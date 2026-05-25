@@ -169,6 +169,10 @@ public:
     /// (re)building track widgets.
     void ensureSectionDivider();
 
+    /// Insert a user-placed divider at the given index, pushing an undo
+    /// command if a command stack is wired up. Triggers rebuildTracks().
+    void addDividerUndoable(size_t insertAt);
+
     /// Zoom to fit the entire timeline.
     void zoomToFit();
 
@@ -515,6 +519,8 @@ private:
     struct DragClipState {
         ClipRef ref;
         int64_t originalIn{0};
+        int64_t originalDuration{0};
+        int64_t originalSourceIn{0};
         size_t  originalTrack{0};
         std::vector<Transition> originalTransitions; // refs originalTrack, ref.clipId
     };

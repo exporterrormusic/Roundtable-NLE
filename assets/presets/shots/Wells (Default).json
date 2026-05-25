@@ -32,11 +32,12 @@
       "isTalking": true,
       "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE.mp4",
       "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK.mp4",
-      "posX": 0.700000,
-      "posY": 0.739000,
-      "scale": 2.133000,
+      "posX": 0.687000,
+      "posY": 0.762000,
+      "scale": 2.193000,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,
@@ -51,11 +52,12 @@
       "stance": "default",
       "animation": "idle",
       "isTalking": false,
-      "posX": 0.250000,
-      "posY": 0.840000,
-      "scale": 1.096000,
+      "posX": 0.249000,
+      "posY": 0.794000,
+      "scale": 1.138000,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,
@@ -66,8 +68,8 @@
     }
   ],
   "layerOrder": [
-    {"type": "ch", "index": 1},
     {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
     {"type": "bg", "index": 0}
   ]
 }

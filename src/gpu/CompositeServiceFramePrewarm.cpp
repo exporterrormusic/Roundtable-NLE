@@ -299,7 +299,10 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
             // Release mutex during background bulk-open so FrameProducer
             // is not starved
             lock.unlock();
-            std::thread([pool, paths = std::move(pathsToOpen)]() {
+            // Join any previous bulk-open thread before spawning a new one.
+            if (m_bulkOpenThread.joinable())
+                m_bulkOpenThread.join();
+            m_bulkOpenThread = std::thread([pool, paths = std::move(pathsToOpen)]() {
                 for (const auto& mediaPath : paths) {
                     namespace fs = std::filesystem;
                     fs::path p(mediaPath);
@@ -321,7 +324,7 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                     }
                 }
                 spdlog::info("[PERF] background bulk-open finished ({} paths)", paths.size());
-            }).detach();
+            });
             lock.lock();
         }
     }

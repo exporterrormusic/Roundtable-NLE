@@ -118,6 +118,7 @@ App::~App()
     // next launch does not pop a spurious "last session crashed"
     // recovery dialog at the user.  See CrashHandler::notifyShutdownStarted.
     CrashHandler::notifyShutdownStarted();
+    spdlog::info("App::~App() — Phase 1: stopping threads");
 
     // Phase 1: Stop all background threads.
     // A10: explicitly stop the PlaybackScheduler (clock + producer +
@@ -162,6 +163,7 @@ App::~App()
     m_audioEngine.reset();
     if (m_scanThread.joinable()) m_scanThread.join();
 
+    spdlog::info("App::~App() — Phase 2: disconnecting signals");
     // Phase 2: Disconnect cross-component signals
     sm.advanceTo(ShutdownPhase::Phase2_Disconnect);
     m_playbackController.reset();
@@ -174,10 +176,12 @@ App::~App()
     // free its CUDA context cleanly.
     shutdownHardwareDecoders();
 
+    spdlog::info("App::~App() — Phase 3: destroying widget tree");
     // Phase 3: Destroy Qt widget tree
     sm.advanceTo(ShutdownPhase::Phase3_DestroyQt);
     m_mainWindow.reset();
 
+    spdlog::info("App::~App() — Phase 4: destroying GPU resources");
     // Phase 4: Destroy GPU resources
     sm.advanceTo(ShutdownPhase::Phase4_DestroyGpu);
     GpuContext::get().shutdown();
@@ -192,6 +196,8 @@ App::~App()
 
     if (s_instance == this)
         s_instance = nullptr;
+
+    spdlog::info("App::~App() — Phase 5: done");
 }
 
 bool App::init()

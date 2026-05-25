@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -283,21 +284,47 @@ public:
     /// Resolve the default shot for a character.
     ///
     /// Priority:
-    ///   1. Check `_defaults.json` (set via the "SET DEFAULT" button in ShotComposer)
+    ///   1. Resolve any alias display name → real character name (see setAlias).
+    ///   2. Check `_defaults.json` (set via the "SET DEFAULT" button in ShotComposer)
     ///      for an explicit character → shot name mapping.
-    ///   2. Fall back to the naming convention `"{characterName} (Default)"`.
-    ///   3. Fall back to case-insensitive match on `"{charactername} (default)"`.
+    ///   3. Fall back to the naming convention `"{characterName} (Default)"`.
+    ///   4. Fall back to case-insensitive match on `"{charactername} (default)"`.
     ///
     /// Returns nullopt if no default shot is found.
     [[nodiscard]] std::optional<ShotPreset> resolveDefaultShot(
         const std::string& characterName) const;
 
+    /// Set or clear a character display-name alias. Persists to `_aliases.json`
+    /// in the preset directory. A script line for `displayName` (or its
+    /// case-insensitive match) will resolve to `realName`'s default shot.
+    /// Pass an empty `displayName` to remove the alias for `realName`.
+    void setAlias(const std::string& realName, const std::string& displayName);
+
+    /// Return the display name configured for a real character name, or the
+    /// real name itself when no alias has been set.
+    [[nodiscard]] std::string displayNameFor(const std::string& realName) const;
+
+    /// Reverse lookup: given a display name (case-insensitive), return the
+    /// real character name. Returns the input if no alias matches.
+    [[nodiscard]] std::string realNameFor(const std::string& displayName) const;
+
+    /// Full alias map: realName → displayName.
+    [[nodiscard]] const std::map<std::string, std::string>& aliases() const noexcept
+    {
+        return m_aliases;
+    }
+
 private:
     /// Generate the file path for a preset name.
     [[nodiscard]] std::filesystem::path pathForPreset(const std::string& name) const;
 
+    /// Load/save the alias map from `_aliases.json`.
+    void loadAliases();
+    void saveAliases() const;
+
     std::filesystem::path                             m_directory;
     std::vector<std::pair<std::string, ShotPreset>>   m_presets; ///< name → preset
+    std::map<std::string, std::string>                m_aliases; ///< realName → displayName
 };
 
 } // namespace rt

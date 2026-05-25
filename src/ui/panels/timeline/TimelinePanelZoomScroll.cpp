@@ -194,30 +194,15 @@ void TimelinePanel::wheelEvent(QWheelEvent* event)
     }
     else
     {
-        // Regular wheel = horizontal scroll (Premiere Pro style).
-        // But if the track content is taller than the viewport (more tracks
-        // than fit on screen), allow vertical scrolling too.
-        bool needsVerticalScroll = false;
-        if (m_verticalScroll && m_verticalScroll->viewport()) {
-            int contentH = m_trackContentArea ? m_trackContentArea->sizeHint().height() : 0;
-            int viewportH = m_verticalScroll->viewport()->height();
-            needsVerticalScroll = (contentH > viewportH);
-        }
-
-        if (needsVerticalScroll) {
-            // Forward to the vertical scroll area so the user can see
-            // tracks that don't fit in the viewport.
-            if (m_verticalScroll && m_verticalScroll->verticalScrollBar()) {
-                auto* vsb = m_verticalScroll->verticalScrollBar();
-                int delta = (event->angleDelta().y() > 0) ? -40 : 40;
-                vsb->setValue(vsb->value() + delta);
-            }
-        } else {
-            // All tracks fit — wheel does horizontal scroll
-            double delta = (event->angleDelta().y() > 0) ? -50.0 : 50.0;
-            m_layoutEngine.setScrollX(m_layoutEngine.scrollX() + delta);
-            onScrollChanged();
-        }
+        // Regular wheel = horizontal scroll (Premiere Pro style), always —
+        // even when track content overflows vertically.  To scroll vertically
+        // the user hovers directly over the vertical scroll bar; that widget
+        // receives wheel events itself and is not intercepted by this panel's
+        // event filter (which only covers the QScrollArea and its viewport,
+        // not the scroll bar child).
+        double delta = (event->angleDelta().y() > 0) ? -50.0 : 50.0;
+        m_layoutEngine.setScrollX(m_layoutEngine.scrollX() + delta);
+        onScrollChanged();
         event->accept();
     }
 }

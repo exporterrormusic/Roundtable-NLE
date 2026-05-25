@@ -355,6 +355,31 @@ void PropertiesPanel::updateShotSection()
     m_shotCombo->blockSignals(false);
 }
 
+void PropertiesPanel::refreshShotDropdown()
+{
+    if (!m_clip || !m_shotSection->isVisible()) return;
+    // Re-read preset names from the manager (COMPOSE may have saved a new
+    // shot) and repopulate the combo, preserving the current selection.
+    m_shotCombo->blockSignals(true);
+    QString current = m_shotCombo->currentText();
+    m_shotCombo->clear();
+
+    if (m_shotManager) {
+        auto names = m_shotManager->presetNames();
+        for (auto& name : names)
+            m_shotCombo->addItem(QString::fromStdString(name));
+
+        int idx = m_shotCombo->findText(current);
+        if (idx >= 0)
+            m_shotCombo->setCurrentIndex(idx);
+        else if (!m_clip->shotName().empty()) {
+            idx = m_shotCombo->findText(QString::fromStdString(m_clip->shotName()));
+            if (idx >= 0) m_shotCombo->setCurrentIndex(idx);
+        }
+    }
+    m_shotCombo->blockSignals(false);
+}
+
 void PropertiesPanel::onShotChanged(const std::string& newShotName)
 {
     if (!m_clip) return;

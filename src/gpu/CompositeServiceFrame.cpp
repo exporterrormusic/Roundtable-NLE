@@ -466,8 +466,30 @@ try
             const auto elapsed = duration_cast<milliseconds>(
                 now - m_lastFullCompositeAt).count();
             if (elapsed < kSettleWindowMs) {
-                hold = m_lastGoodComposite;   // may be null on first view
-                withinSettle = true;
+                // Shot-boundary guard: don't hold the prior shot when the
+                // active clips have entirely changed.  Without this the
+                // previous shot lingers for 1 frame after its clips end.
+                bool sameShot = true;
+                if (m_lastGoodComposite && !m_lastGoodCompositeClipIds.empty()) {
+                    sameShot = false;
+                    for (size_t ti = 0; ti < m_timeline->trackCount() && !sameShot; ++ti) {
+                        auto* trk = m_timeline->track(ti);
+                        if (!trk || trk->type() != TrackType::Video || trk->isMuted())
+                            continue;
+                        for (auto* c : trk->clipsAtTime(tick)) {
+                            if (!c) continue;
+                            uint64_t cid = c->id();
+                            for (uint64_t prev : m_lastGoodCompositeClipIds) {
+                                if (cid == prev) { sameShot = true; break; }
+                            }
+                            if (sameShot) break;
+                        }
+                    }
+                }
+                if (sameShot) {
+                    hold = m_lastGoodComposite;   // may be null on first view
+                    withinSettle = true;
+                }
             }
         }
         if (withinSettle) {
@@ -497,8 +519,43 @@ try
         }
 
         if (clipsAtTick > 0) {
+            // Shot-boundary guard: collect the clip IDs that would be
+            // active at this tick.  The stale fallback below is meant to
+            // mask mid-shot decoder warm-up, NOT to leak the previous
+            // shot's frame past its clip end.  If NONE of the currently
+            // active clips appear in m_lastGoodCompositeClipIds, we just
+            // crossed a shot boundary — return an empty sentinel instead
+            // of the prior shot's composite (which would cause "Wells
+            // visible for 1 frame after her clip ends" et al.).
+            std::vector<uint64_t> currentClipIds;
+            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                auto* trk = m_timeline->track(ti);
+                if (!trk || trk->type() != TrackType::Video || trk->isMuted())
+                    continue;
+                for (auto* c : trk->clipsAtTime(tick)) {
+                    if (c) currentClipIds.push_back(c->id());
+                }
+            }
+
             std::lock_guard lg(m_lastCompositeMtx);
             if (m_lastGoodComposite && m_lastGoodCompositeTick >= 0) {
+                bool anyOverlap = false;
+                for (uint64_t cur : currentClipIds) {
+                    for (uint64_t prev : m_lastGoodCompositeClipIds) {
+                        if (cur == prev) { anyOverlap = true; break; }
+                    }
+                    if (anyOverlap) break;
+                }
+                if (!anyOverlap) {
+                    // Different shot — don't reuse prior composite. Drop
+                    // it so subsequent ticks at this position don't keep
+                    // returning the old shot either.
+                    m_lastGoodComposite.reset();
+                    m_lastGoodCompositeTick = -1;
+                    m_lastGoodCompositeClipIds.clear();
+                    return std::make_shared<CachedFrame>();
+                }
+
                 // Allow at most 2 stale frames so the viewport doesn't
                 // freeze on the previous shot for multiple frame durations
                 // while the new shot's first frame decodes.  At 24fps each
@@ -610,6 +667,15 @@ try
                 const bool wasStale = (m_lastGoodComposite == gpuResult);
                 m_lastGoodComposite     = gpuResult;
                 m_lastGoodCompositeTick = tick;
+                // Record which clips produced this composite so the
+                // shot-boundary check below can skip the stale fallback
+                // when active clips have entirely changed.
+                m_lastGoodCompositeClipIds.clear();
+                m_lastGoodCompositeClipIds.reserve(layers.size());
+                for (const auto& L : layers) {
+                    if (L.clipId != 0)
+                        m_lastGoodCompositeClipIds.push_back(L.clipId);
+                }
                 if (postInvalidate) {
                     spdlog::warn("[LIVE-RELOAD] compositeFrame tick={}: stored "
                                  "FRESH composite (gpuView=0x{:X}, {}x{}, "

@@ -307,6 +307,51 @@ std::unique_ptr<Command> EditOperations::cutSelection(
     return deleteSelection(timeline, selection);
 }
 
+// Remap a source track index to a destination track index by matching
+// TrackType, preserving the relative ordering of source tracks within
+// that type. Critical when pasting between sequences: the clipboard's
+// stored trackIndex is from the SOURCE timeline, so applying it
+// blindly puts audio clips on whatever track sits at that index in
+// the destination — often a video track when the two sequences have
+// different layouts.
+static std::unordered_map<size_t, size_t> buildTrackRemap(
+    const Timeline& timeline, const ClipboardContents& clipboard)
+{
+    // Per-type sorted unique source track indices (taken from clipboard
+    // entries, classified by the clip's type).
+    std::unordered_map<TrackType, std::vector<size_t>> srcByType;
+    for (const auto& entry : clipboard.entries) {
+        if (!entry.clip) continue;
+        TrackType t = (entry.clip->clipType() == ClipType::Audio)
+                      ? TrackType::Audio : TrackType::Video;
+        auto& vec = srcByType[t];
+        if (std::find(vec.begin(), vec.end(), entry.trackIndex) == vec.end())
+            vec.push_back(entry.trackIndex);
+    }
+    for (auto& [t, vec] : srcByType) std::sort(vec.begin(), vec.end());
+
+    // Per-type destination track indices in their natural order.
+    // Dividers are skipped — they aren't valid paste targets.
+    std::unordered_map<TrackType, std::vector<size_t>> dstByType;
+    for (size_t i = 0; i < timeline.trackCount(); ++i) {
+        const Track* t = timeline.track(i);
+        if (t && !t->isDivider())
+            dstByType[t->type()].push_back(i);
+    }
+
+    std::unordered_map<size_t, size_t> remap;
+    for (const auto& [type, srcVec] : srcByType) {
+        const auto dstIt = dstByType.find(type);
+        if (dstIt == dstByType.end() || dstIt->second.empty()) continue;
+        const auto& dstVec = dstIt->second;
+        for (size_t i = 0; i < srcVec.size(); ++i) {
+            size_t dstPos = std::min(i, dstVec.size() - 1);
+            remap[srcVec[i]] = dstVec[dstPos];
+        }
+    }
+    return remap;
+}
+
 std::unique_ptr<Command> EditOperations::paste(
     Timeline& timeline, const ClipboardContents& clipboard,
     int64_t playhead)
@@ -314,15 +359,35 @@ std::unique_ptr<Command> EditOperations::paste(
     if (clipboard.empty()) return nullptr;
 
     auto compound = std::make_unique<CompoundCommand>("Paste");
+    const auto remap = buildTrackRemap(timeline, clipboard);
 
     for (const auto& entry : clipboard.entries)
     {
-        if (entry.trackIndex >= timeline.trackCount()) continue;
+        if (!entry.clip) continue;
+        // Resolve the destination track: prefer the original index when it
+        // exists AND matches the clip's type, otherwise fall back to the
+        // type-aware remap. This keeps within-sequence paste exactly where
+        // it was and only kicks in when crossing sequences with different
+        // track layouts.
+        size_t destIdx = entry.trackIndex;
+        TrackType wantType = (entry.clip->clipType() == ClipType::Audio)
+                             ? TrackType::Audio : TrackType::Video;
+        bool needRemap = (destIdx >= timeline.trackCount());
+        if (!needRemap) {
+            const Track* t = timeline.track(destIdx);
+            if (!t || t->isDivider() || t->type() != wantType) needRemap = true;
+        }
+        if (needRemap) {
+            auto it = remap.find(entry.trackIndex);
+            if (it == remap.end()) continue;
+            destIdx = it->second;
+        }
+        if (destIdx >= timeline.trackCount()) continue;
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
 
-        Track* track = timeline.track(entry.trackIndex);
+        Track* track = timeline.track(destIdx);
         compound->addCommand(std::make_unique<AddClipCommand>(
             track, std::move(cloned)));
     }

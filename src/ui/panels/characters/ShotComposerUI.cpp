@@ -8,6 +8,7 @@
 #include "panels/backgrounds/BackgroundDownloadPanel.h"
 
 #include "Theme.h"
+#include "Settings.h"
 #include "timeline/MediaRelinker.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -690,6 +691,80 @@ QWidget* ShotComposer::createCharFilterColumn()
     connect(m_filterSearchEdit, &QLineEdit::textChanged,
             this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshShotList(); });
 
+    // Right-click context menu: rename character (alias) so script lines
+    // for the new display name resolve to the original character's default
+    // shot. The underlying character/shot data is untouched.
+    m_charFilterList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_charFilterList, &QListWidget::customContextMenuRequested,
+            this, [this](const QPoint& pos) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (!m_charFilterList) return;
+        auto* item = m_charFilterList->itemAt(pos);
+        if (!item) return;
+        const QString tag = item->data(Qt::UserRole).toString();
+        // Skip ALL ("") and UNASSIGNED — only real character entries.
+        if (tag.isEmpty() || tag == QStringLiteral("__UNASSIGNED__"))
+            return;
+
+        // UserRole stores the real character name; the item's text is the
+        // current display label (alias if one is set).
+        const std::string realName    = tag.toStdString();
+        const std::string displayName = item->text().toStdString();
+
+        QMenu menu(this);
+        auto* renameAct = menu.addAction(QStringLiteral("Rename..."));
+        QAction* clearAct = nullptr;
+        if (realName != displayName)
+            clearAct = menu.addAction(QStringLiteral("Reset to \"%1\"")
+                                          .arg(QString::fromStdString(realName)));
+
+        QAction* chosen = menu.exec(m_charFilterList->mapToGlobal(pos));
+        if (!chosen) return;
+
+        if (chosen == clearAct) {
+            m_presetManager.setAlias(realName, std::string{});
+            refreshShotList();
+            return;
+        }
+
+        if (chosen == renameAct) {
+            bool ok = false;
+            QString newName = QInputDialog::getText(
+                this, tr("Rename Character"),
+                tr("New display name for \"%1\":")
+                    .arg(QString::fromStdString(realName)),
+                QLineEdit::Normal,
+                QString::fromStdString(displayName), &ok);
+            if (!ok) return;
+            newName = newName.trimmed();
+            // Reject collisions with other real character names (would
+            // shadow them in the filter).
+            if (!newName.isEmpty() &&
+                newName.compare(QString::fromStdString(realName), Qt::CaseInsensitive) != 0)
+            {
+                for (int i = 0; i < m_charFilterList->count(); ++i) {
+                    auto* it = m_charFilterList->item(i);
+                    if (!it) continue;
+                    const QString existingTag = it->data(Qt::UserRole).toString();
+                    if (existingTag.isEmpty() ||
+                        existingTag == QStringLiteral("__UNASSIGNED__"))
+                        continue;
+                    const std::string existingReal =
+                        m_presetManager.realNameFor(existingTag.toStdString());
+                    if (existingReal != realName &&
+                        QString::fromStdString(existingReal).compare(newName, Qt::CaseInsensitive) == 0)
+                    {
+                        QMessageBox::warning(this, tr("Rename Character"),
+                            tr("\"%1\" is already a character name.").arg(newName));
+                        return;
+                    }
+                }
+            }
+            m_presetManager.setAlias(realName, newName.toStdString());
+            refreshShotList();
+        }
+    });
+
     return column;
 }
 
@@ -1130,11 +1205,18 @@ QWidget* ShotComposer::createLeftPanel()
             QAction* chosen = menu.exec(m_backgroundLibrary->viewport()->mapToGlobal(pos));
             if (!chosen || chosen != importAct) return;
 
+            auto settings = rt::appSettings();
+            QString lastDir = settings.value("Import/lastDir", QString()).toString();
+            if (lastDir.isEmpty())
+                lastDir = QDir::homePath();
             QStringList files = QFileDialog::getOpenFileNames(
                 m_backgroundLibrary, tr("Import Background"),
-                QString(),
+                lastDir,
                 tr("Images (*.png *.jpg *.jpeg *.bmp *.webp)"));
             if (files.isEmpty()) return;
+            QString dir = QFileInfo(files.first()).absolutePath();
+            settings.setValue("Import/lastDir", dir);
+            settings.sync();
             QDir().mkpath(QStringLiteral("assets/backgrounds"));
             for (const QString& srcPath : files) {
                 QFileInfo fi(srcPath);
@@ -1277,11 +1359,18 @@ QWidget* ShotComposer::createLeftPanel()
             QAction* chosen = menu.exec(m_videoLibrary->viewport()->mapToGlobal(pos));
             if (!chosen || chosen != importAct) return;
 
+            auto settings = rt::appSettings();
+            QString lastDir = settings.value("Import/lastDir", QString()).toString();
+            if (lastDir.isEmpty())
+                lastDir = QDir::homePath();
             QStringList files = QFileDialog::getOpenFileNames(
                 m_videoLibrary, tr("Import Video"),
-                QString(),
+                lastDir,
                 tr("Videos (*.mp4 *.avi *.mov *.mkv *.webm *.wmv)"));
             if (files.isEmpty()) return;
+            QString dir = QFileInfo(files.first()).absolutePath();
+            settings.setValue("Import/lastDir", dir);
+            settings.sync();
             QDir().mkpath(QStringLiteral("assets/videos"));
             for (const QString& srcPath : files) {
                 QFileInfo fi(srcPath);

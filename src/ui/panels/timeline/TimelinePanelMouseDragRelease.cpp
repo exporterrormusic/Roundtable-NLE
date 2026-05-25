@@ -470,6 +470,21 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
 
     // ── Reset all drag-related state ─────────────────────────────────────
     if (m_dragMode != DragMode::None) {
+        // Close any open undo macro for trim/slip/slide drags so the
+        // buffered mouse-move commands collapse into a single undo entry.
+        if (m_commandStack && m_commandStack->isMacroActive()) {
+            switch (m_dragMode) {
+            case DragMode::ClipTrimHead:
+            case DragMode::ClipTrimTail:
+            case DragMode::SlipTool:
+            case DragMode::SlideTool:
+                m_commandStack->endMacro();
+                break;
+            default:
+                break;
+            }
+        }
+
         m_dragMode = DragMode::None;
         m_dragClipRef = {};
         m_dragSelectedClips.clear();

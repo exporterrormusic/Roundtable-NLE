@@ -14,6 +14,8 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/KeyframeCmds.h"
+#include "command/commands/EffectCommands.h"
+#include "effects/Effect.h"
 
 #include <QFrame>
 #include <QGridLayout>
@@ -21,6 +23,7 @@
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QApplication>
@@ -622,11 +625,16 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         return;
     }
     if (event->button() == Qt::LeftButton) {
-        // Ruler / clip-bar area → scrub
+        // Ruler / clip-bar area → scrub, clamped to clip edges
         if (event->pos().y() < kRulerHeight + kClipBarHeight) {
             m_scrubbing = true;
             int64_t tick = xToTick(event->pos().x());
-            if (m_clip) tick += m_clip->timelineIn();
+            if (m_clip) {
+                int64_t clipDur = m_clip->duration();
+                if (tick < 0) tick = 0;
+                if (tick > clipDur) tick = clipDur;
+                tick += m_clip->timelineIn();
+            }
             emit playheadScrubbed(tick);
             return;
         }
@@ -691,7 +699,12 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
 {
     if (m_scrubbing) {
         int64_t tick = xToTick(event->pos().x());
-        if (m_clip) tick += m_clip->timelineIn();
+        if (m_clip) {
+            int64_t clipDur = m_clip->duration();
+            if (tick < 0) tick = 0;
+            if (tick > clipDur) tick = clipDur;
+            tick += m_clip->timelineIn();
+        }
         emit playheadScrubbed(tick);
         return;
     }
@@ -728,10 +741,11 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
             entry.track->removeKeyframeAtTime(entry.currentTime);
         }
 
-        // Reinsert at new positions
+        // Reinsert at new positions, clamped to [0, clipDuration]
         m_selectedKeys.clear();
+        int64_t maxTime = m_clip ? m_clip->duration() : INT64_MAX;
         for (auto& entry : m_dragEntries) {
-            int64_t newTime = std::max<int64_t>(0, entry.origTime + delta);
+            int64_t newTime = std::clamp(entry.origTime + delta, int64_t(0), maxTime);
             entry.track->addKeyframe(newTime, entry.value, entry.interp);
             // Restore bezier handles
             for (size_t i = 0; i < entry.track->keyframeCount(); ++i) {
@@ -947,6 +961,7 @@ EffectControlsPanel::EffectControlsPanel(QWidget* parent)
     : QWidget(parent)
 {
     setFocusPolicy(Qt::ClickFocus);
+    setAcceptDrops(true);
     setupUI();
 }
 
@@ -1142,6 +1157,48 @@ void EffectControlsPanel::setupUI()
     footerLayout->addStretch();
 
     mainLayout->addWidget(footer);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Drag & Drop — accept effects dragged from the Effects panel
+// ═════════════════════════════════════════════════════════════════════════════
+
+void EffectControlsPanel::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect")) && m_clip) {
+        event->acceptProposedAction();
+    }
+}
+
+void EffectControlsPanel::dragMoveEvent(QDragMoveEvent* event)
+{
+    if (event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect")) && m_clip) {
+        event->acceptProposedAction();
+    }
+}
+
+void EffectControlsPanel::dropEvent(QDropEvent* event)
+{
+    if (!m_clip || !m_commandStack || !m_timeline) return;
+    if (!event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect"))) return;
+
+    QByteArray effectData = event->mimeData()->data(QStringLiteral("application/x-roundtable-effect"));
+    bool ok = false;
+    int effectType = effectData.toInt(&ok);
+    if (!ok) return;
+
+    auto type = static_cast<EffectType>(effectType);
+    auto& stack = m_clip->effects();
+
+    m_commandStack->execute(
+        std::make_unique<AddEffectCommand>(&stack, type));
+
+    refresh();
+    emit propertyChanged();
+
+    spdlog::info("EffectControlsPanel: added effect '{}' via drop",
+                 effectTypeName(type));
+    event->acceptProposedAction();
 }
 
 } // namespace rt

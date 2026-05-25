@@ -25,6 +25,8 @@
 #include "media/MediaPool.h"
 #include "media/PlaybackController.h"
 #include <QFileInfo>
+#include <algorithm>
+#include <functional>
 
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "spine/ShotPreset.h"
@@ -196,20 +198,90 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     if (!groupVideoTracks.empty() && neededTracks > 0) {
         const size_t reusableN = std::min(neededTracks, groupVideoTracks.size());
 
-        // Plan inserts ABOVE the topmost group track if we need more layers.
-        size_t shift = 0;
-        if (neededTracks > groupVideoTracks.size()) {
-            numInserts   = neededTracks - groupVideoTracks.size();
-            insertPlanAt = groupVideoTracks.front();
-            // Inherit the height of the track currently at insertPlanAt so
-            // the user's customised heights aren't reset to the 80-px
-            // default after the widget reuse pass in rebuildTracks.
-            if (insertPlanAt < m_timeline->trackCount()) {
-                Track* refTrack = m_timeline->track(insertPlanAt);
-                if (refTrack && refTrack->height() >= 1.0f)
-                    insertHeight = refTrack->height();
+        // ── Reuse empty tracks before creating new ones ──────────────
+        // A track is "empty" if it has no clips that overlap the group's
+        // time span [groupStart, groupEnd].  Tracks with clips elsewhere
+        // on the timeline are still usable when they're clear at this spot.
+        auto trackEmptyInRange = [this](size_t ti, int64_t start, int64_t end) -> bool {
+            Track* t = m_timeline->track(ti);
+            if (!t) return false;
+            for (size_t ci = 0; ci < t->clipCount(); ++ci) {
+                Clip* c = t->clip(ci);
+                if (!c) continue;
+                // Overlap check: clip [cIn, cOut) vs range [start, end)
+                if (c->timelineIn() < end && c->timelineOut() > start)
+                    return false; // overlaps — not empty here
             }
-            shift = numInserts;
+            return true; // clear in this time range
+        };
+
+        size_t shortage = (neededTracks > groupVideoTracks.size())
+            ? neededTracks - groupVideoTracks.size() : 0;
+        std::vector<size_t> emptyCandidates;
+        if (shortage > 0) {
+            // Scan every video track, checking for clips that overlap
+            // the group's time span (not the entire track lifetime).
+            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                Track* t = m_timeline->track(ti);
+                if (!t || t->isDivider() || t->type() != TrackType::Video)
+                    continue;
+                if (!trackEmptyInRange(ti, groupStart, groupEnd)) continue;
+                bool inGroup = false;
+                for (size_t g : groupVideoTracks)
+                    if (g == ti) { inGroup = true; break; }
+                if (inGroup) continue;
+                emptyCandidates.push_back(ti);
+            }
+            // Sort by distance to group for compactness
+            const size_t gf = groupVideoTracks.front();
+            const size_t gr = groupVideoTracks.back();
+            std::sort(emptyCandidates.begin(), emptyCandidates.end(),
+                [gf, gr](size_t a, size_t b) {
+                    auto d = [gf, gr](size_t x) {
+                        if (x < gf) return gf - x;
+                        if (x > gr) return x - gr;
+                        return size_t{0};
+                    };
+                    size_t da = d(a), db = d(b);
+                    if (da != db) return da < db;
+                    return a < b;
+                });
+        }
+
+        // Consume empty candidates in proximity order (closest first for
+        // compact placement).  Only create new tracks when there are
+        // genuinely no tracks clear in this time range anywhere.
+        size_t shift = 0;
+        std::vector<size_t> extraTracks;
+        if (shortage > 0) {
+            size_t usedEmpty = 0;
+            for (size_t ei = 0; ei < emptyCandidates.size() && usedEmpty < shortage; ++ei) {
+                extraTracks.push_back(emptyCandidates[ei]);
+                ++usedEmpty;
+            }
+            shortage -= usedEmpty;
+
+            // Only insert new tracks as a last resort
+            if (shortage > 0) {
+                numInserts   = shortage;
+                insertPlanAt = groupVideoTracks.front();
+                if (insertPlanAt < m_timeline->trackCount()) {
+                    Track* refTrack = m_timeline->track(insertPlanAt);
+                    if (refTrack && refTrack->height() >= 1.0f)
+                        insertHeight = refTrack->height();
+                }
+                shift = numInserts;
+            }
+
+            // Map the extra (reused empty) track indices into layerTracks.
+            // If new tracks are being inserted at insertPlanAt, any reused
+            // track at-or-after insertPlanAt shifts down by numInserts.
+            for (size_t e = 0; e < extraTracks.size(); ++e) {
+                size_t idx = extraTracks[e];
+                if (idx >= insertPlanAt && insertPlanAt != SIZE_MAX)
+                    idx += shift;
+                layerTracks[reusableN + e] = idx;
+            }
         }
 
         // Reused-group layer indices, accounting for the upcoming shift:
@@ -224,8 +296,22 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         // previous one to insertPlanAt+1, etc.). Map the topmost (front)
         // layer to the topmost (smallest index) new track.
         for (size_t e = 0; e < numInserts; ++e) {
-            layerTracks[reusableN + e] = insertPlanAt + (numInserts - 1 - e);
+            layerTracks[reusableN + extraTracks.size() + e] = insertPlanAt + (numInserts - 1 - e);
         }
+
+        spdlog::warn("applyShotSwitch: layerTracks=[{}] reusableN={} extraTracks={} "
+                     "numInserts={} insertPlanAt={} shift={}",
+            [&]{
+                std::string s;
+                for (size_t i = 0; i < layerTracks.size(); ++i) {
+                    if (i) s += ",";
+                    s += std::to_string(layerTracks[i]);
+                }
+                return s;
+            }(),
+            reusableN, extraTracks.size(), numInserts,
+            insertPlanAt == SIZE_MAX ? std::string{"NONE"} : std::to_string(insertPlanAt),
+            shift);
     } else if (neededTracks > 0) {
         // No existing group on timeline -- place layers at the bottom of
         // the video stack, appending tracks (via addVideoTrack) as needed.
@@ -280,11 +366,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             vc->setLayerId("background_" + std::to_string(ref.index));
             vc->setShotName(newShotName);
             constexpr float outW2 = 1920.0f, outH2 = 1080.0f;
-            vc->positionX().addKeyframe(0, (bg->posX - 0.5f) * outW2);
-            vc->positionY().addKeyframe(0, (bg->posY - 0.5f) * outH2);
-            vc->scaleX().addKeyframe(0, bg->scale);
-            vc->scaleY().addKeyframe(0, bg->scale);
-            vc->opacity().addKeyframe(0, bg->opacity);
+            vc->positionX().setDefaultValue((bg->posX - 0.5f) * outW2);
+            vc->positionY().setDefaultValue((bg->posY - 0.5f) * outH2);
+            vc->scaleX().setDefaultValue(bg->scale);
+            vc->scaleY().setDefaultValue(bg->scale);
+            vc->opacity().setDefaultValue(bg->opacity);
             if (bg->cropLeft > 0 || bg->cropRight > 0 || bg->cropTop > 0 || bg->cropBottom > 0)
                 vc->setCrop(bg->cropLeft, bg->cropRight, bg->cropTop, bg->cropBottom);
             newClips->push_back({targetTrack, std::move(vc)});
@@ -313,11 +399,15 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 vc->setVideoMutePath(ch->videoMutePath);
                 vc->setVideoTalkPath(ch->videoTalkPath);
                 constexpr float cW = 1920.0f, cH = 1080.0f;
-                vc->positionX().addKeyframe(0, (ch->posX - 0.5f) * cW);
-                vc->positionY().addKeyframe(0, (ch->posY - 0.5f) * cH);
-                vc->scaleX().addKeyframe(0, ch->scale);
-                vc->scaleY().addKeyframe(0, ch->scale);
-                vc->opacity().addKeyframe(0, ch->opacity);
+                vc->positionX().setDefaultValue((ch->posX - 0.5f) * cW);
+                vc->positionY().setDefaultValue((ch->posY - 0.5f) * cH);
+                // Flip is encoded as the sign of the scale so the
+                // PropertiesPanel flip checkboxes round-trip cleanly.
+                // The compositor applies the 0.85× COMPOSE character-fit
+                // dynamically via srcH→outH normalization.
+                vc->scaleX().setDefaultValue(ch->flipX ? -ch->scale : ch->scale);
+                vc->scaleY().setDefaultValue(ch->flipY ? -ch->scale : ch->scale);
+                vc->opacity().setDefaultValue(ch->opacity);
                 if (ch->cropLeft > 0 || ch->cropRight > 0 || ch->cropTop > 0 || ch->cropBottom > 0)
                     vc->setCrop(ch->cropLeft, ch->cropRight, ch->cropTop, ch->cropBottom);
                 newClips->push_back({targetTrack, std::move(vc)});
@@ -339,15 +429,16 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 sc->setGroupId(groupId);
                 sc->setLayerId("char_" + std::to_string(ref.index));
                 constexpr float sW = 1920.0f, sH = 1080.0f;
-                // The COMPOSE 0.85 base-fit factor and the 0.9 pre-render
-                // padding compensation are applied dynamically in the
-                // compositor (compositeFrame) via *0.85/0.9 so that ALL
-                // existing clips benefit without re-creation.
-                sc->positionX().addKeyframe(0, (ch->posX - 0.5f) * sW);
-                sc->positionY().addKeyframe(0, (ch->posY - 0.5f) * sH);
-                sc->scaleX().addKeyframe(0, ch->scale);
-                sc->scaleY().addKeyframe(0, ch->scale);
-                sc->opacity().addKeyframe(0, ch->opacity);
+                // The COMPOSE 0.85 base-fit factor is applied dynamically
+                // in the compositor (compositeFrame) via the GPU spine
+                // FBO's native 0.85× fit, matching COMPOSE exactly.
+                sc->positionX().setDefaultValue((ch->posX - 0.5f) * sW);
+                sc->positionY().setDefaultValue((ch->posY - 0.5f) * sH);
+                // Flip is encoded as the sign of the scale so the
+                // PropertiesPanel flip checkboxes round-trip cleanly.
+                sc->scaleX().setDefaultValue(ch->flipX ? -ch->scale : ch->scale);
+                sc->scaleY().setDefaultValue(ch->flipY ? -ch->scale : ch->scale);
+                sc->opacity().setDefaultValue(ch->opacity);
                 if (ch->cropLeft > 0 || ch->cropRight > 0 || ch->cropTop > 0 || ch->cropBottom > 0)
                     sc->setCrop(ch->cropLeft, ch->cropRight, ch->cropTop, ch->cropBottom);
                 newClips->push_back({targetTrack, std::move(sc)});

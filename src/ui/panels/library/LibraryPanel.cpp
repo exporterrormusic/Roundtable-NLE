@@ -7,6 +7,7 @@
 #include "panels/characters/CharactersPanel.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "Theme.h"
+#include "Settings.h"
 
 #include <QApplication>
 #include <QDesktopServices>
@@ -497,10 +498,17 @@ void LibraryPanel::setupContextMenu(MediaDragTreeWidget* tree, const QString& fi
             if (!chosen) return;
 
             if (chosen == importAct) {
+                auto settings = rt::appSettings();
+                QString lastDir = settings.value("Import/lastDir", QString()).toString();
+                if (lastDir.isEmpty())
+                    lastDir = QDir::homePath();
                 QStringList files = QFileDialog::getOpenFileNames(
                     tree, tr("Import to %1").arg(importDir),
-                    QString(), fileFilter);
+                    lastDir, fileFilter);
                 if (files.isEmpty()) return;
+                QString dir = QFileInfo(files.first()).absolutePath();
+                settings.setValue("Import/lastDir", dir);
+                settings.sync();
                 // Ensure the target directory exists
                 QDir().mkpath(importDir);
                 for (const QString& srcPath : files) {

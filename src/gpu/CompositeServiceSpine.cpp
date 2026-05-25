@@ -460,7 +460,7 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
     // Height-based fit to match COMPOSE's fitScale = canvasH / bh * 0.85.
     // Scale from STABLE bounds (prevents zooming as live bounds shift)
     // Center from STABLE bounds (prevents swaying as live bounds shift)
-    const float spineScale = (static_cast<float>(outH) / bh) * 0.9f;
+    const float spineScale = (static_cast<float>(outH) / bh) * 0.85f;
 
     const float offsetX = outW * 0.5f;
     const float offsetY = outH * 0.5f;

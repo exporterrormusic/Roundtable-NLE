@@ -84,25 +84,84 @@ void TimelineWorkspace::wireTrackSignals()
     //  TRACK MANAGEMENT -- add/delete tracks from context menus
     // =====================================================================
     if (m_timelinePanel && m_timeline) {
+        // Pick a sensible height for a freshly-inserted track. The Track
+        // default is 80 px, but the user may have resized existing tracks —
+        // matching the neighbour's height avoids a jarring size mismatch
+        // when "Add Track Above/Below" pops a new lane in.
+        auto resolveNewTrackHeight = [this](size_t nearIndex) {
+            if (!m_timeline) return 80.0f;
+            auto sample = [this](size_t i) -> float {
+                if (i >= m_timeline->trackCount()) return -1.0f;
+                Track* t = m_timeline->track(i);
+                if (!t || t->isDivider()) return -1.0f;
+                float h = t->height();
+                return (h >= 1.0f) ? h : -1.0f;
+            };
+            float h = sample(nearIndex);
+            if (h > 0.0f) return h;
+            // Fall back to any non-divider neighbour.
+            for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                float hh = sample(i);
+                if (hh > 0.0f) return hh;
+            }
+            return 80.0f;
+        };
+
+        // Insert a fresh track at `insertAt` undoably and refresh the
+        // dependent UI/audio routing. The redo lambda re-runs the same
+        // path; the undo lambda yanks the track back out at the same index.
+        auto addTrackUndoable = [this](size_t insertAt, bool video, float height) {
+            if (!m_timeline) return;
+            if (insertAt > m_timeline->trackCount())
+                insertAt = m_timeline->trackCount();
+
+            auto redo = [this, insertAt, video, height]() {
+                if (m_destroying.load(std::memory_order_acquire)) return;
+                if (!m_timeline) return;
+                auto t = std::make_unique<Track>(
+                    video ? TrackType::Video : TrackType::Audio, "");
+                t->setHeight(height);
+                m_timeline->insertTrack(insertAt, std::move(t));
+                if (m_timelinePanel) m_timelinePanel->rebuildTracks();
+                invalidateAudioSources();
+            };
+            auto undo = [this, insertAt]() {
+                if (m_destroying.load(std::memory_order_acquire)) return;
+                if (!m_timeline) return;
+                if (insertAt >= m_timeline->trackCount()) return;
+                // Clear selection state so we don't dangle a Clip* belonging
+                // to the removed track.
+                m_selectedClip = nullptr;
+                if (m_propertiesPanel) m_propertiesPanel->clearClip();
+                m_timeline->removeTrack(insertAt);
+                if (m_timelinePanel) m_timelinePanel->rebuildTracks();
+                invalidateAudioSources();
+            };
+
+            if (m_commandStack) {
+                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    video ? "Add Video Track" : "Add Audio Track",
+                    std::move(redo), std::move(undo)));
+            } else {
+                redo();
+            }
+        };
+
         connect(m_timelinePanel, &TimelinePanel::addTrackAbove,
-                this, [this](size_t nearIndex, bool video) {
+                this, [this, addTrackUndoable, resolveNewTrackHeight](size_t nearIndex, bool video) {
             if (m_destroying.load(std::memory_order_acquire)) return;
             if (!m_timeline) return;
-            auto t = std::make_unique<Track>(video ? TrackType::Video : TrackType::Audio, "");
             size_t idx = nearIndex < m_timeline->trackCount() ? nearIndex : 0;
-            m_timeline->insertTrack(idx, std::move(t));
-            m_timelinePanel->rebuildTracks();
-            invalidateAudioSources();
+            float h = resolveNewTrackHeight(nearIndex);
+            addTrackUndoable(idx, video, h);
         });
         connect(m_timelinePanel, &TimelinePanel::addTrackBelow,
-                this, [this](size_t nearIndex, bool video) {
+                this, [this, addTrackUndoable, resolveNewTrackHeight](size_t nearIndex, bool video) {
             if (m_destroying.load(std::memory_order_acquire)) return;
             if (!m_timeline) return;
-            auto t = std::make_unique<Track>(video ? TrackType::Video : TrackType::Audio, "");
             size_t idx = nearIndex < m_timeline->trackCount() ? nearIndex + 1 : m_timeline->trackCount();
-            m_timeline->insertTrack(idx, std::move(t));
-            m_timelinePanel->rebuildTracks();
-            invalidateAudioSources();
+            float h = resolveNewTrackHeight(nearIndex);
+            addTrackUndoable(idx, video, h);
         });
         connect(m_timelinePanel, &TimelinePanel::deleteTrack,
                 this, [this](size_t trackIndex) {

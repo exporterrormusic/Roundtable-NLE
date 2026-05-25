@@ -707,16 +707,13 @@ void PropertiesPanel::setupShotSection(QWidget* container)
     m_shotCombo = new QComboBox(m_shotSection);
     m_shotCombo->setToolTip(tr("Select a camera shot preset"));
     m_shotCombo->setEditable(false);
-    connect(m_shotCombo, &QComboBox::currentTextChanged,
-            this, [this](const QString& text) {
+    // Use activated(int) so selecting the same shot re-applies it.
+    connect(m_shotCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int /*index*/) {
                 if (m_updating) return;
                 if (!m_clip) return;
-                // No groupId gate: single non-shot clips and multi-clip mixed
-                // selections both flow through onShotChanged(), which assigns
-                // a shared groupId before dispatching the shot switch.
-                auto newShot = text.toStdString();
-                if (newShot == m_clip->shotName()) return;
-                onShotChanged(newShot);
+                QString text = m_shotCombo->currentText();
+                onShotChanged(text.toStdString());
             });
     form->addRow("Shot:", m_shotCombo);
 

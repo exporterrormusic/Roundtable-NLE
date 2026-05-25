@@ -400,13 +400,27 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
         m_backBuffer = QImage(ww, wh, QImage::Format_ARGB32_Premultiplied);
     m_backBuffer.fill(m_bgColor);
 
-    // â”€â”€ Zoom/pan: virtual canvas maps to widget like the old Python project.
-    // At zoom=1, the canvas fills the widget.  At zoom>1 it is bigger.
-    // canvasOriginX/Y is where the top-left of the virtual canvas lands on screen.
-    float canvasW = static_cast<float>(ww) * m_viewZoom;
-    float canvasH = static_cast<float>(wh) * m_viewZoom;
-    float canvasOriginX = static_cast<float>(ww) * (1.0f - m_viewZoom) * 0.5f + m_viewPanX;
-    float canvasOriginY = static_cast<float>(wh) * (1.0f - m_viewZoom) * 0.5f + m_viewPanY;
+    // ── Use fixed 16:9 logical canvas (1920×1080) for parity with the
+    // Program Monitor output.  Zoom/pan operate on this logical canvas
+    // and it's scaled to fill the widget preserving aspect ratio.
+    constexpr float kLogicalW = 1920.0f;
+    constexpr float kLogicalH = 1080.0f;
+    float widgetAspect = static_cast<float>(ww) / std::max(1.0f, static_cast<float>(wh));
+    float logicalAspect = kLogicalW / kLogicalH;
+    float scaleToWidget;
+    if (widgetAspect > logicalAspect) {
+        // Widget is wider than 16:9 — fit to widget height
+        scaleToWidget = static_cast<float>(wh) / kLogicalH;
+    } else {
+        // Widget is taller or equal — fit to widget width
+        scaleToWidget = static_cast<float>(ww) / kLogicalW;
+    }
+    float canvasW = kLogicalW * scaleToWidget * m_viewZoom;
+    float canvasH = kLogicalH * scaleToWidget * m_viewZoom;
+    float canvasOriginX = static_cast<float>(ww) * (1.0f - m_viewZoom) * 0.5f
+        + m_viewPanX + (static_cast<float>(ww) - canvasW) * 0.5f;
+    float canvasOriginY = static_cast<float>(wh) * (1.0f - m_viewZoom) * 0.5f
+        + m_viewPanY + (static_cast<float>(wh) - canvasH) * 0.5f;
 
     // If no layers exist but we have a global BG image (legacy path), draw it
     if (m_layers.empty() && !m_bgImage.isNull()) {
@@ -532,6 +546,16 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
                 float charScale = fitScale * layer.scale;
                 displayW = std::max(1, static_cast<int>(imgW * charScale));
                 displayH = std::max(1, static_cast<int>(imgH * charScale));
+                static int vcComposeLog = 0;
+                if (vcComposeLog < 10) {
+                    spdlog::warn("[VC-COMPOSE] img={}x{} canvas={:.0f}x{:.0f} "
+                        "fitScale={:.4f} layer.scale={:.3f} charScale={:.4f} "
+                        "display={}x{} display/canvas={:.1f}%",
+                        static_cast<int>(imgW), static_cast<int>(imgH),
+                        canvasW, canvasH, fitScale, layer.scale, charScale,
+                        displayW, displayH, displayH/canvasH*100.0f);
+                    ++vcComposeLog;
+                }
             } else {
                 // Background: scale to fill canvas
                 float scaleToFill = std::max(canvasW / imgW, canvasH / imgH);

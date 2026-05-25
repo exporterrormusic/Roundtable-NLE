@@ -200,6 +200,7 @@ public:
             std::lock_guard lg(m_lastCompositeMtx);
             m_lastGoodComposite.reset();
             m_lastGoodCompositeTick = -1;
+            m_lastGoodCompositeClipIds.clear();
             // Re-arm the settle clock so the next partial composite
             // after invalidation triggers the first-view hold instead
             // of inheriting a stale timestamp from before the reset.
@@ -481,6 +482,13 @@ private:
     mutable std::mutex   m_lastCompositeMtx;
     std::shared_ptr<CachedFrame> m_lastGoodComposite;
     int64_t m_lastGoodCompositeTick{-1};
+    /// Clip ids that produced m_lastGoodComposite. Used to detect shot
+    /// boundaries: if NONE of the currently active clips overlap with
+    /// this set, the previous composite represents a *different* shot and
+    /// must not be reused as a stale fallback while the new shot's
+    /// decoders warm up.  Otherwise the prior shot lingers for 1+ frame
+    /// after its clips end (e.g. Wells visible past her clip end).
+    std::vector<uint64_t> m_lastGoodCompositeClipIds;
 
     // A1: settle-window state.  When a composite is incomplete (fewer
     // resolved layers than active clips at the tick), we hold the prior
@@ -558,6 +566,9 @@ private:
     void doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH);
 
     std::thread m_prewarmThread;
+    /// Bulk-open thread spawned by prewarm iteration (now tracked so
+    /// shutdown can join it instead of leaving it detached).
+    std::thread m_bulkOpenThread;
     std::mutex              m_prewarmMutex;
     std::condition_variable m_prewarmCv;
     PrewarmRequest          m_prewarmRequest{};

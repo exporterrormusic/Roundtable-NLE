@@ -147,13 +147,14 @@ void AudioSync::placeDefaultShotVisuals(Timeline* timeline,
 
                     constexpr float outputWidth = 1920.0f;
                     constexpr float outputHeight = 1080.0f;
-                    constexpr float kCharacterFit = 0.85f;
                     clip->positionX().setDefaultValue((character->posX - 0.5f) * outputWidth);
                     clip->positionY().setDefaultValue((character->posY - 0.5f) * outputHeight);
+                    // Raw preset scale — the compositor applies the 0.85×
+                    // COMPOSE character-fit dynamically via hFit normalization.
                     const float chScaleX = character->flipX ? -character->scale : character->scale;
                     const float chScaleY = character->flipY ? -character->scale : character->scale;
-                    clip->scaleX().setDefaultValue(chScaleX * kCharacterFit);
-                    clip->scaleY().setDefaultValue(chScaleY * kCharacterFit);
+                    clip->scaleX().setDefaultValue(chScaleX);
+                    clip->scaleY().setDefaultValue(chScaleY);
                     clip->opacity().setDefaultValue(character->opacity);
                     if (character->cropLeft > 0 || character->cropRight > 0 ||
                         character->cropTop > 0 || character->cropBottom > 0)

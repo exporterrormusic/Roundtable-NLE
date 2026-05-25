@@ -7,6 +7,7 @@
 
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelinePanelInternal.h"
+#include "panels/timeline/TimelineWorkspace.h"
 #include "widgets/TimelineTrackWidget.h"
 
 #include "timeline/Timeline.h"
@@ -138,11 +139,19 @@ bool TimelinePanel::eventFilter(QObject* watched, QEvent* event)
             mouseDoubleClickEvent(&mapped);
             break;
         case QEvent::MouseButtonPress:
-            // Give keyboard focus to the parent TimelineWorkspace so that
-            // single-key shortcuts (I, O, Delete, Space, etc.) fire from
-            // its keyPressEvent.
-            if (auto* workspace = parentWidget())
-                workspace->setFocus(Qt::MouseFocusReason);
+            // Give keyboard focus to the enclosing TimelineWorkspace so that
+            // single-key shortcuts (Left/Right arrows, I, O, Delete, Space,
+            // etc.) fire from its keyPressEvent. parentWidget() here is the
+            // intermediate centerContainer the layout sits in — focusing it
+            // didn't propagate keys reliably (every other click left arrows
+            // dead until the user re-clicked).  Walk up explicitly until we
+            // hit the TimelineWorkspace.
+            {
+                QWidget* w = parentWidget();
+                while (w && !qobject_cast<TimelineWorkspace*>(w))
+                    w = w->parentWidget();
+                if (w) w->setFocus(Qt::MouseFocusReason);
+            }
             mousePressEvent(&mapped);
             break;
         case QEvent::MouseMove:
@@ -175,13 +184,20 @@ void TimelinePanel::keyPressEvent(QKeyEvent* event)
         event->accept();
         return;
     }
-    // Forward unhandled keys to the parent TimelineWorkspace so its
+    // Forward unhandled keys to the enclosing TimelineWorkspace so its
     // keyPressEvent can handle transport (Left/Right arrows with auto-repeat)
-    // and other workspace-level shortcuts.  QApplication::sendEvent is used
+    // and other workspace-level shortcuts.  parentWidget() is an
+    // intermediate container widget here (the layout's host), not the
+    // workspace itself — sending to it sat the event in a chain whose top
+    // sometimes swallowed arrow keys.  Walk up explicitly until we find the
+    // workspace and dispatch there.  QApplication::sendEvent is used
     // instead of calling keyPressEvent directly because QWidget::keyPressEvent
     // is protected.
-    if (auto* parent = parentWidget()) {
-        QApplication::sendEvent(parent, event);
+    QWidget* w = parentWidget();
+    while (w && !qobject_cast<TimelineWorkspace*>(w))
+        w = w->parentWidget();
+    if (w) {
+        QApplication::sendEvent(w, event);
         if (event->isAccepted())
             return;
     }

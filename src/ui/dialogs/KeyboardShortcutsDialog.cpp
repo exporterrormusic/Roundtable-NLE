@@ -4,9 +4,11 @@
 
 #include "dialogs/KeyboardShortcutsDialog.h"
 #include "ShortcutManager.h"
+#include "Settings.h"
 
 #include <QBoxLayout>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -72,10 +74,17 @@ void KeyboardShortcutsDialog::buildUI()
     auto* importBtn = new QPushButton("Import...", this);
     importBtn->setToolTip("Import shortcut presets from a JSON file");
     connect(importBtn, &QPushButton::clicked, this, [this]() {
+        auto settings = rt::appSettings();
+        QString lastDir = settings.value("Import/lastDir", QString()).toString();
+        if (lastDir.isEmpty())
+            lastDir = QDir::homePath();
         QString path = QFileDialog::getOpenFileName(
-            this, "Import Shortcuts", QString(),
+            this, "Import Shortcuts", lastDir,
             "JSON Files (*.json);;All Files (*)");
         if (path.isEmpty()) return;
+        QString dir = QFileInfo(path).absolutePath();
+        settings.setValue("Import/lastDir", dir);
+        settings.sync();
         if (m_manager.importFromFile(path)) {
             // PopulateTree destroys all tree items — clear the capture
             // pointer so finishCapture() doesn't dereference freed memory.

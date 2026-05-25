@@ -87,6 +87,12 @@
 #include <algorithm>
 #include <filesystem>
 #include <set>
+#include <thread>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 
 namespace rt {
@@ -285,10 +291,28 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
     event->accept();
 
-    // Signal the app to quit.  We use a queued invocation so the close
-    // event finishes processing cleanly before the event loop exits.
+    // Close all windows (belt-and-suspenders) and quit the event loop.
+    QApplication::closeAllWindows();
+    QApplication::quit();
     QMetaObject::invokeMethod(QApplication::instance(), "quit",
                               Qt::QueuedConnection);
+
+    // Hard shutdown watchdog: a detached thread that force-terminates
+    // the process after 8 seconds if graceful teardown hangs (e.g. a
+    // background thread blocked on I/O, a GPU waitIdle deadlock, or
+    // an FFmpeg demuxer stuck on a network share).  This runs OUTSIDE
+    // the Qt event loop, so it works even after the event loop exits
+    // and ~App blocks on a hung thread join.
+#ifdef _WIN32
+    std::thread([]() {
+        Sleep(8000);
+        TerminateProcess(GetCurrentProcess(), 0);
+    }).detach();
+#else
+    QTimer::singleShot(8000, QApplication::instance(), []() {
+        ::_exit(0);
+    });
+#endif
 }
 
 void MainWindow::changeEvent(QEvent* event)

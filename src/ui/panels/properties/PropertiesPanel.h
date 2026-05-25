@@ -125,6 +125,9 @@ public:
     /// Set the shot preset manager for shot switching support.
     void setShotPresetManager(ShotPresetManager* mgr) noexcept { m_shotManager = mgr; }
 
+    /// Refresh the shot dropdown (when COMPOSE saves a new/updated shot).
+    void refreshShotDropdown();
+
     /// Set the timeline for shot switching (needed to find group clips).
     void setTimeline(Timeline* tl) noexcept { m_timeline = tl; }
 

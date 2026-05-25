@@ -149,6 +149,16 @@ void MainWindow::buildPanels()
     // Give AudioSync access to the ShotPresetManager for default shot lookup
     m_audioSync->setShotPresetManager(&m_characterShotPanel->shotComposer()->presetManager());
 
+    // When a shot is saved in COMPOSE, refresh the Properties panel's shot
+    // dropdown so it immediately reflects the new/updated preset.
+    if (auto* tw = m_timelineWorkspace) {
+        connect(m_characterShotPanel->shotComposer(), &ShotComposer::shotChanged,
+                tw, [tw]() {
+            if (auto* pp = tw->propertiesPanel())
+                pp->refreshShotDropdown();
+        });
+    }
+
     // When a script is loaded, refresh the shot list so any newly-referenced
     // characters appear in the COMPOSE character filter (if they are downloaded
     // or have existing user-created shots).  Do NOT auto-create default shots.

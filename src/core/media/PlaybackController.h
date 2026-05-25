@@ -126,6 +126,10 @@ public:
     /// Press L: forward shuttle. Each press doubles speed: 1x, 2x, 4x.
     void shuttleForward();
 
+    /// Begin shuttling at an exact speed (e.g. 0.5 for K+L slow scrub).
+    /// Bypasses the J/L press-counter ramp.  Speed 0 pauses.
+    void setShuttleSpeed(double speed);
+
     /// Get current shuttle speed (negative = reverse).
     [[nodiscard]] double shuttleSpeed() const noexcept { return m_shuttleSpeed; }
 

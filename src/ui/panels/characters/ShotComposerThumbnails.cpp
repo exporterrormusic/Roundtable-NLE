@@ -56,7 +56,8 @@ void ShotComposer::refreshShotList()
     struct ShotInfo {
         std::string name;
         bool isDefault = false;
-        QStringList charTags;
+        QStringList charTags;        ///< real character names (for filter match)
+        QStringList charTagsDisplay; ///< alias-resolved labels (for rendering)
         int layerCount = 0;
     };
     std::vector<ShotInfo> allShotInfos;
@@ -72,21 +73,25 @@ void ShotComposer::refreshShotList()
         si.isDefault = defaultShotNames.count(n) > 0;
         si.layerCount = preset->layerCount();
 
-        // Collect characters from this preset
-        QSet<QString> seenChars;
+        // Collect characters from this preset. charTags holds real
+        // character names for filter matching; charTagsDisplay holds the
+        // alias-resolved labels for rendering.
+        QSet<QString> seenReal;
         for (const auto& ch : preset->characters()) {
-            std::string dn = m_modelManager
+            std::string real = m_modelManager
                 ? m_modelManager->getDisplayName(ch.characterName)
                 : ch.characterName;
-            si.charTags << QString::fromStdString(dn);
-            seenChars.insert(QString::fromStdString(dn));
+            std::string disp = m_presetManager.displayNameFor(real);
+            si.charTags        << QString::fromStdString(real);
+            si.charTagsDisplay << QString::fromStdString(disp);
+            seenReal.insert(QString::fromStdString(real));
         }
 
-        // Count per-character shot occurrences
+        // Count per-character shot occurrences (keyed by real name)
         if (si.charTags.isEmpty()) {
             ++unassignedCount;
         } else {
-            for (const auto& tag : seenChars)
+            for (const auto& tag : seenReal)
                 charShotCount[tag.toStdString()]++;
         }
 
@@ -181,12 +186,28 @@ void ShotComposer::refreshShotList()
             ++row;
         }
 
-        // Character items
-        QStringList sortedChars = validNames.values();
-        sortedChars.sort();
-        for (const auto& cn : sortedChars) {
-            // Apply search filter
-            if (!filterSearchText.isEmpty() && !cn.toLower().contains(filterSearchText))
+        // Character items — sort by the *displayed* name (alias if any)
+        // so the user sees alphabetical order matching the labels.
+        struct CharEntry { QString real; QString display; };
+        std::vector<CharEntry> entries;
+        entries.reserve(validNames.size());
+        for (const auto& cn : validNames) {
+            QString disp = QString::fromStdString(
+                m_presetManager.displayNameFor(cn.toStdString()));
+            entries.push_back({cn, disp});
+        }
+        std::sort(entries.begin(), entries.end(),
+            [](const CharEntry& a, const CharEntry& b) {
+                return a.display.compare(b.display, Qt::CaseInsensitive) < 0;
+            });
+
+        for (const auto& entry : entries) {
+            const QString& cn = entry.real;
+            const QString& disp = entry.display;
+
+            // Apply search filter (search the displayed label so renamed
+            // entries match what the user types).
+            if (!filterSearchText.isEmpty() && !disp.toLower().contains(filterSearchText))
                 continue;
 
             int count = 0;
@@ -194,20 +215,25 @@ void ShotComposer::refreshShotList()
             if (it != charShotCount.end())
                 count = it->second;
 
-            // Get thumbnail for this character
+            // Get thumbnail for this character (real folder name)
             std::string folderName = m_modelManager
                 ? m_modelManager->getFolderName(cn.toStdString())
                 : cn.toStdString();
             QPixmap thumb = makeCharacterThumbnail(folderName, 48);
 
-            auto* item = new QListWidgetItem(QIcon(thumb), cn);
+            // Label shows alias display name; UserRole stores real character
+            // name so downstream filter matching against shot tags works.
+            auto* item = new QListWidgetItem(QIcon(thumb), disp);
             item->setData(Qt::UserRole, cn);
             item->setData(Qt::UserRole + 1, count);
             item->setSizeHint(QSize(0, 60));
             QFont chFont = item->font();
             chFont.setPixelSize(16);
             item->setFont(chFont);
-            item->setToolTip(QString("%1 - %2 shots").arg(cn).arg(count));
+            if (cn == disp)
+                item->setToolTip(QString("%1 - %2 shots").arg(cn).arg(count));
+            else
+                item->setToolTip(QString("%1 (aka %2) - %3 shots").arg(disp, cn).arg(count));
             m_charFilterList->addItem(item);
             if (cn == prevFilter) restoreRow = row;
             ++row;
@@ -236,7 +262,8 @@ void ShotComposer::refreshShotList()
     struct FilteredShot {
         std::string name;
         bool isDefault = false;
-        QStringList charTags;
+        QStringList charTags;        ///< real names
+        QStringList charTagsDisplay; ///< alias-resolved labels
         int layerCount = 0;
         int sortKey = 0;
         QString firstCharTag; // for Character sort mode
@@ -251,7 +278,7 @@ void ShotComposer::refreshShotList()
                 continue;
         }
 
-        // Apply character filter
+        // Apply character filter (real name vs real name)
         if (!charFilter.isEmpty()) {
             if (charFilter == QStringLiteral("__UNASSIGNED__")) {
                 if (!si.charTags.isEmpty())
@@ -273,9 +300,10 @@ void ShotComposer::refreshShotList()
         fs.name = si.name;
         fs.isDefault = si.isDefault;
         fs.charTags = si.charTags;
+        fs.charTagsDisplay = si.charTagsDisplay;
         fs.layerCount = si.layerCount;
-        if (!si.charTags.isEmpty())
-            fs.firstCharTag = si.charTags.first();
+        if (!si.charTagsDisplay.isEmpty())
+            fs.firstCharTag = si.charTagsDisplay.first();
         filtered.push_back(fs);
     }
 
@@ -352,7 +380,7 @@ void ShotComposer::refreshShotList()
 
         auto* item = new QListWidgetItem(QIcon(thumb), displayName);
         item->setData(Qt::UserRole, QString::fromStdString(fs.name));
-        item->setData(Qt::UserRole + 1, fs.charTags);     // QStringList for tags
+        item->setData(Qt::UserRole + 1, fs.charTagsDisplay); // alias-resolved tags
         item->setData(Qt::UserRole + 2, fs.layerCount);    // int layer count
         item->setData(Qt::UserRole + 3, fs.isDefault);     // bool is default
         if (fs.isDefault)

@@ -39,6 +39,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     // stuck in a mode that ignores subsequent input.  Also clean up any
     // visible artifacts left behind by an interrupted drag.
     if (m_dragMode != DragMode::None) {
+        // Close any dangling undo macro from the interrupted drag so
+        // future commands don't accumulate into a stale macro.
+        if (m_commandStack && m_commandStack->isMacroActive()) {
+            m_commandStack->endMacro();
+        }
         m_dragMode = DragMode::None;
         m_dragClipRef = {};
         m_dragSelectedClips.clear();
@@ -304,7 +309,13 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                     const bool nearRight = !nearLeft
                                         && std::abs(pxLocal - clipR) < edgeZone;
 
-                    if (nearLeft || nearRight)
+                // Clicking within the edge-grab zone of a clip
+                // immediately selects the edit point and primes a
+                // trim/transition operation — no prior selection
+                // required.  This also lets Ctrl+T add a transition
+                // with a single edge click + shortcut.
+                const bool shiftClick = event->modifiers() & Qt::ShiftModifier;
+                if ((nearLeft || nearRight) && !shiftClick)
                     {
                         // Look for a touching neighbour on the relevant side.
                         const Clip* leftNeighbour  = nullptr;
@@ -381,20 +392,38 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                         // neighbours come from the same hitTrack.
                         const size_t trimTrackIdx = hitRef->trackIndex;
 
-                        // Clip selection is suppressed for edge clicks —
-                        // only the bracket shows.  m_lastClickedEdge is
-                        // recorded so Ctrl+T can add a transition here.
-                        // Also drop any selected transition so its
-                        // highlight doesn't linger (the selectionChanged
-                        // handler only auto-clears it when a clip is
-                        // selected, and here the selection is empty).
-                        m_selection.clear();
-                        m_selectedTransitionTrack = SIZE_MAX;
-                        m_selectedTransitionIndex = SIZE_MAX;
-                        emit selectionChanged();
+                        // If the user grabbed the edge of a clip that's
+                        // part of a current multi-selection (e.g. a V/A
+                        // pair, or several clips across tracks), preserve
+                        // the selection so the trim drag extends every
+                        // selected clip's matching edge by the same delta.
+                        // Otherwise fall back to the Premiere-style edit-
+                        // point behaviour: clear selection, show the
+                        // bracket, single-clip trim.
+                        ClipRef trimRef{ trimTrackIdx, trimClip->id() };
+                        const bool keepSelection =
+                            (m_selection.count() > 1 &&
+                             m_selection.isSelected(trimRef));
+
+                        if (!keepSelection) {
+                            // Single-clip edge click — Premiere-style edit
+                            // point behaviour: clear selection, show the
+                            // bracket, single-clip trim.  m_lastClickedEdge
+                            // is recorded so Ctrl+T can add a transition.
+                            // Also drop any selected transition so its
+                            // highlight doesn't linger.
+                            m_selection.clear();
+                            m_selectedTransitionTrack = SIZE_MAX;
+                            m_selectedTransitionIndex = SIZE_MAX;
+                            emit selectionChanged();
+                        }
+                        // Show the edit-point bracket in either case so the
+                        // user gets visual confirmation that an edge was
+                        // grabbed — multi-selection trim previously had no
+                        // bracket at all, which read as "nothing happened".
                         setEditPointSelection(trimTrackIdx, seamTick, side);
 
-                        m_dragClipRef          = { trimTrackIdx, trimClip->id() };
+                        m_dragClipRef          = trimRef;
                         m_dragOriginalIn       = trimClip->timelineIn();
                         m_dragOriginalSourceIn = trimClip->sourceIn();
                         m_dragOriginalDuration = trimClip->duration();
@@ -404,8 +433,49 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                                        : DragMode::ClipTrimHead;
                         m_lastClickedEdge = { m_dragClipRef, trimEdge, true };
 
+                        // Wrap all trim-move commands into a single undo
+                        // step so one drag = one Ctrl+Z, not hundreds.
+                        if (m_commandStack)
+                            m_commandStack->beginMacro(
+                                (m_dragMode == DragMode::ClipTrimTail)
+                                    ? "Trim clip tail" : "Trim clip head");
+
+                        // Snapshot every selected clip's original in/
+                        // duration so the trim handlers can extend each
+                        // one by the same delta. For the single-clip case
+                        // (no multi-selection) the snapshot is just the
+                        // grabbed edge's clip.
+                        m_dragSelectedClips.clear();
+                        m_dragTargetTrack = trimTrackIdx;
+                        if (keepSelection) {
+                            for (const auto& sel : m_selection.clips()) {
+                                Track* selTrack = m_timeline->track(sel.trackIndex);
+                                if (!selTrack) continue;
+                                size_t si = selTrack->findClipIndexById(sel.clipId);
+                                if (si >= selTrack->clipCount()) continue;
+                                DragClipState dcs;
+                                dcs.ref = sel;
+                                dcs.originalIn = selTrack->clip(si)->timelineIn();
+                                dcs.originalDuration = selTrack->clip(si)->duration();
+                                dcs.originalSourceIn = selTrack->clip(si)->sourceIn();
+                                dcs.originalTrack = sel.trackIndex;
+                                m_dragSelectedClips.push_back(dcs);
+                            }
+                        } else {
+                            DragClipState dcs;
+                            dcs.ref = m_dragClipRef;
+                            dcs.originalIn = m_dragOriginalIn;
+                            dcs.originalDuration = m_dragOriginalDuration;
+                            dcs.originalSourceIn = m_dragOriginalSourceIn;
+                            dcs.originalTrack = m_dragOriginalTrack;
+                            m_dragSelectedClips.push_back(dcs);
+                        }
+
                         m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
-                        std::vector<uint64_t> excludeIds{ trimClip->id() };
+                        std::vector<uint64_t> excludeIds;
+                        excludeIds.reserve(m_dragSelectedClips.size());
+                        for (const auto& dcs : m_dragSelectedClips)
+                            excludeIds.push_back(dcs.ref.clipId);
                         m_snapEngine.buildTargets(*m_timeline, m_playheadTick,
                                                   0.0, excludeIds);
 
@@ -577,6 +647,10 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             size_t idx = track->findClipIndexById(hitRef->clipId);
             if (idx < track->clipCount())
                 m_dragOriginalSourceIn = track->clip(idx)->sourceIn();
+
+            // Wrap all slip commands into a single undo step.
+            if (m_commandStack)
+                m_commandStack->beginMacro("Slip clip");
         } else {
             // Empty-space click — deselect on release (Premiere style).
             m_dragMode = DragMode::PendingMarquee;
@@ -595,6 +669,10 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             size_t idx = track->findClipIndexById(hitRef->clipId);
             if (idx < track->clipCount())
                 m_dragOriginalIn = track->clip(idx)->timelineIn();
+
+            // Wrap all slide commands into a single undo step.
+            if (m_commandStack)
+                m_commandStack->beginMacro("Slide clip");
         } else {
             m_dragMode = DragMode::PendingMarquee;
         }
@@ -689,6 +767,13 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                     if (leftSrcDur > 0)
                         maxEP = std::min(maxEP, m_rollLeftOrigIn + leftSrcDur - m_rollLeftOrigSrcIn);
 
+                    // Both clips must retain at least kMinClipDuration after
+                    // the roll, otherwise the commit-clamp in rollingEdit()
+                    // triggers a "fully consumed" path that removes the short
+                    // clip and extends the other — the seam snaps back.
+                    minEP = std::max(minEP, m_rollLeftOrigIn + kMinClipDuration);
+                    maxEP = std::min(maxEP, m_rollRightOrigIn + m_rollRightOrigDur - kMinClipDuration);
+
                     // Degenerate (no valid roll range) shouldn't crash —
                     // collapse to the original seam.
                     if (minEP > maxEP) {
@@ -744,6 +829,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                     m_dragMode = DragMode::ClipTrimTail;
                 else
                     m_dragMode = DragMode::ClipTrimHead;
+
+                // Wrap all ripple-trim commands into a single undo step.
+                if (m_commandStack && (m_dragMode == DragMode::ClipTrimTail
+                                       || m_dragMode == DragMode::ClipTrimHead))
+                    m_commandStack->beginMacro("Ripple trim clip");
             }
         } else {
             // Empty-space click — deselect on release.

@@ -10,6 +10,7 @@
 #include "MainWindow.h"
 #include "media/PlaybackController.h"
 #include "panels/effects/GraphicsEditorPanel.h"
+#include "panels/effects/EffectControlsPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -21,7 +22,10 @@
 #include <QApplication>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QShortcut>
+#include <QSpinBox>
+#include <QTextEdit>
 #include <QWidget>
 
 namespace rt {
@@ -48,6 +52,55 @@ void TimelineWorkspace::registerKeyboardShortcuts()
         auto* fw = QApplication::focusWidget();
         if (qobject_cast<QLineEdit*>(fw)) return;
         if (m_playbackController) m_playbackController->goToEnd();
+    });
+
+    // Arrow keys — window-level so they work regardless of which panel has
+    // focus (text inputs are still guarded).  Left/Right step frame-by-frame
+    // with auto-repeat; Up/Down jump between edit points.
+    auto addGlobalShortcut = [this](const QKeySequence& key, auto&& fn) {
+        auto* sc = new QShortcut(key, this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, std::forward<decltype(fn)>(fn));
+    };
+    // Arrow keys nudge the playhead.  If playback is active, stop it first
+    // (Premiere Pro behaviour: pressing Left/Right/Up/Down to navigate halts
+    // playback rather than letting it run away from where the user is
+    // looking).
+    auto stopPlaybackIfRunning = [this]() {
+        if (m_playbackController && m_playbackController->isPlaying())
+            m_playbackController->pause();
+    };
+    addGlobalShortcut(Qt::Key_Left, [this, stopPlaybackIfRunning]() {
+        auto* fw = QApplication::focusWidget();
+        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
+            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
+            return;
+        stopPlaybackIfRunning();
+        if (m_playbackController) m_playbackController->stepBackward();
+    });
+    addGlobalShortcut(Qt::Key_Right, [this, stopPlaybackIfRunning]() {
+        auto* fw = QApplication::focusWidget();
+        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
+            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
+            return;
+        stopPlaybackIfRunning();
+        if (m_playbackController) m_playbackController->stepForward();
+    });
+    addGlobalShortcut(Qt::Key_Up, [this, stopPlaybackIfRunning]() {
+        auto* fw = QApplication::focusWidget();
+        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
+            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
+            return;
+        stopPlaybackIfRunning();
+        if (m_playbackController) m_playbackController->goToPrevEditPoint();
+    });
+    addGlobalShortcut(Qt::Key_Down, [this, stopPlaybackIfRunning]() {
+        auto* fw = QApplication::focusWidget();
+        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
+            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
+            return;
+        stopPlaybackIfRunning();
+        if (m_playbackController) m_playbackController->goToNextEditPoint();
     });
 
     // Shift+I / Shift+O: go to in/out point
@@ -94,7 +147,8 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             }
         }
     });
-    // Ctrl+V: paste at playhead (or paste layer if Essential Graphics focused)
+    // Ctrl+V: paste at playhead (or paste layer if Essential Graphics focused,
+    //          or paste effect if one was copied from Effect Controls)
     addShortcut(Qt::CTRL | Qt::Key_V, [this]() {
         auto* fw = QApplication::focusWidget();
         // Project Bin focused → paste the clipboard as an independent
@@ -110,6 +164,18 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             invalidateCompositeCache();
             scheduleOverlayRefresh();
             if (m_programMonitor) m_programMonitor->requestRefresh();
+            return;
+        }
+        // Effect Controls has a copied effect → paste it onto the current
+        // clip. Does NOT require EC focus — the user may have clicked a
+        // different clip on the timeline after copying the effect.
+        if (m_effectControlsPanel && m_effectControlsPanel->hasCopiedEffect()
+            && m_effectControlsPanel->clip()) {
+            m_effectControlsPanel->pasteEffect();
+            invalidateCompositeCache();
+            updateTransformOverlay();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+            schedulePostEditWork();
             return;
         }
         if (m_timeline && m_timelinePanel && m_commandStack && !m_timelinePanel->clipboard().empty()) {
@@ -143,7 +209,8 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             if (m_programMonitor) m_programMonitor->requestRefresh();
         }
     });
-    // Ctrl+C: copy (or copy layer if Essential Graphics focused)
+    // Ctrl+C: copy (or copy layer if Essential Graphics focused,
+    //          or copy effect if Effect Controls focused)
     addShortcut(Qt::CTRL | Qt::Key_C, [this]() {
         auto* fw = QApplication::focusWidget();
         // Project Bin focused → copy the current selection (sequence,
@@ -156,6 +223,12 @@ void TimelineWorkspace::registerKeyboardShortcuts()
         bool pmFocused = m_programMonitor && m_programMonitor->isAncestorOf(fw);
         if (m_GraphicsEditorPanel && (egFocused || (pmFocused && m_selectedGraphicLayerIdx >= 0))) {
             m_GraphicsEditorPanel->copySelectedLayer();
+            return;
+        }
+        // Effect Controls focused with a selected effect → copy the effect
+        if (m_effectControlsPanel && m_effectControlsPanel->isAncestorOf(fw)
+            && m_effectControlsPanel->hasSelectedEffect()) {
+            m_effectControlsPanel->copySelectedEffect();
             return;
         }
         if (!m_timeline || !m_timelinePanel) return;

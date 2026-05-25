@@ -358,6 +358,7 @@ bool ShotComposer::saveCurrentShot()
         saveShotThumbnail(m_currentShot);
         refreshShotList();
         refreshLayerList();
+        emit shotChanged();
         spdlog::info("ShotComposer: Saved shot '{}'", m_currentShot.name());
     }
     return ok;

@@ -53,6 +53,7 @@
       "scale": 0.750042,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 25.091801,
       "cropRight": 0.000000,

@@ -235,6 +235,7 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
 
 private:
@@ -277,6 +278,13 @@ private:
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
+
+    // ── JKL key state ──────────────────────────────────────────────────
+    // Tracks held-key state for Premiere-style K+J / K+L slow shuttle.
+    // When K is held and J/L is pressed, we engage a 0.5× scrub that
+    // stops the moment J/L is released.
+    bool              m_kHeld{false};
+    bool              m_kSlowShuttleActive{false};
 
     // Panels (owned by splitter hierarchy)
     TimelinePanel*    m_timelinePanel{nullptr};

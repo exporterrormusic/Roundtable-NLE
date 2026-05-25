@@ -16,8 +16,10 @@
 #include "timeline/Timeline.h"
 
 #include "project/Project.h"
+#include "Settings.h"
 #include "SrtIO.h"
 
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -35,10 +37,19 @@ namespace rt {
 
 void MainWindow::onImportSrt()
 {
+    auto settings = rt::appSettings();
+    QString lastDir = settings.value("Import/lastDir", QString()).toString();
+    if (lastDir.isEmpty())
+        lastDir = QDir::homePath();
+
     QString path = QFileDialog::getOpenFileName(
-        this, "Import SRT Subtitles", QString(),
+        this, "Import SRT Subtitles", lastDir,
         "SRT Files (*.srt);;All Files (*)");
     if (path.isEmpty()) return;
+
+    QString dir = QFileInfo(path).absolutePath();
+    settings.setValue("Import/lastDir", dir);
+    settings.sync();
 
     auto entries = parseSrt(std::filesystem::path(path.toStdWString()));
     if (entries.empty()) {

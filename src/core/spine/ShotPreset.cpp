@@ -614,12 +614,15 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
 {
     m_directory = presetsDir;
     m_presets.clear();
+    m_aliases.clear();
 
     if (!std::filesystem::exists(presetsDir)) {
         spdlog::info("ShotPresetManager: presets directory does not exist: {}",
                      presetsDir.string());
         return 0;
     }
+
+    loadAliases();
 
     int count = 0;
     for (const auto& entry : std::filesystem::directory_iterator(presetsDir)) {
@@ -741,6 +744,10 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     if (m_directory.empty())
         return std::nullopt;
 
+    // ── Step 0: Resolve any alias display name → real character name ────
+    // realNameFor returns the input unchanged if no alias matches.
+    std::string realName = realNameFor(characterName);
+
     // ── Step 1: Check _defaults.json for an explicit mapping ────────────
     auto defaultsPath = m_directory / "_defaults.json";
     std::ifstream f(defaultsPath);
@@ -761,7 +768,7 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
                 if (lex.next() != JTok::String) break;
                 std::string val = lex.sval;
 
-                if (key == characterName) {
+                if (key == realName) {
                     // Found an explicit mapping — look up the named preset
                     auto preset = load(val);
                     if (preset)
@@ -774,7 +781,7 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     }
 
     // ── Step 2: Fall back to naming convention ──────────────────────────
-    std::string defaultName = characterName + " (Default)";
+    std::string defaultName = realName + " (Default)";
     {
         auto preset = load(defaultName);
         if (preset) return preset;
@@ -782,7 +789,7 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
 
     // ── Step 3: Case-insensitive fallback ───────────────────────────────
     {
-        std::string lowerChar = characterName;
+        std::string lowerChar = realName;
         std::transform(lowerChar.begin(), lowerChar.end(), lowerChar.begin(), ::tolower);
         std::string targetLower = lowerChar + " (default)";
         auto names = presetNames();
@@ -795,6 +802,85 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     }
 
     return std::nullopt;
+}
+
+void ShotPresetManager::setAlias(const std::string& realName,
+                                  const std::string& displayName)
+{
+    if (realName.empty()) return;
+    if (displayName.empty() || displayName == realName)
+        m_aliases.erase(realName);
+    else
+        m_aliases[realName] = displayName;
+    saveAliases();
+}
+
+std::string ShotPresetManager::displayNameFor(const std::string& realName) const
+{
+    auto it = m_aliases.find(realName);
+    return (it == m_aliases.end()) ? realName : it->second;
+}
+
+std::string ShotPresetManager::realNameFor(const std::string& displayName) const
+{
+    auto lower = [](const std::string& s) {
+        std::string r = s;
+        std::transform(r.begin(), r.end(), r.begin(), ::tolower);
+        return r;
+    };
+    const std::string needle = lower(displayName);
+    for (const auto& [real, disp] : m_aliases) {
+        if (lower(disp) == needle) return real;
+    }
+    return displayName;
+}
+
+void ShotPresetManager::loadAliases()
+{
+    if (m_directory.empty()) return;
+    auto path = m_directory / "_aliases.json";
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    JLexer lex(content);
+    if (lex.next() != JTok::LBrace) return;
+    while (true) {
+        auto t = lex.next();
+        if (t == JTok::RBrace || t == JTok::End) break;
+        if (t == JTok::Comma) continue;
+        if (t != JTok::String) break;
+        std::string key = lex.sval;
+        if (lex.next() != JTok::Colon) break;
+        if (lex.next() != JTok::String) break;
+        std::string val = lex.sval;
+        if (!key.empty() && !val.empty() && key != val)
+            m_aliases[key] = val;
+    }
+}
+
+void ShotPresetManager::saveAliases() const
+{
+    if (m_directory.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(m_directory, ec);
+    auto path = m_directory / "_aliases.json";
+
+    std::ostringstream os;
+    os << '{';
+    bool first = true;
+    for (const auto& [real, disp] : m_aliases) {
+        if (!first) os << ',';
+        first = false;
+        os << '"' << jsonEscape(real) << "\":\"" << jsonEscape(disp) << '"';
+    }
+    os << '}';
+
+    std::ofstream f(path, std::ios::trunc);
+    if (f.is_open()) {
+        auto s = os.str();
+        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    }
 }
 
 std::filesystem::path ShotPresetManager::pathForPreset(const std::string& name) const

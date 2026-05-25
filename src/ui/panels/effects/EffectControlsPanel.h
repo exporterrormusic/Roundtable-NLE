@@ -314,8 +314,22 @@ public:
     /// Returns true if an applied effect is currently selected.
     [[nodiscard]] bool hasSelectedEffect() const noexcept { return m_selectedEffectIndex >= 0; }
 
+    /// Returns true if an effect has been copied and is ready to paste.
+    [[nodiscard]] bool hasCopiedEffect() const noexcept { return m_copiedEffect != nullptr; }
+
     /// Delete the currently selected effect (no-op if none selected).
     void deleteSelectedEffect();
+
+    /// Copy the currently selected effect to internal clipboard.
+    void copySelectedEffect();
+
+    /// Paste a previously copied effect onto the current clip.
+    void pasteEffect();
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 signals:
     void propertyChanged();
@@ -433,6 +447,8 @@ protected:
     bool           m_updating{false};
     int64_t        m_playheadTick{0};
     int            m_selectedEffectIndex{-1};  // -1 = none selected
+    /// Clipboard for copy/paste of a single effect with its settings.
+    std::unique_ptr<Effect> m_copiedEffect;
     /// Sequence resolution for Position seq-px display conversion (defaults
     /// to 1920×1080 — same basis as the internal REF representation).
     uint32_t       m_seqW{1920};

@@ -171,6 +171,22 @@ public:
     /// to break free. Prevents twitchy snap-on/snap-off near targets.
     static constexpr double kReleaseMultiplier = 1.7;
 
+    /// Convert pixel threshold to a tick threshold. Public so callers
+    /// driving multi-clip snap can probe edges via findNearestAttract.
+    [[nodiscard]] int64_t thresholdTicks() const;
+
+    struct AttractHit {
+        int64_t          tick{0};
+        int64_t          dist{std::numeric_limits<int64_t>::max()};
+        SnapTarget::Type type{SnapTarget::Type::GridLine};
+        bool             found{false};
+    };
+    /// Non-hysteretic nearest-target probe. Use this when iterating across
+    /// many candidate ticks (e.g. every edge of every dragged clip in a
+    /// multi-selection drag) where the stuck-target state of snap()/
+    /// snapPair() would interfere across probes.
+    [[nodiscard]] AttractHit findNearestAttract(int64_t tick, int64_t attractTicks) const;
+
 private:
     bool   m_enabled{true};
     double m_thresholdPx{kDefaultThresholdPx};
@@ -182,17 +198,6 @@ private:
     /// logically const while caching per-session lock state.
     mutable int64_t          m_stuckTick{INT64_MIN};
     mutable SnapTarget::Type m_stuckType{SnapTarget::Type::GridLine};
-
-    /// Convert pixel threshold to a tick threshold.
-    [[nodiscard]] int64_t thresholdTicks() const;
-
-    struct AttractHit {
-        int64_t          tick{0};
-        int64_t          dist{std::numeric_limits<int64_t>::max()};
-        SnapTarget::Type type{SnapTarget::Type::GridLine};
-        bool             found{false};
-    };
-    [[nodiscard]] AttractHit findNearestAttract(int64_t tick, int64_t attractTicks) const;
 };
 
 // ─── Clipboard ───────────────────────────────────────────────────────────────

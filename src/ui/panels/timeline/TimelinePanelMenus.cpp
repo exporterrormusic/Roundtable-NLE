@@ -794,8 +794,7 @@ void TimelinePanel::showEmptyAreaContextMenu(const QPointF& globalPos, size_t tr
             size_t insertAt = (trackIndex < SIZE_MAX)
                                   ? trackIndex + 1
                                   : m_timeline->trackCount();
-            m_timeline->addDividerTrack(insertAt);
-            rebuildTracks();
+            addDividerUndoable(insertAt);
         }
     }
     else if (chosen == selectAll) {

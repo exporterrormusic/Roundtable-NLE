@@ -185,6 +185,16 @@ private:
     std::vector<PoolTexKey> m_gpuLayerTexKeys;
     std::vector<std::unique_ptr<rt::Texture>> m_gpuMaskTextures;
 
+    // Per-layer effect-output snapshot textures.  The EffectProcessor uses
+    // only two ping-pong storage images shared across all layers, so when
+    // layer B's effect chain runs after A's it overwrites the textures that
+    // gpuLayers[A].textureInfo references — breaking cross-dissolves between
+    // two effected clips (A appears to vanish, B is sampled for both sides
+    // of the mix).  We snapshot the EffectProcessor output into one of these
+    // per-layer textures after each layer's effect chain completes so the
+    // downstream Transition pass reads stable, layer-specific data.
+    std::vector<std::unique_ptr<rt::Texture>> m_layerEffectOutputs;
+
     // Cache coordinator (optional — for dynamic budgets + VRAM pressure)
     rt::CacheCoordinator* m_cacheCoordinator{nullptr};
 

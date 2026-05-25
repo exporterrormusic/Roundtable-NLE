@@ -470,13 +470,28 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         layer.anchorY  = ancY;
                         layer.clipId   = clipId;
                         layer.blendMode = clip->blendMode();
-                        // VideoClip characters already have the COMPOSE 0.85
-                        // base-fit factor baked into their clip scaleX (kCF).
+                        // Video characters: composite under CONTAIN-fit + 0.85×
+                        // user scale, matching COMPOSE's
+                        //   displayH = canvasH * 0.85 * userScale
+                        //   (preserves source aspect; portrait sources fit
+                        //    canvas height, not canvas width).
+                        // The transform overlay (TimelineWorkspaceOverlay.cpp)
+                        // already documents this contract.  Don't normalize by
+                        // srcH here — Compositor::buildViewportTransform's
+                        // contain-fit (min of outH/srcH, outW/srcW) collapses
+                        // a portrait source's fittedH to outH, so a constant
+                        // 0.85 × userScale gives the correct final height
+                        // regardless of frame-decode state (no flicker on
+                        // scrub / seek / prewarm misses).
                         layer.scX = sx;
                         layer.scY = sy;
-                        // Portrait character frames need contain-fit.
-                        if (isVideoChar)
+                        if (isVideoChar) {
+                            constexpr float kComposeFit = 0.85f;
+                            layer.scX *= kComposeFit;
+                            layer.scY *= kComposeFit;
                             layer.containFit = true;
+                        }
+                        // Portrait character frames need contain-fit.
                         // Packed-alpha: use the flag stored in the GPU cache
                         // entry at upload time â€” avoids fragile height heuristics.
                         layer.isPacked = gpuHit.isPacked;
@@ -696,20 +711,23 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     layer.opacity  = opac;
                                     layer.posX     = px;
                                     layer.posY     = py;
-                                    // Apply the same 0.85/0.9 correction as
-                                    // the non-cache path (isSpineRendered).
-                                    constexpr float kCF = 0.85f;
-                                    constexpr float kSP = 0.9f;
-                                    layer.scX      = sx * (kCF / kSP);
-                                    layer.scY      = sy * (kCF / kSP);
+                                    layer.scX      = sx;
+                                    layer.scY      = sy;
                                     layer.rot      = rot;
                                     layer.anchorX  = ancX;
                                     layer.anchorY  = ancY;
                                     layer.clipId   = clipId;
                                     layer.blendMode = clip->blendMode();
-                                    // Pre-rendered spine: contain-fit so
-                                    // character fits within the output.
-                                    layer.containFit = true;
+                                    // Pre-rendered Spine cache video: composite
+                                    // under CONTAIN-fit + 0.85× user scale to
+                                    // match COMPOSE (see notes in the regular
+                                    // video-character path below).
+                                    {
+                                        constexpr float kCF = 0.85f;
+                                        layer.scX *= kCF;
+                                        layer.scY *= kCF;
+                                        layer.containFit = true;
+                                    }
                                     // Packed-alpha: use the flag stored in the GPU cache
                                     // entry at upload time.
                                     layer.isPacked = gpuHit.isPacked;
@@ -883,7 +901,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     float cx = shared.stableBoundsX + shared.stableBoundsW * 0.5f;
                                     float cy = shared.stableBoundsY + shared.stableBoundsH * 0.5f;
                                     if (bw > 1.0f && bh > 1.0f) {
-                                        fitZoom = (fH / bh) * 0.9f;
+                                        fitZoom = (fH / bh) * 0.85f;
                                     }
                                     // One-time diagnostic: compare stableBounds vs liveBounds
                                     {
@@ -901,8 +919,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                             spdlog::info("  usedBounds:   w={:.1f} h={:.1f}", bw, bh);
                                             spdlog::info("  FBO={}x{} fitZoom={:.4f} cx={:.1f} cy={:.1f}",
                                                          outW, outH, fitZoom, cx, cy);
-                                            spdlog::info("  sx={:.4f} finalSx(after *0.85/0.9)={:.4f}",
-                                                         sx, sx * 0.85f / 0.9f);
+                                            spdlog::info("  sx={:.4f} finalSx={:.4f}",
+                                                         sx, sx);
                                             spdlog::info("=====================================");
                                         }
                                     }
@@ -1255,63 +1273,37 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                || cpuSpineRendered;
             }
 #endif
-            // Detect VideoClip character clips (tall aspect or packed-alpha).
-            bool isVideoCharClip = false;
-            if (!isSpineRendered && frame && frame->width > 0 && frame->height > 0) {
-                float aspect = static_cast<float>(frame->height) /
-                               static_cast<float>(frame->width);
-                if (aspect > 1.5f)
-                    isVideoCharClip = true;
-                if (auto* vc = dynamic_cast<VideoClip*>(clip)) {
-                    auto* mi = m_mediaPool ? m_mediaPool->getInfo(
-                        m_openMediaHandles.count(vc->mediaPath())
-                            ? m_openMediaHandles[vc->mediaPath()] : 0)
-                        : nullptr;
-                    if (mi && mi->packedAlpha)
-                        isVideoCharClip = true;
-                }
-            }
-            float finalSx = sx;
-            float finalSy = sy;
-            // The spine GPU FBO renders characters at 0.9× output height,
-            // but the COMPOSE preview uses 0.85×.  Correct so the timeline
-            // matches what the user sees in COMPOSE.
-            if (isSpineRendered) {
-                constexpr float kComposeFit  = 0.85f;
-                constexpr float kSpinePad    = 0.9f;
-                finalSx *= kComposeFit / kSpinePad;
-                finalSy *= kComposeFit / kSpinePad;
-            }
-            // One-time per-clip-type diagnostic for spine sizing
-            {
-                static bool s_spineLayerLogged = false;
-                static bool s_videoLayerLogged = false;
-                bool doLog = false;
-#ifdef ROUNDTABLE_HAS_SPINE
-                if (!s_spineLayerLogged && dynamic_cast<SpineClip*>(clip)) {
-                    s_spineLayerLogged = true;
-                    doLog = true;
-                }
-#endif
-                if (!s_videoLayerLogged && isVideoCharClip) {
-                    s_videoLayerLogged = true;
-                    doLog = true;
-                }
-                if (doLog) {
-                    spdlog::info("=== LAYER SIZING DIAGNOSTIC ===");
-                    spdlog::info("  clip='{}' isSpineRendered={} isVideoChar={} gpuZeroCopy={}",
-                                 clip->label(), isSpineRendered, isVideoCharClip, gpuSpineZeroCopy);
-                    spdlog::info("  sx={:.4f} sy={:.4f} isSpineRendered={} finalSx={:.4f} finalSy={:.4f}",
-                                 sx, sy, isSpineRendered, finalSx, finalSy);
-                    spdlog::info("  containFit={} frameW={} frameH={} outW={} outH={}",
-                                 isPreRenderedSpine, layer.frameWidth, layer.frameHeight, outW, outH);
-                    spdlog::info("===============================");
-                }
-            }
-
             layer.opacity = opac;
             layer.posX    = px;
             layer.posY    = py;
+            // Detect video-character clips so we can apply the 0.85× fit.
+            bool isVideoCharClip = false;
+            if (auto* vc = dynamic_cast<VideoClip*>(clip)) {
+                if (vc->isVideoCharacter())
+                    isVideoCharClip = true;
+            }
+            // Video characters and pre-rendered Spine cache videos composite
+            // under CONTAIN-fit + 0.85× user scale, matching COMPOSE's:
+            //   displayH = canvasH * 0.85 * userScale
+            // The compositor's contain-fit (min of outW/srcW, outH/srcH)
+            // collapses a portrait source's fittedH to outH, so a constant
+            // 0.85 × userScale gives the correct final height regardless of
+            // the current frame's decode state.  This removes the size
+            // flicker that previously appeared during scrub / seek / prewarm
+            // misses (when frame was momentarily null and the old
+            // outH/srcH-based hFit was skipped entirely).
+            //
+            // The transform overlay (TimelineWorkspaceOverlay.cpp:965-984)
+            // already keys off this contract — it switches to contain-fit for
+            // SpineClips and video characters, expecting the compositor to
+            // do the same.
+            float finalSx = sx, finalSy = sy;
+            if (isVideoCharClip || isPreRenderedSpine) {
+                constexpr float kComposeFit = 0.85f;
+                finalSx *= kComposeFit;
+                finalSy *= kComposeFit;
+                layer.containFit = true;
+            }
             layer.scX     = finalSx;
             layer.scY     = finalSy;
             layer.rot     = rot;
@@ -1347,41 +1339,6 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // to avoid white-fringe from linear texture filtering.
             if (frame && frame->premultipliedAlpha)
                 layer.isPMA = true;
-
-            // Portrait character frames (pre-rendered spine cache or video char
-            // clips) need contain-fit so the whole character fits within the
-            // output, matching the COMPOSE preview.
-            if (isVideoCharClip || isPreRenderedSpine)
-                layer.containFit = true;
-
-            // One-time diagnostic for character sizing
-            {
-                static bool s_vcDiagLogged = false;
-                if (!s_vcDiagLogged && (isVideoCharClip || isPreRenderedSpine) && frame) {
-                    s_vcDiagLogged = true;
-                    spdlog::info("=== CHAR SIZING DIAGNOSTIC ===");
-                    spdlog::info("  clip='{}' mediaW={} mediaH={} packed={} preRendSpine={}",
-                                 clip->label(), frame->width, frame->height,
-                                 layer.isPacked, isPreRenderedSpine);
-                    spdlog::info("  srcForTransform: {}x{} (halved={})",
-                                 layer.isPacked ? frame->width : frame->width,
-                                 layer.isPacked ? frame->height / 2 : frame->height,
-                                 layer.isPacked);
-                    spdlog::info("  sx={:.4f} sy={:.4f} containFit={}",
-                                 layer.scX, layer.scY, layer.containFit);
-                    float srcW_f = static_cast<float>(frame->width);
-                    float srcH_f = static_cast<float>(layer.isPacked ? frame->height / 2 : frame->height);
-                    float s2fW = static_cast<float>(outW) / srcW_f;
-                    float s2fH = static_cast<float>(outH) / srcH_f;
-                    float fit = layer.containFit ? std::min(s2fW, s2fH) : std::max(s2fW, s2fH);
-                    spdlog::info("  scaleToFitW={:.4f} scaleToFitH={:.4f} fitScale={:.4f}",
-                                 s2fW, s2fH, fit);
-                    spdlog::info("  effectiveCharH={:.0f} (outH={}) ratio={:.2f}%%",
-                                 srcH_f * fit * layer.scY, outH,
-                                 srcH_f * fit * layer.scY / outH * 100.0f);
-                    spdlog::info("====================================");
-                }
-            }
 
             // Store wipe transition metadata for GPU spatial blending
             if (activeWipeProgress >= 0.0f) {
@@ -1427,8 +1384,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (bw > 1.0f && bh > 1.0f) {
                             float fW = static_cast<float>(outW);
                             float fH = static_cast<float>(outH);
-                            // Height-based fit to match FBO rendering
-                            float fitZoom = (fH / bh) * 0.9f;
+                            // Height-based fit matching COMPOSE (0.85×)
+                            float fitZoom = (fH / bh) * 0.85f;
                             float charFracW = std::min(1.0f, fitZoom * bw / fW);
                             float charFracH = std::min(1.0f, fitZoom * bh / fH);
                             float marginH = (1.0f - charFracW) * 0.5f;

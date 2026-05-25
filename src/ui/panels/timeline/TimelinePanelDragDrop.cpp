@@ -427,16 +427,17 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         }
 
         // Snap both head and tail (Premiere Pro-style edge snapping)
+        bool didSnap = false;
         if (previewDur > 0) {
             auto snapRes = m_snapEngine.snapPair(tick, tick + previewDur);
-            if (snapRes.didSnap) tick = snapRes.snappedTick;
+            if (snapRes.didSnap) { tick = snapRes.snappedTick; didSnap = true; }
         } else {
             auto snapRes = m_snapEngine.snap(tick);
-            if (snapRes.didSnap) tick = snapRes.snappedTick;
+            if (snapRes.didSnap) { tick = snapRes.snappedTick; didSnap = true; }
         }
 
-        // Show snap indicator on track widgets
-        for (auto tw : m_trackWidgets) tw->setSnapIndicatorTick(-1);
+        // Show snap indicator if snapping occurred; clear it otherwise.
+        for (auto tw : m_trackWidgets) tw->setSnapIndicatorTick(didSnap ? tick : -1);
 
         // Update only the target track's preview; clear all others.
         // Skip preview if media type doesn't match the track type

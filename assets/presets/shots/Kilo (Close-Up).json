@@ -6,9 +6,9 @@
   "backgrounds": [
     {
       "path": "MARIAN_WALL_HD.png",
-      "posX": -0.184967,
-      "posY": 0.766116,
-      "scale": 2.416808,
+      "posX": 0.233000,
+      "posY": 0.674000,
+      "scale": 2.087000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,7 +20,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -31,10 +31,11 @@
       "animation": "idle",
       "isTalking": true,
       "posX": 0.524615,
-      "posY": 1.304078,
+      "posY": 1.360384,
       "scale": 2.939266,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,

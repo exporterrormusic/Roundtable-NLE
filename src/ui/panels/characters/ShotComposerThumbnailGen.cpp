@@ -550,54 +550,44 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
     }
 #endif
 
-    // -- Animation cache + video character fallback ---------------------------
-    // Scan the animation cache directory for a pre-rendered video of this
-    // character's idle animation, or fall back to the hardcoded video
-    // character table (Wells).  extractVideoThumbnail() uses ffmpeg to
-    // pull a single frame -- cheap, and the result is cached in memory.
+    // -- Persistent disk cache (PRIORITY) --------------------------------------
+    // Pre-rendered PNG thumbs in assets/cache/character_thumbs/{charName}.png
+    // are produced by renderAndCacheCharacterThumbnail() with the correct
+    // bbox crop and an extracted background color.  Check these BEFORE any
+    // video path: the H264_Green converted videos below have a literal green
+    // chroma-key background that's meant to be keyed at runtime — extracting
+    // a raw frame from them produces a green-backed thumbnail, which is why
+    // Kilo/Chime/Crown/Modernia/Trony/Yoyo all looked green.
+    {
+        QPixmap cached = loadCachedCharacterThumbnail(charName, sz);
+        if (!cached.isNull()) {
+            QPixmap rounded(sz, sz);
+            rounded.fill(Qt::transparent);
+            QPainter rp(&rounded);
+            rp.setRenderHint(QPainter::Antialiasing);
+            QPainterPath clipPath;
+            clipPath.addRoundedRect(0, 0, sz, sz, 6, 6);
+            rp.setClipPath(clipPath);
+            rp.drawPixmap(0, 0, cached);
+            rp.end();
+            m_charThumbCache[cacheKey] = rounded;
+            return rounded;
+        }
+    }
+
+    // -- Video character fallback ---------------------------------------------
+    // Only used for characters that don't have a pre-rendered PNG cache (e.g.
+    // hardcoded video characters like Wells with packed-alpha videos).  We
+    // intentionally do NOT touch assets/converted/H264_*/ here — those are
+    // green/blue chroma-key sources, not finished thumbnails.
     {
         std::string videoPath;
 
-        // 1) Check animation cache: assets/converted/{format}/{charName}/{outfit}/idle.mp4|.mov
-        {
-            namespace fs = std::filesystem;
-            // Search across all format subdirectories
-            static const char* fmtDirs[] = {"H264_Green", "H264_Blue", "H264_Custom", "ProRes"};
-            fs::path cacheBase;
-            for (const auto* fmt : fmtDirs) {
-                auto candidate = fs::path("assets/converted") / fmt / charName / thumbOutfit;
-                if (fs::exists(candidate)) { cacheBase = candidate; break; }
-            }
-            if (cacheBase.empty())
-                cacheBase = fs::path("assets/converted") / "H264_Green" / charName / thumbOutfit;
-            static const std::string idleNames[] = {"idle", "idle_01", "wait", "stand"};
-            static const std::string exts[] = {".mp4", ".mov"};
-            for (const auto& anim : idleNames) {
-                for (const auto& ext : exts) {
-                    auto p = cacheBase / (anim + ext);
-                    if (fs::exists(p)) { videoPath = p.string(); break; }
-                }
-                if (!videoPath.empty()) break;
-            }
-            // If no idle found, try any video in the outfit directory
-            if (videoPath.empty() && fs::exists(cacheBase) && fs::is_directory(cacheBase)) {
-                for (const auto& entry : fs::directory_iterator(cacheBase)) {
-                    auto ext = entry.path().extension().string();
-                    if (ext == ".mp4" || ext == ".mov") {
-                        videoPath = entry.path().string();
-                        break;
-                    }
-                }
-            }
-        }
-
-        // 2) Fall back to hardcoded video character table (Wells, etc.)
-        if (videoPath.empty()) {
-            const auto& vcFiles = videoCharacterFiles();
-            for (const auto& [filename, info] : vcFiles) {
-                const auto& [vcName, mutePath, talkPath] = info;
-                if (vcName == charName) { videoPath = mutePath; break; }
-            }
+        // Hardcoded video character table (Wells uses packed-alpha .mp4).
+        const auto& vcFiles = videoCharacterFiles();
+        for (const auto& [filename, info] : vcFiles) {
+            const auto& [vcName, mutePath, talkPath] = info;
+            if (vcName == charName) { videoPath = mutePath; break; }
         }
 
         if (!videoPath.empty()) {
@@ -673,29 +663,11 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
         }
     }
 
-    // -- Persistent thumbnail cache check --
-    // If a pre-rendered thumbnail was saved to disk (e.g. at download time),
-    // load it instead of showing a letter placeholder.
-    {
-        QPixmap cached = loadCachedCharacterThumbnail(charName, sz);
-        if (!cached.isNull()) {
-            // Apply rounded corners so the thumbnail doesn't spill out of the curved button
-            QPixmap rounded(sz, sz);
-            rounded.fill(Qt::transparent);
-            QPainter rp(&rounded);
-            rp.setRenderHint(QPainter::Antialiasing);
-            QPainterPath clipPath;
-            clipPath.addRoundedRect(0, 0, sz, sz, 6, 6);
-            rp.setClipPath(clipPath);
-            rp.drawPixmap(0, 0, cached);
-            rp.end();
-            m_charThumbCache[cacheKey] = rounded;
-            spdlog::debug("makeCharacterThumbnail: loaded cached thumb for '{}'", charName);
-            return rounded;
-        }
-    }
+    // (Persistent disk cache is now checked at the top of this function,
+    //  before the video paths, so green-screen converted videos no longer
+    //  hijack Spine characters that have a pre-rendered PNG thumb.)
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Fallback: colored placeholder with initial letter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    //Ã¢â€â‚¬Ã¢â€â‚¬ Fallback: colored placeholder with initial letter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     QPixmap pix(sz, sz);
     pix.fill(Qt::transparent);
@@ -1111,15 +1083,24 @@ void ShotComposer::saveShotThumbnail(const ShotPreset& shot)
     // Temporarily reset to default zoom so the thumbnail always fits perfectly,
     // then restore the user's current zoom without any visual flicker.
     if (m_spinePreview && !m_spinePreview->isHidden()) {
+        // viewPanX/viewPanY return PIXELS, but setCameraTransform takes
+        // NORMALIZED pan (-1..+1) and re-multiplies by width()/height().
+        // Capture in pixels, convert to normalized for the restore call so
+        // the preview doesn't get panned off-screen (which left it
+        // completely black after every save).
         float savedZoom = m_spinePreview->viewZoom();
-        float savedPanX = m_spinePreview->viewPanX();
-        float savedPanY = m_spinePreview->viewPanY();
+        float savedPanXPx = m_spinePreview->viewPanX();
+        float savedPanYPx = m_spinePreview->viewPanY();
+        const float w = static_cast<float>(m_spinePreview->width());
+        const float h = static_cast<float>(m_spinePreview->height());
+        float savedPanXNorm = (w > 0.5f) ? savedPanXPx / w : 0.0f;
+        float savedPanYNorm = (h > 0.5f) ? savedPanYPx / h : 0.0f;
 
         m_spinePreview->resetViewport();
         m_spinePreview->repaint();
         QPixmap preview = m_spinePreview->grab();
 
-        m_spinePreview->setCameraTransform(savedZoom, savedPanX, savedPanY);
+        m_spinePreview->setCameraTransform(savedZoom, savedPanXNorm, savedPanYNorm);
         m_spinePreview->repaint();
 
         if (!preview.isNull()) {

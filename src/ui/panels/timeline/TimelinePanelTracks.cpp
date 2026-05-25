@@ -15,6 +15,7 @@
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
 #include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 #include "command/commands/TrackCommands.h"
 
 #include <QScrollArea>
@@ -140,12 +141,19 @@ void TimelinePanel::rebuildTracks()
 
         // Video: topmost (lowest index) = highest number
         // e.g., 3 video tracks at indices 0,1,2 → V3, V2, V1
-        // Always auto-rename so that old-style names like "Video 1" are
-        // normalised to the short V#/A# scheme used everywhere else.
+        // Preserve custom track names; only renumber empty names or names
+        // that still match the auto-pattern V# (otherwise inserting a
+        // divider or adding a track would wipe the user's rename).
         for (size_t vi = 0; vi < videoIndices.size(); ++vi) {
             Track* t = m_timeline->track(videoIndices[vi]);
-            int num = static_cast<int>(videoIndices.size() - vi);  // bottom-up
-            t->setName("V" + std::to_string(num));
+            const std::string& cur = t->name();
+            bool isAutoName = cur.empty()
+                || (cur.size() >= 2 && cur[0] == 'V'
+                    && std::all_of(cur.begin() + 1, cur.end(), ::isdigit));
+            if (isAutoName) {
+                int num = static_cast<int>(videoIndices.size() - vi);  // bottom-up
+                t->setName("V" + std::to_string(num));
+            }
         }
 
         // Audio: topmost = A1, next = A2, etc.
@@ -440,8 +448,7 @@ void TimelinePanel::rebuildTracks()
                     return;
                 }
                 spdlog::debug("[DEFENSIVE] Adding divider track at {} after deferral", insertAt);
-                safeThis->m_timeline->addDividerTrack(insertAt);
-                safeThis->rebuildTracks();
+                safeThis->addDividerUndoable(insertAt);
             });
         });
 
@@ -824,8 +831,7 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
         QPointer<TimelinePanel> safeThis(this);
         QTimer::singleShot(0, this, [safeThis, insertAt]() {
             if (!safeThis || !safeThis->m_timeline) return;
-            safeThis->m_timeline->addDividerTrack(insertAt);
-            safeThis->rebuildTracks();
+            safeThis->addDividerUndoable(insertAt);
         });
     });
 
@@ -1010,6 +1016,37 @@ void TimelinePanel::ensureSectionDivider()
             boundary = m_timeline->addDividerTrack(firstAudio, /*permanent*/true);
     }
     normalizePermanent(boundary);
+}
+
+void TimelinePanel::addDividerUndoable(size_t insertAt)
+{
+    if (!m_timeline) return;
+    if (insertAt > m_timeline->trackCount())
+        insertAt = m_timeline->trackCount();
+
+    QPointer<TimelinePanel> safeThis(this);
+    auto redo = [safeThis, insertAt]() {
+        if (!safeThis || !safeThis->m_timeline) return;
+        safeThis->m_timeline->addDividerTrack(insertAt, /*permanent*/false);
+        safeThis->rebuildTracks();
+    };
+    auto undo = [safeThis, insertAt]() {
+        if (!safeThis || !safeThis->m_timeline) return;
+        if (insertAt >= safeThis->m_timeline->trackCount()) return;
+        Track* t = safeThis->m_timeline->track(insertAt);
+        // Defensive: only remove if it really is the user divider we added —
+        // skip permanent dividers in case ensureSectionDivider has reshuffled.
+        if (!t || !t->isDivider() || t->isPermanentDivider()) return;
+        safeThis->m_timeline->removeTrack(insertAt);
+        safeThis->rebuildTracks();
+    };
+
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Add Divider Track", std::move(redo), std::move(undo)));
+    } else {
+        redo();
+    }
 }
 
 void TimelinePanel::refreshTrackContents()

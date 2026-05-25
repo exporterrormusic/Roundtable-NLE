@@ -6,9 +6,9 @@
   "backgrounds": [
     {
       "path": "TABLE_LARGE_FINAL.png",
-      "posX": 0.934930,
-      "posY": 0.653991,
-      "scale": 2.784613,
+      "posX": 1.065826,
+      "posY": 0.660505,
+      "scale": 2.595000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,7 +20,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -30,9 +30,9 @@
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.385134,
-      "posY": 1.163003,
-      "scale": 2.646838,
+      "posX": 0.397808,
+      "posY": 1.183273,
+      "scale": 2.580421,
       "rotation": 0.000000,
       "flipX": true,
       "flipY": false,

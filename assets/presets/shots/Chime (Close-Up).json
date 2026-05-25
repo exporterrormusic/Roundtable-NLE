@@ -6,9 +6,9 @@
   "backgrounds": [
     {
       "path": "CONTROL_ROOM_HD.png",
-      "posX": 0.912840,
-      "posY": 0.311966,
-      "scale": 1.981433,
+      "posX": 1.000000,
+      "posY": 0.493000,
+      "scale": 2.083000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,7 +20,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -30,11 +30,12 @@
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.417482,
-      "posY": 0.985654,
-      "scale": 2.171838,
+      "posX": 0.439306,
+      "posY": 1.009520,
+      "scale": 2.204220,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,

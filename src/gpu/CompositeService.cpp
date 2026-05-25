@@ -256,6 +256,7 @@ void CompositeService::invalidateCacheDirect()
         std::lock_guard lg(m_lastCompositeMtx);
         m_lastGoodComposite.reset();
         m_lastGoodCompositeTick = -1;
+        m_lastGoodCompositeClipIds.clear();
         // Re-arm the A1 settle window so a project switch / cache flush
         // gets the same first-view grace as cold startup, instead of
         // inheriting the previous project's timestamp.
@@ -311,6 +312,7 @@ void CompositeService::requestCacheInvalidationRange(int64_t fromTick, int64_t t
         {
             m_lastGoodComposite.reset();
             m_lastGoodCompositeTick = -1;
+            m_lastGoodCompositeClipIds.clear();
             // The held composite covered the invalidated range, so
             // re-arm the A1 settle clock too — otherwise the next
             // partial composite would inherit the stale timestamp
@@ -342,6 +344,16 @@ void CompositeService::shutdown()
         return;
     m_shutdown.store(true, std::memory_order_release);
 
+    // 1a. Drain any in-flight spine load futures so we don't leave
+    //     background threads running past shutdown.
+    {
+        for (auto& f : m_spineLoadFutures) {
+            if (f.valid())
+                f.wait();
+        }
+        m_spineLoadFutures.clear();
+    }
+
     // 1. Stop the prewarm thread BEFORE we clear the containers it
     //    reads.  Without this, calling reset() below races a live
     //    prewarm iteration that's walking m_stickyLastClipFrame /
@@ -353,6 +365,8 @@ void CompositeService::shutdown()
     }
     if (m_prewarmThread.joinable())
         m_prewarmThread.join();
+    if (m_bulkOpenThread.joinable())
+        m_bulkOpenThread.join();
 
     // 2. Drop every shared_ptr<CachedFrame> this service holds.
     //    Each CachedFrame's gpuTextureOwner is a shared_ptr<Texture>

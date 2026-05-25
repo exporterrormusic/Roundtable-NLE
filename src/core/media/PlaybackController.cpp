@@ -355,6 +355,48 @@ void PlaybackController::shuttlePause()
     pause();
 }
 
+void PlaybackController::setShuttleSpeed(double speed)
+{
+    if (m_destroying.load(std::memory_order_acquire))
+        return;
+    if (speed == 0.0) {
+        pause();
+        return;
+    }
+
+    // Clear ramp counters so the next J/L tap re-enters at level 1.
+    m_jShuttleLevel = 0;
+    m_lShuttleLevel = 0;
+    m_shuttleSpeed  = speed;
+
+    int64_t startTick;
+    if (m_audioEngine && m_audioEngine->sampleRate() > 0) {
+        uint32_t sr = m_audioEngine->sampleRate();
+        int64_t frame = m_audioEngine->currentFrame();
+        startTick = static_cast<int64_t>(
+            static_cast<double>(frame) / sr * 48000.0);
+    } else {
+        startTick = currentTick();
+    }
+
+    if (m_syncClock) {
+        m_syncClock->reset(startTick);
+        m_syncClock->setSpeed(speed);
+    }
+
+    if (m_audioEngine) {
+        m_audioEngine->setPlaybackSpeed(speed);
+        m_audioEngine->play();
+    }
+
+    if (!m_audioEngine && m_syncClock)
+        m_syncClock->setRunning(true);
+
+    setState(PlayState::Shuttling);
+    if (onSpeedChanged)
+        onSpeedChanged(m_shuttleSpeed);
+}
+
 void PlaybackController::shuttleForward()
 {
     if (m_destroying.load(std::memory_order_acquire))

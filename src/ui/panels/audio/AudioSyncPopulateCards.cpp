@@ -10,6 +10,7 @@
 #include "widgets/MiniWaveformWidget.h"
 #include "Theme.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFrame>
@@ -34,6 +35,20 @@ void AudioSync::populateCards()
     int savedScrollPos = 0;
     if (m_rightScrollArea && m_rightScrollArea->verticalScrollBar())
         savedScrollPos = m_rightScrollArea->verticalScrollBar()->value();
+
+    // Take focus off any card widget before tearing down. Otherwise Qt
+    // re-targets focus to whichever button survives — typically a button on
+    // the LAST card added — and QScrollArea auto-scrolls to make that
+    // newly-focused widget visible, slamming the view to the bottom right
+    // after a manual match.
+    if (auto* fw = QApplication::focusWidget()) {
+        if (m_rightScrollContent && m_rightScrollContent->isAncestorOf(fw))
+            m_rightScrollArea->setFocus(Qt::OtherFocusReason);
+    }
+    // Suppress scroll-bar value-change side effects (syncLeftListFromScroll)
+    // while the layout churns through clear → repopulate.
+    QScrollBar* rightSB = m_rightScrollArea ? m_rightScrollArea->verticalScrollBar() : nullptr;
+    if (rightSB) rightSB->blockSignals(true);
 
     // ── Card widget pool (Phase 5.A) ──────────────────────────────────
     // Hide existing cards for reuse instead of destroy+recreate.
@@ -70,6 +85,7 @@ void AudioSync::populateCards()
         }
         populateLeftList();
         updateSmartBar();
+        if (rightSB) rightSB->blockSignals(false);
         return;
     }
 
@@ -985,14 +1001,22 @@ void AudioSync::populateCards()
     updateSmartBar();
     updateWorkflowState();
 
-    // Restore scroll position after rebuild
+    // Restore scroll position after rebuild. Two passes: one immediate
+    // (queued for after the current event-loop iteration so layout settles)
+    // and one slightly delayed to overwrite any focus-driven auto-scroll
+    // that QScrollArea performs when widgets are re-parented in.
+    auto restoreScroll = [this, savedScrollPos]() {
+        if (!m_rightScrollArea) return;
+        auto* sb = m_rightScrollArea->verticalScrollBar();
+        if (!sb) return;
+        sb->blockSignals(true);
+        sb->setValue(std::min(savedScrollPos, sb->maximum()));
+        sb->blockSignals(false);
+    };
+    if (rightSB) rightSB->blockSignals(false);
     if (m_rightScrollArea && m_rightScrollArea->verticalScrollBar() && savedScrollPos > 0) {
-        QTimer::singleShot(0, this, [this, savedScrollPos]() {
-            if (m_rightScrollArea && m_rightScrollArea->verticalScrollBar()) {
-                auto* sb = m_rightScrollArea->verticalScrollBar();
-                sb->setValue(std::min(savedScrollPos, sb->maximum()));
-            }
-        });
+        QTimer::singleShot(0,  this, restoreScroll);
+        QTimer::singleShot(30, this, restoreScroll);
     }
 }
 

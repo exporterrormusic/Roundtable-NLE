@@ -11,6 +11,7 @@
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/monitors/SourceMonitor.h"
+#include "panels/project/ProjectBin.h"
 #include "panels/timeline/TimelinePanel.h"
 
 #include "command/CommandStack.h"
@@ -60,51 +61,71 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     const auto mod = event->modifiers();
     const bool noMod = (mod == Qt::NoModifier);
     const bool shiftOnly = (mod == Qt::ShiftModifier);
+    const bool ctrlOnly = (mod == Qt::ControlModifier);
     const bool ctrlShift = (mod == (Qt::ControlModifier | Qt::ShiftModifier));
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Transport ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    // Route transport keys to the Source Monitor's controller when it owns
+    // focus (mirrors the I/O routing below).  Without this check, pressing
+    // Space after clicking inside the Source Monitor would bubble up and
+    // play the timeline instead of the loaded source clip.
+    auto sourceMonitorFocused = [this]() {
+        return m_sourceMonitor && m_sourceMonitor->controller()
+            && m_sourceMonitor->isAncestorOf(QApplication::focusWidget());
+    };
+    auto activeController = [&]() -> PlaybackController* {
+        if (sourceMonitorFocused() && m_sourceMonitor->hasClip())
+            return m_sourceMonitor->controller();
+        return m_playbackController;
+    };
+
     if (noMod && key == Qt::Key_Space) {
-        if (m_playbackController) m_playbackController->togglePlayPause();
+        if (auto* ctl = activeController()) ctl->togglePlayPause();
+        event->accept(); return;
+    }
+    // K + J / K + L = Premiere-style press-and-hold slow scrub at ±0.5×.
+    // Holding K alone pauses; tapping J or L while K is still held engages
+    // the slow shuttle, and releasing J or L (in keyReleaseEvent) stops it.
+    // Auto-repeat events are filtered so holding the key doesn't restart
+    // the shuttle every ~30 ms.
+    const bool isRepeat = event->isAutoRepeat();
+    if (noMod && key == Qt::Key_K) {
+        if (!isRepeat) m_kHeld = true;
+        if (auto* ctl = activeController()) ctl->shuttlePause();
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_J) {
-        if (m_playbackController) m_playbackController->shuttleReverse();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_K) {
-        if (m_playbackController) m_playbackController->shuttlePause();
+        if (auto* ctl = activeController()) {
+            if (m_kHeld) {
+                if (!isRepeat) {
+                    ctl->setShuttleSpeed(-0.5);
+                    m_kSlowShuttleActive = true;
+                }
+            } else {
+                ctl->shuttleReverse();
+            }
+        }
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_L) {
-        if (m_playbackController) m_playbackController->shuttleForward();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_Left) {
-        if (m_playbackController) m_playbackController->stepBackward();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_Right) {
-        if (m_playbackController) m_playbackController->stepForward();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_Home) {
-        if (m_playbackController) m_playbackController->goToStart();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_End) {
-        if (m_playbackController) m_playbackController->goToEnd();
+        if (auto* ctl = activeController()) {
+            if (m_kHeld) {
+                if (!isRepeat) {
+                    ctl->setShuttleSpeed(0.5);
+                    m_kSlowShuttleActive = true;
+                }
+            } else {
+                ctl->shuttleForward();
+            }
+        }
         event->accept(); return;
     }
 
+    // Left/Right/Up/Down/Home/End are now global QShortcuts
+    // (registered in registerKeyboardShortcuts) so they work regardless
+    // of which panel has focus.  No need to handle them here.
+
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Navigation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (noMod && key == Qt::Key_Up) {
-        if (m_playbackController) m_playbackController->goToPrevEditPoint();
-        event->accept(); return;
-    }
-    if (noMod && key == Qt::Key_Down) {
-        if (m_playbackController) m_playbackController->goToNextEditPoint();
-        event->accept(); return;
-    }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mark In/Out ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_I) {
@@ -131,6 +152,14 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
         }
         event->accept(); return;
     }
+    // Ctrl+I = Import media (open file dialog, same as double-clicking Project Bin)
+    if (ctrlOnly && key == Qt::Key_I) {
+        if (m_projectBin) {
+            m_projectBin->importFiles();
+        }
+        event->accept(); return;
+    }
+
     // X = Mark Clip (set in/out around selected clip)
     if (noMod && key == Qt::Key_X) {
         if (m_timeline && m_timelinePanel) {
@@ -277,18 +306,37 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ F = Split at playhead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    // If a clip is selected, split only that clip; otherwise split all.
+    // If any clips are selected, split every selected clip the playhead
+    // crosses; otherwise split all clips at the playhead.
     if (noMod && key == Qt::Key_F) {
         if (m_timeline && m_playbackController && m_commandStack) {
             int64_t tick = m_playbackController->currentTick();
             std::unique_ptr<Command> cmd;
 
-            // Check for a single selected clip
             if (m_timelinePanel) {
-                auto sel = m_timelinePanel->selection().singleSelection();
-                if (sel) {
-                    cmd = EditOperations::splitClip(
-                        *m_timeline, sel->trackIndex, sel->clipId, tick);
+                const auto& sel = m_timelinePanel->selection();
+                if (!sel.empty()) {
+                    // Split every selected clip that the playhead crosses.
+                    auto compound = std::make_unique<CompoundCommand>("Split selected");
+                    bool anySplit = false;
+                    for (const auto& ref : sel.clips()) {
+                        if (ref.trackIndex >= m_timeline->trackCount()) continue;
+                        Track* trk = m_timeline->track(ref.trackIndex);
+                        if (!trk || trk->isLocked()) continue;
+                        size_t ci = trk->findClipIndexById(ref.clipId);
+                        if (ci >= trk->clipCount()) continue;
+                        const Clip* c = trk->clip(ci);
+                        if (tick > c->timelineIn() && tick < c->timelineOut()) {
+                            auto sc = EditOperations::splitClip(
+                                *m_timeline, ref.trackIndex, ref.clipId, tick);
+                            if (sc) {
+                                compound->addCommand(std::move(sc));
+                                anySplit = true;
+                            }
+                        }
+                    }
+                    if (anySplit)
+                        cmd = std::move(compound);
                 }
             }
 
@@ -300,6 +348,23 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
             if (cmd) {
                 m_commandStack->execute(std::move(cmd));
                 if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+                // After a split, the original clip becomes the LEFT half.
+                // Select the RIGHT half(s) instead — the clip starting at
+                // the playhead is what the user wants to work with next.
+                if (m_timelinePanel && m_timeline) {
+                    m_timelinePanel->selection().clear();
+                    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                        Track* trk = m_timeline->track(ti);
+                        if (!trk || trk->isLocked()) continue;
+                        for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+                            const Clip* c = trk->clip(ci);
+                            if (c && c->timelineIn() == tick) {
+                                m_timelinePanel->selection().selectClip(
+                                    ClipRef{ti, c->id()}, true);
+                            }
+                        }
+                    }
+                }
                 invalidateAudioSources();
                 invalidateCompositeCache();
                 updateTransformOverlay();
@@ -638,6 +703,40 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     }
 
     QWidget::keyPressEvent(event);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// keyReleaseEvent — needed only for Premiere-style K+J / K+L slow scrub.
+// Releasing J or L while the slow shuttle is engaged must stop playback;
+// the regular J/L (no K) ramp is unaffected and stays running until K or
+// space is pressed.
+// ─────────────────────────────────────────────────────────────────────────────
+void TimelineWorkspace::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->isAutoRepeat()) { QWidget::keyReleaseEvent(event); return; }
+
+    auto* ctl = (m_sourceMonitor && m_sourceMonitor->controller()
+                 && m_sourceMonitor->hasClip()
+                 && m_sourceMonitor->isAncestorOf(QApplication::focusWidget()))
+        ? m_sourceMonitor->controller()
+        : m_playbackController;
+
+    const int key = event->key();
+    if (key == Qt::Key_K) {
+        m_kHeld = false;
+        if (m_kSlowShuttleActive) {
+            if (ctl) ctl->shuttlePause();
+            m_kSlowShuttleActive = false;
+        }
+        event->accept(); return;
+    }
+    if ((key == Qt::Key_J || key == Qt::Key_L) && m_kSlowShuttleActive) {
+        if (ctl) ctl->shuttlePause();
+        m_kSlowShuttleActive = false;
+        event->accept(); return;
+    }
+
+    QWidget::keyReleaseEvent(event);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -25,6 +25,10 @@
 
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 
 #include <cmath>
 
@@ -768,6 +772,20 @@ void EffectControlsPanel::deleteSelectedEffect()
 
 void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
 {
+    // CTRL+C: copy selected effect
+    if ((event->key() == Qt::Key_C) && (event->modifiers() & Qt::ControlModifier)
+        && m_selectedEffectIndex >= 0) {
+        copySelectedEffect();
+        event->accept();
+        return;
+    }
+    // CTRL+V: paste copied effect
+    if ((event->key() == Qt::Key_V) && (event->modifiers() & Qt::ControlModifier)
+        && m_copiedEffect && m_clip) {
+        pasteEffect();
+        event->accept();
+        return;
+    }
     if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
         && m_selectedEffectIndex >= 0) {
         deleteEffect(static_cast<size_t>(m_selectedEffectIndex));
@@ -775,6 +793,30 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
         return;
     }
     QWidget::keyPressEvent(event);
+}
+
+void EffectControlsPanel::copySelectedEffect()
+{
+    if (m_selectedEffectIndex < 0 || !m_clip) return;
+    size_t idx = static_cast<size_t>(m_selectedEffectIndex);
+    if (idx >= m_clip->effects().effectCount()) return;
+    m_copiedEffect = m_clip->effects().effect(idx).clone();
+    spdlog::info("EffectControlsPanel: copied effect '{}'",
+                 m_copiedEffect->name());
+}
+
+void EffectControlsPanel::pasteEffect()
+{
+    if (!m_copiedEffect || !m_clip || !m_commandStack) return;
+    auto cloned = m_copiedEffect->clone();
+    m_commandStack->execute(
+        std::make_unique<AddEffectCommand>(
+            &m_clip->effects(), std::move(cloned),
+            m_clip->effects().effectCount()));
+    refresh();
+    emit propertyChanged();
+    spdlog::info("EffectControlsPanel: pasted effect '{}'",
+                 m_copiedEffect->name());
 }
 
 bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)

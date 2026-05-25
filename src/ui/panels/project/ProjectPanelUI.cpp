@@ -187,11 +187,19 @@ void ProjectPanel::setupUI()
     });
     connect(m_importBtn, &QPushButton::clicked, this, [this]() {
         hideSidePanel();
+        auto settings = rt::appSettings();
+        QString lastDir = settings.value("Import/lastDir", QString()).toString();
+        if (lastDir.isEmpty())
+            lastDir = QDir::homePath();
         QString path = QFileDialog::getOpenFileName(
-            this, "Import Project", {},
+            this, "Import Project", lastDir,
             "ROUNDTABLE Projects (*.rtp);;All Files (*)");
-        if (!path.isEmpty())
+        if (!path.isEmpty()) {
+            QString dir = QFileInfo(path).absolutePath();
+            settings.setValue("Import/lastDir", dir);
+            settings.sync();
             emit importProject(path);
+        }
     });
     connect(m_settingsBtn, &QPushButton::clicked,
             this, [this]() { toggleSidePanel(SidePanelMode::Settings); });

@@ -22,6 +22,8 @@
 #include <QInputDialog>
 #include <QLineEdit>
 
+#include "Settings.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -36,10 +38,15 @@ namespace rt {
 
 void ProjectBin::importFiles()
 {
+    auto settings = rt::appSettings();
+    QString lastDir = settings.value("Import/lastDir", QString()).toString();
+    if (lastDir.isEmpty())
+        lastDir = QDir::homePath();
+
     QStringList files = QFileDialog::getOpenFileNames(
         this,
         "Import Media",
-        QString(),
+        lastDir,
         "All Files (*.*);;"
         "Video (*.mp4 *.mkv *.avi *.mov *.webm);;"
         "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp);;"
@@ -47,6 +54,11 @@ void ProjectBin::importFiles()
         "Spine (*.skel *.json)");
 
     if (files.isEmpty()) return;
+
+    // Persist the last import directory
+    QString dir = QFileInfo(files.first()).absolutePath();
+    settings.setValue("Import/lastDir", dir);
+    settings.sync();
 
     std::vector<std::filesystem::path> paths;
     paths.reserve(files.size());

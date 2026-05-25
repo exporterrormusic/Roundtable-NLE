@@ -6,9 +6,9 @@
   "backgrounds": [
     {
       "path": "CONTROL_ROOM_HD.png",
-      "posX": 0.156285,
-      "posY": 0.773953,
-      "scale": 1.691606,
+      "posX": 0.236000,
+      "posY": 0.733000,
+      "scale": 2.122000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,7 +20,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -32,11 +32,12 @@
       "isTalking": true,
       "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE.mp4",
       "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK.mp4",
-      "posX": 0.460386,
-      "posY": 1.176557,
-      "scale": 3.608195,
+      "posX": 0.485000,
+      "posY": 1.172000,
+      "scale": 3.813000,
       "rotation": 0.000000,
       "flipX": false,
+      "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,

@@ -246,21 +246,59 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         int64_t newIn = m_dragOriginalIn + tickDelta;
         if (newIn < 0) newIn = 0;
 
-        // Snap the primary dragged clip (both head and tail edges,
-        // like Premiere Pro, so the right edge also snaps to existing
-        // clip boundaries — prevents overlap "spill over").
-        int64_t newOut = newIn + m_dragOriginalDuration;
-        auto result = m_snapEngine.snapPair(newIn, newOut);
-        if (result.didSnap) {
-            newIn = result.snappedTick;
-            // Show indicator at whichever edge actually snapped
-            auto headCheck = m_snapEngine.snap(newIn);
-            if (headCheck.didSnap && headCheck.delta == 0)
-                setSnapIndicator(newIn);  // head edge snapped
-            else
-                setSnapIndicator(newIn + m_dragOriginalDuration);  // tail edge
+        // Snap both edges of the dragged clip(s). For a single-clip drag
+        // the primary's head + tail are tested; for a multi-clip drag we
+        // walk EVERY dragged clip's head + tail and pick whichever yields
+        // the smallest snap delta — otherwise only the primary's edges
+        // could snap, so clips on other tracks would silently pass over
+        // target edges and never magnetise.
+        const bool multiDrag = (m_dragSelectedClips.size() > 1);
+        if (!multiDrag) {
+            int64_t newOut = newIn + m_dragOriginalDuration;
+            auto result = m_snapEngine.snapPair(newIn, newOut);
+            if (result.didSnap) {
+                newIn = result.snappedTick;
+                // Show indicator at whichever edge actually snapped
+                auto headCheck = m_snapEngine.snap(newIn);
+                if (headCheck.didSnap && headCheck.delta == 0)
+                    setSnapIndicator(newIn);  // head edge snapped
+                else
+                    setSnapIndicator(newIn + m_dragOriginalDuration);  // tail edge
+            } else {
+                setSnapIndicator(-1);
+            }
         } else {
-            setSnapIndicator(-1);
+            // findNearestAttract is the non-hysteretic primitive — using
+            // it here lets us probe every dragged edge independently
+            // without the snap engine's stuck-target state interfering
+            // across clips.
+            const int64_t attract = m_snapEngine.thresholdTicks();
+            int64_t bestAbs = std::numeric_limits<int64_t>::max();
+            int64_t bestDelta = 0;
+            int64_t bestEdgeTick = 0;
+            for (const auto& dcs : m_dragSelectedClips) {
+                const int64_t cIn  = dcs.originalIn + tickDelta;
+                const int64_t cOut = cIn + dcs.originalDuration;
+                auto hitIn  = m_snapEngine.findNearestAttract(cIn,  attract);
+                if (hitIn.found && hitIn.dist < bestAbs) {
+                    bestAbs = hitIn.dist;
+                    bestDelta = hitIn.tick - cIn;
+                    bestEdgeTick = hitIn.tick;
+                }
+                auto hitOut = m_snapEngine.findNearestAttract(cOut, attract);
+                if (hitOut.found && hitOut.dist < bestAbs) {
+                    bestAbs = hitOut.dist;
+                    bestDelta = hitOut.tick - cOut;
+                    bestEdgeTick = hitOut.tick;
+                }
+            }
+            if (bestAbs != std::numeric_limits<int64_t>::max()) {
+                newIn += bestDelta;
+                if (newIn < 0) newIn = 0;
+                setSnapIndicator(bestEdgeTick);
+            } else {
+                setSnapIndicator(-1);
+            }
         }
 
         // Compute the actual delta applied to the primary clip
@@ -405,7 +443,15 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             if (clipNewIn < 0) clipNewIn = 0;
 
             int dst = static_cast<int>(dcs.originalTrack) + trackDeltaLive;
-            size_t dstTrack = static_cast<size_t>(dst);
+            // Per-clip bounds: never let a clip go outside the valid track
+            // range.  The group-wide trackDelta clamp only guarantees the
+            // min/max original tracks stay in range — intermediate clips
+            // could still overshoot if the group spans multiple tracks.
+            size_t dstTrack;
+            if (dst < 0 || dst >= static_cast<int>(m_timeline->trackCount()))
+                dstTrack = dcs.ref.trackIndex;
+            else
+                dstTrack = static_cast<size_t>(dst);
 
             Track* srcTr = m_timeline->track(dcs.ref.trackIndex);
             if (!srcTr) continue;
@@ -536,20 +582,20 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             executeCommand(std::move(cmd));
         }
 
-        // Trim other selected clips on the same track by the same delta.
-        // This matches Premiere Pro: when multiple clips are selected and
-        // you grab the head of one, all selected clips on that track trim
-        // their heads by the same amount.
+        // Trim other selected clips by the same delta — including clips on
+        // OTHER tracks (e.g. an audio clip on A1 paired with a video clip
+        // on V1).  Each clip is clamped independently to its own neighbour
+        // on the left and to its own original tail, so a shorter clip in
+        // the selection won't be over-trimmed.
         for (const auto& dcs : m_dragSelectedClips) {
-            if (dcs.ref.clipId == m_dragClipRef.clipId) continue;
-            if (dcs.ref.trackIndex != m_dragClipRef.trackIndex) continue;
+            if (dcs.ref.clipId == m_dragClipRef.clipId &&
+                dcs.ref.trackIndex == m_dragClipRef.trackIndex) continue;
             Track* selTr = m_timeline->track(dcs.ref.trackIndex);
             if (!selTr) continue;
             size_t si = selTr->findClipIndexById(dcs.ref.clipId);
             if (si >= selTr->clipCount()) continue;
-            const Clip* selClip = selTr->clip(si);
             int64_t selNewHead = dcs.originalIn + headDelta;
-            int64_t selOrigTail = dcs.originalIn + selClip->duration();
+            int64_t selOrigTail = dcs.originalIn + dcs.originalDuration;
             if (selNewHead < 0) selNewHead = 0;
             if (selNewHead >= selOrigTail) selNewHead = selOrigTail - 1;
             // also keep away from adjacent clip to the left
@@ -611,16 +657,17 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             executeCommand(std::move(cmd));
         }
 
-        // Trim other selected clips on the same track by the same delta.
+        // Trim other selected clips by the same delta — across tracks too
+        // (e.g. an A/V pair, or a V1+A1+A2 multi-selection).  Each clip is
+        // clamped to its own right-side neighbour and its own original head.
         for (const auto& dcs : m_dragSelectedClips) {
-            if (dcs.ref.clipId == m_dragClipRef.clipId) continue;
-            if (dcs.ref.trackIndex != m_dragClipRef.trackIndex) continue;
+            if (dcs.ref.clipId == m_dragClipRef.clipId &&
+                dcs.ref.trackIndex == m_dragClipRef.trackIndex) continue;
             Track* selTr = m_timeline->track(dcs.ref.trackIndex);
             if (!selTr) continue;
             size_t si = selTr->findClipIndexById(dcs.ref.clipId);
             if (si >= selTr->clipCount()) continue;
-            const Clip* selClip = selTr->clip(si);
-            int64_t selOrigTail = dcs.originalIn + selClip->duration();
+            int64_t selOrigTail = dcs.originalIn + dcs.originalDuration;
             int64_t selNewTail = selOrigTail + tailDelta;
             // keep away from adjacent clip to the right
             int64_t selRightLimit = std::numeric_limits<int64_t>::max();
@@ -775,6 +822,8 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                     DragClipState dcs;
                     dcs.ref = sel;
                     dcs.originalIn = selTrack->clip(si)->timelineIn();
+                    dcs.originalDuration = selTrack->clip(si)->duration();
+                    dcs.originalSourceIn = selTrack->clip(si)->sourceIn();
                     dcs.originalTrack = sel.trackIndex;
                     for (const auto& t : selTrack->transitions()) {
                         if (t.leftClipId == sel.clipId

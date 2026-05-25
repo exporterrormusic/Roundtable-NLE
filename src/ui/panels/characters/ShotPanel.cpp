@@ -239,13 +239,16 @@ void ShotPanel::setupShotGroupSection(QWidget* container)
 
     m_shotCombo = new QComboBox(m_shotGroupSection);
     m_shotCombo->setEditable(false);
-    connect(m_shotCombo, &QComboBox::currentTextChanged,
-            this, [this](const QString& text) {
+    // Use activated(int) instead of currentTextChanged so selecting the
+    // same shot from the dropdown re-applies it (resets the shot).  Qt's
+    // currentTextChanged only fires when the text actually changes, so
+    // clicking the currently-active entry in the popup was a silent no-op.
+    connect(m_shotCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int /*index*/) {
                 if (m_updating) return;
                 if (!m_clip || m_clip->groupId() == 0) return;
-                auto newShot = text.toStdString();
-                if (newShot == m_clip->shotName()) return;
-                onShotChanged(newShot);
+                QString text = m_shotCombo->currentText();
+                onShotChanged(text.toStdString());
             });
     form->addRow("Preset:", m_shotCombo);
 
