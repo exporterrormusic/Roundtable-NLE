@@ -522,6 +522,13 @@ private:
     std::unordered_set<uint64_t> m_prewarmedClipIds;
     // Throttle: only scan the lookahead window every ~100ms during playback.
     std::chrono::steady_clock::time_point m_lastLookaheadScan{};
+    // Last tick value passed to prewarmUpcomingShots.  Used to detect
+    // playhead jumps (seek, scrubber release, JKL direction change) so
+    // the throttle can be bypassed when the tick has moved by more than
+    // continuous playback would produce within the throttle window.
+    // Without this, a seek that lands right before a cut loses lookahead
+    // coverage and the empty-sentinel path fires at the cut.
+    int64_t m_lastLookaheadTick{INT64_MIN};
 
     // ── Sticky per-clip last-good-frame fallback ──────────────────────
     // When a clip is on-screen but its newest frame hasn't been decoded

@@ -211,6 +211,10 @@ signals:
     /// Emitted when source audio playback starts (for mutual exclusion with timeline).
     void playbackStarted();
 
+    /// Emitted when the user scrubs the source monitor's mini-timeline,
+    /// so the timeline can halt its own playback for mutual exclusion.
+    void scrubbed();
+
 public:
     /// Set the MediaPool reference for drag-drop loading.
     void setMediaPool(MediaPool* pool) noexcept { m_pool = pool; }
@@ -245,6 +249,7 @@ private:
     void stopSourceAudio();
     bool ensureScrubAudioLoaded(int64_t frame, int64_t durationFrames);
     void scrubAudioAt(int64_t tick);
+    void updateWaveformSelection();
 
     // Sequence-preview audio (uses an AudioPlaybackService pointed at the
     // inner sequence's Timeline, mirroring how the main timeline plays).

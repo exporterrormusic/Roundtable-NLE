@@ -179,6 +179,13 @@ private:
     bool                 m_draining{false};    // True after EOF while flushing B-frames
     int64_t              m_currentFrame{0};
     std::string          m_lastError;
+    // Source path remembered for the close+reopen still-image seek path.
+    // FFmpeg's image2 demuxer cannot rewind a single-image file: seek then
+    // decodeNext returns EOF because the only packet was already consumed
+    // by the preceding read. Reopening from scratch gives decodeNext a
+    // fresh demuxer that emits the lone packet again.
+    std::filesystem::path m_path;
+    bool                 m_forceSoftware{false};
     mutable std::mutex   m_mutex;
 };
 

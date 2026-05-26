@@ -69,9 +69,13 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // focus (mirrors the I/O routing below).  Without this check, pressing
     // Space after clicking inside the Source Monitor would bubble up and
     // play the timeline instead of the loaded source clip.
+    // isAncestorOf(self) is false in Qt; clicking inside the SourceMonitor
+    // calls setFocus() on the monitor widget itself, so we have to accept
+    // both "focus is the monitor" and "focus is inside the monitor".
     auto sourceMonitorFocused = [this]() {
-        return m_sourceMonitor && m_sourceMonitor->controller()
-            && m_sourceMonitor->isAncestorOf(QApplication::focusWidget());
+        QWidget* fw = QApplication::focusWidget();
+        return m_sourceMonitor && m_sourceMonitor->controller() && fw
+            && (fw == m_sourceMonitor || m_sourceMonitor->isAncestorOf(fw));
     };
     auto activeController = [&]() -> PlaybackController* {
         if (sourceMonitorFocused() && m_sourceMonitor->hasClip())
@@ -130,8 +134,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mark In/Out ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_I) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() &&
-            m_sourceMonitor->isAncestorOf(QApplication::focusWidget())) {
+        if (m_sourceMonitor && m_sourceMonitor->hasClip() && sourceMonitorFocused()) {
             m_sourceMonitor->markIn();
         } else if (m_timeline && m_playbackController) {
             EditOperations::setInPoint(*m_timeline, m_playbackController->currentTick());
@@ -142,8 +145,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     }
     if (noMod && key == Qt::Key_O) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() &&
-            m_sourceMonitor->isAncestorOf(QApplication::focusWidget())) {
+        if (m_sourceMonitor && m_sourceMonitor->hasClip() && sourceMonitorFocused()) {
             m_sourceMonitor->markOut();
         } else if (m_timeline && m_playbackController) {
             EditOperations::setOutPoint(*m_timeline, m_playbackController->currentTick());
@@ -715,9 +717,10 @@ void TimelineWorkspace::keyReleaseEvent(QKeyEvent* event)
 {
     if (event->isAutoRepeat()) { QWidget::keyReleaseEvent(event); return; }
 
+    QWidget* fw = QApplication::focusWidget();
     auto* ctl = (m_sourceMonitor && m_sourceMonitor->controller()
-                 && m_sourceMonitor->hasClip()
-                 && m_sourceMonitor->isAncestorOf(QApplication::focusWidget()))
+                 && m_sourceMonitor->hasClip() && fw
+                 && (fw == m_sourceMonitor || m_sourceMonitor->isAncestorOf(fw)))
         ? m_sourceMonitor->controller()
         : m_playbackController;
 

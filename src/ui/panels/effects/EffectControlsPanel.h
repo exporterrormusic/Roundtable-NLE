@@ -97,6 +97,19 @@ public:
     void setTrack(KeyframeTrack<float>* track);
     [[nodiscard]] KeyframeTrack<float>* track() const noexcept { return m_track; }
 
+    /// Bind additional tracks to this row. The row's keyframe-button,
+    /// stopwatch toggle, and prev/next nav all act on the union; the
+    /// KeyframeTimeline draws and drags a single diamond per time across
+    /// every bound track. Used for compound properties like Position
+    /// (X+Y) where the user expects a single keyframe to capture every
+    /// component, not just the primary one.
+    void addExtraTrack(KeyframeTrack<float>* track);
+    [[nodiscard]] const std::vector<KeyframeTrack<float>*>& extraTracks() const noexcept {
+        return m_extraTracks;
+    }
+    /// All tracks bound to this row: primary first, then extras (skipping nulls).
+    [[nodiscard]] std::vector<KeyframeTrack<float>*> allTracks() const;
+
     /// Add a scrubby spinbox as a value field for this property.
     void addValueWidget(ScrubbySpinBox* spin);
 
@@ -135,6 +148,7 @@ private:
 
     QString               m_name;
     KeyframeTrack<float>* m_track{nullptr};
+    std::vector<KeyframeTrack<float>*> m_extraTracks;
     int                   m_rowIndex{0};
 
     // Widgets
@@ -316,6 +330,11 @@ public:
 
     /// Returns true if an effect has been copied and is ready to paste.
     [[nodiscard]] bool hasCopiedEffect() const noexcept { return m_copiedEffect != nullptr; }
+
+    /// Clear the copied effect clipboard. Call this when the user copies
+    /// a clip (or anything else) so that Ctrl+V doesn't keep pasting the
+    /// stale effect.
+    void clearCopiedEffect() noexcept { m_copiedEffect.reset(); }
 
     /// Delete the currently selected effect (no-op if none selected).
     void deleteSelectedEffect();

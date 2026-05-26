@@ -104,6 +104,12 @@ void TimelinePanel::setTimeline(Timeline* timeline)
 
 void TimelinePanel::rebuildTracks()
 {
+    // Bail out during destruction — the destructor sets m_destroying before
+    // Qt tears down child widgets.  Rebuilding tracks during teardown would
+    // create/destroy widgets in a partially-destroyed hierarchy, risking
+    // heap corruption (0xC0000374) from use-after-free in paint/layout.
+    if (m_destroying.load(std::memory_order_acquire)) return;
+
     // Make sure a divider track separates the video and audio sections
     // BEFORE we count tracks, so the divider is part of this pass.
     ensureSectionDivider();

@@ -38,9 +38,30 @@ public:
         update();
     }
 
+    static double clampRatio(double value)
+    {
+        return std::max(0.0, std::min(1.0, value));
+    }
+
     void setPlayheadRatio(double ratio)
     {
-        m_playheadRatio = std::clamp(ratio, 0.0, 1.0);
+        m_playheadRatio = clampRatio(ratio);
+        update();
+    }
+
+    void setSelectionRange(double startRatio, double endRatio)
+    {
+        m_selectionStartRatio = clampRatio(startRatio);
+        m_selectionEndRatio = clampRatio(endRatio);
+        if (m_selectionEndRatio < m_selectionStartRatio)
+            std::swap(m_selectionStartRatio, m_selectionEndRatio);
+        update();
+    }
+
+    void clearSelection()
+    {
+        m_selectionStartRatio = 0.0;
+        m_selectionEndRatio = 0.0;
         update();
     }
 
@@ -49,6 +70,7 @@ public:
         m_peaks.clear();
         m_channels = 1;
         m_playheadRatio = 0.0;
+        clearSelection();
         update();
     }
 
@@ -59,7 +81,7 @@ protected:
     {
         if (event->button() == Qt::LeftButton && width() > 0) {
             m_dragging = true;
-            double ratio = std::clamp(static_cast<double>(event->pos().x()) / width(), 0.0, 1.0);
+            double ratio = clampRatio(static_cast<double>(event->pos().x()) / width());
             if (m_scrubCallback) m_scrubCallback(ratio);
             event->accept();
         }
@@ -68,7 +90,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override
     {
         if (m_dragging && width() > 0) {
-            double ratio = std::clamp(static_cast<double>(event->pos().x()) / width(), 0.0, 1.0);
+            double ratio = clampRatio(static_cast<double>(event->pos().x()) / width());
             if (m_scrubCallback) m_scrubCallback(ratio);
             event->accept();
         }
@@ -90,6 +112,18 @@ protected:
 
         // Background
         p.fillRect(rect(), Theme::colors().surface0);
+
+        if (m_selectionEndRatio > m_selectionStartRatio && w > 0 && h > 0) {
+            int selX0 = static_cast<int>(std::floor(m_selectionStartRatio * w));
+            int selX1 = static_cast<int>(std::ceil(m_selectionEndRatio * w));
+            selX0 = std::clamp(selX0, 0, w);
+            selX1 = std::clamp(selX1, 0, w);
+            if (selX1 > selX0) {
+                QColor fillColor = Theme::colors().waveformSelection;
+                fillColor.setAlpha(60);
+                p.fillRect(QRect(selX0, 0, selX1 - selX0, h), fillColor);
+            }
+        }
 
         if (m_peaks.empty() || w < 2 || h < 2) {
             // "Loading waveform..." text
@@ -133,8 +167,9 @@ protected:
         p.drawLine(0, static_cast<int>(centerY), w, static_cast<int>(centerY));
 
         // Playhead
-        if (m_playheadRatio > 0.0 && m_playheadRatio < 1.0) {
-            int px = static_cast<int>(m_playheadRatio * w);
+        if (w > 0 && m_playheadRatio >= 0.0 && m_playheadRatio <= 1.0) {
+            int px = static_cast<int>(std::round(m_playheadRatio * static_cast<double>(std::max(0, w - 1))));
+            px = std::clamp(px, 0, std::max(0, w - 1));
             p.setPen(QPen(QColor(0xff, 0xff, 0xff), 2));
             p.drawLine(px, 0, px, h);
         }
@@ -144,6 +179,8 @@ private:
     std::vector<float> m_peaks;
     uint16_t m_channels{1};
     double m_playheadRatio{0.0};
+    double m_selectionStartRatio{0.0};
+    double m_selectionEndRatio{0.0};
     bool m_dragging{false};
     std::function<void(double)> m_scrubCallback;
 };

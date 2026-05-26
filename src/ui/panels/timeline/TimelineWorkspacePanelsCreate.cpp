@@ -430,9 +430,22 @@ void TimelineWorkspace::createPanelWidgets()
         if (m_playbackController &&
             m_playbackController->state() != PlayState::Stopped &&
             m_playbackController->state() != PlayState::Paused) {
-            m_playbackController->stop();
+            m_playbackController->pause();
         }
         invalidateAudioSources();
+    });
+
+    // Scrubbing the Source Monitor mini-timeline pauses main timeline
+    // playback so only one monitor is actively driving audio/video.
+    connect(m_sourceMonitor, &SourceMonitor::scrubbed,
+            this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_playbackController &&
+            m_playbackController->state() != PlayState::Stopped &&
+            m_playbackController->state() != PlayState::Paused) {
+            m_playbackController->pause();
+            invalidateAudioSources();
+        }
     });
 
     makeDock("Source Monitor", m_sourceMonitor);

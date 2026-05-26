@@ -198,7 +198,12 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
 
     if (chosen == cutAction) {
         auto cmd = EditOperations::cutSelection(*m_timeline, m_selection, m_clipboard);
-        if (cmd) { executeCommand(std::move(cmd)); refreshTrackContents(); }
+        if (cmd) {
+            executeCommand(std::move(cmd));
+            m_selection.clear();
+            refreshTrackContents();
+            emit selectionChanged();
+        }
     }
     else if (chosen == copyAction) {
         EditOperations::copySelection(*m_timeline, m_selection, m_clipboard);

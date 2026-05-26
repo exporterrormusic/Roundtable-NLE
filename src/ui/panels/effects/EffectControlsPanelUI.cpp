@@ -31,7 +31,11 @@
 #include <QAction>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <map>
+#include <set>
 #include <unordered_map>
+#include <vector>
 
 namespace rt {
 
@@ -90,6 +94,19 @@ PropertyRow::PropertyRow(const QString& name, KeyframeTrack<float>* track,
 }
 
 void PropertyRow::setTrack(KeyframeTrack<float>* track) { m_track = track; }
+
+void PropertyRow::addExtraTrack(KeyframeTrack<float>* track)
+{
+    if (track) m_extraTracks.push_back(track);
+}
+
+std::vector<KeyframeTrack<float>*> PropertyRow::allTracks() const
+{
+    std::vector<KeyframeTrack<float>*> out;
+    if (m_track) out.push_back(m_track);
+    for (auto* t : m_extraTracks) if (t) out.push_back(t);
+    return out;
+}
 
 QString PropertyRow::propertyName() const { return m_name; }
 
@@ -231,13 +248,15 @@ void PropertyRow::updateForTime(int64_t time)
 {
     if (!m_track) return;
 
-    // Check if there's a keyframe at current time
+    const auto tracks = allTracks();
+
+    // "At a keyframe" if ANY bound track has a keyframe at this time.
     bool atKeyframe = false;
-    for (size_t i = 0; i < m_track->keyframeCount(); ++i) {
-        if (m_track->keyframe(i).time == time) {
-            atKeyframe = true;
-            break;
+    for (auto* tr : tracks) {
+        for (size_t i = 0; i < tr->keyframeCount(); ++i) {
+            if (tr->keyframe(i).time == time) { atKeyframe = true; break; }
         }
+        if (atKeyframe) break;
     }
 
     // Update diamond button style based on whether we're at a keyframe
@@ -247,28 +266,33 @@ void PropertyRow::updateForTime(int64_t time)
             "QToolButton { background: transparent; color: %1; border: none; font-size: 9px; padding: 0; }"
             "QToolButton:hover { color: %2; }")
             .arg(Theme::hex(tc.accent), Theme::hex(tc.accentHover)));
-        // Click = delete keyframe
+        // Click = delete keyframe on every bound track at this time
         m_addKfBtn->disconnect();
-        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time]() {
-            emit deleteKeyframeRequested(m_track, time);
+        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time, tracks]() {
+            for (auto* tr : tracks)
+                emit deleteKeyframeRequested(tr, time);
         });
     } else {
         m_addKfBtn->setStyleSheet(QStringLiteral(
             "QToolButton { background: transparent; color: %1; border: none; font-size: 9px; padding: 0; }"
             "QToolButton:hover { color: %2; }")
             .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary)));
-        // Click = add keyframe
+        // Click = add keyframe on every bound track at this time
         m_addKfBtn->disconnect();
-        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time]() {
-            emit addKeyframeRequested(m_track, time);
+        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time, tracks]() {
+            for (auto* tr : tracks)
+                emit addKeyframeRequested(tr, time);
         });
     }
 
-    // Enable/disable prev/next based on whether keyframes exist in that direction
+    // Enable/disable prev/next based on whether keyframes exist in that
+    // direction on ANY bound track.
     bool hasPrev = false, hasNext = false;
-    for (size_t i = 0; i < m_track->keyframeCount(); ++i) {
-        if (m_track->keyframe(i).time < time) hasPrev = true;
-        if (m_track->keyframe(i).time > time) hasNext = true;
+    for (auto* tr : tracks) {
+        for (size_t i = 0; i < tr->keyframeCount(); ++i) {
+            if (tr->keyframe(i).time < time) hasPrev = true;
+            if (tr->keyframe(i).time > time) hasNext = true;
+        }
     }
     m_prevKfBtn->setEnabled(hasPrev);
     m_nextKfBtn->setEnabled(hasNext);
@@ -472,27 +496,47 @@ void KeyframeTimeline::drawKeyframeDiamonds(QPainter& p)
     for (const auto* row : m_rows) {
         auto it = visIdx.find(row);
         if (it == visIdx.end()) continue;
-        auto* track = row->track();
-        if (!track || track->keyframeCount() == 0) continue;
+        const auto rowTracks = row->allTracks();
+        if (rowTracks.empty()) continue;
 
         int y = rowY(it->second);
         if (y < kRulerHeight || y > height()) continue;
 
-        for (size_t i = 0; i < track->keyframeCount(); ++i) {
-            const auto& kf = track->keyframe(i);
-            int64_t t = kf.time;
+        // Union the keyframe times across every track bound to this row so
+        // compound properties like Position (X+Y) render a single diamond
+        // per time. The "representative" InterpMode for icon selection
+        // comes from the first track that has a keyframe at that time.
+        struct DiamondInfo {
+            InterpMode interp;
+            bool       selected;
+        };
+        std::map<int64_t, DiamondInfo> diamonds;
+        for (auto* track : rowTracks) {
+            if (!track) continue;
+            for (size_t i = 0; i < track->keyframeCount(); ++i) {
+                const auto& kf = track->keyframe(i);
+                int64_t t = kf.time;
+                auto& d = diamonds[t];
+                d.interp = kf.interp;  // last write wins; first track usually primary
+                if (m_selectedKeys.count({track, t}) > 0)
+                    d.selected = true;
+            }
+        }
+        for (auto& [t, info] : diamonds) {
             int x = tickToX(t);
             constexpr int d = kDiamondRadius;
-
-            bool selected = m_selectedKeys.count({const_cast<KeyframeTrack<float>*>(track), t}) > 0;
-            p.setBrush(selected ? tc.textPrimary : tc.accent);
+            const bool selected = info.selected;
+            // Premiere convention: unselected = neutral grey, selected =
+            // the accent color so the user can see exactly which keyframes
+            // will move.
+            p.setBrush(selected ? tc.accent : tc.textTertiary);
 
             // Premiere-style per-mode keyframe icon:
             //   Linear            → diamond
             //   Hold              → square (step)
             //   Bezier / Auto /   → circle
             //   Continuous / Ease
-            switch (kf.interp) {
+            switch (info.interp) {
             case InterpMode::Linear: {
                 QPolygonF diamond;
                 diamond << QPointF(x, y - d) << QPointF(x + d, y)
@@ -644,20 +688,47 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         // Hit-test keyframe diamonds
         auto hit = hitTestKeyframe(event->pos());
         if (hit.track) {
-            SelKey key{hit.track, hit.track->keyframe(hit.index).time};
+            const int64_t hitTime = hit.track->keyframe(hit.index).time;
+
+            // Compound rows (Position = X + Y) render ONE diamond per time
+            // across every bound track. Expand the selection so clicking
+            // that diamond grabs every sibling keyframe at the same time —
+            // otherwise dragging would move X but leave Y behind, which
+            // is exactly the "doesn't seem to save both x and y" symptom.
+            std::vector<SelKey> siblings;
+            siblings.push_back({hit.track, hitTime});
+            for (const auto* row : m_rows) {
+                if (!row->isVisible()) continue;
+                bool rowOwnsHit = false;
+                for (auto* tr : row->allTracks())
+                    if (tr == hit.track) { rowOwnsHit = true; break; }
+                if (!rowOwnsHit) continue;
+                for (auto* tr : row->allTracks()) {
+                    if (!tr || tr == hit.track) continue;
+                    for (size_t i = 0; i < tr->keyframeCount(); ++i) {
+                        if (tr->keyframe(i).time == hitTime) {
+                            siblings.push_back({tr, hitTime});
+                            break;
+                        }
+                    }
+                }
+            }
+
+            SelKey key = siblings.front();
             bool alreadySelected = m_selectedKeys.count(key) > 0;
 
             if (shift) {
-                // Toggle selection of this keyframe
-                if (alreadySelected)
-                    m_selectedKeys.erase(key);
-                else
-                    m_selectedKeys.insert(key);
+                // Toggle selection of this keyframe (and its siblings)
+                if (alreadySelected) {
+                    for (const auto& s : siblings) m_selectedKeys.erase(s);
+                } else {
+                    for (const auto& s : siblings) m_selectedKeys.insert(s);
+                }
             } else {
                 if (!alreadySelected) {
-                    // Click on unselected keyframe → select only this one
+                    // Click on unselected keyframe → select this + siblings
                     m_selectedKeys.clear();
-                    m_selectedKeys.insert(key);
+                    for (const auto& s : siblings) m_selectedKeys.insert(s);
                 }
                 // else: already selected, keep multi-selection for group drag
             }
@@ -711,19 +782,28 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
 
     if (m_marqueeActive) {
         m_marqueeCurrent = event->pos();
-        // Build selection from keyframes inside the marquee rect
+        // Build selection from keyframes inside the marquee rect, inflated
+        // by the diamond's visual radius so a keyframe whose CENTER is
+        // just past the marquee edge (common when the user drags to the
+        // very last frame and can't push the cursor past the widget's
+        // right edge) still gets selected. Without this, edge keyframes
+        // flickered blue during the drag but were dropped on release.
         QRect rect = QRect(m_marqueeOrigin, m_marqueeCurrent).normalized();
+        QRect hitRect = rect.adjusted(-kDiamondRadius, -kDiamondRadius,
+                                       kDiamondRadius,  kDiamondRadius);
         m_selectedKeys = m_preMarqueeSelection; // start from pre-existing
         int vi = 0;
         for (const auto* row : m_rows) {
             if (!row->isVisible()) continue;
-            auto* track = row->track();
-            if (!track || track->keyframeCount() == 0) { ++vi; continue; }
+            const auto rowTracks = row->allTracks();
+            if (rowTracks.empty()) { ++vi; continue; }
             int y = rowY(vi);
-            for (size_t i = 0; i < track->keyframeCount(); ++i) {
-                int x = tickToX(track->keyframe(i).time);
-                if (rect.contains(x, y)) {
-                    m_selectedKeys.insert({track, track->keyframe(i).time});
+            for (auto* track : rowTracks) {
+                if (!track) continue;
+                for (size_t i = 0; i < track->keyframeCount(); ++i) {
+                    int x = tickToX(track->keyframe(i).time);
+                    if (hitRect.contains(x, y))
+                        m_selectedKeys.insert({track, track->keyframe(i).time});
                 }
             }
             ++vi;
@@ -735,6 +815,63 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
     if (m_draggingSelection && !m_dragEntries.empty()) {
         int64_t currentTick = xToTick(event->pos().x());
         int64_t delta = currentTick - m_dragAnchorTick;
+
+        // Premiere-style magnetism (hold Shift to disable). Snap delta so
+        // the "leader" entry (the keyframe nearest the cursor when the drag
+        // began — i.e. the first entry the drag was anchored to) lands on
+        // a sibling keyframe in another track, or on the playhead. We snap
+        // the GROUP delta rather than each keyframe individually so a
+        // multi-select drag keeps its relative spacing.
+        const bool snapEnabled = !(event->modifiers() & Qt::ShiftModifier);
+        if (snapEnabled && !m_dragEntries.empty()) {
+            // Build a set of dragged (track, origTime) so we don't snap to
+            // ourselves or to siblings within the drag group.
+            std::set<std::pair<KeyframeTrack<float>*, int64_t>> dragged;
+            for (const auto& e : m_dragEntries)
+                dragged.insert({e.track, e.origTime});
+
+            // Candidate snap targets: every non-dragged keyframe on any
+            // visible row, plus the playhead.
+            std::vector<int64_t> targets;
+            for (const auto* row : m_rows) {
+                if (!row->isVisible()) continue;
+                auto* tr = row->track();
+                if (!tr) continue;
+                for (size_t i = 0; i < tr->keyframeCount(); ++i) {
+                    int64_t t = tr->keyframe(i).time;
+                    if (!dragged.count({tr, t}))
+                        targets.push_back(t);
+                }
+            }
+            if (m_clip) targets.push_back(m_playheadTick - m_clip->timelineIn());
+
+            // ~6 px snap radius — wide enough to feel sticky, narrow enough
+            // to not interfere with fine placement. Convert to ticks via
+            // the local ruler scale (1 px ≈ tickRangePerPx).
+            const double pxPerTick = (m_clip && m_clip->duration() > 0)
+                ? (static_cast<double>(width()) / static_cast<double>(m_clip->duration()))
+                : 1.0;
+            const int64_t snapRadiusTicks = pxPerTick > 0.0
+                ? static_cast<int64_t>(6.0 / pxPerTick)
+                : 0;
+
+            // Find the best snap by checking what each dragged keyframe
+            // would land on after applying `delta`. The smallest distance
+            // wins; that snap then biases the group delta.
+            int64_t bestDelta   = delta;
+            int64_t bestDist    = snapRadiusTicks + 1;  // sentinel
+            for (const auto& e : m_dragEntries) {
+                int64_t projected = e.origTime + delta;
+                for (int64_t tgt : targets) {
+                    int64_t d = std::abs(projected - tgt);
+                    if (d <= snapRadiusTicks && d < bestDist) {
+                        bestDist  = d;
+                        bestDelta = tgt - e.origTime;
+                    }
+                }
+            }
+            delta = bestDelta;
+        }
 
         // Remove all dragged keyframes from their current positions
         for (auto& entry : m_dragEntries) {
@@ -934,19 +1071,30 @@ KeyframeTimeline::HitResult KeyframeTimeline::hitTestKeyframe(const QPoint& pos)
     for (const auto* row : m_rows) {
         auto it = visIdx.find(row);
         if (it == visIdx.end()) continue;
-        auto* track = row->track();
-        if (!track || track->keyframeCount() == 0) continue;
+        const auto rowTracks = row->allTracks();
+        if (rowTracks.empty()) continue;
 
         int y = rowY(it->second);
         if (y < kRulerHeight || y > height()) continue;
 
-        for (size_t i = 0; i < track->keyframeCount(); ++i) {
-            int x = tickToX(track->keyframe(i).time);
-            int dx = pos.x() - x;
-            int dy = pos.y() - y;
-            // Manhattan distance check (diamond shape)
-            if (std::abs(dx) + std::abs(dy) <= kDiamondRadius + 2) {
-                return {track, i};
+        // Look across every track bound to this row — a compound row like
+        // Position renders ONE diamond at each time covering both X and Y;
+        // returning either track is fine, mousePressEvent expands the
+        // selection to all sibling keyframes at the same time below.
+        for (auto* track : rowTracks) {
+            if (!track) continue;
+            for (size_t i = 0; i < track->keyframeCount(); ++i) {
+                int x = tickToX(track->keyframe(i).time);
+                int dx = pos.x() - x;
+                int dy = pos.y() - y;
+                // Manhattan distance check (diamond shape). Use a generous
+                // 5px slop so near-misses on the small diamond grab it
+                // instead of falling through to the marquee/empty-area path,
+                // which would let the user accidentally start a marquee on
+                // top of an existing keyframe they meant to drag.
+                if (std::abs(dx) + std::abs(dy) <= kDiamondRadius + 5) {
+                    return {track, i};
+                }
             }
         }
     }

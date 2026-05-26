@@ -1078,21 +1078,45 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         if (effectProcessor->process(cmd, srcInfo, layer.effects)) {
                             gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
 
-                            // Effect output lives in OUTPUT space (outW×outH)
-                            // — the OTS / blur / etc. shaders write directly
-                            // to that resolution and the per-clip pos/scale
-                            // are already baked into the effect's own
-                            // positioning.  Reset the layer transform to
-                            // identity so the compositor (and any downstream
-                            // Transition pass) samples this texture 1:1
-                            // instead of remapping through the now-irrelevant
-                            // source-dim transform — that mismatch made
-                            // cross-dissolves between two effected clips
-                            // fade to black (sampler ran out-of-bounds for
-                            // most pixels and returned vec4(0)).
-                            gpuLayers[li].transform = Compositor::buildViewportTransform(
-                                outW, outH, outW, outH,
-                                0.0f, 0.0f, 1.0f, 1.0f, 0.0f, false);
+                            // Effect output is outW×outH. Two regimes:
+                            //   • OTS shaders draw a positioned box in
+                            //     output-pixel coords and leave the rest
+                            //     transparent — the clip's pos/scale are
+                            //     baked into the shader's own placement, so
+                            //     the composite must sample this texture
+                            //     1:1 (identity transform).
+                            //   • Every other effect (blur, sharpen, LUT,
+                            //     flip, color correct, …) is a 1:1
+                            //     passthrough sampler — its output is the
+                            //     source content stretched to fill outW×outH
+                            //     with no awareness of the clip's pos/scale.
+                            //     Keeping identity here would render those
+                            //     clips full-frame and ignore the user's
+                            //     transform; instead build a viewport
+                            //     transform that treats the effect output as
+                            //     an already output-sized texture and
+                            //     reapplies pos/scale/rot/anchor.
+                            bool hasOtsEffect = false;
+                            for (const auto& snap : layer.effects) {
+                                if (snap.type == EffectType::OtsLeft ||
+                                    snap.type == EffectType::OtsRight)
+                                {
+                                    hasOtsEffect = true;
+                                    break;
+                                }
+                            }
+                            if (hasOtsEffect) {
+                                gpuLayers[li].transform = Compositor::buildViewportTransform(
+                                    outW, outH, outW, outH,
+                                    0.0f, 0.0f, 1.0f, 1.0f, 0.0f, false);
+                            } else {
+                                gpuLayers[li].transform = Compositor::buildViewportTransform(
+                                    outW, outH, outW, outH,
+                                    layer.posX, layer.posY,
+                                    layer.scX, layer.scY, layer.rot,
+                                    layer.containFit,
+                                    layer.anchorX, layer.anchorY);
+                            }
 
                             // Snapshot the effect output into this layer's
                             // dedicated texture on the LAST effect pass for

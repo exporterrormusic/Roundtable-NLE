@@ -315,6 +315,10 @@ private:
     // ── State ───────────────────────────────────────────────────────────
     bool m_fullScreenPreview{false};
     bool m_panelsBuilt{false};
+    // Re-entry guard for the qApp event filter: when it forwards a JKL/Space
+    // event into TimelineWorkspace via QApplication::sendEvent, qApp re-runs
+    // its event filters on the same event — without this flag we'd recurse.
+    bool m_forwardingTransportKey{false};
 
     // ── Auto-save ───────────────────────────────────────────────────────
     QTimer* m_autoSaveTimer{nullptr};

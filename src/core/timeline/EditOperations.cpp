@@ -307,6 +307,52 @@ std::unique_ptr<Command> EditOperations::cutSelection(
     return deleteSelection(timeline, selection);
 }
 
+// Fresh starting groupId for a paste/duplicate batch. Returns a value
+// strictly greater than any existing groupId OR clip id on the
+// timeline so the new id is guaranteed not to collide with anything
+// applyShotSwitch might scan by.
+static uint64_t freshGroupIdBase(const Timeline& timeline)
+{
+    uint64_t base = 1;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        const Track* trk = timeline.track(ti);
+        if (!trk) continue;
+        for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+            const Clip* c = trk->clip(ci);
+            if (!c) continue;
+            if (c->groupId() >= base) base = c->groupId() + 1;
+            if (c->id()      >= base) base = c->id() + 1;
+        }
+    }
+    return base;
+}
+
+// Re-stamp groupId on a freshly cloned paste/duplicate clip so it
+// doesn't share identity with the source. Pasted clips that shared a
+// source groupId all map to the same new id (preserves multi-layer
+// shot grouping within the paste batch); independent source groups
+// each get their own fresh id. Without this, applyShotSwitch sweeps
+// the original (still-at-source) clip into the new clip's shot swap,
+// inflating groupStart/groupEnd across the gap and stretching the new
+// shot's layers from the paste position all the way back to the
+// original.
+static void remapClonedGroupId(
+    Clip& cloned,
+    std::unordered_map<uint64_t, uint64_t>& gidRemap,
+    uint64_t& nextGid)
+{
+    const uint64_t oldGid = cloned.groupId();
+    if (oldGid == 0) return; // Ungrouped — nothing to remap
+    auto it = gidRemap.find(oldGid);
+    if (it == gidRemap.end()) {
+        cloned.setGroupId(nextGid);
+        gidRemap.emplace(oldGid, nextGid);
+        ++nextGid;
+    } else {
+        cloned.setGroupId(it->second);
+    }
+}
+
 // Remap a source track index to a destination track index by matching
 // TrackType, preserving the relative ordering of source tracks within
 // that type. Critical when pasting between sequences: the clipboard's
@@ -361,6 +407,13 @@ std::unique_ptr<Command> EditOperations::paste(
     auto compound = std::make_unique<CompoundCommand>("Paste");
     const auto remap = buildTrackRemap(timeline, clipboard);
 
+    uint64_t nextGid = freshGroupIdBase(timeline);
+    std::unordered_map<uint64_t, uint64_t> gidRemap;
+
+    // Track each pasted clip so we can resolve overlaps after all are placed.
+    struct PasteTarget { size_t trackIdx; uint64_t clipId; int64_t timelineIn; };
+    std::vector<PasteTarget> targets;
+
     for (const auto& entry : clipboard.entries)
     {
         if (!entry.clip) continue;
@@ -386,10 +439,44 @@ std::unique_ptr<Command> EditOperations::paste(
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
+        const int64_t pasteIn = cloned->timelineIn();
+        remapClonedGroupId(*cloned, gidRemap, nextGid);
 
         Track* track = timeline.track(destIdx);
-        compound->addCommand(std::make_unique<AddClipCommand>(
-            track, std::move(cloned)));
+
+        // Execute the add immediately so the clip is resident on the
+        // track when we call resolveOverlaps below.  Use addExecuted so
+        // the compound re-executes everything in order on redo.
+        auto addCmd = std::make_unique<AddClipCommand>(track, std::move(cloned));
+        addCmd->execute();
+        compound->addExecuted(std::move(addCmd));
+
+        targets.push_back({destIdx, 0, pasteIn});
+    }
+
+    // Resolve overlaps for each pasted clip — the paste operation
+    // overwrites any clip that overlaps the pasted range (Premiere-style
+    // overwrite paste).
+    for (const auto& tgt : targets) {
+        Track* track = timeline.track(tgt.trackIdx);
+        if (!track) continue;
+
+        // Find the clip we just pasted by matching timelineIn (the ID
+        // changed after clone, so we locate by position).
+        uint64_t pastedId = 0;
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            if (track->clip(ci)->timelineIn() == tgt.timelineIn) {
+                pastedId = track->clip(ci)->id();
+                break;
+            }
+        }
+        if (pastedId == 0) continue;
+
+        auto overlapCmd = resolveOverlaps(timeline, tgt.trackIdx, pastedId);
+        if (overlapCmd) {
+            overlapCmd->execute();
+            compound->addExecuted(std::move(overlapCmd));
+        }
     }
 
     return compound->size() > 0 ? std::move(compound) : nullptr;
@@ -444,6 +531,8 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
     }
 
     // Second: add the pasted clips at playhead on targeted tracks
+    uint64_t nextGid = freshGroupIdBase(timeline);
+    std::unordered_map<uint64_t, uint64_t> gidRemap;
     for (const auto& entry : clipboard.entries)
     {
         if (entry.trackIndex >= timeline.trackCount()) continue;
@@ -452,6 +541,7 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
+        remapClonedGroupId(*cloned, gidRemap, nextGid);
 
         compound->addCommand(std::make_unique<AddClipCommand>(
             track, std::move(cloned)));
@@ -467,6 +557,9 @@ std::unique_ptr<Command> EditOperations::duplicateSelection(
 
     auto compound = std::make_unique<CompoundCommand>("Duplicate");
 
+    uint64_t nextGid = freshGroupIdBase(timeline);
+    std::unordered_map<uint64_t, uint64_t> gidRemap;
+
     for (const auto& ref : selection.clips())
     {
         if (ref.trackIndex >= timeline.trackCount()) continue;
@@ -477,6 +570,7 @@ std::unique_ptr<Command> EditOperations::duplicateSelection(
         const Clip* clip = track->clip(idx);
         auto cloned = clip->clone();
         cloned->setTimelineIn(clip->timelineIn() + kDuplicateOffset);
+        remapClonedGroupId(*cloned, gidRemap, nextGid);
 
         compound->addCommand(std::make_unique<AddClipCommand>(
             track, std::move(cloned)));

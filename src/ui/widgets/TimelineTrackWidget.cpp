@@ -835,46 +835,6 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
         painter.restore();
     }
 
-    // ── Draw video thumbnail (first frame) inside clip body ─────────────
-    if ((clip->clipType() == ClipType::Video || clip->clipType() == ClipType::Image)
-        && m_thumbnailCache && qRect.width() > 20 && qRect.height() > 20)
-    {
-        auto it = m_thumbnailCache->find(clip->id());
-        if (it != m_thumbnailCache->end() && !it->second.isNull()) {
-            painter.save();
-            painter.setClipRect(qRect.adjusted(2, 2, -2, -2));
-
-            const QPixmap& thumb = it->second;
-            double thumbAspect = static_cast<double>(thumb.width()) / thumb.height();
-            double clipH = qRect.height() - 4;
-            double thumbW = clipH * thumbAspect;
-
-            // Draw thumbnail at the left edge of the clip
-            QRectF thumbRect(qRect.left() + 2, qRect.top() + 2, thumbW, clipH);
-            painter.setOpacity(dragging ? 0.55 : 0.7);
-            painter.drawPixmap(thumbRect.toRect(), thumb);
-
-            // If the clip is wide enough, tile the thumbnail (filmstrip style)
-            double x = qRect.left() + 2 + thumbW;
-            while (x + thumbW <= qRect.right() - 2) {
-                QRectF tileRect(x, qRect.top() + 2, thumbW, clipH);
-                painter.drawPixmap(tileRect.toRect(), thumb);
-                x += thumbW;
-            }
-            // Draw partial last tile if there's space
-            double remaining = qRect.right() - 2 - x;
-            if (remaining > 4) {
-                QRectF partialRect(x, qRect.top() + 2, remaining, clipH);
-                double srcFrac = remaining / thumbW;
-                QRectF srcRect(0, 0, thumb.width() * srcFrac, thumb.height());
-                painter.drawPixmap(partialRect.toRect(), thumb, srcRect.toRect());
-            }
-
-            painter.setOpacity(1.0);
-            painter.restore();
-        }
-    }
-
     // ── Draw clip badges (FX, speed, keyframes) ──────────────────────────
     if (qRect.width() > 30 && qRect.height() > 16)
     {

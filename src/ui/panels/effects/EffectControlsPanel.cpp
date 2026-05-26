@@ -395,13 +395,39 @@ void EffectControlsPanel::applyTransformLive()
     auto writeIfTrack = [&](KeyframeTrack<float>* trk, float val) {
         if (trk) writeTrack(*trk, val);
     };
+    // Compound-pin helper: when EITHER track of a compound 2D row (Position
+    // X/Y, Anchor X/Y) is being scrubbed and the row is animated, BOTH
+    // components must get a keyframe at the playhead — otherwise X keeps
+    // accumulating keyframes while Y is silently absent, and dragging the
+    // shared diamond moves only X (the "Y position isn't being tracked"
+    // bug).  When the row is static (neither track has keyframes yet),
+    // writeIfTrack still falls through to updating the default value.
+    auto writeCompound = [this](KeyframeTrack<float>* updated, float updatedVal,
+                                KeyframeTrack<float>* sibling) {
+        if (!updated) return;
+        const bool animated = (updated->keyframeCount() > 0) ||
+                              (sibling && sibling->keyframeCount() > 0);
+        if (animated) {
+            const int64_t t = clipRelativeTick();
+            updated->addKeyframe(t, updatedVal);
+            if (sibling)
+                sibling->addKeyframe(t, sibling->evaluate(t));
+        } else {
+            updated->writeValue(clipRelativeTick(), updatedVal);
+        }
+    };
+
     if (spin == m_posXSpin) {
         // Spin shows display-space pixels; divide by display-factor on write.
         // (clip-level: stored REF-1920, factor = seqW/1920. layer-level:
         // stored project-px, factor = 1.0.)
-        writeIfTrack(effPosX(), static_cast<float>(spin->value() / posDisplayFactorX()));
+        writeCompound(effPosX(),
+                      static_cast<float>(spin->value() / posDisplayFactorX()),
+                      effPosY());
     } else if (spin == m_posYSpin) {
-        writeIfTrack(effPosY(), static_cast<float>(spin->value() / posDisplayFactorY()));
+        writeCompound(effPosY(),
+                      static_cast<float>(spin->value() / posDisplayFactorY()),
+                      effPosX());
     } else if (spin == m_scaleSpin) {
         // Spin shows Premiere-style native percentage; convert back to the
         // engine's cover-fit-multiplier storage so the compositor renders
@@ -422,9 +448,13 @@ void EffectControlsPanel::applyTransformLive()
     } else if (spin == m_opacitySpin) {
         writeIfTrack(effOpacity(), static_cast<float>(spin->value() / 100.0));
     } else if (spin == m_anchorXSpin) {
-        writeIfTrack(effAnchorX(), static_cast<float>(spin->value() / posDisplayFactorX()));
+        writeCompound(effAnchorX(),
+                      static_cast<float>(spin->value() / posDisplayFactorX()),
+                      effAnchorY());
     } else if (spin == m_anchorYSpin) {
-        writeIfTrack(effAnchorY(), static_cast<float>(spin->value() / posDisplayFactorY()));
+        writeCompound(effAnchorY(),
+                      static_cast<float>(spin->value() / posDisplayFactorY()),
+                      effAnchorX());
     } else if (spin == m_speedSpin) {
         m_clip->setSpeed(spin->value() / 100.0);
     } else if (auto* ac = dynamic_cast<AudioClip*>(m_clip)) {
@@ -636,14 +666,28 @@ void EffectControlsPanel::resetPropertyRow(PropertyRow* row)
     const double oldSpeed = m_clip->speed();
     auto* panel = this;
     Clip* clip  = m_clip;
+    // Capture the playhead at reset time so undo replays write at the same
+    // tick the user originally clicked the reset button on, even if the
+    // playhead has moved since.
+    const int64_t resetTick = clipRelativeTick();
 
-    auto apply = [clip, panel](bool toFactory,
-                               const std::vector<TrackSnap>& src) {
+    auto apply = [clip, panel, resetTick](bool toFactory,
+                                          const std::vector<TrackSnap>& src) {
         for (const auto& s : src) {
-            while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
             if (toFactory) {
-                s.trk->setDefaultValue(s.factory);
+                // Premiere convention: if the track is animated, the reset
+                // button writes (or replaces) a keyframe at the current
+                // playhead with the factory value — preserving all other
+                // keyframes. Only when the track has NO keyframes does
+                // reset fall back to changing the default value.
+                if (!s.oldKfs.empty()) {
+                    s.trk->addKeyframe(resetTick, s.factory);
+                } else {
+                    s.trk->setDefaultValue(s.factory);
+                }
             } else {
+                // Undo: wipe and restore the captured snapshot exactly.
+                while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
                 s.trk->setDefaultValue(s.oldDefault);
                 for (const auto& kf : s.oldKfs) s.trk->restoreKeyframe(kf);
             }
@@ -808,6 +852,20 @@ void EffectControlsPanel::copySelectedEffect()
 void EffectControlsPanel::pasteEffect()
 {
     if (!m_copiedEffect || !m_clip || !m_commandStack) return;
+
+    // Guard: audio effects (FillLeft/Right) only on AudioClip;
+    // video/image effects only on non-AudioClip.
+    const bool effectIsAudio = isAudioEffect(m_copiedEffect->effectType());
+    const bool clipIsAudio   = (m_clip->clipType() == ClipType::Audio);
+    if (effectIsAudio != clipIsAudio) {
+        spdlog::warn("EffectControlsPanel: refusing to paste {} effect '{}' onto {} clip '{}'",
+                     effectIsAudio ? "audio" : "video",
+                     m_copiedEffect->name(),
+                     clipIsAudio ? "audio" : "video",
+                     m_clip->label());
+        return;
+    }
+
     auto cloned = m_copiedEffect->clone();
     m_commandStack->execute(
         std::make_unique<AddEffectCommand>(

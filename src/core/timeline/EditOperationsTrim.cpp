@@ -75,10 +75,15 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
     if (splitTime <= clip->timelineIn() || splitTime >= clip->timelineOut())
         return nullptr;
 
-    // Duration must be meaningful on both sides
+    // Duration must be > 0 on both sides. kMinClipDuration (1 frame @ 24fps =
+    // 2000 ticks) is too coarse for split: at 60fps a single frame is 800
+    // ticks, so requiring kMinClipDuration on each side blocked the user
+    // from pressing F to slice a single frame off a clip. Splits are
+    // frame-snapped by the caller (playhead is on a frame boundary), so
+    // accepting any positive duration here is safe.
     int64_t leftDuration  = splitTime - clip->timelineIn();
     int64_t rightDuration = clip->timelineOut() - splitTime;
-    if (leftDuration < kMinClipDuration || rightDuration < kMinClipDuration)
+    if (leftDuration <= 0 || rightDuration <= 0)
         return nullptr;
 
     // ── Capture tail transitions BEFORE the trim mangles them ───────────
@@ -332,13 +337,27 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     int64_t leftNewDuration = newEditPoint - leftClip->timelineIn();
     int64_t rightEnd = rightClip->timelineOut();
 
+    // Looping/unbounded clips (Spine character animations, video characters,
+    // still-image "videos", and image clips) have no real source extent —
+    // they loop or hold a single frame, so rolling should let the edit point
+    // travel freely past sourceIn=0 / sourceDuration.  Mirrors the same
+    // exemption in trimClipEdge above.
+    auto isLoopingClip = [](const Clip* c) -> bool {
+        if (auto* vc = dynamic_cast<const VideoClip*>(c))
+            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath());
+        if (dynamic_cast<const ImageClip*>(c)) return true;
+        if (dynamic_cast<const SpineClip*>(c)) return true;
+        return false;
+    };
+    const bool leftLooping  = isLoopingClip(leftClip);
+    const bool rightLooping = isLoopingClip(rightClip);
+
     // Clamp left clip tail to source media extent (non-looping clips)
     int64_t leftMaxDur = INT64_MAX;
-    {
+    if (!leftLooping) {
         int64_t srcDur = 0;
         if (auto* vc = dynamic_cast<const VideoClip*>(leftClip)) {
-            if (!vc->isVideoCharacter())
-                srcDur = vc->sourceDuration();
+            srcDur = vc->sourceDuration();
         } else if (auto* ac = dynamic_cast<const AudioClip*>(leftClip)) {
             srcDur = ac->sourceDuration();
         }
@@ -354,18 +373,13 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     // constant.  The only source-side constraint is sourceIn >= 0
     // (can't roll the right-clip head left past the start of its media).
     bool  rightHasSourceLimit = false;
-    {
-        int64_t srcDur = 0;
+    if (!rightLooping) {
         if (auto* vc = dynamic_cast<const VideoClip*>(rightClip)) {
-            if (!vc->isVideoCharacter()) {
-                srcDur = vc->sourceDuration();
-                rightHasSourceLimit = true;
-            }
-        } else if (auto* ac = dynamic_cast<const AudioClip*>(rightClip)) {
-            srcDur = ac->sourceDuration();
+            (void)vc;
+            rightHasSourceLimit = true;
+        } else if (dynamic_cast<const AudioClip*>(rightClip)) {
             rightHasSourceLimit = true;
         }
-        (void)srcDur;
     }
 
     int64_t rightNewDuration = rightEnd - newEditPoint;

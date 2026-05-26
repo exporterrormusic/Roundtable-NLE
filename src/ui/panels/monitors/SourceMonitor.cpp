@@ -60,6 +60,20 @@ constexpr int64_t kSourceScrubPreRollFrames  = 4096;
 constexpr int64_t kSourceScrubPostRollFrames = 8192;
 constexpr int64_t kSourceScrubMinFrames      = 4096;
 
+// Still-image extensions. FFmpeg's image2 demuxer reports a real but tiny
+// "duration" for JPGs (e.g. 0.04s @ 25fps), which would otherwise shrink
+// the Source Monitor's standalone duration to a single frame and leave the
+// viewport blank.  PNG happens to come back with duration=0, which is why
+// it "just works" without this guard.
+bool isStillImageSourcePath(const std::filesystem::path& path)
+{
+    auto ext = path.extension().string();
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".png"  || ext == ".jpg"  || ext == ".jpeg" || ext == ".bmp" ||
+           ext == ".gif"  || ext == ".tif"  || ext == ".tiff" || ext == ".webp" ||
+           ext == ".tga"  || ext == ".dds";
+}
+
 bool loadResampledAudioFile(const std::filesystem::path& filePath,
                             std::vector<float>& samples,
                             uint16_t& channels)
@@ -119,13 +133,24 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
         m_frameCount   = info->frameCount;
         m_clipDuration = static_cast<int64_t>(info->duration * 48000.0);
 
+        // Treat still images uniformly regardless of how FFmpeg's image2
+        // demuxer reports them.  JPG comes back with a tiny duration
+        // (~0.04s) that would otherwise make the standalone duration
+        // ~1920 ticks and leave the Source Monitor showing nothing useful;
+        // PNG happens to report duration=0 already.  Normalise both to a
+        // 5-second default and a single canonical frame.
+        auto path = pool->getPath(mediaHandle);
+        if (isStillImageSourcePath(path)) {
+            m_clipDuration = static_cast<int64_t>(48000.0 * 5.0);
+            m_frameCount   = 1;
+        }
+
         m_controller->setFrameRate(m_fps);
         m_controller->setStandaloneDuration(m_clipDuration);
         m_miniTimeline->setDuration(m_clipDuration);
         m_miniTimeline->setFrameRate(m_fps);
 
         // Set clip name from file path
-        auto path = pool->getPath(mediaHandle);
         setClipName(QString::fromStdString(path.filename().string()));
     }
 
@@ -138,6 +163,7 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
         m_viewStack->setCurrentIndex(1); // waveform display
         m_waveformWidget->clear();
         updateTimecodeDisplay();
+        updateWaveformSelection();
     }
 
     // Eagerly kick off async audio decode for video clips that have an
@@ -165,6 +191,18 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
     // a .wav has audio but no video. Enable only the applicable buttons.
     const bool clipHasAudio = (info && info->audioStreamIndex >= 0);
     refreshDragButtons(/*hasVideo=*/!m_audioOnly, /*hasAudio=*/clipHasAudio);
+
+    // The first updateFrameDisplay above returns no frame because getFrame()
+    // for !scrubMode schedules an async prefetch and returns null. Without a
+    // retry the viewport stays blank until the user does something that
+    // triggers another paint — for stills that meant dropping a second time.
+    // Run the poll timer briefly so subsequent ticks pick up the cached
+    // frame the prefetch worker delivers. (Mirrors loadSequence's settle.)
+    if (!m_audioOnly) {
+        m_scrubSettleCounter = 100;  // ~1.6s of retries at 16ms
+        if (!m_pollTimer->isActive())
+            m_pollTimer->start();
+    }
 }
 
 void SourceMonitor::loadSequence(size_t sequenceIndex, const QString& name,
@@ -332,6 +370,7 @@ void SourceMonitor::markIn()
     if (!m_hasClip) return;
     m_miniTimeline->setInPoint(currentTick());
     updateTimecodeDisplay();
+    updateWaveformSelection();
     emit inOutChanged();
 }
 
@@ -340,6 +379,7 @@ void SourceMonitor::markOut()
     if (!m_hasClip) return;
     m_miniTimeline->setOutPoint(currentTick());
     updateTimecodeDisplay();
+    updateWaveformSelection();
     emit inOutChanged();
 }
 
@@ -347,6 +387,7 @@ void SourceMonitor::clearInOut()
 {
     m_miniTimeline->clearInOutPoints();
     updateTimecodeDisplay();
+    updateWaveformSelection();
     emit inOutChanged();
 }
 
@@ -424,6 +465,24 @@ SourceMonitor::SourceRegion SourceMonitor::sourceRegion() const
     return region;
 }
 
+void SourceMonitor::updateWaveformSelection()
+{
+    if (!m_waveformWidget) return;
+    if (!m_audioOnly || m_clipDuration <= 0 || (!hasInPoint() && !hasOutPoint())) {
+        m_waveformWidget->clearSelection();
+        return;
+    }
+
+    int64_t inTick = hasInPoint() ? inPoint() : 0;
+    int64_t outTick = hasOutPoint() ? outPoint() : m_clipDuration;
+    if (outTick < inTick) std::swap(inTick, outTick);
+
+    double duration = static_cast<double>(m_clipDuration);
+    double startRatio = std::clamp(static_cast<double>(inTick) / duration, 0.0, 1.0);
+    double endRatio = std::clamp(static_cast<double>(outTick) / duration, 0.0, 1.0);
+    m_waveformWidget->setSelectionRange(startRatio, endRatio);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Display
 // ═════════════════════════════════════════════════════════════════════════════
@@ -445,6 +504,11 @@ QSize SourceMonitor::sizeHint() const
 void SourceMonitor::onScrub(int64_t tick)
 {
     if (!m_hasClip) return;
+
+    // Emit on the first scrub event of a sequence so the timeline can
+    // halt its own playback for mutual exclusion.
+    if (!m_scrubPending)
+        emit scrubbed();
 
     // Coalesce: just record the latest scrub target.  The poll timer
     // (16 ms) will pick it up and do a single seek+decode for the most
@@ -521,6 +585,7 @@ void SourceMonitor::updateFrameDisplay()
         if (m_clipDuration > 0)
             m_waveformWidget->setPlayheadRatio(
                 static_cast<double>(tick) / static_cast<double>(m_clipDuration));
+        updateWaveformSelection();
     }
     else if (m_isSequence && m_seqFrameProvider)
     {
@@ -913,8 +978,17 @@ void SourceMonitor::dropEvent(QDropEvent* event)
                               .toULongLong(&ok);
 
         if (ok && handle != 0) {
-            if (m_pool)
+            if (m_pool) {
                 loadClip(handle, m_pool);
+                // Stills can miss the cache on the very first synchronous
+                // request — same reason loadFromPath schedules a deferred
+                // repaint below. Without this, dropping an image from the
+                // bin shows a blank viewport until the user drops again.
+                QTimer::singleShot(0, this, [this]() {
+                    if (!m_destroying.load(std::memory_order_acquire))
+                        updateFrameDisplay();
+                });
+            }
             else
                 emit dropReceived(handle);
             event->acceptProposedAction();
@@ -980,8 +1054,16 @@ void SourceMonitor::dropEvent(QDropEvent* event)
             return;
         }
 
-        if (m_pool)
+        if (m_pool) {
             loadClip(handle, m_pool);
+            // See note above in the custom-mime branch — stills miss the
+            // first synchronous frame request; a deferred repaint guarantees
+            // they appear on the initial drop.
+            QTimer::singleShot(0, this, [this]() {
+                if (!m_destroying.load(std::memory_order_acquire))
+                    updateFrameDisplay();
+            });
+        }
         else
             emit dropReceived(handle);
 

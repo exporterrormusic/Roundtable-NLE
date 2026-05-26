@@ -39,8 +39,27 @@ static PixelFormat convertPixFmt(AVPixelFormat fmt)
 
 bool VideoDecoder::seek(double timeSeconds, SeekMode mode)
 {
-    std::lock_guard lock(m_mutex);
+    std::unique_lock lock(m_mutex);
     if (!m_isOpen) return false;
+
+    // Still-image fast path (single-frame JPG/PNG/etc.). FFmpeg's image2
+    // demuxer can't rewind: after the lone packet is read, av_read_frame
+    // returns EOF forever. av_seek_frame "succeeds" but doesn't actually
+    // re-emit the packet, and Precise mode then flushes the just-decoded
+    // frame — so the subsequent decodeNext fails. Reopening from scratch
+    // resets the demuxer cursor so decodeNext can read the JPG packet
+    // again. Mirrors what MediaPool::decodeFrame does for its main entry
+    // decoder via close()+open().
+    const bool isStill = (m_info.frameCount <= 1 || m_info.duration <= 0.0);
+    if (isStill && !m_path.empty()) {
+        std::filesystem::path path = m_path;
+        bool forceSoftware = m_forceSoftware;
+        int maxThreads = m_maxThreads;
+        bool sliceOnly = m_sliceOnlyThreading;
+        lock.unlock();   // open() takes the same mutex
+        bool ok = open(path, forceSoftware, maxThreads, sliceOnly);
+        return ok;
+    }
 
     AVStream* vs = m_fmtCtx->streams[m_info.videoStreamIndex];
 

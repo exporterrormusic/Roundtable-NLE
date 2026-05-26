@@ -33,6 +33,19 @@ namespace rt {
 namespace {
 constexpr size_t kGhostDropTrackVideoAbove = SIZE_MAX - 1;
 constexpr size_t kGhostDropTrackAudioBelow = SIZE_MAX - 2;
+
+// Still-image extensions — FFmpeg's image2 demuxer reports JPGs as a tiny
+// 0.04s "video", which would shrink the drag-preview ghost to a single
+// frame.  Mirror the still-image guard the drop-side code uses so the
+// ghost matches the 5-second default the actual drop will create.
+bool isStillImagePathDrag(const QString& path)
+{
+    QString ext = QFileInfo(path).suffix().toLower();
+    static const QStringList kExts = {
+        "png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp", "tga", "dds"
+    };
+    return kExts.contains(ext);
+}
 // Drop of a video+audio file in the audio-below zone: the video lands on
 // its existing target track, but the audio COMPANION needs a brand-new
 // audio track at the bottom. Distinct from kGhostDropTrackAudioBelow which
@@ -345,9 +358,13 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                 bool ok = false;
                 uint64_t handle = handleTokens[i].toULongLong(&ok);
                 int64_t clipDur = 0;
+                QString resolvedPath;
                 if (ok && handle != 0) {
                     const auto* info = m_mediaPool->getInfo(handle);
-                    if (info && info->duration > 0.0)
+                    resolvedPath = QString::fromStdString(
+                        m_mediaPool->getPath(handle).string());
+                    if (info && info->duration > 0.0 &&
+                        !isStillImagePathDrag(resolvedPath))
                         clipDur = static_cast<int64_t>(info->duration * 48000.0);
                     // Use first clip to determine audio/video type
                     if (i == 0 && info)
@@ -356,18 +373,21 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                 // Resolve via file path if handle had no info
                 if (clipDur <= 0 && i < urls.size()) {
                     QString path = urls[i].toLocalFile();
+                    if (resolvedPath.isEmpty()) resolvedPath = path;
                     if (!path.isEmpty()) {
                         auto h = m_mediaPool->open(path.toStdString());
                         if (h != 0) {
                             const auto* info = m_mediaPool->getInfo(h);
-                            if (info && info->duration > 0.0)
+                            if (info && info->duration > 0.0 &&
+                                !isStillImagePathDrag(path))
                                 clipDur = static_cast<int64_t>(info->duration * 48000.0);
                             if (i == 0 && info)
                                 isAudio = (info->videoStreamIndex < 0);
                         }
                     }
                 }
-                // Fallback per clip
+                // Fallback per clip (also covers stills — 5s default matches
+                // what TimelineWorkspacePanelsWiringMediaDrop.cpp creates).
                 if (clipDur <= 0)
                     clipDur = static_cast<int64_t>(5.0 * 48000.0);
                 clipDurations.push_back(clipDur);
@@ -387,7 +407,8 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                     auto h = m_mediaPool->open(path.toStdString());
                     if (h != 0) {
                         const auto* info = m_mediaPool->getInfo(h);
-                        if (info && info->duration > 0.0)
+                        if (info && info->duration > 0.0 &&
+                            !isStillImagePathDrag(path))
                             clipDur = static_cast<int64_t>(info->duration * 48000.0);
                         if (i == 0 && info)
                             isAudio = (info->videoStreamIndex < 0);

@@ -279,6 +279,69 @@ inline void sehCall(Fn&& fn)
     __try { fn(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+/// If `modBase` is the leaf name of a known third-party DLL injected
+/// into our process (driver shim, overlay capture, game-platform
+/// overlay, ...), returns a short human label.  Otherwise nullptr.
+/// Crashes that originate inside these modules are nearly always
+/// caused by the injected component, not by our code — distinguishing
+/// them in crash_log.txt prevents wasting time hunting bugs we
+/// cannot fix.
+///
+/// Stack-safe: no heap, no exceptions, no CRT TLS — safe to call from
+/// VEH / SEH context where the heap may be unusable.
+static const char* identifyThirdPartyHook(const char* modBase) noexcept
+{
+    if (!modBase || !*modBase) return nullptr;
+
+    // ASCII-lowercase the basename into a stack buffer.  Windows file
+    // names are case-insensitive, so "NvOglv64.DLL" must match the
+    // "nvoglv64" needle below.
+    char lower[96] = {};
+    size_t n = 0;
+    for (; modBase[n] && n + 1 < sizeof(lower); ++n) {
+        char c = modBase[n];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        lower[n] = c;
+    }
+    lower[n] = '\0';
+
+    struct Entry { const char* needle; const char* label; };
+    static constexpr Entry kHooks[] = {
+        // NVIDIA drivers + overlay components.  nvoglv64 in a Vulkan
+        // app is almost always the GFE / NVIDIA-App overlay rendering
+        // its UI through OpenGL, not our code.
+        { "nvoglv64",            "NVIDIA OpenGL driver"                         },
+        { "nvspcap",             "NVIDIA GeForce Experience / ShadowPlay overlay" },
+        { "nvapp",               "NVIDIA App overlay"                           },
+        { "nvspbridge",          "NVIDIA Streamer bridge"                       },
+        // AMD
+        { "amdihk",              "AMD Adrenaline overlay"                       },
+        { "amdvlk",              "AMD Vulkan driver"                            },
+        // Capture / streaming hooks
+        { "ow-graphics-hook",    "Overwolf graphics hook"                       },
+        { "graphics-hook",       "OBS Studio game-capture hook"                 },
+        { "obs-hook",            "OBS game-capture hook"                        },
+        { "fraps",               "Fraps capture"                                },
+        { "rtsshooks",           "RivaTuner Statistics Server / MSI Afterburner"},
+        // Store / chat overlays
+        { "discordhook",         "Discord overlay"                              },
+        { "gameoverlayrenderer", "Steam overlay"                                },
+        { "eosovh",              "Epic Online Services overlay"                 },
+        { "uplay_r",             "Ubisoft Connect overlay"                      },
+    };
+
+    for (const auto& e : kHooks) {
+        // Minimal stack-safe substring search (avoids strstr — locale
+        // tables can heap-allocate on first use).
+        for (size_t i = 0; lower[i]; ++i) {
+            size_t k = 0;
+            while (e.needle[k] && lower[i + k] == e.needle[k]) ++k;
+            if (!e.needle[k]) return e.label;
+        }
+    }
+    return nullptr;
+}
+
 // ── Vectored Exception Handler (VEH) for stack overflow ──────────────────
 // SetUnhandledExceptionFilter runs on the faulting thread's remaining stack.
 // When the fault is STACK_OVERFLOW, there is practically NO stack left —
@@ -378,15 +441,30 @@ static LONG WINAPI lastChanceVectoredHandler(EXCEPTION_POINTERS* exInfo)
     else if (code == 0xC0000374)    tag = "SEH(HEAP_CORRUPTION)";
     else if (code == EXCEPTION_ACCESS_VIOLATION) tag = "SEH(ACCESS_VIOLATION)";
 
-    char msg[320];
+    // If the faulting module is a known third-party hook DLL (driver
+    // overlay, capture hook, game-platform overlay) prefix the line
+    // with [HOOK:<label>] so we don't waste time chasing bugs in our
+    // own code that are actually third-party.  See identifyThirdPartyHook.
+    const char* hookLabel = identifyThirdPartyHook(modBase);
+
+    char msg[384];
     uintptr_t addr = reinterpret_cast<uintptr_t>(
         exInfo->ExceptionRecord->ExceptionAddress);
     if (modBase[0]) {
-        snprintf(msg, sizeof(msg),
-                 "%s: CODE=0x%08X ADDR=0x%llX MOD=%s+0x%llX TID=%lu",
-                 tag, code, static_cast<unsigned long long>(addr),
-                 modBase, static_cast<unsigned long long>(modOff),
-                 GetCurrentThreadId());
+        if (hookLabel) {
+            snprintf(msg, sizeof(msg),
+                     "%s [HOOK:%s]: CODE=0x%08X ADDR=0x%llX MOD=%s+0x%llX TID=%lu",
+                     tag, hookLabel, code,
+                     static_cast<unsigned long long>(addr),
+                     modBase, static_cast<unsigned long long>(modOff),
+                     GetCurrentThreadId());
+        } else {
+            snprintf(msg, sizeof(msg),
+                     "%s: CODE=0x%08X ADDR=0x%llX MOD=%s+0x%llX TID=%lu",
+                     tag, code, static_cast<unsigned long long>(addr),
+                     modBase, static_cast<unsigned long long>(modOff),
+                     GetCurrentThreadId());
+        }
     } else {
         snprintf(msg, sizeof(msg),
                  "%s: CODE=0x%08X ADDR=0x%llX TID=%lu",
@@ -423,6 +501,7 @@ LONG WINAPI crashExceptionFilter(EXCEPTION_POINTERS* exInfo)
 
         // Identify the module containing the crash address
         std::string moduleName = getModuleNameFromAddress(info.exceptionAddress);
+        const char* hookLabel = identifyThirdPartyHook(moduleName.c_str());
 
         HMODULE hMod = nullptr;
         GetModuleHandleExA(
@@ -440,6 +519,9 @@ LONG WINAPI crashExceptionFilter(EXCEPTION_POINTERS* exInfo)
                                << reinterpret_cast<uintptr_t>(info.exceptionAddress)
                                << " in " << moduleName
                                << " (offset 0x" << addrOffset << ")";
+                           if (hookLabel)
+                               oss << " [HOOK: " << hookLabel
+                                   << " — third-party, not our code]";
                            return oss.str();
                        }();
     } else {

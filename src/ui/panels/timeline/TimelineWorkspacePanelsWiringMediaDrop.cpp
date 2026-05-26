@@ -304,7 +304,12 @@ void TimelineWorkspace::wireMediaDropSignals()
                     }
                     // Keep the 5-second default for character animation clips so
                     // the animation loops for a full 5 seconds (Premiere Pro behavior).
-                    if (info && info->duration > 0 && !isCharacterClip)
+                    // Still images (JPG/PNG/...) also stay at the 5-second
+                    // default — FFmpeg's image2 demuxer reports JPG as a tiny
+                    // 1-frame "video" (e.g. 0.04s @ 25fps), which would
+                    // otherwise shrink the dropped clip to a single frame.
+                    if (info && info->duration > 0 && !isCharacterClip
+                        && !isStillImagePath(path))
                         dur = secondsToTicks(info->duration);
                     if (info && info->hasAudio && !isAudio)
                         mediaHasAudio = true;

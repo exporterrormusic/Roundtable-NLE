@@ -354,7 +354,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
     // Global JKL transport routing — works regardless of which panel has focus,
     // but skip when a text input widget (QLineEdit, QTextEdit, QSpinBox) has focus,
     // and skip when the AudioSync panel is active (it has its own transport keys).
-    if (event->type() == QEvent::KeyPress && m_playbackController) {
+    const QEvent::Type t = event->type();
+    const bool isKeyPress   = (t == QEvent::KeyPress);
+    const bool isKeyRelease = (t == QEvent::KeyRelease);
+    if ((isKeyPress || isKeyRelease) && m_playbackController) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->modifiers() == Qt::NoModifier) {
             // Don't intercept if focus is on a text input widget
@@ -384,55 +387,46 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
                 }
             }
 
-            // Route to Source Monitor's controller when it is focused
-            SourceMonitor* sm = sourceMonitor();
-            if (sm && focused && (sm->isAncestorOf(focused) || focused == sm)) {
-                PlaybackController* ctrl = sm->controller();
-                if (ctrl) {
-                    switch (keyEvent->key()) {
-                    case Qt::Key_J:
-                        ctrl->shuttleReverse();
-                        return true;
-                    case Qt::Key_K:
-                        ctrl->shuttlePause();
-                        return true;
-                    case Qt::Key_L:
-                        ctrl->shuttleForward();
-                        return true;
-                    case Qt::Key_Space:
-                        ctrl->togglePlayPause();
-                        return true;
-                    default:
-                        break;
-                    }
-                }
+            // J / K / L (and their releases) must reach
+            // TimelineWorkspace::key{Press,Release}Event so the Premiere-style
+            // K+J / K+L slow-scrub hold logic can track K's held state and
+            // stop playback when J/L is released. Handling them directly here
+            // would short-circuit that logic and produce normal fast shuttle.
+            // The workspace's activeController() routes to the Source Monitor
+            // when it owns focus, so we don't need a separate branch for it.
+            // Guard against re-entry: sendEvent walks qApp's event filters
+            // again, so without the flag we'd recurse on every J/K/L/Space.
+            const int kkey = keyEvent->key();
+            if (!m_forwardingTransportKey
+                && (kkey == Qt::Key_J || kkey == Qt::Key_K ||
+                    kkey == Qt::Key_L || kkey == Qt::Key_Space)
+                && m_timelineWorkspace)
+            {
+                m_forwardingTransportKey = true;
+                QApplication::sendEvent(m_timelineWorkspace, keyEvent);
+                m_forwardingTransportKey = false;
+                return true;
+            }
+
+            // Only key-press events drive the tool / maximize shortcuts; let
+            // releases fall through to default propagation.
+            if (!isKeyPress) {
+                return QMainWindow::eventFilter(watched, event);
             }
 
             // FCP7-style tool shortcuts: must work whichever panel has
             // focus (Program Monitor, Timeline, etc.) — Premiere parity.
             // The text-input focus check at the top of this filter already
             // skips these when typing in a QLineEdit / QSpinBox / etc.
-            auto setTool = [this](EditTool t) -> bool {
+            auto setTool = [this](EditTool tool) -> bool {
                 if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel()) {
-                    m_timelineWorkspace->timelinePanel()->setActiveTool(t);
+                    m_timelineWorkspace->timelinePanel()->setActiveTool(tool);
                     return true;
                 }
                 return false;
             };
 
-            switch (keyEvent->key()) {
-            case Qt::Key_J:
-                m_playbackController->shuttleReverse();
-                return true;
-            case Qt::Key_K:
-                m_playbackController->shuttlePause();
-                return true;
-            case Qt::Key_L:
-                m_playbackController->shuttleForward();
-                return true;
-            case Qt::Key_Space:
-                m_playbackController->togglePlayPause();
-                return true;
+            switch (kkey) {
             case Qt::Key_QuoteLeft:
             case Qt::Key_AsciiTilde:
                 if (m_timelineWorkspace)

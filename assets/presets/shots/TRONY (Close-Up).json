@@ -6,9 +6,9 @@
   "backgrounds": [
     {
       "path": "MARIAN_WALL_HD.png",
-      "posX": 1.002405,
-      "posY": 0.619104,
-      "scale": 2.356316,
+      "posX": 1.002000,
+      "posY": 0.619000,
+      "scale": 2.356000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,7 +20,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 2.000000
     }
   ],
   "characters": [

@@ -408,6 +408,108 @@ try
     layers = buildLayersForFrame(tick, outW, outH, scrubMode, playbackNonBlocking,
                                  clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
 
+    // ── Phase 4: boundary block-on-arrival ──────────────────────────────
+    // When layers.empty() while clipsAtTick > 0, the prewarm prefetches
+    // are in flight but the playhead arrived a few ms early.  Briefly
+    // poll the active clips' frames and retry buildLayersForFrame once
+    // if any arrive within ~16 ms (one 60 fps frame budget — better to
+    // lose one frame than show a black flash).  The decoder workers
+    // run on their own threads and don't need m_compositeMutex, so
+    // holding the lock during the short poll is fine.
+    if (!scrubMode && !isNestedRecursion &&
+        layers.empty() && clipsAtTick > 0 && m_mediaPool)
+    {
+        struct PendingFrame {
+            MediaHandle handle;
+            int64_t frame;
+            ResolutionTier tier;
+        };
+        std::vector<PendingFrame> pending;
+        pending.reserve(8);
+
+        const auto wantTier = m_forceFullResolution.load()
+            ? ResolutionTier::Full
+            : playbackTier();
+
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            auto* trk = m_timeline->track(ti);
+            if (!trk || trk->type() != TrackType::Video || trk->isMuted())
+                continue;
+            for (auto* c : trk->clipsAtTime(tick)) {
+                if (!c || !c->isEnabled()) continue;
+                auto* vc = dynamic_cast<VideoClip*>(c);
+                if (!vc) continue;
+                const auto& mp = vc->mediaPath();
+                if (mp.empty()) continue;
+
+                MediaHandle handle = 0;
+                {
+                    auto it = m_openMediaHandles.find(mp);
+                    if (it != m_openMediaHandles.end())
+                        handle = it->second;
+                }
+                if (handle == 0) continue;
+
+                const auto* info = m_mediaPool->getInfo(handle);
+                if (!info) continue;
+
+                double fps = (info->fps > 0.0) ? info->fps
+                           : (vc->sourceFps() > 0.0 ? vc->sourceFps() : 24.0);
+                int64_t srcTick = tick - c->timelineIn() + c->sourceIn();
+                if (srcTick < 0) srcTick = 0;
+                int64_t frameNum =
+                    static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                if (info->frameCount <= 1) {
+                    frameNum = 0;
+                } else if (vc->isVideoCharacter()) {
+                    frameNum = ((frameNum % info->frameCount) + info->frameCount)
+                               % info->frameCount;
+                } else {
+                    frameNum = std::clamp(frameNum, int64_t(0),
+                                          info->frameCount - 1);
+                }
+
+                if (!m_mediaPool->isFrameCached(handle, frameNum, wantTier))
+                    pending.push_back({handle, frameNum, wantTier});
+            }
+        }
+
+        if (!pending.empty()) {
+            using namespace std::chrono;
+            const auto deadline = steady_clock::now() + milliseconds(16);
+            bool anyArrived = false;
+            do {
+                std::this_thread::sleep_for(milliseconds(2));
+                for (const auto& p : pending) {
+                    if (m_mediaPool->isFrameCached(p.handle, p.frame, p.tier)) {
+                        anyArrived = true;
+                        break;
+                    }
+                }
+            } while (!anyArrived && steady_clock::now() < deadline);
+
+            if (anyArrived) {
+                // Reset gpuSpineUsedThisFrame so the retry isn't blocked by
+                // the prior call's side-effect.
+                gpuSpineUsedThisFrame = false;
+                layers = buildLayersForFrame(
+                    tick, outW, outH, scrubMode, playbackNonBlocking,
+                    clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
+                spdlog::info("[BLOCK-ON-ARRIVAL] tick={}: retry yielded "
+                             "{}/{} layers", tick, layers.size(), clipsAtTick);
+            } else {
+                static std::atomic<int> s_missCount{0};
+                int n = ++s_missCount;
+                if (n <= 20 || n % 50 == 0) {
+                    spdlog::warn("[BLOCK-ON-ARRIVAL] tick={}: 16ms deadline "
+                                 "elapsed with no decoded frames ({} pending) "
+                                 "— falling through to empty sentinel (miss #{}) ",
+                                 tick, pending.size(), n);
+                }
+            }
+        }
+    }
+
     // ── Nested-sequence recursion isolation ─────────────────────────────
     // When this call is an inner SequenceClip composite and it cannot
     // fully resolve its own layers this tick, return nullptr instead of

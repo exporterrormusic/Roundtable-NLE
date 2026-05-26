@@ -147,14 +147,21 @@ void AudioSync::onLoadScriptClicked()
             "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
 
         auto* reply = manager->get(request);
+        // Use QPointer guards — manager and reply are parented to the
+        // stack-local QDialog, so they are destroyed if the user closes
+        // the dialog before the HTTP request completes.  Without QPointer,
+        // the lambda below would call deleteLater() on already-freed
+        // objects → heap corruption (0xC0000374).
+        QPointer<QNetworkAccessManager> mgrGuard(manager);
+        QPointer<QNetworkReply> replyGuard(reply);
         connect(reply, &QNetworkReply::finished, &dlg,
-                [reply, manager, nameEdit]() {
-            reply->deleteLater();
-            manager->deleteLater();
-            if (reply->error() != QNetworkReply::NoError) return;
+                [mgrGuard, replyGuard, nameEdit]() {
+            if (replyGuard) replyGuard->deleteLater();
+            if (mgrGuard)   mgrGuard->deleteLater();
+            if (!replyGuard || replyGuard->error() != QNetworkReply::NoError) return;
             if (nameEdit->isModified()) return; // user already typed a name
 
-            std::string html = reply->readAll().toStdString();
+            std::string html = replyGuard->readAll().toStdString();
             std::string title = AudioSync::extractHtmlTitle(html);
             if (title.empty()) return;
 
@@ -255,7 +262,9 @@ void AudioSync::fetchScriptFromUrl(const QString& url)
         int attemptIndex = 0;
         QNetworkAccessManager* manager = nullptr;
     };
-    auto* state = new FetchState;
+    // shared_ptr ensures FetchState outlives any in-flight lambda that
+    // captures it — avoids the raw delete / deleteLater() ordering race.
+    auto state = std::make_shared<FetchState>();
 
     // Capture the original URL for session key purposes
     QString originalUrl = url;
@@ -266,7 +275,6 @@ void AudioSync::fetchScriptFromUrl(const QString& url)
     auto sharedTryNextUrl = std::make_shared<std::function<void()>>();
     *sharedTryNextUrl = [this, state, urlsToTry, sharedTryNextUrl, docId, isGoogleDocs, originalUrl]() {
         if (state->attemptIndex >= static_cast<int>(urlsToTry.size())) {
-            delete state;
             m_loadScriptBtn->setEnabled(true);
             return;
         }
@@ -323,7 +331,6 @@ void AudioSync::fetchScriptFromUrl(const QString& url)
                 m_loadScriptBtn->setEnabled(true);
                 // Pass the original URL as the session key, not the raw content
                 loadScript(content, originalUrl.toStdString());
-                delete state;
                 return;
             }
 
@@ -343,7 +350,6 @@ void AudioSync::fetchScriptFromUrl(const QString& url)
             m_scriptStatus->setText(QString("Error: %1").arg(errMsg));
             m_scriptStatus->setStyleSheet(QString("color: %1;").arg(Theme::hex(Theme::colors().error)));
             m_loadScriptBtn->setEnabled(true);
-            delete state;
         });
     };
 

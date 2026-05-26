@@ -23,6 +23,8 @@
 #include <QLineEdit>
 
 #include "Settings.h"
+#include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 
 #include <spdlog/spdlog.h>
 
@@ -65,7 +67,32 @@ void ProjectBin::importFiles()
     for (const auto& f : files)
         paths.emplace_back(f.toStdString());
 
-    addFiles(paths);
+    // If the user has a bin selected, import into that bin instead of root.
+    // Uses selectedItems() (not currentItem()) to avoid the persistent
+    // currentItem from a previous click causing silent nesting.
+    QTreeWidgetItem* targetBin = nullptr;
+    if (m_listWidget) {
+        const auto& sel = m_listWidget->selectedItems();
+        if (sel.size() == 1 && sel.first()->data(0, Qt::UserRole + 2).toBool())
+            targetBin = sel.first();
+    }
+
+    // Snapshot before/after so Ctrl+Z can undo the import, exactly like
+    // the drag-and-drop path in handleDropEvent().
+    auto before = std::make_shared<BinSnapshot>(captureBinSnapshot());
+
+    if (targetBin)
+        addFilesToBin(paths, targetBin);
+    else
+        addFiles(paths);
+
+    if (m_commandStack) {
+        auto after = std::make_shared<BinSnapshot>(captureBinSnapshot());
+        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+            "Import Media",
+            [this, after]()  { if (m_destroying.load(std::memory_order_acquire)) return; applyBinSnapshot(*after); },
+            [this, before]() { if (m_destroying.load(std::memory_order_acquire)) return; applyBinSnapshot(*before); }));
+    }
 }
 
 void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)

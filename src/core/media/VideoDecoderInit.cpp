@@ -324,6 +324,8 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     close();
     m_maxThreads = maxThreads;
     m_sliceOnlyThreading = sliceOnlyThreading;
+    m_path = path;
+    m_forceSoftware = forceSoftware;
 
     if (!m_frame || !m_hwFrame || !m_packet) {
         m_lastError = "Internal frame/packet allocation failed";
@@ -546,7 +548,30 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         }
     }
 
-    if (hasAlpha)
+    // Still-image codecs (MJPEG/PNG/BMP/etc.) — force software decode.
+    // PNG happens to fall through to software because NVDEC doesn't claim it,
+    // but NVDEC reports MJPEG support on Pascal+ and then mis-decodes the
+    // single image frame from image2-demuxed JPGs (silent decode failure,
+    // empty viewport, "loadThumbnails: failed to decode first frame" in the
+    // log). Software MJPEG is fast and correct for a one-shot still anyway.
+    auto isStillImageCodec = [](AVCodecID id) {
+        switch (id) {
+            case AV_CODEC_ID_MJPEG:
+            case AV_CODEC_ID_PNG:
+            case AV_CODEC_ID_BMP:
+            case AV_CODEC_ID_GIF:
+            case AV_CODEC_ID_TIFF:
+            case AV_CODEC_ID_WEBP:
+            case AV_CODEC_ID_TARGA:
+            case AV_CODEC_ID_DDS:
+                return true;
+            default:
+                return false;
+        }
+    };
+    const bool stillImageCodec = isStillImageCodec(codecpar->codec_id);
+
+    if (hasAlpha || stillImageCodec)
     {
         spdlog::debug("VideoDecoder: '{}' has alpha channel — forcing software decode "
                       "(NVDEC drops alpha)", path.filename().string());

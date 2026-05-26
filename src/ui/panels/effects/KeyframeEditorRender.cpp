@@ -23,6 +23,8 @@
 #include <QAction>
 #include <QApplication>
 
+#include <cmath>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -370,12 +372,16 @@ void KeyframeEditor::drawKeyframeHandles(QPainter& p, int curveIdx)
         diamond.lineTo(px.x() - kKeyframeRadius, px.y());
         diamond.closeSubpath();
 
+        // Invert per Premiere convention: unselected = neutral grey so the
+        // graph doesn't look "always live"; selected = the curve's color so
+        // you can see which channel(s) you're about to move.
         if (selected) {
-            p.fillPath(diamond, Theme::colors().textBright);
-            p.setPen(QPen(ce.color, 2));
-        } else {
             p.fillPath(diamond, ce.color);
             p.setPen(QPen(ce.color.darker(150), 1));
+        } else {
+            const QColor grey = Theme::colors().textTertiary;
+            p.fillPath(diamond, grey);
+            p.setPen(QPen(grey.darker(150), 1));
         }
         p.drawPath(diamond);
     }
@@ -676,6 +682,34 @@ void KeyframeEditor::mouseMoveEvent(QMouseEvent* event)
         auto oldTime = kf.time;
         auto newTime = static_cast<int64_t>(gp.x());
         auto newVal  = static_cast<float>(gp.y());
+
+        // Premiere-style magnetism: snap newTime to a nearby keyframe on any
+        // OTHER visible curve when the drag pixel falls within ~6 pixels of
+        // it. Only snap to other curves so the user can still freely place
+        // a keyframe near its own siblings; only check visible curves so
+        // hidden tracks don't tug. Hold Shift to disable snapping.
+        const bool snapEnabled = !(event->modifiers() & Qt::ShiftModifier);
+        if (snapEnabled) {
+            constexpr double kSnapPx = 6.0;
+            const double dragPx = pos.x();
+            int64_t bestTime = newTime;
+            double  bestPxDist = kSnapPx;
+            for (int ci = 0; ci < static_cast<int>(m_curves.size()); ++ci) {
+                if (ci == m_dragCurveIdx) continue;
+                const auto& ce = m_curves[ci];
+                if (!ce.visible || !ce.track) continue;
+                for (size_t ki = 0; ki < ce.track->keyframeCount(); ++ki) {
+                    int64_t t = ce.track->keyframe(ki).time;
+                    double candidatePx = graphToPixel(static_cast<double>(t), 0.0).x();
+                    double pxDist = std::abs(candidatePx - dragPx);
+                    if (pxDist < bestPxDist) {
+                        bestPxDist = pxDist;
+                        bestTime = t;
+                    }
+                }
+            }
+            newTime = bestTime;
+        }
 
         if (m_commandStack) {
             m_commandStack->execute(

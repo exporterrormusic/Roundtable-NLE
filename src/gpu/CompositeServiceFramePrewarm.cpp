@@ -200,8 +200,16 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                     frameNum = std::clamp(frameNum, int64_t(0), mediaInfo->frameCount - 1);
                 }
 
-                const auto warmTier = videoClip->isVideoCharacter()
-                    ? ResolutionTier::Half : previewTier;
+                // Match the live composite path (CompositeServiceLayerBuild.cpp
+                // charVideoTier / spineVideoTier): forceFullResolution wins,
+                // otherwise playbackTier().  The scrub-mode override in the
+                // live path doesn't apply here — prewarm runs for playback,
+                // not scrub.  Previously characters were pinned to Half here,
+                // which produced a cache miss whenever the user selected Full
+                // in the playback-resolution dropdown.
+                const auto warmTier = m_forceFullResolution.load()
+                    ? ResolutionTier::Full
+                    : previewTier;
                 (void)m_mediaPool->tryGetFrame(handle, frameNum, warmTier);
 
                 if (mediaInfo->frameCount > 1) {
@@ -368,6 +376,16 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
     }
 
     s_inPrewarm = false;
+
+    // Also scan the upcoming-shots lookahead window so play-start near a
+    // cut prewarms the next clip too — without this, the first
+    // compositeFrame() call after play-start triggers the lookahead, but
+    // if the cut lies within the decoder's open + first-frame-decode
+    // latency the boundary still hits the empty-sentinel.
+    // prewarmUpcomingShots handles its own jump detection, so calling it
+    // here when m_lastLookaheadTick is unset (or far away) bypasses the
+    // 100 ms throttle and scans immediately.
+    prewarmUpcomingShots(tick);
 }
 
 
@@ -390,9 +408,21 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
 
     using namespace std::chrono;
     auto now = steady_clock::now();
-    if (now - m_lastLookaheadScan < milliseconds(100))
+    // Bypass the 100 ms throttle when the playhead has jumped.  Continuous
+    // playback advances the tick by ~100 ms × playbackSpeed within the
+    // throttle window; anything substantially larger is a seek / scrubber
+    // release / JKL direction change and must re-scan the lookahead window
+    // immediately — otherwise a seek that lands within 2 s of a cut loses
+    // upcoming-shot coverage and the cut shows the empty-sentinel.
+    constexpr int64_t kJumpDetectTicks =
+        static_cast<int64_t>(0.25 * kTicksPerSecond);
+    const bool tickJumped =
+        m_lastLookaheadTick != INT64_MIN &&
+        std::abs(tick - m_lastLookaheadTick) > kJumpDetectTicks;
+    if (!tickJumped && now - m_lastLookaheadScan < milliseconds(100))
         return;
     m_lastLookaheadScan = now;
+    m_lastLookaheadTick = tick;
 
     constexpr double LOOKAHEAD_SECONDS = 2.0;
     const int64_t lookaheadTicks = static_cast<int64_t>(LOOKAHEAD_SECONDS * kTicksPerSecond);
@@ -434,12 +464,47 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             }
 
             if (!m_mediaPool->isPathOpen(mp)) {
-                m_mediaPool->openAsync(mp);
-                ++openedThisScan;
-                // Re-queue: next scan (~100ms later) will schedule prefetch
-                // once the async open completes.
-                m_prewarmedClipIds.erase(clip->id());
-                continue;
+                // Imminent-shot escape hatch: if the clip starts within
+                // kImminentTicks the next scan (~100 ms later) will fire
+                // AFTER the playhead crosses the cut, which is exactly
+                // when we end up returning the empty-sentinel.  Force a
+                // synchronous open instead — it can block this thread for
+                // 30-100 ms, but that delay is on the prewarm thread, not
+                // the FrameProducer, and the alternative is a visible
+                // black frame at the cut.
+                constexpr int64_t kImminentTicks =
+                    static_cast<int64_t>(0.5 * kTicksPerSecond);
+                const int64_t leadTicks = clipIn - tick;
+                if (leadTicks <= kImminentTicks) {
+                    uint64_t syncHandle = 0;
+                    {
+                        std::lock_guard hl(m_openMediaHandlesMutex);
+                        syncHandle = m_mediaPool->open(mp);
+                        if (syncHandle != 0)
+                            m_openMediaHandles[mp] = syncHandle;
+                    }
+                    ++openedThisScan;
+                    spdlog::info("[LOOKAHEAD] imminent shot ({:.0f} ms ahead) "
+                                 "forced sync-open: '{}' handle={}",
+                                 static_cast<double>(leadTicks)
+                                     / static_cast<double>(kTicksPerSecond)
+                                     * 1000.0,
+                                 std::filesystem::path(mp).filename().string(),
+                                 syncHandle);
+                    if (syncHandle == 0) {
+                        // Open failed; let the next scan re-try.
+                        m_prewarmedClipIds.erase(clip->id());
+                        continue;
+                    }
+                    // Fall through to the prefetch scheduling below.
+                } else {
+                    m_mediaPool->openAsync(mp);
+                    ++openedThisScan;
+                    // Re-queue: next scan (~100ms later) will schedule prefetch
+                    // once the async open completes.
+                    m_prewarmedClipIds.erase(clip->id());
+                    continue;
+                }
             }
 
             uint64_t handle = 0;
@@ -474,10 +539,16 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
                 srcFrame = 0;
             }
 
-            // Upcoming-shot prewarm uses the current playback tier.
-            // Characters stay Half (they composite tiny regardless).
-            const auto warmTier = isCharacter ? ResolutionTier::Half
-                                              : playbackTier();
+            // Match the live composite path (CompositeServiceLayerBuild.cpp
+            // charVideoTier / spineVideoTier): forceFullResolution wins,
+            // otherwise playbackTier().  Skipping the scrub-mode override
+            // because lookahead prewarm only fires during playback.  Pinning
+            // characters to Half here used to miss the cache whenever the
+            // user selected Full in the playback-resolution dropdown — the
+            // live path would request Full and find nothing prewarmed.
+            const auto warmTier = m_forceFullResolution.load()
+                ? ResolutionTier::Full
+                : playbackTier();
 
             m_mediaPool->schedulePrefetch(handle, srcFrame,
                                           /*count=*/30, /*urgent=*/true, warmTier);

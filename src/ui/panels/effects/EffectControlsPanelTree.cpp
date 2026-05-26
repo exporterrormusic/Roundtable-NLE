@@ -324,8 +324,14 @@ void EffectControlsPanel::buildPropertyTree()
         m_motionSection = makeSectionHeader("Motion");
         m_propLayout->addWidget(m_motionSection);
 
-        // Position — bound to the active source (clip OR selected layer)
+        // Position — bound to the active source (clip OR selected layer).
+        // Position is a compound 2D property: X and Y are independent
+        // KeyframeTracks but the user expects a single "Position keyframe"
+        // to capture both. Binding effPosY() as an extra track on the row
+        // makes the +keyframe button, delete, prev/next, and diamond drag
+        // act on both tracks together.
         m_posRow = makeRow("Position", effPosX());
+        m_posRow->addExtraTrack(effPosY());
         m_posXSpin = createScrubby(-10000, 10000, 1.0, 1);
         m_posYSpin = createScrubby(-10000, 10000, 1.0, 1);
         m_posRow->addValuePair(m_posXSpin, m_posYSpin);
@@ -371,6 +377,7 @@ void EffectControlsPanel::buildPropertyTree()
         // track. The keyframe nav buttons / stopwatch operate on anchorX
         // as the row's primary track (Y follows via the same write path).
         m_anchorRow = makeRow("Anchor Point", effAnchorX());
+        m_anchorRow->addExtraTrack(effAnchorY());
         m_anchorXSpin = createScrubby(-10000, 10000, 1.0, 1);
         m_anchorYSpin = createScrubby(-10000, 10000, 1.0, 1);
         m_anchorRow->addValuePair(m_anchorXSpin, m_anchorYSpin);

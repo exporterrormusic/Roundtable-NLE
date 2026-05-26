@@ -311,11 +311,43 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
 
                 // Clicking within the edge-grab zone of a clip
                 // immediately selects the edit point and primes a
-                // trim/transition operation — no prior selection
-                // required.  This also lets Ctrl+T add a transition
-                // with a single edge click + shortcut.
+                // trim/transition operation, but ONLY if that clip
+                // (or its touching neighbour at a seam) is already
+                // selected.  The first click on an unselected
+                // isolated clip always selects the whole clip,
+                // even near its edge — Premiere-style.
+                // This also lets Ctrl+T add a transition with a
+                // second edge click + shortcut.
                 const bool shiftClick = event->modifiers() & Qt::ShiftModifier;
-                if ((nearLeft || nearRight) && !shiftClick)
+                bool edgeModeOk = false;
+                if (!shiftClick && (nearLeft || nearRight)) {
+                    // The hit clip itself is already selected — edge mode.
+                    if (m_selection.isSelected(*hitRef)) {
+                        edgeModeOk = true;
+                    } else {
+                        // At a seam, hitTestClip always returns the RIGHT
+                        // clip.  If the LEFT clip is selected, the user
+                        // clicked the seam expecting to trim — enter edge
+                        // mode so we keep the selection instead of
+                        // deselecting the left clip and selecting the
+                        // right one (which reads as "a different corner").
+                        for (size_t ci = 0; ci < hitTrack->clipCount(); ++ci) {
+                            const Clip* n = hitTrack->clip(ci);
+                            if (!n || n->id() == hitClip->id()) continue;
+                            if (nearLeft && n->timelineOut() == hitClip->timelineIn()
+                                && m_selection.isSelected(ClipRef{hitRef->trackIndex, n->id()})) {
+                                edgeModeOk = true;
+                                break;
+                            }
+                            if (nearRight && n->timelineIn() == hitClip->timelineOut()
+                                && m_selection.isSelected(ClipRef{hitRef->trackIndex, n->id()})) {
+                                edgeModeOk = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (edgeModeOk)
                     {
                         // Look for a touching neighbour on the relevant side.
                         const Clip* leftNeighbour  = nullptr;
@@ -473,9 +505,35 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
 
                         m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
                         std::vector<uint64_t> excludeIds;
-                        excludeIds.reserve(m_dragSelectedClips.size());
+                        excludeIds.reserve(m_dragSelectedClips.size() + 2);
                         for (const auto& dcs : m_dragSelectedClips)
                             excludeIds.push_back(dcs.ref.clipId);
+
+                        // Also exclude clip edges that are directly
+                        // adjacent on the same track.  After a split
+                        // the two halves share the same edge position;
+                        // without this exclusion the user must fight
+                        // snapping to the other half just to make a
+                        // tiny frame adjustment.
+                        for (const auto& dcs : m_dragSelectedClips) {
+                            Track* adjTrack = m_timeline->track(dcs.originalTrack);
+                            if (!adjTrack) continue;
+                            size_t idx = adjTrack->findClipIndexById(dcs.ref.clipId);
+                            if (idx >= adjTrack->clipCount()) continue;
+                            // Clip immediately before the dragged clip
+                            if (idx > 0) {
+                                const Clip* prevClip = adjTrack->clip(idx - 1);
+                                if (prevClip && prevClip->timelineOut() == dcs.originalIn)
+                                    excludeIds.push_back(prevClip->id());
+                            }
+                            // Clip immediately after the dragged clip
+                            if (idx + 1 < adjTrack->clipCount()) {
+                                const Clip* nextClip = adjTrack->clip(idx + 1);
+                                if (nextClip && nextClip->timelineIn() == dcs.originalIn + dcs.originalDuration)
+                                    excludeIds.push_back(nextClip->id());
+                            }
+                        }
+
                         m_snapEngine.buildTargets(*m_timeline, m_playheadTick,
                                                   0.0, excludeIds);
 
@@ -767,12 +825,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                     if (leftSrcDur > 0)
                         maxEP = std::min(maxEP, m_rollLeftOrigIn + leftSrcDur - m_rollLeftOrigSrcIn);
 
-                    // Both clips must retain at least kMinClipDuration after
-                    // the roll, otherwise the commit-clamp in rollingEdit()
-                    // triggers a "fully consumed" path that removes the short
-                    // clip and extends the other — the seam snaps back.
-                    minEP = std::max(minEP, m_rollLeftOrigIn + kMinClipDuration);
-                    maxEP = std::min(maxEP, m_rollRightOrigIn + m_rollRightOrigDur - kMinClipDuration);
+                    // Allow the seam to travel all the way to the far edges
+                    // of the adjacent clips — rollingEdit() handles full
+                    // consumption of one clip by removing it and extending
+                    // the other.  No kMinClipDuration floor here so the
+                    // user can completely eliminate a clip they roll into.
 
                     // Degenerate (no valid roll range) shouldn't crash —
                     // collapse to the original seam.

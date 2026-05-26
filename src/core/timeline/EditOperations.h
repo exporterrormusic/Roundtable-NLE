@@ -166,10 +166,11 @@ public:
     /// Default snap threshold in pixels.
     static constexpr double kDefaultThresholdPx = 10.0;
 
-    /// Release threshold = attract threshold * this. Premiere-style sticky
-    /// snap: once locked onto a seam, the user must drag past a wider zone
-    /// to break free. Prevents twitchy snap-on/snap-off near targets.
-    static constexpr double kReleaseMultiplier = 1.7;
+    /// Release threshold = attract threshold * this. Sticky snap: once
+    /// locked onto a seam, the user must drag past a wider zone to break
+    /// free.  Kept modest (1.3) so adjacent-clip trimming doesn't feel
+    /// "stuck" when making fine frame adjustments.
+    static constexpr double kReleaseMultiplier = 1.3;
 
     /// Convert pixel threshold to a tick threshold. Public so callers
     /// driving multi-clip snap can probe edges via findNearestAttract.

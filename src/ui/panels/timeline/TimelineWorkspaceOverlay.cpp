@@ -32,6 +32,8 @@
 #include "spine/ShotPreset.h"
 #endif
 
+#include "effects/Blur.h"
+
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
@@ -373,6 +375,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             vc->opacity().setDefaultValue(bg->opacity);
             if (bg->cropLeft > 0 || bg->cropRight > 0 || bg->cropTop > 0 || bg->cropBottom > 0)
                 vc->setCrop(bg->cropLeft, bg->cropRight, bg->cropTop, bg->cropBottom);
+            if (bg->blur > 0.0f) {
+                auto fx = std::make_unique<Blur>();
+                fx->param(Blur::Radius).track.setDefaultValue(bg->blur);
+                vc->effects().addEffect(std::move(fx));
+            }
             newClips->push_back({targetTrack, std::move(vc)});
         } else { // Character
             auto* ch = preset.character(ref.index);
@@ -410,6 +417,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 vc->opacity().setDefaultValue(ch->opacity);
                 if (ch->cropLeft > 0 || ch->cropRight > 0 || ch->cropTop > 0 || ch->cropBottom > 0)
                     vc->setCrop(ch->cropLeft, ch->cropRight, ch->cropTop, ch->cropBottom);
+                if (ch->blur > 0.0f) {
+                    auto fx = std::make_unique<Blur>();
+                    fx->param(Blur::Radius).track.setDefaultValue(ch->blur);
+                    vc->effects().addEffect(std::move(fx));
+                }
                 newClips->push_back({targetTrack, std::move(vc)});
             } else {
                 auto sc = std::make_unique<SpineClip>();
@@ -441,6 +453,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 sc->opacity().setDefaultValue(ch->opacity);
                 if (ch->cropLeft > 0 || ch->cropRight > 0 || ch->cropTop > 0 || ch->cropBottom > 0)
                     sc->setCrop(ch->cropLeft, ch->cropRight, ch->cropTop, ch->cropBottom);
+                if (ch->blur > 0.0f) {
+                    auto fx = std::make_unique<Blur>();
+                    fx->param(Blur::Radius).track.setDefaultValue(ch->blur);
+                    sc->effects().addEffect(std::move(fx));
+                }
                 newClips->push_back({targetTrack, std::move(sc)});
             }
         }

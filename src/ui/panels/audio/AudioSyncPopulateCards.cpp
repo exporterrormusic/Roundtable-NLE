@@ -199,6 +199,7 @@ void AudioSync::populateCards()
                 while (auto* item = oldLayout->takeAt(0)) {
                     if (auto* w = item->widget()) {
                         w->setParent(nullptr);
+                        w->disconnect();  // prevent queued signals from firing on freed widget
                         delete w;
                     }
                     delete item;

@@ -12,6 +12,7 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "panels/monitors/SourceMonitor.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "timeline/EditOperations.h"
@@ -66,41 +67,56 @@ void TimelineWorkspace::registerKeyboardShortcuts()
     // (Premiere Pro behaviour: pressing Left/Right/Up/Down to navigate halts
     // playback rather than letting it run away from where the user is
     // looking).
-    auto stopPlaybackIfRunning = [this]() {
-        if (m_playbackController && m_playbackController->isPlaying())
-            m_playbackController->pause();
+    // Mirror keyPressEvent's routing: when the Source Monitor owns focus,
+    // arrow keys drive its controller; otherwise the timeline controller.
+    // Without this, Left/Right in the Source Monitor did nothing because
+    // the global shortcut always poked the timeline playhead.
+    // NOTE: isAncestorOf(self) returns false in Qt, so the focus check
+    // must also handle the case where focus is on the SourceMonitor widget
+    // itself (its eventFilter does setFocus() on the monitor on click).
+    auto activeArrowController = [this]() -> PlaybackController* {
+        QWidget* fw = QApplication::focusWidget();
+        if (m_sourceMonitor && m_sourceMonitor->controller() &&
+            m_sourceMonitor->hasClip() && fw &&
+            (fw == m_sourceMonitor || m_sourceMonitor->isAncestorOf(fw)))
+            return m_sourceMonitor->controller();
+        return m_playbackController;
     };
-    addGlobalShortcut(Qt::Key_Left, [this, stopPlaybackIfRunning]() {
+    auto stopPlaybackIfRunning = [activeArrowController]() {
+        if (auto* ctl = activeArrowController(); ctl && ctl->isPlaying())
+            ctl->pause();
+    };
+    addGlobalShortcut(Qt::Key_Left, [activeArrowController, stopPlaybackIfRunning]() {
         auto* fw = QApplication::focusWidget();
         if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
             qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
             return;
         stopPlaybackIfRunning();
-        if (m_playbackController) m_playbackController->stepBackward();
+        if (auto* ctl = activeArrowController()) ctl->stepBackward();
     });
-    addGlobalShortcut(Qt::Key_Right, [this, stopPlaybackIfRunning]() {
+    addGlobalShortcut(Qt::Key_Right, [activeArrowController, stopPlaybackIfRunning]() {
         auto* fw = QApplication::focusWidget();
         if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
             qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
             return;
         stopPlaybackIfRunning();
-        if (m_playbackController) m_playbackController->stepForward();
+        if (auto* ctl = activeArrowController()) ctl->stepForward();
     });
-    addGlobalShortcut(Qt::Key_Up, [this, stopPlaybackIfRunning]() {
+    addGlobalShortcut(Qt::Key_Up, [activeArrowController, stopPlaybackIfRunning]() {
         auto* fw = QApplication::focusWidget();
         if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
             qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
             return;
         stopPlaybackIfRunning();
-        if (m_playbackController) m_playbackController->goToPrevEditPoint();
+        if (auto* ctl = activeArrowController()) ctl->goToPrevEditPoint();
     });
-    addGlobalShortcut(Qt::Key_Down, [this, stopPlaybackIfRunning]() {
+    addGlobalShortcut(Qt::Key_Down, [activeArrowController, stopPlaybackIfRunning]() {
         auto* fw = QApplication::focusWidget();
         if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
             qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
             return;
         stopPlaybackIfRunning();
-        if (m_playbackController) m_playbackController->goToNextEditPoint();
+        if (auto* ctl = activeArrowController()) ctl->goToNextEditPoint();
     });
 
     // Shift+I / Shift+O: go to in/out point
@@ -169,6 +185,8 @@ void TimelineWorkspace::registerKeyboardShortcuts()
         // Effect Controls has a copied effect → paste it onto the current
         // clip. Does NOT require EC focus — the user may have clicked a
         // different clip on the timeline after copying the effect.
+        // (Ctrl+C on the timeline clears the effect clipboard, so this
+        //  only fires when the last copy was an effect.)
         if (m_effectControlsPanel && m_effectControlsPanel->hasCopiedEffect()
             && m_effectControlsPanel->clip()) {
             m_effectControlsPanel->pasteEffect();
@@ -217,12 +235,14 @@ void TimelineWorkspace::registerKeyboardShortcuts()
         // footage, or color matte) to the bin clipboard.
         if (m_projectBin && m_projectBin->isAncestorOf(fw)) {
             m_projectBin->copySelection();
+            if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
             return;
         }
         bool egFocused = m_GraphicsEditorPanel && m_GraphicsEditorPanel->isAncestorOf(fw);
         bool pmFocused = m_programMonitor && m_programMonitor->isAncestorOf(fw);
         if (m_GraphicsEditorPanel && (egFocused || (pmFocused && m_selectedGraphicLayerIdx >= 0))) {
             m_GraphicsEditorPanel->copySelectedLayer();
+            if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
             return;
         }
         // Effect Controls focused with a selected effect → copy the effect
@@ -232,6 +252,9 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             return;
         }
         if (!m_timeline || !m_timelinePanel) return;
+        // Copying a clip on the timeline → clear any stale effect
+        // clipboard so Ctrl+V pastes the clip, not the effect.
+        if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
         EditOperations::copySelection(*m_timeline,
             m_timelinePanel->selection(),
             m_timelinePanel->mutableClipboard());

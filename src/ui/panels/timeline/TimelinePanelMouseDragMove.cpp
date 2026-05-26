@@ -12,6 +12,7 @@
 #include "timeline/Clip.h"
 #include "timeline/EditOperations.h"
 #include "timeline/Transition.h"
+#include "command/CommandStack.h"
 #include "command/commands/ClipCommands.h"
 
 #include <QApplication>
@@ -800,9 +801,16 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             if (std::abs(clickPx - clipLeft) < kEdgeThreshold) {
                 m_dragMode = DragMode::ClipTrimHead;
                 m_lastClickedEdge = { m_dragClipRef, ClipEdge::Head, true };
+                // Wrap trim-move commands into a single undo step so one
+                // drag = one Ctrl+Z (edge-click path in mousePressEvent
+                // does this too; PendingClipClick→trim needs its own).
+                if (m_commandStack)
+                    m_commandStack->beginMacro("Trim clip head");
             } else if (std::abs(clickPx - clipRight) < kEdgeThreshold) {
                 m_dragMode = DragMode::ClipTrimTail;
                 m_lastClickedEdge = { m_dragClipRef, ClipEdge::Tail, true };
+                if (m_commandStack)
+                    m_commandStack->beginMacro("Trim clip tail");
             } else {
                 m_dragMode = DragMode::ClipMove;
                 m_lastClickedEdge.valid = false;

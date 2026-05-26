@@ -148,6 +148,13 @@ void TimelineWorkspace::wirePlaybackSignals()
                 auto tc = m_timelinePanel->layoutEngine().formatTimecode(tick);
                 m_timelineTimecode->setText(QString::fromStdString(tc));
             }
+            // Re-evaluate the transform overlay at the new playhead so any
+            // animated scale/position/rotation keyframes update the program
+            // monitor box in real time. Without this, the box stayed at the
+            // value sampled at selection time and only refreshed when the
+            // user deselected + reselected the clip.
+            if (m_selectedClip)
+                updateTransformOverlay();
         }
         // Keyboard transport (arrow keys, Home/End, edit-point nav) and any
         // other controller-driven seek while paused must re-composite the

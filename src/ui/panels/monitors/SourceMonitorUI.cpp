@@ -68,6 +68,17 @@ SourceMonitor::SourceMonitor(QWidget* parent)
     // Wire mini-timeline scrub events
     connect(m_miniTimeline, &MiniTimeline::scrubbed, this, &SourceMonitor::onScrub);
 
+    // Any controller-driven seek (e.g. arrow-key step from the global
+    // shortcut, programmatic seekTo, etc.) needs to repaint the viewport —
+    // the source monitor doesn't have a continuously-running poll timer
+    // while paused, so without this hook arrow Left/Right looked like a
+    // no-op even though the controller tick had moved.
+    m_controller->onPositionChanged = [this](int64_t) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_controller && m_controller->isPlaying()) return;  // poll timer covers it
+        updateFrameDisplay();
+    };
+
     // Manage poll timer and audio from controller state changes
     // (covers both button clicks and keyboard shortcuts)
     m_controller->onStateChanged = [this](PlayState state) {
@@ -619,6 +630,13 @@ void SourceMonitor::setupUI()
     connect(m_btnGoEnd, &QPushButton::clicked, this, [this]() {
         if (m_hasClip) { m_controller->goToEnd(); updateFrameDisplay(); }
     });
+
+    // Install event filter on transport bar and its children so that
+    // clicking playback buttons (which have Qt::NoFocus) or the bar
+    // background still grabs keyboard focus for JKL/Space shortcuts.
+    transportBar->installEventFilter(this);
+    for (auto* child : transportBar->findChildren<QWidget*>())
+        child->installEventFilter(this);
 
     mainLayout->addWidget(transportBar);
 }

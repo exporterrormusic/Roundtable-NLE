@@ -204,4 +204,21 @@ void TimelinePanel::keyPressEvent(QKeyEvent* event)
     QWidget::keyPressEvent(event);
 }
 
+// Forward releases to the workspace too. Required for Premiere-style K+J/K+L
+// slow scrub: releasing J or L (while K is still held) must reach
+// TimelineWorkspace::keyReleaseEvent to stop playback. Default propagation
+// gets eaten by an intermediate container widget in our dock layout.
+void TimelinePanel::keyReleaseEvent(QKeyEvent* event)
+{
+    QWidget* w = parentWidget();
+    while (w && !qobject_cast<TimelineWorkspace*>(w))
+        w = w->parentWidget();
+    if (w) {
+        QApplication::sendEvent(w, event);
+        if (event->isAccepted())
+            return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
 } // namespace rt
