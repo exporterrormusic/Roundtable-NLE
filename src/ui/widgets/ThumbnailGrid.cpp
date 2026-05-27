@@ -326,13 +326,49 @@ void ThumbnailGrid::setThumbnailGenerator(ThumbnailGenerator* gen) noexcept
     m_generator = gen;
 }
 
+void ThumbnailGrid::refreshItem(const std::filesystem::path& filePath)
+{
+    if (!m_generator) return;
+
+    // Clear the cached thumbnail for this item so it re-fetches.
+    for (auto& item : m_items) {
+        if (item.filePath == filePath) {
+            item.thumbnail.reset();
+            break;
+        }
+    }
+
+    // Evict the generator's in-memory cache for this path so the next
+    // requestThumbnail generates from the new file content on disk.
+    m_generator->evictPath(filePath);
+
+    // Queue a fresh thumbnail generation.
+    m_generator->requestThumbnail(
+        filePath,
+        [this](const std::filesystem::path& path, std::shared_ptr<Thumbnail> thumb) {
+            QMetaObject::invokeMethod(this,
+                [this, path, thumb]() { onThumbnailReady(path, thumb); },
+                Qt::QueuedConnection);
+        },
+        static_cast<uint32_t>(cellWidth()));
+}
+
 void ThumbnailGrid::loadVisibleThumbnails()
 {
     if (!m_generator) return;
 
+    auto isAdjustmentPath = [](const std::filesystem::path& path) {
+        for (const auto& part : path) {
+            if (part.string() == "<adjustments>")
+                return true;
+        }
+        return false;
+    };
+
     for (auto& item : m_items)
     {
-        if (item.visible && !item.thumbnail && !item.isFolder)
+        if (item.visible && !item.thumbnail && !item.isFolder &&
+            !isAdjustmentPath(item.filePath))
         {
             m_generator->requestThumbnail(
                 item.filePath,
@@ -680,9 +716,22 @@ void ThumbnailGrid::mouseMoveEvent(QMouseEvent* event)
 
         auto* drag = new QDrag(this);
         auto* mime = new QMimeData;
-        mime->setUrls({QUrl::fromLocalFile(QString::fromStdString(item.filePath.string()))});
-        mime->setData("application/x-roundtable-media",
-                      QByteArray::number(static_cast<qulonglong>(item.mediaHandle)));
+        // Adjustment-layer bin item — synthetic sentinel path, no media handle.
+        // Detected by the "<adjustments>" path component (same scheme as the
+        // list-view tree). Emits its own MIME type so the timeline knows to
+        // create an AdjustmentClip.
+        bool isAdjustment = false;
+        for (const auto& part : item.filePath) {
+            if (part.string() == "<adjustments>") { isAdjustment = true; break; }
+        }
+        if (isAdjustment) {
+            mime->setData("application/x-roundtable-adjustment",
+                          item.displayName.toUtf8());
+        } else {
+            mime->setUrls({QUrl::fromLocalFile(QString::fromStdString(item.filePath.string()))});
+            mime->setData("application/x-roundtable-media",
+                          QByteArray::number(static_cast<qulonglong>(item.mediaHandle)));
+        }
         drag->setMimeData(mime);
         drag->exec(Qt::CopyAction);
         return;

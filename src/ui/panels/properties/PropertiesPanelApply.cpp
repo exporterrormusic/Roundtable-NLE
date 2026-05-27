@@ -503,7 +503,7 @@ void PropertiesPanel::populateFromClip()
     // Identity
     m_labelEdit->setText(QString::fromStdString(m_clip->label()));
     m_enabledCheck->setChecked(m_clip->isEnabled());
-    m_speedSpin->setValue(m_clip->speed());
+    m_speedSpin->setValue(m_clip->speed() * 100.0);
 
     // Transform (using keyframe at t=0)
     // UI shows percentage for scale (100 = 1.0x) and opacity (100 = 1.0)
@@ -768,17 +768,37 @@ void PropertiesPanel::applyEnabled()
 void PropertiesPanel::applySpeed()
 {
     if (m_updating || !m_clip) return;
-    double newVal = m_speedSpin->value();
+    double newPct = m_speedSpin->value();
+    double newVal = newPct / 100.0;
+    if (newVal <= 0.0) newVal = 0.01;
     if (newVal == m_clip->speed()) return;
     double oldVal = m_clip->speed();
+    int64_t oldDur = m_clip->duration();
+    int64_t newDur = static_cast<int64_t>(std::llround(oldDur * oldVal / newVal));
+    if (newDur < kMinClipDuration) newDur = kMinClipDuration;
+
+    // Clamp to next clip's start so we don't overlap
+    if (m_track) {
+        size_t ci = m_track->findClipIndexById(m_clip->id());
+        for (size_t i = ci + 1; i < m_track->clipCount(); ++i) {
+            const Clip* next = m_track->clip(i);
+            if (next && next->timelineIn() > m_clip->timelineIn()) {
+                int64_t maxDur = next->timelineIn() - m_clip->timelineIn();
+                if (newDur > maxDur && maxDur >= kMinClipDuration) newDur = maxDur;
+                break;
+            }
+        }
+    }
+
     auto* clip = m_clip;
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Change speed",
-            [clip, newVal, this]() { clip->setSpeed(newVal); populateFromClip(); emit propertyChanged(); },
-            [clip, oldVal, this]() { clip->setSpeed(oldVal); populateFromClip(); emit propertyChanged(); }));
+            [clip, newVal, newDur, this]() { clip->setSpeed(newVal); clip->setDuration(newDur); populateFromClip(); emit propertyChanged(); },
+            [clip, oldVal, oldDur, this]() { clip->setSpeed(oldVal); clip->setDuration(oldDur); populateFromClip(); emit propertyChanged(); }));
     } else {
         clip->setSpeed(newVal);
+        clip->setDuration(newDur);
         emit propertyChanged();
     }
 }

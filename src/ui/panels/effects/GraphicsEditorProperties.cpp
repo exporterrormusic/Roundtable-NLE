@@ -21,13 +21,9 @@ void GraphicsEditorPanel::populateFromLayer()
  if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
  auto* tl = static_cast<TextLayer*>(m_selectedLayer);
 
- if (m_textContentEdit) {
- m_textContentEdit->blockSignals(true);
- QString cur = QString::fromStdString(tl->text());
- if (m_textContentEdit->toPlainText() != cur)
- m_textContentEdit->setPlainText(cur);
- m_textContentEdit->blockSignals(false);
- }
+ // Text content is edited inline via QLineEdit in the layer list.
+ // The list item widgets handle their own population during rebuildLayerList().
+
  if (m_fontCombo) {
  m_fontCombo->blockSignals(true);
  int idx = m_fontCombo->findText(QString::fromStdString(tl->fontFamily()));
@@ -202,8 +198,8 @@ void GraphicsEditorPanel::applyTextProperties()
  if (m_selectedLayer->layerType() != GraphicLayerType::Text) return;
  auto* tl = static_cast<TextLayer*>(m_selectedLayer);
 
- if (m_textContentEdit)
- tl->setText(m_textContentEdit->toPlainText().toStdString());
+ // Text content is set directly by the inline QLineEdit in the layer list;
+ // no need to read from a separate text edit here.
 
  if (m_fontCombo)
  tl->setFontFamily(m_fontCombo->currentText().toStdString());

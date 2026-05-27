@@ -200,20 +200,30 @@ public:
     /// Close all media. Clears the frame cache.
     void closeAll();
 
+    /// Release the file handle for a single path — closes the decoder
+    /// and the shared-mode HANDLE without reopening.  Safe to call on
+    /// paths that aren't open (no-op).  Used before live-reload to
+    /// guarantee Explorer can recreate the file after deleting it.
+    void closePath(const std::filesystem::path& filePath);
+
     /// Force a single media file to be re-read from disk after its
     /// contents changed (live file replacement / edited Color Matte).
     /// Evicts the CPU + disk frame cache for the file, cancels pending
-    /// prefetch, and reopens the decoder IN PLACE. The handle and the
-    /// path→handle mapping are intentionally preserved: every consumer
-    /// that cached the handle (compositor, Source Monitor, clips) keeps
-    /// it and transparently receives freshly decoded pixels on the next
-    /// getFrame() — no path re-resolution required.
+    /// prefetch.  When reopenDecoder is true (default), reopens the
+    /// decoder IN PLACE.  When false, the decoder is closed and left
+    /// closed — the HANDLE is fully released so Explorer can recreate
+    /// the file.  The next getFrame() transparently reopens on demand.
+    /// The handle and the path→handle mapping are intentionally preserved:
+    /// every consumer that cached the handle (compositor, Source Monitor,
+    /// clips) keeps it and transparently receives freshly decoded pixels
+    /// on the next getFrame() — no path re-resolution required.
     /// Returns the (preserved) handle so the caller can also evict GPU-side
     /// textures for it: GpuTextureCache is keyed by mediaId+frame+tier, and
     /// because the handle is preserved that key is unchanged — it would
     /// otherwise keep serving the stale uploaded texture. Returns
     /// InvalidMedia if the path was not open.
-    [[nodiscard]] MediaHandle invalidatePath(const std::filesystem::path& filePath);
+    [[nodiscard]] MediaHandle invalidatePath(const std::filesystem::path& filePath,
+                                              bool reopenDecoder = true);
 
     /// Snapshot of every source file currently open in the pool (the
     /// canonical resolved paths actually decoded — covers timeline clips,

@@ -100,7 +100,9 @@ public:
     // ── Source range ────────────────────────────────────────────────────
     /// Source media in/out (in ticks, relative to source start)
     [[nodiscard]] int64_t sourceIn()  const noexcept { return m_sourceIn; }
-    [[nodiscard]] int64_t sourceOut() const noexcept { return m_sourceIn + m_duration; }
+    [[nodiscard]] int64_t sourceOut() const noexcept {
+        return m_sourceIn + static_cast<int64_t>(std::llround(m_duration * m_speed));
+    }
     void setSourceIn(int64_t t) noexcept { m_sourceIn = t; }
 
     // ── Speed ───────────────────────────────────────────────────────────

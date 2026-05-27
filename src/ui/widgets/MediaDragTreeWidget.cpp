@@ -412,15 +412,22 @@ void MediaDragTreeWidget::startDrag(Qt::DropActions /*supportedActions*/)
     if (mediaItems.size() == 1) {
         auto* item = mediaItems.first();
         bool isSequence = item->data(0, Qt::UserRole + 3).toBool();
-        if (isSequence) {
+        bool isAdjustment = item->data(0, Qt::UserRole + 6).toBool();
+        if (isAdjustment) {
+            mime->setData("application/x-roundtable-adjustment",
+                          item->data(0, Qt::UserRole + 7).toString().toUtf8());
+        } else if (isSequence) {
             size_t seqIndex = item->data(0, Qt::UserRole + 4).toULongLong();
             int64_t seqDuration = item->data(0, Qt::UserRole + 5).toLongLong();
+            bool seqHasAudio = item->data(0, Qt::UserRole + 7).toBool();
             mime->setData("application/x-roundtable-sequence",
                           QByteArray::number(static_cast<qulonglong>(seqIndex)));
             mime->setData("application/x-roundtable-sequence-name",
                           item->text(0).toUtf8());
             mime->setData("application/x-roundtable-sequence-duration",
                           QByteArray::number(static_cast<qlonglong>(seqDuration)));
+            mime->setData("application/x-roundtable-sequence-has-audio",
+                          QByteArray(seqHasAudio ? "1" : "0"));
         } else {
             uint64_t handle = item->data(0, Qt::UserRole + 1).toULongLong();
             mime->setData("application/x-roundtable-media",

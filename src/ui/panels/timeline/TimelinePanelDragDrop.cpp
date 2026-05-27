@@ -64,6 +64,7 @@ void TimelinePanel::dragEnterEvent(QDragEnterEvent* event)
         event->mimeData()->hasFormat(kTransitionMimeType) ||
         event->mimeData()->hasFormat("application/x-roundtable-media") ||
         event->mimeData()->hasFormat("application/x-roundtable-sequence") ||
+        event->mimeData()->hasFormat("application/x-roundtable-adjustment") ||
         qobject_cast<QTreeWidget*>(event->source()) ||
         event->mimeData()->hasUrls())
     {
@@ -228,6 +229,44 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         return;
     }
 
+    // ── Adjustment-layer drag (from project bin) ────────────────────────
+    if (event->mimeData()->hasFormat("application/x-roundtable-adjustment")) {
+        m_effectDropTarget.reset();
+        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
+        QPointF pos = event->position();
+        double px = pos.x() - headerWidth();
+        int64_t tick = m_layoutEngine.pixelXToTime(px);
+        if (tick < 0) tick = 0;
+        size_t trackIdx = hitTestTrack(pos.y());
+
+        // 5-second default duration matches Premiere Pro.
+        int64_t previewDur = static_cast<int64_t>(5.0 * 48000.0);
+        auto snapRes = m_snapEngine.snapPair(tick, tick + previewDur);
+        if (snapRes.didSnap) tick = snapRes.snappedTick;
+
+        // Adjustment layers always go on a VIDEO track. Find the target.
+        size_t videoTrackIdx = SIZE_MAX;
+        if (m_timeline && trackIdx < m_timeline->trackCount() &&
+            m_timeline->track(trackIdx)->type() == TrackType::Video) {
+            videoTrackIdx = trackIdx;
+        } else if (m_timeline) {
+            for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                if (m_timeline->track(i)->type() == TrackType::Video) {
+                    videoTrackIdx = i; break;
+                }
+            }
+        }
+        for (size_t i = 0; i < m_trackWidgets.size(); ++i) {
+            if (i == videoTrackIdx)
+                m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, false);
+            else
+                m_trackWidgets[i]->clearMediaDragPreview();
+        }
+        event->acceptProposedAction();
+        return;
+    }
+
     // ── Sequence drag (from project bin) ────────────────────────────────
     if (event->mimeData()->hasFormat("application/x-roundtable-sequence")) {
         m_effectDropTarget.reset();
@@ -266,6 +305,14 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                 "application/x-roundtable-drag-mode");
             if (m == "video") seqShowAudio = false;
             else if (m == "audio") seqShowVideo = false;
+        }
+        // Honour the sequence's actual audio content: if the sequence has
+        // no audio clips, don't show an audio ghost track.
+        if (seqShowAudio && event->mimeData()->hasFormat(
+                "application/x-roundtable-sequence-has-audio")) {
+            const QByteArray a = event->mimeData()->data(
+                "application/x-roundtable-sequence-has-audio");
+            if (a == "0") seqShowAudio = false;
         }
 
         // A nested sequence drops as a video nest clip AND an audio nest
@@ -962,6 +1009,33 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         if (clipIdx == SIZE_MAX) { event->ignore(); return; }
 
         emit effectDroppedOnClip(hitRef->trackIndex, hitRef->clipId, effectType);
+        event->acceptProposedAction();
+        return;
+    }
+
+    // ── Adjustment-layer drop (from project bin) ───────────────────────
+    if (event->mimeData()->hasFormat("application/x-roundtable-adjustment")) {
+        QPointF pos = event->position();
+        double px = pos.x() - headerWidth();
+        int64_t tick = m_layoutEngine.pixelXToTime(px);
+        if (tick < 0) tick = 0;
+        size_t trackIdx = hitTestTrack(pos.y());
+
+        bool aboveTopVideo = false;
+        bool belowBottomAudio = false;
+        computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+        if (!ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
+            trackIdx = kGhostDropTrackVideoAbove;
+
+        int64_t dur = static_cast<int64_t>(5.0 * 48000.0);
+        auto snapRes = m_snapEngine.snapPair(tick, tick + dur);
+        if (snapRes.didSnap) tick = snapRes.snappedTick;
+
+        QString name = QString::fromUtf8(
+            event->mimeData()->data("application/x-roundtable-adjustment"));
+        if (name.isEmpty()) name = QStringLiteral("Adjustment Layer");
+
+        emit adjustmentDropped(name, tick, trackIdx);
         event->acceptProposedAction();
         return;
     }

@@ -20,6 +20,7 @@
 #include <QPainter>
 #include <QVBoxLayout>
 #include <QCursor>
+#include <QRegion>
 
 #include <spdlog/spdlog.h>
 
@@ -424,14 +425,39 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
     float swW = static_cast<float>(m_swapchain->extent().width);
     float swH = static_cast<float>(m_swapchain->extent().height);
 
-    // 5% padding on EVERY side — see Viewport.cpp's matching block for
-    // the rationale.  Earlier version applied kFitPadding to just one
-    // axis (the one that aspect-fit chose), so a 16:9 image in a wide
-    // widget got 2.5% side padding but 0% top/bottom.  Now we shrink
-    // both axes first, then aspect-fit into the smaller box.
+    // The native HWND's client area (==swapchain extent) can be LARGER than
+    // the Qt widget rect — on Windows, when a parent widget like a dock
+    // title bar partially covers this widget, Qt clips the HWND visually
+    // via SetWindowRgn but the HWND keeps its full client area. If we
+    // center the video in the full swapchain, the top padding falls into
+    // the clipped-by-title-bar area and the video appears with its top
+    // flush against the title bar. Compute the widget's offset within the
+    // HWND and center within the WIDGET area, not the swapchain area.
+    float widgetW = static_cast<float>(width());
+    float widgetH = static_cast<float>(height());
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+#ifdef _WIN32
+    if (m_nativeWindow) {
+        HWND hwnd = reinterpret_cast<HWND>(m_nativeWindow->winId());
+        if (hwnd) {
+            RECT wr;
+            GetWindowRect(hwnd, &wr);
+            QPoint widgetGlobal = mapToGlobal(QPoint(0, 0));
+            offsetX = static_cast<float>(widgetGlobal.x() - wr.left);
+            offsetY = static_cast<float>(widgetGlobal.y() - wr.top);
+        }
+    }
+#endif
+    // Fall back to swapchain extent if widget size lookup fails.
+    if (widgetW <= 0.0f) { widgetW = swW; offsetX = 0.0f; }
+    if (widgetH <= 0.0f) { widgetH = swH; offsetY = 0.0f; }
+
+    // 5% padding on EVERY side — shrink both axes of the WIDGET area by
+    // kFitPadding first, then aspect-fit into the smaller box.
     constexpr float kFitPadding = 0.90f;  // 5% margin per side
-    const float availW = swW * kFitPadding;
-    const float availH = swH * kFitPadding;
+    const float availW = widgetW * kFitPadding;
+    const float availH = widgetH * kFitPadding;
     const float srcW   = (m_srcW > 0) ? static_cast<float>(m_srcW) : 16.0f;
     const float srcH   = (m_srcH > 0) ? static_cast<float>(m_srcH) :  9.0f;
     const float scaleX = availW / srcW;
@@ -439,8 +465,17 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
     const float scale  = std::min(scaleX, scaleY);
     const float baseW  = srcW * scale;
     const float baseH  = srcH * scale;
-    const float baseX  = (swW - baseW) * 0.5f;
-    const float baseY  = (swH - baseH) * 0.5f;
+    const float baseX  = offsetX + (widgetW - baseW) * 0.5f;
+    const float baseY  = offsetY + (widgetH - baseH) * 0.5f;
+
+    {
+        static int s_vkDiag = 0;
+        if (++s_vkDiag < 6) {
+            spdlog::warn("[VKVIEWPORT-FIT] widget={}x{} sw={}x{} offset=({:.0f},{:.0f}) baseY={:.1f} baseH={:.1f}",
+                         (int)widgetW, (int)widgetH, (int)swW, (int)swH,
+                         offsetX, offsetY, baseY, baseH);
+        }
+    }
 
     // Compute the actual on-screen video rect with zoom/pan applied.
     // (Same math as VkViewport below — keep these two in sync.)
@@ -901,16 +936,37 @@ void VulkanViewport::presentClearFrame()
     if (m_srcW > 0 && m_srcH > 0) {
         const float swW = static_cast<float>(m_swapchain->extent().width);
         const float swH = static_cast<float>(m_swapchain->extent().height);
+        // See presentFrame() for why we center in the WIDGET area, not the
+        // swapchain extent (HWND extends behind dock title bar on Win32).
+        float widgetW = static_cast<float>(width());
+        float widgetH = static_cast<float>(height());
+        float offsetX = 0.0f;
+        float offsetY = 0.0f;
+#ifdef _WIN32
+        if (m_nativeWindow) {
+            HWND hwnd = reinterpret_cast<HWND>(m_nativeWindow->winId());
+            if (hwnd) {
+                RECT wr;
+                GetWindowRect(hwnd, &wr);
+                QPoint widgetGlobal = mapToGlobal(QPoint(0, 0));
+                offsetX = static_cast<float>(widgetGlobal.x() - wr.left);
+                offsetY = static_cast<float>(widgetGlobal.y() - wr.top);
+            }
+        }
+#endif
+        if (widgetW <= 0.0f) { widgetW = swW; offsetX = 0.0f; }
+        if (widgetH <= 0.0f) { widgetH = swH; offsetY = 0.0f; }
+
         constexpr float kFitPadding = 0.90f;
-        const float availW = swW * kFitPadding;
-        const float availH = swH * kFitPadding;
+        const float availW = widgetW * kFitPadding;
+        const float availH = widgetH * kFitPadding;
         const float srcW   = static_cast<float>(m_srcW);
         const float srcH   = static_cast<float>(m_srcH);
         const float scale  = std::min(availW / srcW, availH / srcH);
         const float baseW  = srcW * scale;
         const float baseH  = srcH * scale;
-        const float baseX  = (swW - baseW) * 0.5f;
-        const float baseY  = (swH - baseH) * 0.5f;
+        const float baseX  = offsetX + (widgetW - baseW) * 0.5f;
+        const float baseY  = offsetY + (widgetH - baseH) * 0.5f;
         const float zoomedX = baseX + m_viewPanX + (1.0f - m_viewZoom) * baseW * 0.5f;
         const float zoomedY = baseY + m_viewPanY + (1.0f - m_viewZoom) * baseH * 0.5f;
         const float zoomedW = baseW * m_viewZoom;

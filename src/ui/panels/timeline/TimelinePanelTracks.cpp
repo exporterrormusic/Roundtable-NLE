@@ -556,17 +556,20 @@ void TimelinePanel::rebuildTracks()
                 m_selection.clear();
             m_selection.selectClip(ref, shiftHeld);
 
-            // Linked A/V selection: if the clip has a groupId,
-            // also select all clips with the same groupId across all tracks.
-            uint64_t gid = clip->groupId();
-            if (gid != 0) {
-                for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                    Track* t = m_timeline->track(ti);
-                    for (size_t ci = 0; ci < t->clipCount(); ++ci) {
-                        const Clip* c = t->clip(ci);
-                        if (c->groupId() == gid && c->id() != clip->id()) {
-                            m_selection.selectClip({ti, c->id()}, true);
-                            break; // one match per track for linked A/V
+            // Linked A/V selection: if the clip has a groupId and
+            // linked selection is enabled, also select all clips with
+            // the same groupId across all tracks.
+            if (m_linkedSelectionEnabled) {
+                uint64_t gid = clip->groupId();
+                if (gid != 0) {
+                    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                        Track* t = m_timeline->track(ti);
+                        for (size_t ci = 0; ci < t->clipCount(); ++ci) {
+                            const Clip* c = t->clip(ci);
+                            if (c->groupId() == gid && c->id() != clip->id()) {
+                                m_selection.selectClip({ti, c->id()}, true);
+                                break; // one match per track for linked A/V
+                            }
                         }
                     }
                 }

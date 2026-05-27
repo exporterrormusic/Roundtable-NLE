@@ -276,6 +276,17 @@ private:
     /// on minimize/restore.
     std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> m_mediaWatchSig;
 
+    // ── Polling fallback for unwatchable paths ─────────────────────────
+    // QFileSystemWatcher::addPath() silently fails on some network/external
+    // drives (G:).  For these paths, we fall back to a 2-second poll timer
+    // that compares (size, mtime) signatures and triggers refreshChangedMedia
+    // when content changes.
+    QTimer* m_mediaWatchPollTimer{nullptr};
+    /// Paths that QFileSystemWatcher could not watch — polled instead.
+    std::set<std::string> m_mediaWatchPollSet;
+    /// Last-known sig for polled paths (same format as m_mediaWatchSig).
+    std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> m_mediaWatchPollSig;
+
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
 
@@ -457,6 +468,22 @@ private:
     size_t m_selectedTrackIdx{0};
     size_t m_selectedClipIdx{0};
     int    m_selectedGraphicLayerIdx{-1};  ///< Selected layer within GraphicClip (-1 = whole clip)
+
+    /// Stack indices of every layer selected in the Essential Graphics
+    /// layer list (Shift / Ctrl multi-select). Includes the focused
+    /// layer. Empty when nothing is selected. Drives group-move on the
+    /// program monitor: a single body drag applies the same Δ to every
+    /// layer in this set.
+    std::vector<int> m_selectedGraphicLayerIdxs;
+
+    /// Per-layer snapshot of (posX, posY) at the moment a group-move
+    /// drag begins. Used to apply the focused-layer Δ to siblings
+    /// without accumulating per-tick error. Cleared on drag finished.
+    struct GroupMoveStart { int idx; float posX; float posY; };
+    std::vector<GroupMoveStart> m_groupMoveStart;
+    bool  m_groupMoveActive{false};
+    float m_groupMoveFocusStartX{0.0f};
+    float m_groupMoveFocusStartY{0.0f};
 
     /// Text snapshot taken when in-place text editing begins. The layer's
     /// text is temporarily cleared during editing so the rendered text

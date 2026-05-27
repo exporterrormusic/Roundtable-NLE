@@ -341,6 +341,10 @@ signals:
                          int64_t sourceIn = -1, int64_t sourceOut = -1,
                          int dragMode = 0);
 
+    /// Emitted when an Adjustment Layer is dropped from the project bin.
+    /// Always lands on a video track; default 5-second duration.
+    void adjustmentDropped(const QString& name, int64_t atTick, size_t trackIndex);
+
     /// Emitted when user wants to open a nested sequence (double-click or right-click).
     void openNestedSequence(size_t sequenceIndex);
 

@@ -127,26 +127,9 @@ void GraphicsEditorPanel::buildEditControls()
  m_textSection = makeSectionHeader(tr("Text"));
  addW(m_textSection);
 
- // ── Editable text content (the actual string) ──────────────────
- // Premiere Pro shows the text itself in the Essential Graphics
- // panel; typing here changes the on-screen text immediately.
- {
- m_textContentEdit = new QPlainTextEdit(m_editContainer);
- m_textContentEdit->setPlaceholderText(tr("Type your text…"));
- m_textContentEdit->setFixedHeight(56);
- m_textContentEdit->setTabChangesFocus(true);
- m_textContentEdit->setStyleSheet(QStringLiteral(
- "QPlainTextEdit { background: %1; color: %2; "
- "border: 1px solid %3; font-size: 13px; padding: 4px; }"
- "QPlainTextEdit:focus { border: 1px solid %4; }")
- .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
- Theme::hex(tc.border), Theme::hex(tc.accent)));
- connect(m_textContentEdit, &QPlainTextEdit::textChanged,
- this, [this]() { applyTextProperties(); });
- addW(m_textContentEdit);
- }
-
- // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Font family (full width) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+ // Text content is now edited inline in the m_inlineTextEdit widget
+ // that sits directly below the layer list (merged layout).
+ // -- Font family (full width) --
  {
  auto* rl = makeRow(10);
  m_fontCombo = new QComboBox(m_editContainer);
@@ -500,13 +483,13 @@ void GraphicsEditorPanel::buildEditControls()
  {
  auto* rl = makeRow(14);
  rl->addWidget(makeLabel(tr("Position")));
- m_posXSpin = makeScrubby(-10000, 10000, 0.1, 1);
+ m_posXSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_posXSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyLayerTransform(); });
  rl->addWidget(m_posXSpin);
  auto* xLabel = makeSmallLabel(QStringLiteral("X"));
  rl->addWidget(xLabel);
- m_posYSpin = makeScrubby(-10000, 10000, 0.1, 1);
+ m_posYSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_posYSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyLayerTransform(); });
  rl->addWidget(m_posYSpin);
@@ -519,13 +502,13 @@ void GraphicsEditorPanel::buildEditControls()
  {
  auto* rl = makeRow(14);
  rl->addWidget(makeLabel(tr("Anchor")));
- m_anchorXSpin = makeScrubby(-10000, 10000, 0.1, 1);
+ m_anchorXSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_anchorXSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyLayerTransform(); });
  rl->addWidget(m_anchorXSpin);
  auto* xLabel = makeSmallLabel(QStringLiteral("X"));
  rl->addWidget(xLabel);
- m_anchorYSpin = makeScrubby(-10000, 10000, 0.1, 1);
+ m_anchorYSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_anchorYSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyLayerTransform(); });
  rl->addWidget(m_anchorYSpin);

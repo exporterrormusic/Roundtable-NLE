@@ -48,6 +48,16 @@ void ProjectBin::restoreBinModel(const std::vector<Project::BinItem>& items,
 
     for (const auto& bi : items) {
         if (bi.path.empty()) continue;
+        // Synthetic adjustment-layer items: no source to open, force orange
+        // label even if the saved color drifted.
+        if (projectBinIsAdjustmentPath(bi.path)) {
+            uint32_t color = (bi.labelColor != 0xFF888888)
+                ? bi.labelColor : 0xFFFFAA44;
+            m_grid->addRestoredItem(
+                bi.path, MediaType::Unknown, /*handle*/ 0, bi.id,
+                QString::fromStdString(bi.displayName), color);
+            continue;
+        }
         uint64_t handle = 0;
         if (m_mediaSources) {
             auto r = m_mediaSources->openSource(

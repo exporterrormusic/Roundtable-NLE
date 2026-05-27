@@ -171,6 +171,20 @@ void ThumbnailGenerator::clearCache()
     m_cache.clear();
 }
 
+void ThumbnailGenerator::evictPath(const std::filesystem::path& filePath)
+{
+    std::string pathStr = resolveCanonicalPath(filePath);
+    std::lock_guard lock(m_cacheMutex);
+    // Erase all cache entries whose key path matches (handles multiple
+    // maxWidth variants — 160px icon, 400px scrub preview, etc.).
+    for (auto it = m_cache.begin(); it != m_cache.end(); ) {
+        if (it->first.path == pathStr)
+            it = m_cache.erase(it);
+        else
+            ++it;
+    }
+}
+
 void ThumbnailGenerator::clearAllCaches()
 {
     clearCache();

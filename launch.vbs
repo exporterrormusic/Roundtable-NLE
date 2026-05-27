@@ -26,15 +26,8 @@ Else
     hasDebug   = fso.FileExists(debugExe)
 
     If hasRelease And hasDebug Then
-        ' Pick the newer one
-        Dim releaseDate, debugDate
-        releaseDate = fso.GetFile(releaseExe).DateLastModified
-        debugDate   = fso.GetFile(debugExe).DateLastModified
-        If debugDate > releaseDate Then
-            targetExe = debugExe
-        Else
-            targetExe = releaseExe
-        End If
+        ' Prefer Release for normal use; Debug is only for launch_debug.bat
+        targetExe = releaseExe
     ElseIf hasRelease Then
         targetExe = releaseExe
     ElseIf hasDebug Then

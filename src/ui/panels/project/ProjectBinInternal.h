@@ -16,6 +16,8 @@
 #include <QTreeWidgetItem>
 #include <QVariant>
 
+#include <filesystem>
+
 #include "media/ThumbnailGenerator.h"   // MediaType
 
 namespace rt {
@@ -35,7 +37,24 @@ inline const QColor kLabelVideo     ( 64, 130, 210);
 inline const QColor kLabelAudio     ( 74, 180, 110);
 inline const QColor kLabelImage     (160,  90, 210);
 inline const QColor kLabelSpine     (200, 140,  50);
+inline const QColor kLabelAdjustment(255, 170,  68);  // 0xFFFFAA44 — matches ClipSerialization
 inline const QColor kLabelUnknown   (136, 136, 136);
+
+// Sentinel path components for synthetic bin items. The angle brackets make
+// these invalid Windows filesystem names, so they cannot collide with a real
+// imported file.
+inline constexpr const char* kAdjustmentSentinelDir = "<adjustments>";
+inline constexpr const char* kAdjustmentSentinelExt = ".adj";
+
+/// True if `path` represents a synthetic adjustment-layer bin item.
+inline bool projectBinIsAdjustmentPath(const std::filesystem::path& path)
+{
+    for (const auto& part : path) {
+        if (part.string() == kAdjustmentSentinelDir)
+            return true;
+    }
+    return false;
+}
 
 inline QColor premiereDefaultLabel(MediaType type, bool isSequence = false, bool isBin = false)
 {
@@ -145,6 +164,17 @@ inline QIcon makePremiereBinIcon(const QColor& color, const QString& shape, int 
         diamond.lineTo(2, sz / 2.0);
         diamond.closeSubpath();
         p.drawPath(diamond);
+    }
+    else if (shape == "adjustment") {
+        // Stacked-layers glyph — three offset rounded rectangles
+        p.setBrush(color);
+        p.drawRoundedRect(QRectF(2.5, 2.0,    sz - 7.0, 4.0), 1.0, 1.0);
+        QColor mid = color; mid.setAlpha(210);
+        p.setBrush(mid);
+        p.drawRoundedRect(QRectF(3.5, sz / 2.0 - 2.0, sz - 7.0, 4.0), 1.0, 1.0);
+        QColor low = color; low.setAlpha(160);
+        p.setBrush(low);
+        p.drawRoundedRect(QRectF(4.5, sz - 6.0, sz - 7.0, 4.0), 1.0, 1.0);
     }
     else {
         p.setBrush(color);

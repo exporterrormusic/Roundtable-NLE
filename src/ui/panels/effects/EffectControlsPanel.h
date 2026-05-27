@@ -104,6 +104,11 @@ public:
     /// (X+Y) where the user expects a single keyframe to capture every
     /// component, not just the primary one.
     void addExtraTrack(KeyframeTrack<float>* track);
+    /// Drop a previously-bound extra track. Used by the Scale row to
+    /// detach scaleY when the user un-checks Uniform Scale so the diamond
+    /// drag stops moving Y alongside X.
+    void removeExtraTrack(KeyframeTrack<float>* track);
+    void clearExtraTracks();
     [[nodiscard]] const std::vector<KeyframeTrack<float>*>& extraTracks() const noexcept {
         return m_extraTracks;
     }
@@ -222,7 +227,7 @@ private:
 
     [[nodiscard]] int tickToX(int64_t tick) const;
     [[nodiscard]] int64_t xToTick(int x) const;
-    [[nodiscard]] int rowY(int rowIndex) const;
+    [[nodiscard]] int rowY(const PropertyRow* row) const;
 
     Clip*                      m_clip{nullptr};
     std::vector<PropertyRow*>  m_rows;
@@ -261,6 +266,21 @@ private:
         float biX, biY, boX, boY;
     };
     std::vector<DragEntry> m_dragEntries;
+
+    // Per-track snapshot taken at drag start. Each frame of the drag
+    // restores the track from this snapshot, removes the dragged-set's
+    // origTimes, then re-inserts the dragged keyframes at their new
+    // positions. This guarantees that dragging a keyframe past a
+    // non-dragged keyframe never silently destroys the non-dragged one
+    // (the snapshot brings it back on the next move).
+    struct DragSnapKf {
+        int64_t time;
+        float value;
+        InterpMode interp;
+        float biX, biY, boX, boY;
+    };
+    std::map<KeyframeTrack<float>*, std::vector<DragSnapKf>> m_dragTrackSnap;
+
     CommandStack*  m_commandStack{nullptr};
 
     static constexpr int kRulerHeight = 24;

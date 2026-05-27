@@ -72,6 +72,12 @@ void ProjectBin::setCommandStack(CommandStack* stack) noexcept
     m_commandStack = stack;
 }
 
+void ProjectBin::refreshFileThumbnail(const std::filesystem::path& filePath)
+{
+    if (m_grid)
+        m_grid->refreshItem(filePath);
+}
+
 void ProjectBin::createNewBin()
 {
     bool ok = false;

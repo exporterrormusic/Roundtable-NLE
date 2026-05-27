@@ -1014,11 +1014,13 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
 
                 // Map the clip's source window into peak indices.
                 // Peaks cover the entire file at 480-frame windows (48 kHz).
+                // duration is in timeline ticks; convert to source ticks via speed.
                 constexpr int kPeakWindowFrames = 480;
                 const int64_t srcIn = clip->sourceIn();
                 const int64_t dur   = clip->duration();
+                const double spd    = std::max(clip->speed(), 0.01);
                 const double srcStartPeak = static_cast<double>(srcIn) / kPeakWindowFrames;
-                const double srcEndPeak   = static_cast<double>(srcIn + dur) / kPeakWindowFrames;
+                const double srcEndPeak   = static_cast<double>(srcIn + static_cast<int64_t>(dur * spd)) / kPeakWindowFrames;
 
                 QColor wfCol = tc.waveformFg; wfCol.setAlpha(180);
                 painter.setPen(QPen(wfCol, 1.0));

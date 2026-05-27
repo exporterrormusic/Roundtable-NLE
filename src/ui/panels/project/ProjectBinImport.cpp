@@ -104,6 +104,15 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
         // Skip duplicates — Premiere Pro silently ignores re-imports
         if (m_grid->hasItem(f))
             continue;
+        // Synthetic adjustment-layer items: no source media to open, no
+        // thumbnail to load. Recreate them with their existing name.
+        if (projectBinIsAdjustmentPath(f)) {
+            QString name = QString::fromStdString(f.stem().string());
+            m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
+                                    /*itemId*/ 0, name,
+                                    /*labelColor*/ 0xFFFFAA44);
+            continue;
+        }
         uint64_t handle = 0;
         if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});
@@ -135,6 +144,13 @@ void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
     for (const auto& f : files) {
         if (m_grid->hasItem(f))
             continue;
+        if (projectBinIsAdjustmentPath(f)) {
+            QString name = QString::fromStdString(f.stem().string());
+            m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
+                                    /*itemId*/ 0, name,
+                                    /*labelColor*/ 0xFFFFAA44);
+            continue;
+        }
         uint64_t handle = 0;
         if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});

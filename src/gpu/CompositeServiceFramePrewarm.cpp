@@ -177,7 +177,9 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 if (fps <= 0.0)
                     fps = 24.0;
 
-                int64_t srcTick = tick - clip->timelineIn() + clip->sourceIn();
+                const int64_t localTick = tick - clip->timelineIn();
+                int64_t srcTick = clip->sourceIn() +
+                    static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
                 if (srcTick < 0)
                     srcTick = 0;
 

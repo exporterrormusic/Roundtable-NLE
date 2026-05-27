@@ -192,6 +192,7 @@ void TimelinePanel::clearEditPointSelection()
 
 void TimelinePanel::setLinkPartnersSelected(const ClipRef& seed, bool selected)
 {
+    if (!m_linkedSelectionEnabled) return;
     if (!m_timeline) return;
     Track* seedTrack = m_timeline->track(seed.trackIndex);
     if (!seedTrack) return;

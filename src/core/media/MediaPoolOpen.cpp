@@ -341,7 +341,8 @@ void MediaPool::closeAll()
     m_scrubDecoders.clear();
 }
 
-MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath)
+MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
+                                         bool reopenDecoder)
 {
     // Canonicalize identically to open() so we hit the same map key.
     std::error_code ec;
@@ -405,9 +406,10 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath)
     // zero path-string matching anywhere (which was fragile: the watcher
     // delivers 'G:\..\F.png' while the compositor keyed 'G:/../F.png').
     spdlog::warn("MediaPool: invalidating handle {} '{}' (file changed) — "
-                 "evicting CPU+disk cache, reopening decoder in place, "
+                 "evicting CPU+disk cache, {}decoder, "
                  "next getFrame re-decodes for all consumers",
-                 handle, entry.path.filename().string());
+                 handle, entry.path.filename().string(),
+                 reopenDecoder ? "reopening " : "HANDLE released (not reopening) ");
 
     m_cache->evictMedia(handle);          // drops the pinned still frame too
     if (m_diskCache)
@@ -434,13 +436,19 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath)
     // composite retries.
     if (entry.decoder) {
         entry.decoder->close();
-        if (entry.decoder->open(entry.path)) {
-            entry.info        = entry.decoder->info();
-            entry.packedAlpha = entry.info.packedAlpha;
+        if (reopenDecoder) {
+            if (entry.decoder->open(entry.path)) {
+                entry.info        = entry.decoder->info();
+                entry.packedAlpha = entry.info.packedAlpha;
+            } else {
+                spdlog::warn("MediaPool: invalidate reopen failed for '{}' "
+                             "(handle {}) — will retry on next getFrame",
+                             entry.path.filename().string(), handle);
+            }
         } else {
-            spdlog::warn("MediaPool: invalidate reopen failed for '{}' "
-                         "(handle {}) — will retry on next getFrame",
-                         entry.path.filename().string(), handle);
+            spdlog::warn("MediaPool: invalidate '{}' — HANDLE released, "
+                         "decoder left closed (live-replace safe mode)",
+                         entry.path.filename().string());
         }
     }
 
@@ -461,6 +469,72 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath)
 }
 
 // ─── Async open worker ─────────────────────────────────────────────────────
+
+void MediaPool::closePath(const std::filesystem::path& filePath)
+{
+    // Try the raw path string first (fileChanged delivers the exact path
+    // that was passed to addPath).  Fall back to canonical if needed.
+    // This avoids mismatches when canonical() fails because the file was
+    // just deleted (Explorer overwrite) — canonical() returns the raw
+    // path on error, but the stored key was created when the file existed.
+    std::string rawKey = filePath.string();
+    std::error_code ec;
+    auto canonical = std::filesystem::canonical(filePath, ec);
+    std::string canonicalKey = ec ? rawKey : canonical.string();
+
+    MediaHandle handle = InvalidMedia;
+    {
+        std::lock_guard lock(m_mutex);
+        // Try raw path first (most likely match from fileChanged/addPath)
+        auto pathIt = m_pathToHandle.find(rawKey);
+        if (pathIt == m_pathToHandle.end() && canonicalKey != rawKey)
+            pathIt = m_pathToHandle.find(canonicalKey);
+        if (pathIt == m_pathToHandle.end()) {
+            spdlog::warn("MediaPool::closePath: '{}' NOT in open-handle map "
+                         "(raw='{}' canonical='{}') — handle already released "
+                         "or never opened",
+                         filePath.filename().string(), rawKey, canonicalKey);
+            return;
+        }
+        handle = pathIt->second;
+    }
+
+    // Cancel any queued prefetch tasks for this handle so a background
+    // worker doesn't reopen the decoder while Explorer is mid-overwrite.
+    {
+        std::lock_guard pfLock(m_prefetchMutex);
+        m_prefetchQueue.erase(
+            std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
+                [handle](const PrefetchTask& t) { return t.handle == handle; }),
+            m_prefetchQueue.end());
+    }
+    m_scheduler.cancel(handle);
+
+    // Close the main decoder to release the shared-mode file HANDLE.
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_entries.find(handle);
+        if (it != m_entries.end() && it->second.decoder) {
+            it->second.decoder->close();
+            spdlog::warn("MediaPool::closePath: released HANDLE for '{}' "
+                         "(handle={})", filePath.filename().string(), handle);
+        } else {
+            spdlog::warn("MediaPool::closePath: '{}' found in path map "
+                         "(handle={}) but entry decoder already closed",
+                         filePath.filename().string(), handle);
+        }
+    }
+
+    // Close the dedicated scrub decoder too.
+    auto scrubIt = m_scrubDecoders.find(handle);
+    if (scrubIt != m_scrubDecoders.end()) {
+#ifdef ROUNDTABLE_HAS_FFMPEG
+        if (scrubIt->second.swsCtx)
+            sws_freeContext(static_cast<SwsContext*>(scrubIt->second.swsCtx));
+#endif
+        m_scrubDecoders.erase(scrubIt);
+    }
+}
 
 bool MediaPool::isPathOpen(const std::filesystem::path& filePath) const
 {

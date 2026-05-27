@@ -149,12 +149,17 @@ void TimelineWorkspace::registerKeyboardShortcuts()
     // Ctrl+Shift+C: Paste Insert
     addShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_C, [this]() {
         if (m_timeline && m_timelinePanel && m_commandStack && !m_timelinePanel->clipboard().empty()) {
+            const int64_t pasteTick = m_playbackController ? m_playbackController->currentTick() : 0;
             auto cmd = EditOperations::pasteInsert(
-                *m_timeline, m_timelinePanel->clipboard(),
-                m_playbackController ? m_playbackController->currentTick() : 0);
+                *m_timeline, m_timelinePanel->clipboard(), pasteTick);
             if (cmd) {
                 m_commandStack->execute(std::move(cmd));
                 if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+                // Sync playhead from the model (the command moves it to end
+                // of inserted content as part of its undoable state).
+                int64_t modelTick = m_timeline->playheadPosition();
+                m_timelinePanel->setPlayheadPosition(modelTick);
+                if (m_playbackController) m_playbackController->seekTo(modelTick);
                 invalidateAudioSources();
                 invalidateCompositeCache();
                 updateTransformOverlay();
@@ -197,12 +202,17 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             return;
         }
         if (m_timeline && m_timelinePanel && m_commandStack && !m_timelinePanel->clipboard().empty()) {
+            const int64_t pasteTick = m_playbackController ? m_playbackController->currentTick() : 0;
             auto cmd = EditOperations::paste(
-                *m_timeline, m_timelinePanel->clipboard(),
-                m_playbackController ? m_playbackController->currentTick() : 0);
+                *m_timeline, m_timelinePanel->clipboard(), pasteTick);
             if (cmd) {
                 m_commandStack->execute(std::move(cmd));
                 if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+                // Sync playhead from the model (the command moves it to end
+                // of pasted content as part of its undoable state).
+                int64_t modelTick = m_timeline->playheadPosition();
+                m_timelinePanel->setPlayheadPosition(modelTick);
+                if (m_playbackController) m_playbackController->seekTo(modelTick);
                 invalidateAudioSources();
                 invalidateCompositeCache();
                 updateTransformOverlay();

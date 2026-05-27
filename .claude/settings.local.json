@@ -3,7 +3,8 @@
     "allow": [
       "PowerShell(powershell -ExecutionPolicy Bypass -File build.ps1 -Config RelWithDebInfo)",
       "Bash(git log *)",
-      "Bash(cmake --build build --config Release --target roundtable -- -m)"
+      "Bash(cmake --build build --config Release --target roundtable -- -m)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('c:\\\\Users\\\\rmdou\\\\Desktop\\\\TIER_LIST_PROGRAM_NEW\\\\src\\\\ui\\\\panels\\\\effects\\\\EffectControlsPanelTree.cpp'\\); $text = [System.Text.Encoding]::UTF8.GetString\\($bytes\\); $idx = $text.IndexOf\\('shouldCollapse'\\); Write-Output \\('idx=' + $idx\\); $snippet = $text.Substring\\($idx, 1500\\); Write-Output $snippet)"
     ]
   }
 }

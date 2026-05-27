@@ -7,6 +7,7 @@
 
 #include "QtHelpers.h"
 #include "panels/project/ProjectBin.h"
+#include "panels/project/ProjectBinInternal.h"
 #include "Theme.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
@@ -51,6 +52,11 @@ bool writeMattePng(const std::filesystem::path& path,
     return img.save(QString::fromStdString(path.string()), "PNG");
 }
 } // namespace
+
+bool ProjectBin::isAdjustmentLayer(const std::filesystem::path& path)
+{
+    return projectBinIsAdjustmentPath(path);
+}
 
 bool ProjectBin::isColorMatte(const std::filesystem::path& path)
 {
@@ -387,6 +393,75 @@ void ProjectBin::createColorMatte()
     addFiles({mattePath});
     spdlog::info("ProjectBin: created color matte '{}' at {}",
                  name.toStdString(), mattePath.string());
+}
+
+// -----------------------------------------------------------------------------
+//  Adjustment Layer (Premiere Pro-style)
+// -----------------------------------------------------------------------------
+
+void ProjectBin::createAdjustmentLayer()
+{
+    // Premiere prompts for a name; default to "Adjustment Layer" with a
+    // numeric suffix when one already exists.
+    auto makeUniqueName = [this](const QString& base) {
+        QString candidate = base;
+        auto exists = [this](const QString& name) {
+            for (const auto& it : m_grid->items()) {
+                if (it.isFolder) continue;
+                if (!projectBinIsAdjustmentPath(it.filePath)) continue;
+                if (it.displayName == name) return true;
+            }
+            return false;
+        };
+        int n = 1;
+        while (exists(candidate))
+            candidate = QStringLiteral("%1 %2").arg(base).arg(++n);
+        return candidate;
+    };
+
+    QString defaultName = makeUniqueName(QStringLiteral("Adjustment Layer"));
+
+    bool ok = false;
+    QString name = QInputDialog::getText(this, tr("New Adjustment Layer"),
+                                         tr("Name:"),
+                                         QLineEdit::Normal,
+                                         defaultName, &ok);
+    name = name.trimmed();
+    if (!ok || name.isEmpty())
+        return;
+
+    // Build a sentinel path that's an invalid Windows filename, so the grid's
+    // path-dedup stays correct and there's no risk of collision with imported
+    // media. The path also serializes cleanly through Project::BinItem.
+    QString safeName = name;
+    safeName.replace(QRegularExpression(R"([<>:"/\\|?*])"), QStringLiteral("_"));
+    std::filesystem::path sentinel = std::filesystem::path(kAdjustmentSentinelDir) /
+        (safeName.toStdString() + kAdjustmentSentinelExt);
+
+    // Add via addRestoredItem so we control displayName + labelColor directly.
+    auto doAdd = [this, sentinel, name]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_grid->hasItem(sentinel)) return;
+        m_grid->addRestoredItem(sentinel, MediaType::Unknown, /*handle*/ 0,
+                                /*itemId*/ 0, name, /*labelColor*/ 0xFFFFAA44);
+        syncListView();
+        if (!m_listView) syncIconView();
+    };
+    auto doRemove = [this, sentinel]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        m_grid->removeItem(sentinel);
+        syncListView();
+        if (!m_listView) syncIconView();
+    };
+
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Add Adjustment Layer '" + name.toStdString() + "'",
+            doAdd, doRemove));
+    } else {
+        doAdd();
+    }
+    spdlog::info("ProjectBin: created adjustment layer '{}'", name.toStdString());
 }
 
 void ProjectBin::scaleClipsToResolution(Timeline* seq,

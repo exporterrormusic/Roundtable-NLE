@@ -11,6 +11,7 @@
 #include "media/FrameCache.h"
 #include "media/MediaPool.h"
 #include "Constants.h"
+#include "timeline/AdjustmentClip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SequenceClip.h"
@@ -61,7 +62,41 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     m_gpuSpineInsertedLayer = -1;
     m_gpuSpinePrevLayer = -1;
     m_gpuSpineJustRendered = false;
-    for (size_t ti_rev = m_timeline->trackCount(); ti_rev > 0; --ti_rev) {
+
+    // ── Adjustment-layer pre-pass ────────────────────────────────────────
+    // Track convention in this app: lower index = HIGHER in the visual stack
+    // (see TimelinePanelTracks: "Video: topmost (lowest index) = highest
+    // number"). An adjustment on track T must therefore affect clips on
+    // tracks with index > T (visually below it), matching Premiere/AE.
+    //
+    // adjustmentEffectsForTrack[T] = effects from every adjustment clip
+    // active at this tick on any track with index < T (above T in the
+    // visual stack), in top-down order so they post-process correctly.
+    const size_t trackCnt = m_timeline->trackCount();
+    std::vector<std::vector<EffectStack::EffectSnapshot>>
+        adjustmentEffectsForTrack(trackCnt);
+    {
+        std::vector<EffectStack::EffectSnapshot> running;
+        for (size_t ti = 0; ti < trackCnt; ++ti) {
+            adjustmentEffectsForTrack[ti] = running;  // applies BEFORE this track contributes
+            auto* tr = m_timeline->track(ti);
+            if (!tr || tr->type() != TrackType::Video || tr->isMuted())
+                continue;
+            for (auto* clip : tr->clipsAtTime(tick)) {
+                if (!clip || !clip->isEnabled()) continue;
+                auto* adj = dynamic_cast<AdjustmentClip*>(clip);
+                if (!adj || !adj->effects().hasActiveEffects()) continue;
+                auto eval = adj->effects().evaluate(tick - adj->timelineIn());
+                for (auto& e : eval)
+                    running.push_back(std::move(e));
+            }
+        }
+    }
+
+    for (size_t ti_rev = trackCnt; ti_rev > 0; --ti_rev) {
+        const size_t currentTrackIdx = ti_rev - 1;
+        const auto& pendingAdjustmentEffects =
+            adjustmentEffectsForTrack[currentTrackIdx];
         auto* track = m_timeline->track(ti_rev - 1);
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
@@ -103,6 +138,14 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         for (auto* clip : active) {
             auto perfClipT0 = std::chrono::high_resolution_clock::now();
             if (!clip->isEnabled()) continue;
+            // Adjustment layers don't render a layer of their own — they
+            // contribute their effect stack to lower tracks (harvested after
+            // this inner loop). Skip BEFORE ++clipsAtTick so the settle
+            // window's "layers.size() < clipsAtTick" check doesn't fire and
+            // return an empty sentinel (black flash) every time the cache
+            // is invalidated by an effect add/move.
+            if (dynamic_cast<AdjustmentClip*>(clip))
+                continue;
             ++clipsAtTick;
             bool fromNestedSequence = false;
 
@@ -276,9 +319,13 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             uint32_t gpuSpineW{0}, gpuSpineH{0};
 
             // Program monitor video tier follows the playback-resolution
-            // dropdown (Full / 1/2 / 1/4 / 1/8).
-            // Always decode at full resolution for maximum quality.
-            const auto videoTier = ResolutionTier::Full;
+            // dropdown (Full / 1/2 / 1/4 / 1/8).  Used by the SpineClip
+            // video-fallback path below; the main VideoClip path computes
+            // its own charVideoTier with the same intent + a scrub-time
+            // Half override.  forceFullResolution (ExportPanel) wins.
+            const auto videoTier = m_forceFullResolution.load()
+                ? ResolutionTier::Full
+                : playbackTier();
 
             // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ VideoClip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
             if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
@@ -380,8 +427,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     m_openMediaHandles[mediaPath] = handle;
                 }
 
-                // Calculate source frame number
-                int64_t srcTick = localTick + clip->sourceIn();
+                // Calculate source frame number — scale localTick by clip
+                // speed so 2x clips advance source 2x as fast (matches
+                // TimelineSnapshotBuilder/FrameRenderer/EditOperationsTrim).
+                int64_t srcTick = clip->sourceIn() +
+                    static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
                 // Clamp to 0 instead of skipping: during transition overlap
                 // the incoming clip has negative localTick (tick < timelineIn).
                 // Using frame 0 gives the correct visual for the transition.
@@ -513,6 +563,12 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (clip->effects().hasActiveEffects()) {
                             layer.effects = clip->effects().evaluate(localTick);
                         }
+                        // Append adjustment-layer effects from tracks above.
+                        if (!pendingAdjustmentEffects.empty()) {
+                            layer.effects.insert(layer.effects.end(),
+                                                 pendingAdjustmentEffects.begin(),
+                                                 pendingAdjustmentEffects.end());
+                        }
                         if (perfLog) {
                             auto perfClipT1 = std::chrono::high_resolution_clock::now();
                             double clipMs = std::chrono::duration<double, std::milli>(
@@ -595,13 +651,34 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         m_timeline = innerTimeline;
                         lock.unlock();
 
+                        // Render the inner at the project's master
+                        // resolution rather than the (possibly scrubbed)
+                        // outer outW/outH.  Inner-layer decodes still
+                        // honour playbackTier internally — this only sets
+                        // the inner's output canvas size, keeping the
+                        // SequenceClip snapshot's dimensions consistent
+                        // between Full playback and scrubbed ticks so the
+                        // SequenceClip's transform produces stable geometry
+                        // every frame instead of subtly jittering as the
+                        // canvas shrinks/grows.  Falls back to outW/outH
+                        // when m_project is somehow null.
+                        uint32_t innerW = outW;
+                        uint32_t innerH = outH;
+                        if (m_project) {
+                            const auto& res = m_project->settings().resolution();
+                            if (res.width > 0 && res.height > 0) {
+                                innerW = res.width;
+                                innerH = res.height;
+                            }
+                        }
+
                         // isNestedRecursion=true so the inner composite
                         // doesn't touch the outer's m_lastGoodComposite /
                         // LRU / invalidate flag.  Without this, the inner
                         // overwrites the cached frame the presenter reads,
                         // producing the "nested sequence glitches to its
                         // own first frame every other display tick" bug.
-                        auto innerFrame = compositeFrame(innerTick, outW, outH, scrubMode,
+                        auto innerFrame = compositeFrame(innerTick, innerW, innerH, scrubMode,
                                                           /*isNestedRecursion=*/true);
 
                         // Snapshot into a clean CPU-only BGRA frame. The
@@ -745,6 +822,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     layer.cropB = spineClip->cropBottom();
                                     if (clip->effects().hasActiveEffects())
                                         layer.effects = clip->effects().evaluate(localTick);
+                                    if (!pendingAdjustmentEffects.empty()) {
+                                        layer.effects.insert(layer.effects.end(),
+                                                             pendingAdjustmentEffects.begin(),
+                                                             pendingAdjustmentEffects.end());
+                                    }
                                     if (perfLog) {
                                         auto perfClipT1 = std::chrono::high_resolution_clock::now();
                                         double clipMs = std::chrono::duration<double, std::milli>(
@@ -1067,7 +1149,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     }
 
                     if (fb.handle != 0) {
-                        int64_t srcTick = localTick + clip->sourceIn();
+                        int64_t srcTick = clip->sourceIn() +
+                            static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
                         if (srcTick >= 0) {
                             double fps = 24.0;
                             auto* mInfo = m_mediaPool->getInfo(fb.handle);
@@ -1407,6 +1490,13 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             if (clip->effects().hasActiveEffects()) {
                 const int64_t effectLocalTick = tick - clip->timelineIn();
                 layer.effects = clip->effects().evaluate(effectLocalTick);
+            }
+            // Append adjustment-layer effects from tracks above this one
+            // so they post-process this layer (Premiere/AE behaviour).
+            if (!pendingAdjustmentEffects.empty()) {
+                layer.effects.insert(layer.effects.end(),
+                                     pendingAdjustmentEffects.begin(),
+                                     pendingAdjustmentEffects.end());
             }
 
             // PERF: per-clip timing

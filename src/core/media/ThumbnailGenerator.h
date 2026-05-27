@@ -152,6 +152,11 @@ public:
     /// Clear the in-memory cache.
     void clearCache();
 
+    /// Evict all cache entries for a specific file path.
+    /// Call this when a file's content changes on disk so the next
+    /// requestThumbnail() call regenerates from the new file bytes.
+    void evictPath(const std::filesystem::path& filePath);
+
     /// Clear both in-memory and disk caches.
     void clearAllCaches();
 

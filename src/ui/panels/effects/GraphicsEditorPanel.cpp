@@ -49,6 +49,9 @@
 #include <QScrollBar>
 #include <QSlider>
 #include <QListWidgetItem>
+#include <QLineEdit>
+#include <QKeyEvent>
+#include <QSplitter>
 
 #include <QApplication>
 #include <QClipboard>
@@ -125,30 +128,74 @@ void GraphicsEditorPanel::setupUI()
 
  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Layer list ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
  m_layerList = new QListWidget(this);
- m_layerList->setMinimumHeight(40);
- m_layerList->setMaximumHeight(120);
- m_layerList->setSelectionMode(QAbstractItemView::SingleSelection);
- m_layerList->setDragDropMode(QAbstractItemView::InternalMove);
+ m_layerList->setMinimumHeight(24);
+ m_layerList->setWordWrap(true);
+ // ExtendedSelection: plain click = single, Ctrl+click toggles, Shift+click
+ // extends the range. The single-layer edit controls follow currentRow
+ // (the focused row), so per-layer editing still works while multi-select
+ // is available for bulk context-menu actions (copy/delete).
+ //
+ // NoDragDrop: an earlier `InternalMove` config was silently intercepting
+ // modifier-clicks on already-selected rows (Qt enters a drag-pending
+ // state and skips the selection update), which made Shift/Ctrl-click
+ // collapse to single-selection. Drag-reorder is a luxury — multi-select
+ // is the requested behavior, so disable drag entirely.
+ m_layerList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+ m_layerList->setSelectionBehavior(QAbstractItemView::SelectRows);
+ m_layerList->setDragDropMode(QAbstractItemView::NoDragDrop);
+ m_layerList->setDragEnabled(false);
+ // Use the full accent color (not the subtle variant) so multi-selected
+ // rows are unmistakably highlighted. :selected matches every row in
+ // the selection set, including the non-focused ones, so the user can
+ // see at a glance that the multi-select succeeded. :selected:!active
+ // keeps the highlight visible even when focus moves to another panel.
  m_layerList->setStyleSheet(QStringLiteral(
  "QListWidget { background: %1; color: %2; border: none; "
  "border-bottom: 1px solid %3; font-size: 12px; outline: none; }"
- "QListWidget::item { padding: 3px 6px; min-height: 22px; }"
- "QListWidget::item:selected { background: %4; color: %5; }"
- "QListWidget::item:hover { background: %6; }")
+ "QListWidget::item { padding: 3px 6px; }"
+ "QListWidget::item:selected { background: %4; color: white; }"
+ "QListWidget::item:selected:!active { background: %4; color: white; }"
+ "QListWidget::item:hover { background: %5; }")
  .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
- Theme::hex(tc.border), Theme::hex(tc.accentSubtle),
- Theme::hex(tc.textPrimary), Theme::hex(tc.controlBgHover)));
+ Theme::hex(tc.border), Theme::hex(tc.accent),
+ Theme::hex(tc.controlBgHover)));
  connect(m_layerList, &QListWidget::currentRowChanged,
  this, &GraphicsEditorPanel::selectLayer);
- // Double-click a layer row → jump straight into editing its text
- // right here in Essential Graphics (Premiere Pro). currentRow already
- // changed on the first click, so the layer is selected and the text
- // box is populated; just focus + select it.
+ // Multi-selection set: emit whenever the QListWidget selection set
+ // changes so the workspace can update its group-move target list.
+ connect(m_layerList, &QListWidget::itemSelectionChanged,
+ this, [this]() {
+ emit layerSelectionSetChanged(selectedLayerStackIndices());
+ });
+ // Keep inline QLineEdit text colors in sync with selection highlighting
+ connect(m_layerList, &QListWidget::itemSelectionChanged,
+ this, [this]() {
+ const auto& tc2 = Theme::colors();
+ for (int r = 0; r < m_layerList->count(); ++r) {
+ auto* it = m_layerList->item(r);
+ auto* w = m_layerList->itemWidget(it);
+ if (!w) continue;
+ auto* e = w->findChild<QPlainTextEdit*>();
+ if (!e) continue;
+ bool sel = it->isSelected();
+ e->setStyleSheet(sel
+ ? QStringLiteral("QPlainTextEdit { background: transparent; border: none; color: white; font-size: 12px; padding: 0; }")
+ : QStringLiteral("QPlainTextEdit { background: transparent; border: none; color: %1; font-size: 12px; padding: 0; }")
+ .arg(Theme::hex(tc2.textPrimary)));
+ }
+ });
+ // Double-click a text layer row -> edit the text inline right in the list
  connect(m_layerList, &QListWidget::itemDoubleClicked,
- this, [this](QListWidgetItem*) {
- if (m_textContentEdit && m_textContentEdit->isVisible()) {
- m_textContentEdit->setFocus(Qt::OtherFocusReason);
- m_textContentEdit->selectAll();
+ this, [this](QListWidgetItem* item) {
+ if (!item) return;
+ auto* w = m_layerList->itemWidget(item);
+ if (!w) return;
+ auto* edit = w->findChild<QPlainTextEdit*>();
+ if (edit) {
+ edit->setReadOnly(false);
+ edit->setTextInteractionFlags(Qt::TextEditorInteraction);
+ edit->setFocus(Qt::OtherFocusReason);
+ edit->selectAll();
  }
  });
  m_layerList->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -227,7 +274,18 @@ void GraphicsEditorPanel::setupUI()
 
  menu.exec(m_layerList->viewport()->mapToGlobal(pos));
  });
- rootLayout->addWidget(m_layerList);
+
+ // ── Splitter: layer list ↔ scroll area (user-draggable divider) ──
+ m_splitter = new QSplitter(Qt::Vertical, this);
+ m_splitter->setChildrenCollapsible(false);
+ m_splitter->setHandleWidth(4);
+ m_splitter->setStyleSheet(QStringLiteral(
+ "QSplitter::handle { background: %1; }"
+ "QSplitter::handle:hover { background: %2; }")
+ .arg(Theme::hex(tc.border), Theme::hex(tc.accent)));
+ m_splitter->addWidget(m_layerList);
+ // The scroll area is added to the splitter below
+ rootLayout->addWidget(m_splitter, 1);
 
  // Empty state label
  m_emptyLabel = new QLabel(tr("Select a Graphic clip to edit layers"), this);
@@ -252,7 +310,10 @@ void GraphicsEditorPanel::setupUI()
  m_editLayout->addStretch();
 
  m_scrollArea->setWidget(m_editContainer);
- rootLayout->addWidget(m_scrollArea, 1);
+ m_splitter->addWidget(m_scrollArea);
+
+ // Set initial sizes: layer list ~30%, scroll area ~70%
+ m_splitter->setSizes({120, 280});
 
  // Status bar
  m_statusLabel = new QLabel(this);
@@ -265,8 +326,7 @@ void GraphicsEditorPanel::setupUI()
  rootLayout->addWidget(m_statusLabel);
 
  // Initially show empty state, hide content
- m_layerList->setVisible(false);
- m_scrollArea->setVisible(false);
+ m_splitter->setVisible(false);
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -300,8 +360,7 @@ void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
  m_typeBadge->setVisible(true);
 
  // Show content, hide empty state
- m_layerList->setVisible(true);
- m_scrollArea->setVisible(true);
+ m_splitter->setVisible(true);
  if (m_emptyLabel) m_emptyLabel->setVisible(false);
 
  rebuildLayerList();
@@ -312,8 +371,7 @@ void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
  } else {
  m_clipNameLabel->setText(tr("Graphics Editor"));
  m_typeBadge->setVisible(false);
- m_layerList->setVisible(false);
- m_scrollArea->setVisible(false);
+ m_splitter->setVisible(false);
  if (m_emptyLabel) m_emptyLabel->setVisible(true);
  if (m_statusLabel) m_statusLabel->setText(tr("No clip"));
  }
@@ -335,8 +393,7 @@ void GraphicsEditorPanel::clearClip()
  m_layerList->clear();
  m_clipNameLabel->setText(tr("Graphics Editor"));
  m_typeBadge->setVisible(false);
- m_layerList->setVisible(false);
- m_scrollArea->setVisible(false);
+ m_splitter->setVisible(false);
  if (m_emptyLabel) m_emptyLabel->setVisible(true);
  if (m_statusLabel) m_statusLabel->setText(tr("No clip"));
 }
@@ -355,16 +412,19 @@ void GraphicsEditorPanel::rebuildLayerList()
  return;
  }
 
+ const auto& tc = Theme::colors();
+
  // Build list top-to-bottom (reverse of stack order)
  for (int i = static_cast<int>(m_graphicClip->layerCount()) - 1; i >= 0; --i) {
  auto* layer = m_graphicClip->layer(static_cast<size_t>(i));
  QString icon;
  QString displayName;
- if (layer->layerType() == GraphicLayerType::Text) {
+ bool isText = (layer->layerType() == GraphicLayerType::Text);
+ if (isText) {
  icon = QStringLiteral("\U0001D5E7 ");
  auto* tl = static_cast<TextLayer*>(layer);
  QString raw = QString::fromStdString(tl->text()).trimmed();
- displayName = raw.isEmpty() ? QStringLiteral("(empty)") : raw.left(30);
+ displayName = raw.isEmpty() ? QStringLiteral("(empty)") : raw;
  } else {
  icon = QStringLiteral("\u25A0 ");
  displayName = QString::fromStdString(layer->name());
@@ -373,10 +433,70 @@ void GraphicsEditorPanel::rebuildLayerList()
  QString vis = layer->isVisible() ? QStringLiteral("\U0001F441 ") : QStringLiteral(" \u2003");
  QString lock = layer->isLocked() ? QStringLiteral("\U0001F512 ") : QStringLiteral(" \u2003");
 
+ if (isText) {
+ // ── Text layers: embed a QPlainTextEdit for inline editing ──
+ auto* tl = static_cast<TextLayer*>(layer);
+
+ // Calculate height from line count (min 1 line = 20px)
+ int lineCount = displayName.count('\n') + 1;
+ int itemH = qMax(24, lineCount * 18 + 4);
+
+ auto* item = new QListWidgetItem(m_layerList);
+ item->setData(Qt::UserRole, QVariant::fromValue(static_cast<quintptr>(layer->layerId())));
+ item->setSizeHint(QSize(0, itemH));
+
+ auto* row = new QWidget();
+ row->setAttribute(Qt::WA_TranslucentBackground);
+ auto* rowLay = new QHBoxLayout(row);
+ rowLay->setContentsMargins(3, 1, 3, 1);
+ rowLay->setSpacing(1);
+
+ auto makeIcon = [](const QString& t) {
+ auto* lbl = new QLabel(t);
+ lbl->setFixedWidth(18);
+ lbl->setAlignment(Qt::AlignCenter);
+ lbl->setAttribute(Qt::WA_TranslucentBackground);
+ lbl->setStyleSheet(QStringLiteral("background: transparent;"));
+ return lbl;
+ };
+ rowLay->addWidget(makeIcon(vis));
+ rowLay->addWidget(makeIcon(lock));
+ rowLay->addWidget(makeIcon(icon));
+
+ auto* edit = new QPlainTextEdit(displayName);
+ edit->setFrameShape(QFrame::NoFrame);
+ edit->setAttribute(Qt::WA_TranslucentBackground);
+ edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+ edit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+ edit->setTabChangesFocus(true);
+ edit->document()->setDocumentMargin(0);
+ edit->setFixedHeight(itemH - 2);
+ edit->setReadOnly(true);
+ edit->setTextInteractionFlags(Qt::NoTextInteraction);
+ edit->installEventFilter(this);
+ edit->setStyleSheet(QStringLiteral(
+ "QPlainTextEdit { background: transparent; border: none; color: %1; font-size: 12px; padding: 0; }"
+ ).arg(Theme::hex(tc.textPrimary)));
+ edit->setToolTip(displayName);
+ // Update the underlying TextLayer as the user types
+ connect(edit, &QPlainTextEdit::textChanged, this, [tl, this]() {
+ auto* e = qobject_cast<QPlainTextEdit*>(sender());
+ if (e) {
+ tl->setText(e->toPlainText().toStdString());
+ emit propertyChanged();
+ }
+ });
+ rowLay->addWidget(edit, 1);
+
+ m_layerList->setItemWidget(item, row);
+ } else {
+ // ── Shape layers: plain text item ───────────────────────────
  auto* item = new QListWidgetItem(
  vis + lock + icon + displayName,
  m_layerList);
  item->setData(Qt::UserRole, QVariant::fromValue(static_cast<quintptr>(layer->layerId())));
+ item->setToolTip(displayName);
+ }
  }
  m_layerList->blockSignals(false);
 
@@ -384,6 +504,45 @@ void GraphicsEditorPanel::rebuildLayerList()
  int count = static_cast<int>(m_graphicClip->layerCount());
  m_statusLabel->setText(tr("%n layer(s)", "", count));
  }
+}
+
+std::vector<int> GraphicsEditorPanel::selectedLayerStackIndices() const
+{
+ std::vector<int> out;
+ if (!m_layerList || !m_graphicClip) return out;
+ const int count = static_cast<int>(m_graphicClip->layerCount());
+ const auto rows = m_layerList->selectionModel()
+                       ? m_layerList->selectionModel()->selectedRows()
+                       : QModelIndexList{};
+ out.reserve(static_cast<size_t>(rows.size()));
+ for (const QModelIndex& mi : rows) {
+   const int listRow = mi.row();
+   // Layer list is rendered top-to-bottom = reverse stack order.
+   const int stackIdx = count - 1 - listRow;
+   if (stackIdx >= 0 && stackIdx < count)
+     out.push_back(stackIdx);
+ }
+ return out;
+}
+
+bool GraphicsEditorPanel::eventFilter(QObject* obj, QEvent* event)
+{
+ // When a QPlainTextEdit in the layer list loses focus or the user
+ // presses Enter, switch it back to read-only display mode.
+ auto* edit = qobject_cast<QPlainTextEdit*>(obj);
+ if (edit) {
+ if (event->type() == QEvent::FocusOut) {
+ edit->setReadOnly(true);
+ edit->setTextInteractionFlags(Qt::NoTextInteraction);
+ } else if (event->type() == QEvent::KeyPress) {
+ auto* ke = static_cast<QKeyEvent*>(event);
+ if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+ edit->clearFocus();  // triggers FocusOut -> readOnly
+ return true;
+ }
+ }
+ }
+ return QWidget::eventFilter(obj, event);
 }
 
 void GraphicsEditorPanel::selectLayerByStackIndex(int stackIdx)
@@ -394,6 +553,29 @@ void GraphicsEditorPanel::selectLayerByStackIndex(int stackIdx)
  // List is reversed: top of stack = row 0
  int listRow = count - 1 - stackIdx;
  m_layerList->setCurrentRow(listRow);
+}
+
+void GraphicsEditorPanel::toggleLayerInSelection(int stackIdx)
+{
+ if (!m_graphicClip || !m_layerList) return;
+ const int count = static_cast<int>(m_graphicClip->layerCount());
+ if (stackIdx < 0 || stackIdx >= count) return;
+ const int listRow = count - 1 - stackIdx;
+ QListWidgetItem* item = m_layerList->item(listRow);
+ if (!item) return;
+ auto* selModel = m_layerList->selectionModel();
+ if (!selModel) {
+   item->setSelected(true);
+   m_layerList->setCurrentRow(listRow);
+   return;
+ }
+ const QModelIndex mi = m_layerList->model()->index(listRow, 0);
+ // Toggle membership without disturbing other selected rows.
+ selModel->select(mi, QItemSelectionModel::Toggle | QItemSelectionModel::Rows);
+ // Promote the clicked row to "current" so the single-layer edit
+ // controls follow it. NoUpdate prevents setCurrentIndex from clearing
+ // the rest of the selection.
+ selModel->setCurrentIndex(mi, QItemSelectionModel::NoUpdate);
 }
 
 void GraphicsEditorPanel::selectLayer(int listRow)

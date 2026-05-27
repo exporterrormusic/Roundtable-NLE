@@ -306,8 +306,8 @@ void PropertiesPanel::setupIdentitySection(QWidget* container)
             this, &PropertiesPanel::applyEnabled);
     form->addRow(m_enabledCheck);
 
-    m_speedSpin = createScrubby(0.01, 100.0, 0.01, 3, "x");
-    m_speedSpin->setToolTip(tr("Playback speed multiplier (1.0 = normal)"));
+    m_speedSpin = createScrubby(1.0, 10000.0, 1.0, 0, " %");
+    m_speedSpin->setToolTip(tr("Playback speed percentage (100% = normal). Duration adjusts automatically."));
     connect(m_speedSpin, &ScrubbySpinBox::valueCommitted,
             this, [this](double, double) { applySpeed(); });
     connect(m_speedSpin, &QDoubleSpinBox::editingFinished,
@@ -351,9 +351,9 @@ void PropertiesPanel::setupTransformSection(QWidget* container)
     auto* posLabel = new QLabel("Position", m_transformSection);
     posLabel->setStyleSheet(QStringLiteral("QLabel { color: %1; font-weight: bold; }")
         .arg(Theme::hex(Theme::colors().textPrimary)));
-    m_posXSpin = createScrubby(-10000.0, 10000.0, 1.0, 1);
+    m_posXSpin = createScrubby(-1000000.0, 1000000.0, 1.0, 1);
     m_posXSpin->setToolTip(tr("Horizontal position in pixels"));
-    m_posYSpin = createScrubby(-10000.0, 10000.0, 1.0, 1);
+    m_posYSpin = createScrubby(-1000000.0, 1000000.0, 1.0, 1);
     m_posYSpin->setToolTip(tr("Vertical position in pixels"));
     grid->addWidget(posLabel,              row, 0);
     grid->addWidget(makeAxisLabel("X"),    row, 1);

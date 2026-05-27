@@ -14,6 +14,7 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
+#include "timeline/AudioClip.h"
 #include "panels/audio/AudioMixer.h"
 // ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
@@ -115,7 +116,8 @@ void TimelineWorkspace::wireNestSignals()
             // undo can restore them precisely (including original IDs).
             struct SavedClip {
                 size_t trackIndex;
-                uint64_t clipId;
+                uint64_t clipId;           // original ID (used on first execute)
+                uint64_t restoredId{0};    // ID after undo-restore (used on redo)
                 std::shared_ptr<Clip> clonedClip;  // shared for lambda capture
             };
             auto savedClips = std::make_shared<std::vector<SavedClip>>();
@@ -212,10 +214,16 @@ void TimelineWorkspace::wireNestSignals()
                         dstTrack->addClip(std::move(cloned));
                     }
 
-                    // Remove the original clips from the current timeline
-                    for (const auto& sc : *savedClips) {
+                    // Remove the original clips from the current timeline.
+                    // On first execute, clips are removed by their original ID.
+                    // On redo after undo, undo restored clips with new IDs, so
+                    // we use restoredId (which undo captured).
+                    for (auto& sc : *savedClips) {
                         auto* trk = m_timeline->track(sc.trackIndex);
-                        if (trk) trk->removeClipById(sc.clipId);
+                        if (!trk) continue;
+                        uint64_t removeId = (sc.restoredId != 0) ? sc.restoredId : sc.clipId;
+                        trk->removeClipById(removeId);
+                        sc.restoredId = 0;  // reset for next undo/redo cycle
                     }
 
                     // Insert a SequenceClip in their place
@@ -241,11 +249,14 @@ void TimelineWorkspace::wireNestSignals()
                         if (trk) trk->removeClipById(*seqClipId);
                     }
 
-                    // Restore the original clips
-                    for (const auto& sc : *savedClips) {
+                    // Restore the original clips.  Because clone() assigns
+                    // fresh IDs, we capture the new ID on each SavedClip so
+                    // that redo can find and remove them again.
+                    for (auto& sc : *savedClips) {
                         auto* trk = m_timeline->track(sc.trackIndex);
                         if (!trk) continue;
                         auto restored = sc.clonedClip->clone();
+                        sc.restoredId = restored->id();
                         trk->addClip(std::move(restored));
                     }
 

@@ -97,7 +97,22 @@ void PropertyRow::setTrack(KeyframeTrack<float>* track) { m_track = track; }
 
 void PropertyRow::addExtraTrack(KeyframeTrack<float>* track)
 {
-    if (track) m_extraTracks.push_back(track);
+    if (!track) return;
+    for (auto* t : m_extraTracks) if (t == track) return;
+    m_extraTracks.push_back(track);
+}
+
+void PropertyRow::removeExtraTrack(KeyframeTrack<float>* track)
+{
+    if (!track) return;
+    m_extraTracks.erase(
+        std::remove(m_extraTracks.begin(), m_extraTracks.end(), track),
+        m_extraTracks.end());
+}
+
+void PropertyRow::clearExtraTracks()
+{
+    m_extraTracks.clear();
 }
 
 std::vector<KeyframeTrack<float>*> PropertyRow::allTracks() const
@@ -365,10 +380,19 @@ int64_t KeyframeTimeline::xToTick(int x) const
     return m_viewStart + static_cast<int64_t>(ratio * (m_viewEnd - m_viewStart));
 }
 
-int KeyframeTimeline::rowY(int rowIndex) const
+int KeyframeTimeline::rowY(const PropertyRow* row) const
 {
-    return kRulerHeight + kClipBarHeight + (rowIndex * kRowHeight) + kRowHeight / 2
-           - m_scrollOffsetY;
+    // Use the PropertyRow's actual Y position within its parent container
+    // rather than a calculated rowIndex * kRowHeight. This ensures the
+    // keyframe tracks line up with the effect entries even when section
+    // headers, checkboxes, and other non-row widgets add vertical space
+    // between PropertyRows in the left-side layout.
+    //
+    // The left scrollArea and this KeyframeTimeline share the same Y=0
+    // origin (both are children of the same QSplitter), so the row's
+    // container position maps directly to this widget's coordinates
+    // after subtracting the synced scroll offset.
+    return row->pos().y() + kRowHeight / 2 - m_scrollOffsetY;
 }
 
 void KeyframeTimeline::paintEvent(QPaintEvent* /*event*/)
@@ -471,20 +495,11 @@ void KeyframeTimeline::drawKeyframeDiamonds(QPainter& p)
 
     const auto& tc = Theme::colors();
 
-    // Build visible-row-index map
-    std::unordered_map<const PropertyRow*, int> visIdx;
-    int vi = 0;
-    for (const auto* row : m_rows) {
-        if (!row->isVisible()) continue;
-        visIdx[row] = vi++;
-    }
-
     // Draw horizontal divider lines for each visible property row
     p.setPen(QPen(tc.border, 1.0));
     for (const auto* row : m_rows) {
-        auto it = visIdx.find(row);
-        if (it == visIdx.end()) continue;
-        int y = rowY(it->second) + kRowHeight / 2;
+        if (!row->isVisible()) continue;
+        int y = rowY(row) + kRowHeight / 2;
         if (y > kRulerHeight && y < height()) {
             p.drawLine(0, y, width(), y);
         }
@@ -494,12 +509,11 @@ void KeyframeTimeline::drawKeyframeDiamonds(QPainter& p)
     p.setPen(Qt::NoPen);
 
     for (const auto* row : m_rows) {
-        auto it = visIdx.find(row);
-        if (it == visIdx.end()) continue;
+        if (!row->isVisible()) continue;
         const auto rowTracks = row->allTracks();
         if (rowTracks.empty()) continue;
 
-        int y = rowY(it->second);
+        int y = rowY(row);
         if (y < kRulerHeight || y > height()) continue;
 
         // Union the keyframe times across every track bound to this row so
@@ -737,6 +751,7 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
             m_draggingSelection = true;
             m_dragAnchorTick = xToTick(event->pos().x());
             m_dragEntries.clear();
+            m_dragTrackSnap.clear();
             for (const auto& sk : m_selectedKeys) {
                 for (size_t i = 0; i < sk.track->keyframeCount(); ++i) {
                     const auto& kf = sk.track->keyframe(i);
@@ -747,6 +762,20 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
                                                  kf.bezierOutX, kf.bezierOutY});
                         break;
                     }
+                }
+            }
+            // Snapshot every track touched by the drag so each move can
+            // restore non-dragged keyframes that were overwritten when the
+            // dragged keyframe momentarily collided with them.
+            for (const auto& entry : m_dragEntries) {
+                if (m_dragTrackSnap.count(entry.track)) continue;
+                auto& snap = m_dragTrackSnap[entry.track];
+                snap.reserve(entry.track->keyframeCount());
+                for (size_t i = 0; i < entry.track->keyframeCount(); ++i) {
+                    const auto& kf = entry.track->keyframe(i);
+                    snap.push_back({kf.time, kf.value, kf.interp,
+                                    kf.bezierInX, kf.bezierInY,
+                                    kf.bezierOutX, kf.bezierOutY});
                 }
             }
             setFocus();
@@ -792,12 +821,11 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
         QRect hitRect = rect.adjusted(-kDiamondRadius, -kDiamondRadius,
                                        kDiamondRadius,  kDiamondRadius);
         m_selectedKeys = m_preMarqueeSelection; // start from pre-existing
-        int vi = 0;
         for (const auto* row : m_rows) {
             if (!row->isVisible()) continue;
             const auto rowTracks = row->allTracks();
-            if (rowTracks.empty()) { ++vi; continue; }
-            int y = rowY(vi);
+            if (rowTracks.empty()) continue;
+            int y = rowY(row);
             for (auto* track : rowTracks) {
                 if (!track) continue;
                 for (size_t i = 0; i < track->keyframeCount(); ++i) {
@@ -806,7 +834,6 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
                         m_selectedKeys.insert({track, track->keyframe(i).time});
                 }
             }
-            ++vi;
         }
         update();
         return;
@@ -873,16 +900,56 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
             delta = bestDelta;
         }
 
-        // Remove all dragged keyframes from their current positions
-        for (auto& entry : m_dragEntries) {
-            entry.track->removeKeyframeAtTime(entry.currentTime);
+        // Restore each affected track from its drag-start snapshot. This
+        // un-erases any non-dragged keyframe that a previous move-tick
+        // happened to land on (the "drag past = silently destroyed"
+        // bug). Then strip the dragged-set's origTimes so we can re-add
+        // them at their new positions without leaving duplicates behind.
+        for (auto& [trk, snap] : m_dragTrackSnap) {
+            while (trk->keyframeCount() > 0)
+                trk->removeKeyframe(trk->keyframeCount() - 1);
+            for (const auto& s : snap) {
+                Keyframe<float> kf;
+                kf.time       = s.time;
+                kf.value      = s.value;
+                kf.interp     = s.interp;
+                kf.bezierInX  = s.biX;
+                kf.bezierInY  = s.biY;
+                kf.bezierOutX = s.boX;
+                kf.bezierOutY = s.boY;
+                trk->restoreKeyframe(kf);
+            }
+        }
+        // Build the set of non-dragged keyframe times per track. A new-time
+        // landing on one of these would silently overwrite it (addKeyframe
+        // replaces on collision), so we shift by ±1 tick to skip past it.
+        std::unordered_map<KeyframeTrack<float>*, std::set<int64_t>> nonDragTimes;
+        for (auto& [trk, snap] : m_dragTrackSnap) {
+            auto& set = nonDragTimes[trk];
+            for (const auto& s : snap) set.insert(s.time);
+        }
+        for (const auto& entry : m_dragEntries) {
+            auto it = nonDragTimes.find(entry.track);
+            if (it != nonDragTimes.end()) it->second.erase(entry.origTime);
+            entry.track->removeKeyframeAtTime(entry.origTime);
         }
 
         // Reinsert at new positions, clamped to [0, clipDuration]
         m_selectedKeys.clear();
         int64_t maxTime = m_clip ? m_clip->duration() : INT64_MAX;
+        const int64_t shiftDir = (delta >= 0) ? +1 : -1;
         for (auto& entry : m_dragEntries) {
             int64_t newTime = std::clamp(entry.origTime + delta, int64_t(0), maxTime);
+            // Step past any non-dragged keyframe that already occupies
+            // newTime so neither keyframe is lost. Bounded to avoid an
+            // infinite loop in pathological cases.
+            auto& occupied = nonDragTimes[entry.track];
+            int guard = 0;
+            while (occupied.count(newTime) && guard++ < 100000) {
+                int64_t next = newTime + shiftDir;
+                if (next < 0 || next > maxTime) break;
+                newTime = next;
+            }
             entry.track->addKeyframe(newTime, entry.value, entry.interp);
             // Restore bezier handles
             for (size_t i = 0; i < entry.track->keyframeCount(); ++i) {
@@ -899,13 +966,44 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
             m_selectedKeys.insert({entry.track, newTime});
         }
 
+        // Emit live during the drag so the Effect Controls spinboxes and
+        // the Program Monitor track the new keyframe positions in real
+        // time — otherwise the displayed value stays at the pre-drag
+        // evaluation until the user releases.
+        emit keyframeChanged();
         update();
         return;
     }
 }
 
-void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* /*event*/)
+void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* event)
 {
+    // Re-evaluate the marquee with the release position so a fast drag
+    // that stopped firing mouseMoveEvent right before release still has
+    // the final rect — otherwise edge keyframes that the cursor swept
+    // through but didn't have a recent move event for would drop out.
+    if (m_marqueeActive && event) {
+        m_marqueeCurrent = event->pos();
+        QRect rect = QRect(m_marqueeOrigin, m_marqueeCurrent).normalized();
+        QRect hitRect = rect.adjusted(-kDiamondRadius, -kDiamondRadius,
+                                       kDiamondRadius,  kDiamondRadius);
+        m_selectedKeys = m_preMarqueeSelection;
+        for (const auto* row : m_rows) {
+            if (!row->isVisible()) continue;
+            const auto rowTracks = row->allTracks();
+            if (rowTracks.empty()) continue;
+            int y = rowY(row);
+            for (auto* track : rowTracks) {
+                if (!track) continue;
+                for (size_t i = 0; i < track->keyframeCount(); ++i) {
+                    int x = tickToX(track->keyframe(i).time);
+                    if (hitRect.contains(x, y))
+                        m_selectedKeys.insert({track, track->keyframe(i).time});
+                }
+            }
+        }
+    }
+
     if (m_draggingSelection && !m_dragEntries.empty()) {
         // Check if any keyframe actually moved
         bool moved = false;
@@ -969,6 +1067,7 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* /*event*/)
     m_scrubbing = false;
     m_draggingSelection = false;
     m_dragEntries.clear();
+    m_dragTrackSnap.clear();
     const bool wasMarquee = m_marqueeActive;
     m_marqueeActive = false;
     if (wasMarquee) {
@@ -980,20 +1079,12 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* /*event*/)
 
 void KeyframeTimeline::focusOutEvent(QFocusEvent* event)
 {
-    // Premiere-style: clicking anywhere else in the Effect Controls panel
-    // (a spinbox, a section header, the property tree background, etc.)
-    // moves keyboard focus away from the mini-timeline, which is when we
-    // drop any keyframe selection. Skip clearing on popup activations (the
-    // right-click context menu) and on window deactivation so a returning
-    // user isn't surprised by losing selection when they re-focus the app.
-    const bool popupActive = (QApplication::activePopupWidget() != nullptr);
-    if (event->reason() != Qt::PopupFocusReason &&
-        event->reason() != Qt::ActiveWindowFocusReason &&
-        !popupActive &&
-        !m_selectedKeys.empty()) {
-        m_selectedKeys.clear();
-        update();
-    }
+    // Keep the selection across focus losses. Earlier behavior cleared on
+    // focus-out, but that fired right after a marquee drag (Qt routes a
+    // focus-out as the press grab releases on edge keyframes — common when
+    // dragging to the very first/last frame), making selected diamonds
+    // flash blue during the drag and instantly drop on release. Users
+    // deselect explicitly by clicking an empty area of the mini-timeline.
     QWidget::focusOutEvent(event);
 }
 
@@ -1060,21 +1151,12 @@ void KeyframeTimeline::keyPressEvent(QKeyEvent* event)
 
 KeyframeTimeline::HitResult KeyframeTimeline::hitTestKeyframe(const QPoint& pos) const
 {
-    // Build visible-row-index map
-    std::unordered_map<const PropertyRow*, int> visIdx;
-    int vi = 0;
     for (const auto* row : m_rows) {
         if (!row->isVisible()) continue;
-        visIdx[row] = vi++;
-    }
-
-    for (const auto* row : m_rows) {
-        auto it = visIdx.find(row);
-        if (it == visIdx.end()) continue;
         const auto rowTracks = row->allTracks();
         if (rowTracks.empty()) continue;
 
-        int y = rowY(it->second);
+        int y = rowY(row);
         if (y < kRulerHeight || y > height()) continue;
 
         // Look across every track bound to this row — a compound row like
@@ -1208,6 +1290,12 @@ void EffectControlsPanel::setupUI()
                     bool match = filter.isEmpty()
                         || row->propertyName().toLower().contains(filter)
                         || sectionMatch;
+                    // Scale Width stays hidden while Uniform Scale is on,
+                    // even when the filter would otherwise show it.
+                    if (row == m_scaleWRow && m_uniformScaleCheck
+                            && m_uniformScaleCheck->isChecked()) {
+                        match = false;
+                    }
                     row->setVisible(match);
                 } else {
                     child->setVisible(sectionMatch || filter.isEmpty());
@@ -1265,9 +1353,14 @@ void EffectControlsPanel::setupUI()
     connect(m_kfTimeline, &KeyframeTimeline::playheadScrubbed,
             this, &EffectControlsPanel::seekRequested);
 
-    // Keyframe moved or deleted in the mini-timeline
+    // Keyframe moved or deleted in the mini-timeline. Re-evaluate every
+    // bound track at the playhead so spinbox values reflect the keyframes'
+    // new positions live, not just on release.
     connect(m_kfTimeline, &KeyframeTimeline::keyframeChanged,
-            this, &EffectControlsPanel::propertyChanged);
+            this, [this]() {
+        syncValuesFromClip();
+        emit propertyChanged();
+    });
 
     // ── Empty state label ───────────────────────────────────────────────
     m_emptyLabel = new QLabel(tr("Select a clip to view properties"), this);

@@ -341,6 +341,7 @@ private:
     // Sequence preview state
     bool              m_isSequence{false};
     size_t            m_sequenceIndex{0};
+    bool              m_seqHasAudio{false};
     SequenceFrameProvider m_seqFrameProvider;
     SequenceTimelineGetter m_seqTimelineGetter;
     std::unique_ptr<AudioPlaybackService> m_seqAudioPlayback;

@@ -253,6 +253,9 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // the smallest snap delta — otherwise only the primary's edges
         // could snap, so clips on other tracks would silently pass over
         // target edges and never magnetise.
+        // Holding Ctrl suppresses magnetism entirely for precision moves.
+        const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
+        if (!ctrlHeld) {
         const bool multiDrag = (m_dragSelectedClips.size() > 1);
         if (!multiDrag) {
             int64_t newOut = newIn + m_dragOriginalDuration;
@@ -300,6 +303,12 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             } else {
                 setSnapIndicator(-1);
             }
+        }
+        } else {
+            // Ctrl held: suppress magnetism, reset sticky state so
+            // releasing Ctrl doesn't cause a sudden jump to a stale target.
+            m_snapEngine.resetHysteresis();
+            setSnapIndicator(-1);
         }
 
         // Compute the actual delta applied to the primary clip
@@ -551,11 +560,17 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // to call every tick — setEditPointTick early-returns at -1.
         clearEditPointSelection();
         int64_t newHead = m_dragOriginalIn + tickDelta;
+        const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
+        if (!ctrlHeld) {
         auto result = m_snapEngine.snap(newHead);
         if (result.didSnap) {
             newHead = result.snappedTick;
             setSnapIndicator(result.snappedTick);
         } else {
+            setSnapIndicator(-1);
+        }
+        } else {
+            m_snapEngine.resetHysteresis();
             setSnapIndicator(-1);
         }
 
@@ -626,11 +641,17 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // See ClipTrimHead: hide the edit-point bracket once trimming.
         clearEditPointSelection();
         int64_t newTail = m_dragOriginalIn + m_dragOriginalDuration + tickDelta;
+        const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
+        if (!ctrlHeld) {
         auto result = m_snapEngine.snap(newTail);
         if (result.didSnap) {
             newTail = result.snappedTick;
             setSnapIndicator(result.snappedTick);
         } else {
+            setSnapIndicator(-1);
+        }
+        } else {
+            m_snapEngine.resetHysteresis();
             setSnapIndicator(-1);
         }
 
@@ -716,6 +737,8 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // indicator would appear at a tick the seam can't actually reach.
         const int64_t rawEditPoint = m_rollOriginalEditPoint + tickDelta;
         int64_t newEditPoint = rawEditPoint;
+        const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
+        if (!ctrlHeld) {
         auto snapResult = m_snapEngine.snap(rawEditPoint);
         if (snapResult.didSnap
             && snapResult.snappedTick >= m_rollMinEditPoint
@@ -726,6 +749,12 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         }
         else
         {
+            setSnapIndicator(-1);
+            newEditPoint = std::clamp(rawEditPoint,
+                                      m_rollMinEditPoint, m_rollMaxEditPoint);
+        }
+        } else {
+            m_snapEngine.resetHysteresis();
             setSnapIndicator(-1);
             newEditPoint = std::clamp(rawEditPoint,
                                       m_rollMinEditPoint, m_rollMaxEditPoint);

@@ -43,6 +43,7 @@
 #include "media/AudioEngine.h"
 #include "media/MediaPool.h"
 #include "media/PlaybackController.h"
+#include "timeline/AdjustmentClip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
 #include "timeline/ImageClip.h"
@@ -1300,6 +1301,73 @@ void TimelineWorkspace::wireMediaDropSignals()
                 handle = m_mediaPool->open(filePath.toStdString());
 
             emit m_timelinePanel->mediaDropped(filePath, handle, atTick, trackIndex);
+        });
+
+        // =================================================================
+        //  ADJUSTMENT-LAYER DRAG-DROP -> CREATE AdjustmentClip ON TIMELINE
+        // =================================================================
+        connect(m_timelinePanel, &TimelinePanel::adjustmentDropped,
+                this, [this](const QString& name, int64_t atTick,
+                             size_t trackIndex) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_timeline) return;
+
+            const int64_t dur = secondsToTicks(5.0);
+            const bool forceGhostVideoTrack = (trackIndex == (SIZE_MAX - 1));
+
+            // Resolve the destination video track. If the drop landed above
+            // the top video (kGhostDropTrackVideoAbove sentinel), or on an
+            // audio track / empty area, fall back to the top-most video
+            // track. Create one if the sequence has none.
+            auto resolveVideoTrack = [&]() -> Track* {
+                if (forceGhostVideoTrack || trackIndex >= m_timeline->trackCount() ||
+                    m_timeline->track(trackIndex)->type() != TrackType::Video ||
+                    m_timeline->track(trackIndex)->isDivider()) {
+                    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                        Track* tr = m_timeline->track(i);
+                        if (tr && tr->type() == TrackType::Video && !tr->isDivider())
+                            return tr;
+                    }
+                    return nullptr;
+                }
+                return m_timeline->track(trackIndex);
+            };
+
+            auto refreshAfter = [this](bool trackStructureChanged = false) {
+                if (m_destroying.load(std::memory_order_acquire)) return;
+                if (trackStructureChanged)
+                    m_timelinePanel->rebuildTracks();
+                else
+                    m_timelinePanel->refreshTrackContents();
+                invalidateCompositeCache();
+                if (m_programMonitor) m_programMonitor->requestRefresh();
+            };
+
+            // If no video track exists, create one (matches the media-drop
+            // "new track on empty sequence" behaviour).
+            bool createdTrack = false;
+            Track* track = resolveVideoTrack();
+            if (!track) {
+                track = m_timeline->addVideoTrack("Video 1");
+                createdTrack = true;
+                if (!track) return;
+            }
+
+            auto clip = std::make_unique<AdjustmentClip>();
+            clip->setTimelineIn(atTick);
+            clip->setDuration(dur);
+            clip->setLabel(name.toStdString());
+
+            if (m_commandStack) {
+                m_commandStack->execute(std::make_unique<AddClipCommand>(
+                    track, std::move(clip)));
+            } else {
+                track->addClip(std::move(clip));
+            }
+
+            refreshAfter(createdTrack);
+            spdlog::info("Adjustment Layer dropped on timeline: '{}' at tick {}",
+                         name.toStdString(), atTick);
         });
     }
 }

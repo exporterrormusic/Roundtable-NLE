@@ -431,46 +431,87 @@ try
             ? ResolutionTier::Full
             : playbackTier();
 
-        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-            auto* trk = m_timeline->track(ti);
-            if (!trk || trk->type() != TrackType::Video || trk->isMuted())
-                continue;
-            for (auto* c : trk->clipsAtTime(tick)) {
-                if (!c || !c->isEnabled()) continue;
-                auto* vc = dynamic_cast<VideoClip*>(c);
-                if (!vc) continue;
-                const auto& mp = vc->mediaPath();
-                if (mp.empty()) continue;
+        // Collect VideoClips in a Timeline at the given tick that aren't
+        // cached yet.  Extracted as a lambda so we can call it for the
+        // outer timeline AND for the inner timeline of each SequenceClip
+        // — without descending, a nested sequence's first frame would
+        // never trigger the block-on-arrival wait and the program monitor
+        // would flash black when the only visible content is the nested
+        // sequence and its inner decoders aren't warm.
+        auto collectPending = [&](Timeline* tl, int64_t atTick) {
+            if (!tl) return;
+            for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
+                auto* trk = tl->track(ti);
+                if (!trk || trk->type() != TrackType::Video || trk->isMuted())
+                    continue;
+                for (auto* c : trk->clipsAtTime(atTick)) {
+                    if (!c || !c->isEnabled()) continue;
+                    auto* vc = dynamic_cast<VideoClip*>(c);
+                    if (!vc) continue;
+                    const auto& mp = vc->mediaPath();
+                    if (mp.empty()) continue;
 
-                MediaHandle handle = 0;
-                {
-                    auto it = m_openMediaHandles.find(mp);
-                    if (it != m_openMediaHandles.end())
-                        handle = it->second;
+                    MediaHandle handle = 0;
+                    {
+                        auto it = m_openMediaHandles.find(mp);
+                        if (it != m_openMediaHandles.end())
+                            handle = it->second;
+                    }
+                    if (handle == 0) continue;
+
+                    const auto* info = m_mediaPool->getInfo(handle);
+                    if (!info) continue;
+
+                    double fps = (info->fps > 0.0) ? info->fps
+                               : (vc->sourceFps() > 0.0 ? vc->sourceFps() : 24.0);
+                    const int64_t localTick = atTick - c->timelineIn();
+                    int64_t srcTick = c->sourceIn() +
+                        static_cast<int64_t>(localTick * c->effectiveSpeed(localTick));
+                    if (srcTick < 0) srcTick = 0;
+                    int64_t frameNum =
+                        static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                    if (info->frameCount <= 1) {
+                        frameNum = 0;
+                    } else if (vc->isVideoCharacter()) {
+                        frameNum = ((frameNum % info->frameCount) + info->frameCount)
+                                   % info->frameCount;
+                    } else {
+                        frameNum = std::clamp(frameNum, int64_t(0),
+                                              info->frameCount - 1);
+                    }
+
+                    if (!m_mediaPool->isFrameCached(handle, frameNum, wantTier))
+                        pending.push_back({handle, frameNum, wantTier});
                 }
-                if (handle == 0) continue;
+            }
+        };
 
-                const auto* info = m_mediaPool->getInfo(handle);
-                if (!info) continue;
+        // Outer timeline.
+        collectPending(m_timeline, tick);
 
-                double fps = (info->fps > 0.0) ? info->fps
-                           : (vc->sourceFps() > 0.0 ? vc->sourceFps() : 24.0);
-                int64_t srcTick = tick - c->timelineIn() + c->sourceIn();
-                if (srcTick < 0) srcTick = 0;
-                int64_t frameNum =
-                    static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
-                if (info->frameCount <= 1) {
-                    frameNum = 0;
-                } else if (vc->isVideoCharacter()) {
-                    frameNum = ((frameNum % info->frameCount) + info->frameCount)
-                               % info->frameCount;
-                } else {
-                    frameNum = std::clamp(frameNum, int64_t(0),
-                                          info->frameCount - 1);
+        // Inner timelines reachable through one level of SequenceClip
+        // (matches the depth=2 cap on compositeFrame recursion).  Without
+        // this the nested sequence's first frame on a fresh shot shows
+        // black instead of waiting up to 16 ms for inner decoders.
+        if (m_project) {
+            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                auto* trk = m_timeline->track(ti);
+                if (!trk || trk->type() != TrackType::Video || trk->isMuted())
+                    continue;
+                for (auto* c : trk->clipsAtTime(tick)) {
+                    if (!c || !c->isEnabled()) continue;
+                    auto* seqClip = dynamic_cast<SequenceClip*>(c);
+                    if (!seqClip) continue;
+                    if (seqClip->sequenceIndex() >= m_project->sequenceCount())
+                        continue;
+                    auto* innerTl = m_project->sequence(seqClip->sequenceIndex());
+                    if (!innerTl || innerTl == m_timeline) continue;
+                    // Mirror the render path's innerTick mapping
+                    // (localTick + sourceIn, clamped non-negative).
+                    int64_t innerTick = (tick - c->timelineIn()) + c->sourceIn();
+                    if (innerTick < 0) innerTick = 0;
+                    collectPending(innerTl, innerTick);
                 }
-
-                if (!m_mediaPool->isFrameCached(handle, frameNum, wantTier))
-                    pending.push_back({handle, frameNum, wantTier});
             }
         }
 

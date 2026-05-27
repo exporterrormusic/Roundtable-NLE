@@ -82,10 +82,10 @@ void BackgroundDownloadPanel::setupUI()
     layout->addWidget(m_statusLabel);
 
     // ── Collapsible toggle button (always visible) ───────────────────────
-    m_instructionsToggle = new QPushButton(QStringLiteral("\u25BC  Show download options"));
+    m_instructionsToggle = new QPushButton(QStringLiteral("\u25B6  Show download options"));
     m_instructionsToggle->setObjectName("GhostBtn");
     m_instructionsToggle->setCheckable(true);
-    m_instructionsToggle->setChecked(true);
+    m_instructionsToggle->setChecked(false);
     m_instructionsToggle->setStyleSheet(QStringLiteral(
         "QPushButton { font-size: 12px; font-weight: 500; padding: 4px 8px; "
         "text-align: left; border: none; color: %1; }"
@@ -136,6 +136,7 @@ void BackgroundDownloadPanel::setupUI()
 
     layout->addWidget(m_instructionsToggle);
     layout->addWidget(m_instructionsContainer);
+    m_instructionsContainer->setVisible(false);  // start collapsed
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -209,6 +209,12 @@ public:
     /// Select and scroll to the item matching the given file path.
     void revealByPath(const QString& filePath);
 
+    /// Refresh the thumbnail for a specific file path, re-generating from
+    /// the current on-disk content.  Used when a file is overwritten in
+    /// Windows Explorer while the bin is open, so the icon view updates
+    /// live without requiring an app restart.
+    void refreshFileThumbnail(const std::filesystem::path& filePath);
+
     /// Open the "New Sequence" dialog and create a sequence with chosen settings.
     void createNewSequence();
 
@@ -222,6 +228,14 @@ public:
     /// Whether a bin item path is a generated Color Matte asset
     /// (lives in a "Mattes" directory).
     [[nodiscard]] static bool isColorMatte(const std::filesystem::path& path);
+
+    /// Whether a bin item path is a synthetic Adjustment Layer entry
+    /// (sentinel "<adjustments>/<name>.adj" — never an on-disk file).
+    [[nodiscard]] static bool isAdjustmentLayer(const std::filesystem::path& path);
+
+    /// Create a new Adjustment Layer bin item (Premiere-style — prompts
+    /// for a name and adds it as a draggable synthetic entry).
+    void createAdjustmentLayer();
 
     /// Re-open the color picker for an existing Color Matte and rewrite
     /// the PNG in place, refreshing the bin and every timeline instance.

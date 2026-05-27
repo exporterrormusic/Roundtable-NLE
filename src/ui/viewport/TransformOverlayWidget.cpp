@@ -15,6 +15,7 @@
 #include "Theme.h"
 
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -104,15 +105,39 @@ void TransformOverlayWidget::enterEvent(QEnterEvent* /*event*/)
 
 void TransformOverlayWidget::setTransformOverlay(const TransformOverlayInfo& info)
 {
+    // While the in-place text editor is open, the layer's text has been
+    // temporarily cleared so the renderer doesn't draw it behind the
+    // editor. That clear collapses the content rect to a tiny degenerate
+    // area — and any workspace updateTransformOverlay() call would here
+    // overwrite our hidden-overlay state, drawing a tiny rogue transform
+    // box right on top of the editing text. Save the new info for
+    // restoration on commit but DON'T touch m_overlay's visible flag
+    // until inline editing ends.
+    if (m_inlineTextEdit && m_inlineTextEdit->isVisible()) {
+        m_savedOverlayBeforeEdit = info;
+        m_savedOverlayBeforeEdit.visible = true;
+        return;
+    }
     m_overlay = info;
     if (!info.visible)
         clearCursorOverride();  // no selection → no special cursor
     update();
 }
 
+void TransformOverlayWidget::setSecondaryOverlays(
+    const std::vector<TransformOverlayInfo>& extras)
+{
+    // Even during inline text editing we keep the secondary list up-to-date
+    // — these are sibling layers that aren't being edited, so showing their
+    // boxes still makes sense.
+    m_secondaryOverlays = extras;
+    update();
+}
+
 void TransformOverlayWidget::clearTransformOverlay()
 {
     m_overlay.visible = false;
+    m_secondaryOverlays.clear();
     m_dragMode = DragMode::None;
     applyCursor(Qt::ArrowCursor);
     update();
@@ -520,10 +545,14 @@ QPointF TransformOverlayWidget::frameToWidget(const QPointF& fp) const
 
 void TransformOverlayWidget::computeOverlayCorners(QPointF corners[4]) const
 {
+    computeOverlayCornersFor(m_overlay, corners);
+}
+
+void TransformOverlayWidget::computeOverlayCornersFor(
+    const TransformOverlayInfo& ov, QPointF corners[4]) const
+{
     constexpr float REF_W = 1920.0f;
     constexpr float REF_H = 1080.0f;
-
-    const auto& ov = m_overlay;
 
     // ── Per-layer content-rect mode ─────────────────────────────────────
     if (ov.useContentRect && m_vulkanVp) {

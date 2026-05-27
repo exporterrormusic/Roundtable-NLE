@@ -298,6 +298,12 @@ void EffectControlsPanel::syncValuesFromClip()
     if (!m_clip || m_updating) return;
     m_updating = true;
     populateFromClip();
+    // External edits (program-monitor transform drag, viewport scrub)
+    // create / move keyframes on the bound tracks — the mini-timeline
+    // needs to repaint so the diamonds reflect the new positions live.
+    if (m_kfTimeline) m_kfTimeline->update();
+    for (auto* row : m_propertyRows)
+        if (row) row->updateForTime(clipRelativeTick());
     m_updating = false;
 }
 
@@ -436,13 +442,50 @@ void EffectControlsPanel::applyTransformLive()
         const double sf = coverFitForCurrentClip();
         const double divisor = (sf > 0.0001) ? sf : 1.0;
         float s = static_cast<float>(spin->value() / 100.0 / divisor);
-        writeIfTrack(effScaleX(), s);
-        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked())
-            writeIfTrack(effScaleY(), s);
+        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+            // Uniform: both axes must end up at `s` AND stay paired across
+            // time. If either track is animated, BOTH must keyframe at the
+            // playhead — otherwise scaleY drifts as a static default while
+            // scaleX rides its keyframes and the render stops being uniform.
+            auto* sx = effScaleX();
+            auto* sy = effScaleY();
+            if (sx) {
+                const bool animated = (sx->keyframeCount() > 0)
+                                   || (sy && sy->keyframeCount() > 0);
+                if (animated) {
+                    const int64_t t = clipRelativeTick();
+                    sx->addKeyframe(t, s);
+                    if (sy) sy->addKeyframe(t, s);
+                } else {
+                    sx->writeValue(clipRelativeTick(), s);
+                    if (sy) sy->writeValue(clipRelativeTick(), s);
+                }
+            }
+        } else {
+            writeIfTrack(effScaleX(), s);
+        }
     } else if (spin == m_scaleWSpin) {
         const double sf = coverFitForCurrentClip();
         const double divisor = (sf > 0.0001) ? sf : 1.0;
-        writeIfTrack(effScaleY(), static_cast<float>(spin->value() / 100.0 / divisor));
+        float s = static_cast<float>(spin->value() / 100.0 / divisor);
+        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+            auto* sx = effScaleX();
+            auto* sy = effScaleY();
+            if (sy) {
+                const bool animated = (sy->keyframeCount() > 0)
+                                   || (sx && sx->keyframeCount() > 0);
+                if (animated) {
+                    const int64_t t = clipRelativeTick();
+                    sy->addKeyframe(t, s);
+                    if (sx) sx->addKeyframe(t, s);
+                } else {
+                    sy->writeValue(clipRelativeTick(), s);
+                    if (sx) sx->writeValue(clipRelativeTick(), s);
+                }
+            }
+        } else {
+            writeIfTrack(effScaleY(), s);
+        }
     } else if (spin == m_rotationSpin) {
         writeIfTrack(effRotation(), static_cast<float>(spin->value()));
     } else if (spin == m_opacitySpin) {
@@ -456,7 +499,26 @@ void EffectControlsPanel::applyTransformLive()
                       static_cast<float>(spin->value() / posDisplayFactorY()),
                       effAnchorX());
     } else if (spin == m_speedSpin) {
-        m_clip->setSpeed(spin->value() / 100.0);
+        double newSpd = spin->value() / 100.0;
+        if (newSpd <= 0.0) newSpd = 0.01;
+        double oldSpd = m_clip->speed();
+        m_clip->setSpeed(newSpd);
+        // Adjust duration to keep source range consistent
+        int64_t newDur = static_cast<int64_t>(std::llround(m_clip->duration() * oldSpd / newSpd));
+        if (newDur < kMinClipDuration) newDur = kMinClipDuration;
+        // Clamp to next clip's start so we don't overlap
+        if (m_track) {
+            size_t ci = m_track->findClipIndexById(m_clip->id());
+            for (size_t i = ci + 1; i < m_track->clipCount(); ++i) {
+                const Clip* next = m_track->clip(i);
+                if (next && next->timelineIn() > m_clip->timelineIn()) {
+                    int64_t maxDur = next->timelineIn() - m_clip->timelineIn();
+                    if (newDur > maxDur && maxDur >= kMinClipDuration) newDur = maxDur;
+                    break;
+                }
+            }
+        }
+        m_clip->setDuration(newDur);
     } else if (auto* ac = dynamic_cast<AudioClip*>(m_clip)) {
         if (spin == m_panSpin) {
             float newPan = static_cast<float>(spin->value() / 100.0);
@@ -508,14 +570,20 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
     else if (spin == m_anchorYSpin)  { track = effAnchorY(); factor = posDisplayFactorY(); }
     else if (spin == m_speedSpin) {
         // Speed is not a keyframe track
-        double oldSpd = spin->scrubStartValue() / 100.0;
+        double oldPct = spin->scrubStartValue();
+        double oldSpd = oldPct / 100.0;
+        if (oldSpd <= 0.0) oldSpd = 0.01;
         double newSpd = m_clip->speed();
+        int64_t newDur = m_clip->duration();
+        // Calculate old duration: oldDur = newDur * newSpd / oldSpd
+        int64_t oldDur = static_cast<int64_t>(std::llround(newDur * newSpd / oldSpd));
+        if (oldDur < kMinClipDuration) oldDur = kMinClipDuration;
         Clip* c = m_clip; auto* p = this;
         if (m_commandStack)
             m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                 "Set Speed",
-                [c, newSpd, p]() { c->setSpeed(newSpd); p->populateFromClip(); emit p->propertyChanged(); },
-                [c, oldSpd, p]() { c->setSpeed(oldSpd); p->populateFromClip(); emit p->propertyChanged(); }));
+                [c, newSpd, newDur, p]() { c->setSpeed(newSpd); c->setDuration(newDur); p->populateFromClip(); emit p->propertyChanged(); },
+                [c, oldSpd, oldDur, p]() { c->setSpeed(oldSpd); c->setDuration(oldDur); p->populateFromClip(); emit p->propertyChanged(); }));
         return;
     } else if (auto* ac = dynamic_cast<AudioClip*>(m_clip)) {
         if      (spin == m_panSpin)         { track = &ac->pan(); factor = 100.0; }
@@ -733,12 +801,23 @@ void EffectControlsPanel::applyTransform()
 void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t time)
 {
     if (!track) return;
-    float val = track->evaluate(time);
-    if (m_commandStack) {
-        m_commandStack->execute(
-            std::make_unique<AddKeyframeCommand>(track, time, val));
-    } else {
-        track->addKeyframe(time, val);
+    auto addOne = [this, time](KeyframeTrack<float>* trk) {
+        float v = trk->evaluate(time);
+        if (m_commandStack)
+            m_commandStack->execute(
+                std::make_unique<AddKeyframeCommand>(trk, time, v));
+        else
+            trk->addKeyframe(time, v);
+    };
+    addOne(track);
+    // Uniform Scale: a single click on the Scale row's diamond must
+    // keyframe BOTH axes — otherwise scaleY stays static while scaleX
+    // animates and the render stops being uniform between keyframes.
+    if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+        if (track == effScaleX() && effScaleY())
+            addOne(effScaleY());
+        else if (track == effScaleY() && effScaleX())
+            addOne(effScaleX());
     }
     // Refresh button states so the diamond switches to "delete" mode
     for (auto* row : m_propertyRows)
@@ -750,11 +829,19 @@ void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t tim
 void EffectControlsPanel::onDeleteKeyframe(KeyframeTrack<float>* track, int64_t time)
 {
     if (!track) return;
-    if (m_commandStack) {
-        m_commandStack->execute(
-            std::make_unique<RemoveKeyframeCommand>(track, time));
-    } else {
-        track->removeKeyframeAtTime(time);
+    auto removeOne = [this, time](KeyframeTrack<float>* trk) {
+        if (m_commandStack)
+            m_commandStack->execute(
+                std::make_unique<RemoveKeyframeCommand>(trk, time));
+        else
+            trk->removeKeyframeAtTime(time);
+    };
+    removeOne(track);
+    if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+        if (track == effScaleX() && effScaleY())
+            removeOne(effScaleY());
+        else if (track == effScaleY() && effScaleX())
+            removeOne(effScaleX());
     }
     // Refresh button states so the diamond switches to "add" mode
     for (auto* row : m_propertyRows)

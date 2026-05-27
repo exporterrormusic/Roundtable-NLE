@@ -257,6 +257,7 @@ void SourceMonitor::loadSequence(size_t sequenceIndex, const QString& name,
             }
         }
     }
+    m_seqHasAudio = seqHasAudio;
     refreshDragButtons(/*hasVideo=*/true, /*hasAudio=*/seqHasAudio);
 
     // The first compositeFrame for the inner sequence usually returns an
@@ -339,6 +340,7 @@ void SourceMonitor::clearClip()
     m_audioOnly    = false;
     m_isSequence   = false;
     m_sequenceIndex = 0;
+    m_seqHasAudio  = false;
     m_seqFrameProvider = nullptr;
     m_seqTimelineGetter = nullptr;
     if (m_seqAudioPlayback) {
@@ -832,6 +834,8 @@ void SourceMonitor::startSourceDrag(SourceDragMode mode)
                           QByteArray::number(qlonglong(region.sourceIn)));
         mimeData->setData("application/x-roundtable-source-out",
                           QByteArray::number(qlonglong(region.sourceOut)));
+        mimeData->setData("application/x-roundtable-sequence-has-audio",
+                          QByteArray(m_seqHasAudio ? "1" : "0"));
     } else {
         auto filePath = m_mediaSources
             ? m_mediaSources->sourceInfo(m_mediaHandle).value().path

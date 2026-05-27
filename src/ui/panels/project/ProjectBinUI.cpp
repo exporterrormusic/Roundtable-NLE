@@ -392,6 +392,12 @@ void ProjectBin::setupUI()
                 createColorMatte();
             });
         }
+        {
+            auto* act = newItemMenu->addAction("Adjustment Layer...");
+            QObject::connect(act, &QAction::triggered, this, [this]() {
+                createAdjustmentLayer();
+            });
+        }
         // Paste — available whenever the bin clipboard holds anything
         // (sequence, footage, or color matte).
         if (hasClipboard()) {
@@ -786,6 +792,12 @@ void ProjectBin::setupUI()
             auto* act = newItemMenu->addAction("Color Matte...");
             QObject::connect(act, &QAction::triggered, this, [this]() {
                 createColorMatte();
+            });
+        }
+        {
+            auto* act = newItemMenu->addAction("Adjustment Layer...");
+            QObject::connect(act, &QAction::triggered, this, [this]() {
+                createAdjustmentLayer();
             });
         }
         menu.addSeparator();

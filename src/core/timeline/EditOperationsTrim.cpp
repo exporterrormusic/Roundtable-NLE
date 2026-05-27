@@ -13,6 +13,8 @@
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/GraphicClip.h"
+#include "timeline/TitleClip.h"
 #include "command/Command.h"
 #include "command/CompoundCommand.h"
 #include "command/LambdaCommand.h"
@@ -115,7 +117,12 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
     auto rightClip = clip->clone();
     rightClip->setTimelineIn(splitTime);
     rightClip->setDuration(rightDuration);
-    rightClip->setSourceIn(clip->sourceIn() + leftDuration);
+    // leftDuration is in timeline ticks; convert to source ticks for sourceIn.
+    // Use truncation (static_cast) to match TimelineSnapshotBuilder's sourceTick
+    // calculation, so the right half's first frame matches the left half's last.
+    const double clipSpd = std::max(clip->speed(), 0.01);
+    int64_t rightSrcIn = clip->sourceIn() + static_cast<int64_t>(static_cast<double>(leftDuration) * clipSpd);
+    rightClip->setSourceIn(rightSrcIn);
     rightClip->setLabel(clip->label());
 
     // Assign a new unique group ID so the right half is independently
@@ -227,18 +234,22 @@ std::unique_ptr<Command> EditOperations::trimClip(
     const Clip* clip = track->clip(idx);
 
     // Looping/unbounded clips (Spine character animations, video characters,
-    // graphic-layer/still-image "videos", and image clips) can be extended in
-    // either direction because they loop or hold a single frame. For these we
-    // skip sourceIn>=0 / source-extent clamps so the user can drag the head
+    // graphic-layer/still-image "videos", image clips, GraphicClips, and
+    // TitleClips) can be extended in either direction because they loop or
+    // hold a single frame / are procedurally generated. For these we skip
+    // sourceIn>=0 / source-extent clamps so the user can drag the head
     // edge backwards past tick 0 of the source.
     auto isLoopingClip = [](const Clip* c) -> bool {
         if (auto* vc = dynamic_cast<const VideoClip*>(c))
             return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath());
-        if (dynamic_cast<const ImageClip*>(c)) return true;
-        if (dynamic_cast<const SpineClip*>(c)) return true;
+        if (dynamic_cast<const ImageClip*>(c))   return true;
+        if (dynamic_cast<const SpineClip*>(c))   return true;
+        if (dynamic_cast<const GraphicClip*>(c)) return true;
+        if (dynamic_cast<const TitleClip*>(c))   return true;
         return false;
     };
     const bool looping = isLoopingClip(clip);
+    const double speed = std::max(clip->speed(), 0.01);
 
     int64_t newIn = clip->timelineIn();
     int64_t newDuration = clip->duration();
@@ -246,10 +257,12 @@ std::unique_ptr<Command> EditOperations::trimClip(
 
     if (edge == ClipEdge::Head)
     {
-        // Moving the in-point: adjust timelineIn, sourceIn, and duration
+        // Moving the in-point: adjust timelineIn, sourceIn, and duration.
+        // delta is in timeline ticks; sourceIn is in source ticks, so
+        // scale by speed (e.g. speed 0.5 → 1000 timeline ticks = 500 source ticks).
         int64_t delta = newEdgeTime - clip->timelineIn();
         newIn       = newEdgeTime;
-        newSourceIn = clip->sourceIn() + delta;
+        newSourceIn = clip->sourceIn() + static_cast<int64_t>(std::llround(delta * speed));
         newDuration = clip->duration() - delta;
 
         // Clamp minimum duration
@@ -257,14 +270,14 @@ std::unique_ptr<Command> EditOperations::trimClip(
         {
             newDuration = kMinClipDuration;
             newIn       = clip->timelineOut() - kMinClipDuration;
-            newSourceIn = clip->sourceIn() + (clip->duration() - kMinClipDuration);
+            newSourceIn = clip->sourceIn() + static_cast<int64_t>(std::llround((clip->duration() - kMinClipDuration) * speed));
         }
         // Don't allow timeline to go negative.
         if (newIn < 0)
         {
             int64_t correction = -newIn;
             newIn       = 0;
-            newSourceIn += correction;
+            newSourceIn += static_cast<int64_t>(std::llround(correction * speed));
             newDuration -= correction;
             if (newDuration < kMinClipDuration)
                 newDuration = kMinClipDuration;
@@ -274,7 +287,8 @@ std::unique_ptr<Command> EditOperations::trimClip(
         // sourceIn (the playback layer wraps modulo source duration).
         if (!looping && newSourceIn < 0)
         {
-            int64_t correction = -newSourceIn;
+            // Convert source tick deficit back to timeline ticks
+            int64_t correction = static_cast<int64_t>(std::llround(-newSourceIn / speed));
             newSourceIn = 0;
             newIn       += correction;
             newDuration -= correction;
@@ -299,13 +313,15 @@ std::unique_ptr<Command> EditOperations::trimClip(
             srcDur = ac->sourceDuration();
         }
         if (srcDur > 0) {
-            int64_t maxDur = srcDur - newSourceIn;
+            // Duration is in timeline ticks, source range is in source ticks.
+            // Convert: maxTimelineDur = sourceRange / speed
+            int64_t maxDur = static_cast<int64_t>(std::llround((srcDur - newSourceIn) / speed));
             if (maxDur < kMinClipDuration) maxDur = kMinClipDuration;
             if (newDuration > maxDur) {
                 spdlog::info("DIAG-TRIM tail clamp: clipId={} srcDur={} ({:.3f}s) sourceIn={} "
-                             "requested={} ({:.3f}s) clamped={} ({:.3f}s)",
+                             "speed={:.2f} requested={} ({:.3f}s) clamped={} ({:.3f}s)",
                              clipId, srcDur, srcDur/48000.0, newSourceIn,
-                             newDuration, newDuration/48000.0, maxDur, maxDur/48000.0);
+                             speed, newDuration, newDuration/48000.0, maxDur, maxDur/48000.0);
                 newDuration = maxDur;
             }
         }
@@ -334,19 +350,25 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     const Clip* leftClip  = track->clip(li);
     const Clip* rightClip = track->clip(ri);
 
+    const double leftSpd  = std::max(leftClip->speed(), 0.01);
+    const double rightSpd = std::max(rightClip->speed(), 0.01);
+
     int64_t leftNewDuration = newEditPoint - leftClip->timelineIn();
     int64_t rightEnd = rightClip->timelineOut();
 
     // Looping/unbounded clips (Spine character animations, video characters,
-    // still-image "videos", and image clips) have no real source extent —
-    // they loop or hold a single frame, so rolling should let the edit point
-    // travel freely past sourceIn=0 / sourceDuration.  Mirrors the same
-    // exemption in trimClipEdge above.
+    // still-image "videos", image clips, GraphicClips, and TitleClips) have
+    // no real source extent — they loop or hold a single frame / are
+    // procedurally generated, so rolling should let the edit point travel
+    // freely past sourceIn=0 / sourceDuration.  Mirrors the same exemption
+    // in trimClip above.
     auto isLoopingClip = [](const Clip* c) -> bool {
         if (auto* vc = dynamic_cast<const VideoClip*>(c))
             return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath());
-        if (dynamic_cast<const ImageClip*>(c)) return true;
-        if (dynamic_cast<const SpineClip*>(c)) return true;
+        if (dynamic_cast<const ImageClip*>(c))   return true;
+        if (dynamic_cast<const SpineClip*>(c))   return true;
+        if (dynamic_cast<const GraphicClip*>(c)) return true;
+        if (dynamic_cast<const TitleClip*>(c))   return true;
         return false;
     };
     const bool leftLooping  = isLoopingClip(leftClip);
@@ -362,7 +384,7 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
             srcDur = ac->sourceDuration();
         }
         if (srcDur > 0) {
-            leftMaxDur = srcDur - leftClip->sourceIn();
+            leftMaxDur = static_cast<int64_t>(std::llround((srcDur - leftClip->sourceIn()) / leftSpd));
             if (leftMaxDur < kMinClipDuration) leftMaxDur = kMinClipDuration;
         }
     }
@@ -407,17 +429,18 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     {
         // Right clip extends backwards: new timelineIn = leftClip->timelineIn()
         int64_t rightExtendDur = rightEnd - leftClip->timelineIn();
-        int64_t rightSrcDelta = leftClip->timelineIn() - rightClip->timelineIn(); // negative
-        int64_t rightNewSourceIn = rightClip->sourceIn() + rightSrcDelta;
+        int64_t rightSrcDelta = leftClip->timelineIn() - rightClip->timelineIn(); // negative, timeline ticks
+        int64_t rightNewSourceIn = rightClip->sourceIn() + static_cast<int64_t>(std::llround(rightSrcDelta * rightSpd));
 
         // Clamp right source to source limit
         if (rightHasSourceLimit) {
-            // The right clip's source can't go negative
-            int64_t maxBackShift = rightClip->sourceIn();
+            // The right clip's source can't go negative.
+            // Convert sourceIn ticks to timeline ticks for comparison.
+            int64_t maxBackShift = static_cast<int64_t>(std::llround(rightClip->sourceIn() / rightSpd));
             if (rightSrcDelta < -maxBackShift) {
                 // Can't shift source that far back; clamp
                 rightNewSourceIn = 0;
-                int64_t actualBackShift = -rightClip->sourceIn();
+                int64_t actualBackShift = -maxBackShift;
                 int64_t actualLeftIn = rightClip->timelineIn() + actualBackShift;
                 rightExtendDur = rightEnd - actualLeftIn;
             }
@@ -450,11 +473,12 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     // Its tail is fixed, so the duration check used for regular trims
     // doesn't apply — rolling only shifts the head.
     if (rightHasSourceLimit) {
-        int64_t rightSrcDelta = newEditPoint - rightClip->timelineIn();
-        int64_t rightNewSourceIn = rightClip->sourceIn() + rightSrcDelta;
+        int64_t rightSrcDelta = newEditPoint - rightClip->timelineIn(); // timeline ticks
+        int64_t rightNewSourceIn = rightClip->sourceIn() + static_cast<int64_t>(std::llround(rightSrcDelta * rightSpd));
         if (rightNewSourceIn < 0) {
-            // Clamp: move the edit point right until sourceIn reaches 0
-            int64_t maxLeftShift = rightClip->sourceIn();
+            // Clamp: move the edit point right until sourceIn reaches 0.
+            // maxLeftShift is how far the head can move left before sourceIn hits 0.
+            int64_t maxLeftShift = static_cast<int64_t>(std::llround(rightClip->sourceIn() / rightSpd));
             newEditPoint = rightClip->timelineIn() - maxLeftShift;
             leftNewDuration = newEditPoint - leftClip->timelineIn();
             rightNewDuration = rightEnd - newEditPoint;
@@ -467,7 +491,7 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
         rightNewDuration = kMinClipDuration;
     }
 
-    int64_t rightSourceDelta = newEditPoint - rightClip->timelineIn();
+    int64_t rightSourceDelta = newEditPoint - rightClip->timelineIn(); // timeline ticks
 
     auto compound = std::make_unique<CompoundCommand>("Rolling edit");
 
@@ -476,11 +500,11 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
         track, leftClipId,
         leftClip->timelineIn(), leftNewDuration, leftClip->sourceIn()));
 
-    // Trim right clip head
+    // Trim right clip head — convert timeline delta to source ticks
     compound->addCommand(std::make_unique<TrimClipCommand>(
         track, rightClipId,
         newEditPoint, rightNewDuration,
-        rightClip->sourceIn() + rightSourceDelta));
+        rightClip->sourceIn() + static_cast<int64_t>(std::llround(rightSourceDelta * rightSpd))));
 
     return compound;
 }
@@ -802,7 +826,10 @@ std::unique_ptr<Command> EditOperations::slipClip(
         srcDur = ac->sourceDuration();
     }
     if (srcDur > 0) {
-        int64_t maxSourceIn = srcDur - clip->duration();
+        // duration is in timeline ticks; convert to source ticks via speed
+        double spd = std::max(clip->speed(), 0.01);
+        int64_t srcConsumed = static_cast<int64_t>(std::llround(clip->duration() * spd));
+        int64_t maxSourceIn = srcDur - srcConsumed;
         if (maxSourceIn < 0) maxSourceIn = 0;
         if (newSourceIn > maxSourceIn)
             newSourceIn = maxSourceIn;

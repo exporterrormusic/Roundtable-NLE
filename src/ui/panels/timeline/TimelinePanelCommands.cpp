@@ -169,6 +169,9 @@ void TimelinePanel::wireShortcuts()
         if (cmd) {
             m_commandStack->execute(std::move(cmd));
             refreshTrackContents();
+            // Sync playhead from the model (the command moves it to end
+            // of pasted content as part of its undoable state).
+            setPlayheadPosition(m_timeline->playheadPosition());
             emit contentChanged();
         }
     });
@@ -180,6 +183,9 @@ void TimelinePanel::wireShortcuts()
         if (cmd) {
             m_commandStack->execute(std::move(cmd));
             refreshTrackContents();
+            // Sync playhead from the model (the command moves it to end
+            // of inserted content as part of its undoable state).
+            setPlayheadPosition(m_timeline->playheadPosition());
             emit contentChanged();
         }
     });
@@ -222,6 +228,9 @@ void TimelinePanel::wireShortcuts()
         if (cmd) {
             m_commandStack->execute(std::move(cmd));
             refreshTrackContents();
+            // Sync playhead from the model (the command moves it to end
+            // of duplicated content as part of its undoable state).
+            setPlayheadPosition(m_timeline->playheadPosition());
             emit contentChanged();
         }
     });

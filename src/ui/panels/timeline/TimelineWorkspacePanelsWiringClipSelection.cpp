@@ -465,6 +465,18 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             bool sxWasStatic = m_scaleXWasStaticAtDragStart;
             bool syWasStatic = m_scaleYWasStaticAtDragStart;
             m_scaleDragActive = false;
+            // Snapshot the group-move state for sibling-undo support.
+            // Software Viewport doesn't currently populate group-move
+            // state (only the GPU overlay does), so this is a no-op
+            // snapshot of empty data — kept for symmetry with the GPU
+            // handler so the cmd-construction code below compiles in
+            // both branches.
+            const auto groupMoveSnapshot   = m_groupMoveStart;
+            const float groupFocusStartX   = m_groupMoveFocusStartX;
+            const float groupFocusStartY   = m_groupMoveFocusStartY;
+            const bool  groupMoveWasActive = m_groupMoveActive;
+            m_groupMoveActive = false;
+            m_groupMoveStart.clear();
             updateTransformOverlay();
             if (m_selectedClip) {
                 auto* track = m_timeline ? m_timeline->track(m_selectedTrackIdx) : nullptr;
@@ -509,6 +521,39 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                             bool sxA = scaleChanged && !layer->transform().scaleX.isStatic();
                             bool syA = scaleChanged && !layer->transform().scaleY.isStatic();
                             bool rtA = rotChanged && !layer->transform().rotation.isStatic();
+                            // Group-move undo capture: snapshot each
+                            // sibling's pre / post position so the
+                            // CompoundCommand below restores every layer
+                            // on Ctrl-Z. Position only — scale / rotation
+                            // only affect the focused layer in our drag.
+                            struct SibCapture {
+                                int idx;
+                                float oldPosX, oldPosY;
+                                float newPosX, newPosY;
+                                bool  pxStatic, pyStatic;
+                            };
+                            std::vector<SibCapture> sibCaps;
+                            if (groupMoveWasActive && posChanged) {
+                                const float dxFinal = newPosX - groupFocusStartX;
+                                const float dyFinal = newPosY - groupFocusStartY;
+                                sibCaps.reserve(groupMoveSnapshot.size());
+                                for (const auto& s : groupMoveSnapshot) {
+                                    if (s.idx == layerIdx) continue;
+                                    if (s.idx < 0
+                                        || s.idx >= static_cast<int>(gc->layerCount()))
+                                        continue;
+                                    auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                    SibCapture sc;
+                                    sc.idx     = s.idx;
+                                    sc.oldPosX = s.posX;
+                                    sc.oldPosY = s.posY;
+                                    sc.newPosX = s.posX + dxFinal;
+                                    sc.newPosY = s.posY + dyFinal;
+                                    sc.pxStatic = sl->transform().posX.isStatic();
+                                    sc.pyStatic = sl->transform().posY.isStatic();
+                                    sibCaps.push_back(sc);
+                                }
+                            }
                             auto cmd = std::make_unique<LambdaCommand>(
                                 "Transform Layer",
                                 [gc, layerIdx, newPosX, newPosY, newScX, newScY, newRot,
@@ -555,7 +600,56 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                                         else l->transform().rotation.writeValue(relTick, oldRot);
                                     }
                                 });
-                            m_commandStack->pushWithoutExecute(std::move(cmd));
+                            if (!sibCaps.empty()) {
+                                // Build a sibling-move LambdaCommand and
+                                // wrap both commands in a CompoundCommand
+                                // so a single Ctrl-Z unwinds the entire
+                                // group move. Each sibling's pre-drag
+                                // static flag is captured to choose
+                                // between setDefaultValue (static track)
+                                // and writeValue (already-keyframed).
+                                auto sibCmd = std::make_unique<LambdaCommand>(
+                                    "Group Move Siblings",
+                                    [gc, sibCaps, relTick]() {
+                                        for (const auto& s : sibCaps) {
+                                            if (s.idx < 0
+                                                || s.idx >= static_cast<int>(gc->layerCount()))
+                                                continue;
+                                            auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                            if (s.pxStatic)
+                                                sl->transform().posX.setDefaultValue(s.newPosX);
+                                            else
+                                                sl->transform().posX.writeValue(relTick, s.newPosX);
+                                            if (s.pyStatic)
+                                                sl->transform().posY.setDefaultValue(s.newPosY);
+                                            else
+                                                sl->transform().posY.writeValue(relTick, s.newPosY);
+                                        }
+                                    },
+                                    [gc, sibCaps, relTick]() {
+                                        for (const auto& s : sibCaps) {
+                                            if (s.idx < 0
+                                                || s.idx >= static_cast<int>(gc->layerCount()))
+                                                continue;
+                                            auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                            if (s.pxStatic)
+                                                sl->transform().posX.setDefaultValue(s.oldPosX);
+                                            else
+                                                sl->transform().posX.writeValue(relTick, s.oldPosX);
+                                            if (s.pyStatic)
+                                                sl->transform().posY.setDefaultValue(s.oldPosY);
+                                            else
+                                                sl->transform().posY.writeValue(relTick, s.oldPosY);
+                                        }
+                                    });
+                                auto compound = std::make_unique<CompoundCommand>(
+                                    "Group Move");
+                                compound->addCommand(std::move(cmd));
+                                compound->addCommand(std::move(sibCmd));
+                                m_commandStack->pushWithoutExecute(std::move(compound));
+                            } else {
+                                m_commandStack->pushWithoutExecute(std::move(cmd));
+                            }
                         }
                     } else {
                         Clip* clip = m_selectedClip;
@@ -634,8 +728,44 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 auto* gc = static_cast<GraphicClip*>(m_selectedClip);
                 if (m_selectedGraphicLayerIdx < static_cast<int>(gc->layerCount())) {
                     auto* layer = gc->layer(static_cast<size_t>(m_selectedGraphicLayerIdx));
+
+                    // Group-move bootstrap: on the FIRST tick of a body drag
+                    // with multi-selection active, snapshot every selected
+                    // layer's starting (posX,posY). The focused layer's
+                    // start position is the reference; each subsequent tick
+                    // applies (posX - focusStart) as Δ to siblings, so they
+                    // travel in lockstep without accumulating drift.
+                    if (!m_groupMoveActive && m_selectedGraphicLayerIdxs.size() > 1) {
+                        m_groupMoveActive = true;
+                        m_groupMoveFocusStartX = layer->transform().posX.evaluate(relTick);
+                        m_groupMoveFocusStartY = layer->transform().posY.evaluate(relTick);
+                        m_groupMoveStart.clear();
+                        m_groupMoveStart.reserve(m_selectedGraphicLayerIdxs.size());
+                        for (int idx : m_selectedGraphicLayerIdxs) {
+                            if (idx == m_selectedGraphicLayerIdx) continue;
+                            if (idx < 0 || idx >= static_cast<int>(gc->layerCount())) continue;
+                            auto* el = gc->layer(static_cast<size_t>(idx));
+                            m_groupMoveStart.push_back({
+                                idx,
+                                el->transform().posX.evaluate(relTick),
+                                el->transform().posY.evaluate(relTick)});
+                        }
+                    }
+
                     layer->transform().posX.writeValue(relTick, posX);
                     layer->transform().posY.writeValue(relTick, posY);
+
+                    // Apply the same Δ to every other selected layer.
+                    if (m_groupMoveActive) {
+                        const float dx = posX - m_groupMoveFocusStartX;
+                        const float dy = posY - m_groupMoveFocusStartY;
+                        for (const auto& s : m_groupMoveStart) {
+                            if (s.idx < 0 || s.idx >= static_cast<int>(gc->layerCount())) continue;
+                            auto* el = gc->layer(static_cast<size_t>(s.idx));
+                            el->transform().posX.writeValue(relTick, s.posX + dx);
+                            el->transform().posY.writeValue(relTick, s.posY + dy);
+                        }
+                    }
                 }
             } else {
                 m_selectedClip->positionX().writeValue(relTick, posX);
@@ -817,6 +947,16 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             bool sxWasStatic = m_scaleXWasStaticAtDragStart;
             bool syWasStatic = m_scaleYWasStaticAtDragStart;
             m_scaleDragActive = false;
+            // Snapshot the group-move state BEFORE resetting it. The
+            // sibling start positions and the focus-layer start position
+            // are baked into the undo / redo lambdas below so a single
+            // Ctrl-Z unwinds every layer that travelled in the drag.
+            const auto groupMoveSnapshot   = m_groupMoveStart;
+            const float groupFocusStartX   = m_groupMoveFocusStartX;
+            const float groupFocusStartY   = m_groupMoveFocusStartY;
+            const bool  groupMoveWasActive = m_groupMoveActive;
+            m_groupMoveActive = false;
+            m_groupMoveStart.clear();
             updateTransformOverlay();
             if (m_selectedClip) {
                 auto* track = m_timeline ? m_timeline->track(m_selectedTrackIdx) : nullptr;
@@ -861,6 +1001,39 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                             bool sxA = scaleChanged && !layer->transform().scaleX.isStatic();
                             bool syA = scaleChanged && !layer->transform().scaleY.isStatic();
                             bool rtA = rotChanged && !layer->transform().rotation.isStatic();
+                            // Group-move undo capture: snapshot each
+                            // sibling's pre / post position so the
+                            // CompoundCommand below restores every layer
+                            // on Ctrl-Z. Position only — scale / rotation
+                            // only affect the focused layer in our drag.
+                            struct SibCapture {
+                                int idx;
+                                float oldPosX, oldPosY;
+                                float newPosX, newPosY;
+                                bool  pxStatic, pyStatic;
+                            };
+                            std::vector<SibCapture> sibCaps;
+                            if (groupMoveWasActive && posChanged) {
+                                const float dxFinal = newPosX - groupFocusStartX;
+                                const float dyFinal = newPosY - groupFocusStartY;
+                                sibCaps.reserve(groupMoveSnapshot.size());
+                                for (const auto& s : groupMoveSnapshot) {
+                                    if (s.idx == layerIdx) continue;
+                                    if (s.idx < 0
+                                        || s.idx >= static_cast<int>(gc->layerCount()))
+                                        continue;
+                                    auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                    SibCapture sc;
+                                    sc.idx     = s.idx;
+                                    sc.oldPosX = s.posX;
+                                    sc.oldPosY = s.posY;
+                                    sc.newPosX = s.posX + dxFinal;
+                                    sc.newPosY = s.posY + dyFinal;
+                                    sc.pxStatic = sl->transform().posX.isStatic();
+                                    sc.pyStatic = sl->transform().posY.isStatic();
+                                    sibCaps.push_back(sc);
+                                }
+                            }
                             auto cmd = std::make_unique<LambdaCommand>(
                                 "Transform Layer",
                                 [gc, layerIdx, newPosX, newPosY, newScX, newScY, newRot,
@@ -907,7 +1080,56 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                                         else l->transform().rotation.writeValue(relTick, oldRot);
                                     }
                                 });
-                            m_commandStack->pushWithoutExecute(std::move(cmd));
+                            if (!sibCaps.empty()) {
+                                // Build a sibling-move LambdaCommand and
+                                // wrap both commands in a CompoundCommand
+                                // so a single Ctrl-Z unwinds the entire
+                                // group move. Each sibling's pre-drag
+                                // static flag is captured to choose
+                                // between setDefaultValue (static track)
+                                // and writeValue (already-keyframed).
+                                auto sibCmd = std::make_unique<LambdaCommand>(
+                                    "Group Move Siblings",
+                                    [gc, sibCaps, relTick]() {
+                                        for (const auto& s : sibCaps) {
+                                            if (s.idx < 0
+                                                || s.idx >= static_cast<int>(gc->layerCount()))
+                                                continue;
+                                            auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                            if (s.pxStatic)
+                                                sl->transform().posX.setDefaultValue(s.newPosX);
+                                            else
+                                                sl->transform().posX.writeValue(relTick, s.newPosX);
+                                            if (s.pyStatic)
+                                                sl->transform().posY.setDefaultValue(s.newPosY);
+                                            else
+                                                sl->transform().posY.writeValue(relTick, s.newPosY);
+                                        }
+                                    },
+                                    [gc, sibCaps, relTick]() {
+                                        for (const auto& s : sibCaps) {
+                                            if (s.idx < 0
+                                                || s.idx >= static_cast<int>(gc->layerCount()))
+                                                continue;
+                                            auto* sl = gc->layer(static_cast<size_t>(s.idx));
+                                            if (s.pxStatic)
+                                                sl->transform().posX.setDefaultValue(s.oldPosX);
+                                            else
+                                                sl->transform().posX.writeValue(relTick, s.oldPosX);
+                                            if (s.pyStatic)
+                                                sl->transform().posY.setDefaultValue(s.oldPosY);
+                                            else
+                                                sl->transform().posY.writeValue(relTick, s.oldPosY);
+                                        }
+                                    });
+                                auto compound = std::make_unique<CompoundCommand>(
+                                    "Group Move");
+                                compound->addCommand(std::move(cmd));
+                                compound->addCommand(std::move(sibCmd));
+                                m_commandStack->pushWithoutExecute(std::move(compound));
+                            } else {
+                                m_commandStack->pushWithoutExecute(std::move(cmd));
+                            }
                         }
                     } else {
                         Clip* clip = m_selectedClip;
@@ -1015,9 +1237,11 @@ void TimelineWorkspace::wireClipSelectionSignals() {
 
         // -- Click on empty area: layer selection (Selection tool) or text creation (Text tool) --
         connect(ov, &TransformOverlayWidget::emptyAreaClicked,
-                this, [this](float frameX, float frameY) {
+                this, [this](float frameX, float frameY, Qt::KeyboardModifiers mods) {
             if (m_destroying.load(std::memory_order_acquire)) return;
             if (!m_timelinePanel || !m_timeline) return;
+            const bool addToSelection =
+                (mods & (Qt::ShiftModifier | Qt::ControlModifier)) != 0;
 
             // -- Selection/Text tool: hit-test layers across all GraphicClips at playhead --
             if (m_timelinePanel->activeTool() == EditTool::Selection ||
@@ -1139,10 +1363,16 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     auto* gc = static_cast<GraphicClip*>(m_selectedClip);
                     int hitIdx = hitTestGraphicClip(gc);
                     if (hitIdx >= 0) {
-                        if (hitIdx != m_selectedGraphicLayerIdx) {
+                        if (addToSelection) {
+                            // Shift/Ctrl-click on a layer in the program
+                            // monitor: toggle its membership in the
+                            // multi-selection so a subsequent body drag
+                            // moves every selected layer in lockstep.
+                            m_GraphicsEditorPanel->toggleLayerInSelection(hitIdx);
+                        } else if (hitIdx != m_selectedGraphicLayerIdx) {
                             m_GraphicsEditorPanel->selectLayerByStackIndex(hitIdx);
                         } else {
-                            // Already-selected layer was hit � cycle to next
+                            // Already-selected layer was hit cycle to next
                             // layer underneath by skipping the current one
                             int cycleIdx = hitTestGraphicClip(gc, hitIdx);
                             if (cycleIdx >= 0)
@@ -1473,6 +1703,19 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 if (!std::isfinite(scaleX) || scaleX <= 0.0f) scaleX = 1.0f;
                 if (!std::isfinite(scaleY) || scaleY <= 0.0f) scaleY = 1.0f;
             }
+            // Translate the text layer's GTextAlign into a Qt::Alignment
+            // flag so the inline editor anchors and aligns its glyphs the
+            // same way the renderer does (otherwise center-aligned text
+            // jumps to the left edge during edit and snaps back on commit).
+            Qt::Alignment hAlignFlag = Qt::AlignHCenter;
+            switch (tl->alignment()) {
+            case GTextAlign::Left:    hAlignFlag = Qt::AlignLeft;    break;
+            case GTextAlign::Right:   hAlignFlag = Qt::AlignRight;   break;
+            case GTextAlign::Justify: hAlignFlag = Qt::AlignJustify; break;
+            case GTextAlign::Center:
+            default:                  hAlignFlag = Qt::AlignHCenter; break;
+            }
+
             // fontSize × scaleY → vertical match. horizontalStretch =
             // scaleX/scaleY → horizontal match for anisotropic scaling.
             ov2->beginInlineTextEdit(
@@ -1482,7 +1725,8 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 tl->fontWeight(),
                 tl->isItalic(),
                 textColor,
-                scaleX / scaleY);
+                scaleX / scaleY,
+                hAlignFlag);
         });
 
         connect(ov2, &TransformOverlayWidget::inlineTextCommitted,
@@ -1774,6 +2018,19 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             // the clip's transform (default for non-graphic clips).
             if (m_effectControlsPanel)
                 m_effectControlsPanel->setSelectedGraphicLayer(layer);
+            scheduleOverlayRefresh();
+        });
+        // Track the full multi-selection set from the Essential Graphics
+        // layer list so a single body drag in the program monitor applies
+        // the same delta to every selected layer.
+        connect(m_GraphicsEditorPanel,
+                &GraphicsEditorPanel::layerSelectionSetChanged,
+                this, [this](const std::vector<int>& stackIdxs) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            m_selectedGraphicLayerIdxs = stackIdxs;
+            // Repopulate the overlay so the sibling outline boxes
+            // (drawn for non-focused multi-selected layers) appear /
+            // disappear in sync with the selection set.
             scheduleOverlayRefresh();
         });
         // (Double-clicking a layer row in Essential Graphics now focuses

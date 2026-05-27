@@ -25,6 +25,7 @@
 #include <QScrollArea>
 #include <QSlider>
 #include <QListWidget>
+#include <QSplitter>
 
 #include <memory>
 #include <vector>
@@ -55,11 +56,26 @@ public:
  [[nodiscard]] GraphicLayer* selectedLayer() const noexcept { return m_selectedLayer; }
  [[nodiscard]] int selectedLayerIndex() const noexcept { return m_selectedLayerIdx; }
 
+ /// Stack indices of every selected layer in the layer list (focused +
+ /// all multi-selected rows). Empty if no clip / no selection. Used by
+ /// the timeline workspace to apply group-move deltas in the program
+ /// monitor when more than one layer is selected.
+ [[nodiscard]] std::vector<int> selectedLayerStackIndices() const;
+
  void refresh();
  void clearClip();
 
  /// Programmatically select a layer by stack index (0 = bottom).
+
+ bool eventFilter(QObject* obj, QEvent* event) override;
  void selectLayerByStackIndex(int stackIdx);
+
+ /// Toggle a layer's membership in the multi-selection set without
+ /// disturbing the existing selection — used when the user
+ /// Shift/Ctrl-clicks a layer in the program monitor. The clicked
+ /// layer also becomes the focused row (so the single-layer edit
+ /// controls switch to it). No-op if the index is out of range.
+ void toggleLayerInSelection(int stackIdx);
 
  void copySelectedLayer();
  void pasteLayer();
@@ -72,6 +88,12 @@ signals:
  void propertyChanged();
  /// Emitted when the user selects a different layer in the layer list.
  void layerSelected(GraphicLayer* layer, int layerIndex);
+
+ /// Emitted when the multi-selection set in the layer list changes
+ /// (Shift / Ctrl click). Carries the stack indices of every selected
+ /// row. The workspace consumes this to group-move all selected layers
+ /// when the user drags in the program monitor.
+ void layerSelectionSetChanged(const std::vector<int>& stackIdxs);
 
  /// Emitted when the user double-clicks a layer row — request to jump
  /// into editing that layer's text (Premiere Pro behavior).
@@ -110,6 +132,7 @@ private:
  QLabel* m_emptyLabel{nullptr};
  QLabel* m_statusLabel{nullptr};
  QListWidget* m_layerList{nullptr};
+ QSplitter* m_splitter{nullptr};
  QScrollArea* m_scrollArea{nullptr};
  QWidget* m_editContainer{nullptr};
  QVBoxLayout* m_editLayout{nullptr};

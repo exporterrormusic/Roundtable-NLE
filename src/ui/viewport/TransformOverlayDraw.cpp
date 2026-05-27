@@ -27,7 +27,9 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
     // On a WA_TranslucentBackground window, even a no-op QPainter triggers
     // DWM per-pixel alpha composition, so avoid it when possible.
     bool hasMasks = (m_masks && !m_masks->empty());
-    if (!m_overlay.visible && !m_showSafeAreas && !m_showGrid && !hasMasks)
+    const bool inlineEditing = m_inlineTextEdit && m_inlineTextEdit->isVisible();
+    if (!m_overlay.visible && !m_showSafeAreas && !m_showGrid && !hasMasks
+        && !inlineEditing)
         return;
 
     QPainter painter(this);
@@ -53,6 +55,25 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
     // — visible whenever a selected clip has 2+ Position keyframes.
     if (m_motionX && m_motionY)
         drawMotionPath(painter);
+
+    // ── Live bounding box around the inline text editor ─────────────────
+    // The editor is a top-level borderless window so the user has no
+    // visual cue for the text bounds while typing. Mirror Premiere by
+    // drawing a thin dashed rectangle that hugs the editor's current
+    // screen geometry — the editor's textChanged handler resizes the
+    // widget as text grows, so this box automatically tracks size.
+    if (inlineEditing) {
+        const QRect g = m_inlineTextEdit->geometry();        // screen coords
+        const QPoint tl = mapFromGlobal(g.topLeft());        // overlay-local
+        const QRect local(tl, g.size());
+        const auto& tc = Theme::colors();
+        QColor c = tc.accent; c.setAlpha(200);
+        QPen pen(c, 1.5, Qt::DashLine);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        // Small inset so the line doesn't clip glyph descenders.
+        painter.drawRect(local.adjusted(-2, -2, 2, 2));
+    }
 }
 
 void TransformOverlayWidget::drawMotionPath(QPainter& painter)
@@ -156,11 +177,51 @@ void TransformOverlayWidget::drawMotionPath(QPainter& painter)
 
 void TransformOverlayWidget::drawTransformOverlay(QPainter& painter)
 {
+    const auto& tc = Theme::colors();
+
+    // ── Secondary (sibling) boxes for multi-selection ───────────────────
+    // Drawn FIRST so they sit under the primary box. Each sibling gets
+    // the full transform-handle treatment (dashed outline + four corner
+    // squares) so the user can see at a glance which layers are selected.
+    // Only the focused-layer handles are hit-tested — clicking a sibling
+    // handle currently falls through to the body / empty-area path; the
+    // sibling boxes travel with the focused one during a group-move drag.
+    if (!m_secondaryOverlays.empty()) {
+        constexpr double SEC_HANDLE_SIZE = 8.0;
+        QColor secOutline = tc.accent;     secOutline.setAlpha(160);
+        QColor secHandleBorder = tc.textBright; secHandleBorder.setAlpha(200);
+        QColor secHandleFill   = tc.accent;     secHandleFill.setAlpha(160);
+        for (const auto& sov : m_secondaryOverlays) {
+            if (!sov.visible) continue;
+            QPointF sc[4];
+            computeOverlayCornersFor(sov, sc);
+
+            // Dashed outline.
+            painter.setPen(QPen(secOutline, 1.0, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            QPolygonF spoly;
+            for (int i = 0; i < 4; ++i) spoly << sc[i];
+            spoly << sc[0];
+            painter.drawPolyline(spoly);
+
+            // Corner handle squares — same shape as the focused box's
+            // handles, slightly dimmer alpha so the focused box still
+            // reads as the "active" one.
+            painter.setPen(QPen(secHandleBorder, 1));
+            painter.setBrush(secHandleFill);
+            for (int i = 0; i < 4; ++i) {
+                QRectF h(sc[i].x() - SEC_HANDLE_SIZE / 2,
+                         sc[i].y() - SEC_HANDLE_SIZE / 2,
+                         SEC_HANDLE_SIZE, SEC_HANDLE_SIZE);
+                painter.drawRect(h);
+            }
+        }
+    }
+
     QPointF corners[4];
     computeOverlayCorners(corners);
 
     // ── Bounding box (dashed cyan line) ─────────────────────────────────
-    const auto& tc = Theme::colors();
     QColor boxColor = tc.accent; boxColor.setAlpha(200);
     QPen boxPen(boxColor, 1.5, Qt::DashLine);
     painter.setPen(boxPen);

@@ -16,6 +16,7 @@
 #include "timeline/Marker.h"
 #include "command/Command.h"
 #include "command/CompoundCommand.h"
+#include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TransitionCmds.h"
 
@@ -182,7 +183,9 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
             // Create a right remnant first (clone before trimming the original).
             int64_t rightIn       = movedOut;
             int64_t rightDuration = otherOut - movedOut;
-            int64_t rightSourceIn = other->sourceIn() + (movedOut - otherIn);
+            // Convert timeline-tick delta to source ticks via speed
+            double otherSpd = std::max(other->speed(), 0.01);
+            int64_t rightSourceIn = other->sourceIn() + static_cast<int64_t>(std::llround((movedOut - otherIn) * otherSpd));
             auto rightClip = other->clone();
             rightClip->setTimelineIn(rightIn);
             rightClip->setDuration(rightDuration);
@@ -479,6 +482,23 @@ std::unique_ptr<Command> EditOperations::paste(
         }
     }
 
+    // Compute the end tick of the pasted content for playhead movement.
+    int64_t maxEnd = playhead;
+    for (const auto& entry : clipboard.entries) {
+        if (!entry.clip) continue;
+        int64_t end = playhead + entry.relativeTime + entry.clip->duration();
+        if (end > maxEnd) maxEnd = end;
+    }
+    const int64_t playheadBefore = timeline.playheadPosition();
+
+    // Move playhead to end of pasted content.  Wrap in a LambdaCommand
+    // so Ctrl+Z also restores the playhead to where it was before paste.
+    compound->addCommand(std::make_unique<LambdaCommand>(
+        "Playhead",
+        [&timeline, maxEnd]() { timeline.setPlayheadPosition(maxEnd); },
+        [&timeline, playheadBefore]() { timeline.setPlayheadPosition(playheadBefore); }
+    ));
+
     return compound->size() > 0 ? std::move(compound) : nullptr;
 }
 
@@ -547,6 +567,23 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
             track, std::move(cloned)));
     }
 
+    // Compute the end tick of the pasted content for playhead movement.
+    int64_t maxEnd = playhead;
+    for (const auto& entry : clipboard.entries) {
+        if (!entry.clip) continue;
+        int64_t end = playhead + entry.relativeTime + entry.clip->duration();
+        if (end > maxEnd) maxEnd = end;
+    }
+    const int64_t playheadBefore = timeline.playheadPosition();
+
+    // Move playhead to end of inserted content.  Wrap in a LambdaCommand
+    // so Ctrl+Z also restores the playhead to where it was before paste.
+    compound->addCommand(std::make_unique<LambdaCommand>(
+        "Playhead",
+        [&timeline, maxEnd]() { timeline.setPlayheadPosition(maxEnd); },
+        [&timeline, playheadBefore]() { timeline.setPlayheadPosition(playheadBefore); }
+    ));
+
     return compound->size() > 0 ? std::move(compound) : nullptr;
 }
 
@@ -575,6 +612,27 @@ std::unique_ptr<Command> EditOperations::duplicateSelection(
         compound->addCommand(std::make_unique<AddClipCommand>(
             track, std::move(cloned)));
     }
+
+    // Compute the end tick of the duplicated content for playhead movement.
+    int64_t maxEnd = timeline.playheadPosition();
+    for (const auto& ref : selection.clips()) {
+        if (ref.trackIndex >= timeline.trackCount()) continue;
+        const Track* track = timeline.track(ref.trackIndex);
+        size_t idx = track->findClipIndexById(ref.clipId);
+        if (idx >= track->clipCount()) continue;
+        const Clip* clip = track->clip(idx);
+        int64_t end = clip->timelineIn() + kDuplicateOffset + clip->duration();
+        if (end > maxEnd) maxEnd = end;
+    }
+    const int64_t playheadBefore = timeline.playheadPosition();
+
+    // Move playhead to end of duplicated content.  Wrap in a LambdaCommand
+    // so Ctrl+Z also restores the playhead to where it was before duplicate.
+    compound->addCommand(std::make_unique<LambdaCommand>(
+        "Playhead",
+        [&timeline, maxEnd]() { timeline.setPlayheadPosition(maxEnd); },
+        [&timeline, playheadBefore]() { timeline.setPlayheadPosition(playheadBefore); }
+    ));
 
     return compound->size() > 0 ? std::move(compound) : nullptr;
 }
@@ -828,10 +886,11 @@ std::unique_ptr<Command> EditOperations::liftInOut(
                 // Create right-half clone starting at outPoint
                 int64_t rightOffset = outPoint - origIn;
                 int64_t rightDuration = origDuration - rightOffset;
+                double clipSpd = std::max(clip->speed(), 0.01);
                 auto rightClip = clip->clone();
                 rightClip->setTimelineIn(outPoint);
                 rightClip->setDuration(rightDuration);
-                rightClip->setSourceIn(origSourceIn + rightOffset);
+                rightClip->setSourceIn(origSourceIn + static_cast<int64_t>(std::llround(rightOffset * clipSpd)));
                 compound->addCommand(std::make_unique<AddClipCommand>(track, std::move(rightClip)));
             }
             else if (clip->timelineIn() < inPoint)
@@ -902,10 +961,11 @@ std::unique_ptr<Command> EditOperations::extractInOut(
                 // Right portion starts at inPoint (gap is closed) instead of outPoint
                 int64_t rightOffset = outPoint - origIn;
                 int64_t rightDuration = origDuration - rightOffset;
+                double clipSpd = std::max(clip->speed(), 0.01);
                 auto rightClip = clip->clone();
                 rightClip->setTimelineIn(inPoint); // Rippled: placed right after left
                 rightClip->setDuration(rightDuration);
-                rightClip->setSourceIn(origSourceIn + rightOffset);
+                rightClip->setSourceIn(origSourceIn + static_cast<int64_t>(std::llround(rightOffset * clipSpd)));
                 compound->addCommand(std::make_unique<AddClipCommand>(track, std::move(rightClip)));
             }
             else if (clip->timelineIn() < inPoint)

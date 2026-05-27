@@ -12,6 +12,7 @@
 #include "project/Project.h"
 #include "project/Settings.h"
 #include "timeline/Timeline.h"
+#include "timeline/AudioClip.h"
 #include "media/MediaPool.h"
 
 #include <QLineEdit>
@@ -57,6 +58,22 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             seqItem->setData(0, Qt::UserRole + 3, true);   // isSequence flag
             seqItem->setData(0, Qt::UserRole + 4, QVariant::fromValue(static_cast<quint64>(si)));
             seqItem->setData(0, Qt::UserRole + 5, QVariant::fromValue(static_cast<qlonglong>(seq->duration())));
+            // Pre-compute whether this sequence contains any audio clips
+            // so drag-preview ghosts can omit the audio track when none exist.
+            {
+                bool hasAudio = false;
+                for (size_t ti = 0; ti < seq->trackCount() && !hasAudio; ++ti) {
+                    auto* trk = seq->track(ti);
+                    if (!trk || trk->type() != TrackType::Audio) continue;
+                    for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+                        auto* c = trk->clip(ci);
+                        if (c && dynamic_cast<const AudioClip*>(c) && c->isEnabled()) {
+                            hasAudio = true; break;
+                        }
+                    }
+                }
+                seqItem->setData(0, Qt::UserRole + 7, hasAudio);
+            }
             // Sequences are draggable but NOT drop targets
             seqItem->setFlags((seqItem->flags() & ~Qt::ItemIsDropEnabled) | Qt::ItemIsEditable);
 
@@ -120,9 +137,14 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
                 continue;
         }
 
-        // Apply type filter
-        if (m_activeType != MediaType::Unknown && item.type != m_activeType)
-            continue;
+        const bool isAdjustment = projectBinIsAdjustmentPath(item.filePath);
+
+        // Apply type filter (adjustment layers only show on the "All" tab —
+        // they aren't a media type, so they shouldn't appear under Video/etc.)
+        if (m_activeType != MediaType::Unknown) {
+            if (isAdjustment || item.type != m_activeType)
+                continue;
+        }
 
         auto* treeItem = new QTreeWidgetItem();
 
@@ -140,7 +162,9 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
         // Premiere Pro-style type icon and label color bar
         QColor itemLabelColor;
-        if (item.labelColor != 0xFF888888) {
+        if (isAdjustment) {
+            itemLabelColor = kLabelAdjustment;
+        } else if (item.labelColor != 0xFF888888) {
             itemLabelColor = QColor::fromRgba(item.labelColor);
         } else {
             itemLabelColor = premiereDefaultLabel(item.type);
@@ -149,18 +173,24 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
         // Type-specific icon
         QString shape;
-        switch (item.type) {
-        case MediaType::Video: shape = "video"; break;
-        case MediaType::Audio: shape = "audio"; break;
-        case MediaType::Image: shape = "image"; break;
-        case MediaType::Spine: shape = "spine"; break;
-        default:               shape = "file";  break;
+        if (isAdjustment) {
+            shape = "adjustment";
+        } else {
+            switch (item.type) {
+            case MediaType::Video: shape = "video"; break;
+            case MediaType::Audio: shape = "audio"; break;
+            case MediaType::Image: shape = "image"; break;
+            case MediaType::Spine: shape = "spine"; break;
+            default:               shape = "file";  break;
+            }
         }
         treeItem->setIcon(0, makePremiereBinIcon(itemLabelColor, shape));
 
         // Media Offline indicator â only flag if both: no valid media handle
         // AND file not found on disk (a valid handle means MediaPool opened it)
-        bool isOffline = (item.mediaHandle == 0) &&
+        // Adjustment layers are synthetic — never offline.
+        bool isOffline = !isAdjustment &&
+            (item.mediaHandle == 0) &&
             !item.filePath.empty() &&
             !std::filesystem::exists(item.filePath);
         if (isOffline) {
@@ -175,19 +205,43 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
         // Type column
         QString typeStr;
-        switch (item.type)
-        {
-        case MediaType::Video: typeStr = "Video"; break;
-        case MediaType::Image: typeStr = "Image"; break;
-        case MediaType::Audio: typeStr = "Audio"; break;
-        case MediaType::Spine: typeStr = "Spine"; break;
-        default:               typeStr = "Unknown"; break;
+        if (isAdjustment) {
+            typeStr = "Adjustment";
+        } else {
+            switch (item.type)
+            {
+            case MediaType::Video: typeStr = "Video"; break;
+            case MediaType::Image: typeStr = "Image"; break;
+            case MediaType::Audio: typeStr = "Audio"; break;
+            case MediaType::Spine: typeStr = "Spine"; break;
+            default:               typeStr = "Unknown"; break;
+            }
         }
         treeItem->setText(1, typeStr);
 
-        // Metadata columns from MediaPool
-        const VideoStreamInfo* info = (m_pool && item.mediaHandle)
+        // Mark synthetic adjustment-layer items so the drag widget can emit
+        // the right MIME type and the timeline drop handler knows what to
+        // create. Read by MediaDragTreeWidget::startDrag().
+        if (isAdjustment) {
+            treeItem->setData(0, Qt::UserRole + 6, true);
+            treeItem->setData(0, Qt::UserRole + 7, name);
+        }
+
+        // Metadata columns from MediaPool (adjustment layers have no source
+        // and never get queried). Leave the metadata columns blank for them
+        // — duration is sequence-driven, not item-driven.
+        const VideoStreamInfo* info = (m_pool && item.mediaHandle && !isAdjustment)
             ? m_pool->getInfo(item.mediaHandle) : nullptr;
+        if (isAdjustment) {
+            treeItem->setText(2, "");
+            treeItem->setText(3, "");
+            treeItem->setText(4, "");
+            treeItem->setText(5, "");
+            m_listWidget->addTopLevelItem(treeItem);
+            ++count;
+            continue;
+        }
+
 
         if (info) {
             // Duration

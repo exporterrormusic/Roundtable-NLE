@@ -450,6 +450,58 @@ void Viewport::mouseMoveEvent(QMouseEvent* event)
         m_transformOverlay.posX = m_dragStartPosX + dx;
         m_transformOverlay.posY = m_dragStartPosY + dy;
 
+        // Premiere-style Ctrl-snap: drag with Ctrl held magnetises the
+        // overlay's AABB to the frame's edges and centre lines. Implemented
+        // in widget pixels and converted back to ref-units so the snap
+        // distance feels consistent across zoom levels.
+        if (event->modifiers() & Qt::ControlModifier) {
+            // Corner cache holds stale corners; force recompute so the snap
+            // box reflects the just-applied posX/posY.
+            m_cornerCacheDirty = true;
+            QPointF corners[4];
+            computeOverlayCorners(corners);
+            double minX = corners[0].x(), maxX = corners[0].x();
+            double minY = corners[0].y(), maxY = corners[0].y();
+            for (int i = 1; i < 4; ++i) {
+                minX = std::min(minX, corners[i].x());
+                maxX = std::max(maxX, corners[i].x());
+                minY = std::min(minY, corners[i].y());
+                maxY = std::max(maxY, corners[i].y());
+            }
+            const double cX = (minX + maxX) * 0.5;
+            const double cY = (minY + maxY) * 0.5;
+
+            constexpr double kSnapPx = 10.0;
+            const double tgtsX[3] = {
+                static_cast<double>(m_drawRect.left()),
+                static_cast<double>(m_drawRect.right()),
+                static_cast<double>(m_drawRect.center().x())
+            };
+            const double tgtsY[3] = {
+                static_cast<double>(m_drawRect.top()),
+                static_cast<double>(m_drawRect.bottom()),
+                static_cast<double>(m_drawRect.center().y())
+            };
+            const double srcsX[3] = { minX, maxX, cX };
+            const double srcsY[3] = { minY, maxY, cY };
+
+            double bestDx = 0.0, bestDxAbs = kSnapPx + 1.0;
+            for (double src : srcsX) for (double tgt : tgtsX) {
+                double d = std::abs(src - tgt);
+                if (d < bestDxAbs) { bestDxAbs = d; bestDx = tgt - src; }
+            }
+            double bestDy = 0.0, bestDyAbs = kSnapPx + 1.0;
+            for (double src : srcsY) for (double tgt : tgtsY) {
+                double d = std::abs(src - tgt);
+                if (d < bestDyAbs) { bestDyAbs = d; bestDy = tgt - src; }
+            }
+            if (bestDxAbs <= kSnapPx)
+                m_transformOverlay.posX += static_cast<float>(bestDx / pxPerRefX);
+            if (bestDyAbs <= kSnapPx)
+                m_transformOverlay.posY += static_cast<float>(bestDy / pxPerRefY);
+            m_cornerCacheDirty = true;
+        }
+
         emit transformPositionChanged(m_transformOverlay.posX, m_transformOverlay.posY);
         update();
         return;

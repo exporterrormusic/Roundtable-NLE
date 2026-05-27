@@ -185,6 +185,11 @@ public:
     /// Trigger thumbnail loading for all visible items that need one.
     void loadVisibleThumbnails();
 
+    /// Refresh a specific item's thumbnail — evicts cache for the path
+    /// and queues a fresh generation.  Used when a file is overwritten
+    /// on disk (e.g. in Windows Explorer) while the bin is open.
+    void refreshItem(const std::filesystem::path& filePath);
+
     // ── Geometry ────────────────────────────────────────────────────────
 
     QSize sizeHint() const override;

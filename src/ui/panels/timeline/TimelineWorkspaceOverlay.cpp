@@ -1002,9 +1002,116 @@ void TimelineWorkspace::updateTransformOverlay()
 
     vp->setTransformOverlay(info);
 
+    // Build outline-only sibling overlays for every other layer that's
+    // multi-selected in the Essential Graphics list. They share the
+    // clip-level transform with the focused layer; only the per-layer
+    // transform + content rect differ. The overlay widget draws these
+    // as thin dashed rectangles (no handles) so the user can see at a
+    // glance which layers will travel together in a group-move drag.
+    std::vector<TransformOverlayInfo> secondaries;
+    if (m_selectedClip
+        && m_selectedClip->clipType() == ClipType::Graphic
+        && m_selectedGraphicLayerIdxs.size() > 1)
+    {
+        auto* gc = static_cast<GraphicClip*>(m_selectedClip);
+        secondaries.reserve(m_selectedGraphicLayerIdxs.size());
+        for (int idx : m_selectedGraphicLayerIdxs) {
+            if (idx == m_selectedGraphicLayerIdx) continue;
+            if (idx < 0 || idx >= static_cast<int>(gc->layerCount())) continue;
+            auto* layer = gc->layer(static_cast<size_t>(idx));
+            if (!layer) continue;
+
+            TransformOverlayInfo si;
+            si.visible = true;
+            si.useContentRect = true;
+
+            const auto& xf = layer->transform();
+            si.posX     = xf.posX.evaluate(relTick);
+            si.posY     = xf.posY.evaluate(relTick);
+            si.scaleX   = xf.scaleX.evaluate(relTick);
+            si.scaleY   = xf.scaleY.evaluate(relTick);
+            si.rotation = xf.rotation.evaluate(relTick);
+            si.anchorX  = xf.anchorX.evaluate(relTick);
+            si.anchorY  = xf.anchorY.evaluate(relTick);
+
+            // Shared clip-level (outer) transform.
+            si.clipPosX     = info.clipPosX;
+            si.clipPosY     = info.clipPosY;
+            si.clipScaleX   = info.clipScaleX;
+            si.clipScaleY   = info.clipScaleY;
+            si.clipRotation = info.clipRotation;
+
+            uint32_t outW = 0, outH = 0;
+            graphicCanvasRes(outW, outH);
+            si.contentCanvasW = static_cast<float>(outW);
+            si.contentCanvasH = static_cast<float>(outH);
+
+            if (layer->layerType() == GraphicLayerType::Text) {
+                auto* tl = static_cast<TextLayer*>(layer);
+                QFont font(QString::fromStdString(tl->fontFamily()),
+                           static_cast<int>(tl->fontSize()));
+                font.setWeight(static_cast<QFont::Weight>(tl->fontWeight()));
+                font.setItalic(tl->isItalic());
+                float tracking = tl->tracking().evaluate(relTick);
+                font.setLetterSpacing(QFont::AbsoluteSpacing,
+                                      static_cast<qreal>(tracking));
+                QString text = QString::fromStdString(tl->text());
+                if (tl->allCaps()) text = text.toUpper();
+
+                double bigW = static_cast<double>(outW) * 10.0;
+                double bigH = static_cast<double>(outH) * 10.0;
+                QRectF textRect(-bigW * 0.5 + static_cast<double>(outW) * 0.5,
+                                -bigH * 0.5 + static_cast<double>(outH) * 0.5,
+                                bigW, bigH);
+                int hAlign = Qt::AlignHCenter;
+                switch (tl->alignment()) {
+                    case GTextAlign::Left:    hAlign = Qt::AlignLeft;    break;
+                    case GTextAlign::Center:  hAlign = Qt::AlignHCenter; break;
+                    case GTextAlign::Right:   hAlign = Qt::AlignRight;   break;
+                    case GTextAlign::Justify: hAlign = Qt::AlignJustify; break;
+                }
+                int vAlign = Qt::AlignVCenter;
+                switch (tl->vAlignment()) {
+                    case GTextVAlign::Top:    vAlign = Qt::AlignTop;     break;
+                    case GTextVAlign::Middle: vAlign = Qt::AlignVCenter; break;
+                    case GTextVAlign::Bottom: vAlign = Qt::AlignBottom;  break;
+                }
+                QImage mc(static_cast<int>(outW), static_cast<int>(outH),
+                          QImage::Format_ARGB32_Premultiplied);
+                QPainter mp(&mc);
+                mp.setRenderHint(QPainter::Antialiasing, true);
+                mp.setRenderHint(QPainter::TextAntialiasing, true);
+                mp.setFont(font);
+                QRectF tb;
+                mp.drawText(textRect, hAlign | vAlign | Qt::TextWordWrap,
+                            text, &tb);
+                mp.end();
+                const float horizPad = tl->fontSize() * 0.45f;
+                const float vertPad  = tl->fontSize() * 0.40f;
+                si.contentL = static_cast<float>(tb.left())   - horizPad;
+                si.contentT = static_cast<float>(tb.top())    - vertPad;
+                si.contentR = static_cast<float>(tb.right())  + horizPad;
+                si.contentB = static_cast<float>(tb.bottom()) + vertPad;
+            } else {
+                auto* sl = static_cast<ShapeLayer*>(layer);
+                float sw = sl->shapeWidth();
+                float sh = sl->shapeHeight();
+                float cx = static_cast<float>(outW) * 0.5f;
+                float cy = static_cast<float>(outH) * 0.5f;
+                si.contentL = cx - sw * 0.5f;
+                si.contentT = cy - sh * 0.5f;
+                si.contentR = cx + sw * 0.5f;
+                si.contentB = cy + sh * 0.5f;
+            }
+
+            secondaries.push_back(si);
+        }
+    }
+
     // Also update the GPU overlay widget (TransformOverlayWidget)
     if (auto* overlay = m_programMonitor->transformOverlay()) {
         overlay->setTransformOverlay(info);
+        overlay->setSecondaryOverlays(secondaries);
 
         // Pass mask data for overlay drawing
         if (m_selectedClip && m_selectedClip->maskCount() > 0)

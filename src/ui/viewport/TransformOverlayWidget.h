@@ -18,6 +18,7 @@
 #include <QFont>
 #include <QPointF>
 #include <QRectF>
+#include <QPlainTextEdit>
 
 #include <cstdint>
 #include <cmath>
@@ -44,6 +45,13 @@ public:
     /// Show / update the transform overlay.
     void setTransformOverlay(const TransformOverlayInfo& info);
 
+    /// Set the outline-only secondary boxes drawn alongside the primary
+    /// transform overlay — one per non-focused multi-selected layer in
+    /// the Essential Graphics list. Secondary boxes have no scale /
+    /// rotate / anchor handles and are not hit-tested; they exist purely
+    /// to show the user which layers participate in a group-move drag.
+    void setSecondaryOverlays(const std::vector<TransformOverlayInfo>& extras);
+
     /// Hide the overlay.
     void clearTransformOverlay();
 
@@ -69,13 +77,18 @@ public:
     /// scaleY (baked into fontSizeRef at the call site) and glyph width
     /// ∝ scaleX. Pass scaleX / scaleY so the editor matches; 1.0 = normal
     /// width, 2.0 = glyphs twice as wide as tall.
+    /// `hAlignFlag` is a Qt::Alignment horizontal flag (AlignLeft / AlignHCenter
+    /// / AlignRight / AlignJustify) so the inline editor's text sits in the
+    /// same position the renderer would put it — center-aligned text doesn't
+    /// jump to the left edge during edit.
     void beginInlineTextEdit(const QString& initial,
                              const QString& fontFamily,
                              float fontSizeRef,
                              int fontWeight,
                              bool italic,
                              const QColor& textColor,
-                             float horizontalStretch = 1.0f);
+                             float horizontalStretch = 1.0f,
+                             Qt::Alignment hAlignFlag = Qt::AlignHCenter);
 
     /// True while the in-place text editor is shown.
     [[nodiscard]] bool isInlineTextEditing() const noexcept;
@@ -164,7 +177,11 @@ signals:
 
     /// Emitted when the user clicks on empty area (no handle/body hit).
     /// Coordinates are in frame-space (0..outputWidth, 0..outputHeight).
-    void emptyAreaClicked(float frameX, float frameY);
+    /// `modifiers` carries the keyboard modifiers at click time so the
+    /// workspace can implement Shift/Ctrl multi-select against the hit
+    /// layer (instead of replacing the selection on every click).
+    void emptyAreaClicked(float frameX, float frameY,
+                          Qt::KeyboardModifiers modifiers);
 
     /// Emitted on a double-click in the monitor — used to enter text-edit
     /// mode on the text layer under the cursor (Premiere Pro behavior).
@@ -202,6 +219,11 @@ private:
 
     /// Compute the 4 widget-space corners of the overlay bounding box.
     void computeOverlayCorners(QPointF corners[4]) const;
+
+    /// Same as computeOverlayCorners but for an arbitrary TransformOverlayInfo
+    /// (used to draw outline boxes for multi-selection siblings).
+    void computeOverlayCornersFor(const TransformOverlayInfo& ov,
+                                   QPointF corners[4]) const;
 
     /// Hit-test a corner handle; returns 0–3 or -1.
     int hitTestHandle(const QPointF& widgetPos) const;
@@ -254,6 +276,10 @@ private:
     VulkanViewport* m_vulkanVp{nullptr};
 
     TransformOverlayInfo m_overlay;
+    /// Outline-only sibling overlays for multi-selection. Updated by
+    /// setSecondaryOverlays; consumed by drawTransformOverlay to paint
+    /// a thin rectangle around each non-focused selected layer.
+    std::vector<TransformOverlayInfo> m_secondaryOverlays;
 
     enum class DragMode : uint8_t {
         None,
@@ -293,7 +319,7 @@ private:
 
     // In-place text editor (lazily created child widget shown over the
     // selected text layer's bounding box). Owned via Qt parent.
-    class QLineEdit* m_inlineTextEdit{nullptr};
+    QPlainTextEdit* m_inlineTextEdit{nullptr};
     bool             m_committingInlineText{false};
     /// Screen-space center the inline editor should stay anchored to as
     /// the text grows/shrinks during typing. Updated in beginInlineTextEdit
@@ -301,6 +327,24 @@ private:
     /// handler to resize symmetrically rather than scroll the text.
     QPoint           m_inlineEditCenter{0, 0};
     int              m_inlineEditHeight{32};
+    /// Alignment-anchor screen-X coords for the inline editor (snapshotted
+    /// from the layer's content rect at edit start). The textChanged
+    /// handler picks one of these as the fixed pivot depending on the
+    /// layer's horizontal alignment so left-aligned text grows right and
+    /// right-aligned text grows left instead of jumping around the center.
+    int              m_inlineEditAnchorLeftX{0};
+    int              m_inlineEditAnchorRightX{0};
+    int              m_inlineEditAnchorCenterX{0};
+    int              m_inlineEditAnchorCenterY{0};
+    Qt::Alignment    m_inlineEditAlignH{Qt::AlignHCenter};
+    /// Saved overlay info so we can restore the transform box after
+    /// inline text editing ends (it is hidden during editing to prevent
+    /// a ghost anchor/box from appearing in a different spot).
+    TransformOverlayInfo m_savedOverlayBeforeEdit{};
+    /// Original text when inline editing began — used for Esc→cancel
+    /// (restores this value via inlineTextCommitted so the wiring code
+    /// detects no-change and restores the layer without an undo entry).
+    std::string          m_preEditOriginalText{};
 
     // Mask overlay data (non-owning pointer to clip's masks vector)
     std::vector<OpacityMask>* m_masks{nullptr};

@@ -227,6 +227,17 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
             m_effectControlsPanel->deleteSelectedEffect();
             event->accept(); return;
         }
+        // If keyboard focus is anywhere inside Effect Controls (mini
+        // timeline, spinbox, etc.), the workspace-level Delete must NOT
+        // fall through to clip deletion. The Effect Controls panel and
+        // its KeyframeTimeline child have their own Delete handlers; we
+        // just let Qt's keyboard event loop route to them instead of
+        // clobbering the whole clip when the user meant to remove a
+        // single keyframe.
+        if (m_effectControlsPanel && m_effectControlsPanel->isAncestorOf(
+                QApplication::focusWidget())) {
+            event->ignore(); return;
+        }
         if (m_timeline && m_timelinePanel && m_commandStack) {
             // Check for gap selection first — ripple close the gap
             auto& gap = m_timelinePanel->gapSelection();

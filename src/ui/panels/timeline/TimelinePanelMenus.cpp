@@ -211,7 +211,13 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     }
     else if (chosen == pasteAction) {
         auto cmd = EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick);
-        if (cmd) { executeCommand(std::move(cmd)); refreshTrackContents(); }
+        if (cmd) {
+            executeCommand(std::move(cmd));
+            refreshTrackContents();
+            // Sync playhead from the model (the command moves it to end
+            // of pasted content as part of its undoable state).
+            setPlayheadPosition(m_timeline->playheadPosition());
+        }
     }
     else if (chosen == deleteAction) {
         auto cmd = EditOperations::deleteSelection(*m_timeline, m_selection);
@@ -277,17 +283,52 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     else if (chosen == speedAction) {
         QDialog dlg(this);
         dlg.setWindowTitle("Speed/Duration");
-        dlg.setMinimumWidth(300);
+        dlg.setMinimumWidth(320);
 
         auto* layout = new QVBoxLayout(&dlg);
         auto* form = new QFormLayout;
 
         auto* speedSpin = new QDoubleSpinBox;
-        speedSpin->setRange(0.1, 10.0);
-        speedSpin->setDecimals(2);
-        speedSpin->setSingleStep(0.25);
-        speedSpin->setValue(clip->speed());
+        speedSpin->setRange(1.0, 10000.0);
+        speedSpin->setDecimals(0);
+        speedSpin->setSingleStep(25);
+        speedSpin->setSuffix(" %");
+        speedSpin->setValue(clip->speed() * 100.0);
         form->addRow("Speed:", speedSpin);
+
+        // Duration display (read-only)
+        int64_t durTicks = clip->duration();
+
+        // Auto-select the speed value so the user can type immediately
+        speedSpin->setFocus();
+        speedSpin->selectAll();
+        QTimer::singleShot(0, &dlg, [speedSpin]() {
+            speedSpin->setFocus();
+            speedSpin->selectAll();
+        });
+        double durSecs = ticksToSeconds(durTicks);
+        auto* durationLabel = new QLabel;
+        durationLabel->setText(QString("%1:%2:%3")
+            .arg(static_cast<int>(durSecs) / 3600, 2, 10, QChar('0'))
+            .arg((static_cast<int>(durSecs) % 3600) / 60, 2, 10, QChar('0'))
+            .arg(static_cast<int>(durSecs) % 60, 2, 10, QChar('0')));
+        form->addRow("Duration:", durationLabel);
+
+        // Update duration label when speed changes
+        int64_t origDur = durTicks;
+        double origSpeed = clip->speed();
+        QObject::connect(speedSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            [&](double pct) {
+                double newSpeed = pct / 100.0;
+                if (newSpeed <= 0.0) newSpeed = 0.01;
+                int64_t newDur = static_cast<int64_t>(std::llround(origDur * origSpeed / newSpeed));
+                if (newDur < kMinClipDuration) newDur = kMinClipDuration;
+                double newSecs = ticksToSeconds(newDur);
+                durationLabel->setText(QString("%1:%2:%3")
+                    .arg(static_cast<int>(newSecs) / 3600, 2, 10, QChar('0'))
+                    .arg((static_cast<int>(newSecs) % 3600) / 60, 2, 10, QChar('0'))
+                    .arg(static_cast<int>(newSecs) % 60, 2, 10, QChar('0')));
+            });
 
         auto* pitchCheck = new QCheckBox("Maintain Audio Pitch");
         pitchCheck->setChecked(clip->maintainPitch());
@@ -305,28 +346,54 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
         connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
         if (dlg.exec() == QDialog::Accepted) {
+            double pct = speedSpin->value();
+            double newSpeed = pct / 100.0;
+            if (newSpeed <= 0.0) newSpeed = 0.01;
+            int64_t newDur = static_cast<int64_t>(std::llround(origDur * origSpeed / newSpeed));
+            if (newDur < kMinClipDuration) newDur = kMinClipDuration;
+
+            // Clamp to next clip's start so we don't overlap
+            int64_t maxDur = INT64_MAX;
+            if (m_timeline) {
+                Track* trk = m_timeline->track(ref.trackIndex);
+                if (trk) {
+                    size_t ci = trk->findClipIndexById(ref.clipId);
+                    for (size_t i = ci + 1; i < trk->clipCount(); ++i) {
+                        const Clip* next = trk->clip(i);
+                        if (next && next->timelineIn() > clip->timelineIn()) {
+                            maxDur = next->timelineIn() - clip->timelineIn();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (newDur > maxDur && maxDur >= kMinClipDuration) newDur = maxDur;
+
             if (m_commandStack) {
                 Clip* c = clip;
                 double oldSpeed = c->speed();
-                double newSpeed = speedSpin->value();
+                int64_t oldDur = c->duration();
                 bool oldPitch = c->maintainPitch();
                 bool newPitch = pitchCheck->isChecked();
                 m_commandStack->execute(std::make_unique<LambdaCommand>(
                     "Change Speed/Duration",
-                    [c, newSpeed, newPitch, this]() {
+                    [c, newSpeed, newDur, newPitch, this]() {
                         c->setSpeed(newSpeed);
+                        c->setDuration(newDur);
                         c->setMaintainPitch(newPitch);
                         onScrollChanged();
                         emit contentChanged();
                     },
-                    [c, oldSpeed, oldPitch, this]() {
+                    [c, oldSpeed, oldDur, oldPitch, this]() {
                         c->setSpeed(oldSpeed);
+                        c->setDuration(oldDur);
                         c->setMaintainPitch(oldPitch);
                         onScrollChanged();
                         emit contentChanged();
                     }));
             } else {
-                clip->setSpeed(speedSpin->value());
+                clip->setSpeed(newSpeed);
+                clip->setDuration(newDur);
                 clip->setMaintainPitch(pitchCheck->isChecked());
             }
             onScrollChanged();
@@ -786,7 +853,13 @@ void TimelinePanel::showEmptyAreaContextMenu(const QPointF& globalPos, size_t tr
 
     if (chosen == pasteAction) {
         auto cmd = EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick);
-        if (cmd) { executeCommand(std::move(cmd)); refreshTrackContents(); }
+        if (cmd) {
+            executeCommand(std::move(cmd));
+            refreshTrackContents();
+            // Sync playhead from the model (the command moves it to end
+            // of pasted content as part of its undoable state).
+            setPlayheadPosition(m_timeline->playheadPosition());
+        }
     }
     else if (chosen == addVideoTrack) {
         emit addTrackAbove(trackIndex, true);

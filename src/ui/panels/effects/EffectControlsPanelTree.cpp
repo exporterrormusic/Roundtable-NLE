@@ -337,8 +337,11 @@ void EffectControlsPanel::buildPropertyTree()
         m_posRow->addValuePair(m_posXSpin, m_posYSpin);
         m_propLayout->addWidget(m_posRow);
 
-        // Scale
+        // Scale — when Uniform Scale is on, bind scaleY as an extra so the
+        // row's diamond, prev/next nav, and timeline drag all act on BOTH
+        // axes (otherwise scaleX animates while scaleY stays static).
         m_scaleRow = makeRow("Scale", effScaleX());
+        m_scaleRow->addExtraTrack(effScaleY());
         m_scaleSpin = createScrubby(0, 1000, 0.1, 1);
         m_scaleRow->addValueWidget(m_scaleSpin);
         m_propLayout->addWidget(m_scaleRow);
@@ -360,6 +363,12 @@ void EffectControlsPanel::buildPropertyTree()
             .arg(Theme::hex(tc.textPrimary)));
         connect(m_uniformScaleCheck, &QCheckBox::toggled, this, [this](bool uniform) {
             if (m_scaleWRow) m_scaleWRow->setVisible(!uniform);
+            if (m_scaleRow) {
+                // Re-attach scaleY as the Scale row's compound sibling when
+                // uniform turns on, detach when it turns off.
+                if (uniform) m_scaleRow->addExtraTrack(effScaleY());
+                else         m_scaleRow->removeExtraTrack(effScaleY());
+            }
             if (uniform && m_scaleSpin && m_scaleWSpin) {
                 m_scaleWSpin->setValue(m_scaleSpin->value());
             }
@@ -731,6 +740,14 @@ void EffectControlsPanel::buildPropertyTree()
             else
                 shouldCollapse = (sec.arrow->text() == QStringLiteral("\u25B6"));
 
+            // Scale Width hides while Uniform Scale is checked. Section
+            // expansion would otherwise blanket-show every child and
+            // override that hide.
+            auto uniformHidesScaleW = [this](QWidget* child) {
+                return child == m_scaleWRow && m_uniformScaleCheck
+                       && m_uniformScaleCheck->isChecked();
+            };
+
             if (shouldCollapse) {
                 sec.arrow->setText(QStringLiteral("\u25B6"));
                 for (auto* child : sec.children)
@@ -738,14 +755,18 @@ void EffectControlsPanel::buildPropertyTree()
             } else {
                 sec.arrow->setText(QStringLiteral("\u25BC"));
                 for (auto* child : sec.children)
-                    child->setVisible(true);
+                    child->setVisible(!uniformHidesScaleW(child));
             }
 
-            connect(sec.arrow, &QToolButton::clicked, this, [&sec]() {
-                // Toggle
+            connect(sec.arrow, &QToolButton::clicked, this, [this, &sec]() {
                 bool collapsed = !sec.children.empty() && sec.children[0]->isVisible();
                 for (auto* child : sec.children) {
-                    child->setVisible(!collapsed);
+                    bool show = !collapsed;
+                    if (show && child == m_scaleWRow && m_uniformScaleCheck
+                            && m_uniformScaleCheck->isChecked()) {
+                        show = false;
+                    }
+                    child->setVisible(show);
                 }
                 sec.arrow->setText(collapsed ? QStringLiteral("\u25B6")   // â–¶ collapsed
                                              : QStringLiteral("\u25BC")); // â–¼ expanded

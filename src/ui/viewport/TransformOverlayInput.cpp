@@ -18,6 +18,8 @@
 #include <QMenu>
 #include <QAction>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QKeyEvent>
 #include <QFontMetricsF>
 #include <QPointer>
 #include <QTimer>
@@ -170,12 +172,12 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton && m_overlay.visible) {
         QPointF wPos = event->position();
 
-        // Anchor point handle takes priority — it can sit inside the
-        // bounding box so a body-drag would otherwise eat the click.
-        // Works in both modes: content-rect (graphic layers, anchor in
-        // canvas px) and standard (clips, anchor in REF-1920 px scaled
-        // to srcWidth/Height like position).
-        if (m_vulkanVp) {
+        // Ctrl-modified click on the anchor crosshair → anchor drag.
+        // Checked BEFORE the body test because the anchor sits inside
+        // the body and the body would otherwise always win. Without Ctrl
+        // the anchor is completely ungrabbable, eliminating the dead zone
+        // users saw near the center of the transform box.
+        if ((event->modifiers() & Qt::ControlModifier) && m_vulkanVp) {
             QRectF fr = computeFrameRect();
             if (!fr.isEmpty()) {
                 float canvasW = 0.0f, canvasH = 0.0f;
@@ -211,8 +213,10 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
                         fr.y() + (static_cast<double>(ay) / canvasH) * fr.height());
                     const double dx = wPos.x() - anchorPt.x();
                     const double dy = wPos.y() - anchorPt.y();
-                    constexpr double kAnchorHitRadius = 10.0;
-                    if (dx * dx + dy * dy <= kAnchorHitRadius * kAnchorHitRadius) {
+                    // Generous Ctrl-only hit radius — no risk of intercepting
+                    // body clicks since Ctrl gates the test.
+                    constexpr double kAnchorCtrlHitRadius = 14.0;
+                    if (dx * dx + dy * dy <= kAnchorCtrlHitRadius * kAnchorCtrlHitRadius) {
                         m_dragMode = DragMode::MoveAnchor;
                         m_dragStartWidget  = wPos;
                         m_dragStartAnchorX = m_overlay.anchorX;
@@ -223,6 +227,45 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
                     }
                 }
             }
+        }
+
+        // Body move has priority over corner/anchor handles (Premiere Pro
+        // behavior — anything inside the transform box moves the layer).
+        //
+        // For multi-selection: a click inside ANY of the selected boxes
+        // (focused OR sibling) initiates the body drag. The focused
+        // layer's pos still drives the delta — the group-move logic in
+        // the workspace applies that delta to every sibling — so the
+        // user can grab any selected box and pull the whole group.
+        bool bodyHit = hitTestBody(wPos);
+        if (!bodyHit) {
+            for (const auto& sov : m_secondaryOverlays) {
+                if (!sov.visible) continue;
+                QPointF sc[4];
+                computeOverlayCornersFor(sov, sc);
+                if (rt::hitTestBody(wPos, sc)) {
+                    bodyHit = true;
+                    break;
+                }
+            }
+        }
+        if (bodyHit) {
+            // When masks are active, don't let a body click move the layer;
+            // body clicks should move the mask instead (handled above).
+            if (m_masks && !m_masks->empty()) {
+                event->accept();
+                return;
+            }
+            m_dragMode = DragMode::MoveBody;
+            m_dragStartWidget = wPos;
+            m_dragStartPosX = m_overlay.posX;
+            m_dragStartPosY = m_overlay.posY;
+            m_dragStartScX  = m_overlay.scaleX;
+            m_dragStartScY  = m_overlay.scaleY;
+            m_dragStartRot  = m_overlay.rotation;
+            applyCursor(Qt::ArrowCursor);   // no special move cursor
+            event->accept();
+            return;
         }
 
         int handle = hitTestHandle(wPos);
@@ -262,24 +305,6 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             return;
         }
 
-        if (hitTestBody(wPos)) {
-            // When masks are active, don't let a body click move the layer;
-            // body clicks should move the mask instead (handled above).
-            if (m_masks && !m_masks->empty()) {
-                event->accept();
-                return;
-            }
-            m_dragMode = DragMode::MoveBody;
-            m_dragStartWidget = wPos;
-            m_dragStartPosX = m_overlay.posX;
-            m_dragStartPosY = m_overlay.posY;
-            m_dragStartScX  = m_overlay.scaleX;
-            m_dragStartScY  = m_overlay.scaleY;
-            m_dragStartRot  = m_overlay.rotation;
-            applyCursor(Qt::ArrowCursor);   // no special move cursor
-            event->accept();
-            return;
-        }
     }
 
     // ── Left-click on empty area: emit signal for text tool etc. ────────
@@ -312,7 +337,7 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
                 double drawH = gnorm.height() * surf.height();
                 float frameX = static_cast<float>((wPos.x() - drawX) / drawW) * srcW;
                 float frameY = static_cast<float>((wPos.y() - drawY) / drawH) * srcH;
-                emit emptyAreaClicked(frameX, frameY);
+                emit emptyAreaClicked(frameX, frameY, event->modifiers());
                 event->accept();
                 return;
             }
@@ -369,17 +394,15 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                                                   int fontWeight,
                                                   bool italic,
                                                   const QColor& textColor,
-                                                  float horizontalStretch)
+                                                  float horizontalStretch,
+                                                  Qt::Alignment hAlignFlag)
 {
-    // Centroid of the selected layer's transform box (widget coords). We
-    // use ONLY the center as an anchor; the editor's actual width/height
-    // are derived from the font metrics below — NOT from the box AABB.
-    // Sizing from the AABB made the editor explode to the entire screen
-    // for scaled-up text layers, and become tall+distorted for rotated
-    // layers (the rotated box's AABB is much taller than the glyph line).
-    // Premiere's program-monitor inline edit sizes to the rendered text;
-    // we match that behavior.
-    double cx, cy;
+    // AABB of the selected layer's transform box (widget coords). We use
+    // the LEFT / RIGHT / CENTER X coordinates of this box (depending on
+    // hAlignFlag) as the anchor the editor sticks to as the user types —
+    // so center-aligned text doesn't drift left and left-aligned text
+    // doesn't get centered.
+    double leftX, centerX, rightX, centerY;
     {
         QPointF c[4];
         computeOverlayCorners(c);
@@ -389,13 +412,27 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             minY = std::min(minY, c[i].y()); maxY = std::max(maxY, c[i].y());
         }
         if (maxX - minX < 1.0 || maxY - minY < 1.0) {
-            cx = width()  * 0.5;
-            cy = height() * 0.5;
+            leftX   = width()  * 0.5;
+            centerX = width()  * 0.5;
+            rightX  = width()  * 0.5;
+            centerY = height() * 0.5;
         } else {
-            cx = (minX + maxX) * 0.5;
-            cy = (minY + maxY) * 0.5;
+            leftX   = minX;
+            centerX = (minX + maxX) * 0.5;
+            rightX  = maxX;
+            centerY = (minY + maxY) * 0.5;
         }
     }
+    m_inlineEditAlignH = hAlignFlag;
+
+    // Hide the transform overlay while editing text inline so the box and
+    // anchor point don't appear in a mismatched spot (Premiere Pro behavior:
+    // the transform gizmo disappears while you're editing text in the
+    // Program Monitor).
+    m_savedOverlayBeforeEdit = m_overlay;
+    m_overlay.visible = false;
+    m_preEditOriginalText = initial.toStdString();
+    update();
 
     if (!m_inlineTextEdit) {
         // Independent top-level frameless window. A child of this overlay
@@ -405,7 +442,10 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         // top-level Window with no parent is the only reliable way to get
         // both visibility above the native Vulkan surface AND keyboard
         // focus. Ownership: we delete it in the overlay destructor.
-        m_inlineTextEdit = new QLineEdit(nullptr);
+        //
+        // QPlainTextEdit replaces QLineEdit so that Shift+Enter inserts a
+        // newline (Premiere Pro behavior) while plain Enter commits.
+        m_inlineTextEdit = new QPlainTextEdit(nullptr);
         m_inlineTextEdit->setWindowFlags(Qt::Window
                                          | Qt::FramelessWindowHint
                                          | Qt::WindowStaysOnTopHint
@@ -420,43 +460,84 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         m_inlineTextEdit->setAttribute(Qt::WA_ShowWithoutActivating, false);
         m_inlineTextEdit->setAttribute(Qt::WA_DeleteOnClose, false);
         m_inlineTextEdit->setObjectName(QStringLiteral("inlineTextEdit"));
-        m_inlineTextEdit->setAlignment(Qt::AlignCenter);
+        // No document margin — text hugs the edge so the editor's glyph
+        // origin matches the renderer's exactly. Any padding here would
+        // shift the live text away from the original rendered position.
+        m_inlineTextEdit->document()->setDocumentMargin(0);
+        // Both Qt's QFrame border AND scrollbars would visually create a
+        // "box" over the video (the thing the user reported as a stray
+        // tiny transform box). Disable both so the editor is invisible
+        // except for the glyphs and the selection highlight.
+        m_inlineTextEdit->setFrameStyle(QFrame::NoFrame);
+        m_inlineTextEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_inlineTextEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // Plain text only — no rich-text paste surprises.
+        m_inlineTextEdit->setTabChangesFocus(false);
+
         auto commit = [this]() {
             if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()) return;
             if (m_committingInlineText) return;
             m_committingInlineText = true;
-            const QString t = m_inlineTextEdit->text();
+            const QString t = m_inlineTextEdit->toPlainText();
             m_inlineTextEdit->hide();
+            // Restore the transform overlay after editing.
+            m_overlay = m_savedOverlayBeforeEdit;
+            m_preEditOriginalText.clear();
+            update();
             emit inlineTextCommitted(t);
             m_committingInlineText = false;
             setFocus();
         };
-        connect(m_inlineTextEdit, &QLineEdit::returnPressed, this, commit);
-        connect(m_inlineTextEdit, &QLineEdit::editingFinished, this, commit);
 
-        // Auto-grow as the user types: QLineEdit doesn't expand to fit its
-        // content, it just scrolls. Recompute the screen geometry from the
-        // current text's pixel width and keep it anchored on the original
-        // transform-box center so the edit area grows symmetrically.
-        connect(m_inlineTextEdit, &QLineEdit::textChanged, this,
-                [this](const QString& t) {
+        // Intercept key presses: Enter commits (Premiere Pro), Shift+Enter
+        // inserts a newline (Premiere Pro), Esc cancels (restores original).
+        m_inlineTextEdit->installEventFilter(this);
+
+        // Auto-grow as the user types: QPlainTextEdit doesn't auto-expand.
+        // Recompute the screen geometry from the current text's pixel size
+        // and re-anchor by alignment so the editor's text stays where the
+        // renderer would draw it: left-aligned text grows to the right,
+        // right-aligned grows to the left, center-aligned grows both ways.
+        connect(m_inlineTextEdit, &QPlainTextEdit::textChanged, this,
+                [this]() {
             if (!m_inlineTextEdit) return;
             QFontMetricsF fm(m_inlineTextEdit->font());
-            // Slack of one average char-width keeps the caret visible past
-            // the last glyph and avoids a one-frame scroll on the next
-            // keystroke. Border (1 px each side) + padding 0 + caret slack.
-            double slack  = std::max(8.0, fm.averageCharWidth());
-            double inkW   = fm.horizontalAdvance(t);
-            double wantW  = inkW + 2.0 /*border*/ + slack;
-            int    minW   = 40;
-            int    newW   = std::max(minW, static_cast<int>(std::ceil(wantW)));
-            int    newH   = (m_inlineEditHeight > 0) ? m_inlineEditHeight
-                                                     : m_inlineTextEdit->height();
-            QRect r(m_inlineEditCenter.x() - newW / 2,
-                    m_inlineEditCenter.y() - newH / 2,
-                    newW, newH);
-            if (r != m_inlineTextEdit->geometry())
+            const QString t = m_inlineTextEdit->toPlainText();
+
+            // Width: longest line + slack for caret.
+            double maxLineW = 0.0;
+            const QStringList lines = t.split(QChar('\n'));
+            for (const auto& line : lines)
+                maxLineW = std::max(maxLineW, fm.horizontalAdvance(line));
+            double slackW = std::max(8.0, fm.averageCharWidth());
+            double wantW = maxLineW + slackW;
+            int minW = 40;
+            int newW = std::max(minW, static_cast<int>(std::ceil(wantW)));
+
+            // Height: number of lines × line height (no border padding —
+            // editor is borderless so the box matches the glyph bounds).
+            int nLines = std::max(1, static_cast<int>(lines.size()));
+            double lineH = fm.height() + fm.leading();
+            double wantH = lineH * nLines;
+            int minH = std::max(12, static_cast<int>(std::ceil(lineH)));
+            int newH = std::max(minH, static_cast<int>(std::ceil(wantH)));
+
+            int newX;
+            if (m_inlineEditAlignH & Qt::AlignRight)
+                newX = m_inlineEditAnchorRightX - newW;
+            else if (m_inlineEditAlignH & Qt::AlignLeft)
+                newX = m_inlineEditAnchorLeftX;
+            else
+                newX = m_inlineEditAnchorCenterX - newW / 2;
+
+            QRect r(newX, m_inlineEditAnchorCenterY - newH / 2, newW, newH);
+            if (r != m_inlineTextEdit->geometry()) {
                 m_inlineTextEdit->setGeometry(r);
+                // Trigger the overlay widget to repaint so the live
+                // bounding-box drawn around the editor follows the new
+                // size in lockstep with the text.
+                update();
+            }
         });
     }
 
@@ -480,20 +561,19 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     QColor visibleColor = textColor;
     visibleColor.setAlpha(255);
 
-    // Bake the font into the stylesheet too — setFont alone can be
-    // overridden by stylesheet font defaults on some platforms. Background
-    // uses rgba alpha now that WA_TranslucentBackground is enabled, so it
-    // actually composites over the underlying video instead of looking
-    // like a solid black box.
+    // Premiere-style invisible editor: transparent background, no border.
+    // Only the glyphs and the selection highlight should be visible, so
+    // the live edit looks identical to the renderer's output (just with
+    // a selection block over the highlighted text).
     const QString styleSheet = QStringLiteral(
-        "QLineEdit { "
+        "QPlainTextEdit { "
         "font-family: \"%1\"; "
         "font-size: %2pt; "
         "font-weight: %3; "
         "font-style: %4; "
-        "background: rgba(20,20,20,110); "
+        "background: transparent; "
         "color: %5; "
-        "border: 1px solid rgba(77,158,255,200); "
+        "border: none; "
         "selection-background-color: rgba(77,158,255,180); "
         "selection-color: white; "
         "padding: 0px; }")
@@ -518,51 +598,71 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineTextEdit->setFont(qf);
     m_inlineTextEdit->setStyleSheet(styleSheet);
 
-    // Derive the editor's pixel size from the actual rendered font
-    // metrics — height = one glyph line + a couple px for border/breathing
-    // room, width = enough to hold the initial string plus caret slack.
-    // This is the Premiere-style behavior: the edit box hugs the text,
-    // independent of how tall/wide/rotated the layer's transform box is.
-    QFontMetricsF fm(qf);
-    constexpr int kBorderPad = 4; // 1px border × 2 + 1px breathing × 2
-    int editH = std::max(12, static_cast<int>(std::ceil(fm.height())) + kBorderPad);
-    double slack0 = std::max(8.0, fm.averageCharWidth());
-    int editW = std::max(40,
-        static_cast<int>(std::ceil(fm.horizontalAdvance(initial) + slack0 + kBorderPad)));
-
-    // Build the widget-space rect centered on the transform box centroid,
-    // then clamp into the overlay (so a huge font near a screen edge
-    // doesn't push the editor partially off-screen).
-    QRect g(static_cast<int>(std::round(cx - editW * 0.5)),
-            static_cast<int>(std::round(cy - editH * 0.5)),
-            editW, editH);
-    QRect clamped = g.intersected(rect().adjusted(2, 2, -2, -2));
-    if (clamped.width() < 8 || clamped.height() < 8) {
-        // Degenerate (e.g. overlay not laid out yet) — fall back to a
-        // small editor centered in the overlay.
-        clamped = QRect((width() - 200) / 2, (height() - 32) / 2, 200, 32)
-                      .intersected(rect().adjusted(2, 2, -2, -2));
+    // Apply horizontal text alignment to the document so the editor's
+    // glyphs sit on the same side of its box as the renderer drew them.
+    {
+        QTextOption opt = m_inlineTextEdit->document()->defaultTextOption();
+        opt.setAlignment(hAlignFlag);
+        m_inlineTextEdit->document()->setDefaultTextOption(opt);
     }
 
-    // Position in GLOBAL screen coordinates: a top-level window's geometry
-    // is screen-relative, not parent-relative.
-    QPoint globalTL = mapToGlobal(clamped.topLeft());
-    QRect screenRect(globalTL, clamped.size());
+    // Derive the editor's pixel size from the actual rendered font
+    // metrics — width = enough to hold the initial string plus caret slack,
+    // height = one glyph line. No border/margin padding (borderless editor),
+    // so the box matches glyph bounds.
+    QFontMetricsF fm(qf);
+    int editH = std::max(12, static_cast<int>(std::ceil(fm.height())));
+    double slack0 = std::max(8.0, fm.averageCharWidth());
+    double maxLineW0 = fm.horizontalAdvance(initial);
+    int editW = std::max(40,
+        static_cast<int>(std::ceil(maxLineW0 + slack0)));
 
-    // Remember the editor's screen-space anchor so the textChanged handler
-    // can grow/shrink the geometry symmetrically as the user types.
-    m_inlineEditCenter = screenRect.center();
+    // Position the editor so its alignment-anchor edge sits on the
+    // corresponding edge of the layer's content rect. That way:
+    //   • Left-aligned text: editor's LEFT == content's LEFT, text grows right.
+    //   • Right-aligned: editor's RIGHT == content's RIGHT, text grows left.
+    //   • Center-aligned: editor's CENTER == content's CENTER, grows both ways.
+    int editX;
+    if (hAlignFlag & Qt::AlignRight)
+        editX = static_cast<int>(std::round(rightX)) - editW;
+    else if (hAlignFlag & Qt::AlignLeft)
+        editX = static_cast<int>(std::round(leftX));
+    else
+        editX = static_cast<int>(std::round(centerX - editW * 0.5));
+
+    QRect g(editX,
+            static_cast<int>(std::round(centerY - editH * 0.5)),
+            editW, editH);
+
+    // Convert to GLOBAL screen coordinates: a top-level window's geometry
+    // is screen-relative, not parent-relative.
+    QPoint globalTL = mapToGlobal(g.topLeft());
+    QRect screenRect(globalTL, g.size());
+
+    // Remember the editor's alignment-anchor coords (screen) so textChanged
+    // can re-position the editor as it grows/shrinks.
+    QPoint globalLeft   = mapToGlobal(QPoint(static_cast<int>(std::round(leftX)),
+                                             static_cast<int>(std::round(centerY))));
+    QPoint globalRight  = mapToGlobal(QPoint(static_cast<int>(std::round(rightX)),
+                                             static_cast<int>(std::round(centerY))));
+    QPoint globalCenter = mapToGlobal(QPoint(static_cast<int>(std::round(centerX)),
+                                             static_cast<int>(std::round(centerY))));
+    m_inlineEditAnchorLeftX   = globalLeft.x();
+    m_inlineEditAnchorRightX  = globalRight.x();
+    m_inlineEditAnchorCenterX = globalCenter.x();
+    m_inlineEditAnchorCenterY = globalCenter.y();
+    m_inlineEditCenter = screenRect.center();          // legacy field
     m_inlineEditHeight = screenRect.height();
 
     m_inlineTextEdit->setGeometry(screenRect);
-    m_inlineTextEdit->setText(initial);
+    m_inlineTextEdit->setPlainText(initial);
     m_inlineTextEdit->show();
     m_inlineTextEdit->raise();
     // Defer activation to the next event-loop tick so the window is fully
     // realised before Windows is asked to give it foreground focus. Same
     // pattern PropertiesPanel::focusGraphicTextField uses, for the same
     // "setFocus is ignored on not-yet-shown widget" reason.
-    QPointer<QLineEdit> edit(m_inlineTextEdit);
+    QPointer<QPlainTextEdit> edit(m_inlineTextEdit);
     QTimer::singleShot(0, edit, [edit]() {
         if (!edit) return;
         edit->activateWindow();
@@ -739,6 +839,50 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         m_overlay.posX = m_dragStartPosX + dx;
         m_overlay.posY = m_dragStartPosY + dy;
 
+        // Premiere-style Ctrl-snap: magnetise the overlay's AABB to the
+        // frame edges and centre lines while Ctrl is held. Worked out in
+        // widget pixels and converted back through the same px-per-unit
+        // factor used for the drag so snap distance is zoom-invariant.
+        if (event->modifiers() & Qt::ControlModifier) {
+            QPointF corners[4];
+            computeOverlayCorners(corners);
+            double minX = corners[0].x(), maxX = corners[0].x();
+            double minY = corners[0].y(), maxY = corners[0].y();
+            for (int i = 1; i < 4; ++i) {
+                minX = std::min(minX, corners[i].x());
+                maxX = std::max(maxX, corners[i].x());
+                minY = std::min(minY, corners[i].y());
+                maxY = std::max(maxY, corners[i].y());
+            }
+            const double cX = (minX + maxX) * 0.5;
+            const double cY = (minY + maxY) * 0.5;
+
+            constexpr double kSnapPx = 10.0;
+            const double tgtsX[3] = {
+                fr.left(), fr.right(), fr.center().x()
+            };
+            const double tgtsY[3] = {
+                fr.top(), fr.bottom(), fr.center().y()
+            };
+            const double srcsX[3] = { minX, maxX, cX };
+            const double srcsY[3] = { minY, maxY, cY };
+
+            double bestDx = 0.0, bestDxAbs = kSnapPx + 1.0;
+            for (double src : srcsX) for (double tgt : tgtsX) {
+                double d = std::abs(src - tgt);
+                if (d < bestDxAbs) { bestDxAbs = d; bestDx = tgt - src; }
+            }
+            double bestDy = 0.0, bestDyAbs = kSnapPx + 1.0;
+            for (double src : srcsY) for (double tgt : tgtsY) {
+                double d = std::abs(src - tgt);
+                if (d < bestDyAbs) { bestDyAbs = d; bestDy = tgt - src; }
+            }
+            if (bestDxAbs <= kSnapPx)
+                m_overlay.posX += static_cast<float>(bestDx / (pxPerUnitX * effScaleX));
+            if (bestDyAbs <= kSnapPx)
+                m_overlay.posY += static_cast<float>(bestDy / (pxPerUnitY * effScaleY));
+        }
+
         emit transformPositionChanged(m_overlay.posX, m_overlay.posY);
         update();
         event->accept();
@@ -906,11 +1050,24 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         }
     }
     if (m_overlay.visible && m_dragMode == DragMode::None) {
+        // Sibling-body hover → same move cursor as the focused body so
+        // the user knows they can grab any selected box to drag the group.
+        bool overSiblingBody = false;
+        for (const auto& sov : m_secondaryOverlays) {
+            if (!sov.visible) continue;
+            QPointF sc[4];
+            computeOverlayCornersFor(sov, sc);
+            if (rt::hitTestBody(wPos, sc)) {
+                overSiblingBody = true;
+                break;
+            }
+        }
+
         if (hitTestHandle(wPos) >= 0)
             applyCursor(Qt::SizeFDiagCursor);
         else if (hitTestRotate(wPos) >= 0)
             applyCursor(rotateCursor());
-        else if (hitTestBody(wPos))
+        else if (hitTestBody(wPos) || overSiblingBody)
             applyCursor(Qt::SizeAllCursor);  // Premiere-style move cursor
         else
             applyCursor(Qt::ArrowCursor);
@@ -1044,6 +1201,68 @@ void TransformOverlayWidget::wheelEvent(QWheelEvent* event)
 
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    // ── Inline text editor key handling ──────────────────────────────
+    // Enter commits (Premiere Pro), Shift+Enter inserts newline, Esc cancels.
+    if (m_inlineTextEdit && watched == m_inlineTextEdit) {
+        if (event->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(event);
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                if (ke->modifiers() & Qt::ShiftModifier) {
+                    // Shift+Enter → insert a newline (Premiere Pro behavior).
+                    // Let QPlainTextEdit handle it natively — it already
+                    // inserts a line break with Shift+Enter by default.
+                    return QWidget::eventFilter(watched, event);
+                }
+                // Plain Enter → commit the text and close the editor.
+                if (!m_committingInlineText) {
+                    m_committingInlineText = true;
+                    const QString t = m_inlineTextEdit->toPlainText();
+                    m_inlineTextEdit->hide();
+                    // Restore the transform overlay after editing.
+                    m_overlay = m_savedOverlayBeforeEdit;
+                    m_preEditOriginalText.clear();
+                    update();
+                    emit inlineTextCommitted(t);
+                    m_committingInlineText = false;
+                    setFocus();
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_Escape) {
+                // Esc → cancel, restore original text.
+                if (!m_committingInlineText && !m_preEditOriginalText.empty()) {
+                    m_committingInlineText = true;
+                    QString orig = QString::fromStdString(m_preEditOriginalText);
+                    m_inlineTextEdit->hide();
+                    m_overlay = m_savedOverlayBeforeEdit;
+                    m_preEditOriginalText.clear();
+                    update();
+                    // Emit the original text — the wiring code detects
+                    // newVal==oldVal and restores without an undo entry.
+                    emit inlineTextCommitted(orig);
+                    m_committingInlineText = false;
+                    setFocus();
+                }
+                return true;
+            }
+        }
+        // Also commit on focus out (editingFinished equivalent).
+        if (event->type() == QEvent::FocusOut && !m_committingInlineText
+            && m_inlineTextEdit->isVisible()) {
+            m_committingInlineText = true;
+            const QString t = m_inlineTextEdit->toPlainText();
+            m_inlineTextEdit->hide();
+            m_overlay = m_savedOverlayBeforeEdit;
+            m_preEditOriginalText.clear();
+            update();
+            emit inlineTextCommitted(t);
+            m_committingInlineText = false;
+            setFocus();
+            return true;
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
     // Only intercept events from the VulkanViewport's native QWindow.
     if (!m_vulkanVp || watched != m_vulkanVp->nativeWindow())
         return QWidget::eventFilter(watched, event);
