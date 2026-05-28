@@ -57,6 +57,9 @@ struct Thumbnail
     uint32_t              stride{0};     ///< Bytes per row
     std::vector<uint8_t>  pixels;        ///< BGRA pixel data
     std::filesystem::path sourcePath;    ///< Original source file
+    /// File modification time at the moment this thumbnail was generated.
+    /// Used to detect stale cache entries when the source file is overwritten.
+    std::filesystem::file_time_type mtime{};
     MediaType             type{MediaType::Unknown};
     bool                  valid{false};  ///< True if generation succeeded
 
@@ -221,7 +224,7 @@ private:
 
     // In-memory cache
     mutable std::mutex m_cacheMutex;
-    std::unordered_map<ThumbnailKey, std::shared_ptr<Thumbnail>, ThumbnailKeyHash> m_cache;
+    mutable std::unordered_map<ThumbnailKey, std::shared_ptr<Thumbnail>, ThumbnailKeyHash> m_cache;
 
     // Configuration
     uint32_t              m_defaultWidth{160};

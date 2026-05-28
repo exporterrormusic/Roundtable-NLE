@@ -93,7 +93,8 @@ public:
         std::chrono::high_resolution_clock::time_point& perfTcomp,
         int& effectLayerCount, int& effectPassCount,
         int& transitionCount,
-        bool allowLruInsert = true);
+        bool allowLruInsert = true,
+        bool forceSyncReadback = false);
 
     // ── GPU state ───────────────────────────────────────────────────────
     [[nodiscard]] bool isGpuAvailable() const noexcept;
@@ -195,6 +196,13 @@ private:
     // downstream Transition pass reads stable, layer-specific data.
     std::vector<std::unique_ptr<rt::Texture>> m_layerEffectOutputs;
 
+    // Double-buffered upload textures for packed-alpha layers.  The
+    // compositor reads packed-alpha twice per pixel (RGB + alpha halves);
+    // if the next frame's upload overwrites the same texture between those
+    // reads we get a 1-frame spill.  Alternating upload/composite targets
+    // avoids the race with zero copy overhead.
+    std::vector<std::unique_ptr<rt::Texture>> m_gpuLayerTexturesAlt;
+
     // Cache coordinator (optional — for dynamic budgets + VRAM pressure)
     rt::CacheCoordinator* m_cacheCoordinator{nullptr};
 
@@ -233,7 +241,8 @@ private:
         std::chrono::high_resolution_clock::time_point& perfTcomp,
         int& effectLayerCount, int& effectPassCount,
         int& transitionCount,
-        bool allowLruInsert = true);
+        bool allowLruInsert = true,
+        bool forceSyncReadback = false);
 
     // Composite result LRU
     static constexpr size_t kCacheSize = 8;

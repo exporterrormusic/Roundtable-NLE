@@ -1,0 +1,122 @@
+WELLS HEVC UPGRADE PLAN
+=======================
+2026-05-28
+
+PROBLEM SUMMARY
+---------------
+Wells is a video character (no Spine skeleton) using pre-rendered video files.
+The original approach had severe performance issues:
+
+  ORIGINAL: H.264 GREEN (1080x1888) + CPU chroma key + GPU Ultra Key
+  - 5 redundant CPU chromaKeyInPlace() passes (MediaPoolDecode, MediaPoolPrefetchConvert,
+    MediaPoolPrefetchLoop, ShotComposerVideo x3) — each iterating 2M pixels per frame
+  - 1 GPU Ultra Key 3-pass compute shader (matte→cleanup→finalize) per frame
+  - Total: ~10M+ pixel operations per frame just for chroma keying
+  - Performance: terrible, playback jittery, occasional black/green flickering
+
+CURRENT STATE (May 28, 2026)
+----------------------------
+Wells now uses HEVC stacked-alpha (1080x3776, Main profile, yuv420p, GOP=5,
+QP=18, ~52MB per file). NVDEC hardware decode via standard CUDA hwaccel.
+
+  Stacked-alpha layout:
+    ┌───────────────────┐
+    │   RGB (top half)  │ 1080x1888 — color at 4:2:0 chroma
+    ├───────────────────┤
+    │ Alpha (bot half)  │ 1080x1888 — greyscale, full luma resolution
+    └───────────────────┘
+
+  Compositor shader splits texture: isPacked=1 → reads RGB from top-half UV,
+  alpha from bottom-half UV. Zero chroma key passes, baked-in alpha.
+
+CHANGES MADE
+------------
+C++ (permanent):
+  src/ui/panels/characters/ShotComposerLibrary.cpp
+    - Wells paths: GREEN.mp4 → HEVC.mp4
+
+  src/core/project/ClipSerialization.cpp
+    - Wells migration: remaps all old Wells paths (GREEN, .mov, .mp4, .mxf)
+      to HEVC stacked-alpha at project load
+
+  src/gpu/CompositeEngine.h / .cpp
+    - Added m_gpuLayerTexturesAlt (double-buffer for packed-alpha uploads)
+    - Zero-copy pointer swap between upload/composite targets prevents
+      1-frame spill when compositor reads RGB+alpha across two texture samples
+
+  src/gpu/EffectProcessor.h / .cpp (kept from earlier work, not active by default)
+    - Single-pass Ultra Key shaders (ultra_key_light.comp, ultra_key_combined.comp)
+      gated behind ROUNDTABLE_ULTRAKEY_SINGLEPASS=1 env var
+    - Default: proven 3-pass pipeline unchanged
+
+  src/core/media/FrameCache.h
+    - chromaKeyInPlace() restored to original (no bypass code)
+
+  src/ui/panels/characters/ShotComposerVideo.cpp
+    - needsChromaKey detection restored to original
+
+Shaders (kept, not active by default):
+  shaders/ultra_key_light.comp    — lightweight single-pass (no cleanup)
+  shaders/ultra_key_combined.comp — full single-pass (with cleanup)
+  Both gated behind ROUNDTABLE_ULTRAKEY_SINGLEPASS=1
+
+Video files:
+  assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4  — 1080x3776 HEVC Main yuv420p GOP=5
+  assets/videos/WELLS-CHRONO-TALK_HEVC.mp4  — 1080x3776 HEVC Main yuv420p GOP=5
+  Transcode command:
+    ffmpeg -i WELLS-CHRONO-{MUTE,TALK}_MXF.mxf \
+      -filter_complex "[0:v]split[main][alpha];[main]format=rgb0[color];\
+                       [alpha]alphaextract,format=gray[gray];[color][gray]vstack[out]" \
+      -map "[out]" -c:v hevc_nvenc -preset p4 -qp 18 -g 5 -pix_fmt yuv420p \
+      WELLS-CHRONO-{MUTE,TALK}_HEVC.mp4
+
+CURRENT LIMITATIONS
+-------------------
+1. Chroma subsampling (4:2:0): The RGB half of the stacked frame has color at
+   quarter resolution. This causes slight softness on sharp color edges.
+   Luminance (brightness detail) is full resolution. Alpha is full resolution.
+
+2. GOP=5 minimum: NVENC HEVC does not support GOP=1 (all-intra). GOP=5 gives
+   167ms max seek latency at 30fps — imperceptible in practice.
+
+UPGRADE PLAN: HEVC 4:4:4 via hevc_cuvid
+----------------------------------------
+Goal: Full chroma resolution (yuv444p) with hardware decode.
+
+NVDEC CAN decode HEVC Range Extension (4:4:4) on Turing+ GPUs. FFmpeg's
+hevc_cuvid decoder handles this at 625+ fps. The standard CUDA hwaccel API
+(-hwaccel cuda) does NOT expose 4:4:4 support — only hevc_cuvid does.
+
+Blocking issue: hevc_cuvid outputs NV12 frames in GPU memory. The app's
+decode→upload pipeline (VideoDecoder → MediaPool → GpuUploadManager) treats
+frames from initSoftwareDecoder() as CPU-resident. NV12 GPU frames would
+need to be routed through the existing Nv12Converter or a new GPU upload path.
+
+Required changes:
+  1. VideoDecoderInit.cpp: Add hevc_cuvid as a first-choice decoder for HEVC
+     when CUDA is available. Currently initHardwareDecoder(CUDA) is tried first
+     and fails for 4:4:4; hevc_cuvid should be tried before software fallback.
+
+  2. VideoDecoder / MediaPoolPrefetchConvertGpu.cpp: Handle NV12 GPU frames
+     from hevc_cuvid. The existing Nv12Converter and GPU upload paths can
+     likely be reused. Need to verify frame->format == AV_PIX_FMT_NV12 or
+     AV_PIX_FMT_CUDA and route accordingly.
+
+  3. Testing: Verify correct colors, alpha handling, scrubbing latency,
+     and that no frame pipeline regressions occur for non-HEVC codecs.
+
+After this upgrade:
+  - Re-transcode with -pix_fmt yuv444p for full chroma resolution
+  - GOP=5 for responsive scrubbing
+  - Hardware decode at 600+ fps via hevc_cuvid
+
+CLEANUP NOTES
+-------------
+When hevc_cuvid integration is complete, the env-var-gated single-pass
+Ultra Key shaders (ROUNDTABLE_ULTRAKEY_SINGLEPASS=1) can be promoted to
+default. The light shader (ultra_key_light.comp) is ready for non-Wells
+chroma key clips that don't need matte cleanup.
+
+The chromaKeyInPlace() function in FrameCache.h remains available for
+non-Wells green-screen content (any file with "GREEN" in filename).
+Wells no longer triggers this path since it uses HEVC, not GREEN.

@@ -794,6 +794,22 @@ void ProgramMonitor::updateDisplay()
         }
     };
 
+    // ── Frame drop indicator ──────────────────────────────────────────
+    if (m_dropIndicator && m_pipeline) {
+        int drops = m_pipeline->droppedFrames();
+        if (drops <= 0) {
+            m_dropIndicator->hide();
+        } else {
+            QString color = (drops <= 5) ? QStringLiteral("#FFC107")
+                                         : QStringLiteral("#F44336");
+            m_dropIndicator->setStyleSheet(
+                QString("QLabel { background: %1; border-radius: 5px; }").arg(color));
+            m_dropIndicator->setToolTip(
+                tr("Dropped frames: %1").arg(drops));
+            m_dropIndicator->show();
+        }
+    }
+
     // ── During playback: pipeline handles composite + present ──────
     // The FrameClock drives FrameProducer (compositor thread) and
     // FramePresenter (present thread).  The UI thread only updates

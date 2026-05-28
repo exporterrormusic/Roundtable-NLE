@@ -9,8 +9,11 @@
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
 #include "MediaPoolPrefetchGpu.h"     // tryConvertDecodedToCacheGpu
+#include "media/FrameCache.h"         // chromaKeyInPlace, clearTransparentPixelRGB
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 
 namespace rt {
@@ -46,6 +49,17 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     auto perfDecodeT0 = std::chrono::high_resolution_clock::now();
     auto& decoder = *state.decoder;
     double targetTime = task.frameNumber / task.fps;
+
+    // GREEN-suffixed chroma-key files MUST go through the CPU path
+    // so chromaKeyInPlace() is applied; the GPU-resident path has no
+    // chroma-key shader and would leave the green background visible.
+    bool chromaKeyFile = false;
+    {
+        std::string fn = task.filePath.filename().string();
+        std::transform(fn.begin(), fn.end(), fn.begin(),
+                       [](unsigned char c) { return std::toupper(c); });
+        chromaKeyFile = (fn.find("GREEN") != std::string::npos);
+    }
 
     // Sequential fast path: delta==1 or delta<=150 → advance decoder instead of seeking.
     bool needSeek = true;
@@ -92,8 +106,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         // UPGRADE_PLAN Phase 4: try GPU-resident path first; fall back to
         // CPU on any eligibility failure (feature flag off, headless,
         // packed-alpha, unsupported pixel format, device-lost, etc.).
-        auto cached = tryConvertDecodedToCacheGpu(
-            *this, state, task, fwd, task.frameNumber, wgs);
+        // GREEN chroma-key files skip GPU — chroma key runs on CPU only.
+        auto cached = chromaKeyFile ? nullptr
+            : tryConvertDecodedToCacheGpu(
+                *this, state, task, fwd, task.frameNumber, wgs);
         if (!cached)
             cached = convertDecodedToCache(state, task, fwd, task.frameNumber);
         if (!cached) return nullptr;
@@ -118,8 +134,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
 
     auto perfDecodeT1a = std::chrono::high_resolution_clock::now();
     // UPGRADE_PLAN Phase 4: GPU-resident path first; CPU fallback.
-    auto cached = tryConvertDecodedToCacheGpu(
-        *this, state, task, decoded, task.frameNumber, wgs);
+    // GREEN chroma-key files skip GPU (see seek-path comment above).
+    auto cached = chromaKeyFile ? nullptr
+        : tryConvertDecodedToCacheGpu(
+            *this, state, task, decoded, task.frameNumber, wgs);
     if (!cached)
         cached = convertDecodedToCache(state, task, decoded, task.frameNumber);
     if (!cached)

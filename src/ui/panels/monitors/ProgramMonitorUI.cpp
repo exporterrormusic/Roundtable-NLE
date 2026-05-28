@@ -605,6 +605,13 @@ void ProgramMonitor::setupUI()
     m_shuttleSpeedLabel->hide();
     transportLayout->addWidget(m_shuttleSpeedLabel);
 
+    // Frame drop indicator — green/yellow/red dot, hidden when no drops
+    m_dropIndicator = new QLabel(transportBar);
+    m_dropIndicator->setFixedSize(10, 10);
+    m_dropIndicator->setToolTip(tr("Dropped frames"));
+    m_dropIndicator->hide();
+    transportLayout->addWidget(m_dropIndicator);
+
     transportLayout->addStretch();
 
     // Connect transport buttons

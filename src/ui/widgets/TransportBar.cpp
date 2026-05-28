@@ -131,6 +131,14 @@ void TransportBar::setupUI()
     m_speedLabel->setMinimumWidth(40);
     layout->addWidget(m_speedLabel);
 
+    // ── Frame drop indicator (green/yellow/red dot) ─────────────────────
+    layout->addSpacing(4);
+    m_dropIndicator = new QLabel(this);
+    m_dropIndicator->setFixedSize(10, 10);
+    m_dropIndicator->setToolTip(tr("Dropped frames"));
+    m_dropIndicator->hide();  // hidden until drops are detected
+    layout->addWidget(m_dropIndicator);
+
     layout->addStretch();
 
     // ── Connect buttons ─────────────────────────────────────────────────
@@ -280,6 +288,30 @@ void TransportBar::updateDisplay()
     else
     {
         m_speedLabel->clear();
+    }
+
+    // ── Frame drop indicator ────────────────────────────────────────────
+    if (m_dropIndicator && m_dropProvider) {
+        int drops = m_dropProvider();
+        if (drops < 0) {
+            m_dropIndicator->hide();
+        } else {
+            // Green: no recent drops    Yellow: occasional drops    Red: dropping badly
+            QString color;
+            if (drops == 0)
+                color = QStringLiteral("#4CAF50");  // green
+            else if (drops <= 5)
+                color = QStringLiteral("#FFC107");  // yellow
+            else
+                color = QStringLiteral("#F44336");  // red
+            m_dropIndicator->setStyleSheet(
+                QString("QLabel { background: %1; border-radius: 5px; }").arg(color));
+            m_dropIndicator->setToolTip(
+                drops == 0 ? tr("No dropped frames")
+                           : tr("Dropped frames: %1").arg(drops));
+            m_dropIndicator->show();
+        }
+        m_lastDropCount = drops;
     }
 
     updateButtonStates();

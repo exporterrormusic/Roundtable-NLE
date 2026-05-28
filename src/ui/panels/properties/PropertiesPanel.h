@@ -238,6 +238,11 @@ private:
                                    int decimals, const QString& suffix = {});
     void makeCollapsible(QGroupBox* box);
 
+    /// Return the playhead tick relative to the current clip's timeline-in,
+    /// or 0 if no timeline/clip is set.  Used to write keyframes at the
+    /// correct time (instead of always at time 0).
+    [[nodiscard]] int64_t clipRelativeTick() const noexcept;
+
     // ── Apply property changes ──────────────────────────────────────────
     void applyLabel();
     void applyEnabled();

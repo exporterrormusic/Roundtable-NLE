@@ -22,6 +22,8 @@
 #include "timeline/OpacityMask.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 
 namespace rt {
@@ -29,11 +31,38 @@ namespace rt {
 // When loading a project, the stored video path may reference a .mov (ProRes)
 // file that has since been re-rendered as .mp4 (HEVC), or vice versa.
 // Try the alternate extension so format migrations don't break projects.
+//
+// 2026-05-28 Wells migration: remap all old Wells paths to HEVC
+// stacked-alpha (NVDEC hardware decode, no chroma key needed).
 static std::string resolveVideoPath(const std::string& path)
 {
     if (path.empty()) return path;
     namespace fs = std::filesystem;
     fs::path p(path);
+
+    // Wells-specific migration to HEVC stacked-alpha.
+    {
+        std::string filename = p.filename().string();
+        std::string lower = filename;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        bool isWellsMute = (lower.find("wells-chrono-mute") != std::string::npos);
+        bool isWellsTalk = (lower.find("wells-chrono-talk") != std::string::npos);
+
+        if (isWellsMute || isWellsTalk) {
+            fs::path hevcPath = p;
+            std::string suffix = isWellsMute ? "WELLS-CHRONO-MUTE_HEVC.mp4"
+                                             : "WELLS-CHRONO-TALK_HEVC.mp4";
+            hevcPath.replace_filename(suffix);
+            if (fs::exists(hevcPath)) {
+                spdlog::info("ClipSerialization: Wells migration '{}' -> '{}'",
+                             path, hevcPath.string());
+                return hevcPath.string();
+            }
+        }
+    }
+
     if (fs::exists(p)) return path;
 
     auto ext = p.extension().string();

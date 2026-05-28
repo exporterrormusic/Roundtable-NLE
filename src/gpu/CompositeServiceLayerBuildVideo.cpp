@@ -119,7 +119,17 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // user sees a single stale tick; at heavy scrub the display lags
     // ~100-300 ms behind the playhead but never freezes.
     if (scrubMode) {
-        return nullptr;
+        // Fast inline decode at Quarter tier via scrub decoder.
+        // Quarter is 16x less data than Full, keeping NVDEC contention
+        // low while providing responsive scrubbing. Full quality
+        // arrives from background prefetch when scrubbing stops.
+        auto scrubFrame = m_mediaPool->getFrame(handle, frameNumber,
+            ResolutionTier::Quarter, /*scrubMode=*/true);
+        if (scrubFrame) {
+            m_mediaPool->schedulePrefetch(handle, frameNumber, 1,
+                /*urgent=*/true, tier);
+        }
+        return scrubFrame;
     }
 
     // Non-scrub playback miss: same non-blocking treatment.  getFrame

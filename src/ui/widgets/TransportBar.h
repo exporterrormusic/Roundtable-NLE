@@ -26,6 +26,7 @@
 
 #include <QLabel>
 #include <atomic>
+#include <functional>
 #include <QPushButton>
 #include <QTimer>
 #include <QWidget>
@@ -48,6 +49,12 @@ public:
 
     /// Get the attached controller.
     [[nodiscard]] PlaybackController* controller() const noexcept { return m_controller; }
+
+    /// Set a provider that returns the count of dropped frames.
+    /// Called on each poll tick to update the drop indicator light.
+    /// Return -1 to hide the indicator entirely.
+    using FrameDropProvider = std::function<int()>;
+    void setFrameDropProvider(FrameDropProvider provider) { m_dropProvider = std::move(provider); }
 
     /// Start the UI polling timer.
     void startPolling(int intervalMs = 16);
@@ -101,6 +108,11 @@ private:
 
     // Speed indicator
     QLabel* m_speedLabel{nullptr};
+
+    // Frame drop indicator (green/yellow/red dot beside timecode)
+    QLabel*  m_dropIndicator{nullptr};
+    int      m_lastDropCount{-1};
+    FrameDropProvider m_dropProvider;
 
     std::atomic<bool> m_destroying{false};
 

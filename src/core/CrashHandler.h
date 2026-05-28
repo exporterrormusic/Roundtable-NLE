@@ -130,6 +130,12 @@ public:
     /// Get the path to the crash marker file.
     [[nodiscard]] static std::filesystem::path crashMarkerPath();
 
+    /// Deduplicate the crash log: collapses consecutive identical crash
+    /// entries into a single line with a repeat count.  SESSION START
+    /// markers and stack-trace lines are preserved.  Call once at startup
+    /// after install() to keep the log from ballooning during crash loops.
+    static void deduplicateCrashLog();
+
 private:
     CrashHandler() = delete;
 

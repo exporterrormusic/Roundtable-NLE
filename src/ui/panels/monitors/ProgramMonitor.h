@@ -263,6 +263,7 @@ private:
     QPushButton*      m_btnLoop{nullptr};           ///< Loop playback toggle
     QLineEdit*        m_timecodeEdit{nullptr};       ///< Editable timecode field (hidden until click)
     QLabel*           m_shuttleSpeedLabel{nullptr};  ///< Shuttle speed display (e.g. "2x")
+    QLabel*           m_dropIndicator{nullptr};     ///< Frame drop indicator (green/yellow/red dot)
 
     // Transport buttons (Premiere Pro style)
     TransportButton*  m_btnGoStart{nullptr};

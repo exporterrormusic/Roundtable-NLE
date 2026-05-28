@@ -448,6 +448,21 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
                                      cached->pixels.size() / 4);
         }
 
+        // ── Chroma-key green-screen media (#18FF00) ───────────────────
+        // GREEN-suffixed .mp4 files are H.264 renders of originally-
+        // alpha content placed on a chroma-key green background.
+        // Key them to transparent here so the rest of the pipeline
+        // (compositor, thumbnails, library) never sees the green.
+        if (!cached->pixels.empty()) {
+            std::string fn = entry.path.filename().string();
+            std::transform(fn.begin(), fn.end(), fn.begin(),
+                           [](unsigned char c) { return std::toupper(c); });
+            if (fn.find("GREEN") != std::string::npos) {
+                chromaKeyInPlace(cached->pixels.data(),
+                                 cached->pixels.size() / 4);
+            }
+        }
+
 nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
         (void)0;
 #else

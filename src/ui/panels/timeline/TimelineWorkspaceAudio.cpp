@@ -270,9 +270,12 @@ void TimelineWorkspace::preOpenVideoMedia()
             if (!info.isVideoFile) continue;
 
             if (info.isCharacter) {
-                if (info.predecode &&
-                    mediaInfo->frameCount > 1 &&
-                    mediaInfo->frameCount <= MediaPool::LOOP_PREDECODE_MAX_FRAMES) {
+                // Cap check removed — startLoopPreDecode handles it
+                // internally AND sets the loop wrap-around flag for
+                // over-cap clips (Wells's 880-frame ProRes loop) so
+                // the prefetch can pre-fetch frame 0 at the loop
+                // boundary.
+                if (info.predecode && mediaInfo->frameCount > 1) {
                     pool->startLoopPreDecode(handle, ResolutionTier::Half);
                     ++loopWarmCount;
                 }

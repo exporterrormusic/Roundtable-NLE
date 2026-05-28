@@ -128,8 +128,14 @@ void MainWindow::setCurrentProject(std::unique_ptr<Project> project)
             m_timeline = projTimeline;
 
             // Update workspace (TimelinePanel + compositeFrame + loadAudioSources)
-            if (m_timelineWorkspace)
+            if (m_timelineWorkspace) {
                 m_timelineWorkspace->setTimeline(projTimeline);
+                // MUST set project BEFORE the export preview callback fires,
+                // otherwise CompositeService::m_project is null and nested
+                // SequenceClips silently render as blank (no effects, no
+                // inner timeline, and z-ordering is broken).
+                m_timelineWorkspace->setProject(m_currentProject.get());
+            }
 
             // Update PlaybackController (transport / duration queries)
             if (m_playbackController)

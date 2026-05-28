@@ -42,6 +42,60 @@ inline void clearTransparentPixelRGB(uint8_t* pixels, size_t pixelCount)
     }
 }
 
+/// Chroma-key green pixels to transparent in-place.
+/// Key color is #18FF00 (R=0x18, G=0xFF, B=0x00).
+///
+/// Uses a green-dominance test rather than per-channel distance so it
+/// handles H.264 4:2:0 chroma subsampling gracefully — chroma planes
+/// are at 1/4 resolution, so a single chroma sample bleeds across a
+/// 2×2 block and produces heavy variance at object edges.
+///
+/// Two-stage key:
+///   1. Hard key:  G dominates both R and B → alpha=0 (fully transparent)
+///   2. Spill suppression: G is elevated but not dominant → desaturate G,
+///      push R/B toward their original values (reduces green fringe)
+inline void chromaKeyInPlace(uint8_t* pixels, size_t pixelCount)
+{
+
+    auto* p = reinterpret_cast<uint32_t*>(pixels);
+    for (size_t i = 0; i < pixelCount; ++i) {
+        const uint32_t px = p[i];
+        // BGRA layout
+        const int b = static_cast<int>( px        & 0xFF);
+        const int g = static_cast<int>((px >>  8) & 0xFF);
+        const int r = static_cast<int>((px >> 16) & 0xFF);
+        const int a = static_cast<int>((px >> 24) & 0xFF);
+
+        // ── Hard key: green is clearly dominant ──────────────────────
+        // H.264 4:2:0 chroma subsampling means the green channel can
+        // bleed into the red/blue of edge pixels.  Require G to be
+        // substantially ahead of both R and B, with a minimum brightness
+        // floor so dark/shadow areas don't false-positive.
+        if (g > 80 && g > r + 40 && g > b + 40) {
+            p[i] = 0x00000000;  // fully transparent black
+            continue;
+        }
+
+        // ── Spill suppression: green cast but not dominant ───────────
+        // Semi-transparent edge pixels (hair, motion blur) pick up a
+        // green tint from the background.  Pull G down toward the
+        // average of R and B, weighted by how much G exceeds them.
+        if (g > 60 && g > r && g > b && a > 0) {
+            const int maxRB = (r > b) ? r : b;
+            const int excess = g - maxRB;
+            if (excess > 10) {
+                // Clamp G down: newG = maxRB + 25% of excess
+                const int newG = maxRB + excess / 4;
+                const int gClamped = (newG < 0) ? 0 : (newG > 255 ? 255 : newG);
+                p[i] = (static_cast<uint32_t>(a) << 24)
+                     | (static_cast<uint32_t>(r) << 16)
+                     | (static_cast<uint32_t>(gClamped) << 8)
+                     | static_cast<uint32_t>(b);
+            }
+        }
+    }
+}
+
 /// Resolution tier for multi-resolution caching
 enum class ResolutionTier : uint8_t
 {

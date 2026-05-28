@@ -280,6 +280,17 @@ void MediaPool::loopPreDecodeWorker(
             clearTransparentPixelRGB(cached->pixels.data(),
                                      cached->pixels.size() / 4);
         }
+
+        // ── Chroma-key green-screen media (#18FF00) ───────────────────
+        if (!cached->pixels.empty()) {
+            std::string fn = path.filename().string();
+            std::transform(fn.begin(), fn.end(), fn.begin(),
+                           [](unsigned char c) { return std::toupper(c); });
+            if (fn.find("GREEN") != std::string::npos) {
+                chromaKeyInPlace(cached->pixels.data(),
+                                 cached->pixels.size() / 4);
+            }
+        }
 #endif
 
         m_cache->put(cached);

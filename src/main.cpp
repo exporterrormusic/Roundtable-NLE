@@ -95,6 +95,10 @@ int main(int argc, char* argv[])
     rt::CrashHandler::install(logRoot);
     spdlog::info("Crash logs → {}", logRoot.string());
 
+    // Deduplicate the crash log from previous sessions so it doesn't
+    // balloon during crash loops (e.g., paint recursion or TDR storms).
+    rt::CrashHandler::deduplicateCrashLog();
+
     // Logging: console + perf_log.txt (in unified log root)
     {
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();

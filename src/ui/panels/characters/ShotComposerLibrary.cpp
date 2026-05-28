@@ -84,7 +84,7 @@ void ShotComposer::refreshCharacterLibrary()
 
     // Add video characters (always available regardless of Spine)
     static const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> videoCharacters = {
-        {"Wells", {"assets/videos/WELLS-CHRONO-MUTE.mp4", "assets/videos/WELLS-CHRONO-TALK.mp4"}}
+        {"Wells", {"assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4"}}
     };
     for (const auto& [name, paths] : videoCharacters) {
         if (!searchTerm.isEmpty()) {

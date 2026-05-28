@@ -62,6 +62,23 @@ struct WorkerGpuState {
     uint32_t                       nv12ConverterW{0};
     uint32_t                       nv12ConverterH{0};
 
+    // ── Chroma-key pass (2026-05-27) ─────────────────────────────────
+    // Inline compute dispatch for GREEN-suffixed chroma-key media.
+    // Runs after Nv12Converter produces BGRA; samples the converter
+    // output texture, writes keyed BGRA directly into the pooled
+    // destination texture.  Uses the existing chroma_key.comp shader.
+    VkPipeline              chromaKeyPipeline{VK_NULL_HANDLE};
+    VkPipelineLayout        chromaKeyLayout{VK_NULL_HANDLE};
+    VkShaderModule          chromaKeyShader{VK_NULL_HANDLE};
+    VkDescriptorSetLayout   chromaKeyDescLayout{VK_NULL_HANDLE};
+    VkDescriptorPool        chromaKeyDescPool{VK_NULL_HANDLE};
+    VkDescriptorSet         chromaKeyDescSet{VK_NULL_HANDLE};
+
+    // Stored VkDevice+Allocator for lazy-init (borrowed from GpuContext).
+    VkDevice                ckDevice{VK_NULL_HANDLE};
+    // Initialised flag
+    bool                    chromaKeyReady{false};
+
     /// Deferred-cleanup ring. Each entry holds the per-submission
     /// resources that can only be freed once the GPU has finished
     /// executing the submission. pollAndCleanup() walks the deque in
@@ -131,6 +148,12 @@ struct WorkerGpuState {
     /// ensureOutputSize within the converter will resize the output
     /// texture if the dst dimensions change.
     Nv12Converter* ensureNv12Converter(uint32_t w, uint32_t h);
+
+    /// Lazy-create (or reuse) the chroma-key compute pass.  Called once
+    /// per worker the first time a GREEN file is encountered.  Borrows
+    /// VkDevice from GpuContext — must be called after GpuContext::init.
+    /// Returns false if the shader isn't compiled or GPU init failed.
+    bool ensureChromaKeyPass();
 };
 
 /// Dispatch helper: wraps the eligibility checks (PR-4 feature flag,

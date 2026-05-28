@@ -387,6 +387,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
                 }
             }
 
+            // Don't forward J/K/L/Space to TimelineWorkspace when the
+            // Export panel is the active page — ExportPanel has its own
+            // transport controls and mini-timeline playback.
+            if (currentPage() == Page::Export) {
+                return QMainWindow::eventFilter(watched, event);
+            }
+
             // J / K / L (and their releases) must reach
             // TimelineWorkspace::key{Press,Release}Event so the Premiere-style
             // K+J / K+L slow-scrub hold logic can track K's held state and

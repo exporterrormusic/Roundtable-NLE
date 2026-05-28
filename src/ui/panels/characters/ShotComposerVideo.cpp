@@ -17,6 +17,7 @@
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 #include "media/VideoDecoder.h"
+#include "media/FrameCache.h"
 extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
@@ -269,6 +270,14 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
     QImage frame(tempPath);
     if (!frame.isNull()) {
         frame = frame.convertToFormat(QImage::Format_ARGB32);
+        // Chroma-key GREEN-suffixed media so thumbnails never show green
+        {
+            std::string fn = QFileInfo(videoPath).fileName().toUpper().toStdString();
+            if (fn.find("GREEN") != std::string::npos) {
+                chromaKeyInPlace(frame.bits(),
+                                 static_cast<size_t>(frame.width()) * frame.height());
+            }
+        }
         m_videoFrameCache[path] = frame;
         spdlog::info("ShotComposer: extracted video thumbnail {}x{} from '{}'",
             frame.width(), frame.height(), path);
@@ -309,26 +318,18 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
     if (it != m_videoPlayers.end() && it->second->decoder && it->second->decoder->isOpen())
         return it->second;
 
-    // Resolve the video file path (.mov ProRes 4444 only).
+    // Resolve the video file path — use as-is (no forced .mov extension).
     QString qpath = QString::fromStdString(path);
 
-    // Ensure we're looking for .mov
-    QString movPath = qpath;
-    if (!qpath.endsWith(".mov", Qt::CaseInsensitive)) {
-        int dot = qpath.lastIndexOf('.');
-        if (dot >= 0)
-            movPath = qpath.left(dot) + ".mov";
-    }
-
-    QString movName = QFileInfo(movPath).fileName();
+    QString fileName = QFileInfo(qpath).fileName();
     QString appDir  = QApplication::applicationDirPath() + "/../../../";
 
     // Search order: direct path, assets/videos/, app-relative paths
     QStringList searchPaths = {
-        movPath,
-        QString("assets/videos/%1").arg(movName),
-        appDir + movPath,
-        appDir + "assets/videos/" + movName,
+        qpath,
+        QString("assets/videos/%1").arg(fileName),
+        appDir + qpath,
+        appDir + "assets/videos/" + fileName,
     };
     std::filesystem::path resolvedPath;
     for (const auto& sp : searchPaths) {
@@ -350,6 +351,14 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
         return nullptr;
     }
 
+    // Detect GREEN-suffixed chroma-key files
+    {
+        std::string fn = resolvedPath.filename().string();
+        std::transform(fn.begin(), fn.end(), fn.begin(),
+                       [](unsigned char c) { return std::toupper(c); });
+        state->needsChromaKey = (fn.find("GREEN") != std::string::npos);
+    }
+
     const auto& info = state->decoder->info();
     state->duration = info.duration;
     state->fps = info.fps > 0 ? info.fps : 30.0;
@@ -359,13 +368,20 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
     DecodedFrame df;
     if (state->decoder->decodeNext(df)) {
         QImage firstFrame = decodeFrameToQImage(df, state->decoder.get());
-        // Unpack packed-alpha immediately so the initial display is correct
-        if (!firstFrame.isNull() && firstFrame.height() > firstFrame.width() &&
-            (firstFrame.height() % 2 == 0) &&
-            firstFrame.height() >= firstFrame.width() * 1.8) {
-            firstFrame = unpackPackedAlpha(firstFrame.bits(),
-                static_cast<uint32_t>(firstFrame.width()),
-                static_cast<uint32_t>(firstFrame.height()));
+        if (!firstFrame.isNull()) {
+            // Unpack packed-alpha immediately so the initial display is correct
+            if (firstFrame.height() > firstFrame.width() &&
+                (firstFrame.height() % 2 == 0) &&
+                firstFrame.height() >= firstFrame.width() * 1.8) {
+                firstFrame = unpackPackedAlpha(firstFrame.bits(),
+                    static_cast<uint32_t>(firstFrame.width()),
+                    static_cast<uint32_t>(firstFrame.height()));
+            }
+            // Chroma-key green-screen media
+            if (state->needsChromaKey) {
+                chromaKeyInPlace(firstFrame.bits(),
+                    static_cast<size_t>(firstFrame.width()) * firstFrame.height());
+            }
         }
         state->lastFrame = std::move(firstFrame);
     }
@@ -416,6 +432,11 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
                         frame = unpackPackedAlpha(frame.bits(),
                             static_cast<uint32_t>(frame.width()),
                             static_cast<uint32_t>(frame.height()));
+                    }
+                    // Chroma-key green-screen media
+                    if (sp->needsChromaKey) {
+                        chromaKeyInPlace(frame.bits(),
+                            static_cast<size_t>(frame.width()) * frame.height());
                     }
                     std::lock_guard<std::mutex> lk(sp->frameMutex);
                     sp->pendingFrame = std::move(frame);

@@ -67,7 +67,8 @@ bool ProjectBin::handleDropEvent(QEvent* ev)
     // ── Internal reparent: items dragged within the bin tree ──
     const bool hasInternalMime = de->mimeData()->hasFormat("application/x-roundtable-media") ||
                                  de->mimeData()->hasFormat("application/x-roundtable-sequence") ||
-                                 de->mimeData()->hasFormat("application/x-roundtable-bin-item");
+                                 de->mimeData()->hasFormat("application/x-roundtable-bin-item") ||
+                                 de->mimeData()->hasFormat("application/x-roundtable-adjustment");
     bool isInternal = hasInternalMime;
     if (isInternal) {
         de->setDropAction(Qt::MoveAction);
@@ -131,7 +132,8 @@ bool ProjectBin::handleDropEvent(QEvent* ev)
                 m_listWidget->addTopLevelItem(item);
             ++movedCount;
         }
-        if (targetBin) targetBin->setExpanded(true);
+        // Don't auto-expand on drop — hover-delay expand is handled by
+        // setAutoExpandDelay() configured in ProjectBinUI.cpp.
 
         if (m_commandStack) {
             auto after = std::make_shared<BinSnapshot>(captureBinSnapshot());
@@ -214,8 +216,9 @@ bool ProjectBin::handleDragEnterEvent(QEvent* ev)
     const bool hasMedia = de->mimeData()->hasFormat("application/x-roundtable-media");
     const bool hasSeq = de->mimeData()->hasFormat("application/x-roundtable-sequence");
     const bool hasBin = de->mimeData()->hasFormat("application/x-roundtable-bin-item");
-    if (hasUrls || hasMedia || hasSeq || hasBin) {
-        if (hasMedia || hasSeq || hasBin)
+    const bool hasAdj = de->mimeData()->hasFormat("application/x-roundtable-adjustment");
+    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj) {
+        if (hasMedia || hasSeq || hasBin || hasAdj)
             de->setDropAction(Qt::MoveAction);
         else
             de->setDropAction(Qt::CopyAction);
@@ -232,8 +235,9 @@ bool ProjectBin::handleDragMoveEvent(QEvent* ev)
     const bool hasMedia = de->mimeData()->hasFormat("application/x-roundtable-media");
     const bool hasSeq = de->mimeData()->hasFormat("application/x-roundtable-sequence");
     const bool hasBin = de->mimeData()->hasFormat("application/x-roundtable-bin-item");
-    if (hasUrls || hasMedia || hasSeq || hasBin) {
-        if (hasMedia || hasSeq || hasBin)
+    const bool hasAdj = de->mimeData()->hasFormat("application/x-roundtable-adjustment");
+    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj) {
+        if (hasMedia || hasSeq || hasBin || hasAdj)
             de->setDropAction(Qt::MoveAction);
         else
             de->setDropAction(Qt::CopyAction);

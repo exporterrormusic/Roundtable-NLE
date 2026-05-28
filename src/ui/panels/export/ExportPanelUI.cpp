@@ -253,18 +253,25 @@ void ExportPanel::setupUI()
     // Mini timeline scrub bar (Premiere Proâ€“style)
     m_miniTimeline = new ExportMiniTimeline(previewWidget);
     connect(m_miniTimeline, &ExportMiniTimeline::scrubbed, this, [this](int64_t tick) {
-        // If playing, stop playback â€” the user is scrubbing manually
+        // Stop playback if scrubbing manually
         if (m_playing) {
             m_playing = false;
             m_playbackTimer->stop();
-            m_playPauseBtn->setText(QStringLiteral("\u25B6")); // â–¶
-            if (m_playbackController)
+            m_playPauseBtn->setText(QStringLiteral("\u25B6")); // ▶
+            if (m_playbackController) {
                 m_playbackController->pause();
+                // Restore the main timeline's saved playhead so scrubbing
+                // in the export preview doesn't move the main timeline.
+                if (m_savedMainPlayhead >= 0) {
+                    m_playbackController->seekTo(m_savedMainPlayhead);
+                    m_savedMainPlayhead = -1;
+                }
+            }
         }
 
-        // Seek the PlaybackController so timeline position tracks
-        if (m_playbackController)
-            m_playbackController->seekTo(tick);
+        // Do NOT seek the shared PlaybackController here — the export
+        // preview has its own independent playhead.  Audio scrub still
+        // works via m_audioEngine->scrub() below.
 
         // Play a short audio burst at the scrub position
         if (m_audioEngine) {

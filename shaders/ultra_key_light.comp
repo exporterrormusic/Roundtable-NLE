@@ -1,0 +1,234 @@
+#version 450
+/*
+ * ultra_key_light.comp — Ultra Key single-pass chroma keyer (light).
+ *
+ * Combines matte generation + spill suppression + color correction +
+ * output mode in one dispatch.  Omits matte cleanup (choke/soften/contrast)
+ * for maximum performance on the common case where those params are at
+ * their no-op defaults.
+ *
+ * For clips needing cleanup, ultra_key_combined.comp is used instead.
+ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D        inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[28];
+} pc;
+
+#define KEY_R        pc.params[0]
+#define KEY_G        pc.params[1]
+#define KEY_B        pc.params[2]
+#define OUTPUT_MODE  pc.params[3]
+#define TRANSPARENCY pc.params[5]
+#define HIGHLIGHT    pc.params[6]
+#define SHADOW       pc.params[7]
+#define TOLERANCE    pc.params[8]
+#define PEDESTAL     pc.params[9]
+#define DESATURATE   pc.params[14]
+#define SPILL_RANGE  pc.params[15]
+#define SPILL        pc.params[16]
+#define LUMA_COMP    pc.params[17]
+#define SATURATION   pc.params[18]
+#define HUE          pc.params[19]
+#define LUMINANCE    pc.params[20]
+
+// ── RGB ↔ YCbCr (BT.709) ───────────────────────────────────────────────
+vec3 rgb2ycbcr(vec3 c) {
+    float y  =  0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    float cb = -0.1146 * c.r - 0.3854 * c.g + 0.5000 * c.b;
+    float cr =  0.5000 * c.r - 0.4542 * c.g - 0.0458 * c.b;
+    return vec3(y, cb, cr);
+}
+
+// ── RGB ↔ HSL ───────────────────────────────────────────────────────────
+vec3 rgb2hsl(vec3 c) {
+    float maxC = max(max(c.r, c.g), c.b);
+    float minC = min(min(c.r, c.g), c.b);
+    float l = (maxC + minC) * 0.5;
+    float d = maxC - minC;
+    float s = 0.0;
+    float h = 0.0;
+    if (d > 0.001) {
+        s = l > 0.5 ? d / (2.0 - maxC - minC) : d / (maxC + minC);
+        if (maxC == c.r)      h = (c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0);
+        else if (maxC == c.g) h = (c.b - c.r) / d + 2.0;
+        else                  h = (c.r - c.g) / d + 4.0;
+        h /= 6.0;
+    }
+    return vec3(h, s, l);
+}
+
+float hue2rgb(float p, float q, float t) {
+    if (t < 0.0) t += 1.0;
+    if (t > 1.0) t -= 1.0;
+    if (t < 1.0/6.0) return p + (q - p) * 6.0 * t;
+    if (t < 1.0/2.0) return q;
+    if (t < 2.0/3.0) return p + (q - p) * (2.0/3.0 - t) * 6.0;
+    return p;
+}
+
+vec3 hsl2rgb(vec3 hsl) {
+    if (hsl.y < 0.001) return vec3(hsl.z);
+    float q = hsl.z < 0.5 ? hsl.z * (1.0 + hsl.y) : hsl.z + hsl.y - hsl.z * hsl.y;
+    float p = 2.0 * hsl.z - q;
+    return vec3(
+        hue2rgb(p, q, hsl.x + 1.0/3.0),
+        hue2rgb(p, q, hsl.x),
+        hue2rgb(p, q, hsl.x - 1.0/3.0)
+    );
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.width || pixel.y >= pc.height) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
+
+    // ── Step 1: Matte generation ───────────────────────────────────────
+    vec4 srcColor = texture(inputImage, uv);
+    vec3 ycbcr    = rgb2ycbcr(srcColor.rgb);
+    vec3 keyYCbCr = rgb2ycbcr(vec3(KEY_R, KEY_G, KEY_B));
+
+    float chromaDist   = length(ycbcr.yz - keyYCbCr.yz);
+    float lumaDiff     = abs(ycbcr.x - keyYCbCr.x);
+    float combinedDist = chromaDist + lumaDiff * 0.15;
+
+    float tol   = TOLERANCE / 100.0;
+    float inner = tol * 0.55;
+    float outer = inner + 0.06;
+
+    float alpha = smoothstep(inner, outer, combinedDist);
+
+    // Highlight recovery
+    float highlightStr = HIGHLIGHT / 100.0;
+    float luma = ycbcr.x;
+    if (highlightStr > 0.0) {
+        float highlightMask = smoothstep(0.55, 0.85, luma) * highlightStr;
+        alpha = mix(alpha, min(1.0, alpha + highlightMask), highlightMask);
+    }
+
+    // Shadow recovery
+    float shadowStr = SHADOW / 100.0;
+    if (shadowStr > 0.0) {
+        float shadowMask = smoothstep(0.35, 0.10, luma) * shadowStr;
+        alpha = mix(alpha, min(1.0, alpha + shadowMask), shadowMask);
+    }
+
+    // Pedestal
+    float ped = PEDESTAL / 100.0 * 0.2;
+    alpha = clamp((alpha - ped) / max(1.0 - ped, 0.001), 0.0, 1.0);
+
+    // Transparency scaling
+    float transp = TRANSPARENCY / 100.0;
+    alpha *= (1.0 - transp);
+    alpha = clamp(alpha, 0.0, 1.0);
+
+    // ── Step 2: Spill Suppression ──────────────────────────────────────
+    float spillStr   = SPILL / 100.0;
+    float spillRange = max(SPILL_RANGE / 100.0, 0.05);
+    float desatStr   = DESATURATE / 50.0;
+    float lumaComp   = LUMA_COMP / 100.0;
+
+    vec3 keyColor = vec3(KEY_R, KEY_G, KEY_B);
+    vec3 color    = srcColor.rgb;
+
+    float origLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+    if (spillStr > 0.001 && alpha > 0.001) {
+        float spillAmount = 0.0;
+
+        if (keyColor.g > keyColor.r && keyColor.g > keyColor.b) {
+            float limit = max(color.r, color.b);
+            spillAmount = max(color.g - limit, 0.0);
+        } else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g) {
+            float limit = max(color.r, color.g);
+            spillAmount = max(color.b - limit, 0.0);
+        } else {
+            float limit = max(color.g, color.b);
+            spillAmount = max(color.r - limit, 0.0);
+        }
+
+        float spillFactor = clamp(spillAmount / spillRange, 0.0, 1.0) * spillStr;
+        float edgeBoost   = smoothstep(1.0, 0.5, alpha);
+        spillFactor       = clamp(spillFactor + edgeBoost * spillStr * 0.3, 0.0, 1.0);
+
+        if (keyColor.g > keyColor.r && keyColor.g > keyColor.b) {
+            float limit = max(color.r, color.b);
+            color.g = mix(color.g, min(color.g, limit), spillFactor);
+        } else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g) {
+            float limit = max(color.r, color.g);
+            color.b = mix(color.b, min(color.b, limit), spillFactor);
+        } else {
+            float limit = max(color.g, color.b);
+            color.r = mix(color.r, min(color.r, limit), spillFactor);
+        }
+
+        if (desatStr > 0.001) {
+            float desat = spillFactor * desatStr;
+            float luma  = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            color.rgb   = mix(color.rgb, vec3(luma), desat);
+        }
+
+        if (lumaComp > 0.001) {
+            float currentLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            float diff        = origLuma - currentLuma;
+            color.rgb        += vec3(diff * lumaComp * spillFactor);
+        }
+    }
+
+    // ── Step 3: Foreground Color Correction ────────────────────────────
+    float satScale = SATURATION / 100.0;
+    float hueShift = HUE / 360.0;
+    float lumScale = LUMINANCE / 100.0;
+
+    bool needsCC = (abs(satScale - 1.0) > 0.001 ||
+                    abs(hueShift) > 0.001 ||
+                    abs(lumScale - 1.0) > 0.001);
+
+    if (needsCC && alpha > 0.01) {
+        vec3 hsl = rgb2hsl(color.rgb);
+        hsl.x = fract(hsl.x + hueShift);
+        hsl.y = clamp(hsl.y * satScale, 0.0, 1.0);
+        hsl.z = clamp(hsl.z * lumScale, 0.0, 1.0);
+        color.rgb = hsl2rgb(hsl);
+    }
+
+    // ── Step 4: Output Mode ────────────────────────────────────────────
+    int mode = int(OUTPUT_MODE + 0.5);
+
+    if (mode == 1) {
+        imageStore(outputImage, pixel, vec4(vec3(alpha), 1.0));
+    } else if (mode == 2) {
+        vec3 tinted = mix(vec3(1.0, 0.0, 0.5) * 0.5, srcColor.rgb, alpha);
+        imageStore(outputImage, pixel, vec4(tinted, 1.0));
+    } else if (mode == 3) {
+        imageStore(outputImage, pixel, vec4(srcColor.rgb, 1.0));
+    } else if (mode == 4) {
+        imageStore(outputImage, pixel, vec4(srcColor.rgb * (1.0 - alpha), 1.0));
+    } else if (mode == 5) {
+        float spillHeat = 0.0;
+        if (spillStr > 0.001) {
+            float spillAmount = 0.0;
+            if (keyColor.g > keyColor.r && keyColor.g > keyColor.b)
+                spillAmount = max(srcColor.g - max(srcColor.r, srcColor.b), 0.0);
+            else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g)
+                spillAmount = max(srcColor.b - max(srcColor.r, srcColor.g), 0.0);
+            else
+                spillAmount = max(srcColor.r - max(srcColor.g, srcColor.b), 0.0);
+            float edgeBoost = smoothstep(1.0, 0.5, alpha);
+            spillHeat = clamp((spillAmount / spillRange) * spillStr + edgeBoost * spillStr * 0.3, 0.0, 1.0);
+        }
+        vec3 spillVis = mix(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), spillHeat);
+        spillVis = mix(spillVis, vec3(1.0, 1.0, 0.0), smoothstep(0.5, 1.0, spillHeat));
+        imageStore(outputImage, pixel, vec4(spillVis, 1.0));
+    } else {
+        imageStore(outputImage, pixel, vec4(color, alpha));
+    }
+}

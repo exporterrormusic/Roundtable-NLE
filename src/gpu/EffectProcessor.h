@@ -97,6 +97,9 @@ public:
     /// Synchronous version â€” creates its own command buffer.
     bool processSync(const VkDescriptorImageInfo& sourceImage,
                      const std::vector<EffectStack::EffectSnapshot>& effects);
+    /// Copy current output to caller-owned Texture. Synchronous.
+    bool snapshotOutputSync(Texture& dst);
+
 
     // â”€â”€ Resize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -127,13 +130,20 @@ private:
     bool createPipelines();
     bool createDescriptorResources();
 
+    /// (Re)point the static bindings of every source/LUT ring set:
+    /// binding 0 (output) → storageTexture[0], binding 1 (input) → placeholder,
+    /// and (LUT only) binding 2 → placeholder.  Per-call bindings are set in
+    /// process()/dispatchEffect.  Called after allocation and after resize().
+    void initDescriptorRingBindings();
+
     /// Dispatch a single effect â€” writes to pingPong[targetIdx].
     bool dispatchEffect(VkCommandBuffer cmd,
                         EffectType type,
                         const std::vector<float>& params,
                         int sourceIdx, int targetIdx);
 
-    /// Ultra Key multi-pass dispatch (matte â†’ cleanup â†’ finalize).
+    /// Ultra Key single-pass dispatch (combined matte + cleanup + finalize).
+    /// Falls back to legacy 3-pass if the combined shader is unavailable.
     /// Returns the final targetIdx written to.
     int dispatchUltraKey(VkCommandBuffer cmd,
                          const std::vector<float>& params,
@@ -170,9 +180,11 @@ private:
     VkPipeline       m_sharpenPipeline{VK_NULL_HANDLE};
     VkPipeline       m_glowPipeline{VK_NULL_HANDLE};
     VkPipeline       m_chromaKeyPipeline{VK_NULL_HANDLE};       // legacy (unused)
-    VkPipeline       m_ultraKeyMattePipeline{VK_NULL_HANDLE};   // Pass 1: matte generation
-    VkPipeline       m_ultraKeyCleanupPipeline{VK_NULL_HANDLE}; // Pass 2: matte cleanup
-    VkPipeline       m_ultraKeyFinalizePipeline{VK_NULL_HANDLE};// Pass 3: spill + CC + output
+    VkPipeline       m_ultraKeyMattePipeline{VK_NULL_HANDLE};    // Pass 1: matte generation (legacy)
+    VkPipeline       m_ultraKeyCleanupPipeline{VK_NULL_HANDLE};  // Pass 2: matte cleanup (legacy)
+    VkPipeline       m_ultraKeyFinalizePipeline{VK_NULL_HANDLE}; // Pass 3: spill + CC + output (legacy)
+    VkPipeline       m_ultraKeyCombinedPipeline{VK_NULL_HANDLE}; // Combined single-pass (with cleanup)
+    VkPipeline       m_ultraKeyLightPipeline{VK_NULL_HANDLE};    // Light single-pass (no cleanup, fast path)
     VkPipeline       m_transform2dPipeline{VK_NULL_HANDLE};
     VkPipeline       m_vignettePipeline{VK_NULL_HANDLE};
     VkPipeline       m_lutPipeline{VK_NULL_HANDLE};
@@ -187,8 +199,32 @@ private:
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
     VkDescriptorSetLayout m_lutDescriptorSetLayout{VK_NULL_HANDLE}; // LUT-specific layout (has binding 2)
     VkDescriptorSet       m_descriptorSets[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkDescriptorSet       m_sourceDescriptorSet{VK_NULL_HANDLE};
-    VkDescriptorSet       m_lutDescriptorSet{VK_NULL_HANDLE};       // LUT-only set (has binding 2 for sampler3D)
+
+    // Per-call ring of "source" + LUT descriptor sets.
+    //
+    // The external-source binding (binding 1) is the ONLY descriptor that
+    // varies per layer, and it is mutated with vkUpdateDescriptorSets, which
+    // takes effect on the CPU immediately rather than in command order.  The
+    // render graph records one process() call per effected layer into a
+    // SINGLE command buffer, and up to GpuWorkSubmission::kRingSize frames
+    // overlap on the GPU.  A single shared source set would therefore be
+    // overwritten before earlier dispatches consumed it — every effected
+    // layer would sample the LAST layer's source ("blur pulls in other
+    // layers / flickers").  Each process() call instead claims the next ring
+    // slot, so concurrently-recorded and in-flight dispatches never share a
+    // mutable binding.
+    //
+    // Size = (max compositor layers per frame, 32) × (kRingSize, 3) rounded
+    // up for headroom: covers every process() call that can be pending at
+    // once.  A slot is reused only after the ring wraps, by which point the
+    // frame that last used it has completed (GpuWorkSubmission::beginRecording
+    // waited on its fence).
+    static constexpr uint32_t kDescriptorRing = 128;
+    std::vector<VkDescriptorSet> m_sourceDescriptorSets;  // ring (main layout)
+    std::vector<VkDescriptorSet> m_lutDescriptorSets;     // ring (LUT layout)
+    uint32_t        m_descriptorRingCursor{0};
+    VkDescriptorSet m_curSourceSet{VK_NULL_HANDLE};       // slot chosen by current process()
+    VkDescriptorSet m_curLutSet{VK_NULL_HANDLE};
 
     // Placeholder texture + LUT 3D texture
     Texture m_placeholderTexture;
@@ -196,9 +232,6 @@ private:
 
     // Reusable fence for processSync (avoids create/destroy per call)
     VkFence m_syncFence{VK_NULL_HANDLE};
-
-    // Cached source descriptor to skip redundant vkUpdateDescriptorSets
-    VkImageView m_lastSourceImageView{VK_NULL_HANDLE};
 
     // GPU timing
     VkQueryPool m_queryPool{VK_NULL_HANDLE};

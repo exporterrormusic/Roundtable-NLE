@@ -311,6 +311,7 @@ private:
         double fps         = 30.0;
         double frameAccum  = 0.0;  ///< Accumulator for frame-rate limiting
         QImage lastFrame;          ///< Most recent decoded frame as BGRA QImage
+        bool   needsChromaKey = false;  ///< File is a GREEN-suffixed chroma-key source
 
         // Async decode: persistent worker thread produces frames, UI grabs them
         std::mutex frameMutex;

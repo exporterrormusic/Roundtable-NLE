@@ -126,6 +126,13 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::generateSync(
     // Generate
     auto thumb = generateThumbnail(filePath, maxWidth);
 
+    // Stamp with file mtime so the cache can detect stale entries later
+    if (thumb)
+    {
+        std::error_code ec;
+        thumb->mtime = std::filesystem::last_write_time(filePath, ec);
+    }
+
     // Cache it
     if (thumb && thumb->valid)
     {
@@ -147,8 +154,28 @@ bool ThumbnailGenerator::isCached(const std::filesystem::path& filePath,
 
     std::string pathStr = resolveCanonicalPath(filePath);
 
+    // Read current file mtime for staleness check
+    std::filesystem::file_time_type currentMtime{};
+    {
+        std::error_code ec;
+        currentMtime = std::filesystem::last_write_time(filePath, ec);
+        if (ec) currentMtime = std::filesystem::file_time_type{};
+    }
+
     std::lock_guard lock(m_cacheMutex);
-    return m_cache.find({pathStr, maxWidth}) != m_cache.end();
+    auto it = m_cache.find({pathStr, maxWidth});
+    if (it != m_cache.end())
+    {
+        // File was overwritten since we cached it — treat as not cached
+        if (currentMtime != std::filesystem::file_time_type{} &&
+            currentMtime != it->second->mtime)
+        {
+            m_cache.erase(it);
+            return false;
+        }
+        return true;
+    }
+    return false;
 }
 
 std::shared_ptr<Thumbnail> ThumbnailGenerator::getCached(
@@ -158,10 +185,28 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::getCached(
 
     std::string pathStr = resolveCanonicalPath(filePath);
 
+    // Read current file mtime for staleness check
+    std::filesystem::file_time_type currentMtime{};
+    {
+        std::error_code ec;
+        currentMtime = std::filesystem::last_write_time(filePath, ec);
+        if (ec) currentMtime = std::filesystem::file_time_type{};
+    }
+
     std::lock_guard lock(m_cacheMutex);
     auto it = m_cache.find({pathStr, maxWidth});
     if (it != m_cache.end())
+    {
+        // If the file's mtime on disk differs from when we cached it,
+        // the file was overwritten — evict and pretend we don't have it.
+        if (currentMtime != std::filesystem::file_time_type{} &&
+            currentMtime != it->second->mtime)
+        {
+            m_cache.erase(it);
+            return nullptr;
+        }
         return it->second;
+    }
     return nullptr;
 }
 
@@ -310,6 +355,13 @@ void ThumbnailGenerator::workerLoop()
 
         // Generate the thumbnail
         auto thumb = generateThumbnail(req.path, req.maxWidth);
+
+        // Stamp with file mtime so the cache can detect stale entries later
+        if (thumb)
+        {
+            std::error_code ec;
+            thumb->mtime = std::filesystem::last_write_time(req.path, ec);
+        }
 
         // Cache it (even if invalid, to avoid repeated generation attempts)
         if (thumb)

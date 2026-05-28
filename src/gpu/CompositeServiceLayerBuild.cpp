@@ -470,14 +470,26 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // lower-quality preview. forceFullResolution (export) still
                 // gets Full. Half/Quarter playback already scrubs at the same
                 // tier and would only over-reduce if we generalized further.
+                // Scrub / fast-playback: drop one tier for smooth decode.
+                // At Full→Half, decode cost is 4× lower; at Half→Quarter,
+                // 2× lower.  When the user stops scrubbing, the next frame
+                // request at the normal tier restores full quality.
+                // Premiere Pro does the same — scrubs are lower quality.
                 auto baseVideoTier = m_forceFullResolution.load()
                     ? ResolutionTier::Full
                     : playbackTier();
-                const auto charVideoTier = (scrubMode
-                                            && !m_forceFullResolution.load()
-                                            && baseVideoTier == ResolutionTier::Full)
-                    ? ResolutionTier::Half
-                    : baseVideoTier;
+                ResolutionTier charVideoTier;
+                if (scrubMode && !m_forceFullResolution.load()) {
+                    // Always drop at least one tier during scrub/4x playback
+                    if (baseVideoTier == ResolutionTier::Full)
+                        charVideoTier = ResolutionTier::Half;
+                    else if (baseVideoTier == ResolutionTier::Half)
+                        charVideoTier = ResolutionTier::Quarter;
+                    else
+                        charVideoTier = ResolutionTier::Quarter; // floor
+                } else {
+                    charVideoTier = baseVideoTier;
+                }
 
                 // Clamp frame number to valid range.
                 // For video characters, wrap with modulo so the animation
@@ -769,11 +781,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                             auto baseSpineTier = m_forceFullResolution.load()
                                 ? ResolutionTier::Full
                                 : playbackTier();
-                            const auto spineVideoTier = (scrubMode
-                                                         && !m_forceFullResolution.load()
-                                                         && baseSpineTier == ResolutionTier::Full)
-                                ? ResolutionTier::Half
-                                : baseSpineTier;
+                            ResolutionTier spineVideoTier;
+                            if (scrubMode && !m_forceFullResolution.load()) {
+                                if (baseSpineTier == ResolutionTier::Full)
+                                    spineVideoTier = ResolutionTier::Half;
+                                else if (baseSpineTier == ResolutionTier::Half)
+                                    spineVideoTier = ResolutionTier::Quarter;
+                                else
+                                    spineVideoTier = ResolutionTier::Quarter;
+                            } else {
+                                spineVideoTier = baseSpineTier;
+                            }
 
                             auto* texCache2 = m_engine ? m_engine->textureCache() : nullptr;
                             if (texCache2 && m_engine->isGpuCompositeEnabled()) {

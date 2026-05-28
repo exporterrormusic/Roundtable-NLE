@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <volk.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -32,6 +34,8 @@ class MediaSourceService;
 class VideoUploader;
 class EffectProcessor;
 class VideoDecoder;
+class Texture;
+struct CachedFrame;
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -154,7 +158,25 @@ private:
     int64_t frameToTick(int64_t frameIndex) const noexcept;
 
     /// Evaluate timeline at tick, build compositor layers.
-    int evaluateLayers(const Timeline& timeline, int64_t tick, int depth = 0);
+    /// When \p setOnCompositor is false, layers are built into \p outLayers
+    /// but NOT submitted to the compositor (used for nested sequence recursion).
+    int evaluateLayers(const Timeline& timeline, int64_t tick, int depth = 0,
+                       bool setOnCompositor = true);
+
+    /// Render a nested sequence timeline to a CPU BGRA frame.
+    /// Composites the inner timeline, reads back the result, and returns it.
+    /// Returns nullptr on failure.
+    std::shared_ptr<CachedFrame> renderNestedFrame(
+        const Timeline& nested, int64_t tick, int depth);
+
+    /// After processSync(), snapshot the effect output to a per-layer texture
+    /// so subsequent layers' effect processing doesn't overwrite this layer's
+    /// result in EffectProcessor's shared ping-pong storage textures.
+    /// Returns the snapshot descriptor info on success, or the fallback
+    /// (EffectProcessor's outputDescriptorInfo) on failure.
+    VkDescriptorImageInfo snapshottedEffectOutput(
+        size_t layerIndex,
+        const VkDescriptorImageInfo& fallback);
 
     static constexpr int kMaxNestDepth = 8;
 
@@ -167,6 +189,12 @@ private:
     EffectProcessor*    m_effectProcessor{nullptr};  // Non-owning
     FrameRenderStats    m_stats;
     std::string         m_lastError;
+
+    // Per-layer effect output snapshots — prevents multiple layers from
+    // sharing EffectProcessor's internal ping-pong storage textures.
+    // Indexed by layer index, lazy-allocated on first use.
+    mutable std::vector<std::unique_ptr<Texture>> m_effectSnapshots;
+
     bool                m_initialized{false};
 };
 

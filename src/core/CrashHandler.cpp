@@ -1023,4 +1023,130 @@ void CrashHandler::uninstallPlatformHandler()
 #endif
 }
 
+// ── Crash log deduplication ───────────────────────────────────────────────
+
+void CrashHandler::deduplicateCrashLog()
+{
+    auto logPath = crashLogPath();
+    if (!std::filesystem::exists(logPath)) return;
+
+    // Read all lines
+    std::ifstream in(logPath);
+    if (!in.is_open()) return;
+
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) lines.push_back(line);
+    }
+    in.close();
+
+    if (lines.size() < 50) return;  // Not worth deduplicating small logs
+
+    // Build deduplicated output.  Consecutive crash entry lines with
+    // identical signatures (after stripping timestamp + TID) get collapsed
+    // into one line with a "(repeated N times)" suffix.
+    std::vector<std::string> out;
+
+    // Helper: extract the "stable signature" of a crash log line — the
+    // part that stays the same across repeated crashes of the same bug.
+    // Removes the timestamp prefix and thread-id suffix so consecutive
+    // identical crashes compare equal.
+    auto crashSignature = [](const std::string& s) -> std::string {
+        // Only hash crash entry lines (they start with '[' or have a tag).
+        // SESSION START and other markers pass through as-is.
+        if (s.empty()) return {};
+
+        // Strip "[YYYY-MM-DD HH:MM:SS] " prefix
+        std::string body = s;
+        if (body.size() > 22 && body[0] == '[' &&
+            body[4] == '-' && body[7] == '-' &&
+            body[10] == ' ' && body[13] == ':' && body[16] == ':') {
+            body = body.substr(22);
+        }
+
+        // Strip " TID=NNNNN" suffix (variable thread ID)
+        auto tidPos = body.rfind(" TID=");
+        if (tidPos != std::string::npos) {
+            // Verify the rest after TID= is all digits before stripping
+            auto after = body.substr(tidPos + 5);
+            bool allDigits = !after.empty();
+            for (char c : after) { if (c < '0' || c > '9') { allDigits = false; break; } }
+            if (allDigits) body = body.substr(0, tidPos);
+        }
+
+        return body;
+    };
+
+    size_t runCount = 0;
+    std::string runSig;
+    size_t runStartIdx = 0;  // index in `lines` of first line in current run
+
+    auto flushRun = [&]() {
+        if (runCount <= 1) {
+            // Single line — just copy
+            for (size_t i = runStartIdx; i < runStartIdx + runCount; ++i)
+                out.push_back(lines[i]);
+        } else {
+            // Collapsed run — keep first line with repeat count
+            out.push_back(lines[runStartIdx] +
+                          "  (repeated " + std::to_string(runCount) + " times)");
+        }
+        runCount = 0;
+        runSig.clear();
+    };
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const auto& l = lines[i];
+
+        // SESSION START markers always break runs and pass through
+        if (l.find("SESSION START") != std::string::npos) {
+            flushRun();
+            out.push_back(l);
+            continue;
+        }
+
+        // Lines that don't look like crash entries break runs
+        if (l.empty() || l[0] != '[') {
+            flushRun();
+            out.push_back(l);
+            continue;
+        }
+
+        std::string sig = crashSignature(l);
+
+        // Only deduplicate lines that actually contain crash info
+        bool isCrashLine = (sig.find("CODE=0x") != std::string::npos ||
+                            sig.find("SEH(") == 0 ||
+                            sig.find("Unhandled exception") != std::string::npos ||
+                            sig.find("std::terminate") != std::string::npos);
+
+        if (!isCrashLine) {
+            flushRun();
+            out.push_back(l);
+            continue;
+        }
+
+        if (runCount > 0 && sig == runSig) {
+            // Same crash as previous line — extend the run
+            ++runCount;
+        } else {
+            flushRun();
+            runSig = sig;
+            runStartIdx = i;
+            runCount = 1;
+        }
+    }
+    flushRun();
+
+    // Write back only if we actually reduced the size
+    if (out.size() < lines.size()) {
+        std::ofstream ofs(logPath, std::ios::trunc);
+        if (ofs.is_open()) {
+            for (const auto& ol : out)
+                ofs << ol << '\n';
+        }
+    }
+}
+
 } // namespace rt

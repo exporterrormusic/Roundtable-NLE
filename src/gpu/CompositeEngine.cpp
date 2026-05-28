@@ -411,7 +411,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
     std::chrono::high_resolution_clock::time_point& perfTcomp,
     int& effectLayerCount, int& effectPassCount,
     int& transitionCount,
-    bool allowLruInsert)
+    bool allowLruInsert,
+    bool forceSyncReadback)
 {
     if (m_gpuCompositeState == 0) {
         m_gpuCompositeState = GpuContext::get().isInitialized() ? 1 : -1;
@@ -453,7 +454,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
         compositor, effectProcessor, transitionRenderer,
         perfLog, perfT0, perfTlayers, perfTgpuUp, perfTcomp,
         effectLayerCount, effectPassCount, transitionCount,
-        allowLruInsert);
+        allowLruInsert, forceSyncReadback);
 }
 
 // ============================================================================
@@ -475,7 +476,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     std::chrono::high_resolution_clock::time_point& perfTcomp,
     int& effectLayerCount, int& effectPassCount,
     int& transitionCount,
-    bool allowLruInsert)
+    bool allowLruInsert,
+    bool forceSyncReadback)
 {
     using namespace render_graph;
 
@@ -489,6 +491,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         m_gpuMaskTextures.push_back(std::make_unique<Texture>());
     while (m_layerEffectOutputs.size() < layers.size())
         m_layerEffectOutputs.push_back(std::make_unique<Texture>());
+    while (m_gpuLayerTexturesAlt.size() < layers.size())
+        m_gpuLayerTexturesAlt.push_back(std::make_unique<Texture>());
 
     // ── Set up command buffer (reuse existing triple-buffer slot) ────
     if (!m_gpuSubmission) {
@@ -653,7 +657,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         ResourceId layerTexId{kInvalidResource};
         ResourceId maskTexId{kInvalidResource};
         uint32_t   uploadPassIdx{UINT32_MAX};
-        std::vector<uint32_t> effectPassIdxs;
+        uint32_t   effectPassIdx{UINT32_MAX};
         uint32_t   transitionPassIdx{UINT32_MAX};
     };
     std::vector<LayerPassInfo> layerInfo(layers.size());
@@ -734,29 +738,22 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 maskTexId, VK_NULL_HANDLE, 0, maskRegions, true);
         }
 
-        // ── Add Effect passes for this layer ───────────────────────
-        ResourceId effectInput = layerTexId;
-        for (size_t ei = 0; ei < layer.effects.size(); ++ei) {
+        // ── Add ONE Effect pass per layer ──────────────────────────
+        // process() runs ALL effects in one call — one pass per layer
+        // prevents O(N²) dispatches and topo-sort interleaving (#40).
+        if (!layer.effects.empty()) {
             ResourceId effectOutput = graph.declareResource({
                 .type = ResourceType::StorageImage,
-                .name = "layer" + std::to_string(li) + "_effect" + std::to_string(ei),
-                .width = outW,
-                .height = outH,
+                .name = "layer" + std::to_string(li) + "_effectOut",
+                .width = outW, .height = outH,
                 .format = VK_FORMAT_R8G8B8A8_UNORM,
                 .usageFlags = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .transient = true,
-                .external = true,    // managed by EffectProcessor
+                .transient = true, .external = true,
             });
-
-            uint32_t epIdx = graph.addComputePass(
-                "effect_" + std::to_string(li) + "_" + std::to_string(ei),
-                PassType::Effect,
-                {effectInput}, {effectOutput},
-                VK_NULL_HANDLE, VK_NULL_HANDLE, {}, {}, 1, 1, 1,
-                true,   // optional — skip if effect fails
-                false); // not fatal
-            layerInfo[li].effectPassIdxs.push_back(epIdx);
-            effectInput = effectOutput;
+            layerInfo[li].effectPassIdx = graph.addComputePass(
+                "effect_layer" + std::to_string(li), PassType::Effect,
+                {layerTexId}, {effectOutput},
+                VK_NULL_HANDLE, VK_NULL_HANDLE, {}, {}, 1, 1, 1, true, false);
         }
     }
 
@@ -820,8 +817,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         ResourceId finalTex = li.layerTexId;
         if (li.transitionPassIdx != UINT32_MAX)
             finalTex = graph.pass(li.transitionPassIdx).outputs[0];
-        else if (!li.effectPassIdxs.empty())
-            finalTex = graph.pass(li.effectPassIdxs.back()).outputs[0];
+        else if (li.effectPassIdx != UINT32_MAX)
+            finalTex = graph.pass(li.effectPassIdx).outputs[0];
 
         if (finalTex != kInvalidResource)
             compositeInputs.push_back(finalTex);
@@ -1012,6 +1009,16 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
                             layer.containFit, layer.anchorX, layer.anchorY);
                     } else {
+                        // ── Packed-alpha double-buffer (#93) ──────────
+                        // Swap upload/composite targets so the compositor
+                        // always reads a texture the upload isn't writing
+                        // to.  Zero-copy: just exchange unique_ptrs.
+                        if (layer.isPacked &&
+                            m_gpuLayerTexturesAlt[li] &&
+                            m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
+                            m_gpuLayerTextures[li].swap(m_gpuLayerTexturesAlt[li]);
+                        }
+
                         // Upload via existing GpuUploadManager
                         auto uploadResult = m_uploadManager->uploadLayer(
                             layer, *m_gpuLayerTextures[li],
@@ -1021,7 +1028,15 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             scrubMode);
 
                         if (uploadResult.success) {
-                            gpuLayers[li].textureInfo = uploadResult.descriptor;
+                            // Point compositor at the stable (non-uploaded) texture
+                            if (layer.isPacked &&
+                                m_gpuLayerTexturesAlt[li] &&
+                                m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
+                                gpuLayers[li].textureInfo =
+                                    m_gpuLayerTexturesAlt[li]->descriptorInfo();
+                            } else {
+                                gpuLayers[li].textureInfo = uploadResult.descriptor;
+                            }
                             gpuLayers[li].transform = Compositor::buildViewportTransform(
                                 uploadResult.srcW, uploadResult.srcH, outW, outH,
                                 layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
@@ -1039,205 +1054,139 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
 
         case PassType::Effect: {
-            // Find which layer/effect this pass corresponds to
             for (size_t li = 0; li < layers.size(); ++li) {
-                for (size_t ei = 0; ei < layerInfo[li].effectPassIdxs.size(); ++ei) {
-                    if (layerInfo[li].effectPassIdxs[ei] == passIdx) {
-                        const auto& layer = layers[li];
-                        if (!effectProcessor || !effectProcessor->isInitialized())
-                            break;
+                if (layerInfo[li].effectPassIdx != passIdx) continue;
+                const auto& layer = layers[li];
+                if (!effectProcessor || !effectProcessor->isInitialized()) break;
+                if (!gpuLayers[li].enabled) break;
 
-                        // Fault isolation: skip the effect if its source
-                        // layer's upload failed (gpuLayers[li].enabled was
-                        // cleared in the Upload case).  Sampling a null
-                        // descriptor would either crash the driver or
-                        // produce garbage that contaminates the composite.
-                        if (!gpuLayers[li].enabled)
-                            break;
+                ++effectLayerCount;
+                effectPassCount += (int)layer.effects.size();
 
-                        ++effectLayerCount;
-                        effectPassCount += static_cast<int>(layer.effects.size());
-
-                        // Handle LUT upload for this layer's effects
-                        for (const auto& snap : layer.effects) {
-                            if (snap.type == EffectType::LUT && layer.clipPtr) {
-                                for (size_t cfi = 0; cfi < layer.clipPtr->effects().effectCount(); ++cfi) {
-                                    auto& clipFx = layer.clipPtr->effects().effect(cfi);
-                                    if (clipFx.effectType() == EffectType::LUT && clipFx.isEnabled()) {
-                                        auto* lutFx = static_cast<LUT*>(&clipFx);
-                                        if (lutFx->hasLUT())
-                                            effectProcessor->uploadLUT3D(lutFx->lutData(), lutFx->lutSize());
-                                        break;
-                                    }
-                                }
+                for (const auto& snap : layer.effects) {
+                    if (snap.type == EffectType::LUT && layer.clipPtr) {
+                        for (size_t cfi = 0; cfi < layer.clipPtr->effects().effectCount(); ++cfi) {
+                            auto& clipFx = layer.clipPtr->effects().effect(cfi);
+                            if (clipFx.effectType() == EffectType::LUT && clipFx.isEnabled()) {
+                                auto* lutFx = static_cast<LUT*>(&clipFx);
+                                if (lutFx->hasLUT()) effectProcessor->uploadLUT3D(lutFx->lutData(), lutFx->lutSize());
                                 break;
-                            }
-                        }
-
-                        VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
-                        if (effectProcessor->process(cmd, srcInfo, layer.effects)) {
-                            gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
-
-                            // Effect output is outW×outH. Two regimes:
-                            //   • OTS shaders draw a positioned box in
-                            //     output-pixel coords and leave the rest
-                            //     transparent — the clip's pos/scale are
-                            //     baked into the shader's own placement, so
-                            //     the composite must sample this texture
-                            //     1:1 (identity transform).
-                            //   • Every other effect (blur, sharpen, LUT,
-                            //     flip, color correct, …) is a 1:1
-                            //     passthrough sampler — its output is the
-                            //     source content stretched to fill outW×outH
-                            //     with no awareness of the clip's pos/scale.
-                            //     Keeping identity here would render those
-                            //     clips full-frame and ignore the user's
-                            //     transform; instead build a viewport
-                            //     transform that treats the effect output as
-                            //     an already output-sized texture and
-                            //     reapplies pos/scale/rot/anchor.
-                            bool hasOtsEffect = false;
-                            for (const auto& snap : layer.effects) {
-                                if (snap.type == EffectType::OtsLeft ||
-                                    snap.type == EffectType::OtsRight)
-                                {
-                                    hasOtsEffect = true;
-                                    break;
-                                }
-                            }
-                            if (hasOtsEffect) {
-                                gpuLayers[li].transform = Compositor::buildViewportTransform(
-                                    outW, outH, outW, outH,
-                                    0.0f, 0.0f, 1.0f, 1.0f, 0.0f, false);
-                            } else {
-                                gpuLayers[li].transform = Compositor::buildViewportTransform(
-                                    outW, outH, outW, outH,
-                                    layer.posX, layer.posY,
-                                    layer.scX, layer.scY, layer.rot,
-                                    layer.containFit,
-                                    layer.anchorX, layer.anchorY);
-                            }
-
-                            // Snapshot the effect output into this layer's
-                            // dedicated texture on the LAST effect pass for
-                            // this layer.  EffectProcessor only has two
-                            // ping-pong storage textures shared across all
-                            // layers — without this snapshot the next layer's
-                            // effect chain overwrites the textures that this
-                            // layer's textureInfo still references, breaking
-                            // cross-dissolves between two effected clips.
-                            const bool isLastEffectPass =
-                                (ei + 1 == layerInfo[li].effectPassIdxs.size());
-                            if (isLastEffectPass && li < m_layerEffectOutputs.size()) {
-                                auto& snap = *m_layerEffectOutputs[li];
-                                // Lazy-allocate / re-allocate when output size changes.
-                                if (snap.image() == VK_NULL_HANDLE ||
-                                    snap.width()  != outW ||
-                                    snap.height() != outH)
-                                {
-                                    snap.destroy();
-                                    TextureConfig cfg;
-                                    cfg.width  = outW;
-                                    cfg.height = outH;
-                                    cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
-                                    cfg.usage  = VK_IMAGE_USAGE_SAMPLED_BIT
-                                               | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                                    if (!snap.create(ctx.allocator().handle(),
-                                                     ctx.vkDevice(), cfg))
-                                    {
-                                        spdlog::warn("[EFFECT-SNAPSHOT] failed to "
-                                                     "allocate layer {} snapshot "
-                                                     "({}x{}) — dissolve between "
-                                                     "effected clips may glitch",
-                                                     li, outW, outH);
-                                    }
-                                }
-
-                                if (snap.image() != VK_NULL_HANDLE) {
-                                    // EffectProcessor output is in GENERAL
-                                    // (storage image).  Move it to
-                                    // TRANSFER_SRC_OPTIMAL for the copy, and
-                                    // snap → TRANSFER_DST_OPTIMAL.
-                                    VkImage effImg = effectProcessor->outputImage();
-
-                                    VkImageMemoryBarrier toSrc{};
-                                    toSrc.sType        = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                                    toSrc.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                                    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                                    toSrc.oldLayout    = VK_IMAGE_LAYOUT_GENERAL;
-                                    toSrc.newLayout    = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                                    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                                    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                                    toSrc.image        = effImg;
-                                    toSrc.subresourceRange = {
-                                        VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                                    vkCmdPipelineBarrier(cmd,
-                                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        0, 0, nullptr, 0, nullptr, 1, &toSrc);
-
-                                    snap.transitionLayout(cmd,
-                                        snap.layout(),
-                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-                                    VkImageCopy region{};
-                                    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                    region.extent = {outW, outH, 1};
-                                    vkCmdCopyImage(cmd,
-                                        effImg,        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                        snap.image(),  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                        1, &region);
-
-                                    // Restore effect-output to GENERAL so the
-                                    // next layer's effect chain can write to
-                                    // it as a storage image.
-                                    VkImageMemoryBarrier toGen{};
-                                    toGen.sType        = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                                    toGen.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                                    toGen.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
-                                                        | VK_ACCESS_SHADER_WRITE_BIT;
-                                    toGen.oldLayout    = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                                    toGen.newLayout    = VK_IMAGE_LAYOUT_GENERAL;
-                                    toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                                    toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                                    toGen.image        = effImg;
-                                    toGen.subresourceRange = {
-                                        VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                                    vkCmdPipelineBarrier(cmd,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                        0, 0, nullptr, 0, nullptr, 1, &toGen);
-
-                                    // Make the snapshot sampleable by the
-                                    // transition / composite passes.
-                                    snap.transitionLayout(cmd,
-                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-                                    // Redirect this layer's textureInfo from
-                                    // the shared ping-pong texture to the
-                                    // per-layer snapshot.
-                                    gpuLayers[li].textureInfo = snap.descriptorInfo();
-                                }
-                            }
-                        } else if (pass.optional) {
-                            // Phase D: effect failed.  Disable this pass
-                            // for the rest of the session — the input
-                            // descriptor stays bound (implicit passthrough).
-                            if (m_disabledPasses.insert(pass.name).second) {
-                                spdlog::warn("[RENDER_GRAPH] Effect pass '{}' failed "
-                                             "— disabled for the rest of this session",
-                                             pass.name);
                             }
                         }
                         break;
                     }
                 }
+
+                VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
+                if (effectProcessor->process(cmd, srcInfo, layer.effects)) {
+                    gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
+                    gpuLayers[li].needsSwapRB = false;
+                    gpuLayers[li].isPacked = false;
+                    gpuLayers[li].isPMA = false;
+
+                    // Barrier: compute write → sampler read (#40 fix)
+                    if (effectProcessor->outputImage() != VK_NULL_HANDLE) {
+                        VkImageMemoryBarrier b{};
+                        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                        b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+                        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        b.image = effectProcessor->outputImage();
+                        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+                    }
+
+                    // Snapshot EVERY effected layer's output into its own
+                    // texture.  EffectProcessor has only two ping-pong storage
+                    // images shared across all layers; render-graph passes do
+                    // NOT necessarily execute in layer order, so any layer
+                    // (even the highest-indexed one) can have its live output
+                    // clobbered by another layer's effect before the composite
+                    // samples it.  Copying each result out immediately after
+                    // its own dispatch — in command order — makes every
+                    // layer's textureInfo independent of the shared storage.
+                    if (li < m_layerEffectOutputs.size()) {
+                        auto& snap = *m_layerEffectOutputs[li];
+                        if (snap.image() == VK_NULL_HANDLE || snap.width() != outW || snap.height() != outH) {
+                            snap.destroy();
+                            TextureConfig cfg;
+                            cfg.width = outW; cfg.height = outH;
+                            cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+                            cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                            snap.create(ctx.allocator().handle(), ctx.vkDevice(), cfg);
+                        }
+                        if (snap.image() != VK_NULL_HANDLE) {
+                            VkImage ei = effectProcessor->outputImage();
+                            VkImageMemoryBarrier toSrc{};
+                            toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                            toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                            toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                            toSrc.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+                            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                            toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            toSrc.image = ei;
+                            toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
+                            snap.transitionLayout(cmd, snap.layout(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            VkImageCopy r{};
+                            r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            r.extent = {outW, outH, 1};
+                            vkCmdCopyImage(cmd, ei, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                snap.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+                            VkImageMemoryBarrier toGen{};
+                            toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                            toGen.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                            toGen.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                            toGen.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                            toGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                            toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            toGen.image = ei;
+                            toGen.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toGen);
+                            snap.transitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            gpuLayers[li].textureInfo = snap.descriptorInfo();
+                        }
+                    }
+
+                    {
+                        static std::atomic<int> s_diagCount{0};
+                        if (s_diagCount.fetch_add(1) < 60) {
+                            spdlog::warn("[EFFECT-DIAG] out={}x{} sync={} li={} "
+                                         "effects={} srcView={} outView={} snapImg={}",
+                                         outW, outH, forceSyncReadback, li,
+                                         layer.effects.size(),
+                                         (uint64_t)srcInfo.imageView,
+                                         (uint64_t)gpuLayers[li].textureInfo.imageView,
+                                         (li < m_layerEffectOutputs.size() && m_layerEffectOutputs[li])
+                                             ? (uint64_t)m_layerEffectOutputs[li]->image() : 0ull);
+                        }
+                    }
+
+                    // Transform
+                    bool ots = false;
+                    for (const auto& s : layer.effects)
+                        if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight) { ots = true; break; }
+                    if (ots) gpuLayers[li].transform = Compositor::buildViewportTransform(outW, outH, outW, outH, 0,0,1,1,0,false);
+                    else gpuLayers[li].transform = Compositor::buildViewportTransform(outW, outH, outW, outH,
+                        layer.posX, layer.posY, layer.scX, layer.scY, layer.rot, layer.containFit, layer.anchorX, layer.anchorY);
+                } else if (pass.optional) {
+                    if (m_disabledPasses.insert(pass.name).second)
+                        spdlog::warn("[RENDER_GRAPH] Effect pass '{}' failed — disabled for session", pass.name);
+                }
+                break;
             }
             break;
         }
-
         case PassType::Transition: {
             for (size_t wi = 0; wi < layers.size(); ++wi) {
                 if (layerInfo[wi].transitionPassIdx != passIdx)
@@ -1503,7 +1452,19 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         result->height = outH;
         result->stride = outW * 4;
 
-        if (gpuDisplayMode) {
+        // forceSyncReadback (export / Export Preview): the caller consumes
+        // the CPU pixels on the SAME thread immediately after this returns,
+        // with no fence wait of its own.  The lazy/GPU-direct path below
+        // defers the readback AND leaves the EffectProcessor's single shared
+        // ping-pong storage + descriptor sets live; with up to kRingSize
+        // export frames overlapping on the GPU, frame N+1's effect dispatch
+        // then overwrites the storage/descriptor that frame N's still-pending
+        // blur + composite reads — the "blur flickers / pulls in other
+        // composited layers after a few seconds of export" bug.  Routing
+        // export through the synchronous wait+readback path (below) drains
+        // each frame before the next reuses the EffectProcessor, and reads
+        // fully-rendered (non-stale) pixels.
+        if (gpuDisplayMode && !forceSyncReadback) {
             // GPU-direct display path: used for BOTH playback and scrub.
             //
             // Previously this was gated on `!scrubMode`, which forced
@@ -1531,7 +1492,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             result->gpuTextureOwner = compositor->outputTextureOwner();
         }
 
-        if (readbackOk && gpuDisplayMode) {
+        if (readbackOk && gpuDisplayMode && !forceSyncReadback) {
             auto compPtr = compositor;
             uint32_t rW = outW, rH = outH;
             result->lazyReadback = [compPtr, rW, rH](std::vector<uint8_t>& px) -> bool {

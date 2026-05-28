@@ -99,15 +99,20 @@ struct VCInfo { std::string charName; std::string mutePath; std::string talkPath
 
 inline const std::unordered_map<std::string, VCInfo>& videoCharacterFiles()
 {
-    // Wells was originally ProRes 4444 .mov; converted to packed-alpha H.264
-    // .mp4 for NVDEC playback.  Keep the .mov keys so old shot presets still
-    // resolve (they get migrated on load), but always point new entries at
-    // the .mp4 files.
+    // Wells uses H.264 GREEN-suffixed .mp4 files with a chroma-key
+    // green background (#18FF00).  The chroma key is applied inline
+    // after decode (see chromaKeyInPlace in FrameCache.h) so the
+    // green is never visible anywhere — compositor, thumbnails,
+    // library, export — all see a clean alpha frame.
+    // NVDEC hardware decode (fast) replaces the ProRes 4444 .mov
+    // (software-only, too slow for real-time playback).
+    // Preserve the old .mov and .mp4 keys so existing shot presets
+    // resolve through ClipSerialization migration.
     static const std::unordered_map<std::string, VCInfo> table {
-        { "wells-chrono-mute.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE.mp4", "assets/videos/WELLS-CHRONO-TALK.mp4" } },
-        { "wells-chrono-talk.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE.mp4", "assets/videos/WELLS-CHRONO-TALK.mp4" } },
-        { "wells-chrono-mute.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE.mp4", "assets/videos/WELLS-CHRONO-TALK.mp4" } },
-        { "wells-chrono-talk.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE.mp4", "assets/videos/WELLS-CHRONO-TALK.mp4" } },
+        { "wells-chrono-mute.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
+        { "wells-chrono-talk.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
+        { "wells-chrono-mute.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
+        { "wells-chrono-talk.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
     };
     return table;
 }

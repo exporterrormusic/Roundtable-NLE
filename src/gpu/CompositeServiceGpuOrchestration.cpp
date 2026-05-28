@@ -47,12 +47,19 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
     // isNestedRecursion → don't let the inner sequence composite write its
     // (untransformed, CPU) result into the shared composite LRU; that frame
     // collides with the outer program tick and flickers the nested clip.
+    // forceFullResolution is set only by the Export Panel preview / export
+    // render, which consumes the CPU pixels inline with no fence wait of its
+    // own.  Route those frames through the synchronous wait+readback path so
+    // the shared EffectProcessor ping-pong storage is drained before the next
+    // frame reuses it (otherwise overlapping export frames corrupt each
+    // other's effect output — the "blur flickers after a few seconds" bug).
     auto result = m_engine->composite(
         layers, outW, outH, tick, scrubMode, m_gpuDisplayMode,
         compositor, effectProcessor, transitionRenderer,
         perfLog, perfT0, perfTlayers, perfTgpuUp, perfTcomp,
         effectLayerCount, effectPassCount, transitionCount,
-        /*allowLruInsert=*/!isNestedRecursion);
+        /*allowLruInsert=*/!isNestedRecursion,
+        /*forceSyncReadback=*/m_forceFullResolution.load());
 
     return result;
 }

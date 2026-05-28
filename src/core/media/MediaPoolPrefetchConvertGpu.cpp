@@ -34,10 +34,15 @@
 #include <volk.h>
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -99,6 +104,20 @@ WorkerGpuState::~WorkerGpuState()
     if (signalSem != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
         vkDestroySemaphore(device, signalSem, nullptr);
     }
+
+    // Chroma-key pass resources
+    const VkDevice d = ckDevice ? ckDevice : device;
+    if (chromaKeyPipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(d, chromaKeyPipeline, nullptr);
+    if (chromaKeyLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(d, chromaKeyLayout, nullptr);
+    if (chromaKeyShader != VK_NULL_HANDLE)
+        vkDestroyShaderModule(d, chromaKeyShader, nullptr);
+    if (chromaKeyDescPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(d, chromaKeyDescPool, nullptr);
+    if (chromaKeyDescLayout != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(d, chromaKeyDescLayout, nullptr);
+
     // cmdPool: RAII via rt::CommandPool destructor.
 }
 
@@ -191,6 +210,33 @@ Nv12Converter* WorkerGpuState::ensureNv12Converter(uint32_t w, uint32_t h)
 // ─────────────────────────────────────────────────────────────────────────
 #define gWorkerStep ::rt::setLastWorkerStep
 
+// ── Chroma-key helpers (file-local, called from convertDecodedToCacheGpu)
+namespace {
+
+fs::path findShaderFile(const char* name)
+{
+    fs::path candidates[] = {
+        fs::path(__FILE__).parent_path().parent_path().parent_path() / "build" / "shaders" / name,
+        fs::current_path() / "shaders" / name,
+        fs::current_path().parent_path() / "shaders" / name,
+        fs::current_path().parent_path() / "build" / "shaders" / name,
+    };
+    for (auto& p : candidates)
+        if (fs::exists(p)) return p;
+    return {};
+}
+
+void updateChromaKeyDescriptors(
+    VkDevice dev, VkDescriptorSet ds,
+    const Texture& srcTex, Texture& dstTex);
+
+void recordChromaKeyPass(
+    VkCommandBuffer cmd, WorkerGpuState& wgs,
+    const Texture& srcTex, Texture& dstTex,
+    uint32_t width, uint32_t height);
+
+} // namespace
+
 // ─────────────────────────────────────────────────────────────────────────
 // MediaPool::convertDecodedToCacheGpu
 // ─────────────────────────────────────────────────────────────────────────
@@ -208,7 +254,18 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     if (!ctx.isInitialized() || !ctx.isOperational()) return nullptr;
     if (!wgs.ready())                                  return nullptr;
     if (!m_prefetchTexPool)                            return nullptr;
-    if (task.packedAlpha)                              return nullptr;
+    // Packed-alpha sources (Wells and other video characters) used to bail
+    // here, which forced them onto the CPU bounce path (transferHardwareFrame
+    // + sws_scale + per-frame PCIe re-upload).  That's the dominant cost on
+    // packed-alpha character clips.  The GPU path produces the same BGRA
+    // layout sws_scale would have produced — full 2× height, top RGB,
+    // bottom alpha-as-greyscale — and the compositor's existing UV-split
+    // shader is keyed on the cudaPacked flag the GpuTexCache stores at
+    // putShared time, so the downstream behaviour is identical to the
+    // CPU path (see CompositeServiceLayerBuild.cpp around line 1306).
+    // Keeping the unpackedAlpha=false default on the new CachedFrame so
+    // the GpuTexCache lookup correctly reports isPacked=true to the
+    // compositor.
 
     // Non-blocking sweep of completed prior submissions.  Frees their
     // fence + staging + cmd buffer so we don't accumulate them.  Each
@@ -868,6 +925,275 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
 
     return cached;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// WorkerGpuState::ensureChromaKeyPass
+// ─────────────────────────────────────────────────────────────────────────
+bool WorkerGpuState::ensureChromaKeyPass()
+{
+    if (chromaKeyReady) return true;
+
+    auto& ctx = GpuContext::get();
+    if (!ctx.isInitialized()) return false;
+    const VkDevice dev = ctx.vkDevice();
+    ckDevice = dev;
+
+    // ── Descriptor set layout: binding 0 = storage image (output),
+    //    binding 1 = combined image sampler (Nv12Converter output) ──────
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslCI{};
+    dslCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslCI.bindingCount = 2;
+    dslCI.pBindings    = bindings;
+    if (vkCreateDescriptorSetLayout(dev, &dslCI, nullptr, &chromaKeyDescLayout) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to create descriptor set layout");
+        return false;
+    }
+
+    // ── Descriptor pool ────────────────────────────────────────────────
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolCI{};
+    poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolCI.maxSets       = 1;
+    poolCI.poolSizeCount = 2;
+    poolCI.pPoolSizes    = poolSizes;
+    if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &chromaKeyDescPool) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to create descriptor pool");
+        return false;
+    }
+
+    // ── Allocate descriptor set ────────────────────────────────────────
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool     = chromaKeyDescPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts        = &chromaKeyDescLayout;
+    if (vkAllocateDescriptorSets(dev, &allocInfo, &chromaKeyDescSet) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to allocate descriptor set");
+        return false;
+    }
+
+    // ── Pipeline layout + push constants (matches chroma_key.comp) ─────
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset     = 0;
+    // width(int), height(int), paramCount(int), _pad(int), params[16](float)
+    pushRange.size       = sizeof(int32_t) * 4 + sizeof(float) * 16;
+
+    VkPipelineLayoutCreateInfo plCI{};
+    plCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plCI.setLayoutCount         = 1;
+    plCI.pSetLayouts            = &chromaKeyDescLayout;
+    plCI.pushConstantRangeCount = 1;
+    plCI.pPushConstantRanges    = &pushRange;
+    if (vkCreatePipelineLayout(dev, &plCI, nullptr, &chromaKeyLayout) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to create pipeline layout");
+        return false;
+    }
+
+    // ── Load SPIR-V shader ─────────────────────────────────────────────
+    fs::path spvPath = findShaderFile("chroma_key.comp.spv");
+    if (spvPath.empty()) {
+        spdlog::warn("ChromaKeyPass: chroma_key.comp.spv not found");
+        return false;
+    }
+    std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        spdlog::warn("ChromaKeyPass: failed to open {}", spvPath.string());
+        return false;
+    }
+    const size_t fileSize = static_cast<size_t>(file.tellg());
+    std::vector<char> spirv(fileSize);
+    file.seekg(0);
+    file.read(spirv.data(), static_cast<std::streamsize>(fileSize));
+
+    VkShaderModuleCreateInfo smCI{};
+    smCI.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smCI.codeSize = spirv.size();
+    smCI.pCode    = reinterpret_cast<const uint32_t*>(spirv.data());
+    if (vkCreateShaderModule(dev, &smCI, nullptr, &chromaKeyShader) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to create shader module");
+        return false;
+    }
+
+    // ── Compute pipeline ───────────────────────────────────────────────
+    VkComputePipelineCreateInfo pci{};
+    pci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.module = chromaKeyShader;
+    pci.stage.pName  = "main";
+    pci.layout       = chromaKeyLayout;
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, nullptr,
+                                  &chromaKeyPipeline) != VK_SUCCESS) {
+        spdlog::warn("ChromaKeyPass: failed to create compute pipeline");
+        return false;
+    }
+
+    chromaKeyReady = true;
+    spdlog::warn("ChromaKeyPass: pipeline ready (per-worker)");
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Helpers for convertDecodedToCacheGpu's chroma-key branch
+// ─────────────────────────────────────────────────────────────────────────
+namespace {
+
+/// Update the chroma-key descriptor set to point at the Nv12Converter
+/// output (sampled) and the pooled destination texture (storage write).
+void updateChromaKeyDescriptors(
+    VkDevice dev,
+    VkDescriptorSet ds,
+    const Texture& srcTex,   // Nv12Converter output (BGRA, VK_IMAGE_LAYOUT_GENERAL)
+    Texture&       dstTex)   // pooled dst (will be written as storage)
+{
+    // src: sampler2D — read converter output
+    VkDescriptorImageInfo srcInfo{};
+    srcInfo.sampler     = srcTex.sampler();
+    srcInfo.imageView   = srcTex.imageView();
+    srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // dst: storage image — write keyed result
+    VkDescriptorImageInfo dstInfo{};
+    dstInfo.sampler     = VK_NULL_HANDLE;
+    dstInfo.imageView   = dstTex.imageView();
+    dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = ds;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].pImageInfo      = &dstInfo;
+
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = ds;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo      = &srcInfo;
+
+    vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
+}
+
+/// Record the chroma-key compute dispatch into cmd.
+/// On entry: srcTex (converter output) is in VK_IMAGE_LAYOUT_GENERAL.
+///           dstTex must be in VK_IMAGE_LAYOUT_UNDEFINED (fresh from pool).
+/// On exit:  dstTex is in VK_IMAGE_LAYOUT_GENERAL (storage-written).
+///           Caller must transition dstTex to SHADER_READ_ONLY_OPTIMAL after.
+void recordChromaKeyPass(
+    VkCommandBuffer         cmd,
+    WorkerGpuState&         wgs,
+    const Texture&          srcTex,    // Nv12Converter output
+    Texture&                dstTex,    // pooled destination
+    uint32_t                width,
+    uint32_t                height)
+{
+    const VkDevice dev = wgs.ckDevice;
+
+    // ── Transition srcTex GENERAL → SHADER_READ_ONLY_OPTIMAL ──────────
+    {
+        VkImageMemoryBarrier b{};
+        b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        b.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        b.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        b.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image               = const_cast<Texture&>(srcTex).image();  // read-only op
+        b.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+    }
+
+    // ── Transition dstTex UNDEFINED → GENERAL (storage write) ──────────
+    {
+        VkImageMemoryBarrier b{};
+        b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.srcAccessMask       = 0;
+        b.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image               = dstTex.image();
+        b.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+    }
+
+    // ── Update descriptor set ──────────────────────────────────────────
+    updateChromaKeyDescriptors(dev, wgs.chromaKeyDescSet, srcTex, dstTex);
+
+    // ── Bind + push + dispatch ─────────────────────────────────────────
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wgs.chromaKeyPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wgs.chromaKeyLayout,
+                            0, 1, &wgs.chromaKeyDescSet, 0, nullptr);
+
+    // Push constants: width, height, paramCount(6), _pad(0), params[6]
+    struct CKPush {
+        int32_t width;
+        int32_t height;
+        int32_t paramCount;
+        int32_t _pad;
+        float   params[16];
+    } ck{};
+    ck.width      = static_cast<int32_t>(width);
+    ck.height     = static_cast<int32_t>(height);
+    ck.paramCount = 6;
+    ck._pad       = 0;
+    // keyHue ~114° for #18FF00 green in HSL space
+    ck.params[0] = 114.0f;   // hue (degrees)
+    ck.params[1] = 0.85f;    // saturation
+    ck.params[2] = 0.52f;    // lightness
+    ck.params[3] = 0.38f;    // tolerance (generous for H.264)
+    ck.params[4] = 0.12f;    // edge softness
+    ck.params[5] = 1.0f;     // spill suppression (max)
+
+    vkCmdPushConstants(cmd, wgs.chromaKeyLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(ck), &ck);
+
+    uint32_t gx = (width  + 15) / 16;
+    uint32_t gy = (height + 15) / 16;
+    vkCmdDispatch(cmd, gx, gy, 1);
+
+    // ── Memory barrier: ensure storage writes are visible to next pass ─
+    {
+        VkMemoryBarrier mb{};
+        mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &mb, 0, nullptr, 0, nullptr);
+    }
+}
+
+} // namespace
 
 // ─────────────────────────────────────────────────────────────────────────
 // tryConvertDecodedToCacheGpu — see header.

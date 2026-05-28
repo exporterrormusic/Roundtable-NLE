@@ -1,0 +1,349 @@
+#version 450
+/*
+ * ultra_key_combined.comp — Ultra Key single-pass chroma keyer.
+ *
+ * Merges the former 3-pass pipeline (matte → cleanup → finalize) into one
+ * compute shader.  Neighbor alpha values for choke/soften are computed
+ * on-the-fly from the source texture rather than requiring intermediate
+ * passes.  This eliminates 2 full-screen dispatches, 2 pipeline barriers,
+ * and 2 full-screen read/write round-trips — roughly 3× faster.
+ *
+ * Steps (per pixel):
+ *   1. Compute matte alpha for center + up to 13 cross-neighbor samples
+ *   2. Choke (min-filter erosion) on computed alphas
+ *   3. Soften (weighted blur) on computed alphas
+ *   4. Contrast + Mid Point sigmoid curve
+ *   5. Spill suppression on center RGB
+ *   6. Foreground color correction (HSL)
+ *   7. Output mode selection
+ */
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D        inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[28];
+} pc;
+
+// ── Param indices (must match ChromaKey::Param enum) ────────────────────
+#define KEY_R        pc.params[0]
+#define KEY_G        pc.params[1]
+#define KEY_B        pc.params[2]
+#define OUTPUT_MODE  pc.params[3]
+#define SETTING      pc.params[4]
+#define TRANSPARENCY pc.params[5]
+#define HIGHLIGHT    pc.params[6]
+#define SHADOW       pc.params[7]
+#define TOLERANCE    pc.params[8]
+#define PEDESTAL     pc.params[9]
+#define CHOKE        pc.params[10]
+#define SOFTEN       pc.params[11]
+#define CONTRAST     pc.params[12]
+#define MID_POINT    pc.params[13]
+#define DESATURATE   pc.params[14]
+#define SPILL_RANGE  pc.params[15]
+#define SPILL        pc.params[16]
+#define LUMA_COMP    pc.params[17]
+#define SATURATION   pc.params[18]
+#define HUE          pc.params[19]
+#define LUMINANCE    pc.params[20]
+
+// Maximum kernel radius for choke/soften (kept small for performance).
+#define MAX_KERNEL_R 3
+
+// ── RGB ↔ YCbCr (BT.709) ───────────────────────────────────────────────
+vec3 rgb2ycbcr(vec3 c) {
+    float y  =  0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    float cb = -0.1146 * c.r - 0.3854 * c.g + 0.5000 * c.b;
+    float cr =  0.5000 * c.r - 0.4542 * c.g - 0.0458 * c.b;
+    return vec3(y, cb, cr);
+}
+
+// ── RGB ↔ HSL ───────────────────────────────────────────────────────────
+vec3 rgb2hsl(vec3 c) {
+    float maxC = max(max(c.r, c.g), c.b);
+    float minC = min(min(c.r, c.g), c.b);
+    float l = (maxC + minC) * 0.5;
+    float d = maxC - minC;
+    float s = 0.0;
+    float h = 0.0;
+    if (d > 0.001) {
+        s = l > 0.5 ? d / (2.0 - maxC - minC) : d / (maxC + minC);
+        if (maxC == c.r)      h = (c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0);
+        else if (maxC == c.g) h = (c.b - c.r) / d + 2.0;
+        else                  h = (c.r - c.g) / d + 4.0;
+        h /= 6.0;
+    }
+    return vec3(h, s, l);
+}
+
+float hue2rgb(float p, float q, float t) {
+    if (t < 0.0) t += 1.0;
+    if (t > 1.0) t -= 1.0;
+    if (t < 1.0/6.0) return p + (q - p) * 6.0 * t;
+    if (t < 1.0/2.0) return q;
+    if (t < 2.0/3.0) return p + (q - p) * (2.0/3.0 - t) * 6.0;
+    return p;
+}
+
+vec3 hsl2rgb(vec3 hsl) {
+    if (hsl.y < 0.001) return vec3(hsl.z);
+    float q = hsl.z < 0.5 ? hsl.z * (1.0 + hsl.y) : hsl.z + hsl.y - hsl.z * hsl.y;
+    float p = 2.0 * hsl.z - q;
+    return vec3(
+        hue2rgb(p, q, hsl.x + 1.0/3.0),
+        hue2rgb(p, q, hsl.x),
+        hue2rgb(p, q, hsl.x - 1.0/3.0)
+    );
+}
+
+// ── Matte computation for a single pixel ────────────────────────────────
+// Samples the source texture at the given UV, computes chroma-distance
+// alpha matte.  Returns vec4(rgb, alpha) — analogous to Pass 1 output.
+vec4 computeMatte(vec2 uv) {
+    vec4 color = texture(inputImage, uv);
+
+    vec3 ycbcr    = rgb2ycbcr(color.rgb);
+    vec3 keyYCbCr = rgb2ycbcr(vec3(KEY_R, KEY_G, KEY_B));
+
+    float chromaDist   = length(ycbcr.yz - keyYCbCr.yz);
+    float lumaDiff     = abs(ycbcr.x - keyYCbCr.x);
+    float combinedDist = chromaDist + lumaDiff * 0.15;
+
+    float tol   = TOLERANCE / 100.0;
+    float inner = tol * 0.55;
+    float outer = inner + 0.06;
+
+    float alpha_raw = smoothstep(inner, outer, combinedDist);
+
+    // Highlight recovery
+    float highlightStr = HIGHLIGHT / 100.0;
+    float luma = ycbcr.x;
+    if (highlightStr > 0.0) {
+        float highlightMask = smoothstep(0.55, 0.85, luma) * highlightStr;
+        alpha_raw = mix(alpha_raw, min(1.0, alpha_raw + highlightMask), highlightMask);
+    }
+
+    // Shadow recovery
+    float shadowStr = SHADOW / 100.0;
+    if (shadowStr > 0.0) {
+        float shadowMask = smoothstep(0.35, 0.10, luma) * shadowStr;
+        alpha_raw = mix(alpha_raw, min(1.0, alpha_raw + shadowMask), shadowMask);
+    }
+
+    // Pedestal
+    float ped = PEDESTAL / 100.0 * 0.2;
+    alpha_raw = clamp((alpha_raw - ped) / max(1.0 - ped, 0.001), 0.0, 1.0);
+
+    // Transparency scaling
+    float transp = TRANSPARENCY / 100.0;
+    alpha_raw *= (1.0 - transp);
+
+    return vec4(color.rgb, alpha_raw);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.width || pixel.y >= pc.height) return;
+
+    vec2 uv        = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
+    vec2 texelSize = 1.0 / vec2(pc.width, pc.height);
+
+    // ── Step 0: Determine kernel radii ──────────────────────────────────
+    int chokeRadius  = int(CHOKE  / 100.0 * 3.0 + 0.5);
+    int softenRadius = int(SOFTEN / 100.0 * 3.0 + 0.5);
+    int maxRadius    = max(chokeRadius, softenRadius);
+
+    // ── Step 1: Compute matte alpha for center + neighbors ──────────────
+    // If no cleanup is needed, only compute the center pixel's alpha.
+    float alphaCenter;
+    vec3  colorCenter;
+
+    if (maxRadius == 0) {
+        // Fast path: no neighbor sampling needed
+        vec4 m = computeMatte(uv);
+        colorCenter = m.rgb;
+        alphaCenter = m.a;
+    } else {
+        // We need neighbor alphas for choke/soften.
+        // Pre-compute alpha for up to (1 + 4*maxRadius) sample positions.
+        // Index layout: [0]=center, [1..maxRadius]=+x, [maxRadius+1..2*maxRadius]=-x,
+        //               [2*maxRadius+1..3*maxRadius]=+y, [3*maxRadius+1..4*maxRadius]=-y
+        float neighborAlpha[1 + 4 * MAX_KERNEL_R];
+
+        vec4 m = computeMatte(uv);
+        colorCenter = m.rgb;
+        alphaCenter = m.a;
+        neighborAlpha[0] = alphaCenter;
+
+        for (int d = 1; d <= maxRadius; d++) {
+            float fd = float(d);
+            neighborAlpha[0 + d]                = computeMatte(uv + vec2( fd, 0.0) * texelSize).a;
+            neighborAlpha[MAX_KERNEL_R + d]     = computeMatte(uv + vec2(-fd, 0.0) * texelSize).a;
+            neighborAlpha[2*MAX_KERNEL_R + d]   = computeMatte(uv + vec2(0.0,  fd) * texelSize).a;
+            neighborAlpha[3*MAX_KERNEL_R + d]   = computeMatte(uv + vec2(0.0, -fd) * texelSize).a;
+        }
+
+        float alpha = alphaCenter;
+
+        // ── Choke (min-filter erosion on cross neighbors) ───────────────
+        if (chokeRadius > 0) {
+            float minAlpha = alpha;
+            for (int d = 1; d <= chokeRadius; d++) {
+                minAlpha = min(minAlpha, neighborAlpha[0 + d]);
+                minAlpha = min(minAlpha, neighborAlpha[MAX_KERNEL_R + d]);
+                minAlpha = min(minAlpha, neighborAlpha[2*MAX_KERNEL_R + d]);
+                minAlpha = min(minAlpha, neighborAlpha[3*MAX_KERNEL_R + d]);
+            }
+            alpha = minAlpha;
+        }
+
+        // ── Soften (weighted blur on alpha) ─────────────────────────────
+        if (softenRadius > 0) {
+            float sum = alpha;
+            float wt  = 1.0;
+            for (int d = 1; d <= softenRadius; d++) {
+                float w = 1.0 / (1.0 + float(d));
+                sum += neighborAlpha[0 + d]                * w;
+                sum += neighborAlpha[MAX_KERNEL_R + d]     * w;
+                sum += neighborAlpha[2*MAX_KERNEL_R + d]   * w;
+                sum += neighborAlpha[3*MAX_KERNEL_R + d]   * w;
+                wt += 4.0 * w;
+            }
+            float blurred = sum / wt;
+            alpha = mix(alpha, blurred, SOFTEN / 100.0);
+        }
+
+        alphaCenter = alpha;
+    }
+
+    // ── Contrast + Mid Point sigmoid ────────────────────────────────────
+    float contrastStr = CONTRAST / 100.0;
+    float midPt       = MID_POINT / 100.0;
+
+    if (contrastStr > 0.001) {
+        float gain    = 1.0 + contrastStr * 6.0;
+        float shifted = alphaCenter - midPt;
+        alphaCenter   = 1.0 / (1.0 + exp(-gain * shifted * 10.0));
+    }
+    alphaCenter = clamp(alphaCenter, 0.0, 1.0);
+
+    // ── Step 2: Spill Suppression ───────────────────────────────────────
+    float spillStr   = SPILL / 100.0;
+    float spillRange = max(SPILL_RANGE / 100.0, 0.05);
+    float desatStr   = DESATURATE / 50.0;
+    float lumaComp   = LUMA_COMP / 100.0;
+
+    vec3 keyColor = vec3(KEY_R, KEY_G, KEY_B);
+    vec3 color    = colorCenter;
+    float alpha   = alphaCenter;
+
+    // Save original luma before spill suppression
+    float origLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+    if (spillStr > 0.001 && alpha > 0.001) {
+        float spillAmount = 0.0;
+
+        if (keyColor.g > keyColor.r && keyColor.g > keyColor.b) {
+            float limit = max(color.r, color.b);
+            spillAmount = max(color.g - limit, 0.0);
+        } else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g) {
+            float limit = max(color.r, color.g);
+            spillAmount = max(color.b - limit, 0.0);
+        } else {
+            float limit = max(color.g, color.b);
+            spillAmount = max(color.r - limit, 0.0);
+        }
+
+        float spillFactor = clamp(spillAmount / spillRange, 0.0, 1.0) * spillStr;
+        float edgeBoost   = smoothstep(1.0, 0.5, alpha);
+        spillFactor       = clamp(spillFactor + edgeBoost * spillStr * 0.3, 0.0, 1.0);
+
+        // Apply spill suppression
+        if (keyColor.g > keyColor.r && keyColor.g > keyColor.b) {
+            float limit = max(color.r, color.b);
+            color.g = mix(color.g, min(color.g, limit), spillFactor);
+        } else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g) {
+            float limit = max(color.r, color.g);
+            color.b = mix(color.b, min(color.b, limit), spillFactor);
+        } else {
+            float limit = max(color.g, color.b);
+            color.r = mix(color.r, min(color.r, limit), spillFactor);
+        }
+
+        // Desaturate spill-affected areas
+        if (desatStr > 0.001) {
+            float desat = spillFactor * desatStr;
+            float luma  = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            color.rgb   = mix(color.rgb, vec3(luma), desat);
+        }
+
+        // Luma compensation
+        if (lumaComp > 0.001) {
+            float currentLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            float diff        = origLuma - currentLuma;
+            color.rgb        += vec3(diff * lumaComp * spillFactor);
+        }
+    }
+
+    // ── Step 3: Foreground Color Correction ─────────────────────────────
+    float satScale = SATURATION / 100.0;
+    float hueShift = HUE / 360.0;
+    float lumScale = LUMINANCE / 100.0;
+
+    bool needsCC = (abs(satScale - 1.0) > 0.001 ||
+                    abs(hueShift) > 0.001 ||
+                    abs(lumScale - 1.0) > 0.001);
+
+    if (needsCC && alpha > 0.01) {
+        vec3 hsl = rgb2hsl(color.rgb);
+        hsl.x = fract(hsl.x + hueShift);
+        hsl.y = clamp(hsl.y * satScale, 0.0, 1.0);
+        hsl.z = clamp(hsl.z * lumScale, 0.0, 1.0);
+        color.rgb = hsl2rgb(hsl);
+    }
+
+    // ── Step 4: Output Mode ─────────────────────────────────────────────
+    int mode = int(OUTPUT_MODE + 0.5);
+
+    if (mode == 1) {
+        // Alpha Matte view
+        imageStore(outputImage, pixel, vec4(vec3(alpha), 1.0));
+    } else if (mode == 2) {
+        // Color Channel view
+        vec3 tinted = mix(vec3(1.0, 0.0, 0.5) * 0.5, colorCenter, alpha);
+        imageStore(outputImage, pixel, vec4(tinted, 1.0));
+    } else if (mode == 3) {
+        // Original — bypass keying
+        imageStore(outputImage, pixel, vec4(colorCenter, 1.0));
+    } else if (mode == 4) {
+        // Removed Color view
+        imageStore(outputImage, pixel, vec4(colorCenter * (1.0 - alpha), 1.0));
+    } else if (mode == 5) {
+        // Spill Map heat map
+        float spillHeat = 0.0;
+        if (spillStr > 0.001) {
+            float spillAmount = 0.0;
+            if (keyColor.g > keyColor.r && keyColor.g > keyColor.b)
+                spillAmount = max(colorCenter.g - max(colorCenter.r, colorCenter.b), 0.0);
+            else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g)
+                spillAmount = max(colorCenter.b - max(colorCenter.r, colorCenter.g), 0.0);
+            else
+                spillAmount = max(colorCenter.r - max(colorCenter.g, colorCenter.b), 0.0);
+            float edgeBoost = smoothstep(1.0, 0.5, alpha);
+            spillHeat = clamp((spillAmount / spillRange) * spillStr + edgeBoost * spillStr * 0.3, 0.0, 1.0);
+        }
+        vec3 spillVis = mix(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), spillHeat);
+        spillVis = mix(spillVis, vec3(1.0, 1.0, 0.0), smoothstep(0.5, 1.0, spillHeat));
+        imageStore(outputImage, pixel, vec4(spillVis, 1.0));
+    } else {
+        // Composite mode (mode 0) — premultiplied alpha
+        vec4 outColor = vec4(color, alpha);
+        imageStore(outputImage, pixel, outColor);
+    }
+}

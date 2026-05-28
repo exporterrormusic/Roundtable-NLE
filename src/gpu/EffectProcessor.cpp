@@ -19,6 +19,9 @@
 #include "GpuContext.h"
 #include "GpuScheduler.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #include <vk_mem_alloc.h>
@@ -144,8 +147,11 @@ void EffectProcessor::shutdown()
         m_descriptorPool      = VK_NULL_HANDLE;
         m_descriptorSets[0]   = VK_NULL_HANDLE;
         m_descriptorSets[1]   = VK_NULL_HANDLE;
-        m_sourceDescriptorSet = VK_NULL_HANDLE;
-        m_lutDescriptorSet    = VK_NULL_HANDLE;
+        m_sourceDescriptorSets.clear();
+        m_lutDescriptorSets.clear();
+        m_descriptorRingCursor = 0;
+        m_curSourceSet        = VK_NULL_HANDLE;
+        m_curLutSet           = VK_NULL_HANDLE;
     }
     if (m_lutDescriptorSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(dev, m_lutDescriptorSetLayout, nullptr);
@@ -163,9 +169,11 @@ void EffectProcessor::shutdown()
     m_sharpenPipeline      = VK_NULL_HANDLE;
     m_glowPipeline         = VK_NULL_HANDLE;
     m_chromaKeyPipeline    = VK_NULL_HANDLE;
-    m_ultraKeyMattePipeline    = VK_NULL_HANDLE;
-    m_ultraKeyCleanupPipeline  = VK_NULL_HANDLE;
-    m_ultraKeyFinalizePipeline = VK_NULL_HANDLE;
+    m_ultraKeyMattePipeline     = VK_NULL_HANDLE;
+    m_ultraKeyCleanupPipeline   = VK_NULL_HANDLE;
+    m_ultraKeyFinalizePipeline  = VK_NULL_HANDLE;
+    m_ultraKeyCombinedPipeline  = VK_NULL_HANDLE;
+    m_ultraKeyLightPipeline     = VK_NULL_HANDLE;
     m_transform2dPipeline  = VK_NULL_HANDLE;
     m_vignettePipeline      = VK_NULL_HANDLE;
     m_lutPipeline            = VK_NULL_HANDLE;
@@ -202,35 +210,44 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
     m_stats.effectsApplied = static_cast<int>(effects.size());
     m_currentOutput = 0;
 
-    // Update the source descriptor set to point at the caller's image
-    // (skip if the source hasn't changed since last call)
-    if (sourceImage.imageView != m_lastSourceImageView)
+    // Claim this call's ring slot for the source + LUT descriptor sets.  A
+    // single shared set cannot be reused across the multiple process() calls
+    // the render graph records into one command buffer (one per effected
+    // layer), nor across the kRingSize frames that overlap in flight: the
+    // binding-1 update is immediate on the CPU, so every dispatch would
+    // sample whichever source was bound LAST.  Round-robin over the ring so
+    // each call has its own set; a slot is only reused after the owning
+    // frame has completed.
+    m_curSourceSet = m_sourceDescriptorSets[m_descriptorRingCursor];
+    m_curLutSet    = m_lutDescriptorSets[m_descriptorRingCursor];
+    m_descriptorRingCursor =
+        (m_descriptorRingCursor + 1) % kDescriptorRing;
+
+    // Point this slot's binding 1 (input sampler) at the caller's source.
     {
         VkDescriptorImageInfo srcInfo = sourceImage;
         // Ensure layout is set for shader read
         if (srcInfo.imageLayout == VK_IMAGE_LAYOUT_UNDEFINED)
             srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet write{};
-        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet          = m_sourceDescriptorSet;
-        write.dstBinding      = 1; // input sampler at binding 1
-        write.descriptorCount = 1;
-        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo      = &srcInfo;
-        vkUpdateDescriptorSets(m_device->handle(), 1, &write, 0, nullptr);
-        m_lastSourceImageView = sourceImage.imageView;
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet          = m_curSourceSet;
+        writes[0].dstBinding      = 1; // input sampler at binding 1
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo      = &srcInfo;
 
-        // Also update the LUT descriptor set binding 1 to the same source,
-        // so the first LUT effect (if any) can read from the external source.
-        VkWriteDescriptorSet lutWrite{};
-        lutWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        lutWrite.dstSet          = m_lutDescriptorSet;
-        lutWrite.dstBinding      = 1;
-        lutWrite.descriptorCount = 1;
-        lutWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        lutWrite.pImageInfo      = &srcInfo;
-        vkUpdateDescriptorSets(m_device->handle(), 1, &lutWrite, 0, nullptr);
+        // Also point the LUT slot binding 1 at the same source, so a first
+        // LUT effect (if any) can read from the external source.
+        writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet          = m_curLutSet;
+        writes[1].dstBinding      = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].pImageInfo      = &srcInfo;
+
+        vkUpdateDescriptorSets(m_device->handle(), 2, writes, 0, nullptr);
     }
 
     // Timestamp begin
@@ -240,15 +257,17 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_queryPool, 0);
 
     // For each effect, dispatch compute shader
-    int sourceIdx = -1;  // -1 = use external source via m_sourceDescriptorSet
+    int sourceIdx = -1;  // -1 = use external source via the current ring slot
     int targetIdx = 0;
 
     for (size_t i = 0; i < effects.size(); ++i) {
         const auto& snap = effects[i];
 
-        // Ultra Key uses a 3-pass pipeline (matte → cleanup → finalize)
+        // Ultra Key — prefer light (no cleanup), then combined, fall back to 3-pass
         if (snap.type == EffectType::ChromaKey &&
-            m_ultraKeyMattePipeline != VK_NULL_HANDLE)
+            (m_ultraKeyLightPipeline    != VK_NULL_HANDLE ||
+             m_ultraKeyCombinedPipeline != VK_NULL_HANDLE ||
+             m_ultraKeyMattePipeline    != VK_NULL_HANDLE))
         {
             // OutputMode=3 (Original) — bypass the key entirely
             bool isOriginal = (snap.params.size() > 3 &&
@@ -347,6 +366,96 @@ bool EffectProcessor::processSync(const VkDescriptorImageInfo& sourceImage,
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// =============================================================================
+//  Snapshot output
+// =============================================================================
+
+bool EffectProcessor::snapshotOutputSync(Texture& dst)
+{
+    if (!m_initialized || !m_device || !m_cmdPool) return false;
+    VkImage srcImg = outputImage();
+    if (srcImg == VK_NULL_HANDLE) return false;
+    if (dst.image() == VK_NULL_HANDLE ||
+        dst.width() != m_config.width || dst.height() != m_config.height)
+        return false;
+
+    VkDevice dev = m_device->handle();
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+
+    VkImageMemoryBarrier toSrc{};
+    toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSrc.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toSrc.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSrc.image = srcImg;
+    toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
+
+    VkImageMemoryBarrier toDst{};
+    toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.image = dst.image();
+    toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {m_config.width, m_config.height, 1};
+    vkCmdCopyImage(cmd, srcImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dst.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    VkImageMemoryBarrier restoreSrc{};
+    restoreSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    restoreSrc.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    restoreSrc.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    restoreSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    restoreSrc.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    restoreSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    restoreSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    restoreSrc.image = srcImg;
+    restoreSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier dstReadable{};
+    dstReadable.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    dstReadable.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dstReadable.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dstReadable.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstReadable.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    dstReadable.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dstReadable.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dstReadable.image = dst.image();
+    dstReadable.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier post[2] = {restoreSrc, dstReadable};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, post);
+
+    vkEndCommandBuffer(cmd);
+    if (m_syncFence != VK_NULL_HANDLE) {
+        vkResetFences(dev, 1, &m_syncFence);
+        rt::GpuSubmission sub{};
+        sub.cmd = cmd; sub.queue = rt::GpuQueueKind::Compute;
+        sub.completionFence = m_syncFence; sub.tag = "EffectProcessor::snapshot";
+        rt::GpuContext::get().scheduler().submit(sub);
+        vkWaitForFences(dev, 1, &m_syncFence, VK_TRUE, 100'000'000ull);
+        m_cmdPool->freeBuffer(cmd);
+    } else {
+        m_cmdPool->endSingleTime(cmd, m_queue);
+    }
+    return true;
+}
+
 //  Resize
 // =============================================================================
 
@@ -380,8 +489,8 @@ bool EffectProcessor::resize(uint32_t width, uint32_t height)
             w.pImageInfo      = &outInfo;
             vkUpdateDescriptorSets(m_device->handle(), 1, &w, 0, nullptr);
         }
-        // Invalidate cached source descriptor â€” storage images changed
-        m_lastSourceImageView = VK_NULL_HANDLE;
+        // Re-point the source/LUT ring sets at the new storage[0].
+        initDescriptorRingBindings();
     }
     return true;
 }
@@ -432,39 +541,18 @@ bool EffectProcessor::uploadLUT3D(const std::vector<float>& lutData, int lutSize
         return false;
     }
 
-    // Update the LUT descriptor set binding 2 to point to the new LUT texture
-    VkDescriptorImageInfo lutInfo = m_lutTexture3D.descriptorInfo();
-
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = m_lutDescriptorSet;
-    write.dstBinding      = 2;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &lutInfo;
-    vkUpdateDescriptorSets(m_device->handle(), 1, &write, 0, nullptr);
-
+    // No descriptor write here: dispatchEffect() binds binding 2 (the 3D LUT
+    // sampler) on the selected ring slot for every LUT dispatch, reading the
+    // current m_lutTexture3D.  A single-set update would not reach the ring.
     spdlog::info("EffectProcessor: uploaded {}x{}x{} LUT 3D texture", lutSize, lutSize, lutSize);
     return true;
 }
 
 void EffectProcessor::clearLUT3D()
 {
+    // dispatchEffect() falls back to the placeholder for binding 2 whenever
+    // m_lutTexture3D is null, so just dropping the texture is sufficient.
     m_lutTexture3D.destroy();
-
-    // Reset LUT descriptor set binding 2 to placeholder
-    if (m_device && m_lutDescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorImageInfo phInfo = m_placeholderTexture.descriptorInfo();
-
-        VkWriteDescriptorSet write{};
-        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet          = m_lutDescriptorSet;
-        write.dstBinding      = 2;
-        write.descriptorCount = 1;
-        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo      = &phInfo;
-        vkUpdateDescriptorSets(m_device->handle(), 1, &write, 0, nullptr);
-    }
 }
 
 // =============================================================================
@@ -660,24 +748,25 @@ bool EffectProcessor::createDescriptorResources()
     }
 
     // Pool sizing:
-    //   Fixed sets: ping-pong[0], ping-pong[1], source, LUT = 4 sets.
-    //   Each main set = 1 storage + 1 sampler  (2 descriptors)
-    //   LUT set      = 1 storage + 2 samplers  (3 descriptors)
-    //   Total: 4 storage + 5 samplers across 4 sets.
-    //   We allocate 4× the minimum to leave headroom for future effect
-    //   types that may need their own descriptor set layout, and to absorb
-    //   any pool fragmentation from descriptor updates.
-    constexpr uint32_t kPoolOversize = 4u;
+    //   ping-pong[0], ping-pong[1]                       = 2 main sets
+    //   source ring (kDescriptorRing main-layout sets)
+    //   LUT ring    (kDescriptorRing LUT-layout sets)
+    //   main set = 1 storage + 1 sampler ; LUT set = 1 storage + 2 samplers.
+    // See EffectProcessor.h (m_sourceDescriptorSets) for why the rings exist.
+    const uint32_t kMainSets = 2u + kDescriptorRing;   // ping-pong + source ring
+    const uint32_t kLutSets  = kDescriptorRing;
+    const uint32_t kTotalSets = kMainSets + kLutSets;
+
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = 4 * kPoolOversize;
+    poolSizes[0].descriptorCount = kMainSets + kLutSets;          // 1 storage per set
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 5 * kPoolOversize;
+    poolSizes[1].descriptorCount = kMainSets + 2u * kLutSets;     // main:1, LUT:2
 
     VkDescriptorPoolCreateInfo poolCI{};
     poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolCI.maxSets       = 4 * kPoolOversize;
+    poolCI.maxSets       = kTotalSets;
     poolCI.poolSizeCount = 2;
     poolCI.pPoolSizes    = poolSizes;
 
@@ -692,45 +781,40 @@ bool EffectProcessor::createDescriptorResources()
         return false;
     }
 
-    // Allocate 3 descriptor sets from the main layout + 1 from the LUT layout
-    VkDescriptorSetLayout mainLayouts[3] = {
-        m_descriptorSetLayout, m_descriptorSetLayout, m_descriptorSetLayout
-    };
+    // Allocate the main-layout sets: 2 ping-pong + kDescriptorRing source.
+    std::vector<VkDescriptorSetLayout> mainLayouts(kMainSets, m_descriptorSetLayout);
+    std::vector<VkDescriptorSet>       mainSets(kMainSets, VK_NULL_HANDLE);
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool     = m_descriptorPool;
-    allocInfo.descriptorSetCount = 3;
-    allocInfo.pSetLayouts        = mainLayouts;
+    allocInfo.descriptorSetCount = kMainSets;
+    allocInfo.pSetLayouts        = mainLayouts.data();
 
-    VkDescriptorSet sets[4];
-    if (vkAllocateDescriptorSets(dev, &allocInfo, sets) != VK_SUCCESS) {
-        spdlog::error("EffectProcessor: Failed to allocate 3 main descriptor sets "
-                      "(pool maxSets={}, storage={}, samplers={})",
-                      poolCI.maxSets,
-                      poolSizes[0].descriptorCount,
-                      poolSizes[1].descriptorCount);
+    if (vkAllocateDescriptorSets(dev, &allocInfo, mainSets.data()) != VK_SUCCESS) {
+        spdlog::error("EffectProcessor: Failed to allocate {} main descriptor sets "
+                      "(pool maxSets={})", kMainSets, poolCI.maxSets);
         return false;
     }
-    m_descriptorSets[0]   = sets[0];  // target = storageTexture[0]
-    m_descriptorSets[1]   = sets[1];  // target = storageTexture[1]
-    m_sourceDescriptorSet = sets[2];  // external source input
+    m_descriptorSets[0] = mainSets[0];  // target = storageTexture[0]
+    m_descriptorSets[1] = mainSets[1];  // target = storageTexture[1]
+    m_sourceDescriptorSets.assign(mainSets.begin() + 2, mainSets.end());
 
-    // Allocate LUT descriptor set from the LUT-specific layout
+    // Allocate the LUT ring from the LUT-specific layout.
+    std::vector<VkDescriptorSetLayout> lutLayouts(kLutSets, m_lutDescriptorSetLayout);
+    m_lutDescriptorSets.assign(kLutSets, VK_NULL_HANDLE);
     VkDescriptorSetAllocateInfo lutAllocInfo{};
     lutAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     lutAllocInfo.descriptorPool     = m_descriptorPool;
-    lutAllocInfo.descriptorSetCount = 1;
-    lutAllocInfo.pSetLayouts        = &m_lutDescriptorSetLayout;
+    lutAllocInfo.descriptorSetCount = kLutSets;
+    lutAllocInfo.pSetLayouts        = lutLayouts.data();
 
-    if (vkAllocateDescriptorSets(dev, &lutAllocInfo, &sets[3]) != VK_SUCCESS) {
-        spdlog::error("EffectProcessor: Failed to allocate LUT descriptor set "
-                      "(pool maxSets={}, storage={}, samplers={})",
-                      poolCI.maxSets,
-                      poolSizes[0].descriptorCount,
-                      poolSizes[1].descriptorCount);
+    if (vkAllocateDescriptorSets(dev, &lutAllocInfo,
+                                 m_lutDescriptorSets.data()) != VK_SUCCESS) {
+        spdlog::error("EffectProcessor: Failed to allocate {} LUT descriptor sets "
+                      "(pool maxSets={})", kLutSets, poolCI.maxSets);
         return false;
     }
-    m_lutDescriptorSet = sets[3];
+    m_descriptorRingCursor = 0;
 
     // â”€â”€ Initialize descriptor sets for the ping-pong pair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Each set has:
@@ -769,24 +853,42 @@ bool EffectProcessor::createDescriptorResources()
         vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     }
 
-    // Source set: binding 0 â†’ storageTexture[0], binding 1 â†’ placeholder
-    {
-        VkDescriptorImageInfo outInfo{};
-        outInfo.imageView   = m_storageTextures[0].imageView();
-        outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // Source + LUT rings: binding 0 â†’ storageTexture[0], binding 1 (input) â†’
+    // placeholder, LUT binding 2 â†’ placeholder.  Per-call bindings (the
+    // external source, and the live 3D LUT) are written in process() /
+    // dispatchEffect on the slot that call claims.
+    initDescriptorRingBindings();
 
-        VkDescriptorImageInfo phInfo = m_placeholderTexture.descriptorInfo();
+    return true;
+}
 
+// =============================================================================
+//  Internal — (re)point the static bindings of the source/LUT descriptor rings
+// =============================================================================
+
+void EffectProcessor::initDescriptorRingBindings()
+{
+    if (!m_device) return;
+    VkDevice dev = m_device->handle();
+
+    VkDescriptorImageInfo outInfo{};
+    outInfo.imageView   = m_storageTextures[0].imageView();
+    outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    const VkDescriptorImageInfo phInfo = m_placeholderTexture.descriptorInfo();
+
+    // Source ring: binding 0 = output (storage[0]), binding 1 = placeholder.
+    for (VkDescriptorSet set : m_sourceDescriptorSets) {
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet          = m_sourceDescriptorSet;
+        writes[0].dstSet          = set;
         writes[0].dstBinding      = 0;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[0].pImageInfo      = &outInfo;
 
         writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet          = m_sourceDescriptorSet;
+        writes[1].dstSet          = set;
         writes[1].dstBinding      = 1;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -795,36 +897,26 @@ bool EffectProcessor::createDescriptorResources()
         vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     }
 
-    // â”€â”€ Initialize LUT descriptor set (bindings 0+1 as ping-pong[0], binding 2 as placeholder) â”€â”€
-    {
-        VkDescriptorImageInfo outInfo{};
-        outInfo.imageView   = m_storageTextures[0].imageView();
-        outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo inInfo{};
-        inInfo.sampler     = m_storageTextures[1].sampler();
-        inInfo.imageView   = m_storageTextures[1].imageView();
-        inInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo phInfo = m_placeholderTexture.descriptorInfo();
-
+    // LUT ring: binding 0 = output, binding 1 = placeholder, binding 2 =
+    // placeholder.  dispatchEffect rewrites all three per LUT dispatch.
+    for (VkDescriptorSet set : m_lutDescriptorSets) {
         VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet          = m_lutDescriptorSet;
+        writes[0].dstSet          = set;
         writes[0].dstBinding      = 0;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[0].pImageInfo      = &outInfo;
 
         writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet          = m_lutDescriptorSet;
+        writes[1].dstSet          = set;
         writes[1].dstBinding      = 1;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[1].pImageInfo      = &inInfo;
+        writes[1].pImageInfo      = &phInfo;
 
         writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet          = m_lutDescriptorSet;
+        writes[2].dstSet          = set;
         writes[2].dstBinding      = 2;
         writes[2].descriptorCount = 1;
         writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -832,8 +924,6 @@ bool EffectProcessor::createDescriptorResources()
 
         vkUpdateDescriptorSets(dev, 3, writes, 0, nullptr);
     }
-
-    return true;
 }
 
 // =============================================================================
@@ -887,9 +977,11 @@ bool EffectProcessor::createPipelines()
     m_sharpenPipeline      = loadPipeline("sharpen.comp.spv");
     m_glowPipeline         = loadPipeline("glow.comp.spv");
     m_chromaKeyPipeline    = loadPipeline("chroma_key.comp.spv");
-    m_ultraKeyMattePipeline    = loadPipeline("ultra_key_matte.comp.spv");
-    m_ultraKeyCleanupPipeline  = loadPipeline("ultra_key_cleanup.comp.spv");
-    m_ultraKeyFinalizePipeline = loadPipeline("ultra_key_finalize.comp.spv");
+    m_ultraKeyMattePipeline     = loadPipeline("ultra_key_matte.comp.spv");
+    m_ultraKeyCleanupPipeline   = loadPipeline("ultra_key_cleanup.comp.spv");
+    m_ultraKeyFinalizePipeline  = loadPipeline("ultra_key_finalize.comp.spv");
+    m_ultraKeyCombinedPipeline  = loadPipeline("ultra_key_combined.comp.spv");
+    m_ultraKeyLightPipeline     = loadPipeline("ultra_key_light.comp.spv");
     m_transform2dPipeline  = loadPipeline("transform2d.comp.spv");
     m_vignettePipeline    = loadPipeline("vignette.comp.spv");
     m_lutPipeline         = loadPipeline("lut.comp.spv");
@@ -918,7 +1010,7 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
     if (pipeline == VK_NULL_HANDLE) return false;
 
     // Select descriptor set:
-    //   sourceIdx == -1 â†’ use m_sourceDescriptorSet (external source image)
+    //   sourceIdx == -1 â†’ use m_curSourceSet (external source image)
     //   sourceIdx ==  0 or 1 â†’ use m_descriptorSets[targetIdx]
     //     (descriptorSets[targetIdx] has binding0 = storage[targetIdx],
     //      binding1 = storage[1-targetIdx] which is the source)
@@ -934,7 +1026,7 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
 
         VkDescriptorImageInfo inInfo{};
         if (sourceIdx == -1) {
-            // First effect: input from external source (already set in m_sourceDescriptorSet)
+            // First effect: input from external source (already set in m_curLutSet binding 1)
             // For LUT, we need to reference the first storage texture as output and
             // the source image needs to be handled. Since we can't share the external
             // image between descriptor sets, we use a workaround: set source to storage[1]
@@ -952,21 +1044,21 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
 
         VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet          = m_lutDescriptorSet;
+        writes[0].dstSet          = m_curLutSet;
         writes[0].dstBinding      = 0;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[0].pImageInfo      = &outInfo;
 
         writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet          = m_lutDescriptorSet;
+        writes[1].dstSet          = m_curLutSet;
         writes[1].dstBinding      = 1;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo      = &inInfo;
 
         writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet          = m_lutDescriptorSet;
+        writes[2].dstSet          = m_curLutSet;
         writes[2].dstBinding      = 2;
         writes[2].descriptorCount = 1;
         writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -974,11 +1066,11 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
 
         vkUpdateDescriptorSets(m_device->handle(), 3, writes, 0, nullptr);
 
-        ds = m_lutDescriptorSet;
+        ds = m_curLutSet;
     } else if (sourceIdx == -1) {
-        // First effect (non-LUT): source is external image (already updated in process()).
-        // The sourceDescriptorSet has binding0 = storage[0] (output).
-        ds = m_sourceDescriptorSet;
+        // First effect (non-LUT): source is external image (the current ring
+        // slot's binding 1 was set in process()).  binding 0 = storage[0].
+        ds = m_curSourceSet;
     } else {
         // Subsequent effects: ping-pong.
         // m_descriptorSets[targetIdx] has binding0 = storage[targetIdx] (output),
@@ -1067,15 +1159,16 @@ void EffectProcessor::dispatchPass(VkCommandBuffer cmd, VkPipeline pipeline,
     uint32_t gy = (m_config.height + 15) / 16;
     vkCmdDispatch(cmd, gx, gy, 1);
 
-    // Barrier between passes
-    VkMemoryBarrier barrier{};
-    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    // Barrier between passes — use image barrier for correct
+    // storage-image → sampled-image cache coherency on all GPUs.
+    VkMemoryBarrier memBarrier{};
+    memBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+                         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 }
 
 void EffectProcessor::copyImage(VkCommandBuffer cmd, int sourceIdx, int targetIdx)
@@ -1085,15 +1178,15 @@ void EffectProcessor::copyImage(VkCommandBuffer cmd, int sourceIdx, int targetId
 
     if (sourceIdx < 0) {
         // Source is the external image (first effect in chain).
-        // Use dispatchPass with a passthrough: the m_sourceDescriptorSet
-        // reads from the external source (binding 1) and writes to
+        // Use dispatchPass with a passthrough: the current ring slot's source
+        // set reads from the external source (binding 1) and writes to
         // storage[targetIdx] (binding 0).
         // We use the color correct pipeline with identity params as a passthrough.
         std::vector<float> identity(28, 0.0f);
         identity[0] = 1.0f;  // brightness = 1 (neutral)
         identity[1] = 1.0f;  // contrast = 1 (neutral)
         identity[2] = 1.0f;  // saturation = 1 (neutral)
-        dispatchPass(cmd, m_colorCorrectPipeline, m_sourceDescriptorSet, identity);
+        dispatchPass(cmd, m_colorCorrectPipeline, m_curSourceSet, identity);
     } else if (sourceIdx == targetIdx) {
         // Same source and target, no copy needed.
         return;
@@ -1171,32 +1264,65 @@ int EffectProcessor::dispatchUltraKey(VkCommandBuffer cmd,
                                       const std::vector<float>& params,
                                       int sourceIdx, int targetIdx)
 {
-    // Pass 1: Matte generation  (source â†’ target)
-    {
-        VkDescriptorSet ds = (sourceIdx == -1) ? m_sourceDescriptorSet
-                                               : m_descriptorSets[targetIdx];
-        dispatchPass(cmd, m_ultraKeyMattePipeline, ds, params);
+    VkDescriptorSet ds = (sourceIdx == -1) ? m_curSourceSet
+                                           : m_descriptorSets[targetIdx];
+
+    // Determine whether matte cleanup (choke/soften/contrast) is needed.
+    // Indices match ChromaKey::Param: Choke=10, Soften=11, Contrast=12.
+    bool needsCleanup = false;
+    if (params.size() > 12) {
+        float chokeVal    = params[10];
+        float softenVal   = params[11];
+        float contrastVal = params[12];
+        needsCleanup = (chokeVal > 0.01f || softenVal > 0.01f ||
+                        contrastVal > 0.01f);
     }
+
+    // ── Experimental single-pass path (opt-in via env var) ─────────────
+    static bool singlePass = []() {
+        const char* v = std::getenv("ROUNDTABLE_ULTRAKEY_SINGLEPASS");
+        return v && (std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0);
+    }();
+
+    if (singlePass) {
+        if (!needsCleanup && m_ultraKeyLightPipeline != VK_NULL_HANDLE) {
+            dispatchPass(cmd, m_ultraKeyLightPipeline, ds, params);
+            return targetIdx;
+        }
+        if (m_ultraKeyCombinedPipeline != VK_NULL_HANDLE) {
+            dispatchPass(cmd, m_ultraKeyCombinedPipeline, ds, params);
+            return targetIdx;
+        }
+    }
+
+    // ── Proven 3-pass pipeline (matte → cleanup → finalize) ────────────
+    // Always runs all 3 passes to maintain correct output-slot parity.
+    // The cleanup pass is lightweight when params are at defaults
+    // (choke=0, soften=0, contrast=0) — it just reads/clamps alpha.
+
+    // Pass 1: Matte generation  (source → targetIdx)
+    dispatchPass(cmd, m_ultraKeyMattePipeline, ds, params);
 
     int pass1Output = targetIdx;
     int pass2Target = 1 - pass1Output;
 
-    // Pass 2: Matte cleanup  (pass1Output â†’ pass2Target)
+    // Pass 2: Matte cleanup  (pass1Output → pass2Target)
     {
-        VkDescriptorSet ds = m_descriptorSets[pass2Target];
-        dispatchPass(cmd, m_ultraKeyCleanupPipeline, ds, params);
+        VkDescriptorSet ds2 = m_descriptorSets[pass2Target];
+        dispatchPass(cmd, m_ultraKeyCleanupPipeline, ds2, params);
     }
 
     int pass2Output = pass2Target;
     int pass3Target = 1 - pass2Output;
 
     // Pass 3: Finalize (spill suppress + color correct + output mode)
+    //         (pass2Output → targetIdx, maintaining slot parity)
     {
-        VkDescriptorSet ds = m_descriptorSets[pass3Target];
-        dispatchPass(cmd, m_ultraKeyFinalizePipeline, ds, params);
+        VkDescriptorSet ds3 = m_descriptorSets[pass3Target];
+        dispatchPass(cmd, m_ultraKeyFinalizePipeline, ds3, params);
     }
 
-    return pass3Target; // final output slot
+    return pass3Target;
 }
 
 } // namespace rt

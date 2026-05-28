@@ -1315,8 +1315,16 @@ void ExportPanel::onPlayPause()
         m_playbackTimer->stop();
         m_playPauseBtn->setText(QStringLiteral("\u25B6")); // â–¶
 
-        if (m_playbackController)
+        if (m_playbackController) {
             m_playbackController->pause();
+
+            // Restore the main timeline's playhead to where it was before
+            // export preview playback started.
+            if (m_savedMainPlayhead >= 0) {
+                m_playbackController->seekTo(m_savedMainPlayhead);
+                m_savedMainPlayhead = -1;
+            }
+        }
 
         // Render one high-quality frame at current position
         renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
@@ -1330,6 +1338,11 @@ void ExportPanel::onPlayPause()
         // -- Play ---------------------------------------------------------
         m_playing = true;
         m_playPauseBtn->setText(QStringLiteral("\u23F8")); // ⏸
+
+        // Save the main timeline's current playhead so we can restore it
+        // when export playback stops.
+        if (m_playbackController)
+            m_savedMainPlayhead = m_playbackController->pollPosition();
 
         // Suspend the Program Monitor's playback pipeline BEFORE we
         // call m_playbackController->play().  The shared controller
@@ -1345,13 +1358,17 @@ void ExportPanel::onPlayPause()
 
         // Render the FIRST frame immediately so the user sees video
         // without waiting for the timer to fire (~33ms delay).
-        // scrub=false so the settle-window hold engages when layers are
-        // still cold — prevents the partial-composite flash (missing
-        // background / discolored character) on play start.
+        // scrub=true so the compositor's settle-window hold is BYPASSED
+        // during real-time preview playback — otherwise every tick where
+        // a Full-tier decode isn't ready (typical at 30+fps in export
+        // preview) returns the prior m_lastGoodComposite and the preview
+        // appears frozen.  Accepting partial composites for one or two
+        // frames during a cold decoder warm-up is far better than the
+        // visible freeze the settle window produces here.
         renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
                            m_widthSpin, m_heightSpin,
                            m_miniTimeline->playhead(),
-                           /*scrub=*/false);
+                           /*scrub=*/true);
 
         // Seek PlaybackController to mini-timeline position and play (audio)
         if (m_playbackController) {
@@ -1374,18 +1391,13 @@ void ExportPanel::onPlaybackTick()
         return;
     }
 
-    // Read the authoritative position from PlaybackController (driven by
-    // the AVSyncClock / AudioEngine).  Fall back to manual frame-stepping
-    // if no controller is available.
-    int64_t tick;
-    if (m_playbackController) {
-        tick = m_playbackController->pollPosition();
-    } else {
-        int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
-        if (fps <= 0) fps = 30;
-        int64_t ticksPerFrame = 48000 / fps;
-        tick = m_miniTimeline->playhead() + ticksPerFrame;
-    }
+    // Use the mini-timeline's own playhead for independent frame stepping.
+    // This keeps the export preview's position separate from the main
+    // timeline (which we save/restore in onPlayPause).
+    int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
+    if (fps <= 0) fps = 30;
+    int64_t ticksPerFrame = 48000 / fps;
+    int64_t tick = m_miniTimeline->playhead() + ticksPerFrame;
 
     // Determine the end-of-range
     int64_t endTick = m_timeline->duration();
@@ -1405,11 +1417,22 @@ void ExportPanel::onPlaybackTick()
 
     m_miniTimeline->setPlayhead(tick);
 
-    // Render the preview at full output resolution.  scrub=false so the
-    // settle-window hold can engage when a clip's frames aren't ready yet
-    // — playback is real-time, partial composites would flash visible.
+    // Render the preview at full output resolution.  scrub=true bypasses
+    // the compositor's settle-window hold so the preview actually advances
+    // each tick.  With scrub=false (the prior setting), every tick where a
+    // Full-tier decode wasn't ready re-returned m_lastGoodComposite — at
+    // 30 fps real-time playback that is virtually every tick, so the
+    // preview window froze on the first frame while the timeline's audio
+    // played on.  forceFullResolution=true is preserved by the preview
+    // callback, so charVideoTier is still Full (the scrub-time Half
+    // override only fires when forceFullResolution is false).
+    static int s_tickCount = 0;
+    if (++s_tickCount <= 5 || s_tickCount % 30 == 0) {
+        spdlog::info("[EXPORT-PLAYBACK] tick={} endTick={} fps={}",
+                     tick, endTick, fps);
+    }
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
-                       m_widthSpin, m_heightSpin, tick, /*scrub=*/false);
+                       m_widthSpin, m_heightSpin, tick, /*scrub=*/true);
 }
 
 void ExportPanel::onStepForward()
@@ -1426,9 +1449,6 @@ void ExportPanel::onStepForward()
     int64_t next = m_miniTimeline->playhead() + ticksPerFrame;
     int64_t maxTick = m_timeline->duration();
     if (next > maxTick) next = maxTick;
-
-    if (m_playbackController)
-        m_playbackController->seekTo(next);
 
     m_miniTimeline->setPlayhead(next);
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
@@ -1448,9 +1468,6 @@ void ExportPanel::onStepBack()
     int64_t prev = m_miniTimeline->playhead() - ticksPerFrame;
     if (prev < 0) prev = 0;
 
-    if (m_playbackController)
-        m_playbackController->seekTo(prev);
-
     m_miniTimeline->setPlayhead(prev);
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
                        m_widthSpin, m_heightSpin, prev);
@@ -1468,9 +1485,6 @@ void ExportPanel::onSkipToStart()
         if (inPt >= 0) startTick = inPt;
     }
 
-    if (m_playbackController)
-        m_playbackController->seekTo(startTick);
-
     m_miniTimeline->setPlayhead(startTick);
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
                        m_widthSpin, m_heightSpin, startTick);
@@ -1487,9 +1501,6 @@ void ExportPanel::onSkipToEnd()
         int64_t outPt = m_timeline->outPoint();
         if (outPt > 0) endTick = outPt;
     }
-
-    if (m_playbackController)
-        m_playbackController->seekTo(endTick);
 
     m_miniTimeline->setPlayhead(endTick);
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,

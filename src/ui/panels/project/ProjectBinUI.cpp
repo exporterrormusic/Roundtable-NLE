@@ -232,6 +232,7 @@ void ProjectBin::setupUI()
     m_listWidget->setDropIndicatorShown(true);
     m_listWidget->setDragDropMode(QAbstractItemView::DropOnly);  // Manual drag start; allow drops
     m_listWidget->setDefaultDropAction(Qt::MoveAction);
+    m_listWidget->setAutoExpandDelay(600);  // Hover 600ms during drag to expand a bin
     m_listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     m_listWidget->setEditTriggers(QAbstractItemView::SelectedClicked);
     // Force selection to remain visible even when the widget loses focus
