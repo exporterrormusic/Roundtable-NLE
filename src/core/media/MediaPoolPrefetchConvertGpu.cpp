@@ -254,6 +254,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     if (!ctx.isInitialized() || !ctx.isOperational()) return nullptr;
     if (!wgs.ready())                                  return nullptr;
     if (!m_prefetchTexPool)                            return nullptr;
+
     // Packed-alpha sources (Wells and other video characters) used to bail
     // here, which forced them onto the CPU bounce path (transferHardwareFrame
     // + sws_scale + per-frame PCIe re-upload).  That's the dominant cost on
@@ -534,12 +535,21 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
         case ResolutionTier::Quarter: maxDim =  480; break;
         default:                      maxDim = 1920; break;
     }
-    int dstW = srcW, dstH = srcH;
-    if (srcW > maxDim || srcH > maxDim) {
+    // For packed-4 the output is the NOMINAL frame (one tile tall), so the
+    // tier clamp is computed against srcH/4, not the 4× stacked height.
+    // For packed-2 (stacked-alpha, e.g. Wells HEVC 1080×3776) the tier
+    // clamp must use the nominal height (srcH/2) so export/Full tier
+    // doesn't crush a 1888-tall character to ~960 because the packed
+    // frame (3776) exceeds the 1920 Full-tier cap.
+    const int nominalH = task.info.packedAlpha
+        ? (srcH / std::max(1, task.info.packedTiles)) : srcH;
+    const int contentH = srcH;  // packed-2 keeps full stacked height (compositor splits it)
+    int dstW = srcW, dstH = contentH;
+    if (srcW > maxDim || nominalH > maxDim) {
         const float scale = std::min(static_cast<float>(maxDim) / srcW,
-                                     static_cast<float>(maxDim) / srcH);
+                                     static_cast<float>(maxDim) / nominalH);
         dstW = std::max(2, static_cast<int>(srcW * scale) & ~1);
-        dstH = std::max(2, static_cast<int>(srcH * scale) & ~1);
+        dstH = std::max(2, static_cast<int>(contentH * scale) & ~1);
     }
     if (dstW > 16384 || dstH > 16384) return nullptr;
 

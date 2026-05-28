@@ -13,10 +13,12 @@
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/VideoClip.h"
+#include "timeline/SpineClip.h"
 #include "timeline/Track.h"
 #include "timeline/Timeline.h"
 #include "timeline/KeyframeTrack.h"
 #include "timeline/GraphicLayer.h"
+#include "timeline/GraphicClip.h"
 #include "media/PlaybackController.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
@@ -215,6 +217,87 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
 void EffectControlsPanel::clearClip()
 {
     setClip(nullptr);
+}
+
+void EffectControlsPanel::removeAllKeyframes()
+{
+    if (!m_clip) return;
+
+    // Full snapshot of every animated track so undo restores it exactly.
+    struct TrackSnap {
+        KeyframeTrack<float>*        trk;
+        float                        oldDefault;
+        std::vector<Keyframe<float>> oldKfs;
+        float                        collapseVal;  // static value to keep
+    };
+    std::vector<TrackSnap> snaps;
+    const int64_t t = clipRelativeTick();
+
+    auto addTrack = [&](KeyframeTrack<float>* trk) {
+        if (!trk || trk->keyframeCount() == 0) return;     // nothing to remove
+        for (const auto& s : snaps) if (s.trk == trk) return;  // dedupe
+        // Collapse to the value the track shows at the current playhead so the
+        // current frame looks unchanged; only the motion is removed.
+        snaps.push_back({trk, trk->defaultValue(), trk->keyframes(),
+                         trk->evaluate(t)});
+    };
+
+    // Clip-level transform tracks.
+    addTrack(&m_clip->positionX());
+    addTrack(&m_clip->positionY());
+    addTrack(&m_clip->scaleX());
+    addTrack(&m_clip->scaleY());
+    addTrack(&m_clip->rotation());
+    addTrack(&m_clip->opacity());
+    addTrack(&m_clip->anchorX());
+    addTrack(&m_clip->anchorY());
+    if (auto* ac = dynamic_cast<AudioClip*>(m_clip)) {
+        addTrack(&ac->pan());
+        addTrack(&ac->volume());
+    }
+    // GraphicClip: every text/shape layer's own (per-layer) transform tracks —
+    // these are invisible in Effect Controls unless that layer is selected.
+    if (auto* gc = dynamic_cast<GraphicClip*>(m_clip)) {
+        for (size_t i = 0; i < gc->layerCount(); ++i) {
+            auto* layer = gc->layer(i);
+            if (!layer) continue;
+            auto& tf = layer->transform();
+            addTrack(&tf.posX);    addTrack(&tf.posY);
+            addTrack(&tf.scaleX);  addTrack(&tf.scaleY);
+            addTrack(&tf.rotation);
+            addTrack(&tf.opacity);
+            addTrack(&tf.anchorX); addTrack(&tf.anchorY);
+            if (layer->layerType() == GraphicLayerType::Text)
+                addTrack(&static_cast<TextLayer*>(layer)->tracking());
+        }
+    }
+
+    if (snaps.empty()) return;  // no keyframes anywhere — nothing to do
+
+    auto* panel = this;
+    auto doRemove = [snaps, panel]() {
+        for (const auto& s : snaps) {
+            while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
+            s.trk->setDefaultValue(s.collapseVal);
+        }
+        panel->refresh();
+        emit panel->propertyChanged();
+    };
+    auto undoRemove = [snaps, panel]() {
+        for (const auto& s : snaps) {
+            while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
+            s.trk->setDefaultValue(s.oldDefault);
+            for (const auto& kf : s.oldKfs) s.trk->restoreKeyframe(kf);
+        }
+        panel->refresh();
+        emit panel->propertyChanged();
+    };
+
+    if (m_commandStack)
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Remove All Keyframes", doRemove, undoRemove));
+    else
+        doRemove();
 }
 
 void EffectControlsPanel::refresh()
@@ -498,6 +581,11 @@ void EffectControlsPanel::applyTransformLive()
         writeCompound(effAnchorY(),
                       static_cast<float>(spin->value() / posDisplayFactorY()),
                       effAnchorX());
+    } else if (spin == m_cropLeftSpin || spin == m_cropRightSpin ||
+               spin == m_cropTopSpin  || spin == m_cropBottomSpin) {
+        // Crop is stored on the clip (not a keyframe track). Push all four
+        // values at once since VideoClip/SpineClip::setCrop is atomic.
+        writeCropFromSpins();
     } else if (spin == m_speedSpin) {
         double newSpd = spin->value() / 100.0;
         if (newSpd <= 0.0) newSpd = 0.01;
@@ -537,6 +625,30 @@ void EffectControlsPanel::applyTransformLive()
 }
 
 
+bool EffectControlsPanel::clipHasCrop() const noexcept
+{
+    if (!m_clip) return false;
+    return m_clip->clipType() == ClipType::Video ||
+           m_clip->clipType() == ClipType::Spine;
+}
+
+void EffectControlsPanel::writeCropFromSpins()
+{
+    if (!m_clip || !m_cropLeftSpin || !m_cropRightSpin ||
+        !m_cropTopSpin || !m_cropBottomSpin)
+        return;
+    const float l = static_cast<float>(m_cropLeftSpin->value());
+    const float r = static_cast<float>(m_cropRightSpin->value());
+    const float t = static_cast<float>(m_cropTopSpin->value());
+    const float b = static_cast<float>(m_cropBottomSpin->value());
+    if (auto* vc = dynamic_cast<VideoClip*>(m_clip)) {
+        vc->setCrop(l, r, t, b);
+    } else if (auto* sc = dynamic_cast<SpineClip*>(m_clip)) {
+        sc->setCrop(l, r, t, b);
+    }
+}
+
+
 void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
 {
     // Called at end of scrub — push per-property undo command.
@@ -544,6 +656,47 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
 
     auto* spin = qobject_cast<ScrubbySpinBox*>(sender());
     if (!spin) return;
+
+    // Crop has no keyframe track — it lives on the clip. Build an undo
+    // command from the four spins' pre-scrub vs current values (only the
+    // scrubbed axis differs; the others' old == new, so they're no-ops).
+    if (spin == m_cropLeftSpin || spin == m_cropRightSpin ||
+        spin == m_cropTopSpin  || spin == m_cropBottomSpin) {
+        if (!clipHasCrop()) return;
+        auto axisOld = [spin](ScrubbySpinBox* s) {
+            return static_cast<float>(s == spin ? s->scrubStartValue() : s->value());
+        };
+        const float oL = axisOld(m_cropLeftSpin);
+        const float oR = axisOld(m_cropRightSpin);
+        const float oT = axisOld(m_cropTopSpin);
+        const float oB = axisOld(m_cropBottomSpin);
+        const float nL = static_cast<float>(m_cropLeftSpin->value());
+        const float nR = static_cast<float>(m_cropRightSpin->value());
+        const float nT = static_cast<float>(m_cropTopSpin->value());
+        const float nB = static_cast<float>(m_cropBottomSpin->value());
+        if (oL == nL && oR == nR && oT == nT && oB == nB) return;  // no change
+        Clip* clip  = m_clip;
+        auto* panel = this;
+        auto setCrop = [clip](float l, float r, float t, float b) {
+            if (auto* vc = dynamic_cast<VideoClip*>(clip)) vc->setCrop(l, r, t, b);
+            else if (auto* sc = dynamic_cast<SpineClip*>(clip)) sc->setCrop(l, r, t, b);
+        };
+        if (m_commandStack) {
+            m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+                "Crop",
+                [setCrop, nL, nR, nT, nB, panel]() {
+                    setCrop(nL, nR, nT, nB);
+                    panel->populateFromClip();
+                    emit panel->propertyChanged();
+                },
+                [setCrop, oL, oR, oT, oB, panel]() {
+                    setCrop(oL, oR, oT, oB);
+                    panel->populateFromClip();
+                    emit panel->propertyChanged();
+                }));
+        }
+        return;
+    }
 
     // Identify which track this spin operates on
     KeyframeTrack<float>* track = nullptr;
@@ -718,15 +871,56 @@ void EffectControlsPanel::resetPropertyRow(PropertyRow* row)
     }
 
     if (snaps.empty() && !resetSpeed) {
-        // Crop / anchor / anti-flicker rows are not keyframe-backed; just
-        // restore their displayed default (best effort, matches the
-        // section-reset behaviour) without polluting the undo stack.
+        // Crop / anti-flicker rows are not keyframe-backed. Crop lives on the
+        // clip, so zero this row's spins and write the result back (undoably).
+        // Anti-flicker has no clip storage — just clear the spin display.
+        const bool isCrop = clipHasCrop() &&
+            (spins.contains(m_cropLeftSpin) || spins.contains(m_cropRightSpin) ||
+             spins.contains(m_cropTopSpin)  || spins.contains(m_cropBottomSpin));
+
+        // Capture pre-reset crop (all four axes) for undo before zeroing.
+        float oL = 0, oR = 0, oT = 0, oB = 0;
+        if (isCrop) {
+            oL = static_cast<float>(m_cropLeftSpin->value());
+            oR = static_cast<float>(m_cropRightSpin->value());
+            oT = static_cast<float>(m_cropTopSpin->value());
+            oB = static_cast<float>(m_cropBottomSpin->value());
+        }
+
         for (auto* spin : spins) {
             spin->blockSignals(true);
             spin->setValue(0.0);
             spin->blockSignals(false);
         }
-        applyTransformLive();
+
+        if (isCrop) {
+            const float nL = static_cast<float>(m_cropLeftSpin->value());
+            const float nR = static_cast<float>(m_cropRightSpin->value());
+            const float nT = static_cast<float>(m_cropTopSpin->value());
+            const float nB = static_cast<float>(m_cropBottomSpin->value());
+            Clip* clip  = m_clip;
+            auto* panel = this;
+            auto setCrop = [clip](float l, float r, float t, float b) {
+                if (auto* vc = dynamic_cast<VideoClip*>(clip)) vc->setCrop(l, r, t, b);
+                else if (auto* sc = dynamic_cast<SpineClip*>(clip)) sc->setCrop(l, r, t, b);
+            };
+            if (m_commandStack) {
+                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    QStringLiteral("Reset %1").arg(row->propertyName()).toStdString(),
+                    [setCrop, nL, nR, nT, nB, panel]() {
+                        setCrop(nL, nR, nT, nB);
+                        panel->populateFromClip();
+                        emit panel->propertyChanged();
+                    },
+                    [setCrop, oL, oR, oT, oB, panel]() {
+                        setCrop(oL, oR, oT, oB);
+                        panel->populateFromClip();
+                        emit panel->propertyChanged();
+                    }));
+            } else {
+                setCrop(nL, nR, nT, nB);
+            }
+        }
         emit propertyChanged();
         return;
     }

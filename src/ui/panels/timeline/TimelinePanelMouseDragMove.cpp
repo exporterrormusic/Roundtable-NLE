@@ -240,6 +240,24 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     double pps = m_layoutEngine.pixelsPerSecond();
     int64_t tickDelta = static_cast<int64_t>(deltaX / pps * 48000.0);
 
+    // Quantize the move to whole frames so a clip can never land on a
+    // fractional-frame tick. Timeline ticks run at 48000/sec but a frame is
+    // 48000/fps ticks; an un-quantized pixel→tick delta drops clips a
+    // fraction of a frame off, which is invisible on the timeline but makes
+    // a clip's end overhang the frame boundary the compositor samples on —
+    // showing a 1-frame ghost at shot cuts. Snap-to-edge (below) still
+    // overrides this when the magnet engages.
+    {
+        const double fps = m_layoutEngine.frameRate();
+        if (fps > 0.0) {
+            const int64_t tpf = static_cast<int64_t>(48000.0 / fps + 0.5);
+            if (tpf > 0) {
+                const int64_t half = (tickDelta >= 0) ? tpf / 2 : -(tpf / 2);
+                tickDelta = ((tickDelta + half) / tpf) * tpf;
+            }
+        }
+    }
+
     switch (m_dragMode)
     {
     case DragMode::ClipMove:

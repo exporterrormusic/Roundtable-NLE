@@ -457,10 +457,10 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
 
     if (bw < 1.0f || bh < 1.0f) return frame; // degenerate bounds
 
-    // Height-based fit to match COMPOSE's fitScale = canvasH / bh * 0.85.
-    // Scale from STABLE bounds (prevents zooming as live bounds shift)
-    // Center from STABLE bounds (prevents swaying as live bounds shift)
-    const float spineScale = (static_cast<float>(outH) / bh) * 0.85f;
+    // Height-based fit — fill as much of the output as possible.
+    // The 0.85× compose-fit is applied in the compositor transform (scX/scY)
+    // so the render has maximum native resolution for close-up shots.
+    const float spineScale = (static_cast<float>(outH) / bh);
 
     const float offsetX = outW * 0.5f;
     const float offsetY = outH * 0.5f;

@@ -498,18 +498,23 @@ int FrameRenderer::evaluateLayers(const Timeline& timeline, int64_t tick, int de
             auto frame = m_mediaPool->getFrame(handle, frameNum, ResolutionTier::Full, false);
             if (!frame || !frame->ensurePixels()) continue;
 
-            // Packed-alpha detection (matches VideoDecoderInit heuristic)
+            // Packed-alpha detection (matches VideoDecoderInit heuristic).
+            // A frame already unpacked at decode time (e.g. luma-packed
+            // 4-tile characters, unpacked to straight-alpha RGBA on the GPU)
+            // is a normal alpha layer — never treat it as packed or halve it.
             bool isPacked = false;
             uint32_t nominalW = frame->width;
             uint32_t nominalH = frame->height;
-            if (auto* info = m_mediaPool->getInfo(handle)) {
-                isPacked = info->packedAlpha;
+            if (!frame->unpackedAlpha) {
+                if (auto* info = m_mediaPool->getInfo(handle)) {
+                    isPacked = info->packedAlpha;
+                }
+                if (!isPacked && nominalH > 0 && nominalW > 0 &&
+                    nominalH >= nominalW * 2) {
+                    isPacked = true;
+                }
+                if (isPacked) nominalH /= 2;
             }
-            if (!isPacked && nominalH > 0 && nominalW > 0 &&
-                nominalH >= nominalW * 2) {
-                isPacked = true;
-            }
-            if (isPacked) nominalH /= 2;
 
             // ── Upload to GPU via VideoUploader ─────────────────────────
             CompositorLayer cl;

@@ -315,15 +315,18 @@ int AudioSync::exportToTimeline(Timeline* timeline)
 
                         constexpr float chOutW = 1920.0f;
                         constexpr float chOutH = 1080.0f;
-                        // ShotComposer preview fits characters to 85% of canvas
-                        // height; mirror that here so timeline matches preview.
-                        constexpr float kCharFit = 0.85f;
+                        // Raw preset scale — the compositor applies the 0.85×
+                        // COMPOSE character-fit dynamically (containFit + kComposeFit).
+                        // Do NOT bake 0.85 into the clip scale — that would
+                        // double-compensate (0.85² = 0.7225) and cause the
+                        // character to render ~15% undersized, forcing the user
+                        // to zoom in and lose sharpness.
                         vClip->positionX().setDefaultValue((ch->posX - 0.5f) * chOutW);
                         vClip->positionY().setDefaultValue((ch->posY - 0.5f) * chOutH);
                         const float charScaleX = ch->flipX ? -ch->scale : ch->scale;
                         const float charScaleY = ch->flipY ? -ch->scale : ch->scale;
-                        vClip->scaleX().setDefaultValue(charScaleX * kCharFit);
-                        vClip->scaleY().setDefaultValue(charScaleY * kCharFit);
+                        vClip->scaleX().setDefaultValue(charScaleX);
+                        vClip->scaleY().setDefaultValue(charScaleY);
                         vClip->opacity().setDefaultValue(ch->opacity);
                         if (ch->cropLeft > 0 || ch->cropRight > 0 || ch->cropTop > 0 || ch->cropBottom > 0)
                             vClip->setCrop(ch->cropLeft, ch->cropRight, ch->cropTop, ch->cropBottom);

@@ -19,6 +19,7 @@
 
 #include <QFrame>
 #include <QGridLayout>
+#include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -1396,6 +1397,21 @@ void EffectControlsPanel::setupUI()
         .arg(Theme::hex(tc.textSecondary)));
     footerLayout->addWidget(m_footerTimecodeLabel);
     footerLayout->addStretch();
+
+    // "Remove All Keyframes" — clears every keyframe on the clip AND on all
+    // of a GraphicClip's text/shape layers in one undoable step. This is the
+    // only way to reach keyframes on a graphic layer that isn't the currently
+    // selected one (Effect Controls binds to a single layer at a time).
+    auto* removeAllKfBtn = new QPushButton(tr("Remove All Keyframes"), footer);
+    removeAllKfBtn->setCursor(Qt::PointingHandCursor);
+    removeAllKfBtn->setToolTip(tr("Clear every keyframe on this clip and all of its layers"));
+    removeAllKfBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0 2px; }"
+        "QPushButton:hover { color: %2; }")
+        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textBright)));
+    connect(removeAllKfBtn, &QPushButton::clicked,
+            this, &EffectControlsPanel::removeAllKeyframes);
+    footerLayout->addWidget(removeAllKfBtn);
 
     mainLayout->addWidget(footer);
 }

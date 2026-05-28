@@ -256,9 +256,20 @@ try
                         const double secs = static_cast<double>(clipTickOffset)
                                             / static_cast<double>(rt::kTicksPerSecond);
                         const int64_t srcFrame = static_cast<int64_t>(secs * srcFps);
+                        // Match the live composite path (charVideoTier):
+                        // forceFullResolution wins, otherwise playbackTier().
+                        // Previously characters were pinned to Half here,
+                        // which filled the cache with Half-tier frames.
+                        // When forceFullResolution was set (export/preview),
+                        // getFrame() would then return the cached Half-tier
+                        // frame via its alt-tier fallback — the export
+                        // composited Half-tier characters at full viewport
+                        // resolution, producing blurry output.
                         const auto warmTier = videoClip->isVideoCharacter()
-                                              ? ResolutionTier::Half
-                                              : playbackTier();
+                            ? (m_forceFullResolution.load()
+                               ? ResolutionTier::Full
+                               : playbackTier())
+                            : playbackTier();
                         if (!m_mediaPool->isFrameCached(handle, srcFrame, warmTier)) {
                             // Two-stage prefetch on shot boundary: a small
                             // *urgent* batch (the current + previous frame)
@@ -770,6 +781,7 @@ try
             }
         }
     }
+
 
     // Single layer fast path
     if (!m_gpuDisplayMode && layers.size() == 1) {

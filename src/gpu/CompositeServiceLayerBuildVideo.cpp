@@ -70,7 +70,24 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);
         if (frame && frame->frameNumber == frameNumber && frame->tier == tier)
             return frame;
-        return m_mediaPool->getFrame(handle, frameNumber, tier, true);
+        // getFrame() has an alt-tier fallback (e.g. returns Half when Full
+        // was requested).  During export/preview we MUST reject wrong-tier
+        // frames — compositing a Half-tier character at the full viewport
+        // resolution produces visibly blurry output.
+        frame = m_mediaPool->getFrame(handle, frameNumber, tier, true);
+        if (frame && frame->tier != tier) {
+            // Wrong tier from alt-tier fallback.  Schedule an urgent
+            // correct-tier prefetch for the next frame, but for THIS
+            // frame there's nothing better available — the compositor
+            // will render it and the next frame will be correct.
+            m_mediaPool->schedulePrefetch(handle, frameNumber, 1,
+                                          /*urgent=*/true, tier);
+            spdlog::warn("[EXPORT-TIER] handle={} frame={} requested tier={} "
+                         "but getFrame returned tier={} — scheduling correct-tier prefetch",
+                         handle, frameNumber, static_cast<int>(tier),
+                         static_cast<int>(frame->tier));
+        }
+        return frame;
     }
     // Try non-blocking first (fast path for cached frames during playback).
     auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);

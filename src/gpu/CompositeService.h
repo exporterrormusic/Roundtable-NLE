@@ -550,6 +550,16 @@ private:
     // black character for 200ms" artefacts.
     std::unordered_map<std::string, std::shared_ptr<CachedFrame>> m_stickyLastCharFrame;
 
+    // Reentrancy depth of buildLayersForFrame (nested SequenceClips composite
+    // recursively). The sticky-cache prune may only run at depth 1 (the
+    // top-level frame). Active clip IDs / character keys accumulate across the
+    // whole nested build (cleared at depth-1 entry) so the top-level prune
+    // keeps entries for clips inside nested sequences too. Touched only on the
+    // composite thread under m_compositeMutex.
+    int m_buildLayersDepth{0};
+    std::unordered_set<uint64_t>    m_frameActiveClipIds;
+    std::unordered_set<std::string> m_frameActiveCharKeys;
+
     // Open media handles (shared with preOpenVideoMedia)
     // Protected by its own mutex — the prewarm thread accesses this
     // concurrently with compositeFrame() on the FrameProducer thread.

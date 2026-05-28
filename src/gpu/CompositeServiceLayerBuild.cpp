@@ -52,10 +52,28 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     std::unique_lock<std::recursive_mutex>& lock,
     bool& gpuSpineUsedThisFrame)
 {
+    // Track reentrancy so the sticky-cache prune at the end only fires for
+    // the top-level frame (nested SequenceClips re-enter via compositeFrame).
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    } buildDepthGuard(m_buildLayersDepth);
+
     // fetchMediaFrame lambda replaced by CompositeService::resolveMediaFrame()
     // (extracted to CompositeServiceLayerBuildVideo.cpp for modularization).
 
     std::vector<LayerInfo> layers;
+
+    // At the top level, reset the per-frame active sets. They accumulate
+    // across the whole (possibly nested) build and drive the end-of-frame
+    // sticky-cache prune, so a clip/character that has left the active set
+    // (e.g. a shot cut) cannot linger and its held (possibly GPU-resident)
+    // CachedFrame is released promptly.
+    if (m_buildLayersDepth == 1) {
+        m_frameActiveClipIds.clear();
+        m_frameActiveCharKeys.clear();
+    }
 
     clipsAtTick = 0;
     m_gpuSpineCount = 0;
@@ -147,6 +165,20 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             if (dynamic_cast<AdjustmentClip*>(clip))
                 continue;
             ++clipsAtTick;
+
+            // Record this clip/character as active this frame so its sticky
+            // last-frame entry survives the end-of-frame prune (keys must
+            // match the format used when recording sticky frames below).
+            m_frameActiveClipIds.insert(clip->id());
+#ifdef ROUNDTABLE_HAS_SPINE
+            if (auto* scKey = dynamic_cast<SpineClip*>(clip))
+                m_frameActiveCharKeys.insert(scKey->characterName() + "|" + scKey->outfit() + "|" +
+                                             scKey->animationName() + (scKey->isTalking() ? "|t" : "|m"));
+            else
+#endif
+            if (auto* vcKey = dynamic_cast<VideoClip*>(clip))
+                m_frameActiveCharKeys.insert(vcKey->mediaPath());
+
             bool fromNestedSequence = false;
 
             // Evaluate common transform properties.
@@ -1001,7 +1033,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     float cx = shared.stableBoundsX + shared.stableBoundsW * 0.5f;
                                     float cy = shared.stableBoundsY + shared.stableBoundsH * 0.5f;
                                     if (bw > 1.0f && bh > 1.0f) {
-                                        fitZoom = (fH / bh) * 0.85f;
+                                        // Fill the FBO as much as possible for maximum
+                                        // native resolution on close-up shots.  The 0.85×
+                                        // compose-fit is applied in the compositor
+                                        // transform (scX/scY), not baked into the render.
+                                        fitZoom = std::min(fW / bw, fH / bh);
                                     }
                                     // One-time diagnostic: compare stableBounds vs liveBounds
                                     {
@@ -1399,7 +1435,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // SpineClips and video characters, expecting the compositor to
             // do the same.
             float finalSx = sx, finalSy = sy;
-            if (isVideoCharClip || isPreRenderedSpine) {
+            if (isVideoCharClip || isPreRenderedSpine || gpuSpineZeroCopy || cpuSpineRendered) {
                 constexpr float kComposeFit = 0.85f;
                 finalSx *= kComposeFit;
                 finalSy *= kComposeFit;
@@ -1485,19 +1521,22 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (bw > 1.0f && bh > 1.0f) {
                             float fW = static_cast<float>(outW);
                             float fH = static_cast<float>(outH);
-                            // Height-based fit matching COMPOSE (0.85×)
-                            float fitZoom = (fH / bh) * 0.85f;
-                            float charFracW = std::min(1.0f, fitZoom * bw / fW);
-                            float charFracH = std::min(1.0f, fitZoom * bh / fH);
+                            // The live Spine texture renders the character at
+                            // the FULL texture height (spineScale = outH/bh in
+                            // CompositeServiceSpine), centered. So vertically
+                            // the character fills the texture (crop already
+                            // matches COMPOSE's character-relative crop and
+                            // passes through), and horizontally it occupies
+                            // only charFracW, centered with marginH each side.
+                            // The 0.85x compose-fit scales character AND margins
+                            // together, so it cancels in these fractions.
+                            // charFracW is aspect-based => tier-independent.
+                            float charFracW = std::min(1.0f, (bw / bh) * (fH / fW));
                             float marginH = (1.0f - charFracW) * 0.5f;
-                            float marginV = (1.0f - charFracH) * 0.5f;
-                            // Include transparent margin + proportional character crop.
-                            // Values stay in 0-100 range (divided by 100 later for GPU,
-                            // used directly for CPU blitLayerWithTransform).
+                            // Horizontal: convert character-% -> texture-%.
                             layer.cropL = (marginH + (layer.cropL / 100.0f) * charFracW) * 100.0f;
                             layer.cropR = (marginH + (layer.cropR / 100.0f) * charFracW) * 100.0f;
-                            layer.cropT = (marginV + (layer.cropT / 100.0f) * charFracH) * 100.0f;
-                            layer.cropB = (marginV + (layer.cropB / 100.0f) * charFracH) * 100.0f;
+                            // Vertical crop is already character-relative.
                         }
                     }
                 }
@@ -1565,6 +1604,32 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             layers.push_back(std::move(layer));
         }
     }
+
+    // ── Prune sticky last-frame caches ──────────────────────────────────
+    // Drop entries for clips/characters that are no longer in the active
+    // set (e.g. after a shot cut). This honours the documented contract
+    // ("pruned when clip IDs go out of the active set"), stops a character
+    // from lingering past a cut, and — crucially — releases the held
+    // CachedFrame (often GPU-resident, owning a pooled texture) instead of
+    // retaining it across shots. Safe here: this map is only touched by
+    // buildLayersForFrame (under m_compositeMutex) and reset() (after the
+    // prewarm thread is joined). Only at the top level — a nested
+    // SequenceClip build must not evict the outer shot's entries.
+    if (m_buildLayersDepth == 1) {
+        for (auto it = m_stickyLastClipFrame.begin(); it != m_stickyLastClipFrame.end(); ) {
+            if (m_frameActiveClipIds.find(it->first) == m_frameActiveClipIds.end())
+                it = m_stickyLastClipFrame.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = m_stickyLastCharFrame.begin(); it != m_stickyLastCharFrame.end(); ) {
+            if (m_frameActiveCharKeys.find(it->first) == m_frameActiveCharKeys.end())
+                it = m_stickyLastCharFrame.erase(it);
+            else
+                ++it;
+        }
+    }
+
     return layers;
 }
 

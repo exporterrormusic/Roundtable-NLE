@@ -797,6 +797,42 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         }
     }
 
+    // ── Frame-align migration ───────────────────────────────────────────
+    // Clips placed before drag/export frame-snapping can have boundaries on
+    // fractional-frame ticks (timeline ticks run at 48000/sec; a frame is
+    // 48000/fps ticks). Playback samples on exact frame boundaries, so a
+    // clip whose end overhangs a boundary by a sub-frame renders one extra
+    // frame — the 1-frame "ghost" of a character that should have left at a
+    // shot cut. Snap every clip's in/out to the nearest whole frame so the
+    // boundaries the user aligned by eye are exact. Idempotent (re-running
+    // on already-aligned clips is a no-op).
+    if (Timeline* tl = project->timeline()) {
+        const int64_t tpf = project->settings().ticksPerFrame();
+        if (tpf > 0) {
+            auto q = [tpf](int64_t t) { return ((t + tpf / 2) / tpf) * tpf; };
+            int adjusted = 0;
+            for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
+                Track* trk = tl->track(ti);
+                if (!trk) continue;
+                for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+                    Clip* c = trk->clip(ci);
+                    if (!c) continue;
+                    const int64_t inQ  = q(c->timelineIn());
+                    int64_t       outQ = q(c->timelineOut());
+                    if (outQ <= inQ) outQ = inQ + tpf;   // keep at least 1 frame
+                    if (inQ != c->timelineIn() || outQ != c->timelineOut()) {
+                        c->setTimelineIn(inQ);
+                        c->setDuration(outQ - inQ);
+                        ++adjusted;
+                    }
+                }
+            }
+            if (adjusted > 0)
+                spdlog::info("ProjectSerializer: frame-aligned {} clip boundaries "
+                             "(tpf={})", adjusted, tpf);
+        }
+    }
+
     project->setModified(false);
     return project;
 }

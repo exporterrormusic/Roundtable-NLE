@@ -200,22 +200,35 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
                 return cached;
             }
         }
-        // Also try the opposite resolution tier as last resort
-        auto altTier = (tier == ResolutionTier::Half)
-                           ? ResolutionTier::Full : ResolutionTier::Half;
-        cached = m_cache->getNoPromote(handle, frameNumber, altTier);
-        if (cached) {
-            m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-            // Schedule prefetch for the REQUESTED tier so the next settle
-            // cycle gets the correct resolution instead of the fallback.
-            // Without this, the caller (resolveMediaFrame) may accept the
-            // wrong-tier frame and composite it at full viewport → blurry.
-            schedulePrefetch(handle, frameNumber, 1, /*urgent=*/true, tier);
-            if (!scrubMode) {
-                std::lock_guard lg(m_lastGoodMtx);
-                m_lastGoodFrame[handle] = cached;
+        // Also try the opposite resolution tier as last resort.
+        // Only accept a higher-or-equal tier — downgrading (Full→Half)
+        // produces blurry output when composited at the full viewport
+        // resolution (export path).  Upgrading (Half→Full) is always
+        // safe: the frame is sharper than requested.
+        ResolutionTier altTier;
+        if (tier == ResolutionTier::Half) {
+            altTier = ResolutionTier::Full;
+        } else {
+            // tier is Full or Quarter — don't downgrade to Half/Quarter
+            // respectively.  Fall through to the blocking decode path
+            // instead of returning a blurry fallback.
+            altTier = tier;  // no downgrade
+        }
+        if (altTier != tier) {
+            cached = m_cache->getNoPromote(handle, frameNumber, altTier);
+            if (cached) {
+                m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
+                // Schedule prefetch for the REQUESTED tier so the next settle
+                // cycle gets the correct resolution instead of the fallback.
+                // Without this, the caller (resolveMediaFrame) may accept the
+                // wrong-tier frame and composite it at full viewport → blurry.
+                schedulePrefetch(handle, frameNumber, 1, /*urgent=*/true, tier);
+                if (!scrubMode) {
+                    std::lock_guard lg(m_lastGoodMtx);
+                    m_lastGoodFrame[handle] = cached;
+                }
+                return cached;
             }
-            return cached;
         }
         for (int64_t delta = 1; delta <= 2; ++delta) {
             cached = m_cache->getNoPromote(handle, frameNumber - delta, altTier);
@@ -436,13 +449,24 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
 
     // Try alternate tier as last resort (exact match only — no forward
     // search to avoid the same temporal-jump issue at a different tier).
-    auto altTier = (tier == ResolutionTier::Half)
-                       ? ResolutionTier::Full : ResolutionTier::Half;
-    cached = m_cache->get(handle, frameNumber, altTier);
-    if (cached) {
-        m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-        schedulePrefetch(handle, frameNumber + 1, PREFETCH_AHEAD_COUNT, /*urgent=*/false, tier);
-        return returnFrame(std::move(cached));
+    // Only upgrade (Half→Full), never downgrade (Full→Half) —
+    // compositing a lower-resolution frame at the full viewport produces
+    // blurry output.  resolveMediaFrame already rejects wrong-tier frames
+    // during export, but this prevents the wrong frame from entering the
+    // playback path in the first place.
+    ResolutionTier altTier;
+    if (tier == ResolutionTier::Half) {
+        altTier = ResolutionTier::Full;
+    } else {
+        altTier = tier;  // no downgrade
+    }
+    if (altTier != tier) {
+        cached = m_cache->get(handle, frameNumber, altTier);
+        if (cached) {
+            m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
+            schedulePrefetch(handle, frameNumber + 1, PREFETCH_AHEAD_COUNT, /*urgent=*/false, tier);
+            return returnFrame(std::move(cached));
+        }
     }
 
     // Total miss — return last-good frame if available (holds the most

@@ -531,9 +531,6 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         AVDictionaryEntry* pa = av_dict_get(m_fmtCtx->metadata, "packed_alpha", nullptr, 0);
         if (pa && std::string(pa->value) == "1") {
             m_info.packedAlpha = true;
-            spdlog::info("VideoDecoder: '{}' is packed-alpha ({}x{}, nominal {}x{})",
-                         path.filename().string(), m_info.width, m_info.height,
-                         m_info.width, m_info.height / 2);
         }
         if (!m_info.packedAlpha && !hasAlpha &&
             m_info.height > 0 && m_info.width > 0 &&
@@ -541,10 +538,17 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
             (codecpar->codec_id == AV_CODEC_ID_HEVC ||
              codecpar->codec_id == AV_CODEC_ID_H264)) {
             m_info.packedAlpha = true;
-            spdlog::info("VideoDecoder: '{}' heuristic packed-alpha ({}x{}, "
-                         "height >= 2*width, codec={})",
-                         path.filename().string(), m_info.width, m_info.height,
-                         avcodec_get_name(codecpar->codec_id));
+        }
+
+        // Tile count: the supported packed-alpha layout is 2-tile
+        // (top RGB, bottom alpha-as-greyscale). packedTiles feeds the
+        // nominal-height calc used by the resolution-tier downscale clamp.
+        if (m_info.packedAlpha) {
+            m_info.packedTiles = 2;
+            spdlog::info("VideoDecoder: '{}' packed-alpha 2-tile ({}x{}, nominal {}x{})",
+                         path.filename().string(),
+                         m_info.width, m_info.height,
+                         m_info.width, m_info.height / 2);
         }
     }
 

@@ -308,6 +308,13 @@ public:
     void refresh();
     void clearClip();
 
+    /// Remove every keyframe on the current clip AND, for GraphicClips, on
+    /// all of its text/shape layers — collapsing each animated track to its
+    /// current value as a single undoable command. This is the only way to
+    /// clear keyframes on a graphic layer that isn't the selected one, since
+    /// Effect Controls binds the Motion rows to one layer at a time.
+    void removeAllKeyframes();
+
     // ── Dependencies ────────────────────────────────────────────────────
     void setCommandStack(CommandStack* stack) noexcept {
         m_commandStack = stack;
@@ -424,6 +431,14 @@ protected:
     void applyTransform();
     void applyTransformLive();
     void commitTransform(double oldVal, double newVal);
+
+    /// Write the four Crop spin values to the clip's crop (Video / Spine
+    /// clips only — crop is not a keyframe track, so it lives on the clip,
+    /// not a KeyframeTrack like the Motion properties). Called live during a
+    /// crop scrub; commitTransform() pushes the undo command separately.
+    void writeCropFromSpins();
+    /// True when the current clip stores crop (VideoClip or SpineClip).
+    [[nodiscard]] bool clipHasCrop() const noexcept;
 
     /// Premiere-style per-attribute reset. Restores every value spin in the
     /// row to its engine-native factory default and clears that property's

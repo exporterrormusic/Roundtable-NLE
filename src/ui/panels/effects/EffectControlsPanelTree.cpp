@@ -11,6 +11,8 @@
 
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/VideoClip.h"
+#include "timeline/SpineClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "timeline/OpacityMask.h"
 #include "command/CommandStack.h"
@@ -868,6 +870,24 @@ void EffectControlsPanel::populateFromClip()
     // returns the right multiplier for whichever source is active.
     if (auto* trk = effAnchorX(); m_anchorXSpin && trk) m_anchorXSpin->setValue(trk->evaluate(t) * posFx);
     if (auto* trk = effAnchorY(); m_anchorYSpin && trk) m_anchorYSpin->setValue(trk->evaluate(t) * posFy);
+
+    // Crop (percentage 0–100) — stored on the clip, not a keyframe track.
+    // Only VideoClip / SpineClip carry crop; other clip types leave the
+    // spins at 0 (the compositor ignores crop for them anyway).
+    if (m_cropLeftSpin && m_cropRightSpin && m_cropTopSpin && m_cropBottomSpin) {
+        float cl = 0, cr = 0, ct = 0, cb = 0;
+        if (auto* vc = dynamic_cast<VideoClip*>(m_clip)) {
+            cl = vc->cropLeft(); cr = vc->cropRight();
+            ct = vc->cropTop();  cb = vc->cropBottom();
+        } else if (auto* sc = dynamic_cast<SpineClip*>(m_clip)) {
+            cl = sc->cropLeft(); cr = sc->cropRight();
+            ct = sc->cropTop();  cb = sc->cropBottom();
+        }
+        m_cropLeftSpin->setValue(static_cast<double>(cl));
+        m_cropRightSpin->setValue(static_cast<double>(cr));
+        m_cropTopSpin->setValue(static_cast<double>(ct));
+        m_cropBottomSpin->setValue(static_cast<double>(cb));
+    }
 
     // Speed (percentage)
     if (m_speedSpin) m_speedSpin->setValue(m_clip->speed() * 100.0);

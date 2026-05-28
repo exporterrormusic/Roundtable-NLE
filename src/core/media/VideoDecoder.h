@@ -70,6 +70,7 @@ struct VideoStreamInfo
     bool        hasAudio{false};
     bool        hasAlpha{false};        ///< True if video has native alpha (VP9/ProRes)
     bool        packedAlpha{false};     ///< True if packed-alpha layout (top=RGB, bot=alpha, 2× height)
+    int         packedTiles{0};         ///< Packed tile count: 0=not packed, 2=legacy RGB+alpha, 4=luma-packed R/G/B/A
     bool        isVFR{false};           ///< True if variable frame rate detected
     int         audioStreamIndex{-1};
     int         videoStreamIndex{-1};

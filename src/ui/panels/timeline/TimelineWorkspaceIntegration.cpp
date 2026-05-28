@@ -79,6 +79,12 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
         m_compositeService->setMediaPool(m_mediaPool);
         m_compositeService->setModelManager(m_modelManager);
         m_compositeService->clearMediaHandles();
+        // The composite LRU is keyed by (tick, w, h) only — it has no notion
+        // of which sequence produced a frame. Swapping the active timeline
+        // (e.g. opening a nested sequence) would otherwise let checkLru()
+        // return the previous sequence's cached frame at the same tick, so
+        // the Program Monitor shows the old sequence's content. Flush it.
+        m_compositeService->requestCacheInvalidation();
 #ifdef ROUNDTABLE_HAS_SPINE
         m_compositeService->setSpineLoadScheduler(
             [this](const std::string& c, const std::string& o, int s, const std::string& a) {

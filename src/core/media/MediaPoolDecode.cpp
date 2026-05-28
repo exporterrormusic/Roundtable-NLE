@@ -287,6 +287,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         const int w = static_cast<int>(decoded.width);
         const int h = static_cast<int>(decoded.height);
 
+
         // â”€â”€ Preview downscale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // The compositing output is 1920Ã—1080.  There is no point
         // keeping decoded frames at full resolution (e.g. 4096Ã—2304
@@ -301,11 +302,20 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             case ResolutionTier::Quarter: maxDim =  480; break;
             default:                      maxDim = 1920; break;
         }
+        // Nominal content height: for 2-tile packed alpha this is h/2;
+        // for normal (non-packed) sources it's just h.  (4-tile luma-
+        // packed sources are handled above and never reach this branch.)
+        // The tier clamp must use the NOMINAL height so export/Full tier
+        // doesn't crush a 1888-tall character to ~960 because the packed
+        // frame (e.g. 3776) exceeds the 1920 Full-tier cap.
+        const int contentH = (entry.info.packedAlpha && h > 1)
+            ? (h / std::max(1, entry.info.packedTiles))
+            : h;
         int dstW = w, dstH = h;
-        if (w > maxDim || h > maxDim) {
+        if (w > maxDim || contentH > maxDim) {
             const float scale = std::min(
                 static_cast<float>(maxDim) / w,
-                static_cast<float>(maxDim) / h);
+                static_cast<float>(maxDim) / contentH);
             dstW = std::max(2, static_cast<int>(w * scale) & ~1);
             dstH = std::max(2, static_cast<int>(h * scale) & ~1);
         }
@@ -317,7 +327,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // single GPU dispatch.  Input uploaded at srcW×srcH, shader writes
         // output at dstW×dstH using bilinear-filtered texture sampling.
         // No per-frame persistent texture creation — just CPU readback.
-        if (!entry.packedAlpha &&
+        // 4-tile luma-packed alpha needs special GPU unpack (handled above);
+        // 2-tile stacked-alpha (e.g. Wells HEVC) works fine with normal
+        // NV12→BGRA conversion — the compositor splits via isPacked.
+        if (entry.info.packedTiles != 4 &&
             (srcFmt == AV_PIX_FMT_NV12 || decoded.format == PixelFormat::NV12)
             && w <= 16384 && h <= 16384) {
             if (entry.decodePathLogged < 4) {
@@ -345,7 +358,9 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         }
 
         // ── GPU YUV420P → BGRA with integrated downscale ───────────────
-        if (!entry.packedAlpha &&
+        // 4-tile luma-packed alpha needs special GPU unpack (handled above);
+        // 2-tile stacked-alpha works fine with normal YUV420P→BGRA conversion.
+        if (entry.info.packedTiles != 4 &&
             (srcFmt == AV_PIX_FMT_YUV420P || decoded.format == PixelFormat::YUV420P) &&
             w <= 16384 && h <= 16384 && decoded.data[0] && decoded.data[1] && decoded.data[2])
         {
@@ -441,7 +456,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // sws_scale produces straight-alpha BGRA.  Transparent pixels may
         // have non-zero RGB.  Zeroing those prevents GPU linear filtering
         // from bleeding stale colour into visible edges.
-        if (entry.info.hasAlpha && !entry.packedAlpha &&
+        // Skip transparent-pixel RGB clear for packed-alpha frames:
+        // the alpha lives in a separate tile region, not in the BGRA
+        // alpha channel, so clearing based on A=0 would nuke real colour.
+        if (entry.info.hasAlpha && entry.info.packedTiles == 0 &&
             !cached->pixels.empty())
         {
             clearTransparentPixelRGB(cached->pixels.data(),
