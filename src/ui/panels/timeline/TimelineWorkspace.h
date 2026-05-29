@@ -120,6 +120,12 @@ public:
     void buildPanels();
     void wirePanelSignals();
     void wireClipSelectionSignals();
+    // Sub-groups of wireClipSelectionSignals(), split across sibling .cpp files:
+    void wireViewportTransformSignals();   // TimelineWorkspaceWiringViewport.cpp
+    void wireTransformOverlaySignals();    // TimelineWorkspaceWiringTransformOverlay.cpp
+    void wireOverlayToolSignals();         // TimelineWorkspaceWiringViewport.cpp
+    void wireTimelineContentSignals();     // TimelineWorkspaceWiringViewport.cpp
+    void wirePanelFeedbackSignals();       // TimelineWorkspaceWiringPanels.cpp
     void wireMediaDropSignals();
     void wireNestSignals();
     void wireEffectDropSignals();

@@ -147,6 +147,9 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelineWorkspacePanelsShortcuts.cpp
     panels/timeline/TimelineWorkspacePanelsWiring.cpp
     panels/timeline/TimelineWorkspacePanelsWiringClipSelection.cpp
+    panels/timeline/TimelineWorkspaceWiringViewport.cpp
+    panels/timeline/TimelineWorkspaceWiringTransformOverlay.cpp
+    panels/timeline/TimelineWorkspaceWiringPanels.cpp
     panels/timeline/TimelineWorkspacePanelsWiringMediaDrop.cpp
     panels/timeline/TimelineWorkspacePanelsWiringNest.cpp
     panels/timeline/TimelineWorkspacePanelsWiringEffectDrop.cpp
@@ -218,6 +221,9 @@ set_source_files_properties(
     panels/timeline/TimelineWorkspacePanelsWiringNest.cpp
     panels/timeline/TimelineWorkspacePanelsWiringEffectDrop.cpp
     panels/timeline/TimelineWorkspacePanelsWiringTrack.cpp
+    panels/timeline/TimelineWorkspaceWiringViewport.cpp
+    panels/timeline/TimelineWorkspaceWiringTransformOverlay.cpp
+    panels/timeline/TimelineWorkspaceWiringPanels.cpp
     panels/timeline/TimelineWorkspaceIntegration.cpp
     panels/timeline/TimelineWorkspaceEditCommands.cpp
     panels/timeline/TimelineWorkspaceDeps.cpp
