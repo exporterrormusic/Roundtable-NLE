@@ -109,6 +109,9 @@ add_library(roundtable_ui STATIC
     panels/audio/AudioSyncResegmentAndManual.cpp
     panels/audio/AudioSyncUIScriptPage.cpp
     panels/export/ExportPanel.cpp
+    panels/export/ExportPanelPresets.cpp
+    panels/export/ExportPanelRun.cpp
+    panels/export/ExportPanelTransport.cpp
     panels/export/ExportPanelUI.cpp
     panels/export/ExportMiniTimeline.cpp
     panels/effects/KeyframeEditor.cpp
