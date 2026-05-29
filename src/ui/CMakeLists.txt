@@ -84,6 +84,8 @@ add_library(roundtable_ui STATIC
     panels/characters/ShotComposer.cpp
     panels/characters/ShotComposerVideo.cpp
     panels/characters/ShotComposerUI.cpp
+    panels/characters/ShotComposerUIShotsColumn.cpp
+    panels/characters/ShotComposerUILeftPanel.cpp
     panels/characters/ShotComposerProperties.cpp
     panels/characters/ShotComposerThumbnails.cpp
     panels/characters/ShotComposerThumbnailGen.cpp
@@ -248,6 +250,8 @@ set_source_files_properties(
     panels/characters/ShotComposerClipboard.cpp
     panels/characters/ShotComposerEvents.cpp
     panels/characters/ShotComposerUI.cpp
+    panels/characters/ShotComposerUIShotsColumn.cpp
+    panels/characters/ShotComposerUILeftPanel.cpp
     panels/characters/ShotComposerLibrary.cpp
     MainWindowUIBuild.cpp
     MainWindowUINav.cpp
