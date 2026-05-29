@@ -203,13 +203,6 @@ void MainWindow::buildEditMenu(QMenuBar* menuBar)
             if (m_autoSaveTimer)
                 m_autoSaveTimer->setInterval(dlg.autosaveMinutes() * 60 * 1000);
 
-            // Apply theme change
-            if (dlg.themeChanged()) {
-                auto preset = static_cast<ThemePreset>(
-                    std::clamp(dlg.themePresetIndex(), 0, 0));
-                Theme::apply(preset);
-            }
-
             // Apply scrollbar width override (re-set base stylesheet first to avoid accumulation)
             {
                 int sbw = dlg.scrollbarWidth();

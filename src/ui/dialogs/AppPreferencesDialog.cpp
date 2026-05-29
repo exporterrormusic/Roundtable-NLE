@@ -37,10 +37,6 @@ AppPreferencesDialog::AppPreferencesDialog(QWidget* parent,
     auto* appearanceGroup = new QGroupBox(tr("Appearance"), this);
     auto* appearanceForm = new QFormLayout(appearanceGroup);
 
-    m_themeCombo = new QComboBox(this);
-    m_themeCombo->addItem(tr("Dark"));
-    appearanceForm->addRow(tr("Theme:"), m_themeCombo);
-
     m_scrollbarWidthSpin = new QSpinBox(this);
     m_scrollbarWidthSpin->setRange(10, 28);
     m_scrollbarWidthSpin->setSuffix(tr(" px"));
@@ -143,14 +139,11 @@ AppPreferencesDialog::AppPreferencesDialog(QWidget* parent,
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     loadSettings();
-    m_originalThemeIndex = m_themeCombo->currentIndex();
 }
 
 int AppPreferencesDialog::autosaveMinutes() const { return m_autosaveSpin->value(); }
 QString AppPreferencesDialog::projectsDirectory() const { return m_projectsDirEdit->text(); }
 QString AppPreferencesDialog::cacheDirectory() const { return m_cacheDirEdit->text(); }
-bool AppPreferencesDialog::themeChanged() const { return m_themeCombo->currentIndex() != m_originalThemeIndex; }
-int AppPreferencesDialog::themePresetIndex() const { return m_themeCombo->currentIndex(); }
 int AppPreferencesDialog::scrollbarWidth() const { return m_scrollbarWidthSpin->value(); }
 int AppPreferencesDialog::audioDeviceIndex() const
 {
@@ -165,7 +158,6 @@ int AppPreferencesDialog::hardwareDecodeMode() const
 void AppPreferencesDialog::loadSettings()
 {
     auto s = rt::appSettings();
-    m_themeCombo->setCurrentIndex(s.value("ThemePreset", 0).toInt());
     m_autosaveSpin->setValue(s.value("AutosaveInterval", 5).toInt());
     m_scrollbarWidthSpin->setValue(s.value("ScrollbarWidth", 16).toInt());
     m_projectsDirEdit->setText(s.value("ProjectsDirectory").toString());
@@ -195,7 +187,6 @@ void AppPreferencesDialog::loadSettings()
 void AppPreferencesDialog::saveSettings()
 {
     auto s = rt::appSettings();
-    s.setValue("ThemePreset", m_themeCombo->currentIndex());
     s.setValue("AutosaveInterval", m_autosaveSpin->value());
     s.setValue("ScrollbarWidth", m_scrollbarWidthSpin->value());
     if (!m_projectsDirEdit->text().isEmpty())

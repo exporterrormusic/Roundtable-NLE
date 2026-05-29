@@ -479,8 +479,16 @@ void ShotComposer::onCharacterPropertyChanged()
     if (m_selectedLayer < 0 || m_selectedLayer >= m_currentShot.layerCount())
         return;
 
-    // Push undo before the first change in a burst of edits
-    if (!m_undoPropertyPushed) {
+    // Flip H/V toggles always get their own undo state (never coalesce).
+    // Flip is stored as a separate bool on the character, not as a
+    // continuous value like scale/position.  Coalescing a flip with a
+    // subsequent scale means one Ctrl+Z reverts BOTH — the user loses
+    // the flip even though it was a deliberate earlier action.
+    const bool isFlipToggle = (sender() == m_flipXCheck || sender() == m_flipYCheck);
+
+    // Push undo before the first change in a burst of edits.
+    // Flip toggles always force a new undo state.
+    if (!m_undoPropertyPushed || isFlipToggle) {
         pushUndoState();
         m_undoPropertyPushed = true;
     }

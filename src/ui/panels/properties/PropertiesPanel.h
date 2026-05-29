@@ -161,6 +161,8 @@ public:
     [[nodiscard]] ScrubbySpinBox* scaleYSpin()  const noexcept { return m_scaleYSpin; }
     [[nodiscard]] ScrubbySpinBox* rotationSpin() const noexcept { return m_rotationSpin; }
     [[nodiscard]] ScrubbySpinBox* opacitySpin() const noexcept { return m_opacitySpin; }
+    [[nodiscard]] QCheckBox*      flipHCheck()  const noexcept { return m_flipHCheck; }
+    [[nodiscard]] QCheckBox*      flipVCheck()  const noexcept { return m_flipVCheck; }
 
     // Spine-specific
     [[nodiscard]] QComboBox*  characterCombo()    const noexcept { return m_characterCombo; }
@@ -247,7 +249,10 @@ private:
     void applyLabel();
     void applyEnabled();
     void applySpeed();
-    void applyTransform();
+    /// Commit a single transform field (the spinbox that emitted
+    /// valueCommitted) as one undoable command.  Per-field so undoing a
+    /// scale change never clobbers an unrelated flip/position/etc.
+    void applyTransform(ScrubbySpinBox* src, double oldUi, double newUi);
     /// Live preview during scrub drag — writes current spinbox values to
     /// clip properties without creating undo commands.
     void applyTransformLive();

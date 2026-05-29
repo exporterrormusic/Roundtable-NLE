@@ -480,7 +480,9 @@ void PropertiesPanel::setupTransformSection(QWidget* container)
         // keyboard entry, so we do NOT connect editingFinished here — doing
         // so would create duplicate undo commands (double-undo bug).
         connect(spin, &ScrubbySpinBox::valueCommitted,
-                this, [this](double, double) { applyTransform(); });
+                this, [this, spin](double oldV, double newV) {
+                    applyTransform(spin, oldV, newV);
+                });
     };
     connectTransform(m_posXSpin);
     connectTransform(m_posYSpin);

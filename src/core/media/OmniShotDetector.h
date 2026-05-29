@@ -5,7 +5,7 @@
  * Uses std::thread + std::system for the subprocess bridge
  * (no Qt dependency — safe to compile into roundtable_core).
  *
- * Drop-in replacement for SceneDetector with the same callback API.
+ * This is the sole scene-cut detector (it superseded the old SceneDetector).
  */
 
 #pragma once
@@ -19,7 +19,7 @@
 
 namespace rt {
 
-/// A detected scene cut point (reuses SceneDetector's struct).
+/// A detected scene cut point.
 struct DetectedCut
 {
     int64_t frameNumber{0};

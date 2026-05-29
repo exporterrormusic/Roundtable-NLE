@@ -8,6 +8,16 @@
 
 set -e
 
+# Guardrail: block the commit if any src/**/*.cpp is in no CMakeLists.txt
+# (dead code). Keeps the tree free of the orphan files cleaned up in
+# docs/POST-RELEASE-UPGRADE.txt. Skips gracefully if PowerShell is absent.
+if command -v powershell >/dev/null 2>&1; then
+    if ! powershell -NoProfile -ExecutionPolicy Bypass -File tools/check_orphans.ps1; then
+        echo "pre-commit: orphan .cpp check failed (see above). Commit aborted." >&2
+        exit 1
+    fi
+fi
+
 VERSION_H="src/version.h"
 
 # Get the last tag, strip the leading 'v'

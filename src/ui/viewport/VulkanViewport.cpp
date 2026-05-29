@@ -45,31 +45,6 @@ namespace rt {
 //  Helpers
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-#if 0 // Currently unused
-static std::vector<uint32_t> loadSpirv(const std::string& path)
-{
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) return {};
-    auto size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    std::vector<uint32_t> spirv(static_cast<size_t>(size) / sizeof(uint32_t));
-    file.read(reinterpret_cast<char*>(spirv.data()), size);
-    return spirv;
-}
-
-static VkShaderModule createShaderModule(VkDevice device,
-                                          const std::vector<uint32_t>& spirv)
-{
-    if (spirv.empty()) return VK_NULL_HANDLE;
-    VkShaderModuleCreateInfo ci{};
-    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = spirv.size() * sizeof(uint32_t);
-    ci.pCode    = spirv.data();
-    VkShaderModule mod = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &ci, nullptr, &mod);
-    return mod;
-}
-#endif // unused shader helpers
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  Construction / Destruction

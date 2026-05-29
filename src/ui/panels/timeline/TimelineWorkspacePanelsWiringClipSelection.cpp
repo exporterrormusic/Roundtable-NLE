@@ -413,6 +413,8 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                         m_scaleDragActive = true;
                         m_scaleXWasStaticAtDragStart = layer->transform().scaleX.isStatic();
                         m_scaleYWasStaticAtDragStart = layer->transform().scaleY.isStatic();
+                        m_scaleXAtDragStart = layer->transform().scaleX.evaluate(relTick);
+                        m_scaleYAtDragStart = layer->transform().scaleY.evaluate(relTick);
                     }
                     if (!layer->transform().scaleX.isStatic() || !layer->transform().scaleY.isStatic()) {
                         layer->transform().scaleX.addKeyframe(relTick, scX);
@@ -427,6 +429,12 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     m_scaleDragActive = true;
                     m_scaleXWasStaticAtDragStart = m_selectedClip->scaleX().isStatic();
                     m_scaleYWasStaticAtDragStart = m_selectedClip->scaleY().isStatic();
+                    // Capture the TRUE signed scale (incl. flip) before the
+                    // first drag write, so the undo command restores the
+                    // flipped value rather than the overlay's clamped/stale
+                    // baseline (which would silently revert a flip).
+                    m_scaleXAtDragStart = m_selectedClip->scaleX().evaluate(relTick);
+                    m_scaleYAtDragStart = m_selectedClip->scaleY().evaluate(relTick);
                 }
                 // Preserve Flip H/V (stored as the SIGN of scaleX/scaleY): the
                 // viewport reports a positive magnitude from the resize handle,
@@ -485,6 +493,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             // Capture pre-drag static state before resetting
             bool sxWasStatic = m_scaleXWasStaticAtDragStart;
             bool syWasStatic = m_scaleYWasStaticAtDragStart;
+            const bool wasScaleDrag = m_scaleDragActive;
             m_scaleDragActive = false;
             // Snapshot the group-move state for sibling-undo support.
             // Software Viewport doesn't currently populate group-move
@@ -509,6 +518,27 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 const int64_t relTick = m_playbackController
                     ? std::max<int64_t>(0, m_playbackController->currentTick() - m_selectedClip->timelineIn())
                     : 0;
+                // Source scale old/new from the actual transform track (signed)
+                // rather than the overlay-reported values. The overlay clamps
+                // scale to a positive magnitude and its baseline can be stale
+                // after a properties flip, so trusting it would make the scale
+                // undo also revert the flip (stored as the sign of scaleX/Y).
+                if (wasScaleDrag) {
+                    oldScX = m_scaleXAtDragStart;
+                    oldScY = m_scaleYAtDragStart;
+                    if (m_selectedClip->clipType() == ClipType::Graphic
+                        && m_selectedGraphicLayerIdx >= 0) {
+                        auto* gc = static_cast<GraphicClip*>(m_selectedClip);
+                        if (m_selectedGraphicLayerIdx < static_cast<int>(gc->layerCount())) {
+                            auto* layer = gc->layer(static_cast<size_t>(m_selectedGraphicLayerIdx));
+                            newScX = layer->transform().scaleX.evaluate(relTick);
+                            newScY = layer->transform().scaleY.evaluate(relTick);
+                        }
+                    } else {
+                        newScX = m_selectedClip->scaleX().evaluate(relTick);
+                        newScY = m_selectedClip->scaleY().evaluate(relTick);
+                    }
+                }
                 bool posChanged = (std::abs(oldPosX - newPosX) > 0.01f ||
                                    std::abs(oldPosY - newPosY) > 0.01f);
                 bool scaleChanged = (std::abs(oldScX - newScX) > 0.001f ||
@@ -816,6 +846,8 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                         m_scaleDragActive = true;
                         m_scaleXWasStaticAtDragStart = layer->transform().scaleX.isStatic();
                         m_scaleYWasStaticAtDragStart = layer->transform().scaleY.isStatic();
+                        m_scaleXAtDragStart = layer->transform().scaleX.evaluate(relTick);
+                        m_scaleYAtDragStart = layer->transform().scaleY.evaluate(relTick);
                     }
                     if (!layer->transform().scaleX.isStatic() || !layer->transform().scaleY.isStatic()) {
                         layer->transform().scaleX.addKeyframe(relTick, scX);
@@ -830,6 +862,12 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     m_scaleDragActive = true;
                     m_scaleXWasStaticAtDragStart = m_selectedClip->scaleX().isStatic();
                     m_scaleYWasStaticAtDragStart = m_selectedClip->scaleY().isStatic();
+                    // Capture the TRUE signed scale (incl. flip) before the
+                    // first drag write, so the undo command restores the
+                    // flipped value rather than the overlay's clamped/stale
+                    // baseline (which would silently revert a flip).
+                    m_scaleXAtDragStart = m_selectedClip->scaleX().evaluate(relTick);
+                    m_scaleYAtDragStart = m_selectedClip->scaleY().evaluate(relTick);
                 }
                 // Preserve Flip H/V (stored as the SIGN of scaleX/scaleY): the
                 // viewport reports a positive magnitude from the resize handle,
@@ -975,6 +1013,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             // Capture pre-drag static state before resetting
             bool sxWasStatic = m_scaleXWasStaticAtDragStart;
             bool syWasStatic = m_scaleYWasStaticAtDragStart;
+            const bool wasScaleDrag = m_scaleDragActive;
             m_scaleDragActive = false;
             // Snapshot the group-move state BEFORE resetting it. The
             // sibling start positions and the focus-layer start position
@@ -997,6 +1036,27 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 const int64_t relTick = m_playbackController
                     ? std::max<int64_t>(0, m_playbackController->currentTick() - m_selectedClip->timelineIn())
                     : 0;
+                // Source scale old/new from the actual transform track (signed)
+                // rather than the overlay-reported values. The overlay clamps
+                // scale to a positive magnitude and its baseline can be stale
+                // after a properties flip, so trusting it would make the scale
+                // undo also revert the flip (stored as the sign of scaleX/Y).
+                if (wasScaleDrag) {
+                    oldScX = m_scaleXAtDragStart;
+                    oldScY = m_scaleYAtDragStart;
+                    if (m_selectedClip->clipType() == ClipType::Graphic
+                        && m_selectedGraphicLayerIdx >= 0) {
+                        auto* gc = static_cast<GraphicClip*>(m_selectedClip);
+                        if (m_selectedGraphicLayerIdx < static_cast<int>(gc->layerCount())) {
+                            auto* layer = gc->layer(static_cast<size_t>(m_selectedGraphicLayerIdx));
+                            newScX = layer->transform().scaleX.evaluate(relTick);
+                            newScY = layer->transform().scaleY.evaluate(relTick);
+                        }
+                    } else {
+                        newScX = m_selectedClip->scaleX().evaluate(relTick);
+                        newScY = m_selectedClip->scaleY().evaluate(relTick);
+                    }
+                }
                 bool posChanged = (std::abs(oldPosX - newPosX) > 0.01f ||
                                    std::abs(oldPosY - newPosY) > 0.01f);
                 bool scaleChanged = (std::abs(oldScX - newScX) > 0.001f ||

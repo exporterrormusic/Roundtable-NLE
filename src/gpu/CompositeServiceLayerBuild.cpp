@@ -474,7 +474,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
 
                 // Calculate source frame number — scale localTick by clip
                 // speed so 2x clips advance source 2x as fast (matches
-                // TimelineSnapshotBuilder/FrameRenderer/EditOperationsTrim).
+                // FrameRenderer/EditOperationsTrim).
                 int64_t srcTick = clip->sourceIn() +
                     static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
                 // Clamp to 0 instead of skipping: during transition overlap

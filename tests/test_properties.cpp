@@ -15,6 +15,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/TitleClip.h"
 #include "timeline/Track.h"
+#include "command/CommandStack.h"
 
 #include <QApplication>
 #include <QSignalSpy>
@@ -462,6 +463,42 @@ TEST(PropertiesPanel, TransformChange)
     EXPECT_FLOAT_EQ(clip.scaleY().evaluate(0), 0.8f);
     EXPECT_FLOAT_EQ(clip.rotation().evaluate(0), 45.0f);
     EXPECT_FLOAT_EQ(clip.opacity().evaluate(0), 0.7f);
+}
+
+// Repro: flip horizontal, then change scale; one undo must revert ONLY the
+// scale change, leaving the flip intact (separate undo steps).
+TEST(PropertiesPanel, FlipThenScaleUndoIsSeparate)
+{
+    rt::CommandStack stack;
+    rt::PropertiesPanel panel;
+    rt::VideoClip clip;
+
+    panel.setCommandStack(&stack);
+    panel.setClip(&clip);
+
+    // 1) Flip horizontal via the checkbox.
+    panel.flipHCheck()->setChecked(true);
+    EXPECT_LT(clip.scaleX().evaluate(0), 0.0f) << "flip should make scaleX negative";
+    EXPECT_EQ(stack.undoCount(), 1u) << "flip should be one undo command";
+
+    // 2) Change the scale magnitude. The spinbox now shows the flipped
+    //    (negative) value; user scrubs it to a larger magnitude.
+    const double flippedUi = panel.scaleXSpin()->value(); // ~ -100
+    panel.scaleXSpin()->setValue(flippedUi * 2.0);         // ~ -200
+    emit panel.scaleXSpin()->valueScrubbed(panel.scaleXSpin()->value());     // live write
+    emit panel.scaleXSpin()->valueCommitted(flippedUi, panel.scaleXSpin()->value());
+
+    EXPECT_EQ(stack.undoCount(), 2u) << "flip + scale = two undo commands";
+    EXPECT_FLOAT_EQ(clip.scaleX().evaluate(0), -2.0f);
+
+    // 3) One undo: scale reverts, flip stays.
+    stack.undo();
+    EXPECT_LT(clip.scaleX().evaluate(0), 0.0f) << "flip must survive the scale undo";
+    EXPECT_FLOAT_EQ(clip.scaleX().evaluate(0), -1.0f);
+
+    // 4) Second undo: flip reverts.
+    stack.undo();
+    EXPECT_FLOAT_EQ(clip.scaleX().evaluate(0), 1.0f);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

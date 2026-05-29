@@ -843,113 +843,102 @@ void PropertiesPanel::applyTransformLive()
     emit propertyChanged();
 }
 
-void PropertiesPanel::applyTransform()
+void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double newUi)
 {
-    // Called on scrub-end (valueCommitted).  applyTransformLive() already
-    // wrote the new values during the drag.  We create an undo command
-    // using the pre-scrub values from each spinbox's scrubStartValue().
-    // Use pushWithoutExecute() since values are already applied live.
-    if (m_updating || !m_clip) return;
+    // Called on scrub-end / typed-commit (valueCommitted) for a SINGLE
+    // spinbox.  applyTransformLive() already wrote the new value during the
+    // drag, so we only record an undo command here.  Crucially this command
+    // touches ONLY the field that changed — bundling every transform track
+    // into one command (and restoring each from its spinbox's stale
+    // scrubStartValue) used to clobber unrelated fields on undo, e.g.
+    // undoing a scale change would also revert a Flip H/V, since the flip
+    // lives in the scaleX/scaleY default value.
+    if (m_updating || !m_clip || !src || !m_commandStack) return;
     auto* clip = m_clip;
     const int64_t t = clipRelativeTick();
 
-    // Old values from before the scrub started (captured by ScrubbySpinBox at press)
-    float oPX = static_cast<float>(m_posXSpin->scrubStartValue());
-    float oPY = static_cast<float>(m_posYSpin->scrubStartValue());
-    float oSX = static_cast<float>(m_scaleXSpin->scrubStartValue() / 100.0);
-    float oSY = static_cast<float>(m_scaleYSpin->scrubStartValue() / 100.0);
-    float oRot = static_cast<float>(m_rotationSpin->scrubStartValue());
-    float oOp = static_cast<float>(m_opacitySpin->scrubStartValue() / 100.0);
-    float oCL = static_cast<float>(m_tfCropLeftSpin->scrubStartValue());
-    float oCR = static_cast<float>(m_tfCropRightSpin->scrubStartValue());
-    float oCT = static_cast<float>(m_tfCropTopSpin->scrubStartValue());
-    float oCB = static_cast<float>(m_tfCropBottomSpin->scrubStartValue());
-
-    // Current (new) values from UI
-    float nPX = static_cast<float>(m_posXSpin->value());
-    float nPY = static_cast<float>(m_posYSpin->value());
-    float nSX = static_cast<float>(m_scaleXSpin->value() / 100.0);
-    float nSY = static_cast<float>(m_scaleYSpin->value() / 100.0);
-    float nRot = static_cast<float>(m_rotationSpin->value());
-    float nOp = static_cast<float>(m_opacitySpin->value() / 100.0);
-    float nCL = static_cast<float>(m_tfCropLeftSpin->value());
-    float nCR = static_cast<float>(m_tfCropRightSpin->value());
-    float nCT = static_cast<float>(m_tfCropTopSpin->value());
-    float nCB = static_cast<float>(m_tfCropBottomSpin->value());
-
-    // Detect which keyframe tracks had a NEW keyframe created during the
-    // scrub (as opposed to an existing keyframe being updated).  If a
-    // keyframe was newly created, undo must remove it; otherwise undo
-    // restores the old value.  Only relevant when t > 0 (playhead is
-    // inside the clip at a non-zero relative time).
-    // We check BEFORE applyTransformLive runs, but since live already ran,
-    // we use the EffectControlsPanel heuristic: if the track was static
-    // (no keyframes), any keyframe at t is new — remove it on undo.
-    // If the track had keyframes, just restore the old value.
-    const bool hadPosX = clip->positionX().hasKeyframeAt(t);
-    const bool hadPosY = clip->positionY().hasKeyframeAt(t);
-    const bool hadSX   = clip->scaleX().hasKeyframeAt(t);
-    const bool hadSY   = clip->scaleY().hasKeyframeAt(t);
-    const bool hadRot  = clip->rotation().hasKeyframeAt(t);
-    const bool hadOp   = clip->opacity().hasKeyframeAt(t);
-
-    // A keyframe is "new" (created by this scrub) if the track was static
-    // before (no keyframes at all) — in that case writeValue created the
-    // first keyframe.  Otherwise the keyframe already existed.
-    const bool newPosX = hadPosX && clip->positionX().isStatic();
-    const bool newPosY = hadPosY && clip->positionY().isStatic();
-    const bool newSX   = hadSX   && clip->scaleX().isStatic();
-    const bool newSY   = hadSY   && clip->scaleY().isStatic();
-    const bool newRot  = hadRot  && clip->rotation().isStatic();
-    const bool newOp   = hadOp   && clip->opacity().isStatic();
-
-    auto applyVals = [clip, this, t](float px, float py, float sx, float sy, float rot, float op,
-                                   float cl, float cr, float ct, float cb) {
-        clip->positionX().addKeyframe(t, px);
-        clip->positionY().addKeyframe(t, py);
-        clip->scaleX().addKeyframe(t, sx);
-        clip->scaleY().addKeyframe(t, sy);
-        clip->rotation().addKeyframe(t, rot);
-        clip->opacity().addKeyframe(t, op);
-        if (clip->clipType() == ClipType::Spine)
-            static_cast<SpineClip*>(clip)->setCrop(cl, cr, ct, cb);
-        else if (clip->clipType() == ClipType::Video)
-            static_cast<VideoClip*>(clip)->setCrop(cl, cr, ct, cb);
-        populateFromClip();
-        emit propertyChanged();
+    // ── Crop edges (not keyframe-tracked; Spine/Video only) ─────────────
+    // Each crop spinbox drives one edge; rebuild the crop tuple from the
+    // clip's current edges and flip just this one between old/new so the
+    // other three are never disturbed.
+    auto cropEdgeCmd = [&](int edge) {
+        const float oldV = static_cast<float>(oldUi);
+        const float newV = static_cast<float>(newUi);
+        auto setEdge = [clip, edge](float v) {
+            float l = 0, r = 0, tp = 0, b = 0;
+            if (clip->clipType() == ClipType::Spine) {
+                auto* c = static_cast<SpineClip*>(clip);
+                l = c->cropLeft(); r = c->cropRight(); tp = c->cropTop(); b = c->cropBottom();
+            } else if (clip->clipType() == ClipType::Video) {
+                auto* c = static_cast<VideoClip*>(clip);
+                l = c->cropLeft(); r = c->cropRight(); tp = c->cropTop(); b = c->cropBottom();
+            } else {
+                return;
+            }
+            switch (edge) { case 0: l = v; break; case 1: r = v; break;
+                            case 2: tp = v; break; default: b = v; break; }
+            if (clip->clipType() == ClipType::Spine)
+                static_cast<SpineClip*>(clip)->setCrop(l, r, tp, b);
+            else if (clip->clipType() == ClipType::Video)
+                static_cast<VideoClip*>(clip)->setCrop(l, r, tp, b);
+        };
+        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+            "Change crop",
+            [setEdge, newV, this]() { setEdge(newV); populateFromClip(); emit propertyChanged(); },
+            [setEdge, oldV, this]() { setEdge(oldV); populateFromClip(); emit propertyChanged(); }));
     };
 
-    // Undo helper: remove a newly-created keyframe at time t, or restore
-    // the old value if the keyframe already existed before the scrub.
-    auto undoOne = [clip, t](KeyframeTrack<float>& track, bool isNew, float oldVal) {
-        if (isNew) {
-            track.removeKeyframeAtTime(t);
-        } else {
-            track.writeValue(t, oldVal);
+    if      (src == m_tfCropLeftSpin)   { cropEdgeCmd(0); return; }
+    else if (src == m_tfCropRightSpin)  { cropEdgeCmd(1); return; }
+    else if (src == m_tfCropTopSpin)    { cropEdgeCmd(2); return; }
+    else if (src == m_tfCropBottomSpin) { cropEdgeCmd(3); return; }
+
+    // ── Keyframe-tracked fields ─────────────────────────────────────────
+    // Map the source spinbox to its track index and the UI→internal scale.
+    enum { kPosX, kPosY, kScaleX, kScaleY, kRot, kOpacity };
+    int field = -1;
+    double uiScale = 1.0;
+    const char* desc = "Change transform";
+    if      (src == m_posXSpin)     { field = kPosX;    desc = "Change position"; }
+    else if (src == m_posYSpin)     { field = kPosY;    desc = "Change position"; }
+    else if (src == m_scaleXSpin)   { field = kScaleX;  uiScale = 0.01; desc = "Change scale"; }
+    else if (src == m_scaleYSpin)   { field = kScaleY;  uiScale = 0.01; desc = "Change scale"; }
+    else if (src == m_rotationSpin) { field = kRot;     desc = "Change rotation"; }
+    else if (src == m_opacitySpin)  { field = kOpacity; uiScale = 0.01; desc = "Change opacity"; }
+    if (field < 0) return;
+
+    const float oldVal = static_cast<float>(oldUi * uiScale);
+    const float newVal = static_cast<float>(newUi * uiScale);
+
+    // Stateless resolver so the command lambdas re-fetch the live track from
+    // the clip (mirrors the Flip command pattern) rather than capturing a
+    // raw KeyframeTrack reference.
+    auto trackOf = [](Clip* c, int f) -> KeyframeTrack<float>& {
+        switch (f) {
+            case kPosX:   return c->positionX();
+            case kPosY:   return c->positionY();
+            case kScaleX: return c->scaleX();
+            case kScaleY: return c->scaleY();
+            case kRot:    return c->rotation();
+            default:      return c->opacity();
         }
     };
 
-    if (m_commandStack) {
-        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-            "Change transform",
-            [=]() { applyVals(nPX, nPY, nSX, nSY, nRot, nOp, nCL, nCR, nCT, nCB); },
-            [=]() {
-                // Undo: remove newly-created keyframes, restore old values for existing ones
-                undoOne(clip->positionX(), newPosX, oPX);
-                undoOne(clip->positionY(), newPosY, oPY);
-                undoOne(clip->scaleX(),   newSX,   oSX);
-                undoOne(clip->scaleY(),   newSY,   oSY);
-                undoOne(clip->rotation(), newRot,  oRot);
-                undoOne(clip->opacity(),  newOp,   oOp);
-                // Crop always restores old values (not keyframe-tracked here)
-                if (clip->clipType() == ClipType::Spine)
-                    static_cast<SpineClip*>(clip)->setCrop(oCL, oCR, oCT, oCB);
-                else if (clip->clipType() == ClipType::Video)
-                    static_cast<VideoClip*>(clip)->setCrop(oCL, oCR, oCT, oCB);
-                populateFromClip();
-                emit propertyChanged();
-            }));
-    }
+    // writeValue matches the live-write semantics: on a static track it
+    // updates the default value (no keyframe); on an animated track it
+    // adds/updates the keyframe at t.
+    m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+        desc,
+        [clip, field, t, newVal, trackOf, this]() {
+            trackOf(clip, field).writeValue(t, newVal);
+            populateFromClip();
+            emit propertyChanged();
+        },
+        [clip, field, t, oldVal, trackOf, this]() {
+            trackOf(clip, field).writeValue(t, oldVal);
+            populateFromClip();
+            emit propertyChanged();
+        }));
 }
 
 // ── Spine methods are in PropertiesPanelSpine.cpp ───────────────────────────

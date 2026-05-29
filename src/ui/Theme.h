@@ -234,27 +234,17 @@ struct ThemeMetrics
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  Theme Presets
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Selectable visual presets that adjust colors, spacing, and radii.
-enum class ThemePreset
-{
-    Dark   ///< Neutral dark grays — DEFAULT (only preset for now)
-};
-
-// ═════════════════════════════════════════════════════════════════════════════
 //  Theme API
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// Application theming utilities.
 /// Access the singleton design tokens from anywhere via static methods.
+/// Roundtable ships a single dark theme; there is no theme selection.
 class Theme
 {
 public:
     /// Apply the dark theme to the application. Call once from App::init().
-    /// @param preset  Visual preset (default: PremiereDark)
-    static void apply(ThemePreset preset = ThemePreset::Dark);
+    static void apply();
 
     /// Get the current themed palette.
     [[nodiscard]] static QPalette palette();

@@ -33,8 +33,6 @@ public:
     QString projectsDirectory() const;
     QString cacheDirectory() const;
 
-    bool themeChanged() const;
-    int  themePresetIndex() const;
     int  scrollbarWidth() const;
 
     /// Returns the selected audio output device index (-1 = system default).
@@ -47,7 +45,6 @@ private:
     void loadSettings();
     void saveSettings();
 
-    QComboBox* m_themeCombo{nullptr};
     QSpinBox*  m_autosaveSpin{nullptr};
     QSpinBox*  m_scrollbarWidthSpin{nullptr};
     QLineEdit* m_projectsDirEdit{nullptr};
@@ -55,8 +52,6 @@ private:
     QComboBox* m_audioDeviceCombo{nullptr};
     QComboBox* m_hardwareDecodeCombo{nullptr};
     QLabel*    m_cudaStatusLabel{nullptr};
-
-    int m_originalThemeIndex{0};
 };
 
 } // namespace rt

@@ -497,6 +497,8 @@ private:
     bool   m_scaleDragActive{false};              ///< True while a program-monitor scale drag is in progress
     bool   m_scaleXWasStaticAtDragStart{true};    ///< Saved scaleX static state at drag start
     bool   m_scaleYWasStaticAtDragStart{true};    ///< Saved scaleY static state at drag start
+    float  m_scaleXAtDragStart{1.0f};             ///< True SIGNED scaleX from the clip at drag start (preserves flip)
+    float  m_scaleYAtDragStart{1.0f};             ///< True SIGNED scaleY from the clip at drag start (preserves flip)
     void updateTransformOverlay();
     void scheduleOverlayRefresh();  ///< Deferred overlay re-sync via QTimer
 

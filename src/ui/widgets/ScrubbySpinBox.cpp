@@ -44,6 +44,19 @@ ScrubbySpinBox::ScrubbySpinBox(QWidget* parent)
     // signals around clearFocus, so this won't double-fire for scrubs.
     connect(this, &QDoubleSpinBox::editingFinished,
             this, &ScrubbySpinBox::onEditingFinished);
+
+    // Keep the scrub baseline in sync with PROGRAMMATIC value changes (e.g.
+    // populateFromClip() rewriting the spinbox after a flip toggles the sign
+    // of the scale track).  m_startValue is the "before" value reported to
+    // valueCommitted for undo; if it goes stale, undoing one edit can also
+    // revert an earlier unrelated change that lives in the same property
+    // track (flip H/V is stored as the sign of scaleX/scaleY).  We only sync
+    // when there is no active user gesture: scrubbing maintains its own
+    // press-time baseline, and typed entry seeds m_startValue on FocusIn.
+    connect(this, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (!m_scrubbing && !hasFocus())
+            m_startValue = v;
+    });
 }
 
 ScrubbySpinBox::~ScrubbySpinBox() = default;

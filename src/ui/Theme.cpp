@@ -45,13 +45,12 @@ QString Theme::hex(const QColor& color)
 //  Apply
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-void Theme::apply(ThemePreset preset)
+void Theme::apply()
 {
     auto* app = qApp;
     if (!app) return;
 
-    // Apply the dark preset (only one for now)
-    (void)preset;
+    // Apply the single dark theme.
     applyDarkPreset();
 
     // Fusion base style (only set once to avoid expensive re-init)

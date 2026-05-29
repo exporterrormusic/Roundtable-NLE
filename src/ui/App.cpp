@@ -206,14 +206,8 @@ bool App::init()
 
     spdlog::info("App::init() — creating core subsystems");
 
-    // ── Apply theme (load user preference, default: PremiereDark) ────
-    {
-        auto themeSettings = rt::appSettings();
-        int presetIdx = themeSettings.value("ThemePreset", 0).toInt();
-        auto preset = static_cast<ThemePreset>(
-            std::clamp(presetIdx, 0, 0));
-        Theme::apply(preset);
-    }
+    // ── Apply the single dark theme ─────────────────────────────────────
+    Theme::apply();
 
     // ── Hardware decode preference ──────────────────────────────────────
     {
