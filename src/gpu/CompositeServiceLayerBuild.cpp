@@ -41,6 +41,9 @@
 
 #include <thread>
 #include <unordered_set>
+#include <unordered_map>
+#include <mutex>
+#include <cmath>
 
 namespace rt {
 
@@ -482,15 +485,21 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 double fps = videoClip->sourceFps();
                 if (fps <= 0.0) fps = 24.0;
 
-                int64_t frameNum = static_cast<int64_t>(
-                    ticksToSeconds(srcTick) * fps);
+                // ROUND, don't truncate: ticksToSeconds()*fps is a double and a
+                // frame-aligned tick lands on x.9999999 just as often as x.0000001
+                // (e.g. Wells 30fps on a 30fps timeline: srcTick=1600 → 0.99999…
+                // → truncates to 0 instead of 1).  Truncation biases those frames
+                // one source-frame early, producing an irregular repeat-then-skip
+                // that reads as a "very slight flicker" in motion — in both preview
+                // and export.  At 60fps timelines the 2× oversampling masked it.
+                int64_t frameNum = std::llround(ticksToSeconds(srcTick) * fps);
 
                 auto* mediaInfo = m_mediaPool->getInfo(handle);
 
                 // If clip had no stored fps, use the authoritative MediaPool fps
                 if (videoClip->sourceFps() <= 0.0 && mediaInfo && mediaInfo->fps > 0.0) {
                     fps = mediaInfo->fps;
-                    frameNum = static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                    frameNum = std::llround(ticksToSeconds(srcTick) * fps);
                 }
 
                 const bool isVideoChar = videoClip->isVideoCharacter();
@@ -807,8 +816,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                             const float animTime = static_cast<float>(
                                 ticksToSeconds(animTick)) * spineClip->animationSpeed();
                             const int64_t totalFrames = animInfo->frameCount;
-                            int64_t animFrame = static_cast<int64_t>(
-                                animTime * animInfo->fps);
+                            // Round, not truncate — see frameNum note in the
+                            // VideoClip branch above (truncation = flicker).
+                            int64_t animFrame = std::llround(
+                                static_cast<double>(animTime) * animInfo->fps);
                             // Wrap for looping
                             if (spineClip->isLooping() && totalFrames > 0) {
                                 animFrame = ((animFrame % totalFrames) + totalFrames) % totalFrames;
@@ -1260,7 +1271,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                             double fps = 24.0;
                             auto* mInfo = m_mediaPool->getInfo(fb.handle);
                             if (mInfo && mInfo->fps > 0.0) fps = mInfo->fps;
-                            int64_t frameNum = static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                            // Round, not truncate — see frameNum note in the
+                            // VideoClip branch above (truncation = flicker).
+                            int64_t frameNum = std::llround(ticksToSeconds(srcTick) * fps);
                             if (mInfo && mInfo->frameCount <= 1) frameNum = 0;
                             frame = resolveMediaFrame(fb.handle, frameNum,
                                                     videoTier, scrubMode);
@@ -1451,6 +1464,52 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 layer.frame       = frame;
                 layer.frameWidth  = frame->width;
                 layer.frameHeight = frame->height;
+            }
+
+            // ── [FLICKER-DIAG] (Phase 0 of pipeline upgrade) ─────────────
+            // Detect when the SAME media's displayed frame changes converter
+            // origin, scale, or tier between consecutive FORWARD frames during
+            // steady (non-scrub) playback.  Such a change is exactly what reads
+            // on screen as "brightness/position flicker every ~0.5s": the GPU
+            // and CPU convert paths are not byte-identical (brightness/edge),
+            // and a tier/scale change shifts sub-pixel sampling position.
+            // Gated to df∈[1,4] so pauses (df=0) and seeks/scrubs (df<0 or
+            // large jumps) don't trigger false positives; scrubMode excluded.
+            if (!scrubMode && frame && frame->mediaId != 0) {
+                struct FlickerState {
+                    ConverterOrigin origin{ConverterOrigin::Unknown};
+                    uint32_t w{0}, h{0};
+                    ResolutionTier tier{ResolutionTier::Full};
+                    int64_t frameNo{-1};
+                };
+                static std::mutex s_flickerMtx;
+                static std::unordered_map<uint64_t, FlickerState> s_flicker;
+                std::lock_guard<std::mutex> lk(s_flickerMtx);
+                auto& st = s_flicker[frame->mediaId];
+                const int64_t df = frame->frameNumber - st.frameNo;
+                if (st.frameNo >= 0 && df >= 1 && df <= 4) {
+                    const bool originChanged =
+                        (st.origin != ConverterOrigin::Unknown &&
+                         st.origin != frame->origin);
+                    const bool scaleChanged = (st.w != frame->width ||
+                                               st.h != frame->height);
+                    const bool tierChanged = (st.tier != frame->tier);
+                    if (originChanged || scaleChanged || tierChanged) {
+                        spdlog::warn("[FLICKER-DIAG] mediaId={} frame {}->{} "
+                                     "origin {}->{} dims {}x{}->{}x{} tier {}->{}",
+                                     frame->mediaId, st.frameNo, frame->frameNumber,
+                                     converterOriginName(st.origin),
+                                     converterOriginName(frame->origin),
+                                     st.w, st.h, frame->width, frame->height,
+                                     static_cast<int>(st.tier),
+                                     static_cast<int>(frame->tier));
+                    }
+                }
+                st.origin  = frame->origin;
+                st.w       = frame->width;
+                st.h       = frame->height;
+                st.tier    = frame->tier;
+                st.frameNo = frame->frameNumber;
             }
 
             bool isSpineRendered = false;

@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <functional>
+#include <cmath>
 
 // Core types
 #include "timeline/Timeline.h"
@@ -488,14 +489,27 @@ int FrameRenderer::evaluateLayers(const Timeline& timeline, int64_t tick, int de
             if (videoClip) {
                 double fps = videoClip->sourceFps();
                 if (fps <= 0.0) fps = 24.0;
-                frameNum = static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                // ROUND, don't truncate — ticksToSeconds()*fps lands on
+                // x.9999999 as often as x.0000001 (floating point), and
+                // truncation biases those frames one source-frame early,
+                // producing the off-by-one repeat/skip flicker.  Must match
+                // the preview path (CompositeServiceLayerBuild.cpp).
+                frameNum = std::llround(ticksToSeconds(srcTick) * fps);
 
                 auto* mediaInfo = m_mediaPool->getInfo(handle);
                 if (mediaInfo && mediaInfo->frameCount <= 1) frameNum = 0;
             }
             // ImageClip always uses frame 0
 
-            auto frame = m_mediaPool->getFrame(handle, frameNum, ResolutionTier::Full, false);
+            // forceExact=true: export must block for the EXACT frame.  With
+            // forceExact=false this returned stale/nearby frames (or null →
+            // skipped layer) on a cache miss, which under 60fps prefetch
+            // pressure produced the "several-frame stutter, fine after restart"
+            // export glitch.  Export is offline, so blocking here is correct.
+            auto frame = m_mediaPool->getFrame(handle, frameNum,
+                                               ResolutionTier::Full,
+                                               /*scrubMode=*/false,
+                                               /*forceExact=*/true);
             if (!frame || !frame->ensurePixels()) continue;
 
             // Packed-alpha detection (matches VideoDecoderInit heuristic).

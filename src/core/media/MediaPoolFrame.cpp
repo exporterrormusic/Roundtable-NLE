@@ -127,8 +127,15 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     if (!scrubMode)
         m_cache->setPlayhead(handle, frameNumber);
 
-    // First check cache (no decoder lock needed)
-    auto cached = m_cache->get(handle, frameNumber, tier);
+    // First check cache (no decoder lock needed).
+    // forceExact (export) MUST bypass the shared playback cache: it can hold
+    // frames filled approximately by prefetch workers (their seek path matches
+    // frames by timestamp) or produced under NVDEC contention, which surface
+    // as the "random 1-frame old/frozen" glitch in exports.  Export decodes
+    // the exact frame in isolation below instead.
+    std::shared_ptr<CachedFrame> cached;
+    if (!forceExact)
+        cached = m_cache->get(handle, frameNumber, tier);
     if (cached) {
         m_perf.cacheHits.fetch_add(1, std::memory_order_relaxed);
         static int s_hitLog = 0;
@@ -151,8 +158,9 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
 
     // ── Disk cache check (second-level persistent cache) ─────────────
-    // ~2-3 ms on NVMe SSD vs 10-100 ms re-decode.
-    if (m_diskCache) {
+    // ~2-3 ms on NVMe SSD vs 10-100 ms re-decode.  Skipped for forceExact
+    // (export) — same isolation rationale as the RAM cache above.
+    if (!forceExact && m_diskCache) {
         cached = m_diskCache->get(handle, frameNumber, tier);
         if (cached) {
             m_cache->put(cached); // Promote back to RAM
@@ -303,7 +311,13 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // Uses a dedicated scrub decoder (separate from the main entry decoder)
     // so we NEVER hold m_mutex during the decode.  This eliminates the
     // 60-150ms UI-thread stall that caused scrub jitter.
-    schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+    //
+    // forceExact (export) does NOT schedule prefetch: prefetch workers
+    // contend with this exact decode for NVDEC sessions (the source of stale
+    // surfaces) and would pollute the shared cache with frames export must
+    // not read.  Export decodes purely sequentially via the scrub decoder.
+    if (!forceExact)
+        schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
 
     m_perf.inlineDecodes.fetch_add(1, std::memory_order_relaxed);
 
@@ -334,7 +348,10 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     scrubTask.packedAlpha = packedAlpha;
 
     auto result = decodePrefetchFrame(scrubState, scrubTask);
-    if (result) {
+    // Don't publish export decodes into the shared caches — keep export
+    // side-effect-free so it can't evict playback frames or feed the
+    // DiskFrameCache writer queue (which would pin VRAM via lazyReadback).
+    if (result && !forceExact) {
         m_cache->put(result);
         if (m_diskCache) m_diskCache->putAsync(result);
     }

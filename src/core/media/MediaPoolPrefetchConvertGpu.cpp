@@ -909,6 +909,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     cached->pinned          = (task.info.frameCount <= 1);
     cached->isLoopFrame     = task.isLoop;
     cached->gpuReady        = true;
+    cached->origin          = wasZeroCopy ? ConverterOrigin::GpuZeroCopy
+                                          : ConverterOrigin::GpuShader;
     cached->gpuImageView    = reinterpret_cast<uint64_t>(dstTex->imageView());
     cached->gpuSampler      = reinterpret_cast<uint64_t>(dstTex->sampler());
     cached->gpuTextureOwner = dstTex;   // shared_ptr — co-owned with the cache

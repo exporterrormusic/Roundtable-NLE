@@ -209,6 +209,7 @@ void MediaPool::loopPreDecodeWorker(
         cached->timestamp   = raw.timestamp;
         cached->pinned      = (info.frameCount <= 1);
         cached->isLoopFrame = true;
+        cached->origin      = ConverterOrigin::CpuLoop;
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
         AVPixelFormat srcFmt = AV_PIX_FMT_YUV420P;

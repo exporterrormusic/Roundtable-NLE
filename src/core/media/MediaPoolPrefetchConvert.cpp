@@ -67,6 +67,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
     cached->timestamp   = decoded.timestamp;
     cached->pinned      = (task.info.frameCount <= 1);
     cached->isLoopFrame = task.isLoop;
+    cached->origin      = ConverterOrigin::CpuSws;
 
     if (decoded.data[0] && decoded.width > 0 && decoded.height > 0) {
 #ifdef ROUNDTABLE_HAS_FFMPEG

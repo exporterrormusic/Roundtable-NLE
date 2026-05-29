@@ -104,6 +104,31 @@ enum class ResolutionTier : uint8_t
     Quarter,    // 25% resolution (thumbnail)
 };
 
+/// Which conversion path produced a CachedFrame's pixels/texture.
+/// Used by the [FLICKER-DIAG] consumption-side check (Phase 0 of the
+/// pipeline upgrade): if the displayed frame for a clip switches origin
+/// frame-to-frame during steady playback, the GPU and CPU paths are NOT
+/// byte-identical and the difference shows as brightness/edge flicker.
+enum class ConverterOrigin : uint8_t
+{
+    Unknown = 0,
+    GpuZeroCopy,   ///< NVDEC CUDA buffer → Vulkan compute shader (no CPU bounce)
+    GpuShader,     ///< CPU-transferred frame → Vulkan compute shader convert
+    CpuSws,        ///< sws_scale on a prefetch/scrub/on-demand worker
+    CpuLoop,       ///< sws_scale in the loop pre-decode worker
+};
+
+inline const char* converterOriginName(ConverterOrigin o)
+{
+    switch (o) {
+        case ConverterOrigin::GpuZeroCopy: return "GpuZeroCopy";
+        case ConverterOrigin::GpuShader:   return "GpuShader";
+        case ConverterOrigin::CpuSws:      return "CpuSws";
+        case ConverterOrigin::CpuLoop:     return "CpuLoop";
+        default:                           return "Unknown";
+    }
+}
+
 /// A cached frame — owns its pixel data
 struct CachedFrame
 {
@@ -115,6 +140,9 @@ struct CachedFrame
     ResolutionTier tier{ResolutionTier::Full};
     bool        isKeyframe{false};
     double      timestamp{0.0}; // PTS in seconds
+
+    /// Which conversion path produced this frame (Phase 0 diagnostics).
+    ConverterOrigin origin{ConverterOrigin::Unknown};
 
     std::vector<uint8_t> pixels; // BGRA pixel data (pre-converted)
 

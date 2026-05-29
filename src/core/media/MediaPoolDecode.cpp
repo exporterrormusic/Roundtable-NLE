@@ -260,6 +260,9 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
     cached->tier        = tier;
     cached->isKeyframe  = decoded.isKeyframe;
     cached->timestamp   = decoded.timestamp;
+    // Default to CPU origin; the GPU NV12/YUV420P fast paths below override
+    // to GpuShader before jumping to nv12_done.
+    cached->origin      = ConverterOrigin::CpuSws;
     // Pin static images (PNGs / single-frame media) so the LRU never
     // evicts them.  Re-decoding mid-playback shows up as a "missing layer"
     // skip in the compositor (e.g. backgrounds disappearing for a frame).
@@ -351,6 +354,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
                     cached->width  = static_cast<uint32_t>(dstW);
                     cached->height = static_cast<uint32_t>(dstH);
                     cached->stride = static_cast<uint32_t>(dstW) * 4;
+                    cached->origin = ConverterOrigin::GpuShader;
                     conv->readbackOutput(cached->pixels);
                     goto nv12_done;   // skip sws_scale path
                 }
@@ -383,6 +387,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
                     cached->width  = static_cast<uint32_t>(dstW);
                     cached->height = static_cast<uint32_t>(dstH);
                     cached->stride = static_cast<uint32_t>(dstW) * 4;
+                    cached->origin = ConverterOrigin::GpuShader;
                     conv->readbackOutput(cached->pixels);
                     goto nv12_done;   // skip sws_scale path
                 }

@@ -95,6 +95,14 @@ void ExportPanel::setTimeline(Timeline* timeline)
 
     spdlog::info("ExportPanel::setTimeline called, deferring refreshPreview");
 
+    // When the timeline is cleared (project switch / close), reset the
+    // output path so the next setTimeline/setProject call will regenerate
+    // it from the new sequence name rather than keeping the stale path.
+    if (m_outputPath && !timeline) {
+        m_outputPath->clear();
+        m_outputPath->setPlaceholderText(tr("Select output file..."));
+    }
+
     // Default the output path to the sequence name (only if the field is
     // still empty / showing the placeholder — don't overwrite a user-set path).
     if (m_outputPath && m_outputPath->text().isEmpty() && timeline) {
