@@ -412,6 +412,11 @@ void SourceMonitor::setupUI()
     rt::UiScale::setScaledMinimumWidth(m_playbackResCombo, 70);
     rt::UiScale::setScaledFixedHeight(m_playbackResCombo, 24);
     m_playbackResCombo->setCurrentIndex(1); // default 1/2
+    // Wire the dropdown: changing source playback resolution re-renders the
+    // current frame at the new tier.  (Previously this combo was created but
+    // never connected, so it did nothing — updateFrameDisplay reads its index.)
+    connect(m_playbackResCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateFrameDisplay(); });
     // Zoom level sits directly next to the playback-resolution combo.
     controlLayout->addWidget(m_fitModeCombo, 0, Qt::AlignVCenter);
     controlLayout->addWidget(m_playbackResCombo, 0, Qt::AlignVCenter);

@@ -394,6 +394,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             }
         }
 
+        // NOTE: ProRes 4444 GPU convert intentionally not wired yet — the
+        // shared Nv12Converter command pool is not safe across the threads
+        // that reach this path.  ProRes uses CPU sws_scale below until the
+        // per-worker GPU path lands.
         if (srcFmt == AV_PIX_FMT_BGRA && !needsResize) {
             // Already BGRA at target size â€” direct copy
             const uint32_t stride = static_cast<uint32_t>(decoded.linesize[0]);

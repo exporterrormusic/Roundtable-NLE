@@ -40,7 +40,10 @@ static std::string resolveVideoPath(const std::string& path)
     namespace fs = std::filesystem;
     fs::path p(path);
 
-    // Wells-specific migration to HEVC stacked-alpha.
+    // Wells PROXY workflow: remap any old Wells path to the lightweight HEVC
+    // packed-alpha for editing (fast NVDEC scrub/playback).  The export
+    // renderer transparently substitutes the ProRes master at render time
+    // (see FrameRenderer's wellsExportSource()).
     {
         std::string filename = p.filename().string();
         std::string lower = filename;
@@ -52,9 +55,8 @@ static std::string resolveVideoPath(const std::string& path)
 
         if (isWellsMute || isWellsTalk) {
             fs::path hevcPath = p;
-            std::string suffix = isWellsMute ? "WELLS-CHRONO-MUTE_HEVC.mp4"
-                                             : "WELLS-CHRONO-TALK_HEVC.mp4";
-            hevcPath.replace_filename(suffix);
+            hevcPath.replace_filename(isWellsMute ? "WELLS-CHRONO-MUTE_HEVC.mp4"
+                                                  : "WELLS-CHRONO-TALK_HEVC.mp4");
             if (fs::exists(hevcPath)) {
                 spdlog::info("ClipSerialization: Wells migration '{}' -> '{}'",
                              path, hevcPath.string());

@@ -139,6 +139,11 @@ struct PrefetchTask
     /// against "behind playhead" eviction that would otherwise discard
     /// the loop every iteration.
     bool                   isLoop{false};
+    /// True for export (forceExact) decodes: skip the Full-tier 1920px
+    /// downscale cap so the frame is decoded at native source resolution.
+    /// The 1920 cap is a real-time PREVIEW memory optimisation; export wants
+    /// maximum quality (and supersampling headroom for the composite scale).
+    bool                   exportFullRes{false};
 };
 
 /// Per-handle state for the prefetch worker (separate decoder, sws ctx).

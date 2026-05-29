@@ -517,57 +517,44 @@ void EffectControlsPanel::applyTransformLive()
         writeCompound(effPosY(),
                       static_cast<float>(spin->value() / posDisplayFactorY()),
                       effPosX());
-    } else if (spin == m_scaleSpin) {
-        // Spin shows Premiere-style native percentage; convert back to the
-        // engine's cover-fit-multiplier storage so the compositor renders
-        // exactly the same on-screen size the displayed number promises.
-        // Cover-fit is 1.0 for graphic clips, so this works uniformly.
+    } else if (spin == m_scaleSpin || spin == m_scaleWSpin) {
+        // Spin shows Premiere-style native percentage MAGNITUDE; convert back
+        // to the engine's cover-fit-multiplier storage so the compositor
+        // renders exactly the same on-screen size the displayed number
+        // promises.  Cover-fit is 1.0 for graphic clips.
         const double sf = coverFitForCurrentClip();
         const double divisor = (sf > 0.0001) ? sf : 1.0;
-        float s = static_cast<float>(spin->value() / 100.0 / divisor);
-        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
-            // Uniform: both axes must end up at `s` AND stay paired across
-            // time. If either track is animated, BOTH must keyframe at the
-            // playhead — otherwise scaleY drifts as a static default while
-            // scaleX rides its keyframes and the render stops being uniform.
-            auto* sx = effScaleX();
-            auto* sy = effScaleY();
-            if (sx) {
-                const bool animated = (sx->keyframeCount() > 0)
+        const float mag = static_cast<float>(spin->value() / 100.0 / divisor);
+        const int64_t t = clipRelativeTick();
+        auto* sx = effScaleX();
+        auto* sy = effScaleY();
+        // Flip H/V is stored as the SIGN of scaleX/scaleY.  The spinner only
+        // carries magnitude, so re-apply each track's CURRENT sign — otherwise
+        // editing scale silently un-flips the clip (or, combined with the
+        // min=0 spinner clamp, collapses it to 0).
+        auto signedFor = [&](KeyframeTrack<float>* trk) -> float {
+            return (trk && trk->evaluate(t) < 0.0f) ? -mag : mag;
+        };
+        const bool uniform = m_uniformScaleCheck && m_uniformScaleCheck->isChecked();
+        // Which track this spinner primarily drives.
+        auto* primary = (spin == m_scaleSpin) ? sx : sy;
+        if (uniform) {
+            // Both axes share the magnitude but keep their own flip signs.
+            if (sx || sy) {
+                const bool animated = (sx && sx->keyframeCount() > 0)
                                    || (sy && sy->keyframeCount() > 0);
+                const float sxv = signedFor(sx);
+                const float syv = signedFor(sy);
                 if (animated) {
-                    const int64_t t = clipRelativeTick();
-                    sx->addKeyframe(t, s);
-                    if (sy) sy->addKeyframe(t, s);
+                    if (sx) sx->addKeyframe(t, sxv);
+                    if (sy) sy->addKeyframe(t, syv);
                 } else {
-                    sx->writeValue(clipRelativeTick(), s);
-                    if (sy) sy->writeValue(clipRelativeTick(), s);
+                    if (sx) sx->writeValue(t, sxv);
+                    if (sy) sy->writeValue(t, syv);
                 }
             }
         } else {
-            writeIfTrack(effScaleX(), s);
-        }
-    } else if (spin == m_scaleWSpin) {
-        const double sf = coverFitForCurrentClip();
-        const double divisor = (sf > 0.0001) ? sf : 1.0;
-        float s = static_cast<float>(spin->value() / 100.0 / divisor);
-        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
-            auto* sx = effScaleX();
-            auto* sy = effScaleY();
-            if (sy) {
-                const bool animated = (sy->keyframeCount() > 0)
-                                   || (sx && sx->keyframeCount() > 0);
-                if (animated) {
-                    const int64_t t = clipRelativeTick();
-                    sy->addKeyframe(t, s);
-                    if (sx) sx->addKeyframe(t, s);
-                } else {
-                    sy->writeValue(clipRelativeTick(), s);
-                    if (sx) sx->writeValue(clipRelativeTick(), s);
-                }
-            }
-        } else {
-            writeIfTrack(effScaleY(), s);
+            writeIfTrack(primary, signedFor(primary));
         }
     } else if (spin == m_rotationSpin) {
         writeIfTrack(effRotation(), static_cast<float>(spin->value()));

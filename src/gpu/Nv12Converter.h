@@ -220,6 +220,37 @@ public:
                                        uint32_t dstW, uint32_t dstH,
                                        std::vector<uint8_t>& outPixels);
 
+    // ── YUVA444P12 (ProRes 4444 — 4:4:4 10/12-bit + alpha) ───────────
+    //
+    // FFmpeg decodes ProRes 4444 to planar yuva444p12le: four FULL-resolution
+    // planes (Y, U, V, A) with the 12-bit value in the LOW bits of a 16-bit
+    // word (range 0..4095) — unlike P010 which uses the HIGH bits.  4:4:4 has
+    // no chroma subsampling, and the real alpha plane retires the packed-alpha
+    // stacked-tile hack for video characters (Wells).  Linesizes are in BYTES.
+    bool recordConvertYuva444p12Scaled(VkCommandBuffer cmd,
+                                       const uint8_t* yData, int yLinesize,
+                                       const uint8_t* uData, int uLinesize,
+                                       const uint8_t* vData, int vLinesize,
+                                       const uint8_t* aData, int aLinesize,
+                                       uint32_t srcW, uint32_t srcH,
+                                       uint32_t dstW, uint32_t dstH,
+                                       std::vector<Texture::StagingCleanup>& stagingOut);
+
+    bool convertYuva444p12SyncScaled(const uint8_t* yData, int yLinesize,
+                                     const uint8_t* uData, int uLinesize,
+                                     const uint8_t* vData, int vLinesize,
+                                     const uint8_t* aData, int aLinesize,
+                                     uint32_t srcW, uint32_t srcH,
+                                     uint32_t dstW, uint32_t dstH);
+
+    bool convertAndReadbackYuva444p12Scaled(const uint8_t* yData, int yLinesize,
+                                            const uint8_t* uData, int uLinesize,
+                                            const uint8_t* vData, int vLinesize,
+                                            const uint8_t* aData, int aLinesize,
+                                            uint32_t srcW, uint32_t srcH,
+                                            uint32_t dstW, uint32_t dstH,
+                                            std::vector<uint8_t>& outPixels);
+
     // ── Resize ──────────────────────────────────────────────────────────
 
     bool resize(uint32_t width, uint32_t height);
@@ -275,8 +306,10 @@ private:
     bool createPipeline();
     bool createYuv420pPipeline();
     bool createP010Pipeline();   // UPGRADE_PLAN item 4
+    bool createYuva444p12Pipeline(); // ProRes 4444 (4:4:4 + alpha)
     bool ensureOutputSize(uint32_t w, uint32_t h);
     bool ensureP010Pipeline();   // lazy — first P010 frame triggers init
+    bool ensureYuva444p12Pipeline(); // lazy — first ProRes 4444 frame
 
     Device*      m_device{nullptr};
     Allocator*   m_allocator{nullptr};
@@ -325,6 +358,19 @@ private:
     VkPipelineLayout      m_p010PipeLayout{VK_NULL_HANDLE};
     VkPipeline            m_p010Pipeline{VK_NULL_HANDLE};
     VkShaderModule        m_p010ShaderModule{VK_NULL_HANDLE};
+
+    // YUVA444P12 (ProRes 4444) — four FULL-resolution R16 planes + alpha.
+    // No subsampled UV (4:4:4), plus a dedicated alpha plane.
+    Texture               m_yuvaYTexture;   // R16_UNORM, W × H
+    Texture               m_yuvaUTexture;   // R16_UNORM, W × H
+    Texture               m_yuvaVTexture;   // R16_UNORM, W × H
+    Texture               m_yuvaATexture;   // R16_UNORM, W × H (alpha)
+    VkDescriptorSetLayout m_yuva444DescSetLayout{VK_NULL_HANDLE};
+    VkDescriptorPool      m_yuva444DescPool{VK_NULL_HANDLE};
+    VkDescriptorSet       m_yuva444DescSet{VK_NULL_HANDLE};
+    VkPipelineLayout      m_yuva444PipeLayout{VK_NULL_HANDLE};
+    VkPipeline            m_yuva444Pipeline{VK_NULL_HANDLE};
+    VkShaderModule        m_yuva444ShaderModule{VK_NULL_HANDLE};
 
     // Serialises convertAndReadback* against concurrent prefetch-worker
     // calls. The plain convertSync*/readbackOutput methods are NOT

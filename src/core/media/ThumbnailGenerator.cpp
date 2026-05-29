@@ -300,7 +300,8 @@ bool ThumbnailGenerator::isVideoExtension(const std::string& ext)
 {
     static const char* exts[] = {
         ".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv",
-        ".m4v", ".ts", ".mts", ".m2ts", ".mpg", ".mpeg", ".ogv"
+        ".m4v", ".ts", ".mts", ".m2ts", ".mpg", ".mpeg", ".ogv",
+        ".mxf"   // ProRes/DNxHD masters (e.g. Wells ProRes 4444)
     };
     for (const char* e : exts)
         if (ext == e) return true;

@@ -9,6 +9,9 @@
 #include <chrono>
 #include <functional>
 #include <cmath>
+#include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 // Core types
 #include "timeline/Timeline.h"
@@ -41,11 +44,45 @@ namespace rt {
 FrameRenderer::FrameRenderer() = default;
 FrameRenderer::~FrameRenderer() { shutdown(); }
 
+// Wells PROXY workflow: the timeline edits against the lightweight HEVC
+// packed-alpha proxy, but EXPORT renders from the ProRes 4444 master (sharp,
+// real alpha).  Map a Wells HEVC path to its ProRes master (.mov, then .mxf)
+// when present; both are 1080x1888 nominal so the clip transform is identical.
+// Returns the input unchanged for non-Wells media or when no master exists.
+static std::string wellsExportSource(const std::string& path)
+{
+    namespace fs = std::filesystem;
+    fs::path p(path);
+    std::string lower = p.filename().string();
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool mute = lower.find("wells-chrono-mute") != std::string::npos;
+    const bool talk = lower.find("wells-chrono-talk") != std::string::npos;
+    if (!mute && !talk) return path;
+    const char* base = mute ? "WELLS-CHRONO-MUTE" : "WELLS-CHRONO-TALK";
+    for (const char* ext : { ".mov", "_MXF.mxf" }) {
+        fs::path cand = p;
+        cand.replace_filename(std::string(base) + ext);
+        if (fs::exists(cand)) {
+            spdlog::info("FrameRenderer: Wells export proxy '{}' -> ProRes master '{}'",
+                         path, cand.string());
+            return cand.string();
+        }
+    }
+    return path;
+}
+
 bool FrameRenderer::init(const FrameRendererConfig& config, Compositor* compositor)
 {
     m_config     = config;
     m_compositor = compositor;
     m_stats      = {};
+
+    // Export renders at full quality: enable bicubic layer sampling (sharp
+    // downscale of high-res sources like ProRes characters).  Preview keeps
+    // fast bilinear.  Restored in shutdown() so the shared compositor isn't
+    // left in HQ mode for live playback.
+    if (m_compositor) m_compositor->setHighQualitySampling(true);
 
     // Compositor is optional — without it we produce blank frames
     // (useful for testing the pipeline without GPU)
@@ -63,6 +100,8 @@ bool FrameRenderer::init(const FrameRendererConfig& config, Compositor* composit
 
 void FrameRenderer::shutdown()
 {
+    // Restore the shared compositor to fast bilinear for live preview.
+    if (m_compositor) m_compositor->setHighQualitySampling(false);
     m_compositor  = nullptr;
     m_initialized = false;
 }
@@ -478,7 +517,9 @@ int FrameRenderer::evaluateLayers(const Timeline& timeline, int64_t tick, int de
                 ? videoClip->mediaPath() : imageClip->mediaPath();
             if (mediaPath.empty()) continue;
 
-            uint64_t handle = m_mediaPool->open(mediaPath);
+            // Wells proxy → ProRes master substitution for export (no-op for
+            // everything else).
+            uint64_t handle = m_mediaPool->open(wellsExportSource(mediaPath));
             if (handle == 0) continue;
 
             int64_t localTick = tick - clip->timelineIn();

@@ -346,7 +346,16 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     scrubTask.fps = info.fps > 0 ? info.fps : 30.0;
     scrubTask.info = info;
     scrubTask.packedAlpha = packedAlpha;
+    // Export (forceExact) decodes at native resolution — no 1920px tier cap.
+    // Scrub (scrubMode, not forceExact) keeps the cap for responsiveness.
+    scrubTask.exportFullRes = forceExact;
 
+    // Scrub / on-demand / export(forceExact) decode.  Uses CPU convert
+    // (convertDecodedToCache) — the scrub bottleneck is the decode + per-frame
+    // overhead, NOT the YUV→RGB convert, so routing scrub through a GPU
+    // converter gave no speedup and made export's first frame read a stale
+    // GPU texture (readback raced the convert).  Steady playback still gets
+    // GPU-resident frames via the prefetch workers' per-worker path.
     auto result = decodePrefetchFrame(scrubState, scrubTask);
     // Don't publish export decodes into the shared caches — keep export
     // side-effect-free so it can't evict playback frames or feed the

@@ -95,7 +95,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
         }
         const int contentH = (task.packedAlpha && h > 1) ? h / 2 : h;
         int dstW = w, dstH = h;
-        if (w > maxDim || contentH > maxDim) {
+        // exportFullRes (export decode) skips the tier cap → native resolution.
+        if (!task.exportFullRes && (w > maxDim || contentH > maxDim)) {
             const float scale = std::min(
                 static_cast<float>(maxDim) / w,
                 static_cast<float>(maxDim) / contentH);
@@ -105,6 +106,12 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
 
         const bool needsResize = (dstW != w || dstH != h);
 
+        // NOTE: ProRes 4444 (yuva444p12le) GPU convert is intentionally NOT
+        // wired here — the prefetch path runs on MULTIPLE worker threads, and
+        // the shared Nv12Converter's command pool (GpuContext::m_cmdPool) is
+        // NOT safe for concurrent use.  ProRes goes through CPU sws_scale below
+        // (correct, just slower).  The GPU path will be added via the
+        // per-worker convertDecodedToCacheGpu path instead.  See git history.
         if (srcFmt == AV_PIX_FMT_BGRA && !needsResize) {
             const uint32_t stride = static_cast<uint32_t>(decoded.linesize[0]);
             cached->stride = w * 4;

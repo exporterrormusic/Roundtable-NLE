@@ -428,6 +428,14 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     m_scaleXWasStaticAtDragStart = m_selectedClip->scaleX().isStatic();
                     m_scaleYWasStaticAtDragStart = m_selectedClip->scaleY().isStatic();
                 }
+                // Preserve Flip H/V (stored as the SIGN of scaleX/scaleY): the
+                // viewport reports a positive magnitude from the resize handle,
+                // so re-apply the clip's current sign — otherwise resizing a
+                // flipped clip silently un-flips it.
+                if (m_selectedClip->scaleX().evaluate(relTick) < 0.0f)
+                    scX = (scX < 0.0f ? scX : -scX);
+                if (m_selectedClip->scaleY().evaluate(relTick) < 0.0f)
+                    scY = (scY < 0.0f ? scY : -scY);
                 if (!m_selectedClip->scaleX().isStatic() || !m_selectedClip->scaleY().isStatic()) {
                     m_selectedClip->scaleX().addKeyframe(relTick, scX);
                     m_selectedClip->scaleY().addKeyframe(relTick, scY);
@@ -823,6 +831,14 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     m_scaleXWasStaticAtDragStart = m_selectedClip->scaleX().isStatic();
                     m_scaleYWasStaticAtDragStart = m_selectedClip->scaleY().isStatic();
                 }
+                // Preserve Flip H/V (stored as the SIGN of scaleX/scaleY): the
+                // viewport reports a positive magnitude from the resize handle,
+                // so re-apply the clip's current sign — otherwise resizing a
+                // flipped clip silently un-flips it.
+                if (m_selectedClip->scaleX().evaluate(relTick) < 0.0f)
+                    scX = (scX < 0.0f ? scX : -scX);
+                if (m_selectedClip->scaleY().evaluate(relTick) < 0.0f)
+                    scY = (scY < 0.0f ? scY : -scY);
                 if (!m_selectedClip->scaleX().isStatic() || !m_selectedClip->scaleY().isStatic()) {
                     m_selectedClip->scaleX().addKeyframe(relTick, scX);
                     m_selectedClip->scaleY().addKeyframe(relTick, scY);

@@ -476,4 +476,139 @@ bool Nv12Converter::ensureP010Pipeline()
     return createP010Pipeline();
 }
 
+//══════════════════════════════════════════════════════════════════════════
+//  Internal — create YUVA444P12 (ProRes 4444) pipeline.  Lazy: first frame.
+//  Layout: 4 samplers (Y, U, V, A) + 1 storage image (output).
+//══════════════════════════════════════════════════════════════════════════
+
+bool Nv12Converter::createYuva444p12Pipeline()
+{
+    VkDevice dev = m_device->handle();
+
+    VkDescriptorSetLayoutBinding bindings[5]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    bindings[4].binding         = 4;
+    bindings[4].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutCI{};
+    layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutCI.bindingCount = 5;
+    layoutCI.pBindings    = bindings;
+
+    if (vkCreateDescriptorSetLayout(dev, &layoutCI, nullptr,
+                                     &m_yuva444DescSetLayout) != VK_SUCCESS)
+    {
+        spdlog::error("Nv12Converter: failed to create YUVA444P12 descriptor set layout");
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = 4;
+    poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[1].descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolCI{};
+    poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolCI.maxSets       = 1;
+    poolCI.poolSizeCount = 2;
+    poolCI.pPoolSizes    = poolSizes;
+
+    if (vkCreateDescriptorPool(dev, &poolCI, nullptr,
+                                &m_yuva444DescPool) != VK_SUCCESS)
+    {
+        spdlog::error("Nv12Converter: failed to create YUVA444P12 descriptor pool");
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool     = m_yuva444DescPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts        = &m_yuva444DescSetLayout;
+
+    if (vkAllocateDescriptorSets(dev, &allocInfo, &m_yuva444DescSet) != VK_SUCCESS) {
+        spdlog::error("Nv12Converter: failed to allocate YUVA444P12 descriptor set");
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset     = 0;
+    pushRange.size       = sizeof(int32_t) * 2; // width, height
+
+    VkPipelineLayoutCreateInfo pipeLayoutCI{};
+    pipeLayoutCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeLayoutCI.setLayoutCount         = 1;
+    pipeLayoutCI.pSetLayouts            = &m_yuva444DescSetLayout;
+    pipeLayoutCI.pushConstantRangeCount = 1;
+    pipeLayoutCI.pPushConstantRanges    = &pushRange;
+
+    if (vkCreatePipelineLayout(dev, &pipeLayoutCI, nullptr,
+                                &m_yuva444PipeLayout) != VK_SUCCESS)
+    {
+        spdlog::error("Nv12Converter: failed to create YUVA444P12 pipeline layout");
+        return false;
+    }
+
+    fs::path spvPath = findShader("yuva444p12_to_bgra.comp.spv");
+    if (spvPath.empty()) {
+        spdlog::warn("Nv12Converter: yuva444p12_to_bgra.comp.spv not found — "
+                     "ProRes 4444 GPU conversion unavailable (falls back to CPU sws_scale)");
+        return false;
+    }
+
+    std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        spdlog::error("Nv12Converter: failed to open {}", spvPath.string());
+        return false;
+    }
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    std::vector<char> spirv(fileSize);
+    file.seekg(0);
+    file.read(spirv.data(), static_cast<std::streamsize>(fileSize));
+
+    VkShaderModuleCreateInfo smCI{};
+    smCI.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smCI.codeSize = spirv.size();
+    smCI.pCode    = reinterpret_cast<const uint32_t*>(spirv.data());
+
+    if (vkCreateShaderModule(dev, &smCI, nullptr, &m_yuva444ShaderModule) != VK_SUCCESS) {
+        spdlog::error("Nv12Converter: failed to create YUVA444P12 shader module");
+        return false;
+    }
+
+    VkComputePipelineCreateInfo pci{};
+    pci.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.module = m_yuva444ShaderModule;
+    pci.stage.pName  = "main";
+    pci.layout       = m_yuva444PipeLayout;
+
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, nullptr,
+                                  &m_yuva444Pipeline) != VK_SUCCESS)
+    {
+        spdlog::error("Nv12Converter: failed to create YUVA444P12 compute pipeline");
+        return false;
+    }
+
+    spdlog::info("Nv12Converter: YUVA444P12 (ProRes 4444) compute pipeline created");
+    return true;
+}
+
+bool Nv12Converter::ensureYuva444p12Pipeline()
+{
+    if (m_yuva444Pipeline != VK_NULL_HANDLE) return true;
+    return createYuva444p12Pipeline();
+}
+
 } // namespace rt

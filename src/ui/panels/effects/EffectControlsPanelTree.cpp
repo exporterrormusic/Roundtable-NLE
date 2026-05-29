@@ -855,8 +855,13 @@ void EffectControlsPanel::populateFromClip()
     // without a meaningful native-pixel size (characters / spine / title /
     // graphic) coverFitForCurrentClip() returns 1.0 — unchanged display.
     const double sf = coverFitForCurrentClip();
-    if (auto* trk = effScaleX();  m_scaleSpin  && trk) m_scaleSpin->setValue(trk->evaluate(t) * sf * 100.0);
-    if (auto* trk = effScaleY();  m_scaleWSpin && trk) m_scaleWSpin->setValue(trk->evaluate(t) * sf * 100.0);
+    // Flip H/V is stored as the SIGN of scaleX/scaleY.  The scale spinners
+    // have a minimum of 0, so a negative (flipped) value would clamp to 0 and
+    // read as "0 scale".  Display the MAGNITUDE; the sign (flip) is preserved
+    // on write (see applyTransformLive) and shown via the Properties flip
+    // checkboxes.
+    if (auto* trk = effScaleX();  m_scaleSpin  && trk) { float v = trk->evaluate(t); m_scaleSpin->setValue((v < 0.0f ? -v : v) * sf * 100.0); }
+    if (auto* trk = effScaleY();  m_scaleWSpin && trk) { float v = trk->evaluate(t); m_scaleWSpin->setValue((v < 0.0f ? -v : v) * sf * 100.0); }
 
     // Rotation (degrees)
     if (auto* trk = effRotation(); m_rotationSpin && trk) m_rotationSpin->setValue(trk->evaluate(t));

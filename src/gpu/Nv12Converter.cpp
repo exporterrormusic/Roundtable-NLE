@@ -140,6 +140,33 @@ void Nv12Converter::shutdown()
         m_p010DescSetLayout = VK_NULL_HANDLE;
     }
 
+    // YUVA444P12 (ProRes 4444) cleanup
+    m_yuvaYTexture.destroy();
+    m_yuvaUTexture.destroy();
+    m_yuvaVTexture.destroy();
+    m_yuvaATexture.destroy();
+    if (m_yuva444Pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(dev, m_yuva444Pipeline, nullptr);
+        m_yuva444Pipeline = VK_NULL_HANDLE;
+    }
+    if (m_yuva444PipeLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(dev, m_yuva444PipeLayout, nullptr);
+        m_yuva444PipeLayout = VK_NULL_HANDLE;
+    }
+    if (m_yuva444ShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(dev, m_yuva444ShaderModule, nullptr);
+        m_yuva444ShaderModule = VK_NULL_HANDLE;
+    }
+    if (m_yuva444DescPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(dev, m_yuva444DescPool, nullptr);
+        m_yuva444DescPool = VK_NULL_HANDLE;
+        m_yuva444DescSet  = VK_NULL_HANDLE;
+    }
+    if (m_yuva444DescSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(dev, m_yuva444DescSetLayout, nullptr);
+        m_yuva444DescSetLayout = VK_NULL_HANDLE;
+    }
+
     m_initialized = false;
     m_device      = nullptr;
     m_allocator   = nullptr;

@@ -513,8 +513,14 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
             (srcFmt == AV_PIX_FMT_NV12)    ||
             (srcFmt == AV_PIX_FMT_YUV420P) ||
             (srcFmt == AV_PIX_FMT_P010LE)  ||
-            (srcFmt == AV_PIX_FMT_P016LE);
+            (srcFmt == AV_PIX_FMT_P016LE)  ||
+            (srcFmt == AV_PIX_FMT_YUVA444P12LE);  // ProRes 4444 (4:4:4 + alpha)
         if (!acceptedFmt)
+            return nullptr;
+        // ProRes 4444 needs all four planes (Y, U, V, A).
+        if (srcFmt == AV_PIX_FMT_YUVA444P12LE &&
+            (!decoded.data[0] || !decoded.data[1] ||
+             !decoded.data[2] || !decoded.data[3]))
             return nullptr;
     }
 #else
@@ -545,7 +551,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
         ? (srcH / std::max(1, task.info.packedTiles)) : srcH;
     const int contentH = srcH;  // packed-2 keeps full stacked height (compositor splits it)
     int dstW = srcW, dstH = contentH;
-    if (srcW > maxDim || nominalH > maxDim) {
+    // exportFullRes (export decode) skips the tier cap → native resolution.
+    if (!task.exportFullRes && (srcW > maxDim || nominalH > maxDim)) {
         const float scale = std::min(static_cast<float>(maxDim) / srcW,
                                      static_cast<float>(maxDim) / nominalH);
         dstW = std::max(2, static_cast<int>(srcW * scale) & ~1);
@@ -646,6 +653,20 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
             cmd,
             decoded.data[0], decoded.linesize[0],
             decoded.data[1], decoded.linesize[1],
+            static_cast<uint32_t>(srcW), static_cast<uint32_t>(srcH),
+            static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH),
+            stagingOut);
+    } else if (srcFmt == AV_PIX_FMT_YUVA444P12LE) {
+        // ProRes 4444 — per-worker converter + per-worker cmd buffer, so the
+        // 4-plane upload + convert is thread-safe (unlike the shared-pool path
+        // that crashed).  Real alpha, full 4:4:4 chroma, GPU-resident output.
+        gWorkerStep("convertDecodedToCacheGpu/record-cpu-yuva444p12");
+        recordOk = conv->recordConvertYuva444p12Scaled(
+            cmd,
+            decoded.data[0], decoded.linesize[0],
+            decoded.data[1], decoded.linesize[1],
+            decoded.data[2], decoded.linesize[2],
+            decoded.data[3], decoded.linesize[3],
             static_cast<uint32_t>(srcW), static_cast<uint32_t>(srcH),
             static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH),
             stagingOut);

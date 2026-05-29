@@ -39,6 +39,7 @@
 #include <QDrag>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QComboBox>
 #include <QSettings>
 #include <QPainter>
 #include <QPointer>
@@ -616,8 +617,12 @@ void SourceMonitor::updateFrameDisplay()
         // characters look blurry in the source monitor.
         ResolutionTier tier = ResolutionTier::Half;
         {
-            int idx = QSettings().value(
-                QStringLiteral("playback/resolutionIndex"), 1).toInt();
+            // Honor THIS monitor's own resolution dropdown.  Fall back to the
+            // shared QSettings value only if the combo isn't built yet.
+            int idx = m_playbackResCombo
+                ? m_playbackResCombo->currentIndex()
+                : QSettings().value(
+                      QStringLiteral("playback/resolutionIndex"), 1).toInt();
             switch (idx) {
                 case 0: tier = ResolutionTier::Full;    break;
                 case 1: tier = ResolutionTier::Half;    break;

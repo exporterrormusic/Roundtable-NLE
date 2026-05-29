@@ -86,8 +86,9 @@ struct CompositePushConstants
 {
     int32_t width;
     int32_t height;
+    int32_t hqSample;   // 1 = Catmull-Rom bicubic sampling (export), 0 = bilinear (preview)
 };
-static_assert(sizeof(CompositePushConstants) == 8);
+static_assert(sizeof(CompositePushConstants) == 12);
 
 // ── Layer descriptor ────────────────────────────────────────────────────────
 
@@ -236,6 +237,12 @@ public:
     /// Composite using an internal one-shot command buffer (synchronous).
     bool compositeSync() override;
 
+    /// Enable high-quality (Catmull-Rom bicubic) layer sampling.  Off by
+    /// default (bilinear) for fast real-time preview; the export renderer
+    /// turns it on so downscaled high-res sources (e.g. ProRes characters)
+    /// stay sharp.  See composite.comp.
+    void setHighQualitySampling(bool hq) noexcept { m_hqSampling = hq; }
+
     // ── Resize ──────────────────────────────────────────────────────────
 
     /// Resize the output image.
@@ -307,6 +314,7 @@ public:
     static glm::mat4 identityTransform() { return glm::mat4(1.0f); }
 
 private:
+    bool m_hqSampling{false};  // bicubic layer sampling (export); see composite.comp
     bool createOutputTexture();
     /// Rotate m_outputTexture to the next slot in the output ring.  Called
     /// at the start of every composite() so each composited frame writes

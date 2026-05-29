@@ -84,6 +84,11 @@ void ShotComposer::refreshCharacterLibrary()
 
     // Add video characters (always available regardless of Spine)
     static const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> videoCharacters = {
+        // PROXY workflow: edit on the lightweight HEVC packed-alpha (fast
+        // NVDEC scrub/playback), and the export renderer transparently swaps
+        // in the ProRes 4444 master (sharp, real alpha) — see
+        // FrameRenderer's wellsExportSource().  Both are 1080x1888 nominal,
+        // so transforms/fit are identical between proxy and master.
         {"Wells", {"assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4"}}
     };
     for (const auto& [name, paths] : videoCharacters) {

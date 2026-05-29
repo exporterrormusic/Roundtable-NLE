@@ -427,17 +427,6 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
         }
     }
 
-    // ── Transition trim: commit duration change as a single undo step ───
-    if (m_dragMode == DragMode::TransitionTrim && m_timeline) {
-        Track* track = m_timeline->track(m_transTrimTrackIndex);
-        if (track && m_transTrimIndex < track->transitionCount()) {
-            Transition t = *track->transition(m_transTrimIndex);
-            auto cmd = std::make_unique<SetTransitionPropertyCommand>(
-                track, m_transTrimIndex, t);
-            if (cmd) executeCommand(std::move(cmd));
-        }
-    }
-
     // ── PendingClipClick: user clicked an already-selected clip without dragging ──
     if (m_dragMode == DragMode::PendingClipClick) {
         // Select just the clicked clip (Premiere Pro behaviour) — but
@@ -478,6 +467,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             case DragMode::ClipTrimTail:
             case DragMode::SlipTool:
             case DragMode::SlideTool:
+            case DragMode::TransitionTrim:
                 m_commandStack->endMacro();
                 break;
             default:

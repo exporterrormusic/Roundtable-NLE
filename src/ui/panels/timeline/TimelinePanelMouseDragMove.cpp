@@ -14,6 +14,7 @@
 #include "timeline/Transition.h"
 #include "command/CommandStack.h"
 #include "command/commands/ClipCommands.h"
+#include "command/commands/TransitionCmds.h"
 
 #include <QApplication>
 #include <QMouseEvent>
@@ -1016,7 +1017,15 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             }
 
             t.duration = newDur;
-            track->setTransition(m_transTrimIndex, t);
+
+            // Execute through command stack so the project is marked
+            // modified during the drag (same pattern as clip trim).
+            // A macro wraps all drag ticks into a single undo step.
+            if (m_commandStack && !m_commandStack->isMacroActive())
+                m_commandStack->beginMacro("Trim transition");
+            auto cmd = std::make_unique<SetTransitionPropertyCommand>(
+                track, m_transTrimIndex, t);
+            executeCommand(std::move(cmd));
         }
         onScrollChanged();
         break;
