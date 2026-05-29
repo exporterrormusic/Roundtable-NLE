@@ -457,12 +457,16 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 // Sequence switching
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::switchSequence(size_t index)
+void MainWindow::switchSequence(size_t index, int64_t seekTick)
 {
     if (!m_currentProject) return;
     if (index >= m_currentProject->sequenceCount()) return;
 
     if (index == m_currentProject->activeSequenceIndex()) {
+        // Already active — honour an explicit seek (e.g. re-opening a nested
+        // sequence whose clip the playhead currently sits over).
+        if (seekTick >= 0 && m_playbackController)
+            m_playbackController->seekTo(seekTick);
         // Already active in the backend — but the tab may still need to be
         // (re-)added or raised. Happens when:
         //   - user closed the active sequence's tab: refreshSequenceTabs
@@ -482,12 +486,29 @@ void MainWindow::switchSequence(size_t index)
         return;
     }
 
-    // Stop playback before switching
-    if (m_playbackController)
+    // Stop playback before switching.  stop() rewinds the playhead to the
+    // in-point/start, so capture the outgoing sequence's current position
+    // first and restore it afterwards — otherwise switching away would
+    // discard where the user was working and the sequence would always
+    // re-open at tick 0.  Each Timeline stores its own playhead, so this
+    // makes returning to a sequence resume from the same spot.
+    int64_t outgoingTick = 0;
+    Timeline* outgoing = m_timeline;
+    if (m_playbackController) {
+        outgoingTick = m_playbackController->currentTick();
         m_playbackController->stop();
+    }
+    if (outgoing)
+        outgoing->setPlayheadPosition(outgoingTick);
 
     Timeline* newTimeline = m_currentProject->setActiveSequence(index);
     if (!newTimeline) return;
+
+    // Premiere-style nested open: when an explicit seek was requested, move
+    // the incoming sequence's playhead there BEFORE the workspace wires it
+    // up, so the timeline panel's deferred playhead restore reads this value.
+    if (seekTick >= 0)
+        newTimeline->setPlayheadPosition(seekTick);
 
     // Update MainWindow's own pointer
     m_timeline = newTimeline;
@@ -496,9 +517,13 @@ void MainWindow::switchSequence(size_t index)
     if (m_timelineWorkspace)
         m_timelineWorkspace->setTimeline(newTimeline);
 
-    // Update PlaybackController
-    if (m_playbackController)
+    // Update PlaybackController and align the sync clock + audio engine with
+    // the sequence's restored (or explicitly requested) playhead so the
+    // Program Monitor shows the correct frame and play resumes from there.
+    if (m_playbackController) {
         m_playbackController->setTimeline(newTimeline);
+        m_playbackController->seekTo(newTimeline->playheadPosition());
+    }
 
     // Update ExportPanel
     if (m_exportPanel) {

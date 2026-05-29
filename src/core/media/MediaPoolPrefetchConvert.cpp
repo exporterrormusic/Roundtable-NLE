@@ -129,6 +129,18 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
                     dstW, dstH, AV_PIX_FMT_BGRA,
                     SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
                 if (sws) {
+                    // Pin BT.709 limited→full so this CPU path produces the
+                    // SAME RGB as the GPU Nv12Converter shaders.  Without it
+                    // swscale defaults to BT.601, and frames for the same
+                    // (handle,frame,tier) filled by the GPU vs CPU path
+                    // differ → brightness/saturation flicker once the cache
+                    // churns. srcRange=0 (studio swing in), dstRange=1 (full RGB).
+                    if (srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
+                        const int* t = sws_getCoefficients(SWS_CS_ITU709);
+                        sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
+                                                 t, /*dstRange=*/1,
+                                                 0, 1 << 16, 1 << 16);
+                    }
                     state.swsCtx    = sws;
                     state.swsSrcW   = w;
                     state.swsSrcH   = h;

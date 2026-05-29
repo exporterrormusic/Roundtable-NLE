@@ -42,12 +42,17 @@ void main()
     float y = texture(yPlane, uv).r;
 
     // Sample U and V (chroma) at half resolution — hardware bilinear
-    // filtering gives free chroma upsampling
-    float cb = texture(uPlane, uv).r - 0.5;  // Center around 0
-    float cr = texture(vPlane, uv).r - 0.5;
+    // filtering gives free chroma upsampling.
+    // Studio-swing chroma (16–240, neutral 128) is recentered (128/255 =
+    // 0.50196) AND range-expanded (255/224 = 1.13839) to the full [-0.5,0.5]
+    // the BT.709 coefficients assume.  Must match the CPU sws_scale path's
+    // sws_setColorspaceDetails(BT709) limited→full expansion or frames from
+    // the two decoders flicker. See nv12_to_bgra.comp for the full rationale.
+    float cb = (texture(uPlane, uv).r - 0.50196) * 1.13839;
+    float cr = (texture(vPlane, uv).r - 0.50196) * 1.13839;
 
     // BT.709 YCbCr → RGB conversion (HDTV standard)
-    // Studio-swing scaling (16–235 luma, 16–240 chroma)
+    // Studio-swing luma scaling (16–235)
     float y_scaled = clamp((y - 0.0627) * 1.1644, 0.0, 1.0);
 
     float r = clamp(y_scaled + 1.5748 * cr,                        0.0, 1.0);

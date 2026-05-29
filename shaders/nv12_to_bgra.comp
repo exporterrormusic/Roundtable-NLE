@@ -43,14 +43,21 @@ void main()
     // gives us free chroma upsampling
     vec2 cbcr = texture(uvPlane, uv).rg;
 
-    // NV12 stores U (Cb) in first channel, V (Cr) in second
-    float cb = cbcr.r - 0.5;  // Center around 0 (was 0–1 from unorm)
-    float cr = cbcr.g - 0.5;
+    // NV12 stores U (Cb) in first channel, V (Cr) in second.
+    // Studio-swing chroma is 16–240 around neutral 128, so it must be
+    // recentered (128/255 = 0.50196) AND range-expanded (255/224 = 1.13839)
+    // to the full [-0.5,0.5] the BT.709 coefficients below assume.  The CPU
+    // sws_scale decode path (MediaPoolPrefetchConvert/Loop/Decode) does the
+    // same limited→full expansion via sws_setColorspaceDetails(BT709); the
+    // two paths MUST match byte-for-byte or frames filled by different
+    // decoders flicker in brightness/saturation. (FrameCache "first decode
+    // wins" only masks this within a single cache residency.)
+    float cb = (cbcr.r - 0.50196) * 1.13839;
+    float cr = (cbcr.g - 0.50196) * 1.13839;
 
     // BT.709 YCbCr → RGB conversion (HDTV standard)
-    // For studio-swing (16–235 luma, 16–240 chroma), scale Y:
+    // For studio-swing (16–235 luma), scale Y:
     //   y_scaled = (y - 16/255) * (255 / (235 - 16))
-    // Most NVDEC output uses studio swing, so apply the scaling.
     float y_scaled = clamp((y - 0.0627) * 1.1644, 0.0, 1.0);
 
     float r = clamp(y_scaled + 1.5748 * cr,                        0.0, 1.0);

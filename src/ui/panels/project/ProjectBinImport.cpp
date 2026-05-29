@@ -313,6 +313,84 @@ bool ProjectBin::removeFile(const std::filesystem::path& filePath)
     return m_grid->removeItem(filePath);
 }
 
+void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
+{
+    if (!selected || !m_grid) return;
+
+    const QString oldPath = selected->data(0, Qt::UserRole).toString();
+    const uint64_t itemId = selected->data(0, kBinItemIdRole).toULongLong();
+    const QString displayName = selected->text(0);
+
+    if (oldPath.isEmpty()) return;
+
+    // Find the grid item to modify in-place
+    auto& items = m_grid->mutableItems();
+    int gridIdx = -1;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].itemId == itemId ||
+            items[i].filePath.string() == oldPath.toStdString()) {
+            gridIdx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (gridIdx < 0) {
+        spdlog::warn("ProjectBin::replaceMedia: item not found in grid '{}'",
+                     oldPath.toStdString());
+        return;
+    }
+
+    // Open file dialog
+    auto settings = rt::appSettings();
+    QString lastDir = settings.value("Import/lastDir", QString()).toString();
+    if (lastDir.isEmpty() || !QDir(lastDir).exists())
+        lastDir = QFileInfo(oldPath).absolutePath();
+    if (lastDir.isEmpty())
+        lastDir = QDir::homePath();
+
+    QString newFile = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Replace Media — %1").arg(displayName),
+        lastDir,
+        QStringLiteral("All Files (*.*);;"
+            "Video (*.mp4 *.mkv *.avi *.mov *.webm);;"
+            "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp);;"
+            "Audio (*.wav *.mp3 *.flac *.ogg *.aac)"));
+
+    if (newFile.isEmpty()) return;
+
+    settings.setValue("Import/lastDir", QFileInfo(newFile).absolutePath());
+
+    const std::filesystem::path newPath(newFile.toStdString());
+    if (newPath.string() == oldPath.toStdString()) return;
+
+    // Open the new file via MediaPool
+    uint64_t newHandle = 0;
+    if (m_mediaSources) {
+        auto result = m_mediaSources->openSource(
+            {newPath, RenderRequestType::Still, false});
+        newHandle = result.handle;
+    }
+
+    // Modify the existing grid item in-place — preserves itemId and position
+    auto& item = items[gridIdx];
+    item.filePath    = newPath;
+    item.displayName = displayName;
+    item.type        = ThumbnailGenerator::detectMediaType(newPath);
+    item.mediaHandle = newHandle;
+    item.thumbnail.reset();  // clear old thumbnail so new one loads
+
+    // Rebuild both views
+    syncListView();
+    if (!m_listView)
+        syncIconView();
+
+    // Trigger thumbnail reload for the updated item
+    m_grid->loadVisibleThumbnails();
+
+    spdlog::info("ProjectBin: replaced '{}' with '{}'",
+                 oldPath.toStdString(), newPath.string());
+}
+
 void ProjectBin::clearAll()
 {
     m_grid->clearItems();

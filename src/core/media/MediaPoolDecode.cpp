@@ -422,6 +422,17 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
                     dstW, dstH, AV_PIX_FMT_BGRA,
                     SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
                 if (sws) {
+                    // Pin BT.709 limited→full so this on-demand/scrub CPU
+                    // path produces the SAME RGB as the GPU Nv12Converter
+                    // shaders and the prefetch CPU path.  Mismatched
+                    // colorspace = brightness/saturation flicker when the
+                    // cache mixes frames from different decoders.
+                    if (srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
+                        const int* t = sws_getCoefficients(SWS_CS_ITU709);
+                        sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
+                                                 t, /*dstRange=*/1,
+                                                 0, 1 << 16, 1 << 16);
+                    }
                     entry.swsCtx    = sws;
                     entry.swsSrcW   = w;
                     entry.swsSrcH   = h;

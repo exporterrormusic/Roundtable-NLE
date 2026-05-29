@@ -133,8 +133,61 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
         shared->stableBoundsW, shared->stableBoundsH);
     shared->boundsCached = true;
 
-    spdlog::info("Spine shared: loaded '{}' ({} atlas pages, {:.0f}x{:.0f} bounds)",
-                 key, pages.size(), shared->stableBoundsW, shared->stableBoundsH);
+    // ── Per-animation framing boxes ─────────────────────────────────────
+    // Sample each animation across its duration and store, per animation, the
+    // union of the setup pose and that animation's own bounding-box envelope.
+    // The live renderer frames each clip to its CURRENT animation's box, so a
+    // taller "action" pose grows only its own box (framed to fit, never
+    // clipped) while normal animations keep their original setup-pose size —
+    // exactly one box per animation, not a single shared box that would shrink
+    // everything to the largest pose.  Modest sampling (≈15 fps, capped) keeps
+    // the one-time load cost bounded; bounding boxes vary smoothly so we don't
+    // need frame-accurate sampling to find the extent.
+    {
+        const float setMinX = shared->stableBoundsX;
+        const float setMinY = shared->stableBoundsY;
+        const float setMaxX = shared->stableBoundsX + shared->stableBoundsW;
+        const float setMaxY = shared->stableBoundsY + shared->stableBoundsH;
+        const bool  setValid = shared->stableBoundsW > 1.0f && shared->stableBoundsH > 1.0f;
+
+        const auto animInfos = tempEngine.animation().listAnimations();
+        for (const auto& ai : animInfos) {
+            if (ai.name.empty()) continue;
+            tempEngine.animation().setBodyAnimation(ai.name, false);
+            const float dur = ai.duration;
+            int samples = (dur > 0.0f)
+                ? std::clamp(static_cast<int>(dur * 15.0f), 8, 60)
+                : 1;
+            // Seed with the setup pose so a normal animation that stays within
+            // the setup silhouette keeps the original size.
+            float minX = setValid ?  setMinX :  1e9f;
+            float minY = setValid ?  setMinY :  1e9f;
+            float maxX = setValid ?  setMaxX : -1e9f;
+            float maxY = setValid ?  setMaxY : -1e9f;
+            for (int s = 0; s <= samples; ++s) {
+                const float t = (dur > 0.0f && samples > 0)
+                    ? (static_cast<float>(s) / static_cast<float>(samples)) * dur
+                    : 0.0f;
+                tempEngine.evaluateAtTime(t, 0.0f);
+                float bx, by, bw, bh;
+                tempEngine.getBounds(bx, by, bw, bh);
+                if (bw <= 0.0f || bh <= 0.0f) continue;
+                minX = std::min(minX, bx);
+                minY = std::min(minY, by);
+                maxX = std::max(maxX, bx + bw);
+                maxY = std::max(maxY, by + bh);
+            }
+            if (maxX > minX && maxY > minY) {
+                shared->animBounds[ai.name] =
+                    SpineSharedData::AnimBounds{minX, minY, maxX - minX, maxY - minY};
+            }
+        }
+    }
+
+    spdlog::info("Spine shared: loaded '{}' ({} atlas pages, setup {:.0f}x{:.0f}, "
+                 "{} per-animation boxes)",
+                 key, pages.size(), shared->stableBoundsW, shared->stableBoundsH,
+                 shared->animBounds.size());
 
     m_spineSharedCache.emplace(key, shared);
     return shared;
@@ -433,14 +486,25 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
     // Setup-pose stableBounds provide the anchor center to prevent swaying.
     float liveBx{0}, liveBy{0}, liveBw{0}, liveBh{0};
     state.engine.getBounds(liveBx, liveBy, liveBw, liveBh);
-    // Prefer stable (setup-pose) bounds for scale so the character doesn't
-    // appear to zoom in/out when live bounds fluctuate per frame (e.g. Crown
-    // whose idle animation bounding box oscillates slightly).  Fall back to
-    // live bounds when stable bounds are degenerate.
-    const float bw = (shared.stableBoundsW > 1.0f) ? shared.stableBoundsW
-                    : ((liveBw > 1.0f) ? liveBw : shared.stableBoundsW);
-    const float bh = (shared.stableBoundsH > 1.0f) ? shared.stableBoundsH
-                    : ((liveBh > 1.0f) ? liveBh : shared.stableBoundsH);
+    // Frame to THIS animation's box (setup pose ∪ the animation's own
+    // envelope) so a taller-than-idle pose isn't clipped, while normal
+    // animations keep their original setup-pose size.  Fall back to the
+    // setup-pose bounds, then to live bounds, when no per-animation box
+    // exists.  Using a constant (per-animation) box also prevents the
+    // zoom/sway that live per-frame bounds would cause.
+    const SpineSharedData::AnimBounds* ab = nullptr;
+    {
+        auto abIt = shared.animBounds.find(clip->animationName());
+        if (abIt != shared.animBounds.end()) ab = &abIt->second;
+    }
+    const float boundsW = ab ? ab->w : shared.stableBoundsW;
+    const float boundsH = ab ? ab->h : shared.stableBoundsH;
+    const float boundsX = ab ? ab->x : shared.stableBoundsX;
+    const float boundsY = ab ? ab->y : shared.stableBoundsY;
+    const float bw = (boundsW > 1.0f) ? boundsW
+                    : ((liveBw > 1.0f) ? liveBw : boundsW);
+    const float bh = (boundsH > 1.0f) ? boundsH
+                    : ((liveBh > 1.0f) ? liveBh : boundsH);
     // One-time diagnostic
     {
         static bool s_spineCpuBoundsLogged = false;
@@ -464,10 +528,11 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
 
     const float offsetX = outW * 0.5f;
     const float offsetY = outH * 0.5f;
-    // Use STABLE bounds for center — live bounds shift per frame
-    // which causes visible character swaying during animation playback.
-    const float spineCX = shared.stableBoundsX + shared.stableBoundsW * 0.5f;
-    const float spineCY = shared.stableBoundsY + shared.stableBoundsH * 0.5f;
+    // Center on THIS animation's box (constant per animation) — live bounds
+    // shift per frame which causes visible swaying during playback, and the
+    // setup-pose center would push a taller animation off the top.
+    const float spineCX = boundsX + boundsW * 0.5f;
+    const float spineCY = boundsY + boundsH * 0.5f;
 
     auto spineToPixel = [&](float sx, float sy, float& px, float& py) {
         px = (sx - spineCX) * spineScale + offsetX;

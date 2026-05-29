@@ -370,52 +370,55 @@ void ProjectBin::setupUI()
             .arg(Theme::hex(Theme::colors().textPrimary))
             .arg(Theme::hex(Theme::colors().border))
             .arg(Theme::hex(Theme::colors().accent)));
-        menu.addAction("Import Media...", this, &ProjectBin::importFiles);
-        menu.addAction("New Bin", this, &ProjectBin::createNewBin);
-        menu.addSeparator();
-        QMenu* newItemMenu = menu.addMenu("New Item");
-        newItemMenu->setStyleSheet(QStringLiteral(
-            "QMenu { background: %1; color: %2; border: 1px solid %3; }"
-            "QMenu::item:selected { background: %4; }")
-            .arg(Theme::hex(Theme::colors().surface2))
-            .arg(Theme::hex(Theme::colors().textPrimary))
-            .arg(Theme::hex(Theme::colors().border))
-            .arg(Theme::hex(Theme::colors().accent)));
-        {
-            auto* act = newItemMenu->addAction("Sequence");
-            QObject::connect(act, &QAction::triggered, this, [this]() {
-                createNewSequence();
-            });
-        }
-        {
-            auto* act = newItemMenu->addAction("Color Matte...");
-            QObject::connect(act, &QAction::triggered, this, [this]() {
-                createColorMatte();
-            });
-        }
-        {
-            auto* act = newItemMenu->addAction("Adjustment Layer...");
-            QObject::connect(act, &QAction::triggered, this, [this]() {
-                createAdjustmentLayer();
-            });
-        }
-        // Paste — available whenever the bin clipboard holds anything
-        // (sequence, footage, or color matte).
-        if (hasClipboard()) {
-            menu.addSeparator();
-            menu.addAction("Paste", this, [this]() { pasteClipboard(); });
-        }
-        auto* selected = m_listWidget->itemAt(pos);
-        if (selected) {
-            // Rename (works for sequences, bins, and media items)
-            menu.addAction("Rename", this, [this, selected]() {
-                m_listWidget->editItem(selected, 0);
-            });
 
-            // Check if it's a sequence item
-            bool isSequence = selected->data(0, Qt::UserRole + 3).toBool();
+        auto* selected = m_listWidget->itemAt(pos);
+
+        if (!selected) {
+            // ── Empty-area context menu (no item under cursor) ─────
+            menu.addAction("Import Media...", this, &ProjectBin::importFiles);
+            menu.addAction("New Bin", this, &ProjectBin::createNewBin);
             menu.addSeparator();
+            QMenu* newItemMenu = menu.addMenu("New Item");
+            newItemMenu->setStyleSheet(QStringLiteral(
+                "QMenu { background: %1; color: %2; border: 1px solid %3; }"
+                "QMenu::item:selected { background: %4; }")
+                .arg(Theme::hex(Theme::colors().surface2))
+                .arg(Theme::hex(Theme::colors().textPrimary))
+                .arg(Theme::hex(Theme::colors().border))
+                .arg(Theme::hex(Theme::colors().accent)));
+            {
+                auto* act = newItemMenu->addAction("Sequence");
+                QObject::connect(act, &QAction::triggered, this, [this]() {
+                    createNewSequence();
+                });
+            }
+            {
+                auto* act = newItemMenu->addAction("Color Matte...");
+                QObject::connect(act, &QAction::triggered, this, [this]() {
+                    createColorMatte();
+                });
+            }
+            {
+                auto* act = newItemMenu->addAction("Adjustment Layer...");
+                QObject::connect(act, &QAction::triggered, this, [this]() {
+                    createAdjustmentLayer();
+                });
+            }
+            if (hasClipboard()) {
+                menu.addSeparator();
+                menu.addAction("Paste", this, [this]() { pasteClipboard(); });
+            }
+        } else {
+            // ── Item-specific context menu ──────────────────────────
+            bool isSequence = selected->data(0, Qt::UserRole + 3).toBool();
+            bool isBin = selected->data(0, Qt::UserRole + 2).toBool();
+
             if (isSequence) {
+                // Rename
+                menu.addAction("Rename", this, [this, selected]() {
+                    m_listWidget->editItem(selected, 0);
+                });
+                menu.addSeparator();
                 size_t seqIdx = selected->data(0, Qt::UserRole + 4).toULongLong();
                 menu.addAction("Sequence Settings...", this, [this, seqIdx]() {
                     if (!m_project) return;
@@ -550,9 +553,11 @@ void ProjectBin::setupUI()
                         emit sequencesChanged();
                     }
                 });
-            } else {
-                bool isBin = selected->data(0, Qt::UserRole + 2).toBool();
-                if (isBin) {
+            } else if (isBin) {
+                    menu.addAction("Rename", this, [this, selected]() {
+                        m_listWidget->editItem(selected, 0);
+                    });
+                    menu.addSeparator();
                     menu.addAction("Delete Bin", this, [this, selected]() {
                         int idx = m_listWidget->indexOfTopLevelItem(selected);
                         if (idx >= 0) {
@@ -564,6 +569,14 @@ void ProjectBin::setupUI()
                         syncListView();
                     });
                 } else {
+                    menu.addAction("Rename", this, [this, selected]() {
+                        m_listWidget->editItem(selected, 0);
+                    });
+                    menu.addSeparator();
+                    menu.addAction("Replace Media...", this, [this, selected]() {
+                        replaceMedia(selected);
+                    });
+                    menu.addSeparator();
                     menu.addAction("Copy", this, [this, selected]() {
                         m_listWidget->setCurrentItem(selected);
                         copySelection();
@@ -687,8 +700,7 @@ void ProjectBin::setupUI()
                     });
                 }
             }
-        }
-        menu.addSeparator();
+            menu.addSeparator();
         menu.addAction("Auto-Sort into Bins", this, [this]() { ensureDefaultBins(); });
         menu.addAction("Clear All", this, [this]() { clearAll(); syncListView(); });
         menu.exec(m_listWidget->mapToGlobal(pos));

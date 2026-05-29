@@ -258,6 +258,17 @@ void MediaPool::loopPreDecodeWorker(
                 sws = sws_getContext(w, h, srcFmt,
                                      dW, dH, AV_PIX_FMT_BGRA,
                                      SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+                // Pin BT.709 limited→full so loop pre-decode produces the
+                // SAME RGB as the GPU Nv12Converter shaders that fill the
+                // same frames during live playback.  Otherwise a looping
+                // character's cache is a mix of BT.601 (predecode) and
+                // BT.709 (prefetch) frames → brightness flicker across loops.
+                if (sws && srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
+                    const int* t = sws_getCoefficients(SWS_CS_ITU709);
+                    sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
+                                             t, /*dstRange=*/1,
+                                             0, 1 << 16, 1 << 16);
+                }
                 swsSrcW = w;  swsSrcH = h;
                 swsSrcFmt = static_cast<int>(srcFmt);
                 swsDstW = dW; swsDstH = dH;

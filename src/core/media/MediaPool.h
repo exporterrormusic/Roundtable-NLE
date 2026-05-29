@@ -243,10 +243,16 @@ public:
 
     /// Get a decoded frame from cache, or decode on demand.
     /// Returns nullptr on failure.
+    ///
+    /// forceExact: used by export.  Skips the ±N nearby-frame "frame drop"
+    /// fallback and forces a blocking, frame-accurate inline decode of the
+    /// EXACT frame.  Without it, a cache miss during export returns the
+    /// previous frame as a stale neighbor → frame duplication / stutter.
     [[nodiscard]] std::shared_ptr<CachedFrame> getFrame(
         MediaHandle handle, int64_t frameNumber,
         ResolutionTier tier = ResolutionTier::Full,
-        bool scrubMode = false);
+        bool scrubMode = false,
+        bool forceExact = false);
 
     /// Non-blocking frame access for playback.
     /// Returns a cached frame (exact or nearby) WITHOUT ever decoding inline.

@@ -345,6 +345,17 @@ public:
         bool boundsCached{false};
         float stableBoundsX{0}, stableBoundsY{0};
         float stableBoundsW{0}, stableBoundsH{0};
+        // PER-ANIMATION framing box, keyed by animation name.  Each entry is
+        // the union of the setup pose and that animation's own sampled
+        // envelope (max extent across its frames).  The live renderer frames a
+        // clip to its CURRENT animation's box, so:
+        //   • normal animations (which stay within the setup silhouette) keep
+        //     their original setup-pose size, and
+        //   • a taller "action" pose grows ONLY its own box — it's framed to
+        //     fit (never clipped) without shrinking every other animation.
+        // Falls back to setup-pose bounds when an animation has no entry.
+        struct AnimBounds { float x{0}, y{0}, w{0}, h{0}; };
+        std::unordered_map<std::string, AnimBounds> animBounds;
         bool gpuTexturesUploaded{false};
         std::string skelPath;
         std::string atlasPath;
@@ -654,6 +665,15 @@ private:
     /// Layer index of the PREVIOUS Spine character (for updating its layer
     /// when the next character's readback captures its FBO content).
     int m_gpuSpinePrevLayer{-1};
+    /// Tick of the previous top-level buildLayersForFrame. When the current
+    /// build repeats this tick, the playhead is parked (paused) and we are
+    /// re-compositing a STATIC frame — e.g. during a transform-handle drag.
+    /// On such frames the GPU Spine layer is read back into a stable frame so
+    /// it no longer aliases the transient shared FBO and populates the sticky
+    /// last-good cache (fixes "character vanishes when resizing, returns on
+    /// play"). During playback the tick advances every frame, so zero-copy is
+    /// preserved.
+    int64_t m_lastBuiltTick{-1};
     std::unordered_map<uint64_t, std::unique_ptr<SpineCPUState>> m_spineCache;
     // Sticky last-good pre-rendered frame per Spine clip.
     // Prevents source switching (pre-rendered video <-> live Spine) when

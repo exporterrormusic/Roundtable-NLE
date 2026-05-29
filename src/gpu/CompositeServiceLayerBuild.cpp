@@ -75,6 +75,16 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         m_frameActiveCharKeys.clear();
     }
 
+    // Static-recomposite detection (top level only): when this build repeats
+    // the previous build's tick, the playhead is parked and we're refreshing a
+    // paused frame (e.g. a transform-handle drag fires a burst of same-tick
+    // composites). On these frames the GPU Spine path reads its FBO back into a
+    // stable frame so a later same-tick composite that briefly misses the live
+    // render still shows the character via the sticky cache. During playback
+    // the tick advances each frame, so this stays false and zero-copy is kept.
+    const bool staticRecomposite =
+        (m_buildLayersDepth == 1) && (tick == m_lastBuiltTick);
+
     clipsAtTick = 0;
     m_gpuSpineCount = 0;
     m_gpuSpineInsertedLayer = -1;
@@ -1017,21 +1027,34 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
 
                                 SpineRenderData renderData = state.engine.extractMeshes();
                                 if (!renderData.batches.empty()) {
-                                    // Use STABLE (setup-pose) bounds for scale so the character
-                                    // doesn't appear to zoom in/out when live bounds fluctuate
-                                    // per frame (e.g. Crown whose idle animation bbox oscillates).
-                                    // Fall back to live bounds when stable bounds are degenerate.
+                                    // Frame to THIS animation's box (setup pose ∪ the
+                                    // animation's own envelope) so a taller-than-idle pose
+                                    // (e.g. an "action" animation that raises the head/arms)
+                                    // fits inside the FBO instead of being clipped — while
+                                    // normal animations keep their original setup-pose size.
+                                    // The box is constant per animation, so it still avoids
+                                    // the zoom/sway that live per-frame bounds would cause.
+                                    // Fall back to setup-pose, then live bounds, when missing.
                                     float liveBx{0}, liveBy{0}, liveBw{0}, liveBh{0};
                                     state.engine.getBounds(liveBx, liveBy, liveBw, liveBh);
-                                    const float bw = (shared.stableBoundsW > 1.0f) ? shared.stableBoundsW
-                                                    : ((liveBw > 1.0f) ? liveBw : shared.stableBoundsW);
-                                    const float bh = (shared.stableBoundsH > 1.0f) ? shared.stableBoundsH
-                                                    : ((liveBh > 1.0f) ? liveBh : shared.stableBoundsH);
+                                    const SpineSharedData::AnimBounds* ab = nullptr;
+                                    {
+                                        auto abIt = shared.animBounds.find(spineClip->animationName());
+                                        if (abIt != shared.animBounds.end()) ab = &abIt->second;
+                                    }
+                                    const float boundsW = ab ? ab->w : shared.stableBoundsW;
+                                    const float boundsH = ab ? ab->h : shared.stableBoundsH;
+                                    const float boundsX = ab ? ab->x : shared.stableBoundsX;
+                                    const float boundsY = ab ? ab->y : shared.stableBoundsY;
+                                    const float bw = (boundsW > 1.0f) ? boundsW
+                                                    : ((liveBw > 1.0f) ? liveBw : boundsW);
+                                    const float bh = (boundsH > 1.0f) ? boundsH
+                                                    : ((liveBh > 1.0f) ? liveBh : boundsH);
                                     const float fW = static_cast<float>(outW);
                                     const float fH = static_cast<float>(outH);
                                     float fitZoom = 1.0f;
-                                    float cx = shared.stableBoundsX + shared.stableBoundsW * 0.5f;
-                                    float cy = shared.stableBoundsY + shared.stableBoundsH * 0.5f;
+                                    float cx = boundsX + boundsW * 0.5f;
+                                    float cy = boundsY + boundsH * 0.5f;
                                     if (bw > 1.0f && bh > 1.0f) {
                                         // Fill the FBO as much as possible for maximum
                                         // native resolution on close-up shots.  The 0.85×
@@ -1089,13 +1112,41 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     sr->waitForFrame();
 
                                     gpuSpineDone = true;
-                                    gpuSpineZeroCopy = true;
                                     gpuSpineUsedThisFrame = true;
-                                    ++m_gpuSpineCount;
-                                    m_gpuSpineJustRendered = true;
-                                    gpuSpineDescriptor = sr->outputDescriptorInfo();
-                                    gpuSpineW = outW;
-                                    gpuSpineH = outH;
+
+                                    // STATIC frame (parked playhead, e.g. a
+                                    // transform-handle drag): read the freshly
+                                    // rendered FBO back into a stable CPU frame.
+                                    // This (a) stops the layer aliasing the
+                                    // shared FBO that the next same-tick
+                                    // composite will clear, and (b) populates
+                                    // the sticky last-good cache below, so a
+                                    // subsequent same-tick composite that
+                                    // momentarily fails to re-render the live
+                                    // Spine still shows the character instead of
+                                    // dropping the layer. Fixes the
+                                    // "vanishes when resizing, back on play" bug.
+                                    // During playback the tick advances so we
+                                    // keep the fast zero-copy path.
+                                    bool spineStableReadback = false;
+                                    if (staticRecomposite) {
+                                        auto stable = sr->readbackPixels();
+                                        if (stable && !stable->pixels.empty()) {
+                                            stable->premultipliedAlpha = true; // Spine FBO is PMA
+                                            frame = std::move(stable);
+                                            cpuSpineRendered = true;  // route through contain-fit + 0.85
+                                            spineStableReadback = true;
+                                        }
+                                    }
+
+                                    if (!spineStableReadback) {
+                                        gpuSpineZeroCopy = true;
+                                        ++m_gpuSpineCount;
+                                        m_gpuSpineJustRendered = true;
+                                        gpuSpineDescriptor = sr->outputDescriptorInfo();
+                                        gpuSpineW = outW;
+                                        gpuSpineH = outH;
+                                    }
                                 }
                             }
                         }
@@ -1516,8 +1567,18 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     if (cit != m_spineCache.end() && cit->second->engine.isLoaded()
                         && cit->second->shared) {
                         auto& shared = *cit->second->shared;
+                        // Use the SAME bounds the renderer framed the character
+                        // with (this animation's box) so the crop margins line
+                        // up with the actual character extent in the FBO.
                         float bw = shared.stableBoundsW;
                         float bh = shared.stableBoundsH;
+                        {
+                            auto abIt = shared.animBounds.find(sc->animationName());
+                            if (abIt != shared.animBounds.end()) {
+                                bw = abIt->second.w;
+                                bh = abIt->second.h;
+                            }
+                        }
                         if (bw > 1.0f && bh > 1.0f) {
                             float fW = static_cast<float>(outW);
                             float fH = static_cast<float>(outH);
@@ -1628,6 +1689,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             else
                 ++it;
         }
+        // Record the tick so the NEXT top-level build can detect a parked
+        // playhead (same tick = static recomposite). See staticRecomposite.
+        m_lastBuiltTick = tick;
     }
 
     return layers;

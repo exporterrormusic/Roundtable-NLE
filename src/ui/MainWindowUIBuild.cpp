@@ -384,7 +384,8 @@ void MainWindow::buildPanels()
 
     // ── Wire ProjectBin sequence signals ────────────────────────────────
     if (auto* bin = m_timelineWorkspace->projectBin()) {
-        connect(bin, &ProjectBin::sequenceOpened, this, &MainWindow::switchSequence);
+        connect(bin, &ProjectBin::sequenceOpened, this,
+                [this](size_t idx) { switchSequence(idx); });
         connect(bin, &ProjectBin::sequencesChanged, this, [this]() {
             if (m_destroying.load(std::memory_order_acquire)) return;
             if (!m_currentProject) return;
@@ -470,7 +471,7 @@ void MainWindow::buildPanels()
 
     // ── Wire sequence tab bar to sequence switching ─────────────────────
     connect(m_timelineWorkspace, &TimelineWorkspace::sequenceTabChanged,
-            this, &MainWindow::switchSequence);
+            this, [this](size_t idx) { switchSequence(idx); });
 
     // ── Wire sequence tab settings request ──────────────────────────────
     connect(m_timelineWorkspace, &TimelineWorkspace::sequenceTabSettingsRequested,

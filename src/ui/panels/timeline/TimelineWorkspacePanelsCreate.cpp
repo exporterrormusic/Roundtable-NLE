@@ -793,9 +793,16 @@ void TimelineWorkspace::createPanelWidgets()
         // If closing the active sequence, switch to the first remaining one.
         // Don't call setActiveSequence here — let switchSequence() handle
         // all the timeline/playback/UI wiring.
+        // IMPORTANT: emit sequenceTabChanged BEFORE refreshSequenceTabs so
+        // switchSequence() sees a different old-vs-new active index and
+        // takes the full refresh path (setTimeline, rebuildTracks,
+        // pm->refresh).  If refreshSequenceTabs runs first it silently
+        // changes the project's active to newActive, causing switchSequence
+        // to hit the early-return "already active" path which skips all
+        // UI refresh — leaving the timeline/program monitor stuck on the
+        // closed sequence until the user clicks another tab.
         if (m_project->activeSequenceIndex() == seqIdx) {
             size_t newActive = *m_openSequenceTabs.begin();
-            refreshSequenceTabs();
             emit sequenceTabChanged(newActive);
         } else {
             refreshSequenceTabs();

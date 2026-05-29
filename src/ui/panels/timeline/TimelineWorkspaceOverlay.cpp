@@ -936,12 +936,25 @@ void TimelineWorkspace::updateTransformOverlay()
             const auto* shared = m_compositeService->getSpineSharedDataForOverlay(
                 spineClip->characterName(), spineClip->outfit(),
                 static_cast<int>(spineClip->stance()));
-            if (shared && shared->stableBoundsW > 1.0f && shared->stableBoundsH > 1.0f) {
+            // Match the renderer: it frames the character to THIS animation's
+            // box (setup pose ∪ the animation's envelope), so the overlay must
+            // use the same bounds or it won't line up with the visible
+            // character (especially for taller "action" poses).
+            float boundsW = shared ? shared->stableBoundsW : 0.0f;
+            float boundsH = shared ? shared->stableBoundsH : 0.0f;
+            if (shared) {
+                auto abIt = shared->animBounds.find(spineClip->animationName());
+                if (abIt != shared->animBounds.end()) {
+                    boundsW = abIt->second.w;
+                    boundsH = abIt->second.h;
+                }
+            }
+            if (shared && boundsW > 1.0f && boundsH > 1.0f) {
                 // Scale: same as compositor: fit height with 0.9 padding
                 float refH = 1080.0f;
-                float fitZoom = (refH / shared->stableBoundsH) * 0.9f;
-                info.srcW = static_cast<uint32_t>(shared->stableBoundsW * fitZoom);
-                info.srcH = static_cast<uint32_t>(shared->stableBoundsH * fitZoom);
+                float fitZoom = (refH / boundsH) * 0.9f;
+                info.srcW = static_cast<uint32_t>(boundsW * fitZoom);
+                info.srcH = static_cast<uint32_t>(boundsH * fitZoom);
             }
         }
     }

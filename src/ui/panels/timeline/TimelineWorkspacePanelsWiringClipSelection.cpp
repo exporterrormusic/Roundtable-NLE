@@ -207,8 +207,21 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (clip->clipType() == ClipType::Sequence) {
                 auto* seqClip = static_cast<SequenceClip*>(clip);
                 if (m_project && seqClip->sequenceIndex() < m_project->sequenceCount()) {
+                    // Premiere-style: if the playhead sits over this clip, open
+                    // the inner sequence at the matching position. Map the
+                    // parent-local offset through the clip's source-in + speed
+                    // into the nested sequence's own timebase.
+                    int64_t seekTick = -1;
+                    const int64_t ph = m_timeline->playheadPosition();
+                    if (ph >= seqClip->timelineIn() && ph < seqClip->timelineOut()) {
+                        const int64_t localOffset = ph - seqClip->timelineIn();
+                        seekTick = seqClip->sourceIn() +
+                                   static_cast<int64_t>(std::llround(
+                                       localOffset * seqClip->speed()));
+                        if (seekTick < 0) seekTick = 0;
+                    }
                     auto* mw = qobject_cast<MainWindow*>(window());
-                    if (mw) mw->switchSequence(seqClip->sequenceIndex());
+                    if (mw) mw->switchSequence(seqClip->sequenceIndex(), seekTick);
                 }
                 return;
             }

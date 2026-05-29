@@ -122,6 +122,11 @@ public:
     /// Remove a specific media file from the bin.
     bool removeFile(const std::filesystem::path& filePath);
 
+    /// Replace the media file backing a selected bin item with a new file.
+    /// Preserves label color and display name. The selected tree item
+    /// is updated in-place; both list and icon views are refreshed.
+    void replaceMedia(QTreeWidgetItem* selected);
+
     /// Clear all items from the bin.
     void clearAll();
 

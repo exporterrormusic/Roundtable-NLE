@@ -49,9 +49,14 @@ void main()
     // 10-bit studio swing: black=0.0625, scale=1.1690
     float y_scaled = clamp((y - 0.0625) * 1.1690, 0.0, 1.0);
 
-    // Chroma center = 512 (10-bit) → stored 512<<6=32768 → sampled 0.5000
-    float cb = cbcr.r - 0.5;
-    float cr = cbcr.g - 0.5;
+    // Chroma center = 512 (10-bit) → stored 512<<6=32768 → sampled 0.5000.
+    // 10-bit studio-swing chroma spans 64..960; recenter at 0.5 and expand
+    // by 0.5/(960*64/65535 - 0.5) = 1.1428 so the BT.709 coefficients below
+    // operate on the full [-0.5,0.5] range — matching the CPU sws_scale
+    // path's sws_setColorspaceDetails(BT709) limited→full expansion (see
+    // nv12_to_bgra.comp).  Mismatched expansion = brightness/saturation flicker.
+    float cb = (cbcr.r - 0.5) * 1.1428;
+    float cr = (cbcr.g - 0.5) * 1.1428;
 
     // BT.709 YCbCr → RGB (HDTV standard).  Coefficients are bit-depth
     // independent — only the studio-swing rescale above changes.

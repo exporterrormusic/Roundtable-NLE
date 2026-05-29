@@ -215,7 +215,11 @@ protected:
     void changeEvent(QEvent* event) override;
 
 public slots:
-    void switchSequence(size_t index);
+    /// Make sequence `index` the active timeline.  When `seekTick` is >= 0 the
+    /// new sequence's playhead is moved there (used when double-clicking a
+    /// nested clip so the inner sequence opens at the matching position,
+    /// Premiere-style); otherwise the sequence's own saved playhead is kept.
+    void switchSequence(size_t index, int64_t seekTick = -1);
 
     /// Show the "GPU error — please restart" modal dialog.  Invoked via
     /// QMetaObject::invokeMethod(Qt::QueuedConnection) from the GpuContext

@@ -78,7 +78,8 @@ PrefetchDecoderState& MediaPool::getScrubDecoder(
 // ─── getFrame (blocking + scrub path) ───────────────────────────────────────
 
 std::shared_ptr<CachedFrame> MediaPool::getFrame(
-    MediaHandle handle, int64_t frameNumber, ResolutionTier tier, bool scrubMode)
+    MediaHandle handle, int64_t frameNumber, ResolutionTier tier, bool scrubMode,
+    bool forceExact)
 {
     auto perfGetT0 = std::chrono::high_resolution_clock::now();
     m_perf.totalRequests.fetch_add(1, std::memory_order_relaxed);
@@ -176,7 +177,12 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // prefetch lag and keep the compositor moving without blocking).
     // Also try the other resolution tier since the
     // prefetch thread may have filled a different tier.
-    {
+    //
+    // Export (forceExact) must NEVER accept a neighbor — returning the
+    // previous frame for a missed exact frame is precisely the
+    // duplication/stutter bug.  Skip straight to the blocking, frame-
+    // accurate inline decode below.
+    if (!forceExact) {
         const int64_t searchRadius = scrubMode ? 15 : 5;
         for (int64_t delta = 1; delta <= searchRadius; ++delta) {
             cached = m_cache->getNoPromote(handle, frameNumber - delta, tier);
@@ -254,7 +260,10 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // and lets the compositor show the last good composite or a black layer
     // for 1-2 frames while prefetch workers fill the cache.  This eliminates
     // the 30-300ms stalls that caused visible judder on long-GOP codecs.
-    if (!scrubMode) {
+    // forceExact (export) skips this non-blocking stale-return path and
+    // falls through to the blocking exact decode below — even when called
+    // with scrubMode=false — so the encoder always gets the real frame.
+    if (!scrubMode && !forceExact) {
         // Schedule aggressive prefetch: current frame + ahead
         schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
 

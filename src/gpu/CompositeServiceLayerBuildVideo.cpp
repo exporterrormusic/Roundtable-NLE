@@ -60,12 +60,13 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // — this sets the playhead + extends the interactive playback window
     // (unlike getFrame with scrubMode=true which skips both).  If the
     // exact frame IS cached, return it instantly.  Otherwise fall through
-    // to blocking getFrame with scrubMode=true which does inline decode
-    // via the scrub decoder (the !scrubMode path only returns stale
-    // frames without decoding — useless for export).  The playhead is
-    // already set by tryGetFrame, so the cache won't thrash-evict.
-    // Also reject alternate-tier fallback frames (e.g. Half when Full
-    // was requested) — export always wants the full-quality frame.
+    // to blocking getFrame with forceExact=true: it skips the ±N nearby-
+    // frame fallback (which would otherwise hand back the PREVIOUS frame
+    // as a stale neighbor → frame duplication / stutter) and does a
+    // frame-accurate inline decode of the exact frame via the scrub
+    // decoder.  The playhead is already set by tryGetFrame, so the cache
+    // won't thrash-evict.  Also reject alternate-tier fallback frames
+    // (e.g. Half when Full was requested) — export always wants full quality.
     if (m_forceFullResolution.load()) {
         auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);
         if (frame && frame->frameNumber == frameNumber && frame->tier == tier)
@@ -74,7 +75,8 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         // was requested).  During export/preview we MUST reject wrong-tier
         // frames — compositing a Half-tier character at the full viewport
         // resolution produces visibly blurry output.
-        frame = m_mediaPool->getFrame(handle, frameNumber, tier, true);
+        frame = m_mediaPool->getFrame(handle, frameNumber, tier,
+                                      /*scrubMode=*/true, /*forceExact=*/true);
         if (frame && frame->tier != tier) {
             // Wrong tier from alt-tier fallback.  Schedule an urgent
             // correct-tier prefetch for the next frame, but for THIS

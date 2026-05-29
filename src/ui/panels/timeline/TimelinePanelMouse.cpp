@@ -311,42 +311,12 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
 
                 // Clicking within the edge-grab zone of a clip
                 // immediately selects the edit point and primes a
-                // trim/transition operation, but ONLY if that clip
-                // (or its touching neighbour at a seam) is already
-                // selected.  The first click on an unselected
-                // isolated clip always selects the whole clip,
-                // even near its edge — Premiere-style.
-                // This also lets Ctrl+T add a transition with a
-                // second edge click + shortcut.
+                // trim/transition operation — first click on an
+                // unselected clip's edge enters edge mode directly,
+                // no need to select the whole clip first.
+                // Shift+click bypasses edge mode for selection toggling.
                 const bool shiftClick = event->modifiers() & Qt::ShiftModifier;
-                bool edgeModeOk = false;
-                if (!shiftClick && (nearLeft || nearRight)) {
-                    // The hit clip itself is already selected — edge mode.
-                    if (m_selection.isSelected(*hitRef)) {
-                        edgeModeOk = true;
-                    } else {
-                        // At a seam, hitTestClip always returns the RIGHT
-                        // clip.  If the LEFT clip is selected, the user
-                        // clicked the seam expecting to trim — enter edge
-                        // mode so we keep the selection instead of
-                        // deselecting the left clip and selecting the
-                        // right one (which reads as "a different corner").
-                        for (size_t ci = 0; ci < hitTrack->clipCount(); ++ci) {
-                            const Clip* n = hitTrack->clip(ci);
-                            if (!n || n->id() == hitClip->id()) continue;
-                            if (nearLeft && n->timelineOut() == hitClip->timelineIn()
-                                && m_selection.isSelected(ClipRef{hitRef->trackIndex, n->id()})) {
-                                edgeModeOk = true;
-                                break;
-                            }
-                            if (nearRight && n->timelineIn() == hitClip->timelineOut()
-                                && m_selection.isSelected(ClipRef{hitRef->trackIndex, n->id()})) {
-                                edgeModeOk = true;
-                                break;
-                            }
-                        }
-                    }
-                }
+                bool edgeModeOk = (!shiftClick && (nearLeft || nearRight));
                 if (edgeModeOk)
                     {
                         // Look for a touching neighbour on the relevant side.
