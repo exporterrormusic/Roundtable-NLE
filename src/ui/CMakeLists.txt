@@ -41,6 +41,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelinePanelMouseDragMove.cpp
     panels/timeline/TimelinePanelMouseDragRelease.cpp
     panels/timeline/TimelinePanelDragDrop.cpp
+    panels/timeline/TimelinePanelDrop.cpp
     panels/timeline/TimelinePanelLayout.cpp
     panels/timeline/TimelinePanelTracks.cpp
     panels/timeline/TimelinePanelZoomScroll.cpp
@@ -48,6 +49,8 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelinePanelHitTest.cpp
     panels/timeline/TimelinePanelCommands.cpp
     panels/monitors/SourceMonitor.cpp
+    panels/monitors/SourceMonitorDrag.cpp
+    panels/monitors/SourceMonitorAudio.cpp
     panels/monitors/SourceMonitorUI.cpp
     panels/monitors/ProgramMonitor.cpp
     panels/monitors/ProgramMonitorUI.cpp
