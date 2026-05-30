@@ -58,14 +58,19 @@ void ProjectBin::restoreBinModel(const std::vector<Project::BinItem>& items,
                 QString::fromStdString(bi.displayName), color);
             continue;
         }
-        uint64_t handle = 0;
-        if (m_mediaSources) {
-            auto r = m_mediaSources->openSource(
-                {bi.path, RenderRequestType::Still, false});
-            handle = r.handle;
-        }
+        // Do NOT open the media source synchronously here.  Opening every
+        // bin item on the UI thread (m_mediaSources->openSource → MediaPool
+        // probe + NVDEC init, ~25-150ms each) froze project-open for seconds
+        // on bins with dozens of items.  The handle isn't needed at restore:
+        //   • thumbnails are generated from the file PATH (async
+        //     ThumbnailGenerator, via loadVisibleThumbnails below),
+        //   • the "media offline" overlay keys off file existence, not the
+        //     handle, and
+        //   • timeline drops / source-monitor opens re-open on demand.
+        // Timeline media is additionally warmed in parallel by
+        // preOpenVideoMedia().  Pass handle 0 and let it open lazily.
         m_grid->addRestoredItem(
-            bi.path, MediaType::Unknown, handle, bi.id,
+            bi.path, MediaType::Unknown, /*handle*/ 0, bi.id,
             QString::fromStdString(bi.displayName), bi.labelColor);
     }
     m_grid->loadVisibleThumbnails();

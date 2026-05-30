@@ -35,10 +35,13 @@
 #include <QString>
 
 #include <atomic>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <vector>
 
 class QAction;
+class QWidget;
 class QActionGroup;
 class QDockWidget;
 class QFileInfo;
@@ -108,6 +111,14 @@ public:
     /// Show / hide a status-bar busy spinner with a message.
     void showBusyIndicator(const QString& message);
     void hideBusyIndicator();
+
+    /// Whether a project open is in flight (off-thread load and/or background
+    /// media warmup still running).  While true, the loading overlay is up and
+    /// the qApp event filter swallows user input so half-wired project state
+    /// cannot be touched.
+    [[nodiscard]] bool isProjectLoading() const noexcept {
+        return m_projectLoading.load(std::memory_order_acquire);
+    }
 
     /// Check for auto-save recovery files on startup and offer recovery.
     void checkCrashRecovery();
@@ -340,6 +351,44 @@ private:
     // ── Status bar busy spinner ────────────────────────────────────────
     QProgressBar* m_busySpinner{nullptr};
     QLabel*       m_busyLabel{nullptr};
+
+    // ── Project-open input lock ─────────────────────────────────────────
+    // serializer.load() runs on a worker thread; the heavy parse no longer
+    // freezes the UI.  While the parse and the subsequent background media
+    // warmup run, a full-window overlay blocks interaction so the user can't
+    // scrub / select / play against a half-populated timeline (which the
+    // compositor & warmup threads are concurrently touching → use-after-free).
+    std::atomic<bool> m_projectLoading{false};
+    QWidget*          m_loadingOverlay{nullptr};
+    QLabel*           m_loadingOverlayLabel{nullptr};
+    QProgressBar*     m_loadingOverlayBar{nullptr};
+    QTimer*           m_loadingWatchdog{nullptr};
+    // Smoothing: progress arrives in bursts (6 warmup threads); a timer eases
+    // the displayed bar value toward the real target so it fills smoothly.
+    QTimer*           m_loadingBarTimer{nullptr};
+    int               m_loadingBarTarget{0};
+    int               m_loadingBarTotal{0};
+
+    /// Load a project off the UI thread, then run `continuation` on the UI
+    /// thread with the loaded project (null on failure).  Engages the input
+    /// lock for the duration.
+    void beginAsyncProjectLoad(
+        const std::filesystem::path& path,
+        const QString& busyMessage,
+        std::function<void(std::unique_ptr<Project>)> continuation);
+
+    /// Raise the full-window non-interactive overlay and set m_projectLoading.
+    void engageLoadingOverlay(const QString& message);
+    /// Drop the overlay and clear m_projectLoading (idempotent).
+    void disengageLoadingOverlay();
+    /// Slot: background media warmup finished — release the overlay if a load
+    /// was pending on it.
+    void onBackgroundWarmupFinished();
+    /// Slot: background media warmup progress — drive the loading bar.
+    void setLoadingProgress(int done, int total);
+    /// Release the open input lock now, or keep the overlay up until the
+    /// background media warmup completes (shared by the async open paths).
+    void releaseOpenLock();
     QAction*      m_undoAct{nullptr};
     QAction*      m_redoAct{nullptr};
     QMenu*        m_editMenu{nullptr};

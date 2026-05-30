@@ -239,6 +239,17 @@ signals:
     /// to take ownership.
     void autoProjectCreated(class Project* project);
 
+    /// Emitted on the UI thread as the background media warmup pass opens each
+    /// handle (`done` of `total`).  MainWindow drives the loading progress bar
+    /// from this so the user sees real movement during a large open.
+    void backgroundWarmupProgress(int done, int total);
+
+    /// Emitted on the UI thread when the background media warmup pass
+    /// (preOpenVideoMedia) finishes and no warmup threads remain active.
+    /// MainWindow uses this to drop the project-loading input lock once the
+    /// timeline is fully populated and safe to interact with.
+    void backgroundWarmupFinished();
+
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
@@ -414,12 +425,15 @@ private:
     /// Warm active playback media/GPU resources before the first visible frame.
     void prewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH);
 
+public:
     /// Whether background media warmup (preOpenVideoMedia thread) is still active.
     /// Callers should gate playback start on this being false to avoid
     /// use-after-free crashes during startup (Keyframe<float> iteration in
-    /// the compositor can race with timeline population).
+    /// the compositor can race with timeline population).  MainWindow also
+    /// uses it to decide whether to hold the project-open input lock.
     [[nodiscard]] bool isBackgroundWarmupActive() const noexcept { return m_backgroundWarmupActive.load(std::memory_order_acquire); }
 
+private:
     /// Number of background warmup threads still running.
     std::atomic<int> m_backgroundWarmupActive{0};
 

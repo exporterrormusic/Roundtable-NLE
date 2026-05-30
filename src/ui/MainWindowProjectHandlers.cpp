@@ -44,6 +44,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLabel>
 #include <QMessageBox>
 #include <QProcess>
 #include <QStatusBar>
@@ -52,8 +53,66 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <thread>
 
 namespace rt {
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Async project load primitive
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Parse the .rtp on a worker thread (the heavy, UI-thread-freezing part —
+// see ProjectSerializer::load), then hand the freshly-built Project back to
+// `continuation` on the UI thread.  A freshly-loaded Project is not yet wired
+// to the MediaPool, timeline, or any widget, so parsing it off-thread is safe;
+// every step that touches those (setCurrentProject) stays on the UI thread in
+// the continuation.  The full-window input lock is engaged for the duration so
+// the user can't interact with the old/half-wired project mid-load.
+void MainWindow::beginAsyncProjectLoad(
+    const std::filesystem::path& path,
+    const QString& busyMessage,
+    std::function<void(std::unique_ptr<Project>)> continuation)
+{
+    engageLoadingOverlay(busyMessage);
+
+    auto t0 = std::chrono::steady_clock::now();
+    std::filesystem::path p = path;  // owned copy for the worker thread
+    // shared_ptr keeps the move-only-payload continuation alive across the
+    // thread hop while staying copyable for QMetaObject::invokeMethod.
+    auto cont = std::make_shared<std::function<void(std::unique_ptr<Project>)>>(
+        std::move(continuation));
+
+    std::thread([this, p, cont, t0]() {
+        ProjectSerializer serializer;
+        Project* raw = serializer.load(p).release();
+        double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+        spdlog::warn("[OPEN-PERF] [ASYNC-OPEN] serializer.load '{}' off-thread in {:.0f}ms",
+                     p.string(), ms);
+        QMetaObject::invokeMethod(qApp, [this, raw, cont]() {
+            std::unique_ptr<Project> project(raw);
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            (*cont)(std::move(project));
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+// Common tail for the async open paths: drop the input lock now, or keep the
+// overlay up until the background media warmup finishes (whichever applies).
+// Centralized so every entry point releases the lock identically.
+void MainWindow::releaseOpenLock()
+{
+    if (m_timelineWorkspace && m_timelineWorkspace->isBackgroundWarmupActive()) {
+        // Overlay stays up; backgroundWarmupFinished() drops it once the
+        // timeline's media is warm and safe to interact with.
+        showBusyIndicator(tr("Loading media…"));
+        if (m_loadingOverlayLabel) m_loadingOverlayLabel->setText(tr("Loading media…"));
+    } else {
+        disengageLoadingOverlay();
+    }
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Project CRUD — panel-backed operations
@@ -121,10 +180,11 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
 
     spdlog::info("=== OPEN PROJECT START: {} ===", name.toStdString());
     auto t0 = std::chrono::steady_clock::now();
-    showBusyIndicator(tr("Opening project..."));
-    QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    // Save state of current project before opening new one
+    // Save state of current project before opening new one.  This runs on the
+    // UI thread up-front, while the old project is still fully wired — the
+    // input lock (engaged inside beginAsyncProjectLoad) prevents the user from
+    // touching it during the off-thread parse that follows.
     if (m_currentProject && m_audioSync) {
         spdlog::info("OPEN: saving current project audio sync state");
         m_audioSync->saveProjectState(
@@ -153,78 +213,69 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
 
     std::filesystem::path path = filePath.toStdWString();
 
-    spdlog::info("OPEN: calling serializer.load for {}", path.string());
-    ProjectSerializer serializer;
-    auto project = serializer.load(path);
-    auto t1 = std::chrono::steady_clock::now();
-    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    spdlog::info("OPEN: serializer.load took {} ms", dt);
-
-    if (project) {
-        // Normalize display name to the selected project entry.
-        if (project->name() != name.toStdString())
-            project->setName(name.toStdString());
-        project->setFilePath(path);
-
-        spdlog::info("OPEN: calling setCurrentProject");
-        setCurrentProject(std::move(project));
-        auto t2 = std::chrono::steady_clock::now();
-        auto dt2 = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-        spdlog::info("OPEN: setCurrentProject took {} ms", dt2);
-
-        spdlog::info("OPEN: calling restoreWorkspace");
-        // Prefer the project's own saved layout; fall back to the last
-        // session snapshot.  If neither exists (new project / fresh install),
-        // call resetToDefaultDockLayout() which loads the user's
-        // "USE_AS_DEFAULT" workspace preset from QSettings.
-        if (!restoreWorkspace("project/" + name)
-            && !restoreWorkspace("last_session")) {
-            spdlog::info("OPEN: no saved workspace — resetting to default layout");
-            if (m_timelineWorkspace)
-                m_timelineWorkspace->resetToDefaultDockLayout();
-        }
-
-        // Stay on the current tab (Projects) instead of restoring the
-        // last active page for this project.
-        setCurrentPage(Page::Projects);
-
-        spdlog::info("OPEN: restoring audio sync state");
-        // Restore audio sync state for this project
-        // Prefer the blob embedded in the .rtp file (backed up + versioned)
-        // over QSettings (which has no backup).
-        if (m_audioSync) {
-            const auto& blob = m_currentProject->audioSyncBlob();
-            spdlog::info("OPEN: AudioSync blob size={}", blob.size());
-            if (!blob.empty()) {
-                spdlog::info("OPEN: calling deserializeFromBlob");
-                m_audioSync->deserializeFromBlob(blob);
-                spdlog::info("OPEN: after deserialize — audioPaths.size={}",
-                             m_audioSync->audioPaths().size());
-            } else {
-                spdlog::info("OPEN: blob empty, calling restoreProjectState");
-                m_audioSync->restoreProjectState(name);
+    spdlog::info("OPEN: dispatching async load for {}", path.string());
+    beginAsyncProjectLoad(path, tr("Opening project…"),
+        [this, name, path, t0](std::unique_ptr<Project> project) {
+            if (!project) {
+                disengageLoadingOverlay();
+                spdlog::error("Failed to load project: {}", path.string());
+                QMessageBox::warning(this, "Error",
+                    QString("Failed to open project '%1'").arg(name));
+                return;
             }
-        } else {
-            spdlog::warn("OPEN: m_audioSync is null — cannot restore audio state");
-        }
 
-        auto t3 = std::chrono::steady_clock::now();
-        auto dt3 = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count();
-        spdlog::info("=== OPEN PROJECT COMPLETE: {} total ms ===", dt3);
+            // Normalize display name to the selected project entry.
+            if (project->name() != name.toStdString())
+                project->setName(name.toStdString());
+            project->setFilePath(path);
 
-        addToRecentFiles(QString::fromStdString(path.string()));
+            spdlog::info("OPEN: calling setCurrentProject");
+            setCurrentProject(std::move(project));
 
-        statusBar()->showMessage(
-            QString("Opened '%1'").arg(name), 3000);
-        hideBusyIndicator();
-        QApplication::setOverrideCursor(Qt::ArrowCursor);
-    } else {
-        hideBusyIndicator();
-        QApplication::setOverrideCursor(Qt::ArrowCursor);
-        spdlog::error("Failed to load project: {}", path.string());
-        QMessageBox::warning(this, "Error",
-            QString("Failed to open project '%1'").arg(name));
-    }
+            spdlog::info("OPEN: calling restoreWorkspace");
+            // Prefer the project's own saved layout; fall back to the last
+            // session snapshot.  If neither exists (new project / fresh
+            // install), resetToDefaultDockLayout() loads the user's
+            // "USE_AS_DEFAULT" workspace preset from QSettings.
+            if (!restoreWorkspace("project/" + name)
+                && !restoreWorkspace("last_session")) {
+                spdlog::info("OPEN: no saved workspace — resetting to default layout");
+                if (m_timelineWorkspace)
+                    m_timelineWorkspace->resetToDefaultDockLayout();
+            }
+
+            // Stay on the current tab (Projects) instead of restoring the
+            // last active page for this project.
+            setCurrentPage(Page::Projects);
+
+            spdlog::info("OPEN: restoring audio sync state");
+            // Prefer the blob embedded in the .rtp file (backed up + versioned)
+            // over QSettings (which has no backup).
+            if (m_audioSync) {
+                const auto& blob = m_currentProject->audioSyncBlob();
+                spdlog::info("OPEN: AudioSync blob size={}", blob.size());
+                if (!blob.empty()) {
+                    m_audioSync->deserializeFromBlob(blob);
+                    spdlog::info("OPEN: after deserialize — audioPaths.size={}",
+                                 m_audioSync->audioPaths().size());
+                } else {
+                    m_audioSync->restoreProjectState(name);
+                }
+            } else {
+                spdlog::warn("OPEN: m_audioSync is null — cannot restore audio state");
+            }
+
+            auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            spdlog::info("=== OPEN PROJECT COMPLETE: {} total ms ===", dt);
+
+            addToRecentFiles(QString::fromStdString(path.string()));
+            statusBar()->showMessage(QString("Opened '%1'").arg(name), 3000);
+
+            // Release the input lock — or keep the overlay up until the
+            // background media warmup finishes if it's still running.
+            releaseOpenLock();
+        });
 }
 
 void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& filePath)
@@ -557,33 +608,37 @@ void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath)
 
     spdlog::info("Opening recent project: {}", filePath.toStdString());
 
-    ProjectSerializer serializer;
-    auto project = serializer.load(filePath.toStdWString());
-    if (project) {
-        const QString loadedName = QFileInfo(filePath).baseName();
-        if (project->name() != loadedName.toStdString())
-            project->setName(loadedName.toStdString());
-        project->setFilePath(filePath.toStdString());
-        setCurrentProject(std::move(project));
-        addToRecentFiles(filePath);
+    std::filesystem::path path = filePath.toStdWString();
+    beginAsyncProjectLoad(path, tr("Opening project…"),
+        [this, filePath, path](std::unique_ptr<Project> project) {
+            if (!project) {
+                disengageLoadingOverlay();
+                QMessageBox::warning(this, "Error", "Failed to open " + filePath);
+                return;
+            }
+            const QString loadedName = QFileInfo(filePath).baseName();
+            if (project->name() != loadedName.toStdString())
+                project->setName(loadedName.toStdString());
+            project->setFilePath(path);
+            setCurrentProject(std::move(project));
+            addToRecentFiles(filePath);
 
-        // Stay on the current tab (Projects) instead of restoring the
-        // last active page for this project.
-        setCurrentPage(Page::Projects);
+            // Stay on the current tab (Projects) instead of restoring the
+            // last active page for this project.
+            setCurrentPage(Page::Projects);
 
-        // Restore audio sync state — prefer blob embedded in .rtp over QSettings
-        if (m_audioSync) {
-            const auto& blob = m_currentProject->audioSyncBlob();
-            if (!blob.empty())
-                m_audioSync->deserializeFromBlob(blob);
-            else
-                m_audioSync->restoreProjectState(loadedName);
-        }
+            // Restore audio sync state — prefer blob embedded in .rtp over QSettings
+            if (m_audioSync) {
+                const auto& blob = m_currentProject->audioSyncBlob();
+                if (!blob.empty())
+                    m_audioSync->deserializeFromBlob(blob);
+                else
+                    m_audioSync->restoreProjectState(loadedName);
+            }
 
-        statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
-    } else {
-        QMessageBox::warning(this, "Error", "Failed to open " + filePath);
-    }
+            statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
+            releaseOpenLock();
+        });
 }
 
 void MainWindow::onImportProject(const QString& srcPath)
@@ -681,40 +736,42 @@ void MainWindow::onOpenProject()
 
     if (path.isEmpty()) return;
 
-    showBusyIndicator(tr("Opening project..."));
-    ProjectSerializer serializer;
-    auto project = serializer.load(path.toStdWString());
-    if (project) {
-        const QString loadedName = QFileInfo(path).baseName();
-        if (project->name() != loadedName.toStdString())
-            project->setName(loadedName.toStdString());
-        project->setFilePath(path.toStdWString());
-        setCurrentProject(std::move(project));
-        if (!restoreWorkspace("project/" + loadedName)
-            && !restoreWorkspace("last_session")) {
-            if (m_timelineWorkspace)
-                m_timelineWorkspace->resetToDefaultDockLayout();
-        }
-        addToRecentFiles(path);
-        // Stay on the current tab (Projects) instead of switching to Timeline
-        setCurrentPage(Page::Projects);
+    std::filesystem::path fsPath = path.toStdWString();
+    beginAsyncProjectLoad(fsPath, tr("Opening project…"),
+        [this, fsPath](std::unique_ptr<Project> project) {
+            if (!project) {
+                disengageLoadingOverlay();
+                QMessageBox::warning(this, "Error",
+                    "Failed to open the selected project file.");
+                return;
+            }
+            const QString loadedName =
+                QFileInfo(QString::fromStdWString(fsPath.wstring())).baseName();
+            if (project->name() != loadedName.toStdString())
+                project->setName(loadedName.toStdString());
+            project->setFilePath(fsPath);
+            setCurrentProject(std::move(project));
+            if (!restoreWorkspace("project/" + loadedName)
+                && !restoreWorkspace("last_session")) {
+                if (m_timelineWorkspace)
+                    m_timelineWorkspace->resetToDefaultDockLayout();
+            }
+            addToRecentFiles(QString::fromStdWString(fsPath.wstring()));
+            // Stay on the current tab (Projects) instead of switching to Timeline
+            setCurrentPage(Page::Projects);
 
-        // Restore audio sync state
-        if (m_audioSync) {
-            const auto& blob = m_currentProject->audioSyncBlob();
-            if (!blob.empty())
-                m_audioSync->deserializeFromBlob(blob);
-            else
-                m_audioSync->restoreProjectState(loadedName);
-        }
+            // Restore audio sync state
+            if (m_audioSync) {
+                const auto& blob = m_currentProject->audioSyncBlob();
+                if (!blob.empty())
+                    m_audioSync->deserializeFromBlob(blob);
+                else
+                    m_audioSync->restoreProjectState(loadedName);
+            }
 
-        hideBusyIndicator();
-        statusBar()->showMessage("Project opened", 3000);
-    } else {
-        hideBusyIndicator();
-        QMessageBox::warning(this, "Error",
-            "Failed to open the selected project file.");
-    }
+            statusBar()->showMessage("Project opened", 3000);
+            releaseOpenLock();
+        });
 }
 
 void MainWindow::onSaveProject()

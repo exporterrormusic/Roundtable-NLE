@@ -40,6 +40,12 @@ void TimelinePanel::setTimeline(Timeline* timeline)
     m_pendingWaveformPaths.clear();
     m_failedWaveformPaths.clear();
 
+    // Invalidate in-flight background thumbnail decodes from the previous
+    // timeline so their results don't land in the new project's caches.
+    ++m_thumbnailLoadGeneration;
+    m_pendingThumbnailPaths.clear();
+    m_failedThumbnailPaths.clear();
+
     // Clear clip selection when switching to a new timeline so stale
     // clip IDs from the previous project don't persist in m_selection.
     m_selection.clear();

@@ -31,6 +31,7 @@
 #include <vector>
 
 class QTimer;
+class QImage;
 
 namespace rt {
 
@@ -433,6 +434,10 @@ private:
     // VideoDecoder::open() calls (~150ms each for HEVC/NVDEC) on every
     // loadThumbnails() invocation.
     std::unordered_set<std::string> m_failedThumbnailPaths;
+    // Thumbnails decode on background threads (mirrors the waveform path) so
+    // opening a project with many video clips doesn't freeze the UI thread.
+    std::unordered_set<std::string> m_pendingThumbnailPaths;
+    uint64_t m_thumbnailLoadGeneration{0};
 
     // Animation video cache (for Spine clip cached-vs-live color override)
     const AnimationVideoCache* m_animVideoCache{nullptr};
@@ -601,8 +606,12 @@ private:
                             const std::string& path,
                             std::vector<float> peaks);
 
-    /// Load video thumbnails for all video clips.
+    /// Load video thumbnails for all video clips (decode runs on a background
+    /// thread; the resulting image is applied on the UI thread).
     void loadThumbnails();
+    void queueThumbnailLoad(const std::string& path);
+    void applyThumbnail(uint64_t generation, const std::string& path,
+                        const QImage& image);
 
     // Step 13: Editing helpers
     void executeCommand(std::unique_ptr<Command> cmd);

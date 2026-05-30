@@ -355,6 +355,35 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
     // but skip when a text input widget (QLineEdit, QTextEdit, QSpinBox) has focus,
     // and skip when the AudioSync panel is active (it has its own transport keys).
     const QEvent::Type t = event->type();
+
+    // Keep the project-loading overlay sized to the window (its layout
+    // re-centers the label + progress bar automatically).
+    if (watched == this && t == QEvent::Resize && m_loadingOverlay
+        && m_loadingOverlay->isVisible()) {
+        m_loadingOverlay->setGeometry(rect());
+    }
+
+    // While a project open is in flight (off-thread parse + background media
+    // warmup), swallow all user input.  The overlay covers mouse clicks to the
+    // panels, but keyboard shortcuts travel through this qApp-level filter and
+    // some clicks (dock title bars, etc.) can bypass a child overlay — so block
+    // them here too.  Failure paths drop the lock before showing any dialog.
+    if (m_projectLoading.load(std::memory_order_acquire)) {
+        switch (t) {
+        case QEvent::KeyPress:
+        case QEvent::KeyRelease:
+        case QEvent::Shortcut:
+        case QEvent::ShortcutOverride:
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::Wheel:
+            return true;   // consume
+        default:
+            break;
+        }
+    }
+
     const bool isKeyPress   = (t == QEvent::KeyPress);
     const bool isKeyRelease = (t == QEvent::KeyRelease);
     if ((isKeyPress || isKeyRelease) && m_playbackController) {

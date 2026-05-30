@@ -469,6 +469,12 @@ void MainWindow::buildPanels()
         });
     }
 
+    // ── Drive the loading progress bar + release the input lock on warmup ──
+    connect(m_timelineWorkspace, &TimelineWorkspace::backgroundWarmupProgress,
+            this, &MainWindow::setLoadingProgress);
+    connect(m_timelineWorkspace, &TimelineWorkspace::backgroundWarmupFinished,
+            this, &MainWindow::onBackgroundWarmupFinished);
+
     // ── Wire sequence tab bar to sequence switching ─────────────────────
     connect(m_timelineWorkspace, &TimelineWorkspace::sequenceTabChanged,
             this, [this](size_t idx) { switchSequence(idx); });

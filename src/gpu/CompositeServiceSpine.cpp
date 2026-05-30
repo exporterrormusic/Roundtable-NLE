@@ -406,9 +406,17 @@ void CompositeService::preloadSpineAssets()
             // atlas textures regardless.
 
             // Use shared helpers Ã¢â‚¬â€ atlas data is loaded once per character
-            auto* state = getOrCreateSpineState(spineClip);
-            if (state && state->engine.isLoaded())
+            // Schedule the heavy skeleton+atlas decode on a background thread
+            // (scheduleSpineSharedLoad) instead of loading it synchronously on
+            // the UI thread, which cost ~10s when opening projects with many
+            // character clips.  The first composite uses tryGetSpineState(),
+            // which paints once the background load integrates the shared data
+            // and posts a requestRefresh back to the UI thread.
+            if (m_spineLoadScheduler) {
+                m_spineLoadScheduler(spineClip->characterName(), spineClip->outfit(),
+                                     static_cast<int>(spineClip->stance()), assetsDir);
                 ++preloaded;
+            }
         }
     }
 

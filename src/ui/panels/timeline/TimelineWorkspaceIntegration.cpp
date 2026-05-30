@@ -37,6 +37,7 @@
 #include <QFileSystemWatcher>
 #include <QTimer>
 
+#include <chrono>
 #include <filesystem>
 
 #include <spdlog/spdlog.h>
@@ -65,6 +66,14 @@ std::pair<std::uintmax_t, std::int64_t> mediaFileSig(const std::string& p)
 } // namespace
 
 void TimelineWorkspace::setTimeline(Timeline* timeline) {
+    // [OPEN-PERF] Temporary warn-level phase timers to locate the slow part of
+    // project open (info logs are filtered to warn+, so they're invisible).
+    using _opclk = std::chrono::steady_clock;
+    auto _opT0 = _opclk::now();
+    auto _opMs = [](_opclk::time_point a) {
+        return std::chrono::duration<double, std::milli>(_opclk::now() - a).count();
+    };
+
     // Reset audio service state for the new timeline
     if (m_audioPlayback) {
         m_audioPlayback->cancelWarm();
@@ -72,6 +81,7 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
         m_audioPlayback->reset();
         m_audioPlayback->setTimeline(timeline);
     }
+    spdlog::warn("[OPEN-PERF] setTimeline: audioPlayback reset {:.0f}ms", _opMs(_opT0));
 
     m_timeline = timeline;
     if (m_compositeService) {
@@ -99,8 +109,12 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // operate on the correct timeline (e.g. after project open).
     // Also forward nullptr to clear the dangling reference when a project
     // is deleted while open, preventing use-after-free crashes.
-    if (m_timelinePanel)
-        m_timelinePanel->setTimeline(timeline);
+    {
+        auto _t = _opclk::now();
+        if (m_timelinePanel)
+            m_timelinePanel->setTimeline(timeline);
+        spdlog::warn("[OPEN-PERF] setTimeline: timelinePanel->setTimeline {:.0f}ms", _opMs(_t));
+    }
 
     // Forward to PropertiesPanel so shot switching can find group clips.
     if (m_propertiesPanel)
@@ -111,8 +125,12 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
         m_effectControlsPanel->setTimeline(timeline);
 
     // Forward to AudioMixer so channel strips rebuild for the new project.
-    if (m_audioMixer)
-        m_audioMixer->setTimeline(timeline);
+    {
+        auto _t = _opclk::now();
+        if (m_audioMixer)
+            m_audioMixer->setTimeline(timeline);
+        spdlog::warn("[OPEN-PERF] setTimeline: audioMixer->setTimeline {:.0f}ms", _opMs(_t));
+    }
 
     // Forward to ProgramMonitor so its mini-timeline gets the correct
     // duration, in/out points, and playhead range.
@@ -138,8 +156,12 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Pre-warm the spine cache so first compositeFrame doesn't block on
     // disk I/O (skel parse + PNG decode).  ~100-200ms moved from first
     // render to project-open time where it's imperceptible.
-    if (timeline)
-        preloadSpineAssets();
+    {
+        auto _t = _opclk::now();
+        if (timeline)
+            preloadSpineAssets();
+        spdlog::warn("[OPEN-PERF] setTimeline: preloadSpineAssets {:.0f}ms", _opMs(_t));
+    }
 #endif
 
     // Force an initial composite so the Program Monitor shows the frame
@@ -164,6 +186,8 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Arm the live file-swap watcher for the new project's media.
     if (timeline)
         rescanMediaWatch();
+
+    spdlog::warn("[OPEN-PERF] setTimeline: TOTAL {:.0f}ms", _opMs(_opT0));
 }
 
 void TimelineWorkspace::invalidateCompositeCache()

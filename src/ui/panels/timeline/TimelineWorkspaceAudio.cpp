@@ -29,10 +29,15 @@
 
 #include <QTimer>
 #include <QApplication>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <set>
 #include <thread>
+#include <utility>
+#include <vector>
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -237,82 +242,99 @@ void TimelineWorkspace::preOpenVideoMedia()
     // from this thread (it isn't locked).  The compositor's first access
     // on the UI thread will call m_mediaPool->open() which will then be
     // cheap, and the CompositeService map is populated there.
-    auto* pool    = m_mediaPool;
-    auto  pathMap = std::move(paths);
+    auto* pool = m_mediaPool;
 
-    // Track that a background warmup thread is active so playback can be
+    // Track that a background warmup batch is active so playback can be
     // deferred until it completes.  This prevents use-after-free crashes
     // when the compositor evaluates clip keyframes while the timeline is
-    // still being populated during project-open.
+    // still being populated during project-open.  One increment for the whole
+    // batch (regardless of worker count); the LAST worker out decrements it.
     m_backgroundWarmupActive.fetch_add(1, std::memory_order_release);
 
-    std::thread([this, pool, pathMap = std::move(pathMap)]() {
-        using namespace std::chrono;
-        auto t0 = steady_clock::now();
-        int loopWarmCount = 0;
-        int headWarmCount = 0;
-        int opened = 0;
-        for (const auto& [path, info] : pathMap) {
-            if (!pool) break;
-            uint64_t handle = pool->open(path);
-            if (handle == 0) {
-                spdlog::warn("preOpenVideoMedia(bg): failed to open '{}'", path);
-                continue;
-            }
-            ++opened;
-            const auto* mediaInfo = pool->getInfo(handle);
-            if (!mediaInfo) continue;
+    // Flatten the work so several worker threads can pull entries in parallel.
+    // The dominant per-file cost is the FFmpeg probe + NVDEC init (100-300ms)
+    // and it was previously paid SEQUENTIALLY for every clip on one thread —
+    // the single biggest contributor to slow project opens.  open(),
+    // startLoopPreDecode() and schedulePrefetch() are all internally locked
+    // (m_mutex / m_prefetchMutex), so concurrent calls are safe; and the heavy
+    // decode/convert still runs on MediaPool's dedicated prefetch/loop workers
+    // (we only enqueue here), so no GPU work happens on these threads.
+    auto work = std::make_shared<std::vector<std::pair<std::string, Entry>>>();
+    work->reserve(paths.size());
+    for (auto& kv : paths) work->emplace_back(kv.first, kv.second);
 
-            // Non-video files (stills / audio): the open() call above is
-            // all we need.  Skip loop-pre-decode / prefetch (those are
-            // video-only paths that would waste work on stills and don't
-            // apply to AudioClip media).
-            if (!info.isVideoFile) continue;
+    const int total           = static_cast<int>(work->size());
+    auto workIndex            = std::make_shared<std::atomic<int>>(0);
+    auto processed            = std::make_shared<std::atomic<int>>(0);
+    auto startTime            = std::make_shared<std::chrono::steady_clock::time_point>(
+                                    std::chrono::steady_clock::now());
 
-            if (info.isCharacter) {
-                // Cap check removed — startLoopPreDecode handles it
-                // internally AND sets the loop wrap-around flag for
-                // over-cap clips (Wells's 880-frame ProRes loop) so
-                // the prefetch can pre-fetch frame 0 at the loop
-                // boundary.
-                if (info.predecode && mediaInfo->frameCount > 1) {
-                    pool->startLoopPreDecode(handle, ResolutionTier::Half);
-                    ++loopWarmCount;
+    unsigned hw = std::thread::hardware_concurrency();
+    int nThreads = static_cast<int>(hw ? std::min(hw, 6u) : 4u);
+    nThreads = std::max(2, std::min(nThreads, total));
+    auto threadsRemaining = std::make_shared<std::atomic<int>>(nThreads);
+
+    spdlog::warn("preOpenVideoMedia: warming {} handle(s) across {} thread(s)",
+                 total, nThreads);
+
+    for (int ti = 0; ti < nThreads; ++ti) {
+        std::thread([this, pool, work, workIndex, processed,
+                     threadsRemaining, startTime, total, nThreads]() {
+            for (;;) {
+                int idx = workIndex->fetch_add(1, std::memory_order_relaxed);
+                if (idx >= total) break;
+                const auto& path = (*work)[idx].first;
+                const auto& info = (*work)[idx].second;
+
+                if (pool) {
+                    uint64_t handle = pool->open(path);
+                    if (handle == 0) {
+                        spdlog::warn("preOpenVideoMedia(bg): failed to open '{}'", path);
+                    } else if (info.isVideoFile) {
+                        // Non-video files (stills / audio) only need open().
+                        const auto* mediaInfo = pool->getInfo(handle);
+                        if (mediaInfo) {
+                            if (info.isCharacter) {
+                                if (info.predecode && mediaInfo->frameCount > 1)
+                                    pool->startLoopPreDecode(handle, ResolutionTier::Half);
+                            } else if (mediaInfo->frameCount > 1 &&
+                                       mediaInfo->frameCount <= MediaPool::LOOP_PREDECODE_MAX_FRAMES) {
+                                pool->startLoopPreDecode(handle, ResolutionTier::Full);
+                            } else if (mediaInfo->frameCount > 1) {
+                                pool->schedulePrefetch(handle, /*afterFrame=*/0,
+                                                       /*count=*/60, /*urgent=*/false,
+                                                       ResolutionTier::Full);
+                            }
+                        }
+                    }
                 }
-            } else {
-                if (mediaInfo->frameCount > 1 &&
-                    mediaInfo->frameCount <= MediaPool::LOOP_PREDECODE_MAX_FRAMES) {
-                    pool->startLoopPreDecode(handle, ResolutionTier::Full);
-                    ++loopWarmCount;
-                } else if (mediaInfo->frameCount > 1) {
-                    pool->schedulePrefetch(handle, /*afterFrame=*/0,
-                                           /*count=*/60,
-                                           /*urgent=*/false,
-                                           ResolutionTier::Full);
-                    ++headWarmCount;
-                }
-            }
-        }
-        auto ms = duration<double, std::milli>(steady_clock::now() - t0).count();
-        spdlog::warn("preOpenVideoMedia(bg): opened={} loopWarm={} headWarm={} in {:.0f}ms",
-                     opened, loopWarmCount, headWarmCount, ms);
 
-        // Signal completion on the UI thread so isBackgroundWarmupActive()
-        // returns false and playback can proceed.  Also re-kick the Program
-        // Monitor so the just-warmed media actually paints: the 100ms
-        // post-setTimeline requestRefresh fires a 15-cycle (~240ms) settle
-        // window that typically expires before this background open
-        // completes (NVDEC init + FFmpeg probe is 100-170ms per character
-        // clip), so the cold-start composite returned nothing and the
-        // tick-dedup gate then froze the monitor blank until the user
-        // scrubbed or played.  A second requestRefresh here resets the
-        // settle window with the cache warm, so the saved-playhead frame
-        // composites for real on the next poll tick.
-        QMetaObject::invokeMethod(qApp, [this]() {
-            m_backgroundWarmupActive.fetch_sub(1, std::memory_order_release);
-            if (m_programMonitor) m_programMonitor->requestRefresh();
-        }, Qt::QueuedConnection);
-    }).detach();
+                const int done = processed->fetch_add(1, std::memory_order_acq_rel) + 1;
+                QMetaObject::invokeMethod(qApp, [this, done, total]() {
+                    emit backgroundWarmupProgress(done, total);
+                }, Qt::QueuedConnection);
+            }
+
+            // The last worker to finish finalizes the batch on the UI thread.
+            if (threadsRemaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                auto ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - *startTime).count();
+                spdlog::warn("preOpenVideoMedia(bg): warmed {} handle(s) on {} thread(s) in {:.0f}ms",
+                             total, nThreads, ms);
+                // Re-kick the Program Monitor so the just-warmed media paints,
+                // decrement the batch counter, and signal MainWindow to drop
+                // the project-loading input lock.  Posted to qApp so it runs
+                // on the UI thread where these are safe to touch.
+                QMetaObject::invokeMethod(qApp, [this]() {
+                    const int remaining =
+                        m_backgroundWarmupActive.fetch_sub(1, std::memory_order_release) - 1;
+                    if (m_programMonitor) m_programMonitor->requestRefresh();
+                    if (remaining <= 0)
+                        emit backgroundWarmupFinished();
+                }, Qt::QueuedConnection);
+            }
+        }).detach();
+    }
 }
 
 } // namespace rt
