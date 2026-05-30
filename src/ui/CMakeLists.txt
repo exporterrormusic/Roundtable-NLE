@@ -205,6 +205,7 @@ add_library(roundtable_ui STATIC
     # Viewport
     viewport/Viewport.cpp
     viewport/VulkanViewport.cpp
+    viewport/VulkanViewportPresent.cpp
     viewport/VulkanViewportSetup.cpp
     viewport/OverlayMath.cpp
     viewport/TransformOverlayWidget.cpp
