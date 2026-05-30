@@ -11,6 +11,8 @@
 
 namespace rt {
 
+class Timeline;
+
 class TimelineObserver
 {
 public:
@@ -51,6 +53,12 @@ public:
 
     /// Major structural change — full UI rebuild recommended
     virtual void onTimelineStructureChanged() {}
+
+    /// The timeline is being destroyed. Observers MUST drop any cached raw
+    /// Timeline* (and stop anything that would dereference it) before
+    /// returning -- after this call the object's storage is reclaimed.
+    /// Fired from ~Timeline(); do NOT dereference `tl` here, only compare it.
+    virtual void onTimelineDestroyed(Timeline* /*tl*/) {}
 };
 
 } // namespace rt

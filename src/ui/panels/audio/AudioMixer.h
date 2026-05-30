@@ -26,6 +26,7 @@
 
 #include "widgets/VUMeter.h"
 #include "command/Command.h"
+#include "timeline/TimelineObserver.h"
 
 #include <QLabel>
 #include <QDial>
@@ -166,7 +167,7 @@ private:
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// Audio Mixer panel — horizontal strip of channel faders + VU meters.
-class AudioMixer : public QWidget
+class AudioMixer : public QWidget, public TimelineObserver
 {
     Q_OBJECT
 
@@ -178,6 +179,10 @@ public:
 
     /// Set the timeline to display audio tracks from.
     void setTimeline(Timeline* timeline);
+
+    // TimelineObserver: drop the cached timeline before it is destroyed so the
+    // meter timer can never dereference a freed Timeline (project/seq close).
+    void onTimelineDestroyed(Timeline* tl) override;
 
     /// Set the audio engine for metering.
     void setAudioEngine(AudioEngine* engine);

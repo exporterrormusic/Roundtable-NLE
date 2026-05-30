@@ -186,7 +186,12 @@ AudioMixer::AudioMixer(QWidget* parent)
     setupUI();
 }
 
-AudioMixer::~AudioMixer() = default;
+AudioMixer::~AudioMixer()
+{
+    // Unregister so a later Timeline destruction can't call back into a
+    // destroyed AudioMixer.
+    if (m_timeline) m_timeline->removeObserver(this);
+}
 
 QSize AudioMixer::sizeHint() const { return {520, 440}; }
 
@@ -196,8 +201,25 @@ QSize AudioMixer::sizeHint() const { return {520, 440}; }
 
 void AudioMixer::setTimeline(Timeline* timeline)
 {
-    m_timeline = timeline;
+    if (m_timeline != timeline) {
+        // Observe the timeline so onTimelineDestroyed() can null m_timeline
+        // before it is freed (no more dangling deref in the meter timer).
+        if (m_timeline) m_timeline->removeObserver(this);
+        m_timeline = timeline;
+        if (m_timeline) m_timeline->addObserver(this);
+    }
     rebuildStrips();
+}
+
+void AudioMixer::onTimelineDestroyed(Timeline* tl)
+{
+    if (tl != m_timeline) return;
+    // The timeline is going away: drop every reference into it and halt the
+    // meter timer so updateMeters() cannot touch freed memory. Strips hold
+    // raw Track* into this timeline, so clear them too.
+    m_timeline = nullptr;
+    if (m_meterTimer) m_meterTimer->stop();
+    for (auto& strip : m_strips) strip.track = nullptr;
 }
 
 void AudioMixer::setAudioEngine(AudioEngine* engine)

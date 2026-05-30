@@ -185,6 +185,7 @@ private slots:
 
     // TimelineObserver
     void onInOutChanged() override;
+    void onTimelineDestroyed(Timeline* tl) override;
 
 protected:
     void showEvent(QShowEvent* event) override;

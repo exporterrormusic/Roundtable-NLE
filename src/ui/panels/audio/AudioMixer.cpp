@@ -244,14 +244,10 @@ void AudioMixer::resetPan(ChannelStrip& strip)
 
 void AudioMixer::updateMeters()
 {
-    // ── Safety net: catch any exception (including SEH access violations
-    //    from dangling m_timeline / m_audioEngine pointers during project
-    //    switch or timeline destruction) and silently recover.  The meter
-    //    timer will be reaped when the AudioMixer is next set up with a
-    //    valid project, so a spurious catch is harmless — just a visual
-    //    meter freeze until playback resumes.
-    try {
-
+    // Lifetime: m_timeline is nulled via onTimelineDestroyed() before the
+    // timeline is freed, and strip.track pointers are cleared with it, so the
+    // dereferences below can no longer touch freed memory. (This is why the
+    // former try/catch(...) + /EHa SEH band-aid was removed — see #20.)
     if (!m_audioEngine) return;
 
     // If audio is not actively playing, decay meters to silence
@@ -316,14 +312,6 @@ void AudioMixer::updateMeters()
         const float avgPeak = (m.peakL + m.peakR) * 0.5f;
         strip.vuMeter->setLevel(0, avgPeak * leftGain);
         strip.vuMeter->setLevel(1, avgPeak * rightGain);
-    }
-
-    } catch (...) {
-        // Swallow any exception (SEH access violation from dangling pointers
-        // during project close / timeline destruction).  Stop the timer to
-        // avoid flooding the log with repeated crashes.
-        if (m_meterTimer)
-            m_meterTimer->stop();
     }
 }
 

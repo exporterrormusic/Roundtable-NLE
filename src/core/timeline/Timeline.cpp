@@ -15,7 +15,18 @@ namespace rt {
 // ── Construction ────────────────────────────────────────────────────────────
 
 Timeline::Timeline()  = default;
-Timeline::~Timeline() = default;
+
+Timeline::~Timeline()
+{
+    // Tell observers we're going away so any cached raw Timeline* is nulled
+    // before this object's storage is reclaimed. Without this, e.g. the
+    // AudioMixer meter timer or ExportPanel could dereference a freed timeline
+    // during project/sequence close (the bug the /EHa band-aids masked).
+    // Copy first: a callback may call removeObserver() and mutate m_observers.
+    const auto observers = m_observers;
+    for (auto* obs : observers)
+        if (obs) obs->onTimelineDestroyed(this);
+}
 
 // ── Track management ────────────────────────────────────────────────────────
 

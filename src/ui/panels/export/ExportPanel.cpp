@@ -80,6 +80,15 @@ ExportPanel::~ExportPanel()
         m_timeline->removeObserver(this);
 }
 
+void ExportPanel::onTimelineDestroyed(Timeline* tl)
+{
+    // The timeline is being freed. Drop our cached pointer so nothing here
+    // dereferences it later. Do NOT call removeObserver() — the timeline is
+    // mid-destruction and its observer list is going away with it.
+    if (tl == m_timeline)
+        m_timeline = nullptr;
+}
+
 void ExportPanel::setTimeline(Timeline* timeline)
 {
     // Unregister from old timeline

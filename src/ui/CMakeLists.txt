@@ -272,12 +272,14 @@ set_source_files_properties(
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
 )
 
-# /EHa for AudioMixer.cpp — catch(...) catches SEH access violations
-# from dangling m_timeline / m_audioEngine pointers during project
-# close / timeline destruction.
-set_source_files_properties(panels/audio/AudioMixer.cpp PROPERTIES COMPILE_FLAGS "/EHa")
+# (AudioMixer.cpp no longer needs /EHa: the dangling m_timeline that the
+#  catch(...) masked is now prevented at the root via TimelineObserver::
+#  onTimelineDestroyed() nulling the pointer before the timeline is freed. #20)
 
-# /EHa for ExportPanel.cpp — the main-thread composite lambda in
+# /EHa for ExportPanel.cpp — INTENTIONALLY KEPT (#20). Unlike AudioMixer's
+# (now-removed) lifetime band-aid, this guards an EXTERNAL SEH, not a dangling
+# pointer, so there is no lifetime fix to make:
+# the main-thread composite lambda in
 # pipelineComposite runs under Qt::QueuedConnection during export.  A
 # raised SEH there (e.g. 0x000006BA from an injected hook DLL while the
 # Vulkan ICD is mid-TDR) would otherwise propagate out of the lambda,
