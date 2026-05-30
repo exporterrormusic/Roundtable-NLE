@@ -226,7 +226,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         (entry.info.duration <= 0.0 || entry.info.frameCount <= 1);
     if (entryIsStill && entry.decoder) {
         entry.decoder->close();
-        spdlog::warn("MediaPool: released probe handle for still image '{}' "
+        spdlog::debug("MediaPool: released probe handle for still image '{}' "
                      "(handle={}) — live replace enabled",
                      entry.path.filename().string(), handle);
     }

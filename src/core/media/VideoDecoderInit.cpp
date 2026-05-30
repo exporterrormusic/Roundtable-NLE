@@ -93,8 +93,8 @@ SharedFileHandle openSharedRead(const std::filesystem::path& p)
         if (h2 != INVALID_HANDLE_VALUE) {
             // warn-level on purpose: perf_log.txt is filtered to warn+,
             // so info lines never appear. This is a temporary diagnostic.
-            spdlog::warn("VideoDecoder: share-mode self-test PASSED '{}'",
-                         p.string());
+            spdlog::debug("VideoDecoder: share-mode self-test PASSED '{}'",
+                          p.string());
             ::CloseHandle(h2);
         } else {
             DWORD err = ::GetLastError();
@@ -346,7 +346,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     }
     m_avioFile = static_cast<void*>(sh);
     // warn-level temporary diagnostic (perf_log.txt is warn+ filtered).
-    spdlog::warn("VideoDecoder: shared-mode open '{}' (FILE_SHARE_READ|WRITE|DELETE, raw HANDLE)",
+    spdlog::debug("VideoDecoder: shared-mode open '{}' (FILE_SHARE_READ|WRITE|DELETE, raw HANDLE)",
                  pathStr);
 
     auto* buf = static_cast<uint8_t*>(av_malloc(kAvioBufSize));

@@ -304,6 +304,27 @@ bool FrameSignature::compute(VkImageView view, VkSampler sampler,
 
 void FrameSignature::destroy() {
     if (m_device == VK_NULL_HANDLE) return;
+
+    // Guard against teardown-after-device-destroy. FrameSignatureLog is a
+    // function-local static, so when the harness is enabled its destructor
+    // runs at CRT exit (execute_onexit_table) — which is AFTER App::~App has
+    // already called GpuContext::shutdown() → vkDestroyDevice(). At that point
+    // m_device is a dangling handle and vkDestroyDevice already implicitly
+    // freed every child object below; calling vkDestroyFence / vmaDestroyBuffer
+    // / vkDestroyPipeline on the dead device dereferences freed driver state
+    // and crashes inside nvoglv64.dll (see logs/crash_log.txt, 2026-05-30
+    // 02:14:50 and 02:22:54). GpuContext nulls its device handle on shutdown,
+    // so a mismatch means the device is gone — there is nothing left to free.
+    if (GpuContext::get().vkDevice() != m_device) {
+        m_fence    = VK_NULL_HANDLE; m_cmdPool  = VK_NULL_HANDLE;
+        m_sigBuf   = VK_NULL_HANDLE; m_sigAlloc = nullptr; m_sigMapped = nullptr;
+        m_pipeline = VK_NULL_HANDLE; m_layout   = VK_NULL_HANDLE;
+        m_pool     = VK_NULL_HANDLE; m_dsl      = VK_NULL_HANDLE;
+        m_shader   = VK_NULL_HANDLE; m_device   = VK_NULL_HANDLE;
+        m_ready    = false;
+        return;
+    }
+
     if (m_fence)    { vkDestroyFence(m_device, m_fence, nullptr); m_fence = VK_NULL_HANDLE; }
     if (m_cmdPool)  { vkDestroyCommandPool(m_device, m_cmdPool, nullptr); m_cmdPool = VK_NULL_HANDLE; }
     if (m_sigBuf && m_ctx) {

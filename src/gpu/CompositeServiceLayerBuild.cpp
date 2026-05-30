@@ -232,10 +232,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 ancX = clip->anchorX().evaluate(localTick) * scaleToOutX;
                 ancY = clip->anchorY().evaluate(localTick) * scaleToOutY;
             } catch (...) {
-                // Keyframe vector corruption — use defaults and continue.
-                // The preroll deferral (isBackgroundWarmupActive gate) should
-                // prevent this path from being hit, but this catch-all ensures
-                // we never crash the compositor on corrupted keyframe state.
+                // Catches a C++ exception thrown from evaluate() (e.g. a
+                // std::bad_alloc / std::length_error if a keyframe vector's
+                // size/capacity is garbage) — use defaults and continue.
+                // NOTE: this TU compiles with /EHsc (see src/gpu/CMakeLists.txt),
+                // so this does NOT catch a hardware ACCESS_VIOLATION from
+                // dereferencing a freed/corrupted vector. The real protection
+                // against concurrent timeline mutation is the preroll deferral
+                // (isBackgroundWarmupActive gate) plus the fact that
+                // buildLayersForFrame runs under m_compositeMutex; this catch is
+                // only a soft backstop for thrown exceptions, not a memory-safety
+                // guarantee.
                 spdlog::warn("compositeFrame: keyframe evaluation failed for clip {} — using defaults",
                              clipId);
             }

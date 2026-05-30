@@ -193,7 +193,7 @@ Nv12Converter* WorkerGpuState::ensureNv12Converter(uint32_t w, uint32_t h)
     }
     nv12ConverterW = w;
     nv12ConverterH = h;
-    spdlog::warn("WorkerGpuState: per-worker Nv12Converter created {}x{}",
+    spdlog::debug("WorkerGpuState: per-worker Nv12Converter created {}x{}",
                  w, h);
     return nv12Converter.get();
 }
@@ -398,20 +398,20 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
 
     if (!decoded.isHardware) {
         if (shouldLogZcFail(ZcFailReason::NotHardware))
-            spdlog::warn("[ZC-DIAG] handle={} skipped: decoded.isHardware=false "
+            spdlog::debug("[ZC-DIAG] handle={} skipped: decoded.isHardware=false "
                          "(software decode, NVDEC not engaged for this file)",
                          task.handle);
     } else if (decoded.avFrame == nullptr) {
         if (shouldLogZcFail(ZcFailReason::NullAvFrame))
-            spdlog::warn("[ZC-DIAG] handle={} skipped: decoded.avFrame=null",
+            spdlog::debug("[ZC-DIAG] handle={} skipped: decoded.avFrame=null",
                          task.handle);
     } else if (hwW == 0 || hwH == 0) {
         if (shouldLogZcFail(ZcFailReason::ZeroDims))
-            spdlog::warn("[ZC-DIAG] handle={} skipped: zero dimensions",
+            spdlog::debug("[ZC-DIAG] handle={} skipped: zero dimensions",
                          task.handle);
     } else if ((hwW & 1) != 0 || (hwH & 1) != 0) {
         if (shouldLogZcFail(ZcFailReason::OddDims))
-            spdlog::warn("[ZC-DIAG] handle={} skipped: odd dimensions W={} H={}",
+            spdlog::debug("[ZC-DIAG] handle={} skipped: odd dimensions W={} H={}",
                          task.handle, hwW, hwH);
     }
 
@@ -425,11 +425,11 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
         interop = ctx.cudaVulkanInterop();
         if (!interop) {
             if (shouldLogZcFail(ZcFailReason::NoInterop))
-                spdlog::warn("[ZC-DIAG] handle={} skipped: ctx.cudaVulkanInterop=null",
+                spdlog::debug("[ZC-DIAG] handle={} skipped: ctx.cudaVulkanInterop=null",
                              task.handle);
         } else if (!interop->isAvailable()) {
             if (shouldLogZcFail(ZcFailReason::InteropUnavailable))
-                spdlog::warn("[ZC-DIAG] handle={} skipped: interop->isAvailable=false",
+                spdlog::debug("[ZC-DIAG] handle={} skipped: interop->isAvailable=false",
                              task.handle);
         }
         if (interop && interop->isAvailable()) {
@@ -442,14 +442,14 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
             const int uvPitch = decoded.avFrame->linesize[1];
             if (!yPtr || !uvPtr || yPitch <= 0 || uvPitch <= 0) {
                 if (shouldLogZcFail(ZcFailReason::NullPlanes))
-                    spdlog::warn("[ZC-DIAG] handle={} skipped: null plane ptrs/pitch "
+                    spdlog::debug("[ZC-DIAG] handle={} skipped: null plane ptrs/pitch "
                                  "(yPtr={} uvPtr={} yPitch={} uvPitch={})",
                                  task.handle, yPtr, uvPtr, yPitch, uvPitch);
             } else {
                 auto alloc = interop->allocate(hwW, hwH, /*tenBit=*/hwIsP010);
                 if (!alloc) {
                     if (shouldLogZcFail(ZcFailReason::AllocateFailed))
-                        spdlog::warn("[ZC-DIAG] handle={} skipped: interop->allocate "
+                        spdlog::debug("[ZC-DIAG] handle={} skipped: interop->allocate "
                                      "returned null (vkAllocateMemory exhaustion?)",
                                      task.handle);
                 } else {
@@ -461,7 +461,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
                               yPtr, yPitch, uvPtr, uvPitch, hwW, hwH);
                     if (!copyOk) {
                         if (shouldLogZcFail(ZcFailReason::CopyFailed))
-                            spdlog::warn("[ZC-DIAG] handle={} skipped: "
+                            spdlog::debug("[ZC-DIAG] handle={} skipped: "
                                          "{} copy failed",
                                          task.handle,
                                          hwIsP010 ? "P010" : "NV12");

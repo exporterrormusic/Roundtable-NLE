@@ -529,7 +529,7 @@ void TimelineWorkspace::rescanMediaWatch()
                  "{} now watched by QFileSystemWatcher",
                  want.size(), nowWatched.size());
     for (const QString& w : nowWatched)
-        spdlog::warn("[LIVE-RELOAD]   watching: '{}'", w.toStdString());
+        spdlog::debug("[LIVE-RELOAD]   watching: '{}'", w.toStdString());
 }
 
 void TimelineWorkspace::refreshAfterUndoRedo()

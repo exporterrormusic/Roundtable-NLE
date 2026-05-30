@@ -316,7 +316,7 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
     {
         static int s_vkDiag = 0;
         if (++s_vkDiag < 6) {
-            spdlog::warn("[VKVIEWPORT-FIT] widget={}x{} sw={}x{} offset=({:.0f},{:.0f}) baseY={:.1f} baseH={:.1f}",
+            spdlog::debug("[VKVIEWPORT-FIT] widget={}x{} sw={}x{} offset=({:.0f},{:.0f}) baseY={:.1f} baseH={:.1f}",
                          (int)widgetW, (int)widgetH, (int)swW, (int)swH,
                          offsetX, offsetY, baseY, baseH);
         }

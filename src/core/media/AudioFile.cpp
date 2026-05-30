@@ -76,7 +76,7 @@ SharedFileHandle openSharedReadHandle(const std::filesystem::path& p)
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h2 != INVALID_HANDLE_VALUE) {
-            spdlog::warn("AudioFile: share-mode self-test PASSED '{}'",
+            spdlog::debug("AudioFile: share-mode self-test PASSED '{}'",
                          p.string());
             ::CloseHandle(h2);
         } else {
@@ -713,7 +713,7 @@ bool AudioFile::openSndfile([[maybe_unused]] const std::filesystem::path& path)
         return false;
     }
     m_impl->sndFileFP = static_cast<void*>(sndHandle);
-    spdlog::warn("AudioFile/sndfile: shared-mode open '{}' (raw HANDLE)", path.string());
+    spdlog::debug("AudioFile/sndfile: shared-mode open '{}' (raw HANDLE)", path.string());
 
     SF_VIRTUAL_IO vio;
     vio.get_filelen = &sfVioGetFilelen;
@@ -783,7 +783,7 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
         return false;
     }
     m_impl->avioFile = static_cast<void*>(sh);
-    spdlog::warn("AudioFile/FFmpeg: shared-mode open '{}' (raw HANDLE)", path.string());
+    spdlog::debug("AudioFile/FFmpeg: shared-mode open '{}' (raw HANDLE)", path.string());
 
     auto* buf = static_cast<uint8_t*>(av_malloc(kAudioAvioBufSize));
     if (!buf) {

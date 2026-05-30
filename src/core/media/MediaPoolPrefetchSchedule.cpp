@@ -229,7 +229,7 @@ void MediaPool::prefetchWorker(int workerId)
             }
         }
         if (wgs.ready()) {
-            spdlog::warn("MediaPool prefetch[{}]: WorkerGpuState ready "
+            spdlog::debug("MediaPool prefetch[{}]: WorkerGpuState ready "
                          "— GPU-resident decode path now eligible", workerId);
         }
     };

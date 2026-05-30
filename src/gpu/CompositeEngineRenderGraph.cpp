@@ -810,7 +810,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     {
                         static std::atomic<int> s_diagCount{0};
                         if (s_diagCount.fetch_add(1) < 60) {
-                            spdlog::warn("[EFFECT-DIAG] out={}x{} sync={} li={} "
+                            spdlog::debug("[EFFECT-DIAG] out={}x{} sync={} li={} "
                                          "effects={} srcView={} outView={} snapImg={}",
                                          outW, outH, forceSyncReadback, li,
                                          layer.effects.size(),
