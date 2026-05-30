@@ -19,6 +19,8 @@ add_library(roundtable_ui STATIC
     SplashScreen.cpp
     Theme.cpp
     ThemeStylesheet.cpp
+    ThemeStylesheetControls.cpp
+    ThemeStylesheetViews.cpp
     ThemePresets.cpp
     UiScale.cpp
     UpdateChecker.cpp
