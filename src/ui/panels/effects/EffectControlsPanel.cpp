@@ -364,6 +364,8 @@ bool EffectControlsPanel::isAnySpinBoxBeingEdited() const
     return false;
 }
 
+// EDIT INVARIANT (see CommandStack.h "EDIT DISCIPLINE"): keyframe time is
+// clip-relative. Always go through this when reading/writing a clip KeyframeTrack.
 int64_t EffectControlsPanel::clipRelativeTick() const noexcept
 {
     if (!m_clip) return 0;

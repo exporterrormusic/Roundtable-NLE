@@ -2,13 +2,12 @@
  * test_export.cpp — Unit tests for the Export Pipeline (Step 24).
  *
  * Tests: Encoder enums/config/factory, ExportPresets, ContainerFormats,
- *        FrameRenderer (stub mode), AudioMixdown, RenderQueue job management.
+ *        AudioMixdown, RenderQueue job management.
  */
 
 #include <gtest/gtest.h>
 
 #include "Encoder.h"
-#include "FrameRenderer.h"
 #include "AudioMixdown.h"
 #include "Muxer.h"
 #include "RenderQueue.h"
@@ -302,117 +301,6 @@ TEST(ExportJob, Defaults)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// FrameRenderer (stub mode, no compositor)
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST(ExportFrameRenderer, ConfigDefaults)
-{
-    FrameRendererConfig cfg;
-    EXPECT_EQ(cfg.outputWidth, 1920u);
-    EXPECT_EQ(cfg.outputHeight, 1080u);
-    EXPECT_DOUBLE_EQ(cfg.fps, 30.0);
-    EXPECT_FALSE(cfg.gpuOnly);
-}
-
-TEST(ExportFrameRenderer, InitWithoutCompositor)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 320;
-    cfg.outputHeight = 240;
-
-    // Should succeed in stub mode (no compositor)
-    bool ok = renderer.init(cfg, nullptr);
-    EXPECT_TRUE(ok);
-    EXPECT_TRUE(renderer.isInitialized());
-}
-
-TEST(ExportFrameRenderer, RenderStubFrame)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 32;
-    cfg.outputHeight = 32;
-    cfg.fpsNum = 30;
-    cfg.fpsDen = 1;
-    renderer.init(cfg, nullptr);
-
-    Timeline timeline;
-    auto frame = renderer.renderFrame(timeline, 0);
-
-    EXPECT_TRUE(frame.isValid());
-    EXPECT_EQ(frame.width, 32u);
-    EXPECT_EQ(frame.height, 32u);
-    EXPECT_EQ(frame.frameIndex, 0);
-    EXPECT_EQ(frame.pixels.size(), 32u * 32u * 4u);
-}
-
-TEST(ExportFrameRenderer, RenderAtTime)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 16;
-    cfg.outputHeight = 16;
-    renderer.init(cfg, nullptr);
-
-    Timeline timeline;
-    auto frame = renderer.renderAtTime(timeline, 1.0);
-
-    EXPECT_TRUE(frame.isValid());
-    EXPECT_EQ(frame.width, 16u);
-    EXPECT_DOUBLE_EQ(frame.timestamp, 1.0);
-}
-
-TEST(ExportFrameRenderer, RenderStatsTracked)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 8;
-    cfg.outputHeight = 8;
-    renderer.init(cfg, nullptr);
-
-    Timeline timeline;
-    (void)renderer.renderFrame(timeline, 0);
-    (void)renderer.renderFrame(timeline, 1);
-    (void)renderer.renderFrame(timeline, 2);
-
-    auto stats = renderer.stats();
-    EXPECT_EQ(stats.framesRendered, 3);
-    EXPECT_GT(stats.totalRenderTimeMs, 0.0);
-}
-
-TEST(ExportFrameRenderer, RenderedFrameInvalid)
-{
-    RenderedFrame frame;
-    EXPECT_FALSE(frame.isValid());
-    EXPECT_EQ(frame.width, 0u);
-    EXPECT_EQ(frame.height, 0u);
-    EXPECT_TRUE(frame.pixels.empty());
-}
-
-TEST(ExportFrameRenderer, RenderRange)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 8;
-    cfg.outputHeight = 8;
-    cfg.fpsNum = 10;
-    cfg.fpsDen = 1;
-    renderer.init(cfg, nullptr);
-
-    Timeline timeline;
-    int callbackCount = 0;
-    auto rendered = renderer.renderRange(timeline, 0, 4,
-        [&](const RenderedFrame& /*f*/) {
-            ++callbackCount;
-            return true; // continue
-        });
-
-    EXPECT_EQ(rendered, 5);
-    EXPECT_EQ(callbackCount, 5);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // AudioMixdown
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -622,39 +510,6 @@ TEST(ExportRenderQueue, JobSequentialIds)
         uint32_t id = queue.addJob(cfg);
         EXPECT_EQ(id, static_cast<uint32_t>(i + 1));
     }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Integration: FrameRenderer + Timeline
-// ═════════════════════════════════════════════════════════════════════════════
-
-TEST(ExportIntegration, RenderEmptyTimelineProducesFrame)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 64;
-    cfg.outputHeight = 64;
-    renderer.init(cfg, nullptr);
-
-    Timeline timeline;
-    timeline.addVideoTrack("V1");
-
-    auto frame = renderer.renderFrame(timeline, 0);
-    EXPECT_TRUE(frame.isValid());
-    EXPECT_EQ(frame.pixels.size(), 64u * 64u * 4u);
-}
-
-TEST(ExportIntegration, FrameRendererShutdown)
-{
-    FrameRenderer renderer;
-    FrameRendererConfig cfg;
-    cfg.outputWidth = 16;
-    cfg.outputHeight = 16;
-    renderer.init(cfg, nullptr);
-
-    EXPECT_TRUE(renderer.isInitialized());
-    renderer.shutdown();
-    EXPECT_FALSE(renderer.isInitialized());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

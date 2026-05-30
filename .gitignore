@@ -176,3 +176,6 @@ assets/presets/shots/thumbnails/
 # Backup copies
 *.original
 *.bak
+
+# A/B render-path harness output (#18)
+framehash.csv

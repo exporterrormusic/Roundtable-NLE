@@ -2,7 +2,7 @@
  * RenderQueue — Background render job queue for export.
  *
  * Manages a queue of export jobs that run in background threads.
- * Each job: FrameRenderer → Encoder → Muxer pipeline.
+ * Each job: frame-render callback (preview compositor) → Encoder → Muxer.
  * Supports multiple concurrent jobs, progress tracking, cancellation.
  */
 
@@ -183,8 +183,9 @@ public:
     void setProgressCallback(const JobProgressFn& cb) { m_progressCb = cb; }
     void setCompleteCallback(const JobCompleteFn& cb) { m_completeCb = cb; }
 
-    /// Set a callback that produces composited frames for export.
-    /// When set, processJob uses this instead of the stub FrameRenderer.
+    /// Set a callback that produces composited frames for export. REQUIRED:
+    /// processJob composites every frame through this (the preview compositor).
+    /// The old internal FrameRenderer fallback was removed (#18).
     void setFrameRenderCallback(FrameRenderFn fn) { m_frameRenderCb = std::move(fn); }
 
     // processJob is public so the SEH-safe wrapper (safeProcessJob in

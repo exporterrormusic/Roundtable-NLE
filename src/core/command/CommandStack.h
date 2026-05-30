@@ -6,6 +6,42 @@
  * - undo() / redo()
  * - merge continuous operations (e.g. dragging)
  * - configurable max depth
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ *  EDIT DISCIPLINE  (read before adding a new undoable edit — #21)
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ *  The #1 source of undo bugs here is choosing the wrong push. The rule:
+ *
+ *    • Has the model ALREADY been mutated when you record the command?
+ *        - NO  (the command should perform the change)  -> execute(cmd)
+ *               or, in a TimelinePanel, executeCommand(cmd) which also
+ *               refreshes track widgets + emits contentChanged().
+ *        - YES (a live drag/spinbox already applied it)  -> pushWithoutExecute(cmd)
+ *
+ *    Using execute() on an already-applied change DOUBLE-applies it.
+ *    Using pushWithoutExecute() on a not-yet-applied change makes the action
+ *    do nothing until the user redoes it. Both are classic regressions.
+ *
+ *    • The command's execute()/undo() must be SYMMETRIC and capture their own
+ *      before/after state at construction — never read "current" state at
+ *      undo() time (it may have moved on).
+ *
+ *    • Group N edits into ONE undo step with beginMacro()/endMacro()
+ *      (e.g. a multi-clip move, a paste, an effect-with-keyframes add).
+ *
+ *  EDIT INVARIANTS (fold these into any new edit of the same kind):
+ *
+ *    • Keyframe time is CLIP-RELATIVE, not absolute timeline tick. Use the
+ *      clip-relative tick (see EffectControlsPanel::clipRelativeTick()) when
+ *      reading/writing a clip's KeyframeTrack, or keyframes land at the wrong
+ *      time after the clip moves.
+ *
+ *    • Multi-clip move clamps the GROUP delta, not each clip. Compute one
+ *      delta for the whole selection and clamp THAT so the leftmost clip
+ *      stops at tick 0 — never clamp clips individually (they'd pile up /
+ *      overlap at 0). See TimelinePanelMouseDragMove.cpp "Group-floor clamp".
+ * ════════════════════════════════════════════════════════════════════════════
  */
 
 #pragma once

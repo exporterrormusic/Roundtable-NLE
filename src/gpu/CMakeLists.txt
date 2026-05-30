@@ -40,6 +40,10 @@ add_library(roundtable_gpu STATIC
     CompositeEngine.cpp
     CompositeEngineRenderGraph.cpp
 
+    # A/B render-path verification harness (#18)
+    diag/FrameSignature.cpp
+    diag/FrameSignatureLog.cpp
+
     # Composite service (extracted from TimelineWorkspaceComposite.cpp)
     CompositeService.cpp
     CompositeServiceFrame.cpp

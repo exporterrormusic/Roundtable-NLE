@@ -1,0 +1,52 @@
+#version 450
+//
+// frame_signature.comp — GPU-side composite-output signature for the A/B
+// render-path verification harness (#18). Computes a 256-bit signature of an
+// rgba8 output texture entirely on the GPU so only 32 bytes (not the whole
+// frame) are read back. Two frames are bit-identical iff their signatures
+// match (collision probability is negligible for verification use).
+//
+// The combine is commutative (atomicAdd / atomicXor across 8 buckets) so it is
+// order-independent across invocations, and position-weighted (spatial key) so
+// the same pixels in different positions produce different signatures.
+//
+// IMPORTANT: both render paths must run THIS shader on same-format textures for
+// the comparison to be apples-to-apples. Channel order is irrelevant to
+// equality as long as both paths use the same format.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D inputImage;   // composite output (rgba8)
+
+layout(std430, binding = 1) buffer SigBuffer {
+    uint sig[8];                                     // zero-init by host before dispatch
+};
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.width || p.y >= pc.height) return;
+
+    // Exact texel (no filtering); for rgba8_unorm, *255 round-trips losslessly.
+    vec4 c = texelFetch(inputImage, p, 0);
+    uint r = uint(round(c.r * 255.0));
+    uint g = uint(round(c.g * 255.0));
+    uint b = uint(round(c.b * 255.0));
+    uint a = uint(round(c.a * 255.0));
+    uint pv = r | (g << 8) | (b << 16) | (a << 24);
+
+    // Spatial key so position matters; multiply wraps (fine for hashing).
+    uint key   = uint(p.x) * 73856093u ^ uint(p.y) * 19349663u;
+    uint mixed = pv * (key | 1u) + key;
+
+    // Two commutative combines over DISJOINT bucket ranges. They must not
+    // overlap: mixing atomicAdd and atomicXor on the same location is
+    // order-dependent across threads (non-deterministic). Buckets 0-3 are
+    // pure-add; buckets 4-7 are pure-xor.
+    atomicAdd(sig[key & 3u], mixed);
+    atomicXor(sig[4u + (key & 3u)], mixed ^ (mixed >> 13) ^ pv);
+}

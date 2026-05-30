@@ -15,6 +15,7 @@
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
 #include "CompositeServiceBlend.h"       // rasterizeMasks
 #include "Compositor.h"
+#include "diag/FrameSignatureLog.h"
 #include "GpuContext.h"
 #include "GpuTextureCache.h"
 #include "GpuWorkSubmission.h"
@@ -1087,6 +1088,19 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         GpuContext::get().signalDeviceLost();
         compOk = false;
         readbackOk = false;
+    }
+
+    // A/B harness (#18): GPU-signature the preview output. The composite was
+    // submitted (async) just above; FrameSignature's own GpuScheduler submit
+    // runs after it in graphics-queue submission order, and its acquire barrier
+    // provides the cross-submission memory visibility. The Compositor output
+    // rests in GENERAL (same as the export path). No-op unless ROUNDTABLE_FRAMEHASH
+    // is set; when set, this serialises a per-frame signature submit (offline use).
+    if (compOk && gpuSubmitOk && FrameSignatureLog::get().enabled()) {
+        FrameSignatureLog::get().capture(
+            "preview", tick,
+            compositor->outputImageView(), compositor->outputSampler(),
+            outW, outH, VK_IMAGE_LAYOUT_GENERAL);
     }
 
     m_uploadManager->endFrame();

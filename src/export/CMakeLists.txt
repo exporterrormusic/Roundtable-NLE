@@ -5,7 +5,6 @@ add_library(roundtable_export STATIC
     RenderQueue.cpp
     SmartRenderAnalyzer.cpp
     PacketDemuxer.cpp
-    FrameRenderer.cpp
     AudioMixdown.cpp
     Muxer.cpp
     formats/H264Encoder.cpp

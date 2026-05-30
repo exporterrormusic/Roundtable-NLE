@@ -3,7 +3,6 @@
  */
 
 #include "RenderQueue.h"
-#include "FrameRenderer.h"
 #include "AudioMixdown.h"
 #include "Muxer.h"
 #include "Encoder.h"
@@ -287,23 +286,21 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     auto startTime = std::chrono::steady_clock::now();
 
     // ── Step 1: Frame renderer setup ────────────────────────────────
-    spdlog::info("RndQ[{}]: Step 1 — frame renderer setup", job.id);
-    FrameRenderer renderer;
-    FrameRendererConfig frCfg;
-    frCfg.outputWidth  = job.config.outputWidth;
-    frCfg.outputHeight = job.config.outputHeight;
-    frCfg.fpsNum       = job.config.encoderConfig.fpsNum;
-    frCfg.fpsDen       = job.config.encoderConfig.fpsDen;
+    // The live export composites each frame through m_frameRenderCb
+    // (ExportPanel -> the preview compositor with forceFullResolution). The
+    // old internal FrameRenderer was an unreachable fallback and was removed
+    // (#18: the export already shared the preview compositing path), so a
+    // frame-render callback is now REQUIRED.
+    const uint32_t outW   = job.config.outputWidth;
+    const uint32_t outH   = job.config.outputHeight;
+    const int      fpsNum = job.config.encoderConfig.fpsNum;
+    const int      fpsDen = job.config.encoderConfig.fpsDen;
 
-    const bool useCallback = !!m_frameRenderCb;
-    if (!useCallback) {
-        renderer.setProject(m_project);
-        if (!renderer.init(frCfg, compositor)) {
-            job.status = JobStatus::Failed;
-            job.error = "Failed to initialize frame renderer";
-            if (m_completeCb) m_completeCb(job.id, false, job.error);
-            return;
-        }
+    if (!m_frameRenderCb) {
+        job.status = JobStatus::Failed;
+        job.error = "RenderQueue: no frame-render callback set";
+        if (m_completeCb) m_completeCb(job.id, false, job.error);
+        return;
     }
 
     // ── Step 2: Encoder creation ────────────────────────────────────
@@ -353,7 +350,7 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     int64_t endFrame   = job.config.endFrame;
     if (endFrame <= startFrame && timeline) {
         double duration = ticksToSeconds(timeline->duration());
-        endFrame = static_cast<int64_t>(duration * frCfg.fpsNum / frCfg.fpsDen);
+        endFrame = static_cast<int64_t>(duration * fpsNum / fpsDen);
     }
     int64_t totalFrames = endFrame - startFrame;
     if (totalFrames <= 0) totalFrames = 1;
@@ -468,41 +465,29 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         // straight through — no per-frame CPU channel-swap + 4K alloc.
         // The holders below MUST outlive the encodeFrame() call.
         std::shared_ptr<CachedFrame> cframe;
-        RenderedFrame rendered;
         const uint8_t* encodePixels = nullptr;
 
-        if (useCallback) {
-            // Use the real compositing callback (produces BGRA CachedFrame)
-            int64_t tick = static_cast<int64_t>(
-                static_cast<double>(f) * 48000.0 * frCfg.fpsDen / frCfg.fpsNum);
-            // Calculate next frame's tick for the composite pipeline
-            // (async pre-submit so main thread composites next frame
-            // while worker encodes this one).
-            int64_t nextTick = -1;
-            if (f + 1 < endFrame) {
-                nextTick = static_cast<int64_t>(
-                    static_cast<double>(f + 1) * 48000.0 * frCfg.fpsDen / frCfg.fpsNum);
-            }
-            cframe = m_frameRenderCb(tick, nextTick, frCfg.outputWidth, frCfg.outputHeight, true);
-            // Frame callback MUST have populated CPU pixels on the main
-            // thread before returning (the callback does ensurePixels
-            // inside the BlockingQueuedConnection dispatch).  We do NOT
-            // call ensurePixels() here because it may trigger a GPU
-            // readback (lazyReadback) which is NOT thread-safe.
-            if (!cframe || cframe->pixels.empty()) {
-                spdlog::warn("RndQ[{}]: null or empty frame at f={}, skipping", job.id, f);
-                updateProgress(f);
-                continue;
-            }
-            encodePixels = cframe->pixels.data();
-        } else {
-            rendered = renderer.renderFrame(*timeline, f);
-            if (!rendered.isValid() || rendered.pixels.empty()) {
-                updateProgress(f);
-                continue;
-            }
-            encodePixels = rendered.pixels.data();
+        // Composite this frame via the main-thread callback (preview compositor;
+        // produces a BGRA CachedFrame). Async pre-submit of the next frame's
+        // tick lets the main thread composite f+1 while the worker encodes f.
+        int64_t tick = static_cast<int64_t>(
+            static_cast<double>(f) * 48000.0 * fpsDen / fpsNum);
+        int64_t nextTick = -1;
+        if (f + 1 < endFrame) {
+            nextTick = static_cast<int64_t>(
+                static_cast<double>(f + 1) * 48000.0 * fpsDen / fpsNum);
         }
+        cframe = m_frameRenderCb(tick, nextTick, outW, outH, true);
+        // The callback MUST have populated CPU pixels on the main thread before
+        // returning (it does ensurePixels inside the BlockingQueuedConnection
+        // dispatch). We do NOT call ensurePixels() here — it may trigger a GPU
+        // readback (lazyReadback) which is NOT thread-safe.
+        if (!cframe || cframe->pixels.empty()) {
+            spdlog::warn("RndQ[{}]: null or empty frame at f={}, skipping", job.id, f);
+            updateProgress(f);
+            continue;
+        }
+        encodePixels = cframe->pixels.data();
 
         // Encode frame
         if (encoder->encodeFrame(encodePixels, f - startFrame)) {

@@ -333,8 +333,9 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // Compute the actual delta applied to the primary clip
         int64_t actualDelta = newIn - m_dragOriginalIn;
 
+        // EDIT INVARIANT (see CommandStack.h "EDIT DISCIPLINE"):
         // Group-floor clamp: when multiple clips are dragged left as a
-        // unit, raise the delta so the leftmost selected clip lands at
+        // unit, raise the GROUP delta so the leftmost selected clip lands at
         // tick 0 instead of every clip individually clamping to 0 and
         // collapsing into an overlap (rightmost ends up overwriting the
         // leftmost).
