@@ -38,6 +38,7 @@ add_library(roundtable_gpu STATIC
 
     # Composite engine (extracted from CompositeService)
     CompositeEngine.cpp
+    CompositeEngineRenderGraph.cpp
 
     # Composite service (extracted from TimelineWorkspaceComposite.cpp)
     CompositeService.cpp
