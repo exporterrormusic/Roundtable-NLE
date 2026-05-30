@@ -10,8 +10,6 @@ ROUNDTABLE is a full-featured NLE written in C++20 with Vulkan 1.3 compute shade
 
 [![Watch the ROUNDTABLE tutorial](https://img.youtube.com/vi/ENj9zA39scc/maxresdefault.jpg)](https://youtu.be/ENj9zA39scc)
 
-▶️ **[Watch the tutorial on YouTube](https://youtu.be/ENj9zA39scc)**
-
 ---
 
 ## Disclaimer
