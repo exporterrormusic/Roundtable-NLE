@@ -75,6 +75,8 @@ add_library(roundtable_ui STATIC
     panels/properties/PropertiesPanelGraphic.cpp
     panels/effects/EffectControlsPanel.cpp
     panels/effects/EffectControlsPanelUI.cpp
+    panels/effects/EffectControlsPanelPropertyRow.cpp
+    panels/effects/EffectControlsPanelKeyframeTimeline.cpp
     panels/effects/EffectControlsPanelTree.cpp
     panels/effects/EffectControlsPanelEffects.cpp
     panels/effects/GraphicsEditorPanel.cpp
