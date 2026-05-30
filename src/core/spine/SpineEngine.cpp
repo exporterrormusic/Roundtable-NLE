@@ -558,6 +558,8 @@ SpineRenderData SpineEngine::extractMeshes()
                 batch = &result.batches.back();
                 batch->texturePageIndex = pageIndex;
                 batch->blendMode = blendMode;
+                const char* sn = slot->getData().getName().buffer();
+                batch->debugFirstSlot = sn ? sn : "";
             }
 
             auto baseVertex = static_cast<uint16_t>(batch->vertices.size());
@@ -589,6 +591,8 @@ SpineRenderData SpineEngine::extractMeshes()
                 batch = &result.batches.back();
                 batch->texturePageIndex = pageIndex;
                 batch->blendMode = blendMode;
+                const char* sn = slot->getData().getName().buffer();
+                batch->debugFirstSlot = sn ? sn : "";
             }
 
             auto baseVertex = static_cast<uint16_t>(batch->vertices.size());

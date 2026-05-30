@@ -229,6 +229,26 @@ void SpineAnimation::update(float dt)
     m_animState->update(dt * m_speed);
 }
 
+// Absolute-time seeking (evaluateAtTime) can land a looping track exactly on
+// its loop boundary, where animationTime = trackTime mod duration ≈ 0.  At that
+// instant the animation samples its t=0 keyframe values, which for assets whose
+// loops are not perfectly seamless (e.g. a slot opacity that is 0 just before
+// the loop end but keyed differently at t=0) produces a one-frame "pop" of that
+// slot — visible only on the timeline, since the COMPOSE/LIBRARY previews drive
+// the engine with continuous update(dt) and never sample exactly at the seam.
+// Nudge the track time a fraction of a frame past the boundary so the seam
+// frame matches its neighbours, mirroring continuous-playback behaviour.
+void SpineAnimation::nudgeOffLoopSeam(spine::TrackEntry* entry)
+{
+    if (!entry || !entry->getLoop()) return;
+    // ~one 60 fps frame: small enough to be imperceptible, large enough to clear
+    // a single-frame boundary keyframe and the slot-cull alpha threshold.
+    constexpr float kSeamEps = 1.0f / 60.0f;
+    const float rel = entry->getAnimationTime() - entry->getAnimationStart();
+    if (rel >= 0.0f && rel < kSeamEps)
+        entry->setTrackTime(entry->getTrackTime() + (kSeamEps - rel));
+}
+
 void SpineAnimation::evaluateAtTime(float bodyTime, float talkTime)
 {
     if (!m_animState || !m_skeleton) return;
@@ -240,6 +260,7 @@ void SpineAnimation::evaluateAtTime(float bodyTime, float talkTime)
     auto* bodyEntry = m_animState->getCurrent(static_cast<size_t>(AnimTrack::Body));
     if (bodyEntry) {
         bodyEntry->setTrackTime(bodyTime);
+        nudgeOffLoopSeam(bodyEntry);
     }
 
     // Set talk track time directly
@@ -247,6 +268,7 @@ void SpineAnimation::evaluateAtTime(float bodyTime, float talkTime)
         auto* talkEntry = m_animState->getCurrent(static_cast<size_t>(AnimTrack::Talk));
         if (talkEntry) {
             talkEntry->setTrackTime(talkTime);
+            nudgeOffLoopSeam(talkEntry);
         }
     }
 

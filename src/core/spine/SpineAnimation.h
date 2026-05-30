@@ -27,6 +27,7 @@ namespace spine {
     class AnimationState;
     class AnimationStateData;
     class Animation;
+    class TrackEntry;
 }
 
 namespace rt {
@@ -132,6 +133,12 @@ public:
 private:
     struct AnimStateDeleter { void operator()(spine::AnimationState* p) const; };
     struct AnimStateDataDeleter { void operator()(spine::AnimationStateData* p) const; };
+
+    /// If a looping track entry has landed within a fraction of a frame of its
+    /// loop boundary (animationTime ≈ start), nudge it past the seam so
+    /// absolute-time seeking doesn't sample the t=0 keyframe and pop a slot for
+    /// one frame.  No-op for non-looping entries.  See evaluateAtTime().
+    static void nudgeOffLoopSeam(spine::TrackEntry* entry);
 
     spine::Skeleton*                                          m_skeleton = nullptr;
     spine::SkeletonData*                                      m_skelData = nullptr;

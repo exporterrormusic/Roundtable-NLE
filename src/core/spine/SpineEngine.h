@@ -61,6 +61,11 @@ struct SpineRenderBatch
     SpineBlendMode                   blendMode = SpineBlendMode::Normal;
     std::vector<SpineVertex>         vertices;
     std::vector<uint16_t>            indices;
+    // Diagnostic only: name of the first slot that opened this batch (in draw
+    // order).  Set on batch creation in extractMeshes(); not uploaded to the
+    // GPU.  Used by the timeline Spine-blend signature logger to pinpoint which
+    // slot/blend-mode transition causes a one-frame flicker.
+    std::string                      debugFirstSlot;
 };
 
 /// Result of extractMeshes() — all render data for the current pose

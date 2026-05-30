@@ -44,6 +44,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <cmath>
+#include <cstdlib>
 
 namespace rt {
 
@@ -1044,6 +1045,80 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                     timeSeconds * spineClip->animationSpeed(), timeSeconds);
 
                                 SpineRenderData renderData = state.engine.extractMeshes();
+
+                                // ── SPINE-BLEND-DIAG (opt-in) ──────────────
+                                // Diagnostic for one-frame Spine flicker: logs a
+                                // per-clip batch signature (blend letters +
+                                // non-Normal slot names) plus the min vertex
+                                // brightness/alpha and the slot they land in,
+                                // edge-triggered so it only fires when something
+                                // changes between frames.  Pinpoints the loop
+                                // time + slot behind a flicker.  Off unless the
+                                // ROUNDTABLE_SPINE_DIAG env var is set, since
+                                // it's a one-off investigation tool.
+                                static const bool s_spineDiagEnabled =
+                                    std::getenv("ROUNDTABLE_SPINE_DIAG") != nullptr;
+                                if (s_spineDiagEnabled) {
+                                    auto blendLetter = [](SpineBlendMode m) -> char {
+                                        switch (m) {
+                                        case SpineBlendMode::Additive: return 'A';
+                                        case SpineBlendMode::Multiply: return 'M';
+                                        case SpineBlendMode::Screen:   return 'S';
+                                        default:                       return 'N';
+                                        }
+                                    };
+                                    std::string sig;
+                                    sig.reserve(renderData.batches.size());
+                                    std::string nonNormal;
+                                    int nonNormalCount = 0;
+                                    // Per-frame vertex color/alpha range.  A one-frame
+                                    // darkening on a static (single-batch, Normal) skeleton
+                                    // is the signature of a slot color/alpha (tint) key:
+                                    // track the darkest tint and the slot batch it lands in.
+                                    float minBright = 2.0f;   // min over verts of (r+g+b)/3
+                                    float minA      = 2.0f;   // min vertex alpha
+                                    std::string darkSlot;     // batch whose vert hit minBright
+                                    for (size_t bi = 0; bi < renderData.batches.size(); ++bi) {
+                                        const auto& b = renderData.batches[bi];
+                                        sig.push_back(blendLetter(b.blendMode));
+                                        if (b.blendMode != SpineBlendMode::Normal) {
+                                            ++nonNormalCount;
+                                            if (!nonNormal.empty()) nonNormal += ", ";
+                                            nonNormal += "#" + std::to_string(bi) + ":'"
+                                                       + b.debugFirstSlot + "'="
+                                                       + blendLetter(b.blendMode);
+                                        }
+                                        for (const auto& v : b.vertices) {
+                                            const float bright = (v.r + v.g + v.b) * (1.0f / 3.0f);
+                                            if (bright < minBright) { minBright = bright; darkSlot = b.debugFirstSlot; }
+                                            if (v.a < minA) minA = v.a;
+                                        }
+                                    }
+                                    // Edge-trigger on a coarse (sig + brightness/alpha bucket)
+                                    // key so a one-frame tint dip prints exactly twice per loop
+                                    // (enter + exit) with its animTime, instead of every frame.
+                                    const int brightBucket = static_cast<int>(minBright * 20.0f);
+                                    const int alphaBucket  = static_cast<int>(minA * 20.0f);
+                                    const std::string key = sig + "|" + std::to_string(brightBucket)
+                                                          + "|" + std::to_string(alphaBucket);
+                                    static std::unordered_map<uint64_t, std::string> s_spineBlendSig;
+                                    auto sigIt = s_spineBlendSig.find(spineClip->id());
+                                    if (sigIt == s_spineBlendSig.end() || sigIt->second != key) {
+                                        spdlog::warn(
+                                            "[SPINE-BLEND-DIAG] char='{}' outfit='{}' anim='{}' "
+                                            "animTime={:.3f}s tick={} batches={} nonNormal={} [{}] "
+                                            "minBright={:.3f} minA={:.3f} darkSlot='{}' sig={} (prev={})",
+                                            spineClip->characterName(), spineClip->outfit(),
+                                            spineClip->animationName(),
+                                            timeSeconds * spineClip->animationSpeed(), tick,
+                                            renderData.batches.size(), nonNormalCount,
+                                            nonNormal.empty() ? "-" : nonNormal,
+                                            minBright, minA, darkSlot, sig,
+                                            sigIt == s_spineBlendSig.end() ? "<new>" : sigIt->second);
+                                        s_spineBlendSig[spineClip->id()] = key;
+                                    }
+                                }
+
                                 if (!renderData.batches.empty()) {
                                     // Frame to THIS animation's box (setup pose ∪ the
                                     // animation's own envelope) so a taller-than-idle pose
