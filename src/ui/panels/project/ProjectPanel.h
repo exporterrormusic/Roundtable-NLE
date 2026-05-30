@@ -162,6 +162,10 @@ private slots:
 
 private:
     void setupUI();
+    // setupUI() section builders (each builds a member widget):
+    void buildIconRail();      // ProjectPanelUI.cpp
+    void buildSidePanel();     // ProjectPanelSidePanelBuild.cpp
+    void buildContentArea();   // ProjectPanelUI.cpp
     void rebuildTable();
     void showSidePanel(SidePanelMode mode);
     void hideSidePanel();

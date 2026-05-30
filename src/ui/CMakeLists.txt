@@ -137,6 +137,7 @@ add_library(roundtable_ui STATIC
     panels/project/ConversionPanel.cpp
     panels/project/ProjectPanel.cpp
     panels/project/ProjectPanelUI.cpp
+    panels/project/ProjectPanelSidePanelBuild.cpp
     panels/project/ProjectPanelHelpers.cpp
     panels/project/ProjectPanelTable.cpp
     panels/project/ProjectPanelNewPanel.cpp
