@@ -6,6 +6,12 @@
 
 ROUNDTABLE is a full-featured NLE written in C++20 with Vulkan 1.3 compute shaders and Qt 6. It combines professional-grade editing with native Spine animation compositing, AI-powered script-to-audio synchronization, real-time audio mixing, and hardware-accelerated export — purpose-built for creators working with 2D character animation and talking-head content.
 
+## 📺 Tutorial Video
+
+[![Watch the ROUNDTABLE tutorial](https://img.youtube.com/vi/ENj9zA39scc/maxresdefault.jpg)](https://youtu.be/ENj9zA39scc)
+
+▶️ **[Watch the tutorial on YouTube](https://youtu.be/ENj9zA39scc)**
+
 ---
 
 ## Disclaimer
@@ -17,7 +23,7 @@ ROUNDTABLE is a full-featured NLE written in C++20 with Vulkan 1.3 compute shade
 ## Support
 
 If you'd like to support development, you can leave a tip at:
-👉 **https://www.paypal.com/ncp/payment/7THEH3LWCTRZU*
+👉 **https://www.paypal.com/ncp/payment/7THEH3LWCTRZU**
 
 All contributions are greatly appreciated!
 
@@ -167,7 +173,8 @@ src/
 ├── gpu/                  # Vulkan 1.3 + optional CUDA
 │   ├── vulkan/           # Device management, pipelines, buffers, textures
 │   ├── cuda/             # CUDA context, NVDEC/NVENC interop
-│   └── Compositor/       # Frame compositing, render passes, staging
+│   ├── render_graph/     # Render-graph orchestration
+│   └── (compositor)      # CompositeService/CompositeEngine — frame compositing, staging
 ├── ui/                   # Qt 6 interface
 │   ├── panels/           # Timeline, monitors, effects, audio mixer, project bin
 │   ├── dialogs/          # Preferences, shortcuts, project settings, relink media
