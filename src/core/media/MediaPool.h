@@ -20,6 +20,7 @@
 #include "DiskFrameCache.h"
 #include "FrameScheduler.h"
 #include "VideoDecoder.h"
+#include "PerformanceProfile.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -273,7 +274,7 @@ public:
     /// When urgent=true, the first frame is pushed to the front of the
     /// prefetch queue so workers pick it up immediately.
     void schedulePrefetch(MediaHandle handle, int64_t afterFrame,
-                          int count = PREFETCH_AHEAD_COUNT,
+                          int count = perfProfile().prefetchAheadFrames,
                           bool urgent = false,
                           ResolutionTier tier = ResolutionTier::Full);
 
@@ -441,10 +442,14 @@ private:
     // The proper architectural fix is UPGRADE_PLAN §1.3 Path C
     // (separate graphics + async-compute queues for compositor vs
     // prefetch); this is a tighten-the-knob mitigation in the
-    // meantime.  Once Path C lands, this constant can return higher.
-    static constexpr int PREFETCH_AHEAD_COUNT = 12;
-    static constexpr int PREFETCH_THREAD_COUNT = 10;
-    static constexpr int PREFETCH_NVDEC_WORKERS = 2;
+    // meantime.  Once Path C lands, these knobs can return higher.
+    //
+    // These three values now live in rt::PerformanceProfile
+    // (perfProfile().prefetchAheadFrames / prefetchThreadCount /
+    // nvdecWorkers) so they can be scaled per-machine and by the Boost
+    // toggle — see docs/BOOST_MODE_PLAN.md.  The defaults above remain
+    // the behaviour-neutral baseline.  nvdecWorkers is always clamped by
+    // the GPU's real NVENC/NVDEC session cap before it is raised.
 
     void startPrefetchThread();
     void stopPrefetchThread();

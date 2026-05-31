@@ -72,6 +72,29 @@ struct GpuClassification
     bool            hasStrictNvencSessionCap{false};
 };
 
+/// Coarse machine capability class, used to scale the PerformanceProfile
+/// (and the Boost toggle) per machine.  Driven primarily by VRAM — the
+/// binding resource for this GPU-resident NLE — with RAM / core count able
+/// only to pull the tier DOWN, never up.  See docs/BOOST_MODE_PLAN.md §3.
+enum class MachineTier
+{
+    Entry,        ///< iGPU / <4 GB VRAM, or RAM/core starved
+    Standard,     ///< ~4-8 GB VRAM, 16 GB RAM — today's tuned defaults live here
+    Performance,  ///< ~8-16 GB VRAM, 32 GB RAM
+    Workstation,  ///< >=16 GB VRAM, >=48 GB RAM, >=16 cores
+};
+
+/// Classify the machine into a MachineTier from detected hardware.
+/// @param gpu          Result of classifyGpu() (provides vramBytes).
+/// @param totalRamBytes Installed physical RAM.
+/// @param logicalCores  std::thread::hardware_concurrency() (0 == unknown).
+[[nodiscard]] MachineTier classifyMachine(const GpuClassification& gpu,
+                                          uint64_t totalRamBytes,
+                                          unsigned logicalCores);
+
+/// Human-readable tier name for logging / UI.
+[[nodiscard]] const char* machineTierName(MachineTier tier);
+
 /// Scan the current process for known injected overlay DLLs.  Safe to
 /// call any time; cheap (single EnumProcessModules pass).
 std::vector<InjectedHook> scanLoadedHooks();

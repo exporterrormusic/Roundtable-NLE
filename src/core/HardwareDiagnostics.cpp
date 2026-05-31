@@ -244,6 +244,51 @@ GpuClassification classifyGpu(uint32_t vendorId,
     return cls;
 }
 
+MachineTier classifyMachine(const GpuClassification& gpu,
+                            uint64_t totalRamBytes,
+                            unsigned logicalCores)
+{
+    constexpr uint64_t kGiB = 1024ull * 1024ull * 1024ull;
+    const uint64_t vram = gpu.vramBytes;
+    const uint64_t ram  = totalRamBytes;
+    const unsigned cores = logicalCores;
+
+    // ── Base tier from VRAM (the binding resource) ──────────────────────
+    MachineTier tier;
+    if      (vram >= 16 * kGiB) tier = MachineTier::Workstation;
+    else if (vram >=  8 * kGiB) tier = MachineTier::Performance;
+    else if (vram >=  4 * kGiB) tier = MachineTier::Standard;
+    else                        tier = MachineTier::Entry;
+
+    // ── RAM / core gates can only pull the tier DOWN ────────────────────
+    // A 16 GB-VRAM card paired with 8 GB RAM is not a Workstation; the
+    // caches it would enable would thrash system memory.  cores==0 means
+    // "unknown" — don't penalise for it.
+    auto demoteTo = [&](MachineTier ceiling) {
+        if (static_cast<int>(tier) > static_cast<int>(ceiling))
+            tier = ceiling;
+    };
+    if (ram < 12 * kGiB || (cores != 0 && cores <= 4))
+        demoteTo(MachineTier::Entry);
+    else if (ram < 24 * kGiB || (cores != 0 && cores < 8))
+        demoteTo(MachineTier::Standard);
+    else if (ram < 40 * kGiB || (cores != 0 && cores < 12))
+        demoteTo(MachineTier::Performance);
+
+    return tier;
+}
+
+const char* machineTierName(MachineTier tier)
+{
+    switch (tier) {
+    case MachineTier::Entry:       return "Entry";
+    case MachineTier::Standard:    return "Standard";
+    case MachineTier::Performance: return "Performance";
+    case MachineTier::Workstation: return "Workstation";
+    }
+    return "Unknown";
+}
+
 void logAtStartup(const GpuClassification& gpu,
                   const std::vector<InjectedHook>& hooks)
 {

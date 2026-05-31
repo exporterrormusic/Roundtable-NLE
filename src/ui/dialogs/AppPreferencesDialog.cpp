@@ -7,7 +7,9 @@
 #include "GpuContext.h"
 #include "media/AudioEngine.h"
 #include "media/VideoDecoder.h"
+#include "HardwareDiagnostics.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -19,6 +21,12 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QVBoxLayout>
+
+#include <thread>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "Settings.h"
 
@@ -125,6 +133,44 @@ AppPreferencesDialog::AppPreferencesDialog(QWidget* parent,
 
     mainLayout->addWidget(hwGroup);
 
+    // ── Performance (Boost mode) ────────────────────────────────────────
+    auto* perfGroup = new QGroupBox(tr("Performance"), this);
+    auto* perfLayout = new QVBoxLayout(perfGroup);
+
+    m_boostCheck = new QCheckBox(
+        tr("Boost mode — trade system resources for higher performance"), this);
+    perfLayout->addWidget(m_boostCheck);
+
+    // Detected machine tier (transparency: shows what Boost will scale).
+    QString tierStr = tr("Unknown");
+    {
+        const auto& gi = GpuContext::get().device().gpuInfo();
+        auto gpu = HardwareDiagnostics::classifyGpu(gi.vendorId, gi.deviceId,
+                                                    gi.name, gi.vramSize);
+        uint64_t ramBytes = 0;
+#ifdef _WIN32
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof(ms);
+        if (GlobalMemoryStatusEx(&ms)) ramBytes = static_cast<uint64_t>(ms.ullTotalPhys);
+#endif
+        auto tier = HardwareDiagnostics::classifyMachine(
+            gpu, ramBytes, std::thread::hardware_concurrency());
+        tierStr = QString::fromLatin1(HardwareDiagnostics::machineTierName(tier));
+    }
+
+    auto* perfNote = new QLabel(
+        tr("Detected machine tier: <b>%1</b>.<br>"
+           "Default scales caches to your hardware automatically. Boost raises "
+           "the GPU/CPU cache working set further for smoother scrubbing on "
+           "capable machines, at the cost of higher VRAM/RAM use — best when the "
+           "editor is your primary app. Takes effect after restart.").arg(tierStr),
+        this);
+    perfNote->setWordWrap(true);
+    perfNote->setStyleSheet("color: #999;");
+    perfLayout->addWidget(perfNote);
+
+    mainLayout->addWidget(perfGroup);
+
     // ── Button box ──────────────────────────────────────────────────────
     mainLayout->addStretch();
 
@@ -173,6 +219,9 @@ void AppPreferencesDialog::loadSettings()
         }
     }
 
+    if (m_boostCheck)
+        m_boostCheck->setChecked(s.value("performance/boostEnabled", false).toBool());
+
     int savedDevice = s.value("AudioDeviceIndex", -1).toInt();
     if (m_audioDeviceCombo) {
         for (int i = 0; i < m_audioDeviceCombo->count(); ++i) {
@@ -201,6 +250,8 @@ void AppPreferencesDialog::saveSettings()
         // Apply immediately — affects all new VideoDecoder instances
         setForceSoftwareDecode(mode == 1);
     }
+    if (m_boostCheck)
+        s.setValue("performance/boostEnabled", m_boostCheck->isChecked());
 }
 
 } // namespace rt

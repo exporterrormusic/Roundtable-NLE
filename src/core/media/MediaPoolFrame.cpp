@@ -197,7 +197,7 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
             if (cached) {
                 m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
                 // Piggyback prefetch so the target frame is decoded soon
-                schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+                schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
                 if (!scrubMode) {
                     std::lock_guard lg(m_lastGoodMtx);
                     m_lastGoodFrame[handle] = cached;
@@ -273,7 +273,7 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // with scrubMode=false — so the encoder always gets the real frame.
     if (!scrubMode && !forceExact) {
         // Schedule aggressive prefetch: current frame + ahead
-        schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+        schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
 
         // Try to return last-good-frame (stale but visible)
         std::shared_ptr<CachedFrame> stale;
@@ -317,7 +317,7 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // surfaces) and would pollute the shared cache with frames export must
     // not read.  Export decodes purely sequentially via the scrub decoder.
     if (!forceExact)
-        schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+        schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
 
     m_perf.inlineDecodes.fetch_add(1, std::memory_order_relaxed);
 
@@ -471,13 +471,13 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
         cached = m_cache->get(handle, frameNumber + d, tier);
         if (cached) {
             m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-            schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+            schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
             return returnFrame(std::move(cached));
         }
         cached = m_cache->get(handle, frameNumber - d, tier);
         if (cached) {
             m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-            schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+            schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
             return returnFrame(std::move(cached));
         }
     }
@@ -499,7 +499,7 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
         cached = m_cache->get(handle, frameNumber, altTier);
         if (cached) {
             m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-            schedulePrefetch(handle, frameNumber + 1, PREFETCH_AHEAD_COUNT, /*urgent=*/false, tier);
+            schedulePrefetch(handle, frameNumber + 1, perfProfile().prefetchAheadFrames, /*urgent=*/false, tier);
             return returnFrame(std::move(cached));
         }
     }
@@ -513,13 +513,13 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
         auto it = m_lastGoodFrame.find(handle);
         if (it != m_lastGoodFrame.end() && it->second) {
             m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);
-            schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+            schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
             return it->second;
         }
     }
 
     m_perf.totalMisses.fetch_add(1, std::memory_order_relaxed);
-    schedulePrefetch(handle, frameNumber, PREFETCH_AHEAD_COUNT, /*urgent=*/true, tier);
+    schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
 
     static std::atomic<int> s_tryMissLog{0};
     if (++s_tryMissLog % 30 == 0) {

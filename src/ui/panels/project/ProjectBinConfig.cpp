@@ -38,7 +38,8 @@ void ProjectBin::setMediaPool(MediaPool* pool) noexcept
 
     // Create a ThumbnailGenerator if we don't have one yet
     if (pool && !m_generator) {
-        m_ownedGenerator = std::make_unique<ThumbnailGenerator>(2, 160, 120);
+        m_ownedGenerator = std::make_unique<ThumbnailGenerator>(
+            perfProfile().thumbnailThreads, 160, 120);
         m_ownedGenerator->setMediaPool(pool);
         m_ownedGenerator->setCacheDirectory(
             (rt::userDataDir() + "/cache/thumbnails").toStdString());

@@ -66,6 +66,16 @@ public:
     /// Register the disk-backed DiskFrameCache.
     void setDiskCache(DiskFrameCache* cache);
 
+    /// Re-apply the CPU FrameCache + disk budgets from the current
+    /// recommended* values.  Call after the active PerformanceProfile is
+    /// installed when that happens AFTER setFrameCache/setDiskCache (the
+    /// PerformanceProfile needs GPU VRAM to pick a tier, which is only known
+    /// after GPU init — later than cache registration).  No-op for any cache
+    /// not yet registered.  GPU texture cache budgets are applied lazily on
+    /// first composite, so they always see the installed profile and need no
+    /// re-apply here.
+    void reapplyBudgets();
+
     /// Register a callback to check GPU VRAM pressure.
     /// Called from onFrameCompleted().  The callback lives in the GPU layer
     /// (CompositeEngine) which has access to GpuTextureCache.

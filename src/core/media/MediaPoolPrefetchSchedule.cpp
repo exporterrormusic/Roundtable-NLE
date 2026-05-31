@@ -183,6 +183,13 @@ void MediaPool::prefetchWorker(int workerId)
 #endif
     spdlog::info("MediaPool: prefetch worker {} started (ABOVE_NORMAL priority)", workerId);
 
+    // Worker-pool partition point: ids [0..nvdecWorkers) are the NVDEC-
+    // eligible workers, the rest are software-decode.  Snapshot once per
+    // worker so the partition is stable for this thread's lifetime.
+    // (Was the PREFETCH_NVDEC_WORKERS constant; now machine-adaptive via
+    // PerformanceProfile — see docs/BOOST_MODE_PLAN.md.)
+    const int nvdecWorkers = perfProfile().nvdecWorkers;
+
     // UPGRADE_PLAN: per-worker Vulkan state.  MediaPool is constructed
     // BEFORE GpuContext::init runs in the typical App startup, so this
     // first attempt usually fails (GpuContext not yet initialised).
@@ -285,7 +292,7 @@ void MediaPool::prefetchWorker(int workerId)
                         // H.264, instead of yielding back to the two NVDEC
                         // workers and starving the cache during cold-start.
                         const bool nvdecHoldsAlpha =
-                            (workerId < PREFETCH_NVDEC_WORKERS) && anyPackedAlpha;
+                            (workerId < nvdecWorkers) && anyPackedAlpha;
                         if (nvdecHoldsAlpha) {
                             auto dit = decoders.find(it->first);
                             if (dit != decoders.end()) {
@@ -325,13 +332,13 @@ void MediaPool::prefetchWorker(int workerId)
                 return t.info.frameCount > 1 && !t.packedAlpha;
             };
             auto preferredAcceptable = [&](const PrefetchTask& t) -> bool {
-                if (workerId < PREFETCH_NVDEC_WORKERS && t.packedAlpha)
+                if (workerId < nvdecWorkers && t.packedAlpha)
                     return false;
                 auto ownerIt = m_prefetchPackedOwner.find(t.handle);
                 if (ownerIt != m_prefetchPackedOwner.end())
                     return ownerIt->second == workerId;
                 // No owner yet.  SW workers skip plain video on this pass.
-                if (workerId >= PREFETCH_NVDEC_WORKERS && isNonPackedVideo(t))
+                if (workerId >= nvdecWorkers && isNonPackedVideo(t))
                     return false;
                 return true;
             };
@@ -354,7 +361,7 @@ void MediaPool::prefetchWorker(int workerId)
             // someone else), we fall through to the normal 2 ms idle
             // wait and try again next iteration.
             if (pick == m_prefetchQueue.end() &&
-                workerId >= PREFETCH_NVDEC_WORKERS)
+                workerId >= nvdecWorkers)
             {
                 const bool hasUnownedVideo = std::any_of(
                     m_prefetchQueue.begin(), m_prefetchQueue.end(),
@@ -421,7 +428,7 @@ void MediaPool::prefetchWorker(int workerId)
             continue;
         }
 
-        const size_t maxDecoders = (workerId < PREFETCH_NVDEC_WORKERS) ? 8 : 4;
+        const size_t maxDecoders = (workerId < nvdecWorkers) ? 8 : 4;
 
         bool isNewHandle = (decoders.find(task.handle) == decoders.end());
         if (isNewHandle && decoders.size() >= maxDecoders) {
@@ -458,7 +465,7 @@ void MediaPool::prefetchWorker(int workerId)
         if (!state.decoder) {
             auto openT0 = std::chrono::steady_clock::now();
             state.decoder = std::make_unique<VideoDecoder>();
-            const bool useHwDecode = (workerId < PREFETCH_NVDEC_WORKERS)
+            const bool useHwDecode = (workerId < nvdecWorkers)
                                    && !task.info.hasAlpha;
             const int swThreads = useHwDecode ? 0 : 2;
             if (!state.decoder->open(task.filePath, /*forceSoftware=*/!useHwDecode, /*maxThreads=*/swThreads)) {

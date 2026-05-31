@@ -76,8 +76,8 @@ MediaPool::MediaPool(std::shared_ptr<FrameCache> cache)
     , m_pixelPool(std::make_shared<PixelBufferPool>())
 {
     // Configure the scheduler lookahead to match the existing prefetch window.
-    m_scheduler.setMaxLookahead(PREFETCH_AHEAD_COUNT);
-    m_scheduler.setMaxWorkers(PREFETCH_THREAD_COUNT);
+    m_scheduler.setMaxLookahead(perfProfile().prefetchAheadFrames);
+    m_scheduler.setMaxWorkers(perfProfile().prefetchThreadCount);
 
     // UPGRADE_PLAN Phase 3: try to allocate the GPU-resident texture pool
     // here.  In the typical App startup MediaPool is constructed BEFORE

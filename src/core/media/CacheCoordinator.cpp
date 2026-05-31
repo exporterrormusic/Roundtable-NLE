@@ -5,6 +5,7 @@
 #include "CacheCoordinator.h"
 #include "FrameCache.h"
 #include "DiskFrameCache.h"
+#include "PerformanceProfile.h"
 
 #include <spdlog/spdlog.h>
 #include <filesystem>
@@ -60,6 +61,22 @@ void CacheCoordinator::setDiskCache(DiskFrameCache* cache)
                  budget / (1024.0 * 1024.0 * 1024.0));
 }
 
+void CacheCoordinator::reapplyBudgets()
+{
+    if (m_frameCache) {
+        const size_t budget = recommendedFrameCacheBudget();
+        m_frameCache->setCapacity(budget);
+        spdlog::info("CacheCoordinator: FrameCache budget re-applied = {:.1f} GB "
+                     "(profile{})",
+                     budget / (1024.0 * 1024.0 * 1024.0),
+                     perfProfile().boostEnabled ? ", Boost" : "");
+    }
+    if (m_diskCache) {
+        const size_t budget = recommendedDiskCacheBudget();
+        m_diskCache->setBudget(budget);
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Budget queries
 // ═════════════════════════════════════════════════════════════════════════════
@@ -70,6 +87,11 @@ size_t CacheCoordinator::recommendedFrameCacheBudget() const noexcept
     constexpr size_t kGiB = 1024ull * kMiB;
     constexpr size_t kMin = 256 * kMiB;
     constexpr size_t kMax = 1 * kGiB;
+
+    // Boost override (PerformanceProfile): when set, it is the authoritative
+    // budget — the profile already clamped it to a safe fraction of RAM.
+    if (const size_t o = perfProfile().frameCacheBudgetBytes; o != 0)
+        return o;
 
     if (m_totalRam == 0) return 512 * kMiB;
 
@@ -134,6 +156,10 @@ size_t CacheCoordinator::recommendedGpuTexCacheBudget(
     constexpr size_t kMin = 256 * kMiB;
     constexpr size_t kMax = 2 * kGiB;
 
+    // Boost override: profile already clamped to <=45% of VRAM.
+    if (const size_t o = perfProfile().gpuTexCacheBudgetBytes; o != 0)
+        return o;
+
     if (deviceVramBytes == 0) return 1 * kGiB;
 
     // 12% of device VRAM, clamped [256 MB, 2 GB].
@@ -169,6 +195,10 @@ size_t CacheCoordinator::recommendedGpuTexCacheMaxEntries(
     //    2 GB →  40 entries
     constexpr size_t kFloor = 40;
     constexpr size_t kCeil  = 180;
+    // Boost override: the profile raises this ceiling per tier (safe —
+    // eviction is fence-gated; pressure relief stays armed).
+    if (const size_t o = perfProfile().gpuTexMaxEntries; o != 0)
+        return o;
     if (deviceVramBytes == 0) return 120;
     const size_t entries = deviceVramBytes / (160ull * 1024 * 1024); // ~160 MB / entry of VRAM headroom
     return std::clamp(entries, kFloor, kCeil);
@@ -194,6 +224,9 @@ size_t CacheCoordinator::recommendedFrameCacheMaxEntries(
     //    4 GB VRAM → ~120 entries (~960 MB)
     constexpr size_t kFloor = 100;
     constexpr size_t kCeil  = 400;
+    // Boost override: raised ceiling to match the larger GPU working set.
+    if (const size_t o = perfProfile().frameCacheMaxEntries; o != 0)
+        return o;
     const size_t gpuTexEntries = recommendedGpuTexCacheMaxEntries(deviceVramBytes);
     const size_t entries = gpuTexEntries * 2;
     return std::clamp(entries, kFloor, kCeil);
@@ -204,6 +237,10 @@ size_t CacheCoordinator::recommendedDiskCacheBudget() const noexcept
     constexpr size_t kGiB = 1024ull * 1024ull * 1024ull;
     constexpr size_t kMin = 4 * kGiB;
     constexpr size_t kMax = 32 * kGiB;
+
+    // Boost override (currently unused — disk is cheap and already adaptive).
+    if (const size_t o = perfProfile().diskCacheBudgetBytes; o != 0)
+        return o;
 
     // 5% of free space on the current drive
     std::error_code ec;

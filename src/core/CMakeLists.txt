@@ -17,6 +17,9 @@ add_library(roundtable_core STATIC
     # Hardware diagnostics (overlay-hook detection + GPU classification)
     HardwareDiagnostics.cpp
 
+    # Performance profile (machine-adaptive resource knobs / Boost mode)
+    PerformanceProfile.cpp
+
     # Timeline
     timeline/Timeline.cpp
     timeline/Track.cpp
