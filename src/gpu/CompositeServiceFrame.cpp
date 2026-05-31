@@ -150,8 +150,8 @@ try
     if (!isNestedRecursion
             && m_cacheInvalidateRequested.exchange(false, std::memory_order_acquire)) {
         postInvalidate = true;
-        spdlog::warn("[LIVE-RELOAD] compositeFrame tick={}: invalidate flag "
-                     "consumed — clearLru + reset lastGoodComposite", tick);
+        spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: invalidate flag "
+                      "consumed — clearLru + reset lastGoodComposite", tick);
         if (m_engine)
             m_engine->clearLru();
         {
@@ -747,10 +747,10 @@ try
                      "({} clips present, no decoded frames available)",
                      tick, clipsAtTick);
         if (postInvalidate) {
-            spdlog::warn("[LIVE-RELOAD] compositeFrame tick={}: returning "
-                         "EMPTY SENTINEL after invalidate (clipsAtTick={}, "
-                         "no decoded frames available — decode in flight)",
-                         tick, clipsAtTick);
+            spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: returning "
+                          "EMPTY SENTINEL after invalidate (clipsAtTick={}, "
+                          "no decoded frames available — decode in flight)",
+                          tick, clipsAtTick);
         }
         {
             auto emptyFrame = std::make_shared<CachedFrame>();

@@ -351,23 +351,25 @@ void CompositeService::warmNewSpineClips()
             auto* spineClip = dynamic_cast<SpineClip*>(track->clip(ci));
             if (!spineClip) continue;
 
-            const uint64_t cid = spineClip->id();
-            if (m_spineCache.count(cid)) continue; // already cached
+            // Already have a per-clip engine for this clip — nothing to do.
+            if (m_spineCache.count(spineClip->id())) continue;
 
-            // Eagerly load shared skeleton+atlas data if not cached yet.
-            // This eliminates the 100-200ms disk I/O stall when the first
-            // compositeFrame hits a newly dropped SpineClip.
+            // Ensure the shared skeleton/atlas data is loaded, but NEVER build
+            // the per-clip SpineEngine here.
+            //
+            // Building it eagerly for every spine clip in the whole timeline is
+            // what froze the app for ~6s on the first paste/drag after opening a
+            // project (measured via [EDIT-PERF] warmSpine): each clip's
+            // Skeleton+AnimationState construction is only ~3-7ms, but the loop
+            // pays it for the entire timeline at once, then caches the result in
+            // m_spineCache (hence "first time only"). The per-clip engine is
+            // instead built lazily by tryGetSpineState() during compositeFrame —
+            // only for clips at the current playhead — so the cost is spread out
+            // and paid only for characters actually on screen.
             const std::string key = spineCharKey(*spineClip);
-            if (!m_spineSharedCache.count(key)) {
-                getOrCreateSharedSpineData(*spineClip, assetsDir);
-            }
-
-            // Create per-clip engine from cached shared data (fast path).
-            auto sit = m_spineSharedCache.find(key);
-            if (sit != m_spineSharedCache.end() && sit->second &&
-                !sit->second->skelBytes.empty()) {
-                getOrCreateSpineState(spineClip);
-            }
+            if (!m_spineSharedCache.count(key) && m_spineLoadScheduler)
+                m_spineLoadScheduler(spineClip->characterName(), spineClip->outfit(),
+                                     static_cast<int>(spineClip->stance()), assetsDir);
         }
     }
 }

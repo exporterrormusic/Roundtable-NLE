@@ -302,7 +302,7 @@ void TimelinePanel::applyThumbnail(uint64_t generation, const std::string& path,
 
     if (image.isNull()) {
         m_failedThumbnailPaths.insert(path);
-        spdlog::warn("loadThumbnails: failed to decode thumbnail for '{}'", path);
+        spdlog::debug("loadThumbnails: failed to decode thumbnail for '{}'", path);
         return;
     }
 

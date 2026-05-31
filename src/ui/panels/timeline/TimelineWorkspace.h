@@ -189,6 +189,15 @@ public:
     /// any timeline mutation, project load, or media import.
     void rescanMediaWatch();
 
+    /// UI-thread apply step for rescanMediaWatch(): given the off-thread
+    /// existence + (size,mtime) results, diff the QFileSystemWatcher, arm the
+    /// poll fallback for unwatchable paths, and seed content signatures. Never
+    /// touches the filesystem itself, so it stays cheap on the GUI thread.
+    void applyMediaWatchScan(
+        const std::set<std::string>& candidates,
+        const std::set<std::string>& existing,
+        const std::map<std::string, std::pair<std::uintmax_t, std::int64_t>>& sigs);
+
     /// Backward compat — returns the QDockWidget wrapping the named panel.
     [[nodiscard]] QDockWidget* dockForPanel(const QString& panelName) const;
 
@@ -303,6 +312,11 @@ private:
     std::set<std::string> m_mediaWatchPollSet;
     /// Last-known sig for polled paths (same format as m_mediaWatchSig).
     std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> m_mediaWatchPollSig;
+    /// rescanMediaWatch() runs its filesystem stats (exists + size/mtime) on a
+    /// background thread so a cold network drive (G:) can't freeze the UI for
+    /// seconds at project-open. These coalesce overlapping scan requests.
+    bool m_mediaWatchScanInFlight{false};   ///< a background stat pass is running
+    bool m_mediaWatchScanQueued{false};     ///< a rescan was requested mid-flight
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
