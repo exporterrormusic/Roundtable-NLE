@@ -39,6 +39,7 @@
 #include <cmath>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QPlainTextEdit>
 #include <QComboBox>
 #include <QColorDialog>
 #include <QTimer>
@@ -144,7 +145,12 @@ void PropertiesPanel::setupUI()
         QStringLiteral("QLabel { color: %1; font-weight: bold; font-size: 12px; "
                        "background: transparent; border: none; }")
             .arg(Theme::hex(tc.text)));
-    toolbarLayout->addWidget(m_headerLabel);
+    // Don't let a long clip name (e.g. a full caption line) dictate the panel
+    // width — ignore the label's wide sizeHint so it stays inside the dock
+    // (and the rest of the panel keeps its right padding instead of spilling).
+    m_headerLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_headerLabel->setMinimumWidth(0);
+    toolbarLayout->addWidget(m_headerLabel, 1);
 
     m_typeLabel = new QLabel(this);
     m_typeLabel->setFixedHeight(18);
@@ -235,9 +241,15 @@ void PropertiesPanel::setupUI()
     setupAudioSection(m_scrollContainer);
     setupTitleSection(m_scrollContainer);
     setupGraphicSection(m_scrollContainer);
+    setupCaptionSection(m_scrollContainer);
     setupTransformSection(m_scrollContainer);
     setupEffectsSection(m_scrollContainer);
     setupTransitionSection(m_scrollContainer);
+
+    // Load shared text-appearance presets once all preset combos exist
+    // (caption/title/graphic sections each created their combo above).
+    loadTextPresets();
+    rebuildPresetCombos();
 
     // Make visible QGroupBox sections collapsible (click title to expand/collapse)
     for (auto* w : {m_transformSection, m_videoSection,
@@ -561,6 +573,10 @@ bool PropertiesPanel::eventFilter(QObject* obj, QEvent* event)
         if (qobject_cast<QComboBox*>(obj))
             return true;
     }
+    // The caption Text field is a multi-line wrapping editor (no
+    // editingFinished signal), so commit its edit when it loses focus.
+    if (event->type() == QEvent::FocusOut && obj == m_capTextEdit)
+        applyCaptionText();
     return QWidget::eventFilter(obj, event);
 }
 

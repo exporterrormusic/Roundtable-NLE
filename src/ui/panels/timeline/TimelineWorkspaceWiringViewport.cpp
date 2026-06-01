@@ -57,6 +57,8 @@
 #include "timeline/VideoClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
+#include "timeline/CaptionClip.h"
+#include "panels/captions/CaptionsPanel.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Transition.h"
@@ -509,6 +511,30 @@ void TimelineWorkspace::wireOverlayToolSignals()
         connect(ov2, &TransformOverlayWidget::textEditRequested,
                 this, [this, ov2, currentTextLayer](float, float) {
             if (m_destroying.load(std::memory_order_acquire)) return;
+
+            // Caption clip selected → edit the caption's text in place,
+            // just like a graphic text layer.
+            if (m_selectedClip && m_selectedClip->clipType() == ClipType::Caption) {
+                auto* cc = static_cast<CaptionClip*>(m_selectedClip);
+                m_preEditOriginalText = cc->text();
+                m_inlineTextEditActive = true;
+                updateTransformOverlay();
+                cc->setText(std::string{});           // hide while editing
+                invalidateCompositeCache();
+                if (m_programMonitor) m_programMonitor->requestRefresh();
+                QColor textColor = QColor::fromRgba(cc->textColor());
+                ov2->beginInlineTextEdit(
+                    QString::fromStdString(m_preEditOriginalText),
+                    QString::fromStdString(cc->fontFamily()),
+                    cc->fontSize(),
+                    static_cast<int>(QFont::Bold),  // captions render bold
+                    /*italic*/false,
+                    textColor,
+                    /*hStretch*/1.0f,
+                    Qt::AlignHCenter);
+                return;
+            }
+
             TextLayer* tl = currentTextLayer();
             if (!tl) return;
 
@@ -600,6 +626,31 @@ void TimelineWorkspace::wireOverlayToolSignals()
         connect(ov2, &TransformOverlayWidget::inlineTextCommitted,
                 this, [this, currentTextLayer](const QString& newText) {
             if (m_destroying.load(std::memory_order_acquire)) return;
+
+            // Caption clip: commit the edited text back to the caption.
+            if (m_selectedClip && m_selectedClip->clipType() == ClipType::Caption) {
+                auto* cc = static_cast<CaptionClip*>(m_selectedClip);
+                const std::string newVal = newText.toStdString();
+                const std::string oldVal = m_preEditOriginalText;
+                m_inlineTextEditActive = false;
+                m_preEditOriginalText.clear();
+                auto capRefresh = [this]() {
+                    invalidateCompositeCache();
+                    if (m_programMonitor) m_programMonitor->requestRefresh();
+                    scheduleOverlayRefresh();
+                    if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+                    if (m_captionsPanel) m_captionsPanel->refresh();
+                };
+                if (newVal == oldVal) { cc->setText(oldVal); capRefresh(); return; }
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        "Edit Caption Text",
+                        [cc, newVal, capRefresh]() { cc->setText(newVal); capRefresh(); },
+                        [cc, oldVal, capRefresh]() { cc->setText(oldVal); capRefresh(); }));
+                } else { cc->setText(newVal); capRefresh(); }
+                return;
+            }
+
             TextLayer* tl = currentTextLayer();
             if (!tl) {
                 m_inlineTextEditActive = false;

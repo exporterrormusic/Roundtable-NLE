@@ -21,6 +21,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QPushButton>
 
 namespace rt {
 
@@ -186,6 +187,19 @@ void PropertiesPanel::setupTitleSection(QWidget* container)
     connect(m_alignCombo, &QComboBox::currentIndexChanged,
             this, [this](int) { applyTitleAlign(); });
     form->addRow("Align:", m_alignCombo);
+
+    // Shared text appearance presets.
+    m_titlePresetCombo = new QComboBox(m_titleSection);
+    m_titlePresetCombo->setToolTip(tr("Apply a saved text appearance preset"));
+    connect(m_titlePresetCombo, &QComboBox::activated,
+            this, [this](int idx) { applyTextPreset(idx); });
+    form->addRow("Preset:", m_titlePresetCombo);
+
+    m_titleSavePresetBtn = new QPushButton(tr("Save Preset\xE2\x80\xA6"), m_titleSection);
+    m_titleSavePresetBtn->setToolTip(tr("Save the current appearance as a reusable text preset"));
+    connect(m_titleSavePresetBtn, &QPushButton::clicked,
+            this, &PropertiesPanel::saveTextPresetAs);
+    form->addRow("", m_titleSavePresetBtn);
 
     container->layout()->addWidget(m_titleSection);
 }

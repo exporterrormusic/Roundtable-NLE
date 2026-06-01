@@ -307,6 +307,19 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     connect(m_gfxShadowCheck, &QCheckBox::toggled, this, &PropertiesPanel::applyGfxShadowEnabled);
     form->addRow(m_gfxShadowCheck);
 
+    // Shared text appearance presets.
+    m_gfxPresetCombo = new QComboBox(m_graphicSection);
+    m_gfxPresetCombo->setToolTip(tr("Apply a saved text appearance preset"));
+    connect(m_gfxPresetCombo, &QComboBox::activated,
+            this, [this](int idx) { applyTextPreset(idx); });
+    form->addRow("Preset:", m_gfxPresetCombo);
+
+    m_gfxSavePresetBtn = new QPushButton(tr("Save Preset\xE2\x80\xA6"), m_graphicSection);
+    m_gfxSavePresetBtn->setToolTip(tr("Save the current appearance as a reusable text preset"));
+    connect(m_gfxSavePresetBtn, &QPushButton::clicked,
+            this, &PropertiesPanel::saveTextPresetAs);
+    form->addRow("", m_gfxSavePresetBtn);
+
     container->layout()->addWidget(m_graphicSection);
 }
 

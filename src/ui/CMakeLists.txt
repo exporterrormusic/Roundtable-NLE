@@ -75,6 +75,7 @@ add_library(roundtable_ui STATIC
     panels/properties/PropertiesPanelAudio.cpp
     panels/properties/PropertiesPanelTitle.cpp
     panels/properties/PropertiesPanelGraphic.cpp
+    panels/properties/PropertiesPanelCaption.cpp
     panels/effects/EffectControlsPanel.cpp
     panels/effects/EffectControlsPanelUI.cpp
     panels/effects/EffectControlsPanelPropertyRow.cpp
@@ -253,6 +254,7 @@ set_source_files_properties(
     panels/properties/PropertiesPanelAudio.cpp
     panels/properties/PropertiesPanelTitle.cpp
     panels/properties/PropertiesPanelGraphic.cpp
+    panels/properties/PropertiesPanelCaption.cpp
     panels/characters/ShotComposerPreview.cpp
     panels/characters/ShotComposerShots.cpp
     panels/characters/ShotComposerLayers.cpp

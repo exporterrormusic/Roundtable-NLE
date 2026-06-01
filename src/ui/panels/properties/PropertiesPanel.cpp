@@ -127,8 +127,37 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
     m_audioSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
+    if (m_captionSection) m_captionSection->setVisible(false);
     if (m_effectsSection) m_effectsSection->setVisible(false);
     if (m_transitionSection) m_transitionSection->setVisible(false);
+
+    // All-captions selection → show the Caption styling section; edits apply
+    // to every selected caption at once.
+    bool allCaptions = true;
+    for (auto* c : clips)
+        if (!c || c->clipType() != ClipType::Caption) { allCaptions = false; break; }
+    if (allCaptions) {
+        m_clip = clips.front();
+        m_track = nullptr;
+        m_spineClip = nullptr;
+        if (m_captionSection) m_captionSection->setVisible(true);
+        m_headerLabel->setText(QString("%1 captions selected").arg(clips.size()));
+        m_typeLabel->setText("Captions");
+        const auto& tmc = Theme::metrics();
+        QColor capBadge(70, 200, 170);
+        m_typeLabel->setStyleSheet(
+            QStringLiteral("QLabel { color: %1; font-size: 11px; padding: 1px 6px; "
+                           "border-radius: %2px; background: %3; border: none; }")
+                .arg(Theme::hex(capBadge.lighter(160)),
+                     QString::number(tmc.radiusSm),
+                     Theme::hex(capBadge.darker(220))));
+        m_scrollArea->setVisible(true);
+        m_emptyLabel->setVisible(false);
+        if (m_statusLabel) m_statusLabel->setText(QStringLiteral("Captions"));
+        populateFromCaption();
+        emit clipChanged(m_clip);
+        return;
+    }
 
     if (allSameGroup) {
         // Use the first clip as representative for shot name / group info
@@ -238,10 +267,14 @@ void PropertiesPanel::refresh()
 void PropertiesPanel::showSectionsForType()
 {
     bool hasClip = (m_clip != nullptr);
+    bool isCaption = (hasClip && m_clip->clipType() == ClipType::Caption);
     // Identity section always hidden (data binding kept internally)
     m_identitySection->setVisible(false);
-    m_transformSection->setVisible(hasClip);
-    if (m_effectsSection) m_effectsSection->setVisible(hasClip);
+    // Captions are positioned via their own Position control, not the generic
+    // transform/shot/effects sections — keep the panel focused.
+    m_transformSection->setVisible(hasClip && !isCaption);
+    if (m_effectsSection) m_effectsSection->setVisible(hasClip && !isCaption);
+    if (m_captionSection) m_captionSection->setVisible(isCaption);
     if (m_transitionSection) m_transitionSection->setVisible(false); // hide when showing clip
 
     // Legacy spine section stays hidden
@@ -267,7 +300,7 @@ void PropertiesPanel::showSectionsForType()
 
     // Shot section: always show for any clip so the user can apply
     // a shot preset at any time, not just for pre-grouped clips.
-    bool inShotGroup = hasClip;
+    bool inShotGroup = hasClip && !isCaption;
     m_shotSection->setVisible(inShotGroup);
     if (inShotGroup)
         updateShotSection();
@@ -301,6 +334,7 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
     m_audioSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
+    if (m_captionSection) m_captionSection->setVisible(false);
 
     m_transitionSection->setVisible(true);
     populateFromTransition();

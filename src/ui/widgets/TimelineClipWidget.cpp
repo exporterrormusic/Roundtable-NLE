@@ -55,6 +55,13 @@ ClipVisualStyle TimelineClipWidget::defaultStyle(ClipType type)
             style.fillColor   = QColor(123, 104, 238); // mediumslateblue
             style.borderColor = QColor(123, 104, 238).lighter(130);
             break;
+        case ClipType::Caption:
+            // Teal caption clip with a lighter border (matches other clip
+            // types) so the gaps/borders between cues read clearly instead
+            // of the default-constructed near-black.
+            style.fillColor   = QColor(0x2E, 0x8B, 0x80); // muted teal
+            style.borderColor = QColor(0x2E, 0x8B, 0x80).lighter(140);
+            break;
     }
 
     return style;
@@ -72,6 +79,7 @@ QString TimelineClipWidget::typeName(ClipType type)
         case ClipType::Image:      return QStringLiteral("Image");
         case ClipType::Graphic:    return QStringLiteral("Graphic");
         case ClipType::Sequence:   return QStringLiteral("Sequence");
+        case ClipType::Caption:    return QStringLiteral("Caption");
     }
     return QStringLiteral("Unknown");
 }
@@ -88,12 +96,17 @@ QChar TimelineClipWidget::typeIcon(ClipType type)
         case ClipType::Image:      return QChar(0x25A3); // ▣
         case ClipType::Graphic:    return QChar(0x0047); // G
         case ClipType::Sequence:   return QChar(0x229E); // ⊞ nested
+        case ClipType::Caption:    return QChar(0x0043); // C (caption)
     }
     return QChar(0x25CF); // ●
 }
 
 QString TimelineClipWidget::displayLabel(ClipType type, const QString& label)
 {
+    // Caption clips show only their text — no leading type-icon letter (which
+    // looked like a stray initial in front of each transcript line).
+    if (type == ClipType::Caption)
+        return label;
     QChar icon = typeIcon(type);
     if (label.isEmpty())
         return QString(icon);

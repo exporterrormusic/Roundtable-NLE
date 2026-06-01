@@ -105,7 +105,7 @@ void CaptionsPanel::buildUI()
  m_addTrackBtn->setObjectName("addTrackBtn");
  m_addTrackBtn->setFixedHeight(30);
  m_addTrackBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
- m_addTrackBtn->setToolTip("Create the Subtitles caption track at the top of the timeline");
+ m_addTrackBtn->setToolTip("Create the Captions track at the top of the timeline");
  actionRow1->addWidget(m_addTrackBtn);
 
  m_transcribeBtn = new QPushButton("\xF0\x9F\x8E\x99 Transcribe", this);

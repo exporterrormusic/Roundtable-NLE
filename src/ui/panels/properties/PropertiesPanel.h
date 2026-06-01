@@ -56,6 +56,8 @@
 
 class QGroupBox;
 class QTimer;
+class QFontComboBox;
+class QPlainTextEdit;
 
 namespace rt {
 
@@ -64,6 +66,7 @@ class SpineClip;
 class VideoClip;
 class AudioClip;
 class TitleClip;
+class CaptionClip;
 class ScrubbySpinBox;
 class CommandStack;
 class ModelManager;
@@ -219,6 +222,7 @@ private:
     void setupAudioSection(QWidget* container);
     void setupTitleSection(QWidget* container);
     void setupGraphicSection(QWidget* container);
+    void setupCaptionSection(QWidget* container);
     void setupShotSection(QWidget* container);
     void setupEffectsSection(QWidget* container);
     void setupTransitionSection(QWidget* container);
@@ -292,6 +296,26 @@ private:
     void applyGfxStrokeWidth();
     void applyGfxStrokeColor();
     void applyGfxShadowEnabled();
+
+    // Caption styling — applies to ALL selected caption clips at once.
+    void applyCaptionText();
+    void applyCaptionSpeaker();
+    void applyCaptionFontFamily();
+    void applyCaptionFontSize();
+    void applyCaptionPosition();
+    void applyCaptionTextColor();
+    void applyCaptionBgColor();
+    void populateFromCaption();
+    // Universal text appearance presets — shared by Caption, Title, and
+    // Graphic text sections. Apply/save dispatch on the current clip type.
+    void applyTextPreset(int index);
+    void saveTextPresetAs();
+    void loadTextPresets();
+    void saveTextPresetsToDisk() const;
+    void rebuildPresetCombos();
+    /// Collect every selected caption clip (single or multi-selection) so a
+    /// style change can be applied to all of them in one undoable command.
+    std::vector<CaptionClip*> captionTargets() const;
 
     void applyTransitionType();
     void applyTransitionDuration();
@@ -387,6 +411,8 @@ private:
     QCheckBox*      m_boldCheck{nullptr};
     QCheckBox*      m_italicCheck{nullptr};
     QComboBox*      m_alignCombo{nullptr};
+    QComboBox*      m_titlePresetCombo{nullptr};
+    QPushButton*    m_titleSavePresetBtn{nullptr};
 
     // Graphic section
     QWidget*        m_graphicSection{nullptr};
@@ -402,6 +428,35 @@ private:
     ScrubbySpinBox* m_gfxStrokeWidthSpin{nullptr};
     QPushButton*    m_gfxStrokeColorBtn{nullptr};
     QCheckBox*      m_gfxShadowCheck{nullptr};
+    QComboBox*      m_gfxPresetCombo{nullptr};
+    QPushButton*    m_gfxSavePresetBtn{nullptr};
+
+    // Caption section (shown for CaptionClip — single or multi-selection)
+    QWidget*        m_captionSection{nullptr};
+    QPlainTextEdit* m_capTextEdit{nullptr};
+    QLineEdit*      m_capSpeakerEdit{nullptr};
+    QFontComboBox*  m_capFontCombo{nullptr};
+    ScrubbySpinBox* m_capFontSizeSpin{nullptr};
+    QComboBox*      m_capPositionCombo{nullptr};
+    QPushButton*    m_capTextColorBtn{nullptr};
+    QPushButton*    m_capBgColorBtn{nullptr};
+    QComboBox*      m_capPresetCombo{nullptr};
+    QPushButton*    m_capSavePresetBtn{nullptr};
+
+    /// A saved text appearance, shared across caption/title/graphic text.
+    /// Each clip type applies the subset of fields it supports.
+    struct TextStylePreset {
+        std::string name;
+        std::string fontFamily{"Arial"};
+        float       fontSize{32.0f};
+        uint32_t    textColor{0xFFFFFFFFu};
+        uint32_t    bgColor{0xCC000000u};
+        int         position{0};   // caption only
+        bool        bold{false};
+        bool        italic{false};
+        int         alignment{1};  // 0=left 1=center 2=right
+    };
+    std::vector<TextStylePreset> m_textPresets;
 
     // Transition section
     QWidget*        m_transitionSection{nullptr};

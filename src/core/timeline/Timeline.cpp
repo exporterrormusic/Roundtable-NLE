@@ -119,7 +119,7 @@ Track* Timeline::addCaptionTrack()
     if (Track* existing = captionTrack())
         return existing;
 
-    auto track = std::make_unique<Track>(TrackType::Video, "Subtitles");
+    auto track = std::make_unique<Track>(TrackType::Video, "Captions");
     track->setCaptionTrack(true);
     track->setTargeted(false);    // not an edit target
     track->setSyncLocked(false);  // unaffected by ripple edits

@@ -661,6 +661,15 @@ void PropertiesPanel::populateFromClip()
         m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));
         m_fadeOutSpin->setValue(static_cast<double>(ac->fadeOutDuration()));
     }
+    else if (m_clip->clipType() == ClipType::Caption)
+    {
+        populateFromCaption();
+        // The header showed the whole transcript line (CaptionClip label ==
+        // its text); trim it so it doesn't dominate the title bar.
+        QString hdr = m_headerLabel->text();
+        if (hdr.length() > 40)
+            m_headerLabel->setText(hdr.left(37) + QStringLiteral("..."));
+    }
     else if (m_clip->clipType() == ClipType::Title)
     {
         auto* tc = static_cast<TitleClip*>(m_clip);
