@@ -32,6 +32,7 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
+#include "panels/captions/CaptionsPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -569,6 +570,12 @@ void TimelineWorkspace::createPanelWidgets()
     if (m_timeline) m_GraphicsEditorPanel->setTimeline(m_timeline);
     makeDock("Graphics Editor", m_GraphicsEditorPanel);
 
+    // -- Captions ---------------------------------------------------------
+    m_captionsPanel = new CaptionsPanel(this);
+    if (m_commandStack) m_captionsPanel->setCommandStack(m_commandStack);
+    if (m_timeline) m_captionsPanel->setTimeline(m_timeline);
+    makeDock("Captions", m_captionsPanel);
+
     // -- Library ----------------------------------------------------------
     m_libraryPanel = new LibraryPanel(this);
     m_charactersPanel = m_libraryPanel->charactersPanel();
@@ -1019,23 +1026,24 @@ void TimelineWorkspace::createPanelWidgets()
                  Theme::hex(Theme::colors().textPrimary),
                  Theme::hex(Theme::colors().border),
                  Theme::hex(Theme::colors().accent)));
-        menu.addAction(tr("Add Caption Track"), this, [this]() {
+        // The caption track is created from the Captions panel
+        // ("Add Captions to Timeline"); this button only toggles its
+        // visibility. Disable the toggles when no caption track exists.
+        const bool hasCaptionTrack = m_timeline && m_timeline->captionTrack();
+        QAction* aHide = menu.addAction(tr("Hide Captions Track"), this, [this]() {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_timeline) {
-                m_timeline->addVideoTrack("Captions");
-                if (m_timelinePanel) m_timelinePanel->rebuildTracks();
-            }
+            if (m_timelinePanel) m_timelinePanel->setCaptionTrackVisible(false);
+            invalidateCompositeCache();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
         });
-        menu.addAction(tr("Hide Caption Track"), this, [this]() {
+        QAction* aShow = menu.addAction(tr("Show Captions Track"), this, [this]() {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_timelinePanel)
-                m_timelinePanel->setCaptionTrackVisible(false);
+            if (m_timelinePanel) m_timelinePanel->setCaptionTrackVisible(true);
+            invalidateCompositeCache();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
         });
-        menu.addAction(tr("Show Caption Track"), this, [this]() {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_timelinePanel)
-                m_timelinePanel->setCaptionTrackVisible(true);
-        });
+        aHide->setEnabled(hasCaptionTrack);
+        aShow->setEnabled(hasCaptionTrack);
         menu.exec(btnCC->mapToGlobal(QPoint(0, btnCC->height())));
     });
 

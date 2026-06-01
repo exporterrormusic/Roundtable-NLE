@@ -86,6 +86,7 @@ add_library(roundtable_ui STATIC
     panels/effects/GraphicsEditorProperties.cpp
     panels/effects/ColorGradingPanel.cpp
     panels/effects/EffectsPanel.cpp
+    panels/captions/CaptionsPanel.cpp
     panels/audio/AudioMixer.cpp
     panels/audio/AudioMixerUI.cpp
     panels/characters/ShotComposer.cpp

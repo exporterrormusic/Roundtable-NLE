@@ -289,13 +289,29 @@ void TimelineTrackWidget::paintEvent(QPaintEvent* event)
     // Track background
     QColor bgColor = (m_track->type() == TrackType::Video)
                          ? tc.trackBg : tc.trackBgAlt;
+    // Caption (subtitle) track gets a clearly distinct tint (blended ~35%
+    // toward the accent) so it never looks like just another video track.
+    if (m_track->isCaptionTrack()) {
+        const QColor a = tc.accent;
+        bgColor = QColor((bgColor.red()   * 65 + a.red()   * 35) / 100,
+                         (bgColor.green() * 65 + a.green() * 35) / 100,
+                         (bgColor.blue()  * 65 + a.blue()  * 35) / 100);
+    }
     painter.fillRect(dirtyRect, bgColor);
 
     // Bottom border (only if dirty rect touches the bottom edge)
     if (dirtyRect.bottom() >= height() - 2) {
-        painter.setPen(tc.trackDivider);
-        painter.drawLine(dirtyRect.left(), height() - 1,
-                         dirtyRect.right(), height() - 1);
+        // Caption track gets a thick accent separator so it reads as a
+        // distinct, pinned region clearly divided from the video tracks below.
+        if (m_track->isCaptionTrack()) {
+            painter.setPen(QPen(tc.accent, 2));
+            painter.drawLine(dirtyRect.left(), height() - 1,
+                             dirtyRect.right(), height() - 1);
+        } else {
+            painter.setPen(tc.trackDivider);
+            painter.drawLine(dirtyRect.left(), height() - 1,
+                             dirtyRect.right(), height() - 1);
+        }
     }
 
     // Locked overlay — drawn after clips (see below)

@@ -29,7 +29,9 @@ public:
  // â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  [[nodiscard]] const std::string& text() const noexcept { return m_text; }
  [[nodiscard]] const std::string& speaker() const noexcept { return m_speaker; }
- void setText(const std::string& t) { m_text = t; }
+ // Keep the base-clip label in sync with the caption text so the timeline
+ // clip widget shows the caption content directly.
+ void setText(const std::string& t) { m_text = t; m_label = t.empty() ? "Caption" : t; }
  void setSpeaker(const std::string& s) { m_speaker = s; }
 
  // â”€â”€ Style â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

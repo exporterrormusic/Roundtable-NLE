@@ -40,6 +40,12 @@ public:
     /// reserved for ensureSectionDivider; user-added dividers stay non-permanent.
     Track* addDividerTrack(size_t insertIndex = static_cast<size_t>(-1),
                            bool permanent = false);
+    /// Add (or return the existing) dedicated caption/subtitle track, pinned
+    /// at index 0 so it composites on top of all video. Only one caption
+    /// track ever exists; calling again returns the current one.
+    Track* addCaptionTrack();
+    /// The caption track if one exists, else nullptr.
+    [[nodiscard]] Track* captionTrack() noexcept;
     void   removeTrack(size_t index);
     void   moveTrack(size_t from, size_t to);
     [[nodiscard]] size_t       trackCount() const noexcept;

@@ -68,7 +68,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 20;  // v20 = persist Track.isPermanentDivider so user-added dividers don't get hijacked when whoever sits at the V/A boundary is greedily promoted
+    static constexpr uint32_t FORMAT_VERSION = 21;  // v21 = persist Track.isCaptionTrack (subtitle track pinned on top) + CaptionClip type-specific fields
+                                                    // v20 = persist Track.isPermanentDivider so user-added dividers don't get hijacked when whoever sits at the V/A boundary is greedily promoted
                                                     // v19 = clip anchorX/anchorY tracks (rotation/scale pivot)
                                                     // v18 = persist Track.isDivider flag (V/A separator)
                                                     // v17 = Sequences section correctly writes v16+ transition fields

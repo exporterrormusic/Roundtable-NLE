@@ -116,6 +116,41 @@ void TimelinePanel::rebuildTracks()
     // heap corruption (0xC0000374) from use-after-free in paint/layout.
     if (m_destroying.load(std::memory_order_acquire)) return;
 
+    // ── Pin the caption (Subtitles) track to the very top ────────────────
+    // It must sit just below the ruler, separate from the video stack. Detect
+    // the caption track robustly — by its flag, its name, OR by the fact that
+    // it holds CaptionClips (so legacy tracks created by the old toolbar
+    // button, or any track that ended up with caption clips, are recognised),
+    // flag it, and move it to index 0.
+    if (m_timeline) {
+        auto looksLikeCaption = [](Track* t) -> bool {
+            if (!t || t->isDivider()) return false;
+            if (t->isCaptionTrack()) return true;
+            if (t->type() == TrackType::Video &&
+                (t->name() == "Subtitles" || t->name() == "Captions"))
+                return true;
+            for (size_t ci = 0; ci < t->clipCount(); ++ci) {
+                const Clip* c = t->clip(ci);
+                if (c && c->clipType() == ClipType::Caption) return true;
+            }
+            return false;
+        };
+        size_t capIdx = SIZE_MAX;
+        for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+            if (looksLikeCaption(m_timeline->track(i))) { capIdx = i; break; }
+        }
+        if (capIdx != SIZE_MAX) {
+            Track* cap = m_timeline->track(capIdx);
+            cap->setCaptionTrack(true);
+            if (capIdx != 0) {
+                spdlog::info("[Captions] pinning caption track from index {} to 0", capIdx);
+                m_timeline->moveTrack(capIdx, 0);
+            } else {
+                spdlog::info("[Captions] caption track already at index 0");
+            }
+        }
+    }
+
     // Make sure a divider track separates the video and audio sections
     // BEFORE we count tracks, so the divider is part of this pass.
     ensureSectionDivider();
@@ -146,7 +181,8 @@ void TimelinePanel::rebuildTracks()
         std::vector<size_t> videoIndices, audioIndices;
         for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
             Track* t = m_timeline->track(i);
-            if (t->isDivider()) continue; // Dividers have no name
+            if (t->isDivider()) continue;      // Dividers have no name
+            if (t->isCaptionTrack()) continue; // Caption track keeps "Subtitles"
             if (t->type() == TrackType::Video) videoIndices.push_back(i);
             else                                audioIndices.push_back(i);
         }
@@ -500,8 +536,13 @@ void TimelinePanel::rebuildTracks()
             // press, but defend here too in case the move came via some
             // other path.
             if (Track* src = m_timeline->track(srcIdx);
-                    src && src->isPermanentDivider())
+                    src && (src->isPermanentDivider() || src->isCaptionTrack()))
                 return;
+            // The caption track is pinned at the top — never let another
+            // track be dropped above it (index 0).
+            if (dst == 0 && m_timeline->trackCount() > 0 &&
+                    m_timeline->track(0) && m_timeline->track(0)->isCaptionTrack())
+                dst = 1;
             // Defer past the mouseReleaseEvent so we don't delete the
             // TrackHeader that is currently on the stack.
             QTimer::singleShot(0, this, [this, srcIdx, dst]() {
@@ -600,6 +641,28 @@ void TimelinePanel::rebuildTracks()
         static_cast<QVBoxLayout*>(trackLayout)->addStretch();
     }
 
+    // Pin ONLY the caption (Subtitles) track flush at the very top of the
+    // panel by moving its header+content widgets ABOVE the leading centring
+    // stretch. The remaining tracks stay vertically centred between the two
+    // stretches, so the caption reads as a separate region just below the
+    // ruler while everything else is unchanged.
+    {
+        const bool hasCaption = m_timeline && m_timeline->trackCount() > 0
+                                && m_timeline->track(0)
+                                && m_timeline->track(0)->isCaptionTrack();
+        if (hasCaption) {
+            auto pinToTop = [](QLayout* L, QWidget* w) {
+                if (!L || !w) return;
+                L->removeWidget(w);
+                static_cast<QBoxLayout*>(L)->insertWidget(0, w);
+            };
+            if (!m_trackHeaders.empty()) pinToTop(headerLayout, m_trackHeaders[0]);
+            if (!m_trackWidgets.empty()) pinToTop(trackLayout,  m_trackWidgets[0]);
+            spdlog::info("[Captions] pinned caption track flush at panel top "
+                         "(other tracks stay centred)");
+        }
+    }
+
     spdlog::info("rebuildTracks: now have {} headers, {} widgets for {} tracks",
                  m_trackHeaders.size(), m_trackWidgets.size(), newCount);
 
@@ -665,6 +728,10 @@ void TimelinePanel::rebuildTracks()
             if (hdr) hdr->update();
     });
 
+    // Re-apply caption-track hidden state (muted caption track ⇒ collapsed
+    // header+row) so Hide/Show survives a rebuild and project reload.
+    applyCaptionTrackVisibility();
+
     // NOTE: no setUpdatesEnabled(true)/repaint() pair here — we never
     // disabled updates, and reused widgets already hold valid painted
     // content.  Newly-added widgets will get their first paintEvent on
@@ -693,6 +760,7 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
         for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
             Track* t = m_timeline->track(i);
             if (t->isDivider()) continue;
+            if (t->isCaptionTrack()) continue; // Caption track keeps "Subtitles"
             if (t->type() == TrackType::Video) videoIndices.push_back(i);
             else                                audioIndices.push_back(i);
         }

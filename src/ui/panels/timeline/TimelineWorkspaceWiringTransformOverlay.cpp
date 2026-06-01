@@ -874,7 +874,8 @@ void TimelineWorkspace::wireTransformOverlaySignals()
                 int videoCount = 0;
                 for (size_t ti2 = 0; ti2 < m_timeline->trackCount(); ++ti2) {
                     auto* t = m_timeline->track(ti2);
-                    if (t && t->type() == TrackType::Video && !t->isDivider())
+                    if (t && t->type() == TrackType::Video && !t->isDivider()
+                        && !t->isCaptionTrack())
                         ++videoCount;
                 }
                 std::string trackName = "V" + std::to_string(videoCount + 1);

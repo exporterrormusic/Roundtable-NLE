@@ -61,16 +61,36 @@ void TimelinePanel::setSnappingEnabled(bool enabled)
 void TimelinePanel::setCaptionTrackVisible(bool visible)
 {
     if (!m_timeline) return;
-    // Toggle visibility on any track widget whose track name contains "Caption"
-    for (auto tw : m_trackWidgets) {
-        size_t idx = tw->trackIndex();
-        if (idx < m_timeline->trackCount()) {
-            const auto* trk = m_timeline->track(idx);
-            if (trk && trk->name().find("Caption") != std::string::npos)
-                tw->setVisible(visible);
+    // "Hidden" == caption track muted: the compositor skips muted video
+    // tracks (so the burned-in overlay disappears), the state persists with
+    // the project, and applyCaptionTrackVisibility() collapses the row.
+    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+        Track* trk = m_timeline->track(i);
+        if (trk && trk->isCaptionTrack()) {
+            trk->setMuted(!visible);
+            break;
         }
     }
+    applyCaptionTrackVisibility();
     update();
+}
+
+void TimelinePanel::applyCaptionTrackVisibility()
+{
+    if (!m_timeline) return;
+    // Hide BOTH the header and the content widget for the caption track so the
+    // two parallel QVBoxLayouts stay aligned (hiding only one desyncs them and
+    // shoves the rest of the timeline out of place).
+    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+        Track* trk = m_timeline->track(i);
+        if (!trk || !trk->isCaptionTrack()) continue;
+        const bool show = !trk->isMuted();
+        if (i < m_trackWidgets.size() && m_trackWidgets[i])
+            m_trackWidgets[i]->setVisible(show);
+        if (i < m_trackHeaders.size() && m_trackHeaders[i])
+            m_trackHeaders[i]->setVisible(show);
+        break;
+    }
 }
 
 void TimelinePanel::executeCommand(std::unique_ptr<Command> cmd)

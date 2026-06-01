@@ -66,6 +66,14 @@ public:
     [[nodiscard]] bool isPermanentDivider() const noexcept { return m_isPermanentDivider; }
     void setPermanentDivider(bool v) noexcept { m_isPermanentDivider = v; }
 
+    /// Caption track — the dedicated subtitle/closed-caption track pinned
+    /// above all other tracks (Premiere-style). Stored as TrackType::Video
+    /// so the existing compositor/mixer paths treat it uniformly, but flagged
+    /// so the UI renders it distinctly and keeps it pinned & non-reorderable.
+    /// Holds only CaptionClip clips; renders as a burned-in overlay on top.
+    [[nodiscard]] bool isCaptionTrack() const noexcept { return m_isCaption; }
+    void setCaptionTrack(bool v) noexcept { m_isCaption = v; }
+
     [[nodiscard]] float height() const noexcept { return m_height; }
     void setHeight(float h) noexcept { m_height = h; }
 
@@ -122,6 +130,7 @@ private:
     bool                                   m_syncLocked{true}; // Sync lock on by default
     bool                                   m_isDivider{false}; // Visual separator track
     bool                                   m_isPermanentDivider{false}; // Auto-managed V/A boundary divider (not persisted)
+    bool                                   m_isCaption{false}; // Dedicated caption/subtitle track (pinned on top)
     float                                  m_height{80.0f};  // pixels
     uint32_t                               m_color{0};       // custom RGBA (0=none)
     float                                  m_volume{1.0f};   // linear gain

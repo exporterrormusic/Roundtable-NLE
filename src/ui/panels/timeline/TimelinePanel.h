@@ -154,6 +154,10 @@ public:
     /// Refresh all track widgets from the data model.
     void rebuildTracks();
 
+    /// Number of track widgets currently laid out (used to detect when the
+    /// timeline's track count changed and a full rebuild is required).
+    [[nodiscard]] size_t laidOutTrackCount() const { return m_trackWidgets.size(); }
+
     /// Incremental track insertion — creates a header + widget for one new
     /// track without destroying existing widgets.  Avoids the blank flash
     /// that full rebuildTracks() causes.
@@ -258,8 +262,14 @@ public:
     /// Called automatically by Ctrl+C so Paste Attributes is always ready.
     void copyAttributesFromSelection();
 
-    /// Show or hide caption track widgets.
+    /// Show or hide the caption (Subtitles) track. "Hidden" mutes the track
+    /// (so the compositor skips the burned-in overlay) and collapses both its
+    /// header and content row in the timeline.
     void setCaptionTrackVisible(bool visible);
+
+    /// Re-apply the caption track's hidden/shown state (caption track muted ⇒
+    /// header+widget collapsed). Call after rebuildTracks so it survives.
+    void applyCaptionTrackVisibility();
 
     /// Sync ruler in/out markers from the timeline data model.
     void updateInOutRange();

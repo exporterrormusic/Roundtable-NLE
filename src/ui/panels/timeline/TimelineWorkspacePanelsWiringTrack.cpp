@@ -173,7 +173,7 @@ void TimelineWorkspace::wireTrackSignals()
             // next rebuild. Reject the delete so the result matches the
             // user's intent (no flicker, no recreate).
             if (auto* tr = m_timeline->track(trackIndex);
-                    tr && tr->isPermanentDivider())
+                    tr && (tr->isPermanentDivider() || tr->isCaptionTrack()))
                 return;
 
             // Clear selection state BEFORE removing the track so we don't

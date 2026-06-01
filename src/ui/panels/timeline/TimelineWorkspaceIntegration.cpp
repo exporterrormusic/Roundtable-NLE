@@ -14,6 +14,7 @@
 #include "panels/audio/AudioMixer.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/EffectsPanel.h"
+#include "panels/captions/CaptionsPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/project/ProjectBin.h"
@@ -132,6 +133,10 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Forward to EffectControlsPanel
     if (m_effectControlsPanel)
         m_effectControlsPanel->setTimeline(timeline);
+
+    // Forward to CaptionsPanel so the caption list rebuilds for the new sequence.
+    if (m_captionsPanel)
+        m_captionsPanel->setTimeline(timeline);
 
     // Forward to AudioMixer so channel strips rebuild for the new project.
     {

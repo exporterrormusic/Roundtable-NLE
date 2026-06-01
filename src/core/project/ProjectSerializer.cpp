@@ -141,6 +141,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
             sec.writeU8(track->isSyncLocked() ? 1 : 0); // v5+
             sec.writeU8(track->isDivider() ? 1 : 0);    // v18+
             sec.writeU8(track->isPermanentDivider() ? 1 : 0); // v20+
+            sec.writeU8(track->isCaptionTrack() ? 1 : 0); // v21+
 
             // Clips for this track
             sec.writeU32(static_cast<uint32_t>(track->clipCount()));
@@ -217,6 +218,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
                 sec.writeU8(track->isSyncLocked() ? 1 : 0); // v5+
                 sec.writeU8(track->isDivider() ? 1 : 0);    // v18+
                 sec.writeU8(track->isPermanentDivider() ? 1 : 0); // v20+
+                sec.writeU8(track->isCaptionTrack() ? 1 : 0); // v21+
 
                 sec.writeU32(static_cast<uint32_t>(track->clipCount()));
                 for (size_t ci = 0; ci < track->clipCount(); ++ci)
@@ -505,6 +507,9 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     // ensureSectionDivider will promote whichever divider sits
                     // at the V/A boundary on first rebuild (the legacy
                     // "greedy" path, used only for one-time migration).
+                    if (version >= 21) {
+                        track->setCaptionTrack(sr.readU8() != 0);
+                    }
 
                     // Clips
                     uint32_t clipCount = sr.readU32();
@@ -628,6 +633,9 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     }
                     if (version >= 20) {
                         track->setPermanentDivider(sr.readU8() != 0);
+                    }
+                    if (version >= 21) {
+                        track->setCaptionTrack(sr.readU8() != 0);
                     }
 
                     uint32_t clipCount = sr.readU32();

@@ -24,6 +24,7 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
+#include "panels/captions/CaptionsPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -305,6 +306,40 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_ColorGradingPanel, &ColorGradingPanel::propertyChanged,
                 this, [this]() {
             invalidateCompositeCache();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+        });
+    }
+
+    // -- Wire CaptionsPanel edits to refresh timeline + monitor ------------
+    if (m_captionsPanel) {
+        connect(m_captionsPanel, &CaptionsPanel::captionEdited,
+                this, [this]() {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            invalidateCompositeCache();
+            if (m_timelinePanel) {
+                // A new/removed caption track changes the track count and
+                // needs a full rebuild to add/remove its row; clip-only edits
+                // just repaint.
+                if (m_timeline &&
+                    m_timelinePanel->laidOutTrackCount() != m_timeline->trackCount())
+                    m_timelinePanel->rebuildTracks();
+                else
+                    m_timelinePanel->refreshTrackContents();
+            }
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+        });
+        // Jump the playhead to a caption when selected in the list.
+        connect(m_captionsPanel, &CaptionsPanel::captionSelected,
+                this, [this](int64_t timelineIn) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_playbackController) {
+                if (m_playbackController->isPlaying())
+                    m_playbackController->pause();
+                m_playbackController->seekTo(timelineIn);
+            } else if (m_timeline) {
+                m_timeline->setPlayheadPosition(timelineIn);
+            }
+            if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
             if (m_programMonitor) m_programMonitor->requestRefresh();
         });
     }

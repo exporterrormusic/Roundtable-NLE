@@ -470,6 +470,8 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Adjustment: typeName = "Adjustment"; break;
     case ClipType::Image:      typeName = "Image";      break;
     case ClipType::Graphic:    typeName = "Graphic";    break;
+    case ClipType::Caption:    typeName = "Caption";    break;
+    default:                   break;
     }
     m_headerLabel->setText(QString::fromStdString(m_clip->label()));
     m_typeLabel->setText(typeName);
@@ -484,6 +486,7 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Graphic:    badgeColor = QColor(220, 140, 60);  break;
     case ClipType::Image:      badgeColor = QColor(100, 180, 200); break;
     case ClipType::Adjustment: badgeColor = QColor(180, 180, 180); break;
+    case ClipType::Caption:    badgeColor = QColor(70, 200, 170);  break;
     default:                   badgeColor = QColor(150, 150, 150); break;
     }
     {

@@ -15,6 +15,7 @@
 #include "timeline/AdjustmentClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SequenceClip.h"
+#include "timeline/CaptionClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
@@ -316,6 +317,17 @@ void writeClip(BinaryWriter& w, const Clip& clip)
         w.writeString(sc.sequenceName());
         break;
     }
+    case ClipType::Caption: {
+        auto& cc = static_cast<const CaptionClip&>(clip);
+        w.writeString(cc.text());
+        w.writeString(cc.speaker());
+        w.writeString(cc.fontFamily());
+        w.writeF32(cc.fontSize());
+        w.writeU32(cc.textColor());
+        w.writeU32(cc.bgColor());
+        w.writeU8(static_cast<uint8_t>(cc.position()));
+        break;
+    }
     case ClipType::Graphic: {
         auto& gc = static_cast<const GraphicClip&>(clip);
         w.writeU32(static_cast<uint32_t>(gc.layerCount()));
@@ -460,6 +472,9 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         break;
     case ClipType::Sequence:
         clip = std::make_unique<SequenceClip>();
+        break;
+    case ClipType::Caption:
+        clip = std::make_unique<CaptionClip>();
         break;
     default:
         return nullptr;
@@ -696,6 +711,17 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         auto* sc = static_cast<SequenceClip*>(clip.get());
         sc->setSequenceIndex(static_cast<size_t>(r.readU32()));
         sc->setSequenceName(r.readString());
+        break;
+    }
+    case ClipType::Caption: {
+        auto* cc = static_cast<CaptionClip*>(clip.get());
+        cc->setText(r.readString());
+        cc->setSpeaker(r.readString());
+        cc->setFontFamily(r.readString());
+        cc->setFontSize(r.readF32());
+        cc->setTextColor(r.readU32());
+        cc->setBgColor(r.readU32());
+        cc->setPosition(static_cast<CaptionPosition>(r.readU8()));
         break;
     }
     default:

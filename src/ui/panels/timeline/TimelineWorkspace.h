@@ -60,6 +60,7 @@ namespace rt {
 
 // Forward declarations — panels
 class AudioMixer;
+class CaptionsPanel;
 class CharactersPanel;
 class LibraryPanel;
 class CommandStack;
@@ -336,6 +337,7 @@ private:
     PropertiesPanel*  m_propertiesPanel{nullptr};
     EffectControlsPanel* m_effectControlsPanel{nullptr};
     GraphicsEditorPanel* m_GraphicsEditorPanel{nullptr};
+    CaptionsPanel*    m_captionsPanel{nullptr};
     ColorGradingPanel*     m_ColorGradingPanel{nullptr};
     EffectsPanel*     m_effectsPanel{nullptr};
     AudioMixer*       m_audioMixer{nullptr};

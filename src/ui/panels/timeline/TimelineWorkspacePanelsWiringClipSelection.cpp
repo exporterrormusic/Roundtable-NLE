@@ -23,6 +23,7 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
+#include "panels/captions/CaptionsPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -202,6 +203,19 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (!track) return;
             auto* clip = track->clip(clipIdx);
             if (!clip) return;
+
+            // CaptionClip: focus the Captions panel and select this cue.
+            if (clip->clipType() == ClipType::Caption) {
+                if (m_captionsPanel) {
+                    if (auto* dock = qobject_cast<QDockWidget*>(
+                            m_captionsPanel->parentWidget())) {
+                        dock->show();
+                        dock->raise();
+                    }
+                    m_captionsPanel->selectCaption(trackIdx, clipIdx);
+                }
+                return;
+            }
 
             // SequenceClip: open the nested sequence
             if (clip->clipType() == ClipType::Sequence) {

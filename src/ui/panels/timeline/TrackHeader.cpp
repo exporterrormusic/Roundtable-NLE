@@ -102,14 +102,23 @@ void TrackHeader::paintEvent(QPaintEvent* event)
     // Background
     QColor bg = (m_track->type() == TrackType::Video)
                     ? tc.trackBg : tc.trackBgAlt;
+    if (m_track->isCaptionTrack()) {
+        const QColor a = tc.accent;  // match the content-area caption tint
+        bg = QColor((bg.red()   * 65 + a.red()   * 35) / 100,
+                    (bg.green() * 65 + a.green() * 35) / 100,
+                    (bg.blue()  * 65 + a.blue()  * 35) / 100);
+    }
     painter.fillRect(rect(), bg);
 
     // Right border
     painter.setPen(tc.trackDivider);
     painter.drawLine(w - 1, 0, w - 1, h);
 
-    // Bottom border
+    // Bottom border — thick accent under the caption track to set it apart.
+    if (m_track->isCaptionTrack())
+        painter.setPen(QPen(tc.accent, 2));
     painter.drawLine(0, h - 1, w, h - 1);
+    painter.setPen(tc.trackDivider);
 
     // Targeting indicator (left edge patch)
     {
@@ -262,6 +271,11 @@ void TrackHeader::mousePressEvent(QMouseEvent* event)
         emit soloToggled(m_trackIndex, !m_track->isSoloed());
     else if (syncLockButtonRect().contains(pos))
         emit syncLockToggled(m_trackIndex, !m_track->isSyncLocked());
+    else if (m_track->isCaptionTrack()) {
+        // The caption (subtitle) track is pinned at the top and cannot be
+        // reordered — swallow the press without arming a drag.
+        event->accept();
+    }
     else {
         // Click landed on the label / blank area → arm a reorder drag.
         m_reorderPressed = true;
@@ -396,7 +410,10 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     QAction* addAudioTrack = addMenu->addAction("Add Audio Track");
     QAction* addDividerTrack = addMenu->addAction("Add Divider");
 
-    QAction* deleteAction = menu.addAction("Delete Track");
+    // The caption track is pinned/auto-managed — it can't be deleted by hand.
+    QAction* deleteAction = m_track->isCaptionTrack()
+                                ? nullptr
+                                : menu.addAction("Delete Track");
 
     menu.addSeparator();
 
@@ -434,7 +451,7 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     else if (chosen == addVideoTrack) { emit addTrackRequested(true, true, m_trackIndex); }
     else if (chosen == addAudioTrack) { emit addTrackRequested(false, true, m_trackIndex); }
     else if (chosen == addDividerTrack) { emit addDividerRequested(true, m_trackIndex); }
-    else if (chosen == deleteAction)  { emit deleteTrackRequested(m_trackIndex); }
+    else if (deleteAction && chosen == deleteAction)  { emit deleteTrackRequested(m_trackIndex); }
     else if (chosen == collapseAction) { emit collapseToggled(m_trackIndex, !m_track->isCollapsed()); }
     else if (chosen == sizeSmall)  { emit trackSizePresetRequested(m_trackIndex, 30.0f); }
     else if (chosen == sizeMedium) { emit trackSizePresetRequested(m_trackIndex, 60.0f); }

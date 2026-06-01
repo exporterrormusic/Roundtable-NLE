@@ -29,7 +29,8 @@ enum class ClipType : uint8_t
     Adjustment,  // Adjustment layer (effects only, no source)
     Image,       // Static image
     Graphic,     // Multi-layer graphic container (text, shapes)
-    Sequence     // Nested sequence (references another Timeline)
+    Sequence,    // Nested sequence (references another Timeline)
+    Caption      // Subtitle / closed-caption cue (lives on the caption track)
 };
 
 /// Base clip class. Derived classes add type-specific data.

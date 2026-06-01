@@ -31,6 +31,7 @@ void TimelineWorkspace::arrangeDockLayout()
     auto* dockScopes          = m_dockWidgets.value("Scopes");
     auto* dockProperties      = m_dockWidgets.value("Properties");
     auto* dockCharacters      = m_dockWidgets.value("Library");
+    auto* dockCaptions        = m_dockWidgets.value("Captions");
     auto* dockAudioMeters     = m_dockWidgets.value("Audio Meters");
     auto* dockTools           = m_dockWidgets.value("Tools");
 
@@ -66,6 +67,11 @@ void TimelineWorkspace::arrangeDockLayout()
         m_innerMainWindow->tabifyDockWidget(dockScopes ? dockScopes : dockEffectControls, dockProperties);
     if (dockCharacters)
         m_innerMainWindow->tabifyDockWidget(dockProperties ? dockProperties : dockEffectControls, dockCharacters);
+    // Captions must be placed explicitly here — otherwise Qt auto-tabifies the
+    // un-positioned dock onto whatever it finds (the Source Monitor), which is
+    // what produced the "merged into the Source Monitor" tab glitch.
+    if (dockCaptions)
+        m_innerMainWindow->tabifyDockWidget(dockCharacters ? dockCharacters : dockEffectControls, dockCaptions);
 
     dockEffectControls->raise();
 

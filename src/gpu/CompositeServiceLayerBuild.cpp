@@ -19,6 +19,7 @@
 #include "timeline/TitleClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
+#include "timeline/CaptionClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Transition.h"
@@ -693,6 +694,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     refH = m_project->settings().resolution().height;
                 }
                 frame = rt::renderGraphicClip(graphicClip, tick, outW, outH, refW, refH);
+            }
+            // ── CaptionClip (burned-in subtitle overlay) ────────────────────
+            else if (auto* captionClip = dynamic_cast<CaptionClip*>(clip)) {
+                // Pass project resolution as reference so caption font metrics
+                // stay proportional at reduced render resolutions (scrub).
+                uint32_t refW = 0, refH = 0;
+                if (m_project) {
+                    refW = m_project->settings().resolution().width;
+                    refH = m_project->settings().resolution().height;
+                }
+                frame = rt::renderCaptionClip(captionClip, tick, outW, outH, refW, refH);
             }
             // â”€â”€ SequenceClip (nested sequence) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             else if (auto* seqClip = dynamic_cast<SequenceClip*>(clip)) {

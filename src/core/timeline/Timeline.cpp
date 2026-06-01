@@ -40,7 +40,7 @@ Track* Timeline::addVideoTrack(const std::string& name)
         // real video tracks).
         int videoCount = 0;
         for (const auto& t : m_tracks)
-            if (t->type() == TrackType::Video && !t->isDivider()) ++videoCount;
+            if (t->type() == TrackType::Video && !t->isDivider() && !t->isCaptionTrack()) ++videoCount;
         trackName = "V" + std::to_string(videoCount + 1);
     }
     // Insert before the first audio track OR the V/A divider, whichever
@@ -55,6 +55,10 @@ Track* Timeline::addVideoTrack(const std::string& name)
             break;
         }
     }
+    // Never let a new video track land above the pinned caption track —
+    // captions must stay at index 0 (topmost = composited on top).
+    if (!m_tracks.empty() && m_tracks.front()->isCaptionTrack() && insertIdx == 0)
+        insertIdx = 1;
     auto track = std::make_unique<Track>(TrackType::Video, trackName);
     auto* ptr = track.get();
     m_tracks.insert(m_tracks.begin() + static_cast<ptrdiff_t>(insertIdx),
@@ -97,6 +101,33 @@ Track* Timeline::addDividerTrack(size_t insertIndex, bool permanent)
                     std::move(track));
     notifyTrackAdded(insertIndex);
     spdlog::debug("Added divider track at index {} permanent={}", insertIndex, permanent);
+    return ptr;
+}
+
+Track* Timeline::captionTrack() noexcept
+{
+    if (!m_tracks.empty() && m_tracks.front()->isCaptionTrack())
+        return m_tracks.front().get();
+    // Defensive: scan in case it isn't at index 0 (shouldn't happen).
+    for (auto& t : m_tracks)
+        if (t->isCaptionTrack()) return t.get();
+    return nullptr;
+}
+
+Track* Timeline::addCaptionTrack()
+{
+    if (Track* existing = captionTrack())
+        return existing;
+
+    auto track = std::make_unique<Track>(TrackType::Video, "Subtitles");
+    track->setCaptionTrack(true);
+    track->setTargeted(false);    // not an edit target
+    track->setSyncLocked(false);  // unaffected by ripple edits
+    track->setHeight(44.0f);      // compact, like Premiere's caption track
+    auto* ptr = track.get();
+    m_tracks.insert(m_tracks.begin(), std::move(track)); // pin at index 0 (top)
+    notifyTrackAdded(0);
+    spdlog::debug("Added caption track at index 0");
     return ptr;
 }
 
@@ -328,6 +359,9 @@ std::unique_ptr<Timeline> Timeline::clone() const
         // Without copying this flag the divider clones as a regular V-track,
         // producing the "extra video layer" seen in duplicated sequences.
         dstTrack->setDivider(srcTrack->isDivider());
+        // Caption track is also TrackType::Video + flag; preserve it so the
+        // cloned sequence keeps its pinned subtitle track.
+        dstTrack->setCaptionTrack(srcTrack->isCaptionTrack());
         dstTrack->setHeight(srcTrack->height());
         dstTrack->setColor(srcTrack->color());
         dstTrack->setVolume(srcTrack->volume());
