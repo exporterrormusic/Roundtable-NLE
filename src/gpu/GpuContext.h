@@ -162,6 +162,20 @@ public:
     [[nodiscard]] GpuScheduler& scheduler() noexcept { return m_scheduler; }
     [[nodiscard]] const GpuScheduler& scheduler() const noexcept { return m_scheduler; }
 
+    /// Monotonic counter bumped once per composited frame submission.  Drives
+    /// the PrefetchTexturePool's deferred-reuse quarantine: a recycled VkImage
+    /// must not be handed back out until enough composite frames have been
+    /// SUBMITTED past its release that any in-flight submit referencing it has
+    /// completed (the compositor is triple-buffered, so a few frames suffice).
+    /// Closes the texture-reuse race that shows stale/other-clip frames on the
+    /// GPU-resident decode path.
+    [[nodiscard]] uint64_t compositeEpoch() const noexcept {
+        return m_compositeEpoch.load(std::memory_order_acquire);
+    }
+    void bumpCompositeEpoch() noexcept {
+        m_compositeEpoch.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     /// Graphics queue family index (for creating per-thread CommandPools).
     [[nodiscard]] uint32_t graphicsQueueFamilyIndex() const noexcept
     {
@@ -289,6 +303,7 @@ private:
     std::unique_ptr<GpuResourceManager>  m_resourceManager;
 
     bool m_initialized{false};
+    std::atomic<uint64_t> m_compositeEpoch{0};  ///< Per-composite-frame counter (texture quarantine)
     std::atomic<GpuState> m_gpuState{GpuState::Healthy};
     std::function<void()> m_fatalFailureCallback{};
     std::atomic<bool>     m_fatalFailureFired{false};

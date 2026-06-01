@@ -820,6 +820,10 @@ void ProgramMonitor::updateDisplay()
         const double fps = m_controller->frameRate();
         if (m_pool && fps > 0.0)
             m_pool->setProjectFps(fps);
+        // Keep the pool's playback speed current so prefetch strides decode
+        // to only the frames that will actually be displayed at high speed.
+        if (m_pool)
+            m_pool->setPlaybackSpeed(m_controller->shuttleSpeed());
 
         // Keep poll rate at 16ms for smooth frame updates during playback
         if (m_pollTimer->interval() != 16)

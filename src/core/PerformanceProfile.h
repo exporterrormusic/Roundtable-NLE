@@ -55,20 +55,18 @@ struct PerformanceProfile
     // ── Quality / editing ─────────────────────────────────────────────────
     float editProxyScale = 0.5f;      ///< full-res ProRes forced to 1/2 today
 
-    // ── Mode ──────────────────────────────────────────────────────────────
-    bool boostEnabled = false;
-
-    /// Build a profile for the given machine.  Phase 1 returns the
-    /// behaviour-neutral defaults; Phase 2 will classify a MachineTier from
-    /// these inputs and Phase 3 will apply the Boost multiplier.
+    /// Build a profile adapted to the given machine.  Scales the cache
+    /// working set modestly by detected tier (capable machines keep more
+    /// recent frames resident); throughput knobs stay at the conservative
+    /// baseline.  There is no opt-in mode — this single adaptive default
+    /// replaces the former locked-low constants.
     ///
     /// Primitive parameters (not a GpuClassification) keep this header free of
     /// Vulkan/HardwareDiagnostics coupling and make the policy unit-testable.
     static PerformanceProfile forMachine(size_t deviceVramBytes,
                                          size_t totalRamBytes,
                                          unsigned logicalCores,
-                                         bool hasStrictNvencCap,
-                                         bool boost);
+                                         bool hasStrictNvencCap);
 };
 
 /// Process-global active profile.  Defaults to the historically-tuned values

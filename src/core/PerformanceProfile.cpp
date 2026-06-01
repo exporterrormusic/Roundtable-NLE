@@ -1,9 +1,9 @@
 /*
  * PerformanceProfile.cpp — active-profile storage + machine factory.
  *
- * Phase 1: forMachine() returns the behaviour-neutral defaults.  The
- * MachineTier classifier (Phase 2) and Boost multiplier (Phase 3) slot in
- * here without changing any consumer.  See docs/BOOST_MODE_PLAN.md.
+ * forMachine() classifies the machine into a tier and scales the cache
+ * working set modestly to fit it (one adaptive default — no opt-in mode).
+ * Throughput knobs stay at the conservative baseline.
  */
 
 #include "PerformanceProfile.h"
@@ -34,78 +34,79 @@ void setPerfProfile(const PerformanceProfile& profile)
 PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
                                                   size_t totalRamBytes,
                                                   unsigned logicalCores,
-                                                  bool hasStrictNvencCap,
-                                                  bool boost)
+                                                  bool hasStrictNvencCap)
 {
     using HardwareDiagnostics::MachineTier;
 
     PerformanceProfile p;
-    p.boostEnabled = boost;
 
     // Hardware gate (always honoured): machines with a strict NVENC/NVDEC
     // session cap (Pascal consumer SKUs, pre-driver-550) must never run more
-    // than 2 NVDEC workers, Boost or not.
+    // than 2 NVDEC workers.
     if (hasStrictNvencCap)
         p.nvdecWorkers = 2;
 
-    // ── DEFAULT (adaptive) path ─────────────────────────────────────────
-    // When Boost is OFF the cache override fields stay 0, which means
-    // "let CacheCoordinator compute its existing VRAM/RAM-proportional
-    // defaults".  Those formulas are already adaptive, so the default is
-    // adaptive-but-conservative with zero behaviour change from before the
-    // profile existed.  The Path-C-gated throughput knobs (prefetchAhead*,
-    // nvdecWorkers, prefetchThreadCount) also stay at their conservative
-    // baselines here — they cannot be raised safely until Path C decouples
-    // the prefetch convert/upload work from the compositor's queue.
-    if (!boost)
-        return p;
-
-    // ── BOOST (opt-in aggressive) path ──────────────────────────────────
-    // Raise the cache working-set CEILINGS by tier.  These are the
-    // "safe today" knobs: GpuTextureCache eviction is fence-gated (pin +
-    // triple-buffered ring) so a larger working set cannot destroy an
-    // in-flight texture, and CacheCoordinator's live VMA/RAM pressure
-    // relief stays armed to back off if a target proves too high on a
-    // contended machine.  See docs/BOOST_MODE_PLAN.md §4, §6.
+    // ── Modest, default machine adaptation ──────────────────────────────
+    // There is no opt-in "Boost" mode: the default simply scales the cache
+    // WORKING SET to the machine tier so a capable GPU keeps more recent
+    // frames resident (smoother scrub-back over already-seen footage) than
+    // the one-size-fits-the-weakest-machine floor — WITHOUT the aggressive
+    // sizing that thrashed VRAM on a busy timeline.  Cache fields left at 0
+    // fall through to CacheCoordinator's existing conservative formula.
     //
-    // NOTE: Boost does NOT yet raise prefetchAheadFrames / nvdecWorkers /
-    // prefetchThreadCount — those remain Path-C-gated (Phase 5/6).
+    // Deliberately conservative:
+    //   • Only the cache working set scales — the throughput knobs
+    //     (prefetchAheadFrames, nvdecWorkers, prefetchThreadCount) stay at
+    //     the baseline.  Raising those safely needs the prefetch/compositor
+    //     queue-decoupling work (parked in git stash; see
+    //     docs/BOOST_MODE_PLAN.md), which is not landed.
+    //   • Entry/Standard tiers stay on the floor (little headroom to spare).
+    //   • The byte budget is sized with generous slack so the ENTRY-COUNT
+    //     cap is the binding limit, never byte-pressure — that avoids the
+    //     near-budget eviction thrash that an over-tight budget caused.
     const auto tier = HardwareDiagnostics::classifyMachine(
         [&] { HardwareDiagnostics::GpuClassification g; g.vramBytes = deviceVramBytes; return g; }(),
         totalRamBytes, logicalCores);
 
-    // Per-tier aggressive cache working set.  gpuTexMaxEntries is the real
-    // ceiling; gpuTexCacheBudgetBytes is sized to accommodate it (~9 MB/
-    // entry of 1080p BGRA + slack) so byte-pressure doesn't evict before
-    // the entry cap does, then clamped to a sane fraction of VRAM.
-    size_t gpuEntries = 0;
-    size_t frameBudget = 0;
+    // Size the GPU cache by a BYTE budget directly (not entry count) — frame
+    // textures vary wildly (1080p ≈ 8 MB, a tall packed-alpha clip ≈ 16 MB),
+    // so an entry count can't predict VRAM use.  The entry cap is set high
+    // enough that the byte budget is the binding limit.  Values are a modest
+    // step above CacheCoordinator's ~2 GB / ~1 GB floor, with lots of VRAM/RAM
+    // headroom left.
+    size_t gpuBudget    = 0;   // 0 ⇒ CacheCoordinator's conservative default
+    size_t gpuEntryCap  = 0;
+    size_t frameBudget  = 0;
+    size_t frameEntries = 0;
     switch (tier) {
-    case MachineTier::Entry:       gpuEntries = 60;  frameBudget = 384 * kMiB; break;
-    case MachineTier::Standard:    gpuEntries = 150; frameBudget = 1   * kGiB; break;
-    case MachineTier::Performance: gpuEntries = 300; frameBudget = 2   * kGiB; break;
-    case MachineTier::Workstation: gpuEntries = 450; frameBudget = 4   * kGiB; break;
+    case MachineTier::Entry:       break;   // floor (little headroom to spare)
+    case MachineTier::Standard:    break;   // ≈ floor
+    case MachineTier::Performance: gpuBudget = 3 * kGiB; gpuEntryCap = 400; frameBudget = 2 * kGiB; frameEntries = 600; break;
+    case MachineTier::Workstation: gpuBudget = 5 * kGiB; gpuEntryCap = 700; frameBudget = 4 * kGiB; frameEntries = 900; break;
     }
 
-    p.gpuTexMaxEntries = gpuEntries;
-    p.frameCacheMaxEntries = gpuEntries * 2;   // orphan-texture headroom (matches default shape)
+    if (gpuBudget != 0) {
+        // Hard safety ceiling: keep the texture cache well below the VRAM
+        // paging danger zone.  ~25% of VRAM (≈6 GB on a 24 GB card) leaves
+        // ample room for decoder surfaces + the swapchain + live frames +
+        // driver overhead, so total VMA-tracked VRAM stays clear of the OS
+        // budget that previously triggered driver paging + stutter.
+        const size_t vramCeil = deviceVramBytes ? (deviceVramBytes * 25 / 100)
+                                                : gpuBudget;
+        p.gpuTexCacheBudgetBytes = std::min(gpuBudget, vramCeil);
+        p.gpuTexMaxEntries       = gpuEntryCap;     // ceiling; byte budget binds first
+        p.frameCacheMaxEntries   = frameEntries;    // bounds orphan-texture VRAM
+    }
+    if (frameBudget != 0) {
+        // RAM is plentiful, but the FrameCache also pins GPU-co-owned VkImages
+        // until the compositor consumes them, so it is bounded too (≤~12% RAM).
+        const size_t ramCeil = totalRamBytes ? (totalRamBytes / 8) : frameBudget;
+        p.frameCacheBudgetBytes = std::min(frameBudget, ramCeil);
+    }
 
-    // Byte budget that lets the entry cap be the binding ceiling, clamped
-    // so we never claim more than ~45% of VRAM for the texture cache.
-    const size_t wantBudget = gpuEntries * (9 * kMiB);
-    const size_t vramCeil = deviceVramBytes ? (deviceVramBytes * 45 / 100) : wantBudget;
-    p.gpuTexCacheBudgetBytes = std::min(wantBudget, vramCeil);
-
-    // CPU frame-cache budget, clamped so it never exceeds 25% of RAM.
-    const size_t ramCeil = totalRamBytes ? (totalRamBytes / 4) : frameBudget;
-    p.frameCacheBudgetBytes = std::min(frameBudget, ramCeil);
-
-    // Background work scales with cores under Boost (helps thumbnail/proxy
-    // generation keep up without starving decode).  Wired into consumers
-    // incrementally — see BOOST_MODE_PLAN.md §4.
-    if (logicalCores >= 16)      p.thumbnailThreads = 8;
-    else if (logicalCores >= 8)  p.thumbnailThreads = 6;
-    else if (logicalCores >= 6)  p.thumbnailThreads = 4;
+    // Background work scales modestly with cores (thumbnail/waveform gen).
+    if (logicalCores >= 16)      p.thumbnailThreads = 4;
+    else if (logicalCores >= 8)  p.thumbnailThreads = 3;
 
     return p;
 }

@@ -1257,8 +1257,26 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                      spineClip->characterName(),
                                      frame->width, frame->height);
                     } else {
-                        spdlog::error("[SPINE-RENDER] '{}' FAILED both GPU and CPU paths",
-                                      spineClip->characterName());
+                        // Distinguish the expected async-load window (the Spine
+                        // skeleton hasn't finished loading yet — normal for the
+                        // first composites after a project opens; the character
+                        // appears as soon as its asset is ready) from a genuine
+                        // render failure.  Only the latter is error-worthy; the
+                        // former was spamming [error] at startup.
+                        auto sit2 = m_spineCache.find(spineClip->id());
+                        const bool stillLoading =
+                            (sit2 == m_spineCache.end() || !sit2->second ||
+                             !sit2->second->engine.isLoaded());
+                        if (stillLoading) {
+                            spdlog::debug("[SPINE-RENDER] '{}' skeleton still "
+                                          "loading — layer deferred this frame",
+                                          spineClip->characterName());
+                        } else {
+                            spdlog::error("[SPINE-RENDER] '{}' FAILED both GPU and "
+                                          "CPU paths (skeleton loaded but render "
+                                          "produced no frame)",
+                                          spineClip->characterName());
+                        }
                     }
                 } else if (gpuSpineZeroCopy) {
                     spdlog::info("[SPINE-RENDER] '{}' GPU zero-copy: {}x{}",

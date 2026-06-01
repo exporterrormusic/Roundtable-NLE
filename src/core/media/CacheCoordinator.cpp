@@ -67,9 +67,8 @@ void CacheCoordinator::reapplyBudgets()
         const size_t budget = recommendedFrameCacheBudget();
         m_frameCache->setCapacity(budget);
         spdlog::info("CacheCoordinator: FrameCache budget re-applied = {:.1f} GB "
-                     "(profile{})",
-                     budget / (1024.0 * 1024.0 * 1024.0),
-                     perfProfile().boostEnabled ? ", Boost" : "");
+                     "(tier-adaptive profile)",
+                     budget / (1024.0 * 1024.0 * 1024.0));
     }
     if (m_diskCache) {
         const size_t budget = recommendedDiskCacheBudget();

@@ -23,15 +23,41 @@ PrefetchTexturePool::~PrefetchTexturePool()
     clear();
 }
 
+void PrefetchTexturePool::sweepLocked(const PoolKey& key, uint64_t now)
+{
+    auto qit = m_quarantine.find(key);
+    if (qit == m_quarantine.end()) return;
+    auto& q = qit->second;
+    auto& bucket = m_buckets[key];
+
+    for (auto it = q.begin(); it != q.end(); ) {
+        // Elapsed since release.  Epoch is monotonic and releaseEpoch was
+        // sampled at (a past) release, so now >= releaseEpoch always.
+        if (now - it->releaseEpoch >= kQuarantineFrames) {
+            if (bucket.size() < kMaxPerShape)
+                bucket.push_back(std::move(it->tex));
+            // Else: past quarantine AND bucket full → safe to destroy now
+            // (no GPU work references it).  unique_ptr dtor frees VMA memory.
+            it = q.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 std::unique_ptr<Texture> PrefetchTexturePool::acquire(
     uint32_t width, uint32_t height,
     VkFormat format, VkImageUsageFlags usage)
 {
     std::lock_guard lk(m_mtx);
     PoolKey key{width, height, format, usage};
+
+    // Promote any quarantined textures that have aged out before reusing.
+    sweepLocked(key, GpuContext::get().compositeEpoch());
+
     auto it = m_buckets.find(key);
     if (it == m_buckets.end() || it->second.empty())
-        return nullptr;
+        return nullptr;  // caller creates a fresh Texture
     std::unique_ptr<Texture> tex = std::move(it->second.back());
     it->second.pop_back();
     return tex;
@@ -44,17 +70,23 @@ void PrefetchTexturePool::release(std::unique_ptr<Texture> tex,
     if (!tex) return;
     std::lock_guard lk(m_mtx);
     PoolKey key{width, height, format, usage};
-    auto& bucket = m_buckets[key];
-    if (bucket.size() < kMaxPerShape) {
-        bucket.push_back(std::move(tex));
-    }
-    // Else: drop on the floor — tex's destructor releases VMA memory.
+
+    const uint64_t now = GpuContext::get().compositeEpoch();
+    // Opportunistically age out earlier releases so quarantine doesn't grow
+    // unboundedly when acquire isn't being called for this shape.
+    sweepLocked(key, now);
+
+    // NEVER recycle straight into the reusable bucket: the texture may still
+    // be sampled by an in-flight compositor submit.  Quarantine it instead;
+    // sweepLocked promotes it once kQuarantineFrames epochs have passed.
+    m_quarantine[key].push_back(Quarantined{std::move(tex), now});
 }
 
 void PrefetchTexturePool::clear()
 {
     std::lock_guard lk(m_mtx);
     m_buckets.clear();
+    m_quarantine.clear();
 }
 
 size_t PrefetchTexturePool::totalEntries() const
@@ -63,6 +95,8 @@ size_t PrefetchTexturePool::totalEntries() const
     size_t n = 0;
     for (const auto& [k, bucket] : m_buckets)
         n += bucket.size();
+    for (const auto& [k, q] : m_quarantine)
+        n += q.size();
     return n;
 }
 

@@ -17,7 +17,6 @@
 class QComboBox;
 class QLineEdit;
 class QSpinBox;
-class QCheckBox;
 
 namespace rt {
 
@@ -53,7 +52,6 @@ private:
     QComboBox* m_audioDeviceCombo{nullptr};
     QComboBox* m_hardwareDecodeCombo{nullptr};
     QLabel*    m_cudaStatusLabel{nullptr};
-    QCheckBox* m_boostCheck{nullptr};
 };
 
 } // namespace rt

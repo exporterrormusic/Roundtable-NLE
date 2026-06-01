@@ -281,6 +281,14 @@ public:
     /// Set project frame rate so prefetch can skip unnecessary source frames.
     void setProjectFps(double fps) { m_projectFps.store(fps > 0.0 ? fps : 30.0, std::memory_order_relaxed); }
 
+    /// Set the current playback speed (1.0 = normal, 4.0 = 4×, etc.).  At high
+    /// speed the player only displays every ~Nth source frame, so the prefetch
+    /// strides by N and decodes ONLY the frames that will actually be shown —
+    /// otherwise it wastes (N-1)/N of the decoder on frames that are skipped,
+    /// which is why heavy videos can't keep up at 4× while procedural Spine
+    /// (no decode) plays fine.
+    void setPlaybackSpeed(double s) { m_playbackSpeed.store(s, std::memory_order_relaxed); }
+
     // ── Queries ─────────────────────────────────────────────────────────
 
     /// Get stream info for an opened media.
@@ -564,6 +572,7 @@ private:
     std::deque<PrefetchTask>                         m_prefetchQueue;
     std::atomic<int64_t>                              m_playheadFrame{0}; // for priority scheduling
     std::atomic<double>                                m_projectFps{30.0}; // for frame-stride optimization
+    std::atomic<double>                                m_playbackSpeed{1.0}; // for high-speed decode striding
 
     // Per-handle cooldown to avoid rebuilding the queue every frame tick.
     // Protected by m_prefetchMutex.

@@ -109,9 +109,34 @@ private:
     //    shape at 1080p BGRA — fits any GPU.
     static constexpr size_t kMaxPerShape = 24;
 
+    // A texture released back to the pool whose last GPU use may still be in
+    // flight.  Held in quarantine until kQuarantineFrames composite epochs
+    // (GpuContext::compositeEpoch) have elapsed since release — by then any
+    // submit that referenced it has completed (the compositor is triple-
+    // buffered) — then promoted to m_buckets for reuse.  This is what prevents
+    // a prefetch convert from overwriting a VkImage the compositor is still
+    // sampling (the stale/wrong-frame race on the GPU-resident path — e.g.
+    // another clip's frame showing at the top of a packed-alpha character).
+    struct Quarantined {
+        std::unique_ptr<Texture> tex;
+        uint64_t                 releaseEpoch{0};
+    };
+
+    // In-flight depth is kRingSize (3) in GpuUploadManager; quarantine one
+    // extra frame for margin.
+    static constexpr uint64_t kQuarantineFrames = 4;
+
+    /// Requires m_mtx held.  Promote quarantined textures for `key` whose
+    /// quarantine has elapsed (relative to `now`) into the reusable bucket,
+    /// capping the bucket at kMaxPerShape and safely destroying any excess
+    /// (excess is past-quarantine, so destruction cannot race the GPU).
+    void sweepLocked(const PoolKey& key, uint64_t now);
+
     mutable std::mutex m_mtx;
     std::unordered_map<PoolKey,
         std::vector<std::unique_ptr<Texture>>, PoolKeyHash> m_buckets;
+    std::unordered_map<PoolKey,
+        std::vector<Quarantined>, PoolKeyHash> m_quarantine;
 };
 
 // ── Helper: create-or-acquire a pooled Texture wrapped in a shared_ptr ──

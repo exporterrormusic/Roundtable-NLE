@@ -119,9 +119,25 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
         }
 
         const double projFps = m_projectFps.load(std::memory_order_relaxed);
-        const int stride = (info.fps > projFps * 1.4)
+        // Source-fps stride: a 60 fps clip in a 30 fps project only needs every
+        // 2nd source frame.
+        const int srcStride = (info.fps > projFps * 1.4)
             ? std::max(1, static_cast<int>(std::round(info.fps / projFps)))
             : 1;
+        // Playback-speed stride: at N× the playhead advances ~N source frames
+        // per displayed frame, so decode ONLY those — never the intermediate
+        // frames the player skips over.  This is what lets heavy videos keep
+        // up at 4× (decode load stays ~1× instead of 4×).  No effect at 1×.
+        const double absSpeed = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
+        const int speedStride = (absSpeed > 1.4)
+            ? std::max(1, static_cast<int>(std::lround(absSpeed)))
+            : 1;
+        const int stride = std::max(1, srcStride * speedStride);
+        // Bound the lookahead window in DISPLAYED frames, not source frames, so
+        // a strided prefetch still buffers ~maxLookahead frames ahead (without
+        // this, stride N would shrink the buffer to maxLookahead/N → stutter).
+        const int64_t lookaheadWindow =
+            static_cast<int64_t>(m_scheduler.maxLookahead()) * stride;
         const int effectiveCount = interactivePlayback ? std::min(count, 16) : count;
         // Update scheduler playhead for lookahead bounding.
         m_scheduler.setPlayhead(afterFrame);
@@ -139,9 +155,9 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             if (m_cache->contains(handle, fn, tier))
                 continue;
 
-            // Scheduler lookahead gate: skip frames outside the bounded
-            // lookahead window (unless urgent).
-            if (!m_scheduler.withinLookahead(fn, afterFrame) && !(urgent && i == 0)) {
+            // Lookahead gate (stride-scaled): skip frames outside the bounded
+            // displayed-frame window (unless this is the urgent target frame).
+            if ((fn - afterFrame) > lookaheadWindow && !(urgent && i == 0)) {
                 if (i > 0) break;
                 continue;
             }
@@ -528,8 +544,25 @@ void MediaPool::prefetchWorker(int workerId)
                 }
             }
 
+            // Stride the follow-up batch by playback speed.  At Nx only every
+            // Nth source frame is displayed; decodePrefetchFrame decode-skips
+            // the gap WITHOUT converting (its delta<=150 fast path), so the
+            // decoder still advances frame-by-frame (cheap NVDEC) but the
+            // expensive GPU convert+copy runs only on the frames that will be
+            // shown.  This cuts convert load ~Nx at high speed — the fix for
+            // 4x stutter (the convert+copy, not the decode, saturates the
+            // compute queue).  followStride == 1 at normal speed (unchanged).
+            const double projFpsFu = m_projectFps.load(std::memory_order_relaxed);
+            const int srcStrideFu = (task.info.fps > projFpsFu * 1.4)
+                ? std::max(1, static_cast<int>(std::round(task.info.fps / projFpsFu))) : 1;
+            const double absSpeedFu = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
+            const int speedStrideFu = (absSpeedFu > 1.4)
+                ? std::max(1, static_cast<int>(std::lround(absSpeedFu))) : 1;
+            const int followStride = std::max(1, srcStrideFu * speedStrideFu);
+
             for (int f = 1; f <= kMaxFollowUp; ++f) {
-                const int64_t nextFn = task.frameNumber + f;
+                const int64_t nextFn = task.frameNumber +
+                                       static_cast<int64_t>(f) * followStride;
                 if (nextFn > maxFollow) break;
                 if (m_cache->contains(task.handle, nextFn, followTier)) continue;
                 if (!m_prefetchRunning) break;

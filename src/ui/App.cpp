@@ -311,13 +311,11 @@ bool App::init()
                 HardwareDiagnostics::logAtStartup(m_diagnosticsGpu,
                                                   m_diagnosticsHooks);
 
-                // ── Machine-adaptive performance profile (Boost mode) ──────
+                // ── Machine-adaptive performance profile ───────────────────
                 // Classify the machine into a tier and install the active
-                // PerformanceProfile.  Phase 1/2: this is behaviour-neutral
-                // (forMachine() returns the historically-tuned defaults); the
-                // tier is logged so support traces show it, and Phase 3 will
-                // select per-tier values + honour the Boost toggle.
-                // See docs/BOOST_MODE_PLAN.md.
+                // PerformanceProfile, which scales the cache working set to the
+                // hardware (capable machines keep more recent frames resident).
+                // Single adaptive default — no opt-in mode.
                 uint64_t totalRamBytes = 0;
 #ifdef _WIN32
                 {
@@ -330,23 +328,20 @@ bool App::init()
                 const unsigned logicalCores = std::thread::hardware_concurrency();
                 const auto tier = HardwareDiagnostics::classifyMachine(
                     m_diagnosticsGpu, totalRamBytes, logicalCores);
-                const bool boostEnabled =
-                    rt::appSettings().value("performance/boostEnabled", false).toBool();
-                spdlog::info("[HW-DIAG] Machine tier = {} (VRAM {} MB, RAM {} MB, {} cores), Boost={}",
+                spdlog::info("[HW-DIAG] Machine tier = {} (VRAM {} MB, RAM {} MB, {} cores)",
                              HardwareDiagnostics::machineTierName(tier),
                              m_diagnosticsGpu.vramBytes / (1024ull * 1024ull),
                              totalRamBytes / (1024ull * 1024ull),
-                             logicalCores,
-                             boostEnabled ? "ON" : "OFF");
+                             logicalCores);
                 setPerfProfile(PerformanceProfile::forMachine(
                     m_diagnosticsGpu.vramBytes, totalRamBytes, logicalCores,
-                    m_diagnosticsGpu.hasStrictNvencSessionCap, boostEnabled));
+                    m_diagnosticsGpu.hasStrictNvencSessionCap));
 
                 // The CPU FrameCache + disk budgets were applied earlier (at
                 // cache registration, before GPU VRAM was known); re-apply now
-                // that the profile is installed so Boost overrides take effect.
-                // GPU texture-cache budgets are applied lazily on first
-                // composite and already see the profile.
+                // that the profile is installed so its tier-scaled values take
+                // effect.  GPU texture-cache budgets are applied lazily on
+                // first composite and already see the profile.
                 if (m_cacheCoordinator) m_cacheCoordinator->reapplyBudgets();
 
                 // UPGRADE_PLAN: arm the GPU-resident prefetch decode

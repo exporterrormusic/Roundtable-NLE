@@ -1079,6 +1079,13 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
     }
 
+    // Advance the composite epoch that drives PrefetchTexturePool's deferred-
+    // reuse quarantine.  Bumped per composite submit (whether or not it
+    // succeeded) so a recycled texture released during this frame is held out
+    // of reuse until several more frames have been submitted — guaranteeing any
+    // in-flight submit that sampled it has completed.
+    ctx.bumpCompositeEpoch();
+
     if (!gpuSubmitOk) {
         // P2: no retry/backoff.  Submit failure means the device is lost
         // or wedged; signalling it propagates to the fatal-failure modal.
