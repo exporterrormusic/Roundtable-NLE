@@ -43,7 +43,7 @@ TEST(MediaSourceServiceTest, PlaybackRequestsAreBestEffortAndNonBlocking)
 
     EXPECT_FALSE(service.allowsBlockingDecode(request));
     EXPECT_EQ(options.tier, ResolutionTier::Half);
-    EXPECT_FALSE(options.scrubMode);
+    EXPECT_FALSE(options.exactDecode);
     EXPECT_TRUE(options.preferNativeGpuFormat);
     EXPECT_EQ(key.source, 42);
     EXPECT_EQ(key.frameNumber, 7);
@@ -76,7 +76,7 @@ TEST(MediaSourceServiceTest, BestEffortSourceMonitorRequestsStayNonBlocking)
     const auto options = service.frameOptionsFor(request);
 
     EXPECT_FALSE(service.allowsBlockingDecode(request));
-    EXPECT_FALSE(options.scrubMode);
+    EXPECT_FALSE(options.exactDecode);
     EXPECT_EQ(options.tier, ResolutionTier::Half);
 }
 
@@ -96,7 +96,7 @@ TEST(MediaSourceServiceTest, ExactRequestTypesAllowBlockingDecode)
 
         const auto options = service.frameOptionsFor(request);
         EXPECT_TRUE(service.allowsBlockingDecode(request));
-        EXPECT_TRUE(options.scrubMode);
+        EXPECT_TRUE(options.exactDecode);
         EXPECT_EQ(options.tier, ResolutionTier::Quarter);
     }
 }
@@ -116,7 +116,7 @@ TEST(MediaSourceServiceTest, ThumbnailFrameRequestsUseContractDefaults)
     const auto key = service.cacheKeyFor(request);
 
     EXPECT_TRUE(service.allowsBlockingDecode(request));
-    EXPECT_TRUE(options.scrubMode);
+    EXPECT_TRUE(options.exactDecode);
     EXPECT_EQ(options.tier, ResolutionTier::Quarter);
     EXPECT_EQ(key.type, RenderRequestType::Thumbnail);
     EXPECT_EQ(key.quality, RenderQuality::Quarter);

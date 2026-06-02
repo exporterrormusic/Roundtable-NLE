@@ -52,6 +52,8 @@ add_library(roundtable_gpu STATIC
     CompositeServiceSpine.cpp
     CompositeServiceLayerBuild.cpp
     CompositeServiceLayerBuildVideo.cpp
+    CompositeServiceLayerBuildNested.cpp
+    CompositeServiceLayerBuildSpine.cpp
 
     # GPU abstraction layer
     GpuWorkSubmission.cpp

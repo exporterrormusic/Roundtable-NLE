@@ -910,8 +910,25 @@ CrashInfo CrashHandler::lastCrash()
 bool CrashHandler::hasPreviousCrashLog()
 {
     auto logPath = crashLogPath();
-    return std::filesystem::exists(logPath) &&
-           std::filesystem::file_size(logPath) > 0;
+    std::error_code ec;
+    if (!std::filesystem::exists(logPath, ec) ||
+        std::filesystem::file_size(logPath, ec) == 0)
+        return false;
+
+    // install() seeds the log with a "=== SESSION START ===" writability
+    // marker, so mere non-emptiness does not imply a crash. Report a previous
+    // crash only when the log holds real content beyond those session markers.
+    std::ifstream in(logPath);
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() &&
+               (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+        if (line.empty()) continue;
+        if (line.find("=== SESSION START ===") != std::string::npos) continue;
+        return true;  // genuine crash content present
+    }
+    return false;
 }
 
 // ── Platform handler install / uninstall ────────────────────────────────────

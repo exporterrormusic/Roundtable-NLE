@@ -677,10 +677,25 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             scrubMode);
 
                         if (uploadResult.success) {
-                            // Point compositor at the stable (non-uploaded) texture
+                            // Point the compositor at the stable (non-uploaded)
+                            // double-buffer texture — but ONLY when it matches the
+                            // just-uploaded texture's dimensions. The preceding
+                            // scrub frames can be GPU-resident (they take the
+                            // gpuTextureReady branch and never touch this double-
+                            // buffer), or the tier can change on a scrub→settle, so
+                            // the Alt buffer may hold STALE / wrong-size content.
+                            // Displaying it then shows garbage transformed by the
+                            // new frame's geometry — the Wells "settle" red-seam
+                            // glitch. When Alt is stale/mismatched, show the freshly
+                            // uploaded texture instead (correct size + content). In
+                            // steady state the dimensions match every frame, so the
+                            // #93 write-race protection is preserved unchanged.
                             if (layer.isPacked &&
                                 m_gpuLayerTexturesAlt[li] &&
-                                m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
+                                m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE &&
+                                m_gpuLayerTextures[li] &&
+                                m_gpuLayerTexturesAlt[li]->width()  == m_gpuLayerTextures[li]->width() &&
+                                m_gpuLayerTexturesAlt[li]->height() == m_gpuLayerTextures[li]->height()) {
                                 gpuLayers[li].textureInfo =
                                     m_gpuLayerTexturesAlt[li]->descriptorInfo();
                             } else {

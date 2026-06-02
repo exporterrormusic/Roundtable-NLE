@@ -68,9 +68,13 @@ cmake --build build --config Release --parallel
 ```
 
 ### Run Tests
+Tests are off by default; configure with `-DROUNDTABLE_BUILD_TESTS=ON`, build,
+then run with ctest. The `core` label is the deterministic, headless-safe group
+(GPU/UI tests need a real Vulkan device and display):
 ```powershell
-cd build
-ctest --output-on-failure
+cmake -B build -S . -DROUNDTABLE_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release -L core --output-on-failure
 ```
 
 ### Portable / Move to Another Machine

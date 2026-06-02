@@ -391,20 +391,23 @@ TEST_F(SerializerTest, RoundTripInMemory)
     EXPECT_EQ(loaded->timeline()->inPoint(), 0);
     EXPECT_EQ(loaded->timeline()->outPoint(), 480000);
 
-    // Tracks
+    // Tracks — on load the V/A divider invariant regroups all video tracks
+    // above audio tracks, so the saved order (Video 1, Audio 1, Video 2) loads
+    // back as Video 1, Video 2, Audio 1. All track fields are preserved; only
+    // the indices change.
     ASSERT_EQ(loaded->timeline()->trackCount(), 3u);
     EXPECT_EQ(loaded->timeline()->track(0)->type(), TrackType::Video);
     EXPECT_EQ(loaded->timeline()->track(0)->name(), "Video 1");
-    EXPECT_EQ(loaded->timeline()->track(1)->type(), TrackType::Audio);
-    EXPECT_EQ(loaded->timeline()->track(1)->name(), "Audio 1");
-    EXPECT_EQ(loaded->timeline()->track(2)->type(), TrackType::Video);
-    EXPECT_EQ(loaded->timeline()->track(2)->name(), "Video 2");
+    EXPECT_EQ(loaded->timeline()->track(1)->type(), TrackType::Video);
+    EXPECT_EQ(loaded->timeline()->track(1)->name(), "Video 2");
+    EXPECT_EQ(loaded->timeline()->track(2)->type(), TrackType::Audio);
+    EXPECT_EQ(loaded->timeline()->track(2)->name(), "Audio 1");
 
-    // Track properties
-    EXPECT_TRUE(loaded->timeline()->track(2)->isLocked());
-    EXPECT_FALSE(loaded->timeline()->track(2)->isMuted());
-    EXPECT_TRUE(loaded->timeline()->track(2)->isSoloed());
-    EXPECT_FLOAT_EQ(loaded->timeline()->track(2)->height(), 120.0f);
+    // Track properties (Video 2 — locked, soloed, height 120 — is now at index 1)
+    EXPECT_TRUE(loaded->timeline()->track(1)->isLocked());
+    EXPECT_FALSE(loaded->timeline()->track(1)->isMuted());
+    EXPECT_TRUE(loaded->timeline()->track(1)->isSoloed());
+    EXPECT_FLOAT_EQ(loaded->timeline()->track(1)->height(), 120.0f);
 
     // Modified flag
     EXPECT_FALSE(loaded->isModified());
@@ -496,8 +499,9 @@ TEST_F(SerializerTest, AudioClipRoundTrip)
     auto loaded = serializer.deserialize(data);
     ASSERT_NE(loaded, nullptr);
 
-    ASSERT_GE(loaded->timeline()->track(1)->clipCount(), 1u);
-    auto* clip = loaded->timeline()->track(1)->clip(0);
+    // Audio 1 regroups below the video tracks on load (index 2, not 1).
+    ASSERT_GE(loaded->timeline()->track(2)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(2)->clip(0);
     ASSERT_EQ(clip->clipType(), ClipType::Audio);
 
     auto* ac = static_cast<AudioClip*>(clip);
@@ -517,9 +521,10 @@ TEST_F(SerializerTest, AdjustmentClipRoundTrip)
     auto loaded = serializer.deserialize(data);
     ASSERT_NE(loaded, nullptr);
 
+    // The AdjustmentClip lives on "Video 2", which regroups to index 1 on load.
     ASSERT_GE(loaded->timeline()->trackCount(), 3u);
-    ASSERT_GE(loaded->timeline()->track(2)->clipCount(), 1u);
-    auto* clip = loaded->timeline()->track(2)->clip(0);
+    ASSERT_GE(loaded->timeline()->track(1)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(1)->clip(0);
     ASSERT_EQ(clip->clipType(), ClipType::Adjustment);
 
     auto* ac = static_cast<AdjustmentClip*>(clip);

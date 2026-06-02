@@ -140,12 +140,16 @@ std::string TimelineLayoutEngine::formatTimecode(int64_t tick) const
 {
     double totalSeconds = ticksToSeconds(std::max(tick, int64_t(0)));
 
-    // Drop-frame timecode for 29.97 and 59.94 fps
+    // Drop-frame timecode applies ONLY to the fractional NTSC rates
+    // (29.97 = 30000/1001, 59.94 = 60000/1001), never to an exact 30/60.
+    // A loose epsilon here previously matched exact 30.0 fps (|30 - 29.97| =
+    // 0.03), so 30 fps projects rendered NTSC ";" timecode with shifted frame
+    // numbers. Gate on the rate actually being non-integer.
     bool dropFrame = false;
     int nominalRate = static_cast<int>(std::round(m_frameRate));
-    if ((nominalRate == 30 && std::abs(m_frameRate - 29.97) < 0.05) ||
-        (nominalRate == 60 && std::abs(m_frameRate - 59.94) < 0.05))
-    {
+    const bool fractionalRate =
+        std::abs(m_frameRate - std::round(m_frameRate)) > 1e-3;
+    if (fractionalRate && (nominalRate == 30 || nominalRate == 60)) {
         dropFrame = true;
     }
 

@@ -40,8 +40,8 @@ TEST(EffectTest, BlurConstruction)
 {
     Blur fx;
     EXPECT_EQ(fx.effectType(), EffectType::Blur);
-    EXPECT_STREQ(fx.name(), "Blur");
-    EXPECT_EQ(fx.paramCount(), 2u); // radius, sigma
+    EXPECT_STREQ(fx.name(), "Gaussian Blur");
+    EXPECT_EQ(fx.paramCount(), 1u); // radius only (sigma derived in shader as radius/3)
 }
 
 TEST(EffectTest, SharpenConstruction)
@@ -146,9 +146,8 @@ TEST(EffectTest, EvalAllParams)
 {
     Blur fx;
     auto vals = fx.evalAllParams(0);
-    ASSERT_EQ(vals.size(), 2u);
-    EXPECT_FLOAT_EQ(vals[0], 5.0f);  // radius default
-    EXPECT_FLOAT_EQ(vals[1], 2.0f);  // sigma default
+    ASSERT_EQ(vals.size(), 1u);
+    EXPECT_FLOAT_EQ(vals[0], 15.0f);  // radius default
 }
 
 TEST(EffectTest, KeyframeableParam)
@@ -226,9 +225,16 @@ TEST(EffectTest, CloneTransform2D)
 TEST(EffectFactoryTest, CreateAllTypes)
 {
     for (int i = 0; i < static_cast<int>(EffectType::Count); ++i) {
-        auto fx = createEffect(static_cast<EffectType>(i));
+        const auto type = static_cast<EffectType>(i);
+        auto fx = createEffect(type);
         ASSERT_NE(fx, nullptr) << "Failed for type " << i;
-        EXPECT_EQ(fx->effectType(), static_cast<EffectType>(i));
+        if (type == EffectType::LumetriColor) {
+            // Legacy alias kept only for serialized-project numbering: it is
+            // intentionally constructed as ColorGrading (see createEffect).
+            EXPECT_EQ(fx->effectType(), EffectType::ColorGrading);
+        } else {
+            EXPECT_EQ(fx->effectType(), type);
+        }
     }
 }
 
@@ -241,7 +247,7 @@ TEST(EffectFactoryTest, InvalidType)
 TEST(EffectFactoryTest, EffectTypeNames)
 {
     EXPECT_STREQ(effectTypeName(EffectType::ColorCorrect), "Color Correct");
-    EXPECT_STREQ(effectTypeName(EffectType::Blur), "Blur");
+    EXPECT_STREQ(effectTypeName(EffectType::Blur), "Gaussian Blur");
     EXPECT_STREQ(effectTypeName(EffectType::Sharpen), "Sharpen");
     EXPECT_STREQ(effectTypeName(EffectType::Glow), "Glow");
     EXPECT_STREQ(effectTypeName(EffectType::ChromaKey), "Ultra Key");
@@ -396,7 +402,7 @@ TEST(EffectStackTest, Evaluate)
     auto snapshots = stack.evaluate(0);
     ASSERT_EQ(snapshots.size(), 2u);
     EXPECT_EQ(snapshots[0].type, EffectType::Blur);
-    EXPECT_EQ(snapshots[0].params.size(), 2u);
+    EXPECT_EQ(snapshots[0].params.size(), 1u);
     EXPECT_EQ(snapshots[1].type, EffectType::Glow);
     EXPECT_EQ(snapshots[1].params.size(), 3u);
 }
@@ -503,7 +509,7 @@ TEST(EffectCommandTest, SetParamCommand)
     EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 20.0f);
 
     cmds.undo();
-    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 5.0f); // default
+    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 15.0f); // default
 }
 
 TEST(EffectCommandTest, SetParamMerge)
@@ -521,21 +527,25 @@ TEST(EffectCommandTest, SetParamMerge)
 
     // All merged into one undo step
     cmds.undo();
-    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 5.0f);
+    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 15.0f);
 }
 
 TEST(EffectCommandTest, SetParamNoMergeDifferentParam)
 {
     EffectStack stack;
-    stack.addEffect(std::make_unique<Blur>());
+    // Blur is single-param now, so exercise no-merge with a multi-param effect:
+    // setting two DIFFERENT params must produce two separate undo steps.
+    stack.addEffect(std::make_unique<Sharpen>());
     auto id = stack.effect(0).id();
 
     CommandStack cmds;
-    cmds.execute(std::make_unique<SetEffectParamCommand>(&stack, id, Blur::Radius, 10.0f));
+    cmds.execute(std::make_unique<SetEffectParamCommand>(&stack, id, Sharpen::Amount, 2.0f));
+    cmds.execute(std::make_unique<SetEffectParamCommand>(&stack, id, Sharpen::Radius, 3.0f));
 
-    // Different params — should not merge, two undo steps
+    // Different params don't merge — one undo reverts only the most recent (Radius).
     cmds.undo();
-    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Blur::Radius, 0), 10.0f); // still changed
+    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Sharpen::Radius, 0), 1.0f); // back to default
+    EXPECT_FLOAT_EQ(stack.effect(0).evalParam(Sharpen::Amount, 0), 2.0f); // still changed
 }
 
 TEST(EffectCommandTest, SetEffectEnabledCommand)
@@ -585,7 +595,7 @@ TEST(EffectCommandTest, AddRemoveRoundTrip)
 TEST(EffectParamsTest, BlurDefaults)
 {
     Blur fx;
-    EXPECT_FLOAT_EQ(fx.evalParam(Blur::Radius, 0), 5.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Blur::Radius, 0), 15.0f);
     // Sigma is derived as radius/3.0 — not a user-facing param.
     EXPECT_FLOAT_EQ(fx.param(Blur::Radius).minVal, 0.0f);
     EXPECT_FLOAT_EQ(fx.param(Blur::Radius).maxVal, 100.0f);

@@ -1,0 +1,72 @@
+# ROUNDTABLE — CI Tests
+#
+# Trigger: every push to main and every pull request.
+#
+# What it does:
+#   1. Orphan-source guardrail (now covers tests/ too — a test .cpp whose stem
+#      is registered in no CMakeLists is dead code and fails the build).
+#   2. Configures + builds the whole project WITH tests (-DROUNDTABLE_BUILD_TESTS=ON).
+#      Building every test target is itself a guardrail: it catches tests that
+#      bit-rot against the live API (the reason the suite had silently gone red).
+#   3. Runs the "core" ctest label — the deterministic, headless-safe group.
+#      GPU/UI tests need a real Vulkan device / display, so they are built
+#      (compile coverage) but not executed on the headless runner.
+
+name: CI Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Visual Studio
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check for orphan source files (src/ + tests/)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check_orphans.ps1
+
+      - name: Configure CMake (with tests)
+        shell: pwsh
+        run: |
+          # Use bundled cmake (3.31.6+) — required by FetchContent sub-builds.
+          $cmake = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\cmake.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $cmake) { $cmake = "cmake" }
+          $cmakeDir = Split-Path -Parent $cmake
+          $env:PATH = "${cmakeDir};${env:PATH}"
+          & $cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DROUNDTABLE_BUILD_TESTS=ON `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\third_party\qt\6.8.3\msvc2022_64"
+
+      - name: Build (all targets — compile coverage for the whole test suite)
+        shell: pwsh
+        run: |
+          $cmake = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\cmake.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $cmake) { $cmake = "cmake" }
+          $cmakeDir = Split-Path -Parent $cmake
+          $env:PATH = "${cmakeDir};${env:PATH}"
+          & $cmake --build build --config Release --parallel
+
+      - name: Run core tests (deterministic, headless-safe)
+        shell: pwsh
+        run: |
+          $ctest = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\ctest.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ctest) { $ctest = "ctest" }
+          & $ctest --test-dir build -C Release -L core --output-on-failure

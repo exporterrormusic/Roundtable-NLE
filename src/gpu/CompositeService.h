@@ -57,8 +57,8 @@ class ModelManager;
 class SpineClip;
 class VideoClip;
 class Project;
+class SequenceClip;
 class ShotPresetManager;
-class SpineClip;
 class Timeline;
 class TitleClip;
 struct CachedFrame;
@@ -457,12 +457,41 @@ private:
                                                 bool& gpuSpineUsedThisFrame);
 
     // Per-clip-type layer builders (extracted to reduce CompositeServiceLayerBuild.cpp)
-    struct PerClipContext;
     std::shared_ptr<CachedFrame> resolveMediaFrame(MediaHandle handle, int64_t frameNumber,
                                                     ResolutionTier tier, bool scrubMode) const;
-    void buildVideoClipLayer(VideoClip* videoClip, Clip* clip, const PerClipContext& ctx);
+    // Lazily opens / search-resolves a VideoClip's media handle. skipClip=true
+    // means the caller should skip the clip; a 0 return with skipClip=false
+    // means an async open is still pending (proceed to sticky-frame fallback).
+    uint64_t resolveVideoClipHandle(VideoClip* videoClip, bool playbackNonBlocking,
+                                    bool& skipClip);
+    // Renders a nested SequenceClip to a clean CPU BGRA frame via a recursive
+    // composite of its inner timeline. Returns null when the clip references no
+    // valid inner sequence. Temporarily swaps m_timeline and releases `lock`
+    // for the recursion, restoring both before returning.
+    std::shared_ptr<CachedFrame> buildSequenceClipFrame(
+        SequenceClip* seqClip, int64_t localTick,
+        uint32_t outW, uint32_t outH, bool scrubMode,
+        std::unique_lock<std::recursive_mutex>& lock);
 #ifdef ROUNDTABLE_HAS_SPINE
-    void buildSpineClipLayer(SpineClip* spineClip, Clip* clip, const PerClipContext& ctx);
+    // Result of building a live SpineClip layer: either a CPU `frame` or a GPU
+    // zero-copy descriptor (when gpuSpineZeroCopy is set).
+    struct SpineLayerResult {
+        std::shared_ptr<CachedFrame> frame;
+        bool                  gpuSpineZeroCopy = false;
+        VkDescriptorImageInfo gpuSpineDescriptor{};
+        uint32_t              gpuSpineW = 0;
+        uint32_t              gpuSpineH = 0;
+        bool                  cpuSpineRendered = false;
+    };
+    // Live Spine evaluation (GPU-first, CPU fallback) for one SpineClip.
+    // Renders into the returned frame / zero-copy descriptor, may read a prior
+    // GPU-spine render back into layers[m_gpuSpineInsertedLayer] (multi-char),
+    // and sets gpuSpineUsedThisFrame. `sx` feeds a diagnostic log only.
+    SpineLayerResult buildSpineClipLayer(
+        SpineClip* spineClip, int64_t tick, int64_t localTick,
+        uint32_t outW, uint32_t outH, bool scrubMode, bool playbackNonBlocking,
+        bool staticRecomposite, bool& gpuSpineUsedThisFrame,
+        std::vector<LayerInfo>& layers, float sx);
 #endif
 
     // GPU compositing path (delegates to CompositeEngine)

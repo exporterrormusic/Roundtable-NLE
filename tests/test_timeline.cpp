@@ -30,6 +30,13 @@ public:
     int inOutChangedCount{0};
     int structureChangedCount{0};
 
+    // RAII registration: an observer MUST deregister before it dies (the same
+    // contract production observers honour in their dtors), otherwise ~Timeline
+    // would notify freed memory. Binding to the Timeline on construction and
+    // removing on destruction makes that automatic for every test.
+    explicit TestObserver(Timeline& tl) : m_timeline(&tl) { m_timeline->addObserver(this); }
+    ~TestObserver() override { if (m_timeline) m_timeline->removeObserver(this); }
+
     void onTrackAdded(size_t) override      { ++trackAddedCount; }
     void onTrackRemoved(size_t) override    { ++trackRemovedCount; }
     void onTrackMoved(size_t, size_t) override { ++trackMovedCount; }
@@ -37,6 +44,10 @@ public:
     void onPlayheadChanged(int64_t) override { ++playheadChangedCount; }
     void onInOutChanged() override          { ++inOutChangedCount; }
     void onTimelineStructureChanged() override { ++structureChangedCount; }
+    void onTimelineDestroyed(Timeline*) override { m_timeline = nullptr; }
+
+private:
+    Timeline* m_timeline{nullptr};
 };
 
 // ── Timeline fixture ────────────────────────────────────────────────────────
@@ -227,35 +238,31 @@ TEST_F(TimelineTest, DurationIsMaxAcrossTracks)
 
 TEST_F(TimelineTest, ObserverTrackAdded)
 {
-    TestObserver obs;
-    timeline->addObserver(&obs);
+    TestObserver obs(*timeline);
     timeline->addVideoTrack("V1");
     EXPECT_EQ(obs.trackAddedCount, 1);
 }
 
 TEST_F(TimelineTest, ObserverTrackRemoved)
 {
-    TestObserver obs;
+    TestObserver obs(*timeline);
     timeline->addVideoTrack("V1");
-    timeline->addObserver(&obs);
     timeline->removeTrack(0);
     EXPECT_EQ(obs.trackRemovedCount, 1);
 }
 
 TEST_F(TimelineTest, ObserverTrackMoved)
 {
-    TestObserver obs;
+    TestObserver obs(*timeline);
     timeline->addVideoTrack("V1");
     timeline->addVideoTrack("V2");
-    timeline->addObserver(&obs);
     timeline->moveTrack(0, 1);
     EXPECT_EQ(obs.trackMovedCount, 1);
 }
 
 TEST_F(TimelineTest, ObserverMarkerChanged)
 {
-    TestObserver obs;
-    timeline->addObserver(&obs);
+    TestObserver obs(*timeline);
     timeline->addMarker(48000, "M1");
     EXPECT_EQ(obs.markerChangedCount, 1);
     timeline->removeMarker(0);
@@ -264,8 +271,7 @@ TEST_F(TimelineTest, ObserverMarkerChanged)
 
 TEST_F(TimelineTest, ObserverPlayheadChanged)
 {
-    TestObserver obs;
-    timeline->addObserver(&obs);
+    TestObserver obs(*timeline);
     timeline->setPlayheadPosition(48000);
     EXPECT_EQ(obs.playheadChangedCount, 1);
     // Setting same position doesn't fire again
@@ -275,8 +281,7 @@ TEST_F(TimelineTest, ObserverPlayheadChanged)
 
 TEST_F(TimelineTest, ObserverInOutChanged)
 {
-    TestObserver obs;
-    timeline->addObserver(&obs);
+    TestObserver obs(*timeline);
     timeline->setInPoint(24000);
     EXPECT_EQ(obs.inOutChangedCount, 1);
     timeline->setOutPoint(96000);
@@ -287,8 +292,7 @@ TEST_F(TimelineTest, ObserverInOutChanged)
 
 TEST_F(TimelineTest, RemoveObserverStopsCallbacks)
 {
-    TestObserver obs;
-    timeline->addObserver(&obs);
+    TestObserver obs(*timeline);
     timeline->addVideoTrack("V1");
     EXPECT_EQ(obs.trackAddedCount, 1);
     timeline->removeObserver(&obs);

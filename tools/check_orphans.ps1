@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Fails if any src/**/*.cpp is not referenced by a CMakeLists.txt.
+    Fails if any src/**/*.cpp or tests/*.cpp is not referenced by a CMakeLists.txt.
 
 .DESCRIPTION
     The build uses EXPLICIT source lists in per-module CMakeLists.txt (no
@@ -8,6 +8,11 @@
     .cpp on disk whose basename appears in no CMakeLists is never compiled,
     i.e. dead code. This guardrail stops dead code from silently accumulating
     again (the root cause of the ~8k-line cleanup in POST-RELEASE-UPGRADE.txt).
+
+    tests/ is covered too, but with a different match rule: a test is
+    registered as `add_roundtable_test(<stem> ...)` (no .cpp), so an orphan
+    test .cpp is one whose STEM appears in no CMakeLists. This catches dead
+    test files left behind when the class they exercised was deleted.
 
     Allow-list: files that are intentionally uncompiled because they are
     work-in-progress for a planned feature. Keep this list TINY and justified.
@@ -22,6 +27,7 @@ $ErrorActionPreference = 'Stop'
 # Repo root = parent of this script's tools/ dir.
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $srcDir   = Join-Path $repoRoot 'src'
+$testsDir = Join-Path $repoRoot 'tests'
 
 # Intentionally-uncompiled WIP files (basename). Remove an entry once its
 # .cpp is wired into a CMakeLists.
@@ -42,6 +48,8 @@ $cmakeText = Get-ChildItem -Path $repoRoot -Recurse -Filter 'CMakeLists.txt' -Fi
     Out-String
 
 $orphans = @()
+
+# src/: explicit source lists reference the full basename (Foo.cpp).
 foreach ($cpp in Get-ChildItem -Path $srcDir -Recurse -Filter '*.cpp' -File) {
     $base = $cpp.Name
     if ($allowList -contains $base) { continue }
@@ -49,6 +57,19 @@ foreach ($cpp in Get-ChildItem -Path $srcDir -Recurse -Filter '*.cpp' -File) {
     if ($cmakeText -notmatch [regex]::Escape($base)) {
         $rel = $cpp.FullName.Substring($repoRoot.Length + 1) -replace '\\','/'
         $orphans += $rel
+    }
+}
+
+# tests/: registered as add_roundtable_test(<stem> ...) — match the stem,
+# anchored on a word boundary so e.g. test_audio doesn't shadow test_audio_sync.
+if (Test-Path $testsDir) {
+    foreach ($cpp in Get-ChildItem -Path $testsDir -Filter '*.cpp' -File) {
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($cpp.Name)
+        if ($allowList -contains $cpp.Name) { continue }
+        if ($cmakeText -notmatch ('\b' + [regex]::Escape($stem) + '\b')) {
+            $rel = $cpp.FullName.Substring($repoRoot.Length + 1) -replace '\\','/'
+            $orphans += $rel
+        }
     }
 }
 

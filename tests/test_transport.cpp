@@ -523,10 +523,17 @@ TEST(Transport, PollReturnsCurrentTick)
 TEST(Transport, PollUpdatesTimeline)
 {
     TestSetup ts;
-    ts.clock.reset(5 * TPS);
+    // Establish the position through the controller (play() resyncs the sync
+    // clock to the authoritative playhead, so poking the clock alone would be
+    // overwritten). pollPosition() must then propagate the current tick into
+    // the Timeline. The sync clock extrapolates with wall time once running,
+    // so allow a small forward tolerance rather than exact equality.
+    ts.controller.seekTo(5 * TPS);
     ts.controller.play();
     (void)ts.controller.pollPosition();
-    EXPECT_EQ(ts.timeline.playheadPosition(), 5 * TPS);
+    const int64_t pos = ts.timeline.playheadPosition();
+    EXPECT_GE(pos, 5 * TPS);
+    EXPECT_LT(pos, 5 * TPS + TPS / 10);  // within 0.1s of the start tick
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

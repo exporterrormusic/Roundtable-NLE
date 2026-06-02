@@ -1,17 +1,15 @@
 /*
- * CompositeServiceLayerBuildVideo.cpp - VideoClip layer building helper.
- * Extracted from CompositeServiceLayerBuild.cpp (Step 3.1 of modularization plan).
+ * CompositeServiceLayerBuildVideo.cpp - media frame resolution helper.
+ * Extracted from CompositeServiceLayerBuild.cpp (modularization).
  *
  * Contains:
  *   - resolveMediaFrame()   — media frame resolution with cache-aware fetch
- *   - buildVideoClipLayer() — per-clip VideoClip layer construction
  *
- * These helpers are called from buildLayersForFrame() to reduce the size
- * of the main timeline traversal function.
+ * Called from buildLayersForFrame() to reduce the size of the main
+ * timeline traversal function.
  */
 
 #include "CompositeService.h"
-#include "CompositeServiceLayerBuildInternal.h"
 
 #include "media/FrameCache.h"
 #include "media/MediaPool.h"
@@ -24,6 +22,11 @@
 #include "CompositeEngine.h"
 #include "GpuContext.h"
 #include "GpuTextureCache.h"
+
+#include <spdlog/spdlog.h>
+
+#include <filesystem>
+#include <vector>
 
 namespace rt {
 
@@ -156,6 +159,122 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // map without inline decoding, matching the "never stall the
     // render thread" design.
     return m_mediaPool->getFrame(handle, frameNumber, tier, /*scrubMode=*/false);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveVideoClipHandle — lazily open / search-resolve a VideoClip's media.
+//
+// Extracted verbatim from the VideoClip branch of buildLayersForFrame().
+// Return/skip contract (must match the original inline control flow):
+//   • skipClip=true, returns 0  → caller should `continue` (no MediaPool,
+//     empty path, or media unresolvable after the search-path fallback).
+//   • skipClip=false, returns 0 → playbackNonBlocking open still pending;
+//     caller proceeds with handle 0 so the sticky-frame fallback can run.
+//   • skipClip=false, returns !=0 → resolved handle (cached in m_openMediaHandles).
+// ─────────────────────────────────────────────────────────────────────────────
+uint64_t CompositeService::resolveVideoClipHandle(
+    VideoClip* videoClip, bool playbackNonBlocking, bool& skipClip)
+{
+    skipClip = false;
+    if (!m_mediaPool) { skipClip = true; return 0; }  // VideoClip needs MediaPool
+    const auto& mediaPath = videoClip->mediaPath();
+    if (mediaPath.empty()) { skipClip = true; return 0; }
+
+    // Lazy-open media handle (cached by path)
+    uint64_t handle = 0;
+    auto it = m_openMediaHandles.find(mediaPath);
+    if (it != m_openMediaHandles.end() && it->second != 0) {
+        handle = it->second;
+    } else if (playbackNonBlocking && !m_forceFullResolution.load()) {
+        // Check if MediaPool finished opening this path in the background.
+        if (m_mediaPool->isPathOpen(mediaPath)) {
+            handle = m_mediaPool->open(mediaPath);
+            m_openMediaHandles[mediaPath] = handle;
+        } else {
+            // Not open yet — start or continue async open.
+            m_mediaPool->openAsync(mediaPath);
+            handle = 0;
+        }
+    } else {
+        // Prefer .mp4 packed-alpha (NVDEC hw decode) over .mov/.webm
+        // (software decode).  Try .mp4 FIRST before the original path
+        // so we never open a slow ProRes when a fast HEVC exists.
+        namespace fs = std::filesystem;
+        fs::path p(mediaPath);
+        if (p.extension() == ".mov" || p.extension() == ".webm") {
+            fs::path mp4Path = fs::path(mediaPath).replace_extension(".mp4");
+            if (fs::exists(mp4Path))
+                handle = m_mediaPool->open(mp4Path);
+            if (handle == 0) {
+                fs::path mp4InVideos = fs::path("assets") / "videos" / mp4Path.filename();
+                if (fs::exists(mp4InVideos))
+                    handle = m_mediaPool->open(mp4InVideos);
+            }
+        }
+
+        // Fall back to original path
+        if (handle == 0)
+            handle = m_mediaPool->open(mediaPath);
+
+        // If that fails, try resolving common search paths
+        if (handle == 0) {
+            // Try alternate video extensions Ã¢â‚¬â€ prefer .mp4 packed-alpha
+            // (NVDEC hardware decode) over .webm (software VP9).
+            std::vector<fs::path> altExts;
+            if (p.extension() == ".webm") {
+                altExts.push_back(fs::path(mediaPath).replace_extension(".mp4"));
+                altExts.push_back(fs::path(mediaPath).replace_extension(".mov"));
+            } else if (p.extension() == ".mov") {
+                altExts.push_back(fs::path(mediaPath).replace_extension(".mp4"));
+                altExts.push_back(fs::path(mediaPath).replace_extension(".webm"));
+            } else if (p.extension() == ".mp4") {
+                altExts.push_back(fs::path(mediaPath).replace_extension(".webm"));
+                altExts.push_back(fs::path(mediaPath).replace_extension(".mov"));
+            }
+
+            // Common image extensions — for background images referenced
+            // as bare filenames without extension (e.g. "TABLE_LARGE_FINAL")
+            const fs::path imgExts[] = {".png", ".jpg", ".jpeg"};
+            for (const auto& imgExt : imgExts) {
+                altExts.push_back(fs::path(mediaPath).replace_extension(imgExt));
+            }
+
+            // Search paths for unresolved media (bare filenames or
+            // relative paths)
+            std::vector<fs::path> searchPaths = {
+                fs::path("assets") / "backgrounds" / p.filename(),
+                fs::path("assets") / "videos" / p.filename(),
+                fs::path("assets") / p,
+                p.filename()
+            };
+
+            // Also try alternate extensions in each search dir
+            for (const auto& altExt : altExts) {
+                if (altExt.empty()) continue;
+                fs::path altName = altExt.filename();
+                searchPaths.push_back(altExt);
+                searchPaths.push_back(fs::path("assets") / "videos" / altName);
+                searchPaths.push_back(fs::path("assets") / altExt);
+                searchPaths.push_back(altName);
+            }
+
+            for (const auto& candidate : searchPaths) {
+                if (fs::exists(candidate)) {
+                    handle = m_mediaPool->open(candidate);
+                    if (handle != 0) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (handle == 0) {
+            spdlog::warn("compositeFrame: could not resolve media '{}'", mediaPath);
+            skipClip = true;
+            return 0;
+        }
+        m_openMediaHandles[mediaPath] = handle;
+    }
+    return handle;
 }
 
 } // namespace rt

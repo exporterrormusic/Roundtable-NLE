@@ -45,13 +45,13 @@ TEST(TimelineLayout, DefaultValues)
     EXPECT_DOUBLE_EQ(engine.pixelsPerSecond(), 100.0);
     EXPECT_DOUBLE_EQ(engine.scrollX(), 0.0);
     EXPECT_DOUBLE_EQ(engine.viewportWidth(), 800.0);
-    EXPECT_DOUBLE_EQ(engine.frameRate(), 24.0);
+    EXPECT_DOUBLE_EQ(engine.frameRate(), 60.0);
     EXPECT_EQ(engine.totalDuration(), 0);
 }
 
 TEST(TimelineLayout, Constants)
 {
-    EXPECT_DOUBLE_EQ(rt::TimelineLayoutEngine::kMinPixelsPerSecond, 0.5);
+    EXPECT_DOUBLE_EQ(rt::TimelineLayoutEngine::kMinPixelsPerSecond, 0.05);
     EXPECT_DOUBLE_EQ(rt::TimelineLayoutEngine::kMaxPixelsPerSecond, 20000.0);
     EXPECT_DOUBLE_EQ(rt::TimelineLayoutEngine::kDefaultPixelsPerSecond, 100.0);
 }
@@ -613,8 +613,12 @@ TEST(TimelineLayout, ScrollbarNoDuration)
     engine.setTotalDuration(0);
 
     auto state = engine.computeScrollbar();
+    // An empty timeline still exposes a 60s pannable range (Premiere-style
+    // pan/zoom into empty space), so the handle reflects the viewport's
+    // fraction of that range rather than filling the whole bar.
     EXPECT_DOUBLE_EQ(state.handleStart, 0.0);
-    EXPECT_DOUBLE_EQ(state.handleEnd, 1.0);
+    EXPECT_GT(state.handleEnd, 0.0);
+    EXPECT_LT(state.handleEnd, 1.0);
 }
 
 TEST(TimelineLayout, ScrollbarAtStart)
@@ -641,8 +645,9 @@ TEST(TimelineLayout, ScrollbarHandleWidth)
     engine.setScrollX(0);
 
     auto state = engine.computeScrollbar();
-    // Handle should represent 800px out of 30s * 1.1 * 100pps = 3300px
-    double expectedWidth = 800.0 / 3300.0;
+    // Padded scrollable range for 30s content = max(30*1.5, 30+60, 16, 60) =
+    // 90s, so the handle is 800px out of 90s * 100pps = 9000px.
+    double expectedWidth = 800.0 / 9000.0;
     EXPECT_TRUE(nearEqual(state.handleWidth(), expectedWidth, 0.01));
 }
 

@@ -293,20 +293,14 @@ TEST_F(SpineTest, EngineLoadSkeleton_Modernia)
     auto files = findCharFiles("Modernia");
     if (!files.valid()) GTEST_SKIP() << "Modernia not available";
 
-    // Modernia default is v4.0.47 — spine-cpp 4.1 correctly rejects it.
-    // We verify that the version is detected but loading fails gracefully.
+    // The spine-cpp 4.1 runtime is backward-compatible with 4.0.x skeletons
+    // (Modernia is v4.0.47): the version is detected and the skeleton loads.
     rt::SpineEngine engine;
     auto ver = rt::SpineEngine::detectVersion(files.skel);
     EXPECT_FALSE(ver.empty());
 
-    if (ver.find("4.0") == 0) {
-        // 4.0 skeleton → expect load failure with 4.1 runtime
-        EXPECT_FALSE(engine.loadSkeleton(files.skel, files.atlas));
-        EXPECT_FALSE(engine.isLoaded());
-    } else {
-        EXPECT_TRUE(engine.loadSkeleton(files.skel, files.atlas));
-        EXPECT_TRUE(engine.isLoaded());
-    }
+    EXPECT_TRUE(engine.loadSkeleton(files.skel, files.atlas));
+    EXPECT_TRUE(engine.isLoaded());
 }
 
 TEST_F(SpineTest, EngineLoadInvalid)
