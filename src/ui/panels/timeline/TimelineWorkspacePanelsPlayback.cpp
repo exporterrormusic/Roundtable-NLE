@@ -13,7 +13,6 @@
 #include "media/AudioEngine.h"
 #include "media/AudioPlaybackService.h"
 #include "media/PlaybackController.h"
-#include "panels/audio/AudioMixer.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/monitors/ScopesPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -62,8 +61,6 @@ void TimelineWorkspace::wirePlaybackSignals()
             m_audioEngine->scrub(frame);
             if (m_meterTimer && !m_meterTimer->isActive())
                 m_meterTimer->start();
-            if (m_audioMixer)
-                m_audioMixer->ensureMeterTimerRunning();
         }
         if (m_programMonitor)
             m_programMonitor->notifyScrub();
@@ -87,8 +84,6 @@ void TimelineWorkspace::wirePlaybackSignals()
             m_audioEngine->scrub(frame);
             if (m_meterTimer && !m_meterTimer->isActive())
                 m_meterTimer->start();
-            if (m_audioMixer)
-                m_audioMixer->ensureMeterTimerRunning();
         }
     });
 
@@ -170,8 +165,6 @@ void TimelineWorkspace::wirePlaybackSignals()
         if (state == PlayState::Playing || state == PlayState::Shuttling) {
             if (m_meterTimer && !m_meterTimer->isActive())
                 m_meterTimer->start();
-            if (m_audioMixer)
-                m_audioMixer->ensureMeterTimerRunning();
             if (m_sourceMonitor && m_sourceMonitor->controller()
                 && m_sourceMonitor->controller()->state() != PlayState::Stopped
                 && m_sourceMonitor->controller()->state() != PlayState::Paused) {

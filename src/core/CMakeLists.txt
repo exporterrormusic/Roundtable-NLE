@@ -107,6 +107,11 @@ add_library(roundtable_core STATIC
     media/ChromaKeyEncoder.cpp
     media/ProResEncoder.cpp
 
+    # Audio DSP (EQ, dynamics) — real-time-safe processors
+    audiofx/ParametricEQ.cpp
+    audiofx/Dynamics.cpp
+    audiofx/FxChain.cpp
+
     # Effects
     effects/EffectStack.cpp
     effects/ColorCorrect.cpp

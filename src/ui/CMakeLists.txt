@@ -88,8 +88,6 @@ add_library(roundtable_ui STATIC
     panels/effects/ColorGradingPanel.cpp
     panels/effects/EffectsPanel.cpp
     panels/captions/CaptionsPanel.cpp
-    panels/audio/AudioMixer.cpp
-    panels/audio/AudioMixerUI.cpp
     panels/characters/ShotComposer.cpp
     panels/characters/ShotComposerVideo.cpp
     panels/characters/ShotComposerUI.cpp
@@ -189,6 +187,7 @@ add_library(roundtable_ui STATIC
     widgets/ColorWheelWidget.cpp
     widgets/CurveEditor.cpp
     widgets/ScrubbySpinBox.cpp
+    widgets/AudioFxSection.cpp
     widgets/ThumbnailGrid.cpp
     widgets/MiniTimeline.cpp
     widgets/SpinePreviewWidget.cpp

@@ -156,6 +156,16 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                 }
             }
 
+            // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────
+            // Process on a CLONE so the live clip's filter/envelope state is
+            // never touched by the offline render. Runs at the source rate /
+            // channel count, before volume/pan and any resampling.
+            if (aclip->audioFx().isActive()) {
+                auto chain = aclip->audioFx().clone();
+                chain.prepare(srcRate, srcCh);
+                chain.process(srcSamples.data(), static_cast<int>(framesRead));
+            }
+
             // Get volume (evaluate at clip start; for full keyframe support
             // we'd evaluate per-sample, but this gives correct static volume)
             float volume = aclip->volume().evaluate(clip->timelineIn()) * config.masterVolume;

@@ -67,6 +67,7 @@ std::unique_ptr<Clip> AudioClip::clone() const
     copy->m_pan            = m_pan;
     copy->m_fadeIn         = m_fadeIn;
     copy->m_fadeOut        = m_fadeOut;
+    copy->m_audioFx        = m_audioFx.clone();
 
     return copy;
 }

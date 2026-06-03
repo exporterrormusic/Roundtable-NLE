@@ -31,7 +31,6 @@
 #include "timeline/SpineClip.h"
 
 // Delegated panel headers (for accessor forwarding)
-#include "panels/audio/AudioMixer.h"
 #include "panels/effects/EffectsPanel.h"
 #include "panels/project/HistoryPanel.h"
 #include "panels/effects/KeyframeEditor.h"

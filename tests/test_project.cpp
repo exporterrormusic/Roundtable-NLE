@@ -25,6 +25,9 @@
 #include "timeline/Transition.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "audiofx/FxChain.h"
+#include "audiofx/ParametricEQ.h"
+#include "audiofx/Dynamics.h"
 
 using namespace rt;
 
@@ -411,6 +414,73 @@ TEST_F(SerializerTest, RoundTripInMemory)
 
     // Modified flag
     EXPECT_FALSE(loaded->isModified());
+}
+
+TEST_F(SerializerTest, AudioFxChainRoundTrip)
+{
+    auto p = Project::createNew("FX Test");
+    auto* tl = p->timeline();
+
+    auto audio = std::make_unique<AudioClip>();
+    audio->setMediaPath("audio/voice.wav");
+    audio->setTimelineIn(0);
+    audio->setDuration(96000);
+
+    // Build a chain: EQ (HPF + 2 bands + trim) then Dynamics (all 3 stages).
+    auto* eq = static_cast<audiofx::ParametricEQ*>(
+        audio->audioFx().add(audiofx::ProcessorKind::ParametricEQ));
+    eq->setHighPass(true, 90.0f, 0.8f);
+    audiofx::ParametricEQ::Band b;
+    b.enabled = true; b.type = audiofx::Biquad::Type::Peaking;
+    b.freqHz = 3200.0f; b.gainDb = 4.5f; b.q = 1.3f;
+    eq->setBand(0, b);
+    eq->setOutputGainDb(-1.5f);
+
+    auto* dyn = static_cast<audiofx::Dynamics*>(
+        audio->audioFx().add(audiofx::ProcessorKind::Dynamics));
+    dyn->loadVoicePreset();
+    dyn->setEnabled(false);  // exercise per-processor enabled flag
+
+    tl->track(1)->addClip(std::move(audio));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    // Audio clip lands on the audio track (index 1).
+    const Track* atrack = nullptr;
+    for (size_t i = 0; i < loaded->timeline()->trackCount(); ++i) {
+        if (loaded->timeline()->track(i)->type() == TrackType::Audio) {
+            atrack = loaded->timeline()->track(i);
+            break;
+        }
+    }
+    ASSERT_NE(atrack, nullptr);
+    ASSERT_GE(atrack->clipCount(), 1u);
+    const auto* aclip = dynamic_cast<const AudioClip*>(atrack->clip(0));
+    ASSERT_NE(aclip, nullptr);
+
+    const auto& chain = aclip->audioFx();
+    ASSERT_EQ(chain.size(), 2u);
+
+    const auto* leq = dynamic_cast<const audiofx::ParametricEQ*>(&chain.at(0));
+    ASSERT_NE(leq, nullptr);
+    EXPECT_TRUE(leq->highPassOn());
+    EXPECT_FLOAT_EQ(leq->highPassFreq(), 90.0f);
+    EXPECT_FLOAT_EQ(leq->highPassQ(), 0.8f);
+    EXPECT_TRUE(leq->band(0).enabled);
+    EXPECT_FLOAT_EQ(leq->band(0).freqHz, 3200.0f);
+    EXPECT_FLOAT_EQ(leq->band(0).gainDb, 4.5f);
+    EXPECT_FLOAT_EQ(leq->band(0).q, 1.3f);
+    EXPECT_FLOAT_EQ(leq->outputGainDb(), -1.5f);
+
+    const auto* ldyn = dynamic_cast<const audiofx::Dynamics*>(&chain.at(1));
+    ASSERT_NE(ldyn, nullptr);
+    EXPECT_FALSE(ldyn->isEnabled());
+    EXPECT_TRUE(ldyn->gate().enabled);
+    EXPECT_TRUE(ldyn->compressor().enabled);
+    EXPECT_FLOAT_EQ(ldyn->compressor().makeupDb, 4.0f);  // from loadVoicePreset
+    EXPECT_TRUE(ldyn->limiter().enabled);
 }
 
 TEST_F(SerializerTest, SpineClipRoundTrip)

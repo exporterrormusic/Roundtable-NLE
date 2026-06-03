@@ -13,7 +13,6 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
-#include "panels/audio/AudioMixer.h"
 // ShotPanel removed � character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
 #include "panels/effects/KeyframeEditor.h"

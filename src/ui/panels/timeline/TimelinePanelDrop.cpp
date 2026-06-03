@@ -150,6 +150,31 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         return;
     }
 
+    // ── Audio FX drop (EQ / Dynamics → clip FxChain) ────────────────────
+    if (event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
+        QByteArray fxData = event->mimeData()->data("application/x-roundtable-audiofx");
+        bool ok = false;
+        int kind = fxData.toInt(&ok);
+        if (!ok) { event->ignore(); return; }
+
+        QPointF pos = event->position();
+        auto hitRef = hitTestClip(pos);
+        if (!hitRef || !m_timeline) { event->ignore(); return; }
+
+        auto* track = m_timeline->track(hitRef->trackIndex);
+        if (!track) { event->ignore(); return; }
+        size_t clipIdx = track->findClipIndexById(hitRef->clipId);
+        if (clipIdx == SIZE_MAX) { event->ignore(); return; }
+
+        // Audio DSP only applies to audio clips.
+        const Clip* clip = track->clip(clipIdx);
+        if (!clip || clip->clipType() != ClipType::Audio) { event->ignore(); return; }
+
+        emit audioFxDroppedOnClip(hitRef->trackIndex, hitRef->clipId, kind);
+        event->acceptProposedAction();
+        return;
+    }
+
     // ── Adjustment-layer drop (from project bin) ───────────────────────
     if (event->mimeData()->hasFormat("application/x-roundtable-adjustment")) {
         QPointF pos = event->position();

@@ -1,4 +1,4 @@
 // ROUNDTABLE version -- written by publish-gui.ps1
 #pragma once
 
-#define ROUNDTABLE_VERSION "0.23"
+#define ROUNDTABLE_VERSION "0.24"

@@ -5,6 +5,7 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/AudioFxSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -125,6 +126,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
     m_animationSection->setVisible(false);
     m_videoSection->setVisible(false);
     m_audioSection->setVisible(false);
+    if (m_audioFxSection) m_audioFxSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
     if (m_captionSection) m_captionSection->setVisible(false);
@@ -268,11 +270,14 @@ void PropertiesPanel::showSectionsForType()
 {
     bool hasClip = (m_clip != nullptr);
     bool isCaption = (hasClip && m_clip->clipType() == ClipType::Caption);
+    // Audio clips have no spatial representation, so the Transform section
+    // (position / scale / rotation / anchor) does not apply to them.
+    bool isAudio = (hasClip && m_clip->clipType() == ClipType::Audio);
     // Identity section always hidden (data binding kept internally)
     m_identitySection->setVisible(false);
     // Captions are positioned via their own Position control, not the generic
     // transform/shot/effects sections — keep the panel focused.
-    m_transformSection->setVisible(hasClip && !isCaption);
+    m_transformSection->setVisible(hasClip && !isCaption && !isAudio);
     if (m_effectsSection) m_effectsSection->setVisible(hasClip && !isCaption);
     if (m_captionSection) m_captionSection->setVisible(isCaption);
     if (m_transitionSection) m_transitionSection->setVisible(false); // hide when showing clip
@@ -307,6 +312,8 @@ void PropertiesPanel::showSectionsForType()
 
     m_videoSection->setVisible(hasClip && m_clip->clipType() == ClipType::Video);
     m_audioSection->setVisible(hasClip && m_clip->clipType() == ClipType::Audio);
+    if (m_audioFxSection)
+        m_audioFxSection->setVisible(hasClip && m_clip->clipType() == ClipType::Audio);
     m_titleSection->setVisible(hasClip && m_clip->clipType() == ClipType::Title);
     m_graphicSection->setVisible(hasClip && m_clip->clipType() == ClipType::Graphic);
 }
@@ -332,6 +339,7 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
     m_shotSection->setVisible(false);
     m_videoSection->setVisible(false);
     m_audioSection->setVisible(false);
+    if (m_audioFxSection) m_audioFxSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
     if (m_captionSection) m_captionSection->setVisible(false);

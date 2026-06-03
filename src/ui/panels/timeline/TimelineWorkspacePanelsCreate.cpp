@@ -16,7 +16,6 @@
 #include "Theme.h"
 
 // Panels
-#include "panels/audio/AudioMixer.h"
 #include "panels/characters/CharactersPanel.h"
 #include "panels/library/LibraryPanel.h"
 #include "panels/effects/EffectsPanel.h"
@@ -619,13 +618,6 @@ void TimelineWorkspace::createPanelWidgets()
         m_sourceMonitor->loadClip(handle, m_mediaPool);
     });
     makeDock("Library", m_libraryPanel);
-
-    // -- Audio Mixer ------------------------------------------------------
-    m_audioMixer = new AudioMixer(this);
-    if (m_timeline) m_audioMixer->setTimeline(m_timeline);
-    if (m_audioEngine) m_audioMixer->setAudioEngine(m_audioEngine);
-    if (m_commandStack) m_audioMixer->setCommandStack(m_commandStack);
-    makeDock("Audio Mixer", m_audioMixer);
 
     // -- Audio Meters (VU Meter) ------------------------------------------
     auto* meterContainer = new QWidget;

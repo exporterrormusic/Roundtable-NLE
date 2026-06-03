@@ -10,6 +10,7 @@
 #include "timeline/Clip.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "audiofx/FxChain.h"
 #include "command/CommandStack.h"
 #include "command/commands/EffectCommands.h"
 #include "timeline/Transition.h"
@@ -37,6 +38,11 @@ namespace {
 // even when the Effects panel is in a separate floating window.
 constexpr const char* kEffectMimeType = "application/x-roundtable-effect";
 constexpr const char* kTransitionMimeType = "application/x-roundtable-transition";
+// Audio DSP processors (EQ / Dynamics) live in a separate per-clip FxChain,
+// not the EffectType/EffectStack system, so they carry their own MIME payload
+// (the audiofx::ProcessorKind int) and a distinct item role.
+constexpr const char* kAudioFxMimeType = "application/x-roundtable-audiofx";
+constexpr int kAudioFxRole = Qt::UserRole + 3;
 
 /// QTreeWidget subclass that embeds the effect type in custom MIME data
 /// during drag operations, ensuring cross-window drops work correctly.
@@ -51,13 +57,16 @@ protected:
         auto* drag = new QDrag(this);
         auto* mimeData = new QMimeData;
 
-        // Check if this is a transition item (UserRole+1) or an effect item (UserRole)
-        QVariant transData = item->data(0, Qt::UserRole + 1);
+        // Transition (UserRole+1), audio-FX processor (UserRole+3), or effect (UserRole).
+        QVariant transData  = item->data(0, Qt::UserRole + 1);
+        QVariant audioFxData = item->data(0, kAudioFxRole);
         QVariant effectData = item->data(0, Qt::UserRole);
 
         if (transData.isValid()) {
             int transType = transData.toInt();
             mimeData->setData(kTransitionMimeType, QByteArray::number(transType));
+        } else if (audioFxData.isValid()) {
+            mimeData->setData(kAudioFxMimeType, QByteArray::number(audioFxData.toInt()));
         } else if (effectData.isValid()) {
             int effectType = effectData.toInt();
             mimeData->setData(kEffectMimeType, QByteArray::number(effectType));
@@ -387,6 +396,20 @@ void EffectsPanel::populateBrowser()
             child->setText(0, QString::fromUtf8(effectTypeName(type)));
             child->setData(0, Qt::UserRole, static_cast<int>(type));
             child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
+        }
+
+        // Append the audiofx DSP processors (EQ / Dynamics) to Audio Effects.
+        // These are NOT EffectType values — they carry kAudioFxRole and drop
+        // into the clip's FxChain rather than its EffectStack.
+        if (std::string(cat.name) == "Audio Effects") {
+            struct FxEntry { const char* name; audiofx::ProcessorKind kind; };
+            for (const FxEntry& fx : { FxEntry{"Parametric EQ", audiofx::ProcessorKind::ParametricEQ},
+                                       FxEntry{"Dynamics",      audiofx::ProcessorKind::Dynamics} }) {
+                auto* child = new QTreeWidgetItem(catItem);
+                child->setText(0, QString::fromUtf8(fx.name));
+                child->setData(0, kAudioFxRole, static_cast<int>(fx.kind));
+                child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
+            }
         }
 
         catItem->setExpanded(false);

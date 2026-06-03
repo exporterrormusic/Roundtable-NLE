@@ -338,9 +338,8 @@ void MainWindow::buildWindowMenu(QMenuBar* menuBar)
                "Effects", "Text Graphics"},
               "Effect Controls"},
             {"Audio",     QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_5),
-             {"Source Monitor", "Program Monitor", "Audio Mixer",
-              "Audio Meters"},
-             "Audio Mixer"},
+             {"Source Monitor", "Program Monitor", "Audio Meters"},
+             "Audio Meters"},
         };
         // clang-format on
 
@@ -509,7 +508,6 @@ void MainWindow::buildWindowMenu(QMenuBar* menuBar)
 
         // -- Audio panels --
         const PanelEntry audioPanels[] = {
-            {"Audio Mixer",  "Audio Mixer",  QKeySequence(Qt::SHIFT | Qt::Key_6)},
             {"Audio Meters", "Audio Meters", {}},
         };
         // clang-format on

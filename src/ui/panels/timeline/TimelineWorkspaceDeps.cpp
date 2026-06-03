@@ -17,7 +17,6 @@
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
 
-#include "panels/audio/AudioMixer.h"
 #include "panels/characters/CharactersPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/properties/PropertiesPanel.h"

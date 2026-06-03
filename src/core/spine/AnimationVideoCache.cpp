@@ -256,13 +256,13 @@ std::string AnimationVideoCache::codecForCharacterOutfit(const std::string& char
     return {};
 }
 
-MediaHandle AnimationVideoCache::getMediaHandle(const std::string& characterName,
-                                                  const std::string& outfit,
-                                                  const std::string& animationName)
+MediaHandle AnimationVideoCache::getMediaHandleLocked(const std::string& characterName,
+                                                      const std::string& outfit,
+                                                      const std::string& animationName)
 {
+    // PRECONDITION: m_mutex held by caller.
     if (!m_mediaPool) return InvalidMedia;
 
-    std::lock_guard lock(m_mutex);
     auto key = makeKey(characterName, outfit, animationName);
     auto it = m_entries.find(key);
     if (it == m_entries.end()) return InvalidMedia;
@@ -285,13 +285,33 @@ MediaHandle AnimationVideoCache::getMediaHandle(const std::string& characterName
     return entry.mediaHandle;
 }
 
+MediaHandle AnimationVideoCache::getMediaHandle(const std::string& characterName,
+                                                  const std::string& outfit,
+                                                  const std::string& animationName)
+{
+    std::lock_guard lock(m_mutex);
+    return getMediaHandleLocked(characterName, outfit, animationName);
+}
+
 std::shared_ptr<CachedFrame> AnimationVideoCache::getFrame(
     const std::string& characterName,
     const std::string& outfit,
     const std::string& animationName,
     int64_t frameNumber)
 {
-    MediaHandle handle = getMediaHandle(characterName, outfit, animationName);
+    // Hold m_mutex across BOTH the handle resolution and the decode.  If we
+    // released the lock between the two (as the old getMediaHandle()-then-
+    // decode form did), a concurrent removeEntry()/clear() could release the
+    // MediaHandle out from under the in-flight decode → use-after-release in
+    // MediaPool (D2).  m_mediaPool->getFrame() does not call back into this
+    // cache, so holding m_mutex here cannot deadlock.  The cost is that
+    // cache decodes serialise against entry mutations, which is acceptable:
+    // getFrame() is only used for thumbnail generation, not the hot
+    // per-frame composite path (which uses getMediaHandle() + MediaPool
+    // directly).
+    std::lock_guard lock(m_mutex);
+
+    MediaHandle handle = getMediaHandleLocked(characterName, outfit, animationName);
     if (handle == InvalidMedia || !m_mediaPool) return nullptr;
 
     // Half tier with the nomH fix (uses nominal height h/2 for scale
@@ -471,11 +491,24 @@ void AnimationVideoCache::workerLoop()
             ? (job.animName + "_talk") : job.animName;
         const std::string key = makeKey(job.charName, job.outfit, cacheAnimName);
 
-        // Update current job description for UI display
+        // Update current job description for UI display, and snapshot the
+        // config the render section reads UNLOCKED below.  setEncoderFormat /
+        // setChromaKeyColor / setCompletionCallback can fire on the UI thread
+        // at any time; snapshotting under m_mutex serialises against them so
+        // the unlocked render reads (and the std::function call) can't tear
+        // (D1 / D3).
+        SpineCacheFormat    encoderFmt;
+        uint8_t             chromaR, chromaG, chromaB;
+        AnimCacheCompleteFn completeFn;
         {
             std::lock_guard lock(m_mutex);
             m_currentJobDesc = job.charName + " / " + job.outfit + " / "
                              + job.animName + (job.isTalking ? " [talk]" : "");
+            encoderFmt = m_encoderFormat;
+            chromaR    = m_chromaKeyR;
+            chromaG    = m_chromaKeyG;
+            chromaB    = m_chromaKeyB;
+            completeFn = m_completeFn;
         }
 
         try {
@@ -493,7 +526,7 @@ void AnimationVideoCache::workerLoop()
             renderJob.outfit        = job.outfit;
             renderJob.animationName = job.animName;   // actual Spine animation name (no _talk suffix)
             renderJob.isTalking     = job.isTalking;  // talk track blending flag
-            renderJob.outputPath    = cachePath(job.charName, job.outfit, cacheAnimName, m_encoderFormat);
+            renderJob.outputPath    = cachePath(job.charName, job.outfit, cacheAnimName, encoderFmt);
             renderJob.fps           = 60;
             // QP=22 ~halves bitrate vs QP=18 (~80 Mbps vs ~157 Mbps for 1632x3840
             // packed-alpha @60fps).  Lower bitrate = less PCIe traffic and less
@@ -506,7 +539,7 @@ void AnimationVideoCache::workerLoop()
             // since the output is normal (not packed) height so bitrate is lower.
             renderJob.crf           = 22;
             // Map SpineCacheFormat → PrerenderFormat
-            switch (m_encoderFormat) {
+            switch (encoderFmt) {
             case SpineCacheFormat::GreenScreen:
                 renderJob.format = PrerenderFormat::GreenScreen;
                 break;
@@ -521,9 +554,9 @@ void AnimationVideoCache::workerLoop()
                 break;
             }
             // Propagate chroma key colour
-            renderJob.chromaKeyR = m_chromaKeyR;
-            renderJob.chromaKeyG = m_chromaKeyG;
-            renderJob.chromaKeyB = m_chromaKeyB;
+            renderJob.chromaKeyR = chromaR;
+            renderJob.chromaKeyG = chromaG;
+            renderJob.chromaKeyB = chromaB;
 
             // Create .rendering marker so an interrupted render is
             // detected and cleaned up on next startup.
@@ -631,16 +664,16 @@ void AnimationVideoCache::workerLoop()
                 m_currentJobDesc.clear();
             }
 
-            if (m_completeFn) {
-                m_completeFn(job.charName, job.outfit, cacheAnimName,
-                             result.success);
+            if (completeFn) {
+                completeFn(job.charName, job.outfit, cacheAnimName,
+                           result.success);
             }
 
         } catch (const std::exception& ex) {
             spdlog::error("AnimCache: render failed for '{}': {}", key, ex.what());
             // Clean up marker if exception thrown during render
             {
-                auto failMarker = cachePath(job.charName, job.outfit, cacheAnimName, m_encoderFormat);
+                auto failMarker = cachePath(job.charName, job.outfit, cacheAnimName, encoderFmt);
                 failMarker.replace_extension(".rendering");
                 std::error_code ec;
                 fs::remove(failMarker, ec);
@@ -650,8 +683,8 @@ void AnimationVideoCache::workerLoop()
                 m_pendingKeys.erase(key);
             }
             m_jobCv.notify_all();
-            if (m_completeFn) {
-                m_completeFn(job.charName, job.outfit, cacheAnimName, false);
+            if (completeFn) {
+                completeFn(job.charName, job.outfit, cacheAnimName, false);
             }
         }
     }

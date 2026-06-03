@@ -21,6 +21,9 @@
 #include "effects/EffectStack.h"
 #include "effects/LUT.h"
 #include "timeline/OpacityMask.h"
+#include "audiofx/FxChain.h"
+#include "audiofx/ParametricEQ.h"
+#include "audiofx/Dynamics.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -175,6 +178,106 @@ void readKeyframeTrack(BinaryReader& r, KeyframeTrack<float>& track, uint32_t ve
     if (version < 8 && track.keyframeCount() == 1 && track.keyframe(0).time == 0) {
         track.setDefaultValue(track.keyframe(0).value);
         track.removeKeyframe(0);
+    }
+}
+
+// ── Audio FX chain (v22+) ───────────────────────────────────────────────────
+// Each processor is length-prefixed so unknown/older kinds re-sync cleanly.
+
+static void writeAudioFx(BinaryWriter& w, const audiofx::FxChain& chain)
+{
+    w.writeU32(static_cast<uint32_t>(chain.size()));
+    for (size_t i = 0; i < chain.size(); ++i) {
+        const audiofx::AudioProcessor& p = chain.at(i);
+
+        BinaryWriter pw;  // processor payload (length-prefixed below)
+        uint8_t kind = 0xFF;
+
+        if (const auto* eq = dynamic_cast<const audiofx::ParametricEQ*>(&p)) {
+            kind = static_cast<uint8_t>(audiofx::ProcessorKind::ParametricEQ);
+            pw.writeU8(eq->highPassOn() ? 1 : 0);
+            pw.writeF32(eq->highPassFreq()); pw.writeF32(eq->highPassQ());
+            pw.writeU8(eq->lowPassOn() ? 1 : 0);
+            pw.writeF32(eq->lowPassFreq()); pw.writeF32(eq->lowPassQ());
+            pw.writeU32(static_cast<uint32_t>(eq->bandCount()));
+            for (int b = 0; b < eq->bandCount(); ++b) {
+                const auto& bd = eq->band(b);
+                pw.writeU8(bd.enabled ? 1 : 0);
+                pw.writeU8(static_cast<uint8_t>(bd.type));
+                pw.writeF32(bd.freqHz); pw.writeF32(bd.gainDb); pw.writeF32(bd.q);
+            }
+            pw.writeF32(eq->outputGainDb());
+        } else if (const auto* dyn = dynamic_cast<const audiofx::Dynamics*>(&p)) {
+            kind = static_cast<uint8_t>(audiofx::ProcessorKind::Dynamics);
+            const auto& g = dyn->gate();
+            pw.writeU8(g.enabled ? 1 : 0);
+            pw.writeF32(g.thresholdDb); pw.writeF32(g.ratio); pw.writeF32(g.rangeDb);
+            pw.writeF32(g.attackMs);    pw.writeF32(g.releaseMs);
+            const auto& c = dyn->compressor();
+            pw.writeU8(c.enabled ? 1 : 0);
+            pw.writeF32(c.thresholdDb); pw.writeF32(c.ratio); pw.writeF32(c.kneeDb);
+            pw.writeF32(c.makeupDb);    pw.writeF32(c.attackMs); pw.writeF32(c.releaseMs);
+            const auto& l = dyn->limiter();
+            pw.writeU8(l.enabled ? 1 : 0);
+            pw.writeF32(l.ceilingDb); pw.writeF32(l.releaseMs);
+        }
+
+        w.writeU8(kind);
+        w.writeU8(p.isEnabled() ? 1 : 0);
+        w.writeU32(static_cast<uint32_t>(pw.size()));
+        w.writeBytes(pw.data().data(), pw.size());
+    }
+}
+
+static void readAudioFx(BinaryReader& r, audiofx::FxChain& chain)
+{
+    const uint32_t count = r.readU32();
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint8_t kind    = r.readU8();
+        const bool    enabled = r.readU8() != 0;
+        const uint32_t payloadLen = r.readU32();
+        const size_t endPos = r.position() + payloadLen;
+
+        if (kind == static_cast<uint8_t>(audiofx::ProcessorKind::ParametricEQ)) {
+            auto* eq = static_cast<audiofx::ParametricEQ*>(
+                chain.add(audiofx::ProcessorKind::ParametricEQ));
+            eq->setEnabled(enabled);
+            const bool  hOn = r.readU8() != 0;
+            const float hF = r.readF32(), hQ = r.readF32();
+            eq->setHighPass(hOn, hF, hQ);
+            const bool  lOn = r.readU8() != 0;
+            const float lF = r.readF32(), lQ = r.readF32();
+            eq->setLowPass(lOn, lF, lQ);
+            const uint32_t bands = r.readU32();
+            for (uint32_t b = 0; b < bands; ++b) {
+                audiofx::ParametricEQ::Band bd;
+                bd.enabled = r.readU8() != 0;
+                bd.type    = static_cast<audiofx::Biquad::Type>(r.readU8());
+                bd.freqHz  = r.readF32(); bd.gainDb = r.readF32(); bd.q = r.readF32();
+                if (static_cast<int>(b) < eq->bandCount()) eq->setBand(static_cast<int>(b), bd);
+            }
+            eq->setOutputGainDb(r.readF32());
+        } else if (kind == static_cast<uint8_t>(audiofx::ProcessorKind::Dynamics)) {
+            auto* dyn = static_cast<audiofx::Dynamics*>(
+                chain.add(audiofx::ProcessorKind::Dynamics));
+            dyn->setEnabled(enabled);
+            audiofx::Dynamics::GateSettings g;
+            g.enabled = r.readU8() != 0;
+            g.thresholdDb = r.readF32(); g.ratio = r.readF32(); g.rangeDb = r.readF32();
+            g.attackMs = r.readF32();    g.releaseMs = r.readF32();
+            dyn->setGate(g);
+            audiofx::Dynamics::CompSettings c;
+            c.enabled = r.readU8() != 0;
+            c.thresholdDb = r.readF32(); c.ratio = r.readF32(); c.kneeDb = r.readF32();
+            c.makeupDb = r.readF32();    c.attackMs = r.readF32(); c.releaseMs = r.readF32();
+            dyn->setCompressor(c);
+            audiofx::Dynamics::LimiterSettings l;
+            l.enabled = r.readU8() != 0;
+            l.ceilingDb = r.readF32(); l.releaseMs = r.readF32();
+            dyn->setLimiter(l);
+        }
+        // Unknown kind or trailing future fields: re-sync to the payload end.
+        if (r.position() < endPos) r.skip(endPos - r.position());
     }
 }
 
@@ -429,6 +532,10 @@ void writeClip(BinaryWriter& w, const Clip& clip)
             }
         }
     }
+
+    // ── Audio FX chain (v22+) — audio clips only ───────────────────────
+    if (clip.clipType() == ClipType::Audio)
+        writeAudioFx(w, static_cast<const AudioClip&>(clip).audioFx());
 }
 
 std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
@@ -794,6 +901,10 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
             clip->addMask(std::move(m));
         }
     }
+
+    // ── Audio FX chain (v22+) — audio clips only ───────────────────────
+    if (version >= 22 && clip && clip->clipType() == ClipType::Audio)
+        readAudioFx(r, static_cast<AudioClip*>(clip.get())->audioFx());
 
     return clip;
 }

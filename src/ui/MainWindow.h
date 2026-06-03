@@ -78,7 +78,6 @@ class ModelManager;
 class Timeline;
 
 // Panel forward declarations (delegated through TimelineWorkspace)
-class AudioMixer;
 class EffectControlsPanel;
 class EffectsPanel;
 class HistoryPanel;
@@ -189,7 +188,6 @@ public:
     [[nodiscard]] PropertiesPanel*  propertiesPanel()  const noexcept;
     [[nodiscard]] EffectControlsPanel* effectControlsPanel() const noexcept;
     [[nodiscard]] EffectsPanel*     effectsPanel()     const noexcept;
-    [[nodiscard]] AudioMixer*       audioMixer()       const noexcept;
     [[nodiscard]] KeyframeEditor*   keyframeEditor()   const noexcept;
     [[nodiscard]] HistoryPanel*     historyPanel()     const noexcept;
 

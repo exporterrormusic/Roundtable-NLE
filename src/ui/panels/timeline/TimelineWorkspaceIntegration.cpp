@@ -11,7 +11,6 @@
 #include "spine/AnimationVideoCache.h"
 #include "Settings.h"
 
-#include "panels/audio/AudioMixer.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/EffectsPanel.h"
 #include "panels/captions/CaptionsPanel.h"
@@ -137,14 +136,6 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Forward to CaptionsPanel so the caption list rebuilds for the new sequence.
     if (m_captionsPanel)
         m_captionsPanel->setTimeline(timeline);
-
-    // Forward to AudioMixer so channel strips rebuild for the new project.
-    {
-        auto _t = _opclk::now();
-        if (m_audioMixer)
-            m_audioMixer->setTimeline(timeline);
-        spdlog::warn("[OPEN-PERF] setTimeline: audioMixer->setTimeline {:.0f}ms", _opMs(_t));
-    }
 
     // Forward to ProgramMonitor so its mini-timeline gets the correct
     // duration, in/out points, and playhead range.

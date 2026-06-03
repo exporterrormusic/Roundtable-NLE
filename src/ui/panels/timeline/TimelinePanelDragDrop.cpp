@@ -53,6 +53,7 @@ void TimelinePanel::dragEnterEvent(QDragEnterEvent* event)
 {
     // Accept effect drags, transition drags, media drags, sequence drags, or external file drops
     if (event->mimeData()->hasFormat("application/x-roundtable-effect") ||
+        event->mimeData()->hasFormat("application/x-roundtable-audiofx") ||
         event->mimeData()->hasFormat(kTransitionMimeType) ||
         event->mimeData()->hasFormat("application/x-roundtable-media") ||
         event->mimeData()->hasFormat("application/x-roundtable-sequence") ||
@@ -203,8 +204,9 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         return;
     }
 
-    // ── Effect drag (custom MIME) ───────────────────────────────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-effect")) {
+    // ── Effect / audio-FX drag (custom MIME) — same clip highlight ──────
+    if (event->mimeData()->hasFormat("application/x-roundtable-effect") ||
+        event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
         QPointF pos = event->position();
         auto hitRef = hitTestClip(pos);
         if (hitRef != m_effectDropTarget) {

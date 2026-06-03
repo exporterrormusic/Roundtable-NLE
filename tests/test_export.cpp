@@ -14,8 +14,15 @@
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
+#include "timeline/AudioClip.h"
+#include "Constants.h"
+#include "audiofx/ParametricEQ.h"
+#include "audiofx/FxChain.h"
 
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 using namespace rt;
@@ -30,12 +37,13 @@ TEST(ExportEncoder, CodecNames)
     EXPECT_STREQ(encoderCodecName(EncoderCodec::H265), "H.265");
     EXPECT_STREQ(encoderCodecName(EncoderCodec::AV1), "AV1");
     EXPECT_STREQ(encoderCodecName(EncoderCodec::ProRes), "ProRes");
+    EXPECT_STREQ(encoderCodecName(EncoderCodec::DNxHR), "DNxHR");
     EXPECT_STREQ(encoderCodecName(EncoderCodec::ImageSequence), "Image Sequence");
 }
 
 TEST(ExportEncoder, CodecCount)
 {
-    EXPECT_EQ(static_cast<int>(EncoderCodec::Count), 5);
+    EXPECT_EQ(static_cast<int>(EncoderCodec::Count), 6);
 }
 
 TEST(ExportEncoder, ConfigDefaults)
@@ -395,6 +403,94 @@ TEST(ExportAudioMixdown, WriteWavFile)
     EXPECT_LT(fileSize, 195000u);
 
     std::filesystem::remove(tempPath);
+}
+
+// ── Audio FX chain integration in the export mixdown ─────────────────────────
+
+namespace {
+
+/// Write a stereo PCM-16 WAV tone; returns the path (empty on failure).
+std::filesystem::path writeToneWav(double seconds, float amp, uint32_t sr)
+{
+    auto path = std::filesystem::temp_directory_path() / "test_export_fx_tone.wav";
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return {};
+
+    const uint16_t channels = 2, bits = 16;
+    const auto frames = static_cast<uint32_t>(seconds * sr);
+    const uint32_t dataSize = frames * channels * (bits / 8);
+    const uint32_t byteRate = sr * channels * (bits / 8);
+    const uint16_t blockAlign = channels * (bits / 8);
+    const uint32_t fileSize = 36 + dataSize;
+    const uint32_t fmtSize = 16; const uint16_t pcm = 1;
+
+    auto w32 = [&](uint32_t v){ f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto w16 = [&](uint16_t v){ f.write(reinterpret_cast<const char*>(&v), 2); };
+    f.write("RIFF", 4); w32(fileSize); f.write("WAVE", 4);
+    f.write("fmt ", 4); w32(fmtSize); w16(pcm); w16(channels);
+    w32(sr); w32(byteRate); w16(blockAlign); w16(bits);
+    f.write("data", 4); w32(dataSize);
+
+    for (uint32_t i = 0; i < frames; ++i) {
+        const float v = amp * std::sin(2.0f * 3.14159265f * 440.0f * i / sr);
+        const auto s = static_cast<int16_t>(std::clamp(v, -1.0f, 1.0f) * 32767.0f);
+        w16(static_cast<uint16_t>(s)); w16(static_cast<uint16_t>(s));
+    }
+    return path;
+}
+
+float mixRms(const MixdownResult& r)
+{
+    if (r.samples.empty()) return 0.0f;
+    double acc = 0.0;
+    for (float s : r.samples) acc += static_cast<double>(s) * s;
+    return static_cast<float>(std::sqrt(acc / r.samples.size()));
+}
+
+} // namespace
+
+TEST(ExportAudioMixdown, ClipFxChainAffectsMix)
+{
+    const uint32_t sr = 48000;
+    auto wav = writeToneWav(0.5, 0.8f, sr);
+    ASSERT_FALSE(wav.empty());
+
+    Timeline tl;
+    Track* at = tl.addAudioTrack("Audio 1");
+    ASSERT_NE(at, nullptr);
+
+    auto clip = std::make_unique<AudioClip>();
+    clip->setMediaPath(wav.string());
+    clip->setSampleRate(sr);
+    clip->setChannels(2);
+    clip->setTimelineIn(0);
+    clip->setDuration(secondsToTicks(0.5));
+    clip->setSourceDuration(secondsToTicks(0.5));
+    AudioClip* rawClip = clip.get();
+    at->addClip(std::move(clip));
+
+    AudioMixdownConfig cfg;
+    cfg.sampleRate = sr;
+    cfg.channels = 2;
+
+    AudioMixdown mixdown;
+    auto dry = mixdown.mix(tl, cfg);
+    if (!dry.isValid() || mixRms(dry) < 1e-4f) {
+        std::filesystem::remove(wav);
+        GTEST_SKIP() << "No audio backend available to read WAV";
+    }
+
+    // Apply a -6 dB output trim via the clip's EQ; the mix should ~halve.
+    auto* eq = static_cast<audiofx::ParametricEQ*>(
+        rawClip->audioFx().add(audiofx::ProcessorKind::ParametricEQ));
+    eq->setOutputGainDb(-6.0206f);  // 0.5x linear
+
+    auto wet = mixdown.mix(tl, cfg);
+    ASSERT_TRUE(wet.isValid());
+
+    EXPECT_NEAR(mixRms(wet), mixRms(dry) * 0.5f, mixRms(dry) * 0.05f);
+
+    std::filesystem::remove(wav);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

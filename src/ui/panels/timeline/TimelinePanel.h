@@ -332,6 +332,10 @@ signals:
     /// Emitted when an effect is dropped onto a timeline clip.
     void effectDroppedOnClip(size_t trackIndex, uint64_t clipId, int effectType);
 
+    /// Emitted when an audio DSP processor (EQ/Dynamics) is dropped onto a
+    /// timeline clip. `kind` is an audiofx::ProcessorKind value.
+    void audioFxDroppedOnClip(size_t trackIndex, uint64_t clipId, int kind);
+
     /// Emitted when a transition is dropped at a clip edge.
     void transitionDroppedAtEdge(size_t trackIndex, uint64_t leftClipId,
                                  uint64_t rightClipId, int64_t editPointTick,

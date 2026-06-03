@@ -8,6 +8,7 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/AudioFxSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -141,6 +142,14 @@ void PropertiesPanel::setupAudioSection(QWidget* container)
     form->addRow("Fade Out:", m_fadeOutSpin);
 
     container->layout()->addWidget(m_audioSection);
+
+    // Audio effect chain editor (EQ / Dynamics) — sits just below the basic
+    // audio controls. Hidden until an audio clip is selected.
+    m_audioFxSection = new AudioFxSection(container);
+    m_audioFxSection->setVisible(false);
+    connect(m_audioFxSection, &AudioFxSection::changed,
+            this, &PropertiesPanel::propertyChanged);
+    container->layout()->addWidget(m_audioFxSection);
 }
 
 } // namespace rt

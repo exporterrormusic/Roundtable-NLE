@@ -27,7 +27,6 @@ void TimelineWorkspace::arrangeDockLayout()
     auto* dockColorGrading    = m_dockWidgets.value("Color Correction");
     auto* dockEffects         = m_dockWidgets.value("Effects");
     auto* dockHistory         = m_dockWidgets.value("History");
-    auto* dockAudioMixer      = m_dockWidgets.value("Audio Mixer");
     auto* dockScopes          = m_dockWidgets.value("Scopes");
     auto* dockProperties      = m_dockWidgets.value("Properties");
     auto* dockCharacters      = m_dockWidgets.value("Library");
@@ -42,7 +41,7 @@ void TimelineWorkspace::arrangeDockLayout()
     //
     //  Top row:  [Project Bin | Source Monitor | Program Monitor | Effect Controls]
     //  Right of central: Audio Meters
-    //  Effect Controls area: Effects, Keyframes, History, Audio Mixer tabbed
+    //  Effect Controls area: Effects, Keyframes, History tabbed
     // =====================================================================
 
     m_innerMainWindow->addDockWidget(Qt::TopDockWidgetArea, dockProjectBin);
@@ -59,10 +58,8 @@ void TimelineWorkspace::arrangeDockLayout()
         m_innerMainWindow->tabifyDockWidget(dockColorGrading ? dockColorGrading : dockEffectControls, dockEffects);
     if (dockHistory)
         m_innerMainWindow->tabifyDockWidget(dockEffects ? dockEffects : dockEffectControls, dockHistory);
-    if (dockAudioMixer)
-        m_innerMainWindow->tabifyDockWidget(dockHistory ? dockHistory : dockEffectControls, dockAudioMixer);
     if (dockScopes)
-        m_innerMainWindow->tabifyDockWidget(dockAudioMixer ? dockAudioMixer : dockEffectControls, dockScopes);
+        m_innerMainWindow->tabifyDockWidget(dockHistory ? dockHistory : dockEffectControls, dockScopes);
     if (dockProperties)
         m_innerMainWindow->tabifyDockWidget(dockScopes ? dockScopes : dockEffectControls, dockProperties);
     if (dockCharacters)

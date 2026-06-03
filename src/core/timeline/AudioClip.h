@@ -9,6 +9,7 @@
 
 #include "timeline/Clip.h"
 #include "timeline/KeyframeTrack.h"
+#include "audiofx/FxChain.h"
 #include <string>
 
 namespace rt {
@@ -45,6 +46,13 @@ public:
     const KeyframeTrack<float>& volume() const noexcept { return m_volume; }
     const KeyframeTrack<float>& pan()    const noexcept { return m_pan; }
 
+    // ── Audio effect chain (EQ, dynamics) ───────────────────────────────
+    /// Per-clip DSP chain applied to this clip's audio (see core/audiofx).
+    /// Distinct from the GPU EffectStack (effects()): this is sample-domain
+    /// audio processing, not a video effect.
+    audiofx::FxChain&       audioFx()       noexcept { return m_audioFx; }
+    const audiofx::FxChain& audioFx() const noexcept { return m_audioFx; }
+
     // ── Fades ───────────────────────────────────────────────────────────
     [[nodiscard]] int64_t fadeInDuration()  const noexcept { return m_fadeIn; }
     [[nodiscard]] int64_t fadeOutDuration() const noexcept { return m_fadeOut; }
@@ -66,6 +74,8 @@ private:
 
     int64_t m_fadeIn{0};   // In ticks
     int64_t m_fadeOut{0};
+
+    audiofx::FxChain m_audioFx;
 };
 
 } // namespace rt

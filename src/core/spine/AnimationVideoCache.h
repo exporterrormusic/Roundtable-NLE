@@ -109,22 +109,42 @@ public:
     /// Set a callback for when background pre-renders complete.
     /// Called on the rendering thread — use QMetaObject::invokeMethod
     /// to bounce to the UI thread if needed.
-    void setCompletionCallback(AnimCacheCompleteFn fn) { m_completeFn = std::move(fn); }
+    ///
+    /// Thread-safe: the worker thread snapshots m_completeFn under m_mutex
+    /// at the start of each job, so this setter must take the same lock to
+    /// avoid a torn read of the std::function (D3).
+    void setCompletionCallback(AnimCacheCompleteFn fn)
+    {
+        std::lock_guard lock(m_mutex);
+        m_completeFn = std::move(fn);
+    }
 
     /// Set the encoder format for new renders.
-    void setEncoderFormat(SpineCacheFormat fmt) { m_encoderFormat = fmt; }
-    [[nodiscard]] SpineCacheFormat encoderFormat() const { return m_encoderFormat; }
+    /// Thread-safe: worker reads m_encoderFormat unlocked while rendering, so
+    /// both the setter and the worker's read are serialised on m_mutex (D1).
+    void setEncoderFormat(SpineCacheFormat fmt)
+    {
+        std::lock_guard lock(m_mutex);
+        m_encoderFormat = fmt;
+    }
+    [[nodiscard]] SpineCacheFormat encoderFormat() const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_encoderFormat;
+    }
 
     /// Set the chroma key background color (used for GreenScreen/BlueScreen/CustomColor formats).
+    /// Thread-safe: worker reads these unlocked while rendering (D1).
     void setChromaKeyColor(uint8_t r, uint8_t g, uint8_t b)
     {
+        std::lock_guard lock(m_mutex);
         m_chromaKeyR = r;
         m_chromaKeyG = g;
         m_chromaKeyB = b;
     }
-    [[nodiscard]] uint8_t chromaKeyR() const { return m_chromaKeyR; }
-    [[nodiscard]] uint8_t chromaKeyG() const { return m_chromaKeyG; }
-    [[nodiscard]] uint8_t chromaKeyB() const { return m_chromaKeyB; }
+    [[nodiscard]] uint8_t chromaKeyR() const { std::lock_guard lk(m_mutex); return m_chromaKeyR; }
+    [[nodiscard]] uint8_t chromaKeyG() const { std::lock_guard lk(m_mutex); return m_chromaKeyG; }
+    [[nodiscard]] uint8_t chromaKeyB() const { std::lock_guard lk(m_mutex); return m_chromaKeyB; }
 
     /// Set the MediaPool (can be set after construction, non-owning).
     void setMediaPool(MediaPool* pool) { m_mediaPool = pool; }
@@ -281,6 +301,15 @@ private:
                                      const std::string& outfit,
                                      const std::string& animName,
                                      SpineCacheFormat fmt) const;
+
+    /// Resolve (and lazily open) the MediaHandle for an entry.
+    /// PRECONDITION: m_mutex is already held by the caller.  Keeping the
+    /// lock held across both the handle lookup AND the subsequent decode in
+    /// getFrame() prevents removeEntry()/clear() from releasing the handle
+    /// mid-decode (a use-after-release in MediaPool — D2).
+    MediaHandle getMediaHandleLocked(const std::string& characterName,
+                                     const std::string& outfit,
+                                     const std::string& animationName);
 
     /// Worker function for background render threads.
     /// Each worker owns its own SpinePrerenderer and processes jobs

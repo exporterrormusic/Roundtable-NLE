@@ -68,6 +68,7 @@ class AudioClip;
 class TitleClip;
 class CaptionClip;
 class ScrubbySpinBox;
+class AudioFxSection;
 class CommandStack;
 class ModelManager;
 class ShotPresetManager;
@@ -402,6 +403,9 @@ private:
     ScrubbySpinBox* m_panSpin{nullptr};
     ScrubbySpinBox* m_fadeInSpin{nullptr};
     ScrubbySpinBox* m_fadeOutSpin{nullptr};
+
+    // Audio effect chain editor (EQ / Dynamics) — shown for audio clips
+    AudioFxSection* m_audioFxSection{nullptr};
 
     // Title section
     QWidget*        m_titleSection{nullptr};

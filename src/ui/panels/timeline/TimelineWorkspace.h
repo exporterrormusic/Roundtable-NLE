@@ -59,7 +59,6 @@ class QToolButton;
 namespace rt {
 
 // Forward declarations — panels
-class AudioMixer;
 class CaptionsPanel;
 class CharactersPanel;
 class LibraryPanel;
@@ -151,7 +150,6 @@ public:
     [[nodiscard]] PropertiesPanel*  propertiesPanel()  const noexcept { return m_propertiesPanel; }
     [[nodiscard]] EffectControlsPanel* effectControlsPanel() const noexcept { return m_effectControlsPanel; }
     [[nodiscard]] EffectsPanel*     effectsPanel()     const noexcept { return m_effectsPanel; }
-    [[nodiscard]] AudioMixer*       audioMixer()       const noexcept { return m_audioMixer; }
     [[nodiscard]] KeyframeEditor*   keyframeEditor()   const noexcept { return m_keyframeEditor; }
     [[nodiscard]] HistoryPanel*     historyPanel()     const noexcept { return m_historyPanel; }
     [[nodiscard]] ScopesPanel*      scopesPanel()      const noexcept { return m_scopesPanel; }
@@ -340,7 +338,6 @@ private:
     CaptionsPanel*    m_captionsPanel{nullptr};
     ColorGradingPanel*     m_ColorGradingPanel{nullptr};
     EffectsPanel*     m_effectsPanel{nullptr};
-    AudioMixer*       m_audioMixer{nullptr};
     KeyframeEditor*   m_keyframeEditor{nullptr};
     HistoryPanel*     m_historyPanel{nullptr};
     ScopesPanel*      m_scopesPanel{nullptr};

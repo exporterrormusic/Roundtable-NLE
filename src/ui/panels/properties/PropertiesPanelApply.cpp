@@ -8,6 +8,7 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/AudioFxSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -660,6 +661,7 @@ void PropertiesPanel::populateFromClip()
         m_panSpin->setValue(ac->pan().evaluate(0));
         m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));
         m_fadeOutSpin->setValue(static_cast<double>(ac->fadeOutDuration()));
+        if (m_audioFxSection) m_audioFxSection->setClip(ac, m_commandStack);
     }
     else if (m_clip->clipType() == ClipType::Caption)
     {

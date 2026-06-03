@@ -12,7 +12,6 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
-#include "panels/audio/AudioMixer.h"
 // ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
 #include "panels/effects/KeyframeEditor.h"
@@ -58,6 +57,8 @@
 #include "timeline/VideoClip.h"
 
 #include "effects/ChromaKey.h"
+#include "audiofx/FxChain.h"
+#include "audiofx/Dynamics.h"
 #include "media/FrameCache.h"
 #include "media/AudioPlaybackService.h"
 
@@ -124,6 +125,58 @@ void TimelineWorkspace::wireEffectDropSignals()
 
             spdlog::info("Effect '{}' added to clip '{}' via drag-drop",
                          effectTypeName(type), clip->label());
+        });
+    }
+
+    // =====================================================================
+    //  AUDIO-FX DRAG-DROP -> ADD EQ/DYNAMICS TO CLIP'S FxChain
+    // =====================================================================
+    if (m_timelinePanel) {
+        connect(m_timelinePanel, &TimelinePanel::audioFxDroppedOnClip,
+                this, [this](size_t trackIdx, uint64_t clipId, int kindInt) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_timeline) return;
+            auto* track = m_timeline->track(trackIdx);
+            if (!track) return;
+            size_t clipIdx = track->findClipIndexById(clipId);
+            if (clipIdx == SIZE_MAX) return;
+            auto* clip = track->clip(clipIdx);
+            if (!clip || clip->clipType() != ClipType::Audio) return;
+            auto* aclip = static_cast<AudioClip*>(clip);
+            const auto kind = static_cast<audiofx::ProcessorKind>(kindInt);
+
+            // Whole-chain snapshot undo, matching AudioFxSection::commitEdit so
+            // both entry points behave identically.
+            auto before = std::make_shared<audiofx::FxChain>(aclip->audioFx().clone());
+            auto after  = std::make_shared<audiofx::FxChain>(aclip->audioFx().clone());
+            auto* proc = after->add(kind);
+            if (kind == audiofx::ProcessorKind::Dynamics)
+                static_cast<audiofx::Dynamics*>(proc)->loadVoicePreset();
+
+            auto refresh = [this, trackIdx, clipId]() {
+                if (m_destroying.load(std::memory_order_acquire) || !m_timeline) return;
+                auto* tr = m_timeline->track(trackIdx);
+                if (!tr) return;
+                size_t ci = tr->findClipIndexById(clipId);
+                if (ci == SIZE_MAX) return;
+                auto* c = tr->clip(ci);
+                if (m_propertiesPanel) m_propertiesPanel->setClip(c, tr);
+                m_selectedClip = c;
+                m_selectedTrackIdx = trackIdx;
+                m_selectedClipIdx = ci;
+                m_selectedGraphicLayerIdx = -1;
+            };
+            auto redo = [aclip, after, refresh]() { aclip->audioFx() = after->clone(); refresh(); };
+            auto undo = [aclip, before, refresh]() { aclip->audioFx() = before->clone(); refresh(); };
+
+            if (m_commandStack)
+                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    std::string("Add ") + audiofx::processorKindName(kind), redo, undo));
+            else
+                redo();
+
+            spdlog::info("Audio FX '{}' added to clip '{}' via drag-drop",
+                         audiofx::processorKindName(kind), clip->label());
         });
     }
 
