@@ -1,14 +1,15 @@
 {
-  "name": "Mint (Wide)",
+  "name": "Yoyo (News Story)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
       "path": "TABLE_OVERLAY.png",
-      "posX": 0.499734,
-      "posY": 0.494975,
-      "scale": 1.020703,
+      "posX": 0.220000,
+      "posY": 0.515000,
+      "scale": 2.150000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -24,9 +25,9 @@
     },
     {
       "path": "TABLE_LARGE_FINAL.png",
-      "posX": 0.499734,
-      "posY": 0.494975,
-      "scale": 1.020703,
+      "posX": 0.220000,
+      "posY": 0.515000,
+      "scale": 2.150000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -43,14 +44,14 @@
   ],
   "characters": [
     {
-      "characterName": "Mint",
+      "characterName": "Yoyo",
       "outfit": "default",
       "stance": "default",
-      "animation": "action",
-      "isTalking": false,
-      "posX": 0.335733,
-      "posY": 0.578766,
-      "scale": 0.760000,
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.800237,
+      "posY": 0.735054,
+      "scale": 1.442113,
       "rotation": 0.000000,
       "flipX": true,
       "flipY": false,
@@ -61,32 +62,11 @@
       "cropBottom": 0.000000,
       "blur": 0.000000,
       "visible": true
-    },
-    {
-      "characterName": "Yoyo",
-      "outfit": "default",
-      "stance": "default",
-      "animation": "idle",
-      "isTalking": true,
-      "posX": 0.786000,
-      "posY": 0.605000,
-      "scale": 0.745000,
-      "rotation": 0.000000,
-      "flipX": true,
-      "flipY": false,
-      "opacity": 1.000000,
-      "cropLeft": 0.000000,
-      "cropRight": 0.000000,
-      "cropTop": 0.000000,
-      "cropBottom": 17.100000,
-      "blur": 0.000000,
-      "visible": true
     }
   ],
   "layerOrder": [
     {"type": "bg", "index": 0},
     {"type": "ch", "index": 0},
-    {"type": "ch", "index": 1},
     {"type": "bg", "index": 1}
   ]
 }

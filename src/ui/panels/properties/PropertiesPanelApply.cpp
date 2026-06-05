@@ -42,8 +42,10 @@
 #include <QVBoxLayout>
 #include <QComboBox>
 #include <QColorDialog>
+#include <QSet>
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <chrono>
 
 namespace rt {
@@ -327,30 +329,136 @@ void PropertiesPanel::updateShotSection()
             .arg(m_clip->groupId())
             .arg(QString::fromStdString(m_clip->layerId())));
 
+    if (!m_shotManager) {
+        // No manager — fall back to just listing the clip's own shot.
+        m_shotShowCombo->setVisible(false);
+        m_shotCharCombo->setVisible(false);
+        m_shotCombo->blockSignals(true);
+        m_shotCombo->clear();
+        if (!m_clip->shotName().empty())
+            m_shotCombo->addItem(QString::fromStdString(m_clip->shotName()));
+        m_shotCombo->blockSignals(false);
+        return;
+    }
+
+    m_shotShowCombo->setVisible(true);
+    m_shotCharCombo->setVisible(true);
+
+    // Gather distinct shows + characters across all presets, and find the
+    // current clip's shot so the navigation filters can default to it.
+    QSet<QString> showSet, charSet;
+    QString defShow, defChar;
+    const QString clipShot = QString::fromStdString(m_clip->shotName());
+    for (const auto& name : m_shotManager->presetNames()) {
+        auto preset = m_shotManager->load(name);
+        if (!preset) continue;
+        for (const auto& s : preset->shows())
+            showSet.insert(QString::fromStdString(s));
+        for (const auto& ch : preset->characters())
+            charSet.insert(QString::fromStdString(ch.characterName));
+        if (QString::fromStdString(name) == clipShot) {
+            if (!preset->shows().empty())
+                defShow = QString::fromStdString(preset->shows().front());
+            if (!preset->characters().empty())
+                defChar = QString::fromStdString(preset->characters().front().characterName);
+        }
+    }
+
+    auto sortedList = [](const QSet<QString>& set) {
+        QStringList list(set.begin(), set.end());
+        std::sort(list.begin(), list.end(),
+            [](const QString& a, const QString& b) {
+                return a.compare(b, Qt::CaseInsensitive) < 0;
+            });
+        return list;
+    };
+
+    {
+        // Block the combo signals during population so currentIndexChanged
+        // doesn't repopulate the shot combo mid-build; we call it once below.
+        QSignalBlocker blockShow(m_shotShowCombo);
+        QSignalBlocker blockChar(m_shotCharCombo);
+
+        m_shotShowCombo->clear();
+        m_shotShowCombo->addItem(tr("All Shows"), QString());
+        for (const QString& s : sortedList(showSet))
+            m_shotShowCombo->addItem(s, s);
+        if (!defShow.isEmpty()) {
+            int i = m_shotShowCombo->findData(defShow);
+            if (i >= 0) m_shotShowCombo->setCurrentIndex(i);
+        }
+
+        m_shotCharCombo->clear();
+        m_shotCharCombo->addItem(tr("All Characters"), QString());
+        for (const QString& cn : sortedList(charSet))
+            m_shotCharCombo->addItem(cn, cn);
+        if (!defChar.isEmpty()) {
+            int i = m_shotCharCombo->findData(defChar);
+            if (i >= 0) m_shotCharCombo->setCurrentIndex(i);
+        }
+    }
+
+    populateShotCombo(clipShot);
+}
+
+void PropertiesPanel::populateShotCombo(const QString& selectName)
+{
+    if (!m_shotCombo) return;
+
+    QString target = selectName;
+    if (target.isEmpty() && m_clip)
+        target = QString::fromStdString(m_clip->shotName());
+
+    const QString showF = m_shotShowCombo ? m_shotShowCombo->currentData().toString() : QString();
+    const QString charF = m_shotCharCombo ? m_shotCharCombo->currentData().toString() : QString();
+
     m_shotCombo->blockSignals(true);
     m_shotCombo->clear();
 
     if (m_shotManager) {
         auto names = m_shotManager->presetNames();
-        for (auto& name : names)
-            m_shotCombo->addItem(QString::fromStdString(name));
+        std::sort(names.begin(), names.end());
+        for (const auto& name : names) {
+            auto preset = m_shotManager->load(name);
+            if (!preset) continue;
+            // Show filter
+            if (!showF.isEmpty() && !preset->hasShow(showF.toStdString()))
+                continue;
+            // Character filter
+            if (!charF.isEmpty()) {
+                bool has = false;
+                for (const auto& ch : preset->characters()) {
+                    if (QString::fromStdString(ch.characterName)
+                            .compare(charF, Qt::CaseInsensitive) == 0) {
+                        has = true;
+                        break;
+                    }
+                }
+                if (!has) continue;
+            }
+            // Display the bare shot name (append the show when listing across
+            // all shows) but carry the full "show/name" key as item data.
+            std::string s, bare;
+            ShotPresetManager::splitKey(name, s, bare);
+            QString display = QString::fromStdString(bare);
+            if (showF.isEmpty() && !s.empty())
+                display += QStringLiteral("  ·  ") + QString::fromStdString(s);
+            m_shotCombo->addItem(display, QString::fromStdString(name));
+        }
 
-        // Select the current shot if it has a name
-        int idx = m_shotCombo->findText(QString::fromStdString(m_clip->shotName()));
-        spdlog::info("[SHOT-DROPDOWN] clip groupId={} shotName='{}' findText={} comboCount={}",
-                     m_clip->groupId(), m_clip->shotName(), idx, m_shotCombo->count());
+        // Select by key (data); fall back to display text for legacy bare refs.
+        int idx = m_shotCombo->findData(target);
+        if (idx < 0) idx = m_shotCombo->findText(target);
         if (idx >= 0) {
             m_shotCombo->setCurrentIndex(idx);
         } else {
-            // No matching shot — insert a placeholder so the dropdown doesn't
-            // show the first alphabetical item as if it were selected.
+            // Current shot not in the filtered list — show a neutral placeholder
+            // so the first listed shot isn't mistaken for the active one.
             m_shotCombo->insertItem(0, QStringLiteral("-- Choose a shot --"));
             m_shotCombo->setCurrentIndex(0);
         }
-        // Otherwise leave selection on the first item but don't force it
-    } else {
-        if (!m_clip->shotName().empty())
-            m_shotCombo->addItem(QString::fromStdString(m_clip->shotName()));
+    } else if (!target.isEmpty()) {
+        m_shotCombo->addItem(target);
     }
 
     m_shotCombo->blockSignals(false);
@@ -359,26 +467,12 @@ void PropertiesPanel::updateShotSection()
 void PropertiesPanel::refreshShotDropdown()
 {
     if (!m_clip || !m_shotSection->isVisible()) return;
-    // Re-read preset names from the manager (COMPOSE may have saved a new
-    // shot) and repopulate the combo, preserving the current selection.
-    m_shotCombo->blockSignals(true);
+    // Re-read presets from the manager (COMPOSE may have saved a new shot) and
+    // repopulate, preserving the current selection where possible.
     QString current = m_shotCombo->currentText();
-    m_shotCombo->clear();
-
-    if (m_shotManager) {
-        auto names = m_shotManager->presetNames();
-        for (auto& name : names)
-            m_shotCombo->addItem(QString::fromStdString(name));
-
-        int idx = m_shotCombo->findText(current);
-        if (idx >= 0)
-            m_shotCombo->setCurrentIndex(idx);
-        else if (!m_clip->shotName().empty()) {
-            idx = m_shotCombo->findText(QString::fromStdString(m_clip->shotName()));
-            if (idx >= 0) m_shotCombo->setCurrentIndex(idx);
-        }
-    }
-    m_shotCombo->blockSignals(false);
+    if (current == QStringLiteral("-- Choose a shot --"))
+        current.clear();
+    populateShotCombo(current);
 }
 
 void PropertiesPanel::onShotChanged(const std::string& newShotName)

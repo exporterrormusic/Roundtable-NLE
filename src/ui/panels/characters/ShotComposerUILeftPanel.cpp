@@ -499,10 +499,23 @@ QWidget* ShotComposer::createLeftPanel()
     auto* bgLayout = new QVBoxLayout(bgTab);
     bgLayout->setContentsMargins(5, 5, 5, 5);
 
+    m_bgSearchEdit = new QLineEdit;
+    m_bgSearchEdit->setPlaceholderText(QStringLiteral("\xF0\x9F\x94\x8D Search backgrounds..."));
+    m_bgSearchEdit->setClearButtonEnabled(true);
+    bgLayout->addWidget(m_bgSearchEdit);
+    connect(m_bgSearchEdit, &QLineEdit::textChanged,
+            this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshBackgroundLibrary(); });
+
     m_backgroundLibrary = new DragAssetList;
     setupIconList(m_backgroundLibrary);
     m_backgroundLibrary->setDragEnabled(true);
     m_backgroundLibrary->setDragDropMode(QAbstractItemView::DragOnly);
+    // Accept image files dropped from the OS (Explorer) to import them.
+    // Handled in ShotComposer::eventFilter (Drop on the list's viewport).
+    m_backgroundLibrary->setAcceptDrops(true);
+    m_backgroundLibrary->viewport()->setAcceptDrops(true);
+    m_backgroundLibrary->installEventFilter(this);
+    m_backgroundLibrary->viewport()->installEventFilter(this);
     m_backgroundLibrary->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_backgroundLibrary, &QWidget::customContextMenuRequested,
             this, [this](const QPoint& pos) {
@@ -624,6 +637,9 @@ QWidget* ShotComposer::createLeftPanel()
     bgLayout->addWidget(m_backgroundLibrary, 1);
 
     auto* btnAddBg = new QPushButton("Add Background");
+    btnAddBg->setToolTip(QStringLiteral(
+        "Add the selected background to the shot. To import new images, drag "
+        "them in or right-click → Import Background…"));
     bgLayout->addWidget(btnAddBg);
 
     m_libraryTabs->addTab(bgTab, "Backgrounds");
@@ -651,6 +667,13 @@ QWidget* ShotComposer::createLeftPanel()
     auto* videoTab = new QWidget;
     auto* videoLayout = new QVBoxLayout(videoTab);
     videoLayout->setContentsMargins(5, 5, 5, 5);
+
+    m_videoSearchEdit = new QLineEdit;
+    m_videoSearchEdit->setPlaceholderText(QStringLiteral("\xF0\x9F\x94\x8D Search videos..."));
+    m_videoSearchEdit->setClearButtonEnabled(true);
+    videoLayout->addWidget(m_videoSearchEdit);
+    connect(m_videoSearchEdit, &QLineEdit::textChanged,
+            this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshVideoLibrary(); });
 
     m_videoLibrary = new DragAssetList;
     setupIconList(m_videoLibrary);
@@ -833,6 +856,8 @@ QWidget* ShotComposer::createLeftPanel()
     });
     connect(btnAddBg, &QPushButton::clicked, this, [this, bgItemPath]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
+        // Add the selected library background to the shot. Importing new images
+        // is done via drag-and-drop or the right-click "Import Background…".
         auto items = m_backgroundLibrary->selectedItems();
         if (!items.isEmpty()) addBackground(bgItemPath(items.first()));
     });

@@ -68,7 +68,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 22;  // v22 = persist AudioClip audiofx chain (ParametricEQ / Dynamics)
+    static constexpr uint32_t FORMAT_VERSION = 23;  // v23 = persist Project.show (per-show default shots)
+                                                    // v22 = persist AudioClip audiofx chain (ParametricEQ / Dynamics)
                                                     // v21 = persist Track.isCaptionTrack (subtitle track pinned on top) + CaptionClip type-specific fields
                                                     // v20 = persist Track.isPermanentDivider so user-added dividers don't get hijacked when whoever sits at the V/A boundary is greedily promoted
                                                     // v19 = clip anchorX/anchorY tracks (rotation/scale pivot)
@@ -92,6 +93,7 @@ public:
         Section_Sequences   = 0x0A,   ///< Multi-sequence support (v4+)
         Section_BinState    = 0x0B,   ///< Project bin media files + folders
         Section_AudioSync   = 0x0C,   ///< AudioSync panel state (v13+)
+        Section_ProjectMeta = 0x0D,   ///< Project-level metadata: show assignment (v23+)
     };
 };
 

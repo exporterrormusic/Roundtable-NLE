@@ -7,7 +7,9 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 // ─── Minimal JSON helpers ───────────────────────────────────────────────────
@@ -147,6 +149,19 @@ namespace rt {
 ShotPreset::ShotPreset(const std::string& name)
     : m_name(name)
 {
+}
+
+// ── Shows ─────────────────────────────────────────────────────────────────
+
+bool ShotPreset::hasShow(const std::string& show) const
+{
+    if (m_show.size() != show.size()) return false;
+    for (size_t i = 0; i < m_show.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(m_show[i])) !=
+            std::tolower(static_cast<unsigned char>(show[i])))
+            return false;
+    }
+    return true;
 }
 
 // ── Backgrounds ─────────────────────────────────────────────────────────────
@@ -360,6 +375,9 @@ std::string ShotPreset::toJson() const
     o << "{\n";
     o << "  \"name\": \"" << jsonEscape(m_name) << "\",\n";
 
+    // Show (namespace)
+    o << "  \"show\": \"" << jsonEscape(m_show) << "\",\n";
+
     // Camera
     o << "  \"cameraZoom\": " << m_cameraZoom << ",\n";
     o << "  \"cameraX\": " << m_cameraX << ",\n";
@@ -457,6 +475,25 @@ std::optional<ShotPreset> ShotPreset::fromJson(const std::string& json)
         if (key == "name") {
             if (lex.next() != JTok::String) return std::nullopt;
             preset.m_name = lex.sval;
+        }
+        else if (key == "show") {
+            if (lex.next() != JTok::String) return std::nullopt;
+            preset.m_show = lex.sval;
+        }
+        else if (key == "shows") {
+            // Legacy multi-show tag array → migrate to the single show
+            // namespace (take the first tag).
+            if (lex.next() != JTok::LBracket) return std::nullopt;
+            bool took = false;
+            while (true) {
+                auto st = lex.next();
+                if (st == JTok::RBracket || st == JTok::End) break;
+                if (st == JTok::Comma) continue;
+                if (st == JTok::String && !took && !lex.sval.empty()) {
+                    if (preset.m_show.empty()) preset.m_show = lex.sval;
+                    took = true;
+                }
+            }
         }
         else if (key == "cameraZoom") {
             if (lex.next() != JTok::Number) return std::nullopt;
@@ -610,11 +647,28 @@ ShotPreset ShotPreset::createDefault(const std::string& characterName)
 
 // ─── ShotPresetManager ───────────────────────────────────────────────────────
 
+std::string ShotPresetManager::makeKey(const std::string& show,
+                                        const std::string& name)
+{
+    return show.empty() ? name : (show + "/" + name);
+}
+
+void ShotPresetManager::splitKey(const std::string& key, std::string& show,
+                                 std::string& name)
+{
+    auto pos = key.find('/');
+    if (pos == std::string::npos) { show.clear(); name = key; }
+    else { show = key.substr(0, pos); name = key.substr(pos + 1); }
+}
+
 int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
 {
     m_directory = presetsDir;
     m_presets.clear();
     m_aliases.clear();
+    m_knownShows.clear();
+    m_showThumbnails.clear();
+    m_showDefaults.clear();
 
     if (!std::filesystem::exists(presetsDir)) {
         spdlog::info("ShotPresetManager: presets directory does not exist: {}",
@@ -623,31 +677,104 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
     }
 
     loadAliases();
+    loadShows();
+    loadShowThumbnails();
+    loadShowDefaults();
 
     int count = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(presetsDir)) {
-        if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
-        // Case-insensitive .json check
-        if (ext != ".json" && ext != ".JSON") continue;
+    std::set<std::string> seenKeys;   // dedupe guard (exact keys)
 
-        std::ifstream ifs(entry.path(), std::ios::binary);
-        if (!ifs) continue;
+    // ── Snapshot the directory listing BEFORE any migration writes ──────
+    // Migration creates show subdirectories + files; if we iterated live we
+    // would descend into a directory we just created and load each migrated
+    // shot a second time (the "doubled shot count" bug). Collect first.
+    std::vector<std::filesystem::path> rootFiles;                       // No-Show
+    std::vector<std::pair<std::string, std::filesystem::path>> subFiles; // (show, file)
+    {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(presetsDir, ec)) {
+            if (entry.is_regular_file()) {
+                auto ext = entry.path().extension().string();
+                if (ext != ".json" && ext != ".JSON") continue;
+                auto stem = entry.path().filename().string();
+                if (!stem.empty() && stem.front() == '_') continue; // config files
+                rootFiles.push_back(entry.path());
+            } else if (entry.is_directory()) {
+                const std::string dirName = entry.path().filename().string();
+                if (dirName == "thumbnails" ||
+                    (!dirName.empty() && dirName.front() == '_'))
+                    continue;
+                std::error_code ec2;
+                for (const auto& sub :
+                         std::filesystem::directory_iterator(entry.path(), ec2)) {
+                    if (!sub.is_regular_file()) continue;
+                    auto ext = sub.path().extension().string();
+                    if (ext != ".json" && ext != ".JSON") continue;
+                    subFiles.emplace_back(dirName, sub.path());
+                }
+            }
+        }
+    }
 
+    auto parse = [](const std::filesystem::path& path) -> std::optional<ShotPreset> {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) return std::nullopt;
         std::string content((std::istreambuf_iterator<char>(ifs)),
                              std::istreambuf_iterator<char>());
-
         auto preset = ShotPreset::fromJson(content);
-        if (preset) {
-            // Use filename stem as name if preset has no name
-            if (preset->name().empty())
-                preset->setName(entry.path().stem().string());
-            m_presets.emplace_back(preset->name(), std::move(*preset));
-            ++count;
-        } else {
-            spdlog::warn("ShotPresetManager: failed to parse preset: {}",
-                         entry.path().string());
+        if (preset && preset->name().empty())
+            preset->setName(path.stem().string());
+        return preset;
+    };
+
+    // ── 1) Show shots (subdirectories) — the location is authoritative ──
+    for (const auto& [showDir, file] : subFiles) {
+        auto preset = parse(file);
+        if (!preset) {
+            spdlog::warn("ShotPresetManager: failed to parse preset: {}", file.string());
+            continue;
         }
+        preset->setShow(showDir);
+        const std::string key = makeKey(showDir, preset->name());
+        if (!seenKeys.insert(key).second) continue; // already loaded
+        m_presets.emplace_back(key, std::move(*preset));
+        ++count;
+    }
+
+    // ── 2) Root files: No-Show shots, or legacy show-tagged → migrate ───
+    for (const auto& file : rootFiles) {
+        auto preset = parse(file);
+        if (!preset) {
+            spdlog::warn("ShotPresetManager: failed to parse preset: {}", file.string());
+            continue;
+        }
+        const std::string show = preset->show();
+        const std::string name = preset->name();
+        const std::string key  = makeKey(show, name);
+
+        if (!show.empty()) {
+            // Legacy tagged shot. If the show namespace already has this shot
+            // (from step 1), just delete the stale root copy; otherwise move it.
+            std::error_code ec;
+            if (seenKeys.count(key)) {
+                std::filesystem::remove(file, ec);
+                continue;
+            }
+            auto dst = pathForPreset(show, name);
+            std::filesystem::create_directories(dst.parent_path(), ec);
+            std::ofstream ofs(dst, std::ios::binary);
+            if (ofs) {
+                ofs << preset->toJson();
+                ofs.close();
+                std::filesystem::remove(file, ec);
+                spdlog::info("ShotPresetManager: migrated '{}' into show '{}'", name, show);
+            }
+        } else {
+            if (seenKeys.count(key)) continue; // duplicate No-Show name
+        }
+        seenKeys.insert(key);
+        m_presets.emplace_back(key, std::move(*preset));
+        ++count;
     }
 
     spdlog::info("ShotPresetManager: loaded {} presets from {}", count, presetsDir.string());
@@ -659,51 +786,82 @@ bool ShotPresetManager::save(const ShotPreset& preset)
     if (preset.name().empty())
         return false;
 
-    // Ensure directory exists
+    auto path = pathForPreset(preset.show(), preset.name());
     if (!m_directory.empty()) {
         std::error_code ec;
-        std::filesystem::create_directories(m_directory, ec);
+        std::filesystem::create_directories(path.parent_path(), ec);
     }
 
-    auto path = pathForPreset(preset.name());
     std::ofstream ofs(path, std::ios::binary);
     if (!ofs)
         return false;
 
     ofs << preset.toJson();
 
-    // Update in-memory cache
+    const std::string key = makeKey(preset.show(), preset.name());
     for (auto& [n, p] : m_presets) {
-        if (n == preset.name()) {
+        if (n == key) {
             p = preset;
             return true;
         }
     }
-    m_presets.emplace_back(preset.name(), preset);
+    m_presets.emplace_back(key, preset);
     return true;
 }
 
-std::optional<ShotPreset> ShotPresetManager::load(const std::string& name) const
+std::optional<ShotPreset> ShotPresetManager::load(const std::string& show,
+                                                  const std::string& name) const
 {
-    for (const auto& [n, p] : m_presets) {
-        if (n == name) return p;
+    const std::string key = makeKey(show, name);
+    for (const auto& [k, p] : m_presets)
+        if (k == key) return p;
+    return std::nullopt;
+}
+
+std::optional<ShotPreset> ShotPresetManager::load(const std::string& key) const
+{
+    // Exact key match first.
+    for (const auto& [k, p] : m_presets)
+        if (k == key) return p;
+
+    // Back-compat: a bare name (no show) may reference a shot that now lives in
+    // a show subdirectory (e.g. an old project's clip reference). Fall back to
+    // the first preset whose bare name matches.
+    if (key.find('/') == std::string::npos) {
+        for (const auto& [k, p] : m_presets)
+            if (p.name() == key) return p;
     }
     return std::nullopt;
 }
 
-bool ShotPresetManager::remove(const std::string& name)
+bool ShotPresetManager::remove(const std::string& show, const std::string& name)
 {
-    // Always delete files from disk first, regardless of cache state —
-    // this covers orphaned thumbnails that may linger after earlier operations.
+    return remove(makeKey(show, name));
+}
+
+bool ShotPresetManager::remove(const std::string& key)
+{
+    // Resolve the actual stored key (handle bare-name back-compat).
+    std::string actualKey = key;
+    if (!std::any_of(m_presets.begin(), m_presets.end(),
+                     [&](const auto& pr) { return pr.first == key; }) &&
+        key.find('/') == std::string::npos) {
+        for (const auto& [k, p] : m_presets)
+            if (p.name() == key) { actualKey = k; break; }
+    }
+
+    std::string show, name;
+    splitKey(actualKey, show, name);
+
     {
         std::error_code ec;
-        auto path = pathForPreset(name);
-        std::filesystem::remove(path, ec);
+        std::filesystem::remove(pathForPreset(show, name), ec);
 
+        // Thumbnail keyed by the sanitized full key.
         auto thumbDir = m_directory / "thumbnails";
         std::string sanitized;
-        sanitized.reserve(name.size());
-        for (char c : name) {
+        sanitized.reserve(actualKey.size());
+        for (char c : actualKey) {
             if (c == '/' || c == '\\' || c == ':' || c == '*' ||
                 c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
                 sanitized += '_';
@@ -713,33 +871,67 @@ bool ShotPresetManager::remove(const std::string& name)
         std::filesystem::remove(thumbDir / (sanitized + ".png"), ec);
     }
 
-    // Remove from in-memory cache if present
     auto it = std::find_if(m_presets.begin(), m_presets.end(),
-                           [&](const auto& pair) { return pair.first == name; });
+                           [&](const auto& pair) { return pair.first == actualKey; });
     if (it == m_presets.end())
         return false;
-
     m_presets.erase(it);
     return true;
 }
 
 std::vector<std::string> ShotPresetManager::presetNames() const
 {
+    std::vector<std::string> keys;
+    keys.reserve(m_presets.size());
+    for (const auto& [k, _] : m_presets)
+        keys.emplace_back(k);
+    return keys;
+}
+
+std::vector<std::string> ShotPresetManager::namesForShow(const std::string& show) const
+{
+    auto ieq = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        return true;
+    };
     std::vector<std::string> names;
-    names.reserve(m_presets.size());
-    for (const auto& [n, _] : m_presets)
-        names.emplace_back(n);
+    for (const auto& [k, p] : m_presets) {
+        std::string s, n;
+        splitKey(k, s, n);
+        if (ieq(s, show)) names.push_back(n);
+    }
     return names;
 }
 
-bool ShotPresetManager::hasPreset(const std::string& name) const
+bool ShotPresetManager::hasPreset(const std::string& show, const std::string& name) const
 {
+    const std::string key = makeKey(show, name);
     return std::any_of(m_presets.begin(), m_presets.end(),
-                       [&](const auto& pair) { return pair.first == name; });
+                       [&](const auto& pair) { return pair.first == key; });
+}
+
+bool ShotPresetManager::hasPreset(const std::string& key) const
+{
+    if (std::any_of(m_presets.begin(), m_presets.end(),
+                    [&](const auto& pair) { return pair.first == key; }))
+        return true;
+    if (key.find('/') == std::string::npos)
+        return std::any_of(m_presets.begin(), m_presets.end(),
+                           [&](const auto& pair) { return pair.second.name() == key; });
+    return false;
 }
 
 std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     const std::string& characterName) const
+{
+    return resolveDefaultShot(characterName, std::string{});
+}
+
+std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
+    const std::string& characterName, const std::string& show) const
 {
     if (m_directory.empty())
         return std::nullopt;
@@ -747,6 +939,29 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     // ── Step 0: Resolve any alias display name → real character name ────
     // realNameFor returns the input unchanged if no alias matches.
     std::string realName = realNameFor(characterName);
+
+    // ── Step A: per-show default (checked first when a show is given) ────
+    if (!show.empty()) {
+        std::string lowerShow = show;
+        std::transform(lowerShow.begin(), lowerShow.end(), lowerShow.begin(), ::tolower);
+        auto sit = m_showDefaults.find(lowerShow);
+        if (sit != m_showDefaults.end()) {
+            auto cit = sit->second.find(realName);
+            if (cit != sit->second.end()) {
+                // The mapped shot lives in this show's namespace.
+                auto preset = load(show, cit->second);
+                if (!preset) preset = load(cit->second); // legacy/global fallback
+                if (preset) return preset;
+                // Mapped shot missing → fall through to global resolution.
+            }
+        }
+
+        // Naming convention within the show: "<Character> (Default)".
+        {
+            auto preset = load(show, realName + " (Default)");
+            if (preset) return preset;
+        }
+    }
 
     // ── Step 1: Check _defaults.json for an explicit mapping ────────────
     auto defaultsPath = m_directory / "_defaults.json";
@@ -883,19 +1098,297 @@ void ShotPresetManager::saveAliases() const
     }
 }
 
-std::filesystem::path ShotPresetManager::pathForPreset(const std::string& name) const
+// ── Show registry ────────────────────────────────────────────────────────
+
+namespace {
+bool iEquals(const std::string& a, const std::string& b)
 {
-    // Sanitize the name for use as a filename
-    std::string sanitized;
-    sanitized.reserve(name.size());
-    for (char c : name) {
-        if (c == '/' || c == '\\' || c == ':' || c == '*' ||
-            c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
-            sanitized += '_';
-        else
-            sanitized += c;
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i])))
+            return false;
+    return true;
+}
+} // anon
+
+void ShotPresetManager::addShow(const std::string& show)
+{
+    if (show.empty()) return;
+    for (const auto& s : m_knownShows)
+        if (iEquals(s, show)) return; // already registered
+    m_knownShows.push_back(show);
+    saveShows();
+}
+
+void ShotPresetManager::removeShow(const std::string& show)
+{
+    auto before = m_knownShows.size();
+    m_knownShows.erase(
+        std::remove_if(m_knownShows.begin(), m_knownShows.end(),
+            [&](const std::string& s) { return iEquals(s, show); }),
+        m_knownShows.end());
+    if (m_knownShows.size() != before)
+        saveShows();
+
+    // Drop any thumbnail registered for this show.
+    std::string lower = show;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    if (m_showThumbnails.erase(lower) > 0)
+        saveShowThumbnails();
+}
+
+void ShotPresetManager::renameShow(const std::string& oldName,
+                                    const std::string& newName)
+{
+    if (newName.empty()) return;
+    bool changed = false;
+    for (auto& s : m_knownShows) {
+        if (iEquals(s, oldName)) { s = newName; changed = true; }
     }
-    return m_directory / (sanitized + ".json");
+    if (!changed) {
+        m_knownShows.push_back(newName);
+        changed = true;
+    }
+    if (changed) saveShows();
+
+    // Carry the thumbnail over to the new name.
+    std::string oldLower = oldName, newLower = newName;
+    std::transform(oldLower.begin(), oldLower.end(), oldLower.begin(), ::tolower);
+    std::transform(newLower.begin(), newLower.end(), newLower.begin(), ::tolower);
+    auto it = m_showThumbnails.find(oldLower);
+    if (it != m_showThumbnails.end() && oldLower != newLower) {
+        m_showThumbnails[newLower] = it->second;
+        m_showThumbnails.erase(it);
+        saveShowThumbnails();
+    }
+}
+
+void ShotPresetManager::setShowThumbnail(const std::string& show,
+                                          const std::string& path)
+{
+    if (show.empty()) return;
+    std::string lower = show;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    if (path.empty())
+        m_showThumbnails.erase(lower);
+    else
+        m_showThumbnails[lower] = path;
+    saveShowThumbnails();
+}
+
+std::string ShotPresetManager::showThumbnail(const std::string& show) const
+{
+    std::string lower = show;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    auto it = m_showThumbnails.find(lower);
+    return (it == m_showThumbnails.end()) ? std::string{} : it->second;
+}
+
+void ShotPresetManager::loadShowThumbnails()
+{
+    if (m_directory.empty()) return;
+    auto path = m_directory / "_show_thumbnails.json";
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    JLexer lex(content);
+    if (lex.next() != JTok::LBrace) return;
+    while (true) {
+        auto t = lex.next();
+        if (t == JTok::RBrace || t == JTok::End) break;
+        if (t == JTok::Comma) continue;
+        if (t != JTok::String) break;
+        std::string key = lex.sval;
+        if (lex.next() != JTok::Colon) break;
+        if (lex.next() != JTok::String) break;
+        std::string val = lex.sval;
+        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+        if (!key.empty() && !val.empty())
+            m_showThumbnails[key] = val;
+    }
+}
+
+void ShotPresetManager::saveShowThumbnails() const
+{
+    if (m_directory.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(m_directory, ec);
+    auto path = m_directory / "_show_thumbnails.json";
+
+    std::ostringstream os;
+    os << '{';
+    bool first = true;
+    for (const auto& [show, img] : m_showThumbnails) {
+        if (!first) os << ',';
+        first = false;
+        os << '"' << jsonEscape(show) << "\":\"" << jsonEscape(img) << '"';
+    }
+    os << '}';
+
+    std::ofstream f(path, std::ios::trunc);
+    if (f.is_open()) {
+        auto s = os.str();
+        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    }
+}
+
+void ShotPresetManager::loadShows()
+{
+    if (m_directory.empty()) return;
+    auto path = m_directory / "_shows.json";
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    JLexer lex(content);
+    if (lex.next() != JTok::LBracket) return;
+    while (true) {
+        auto t = lex.next();
+        if (t == JTok::RBracket || t == JTok::End) break;
+        if (t == JTok::Comma) continue;
+        if (t == JTok::String && !lex.sval.empty()) {
+            bool dup = false;
+            for (const auto& s : m_knownShows)
+                if (iEquals(s, lex.sval)) { dup = true; break; }
+            if (!dup) m_knownShows.push_back(lex.sval);
+        }
+    }
+}
+
+void ShotPresetManager::saveShows() const
+{
+    if (m_directory.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(m_directory, ec);
+    auto path = m_directory / "_shows.json";
+
+    std::ostringstream os;
+    os << '[';
+    for (size_t i = 0; i < m_knownShows.size(); ++i) {
+        if (i) os << ',';
+        os << '"' << jsonEscape(m_knownShows[i]) << '"';
+    }
+    os << ']';
+
+    std::ofstream f(path, std::ios::trunc);
+    if (f.is_open()) {
+        auto s = os.str();
+        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    }
+}
+
+// ── Per-show default shots ────────────────────────────────────────────────
+
+void ShotPresetManager::setShowDefaultShot(const std::string& show,
+                                            const std::string& characterName,
+                                            const std::string& shotName)
+{
+    if (show.empty() || characterName.empty()) return;
+    std::string lowerShow = show;
+    std::transform(lowerShow.begin(), lowerShow.end(), lowerShow.begin(), ::tolower);
+
+    if (shotName.empty()) {
+        auto sit = m_showDefaults.find(lowerShow);
+        if (sit != m_showDefaults.end()) {
+            sit->second.erase(characterName);
+            if (sit->second.empty()) m_showDefaults.erase(sit);
+        }
+    } else {
+        m_showDefaults[lowerShow][characterName] = shotName;
+    }
+    saveShowDefaults();
+}
+
+void ShotPresetManager::loadShowDefaults()
+{
+    if (m_directory.empty()) return;
+    auto path = m_directory / "_show_defaults.json";
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    // Format: { "<show>": { "<character>": "<shot>", ... }, ... }
+    JLexer lex(content);
+    if (lex.next() != JTok::LBrace) return;
+    while (true) {
+        auto t = lex.next();
+        if (t == JTok::RBrace || t == JTok::End) break;
+        if (t == JTok::Comma) continue;
+        if (t != JTok::String) break;
+        std::string show = lex.sval;
+        std::transform(show.begin(), show.end(), show.begin(), ::tolower);
+        if (lex.next() != JTok::Colon) break;
+        if (lex.next() != JTok::LBrace) break;
+        std::map<std::string, std::string> charMap;
+        while (true) {
+            auto it = lex.next();
+            if (it == JTok::RBrace || it == JTok::End) break;
+            if (it == JTok::Comma) continue;
+            if (it != JTok::String) break;
+            std::string ch = lex.sval;
+            if (lex.next() != JTok::Colon) break;
+            if (lex.next() != JTok::String) break;
+            if (!ch.empty() && !lex.sval.empty())
+                charMap[ch] = lex.sval;
+        }
+        if (!show.empty() && !charMap.empty())
+            m_showDefaults[show] = std::move(charMap);
+    }
+}
+
+void ShotPresetManager::saveShowDefaults() const
+{
+    if (m_directory.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(m_directory, ec);
+    auto path = m_directory / "_show_defaults.json";
+
+    std::ostringstream os;
+    os << '{';
+    bool firstShow = true;
+    for (const auto& [show, charMap] : m_showDefaults) {
+        if (charMap.empty()) continue;
+        if (!firstShow) os << ',';
+        firstShow = false;
+        os << '"' << jsonEscape(show) << "\":{";
+        bool firstCh = true;
+        for (const auto& [ch, shot] : charMap) {
+            if (!firstCh) os << ',';
+            firstCh = false;
+            os << '"' << jsonEscape(ch) << "\":\"" << jsonEscape(shot) << '"';
+        }
+        os << '}';
+    }
+    os << '}';
+
+    std::ofstream f(path, std::ios::trunc);
+    if (f.is_open()) {
+        auto s = os.str();
+        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    }
+}
+
+std::filesystem::path ShotPresetManager::pathForPreset(const std::string& show,
+                                                       const std::string& name) const
+{
+    auto sanitize = [](const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            if (c == '/' || c == '\\' || c == ':' || c == '*' ||
+                c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+                out += '_';
+            else
+                out += c;
+        }
+        return out;
+    };
+    // No-Show shots live in the root; show shots in a per-show subdirectory.
+    std::filesystem::path base =
+        show.empty() ? m_directory : (m_directory / sanitize(show));
+    return base / (sanitize(name) + ".json");
 }
 
 } // namespace rt

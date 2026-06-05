@@ -1,5 +1,6 @@
 {
-  "name": "Chime (Intro)",
+  "name": "CROWN (Default)",
+  "show": "KINGDOM CONNECTION",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
@@ -7,13 +8,13 @@
   ],
   "characters": [
     {
-      "characterName": "Chime",
+      "characterName": "Crown",
       "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.199620,
-      "posY": 0.740991,
+      "posX": 0.500000,
+      "posY": 0.750000,
       "scale": 1.000000,
       "rotation": 0.000000,
       "flipX": false,

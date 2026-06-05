@@ -1,14 +1,15 @@
 {
-  "name": "Yoyo (Close-Up)",
+  "name": "Mint (Wide)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
       "path": "TABLE_OVERLAY.png",
-      "posX": -0.368000,
-      "posY": 0.607000,
-      "scale": 3.183000,
+      "posX": 0.499734,
+      "posY": 0.494975,
+      "scale": 1.020703,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -24,9 +25,9 @@
     },
     {
       "path": "TABLE_LARGE_FINAL.png",
-      "posX": -0.368000,
-      "posY": 0.607000,
-      "scale": 3.183000,
+      "posX": 0.499734,
+      "posY": 0.494975,
+      "scale": 1.020703,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -38,19 +39,19 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 2.000000
+      "blur": 0.000000
     }
   ],
   "characters": [
     {
-      "characterName": "Yoyo",
+      "characterName": "Mint",
       "outfit": "default",
       "stance": "default",
-      "animation": "idle",
-      "isTalking": true,
-      "posX": 0.507502,
-      "posY": 0.927108,
-      "scale": 2.004020,
+      "animation": "action",
+      "isTalking": false,
+      "posX": 0.335733,
+      "posY": 0.578766,
+      "scale": 0.760000,
       "rotation": 0.000000,
       "flipX": true,
       "flipY": false,
@@ -61,11 +62,32 @@
       "cropBottom": 0.000000,
       "blur": 0.000000,
       "visible": true
+    },
+    {
+      "characterName": "Yoyo",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.786000,
+      "posY": 0.605000,
+      "scale": 0.745000,
+      "rotation": 0.000000,
+      "flipX": true,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 17.100000,
+      "blur": 0.000000,
+      "visible": true
     }
   ],
   "layerOrder": [
     {"type": "bg", "index": 0},
     {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
     {"type": "bg", "index": 1}
   ]
 }

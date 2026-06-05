@@ -14,6 +14,10 @@
 // Delegated panel headers (for page-switch refresh)
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/characters/CharacterShotPanel.h"
+#include "panels/characters/ShotComposer.h"
+#include "panels/project/ProjectPanel.h"
+#include "spine/ShotPreset.h"
 
 #include <QButtonGroup>
 #include <QCoreApplication>
@@ -498,6 +502,17 @@ void MainWindow::onPageTabChanged(int index)
     if (index == static_cast<int>(Page::Timeline)) {
         if (auto* pm = programMonitor())
             pm->requestRefresh();
+    }
+
+    // When switching TO the Projects page, refresh the known-shows list so the
+    // right-click "Assign to Show" submenu reflects shows added in COMPOSE.
+    // Use ShotComposer::knownShows() (merges the _shows.json registry AND every
+    // show used as a tag on shots) — not ShotPresetManager::knownShows(), which
+    // is registry-only and misses shows that only exist as shot tags.
+    if (index == static_cast<int>(Page::Projects) && m_projectPanel &&
+        m_characterShotPanel && m_characterShotPanel->shotComposer()) {
+        m_projectPanel->setKnownShows(
+            m_characterShotPanel->shotComposer()->knownShows());
     }
 
     // Log page switch

@@ -147,6 +147,12 @@ public:
     /// Refresh the background library list from disk (subfolders become groups).
     void refreshBackgroundLibrary();
 
+    /// Copy image file(s) into assets/backgrounds and refresh the library
+    /// (import only — does NOT add to the current shot). Used by the "Add
+    /// Background" button and by drag-and-drop of files onto the background
+    /// library. Non-image files are ignored; existing files are reused.
+    void importBackgroundFiles(const QStringList& sourcePaths);
+
     // ── Layer ordering ──────────────────────────────────────────────────
 
     void moveSelectedLayerUp();
@@ -253,6 +259,12 @@ public:
     /// Get the character-filter thumbnail column (to be reparented into CharacterShotPanel).
     [[nodiscard]] QWidget* charFilterColumn() const noexcept { return m_charFilterColumn; }
 
+    /// Get the show-filter column (to be reparented into CharacterShotPanel).
+    [[nodiscard]] QWidget* showFilterColumn() const noexcept { return m_showFilterColumn; }
+
+    /// All distinct show names known across saved shots (sorted, case-insensitive).
+    [[nodiscard]] QStringList knownShows() const;
+
 signals:
     /// Emitted when the shot composition changes.
     void shotChanged();
@@ -281,6 +293,19 @@ private:
     QWidget* createPropertiesPanel();
     QWidget* createShotsColumn();
     QWidget* createCharFilterColumn();
+    QWidget* createShowFilterColumn();
+
+    /// Return the active show filter value from the show filter list.
+    /// Returns empty string for "ALL", "__UNASSIGNED__" for shots with no
+    /// shows, or the show name for a specific show filter.
+    [[nodiscard]] QString activeShowFilter() const;
+
+    /// Apply the m_showsEdit text (comma-separated) to the current shot and save.
+    void onShotShowsChanged();
+
+    /// The show namespace new/saved shots belong to, derived from the active
+    /// SHOWS filter: a specific show, or "" for No Show (also when ALL SHOWS).
+    [[nodiscard]] std::string activeShowNamespace() const;
 
     void refreshLayerList();
     void copySelectedLayer();
@@ -398,6 +423,9 @@ private:
     QWidget*      m_shotsColumn        = nullptr;   ///< Standalone shots sidebar column
     QWidget*      m_charFilterColumn   = nullptr;   ///< Character thumbnail filter column
     QListWidget*  m_charFilterList     = nullptr;   ///< Character thumbnail filter chip list
+    QWidget*      m_showFilterColumn   = nullptr;   ///< Show filter column
+    QListWidget*  m_showFilterList     = nullptr;   ///< Show filter chip list
+    QLineEdit*    m_showFilterSearchEdit = nullptr; ///< Show filter search bar
     QTabWidget*   m_libraryTabs       = nullptr;
     QListWidget*  m_shotList           = nullptr;   ///< Shot picker thumbnail strip
     QComboBox*    m_shotSortCombo      = nullptr;   ///< Sort dropdown (A-Z, Recent, Character, Favorites)
@@ -407,6 +435,8 @@ private:
     QListWidget*  m_backgroundLibrary = nullptr;
     QListWidget*  m_videoLibrary      = nullptr;
     QLineEdit*    m_charSearchEdit    = nullptr;
+    QLineEdit*    m_bgSearchEdit      = nullptr;   ///< Backgrounds tab search
+    QLineEdit*    m_videoSearchEdit   = nullptr;   ///< Videos tab search
     QCheckBox*    m_namedOnlyCheck    = nullptr;
     QSlider*      m_iconZoomSlider    = nullptr;
     int           m_iconSize          = 120;  ///< Current thumbnail size in px
@@ -429,6 +459,7 @@ private:
 
     // ── Properties panel ────────────────────────────────────────────────
     QLineEdit*    m_shotNameEdit      = nullptr;
+    QLineEdit*    m_showsEdit         = nullptr;   ///< Comma-separated shows for current shot
     QCheckBox*    m_defaultShotCheck  = nullptr;
     QComboBox*    m_defaultCharCombo  = nullptr;   ///< Character to set as default for
     QPushButton*  m_setDefaultBtn     = nullptr;   ///< "Set as Default" button

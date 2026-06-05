@@ -1068,7 +1068,8 @@ QString ShotComposer::shotThumbnailPath(const std::string& shotName) const
 
 void ShotComposer::saveShotThumbnail(const ShotPreset& shot)
 {
-    QString path = shotThumbnailPath(shot.name());
+    QString path = shotThumbnailPath(
+        ShotPresetManager::makeKey(shot.show(), shot.name()));
     if (path.isEmpty()) return;
 
     // Ensure thumbnails directory exists

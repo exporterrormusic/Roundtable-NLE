@@ -23,7 +23,6 @@
 #include "timeline/Timeline.h"
 
 // Panels (for type checking)
-#include "panels/audio/AudioMixer.h"
 #include "panels/characters/CharacterBrowser.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/export/ExportPanel.h"
@@ -209,7 +208,6 @@ TEST_F(MainWindowTest, NoPanelsBeforeBuild)
     MainWindow mw;
     EXPECT_EQ(mw.timelinePanel(), nullptr);
     EXPECT_EQ(mw.projectBin(), nullptr);
-    EXPECT_EQ(mw.audioMixer(), nullptr);
     EXPECT_EQ(mw.dockCount(), 0);
 }
 
@@ -229,7 +227,6 @@ TEST_F(MainWindowTest, BuildPanelsCreatesAllPanels)
     EXPECT_NE(mw.projectBin(), nullptr);
     EXPECT_NE(mw.propertiesPanel(), nullptr);
     EXPECT_NE(mw.effectsPanel(), nullptr);
-    EXPECT_NE(mw.audioMixer(), nullptr);
 }
 
 TEST_F(MainWindowTest, BuildPanelsIdempotent)
@@ -263,9 +260,7 @@ TEST_F(MainWindowTest, DockForPanelFound)
     EXPECT_NE(mw.dockForPanel("Source Monitor"), nullptr);
     EXPECT_NE(mw.dockForPanel("Program Monitor"), nullptr);
     EXPECT_NE(mw.dockForPanel("Effect Controls"), nullptr);
-    EXPECT_NE(mw.dockForPanel("Audio Mixer"), nullptr);
     EXPECT_NE(mw.timelinePanel(), nullptr);
-    EXPECT_NE(mw.audioMixer(), nullptr);
     EXPECT_NE(mw.propertiesPanel(), nullptr);
     EXPECT_NE(mw.projectBin(), nullptr);
 }
@@ -442,7 +437,6 @@ TEST_F(MainWindowTest, AppFullIntegration)
     ASSERT_NE(mw, nullptr);
     EXPECT_EQ(mw->dockCount(), 9);
     EXPECT_NE(mw->timelinePanel(), nullptr);
-    EXPECT_NE(mw->audioMixer(), nullptr);
     EXPECT_NE(mw->exportPanel(), nullptr);
     EXPECT_NE(mw->projectPanel(), nullptr);
     EXPECT_EQ(mw->pageCount(), 5);

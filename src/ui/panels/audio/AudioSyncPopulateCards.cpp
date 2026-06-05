@@ -26,8 +26,30 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <functional>
+#include <memory>
 
 namespace rt {
+
+namespace {
+// QComboBox that defers filling its (potentially huge) item list until the
+// user actually opens the dropdown. Pre-filling every "Reassign…" combo with
+// all script lines was O(N²) for N lines — the dominant cost when opening the
+// Match tab on large projects. The list is built once, on first popup.
+class LazyComboBox : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+    std::function<void()> firstPopup;
+    void showPopup() override {
+        if (firstPopup) {
+            auto fn = std::move(firstPopup);
+            firstPopup = nullptr;
+            fn();
+        }
+        QComboBox::showPopup();
+    }
+};
+} // namespace
 
 void AudioSync::populateCards()
 {
@@ -116,12 +138,14 @@ void AudioSync::populateCards()
         std::string character;
         std::string dialogue;
     };
-    std::vector<ScriptLineDisplay> displayLines;
+    // Shared so each card's reassign combo and its slot reference one copy
+    // instead of copying the whole vector per card (was O(N²) memory).
+    auto displayLines = std::make_shared<std::vector<ScriptLineDisplay>>();
     {
         int idx = 0;
         for (const auto& line : m_script->lines) {
             ++idx;
-            displayLines.push_back({idx, line.lineNumber, line.character, line.dialogue});
+            displayLines->push_back({idx, line.lineNumber, line.character, line.dialogue});
         }
     }
 
@@ -756,8 +780,9 @@ void AudioSync::populateCards()
 
             rightLayout->addStretch();
 
-            // Reassign dropdown
-            auto* lineCombo = new QComboBox;
+            // Reassign dropdown — the item list (all script lines) is filled
+            // lazily on first popup to keep card creation O(1) instead of O(N).
+            auto* lineCombo = new LazyComboBox;
             lineCombo->setFixedHeight(24);
             lineCombo->setStyleSheet(
                 QString("QComboBox { background: %1; color: %2; border: 1px solid %3; "
@@ -765,22 +790,26 @@ void AudioSync::populateCards()
                     Theme::hex(_tc.inputBg), Theme::hex(_tc.textPrimary),
                     Theme::hex(_tc.inputBorder), _rad));
             lineCombo->addItem("Reassign...");
-            for (size_t j = 0; j < displayLines.size(); ++j) {
-                const auto& dl = displayLines[j];
-                QString entry = QString("%1. %2: %3")
-                    .arg(dl.displayNum)
-                    .arg(QString::fromStdString(dl.character))
-                    .arg(QString::fromStdString(dl.dialogue).left(20));
-                lineCombo->addItem(entry);
-            }
             lineCombo->setCurrentIndex(0);
-            auto displayLinesCopy = displayLines;
+            QPointer<LazyComboBox> comboGuard(lineCombo);
+            lineCombo->firstPopup = [comboGuard, displayLines]() {
+                if (!comboGuard) return;
+                comboGuard->blockSignals(true);
+                for (const auto& dl : *displayLines) {
+                    QString entry = QString("%1. %2: %3")
+                        .arg(dl.displayNum)
+                        .arg(QString::fromStdString(dl.character))
+                        .arg(QString::fromStdString(dl.dialogue).left(20));
+                    comboGuard->addItem(entry);
+                }
+                comboGuard->blockSignals(false);
+            };
             connect(lineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                    this, [this, clipIdx, displayLinesCopy](int comboIdx) {
+                    this, [this, clipIdx, displayLines](int comboIdx) {
                 if (clipIdx >= m_clips.size() || comboIdx <= 0) return;
                 size_t lineIdx = static_cast<size_t>(comboIdx - 1);
-                if (lineIdx >= displayLinesCopy.size()) return;
-                const auto& dl = displayLinesCopy[lineIdx];
+                if (lineIdx >= displayLines->size()) return;
+                const auto& dl = (*displayLines)[lineIdx];
                 struct Snap {
                     int         matchState;
                     int         scriptLineNumber;

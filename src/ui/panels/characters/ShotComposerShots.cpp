@@ -21,6 +21,8 @@
 #include <QLineEdit>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QMap>
+#include <QSet>
 
 #include <fstream>
 #include <spdlog/spdlog.h>
@@ -112,6 +114,14 @@ void ShotComposer::ensureDefaultShotsForCharacters(const QStringList& characters
         refreshShotList();
 }
 
+std::string ShotComposer::activeShowNamespace() const
+{
+    const QString show = activeShowFilter();
+    if (show.isEmpty() || show == QStringLiteral("__UNASSIGNED__"))
+        return {};                       // ALL SHOWS / NO SHOW → No-Show namespace
+    return show.toStdString();
+}
+
 QString ShotComposer::activeCharFilter() const
 {
     // The character filter list now contains ALL (item 0, empty UserRole),
@@ -125,6 +135,87 @@ QString ShotComposer::activeCharFilter() const
         }
     }
     return {};
+}
+
+QString ShotComposer::activeShowFilter() const
+{
+    if (m_showFilterList) {
+        auto* curItem = m_showFilterList->currentItem();
+        if (curItem) {
+            QString val = curItem->data(Qt::UserRole).toString();
+            if (!val.isEmpty())
+                return val;
+        }
+    }
+    return {};
+}
+
+QStringList ShotComposer::knownShows() const
+{
+    // Collect distinct show names — registered shows (the "+"-created registry)
+    // plus shows actually used by shots. Case-insensitive dedupe, preserving
+    // first-seen casing; result sorted alphabetically.
+    QMap<QString, QString> byLower; // lower -> first-seen display
+    for (const auto& s : m_presetManager.knownShows()) {
+        QString qs = QString::fromStdString(s).trimmed();
+        if (qs.isEmpty()) continue;
+        QString key = qs.toLower();
+        if (!byLower.contains(key))
+            byLower.insert(key, qs);
+    }
+    for (const auto& [k, p] : m_presetManager.allPresets()) {
+        (void)k;
+        QString qs = QString::fromStdString(p.show()).trimmed();
+        if (qs.isEmpty()) continue;
+        QString key = qs.toLower();
+        if (!byLower.contains(key))
+            byLower.insert(key, qs);
+    }
+    QStringList out = byLower.values();
+    std::sort(out.begin(), out.end(),
+        [](const QString& a, const QString& b) {
+            return a.compare(b, Qt::CaseInsensitive) < 0;
+        });
+    return out;
+}
+
+void ShotComposer::onShotShowsChanged()
+{
+    if (!m_showsEdit) return;
+    if (m_currentShot.name().empty()) return;
+
+    // A shot belongs to a single show (its namespace). The field is treated as
+    // a single value (first entry if the user typed several). Changing it MOVES
+    // the shot into that show's namespace.
+    QString newShow;
+    for (const QString& part : m_showsEdit->text().split(',', Qt::SkipEmptyParts)) {
+        QString s = part.trimmed();
+        if (!s.isEmpty()) { newShow = s; break; }
+    }
+
+    const std::string newShowStd = newShow.toStdString();
+    if (newShowStd == m_currentShot.show())
+        return; // no change
+
+    const std::string oldKey =
+        ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
+
+    m_currentShot.setShow(newShowStd);
+    if (!newShowStd.empty())
+        m_presetManager.addShow(newShowStd); // register so it persists
+
+    // Write to the new namespace, then remove the old file.
+    m_presetManager.save(m_currentShot);
+    const std::string newKey =
+        ShotPresetManager::makeKey(newShowStd, m_currentShot.name());
+    if (oldKey != newKey)
+        m_presetManager.remove(oldKey);
+    m_lastSavedName = newKey;
+
+    refreshShotList();
+    emit shotChanged();
+    spdlog::info("ShotComposer: moved shot '{}' to show '{}'",
+                 m_currentShot.name(), newShowStd);
 }
 
 // =====================================================================
@@ -144,7 +235,11 @@ void ShotComposer::newShot(const QString& name)
 {
     m_currentShot = ShotPreset(name.toStdString());
     m_selectedLayer = -1;
-    m_lastSavedName = name.toStdString();
+    // The new shot lives in the active show's namespace, so creating
+    // "CROWN (Default)" under one show never collides with another show's.
+    m_currentShot.setShow(activeShowNamespace());
+    m_lastSavedName = ShotPresetManager::makeKey(m_currentShot.show(),
+                                                 name.toStdString());
 
     // If a specific character filter is active, auto-add that character
     QString filterVal = activeCharFilter();
@@ -179,12 +274,20 @@ void ShotComposer::newShot(const QString& name)
         m_currentShot.addCharacter(ch);
     }
 
+    // Register the show so it persists in the SHOWS column registry.
+    if (!m_currentShot.show().empty())
+        m_presetManager.addShow(m_currentShot.show());
+
     // Save the new shot immediately so it appears in the preset list
     m_presetManager.save(m_currentShot);
 
     m_updating = true;
     m_shotNameEdit->setText(name);
     m_shotNameEdit->setEnabled(true);
+    if (m_showsEdit) {
+        m_showsEdit->setText(QString::fromStdString(m_currentShot.show()));
+        m_showsEdit->setEnabled(true);
+    }
     m_defaultShotCheck->setEnabled(true);
     m_defaultCharCombo->setEnabled(true);
     m_setDefaultBtn->setEnabled(true);
@@ -202,7 +305,8 @@ void ShotComposer::setCurrentShot(const ShotPreset& preset)
 {
     m_currentShot = preset;
     m_selectedLayer = -1;
-    m_lastSavedName = preset.name();  // Last saved name = this preset's name
+    // Track the full (show/name) key so renames/moves clean up the old file.
+    m_lastSavedName = ShotPresetManager::makeKey(preset.show(), preset.name());
 
     // ── Migrate legacy video-character backgrounds → proper CharacterState ──
     // Old shots stored Wells as a Background with layerType="video".
@@ -292,6 +396,10 @@ void ShotComposer::setCurrentShot(const ShotPreset& preset)
     m_updating = true;
     m_shotNameEdit->setText(QString::fromStdString(preset.name()));
     m_shotNameEdit->setEnabled(true);
+    if (m_showsEdit) {
+        m_showsEdit->setText(QString::fromStdString(m_currentShot.show()));
+        m_showsEdit->setEnabled(true);
+    }
     m_defaultShotCheck->setEnabled(true);
     m_defaultCharCombo->setEnabled(true);
     m_setDefaultBtn->setEnabled(true);
@@ -344,16 +452,18 @@ bool ShotComposer::saveCurrentShot()
     if (m_currentShot.name().empty())
         return false;
 
-    // ── Clean up orphaned file on rename ────────────────────────────────
-    // If the shot was previously saved under a different name, delete the
-    // old file so it doesn't linger on disk and confuse things.
-    if (!m_lastSavedName.empty() && m_lastSavedName != m_currentShot.name()) {
+    // ── Clean up orphaned file on rename/move ───────────────────────────
+    // If the shot was previously saved under a different (show, name) key,
+    // delete the old file so it doesn't linger on disk.
+    const std::string currentKey =
+        ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
+    if (!m_lastSavedName.empty() && m_lastSavedName != currentKey) {
         m_presetManager.remove(m_lastSavedName);
     }
 
     bool ok = m_presetManager.save(m_currentShot);
     if (ok) {
-        m_lastSavedName = m_currentShot.name();
+        m_lastSavedName = currentKey;
         // Generate & persist a thumbnail PNG next to the preset JSON
         saveShotThumbnail(m_currentShot);
         refreshShotList();
@@ -369,11 +479,12 @@ void ShotComposer::duplicateCurrentShot()
     if (m_currentShot.name().empty())
         return;
 
-    // Generate a unique name
+    // Generate a unique name within the same show namespace
+    const std::string show = m_currentShot.show();
     std::string baseName = m_currentShot.name() + " Copy";
     std::string newName  = baseName;
     int counter = 2;
-    while (m_presetManager.hasPreset(newName)) {
+    while (m_presetManager.hasPreset(show, newName)) {
         newName = baseName + " " + std::to_string(counter++);
     }
 
@@ -384,7 +495,7 @@ void ShotComposer::duplicateCurrentShot()
     if (!ok || name.trimmed().isEmpty())
         return;
 
-    ShotPreset dupe = m_currentShot;
+    ShotPreset dupe = m_currentShot;   // keeps the same show
     dupe.setName(name.trimmed().toStdString());
     m_presetManager.save(dupe);
     setCurrentShot(dupe);

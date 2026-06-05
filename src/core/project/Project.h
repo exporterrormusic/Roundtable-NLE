@@ -47,6 +47,12 @@ public:
     [[nodiscard]] bool isModified() const noexcept { return m_modified.load(std::memory_order_relaxed); }
     void setModified(bool v = true) noexcept { m_modified.store(v, std::memory_order_relaxed); }
 
+    // ── Show assignment ─────────────────────────────────────────────────
+    /// The "show" this project belongs to (e.g. "Roundtable Talk"). Used to
+    /// resolve per-show default character shots. Empty = unassigned.
+    [[nodiscard]] const std::string& show() const noexcept { return m_show; }
+    void setShow(const std::string& show) { m_show = show; }
+
     // ── Sequences (Timelines) ───────────────────────────────────────────
     /// Returns the currently active sequence (backward-compat alias).
     [[nodiscard]] Timeline* timeline() noexcept;
@@ -138,6 +144,7 @@ public:
 
 private:
     std::string                    m_name{"Untitled"};
+    std::string                    m_show;            ///< Show assignment (per-show defaults)
     std::filesystem::path          m_filePath;
     std::atomic<bool>                   m_modified{false};
     uint32_t                       m_formatVersion{2};  // v2 = C++ rewrite

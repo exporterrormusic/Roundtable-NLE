@@ -215,6 +215,13 @@ void CharacterShotPanel::setupUI()
         m_charFilterWidget->setVisible(false);
     }
 
+    // ── Show filter column (between rail and character filter, COMPOSE-only) ──
+    m_showFilterWidget = m_shotComposer->showFilterColumn();
+    if (m_showFilterWidget) {
+        rootLayout->insertWidget(1, m_showFilterWidget); // rail(0) → show(1) → charFilter(2) → shots(3) → letter(4) → content(5)
+        m_showFilterWidget->setVisible(false);
+    }
+
     // ── Page 3: SETTINGS ────────────────────────────────────────
     m_contentStack->addWidget(createSettingsPage());  // index 3
 
@@ -237,6 +244,8 @@ void CharacterShotPanel::setupUI()
             m_shotsColumnWidget->setVisible(id == Compose);
         if (m_charFilterWidget)
             m_charFilterWidget->setVisible(id == Compose);
+        if (m_showFilterWidget)
+            m_showFilterWidget->setVisible(id == Compose);
 
         // Auto-refresh conversion table when switching to Convert page
         if (id == Convert && m_conversionPanel)

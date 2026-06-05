@@ -139,6 +139,27 @@ public:
     [[nodiscard]] const std::string& name() const noexcept { return m_name; }
     void setName(const std::string& n) { m_name = n; }
 
+    // ── Show (namespace) ───────────────────────────────────────────────────
+    /// The single "show" this shot belongs to — its namespace. A shot is
+    /// identified by (show, name): the same name can exist independently in
+    /// different shows (e.g. "CROWN (Default)" in "Roundtable Talk" vs
+    /// "Kingdom Connection"). Empty = the shared "No Show" namespace.
+    [[nodiscard]] const std::string& show() const noexcept { return m_show; }
+    void setShow(const std::string& s) { m_show = s; }
+
+    // Compat wrappers: shots used to carry multiple show "tags"; the model is
+    // now a single show (namespace). These keep older call sites working.
+    [[nodiscard]] std::vector<std::string> shows() const {
+        return m_show.empty() ? std::vector<std::string>{}
+                              : std::vector<std::string>{m_show};
+    }
+    void setShows(const std::vector<std::string>& v) {
+        m_show = v.empty() ? std::string{} : v.front();
+    }
+
+    /// Case-insensitive equality to this shot's show.
+    [[nodiscard]] bool hasShow(const std::string& show) const;
+
     // ── Backgrounds ─────────────────────────────────────────────────────
     [[nodiscard]] const std::vector<BackgroundState>& backgrounds() const noexcept
     {
@@ -233,6 +254,7 @@ public:
 private:
 
     std::string                m_name;
+    std::string                  m_show;      ///< Show namespace this shot belongs to
     std::vector<BackgroundState> m_backgrounds;
     std::vector<CharacterState>  m_characters;
     std::vector<LayerRef>        m_layerOrder;
@@ -254,17 +276,41 @@ public:
     /// @return Number of presets loaded.
     int scan(const std::filesystem::path& presetsDir);
 
-    /// Save a preset to disk (creates/overwrites the file).
+    // ── Identity ────────────────────────────────────────────────────────
+    // A shot is identified by (show, name). On disk it lives in a per-show
+    // subdirectory (No-Show shots live in the root). In memory and in clip
+    // references it is addressed by a "key": "<show>/<name>", or just "<name>"
+    // for No-Show shots.
+    [[nodiscard]] static std::string makeKey(const std::string& show,
+                                             const std::string& name);
+    static void splitKey(const std::string& key, std::string& show,
+                         std::string& name);
+
+    /// Save a preset to disk (creates/overwrites the file for its show+name).
     bool save(const ShotPreset& preset);
 
-    /// Load a preset by name.  Returns nullopt if not found.
-    [[nodiscard]] std::optional<ShotPreset> load(const std::string& name) const;
+    /// Load a preset by key ("show/name" or "name"). For a bare name with no
+    /// show, falls back to searching every show (back-compat for old clip
+    /// references / projects). Returns nullopt if not found.
+    [[nodiscard]] std::optional<ShotPreset> load(const std::string& key) const;
 
-    /// Delete a preset by name from disk.
-    bool remove(const std::string& name);
+    /// Load a preset within a specific show namespace.
+    [[nodiscard]] std::optional<ShotPreset> load(const std::string& show,
+                                                 const std::string& name) const;
 
-    /// List all available preset names.
+    /// Delete a preset by key (or by show+name).
+    bool remove(const std::string& key);
+    bool remove(const std::string& show, const std::string& name);
+
+    /// List all preset keys ("show/name" / "name").
     [[nodiscard]] std::vector<std::string> presetNames() const;
+
+    /// Bare shot names within a single show namespace.
+    [[nodiscard]] std::vector<std::string> namesForShow(const std::string& show) const;
+
+    /// All presets (for iteration without per-name loads).
+    [[nodiscard]] const std::vector<std::pair<std::string, ShotPreset>>&
+        allPresets() const noexcept { return m_presets; }
 
     /// Number of known presets.
     [[nodiscard]] int presetCount() const noexcept
@@ -278,8 +324,9 @@ public:
         return m_directory;
     }
 
-    /// Check if a preset with the given name exists.
-    [[nodiscard]] bool hasPreset(const std::string& name) const;
+    /// Check if a preset exists (by key, or within a specific show namespace).
+    [[nodiscard]] bool hasPreset(const std::string& key) const;
+    [[nodiscard]] bool hasPreset(const std::string& show, const std::string& name) const;
 
     /// Resolve the default shot for a character.
     ///
@@ -293,6 +340,21 @@ public:
     /// Returns nullopt if no default shot is found.
     [[nodiscard]] std::optional<ShotPreset> resolveDefaultShot(
         const std::string& characterName) const;
+
+    /// Show-aware default-shot resolution. When `show` is non-empty, a
+    /// per-show default (from `_show_defaults.json`) is checked FIRST, then it
+    /// falls back to the global default and naming convention (the behaviour of
+    /// the single-argument overload). This lets the same character have a
+    /// different default shot per show (e.g. Crown in "Roundtable Talk" vs
+    /// "Kingdom Connection").
+    [[nodiscard]] std::optional<ShotPreset> resolveDefaultShot(
+        const std::string& characterName, const std::string& show) const;
+
+    /// Set or clear the per-show default shot for a character. Empty shotName
+    /// clears it. Persists to `_show_defaults.json`.
+    void setShowDefaultShot(const std::string& show,
+                            const std::string& characterName,
+                            const std::string& shotName);
 
     /// Set or clear a character display-name alias. Persists to `_aliases.json`
     /// in the preset directory. A script line for `displayName` (or its
@@ -314,17 +376,58 @@ public:
         return m_aliases;
     }
 
+    // ── Show registry ─────────────────────────────────────────────────────
+    /// Registered show names. This is a superset of the shows actually used by
+    /// shots — it lets a user create a show (via the "+" button) before any
+    /// shot is assigned to it. Persisted to `_shows.json` in the preset dir.
+    [[nodiscard]] const std::vector<std::string>& knownShows() const noexcept
+    {
+        return m_knownShows;
+    }
+
+    /// Register a show name (no-op if it already exists, case-insensitive).
+    void addShow(const std::string& show);
+
+    /// Unregister a show name (case-insensitive). Does not touch shots.
+    void removeShow(const std::string& show);
+
+    /// Rename a registered show (case-insensitive match). Does not touch shots.
+    void renameShow(const std::string& oldName, const std::string& newName);
+
+    /// Set (or clear, if path empty) the thumbnail image path for a show.
+    void setShowThumbnail(const std::string& show, const std::string& path);
+
+    /// Thumbnail image path for a show (case-insensitive), or "" if none.
+    [[nodiscard]] std::string showThumbnail(const std::string& show) const;
+
 private:
-    /// Generate the file path for a preset name.
-    [[nodiscard]] std::filesystem::path pathForPreset(const std::string& name) const;
+    /// Generate the file path for a preset (per-show subdir; root = No Show).
+    [[nodiscard]] std::filesystem::path pathForPreset(const std::string& show,
+                                                      const std::string& name) const;
 
     /// Load/save the alias map from `_aliases.json`.
     void loadAliases();
     void saveAliases() const;
 
+    /// Load/save the registered show list from `_shows.json`.
+    void loadShows();
+    void saveShows() const;
+
+    /// Load/save per-show thumbnail paths from `_show_thumbnails.json`.
+    void loadShowThumbnails();
+    void saveShowThumbnails() const;
+
+    /// Load/save per-show default-shot map from `_show_defaults.json`.
+    void loadShowDefaults();
+    void saveShowDefaults() const;
+
     std::filesystem::path                             m_directory;
     std::vector<std::pair<std::string, ShotPreset>>   m_presets; ///< name → preset
     std::map<std::string, std::string>                m_aliases; ///< realName → displayName
+    std::vector<std::string>                          m_knownShows; ///< registered show names
+    std::map<std::string, std::string>                m_showThumbnails; ///< lowercased show → image path
+    /// lowercased show → (real character name → shot name). Per-show defaults.
+    std::map<std::string, std::map<std::string, std::string>> m_showDefaults;
 };
 
 } // namespace rt

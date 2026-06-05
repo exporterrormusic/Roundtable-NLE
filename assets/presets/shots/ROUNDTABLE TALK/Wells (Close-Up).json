@@ -1,17 +1,18 @@
 {
-  "name": "Kilo (Default)",
+  "name": "Wells (Close-Up)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "MARIAN_WALL_HD",
-      "posX": 0.493663,
-      "posY": 0.511261,
-      "scale": 1.160000,
+      "path": "CONTROL_ROOM_HD.png",
+      "posX": 0.236000,
+      "posY": 0.733000,
+      "scale": 2.122000,
       "opacity": 1.000000,
-      "nativeWidth": 1920,
-      "nativeHeight": 1080,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
       "visible": true,
       "layerType": "image",
       "inPoint": 0.000000,
@@ -20,39 +21,21 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
     {
-      "characterName": "Kilo",
+      "characterName": "Wells",
       "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.756848,
-      "posY": 0.977096,
-      "scale": 1.918390,
-      "rotation": 0.000000,
-      "flipX": false,
-      "flipY": false,
-      "opacity": 1.000000,
-      "cropLeft": 0.000000,
-      "cropRight": 0.000000,
-      "cropTop": 0.000000,
-      "cropBottom": 0.000000,
-      "blur": 0.000000,
-      "visible": true
-    },
-    {
-      "characterName": "Trony",
-      "outfit": "default",
-      "stance": "default",
-      "animation": "idle",
-      "isTalking": false,
-      "posX": 0.321781,
-      "posY": 1.067264,
-      "scale": 2.208710,
+      "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE.mov",
+      "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK.mov",
+      "posX": 0.485000,
+      "posY": 1.172000,
+      "scale": 3.813000,
       "rotation": 0.000000,
       "flipX": false,
       "flipY": false,
@@ -67,7 +50,6 @@
   ],
   "layerOrder": [
     {"type": "ch", "index": 0},
-    {"type": "ch", "index": 1},
     {"type": "bg", "index": 0}
   ]
 }

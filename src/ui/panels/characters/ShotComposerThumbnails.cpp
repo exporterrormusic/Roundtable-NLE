@@ -34,15 +34,27 @@ void ShotComposer::refreshShotList()
 {
     m_shotList->blockSignals(true);
     m_shotList->clear();
-    auto names = m_presetManager.presetNames();
-    std::sort(names.begin(), names.end());
 
     // Get filter criteria
     QString searchFilter;
     QString charFilter;
+    QString showFilter;
     if (m_shotSearchEdit)
         searchFilter = m_shotSearchEdit->text().trimmed().toLower();
     charFilter = activeCharFilter();
+    showFilter = activeShowFilter();
+
+    // Helper: does a shot (by its show tags) match the active SHOWS filter?
+    auto shotMatchesShow = [&](const QStringList& shotShows) -> bool {
+        if (showFilter.isEmpty())
+            return true; // ALL
+        if (showFilter == QStringLiteral("__UNASSIGNED__"))
+            return shotShows.isEmpty();
+        for (const auto& s : shotShows)
+            if (s.compare(showFilter, Qt::CaseInsensitive) == 0)
+                return true;
+        return false;
+    };
 
     // Build set of default shot names
     std::set<std::string> defaultShotNames;
@@ -54,24 +66,45 @@ void ShotComposer::refreshShotList()
     // Scan all presets once to count per-character shot occurrences
     // and collect character names per shot for tag display.
     struct ShotInfo {
-        std::string name;
+        std::string name;            ///< bare shot name (display)
+        std::string key;             ///< full "show/name" key (load reference)
         bool isDefault = false;
         QStringList charTags;        ///< real character names (for filter match)
         QStringList charTagsDisplay; ///< alias-resolved labels (for rendering)
+        QStringList shows;           ///< owning show (0 or 1 entry)
         int layerCount = 0;
     };
     std::vector<ShotInfo> allShotInfos;
-    std::map<std::string, int> charShotCount; // character display name -> shot count
-    int unassignedCount = 0;
+    std::map<std::string, int> charShotCount; // character real name -> shot count (within active show)
+    int unassignedCount = 0;                  // char-unassigned shots (within active show)
+    int showFilteredTotal = 0;                // ALL count for CHARACTERS column (within active show)
 
-    for (const auto& n : names) {
-        auto preset = m_presetManager.load(n);
-        if (!preset) continue;
+    // Per-show counts span ALL shots (the SHOWS column is the top-level filter
+    // and is not narrowed by the character selection). Keyed by lowercased
+    // show name → {first-seen display casing, shot count}.
+    std::map<QString, std::pair<QString, int>> showShotCount;
+    int showUnassignedCount = 0; // shots with no show tags
+
+    // Seed with registered shows (the "+"-created registry) so a show with no
+    // shots yet still appears in the column (count 0).
+    for (const auto& s : m_presetManager.knownShows()) {
+        QString qs = QString::fromStdString(s).trimmed();
+        if (qs.isEmpty()) continue;
+        auto& slot = showShotCount[qs.toLower()];
+        if (slot.first.isEmpty()) slot.first = qs;
+    }
+
+    for (const auto& [presetKey, presetRef] : m_presetManager.allPresets()) {
+        const ShotPreset* preset = &presetRef;
 
         ShotInfo si;
-        si.name = n;
-        si.isDefault = defaultShotNames.count(n) > 0;
+        si.name = preset->name();
+        si.key  = presetKey;
+        si.isDefault = defaultShotNames.count(preset->name()) > 0;
         si.layerCount = preset->layerCount();
+
+        if (!preset->show().empty())
+            si.shows << QString::fromStdString(preset->show());
 
         // Collect characters from this preset. charTags holds real
         // character names for filter matching; charTagsDisplay holds the
@@ -87,18 +120,124 @@ void ShotComposer::refreshShotList()
             seenReal.insert(QString::fromStdString(real));
         }
 
-        // Count per-character shot occurrences (keyed by real name)
-        if (si.charTags.isEmpty()) {
-            ++unassignedCount;
+        // Per-show counts (all shots).
+        if (si.shows.isEmpty()) {
+            ++showUnassignedCount;
         } else {
-            for (const auto& tag : seenReal)
-                charShotCount[tag.toStdString()]++;
+            QSet<QString> seenShow;
+            for (const auto& sh : si.shows) {
+                QString key = sh.toLower();
+                if (seenShow.contains(key)) continue;
+                seenShow.insert(key);
+                auto& slot = showShotCount[key];
+                if (slot.first.isEmpty()) slot.first = sh; // first-seen casing
+                slot.second++;
+            }
+        }
+
+        // Per-character shot occurrences, narrowed to the active show so the
+        // CHARACTERS column cascades from the selected show.
+        if (shotMatchesShow(si.shows)) {
+            ++showFilteredTotal; // ALL count reflects the selected show
+            if (si.charTags.isEmpty()) {
+                ++unassignedCount;
+            } else {
+                for (const auto& tag : seenReal)
+                    charShotCount[tag.toStdString()]++;
+            }
         }
 
         allShotInfos.push_back(si);
     }
 
     int totalShots = static_cast<int>(allShotInfos.size());
+
+    // --- Build show filter chip list (m_showFilterList) ---
+    if (m_showFilterList) {
+        QString prevShow;
+        if (auto* cur = m_showFilterList->currentItem())
+            prevShow = cur->data(Qt::UserRole).toString();
+
+        m_showFilterList->blockSignals(true);
+        m_showFilterList->clear();
+
+        QString showSearchText;
+        if (m_showFilterSearchEdit)
+            showSearchText = m_showFilterSearchEdit->text().trimmed().toLower();
+
+        int restoreRow = -1;
+        int row = 0;
+
+        // ALL
+        {
+            auto* item = new QListWidgetItem(QStringLiteral("ALL SHOWS"));
+            item->setData(Qt::UserRole, QString());
+            item->setData(Qt::UserRole + 1, totalShots);
+            item->setSizeHint(QSize(0, 34));
+            QFont f = item->font(); f.setPixelSize(15); f.setBold(true); item->setFont(f);
+            item->setForeground(QColor(180, 220, 180));
+            m_showFilterList->addItem(item);
+            if (prevShow.isEmpty()) restoreRow = row;
+            ++row;
+        }
+        // UNASSIGNED
+        {
+            auto* item = new QListWidgetItem(QStringLiteral("NO SHOW"));
+            item->setData(Qt::UserRole, QStringLiteral("__UNASSIGNED__"));
+            item->setData(Qt::UserRole + 1, showUnassignedCount);
+            item->setSizeHint(QSize(0, 34));
+            QFont f = item->font(); f.setPixelSize(15); f.setBold(true); item->setFont(f);
+            item->setForeground(QColor(210, 170, 80));
+            m_showFilterList->addItem(item);
+            if (prevShow == QStringLiteral("__UNASSIGNED__")) restoreRow = row;
+            ++row;
+        }
+        // Separator
+        {
+            auto* sep = new QListWidgetItem(QString());
+            sep->setFlags(sep->flags() & ~Qt::ItemIsSelectable);
+            sep->setSizeHint(QSize(0, 8));
+            sep->setBackground(QColor(100, 100, 130, 50));
+            m_showFilterList->addItem(sep);
+            ++row;
+        }
+        // Show entries, sorted by display name
+        std::vector<std::pair<QString, int>> shows; // display, count
+        shows.reserve(showShotCount.size());
+        for (const auto& [key, val] : showShotCount)
+            shows.emplace_back(val.first, val.second);
+        std::sort(shows.begin(), shows.end(),
+            [](const auto& a, const auto& b) {
+                return a.first.compare(b.first, Qt::CaseInsensitive) < 0;
+            });
+        for (const auto& [disp, count] : shows) {
+            if (!showSearchText.isEmpty() && !disp.toLower().contains(showSearchText))
+                continue;
+            // Optional per-show thumbnail (set via the column context menu).
+            QString thumbPath = QString::fromStdString(
+                m_presetManager.showThumbnail(disp.toStdString()));
+            QListWidgetItem* item = nullptr;
+            if (!thumbPath.isEmpty() && QFileInfo::exists(thumbPath)) {
+                QPixmap pix(thumbPath);
+                item = new QListWidgetItem(QIcon(pix), disp);
+                item->setSizeHint(QSize(0, 104)); // tall row: big thumbnail on top, name below
+            } else {
+                item = new QListWidgetItem(disp);
+                item->setSizeHint(QSize(0, 34));
+            }
+            item->setData(Qt::UserRole, disp);
+            item->setData(Qt::UserRole + 1, count);
+            QFont f = item->font(); f.setPixelSize(14); item->setFont(f);
+            item->setToolTip(QStringLiteral("%1 — %2 shots").arg(disp).arg(count));
+            m_showFilterList->addItem(item);
+            if (disp == prevShow) restoreRow = row;
+            ++row;
+        }
+
+        if (restoreRow >= 0 && restoreRow < m_showFilterList->count())
+            m_showFilterList->setCurrentRow(restoreRow);
+        m_showFilterList->blockSignals(false);
+    }
 
     // --- Build character filter chip list (m_charFilterList) ---
     if (m_charFilterList) {
@@ -113,24 +252,29 @@ void ShotComposer::refreshShotList()
         int restoreRow = -1;
         int row = 0;
 
-        // Collect valid character names (downloaded + video + from user shots)
+        // Collect valid character names. When no show is selected we list the
+        // full roster (downloaded + video + characters used in any shot). When
+        // a specific show (or NO SHOW) is active, the list cascades to only the
+        // characters that appear in that show's shots (charShotCount keys).
         QSet<QString> validNames;
+        if (showFilter.isEmpty()) {
 #ifdef ROUNDTABLE_HAS_SPINE
-        if (m_modelManager && m_modelManager->isScanned()) {
-            for (const auto& name : m_modelManager->characterDisplayNames())
-                validNames.insert(QString::fromStdString(name));
-        }
+            if (m_modelManager && m_modelManager->isScanned()) {
+                for (const auto& name : m_modelManager->characterDisplayNames())
+                    validNames.insert(QString::fromStdString(name));
+            }
 #endif
-        for (const auto& [filename, info] : videoCharacterFiles()) {
-            (void)filename;
-            // Only include video characters whose media actually exists on
-            // disk — the installer version may not ship these assets.
-            if (QFileInfo::exists(QString::fromStdString(info.mutePath)) ||
-                QFileInfo::exists(QString::fromStdString(info.talkPath))) {
-                validNames.insert(QString::fromStdString(info.charName));
+            for (const auto& [filename, info] : videoCharacterFiles()) {
+                (void)filename;
+                // Only include video characters whose media actually exists on
+                // disk — the installer version may not ship these assets.
+                if (QFileInfo::exists(QString::fromStdString(info.mutePath)) ||
+                    QFileInfo::exists(QString::fromStdString(info.talkPath))) {
+                    validNames.insert(QString::fromStdString(info.charName));
+                }
             }
         }
-        // Also include any character that appears in user shots
+        // Always include characters that appear in the (show-filtered) shots.
         for (const auto& [cn, count] : charShotCount) {
             (void)count;
             validNames.insert(QString::fromStdString(cn));
@@ -146,7 +290,9 @@ void ShotComposer::refreshShotList()
             QString label = QString("ALL");
             auto* item = new QListWidgetItem(label);
             item->setData(Qt::UserRole, QString()); // empty = ALL
-            item->setData(Qt::UserRole + 1, totalShots);
+            // Count reflects the active SHOWS filter (cascade): the number of
+            // shots in the selected show, or every shot when no show is selected.
+            item->setData(Qt::UserRole + 1, showFilteredTotal);
             item->setSizeHint(QSize(0, 56));
             QFont allFont = item->font();
             allFont.setPixelSize(18);
@@ -219,14 +365,14 @@ void ShotComposer::refreshShotList()
             std::string folderName = m_modelManager
                 ? m_modelManager->getFolderName(cn.toStdString())
                 : cn.toStdString();
-            QPixmap thumb = makeCharacterThumbnail(folderName, 48);
+            QPixmap thumb = makeCharacterThumbnail(folderName, 96);
 
             // Label shows alias display name; UserRole stores real character
             // name so downstream filter matching against shot tags works.
             auto* item = new QListWidgetItem(QIcon(thumb), disp);
             item->setData(Qt::UserRole, cn);
             item->setData(Qt::UserRole + 1, count);
-            item->setSizeHint(QSize(0, 60));
+            item->setSizeHint(QSize(0, 104));
             QFont chFont = item->font();
             chFont.setPixelSize(16);
             item->setFont(chFont);
@@ -260,7 +406,9 @@ void ShotComposer::refreshShotList()
 
     // Build filtered shot list
     struct FilteredShot {
-        std::string name;
+        std::string name;            ///< bare name (display)
+        std::string key;             ///< full "show/name" key (load reference)
+        std::string show;            ///< owning show ("" = No Show)
         bool isDefault = false;
         QStringList charTags;        ///< real names
         QStringList charTagsDisplay; ///< alias-resolved labels
@@ -270,6 +418,8 @@ void ShotComposer::refreshShotList()
     };
     std::vector<FilteredShot> filtered;
 
+    const bool showingAllShows = showFilter.isEmpty();
+
     for (const auto& si : allShotInfos) {
         // Apply name search filter
         if (!searchFilter.isEmpty()) {
@@ -277,6 +427,10 @@ void ShotComposer::refreshShotList()
             if (!qn.contains(searchFilter))
                 continue;
         }
+
+        // Apply show filter (cascade: show ∩ character)
+        if (!shotMatchesShow(si.shows))
+            continue;
 
         // Apply character filter (real name vs real name)
         if (!charFilter.isEmpty()) {
@@ -298,6 +452,8 @@ void ShotComposer::refreshShotList()
 
         FilteredShot fs;
         fs.name = si.name;
+        fs.key  = si.key;
+        fs.show = si.shows.isEmpty() ? std::string{} : si.shows.first().toStdString();
         fs.isDefault = si.isDefault;
         fs.charTags = si.charTags;
         fs.charTagsDisplay = si.charTagsDisplay;
@@ -361,25 +517,28 @@ void ShotComposer::refreshShotList()
             }
         }
 
-        // Build thumbnail
+        // Build thumbnail (keyed by the full show/name key)
         QPixmap thumb;
-        QString cachedPath = shotThumbnailPath(fs.name);
+        QString cachedPath = shotThumbnailPath(fs.key);
         if (!cachedPath.isEmpty() && QFileInfo::exists(cachedPath)) {
             thumb.load(cachedPath);
         }
         if (thumb.isNull()) {
-            auto preset = m_presetManager.load(fs.name);
+            auto preset = m_presetManager.load(fs.key);
             if (preset)
                 thumb = makeShotThumbnail(*preset, kThumbW, kThumbH);
             else
                 thumb = QPixmap(kThumbW, kThumbH);
         }
 
-        // Build shot item with data roles for custom delegate
+        // Build shot item. Display the bare name; when viewing ALL SHOWS append
+        // the owning show so same-named shots from different shows are distinct.
         QString displayName = QString::fromStdString(fs.name);
+        if (showingAllShows && !fs.show.empty())
+            displayName += QStringLiteral("   ·   ") + QString::fromStdString(fs.show);
 
         auto* item = new QListWidgetItem(QIcon(thumb), displayName);
-        item->setData(Qt::UserRole, QString::fromStdString(fs.name));
+        item->setData(Qt::UserRole, QString::fromStdString(fs.key)); // full key for load
         item->setData(Qt::UserRole + 1, fs.charTagsDisplay); // alias-resolved tags
         item->setData(Qt::UserRole + 2, fs.layerCount);    // int layer count
         item->setData(Qt::UserRole + 3, fs.isDefault);     // bool is default
@@ -388,7 +547,9 @@ void ShotComposer::refreshShotList()
 
         m_shotList->addItem(item);
 
-        if (!m_currentShot.name().empty() && fs.name == m_currentShot.name())
+        const std::string curKey =
+            ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
+        if (!m_currentShot.name().empty() && fs.key == curKey)
             selectRow = visibleRow;
         ++visibleRow;
     }

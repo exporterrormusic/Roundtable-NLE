@@ -200,9 +200,11 @@ int AudioSync::exportToTimeline(Timeline* timeline)
             if (group.character.empty() || group.totalDuration <= 0) continue;
 
             std::string shotName;
-            auto preset = m_shotPresetManager->resolveDefaultShot(group.character);
+            auto preset = m_shotPresetManager->resolveDefaultShot(group.character, m_currentShow);
             if (preset)
-                shotName = preset->name();
+                // Store the full (show/name) key so the clip re-resolves to the
+                // correct per-show shot later (the Properties Shot dropdown).
+                shotName = ShotPresetManager::makeKey(preset->show(), preset->name());
 
             if (!preset) {
                 spdlog::debug("  No default shot for '{}', skipping visual clips",

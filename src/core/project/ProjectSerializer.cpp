@@ -353,6 +353,14 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
         }
     }
 
+    // ── Section: Project metadata (show assignment) ─────────────────────
+    if (!project.show().empty()) {
+        BinaryWriter sec;
+        sec.writeString(project.show());
+        out.beginSection(Section_ProjectMeta, sec.data());
+        ++sectionCount;
+    }
+
     // ── Patch section count ─────────────────────────────────────────────
     auto& d = const_cast<std::vector<uint8_t>&>(out.data());
     d[sectionCountPos]     = static_cast<uint8_t>(sectionCount);
@@ -796,6 +804,12 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
             std::vector<uint8_t> blob(blobStart, blobStart + size);
             project->setAudioSyncBlob(std::move(blob));
             spdlog::info("ProjectSerializer: loaded AudioSync blob ({} bytes)", size);
+            break;
+        }
+
+        case Section_ProjectMeta: {
+            project->setShow(sr.readString());
+            spdlog::info("ProjectSerializer: loaded project show '{}'", project->show());
             break;
         }
 

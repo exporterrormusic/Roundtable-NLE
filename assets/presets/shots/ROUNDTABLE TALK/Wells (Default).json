@@ -1,32 +1,15 @@
 {
-  "name": "Yoyo (News Story)",
+  "name": "Wells (Default)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "TABLE_OVERLAY.png",
-      "posX": 0.220000,
-      "posY": 0.515000,
-      "scale": 2.150000,
-      "opacity": 1.000000,
-      "nativeWidth": 0,
-      "nativeHeight": 0,
-      "visible": true,
-      "layerType": "image",
-      "inPoint": 0.000000,
-      "outPoint": 0.000000,
-      "cropLeft": 0.000000,
-      "cropRight": 0.000000,
-      "cropTop": 0.000000,
-      "cropBottom": 0.000000,
-      "blur": 0.000000
-    },
-    {
-      "path": "TABLE_LARGE_FINAL.png",
-      "posX": 0.220000,
-      "posY": 0.515000,
-      "scale": 2.150000,
+      "path": "CONTROL_ROOM_HD.png",
+      "posX": 0.500000,
+      "posY": 0.500000,
+      "scale": 1.000000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -43,16 +26,38 @@
   ],
   "characters": [
     {
-      "characterName": "Yoyo",
+      "characterName": "Wells",
       "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.800237,
-      "posY": 0.735054,
-      "scale": 1.442113,
+      "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE.mov",
+      "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK.mov",
+      "posX": 0.687000,
+      "posY": 0.762000,
+      "scale": 2.193000,
       "rotation": 0.000000,
-      "flipX": true,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    },
+    {
+      "characterName": "Chime",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": false,
+      "posX": 0.249000,
+      "posY": 0.794000,
+      "scale": 1.138000,
+      "rotation": 0.000000,
+      "flipX": false,
       "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
@@ -64,8 +69,8 @@
     }
   ],
   "layerOrder": [
-    {"type": "bg", "index": 0},
     {"type": "ch", "index": 0},
-    {"type": "bg", "index": 1}
+    {"type": "ch", "index": 1},
+    {"type": "bg", "index": 0}
   ]
 }

@@ -26,13 +26,17 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
+#include <QSet>
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSlider>
+#include <QLineEdit>
 #include <QSplitter>
 #include <QStyledItemDelegate>
 #include <QTabWidget>
+#include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
 
@@ -40,6 +44,25 @@
 
 
 namespace rt {
+
+// A QMenu that stays open when a checkable item is toggled, so the user can
+// tick several shows in one go. Non-checkable items (e.g. "New Show…") close
+// the menu normally.
+namespace {
+class CheckableKeepOpenMenu : public QMenu {
+public:
+    using QMenu::QMenu;
+protected:
+    void mouseReleaseEvent(QMouseEvent* e) override {
+        QAction* a = activeAction();
+        if (a && a->isCheckable() && a->isEnabled()) {
+            a->trigger();   // toggles checked state + emits triggered
+            return;          // keep the menu open
+        }
+        QMenu::mouseReleaseEvent(e);
+    }
+};
+} // anon
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -86,6 +109,87 @@ QWidget* ShotComposer::createPropertiesPanel()
     nameRow->addWidget(saveShotBtnProps);
     shotNameLayout->addLayout(nameRow);
 
+    // ── Shows row — assign this shot to one or more shows (comma-separated) ──
+    auto* showsRow = new QHBoxLayout;
+    showsRow->setContentsMargins(0, 0, 0, 0);
+    showsRow->setSpacing(m.spacingXs);
+
+    auto* showsLabel = new QLabel(QStringLiteral("Shows:"));
+    showsLabel->setStyleSheet(QStringLiteral("color: %1;")
+        .arg(Theme::hex(c.textSecondary)));
+    showsRow->addWidget(showsLabel);
+
+    m_showsEdit = new QLineEdit;
+    m_showsEdit->setPlaceholderText(QStringLiteral("e.g. Roundtable Talk, Kingdom Connection"));
+    m_showsEdit->setToolTip(QStringLiteral(
+        "The show this shot belongs to (its namespace). Used by the SHOWS filter."));
+    m_showsEdit->setEnabled(false);
+    m_showsEdit->setReadOnly(true);   // show is changed via the dropdown / move
+    showsRow->addWidget(m_showsEdit, 1);
+
+    // Dropdown button: pick the single show this shot belongs to (its
+    // namespace). Choosing a show MOVES the shot into it. "No Show" / "New
+    // Show…" are also available.
+    auto* showsDropBtn = new QToolButton;
+    showsDropBtn->setText(QStringLiteral("Move ▾"));
+    showsDropBtn->setToolTip(QStringLiteral("Move this shot to a show"));
+    showsDropBtn->setFixedHeight(36);
+    showsDropBtn->setPopupMode(QToolButton::InstantPopup);
+    showsRow->addWidget(showsDropBtn);
+
+    auto* showsMenu = new QMenu(showsDropBtn);
+    showsDropBtn->setMenu(showsMenu);
+
+    // Move the current shot into `show` (empty = No Show) via m_showsEdit +
+    // onShotShowsChanged() (which relocates the file and updates the registry).
+    auto moveToShow = [this](const QString& show) {
+        if (!m_showsEdit) return;
+        m_showsEdit->setText(show);
+        onShotShowsChanged();
+    };
+
+    connect(showsMenu, &QMenu::aboutToShow, this, [this, showsMenu, moveToShow]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        showsMenu->clear();
+        if (!m_showsEdit || !m_showsEdit->isEnabled()) {
+            auto* a = showsMenu->addAction(tr("(open or create a shot first)"));
+            a->setEnabled(false);
+            return;
+        }
+        const QString cur = QString::fromStdString(m_currentShot.show());
+        QAction* noShow = showsMenu->addAction(tr("No Show"));
+        noShow->setCheckable(true);
+        noShow->setChecked(cur.isEmpty());
+        connect(noShow, &QAction::triggered, this, [moveToShow]() { moveToShow(QString()); });
+        showsMenu->addSeparator();
+        for (const QString& s : knownShows()) {
+            QAction* a = showsMenu->addAction(s);
+            a->setCheckable(true);
+            a->setChecked(s.compare(cur, Qt::CaseInsensitive) == 0);
+            connect(a, &QAction::triggered, this, [moveToShow, s]() { moveToShow(s); });
+        }
+        showsMenu->addSeparator();
+        QAction* newAct = showsMenu->addAction(tr("New Show…"));
+        connect(newAct, &QAction::triggered, this, [this, moveToShow]() {
+            bool ok = false;
+            QString name = QInputDialog::getText(this, tr("New Show"),
+                tr("Show name:"), QLineEdit::Normal, QString(), &ok);
+            if (!ok || name.trimmed().isEmpty()) return;
+            name = name.trimmed();
+            m_presetManager.addShow(name.toStdString());
+            moveToShow(name);
+        });
+    });
+
+    shotNameLayout->addLayout(showsRow);
+
+    connect(m_showsEdit, &QLineEdit::editingFinished,
+            this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_updating) return;
+        onShotShowsChanged();
+    });
+
     m_defaultShotCheck = new QCheckBox("Set as character's default shot");
     m_defaultShotCheck->setEnabled(false);
     m_defaultShotCheck->setVisible(false);
@@ -118,15 +222,31 @@ QWidget* ShotComposer::createPropertiesPanel()
 
         QString charName = m_defaultCharCombo->currentText();
 
-        // Record this shot as the default for the selected character
-        m_characterDefaults[charName.toStdString()] = m_currentShot.name();
-        saveDefaults();
+        // When a specific show is selected in the SHOWS filter, set a
+        // per-show default for that show; otherwise set the global default.
+        const QString show = activeShowFilter();
+        const bool perShow = !show.isEmpty()
+            && show != QStringLiteral("__UNASSIGNED__");
+
+        if (perShow) {
+            m_presetManager.setShowDefaultShot(show.toStdString(),
+                                               charName.toStdString(),
+                                               m_currentShot.name());
+            spdlog::info("ShotComposer: Set '{}' as default shot for '{}' in show '{}'",
+                         m_currentShot.name(), charName.toStdString(), show.toStdString());
+        } else {
+            // Record this shot as the global default for the selected character
+            m_characterDefaults[charName.toStdString()] = m_currentShot.name();
+            saveDefaults();
+            spdlog::info("ShotComposer: Set '{}' as default shot for '{}'",
+                         m_currentShot.name(), charName.toStdString());
+        }
         refreshShotList();
-        spdlog::info("ShotComposer: Set '{}' as default shot for '{}'",
-                     m_currentShot.name(), charName.toStdString());
         QToolTip::showText(m_setDefaultBtn->mapToGlobal(QPoint(0, -30)),
-                           QString("Set as default for %1").arg(charName),
-                           m_setDefaultBtn, {}, 2000);
+                           perShow
+                             ? QString("Set as default for %1 in \"%2\"").arg(charName, show)
+                             : QString("Set as default for %1").arg(charName),
+                           m_setDefaultBtn, {}, 2500);
     });
 
     connect(saveShotBtnProps, &QPushButton::clicked, this, [this]() {

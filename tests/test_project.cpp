@@ -513,6 +513,27 @@ TEST_F(SerializerTest, SpineClipRoundTrip)
     EXPECT_EQ(sc->color(), 0xFFFF0000u);
 }
 
+TEST_F(SerializerTest, ProjectShowRoundTrip)
+{
+    auto original = makeTestProject();
+    original->setShow("Roundtable Talk");
+    auto data = serializer.serialize(*original);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->show(), "Roundtable Talk");
+}
+
+TEST_F(SerializerTest, ProjectShowDefaultsEmpty)
+{
+    // A project with no show assigned should deserialize with an empty show
+    // (and old files, which lack the section entirely, behave the same).
+    auto original = makeTestProject();
+    auto data = serializer.serialize(*original);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_TRUE(loaded->show().empty());
+}
+
 TEST_F(SerializerTest, VideoClipRoundTrip)
 {
     auto original = makeTestProject();

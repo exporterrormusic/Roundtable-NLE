@@ -32,6 +32,7 @@ Project::~Project() = default;
 
 Project::Project(Project&& o) noexcept
     : m_name(std::move(o.m_name))
+    , m_show(std::move(o.m_show))
     , m_filePath(std::move(o.m_filePath))
     , m_modified(o.m_modified.load(std::memory_order_relaxed))
     , m_formatVersion(o.m_formatVersion)
@@ -49,6 +50,7 @@ Project& Project::operator=(Project&& o) noexcept
 {
     if (this != &o) {
         m_name            = std::move(o.m_name);
+        m_show            = std::move(o.m_show);
         m_filePath        = std::move(o.m_filePath);
         m_modified.store(o.m_modified.load(std::memory_order_relaxed), std::memory_order_relaxed);
         m_formatVersion   = o.m_formatVersion;

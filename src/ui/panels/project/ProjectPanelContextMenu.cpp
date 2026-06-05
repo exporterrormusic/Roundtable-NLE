@@ -15,6 +15,11 @@
 
 namespace rt {
 
+void ProjectPanel::setKnownShows(const QStringList& shows)
+{
+    m_knownShows = shows;
+}
+
 // =============================================================================
 // Project table context menu
 // =============================================================================
@@ -33,6 +38,22 @@ void ProjectPanel::showContextMenu(const QPoint& pos)
     QMenu menu(this);
     menu.addAction("Open", this,
                    [this, name]() { emit openProject(name); });
+    menu.addSeparator();
+
+    // ── Assign to Show submenu ──────────────────────────────────────────
+    {
+        QMenu* showMenu = menu.addMenu("Assign to Show");
+        showMenu->addAction("(None)", this, [this, name, fpath]() {
+            emit assignProjectToShow(name, fpath, QString());
+        });
+        if (!m_knownShows.isEmpty())
+            showMenu->addSeparator();
+        for (const QString& sh : m_knownShows) {
+            showMenu->addAction(sh, this, [this, name, fpath, sh]() {
+                emit assignProjectToShow(name, fpath, sh);
+            });
+        }
+    }
     menu.addSeparator();
     menu.addAction("Rename...", this, [this, name]() {
         bool ok = false;

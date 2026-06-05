@@ -234,6 +234,10 @@ private:
     void updateShotSection();
     void onShotChanged(const std::string& newShotName);
 
+    /// Repopulate the Shot dropdown honoring the Show/Character navigation
+    /// filters. Selects `selectName` if present (else the clip's current shot).
+    void populateShotCombo(const QString& selectName);
+
     // Spine dropdown population
     void populateCharacterDropdown();
     void populateOutfitDropdown();
@@ -473,6 +477,8 @@ private:
 
     // Shot section (shown when clip belongs to a shot group)
     QWidget*        m_shotSection{nullptr};
+    QComboBox*      m_shotShowCombo{nullptr};   ///< Navigation filter: show
+    QComboBox*      m_shotCharCombo{nullptr};   ///< Navigation filter: character
     QComboBox*      m_shotCombo{nullptr};
     QLabel*         m_shotInfoLabel{nullptr};
 

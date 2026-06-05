@@ -603,6 +603,40 @@ void MainWindow::buildPanels()
             this, &MainWindow::onExportProject);
     connect(m_projectPanel, &ProjectPanel::projectsDirChanged,
             this, &MainWindow::onProjectsDirChanged);
+    connect(m_projectPanel, &ProjectPanel::assignProjectToShow, this,
+            [this](const QString& name, const QString& filePath, const QString& show) {
+        const std::string showStd = show.toStdString();
+        // If this is the currently-open project, set it in memory (used
+        // immediately by AudioSync) and mark modified — it persists on the
+        // next save. Otherwise load the file, set the show, and save it back.
+        if (m_currentProject &&
+            QString::fromStdString(m_currentProject->name()) == name) {
+            m_currentProject->setShow(showStd);
+            m_currentProject->setModified(true);
+            if (m_audioSync) m_audioSync->setCurrentShow(showStd);
+        } else {
+            QString path = filePath.isEmpty()
+                ? m_projectPanel->projectFilePath(name) : filePath;
+            if (path.isEmpty()) return;
+            std::filesystem::path fp(path.toStdWString());
+            ProjectSerializer ser;
+            auto proj = ser.load(fp);
+            if (!proj) {
+                QMessageBox::warning(this, "Assign to Show",
+                    "Could not open the project file to assign its show.");
+                return;
+            }
+            proj->setShow(showStd);
+            if (!ser.save(*proj, fp)) {
+                QMessageBox::warning(this, "Assign to Show",
+                    "Failed to save the project's show assignment.");
+                return;
+            }
+        }
+        statusBar()->showMessage(show.isEmpty()
+            ? QString("Cleared show for '%1'").arg(name)
+            : QString("Assigned '%1' to show \"%2\"").arg(name, show), 3000);
+    });
     connect(m_projectPanel, &ProjectPanel::openFromFile,
             this, &MainWindow::onOpenProject);
     connect(m_projectPanel, &ProjectPanel::openFilePath,

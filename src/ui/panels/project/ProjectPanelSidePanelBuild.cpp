@@ -203,18 +203,25 @@ void ProjectPanel::buildSidePanel()
         stepRow->addStretch();
         lay->addLayout(stepRow);
 
-        auto* folderRow = new QHBoxLayout;
-        folderRow->setSpacing(4);
+        // Location input on its own full-width row.
         m_locationInput = new QLineEdit;
         m_locationInput->setPlaceholderText("Default projects folder");
         m_locationInput->setStyleSheet(inputStyle());
-        folderRow->addWidget(m_locationInput, 1);
+        lay->addWidget(m_locationInput);
 
-        m_locationBrowseBtn = new QPushButton;
+        // Browse button on its own row, LEFT-aligned (a trailing stretch
+        // absorbs the slack). Right-aligning pushed it against the panel's
+        // right edge, which is exactly where the narrow side panel clips.
+        auto* folderRow = new QHBoxLayout;
+        folderRow->setSpacing(4);
+
+        m_locationBrowseBtn = new QPushButton(QStringLiteral(" Browse…"));
         m_locationBrowseBtn->setIcon(createFolderIcon());
-        m_locationBrowseBtn->setFixedSize(36, 30);
+        m_locationBrowseBtn->setFixedHeight(30);
+        m_locationBrowseBtn->setMinimumWidth(90);
+        m_locationBrowseBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         m_locationBrowseBtn->setCursor(Qt::PointingHandCursor);
-        m_locationBrowseBtn->setToolTip("Browse for save location folder");
+        m_locationBrowseBtn->setToolTip("Browse for a save location folder");
         m_locationBrowseBtn->setStyleSheet(QStringLiteral(
             "QPushButton { background: %1; border: 1px solid %2;"
             "  color: %3; font-size: 11px; font-weight: 600;"
@@ -237,6 +244,7 @@ void ProjectPanel::buildSidePanel()
             }
         });
         folderRow->addWidget(m_locationBrowseBtn);
+        folderRow->addStretch();
         lay->addLayout(folderRow);
 
         // Recent paths row

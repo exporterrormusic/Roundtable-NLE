@@ -342,6 +342,9 @@ void AudioSync::restoreProjectState(const QString& projectName)
         m_restoring = false;
         updateWorkflowState();
         if (m_script) {
+            // Rebuild the Match-tab character filter list; restoreSession()
+            // does not do this, so without it the Match tab shows no characters.
+            populateScriptFilter();
             if (isVisible()) {
                 populateCards();      // <-- also calls populateLeftList() internally
             } else {
@@ -455,6 +458,9 @@ void AudioSync::restoreProjectState(const QString& projectName)
 
     updateWorkflowState();
     if (m_script) {
+        // Rebuild the Match-tab character filter list (see restoreProjectState
+        // multi-session path above for why this is required).
+        populateScriptFilter();
         if (isVisible()) {
             populateCards();      // <-- also calls populateLeftList() internally
         } else {
@@ -823,6 +829,9 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
         populateScriptSessionList();
         updateWorkflowState();
         if (m_script) {
+            // Rebuild the Match-tab character filter list; restoreSession()
+            // does not, so the Match tab would otherwise show no characters.
+            populateScriptFilter();
             if (isVisible())
                 populateCards();
             else
@@ -969,6 +978,8 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
     populateScriptSessionList();
     updateWorkflowState();
     if (m_script) {
+        // Rebuild the Match-tab character filter list (see v4 path above).
+        populateScriptFilter();
         if (isVisible())
             populateCards();
         else

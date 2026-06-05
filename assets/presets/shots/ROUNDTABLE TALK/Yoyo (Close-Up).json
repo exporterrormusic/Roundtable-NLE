@@ -1,14 +1,15 @@
 {
-  "name": "Modernia (Default)",
+  "name": "Yoyo (Close-Up)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "MARIAN_WALL_ALT.png",
-      "posX": 0.601872,
-      "posY": 0.500504,
-      "scale": 1.300000,
+      "path": "TABLE_OVERLAY.png",
+      "posX": -0.368000,
+      "posY": 0.607000,
+      "scale": 3.183000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -21,20 +22,38 @@
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
       "blur": 0.000000
+    },
+    {
+      "path": "TABLE_LARGE_FINAL.png",
+      "posX": -0.368000,
+      "posY": 0.607000,
+      "scale": 3.183000,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 2.000000
     }
   ],
   "characters": [
     {
-      "characterName": "Modernia",
-      "outfit": "outfit_02",
+      "characterName": "Yoyo",
+      "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.260861,
-      "posY": 0.943383,
-      "scale": 2.045984,
+      "posX": 0.507502,
+      "posY": 0.927108,
+      "scale": 2.004020,
       "rotation": 0.000000,
-      "flipX": false,
+      "flipX": true,
       "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
@@ -46,7 +65,8 @@
     }
   ],
   "layerOrder": [
+    {"type": "bg", "index": 0},
     {"type": "ch", "index": 0},
-    {"type": "bg", "index": 0}
+    {"type": "bg", "index": 1}
   ]
 }

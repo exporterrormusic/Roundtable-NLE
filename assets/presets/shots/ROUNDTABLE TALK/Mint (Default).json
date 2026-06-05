@@ -1,14 +1,15 @@
 {
-  "name": "TRONY (Close-Up)",
+  "name": "Mint (Default)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "MARIAN_WALL_HD.png",
-      "posX": 1.002000,
-      "posY": 0.619000,
-      "scale": 2.356000,
+      "path": "TABLE_LARGE_FINAL.png",
+      "posX": 1.065826,
+      "posY": 0.660505,
+      "scale": 2.595000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,21 +21,21 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 2.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
     {
-      "characterName": "Trony",
+      "characterName": "Mint",
       "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.596940,
-      "posY": 1.434144,
-      "scale": 3.468497,
+      "posX": 0.397808,
+      "posY": 1.183273,
+      "scale": 2.580421,
       "rotation": 0.000000,
-      "flipX": false,
+      "flipX": true,
       "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,

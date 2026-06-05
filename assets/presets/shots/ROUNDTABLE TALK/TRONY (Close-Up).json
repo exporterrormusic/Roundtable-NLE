@@ -1,14 +1,15 @@
 {
-  "name": "Modernia (Close-Up)",
+  "name": "TRONY (Close-Up)",
+  "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "MARIAN_WALL_ALT.png",
-      "posX": 0.712000,
-      "posY": 0.569000,
-      "scale": 2.150000,
+      "path": "MARIAN_WALL_HD.png",
+      "posX": 1.002000,
+      "posY": 0.619000,
+      "scale": 2.356000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -20,19 +21,19 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 5.000000
+      "blur": 2.000000
     }
   ],
   "characters": [
     {
-      "characterName": "Modernia",
-      "outfit": "outfit_02",
+      "characterName": "Trony",
+      "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.328326,
-      "posY": 1.469927,
-      "scale": 3.329000,
+      "posX": 0.596940,
+      "posY": 1.434144,
+      "scale": 3.468497,
       "rotation": 0.000000,
       "flipX": false,
       "flipY": false,

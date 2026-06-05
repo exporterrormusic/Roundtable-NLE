@@ -722,6 +722,28 @@ void PropertiesPanel::setupShotSection(QWidget* container)
         .arg(Theme::hex(Theme::colors().textSecondary)));
     form->addRow("Group:", m_shotInfoLabel);
 
+    // Navigation filters — narrow the Shot dropdown by show, then character.
+    // These do NOT modify the clip; they only filter which presets are listed.
+    m_shotShowCombo = new QComboBox(m_shotSection);
+    m_shotShowCombo->setToolTip(tr("Filter shots by show"));
+    m_shotShowCombo->setEditable(false);
+    connect(m_shotShowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (m_updating) return;
+                populateShotCombo(QString());
+            });
+    form->addRow("Show:", m_shotShowCombo);
+
+    m_shotCharCombo = new QComboBox(m_shotSection);
+    m_shotCharCombo->setToolTip(tr("Filter shots by character"));
+    m_shotCharCombo->setEditable(false);
+    connect(m_shotCharCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (m_updating) return;
+                populateShotCombo(QString());
+            });
+    form->addRow("Character:", m_shotCharCombo);
+
     m_shotCombo = new QComboBox(m_shotSection);
     m_shotCombo->setToolTip(tr("Select a camera shot preset"));
     m_shotCombo->setEditable(false);
@@ -730,8 +752,11 @@ void PropertiesPanel::setupShotSection(QWidget* container)
             this, [this](int /*index*/) {
                 if (m_updating) return;
                 if (!m_clip) return;
-                QString text = m_shotCombo->currentText();
-                onShotChanged(text.toStdString());
+                // Item data carries the full "show/name" key; fall back to the
+                // display text for the "-- Choose a shot --" placeholder.
+                QString key = m_shotCombo->currentData().toString();
+                if (key.isEmpty()) key = m_shotCombo->currentText();
+                onShotChanged(key.toStdString());
             });
     form->addRow("Shot:", m_shotCombo);
 

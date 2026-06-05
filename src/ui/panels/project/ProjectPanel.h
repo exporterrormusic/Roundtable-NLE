@@ -100,6 +100,10 @@ public:
     void setRecentProjects(const QStringList& paths);
     void setProjectsDirectory(const QString& dir);
 
+    /// Provide the list of known shows for the right-click "Assign to Show"
+    /// submenu in the project table.
+    void setKnownShows(const QStringList& shows);
+
     /// Look up the full file path for a project by name.
     /// Returns an empty string if the project is not in the current list.
     [[nodiscard]] QString projectFilePath(const QString& name) const;
@@ -146,6 +150,9 @@ signals:
     void importProject(const QString& srcPath);
     void exportProject(const QString& name, const QString& dstPath);
     void projectsDirChanged(const QString& newDir);
+    /// Assign (or clear, when show is empty) a project's show.
+    void assignProjectToShow(const QString& name, const QString& filePath,
+                             const QString& show);
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -192,6 +199,7 @@ private:
     QStringList          m_recentPaths;
     QStringList          m_recentSaveLocations;
     QString              m_currentProjectName;
+    QStringList          m_knownShows;
     QString              m_searchFilter;
     QString              m_projectsDir;
     int                  m_sortMode{0};

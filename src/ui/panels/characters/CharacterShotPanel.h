@@ -105,6 +105,7 @@ private:
     ConversionPanel*   m_conversionPanel{nullptr};
     QWidget*           m_shotsColumnWidget{nullptr};
     QWidget*           m_charFilterWidget{nullptr};
+    QWidget*           m_showFilterWidget{nullptr};
 };
 
 } // namespace rt

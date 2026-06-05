@@ -350,7 +350,9 @@ void ProjectPanel::applyNewPanelResponsiveLayout()
     }
 
     if (m_locationBrowseBtn)
-        m_locationBrowseBtn->setFixedSize(m_newSizes.browseBtnSize, m_newSizes.browseBtnSize);
+        // Keep the labeled "Browse…" button height responsive but let its width
+        // grow to fit the text (don't force it into a tiny icon-only square).
+        m_locationBrowseBtn->setFixedHeight(m_newSizes.browseBtnSize);
 
     if (auto* recentLbl = m_newPage->findChild<QLabel*>("NewRecentLbl")) {
         recentLbl->setStyleSheet(QStringLiteral(

@@ -496,6 +496,82 @@ TEST_F(ShotPresetSerializationTest, SpecialCharactersInName)
     EXPECT_EQ(loaded->name(), "Shot \"with\" special\nchars");
 }
 
+TEST_F(ShotPresetSerializationTest, ShowRoundTrip)
+{
+    ShotPreset original("Show Shot");
+    original.setShow("Roundtable Talk");   // a shot belongs to one show
+    CharacterState ch;
+    ch.characterName = "Chime";
+    original.addCharacter(ch);
+
+    auto json = original.toJson();
+    auto loaded = ShotPreset::fromJson(json);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->show(), "Roundtable Talk");
+    EXPECT_TRUE(loaded->hasShow("roundtable talk"));    // case-insensitive
+    EXPECT_FALSE(loaded->hasShow("Kingdom Connection"));
+}
+
+TEST_F(ShotPresetSerializationTest, LegacyMultiShowMigratesToFirst)
+{
+    // Old files used a "shows" array; the first tag becomes the single show.
+    const std::string legacy =
+        R"({"name":"Legacy","shows":["Kingdom Connection","Roundtable Talk"]})";
+    auto loaded = ShotPreset::fromJson(legacy);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->show(), "Kingdom Connection");
+}
+
+TEST_F(ShotPresetSerializationTest, NoShowRoundTrip)
+{
+    ShotPreset original("Plain Shot");
+    auto json = original.toJson();
+    auto loaded = ShotPreset::fromJson(json);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_TRUE(loaded->show().empty());
+    EXPECT_FALSE(loaded->hasShow("Anything"));
+}
+
+TEST_F(ShotPresetSerializationTest, ShowNamespaceUnique)
+{
+    // The same name in two shows are distinct shots (per-show namespace).
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "rt_show_ns_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+
+    ShotPresetManager mgr;
+    mgr.scan(dir);
+
+    ShotPreset a("CROWN (Default)");
+    a.setShow("Roundtable Talk");
+    ShotPreset b("CROWN (Default)");
+    b.setShow("Kingdom Connection");
+    EXPECT_TRUE(mgr.save(a));
+    EXPECT_TRUE(mgr.save(b));
+
+    // Two distinct presets despite the identical bare name.
+    EXPECT_TRUE(mgr.hasPreset("Roundtable Talk", "CROWN (Default)"));
+    EXPECT_TRUE(mgr.hasPreset("Kingdom Connection", "CROWN (Default)"));
+    EXPECT_EQ(mgr.presetCount(), 2);
+
+    auto la = mgr.load("Roundtable Talk", "CROWN (Default)");
+    auto lb = mgr.load("Kingdom Connection", "CROWN (Default)");
+    ASSERT_TRUE(la.has_value());
+    ASSERT_TRUE(lb.has_value());
+    EXPECT_EQ(la->show(), "Roundtable Talk");
+    EXPECT_EQ(lb->show(), "Kingdom Connection");
+
+    // A fresh scan finds both (in their subdirectories).
+    ShotPresetManager mgr2;
+    mgr2.scan(dir);
+    EXPECT_EQ(mgr2.presetCount(), 2);
+    EXPECT_TRUE(mgr2.hasPreset("Roundtable Talk", "CROWN (Default)"));
+    EXPECT_TRUE(mgr2.hasPreset("Kingdom Connection", "CROWN (Default)"));
+
+    fs::remove_all(dir);
+}
+
 TEST_F(ShotPresetSerializationTest, StanceRoundTrip)
 {
     ShotPreset p;
@@ -965,7 +1041,8 @@ TEST_F(ShotComposerUITest, DeselectLayer)
 
 TEST_F(ShotComposerUITest, LibraryTabCount)
 {
-    EXPECT_EQ(m_panel->libraryTabs()->count(), 3); // Shots, Characters, Backgrounds
+    // Characters, Backgrounds, NikkeBKG, Videos
+    EXPECT_EQ(m_panel->libraryTabs()->count(), 4);
 }
 
 TEST_F(ShotComposerUITest, StanceComboOptions)
@@ -997,6 +1074,7 @@ TEST_F(ShotComposerUITest, PresetManagerIntegration)
     EXPECT_TRUE(m_panel->saveCurrentShot());
 
     EXPECT_TRUE(m_panel->presetManager().hasPreset("Rapi - Default"));
-    EXPECT_EQ(m_panel->shotList()->count(), 1);
-    EXPECT_EQ(m_panel->shotCombo()->count(), 1);  // combo stays in sync
+    // The shot lives in the No-Show namespace ("" show).
+    EXPECT_TRUE(m_panel->presetManager().hasPreset("", "Rapi - Default"));
+    EXPECT_EQ(m_panel->shotList()->count(), 1);   // shot strip stays in sync
 }

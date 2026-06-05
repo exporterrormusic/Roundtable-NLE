@@ -616,8 +616,11 @@ void AudioSync::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
     if (m_cardsDirty) {
-        populateScriptList();
-        populateClipList();
+        // populateScriptList() already rebuilds both the left list and the
+        // cards; calling populateClipList() afterwards rebuilt every card a
+        // second time. Build once.
+        populateLeftList();
+        populateCards();
         m_cardsDirty = false;
     }
 }

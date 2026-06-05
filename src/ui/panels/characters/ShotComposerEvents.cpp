@@ -13,11 +13,15 @@
 #endif
 
 #include <QDragEnterEvent>
+#include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QFileInfo>
 #include <QKeyEvent>
+#include <QListWidget>
 #include <QMimeData>
 #include <QPixmap>
 #include <QToolTip>
+#include <QUrl>
 
 #include <spdlog/spdlog.h>
 
@@ -59,6 +63,41 @@ void ShotComposer::updateDropIndicatorLine()
 bool ShotComposer::eventFilter(QObject* obj, QEvent* event)
 {
     static constexpr const char* kAssetMime = "application/x-roundtable-asset";
+
+    // ── Drop image files from the OS onto the background library to import ──
+    if (m_backgroundLibrary &&
+        (obj == m_backgroundLibrary || obj == m_backgroundLibrary->viewport())) {
+        auto hasImageUrls = [](const QMimeData* md) {
+            if (!md || !md->hasUrls()) return false;
+            static const QStringList ext = {"png", "jpg", "jpeg", "bmp", "webp"};
+            for (const QUrl& u : md->urls()) {
+                if (!u.isLocalFile()) continue;
+                QString suffix = QFileInfo(u.toLocalFile()).suffix().toLower();
+                if (ext.contains(suffix)) return true;
+            }
+            return false;
+        };
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            auto* de = static_cast<QDragMoveEvent*>(event);
+            if (hasImageUrls(de->mimeData())) {
+                de->setDropAction(Qt::CopyAction);
+                de->acceptProposedAction();
+                return true;
+            }
+            return false;
+        }
+        if (event->type() == QEvent::Drop) {
+            auto* de = static_cast<QDropEvent*>(event);
+            if (!hasImageUrls(de->mimeData())) return false;
+            QStringList paths;
+            for (const QUrl& u : de->mimeData()->urls())
+                if (u.isLocalFile()) paths << u.toLocalFile();
+            de->setDropAction(Qt::CopyAction);
+            de->acceptProposedAction();
+            importBackgroundFiles(paths);
+            return true;
+        }
+    }
 
     // ── Drag-and-drop from asset library onto layer list or preview ──────
     bool isLayerList = m_layerList &&

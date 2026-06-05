@@ -261,6 +261,12 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
                 } else {
                     m_audioSync->restoreProjectState(name);
                 }
+                // Re-baseline the dirty tracker to the canonical in-memory
+                // serialization. The on-disk bytes can differ (unordered_map
+                // session ordering, filtered missing audio paths), so comparing
+                // against them would falsely mark the project dirty right after
+                // opening — triggering spurious auto-saves / unsaved prompts.
+                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
             } else {
                 spdlog::warn("OPEN: m_audioSync is null — cannot restore audio state");
             }
@@ -634,6 +640,8 @@ void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath)
                     m_audioSync->deserializeFromBlob(blob);
                 else
                     m_audioSync->restoreProjectState(loadedName);
+                // Re-baseline the dirty tracker (see onOpenProjectFromPanel).
+                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
             }
 
             statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
@@ -767,6 +775,8 @@ void MainWindow::onOpenProject()
                     m_audioSync->deserializeFromBlob(blob);
                 else
                     m_audioSync->restoreProjectState(loadedName);
+                // Re-baseline the dirty tracker (see onOpenProjectFromPanel).
+                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
             }
 
             statusBar()->showMessage("Project opened", 3000);

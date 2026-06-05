@@ -106,8 +106,12 @@ void MainWindow::setCurrentProject(std::unique_ptr<Project> project)
     if (m_currentProject) {
         // Reset per-project panels so old state doesn't leak into the new project.
         // Scripts, audio, clips, and sessions from the previous project are cleared.
-        if (m_audioSync)
+        if (m_audioSync) {
             m_audioSync->resetForNewProject();
+            // Per-show default shots: tell AudioSync which show this project
+            // belongs to so resolveDefaultShot() picks show-specific defaults.
+            m_audioSync->setCurrentShow(m_currentProject->show());
+        }
 
         // Release all media from the old project and clear the frame cache
         if (m_mediaPool)

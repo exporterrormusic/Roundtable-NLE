@@ -132,7 +132,7 @@ QStringList AudioSync::missingDefaultShots() const
 
     for (const auto& character : m_script->characters) {
         if (character.empty()) continue;
-        auto preset = m_shotPresetManager->resolveDefaultShot(character);
+        auto preset = m_shotPresetManager->resolveDefaultShot(character, m_currentShow);
         if (!preset)
             missing.append(QString::fromStdString(character));
     }

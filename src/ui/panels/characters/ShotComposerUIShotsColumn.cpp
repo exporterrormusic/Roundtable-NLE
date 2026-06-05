@@ -38,6 +38,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QShortcut>
 #include <QSlider>
 #include <QSplitter>
@@ -48,6 +49,9 @@
 #include <QVBoxLayout>
 
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <vector>
 
 namespace rt {
 
@@ -357,6 +361,7 @@ QWidget* ShotComposer::createShotsColumn()
         m_selectedLayer = -1;
         m_shotNameEdit->clear();
         m_shotNameEdit->setEnabled(false);
+        if (m_showsEdit) { m_showsEdit->clear(); m_showsEdit->setEnabled(false); }
         m_defaultShotCheck->setEnabled(false);
         m_defaultCharCombo->setEnabled(false);
         m_defaultCharCombo->clear();
@@ -373,38 +378,114 @@ QWidget* ShotComposer::createShotsColumn()
         if (m_destroying.load(std::memory_order_acquire)) return;
         auto* item = m_shotList->itemAt(pos);
         if (!item) return;
-        QString shotName = item->data(Qt::UserRole).toString();
-        if (shotName.isEmpty()) return;
+        const QString shotKey = item->data(Qt::UserRole).toString();
+        if (shotKey.isEmpty()) return;
+
+        // A shot is identified by (show, name); the list item carries the full
+        // "show/name" key. Split it for display and same-show operations.
+        std::string shotShowStd, shotNameStd;
+        ShotPresetManager::splitKey(shotKey.toStdString(), shotShowStd, shotNameStd);
+        const QString shotName = QString::fromStdString(shotNameStd);
+        const QString shotShow = QString::fromStdString(shotShowStd);
+        const std::string curKey =
+            ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
 
         QMenu menu(this);
         QAction* actDuplicate = menu.addAction(QStringLiteral("\U0001F4CB Duplicate"));
         QAction* actRename    = menu.addAction(QStringLiteral("\u270F\uFE0F Rename"));
+
+        // \u2500\u2500 Move to Show submenu \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        // A shot belongs to exactly one show (its namespace). The current show
+        // is checked; picking another MOVES the shot there. "No Show" / a new
+        // show are also options.
+        QMenu* showMenu = menu.addMenu(QStringLiteral("\U0001F3AC Move to Show"));
+        QAction* actNoShow = showMenu->addAction(QStringLiteral("No Show"));
+        actNoShow->setCheckable(true);
+        actNoShow->setChecked(shotShowStd.empty());
+        showMenu->addSeparator();
+        std::vector<QAction*> showActs;
+        const QStringList allShows = knownShows();
+        for (const QString& sh : allShows) {
+            QAction* a = showMenu->addAction(sh);
+            a->setCheckable(true);
+            a->setChecked(sh.compare(shotShow, Qt::CaseInsensitive) == 0);
+            showActs.push_back(a);
+        }
+        showMenu->addSeparator();
+        QAction* actNewShow = showMenu->addAction(QStringLiteral("New Show\u2026"));
+
         menu.addSeparator();
         QAction* actDelete    = menu.addAction(QStringLiteral("\U0001F5D1 Delete"));
 
         QAction* chosen = menu.exec(m_shotList->viewport()->mapToGlobal(pos));
         if (!chosen) return;
 
+        // \u2500\u2500 Move-to-show handling \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        {
+            bool isMove = false;
+            QString destShow;
+            if (chosen == actNoShow) { isMove = true; destShow.clear(); }
+            else if (chosen == actNewShow) {
+                bool ok = false;
+                QString name = QInputDialog::getText(this, tr("New Show"),
+                    tr("Show name:"), QLineEdit::Normal, QString(), &ok);
+                if (!ok || name.trimmed().isEmpty()) return;
+                isMove = true;
+                destShow = name.trimmed();
+                m_presetManager.addShow(destShow.toStdString());
+            } else {
+                for (size_t i = 0; i < showActs.size(); ++i) {
+                    if (chosen == showActs[i]) { isMove = true; destShow = allShows[static_cast<int>(i)]; break; }
+                }
+            }
+            if (isMove) {
+                if (destShow.compare(shotShow, Qt::CaseInsensitive) == 0)
+                    return; // already there
+                auto preset = m_presetManager.load(shotKey.toStdString());
+                if (!preset) return;
+                // Guard against a name collision in the destination show.
+                if (m_presetManager.hasPreset(destShow.toStdString(), shotNameStd)) {
+                    QMessageBox::warning(this, tr("Move to Show"),
+                        tr("A shot named \"%1\" already exists in that show.").arg(shotName));
+                    return;
+                }
+                preset->setShow(destShow.toStdString());
+                m_presetManager.save(*preset);
+                m_presetManager.remove(shotKey.toStdString());
+                if (curKey == shotKey.toStdString()) {
+                    m_currentShot.setShow(destShow.toStdString());
+                    m_lastSavedName = ShotPresetManager::makeKey(
+                        destShow.toStdString(), m_currentShot.name());
+                    if (m_showsEdit && m_showsEdit->isEnabled())
+                        m_showsEdit->setText(destShow);
+                }
+                refreshShotList();
+                spdlog::info("ShotComposer: moved shot '{}' to show '{}'",
+                             shotNameStd, destShow.toStdString());
+                return;
+            }
+        }
+
         if (chosen == actDuplicate) {
-            auto preset = m_presetManager.load(shotName.toStdString());
+            auto preset = m_presetManager.load(shotKey.toStdString());
             if (!preset) return;
-            std::string baseName = shotName.toStdString() + " Copy";
+            std::string baseName = shotNameStd + " Copy";
             std::string newName  = baseName;
             int counter = 2;
-            while (m_presetManager.hasPreset(newName))
+            while (m_presetManager.hasPreset(shotShowStd, newName))
                 newName = baseName + " " + std::to_string(counter++);
             bool ok = false;
             QString dupeName = QInputDialog::getText(this, "Duplicate Shot",
                 "Name for the duplicate:", QLineEdit::Normal,
                 QString::fromStdString(newName), &ok);
             if (!ok || dupeName.trimmed().isEmpty()) return;
-            ShotPreset dupe = *preset;
+            ShotPreset dupe = *preset;       // keeps the same show
             dupe.setName(dupeName.trimmed().toStdString());
             m_presetManager.save(dupe);
             setCurrentShot(dupe);
             refreshShotList();
             spdlog::info("ShotComposer: Duplicated shot '{}' as '{}'",
-                shotName.toStdString(), dupe.name());
+                shotNameStd, dupe.name());
         }
         else if (chosen == actRename) {
             bool ok = false;
@@ -413,21 +494,21 @@ QWidget* ShotComposer::createShotsColumn()
             if (!ok || newName.trimmed().isEmpty() || newName.trimmed() == shotName)
                 return;
             std::string newNameStd = newName.trimmed().toStdString();
-            if (m_presetManager.hasPreset(newNameStd)) {
+            if (m_presetManager.hasPreset(shotShowStd, newNameStd)) {
                 QMessageBox::warning(this, "Rename Shot",
-                    QString("A shot named '%1' already exists.").arg(newName.trimmed()));
+                    QString("A shot named '%1' already exists in this show.").arg(newName.trimmed()));
                 return;
             }
-            auto preset = m_presetManager.load(shotName.toStdString());
+            auto preset = m_presetManager.load(shotKey.toStdString());
             if (!preset) return;
-            ShotPreset renamed = *preset;
+            ShotPreset renamed = *preset;    // keeps the same show
             renamed.setName(newNameStd);
             m_presetManager.save(renamed);
-            m_presetManager.remove(shotName.toStdString());
+            m_presetManager.remove(shotKey.toStdString());
             setCurrentShot(renamed);
             refreshShotList();
             spdlog::info("ShotComposer: Renamed shot '{}' -> '{}'",
-                shotName.toStdString(), newNameStd);
+                shotNameStd, newNameStd);
         }
         else if (chosen == actDelete) {
             auto reply = QMessageBox::question(
@@ -435,8 +516,8 @@ QWidget* ShotComposer::createShotsColumn()
                 QString("Are you sure you want to delete '%1'?\nThis cannot be undone.").arg(shotName),
                 QMessageBox::Yes | QMessageBox::No);
             if (reply != QMessageBox::Yes) return;
-            m_presetManager.remove(shotName.toStdString());
-            if (m_currentShot.name() == shotName.toStdString()) {
+            m_presetManager.remove(shotKey.toStdString());
+            if (curKey == shotKey.toStdString()) {
                 m_currentShot = ShotPreset();
                 m_selectedLayer = -1;
                 m_shotNameEdit->clear();

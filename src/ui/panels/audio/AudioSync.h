@@ -164,6 +164,11 @@ public:
     void setAudioEngine(AudioEngine* engine);
     void setShotPresetManager(ShotPresetManager* mgr) noexcept { m_shotPresetManager = mgr; }
 
+    /// Set the show of the currently-open project. Default-shot resolution
+    /// uses this so a character can have a different default shot per show.
+    void setCurrentShow(const std::string& show) { m_currentShow = show; }
+    [[nodiscard]] const std::string& currentShow() const noexcept { return m_currentShow; }
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
@@ -366,6 +371,7 @@ private:
     AudioEngine*      m_audioEngine{nullptr};
     AVSyncClock*      m_savedSyncClock{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
+    std::string        m_currentShow;  ///< Show of the open project (per-show defaults)
 
     std::unique_ptr<Transcriber> m_transcriber;
     std::unique_ptr<Script>      m_script;

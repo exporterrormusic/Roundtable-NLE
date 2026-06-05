@@ -126,6 +126,13 @@ void ShotComposer::refreshBackgroundLibrary()
     QStringList filters;
     filters << "*.png" << "*.jpg" << "*.jpeg" << "*.bmp" << "*.webp";
 
+    // Search filter (matches the file base name, case-insensitive)
+    const QString searchText = m_bgSearchEdit
+        ? m_bgSearchEdit->text().trimmed().toLower() : QString();
+    auto matchesSearch = [&](const QFileInfo& fi) {
+        return searchText.isEmpty() || fi.baseName().toLower().contains(searchText);
+    };
+
     // Helper: add a single background item (cached thumbnail).
     // For subfolder items, store the relative-from-backgrounds-dir path in UserRole+2
     // so DragAssetList::mimeData() can pass the correct path to addBackground().
@@ -162,6 +169,7 @@ void ShotComposer::refreshBackgroundLibrary()
     // ── Step 1: root-level files (user-added backgrounds) ───────────────
     auto rootFiles = bgDir.entryInfoList(filters, QDir::Files, QDir::Name);
     for (const auto& entry : rootFiles) {
+        if (!matchesSearch(entry)) continue;
         addBgItem(entry, QString());
     }
 
@@ -170,7 +178,12 @@ void ShotComposer::refreshBackgroundLibrary()
     for (const QFileInfo& sd : subdirs) {
         QDir subDir(sd.absoluteFilePath());
         auto subFiles = subDir.entryInfoList(filters, QDir::Files, QDir::Name);
-        if (subFiles.isEmpty()) continue;
+
+        // Apply the search filter to the subfolder's files first.
+        QList<QFileInfo> matched;
+        for (const auto& entry : subFiles)
+            if (matchesSearch(entry)) matched.append(entry);
+        if (matched.isEmpty()) continue; // hide groups with no matches
 
         // Non-selectable group header
         auto* header = new QListWidgetItem(QStringLiteral("\xF0\x9F\x93\x81  ") + sd.fileName());
@@ -183,12 +196,42 @@ void ShotComposer::refreshBackgroundLibrary()
         m_backgroundLibrary->addItem(header);
 
         // Files under this subdirectory — pass subdir name for relative path
-        for (const auto& entry : subFiles) {
+        for (const auto& entry : matched) {
             addBgItem(entry, sd.fileName());
         }
     }
 
     spdlog::debug("ShotComposer: Found {} backgrounds", m_backgroundLibrary->count());
+}
+
+void ShotComposer::importBackgroundFiles(const QStringList& sourcePaths)
+{
+    if (sourcePaths.isEmpty() || !m_backgroundLibrary) return;
+
+    static const QStringList kImgExt =
+        {"png", "jpg", "jpeg", "bmp", "webp"};
+
+    QDir().mkpath(QStringLiteral("assets/backgrounds"));
+    QStringList importedAbsPaths;
+    for (const QString& srcPath : sourcePaths) {
+        QFileInfo fi(srcPath);
+        if (!fi.isFile() || !kImgExt.contains(fi.suffix().toLower()))
+            continue; // ignore non-image files
+        QString dstPath = QStringLiteral("assets/backgrounds/") + fi.fileName();
+        if (!QFile::exists(dstPath)) {
+            if (!QFile::copy(srcPath, dstPath)) {
+                spdlog::warn("ShotComposer: failed to import background '{}'",
+                             srcPath.toStdString());
+                continue;
+            }
+        }
+        importedAbsPaths << QFileInfo(dstPath).absoluteFilePath();
+    }
+    if (importedAbsPaths.isEmpty()) return;
+
+    // Import into the library only. Adding a background to the shot is done by
+    // dragging the thumbnail onto the layers/preview, or double-clicking it.
+    refreshBackgroundLibrary();
 }
 
 void ShotComposer::refreshVideoLibrary()
@@ -203,6 +246,10 @@ void ShotComposer::refreshVideoLibrary()
     filters << "*.mp4" << "*.avi" << "*.mov" << "*.mkv" << "*.webm" << "*.wmv";
     auto entries = vidDir.entryInfoList(filters, QDir::Files, QDir::Name);
 
+    // Search filter (matches video file or video-character name, case-insensitive)
+    const QString searchText = m_videoSearchEdit
+        ? m_videoSearchEdit->text().trimmed().toLower() : QString();
+
     // Track which video-character names we've already added (avoid duplicates)
     std::unordered_set<std::string> addedVideoChars;
 
@@ -214,6 +261,9 @@ void ShotComposer::refreshVideoLibrary()
             // This file belongs to a video character â€” add as character entry
             const auto& [charName, mutePath, talkPath] = it->second;
             if (addedVideoChars.count(charName)) continue;
+            if (!searchText.isEmpty() &&
+                !QString::fromStdString(charName).toLower().contains(searchText))
+                continue;
             addedVideoChars.insert(charName);
 
             // Extract thumbnail from mute video
@@ -232,7 +282,11 @@ void ShotComposer::refreshVideoLibrary()
             item->setForeground(Theme::colors().accent);
             m_videoLibrary->addItem(item);
         } else {
-            // Regular video â€” extract first frame as thumbnail
+            // Regular video â€” apply search filter on the file base name
+            if (!searchText.isEmpty() &&
+                !entry.baseName().toLower().contains(searchText))
+                continue;
+            // extract first frame as thumbnail
             QPixmap thumb;
             QImage frame = extractVideoThumbnail(fullPath);
             if (!frame.isNull())
