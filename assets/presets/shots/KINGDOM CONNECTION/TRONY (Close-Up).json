@@ -1,0 +1,53 @@
+{
+  "name": "TRONY (Close-Up)",
+  "show": "KINGDOM CONNECTION",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "TRONY-KILO ROMANCE BKG 2",
+      "posX": 0.729642,
+      "posY": 0.418209,
+      "scale": 2.356000,
+      "opacity": 1.000000,
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 2.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Trony",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.596940,
+      "posY": 1.434144,
+      "scale": 3.468497,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "bg", "index": 0}
+  ]
+}

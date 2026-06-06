@@ -1,0 +1,74 @@
+{
+  "name": "RED HOOD (Default)",
+  "show": "KINGDOM CONNECTION",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "INTERVIEW",
+      "posX": 0.500000,
+      "posY": 0.500000,
+      "scale": 1.000000,
+      "opacity": 1.000000,
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Red Hood",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.693970,
+      "posY": 0.753573,
+      "scale": 1.271105,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    },
+    {
+      "characterName": "Modernia",
+      "outfit": "outfit_02",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": false,
+      "posX": 0.237000,
+      "posY": 0.760000,
+      "scale": 1.093000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
+    {"type": "bg", "index": 0}
+  ]
+}

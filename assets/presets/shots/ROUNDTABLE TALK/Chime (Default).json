@@ -1,0 +1,76 @@
+{
+  "name": "Chime (Default)",
+  "show": "ROUNDTABLE TALK",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "CONTROL_ROOM_HD.png",
+      "posX": 0.500000,
+      "posY": 0.500000,
+      "scale": 1.000000,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Wells",
+      "outfit": "CHRONO",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": false,
+      "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4",
+      "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4",
+      "posX": 0.687000,
+      "posY": 0.762000,
+      "scale": 2.193000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    },
+    {
+      "characterName": "Chime",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.249000,
+      "posY": 0.794000,
+      "scale": 1.138000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
+    {"type": "bg", "index": 0}
+  ]
+}

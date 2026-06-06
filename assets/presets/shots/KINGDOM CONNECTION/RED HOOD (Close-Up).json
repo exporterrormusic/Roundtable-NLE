@@ -1,0 +1,53 @@
+{
+  "name": "RED HOOD (Close-Up)",
+  "show": "KINGDOM CONNECTION",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "INTERVIEW",
+      "posX": 0.137000,
+      "posY": 0.545000,
+      "scale": 1.738000,
+      "opacity": 1.000000,
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 2.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Red Hood",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.475000,
+      "posY": 0.986000,
+      "scale": 2.210000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "bg", "index": 0}
+  ]
+}

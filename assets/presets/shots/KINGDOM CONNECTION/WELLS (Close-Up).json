@@ -1,0 +1,55 @@
+{
+  "name": "WELLS (Close-Up)",
+  "show": "KINGDOM CONNECTION",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "CROWN CONTROL ROOM CONNECTION",
+      "posX": 0.236000,
+      "posY": 0.733000,
+      "scale": 2.122000,
+      "opacity": 1.000000,
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 5.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Wells",
+      "outfit": "DRESS",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "videoMutePath": "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4",
+      "videoTalkPath": "assets/videos/WELLS-DRESS-TALK_HEVC.mp4",
+      "posX": 0.479975,
+      "posY": 1.272056,
+      "scale": 3.813000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "bg", "index": 0}
+  ]
+}
