@@ -163,6 +163,14 @@ private:
 
     // ── Hit testing / geometry helpers for overlay ───────────────────────
 
+    /// Compute the screen-space transform of the 16:9 logical canvas
+    /// (origin = top-left in widget pixels, w/h = on-screen size).
+    /// This is the SINGLE source of truth for the canvas: content rendering,
+    /// the overlay frame border, hit-testing and dragging must all use it so
+    /// the shot frame and its contents stay locked together at every zoom.
+    void computeCanvasTransform(float& originX, float& originY,
+                                float& w, float& h) const;
+
     /// Get the screen-space bounding rect for a character layer.
     QRect layerScreenRect(const PreviewCharLayer& layer) const;
 

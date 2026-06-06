@@ -54,13 +54,18 @@ static std::string resolveVideoPath(const std::string& path)
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-        bool isWellsMute = (lower.find("wells-chrono-mute") != std::string::npos);
-        bool isWellsTalk = (lower.find("wells-chrono-talk") != std::string::npos);
-
-        if (isWellsMute || isWellsTalk) {
+        // Map each Wells costume's old/master path to its lightweight stacked
+        // HEVC proxy (skip paths already pointing at a _HEVC proxy).
+        const char* hevcName = nullptr;
+        if (lower.find("_hevc") == std::string::npos) {
+            if      (lower.find("wells-chrono-mute") != std::string::npos) hevcName = "WELLS-CHRONO-MUTE_HEVC.mp4";
+            else if (lower.find("wells-chrono-talk") != std::string::npos) hevcName = "WELLS-CHRONO-TALK_HEVC.mp4";
+            else if (lower.find("wells-dress-mute")  != std::string::npos) hevcName = "WELLS-DRESS-MUTE_HEVC.mp4";
+            else if (lower.find("wells-dress-talk")  != std::string::npos) hevcName = "WELLS-DRESS-TALK_HEVC.mp4";
+        }
+        if (hevcName) {
             fs::path hevcPath = p;
-            hevcPath.replace_filename(isWellsMute ? "WELLS-CHRONO-MUTE_HEVC.mp4"
-                                                  : "WELLS-CHRONO-TALK_HEVC.mp4");
+            hevcPath.replace_filename(hevcName);
             if (fs::exists(hevcPath)) {
                 spdlog::info("ClipSerialization: Wells migration '{}' -> '{}'",
                              path, hevcPath.string());

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace rt {
 
@@ -109,12 +110,42 @@ inline const std::unordered_map<std::string, VCInfo>& videoCharacterFiles()
     // Preserve the old .mov and .mp4 keys so existing shot presets
     // resolve through ClipSerialization migration.
     static const std::unordered_map<std::string, VCInfo> table {
-        { "wells-chrono-mute.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
-        { "wells-chrono-talk.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
-        { "wells-chrono-mute.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
-        { "wells-chrono-talk.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE-GREEN.mp4", "assets/videos/WELLS-CHRONO-TALK-GREEN.mp4" } },
+        // CHRONO — stacked-alpha HEVC proxy (the GREEN chroma-key .mp4s are gone).
+        { "wells-chrono-mute.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4" } },
+        { "wells-chrono-talk.mp4", { "Wells", "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4" } },
+        { "wells-chrono-mute.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4" } },
+        { "wells-chrono-talk.mov", { "Wells", "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4" } },
+        // DRESS outfit — stacked-alpha HEVC (top RGB / bottom alpha, 1080x3776),
+        // converted from the ProRes 4444 originals.  Keys cover both the HEVC
+        // files and the original .mov so library/migration resolve them to Wells
+        // instead of listing them as plain background videos.
+        { "wells-dress-mute_hevc.mp4", { "Wells", "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4", "assets/videos/WELLS-DRESS-TALK_HEVC.mp4" } },
+        { "wells-dress-talk_hevc.mp4", { "Wells", "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4", "assets/videos/WELLS-DRESS-TALK_HEVC.mp4" } },
+        { "wells-dress-mute.mov",      { "Wells", "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4", "assets/videos/WELLS-DRESS-TALK_HEVC.mp4" } },
+        { "wells-dress-talk.mov",      { "Wells", "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4", "assets/videos/WELLS-DRESS-TALK_HEVC.mp4" } },
     };
     return table;
+}
+
+// ── Video-character outfit catalog ──────────────────────────────────────────
+// A video character can have multiple outfits, each swapping the mute/talk
+// video pair (mirrors Spine outfit switching).  The first entry is the
+// default outfit used when the character is first added to a shot.
+struct VCOutfit { std::string name; std::string mutePath; std::string talkPath; };
+
+inline const std::vector<VCOutfit>& videoCharacterOutfitsFor(const std::string& charName)
+{
+    static const std::unordered_map<std::string, std::vector<VCOutfit>> table {
+        { "Wells", {
+            // Stacked-alpha HEVC proxies (NVDEC, 1080x3776) — same workflow as
+            // the primary character library; export prefers the HEVC over .mov.
+            { "CHRONO", "assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4" },
+            { "DRESS",  "assets/videos/WELLS-DRESS-MUTE_HEVC.mp4",  "assets/videos/WELLS-DRESS-TALK_HEVC.mp4" },
+        }},
+    };
+    static const std::vector<VCOutfit> kEmpty;
+    auto it = table.find(charName);
+    return it != table.end() ? it->second : kEmpty;
 }
 
 // ── Filter icon generators (implemented in ShotComposerThumbnailGen.cpp) ──

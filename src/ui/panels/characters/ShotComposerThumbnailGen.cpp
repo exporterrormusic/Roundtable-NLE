@@ -583,11 +583,26 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
     {
         std::string videoPath;
 
-        // Hardcoded video character table (Wells uses packed-alpha .mp4).
-        const auto& vcFiles = videoCharacterFiles();
-        for (const auto& [filename, info] : vcFiles) {
-            const auto& [vcName, mutePath, talkPath] = info;
-            if (vcName == charName) { videoPath = mutePath; break; }
+        // Prefer the character's default outfit (first catalog entry) so the
+        // thumbnail is stable — videoCharacterFiles() is an unordered_map, so
+        // iterating it picks an arbitrary outfit once a character has several.
+        auto pickExisting = [](const std::string& mute, const std::string& talk) -> std::string {
+            if (!mute.empty() && QFileInfo::exists(QString::fromStdString(mute))) return mute;
+            if (!talk.empty() && QFileInfo::exists(QString::fromStdString(talk))) return talk;
+            return {};
+        };
+        for (const auto& o : videoCharacterOutfitsFor(charName)) {
+            videoPath = pickExisting(o.mutePath, o.talkPath);
+            if (!videoPath.empty()) break;
+        }
+        // Fallback: scan the file table for any existing media for this char.
+        if (videoPath.empty()) {
+            for (const auto& [filename, info] : videoCharacterFiles()) {
+                (void)filename;
+                if (info.charName != charName) continue;
+                videoPath = pickExisting(info.mutePath, info.talkPath);
+                if (!videoPath.empty()) break;
+            }
         }
 
         if (!videoPath.empty()) {

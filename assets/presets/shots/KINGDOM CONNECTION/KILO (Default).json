@@ -1,15 +1,15 @@
 {
-  "name": "CROWN (Default)",
+  "name": "KILO (Default)",
   "show": "KINGDOM CONNECTION",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "STUDIO",
-      "posX": 0.522358,
-      "posY": 0.621560,
-      "scale": 1.396760,
+      "path": "TRONY-KILO ROMANCE BKG 2",
+      "posX": 0.443323,
+      "posY": 0.504919,
+      "scale": 1.339918,
       "opacity": 1.000000,
       "nativeWidth": 1920,
       "nativeHeight": 1080,
@@ -26,16 +26,36 @@
   ],
   "characters": [
     {
-      "characterName": "Crown",
+      "characterName": "Kilo",
       "outfit": "default",
       "stance": "default",
       "animation": "idle",
       "isTalking": true,
-      "posX": 0.312060,
-      "posY": 0.710714,
-      "scale": 1.371497,
+      "posX": 0.860133,
+      "posY": 0.786197,
+      "scale": 1.408295,
       "rotation": 0.000000,
       "flipX": true,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    },
+    {
+      "characterName": "Trony",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": false,
+      "posX": 0.210000,
+      "posY": 0.856000,
+      "scale": 1.662000,
+      "rotation": 0.000000,
+      "flipX": false,
       "flipY": false,
       "opacity": 1.000000,
       "cropLeft": 0.000000,
@@ -48,6 +68,7 @@
   ],
   "layerOrder": [
     {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
     {"type": "bg", "index": 0}
   ]
 }

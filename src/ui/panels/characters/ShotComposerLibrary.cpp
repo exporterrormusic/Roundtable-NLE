@@ -392,33 +392,58 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
 
     // Populate outfit combo â€” ensure "default" always appears first
     m_outfitCombo->clear();
-#ifdef ROUNDTABLE_HAS_SPINE
-    if (m_modelManager) {
-        const auto* entry = m_modelManager->findByName(ch.characterName);
-        if (entry) {
-            // Add "default" first if it exists, then the rest
-            bool hasDefault = false;
-            for (const auto& outfit : entry->outfits) {
-                if (outfit.name == "default") { hasDefault = true; break; }
-            }
-            if (hasDefault)
-                m_outfitCombo->addItem("default");
-            for (const auto& outfit : entry->outfits) {
-                if (outfit.name != "default")
-                    m_outfitCombo->addItem(QString::fromStdString(outfit.name));
+    bool isVideoChar = ch.isVideoCharacter();
+    bool videoHasOutfits = false;
+    if (isVideoChar) {
+        // Video characters: outfits come from the video-outfit catalog, each
+        // swapping the mute/talk video pair (mirrors Spine outfit switching).
+        const auto& vcOutfits = videoCharacterOutfitsFor(ch.characterName);
+        for (const auto& o : vcOutfits)
+            m_outfitCombo->addItem(QString::fromStdString(o.name));
+        videoHasOutfits = m_outfitCombo->count() > 1;
+
+        // Select by matching the character's current video path first (robust
+        // to legacy presets that stored outfit="default"), then by outfit name.
+        int sel = -1;
+        for (int i = 0; i < static_cast<int>(vcOutfits.size()); ++i) {
+            if (vcOutfits[static_cast<size_t>(i)].mutePath == ch.videoMutePath ||
+                vcOutfits[static_cast<size_t>(i)].talkPath == ch.videoTalkPath) {
+                sel = i; break;
             }
         }
-    }
-#endif
-    // Select the character's current outfit, fall back to "default"
-    std::string targetOutfit = ch.outfit.empty() ? "default" : ch.outfit;
-    int outfitIdx = m_outfitCombo->findText(QString::fromStdString(targetOutfit));
-    if (outfitIdx >= 0) m_outfitCombo->setCurrentIndex(outfitIdx);
-    else if (m_outfitCombo->count() > 0) {
-        m_outfitCombo->setCurrentIndex(0);
+        if (sel < 0)
+            sel = m_outfitCombo->findText(QString::fromStdString(ch.outfit));
+        if (sel < 0 && m_outfitCombo->count() > 0) sel = 0;
+        if (sel >= 0) m_outfitCombo->setCurrentIndex(sel);
     } else {
-        m_outfitCombo->addItem(QString::fromStdString(targetOutfit));
-        m_outfitCombo->setCurrentIndex(0);
+#ifdef ROUNDTABLE_HAS_SPINE
+        if (m_modelManager) {
+            const auto* entry = m_modelManager->findByName(ch.characterName);
+            if (entry) {
+                // Add "default" first if it exists, then the rest
+                bool hasDefault = false;
+                for (const auto& outfit : entry->outfits) {
+                    if (outfit.name == "default") { hasDefault = true; break; }
+                }
+                if (hasDefault)
+                    m_outfitCombo->addItem("default");
+                for (const auto& outfit : entry->outfits) {
+                    if (outfit.name != "default")
+                        m_outfitCombo->addItem(QString::fromStdString(outfit.name));
+                }
+            }
+        }
+#endif
+        // Select the character's current outfit, fall back to "default"
+        std::string targetOutfit = ch.outfit.empty() ? "default" : ch.outfit;
+        int outfitIdx = m_outfitCombo->findText(QString::fromStdString(targetOutfit));
+        if (outfitIdx >= 0) m_outfitCombo->setCurrentIndex(outfitIdx);
+        else if (m_outfitCombo->count() > 0) {
+            m_outfitCombo->setCurrentIndex(0);
+        } else {
+            m_outfitCombo->addItem(QString::fromStdString(targetOutfit));
+            m_outfitCombo->setCurrentIndex(0);
+        }
     }
 
     int stanceIdx = static_cast<int>(ch.stance);
@@ -431,9 +456,10 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     m_flipYCheck->setChecked(ch.flipY);
     m_visibleCheck->setChecked(ch.visible);
 
-    // Hide Spine-specific controls for video characters
+    // Hide Spine-specific controls for video characters, but keep the Outfit
+    // combo when the video character has selectable costumes (e.g. Wells).
     bool isVideo = ch.isVideoCharacter();
-    m_outfitCombo->setVisible(!isVideo);
+    m_outfitCombo->setVisible(!isVideo || videoHasOutfits);
     m_stanceCombo->setVisible(!isVideo);
     m_animCombo->setVisible(!isVideo);
     // Flip is available for ALL character types (Spine + video)
@@ -576,6 +602,18 @@ void ShotComposer::onCharacterPropertyChanged()
 
     int stanceIdx = m_stanceCombo->currentIndex();
     ch->stance = static_cast<CharacterStance>(stanceIdx >= 0 ? stanceIdx : 0);
+
+    // For video characters, the outfit selects a different mute/talk video
+    // pair — swap the stored paths so the preview/export pick up the costume.
+    if (ch->isVideoCharacter()) {
+        for (const auto& o : videoCharacterOutfitsFor(ch->characterName)) {
+            if (o.name == ch->outfit) {
+                ch->videoMutePath = o.mutePath;
+                ch->videoTalkPath = o.talkPath;
+                break;
+            }
+        }
+    }
 
     updatePreview();
     emit shotChanged();

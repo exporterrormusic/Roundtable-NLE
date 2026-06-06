@@ -15,15 +15,44 @@
 
 namespace rt {
 
+// ─────────────────────────────────────────────────────────────────────────
+// Canvas transform — the ONE place that maps the 16:9 logical canvas to
+// screen pixels.  Content rendering, the overlay frame, hit-testing and
+// dragging all call this so they can never diverge (which previously caused
+// zoom to drift the shot contents away from the shot frame).
+// ─────────────────────────────────────────────────────────────────────────
+void SpinePreviewWidget::computeCanvasTransform(float& originX, float& originY,
+                                                float& w, float& h) const
+{
+    const float ww = static_cast<float>(width());
+    const float wh = static_cast<float>(height());
+
+    constexpr float kLogicalW = 1920.0f;
+    constexpr float kLogicalH = 1080.0f;
+    const float widgetAspect  = ww / std::max(1.0f, wh);
+    const float logicalAspect = kLogicalW / kLogicalH;
+
+    // Fit the 16:9 canvas inside the widget (letter-/pillar-box), then zoom.
+    const float scaleToWidget = (widgetAspect > logicalAspect)
+        ? wh / kLogicalH     // widget wider than 16:9 → fit to height
+        : ww / kLogicalW;    // widget taller/equal     → fit to width
+
+    w = kLogicalW * scaleToWidget * m_viewZoom;
+    h = kLogicalH * scaleToWidget * m_viewZoom;
+
+    // Zoom about the widget centre: (ww - w)/2 keeps the canvas centred at
+    // every zoom level, then pan offsets it.  Pan is added directly so it
+    // stays consistent with the cursor-anchored wheel-zoom math.
+    originX = (ww - w) * 0.5f + m_viewPanX;
+    originY = (wh - h) * 0.5f + m_viewPanY;
+}
+
 QRect SpinePreviewWidget::layerScreenRect(const PreviewCharLayer& layer) const
 {
-    int ww = width(), wh = height();
+    int wh = height();
 
-    // Same zoom math as renderMultiLayer: virtual canvas
-    float canvasW = static_cast<float>(ww) * m_viewZoom;
-    float canvasH = static_cast<float>(wh) * m_viewZoom;
-    float canvasOriginX = static_cast<float>(ww) * (1.0f - m_viewZoom) * 0.5f + m_viewPanX;
-    float canvasOriginY = static_cast<float>(wh) * (1.0f - m_viewZoom) * 0.5f + m_viewPanY;
+    float canvasOriginX, canvasOriginY, canvasW, canvasH;
+    computeCanvasTransform(canvasOriginX, canvasOriginY, canvasW, canvasH);
 
     // â”€â”€ Background / video image layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (layer.isBackground) {
@@ -162,11 +191,8 @@ void SpinePreviewWidget::drawTransformOverlay(QPainter& painter)
 
     // â”€â”€ Draw 16:9 canvas border â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     {
-        int ww = width(), wh = height();
-        float canvasW = static_cast<float>(ww) * m_viewZoom;
-        float canvasH = static_cast<float>(wh) * m_viewZoom;
-        float canvasOriginX = static_cast<float>(ww) * (1.0f - m_viewZoom) * 0.5f + m_viewPanX;
-        float canvasOriginY = static_cast<float>(wh) * (1.0f - m_viewZoom) * 0.5f + m_viewPanY;
+        float canvasOriginX, canvasOriginY, canvasW, canvasH;
+        computeCanvasTransform(canvasOriginX, canvasOriginY, canvasW, canvasH);
         QRectF canvasRect(canvasOriginX, canvasOriginY, canvasW, canvasH);
 
         // Semi-transparent darkening outside the canvas area
@@ -328,7 +354,7 @@ void SpinePreviewWidget::wheelEvent(QWheelEvent* event)
     newZoom = std::clamp(newZoom, 0.1f, 10.0f);
 
     // Zoom toward mouse position â€” pan is relative to widget center
-    // (rendering uses center-based origin: canvasOriginX = ww*(1-zoom)/2 + panX)
+    // (computeCanvasTransform uses center-based origin: canvasOriginX = (ww - canvasW)/2 + panX)
     QPointF mousePos = event->position();
     float mx = static_cast<float>(mousePos.x()) - width()  * 0.5f;
     float my = static_cast<float>(mousePos.y()) - height() * 0.5f;
@@ -571,11 +597,10 @@ void SpinePreviewWidget::mouseMoveEvent(QMouseEvent* event)
     // Drag
     if (m_dragging && m_dragLayerIdx >= 0 && m_dragLayerIdx < static_cast<int>(m_layers.size())) {
         auto& layer = m_layers[static_cast<size_t>(m_dragLayerIdx)];
-        int ww = width(), wh = height();
 
         // Convert pixel delta to normalized coordinate delta relative to canvas
-        float canvasW = static_cast<float>(ww) * m_viewZoom;
-        float canvasH = static_cast<float>(wh) * m_viewZoom;
+        float canvasOriginX, canvasOriginY, canvasW, canvasH;
+        computeCanvasTransform(canvasOriginX, canvasOriginY, canvasW, canvasH);
         float dxPx = static_cast<float>(pos.x() - m_dragStartPos.x());
         float dyPx = static_cast<float>(pos.y() - m_dragStartPos.y());
         float dxNorm = dxPx / canvasW;
