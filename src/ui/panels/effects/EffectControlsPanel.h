@@ -196,6 +196,14 @@ public:
     /// Set command stack for undo support.
     void setCommandStack(CommandStack* stack) noexcept { m_commandStack = stack; }
 
+    /// Keyframe clipboard (Premiere-style copy/paste across properties).
+    void copySelectedKeyframes();
+    void cutSelectedKeyframes();
+    void pasteKeyframes();
+    [[nodiscard]] bool hasKfClipboardData() const noexcept { return !m_kfClipboard.empty(); }
+    [[nodiscard]] bool hasSelectedKeyframes() const noexcept { return !m_selectedKeys.empty(); }
+    void clearKfClipboard() noexcept { m_kfClipboard.clear(); }
+
     QSize sizeHint() const override { return {400, 200}; }
     QSize minimumSizeHint() const override { return {100, 50}; }
 
@@ -282,6 +290,18 @@ private:
     std::map<KeyframeTrack<float>*, std::vector<DragSnapKf>> m_dragTrackSnap;
 
     CommandStack*  m_commandStack{nullptr};
+
+    // ── Keyframe clipboard (Premiere-style copy/paste) ──────────────────
+    struct KfClipboardEntry {
+        KeyframeTrack<float>* track;
+        int64_t relativeTime;
+        float   value;
+        int     interp;
+        float   bezierInX, bezierInY, bezierOutX, bezierOutY;
+        int     spatialInterp;
+        float   spatialInX, spatialInY, spatialOutX, spatialOutY;
+    };
+    std::vector<KfClipboardEntry> m_kfClipboard;
 
     static constexpr int kRulerHeight = 24;
     static constexpr int kRowHeight   = 28;
@@ -372,6 +392,21 @@ public:
     /// Paste a previously copied effect onto the current clip.
     void pasteEffect();
 
+    // ── Keyframe clipboard (delegates to KeyframeTimeline) ──────────────
+    /// Copy selected keyframes in the mini-timeline to internal clipboard.
+    void copySelectedKeyframes();
+    /// Cut (copy + delete) selected keyframes.
+    void cutSelectedKeyframes();
+    /// Paste keyframes from clipboard at the current playhead.
+    void pasteKeyframes();
+    /// Returns true if the keyframe clipboard has data.
+    [[nodiscard]] bool hasKfClipboardData() const noexcept;
+    /// Returns true if the mini-timeline has selected keyframes.
+    [[nodiscard]] bool hasSelectedKeyframes() const noexcept;
+    /// Clear the keyframe clipboard (call when copying a clip so Ctrl+V
+    /// doesn't paste stale keyframes).
+    void clearKfClipboard() noexcept;
+
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
@@ -408,6 +443,9 @@ private:
     void buildLetterboxUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build generic flat parameter rows for a non-Ultra Key effect
     void buildGenericEffectUI(Effect& fx, size_t effectIdx, int& rowIdx);
+    /// Build a beat-reactive effect UI: generic params + audio-source picker
+    /// and a "Detect Beats" action that bakes onsets for Auto mode.
+    void buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Wire a single effect parameter spin box to live preview + undo commit
     void wireEffectParam(ScrubbySpinBox* spin, size_t effectIdx, size_t paramIdx);
     /// Build mask parameter sub-sections for all masks on the current clip

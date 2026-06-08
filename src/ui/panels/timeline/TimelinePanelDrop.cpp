@@ -150,6 +150,30 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         return;
     }
 
+    // ── Glitch preset drop (curated multi-effect macro) ─────────────────
+    if (event->mimeData()->hasFormat("application/x-roundtable-glitch-preset")) {
+        m_effectDropTarget.reset();
+        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
+        bool ok = false;
+        int presetId = event->mimeData()
+            ->data("application/x-roundtable-glitch-preset").toInt(&ok);
+        if (!ok) { event->ignore(); return; }
+
+        QPointF pos = event->position();
+        auto hitRef = hitTestClip(pos);
+        if (!hitRef || !m_timeline) { event->ignore(); return; }
+
+        auto* track = m_timeline->track(hitRef->trackIndex);
+        if (!track) { event->ignore(); return; }
+        size_t clipIdx = track->findClipIndexById(hitRef->clipId);
+        if (clipIdx == SIZE_MAX) { event->ignore(); return; }
+
+        emit glitchPresetDroppedOnClip(hitRef->trackIndex, hitRef->clipId, presetId);
+        event->acceptProposedAction();
+        return;
+    }
+
     // ── Audio FX drop (EQ / Dynamics → clip FxChain) ────────────────────
     if (event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
         QByteArray fxData = event->mimeData()->data("application/x-roundtable-audiofx");

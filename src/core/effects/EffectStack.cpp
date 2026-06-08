@@ -19,6 +19,10 @@
 #include "effects/Flip.h"
 #include "effects/ColorGrading.h"
 #include "effects/FillChannel.h"
+#include "effects/GlitchEffects.h"
+#include "effects/BeatEffects.h"
+
+#include "Constants.h"
 
 #include <algorithm>
 
@@ -94,6 +98,18 @@ std::unique_ptr<Effect> createEffect(EffectType type)
     case EffectType::FlipVertical:   return std::make_unique<Flip>(EffectType::FlipVertical);
     case EffectType::FillLeftWithRight:  return std::make_unique<FillLeftWithRight>();
     case EffectType::FillRightWithLeft:  return std::make_unique<FillRightWithLeft>();
+    case EffectType::Scanlines:          return std::make_unique<Scanlines>();
+    case EffectType::BlockGlitch:        return std::make_unique<BlockGlitch>();
+    case EffectType::ChromaticSplit:     return std::make_unique<ChromaticSplit>();
+    case EffectType::TurbulentDisplace:  return std::make_unique<TurbulentDisplace>();
+    case EffectType::Posterize:          return std::make_unique<Posterize>();
+    case EffectType::Grain:              return std::make_unique<Grain>();
+    case EffectType::SignalTear:         return std::make_unique<SignalTear>();
+    case EffectType::BeatZoom:           return std::make_unique<BeatZoom>();
+    case EffectType::BeatFlash:          return std::make_unique<BeatFlash>();
+    case EffectType::BeatShake:          return std::make_unique<BeatShake>();
+    case EffectType::BeatChroma:         return std::make_unique<BeatChroma>();
+    case EffectType::BeatDrop:           return std::make_unique<BeatDrop>();
     default: return nullptr;
     }
 }
@@ -176,6 +192,28 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
         if (e->effectType() == EffectType::ColorGrading) {
             auto* lumetri = static_cast<const ColorGrading*>(e.get());
             result.push_back({e->effectType(), lumetri->evalGpuParams(time)});
+
+        } else if (isProceduralTimeEffect(e->effectType())) {
+            // Glitch family: forward a continuous clock so the shader can
+            // animate itself. `time` here is already clip-local (the caller
+            // passes tick - clip->timelineIn()), so this auto-fits clip length.
+            auto params = e->evalAllParams(time);
+            if (params.size() <= kGlitchTimeSlot)
+                params.resize(kGlitchTimeSlot + 1, 0.0f);
+            params[kGlitchTimeSlot] = static_cast<float>(ticksToSeconds(time));
+            result.push_back({e->effectType(), std::move(params)});
+
+        } else if (isBeatReactEffect(e->effectType())) {
+            // Beat family: the CPU computes the 0–1 pulse envelope (from the
+            // tempo grid or detected onsets) and forwards it + the clock so the
+            // shader just scales its reaction by pulse * Amount.
+            auto* be = static_cast<const BeatReactEffect*>(e.get());
+            auto params = e->evalAllParams(time);
+            if (params.size() <= kGlitchTimeSlot)
+                params.resize(kGlitchTimeSlot + 1, 0.0f);
+            params[kBeatPulseSlot]  = be->computePulse(time);
+            params[kGlitchTimeSlot] = static_cast<float>(ticksToSeconds(time));
+            result.push_back({e->effectType(), std::move(params)});
 
         } else {
             result.push_back({e->effectType(), e->evalAllParams(time)});

@@ -5,6 +5,7 @@
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
 #include "Theme.h"
+#include "PathUtils.h"
 
 #include "Encoder.h"
 #include "Muxer.h"
@@ -446,7 +447,7 @@ void ExportPanel::setupUI()
         uint32_t jobId = static_cast<uint32_t>(item->data(Qt::UserRole).toULongLong(&ok));
         if (ok && m_renderQueue) {
             const auto* job = m_renderQueue->job(jobId);
-            if (job && QFileInfo(QString::fromStdString(job->config.outputPath.string())).exists()) {
+            if (job && QFileInfo(QString::fromStdString(pathToUtf8(job->config.outputPath))).exists()) {
                 revealAction = menu.addAction(tr("Reveal in Explorer"));
             }
         }
@@ -460,7 +461,7 @@ void ExportPanel::setupUI()
         } else if (revealAction && chosen == revealAction) {
             const auto* job = m_renderQueue->job(jobId);
             if (job) {
-                QString path = QString::fromStdString(job->config.outputPath.string());
+                QString path = QString::fromStdString(pathToUtf8(job->config.outputPath));
                 QFileInfo fi(path);
                 if (fi.exists()) {
                     QProcess::startDetached("explorer.exe",

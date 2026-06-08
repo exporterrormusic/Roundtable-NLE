@@ -359,6 +359,54 @@ static LONG WINAPI stackOverflowVectoredHandler(EXCEPTION_POINTERS* exInfo)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/// Heap-safe stack-walk logger for fatal fast-fail exceptions (heap
+/// corruption, /GS stack-buffer-overrun, __fastfail).  These are raised
+/// via RtlReportFatalFailure and go STRAIGHT to WER/terminate — they
+/// bypass SetUnhandledExceptionFilter, so crashExceptionFilter's
+/// symbolized walk + minidump never run for them (which is why every
+/// 0xC0000374 in crash_log.txt dead-ends at a single ntdll frame).
+///
+/// We run inside the first-chance VEH, still on the faulting thread, so
+/// the live stack contains the frame in OUR code that triggered the heap
+/// operation which detected the corruption.  Logs each return address as
+/// "module+0xoffset" using ONLY stack buffers + OS calls (NO CRT heap —
+/// that's exactly what's corrupted).  Symbolize the roundtable.exe
+/// offsets offline against build/bin/Release/roundtable.pdb.
+static void logFatalStackStackSafe(const wchar_t* logDir) noexcept
+{
+    appendCrashLogRawStackSafe(logDir,
+        "  --- fatal stack (module+offset; symbolize vs roundtable.pdb) ---");
+
+    void* frames[62] = {};
+    USHORT n = CaptureStackBackTrace(0, 62, frames, nullptr);
+    for (USHORT i = 0; i < n; ++i) {
+        char       modBase[64] = {};
+        unsigned long long off = 0;
+        HMODULE    hMod        = nullptr;
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(frames[i]), &hMod) && hMod) {
+            char modPath[MAX_PATH] = {};
+            if (GetModuleFileNameA(hMod, modPath, MAX_PATH)) {
+                const char* base = modPath;
+                for (const char* p = modPath; *p; ++p)
+                    if (*p == '\\' || *p == '/') base = p + 1;
+                size_t k = 0;
+                while (base[k] && k + 1 < sizeof(modBase)) { modBase[k] = base[k]; ++k; }
+                modBase[k] = '\0';
+            }
+            off = reinterpret_cast<unsigned long long>(frames[i])
+                - reinterpret_cast<unsigned long long>(hMod);
+        }
+        char line[192];
+        snprintf(line, sizeof(line), "  [%2u] %s+0x%llX",
+                 static_cast<unsigned>(i),
+                 modBase[0] ? modBase : "?", off);
+        appendCrashLogRawStackSafe(logDir, line);
+    }
+}
+
 // ── Last-chance VEH (registered as last handler) ────────────────────────
 // On Windows 8+, SetUnhandledExceptionFilter is unreliable — WER may
 // intercept the exception before the filter runs.  This VEH runs BEFORE
@@ -472,6 +520,18 @@ static LONG WINAPI lastChanceVectoredHandler(EXCEPTION_POINTERS* exInfo)
                  GetCurrentThreadId());
     }
     appendCrashLogRawStackSafe(state().crashDirW, msg);
+
+    // Fatal fast-fail codes (heap corruption, /GS stack-buffer-overrun,
+    // __fastfail) are raised via RtlReportFatalFailure and terminate the
+    // process WITHOUT reaching SetUnhandledExceptionFilter — so the
+    // symbolized stack walk + minidump in crashExceptionFilter never run.
+    // This VEH is the only handler that fires for them, so capture the
+    // (heap-safe) stack here; otherwise the crash is undiagnosable.
+    if (code == 0xC0000374       // STATUS_HEAP_CORRUPTION
+     || code == 0xC0000409       // STATUS_STACK_BUFFER_OVERRUN (/GS, __fastfail)
+     || code == 0xC0000602) {    // STATUS_FAIL_FAST_EXCEPTION
+        logFatalStackStackSafe(state().crashDirW);
+    }
 
     // Continue searching — SEH handlers and the unhandled exception
     // filter will still process this exception normally.

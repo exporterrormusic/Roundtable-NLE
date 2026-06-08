@@ -69,8 +69,10 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     // when m_project is somehow null.
     uint32_t innerW = outW;
     uint32_t innerH = outH;
-    if (m_project) {
-        const auto& res = m_project->settings().resolution();
+    if (innerTimeline) {
+        // Each sequence has its own resolution — render the nested sequence at
+        // ITS canvas size, not the parent/active sequence's.
+        const auto& res = innerTimeline->settings().resolution();
         if (res.width > 0 && res.height > 0) {
             innerW = res.width;
             innerH = res.height;

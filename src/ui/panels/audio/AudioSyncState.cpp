@@ -64,21 +64,36 @@ void AudioSync::updateWorkflowState()
     // Update smart bar and button states
     updateSmartBar();
 
+    // Export needs CONFIRMED matches, not the m_syncDone workflow flag.
+    // Re-syncing a URL script with GDrive remaps existing matches (they
+    // survive) but resets m_syncDone=false — which used to grey out Export
+    // even though confirmed clips were ready to export. So enable Export (and
+    // the confirm/clear actions that operate on matches) whenever there is at
+    // least one confirmed clip, regardless of m_syncDone.
+    bool hasConfirmedMatch = false;
+    for (const auto& clip : m_clips) {
+        if (clip.scriptLineNumber >= 0 && clip.matchState == 2) {
+            hasConfirmedMatch = true;
+            break;
+        }
+    }
+    const bool canExport = m_syncDone || hasConfirmedMatch;
+
     // Enable/disable setup-panel group boxes (hidden old groups still used
     // by restoreProjectState, so keep them in sync)
     if (m_audioGroup)      m_audioGroup->setEnabled(m_scriptLoaded);
     if (m_transcribeGroup) m_transcribeGroup->setEnabled(m_audioImported);
     if (m_syncGroup)       m_syncGroup->setEnabled(m_transcriptionDone && m_scriptLoaded);
     if (m_reviewGroup)     m_reviewGroup->setEnabled(m_syncDone || m_transcriptionDone);
-    if (m_exportBtn)       m_exportBtn->setEnabled(m_syncDone);
+    if (m_exportBtn)       m_exportBtn->setEnabled(canExport);
     if (m_confirmBtn)      m_confirmBtn->setEnabled(m_syncDone);
     if (m_confirmAllBtn)   m_confirmAllBtn->setEnabled(m_syncDone);
 
     // Enable/disable the new action bar buttons
     if (m_syncActionBtn)       m_syncActionBtn->setEnabled(m_transcriptionDone && m_scriptLoaded);
     if (m_confirmAllActionBtn) m_confirmAllActionBtn->setEnabled(m_syncDone);
-    if (m_clearActionBtn)      m_clearActionBtn->setEnabled(m_syncDone);
-    if (m_exportActionBtn)     m_exportActionBtn->setEnabled(m_syncDone);
+    if (m_clearActionBtn)      m_clearActionBtn->setEnabled(canExport);
+    if (m_exportActionBtn)     m_exportActionBtn->setEnabled(canExport);
 
     // Update the status label in the action bar
     int confirmed = 0, total = 0;
@@ -454,8 +469,9 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
         hoverBorder = Theme::hex(_tc.warning.lighter(120));
         break;
     default:
-        bgColor     = Theme::hex(_tc.surface2);
-        borderColor = Theme::hex(_tc.borderLight);
+        // Unmatched: red, to match the left script-line list (errorBg/error).
+        bgColor     = Theme::hex(_tc.errorBg);
+        borderColor = Theme::hex(_tc.error);
         hoverBg     = Theme::hex(_tc.surface3);
         hoverBorder = Theme::hex(_tc.border);
         break;
@@ -484,7 +500,7 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                 if (lbl->text().startsWith("#")) {
                     QString badgeColor = (matchState == 2) ? Theme::hex(_tc.successBtnBg)
                                        : (matchState == 1) ? Theme::hex(_tc.warning)
-                                                           : Theme::hex(_tc.surface3);
+                                                           : Theme::hex(_tc.error);
                     lbl->setStyleSheet(
                         QString("QLabel { color: %2; font-weight: bold; font-size: 12px; "
                                 "background: %1; border-radius: %3px; border: none; }")

@@ -4,6 +4,7 @@
  */
 
 #include "MediaPool.h"
+#include "PathUtils.h"
 
 #include <cstring>
 #include <algorithm>
@@ -40,6 +41,11 @@ static bool isProResCodec(const std::string& codecName)
 
 // ─── Open ───────────────────────────────────────────────────────────────────
 
+MediaHandle MediaPool::open(const std::string& utf8Path)
+{
+    return open(utf8ToPath(utf8Path));
+}
+
 MediaHandle MediaPool::open(const std::filesystem::path& filePath)
 {
     auto openT0 = std::chrono::steady_clock::now();
@@ -47,7 +53,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     // Canonicalize the path for dedup (filesystem I/O — outside lock)
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string key = ec ? filePath.string() : canonical.string();
+    std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 
     // ── Fast path: already open or known-failed? ─────────────────────
     {
@@ -65,7 +71,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
             if (entryIt != m_entries.end()) {
                 entryIt->second.refCount++;
                 spdlog::debug("MediaPool: reusing handle {} for '{}' (refCount={})",
-                              pathIt->second, filePath.filename().string(),
+                              pathIt->second, pathToUtf8(filePath.filename()),
                               entryIt->second.refCount);
                 return pathIt->second;
             }
@@ -83,7 +89,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         namespace fs = std::filesystem;
         std::error_code existsEc;
         if (fs::exists(filePath, existsEc))
-            directOpen = decoder->open(filePath.string(), /*forceSoftware=*/false, /*maxThreads=*/4);
+            directOpen = decoder->open(filePath, /*forceSoftware=*/false, /*maxThreads=*/4);
     }
     if (!directOpen) {
         // ── Search common asset directories for the file ────────────────
@@ -137,9 +143,9 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
             std::error_code ec2;
             if (!fs::exists(candidate, ec2)) continue;
             decoder = std::make_unique<VideoDecoder>();
-            if (decoder->open(candidate.string(), /*forceSoftware=*/false, /*maxThreads=*/4)) {
+            if (decoder->open(candidate, /*forceSoftware=*/false, /*maxThreads=*/4)) {
                 spdlog::info("MediaPool: resolved '{}' → '{}'",
-                             filePath.string(), candidate.string());
+                             pathToUtf8(filePath), pathToUtf8(candidate));
                 actualFilePath = candidate;
                 found = true;
                 break;
@@ -147,7 +153,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         }
 
         if (!found) {
-            spdlog::error("MediaPool: failed to open '{}' (caching as failed)", filePath.string());
+            spdlog::error("MediaPool: failed to open '{}' (caching as failed)", pathToUtf8(filePath));
             {
                 std::lock_guard lock(m_mutex);
                 m_failedPaths.insert(key);
@@ -164,7 +170,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     if (isProResCodec(decoder->info().codecName))
     {
         spdlog::info("MediaPool: using ProRes native decode for '{}' (sw, native alpha)",
-                     filePath.filename().string());
+                     pathToUtf8(filePath.filename()));
         // Fall through — use the software decoder as-is.
         // ProRes 4444 intra-frame: every frame is a keyframe, instant random access,
         // native YUVA444P10LE alpha.  No transcoding needed.
@@ -182,7 +188,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
             if (entryIt2 != m_entries.end()) {
                 entryIt2->second.refCount++;
                 spdlog::debug("MediaPool: race dedup — reusing handle {} for '{}'",
-                              pathIt2->second, filePath.filename().string());
+                              pathIt2->second, pathToUtf8(filePath.filename()));
                 return pathIt2->second;
             }
         }
@@ -198,7 +204,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     entry.refCount    = 1;
 
     spdlog::info("MediaPool: opened '{}' handle={} ({}x{}, {:.2f}fps, {:.1f}s, {} frames, hw={})",
-                 actualPath.filename().string(), handle,
+                 pathToUtf8(actualPath.filename()), handle,
                  entry.info.width, entry.info.height,
                  entry.info.fps, entry.info.duration, entry.info.frameCount,
                  entry.decoder->isHardwareAccelerated() ? "yes" : "no");
@@ -211,7 +217,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     {
         std::error_code ecOrig;
         auto origCanonical = std::filesystem::canonical(filePath, ecOrig);
-        std::string origKey = ecOrig ? filePath.string() : origCanonical.string();
+        std::string origKey = ecOrig ? pathToUtf8(filePath) : pathToUtf8(origCanonical);
         m_pathToHandle[origKey] = handle;
     }
 
@@ -228,7 +234,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         entry.decoder->close();
         spdlog::debug("MediaPool: released probe handle for still image '{}' "
                      "(handle={}) — live replace enabled",
-                     entry.path.filename().string(), handle);
+                     pathToUtf8(entry.path.filename()), handle);
     }
 
     m_entries.emplace(handle, std::move(entry));
@@ -242,7 +248,7 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
             std::chrono::steady_clock::now() - openT0).count();
         if (openMs > 20.0)
             spdlog::info("[PERF] MediaPool::open '{}': {:.0f}ms",
-                         filePath.filename().string(), openMs);
+                         pathToUtf8(filePath.filename()), openMs);
     }
 
     // Notify the live file-swap watcher about the just-opened file, OUTSIDE
@@ -268,12 +274,12 @@ void MediaPool::release(MediaHandle handle)
     it->second.refCount--;
     if (it->second.refCount <= 0) {
         spdlog::info("MediaPool: closing handle {} '{}'",
-                     handle, it->second.path.filename().string());
+                     handle, pathToUtf8(it->second.path.filename()));
 
         // Remove from path map
         std::error_code ec;
         auto canonical = std::filesystem::canonical(it->second.path, ec);
-        std::string key = ec ? it->second.path.string() : canonical.string();
+        std::string key = ec ? pathToUtf8(it->second.path) : pathToUtf8(canonical);
         m_pathToHandle.erase(key);
 
         // Evict cached frames for this media
@@ -347,7 +353,7 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
     // Canonicalize identically to open() so we hit the same map key.
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string key = ec ? filePath.string() : canonical.string();
+    std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 
     // Flush queued prefetch work for the (about to be closed) handle.
     MediaHandle handle = InvalidMedia;
@@ -359,7 +365,7 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
             spdlog::warn("MediaPool::invalidatePath: '{}' (key '{}') NOT in "
                          "open-handle map — nothing to invalidate (path-key "
                          "mismatch or not yet opened)",
-                         filePath.string(), key);
+                         pathToUtf8(filePath), key);
             return InvalidMedia;    // not open — next open() reads fresh
         }
         handle = pathIt->second;
@@ -408,7 +414,7 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
     spdlog::warn("MediaPool: invalidating handle {} '{}' (file changed) — "
                  "evicting CPU+disk cache, {}decoder, "
                  "next getFrame re-decodes for all consumers",
-                 handle, entry.path.filename().string(),
+                 handle, pathToUtf8(entry.path.filename()),
                  reopenDecoder ? "reopening " : "HANDLE released (not reopening) ");
 
     m_cache->evictMedia(handle);          // drops the pinned still frame too
@@ -443,12 +449,12 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
             } else {
                 spdlog::warn("MediaPool: invalidate reopen failed for '{}' "
                              "(handle {}) — will retry on next getFrame",
-                             entry.path.filename().string(), handle);
+                             pathToUtf8(entry.path.filename()), handle);
             }
         } else {
             spdlog::warn("MediaPool: invalidate '{}' — HANDLE released, "
                          "decoder left closed (live-replace safe mode)",
-                         entry.path.filename().string());
+                         pathToUtf8(entry.path.filename()));
         }
     }
 
@@ -477,10 +483,10 @@ void MediaPool::closePath(const std::filesystem::path& filePath)
     // This avoids mismatches when canonical() fails because the file was
     // just deleted (Explorer overwrite) — canonical() returns the raw
     // path on error, but the stored key was created when the file existed.
-    std::string rawKey = filePath.string();
+    std::string rawKey = pathToUtf8(filePath);
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string canonicalKey = ec ? rawKey : canonical.string();
+    std::string canonicalKey = ec ? rawKey : pathToUtf8(canonical);
 
     MediaHandle handle = InvalidMedia;
     {
@@ -493,7 +499,7 @@ void MediaPool::closePath(const std::filesystem::path& filePath)
             spdlog::warn("MediaPool::closePath: '{}' NOT in open-handle map "
                          "(raw='{}' canonical='{}') — handle already released "
                          "or never opened",
-                         filePath.filename().string(), rawKey, canonicalKey);
+                         pathToUtf8(filePath.filename()), rawKey, canonicalKey);
             return;
         }
         handle = pathIt->second;
@@ -517,11 +523,11 @@ void MediaPool::closePath(const std::filesystem::path& filePath)
         if (it != m_entries.end() && it->second.decoder) {
             it->second.decoder->close();
             spdlog::warn("MediaPool::closePath: released HANDLE for '{}' "
-                         "(handle={})", filePath.filename().string(), handle);
+                         "(handle={})", pathToUtf8(filePath.filename()), handle);
         } else {
             spdlog::warn("MediaPool::closePath: '{}' found in path map "
                          "(handle={}) but entry decoder already closed",
-                         filePath.filename().string(), handle);
+                         pathToUtf8(filePath.filename()), handle);
         }
     }
 
@@ -540,7 +546,7 @@ bool MediaPool::isPathOpen(const std::filesystem::path& filePath) const
 {
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string key = ec ? filePath.string() : canonical.string();
+    std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
     std::lock_guard lock(m_mutex);
     return m_pathToHandle.find(key) != m_pathToHandle.end();
 }
@@ -551,7 +557,7 @@ std::vector<std::filesystem::path> MediaPool::openMediaPaths() const
     std::vector<std::filesystem::path> paths;
     paths.reserve(m_pathToHandle.size());
     for (const auto& kv : m_pathToHandle)
-        paths.emplace_back(kv.first);
+        paths.emplace_back(utf8ToPath(kv.first));
     return paths;
 }
 
@@ -568,7 +574,7 @@ void MediaPool::openAsync(const std::filesystem::path& filePath)
 
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string key = ec ? filePath.string() : canonical.string();
+    std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 
     // Skip if already open or in flight or known-failed.
     {
@@ -624,16 +630,16 @@ void MediaPool::openWorkerLoop()
             std::chrono::steady_clock::now() - t0).count();
         if (h != InvalidMedia) {
             spdlog::info("[PERF] MediaPool::openAsync '{}': {:.0f}ms (handle={})",
-                         path.filename().string(), ms, h);
+                         pathToUtf8(path.filename()), ms, h);
         } else {
             spdlog::warn("[PERF] MediaPool::openAsync '{}': FAILED after {:.0f}ms",
-                         path.filename().string(), ms);
+                         pathToUtf8(path.filename()), ms);
         }
 
         // Clear in-flight marker.
         std::error_code ec;
         auto canonical = std::filesystem::canonical(path, ec);
-        std::string key = ec ? path.string() : canonical.string();
+        std::string key = ec ? pathToUtf8(path) : pathToUtf8(canonical);
         std::lock_guard wlk(m_openWorkerMutex);
         m_openWorkerInFlight.erase(key);
     }

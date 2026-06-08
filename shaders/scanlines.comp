@@ -1,0 +1,56 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] intensity  [1] lineCount [2] roll      [3] interlace
+    // [4] tintR      [5] tintG     [6] tintB     [7] flicker
+    // [15] clip-local seconds (injected by EffectStack)
+} pc;
+
+float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+    vec4 c  = texture(inputImage, uv);
+
+    float intensity = pc.params[0];
+    float lineCount = max(pc.params[1], 1.0);
+    float roll      = pc.params[2];
+    float interlace = pc.params[3];
+    vec3  tint      = vec3(pc.params[4], pc.params[5], pc.params[6]);
+    float flicker   = pc.params[7];
+    float t         = pc.params[15];
+
+    // Rolling scanline pattern.
+    float phase = uv.y * lineCount + t * roll * lineCount * 0.05;
+    float scan  = 0.5 + 0.5 * cos(phase * 6.2831853);
+    vec3  col   = c.rgb * mix(1.0, scan, intensity);
+
+    // Per-row interlace flicker (alternating rows dim each refresh).
+    if (interlace > 0.0) {
+        float row = floor(uv.y * float(pc.height));
+        if (mod(row + floor(t * 50.0), 2.0) >= 1.0)
+            col *= 1.0 - 0.4 * interlace;
+    }
+
+    // Additive tint (hologram / phosphor colour).
+    col += tint * intensity * 0.5;
+
+    // Global brightness flicker.
+    if (flicker > 0.0)
+        col *= 1.0 - flicker * 0.5 * hash11(floor(t * 30.0));
+
+    imageStore(outputImage, px, vec4(col, c.a));
+}

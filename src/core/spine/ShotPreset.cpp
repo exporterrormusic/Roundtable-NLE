@@ -777,6 +777,34 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
         ++count;
     }
 
+    // ── Auto-register shows discovered on disk ──────────────────────────
+    // A show folder (or a show-tagged shot) is authoritative even when it's
+    // missing from _shows.json — otherwise the show is invisible in the UI
+    // (e.g. a "ROUNDTABLE TALK" folder that isn't listed). Heal the registry
+    // so every show with presets shows up, and persist once if anything was
+    // added.
+    {
+        auto ciEqual = [](const std::string& a, const std::string& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i)
+                if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                    std::tolower(static_cast<unsigned char>(b[i]))) return false;
+            return true;
+        };
+        bool showsChanged = false;
+        auto ensureShow = [&](const std::string& s) {
+            if (s.empty()) return;
+            for (const auto& k : m_knownShows)
+                if (ciEqual(k, s)) return;
+            m_knownShows.push_back(s);
+            showsChanged = true;
+        };
+        for (const auto& [showDir, file] : subFiles) ensureShow(showDir);
+        for (const auto& [key, preset] : m_presets) ensureShow(preset.show());
+        if (showsChanged)
+            saveShows();
+    }
+
     spdlog::info("ShotPresetManager: loaded {} presets from {}", count, presetsDir.string());
     return count;
 }

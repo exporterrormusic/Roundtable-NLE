@@ -234,6 +234,13 @@ void MainWindow::refreshProjectsList()
             info.resH = meta.resH;
             info.fps  = meta.fps;
         }
+        // For the currently-open project prefer the in-memory show (may be
+        // assigned but not yet saved); otherwise read it from the file.
+        if (info.isCurrent && m_currentProject)
+            info.show = QString::fromStdString(m_currentProject->show());
+        else
+            info.show = QString::fromStdString(ProjectSerializer::readProjectShow(
+                entry.absoluteFilePath().toStdWString()));
 
         projects.append(info);
     }

@@ -3,6 +3,7 @@
  */
 
 #include "media/AudioFile.h"
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
@@ -77,18 +78,18 @@ SharedFileHandle openSharedReadHandle(const std::filesystem::path& p)
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h2 != INVALID_HANDLE_VALUE) {
             spdlog::debug("AudioFile: share-mode self-test PASSED '{}'",
-                         p.string());
+                         pathToUtf8(p));
             ::CloseHandle(h2);
         } else {
             DWORD err = ::GetLastError();
             spdlog::warn("AudioFile: share-mode self-test FAILED '{}' "
                          "GetLastError={} — FILE_SHARE_DELETE not active",
-                         p.string(), err);
+                         pathToUtf8(p), err);
         }
     }
     return h;
 #else
-    return std::fopen(p.string().c_str(), "rb");
+    return std::fopen(pathToUtf8(p).c_str(), "rb");
 #endif
 }
 
@@ -369,6 +370,11 @@ AudioFile::~AudioFile()
 
 // ─── Open ───────────────────────────────────────────────────────────────────
 
+bool AudioFile::open(const std::string& utf8Path)
+{
+    return open(utf8ToPath(utf8Path));
+}
+
 bool AudioFile::open(const std::filesystem::path& path)
 {
     std::lock_guard lock(m_mutex);
@@ -377,7 +383,7 @@ bool AudioFile::open(const std::filesystem::path& path)
     m_path = path;
 
     if (!std::filesystem::exists(path)) {
-        m_lastError = "File not found: " + path.string();
+        m_lastError = "File not found: " + pathToUtf8(path);
         spdlog::error("AudioFile: {}", m_lastError);
         return false;
     }
@@ -388,7 +394,7 @@ bool AudioFile::open(const std::filesystem::path& path)
         m_isOpen  = true;
         m_backend = AudioBackend::Sndfile;
         spdlog::info("AudioFile: opened '{}' via libsndfile ({} ch, {} Hz, {} frames)",
-                     path.filename().string(), m_info.channels,
+                     pathToUtf8(path.filename()), m_info.channels,
                      m_info.sampleRate, m_info.frames);
         return true;
     }
@@ -400,13 +406,13 @@ bool AudioFile::open(const std::filesystem::path& path)
         m_isOpen  = true;
         m_backend = AudioBackend::FFmpeg;
         spdlog::info("AudioFile: opened '{}' via FFmpeg ({} ch, {} Hz, {} frames)",
-                     path.filename().string(), m_info.channels,
+                     pathToUtf8(path.filename()), m_info.channels,
                      m_info.sampleRate, m_info.frames);
         return true;
     }
 #endif
 
-    m_lastError = "No audio backend could open: " + path.string();
+    m_lastError = "No audio backend could open: " + pathToUtf8(path);
     spdlog::error("AudioFile: {}", m_lastError);
     return false;
 }
@@ -709,11 +715,11 @@ bool AudioFile::openSndfile([[maybe_unused]] const std::filesystem::path& path)
     // the un-lock work done for the FFmpeg path.
     SharedFileHandle sndHandle = openSharedReadHandle(path);
     if (sndHandle == kInvalidShared) {
-        m_lastError = "Cannot open audio file (shared mode): " + path.string();
+        m_lastError = "Cannot open audio file (shared mode): " + pathToUtf8(path);
         return false;
     }
     m_impl->sndFileFP = static_cast<void*>(sndHandle);
-    spdlog::debug("AudioFile/sndfile: shared-mode open '{}' (raw HANDLE)", path.string());
+    spdlog::debug("AudioFile/sndfile: shared-mode open '{}' (raw HANDLE)", pathToUtf8(path));
 
     SF_VIRTUAL_IO vio;
     vio.get_filelen = &sfVioGetFilelen;
@@ -779,11 +785,11 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
     // Shared-mode open + custom AVIO (see header for rationale).
     SharedFileHandle sh = openSharedReadHandle(path);
     if (sh == kInvalidShared) {
-        m_lastError = "Cannot open audio file (shared mode): " + path.string();
+        m_lastError = "Cannot open audio file (shared mode): " + pathToUtf8(path);
         return false;
     }
     m_impl->avioFile = static_cast<void*>(sh);
-    spdlog::debug("AudioFile/FFmpeg: shared-mode open '{}' (raw HANDLE)", path.string());
+    spdlog::debug("AudioFile/FFmpeg: shared-mode open '{}' (raw HANDLE)", pathToUtf8(path));
 
     auto* buf = static_cast<uint8_t*>(av_malloc(kAudioAvioBufSize));
     if (!buf) {
@@ -819,7 +825,7 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
     m_impl->fmtCtx->pb     = m_impl->avioCtx;
     m_impl->fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
 
-    int ret = avformat_open_input(&m_impl->fmtCtx, path.string().c_str(),
+    int ret = avformat_open_input(&m_impl->fmtCtx, pathToUtf8(path).c_str(),
                                   nullptr, nullptr);
     if (ret < 0) {
         char errbuf[256];

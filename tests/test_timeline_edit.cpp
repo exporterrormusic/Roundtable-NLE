@@ -752,6 +752,78 @@ TEST(EditOperations, PasteUndo)
     EXPECT_EQ(tt.vTrack->clipCount(), 3u);
 }
 
+// Pasting from a 3-video-track sequence into one with MORE tracks must
+// anchor the clips at V1 (bottom = highest index) and fill upward — NOT
+// land them on the top tracks.
+TEST(EditOperations, PasteCrossSequenceAnchorsAtV1)
+{
+    rt::Timeline src;
+    rt::Track* s0 = src.addVideoTrack("");  // idx0 = top    = V3
+    rt::Track* s1 = src.addVideoTrack("");  // idx1          = V2
+    rt::Track* s2 = src.addVideoTrack("");  // idx2 = bottom = V1
+    addClip(s0, 0.0, 1.0);
+    addClip(s1, 0.0, 1.0);
+    addClip(s2, 0.0, 1.0);
+
+    rt::SelectionSet sel;
+    sel.selectClip({0, s0->clip(0)->id()}, true);
+    sel.selectClip({1, s1->clip(0)->id()}, true);
+    sel.selectClip({2, s2->clip(0)->id()}, true);
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, sel, clipboard);
+
+    rt::Timeline dst;
+    for (int i = 0; i < 5; ++i) dst.addVideoTrack("");  // idx0..4, idx4 = V1
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::paste(dst, clipboard, 10 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    // Bottom three tracks (V1,V2,V3 = idx 4,3,2) get the clips; top two empty.
+    EXPECT_EQ(dst.track(4)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(3)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(2)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(1)->clipCount(), 0u);
+    EXPECT_EQ(dst.track(0)->clipCount(), 0u);
+}
+
+// Pasting from a sequence with MORE video tracks than the destination must
+// create the missing tracks so no clip is dropped, and undo must remove them.
+TEST(EditOperations, PasteCrossSequenceAddsOverflowTracks)
+{
+    rt::Timeline src;
+    std::vector<rt::Track*> st;
+    for (int i = 0; i < 4; ++i) st.push_back(src.addVideoTrack(""));
+    rt::SelectionSet sel;
+    for (int i = 0; i < 4; ++i) {
+        addClip(st[static_cast<size_t>(i)], 0.0, 1.0);
+        sel.selectClip({static_cast<size_t>(i), st[static_cast<size_t>(i)]->clip(0)->id()}, true);
+    }
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, sel, clipboard);
+
+    rt::Timeline dst;
+    dst.addVideoTrack("");
+    dst.addVideoTrack("");
+    const size_t before = dst.trackCount();
+
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::paste(dst, clipboard, 0);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    EXPECT_EQ(dst.trackCount(), before + 2);  // two overflow video tracks
+    size_t total = 0;
+    for (size_t i = 0; i < dst.trackCount(); ++i) total += dst.track(i)->clipCount();
+    EXPECT_EQ(total, 4u);                       // all clips placed, none dropped
+
+    stack.undo();
+    EXPECT_EQ(dst.trackCount(), before);        // overflow tracks removed
+    size_t after = 0;
+    for (size_t i = 0; i < dst.trackCount(); ++i) after += dst.track(i)->clipCount();
+    EXPECT_EQ(after, 0u);
+}
+
 TEST(EditOperations, CutSelection)
 {
     TestTimeline tt;

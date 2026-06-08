@@ -989,6 +989,18 @@ bool EffectProcessor::createPipelines()
     m_colorGradingPipeline = loadPipeline("lumetri_color.comp.spv");
     m_otsPipeline         = loadPipeline("ots.comp.spv");
     m_flipPipeline        = loadPipeline("flip.comp.spv");
+    m_scanlinesPipeline         = loadPipeline("scanlines.comp.spv");
+    m_blockGlitchPipeline       = loadPipeline("block_glitch.comp.spv");
+    m_chromaticSplitPipeline    = loadPipeline("chromatic_split.comp.spv");
+    m_turbulentDisplacePipeline = loadPipeline("turbulent_displace.comp.spv");
+    m_posterizePipeline         = loadPipeline("posterize.comp.spv");
+    m_grainPipeline             = loadPipeline("grain.comp.spv");
+    m_signalTearPipeline        = loadPipeline("signal_tear.comp.spv");
+    m_beatZoomPipeline          = loadPipeline("beat_zoom.comp.spv");
+    m_beatFlashPipeline         = loadPipeline("beat_flash.comp.spv");
+    m_beatShakePipeline         = loadPipeline("beat_shake.comp.spv");
+    m_beatChromaPipeline        = loadPipeline("beat_chroma.comp.spv");
+    m_beatDropPipeline          = loadPipeline("beat_drop.comp.spv");
 
     spdlog::info("EffectProcessor: pipelines created (colorCorrect={}, blur={}, lumetri={})",
                  m_colorCorrectPipeline != VK_NULL_HANDLE,
@@ -1129,6 +1141,18 @@ VkPipeline EffectProcessor::getPipeline(EffectType type) const
     case EffectType::OtsRight:       return m_otsPipeline;
     case EffectType::FlipHorizontal: return m_flipPipeline;
     case EffectType::FlipVertical:   return m_flipPipeline;
+    case EffectType::Scanlines:         return m_scanlinesPipeline;
+    case EffectType::BlockGlitch:       return m_blockGlitchPipeline;
+    case EffectType::ChromaticSplit:    return m_chromaticSplitPipeline;
+    case EffectType::TurbulentDisplace: return m_turbulentDisplacePipeline;
+    case EffectType::Posterize:         return m_posterizePipeline;
+    case EffectType::Grain:             return m_grainPipeline;
+    case EffectType::SignalTear:        return m_signalTearPipeline;
+    case EffectType::BeatZoom:          return m_beatZoomPipeline;
+    case EffectType::BeatFlash:         return m_beatFlashPipeline;
+    case EffectType::BeatShake:         return m_beatShakePipeline;
+    case EffectType::BeatChroma:        return m_beatChromaPipeline;
+    case EffectType::BeatDrop:          return m_beatDropPipeline;
     default:                       return VK_NULL_HANDLE;
     }
 }

@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <limits>
 #include <filesystem>
 
 namespace rt {
@@ -59,15 +60,88 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     if (!timeline) return 0;
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Gather confirmed clips, sorted by scriptLineNumber ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    std::vector<const SyncClip*> confirmed;
-    for (const auto& c : m_clips) {
-        if (c.scriptLineNumber >= 0 && c.matchState == 2) // 2 = confirmed
-            confirmed.push_back(&c);
+    // ── EXPORT == MATCH tab, exactly ────────────────────────────────────
+    // The MATCH tab shows (and plays) exactly ONE clip per script line: its
+    // "primary" — the best CONFIRMED clip on that line. The export now mirrors
+    // that precisely by walking the script lines IN ORDER and placing each
+    // line's primary confirmed clip. This guarantees the timeline matches the
+    // MATCH tab in both order AND content — no duplicates, no cross-character
+    // strays, no reordering — and needs no re-sync.
+    //
+    // Primary selection: same rule as populateCards() — highest confidence
+    // among confirmed clips (all matchState==2 here, so confidence is the
+    // sole differentiator).  Character-name matching is deliberately not
+    // used because the MATCH tab doesn't either; manual confirmation
+    // already guarantees the right clip is assigned to each line.
+
+    // lineNumber → its position in m_script->lines (script reading order) — for
+    // the diagnostic below.
+    std::unordered_map<int, int> linePos;
+    if (m_script) {
+        int p = 0;
+        for (const auto& ln : m_script->lines) linePos[ln.lineNumber] = p++;
     }
-    std::sort(confirmed.begin(), confirmed.end(),
-              [](const SyncClip* a, const SyncClip* b) {
-                  return a->scriptLineNumber < b->scriptLineNumber;
-              });
+    auto scriptPosOf = [&](const SyncClip* c) -> int {
+        auto it = linePos.find(c->scriptLineNumber);
+        return (it != linePos.end()) ? it->second
+                                     : std::numeric_limits<int>::max();
+    };
+
+    std::vector<const SyncClip*> confirmed;
+    if (m_script) {
+        // Confirmed clips per line, in m_clips order.
+        std::unordered_map<int, std::vector<size_t>> confirmedByLine;
+        for (size_t i = 0; i < m_clips.size(); ++i) {
+            const auto& c = m_clips[i];
+            if (c.scriptLineNumber >= 0 && c.matchState == 2)
+                confirmedByLine[c.scriptLineNumber].push_back(i);
+        }
+        for (const auto& line : m_script->lines) {
+            auto it = confirmedByLine.find(line.lineNumber);
+            if (it == confirmedByLine.end()) continue;
+            // Primary: pick the clip with the highest confidence, matching
+            // the MATCH tab's populateCards primary-selection rule exactly.
+            // (All clips here have matchState==2, so matchState doesn't
+            // differ — confidence is the sole tiebreaker, same as the card
+            // display.  Character-match is intentionally NOT used as a
+            // criterion because the MATCH tab doesn't use it either, and
+            // manual confirmation already guarantees the correct clip.)
+            const SyncClip* best = nullptr;
+            float bestConf = -1.0f;
+            for (size_t ci : it->second) {
+                const auto& c = m_clips[ci];
+                if (!best || c.confidence > bestConf) {
+                    best = &c;
+                    bestConf = c.confidence;
+                }
+            }
+            if (best) confirmed.push_back(best);   // already in script order
+        }
+    } else {
+        // No script loaded — fall back to every confirmed clip in m_clips order.
+        for (const auto& c : m_clips)
+            if (c.scriptLineNumber >= 0 && c.matchState == 2)
+                confirmed.push_back(&c);
+    }
+
+    // DIAG-EXPORT-ORDER: dump the resolved export order with each clip's
+    // line#, its position in the script (= MATCH order), character and
+    // source, so a misplaced (e.g. manually-matched) clip is traceable.
+    {
+        std::string seq;
+        for (const SyncClip* c : confirmed) {
+            const int pos = scriptPosOf(c);
+            seq += "\n    scriptPos=" + (pos == std::numeric_limits<int>::max()
+                                         ? std::string("MISSING")
+                                         : std::to_string(pos))
+                 + " line#=" + std::to_string(c->scriptLineNumber)
+                 + " char='" + c->character + "'"
+                 + " src='" + sourceBasename(c->sourceFile) + "'"
+                 + " start=" + std::to_string(c->start);
+        }
+        spdlog::warn("DIAG-EXPORT-ORDER: {} confirmed clips (export order):{}",
+                     confirmed.size(), seq);
+    }
 
     if (confirmed.empty()) {
         spdlog::warn("AudioSync::exportToTimeline ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no confirmed clips");

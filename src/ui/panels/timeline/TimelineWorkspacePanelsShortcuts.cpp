@@ -168,10 +168,24 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             }
         }
     });
-    // Ctrl+V: paste at playhead (or paste layer if Essential Graphics focused,
+    // Ctrl+V: paste at playhead (or paste keyframes if Effect Controls has
+    //          keyframe clipboard, paste layer if Essential Graphics focused,
     //          or paste effect if one was copied from Effect Controls)
     addShortcut(Qt::CTRL | Qt::Key_V, [this]() {
         auto* fw = QApplication::focusWidget();
+        // ── Keyframe clipboard takes highest priority ──────────────────
+        // If the user copied keyframes in Effect Controls, Ctrl+V pastes
+        // them regardless of which panel currently has focus (matching
+        // Premiere Pro behavior).
+        if (m_effectControlsPanel && m_effectControlsPanel->hasKfClipboardData()
+            && m_effectControlsPanel->clip()) {
+            m_effectControlsPanel->pasteKeyframes();
+            invalidateCompositeCache();
+            updateTransformOverlay();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+            schedulePostEditWork();
+            return;
+        }
         // Project Bin focused → paste the clipboard as an independent
         // duplicate (sequence, footage, or color matte).
         if (m_projectBin && m_projectBin->isAncestorOf(fw)) {
@@ -221,8 +235,13 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             }
         }
     });
-    // Ctrl+X: cut
+    // Ctrl+X: cut (or cut keyframes if Effect Controls has selection)
     addShortcut(Qt::CTRL | Qt::Key_X, [this]() {
+        // ── Keyframe selection in Effect Controls → cut keyframes ──────
+        if (m_effectControlsPanel && m_effectControlsPanel->hasSelectedKeyframes()) {
+            m_effectControlsPanel->cutSelectedKeyframes();
+            return;
+        }
         if (!m_timeline || !m_timelinePanel || !m_commandStack) return;
         auto& cb = m_timelinePanel->mutableClipboard();
         auto cmd = EditOperations::cutSelection(*m_timeline,
@@ -237,22 +256,34 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             if (m_programMonitor) m_programMonitor->requestRefresh();
         }
     });
-    // Ctrl+C: copy (or copy layer if Essential Graphics focused,
+    // Ctrl+C: copy (or copy keyframes if Effect Controls has selection,
+    //          or copy layer if Essential Graphics focused,
     //          or copy effect if Effect Controls focused)
     addShortcut(Qt::CTRL | Qt::Key_C, [this]() {
         auto* fw = QApplication::focusWidget();
+        // ── Keyframe selection in Effect Controls → copy keyframes ─────
+        if (m_effectControlsPanel && m_effectControlsPanel->hasSelectedKeyframes()) {
+            m_effectControlsPanel->copySelectedKeyframes();
+            return;
+        }
         // Project Bin focused → copy the current selection (sequence,
         // footage, or color matte) to the bin clipboard.
         if (m_projectBin && m_projectBin->isAncestorOf(fw)) {
             m_projectBin->copySelection();
-            if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
+            if (m_effectControlsPanel) {
+                m_effectControlsPanel->clearCopiedEffect();
+                m_effectControlsPanel->clearKfClipboard();
+            }
             return;
         }
         bool egFocused = m_GraphicsEditorPanel && m_GraphicsEditorPanel->isAncestorOf(fw);
         bool pmFocused = m_programMonitor && m_programMonitor->isAncestorOf(fw);
         if (m_GraphicsEditorPanel && (egFocused || (pmFocused && m_selectedGraphicLayerIdx >= 0))) {
             m_GraphicsEditorPanel->copySelectedLayer();
-            if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
+            if (m_effectControlsPanel) {
+                m_effectControlsPanel->clearCopiedEffect();
+                m_effectControlsPanel->clearKfClipboard();
+            }
             return;
         }
         // Effect Controls focused with a selected effect → copy the effect
@@ -263,8 +294,11 @@ void TimelineWorkspace::registerKeyboardShortcuts()
         }
         if (!m_timeline || !m_timelinePanel) return;
         // Copying a clip on the timeline → clear any stale effect
-        // clipboard so Ctrl+V pastes the clip, not the effect.
-        if (m_effectControlsPanel) m_effectControlsPanel->clearCopiedEffect();
+        // and keyframe clipboards so Ctrl+V pastes the clip.
+        if (m_effectControlsPanel) {
+            m_effectControlsPanel->clearCopiedEffect();
+            m_effectControlsPanel->clearKfClipboard();
+        }
         EditOperations::copySelection(*m_timeline,
             m_timelinePanel->selection(),
             m_timelinePanel->mutableClipboard());
@@ -390,21 +424,36 @@ void TimelineWorkspace::registerKeyboardShortcuts()
             }
         }
 
-        bool alreadyExists = false;
-        for (size_t ti2 = 0; ti2 < track->transitionCount(); ++ti2) {
-            const Transition* existing = track->transition(ti2);
-            if (existing && existing->editPointTick == trans.editPointTick) {
-                alreadyExists = true;
-                break;
+        // Reject if the new transition would overlap any existing
+        // transition's range (not just the same edit point — a long
+        // fade-in can overlap a fade-out on the same clip).
+        {
+            int64_t newStart, newEnd;
+            trans.getRange(newStart, newEnd);
+            bool wouldOverlap = false;
+            for (size_t ti2 = 0; ti2 < track->transitionCount(); ++ti2) {
+                const Transition* existing = track->transition(ti2);
+                if (!existing) continue;
+                int64_t exStart, exEnd;
+                existing->getRange(exStart, exEnd);
+                // Two ranges [a,b) and [c,d) overlap if a<d && c<b
+                if (newStart < exEnd && exStart < newEnd) {
+                    wouldOverlap = true;
+                    break;
+                }
             }
+            if (wouldOverlap) return;
         }
-        if (alreadyExists) return;
 
         auto cmd = std::make_unique<AddTransitionCommand>(
             track, clipIdx, clipIdx, trans);
         m_commandStack->execute(std::move(cmd));
 
         invalidateCompositeCache();
+        // A cross-dissolve on an audio track bakes its crossfade into the
+        // mixed audio source; rebuild it now so the transition is audible
+        // immediately instead of only after its duration is adjusted.
+        invalidateAudioSources();
         if (m_timelinePanel) {
             m_timelinePanel->rebuildTracks();
             // The edge click that primed this transition left an edit-point

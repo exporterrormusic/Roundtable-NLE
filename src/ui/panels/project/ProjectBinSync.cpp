@@ -90,7 +90,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
                 // Duration from timeline length
                 TimeTick durTicks = seq->duration();
                 double durSec = ticksToSeconds(durTicks);
-                double seqFps = m_project->settings().frameRate();
+                double seqFps = seq->settings().frameRate();
                 if (seqFps <= 0.0) seqFps = 24.0;
                 int totalFrames = static_cast<int>(durSec * seqFps);
                 int hh = totalFrames / (3600 * static_cast<int>(seqFps));
@@ -104,10 +104,10 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
                     .arg(ff, 2, 10, QChar('0'))
                     .arg(trackCount));
 
-                // FPS and resolution from project settings
+                // FPS and resolution from THIS sequence's own settings
                 seqItem->setText(3, QString::number(seqFps, 'f',
                     (seqFps == std::floor(seqFps)) ? 0 : 2));
-                const auto& res = m_project->settings().resolution();
+                const auto& res = seq->settings().resolution();
                 seqItem->setText(4, QStringLiteral("%1x%2").arg(res.width).arg(res.height));
                 seqItem->setText(5, "");
             }

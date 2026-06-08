@@ -534,6 +534,24 @@ int SpineRenderer::loadAtlasTextures(const SpineAtlas& atlas)
             continue;
         }
 
+        // Premultiply alpha into RGB if the atlas page is not already PMA.
+        // The fragment shader (spine.frag) assumes PMA input:
+        //     outColor = texel * fragColor;
+        // Straight-alpha texels produce overly bright semi-transparent
+        // edges (white halos / circles around sprites) when blended with
+        // the PMA-over blend state (src=ONE, dst=ONE_MINUS_SRC_ALPHA).
+        if (!page.pma) {
+            const int total = w * h;
+            for (int p = 0; p < total; ++p) {
+                uint8_t a = pixels[p * 4 + 3];
+                if (a < 255) {
+                    pixels[p * 4 + 0] = static_cast<uint8_t>((pixels[p * 4 + 0] * a + 127) / 255);
+                    pixels[p * 4 + 1] = static_cast<uint8_t>((pixels[p * 4 + 1] * a + 127) / 255);
+                    pixels[p * 4 + 2] = static_cast<uint8_t>((pixels[p * 4 + 2] * a + 127) / 255);
+                }
+            }
+        }
+
         bool ok = uploadAtlasTexture(static_cast<int>(i), pixels,
                                       static_cast<uint32_t>(w),
                                       static_cast<uint32_t>(h),

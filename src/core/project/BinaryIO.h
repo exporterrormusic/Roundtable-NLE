@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "PathUtils.h"
+
 namespace rt {
 
 // ── Streaming binary write helper ──────────────────────────────────────────
@@ -59,7 +61,7 @@ public:
         m_data.insert(m_data.end(), s.begin(), s.end());
     }
 
-    void writePath(const std::filesystem::path& p) { writeString(p.string()); }
+    void writePath(const std::filesystem::path& p) { writeString(pathToUtf8(p)); }
 
     void writeBytes(const uint8_t* data, size_t size)
     {

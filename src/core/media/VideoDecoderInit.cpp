@@ -20,6 +20,7 @@ extern "C" {
 }
 
 #include "media/VideoDecoder.h"
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 #include <cstdio>
@@ -94,18 +95,18 @@ SharedFileHandle openSharedRead(const std::filesystem::path& p)
             // warn-level on purpose: perf_log.txt is filtered to warn+,
             // so info lines never appear. This is a temporary diagnostic.
             spdlog::debug("VideoDecoder: share-mode self-test PASSED '{}'",
-                          p.string());
+                          pathToUtf8(p));
             ::CloseHandle(h2);
         } else {
             DWORD err = ::GetLastError();
             spdlog::warn("VideoDecoder: share-mode self-test FAILED '{}' "
                          "GetLastError={} — FILE_SHARE_DELETE not active",
-                         p.string(), err);
+                         pathToUtf8(p), err);
         }
     }
     return h;
 #else
-    return std::fopen(p.string().c_str(), "rb");
+    return std::fopen(pathToUtf8(p).c_str(), "rb");
 #endif
 }
 
@@ -333,7 +334,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         return false;
     }
 
-    std::string pathStr = path.string();
+    std::string pathStr = pathToUtf8(path);
 
     // ── Open the file ourselves in shared mode (read | write | delete)
     //    and feed FFmpeg via a custom AVIOContext. This is what stops
@@ -546,7 +547,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         if (m_info.packedAlpha) {
             m_info.packedTiles = 2;
             spdlog::info("VideoDecoder: '{}' packed-alpha 2-tile ({}x{}, nominal {}x{})",
-                         path.filename().string(),
+                         pathToUtf8(path.filename()),
                          m_info.width, m_info.height,
                          m_info.width, m_info.height / 2);
         }
@@ -578,7 +579,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     if (hasAlpha || stillImageCodec)
     {
         spdlog::debug("VideoDecoder: '{}' has alpha channel — forcing software decode "
-                      "(NVDEC drops alpha)", path.filename().string());
+                      "(NVDEC drops alpha)", pathToUtf8(path.filename()));
 
         const char* preferredDecoder = nullptr;
         if (codecpar->codec_id == AV_CODEC_ID_VP9)
@@ -595,7 +596,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     else if (forceSoftware)
     {
         spdlog::debug("VideoDecoder: '{}' force-software (no NVDEC session)",
-                      path.filename().string());
+                      pathToUtf8(path.filename()));
         if (!initSoftwareDecoder())
         {
             avformat_close_input(&m_fmtCtx);
@@ -606,7 +607,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     {
         if (forceSoftwareDecode()) {
             spdlog::info("VideoDecoder: '{}' — user preference is software-only",
-                         path.filename().string());
+                         pathToUtf8(path.filename()));
             if (!initSoftwareDecoder()) {
                 avformat_close_input(&m_fmtCtx);
                 return false;
@@ -640,7 +641,7 @@ done_open:
     m_isOpen = true;
     m_currentFrame = 0;
     spdlog::info("VideoDecoder: opened '{}' — {}x{} @ {:.2f}fps, {:.1f}s, codec={}, hw={}",
-                 path.filename().string(), m_info.width, m_info.height,
+                 pathToUtf8(path.filename()), m_info.width, m_info.height,
                  m_info.fps, m_info.duration, m_info.codecName,
                  m_hwAccel ? "GPU-accelerated" : "software");
     return true;

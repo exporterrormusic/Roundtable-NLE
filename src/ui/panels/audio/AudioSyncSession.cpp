@@ -261,44 +261,113 @@ void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
         oldScript = m_script.get();
 
     // ── Step 1: Remap existing clips to new script lines ───────────────
-    // For each clip that has a scriptLineNumber, find the best matching
-    // line in the new script by comparing dialogue text.
+    // For each matched clip, locate the line it is currently matched to in
+    // the NEW script.  The reference text is the dialogue of the OLD line it
+    // points at — NOT the clip's transcript.  A matched clip's transcript
+    // (raw Whisper output) is rarely a byte-exact match to the script line,
+    // so comparing the transcript would wrongly drop matches for lines that
+    // never changed.  Comparing old-line dialogue → new-line dialogue means
+    // an unchanged line matches exactly (score 1.0) and keeps its match;
+    // only genuinely edited/removed lines fall through to unmatched.
+    //
+    // IMPORTANT: clip.scriptLineNumber holds ScriptLine::lineNumber (the
+    // source-text line number), NOT the index into Script::lines.  Blank
+    // lines and segment markers advance lineNumber without producing a
+    // ScriptLine, so the two are different.  Look lines up BY lineNumber and
+    // store the matched line's lineNumber back — using the array index here
+    // is what made re-synced clips point at the wrong (or no) line.
+    auto dialogueForLineNumber = [](const Script* scr, int lineNumber) -> std::string {
+        if (!scr) return {};
+        for (const auto& ln : scr->lines)
+            if (ln.lineNumber == lineNumber)
+                return ln.dialogue;
+        return {};
+    };
+
     auto remapClips = [&](std::vector<SyncClip>& clips) {
         for (auto& clip : clips) {
             if (clip.scriptLineNumber < 0)
                 continue;
 
-            // Use editedText if available, else transcript, else empty
-            std::string clipText = clip.editedText.empty() ? clip.transcript : clip.editedText;
-            if (clipText.empty())
+            // Reference = dialogue of the line this clip is currently matched
+            // to in the old script (looked up by lineNumber).  Fall back to
+            // the clip's own text only when the old line can't be found.
+            std::string refText = dialogueForLineNumber(oldScript, clip.scriptLineNumber);
+            if (refText.empty())
+                refText = clip.editedText.empty() ? clip.transcript : clip.editedText;
+            if (refText.empty())
                 continue;
 
-            std::string clipNorm = ScriptMatcher::normalize(clipText);
+            std::string refNorm = ScriptMatcher::normalize(refText);
 
-            int bestNewLine = -1;
+            // ── Fast path: keep an UNCHANGED line exactly where it is ──────
+            // If the clip's CURRENT line still exists in the new script with
+            // the same dialogue, preserve its assignment (and confirmed
+            // state). The fuzzy loop below picks the FIRST line with the best
+            // score, so two identically-worded lines (e.g. two short "Hey!" /
+            // "Marian!" lines) would let an EARLIER line steal a confirmed
+            // clip from its real line — scrambling matches on a GDrive
+            // re-sync even when nothing in the doc actually moved. Honoring the
+            // existing line when unchanged keeps confirmed clips stable.
+            {
+                const std::string oldDlg =
+                    dialogueForLineNumber(oldScript, clip.scriptLineNumber);
+                const std::string newDlg =
+                    dialogueForLineNumber(newScript.get(), clip.scriptLineNumber);
+                if (!oldDlg.empty() && !newDlg.empty()
+                    && ScriptMatcher::normalize(oldDlg)
+                       == ScriptMatcher::normalize(newDlg)) {
+                    for (const auto& ln : newScript->lines) {
+                        if (ln.lineNumber == clip.scriptLineNumber) {
+                            clip.scriptSegment = ln.character + ": " + ln.dialogue;
+                            break;
+                        }
+                    }
+                    continue;   // scriptLineNumber + matchState untouched
+                }
+            }
+
+            int bestIdx = -1;
             float bestScore = 0.0f;
 
+            // Case-insensitive speaker compare — never remap a clip onto a
+            // DIFFERENT character's line. The audio is per-character, so a
+            // Marian clip must only match Marian lines; matching purely on text
+            // similarity (the auto-matcher groups by character, but this remap
+            // didn't) is what dropped a speaker's audio onto another's line.
+            auto sameSpeaker = [](const std::string& a, const std::string& b) {
+                if (a.empty() || b.empty()) return true;   // unknown → don't block
+                if (a.size() != b.size()) return false;
+                for (size_t i = 0; i < a.size(); ++i)
+                    if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]))
+                        return false;
+                return true;
+            };
+
             for (size_t j = 0; j < newScript->lines.size(); ++j) {
+                if (!sameSpeaker(clip.character, newScript->lines[j].character))
+                    continue;   // different speaker — not a candidate
                 std::string newDialogue = ScriptMatcher::normalize(newScript->lines[j].dialogue);
 
                 float score;
-                if (clipNorm == newDialogue) {
-                    score = 1.0f; // exact match
+                if (refNorm == newDialogue) {
+                    score = 1.0f; // exact match — line unchanged
                 } else {
-                    score = ScriptMatcher::sequenceRatio(clipNorm, newDialogue);
+                    score = ScriptMatcher::sequenceRatio(refNorm, newDialogue);
                 }
 
                 if (score > bestScore) {
                     bestScore = score;
-                    bestNewLine = static_cast<int>(j);
+                    bestIdx = static_cast<int>(j);
                 }
             }
 
-            if (bestScore >= 0.6f && bestNewLine >= 0) {
-                clip.scriptLineNumber = bestNewLine;
-                // Update the script segment name if available
-                if (bestNewLine < static_cast<int>(newScript->lines.size()))
-                    clip.scriptSegment = newScript->lines[bestNewLine].segment;
+            if (bestScore >= 0.6f && bestIdx >= 0) {
+                const auto& newLine = newScript->lines[bestIdx];
+                clip.scriptLineNumber = newLine.lineNumber;   // line NUMBER, not index
+                // Match runAutoSync's scriptSegment format ("CHAR: dialogue")
+                // so a re-synced clip looks identical to a freshly synced one.
+                clip.scriptSegment = newLine.character + ": " + newLine.dialogue;
             } else {
                 // Could not remap — mark as unmatched
                 clip.scriptLineNumber = -1;

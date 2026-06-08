@@ -34,6 +34,7 @@ void ProjectPanel::showContextMenu(const QPoint& pos)
 
     QString name   = nameItem->data(Qt::UserRole).toString();
     QString fpath = nameItem->data(Qt::UserRole + 1).toString();
+    QString currentShow = nameItem->data(Qt::UserRole + 2).toString();
 
     QMenu menu(this);
     menu.addAction("Open", this,
@@ -41,17 +42,22 @@ void ProjectPanel::showContextMenu(const QPoint& pos)
     menu.addSeparator();
 
     // ── Assign to Show submenu ──────────────────────────────────────────
+    // The project's current show is shown checked (case-insensitive match).
     {
         QMenu* showMenu = menu.addMenu("Assign to Show");
-        showMenu->addAction("(None)", this, [this, name, fpath]() {
+        QAction* noneAct = showMenu->addAction("(None)", this, [this, name, fpath]() {
             emit assignProjectToShow(name, fpath, QString());
         });
+        noneAct->setCheckable(true);
+        noneAct->setChecked(currentShow.isEmpty());
         if (!m_knownShows.isEmpty())
             showMenu->addSeparator();
         for (const QString& sh : m_knownShows) {
-            showMenu->addAction(sh, this, [this, name, fpath, sh]() {
+            QAction* act = showMenu->addAction(sh, this, [this, name, fpath, sh]() {
                 emit assignProjectToShow(name, fpath, sh);
             });
+            act->setCheckable(true);
+            act->setChecked(QString::compare(sh, currentShow, Qt::CaseInsensitive) == 0);
         }
     }
     menu.addSeparator();

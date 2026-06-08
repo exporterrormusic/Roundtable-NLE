@@ -118,13 +118,29 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
         int w = 0, h = 0, ch = 0;
         uint8_t* pixels = stbi_load(texPath.c_str(), &w, &h, &ch, 4);
         if (pixels) {
+            // Premultiply alpha into RGB for any page that isn't already PMA.
+            // The GPU shader (spine.frag) assumes PMA input; the CPU rasterizer
+            // will un-premultiply later when it needs straight alpha.
+            if (!pages[pi].pma) {
+                const int total = w * h;
+                for (int p = 0; p < total; ++p) {
+                    uint8_t a = pixels[p * 4 + 3];
+                    if (a < 255) {
+                        pixels[p * 4 + 0] = static_cast<uint8_t>((pixels[p * 4 + 0] * a + 127) / 255);
+                        pixels[p * 4 + 1] = static_cast<uint8_t>((pixels[p * 4 + 1] * a + 127) / 255);
+                        pixels[p * 4 + 2] = static_cast<uint8_t>((pixels[p * 4 + 2] * a + 127) / 255);
+                    }
+                }
+                shared->pagePMA[pi] = true;
+            }
+
             shared->pagePixels[pi].assign(pixels, pixels + w * h * 4);
             shared->pageWidths[pi] = w;
             shared->pageHeights[pi] = h;
             stbi_image_free(pixels);
         }
     }
-    // Pixels are still in raw PMA form; CPU path will convert later.
+    // All pages are now PMA; the CPU path will un-premultiply on first use.
     shared->pagePixelsUnpremultiplied = false;
 
     // Pre-cache bounds from setup pose

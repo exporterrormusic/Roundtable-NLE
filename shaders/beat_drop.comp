@@ -1,0 +1,40 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] amount (unitless punch)   [14] pulse (0–1)
+} pc;
+
+// Combined "drop": zoom + flash + chromatic kick, all driven by one knob.
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    float amt = pc.params[0] * pc.params[14];
+
+    // Zoom in toward centre.
+    vec2 c   = vec2(0.5);
+    vec2 suv = clamp(c + (uv - c) / (1.0 + amt * 0.15), 0.0, 1.0);
+
+    // Chromatic split.
+    vec2  off = vec2(amt * 10.0 / res.x, 0.0);
+    float r = texture(inputImage, clamp(suv + off, 0.0, 1.0)).r;
+    vec4  g = texture(inputImage, suv);
+    float b = texture(inputImage, clamp(suv - off, 0.0, 1.0)).b;
+
+    // Flash.
+    vec3 col = vec3(r, g.g, b) * (1.0 + amt * 0.4);
+    imageStore(outputImage, px, vec4(clamp(col, 0.0, 1.0), g.a));
+}

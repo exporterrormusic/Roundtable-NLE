@@ -69,6 +69,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProcess>
@@ -181,6 +182,38 @@ void MainWindow::buildPanels()
         CompositeService::setModalDialogActive(true);
         ModalGuard modalGuard;
 
+        // ── Show picker: choose which show's default shots to use ───────
+        // Default-shot resolution is per-show, so let the user pick which
+        // show's defaults drive this export instead of silently falling back
+        // to whichever show happens to resolve first.
+        if (auto* mgr = m_audioSync->shotPresetManager()) {
+            const auto& shows = mgr->knownShows();
+            if (shows.size() > 1) {
+                QStringList showItems;
+                for (const auto& s : shows)
+                    showItems << QString::fromStdString(s);
+
+                // Pre-select the show this project is associated with; fall
+                // back to AudioSync's current show if the project has none.
+                int curIdx = 0;
+                QString preferred = QString::fromStdString(m_currentProject->show());
+                if (preferred.isEmpty())
+                    preferred = QString::fromStdString(m_audioSync->currentShow());
+                int found = showItems.indexOf(preferred);
+                if (found >= 0) curIdx = found;
+
+                bool ok = false;
+                QString chosen = QInputDialog::getItem(
+                    this, tr("Export — Show"),
+                    tr("Use default shots from which show?"),
+                    showItems, curIdx, /*editable*/ false, &ok);
+                if (!ok) return;  // user cancelled the export
+                m_audioSync->setCurrentShow(chosen.toStdString());
+            } else if (shows.size() == 1) {
+                m_audioSync->setCurrentShow(shows.front());
+            }
+        }
+
         // ── Warn about missing default shots ───────────────────────────
         {
             QStringList missingDefault = m_audioSync->missingDefaultShots();
@@ -198,31 +231,55 @@ void MainWindow::buildPanels()
             }
         }
 
-        // ── Sequence picker: ask user which sequence to export to ────
+        // ── Sequence picker: choose an existing sequence or create a new ──
+        // one.  Always shown (even with a single sequence) so the user can
+        // route the export wherever they want, or start a fresh sequence.
         Timeline* targetTimeline = nullptr;
-        if (m_currentProject->sequenceCount() <= 1) {
-            // Only one sequence — use it directly
-            targetTimeline = m_currentProject->sequence(0);
-        } else {
-            QStringList seqNames;
-            int activeIdx = static_cast<int>(m_currentProject->activeSequenceIndex());
+        {
+            const QString kCreateNew =
+                QStringLiteral("+  Create new sequence...");
+            QStringList items;
+            const int activeIdx =
+                static_cast<int>(m_currentProject->activeSequenceIndex());
             for (size_t i = 0; i < m_currentProject->sequenceCount(); ++i) {
                 auto* seq = m_currentProject->sequence(i);
-                seqNames << (seq ? QString::fromStdString(seq->name()) : QStringLiteral("Sequence %1").arg(i + 1));
+                items << (seq ? QString::fromStdString(seq->name())
+                              : QStringLiteral("Sequence %1").arg(i + 1));
             }
+            const int createRow = items.size();
+            items << kCreateNew;
+
             bool ok = false;
             QString chosen = QInputDialog::getItem(
-                this, "Export to Sequence",
-                "Select target sequence:",
-                seqNames, activeIdx, false, &ok);
+                this, "Export to Timeline",
+                "Choose the sequence to export into:",
+                items, activeIdx, /*editable=*/false, &ok);
             if (!ok) return;
-            int chosenIdx = seqNames.indexOf(chosen);
-            if (chosenIdx < 0) chosenIdx = activeIdx;
-            targetTimeline = m_currentProject->sequence(static_cast<size_t>(chosenIdx));
 
-            // Switch to the chosen sequence if different from active
-            if (static_cast<size_t>(chosenIdx) != m_currentProject->activeSequenceIndex())
-                switchSequence(static_cast<size_t>(chosenIdx));
+            const int chosenRow = items.indexOf(chosen);
+            if (chosen == kCreateNew || chosenRow == createRow) {
+                // Prompt for a name, then create + switch to a fresh sequence.
+                bool nameOk = false;
+                const QString defaultName =
+                    QString::fromStdString(m_currentProject->nextSequenceName());
+                QString name = QInputDialog::getText(
+                    this, "New Sequence", "Sequence name:",
+                    QLineEdit::Normal, defaultName, &nameOk);
+                if (!nameOk) return;
+                if (name.trimmed().isEmpty()) name = defaultName;
+
+                targetTimeline =
+                    m_currentProject->addSequence(name.toStdString());
+                if (!targetTimeline) return;
+                // switchSequence() makes it active and refreshes tabs/panels.
+                switchSequence(m_currentProject->sequenceCount() - 1);
+            } else {
+                const size_t idx = static_cast<size_t>(
+                    chosenRow < 0 ? activeIdx : chosenRow);
+                targetTimeline = m_currentProject->sequence(idx);
+                if (idx != m_currentProject->activeSequenceIndex())
+                    switchSequence(idx);
+            }
         }
         if (!targetTimeline) return;
 
@@ -460,11 +517,38 @@ void MainWindow::buildPanels()
 
         // Double-click (or drag) media items → load in Source Monitor
         connect(bin, &ProjectBin::loadInSourceMonitor,
-                this, [this](const std::filesystem::path& /*filePath*/, uint64_t mediaHandle) {
+                this, [this](const std::filesystem::path& filePath, uint64_t mediaHandle) {
             if (m_destroying.load(std::memory_order_acquire)) return;
             auto* sm = sourceMonitor();
-            if (sm && m_mediaPool)
-                sm->loadClip(mediaHandle, m_mediaPool);
+            if (!sm || !m_mediaPool) return;
+
+            // The bin may hand us a stale or 0 handle (e.g. the grid had no
+            // current selection).  loadClip() silently no-ops on an invalid
+            // handle, which looks like "double-click does nothing", so fall
+            // back to (re)opening the file by path.
+            uint64_t handle = mediaHandle;
+            if ((handle == 0 || !m_mediaPool->isValid(handle)) && !filePath.empty())
+                handle = m_mediaPool->open(filePath);
+            if (handle == 0 || !m_mediaPool->isValid(handle)) {
+                spdlog::warn("loadInSourceMonitor: no valid media handle for '{}'",
+                             filePath.string());
+                return;
+            }
+
+            sm->loadClip(handle, m_mediaPool);
+
+            // Opening a clip here makes the Source Monitor the transport
+            // target so the next Space plays it (not the timeline).
+            if (m_timelineWorkspace) {
+                m_timelineWorkspace->setSourceTransportActive(true);
+                // Bring the Source Monitor to the front (it may be tabbed
+                // behind the Program Monitor) so the clip is actually visible.
+                if (auto* dock = m_timelineWorkspace->dockForPanel(
+                        QStringLiteral("Source Monitor"))) {
+                    dock->show();
+                    dock->raise();
+                }
+            }
         });
     }
 
@@ -636,6 +720,8 @@ void MainWindow::buildPanels()
         statusBar()->showMessage(show.isEmpty()
             ? QString("Cleared show for '%1'").arg(name)
             : QString("Assigned '%1' to show \"%2\"").arg(name, show), 3000);
+        // Refresh so the Assign-to-Show checkmark reflects the new assignment.
+        refreshProjectsList();
     });
     connect(m_projectPanel, &ProjectPanel::openFromFile,
             this, &MainWindow::onOpenProject);

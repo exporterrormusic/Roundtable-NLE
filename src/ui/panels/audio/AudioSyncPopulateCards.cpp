@@ -195,7 +195,8 @@ void AudioSync::populateCards()
         switch (matchState) {
         case 2:  bgColor = Theme::hex(_tc.successBg); borderColor = Theme::hex(_tc.success); break;
         case 1:  bgColor = Theme::hex(_tc.warningBg); borderColor = Theme::hex(_tc.warning); break;
-        default: bgColor = Theme::hex(_tc.surface2); borderColor = Theme::hex(_tc.borderLight); break;
+        // Unmatched: red, to match the left script-line list (errorBg/error).
+        default: bgColor = Theme::hex(_tc.errorBg); borderColor = Theme::hex(_tc.error); break;
         }
 
         QString hoverBg, hoverBorder;
@@ -275,7 +276,7 @@ void AudioSync::populateCards()
         numLabel->setFixedSize(36, 24);
         numLabel->setAlignment(Qt::AlignCenter);
         QString badgeColor = (matchState == 2) ? Theme::hex(_tc.successBtnBg)
-                           : (matchState == 1) ? Theme::hex(_tc.warning) : Theme::hex(_tc.surface3);
+                           : (matchState == 1) ? Theme::hex(_tc.warning) : Theme::hex(_tc.error);
         numLabel->setStyleSheet(
             QString("QLabel { color: %2; font-weight: bold; font-size: 12px; "
                     "background: %1; border-radius: %3px; border: none; }").arg(badgeColor, Theme::hex(_tc.textBright), _rad));
@@ -810,29 +811,56 @@ void AudioSync::populateCards()
                 size_t lineIdx = static_cast<size_t>(comboIdx - 1);
                 if (lineIdx >= displayLines->size()) return;
                 const auto& dl = (*displayLines)[lineIdx];
-                struct Snap {
+                // Per-clip snapshot — a reassign touches the moved clip AND
+                // any clip already sitting on the target line (which must be
+                // bumped off, since a script line holds at most one match;
+                // without this you'd end up with two clips — often two
+                // different characters — on one line, which then exported as
+                // out-of-order/duplicate entries).
+                struct ClipSnap {
+                    size_t      idx;
                     int         matchState;
                     int         scriptLineNumber;
                     std::string character;
                     std::string scriptSegment;
                     float       confidence;
                 };
-                Snap oldSnap{
-                    m_clips[clipIdx].matchState,
-                    m_clips[clipIdx].scriptLineNumber,
-                    m_clips[clipIdx].character,
-                    m_clips[clipIdx].scriptSegment,
-                    m_clips[clipIdx].confidence};
-                Snap newSnap{1, dl.lineNumber, dl.character,
-                             dl.character + ": " + dl.dialogue, 1.0f};
-                auto apply = [this, clipIdx](Snap s) {
+                auto capture = [this](size_t idx) -> ClipSnap {
+                    return { idx, m_clips[idx].matchState,
+                             m_clips[idx].scriptLineNumber, m_clips[idx].character,
+                             m_clips[idx].scriptSegment, m_clips[idx].confidence };
+                };
+                std::vector<ClipSnap> before, after;
+                // The reassigned clip → tentative match on the chosen line.
+                before.push_back(capture(clipIdx));
+                after.push_back({ clipIdx, 1, dl.lineNumber, dl.character,
+                                  dl.character + ": " + dl.dialogue, 1.0f });
+                // Bump any OTHER clip currently matched to that line back to
+                // unmatched (keep its own character — it's still that speaker's
+                // audio, just no longer assigned here).
+                for (size_t i = 0; i < m_clips.size(); ++i) {
+                    if (i == clipIdx) continue;
+                    if (m_clips[i].scriptLineNumber == dl.lineNumber
+                        && m_clips[i].matchState != 0) {
+                        before.push_back(capture(i));
+                        ClipSnap u = capture(i);
+                        u.matchState = 0;
+                        u.scriptLineNumber = -1;
+                        u.scriptSegment.clear();
+                        u.confidence = 0.0f;
+                        after.push_back(std::move(u));
+                    }
+                }
+                auto applySnaps = [this](const std::vector<ClipSnap>& snaps) {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    if (clipIdx >= m_clips.size()) return;
-                    m_clips[clipIdx].matchState       = s.matchState;
-                    m_clips[clipIdx].scriptLineNumber = s.scriptLineNumber;
-                    m_clips[clipIdx].character        = std::move(s.character);
-                    m_clips[clipIdx].scriptSegment    = std::move(s.scriptSegment);
-                    m_clips[clipIdx].confidence       = s.confidence;
+                    for (const auto& s : snaps) {
+                        if (s.idx >= m_clips.size()) continue;
+                        m_clips[s.idx].matchState       = s.matchState;
+                        m_clips[s.idx].scriptLineNumber = s.scriptLineNumber;
+                        m_clips[s.idx].character        = s.character;
+                        m_clips[s.idx].scriptSegment    = s.scriptSegment;
+                        m_clips[s.idx].confidence       = s.confidence;
+                    }
                     // Defer rebuild so the combo isn't deleted during its own signal
                     QTimer::singleShot(0, this, [this]() {
                         if (m_destroying.load(std::memory_order_acquire)) return;
@@ -842,10 +870,10 @@ void AudioSync::populateCards()
                 if (m_commandStack) {
                     m_commandStack->execute(std::make_unique<LambdaCommand>(
                         "Reassign audio match",
-                        [apply, newSnap]() mutable { apply(std::move(newSnap)); },
-                        [apply, oldSnap]() mutable { apply(std::move(oldSnap)); }));
+                        [applySnaps, after]() { applySnaps(after); },
+                        [applySnaps, before]() { applySnaps(before); }));
                 } else {
-                    apply(std::move(newSnap));
+                    applySnaps(after);
                 }
             });
             rightLayout->addWidget(lineCombo);
@@ -957,30 +985,50 @@ void AudioSync::populateCards()
                 if (clipIdxRaw < 0) return;
                 const size_t clipIdx = static_cast<size_t>(clipIdxRaw);
                 if (clipIdx >= m_clips.size()) return;
-                struct Snap {
+                // Per-clip snapshot — assigning a clip to a line also bumps any
+                // clip already matched to that line off it (one clip per line),
+                // so two different speakers can't end up on the same line and
+                // export out of order. Mirrors the Reassign… combo above.
+                struct ClipSnap {
+                    size_t      idx;
                     int         matchState;
                     int         scriptLineNumber;
                     std::string character;
                     std::string scriptSegment;
                     float       confidence;
                 };
-                Snap oldSnap{
-                    m_clips[clipIdx].matchState,
-                    m_clips[clipIdx].scriptLineNumber,
-                    m_clips[clipIdx].character,
-                    m_clips[clipIdx].scriptSegment,
-                    m_clips[clipIdx].confidence};
-                Snap newSnap{1, lineNum, lineChar,
-                             lineChar + ": " + lineDial, 1.0f};
-                auto apply = [this, clipIdx](Snap s) {
+                auto capture = [this](size_t idx) -> ClipSnap {
+                    return { idx, m_clips[idx].matchState,
+                             m_clips[idx].scriptLineNumber, m_clips[idx].character,
+                             m_clips[idx].scriptSegment, m_clips[idx].confidence };
+                };
+                std::vector<ClipSnap> before, after;
+                before.push_back(capture(clipIdx));
+                after.push_back({ clipIdx, 1, lineNum, lineChar,
+                                  lineChar + ": " + lineDial, 1.0f });
+                for (size_t i = 0; i < m_clips.size(); ++i) {
+                    if (i == clipIdx) continue;
+                    if (m_clips[i].scriptLineNumber == lineNum
+                        && m_clips[i].matchState != 0) {
+                        before.push_back(capture(i));
+                        ClipSnap u = capture(i);
+                        u.matchState = 0;
+                        u.scriptLineNumber = -1;
+                        u.scriptSegment.clear();
+                        u.confidence = 0.0f;
+                        after.push_back(std::move(u));
+                    }
+                }
+                auto applySnaps = [this](const std::vector<ClipSnap>& snaps) {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    if (clipIdx >= m_clips.size()) return;
-                    m_clips[clipIdx].matchState       = s.matchState;
-                    m_clips[clipIdx].scriptLineNumber = s.scriptLineNumber;
-                    m_clips[clipIdx].character        = std::move(s.character);
-                    m_clips[clipIdx].scriptSegment    = std::move(s.scriptSegment);
-                    m_clips[clipIdx].confidence       = s.confidence;
-                    // Defer rebuild so the combo isn't deleted during its own signal
+                    for (const auto& s : snaps) {
+                        if (s.idx >= m_clips.size()) continue;
+                        m_clips[s.idx].matchState       = s.matchState;
+                        m_clips[s.idx].scriptLineNumber = s.scriptLineNumber;
+                        m_clips[s.idx].character        = s.character;
+                        m_clips[s.idx].scriptSegment    = s.scriptSegment;
+                        m_clips[s.idx].confidence       = s.confidence;
+                    }
                     QTimer::singleShot(0, this, [this]() {
                         if (m_destroying.load(std::memory_order_acquire)) return;
                         populateCards();
@@ -989,10 +1037,10 @@ void AudioSync::populateCards()
                 if (m_commandStack) {
                     m_commandStack->execute(std::make_unique<LambdaCommand>(
                         "Assign audio clip to script line",
-                        [apply, newSnap]() mutable { apply(std::move(newSnap)); },
-                        [apply, oldSnap]() mutable { apply(std::move(oldSnap)); }));
+                        [applySnaps, after]() { applySnaps(after); },
+                        [applySnaps, before]() { applySnaps(before); }));
                 } else {
-                    apply(std::move(newSnap));
+                    applySnaps(after);
                 }
             });
             rightLayout->addWidget(assignCombo);

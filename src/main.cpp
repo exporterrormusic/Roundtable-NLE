@@ -148,6 +148,16 @@ int main(int argc, char* argv[])
     ::SetEnvironmentVariableW(L"DISABLE_OGL_HOOK", L"1");
 #endif
 
+    // Disable Qt's accessibility (UI Automation) bridge.  When a Windows UI
+    // Automation client is active (Narrator, Voice Access, some IME/recording
+    // tools), a focus change drives QAccessible::updateAccessibility ->
+    // UIAutomationCore.dll -> QAccessibleWidget::window -> QWidget::windowHandle
+    // on a widget that may already be torn down, causing an ACCESS_VIOLATION
+    // entirely inside Qt's a11y bridge (see crash_log.txt 2026-06-06 18:38:20).
+    // We don't ship screen-reader support, so disable the bridge outright.
+    // Must be set before QApplication is constructed.
+    qputenv("QT_ACCESSIBILITY", "0");
+
     // Silence FFmpeg logging
 #ifdef ROUNDTABLE_HAS_FFMPEG
     av_log_set_level(AV_LOG_QUIET);

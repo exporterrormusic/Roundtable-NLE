@@ -78,6 +78,7 @@ add_library(roundtable_core STATIC
     media/UnifiedCache.cpp
     media/DiskFrameCache.cpp
     media/WaveformCache.cpp
+    media/BeatDetector.cpp
     media/AVSyncClock.cpp
     media/PlaybackController.cpp
     media/PlaybackScheduler.cpp
@@ -122,6 +123,8 @@ add_library(roundtable_core STATIC
     effects/Ots.cpp
     effects/Flip.cpp
     effects/SimpleEffects.cpp
+    effects/GlitchEffects.cpp
+    effects/BeatEffects.cpp
 
     # Commands (effects)
     command/commands/EffectCommands.cpp

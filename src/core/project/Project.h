@@ -97,8 +97,18 @@ public:
     [[nodiscard]] const AssetDatabase* assets() const noexcept { return m_assets.get(); }
 
     // ── Settings ────────────────────────────────────────────────────────
-    [[nodiscard]] const Settings& settings() const noexcept { return m_settings; }
-    [[nodiscard]] Settings& settings() noexcept { return m_settings; }
+    // settings() returns the ACTIVE sequence's settings (each sequence owns
+    // its own — independent, like Premiere Pro). Falls back to the project
+    // default template when there are no sequences. Defined in Project.cpp
+    // because it dereferences a Timeline.
+    [[nodiscard]] const Settings& settings() const noexcept;
+    [[nodiscard]] Settings& settings() noexcept;
+
+    /// Project-level default settings template — used to seed NEW sequences
+    /// and as the fallback before any sequence exists. NOT the active
+    /// sequence's settings (use settings() for that).
+    [[nodiscard]] const Settings& defaultSettings() const noexcept { return m_settings; }
+    [[nodiscard]] Settings& defaultSettings() noexcept { return m_settings; }
 
     // ── Command stack (undo/redo) ───────────────────────────────────────
     [[nodiscard]] CommandStack* commandStack() noexcept { return m_commands.get(); }

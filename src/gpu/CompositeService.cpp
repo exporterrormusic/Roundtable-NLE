@@ -156,7 +156,10 @@ void CompositeService::reset()
     if (m_engine) {
         m_engine->clearLru();
     }
-    m_lastActiveClipIds.clear();
+    {
+        std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
+        m_lastActiveClipIds.clear();
+    }
     m_prewarmedClipIds.clear();
     m_lastLookaheadScan = {};
     m_stickyLastClipFrame.clear();

@@ -9,6 +9,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "PathUtils.h"
 
 #include "CompositeService.h"
 #include "media/AudioPlaybackService.h"
@@ -210,7 +211,7 @@ void TimelineWorkspace::preOpenVideoMedia()
                 auto setFor = [&](const std::string& animName, bool pred) {
                     const auto* entry = cache->getEntry(chr, outfit, animName);
                     if (!entry) return;
-                    const std::string p = entry->videoPath.string();
+                    const std::string p = pathToUtf8(entry->videoPath);
                     if (p.empty()) return;
                     auto it = paths.find(p);
                     if (it == paths.end()) {

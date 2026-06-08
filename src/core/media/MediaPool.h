@@ -188,6 +188,14 @@ public:
     /// Returns InvalidMedia on failure.
     [[nodiscard]] MediaHandle open(const std::filesystem::path& filePath);
 
+    /// Open a media file given a UTF-8-encoded path string. Callers across the
+    /// app hold paths as UTF-8 std::strings (QString::toStdString(), pathToUtf8(),
+    /// serialized clip paths). The plain std::filesystem::path(std::string)
+    /// constructor decodes via the ANSI codepage on Windows and mangles any
+    /// non-CP_ACP character (e.g. U+FF5C '｜' in yt-dlp filenames), so this
+    /// overload routes through utf8ToPath() to preserve the bytes losslessly.
+    [[nodiscard]] MediaHandle open(const std::string& utf8Path);
+
     /// Asynchronously open a media file on a background worker thread.
     /// Returns immediately. The handle (when ready) can be retrieved later
     /// via isPathOpen()/findHandleByPath() or the standard open() call,

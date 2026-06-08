@@ -163,6 +163,7 @@ public:
     void setCommandStack(CommandStack* stack);
     void setAudioEngine(AudioEngine* engine);
     void setShotPresetManager(ShotPresetManager* mgr) noexcept { m_shotPresetManager = mgr; }
+    [[nodiscard]] ShotPresetManager* shotPresetManager() const noexcept { return m_shotPresetManager; }
 
     /// Set the show of the currently-open project. Default-shot resolution
     /// uses this so a character can have a different default shot per show.

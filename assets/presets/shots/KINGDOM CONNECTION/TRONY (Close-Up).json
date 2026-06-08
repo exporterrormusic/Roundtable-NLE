@@ -7,8 +7,8 @@
   "backgrounds": [
     {
       "path": "TRONY-KILO ROMANCE BKG 2",
-      "posX": 0.729642,
-      "posY": 0.418209,
+      "posX": 0.730000,
+      "posY": 0.418000,
       "scale": 2.356000,
       "opacity": 1.000000,
       "nativeWidth": 1920,
@@ -21,7 +21,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 2.000000
+      "blur": 5.000000
     }
   ],
   "characters": [

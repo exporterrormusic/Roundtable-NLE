@@ -47,8 +47,33 @@ enum class EffectType : uint8_t
     // (effect type stored as a raw uint8) keep their numbering.
     FlipHorizontal,
     FlipVertical,
+    // Glitch building blocks — procedural and time-driven. EffectStack injects
+    // clip-local seconds at params[kGlitchTimeSlot]; see isProceduralTimeEffect.
+    Scanlines,
+    BlockGlitch,
+    ChromaticSplit,
+    TurbulentDisplace,
+    Posterize,
+    Grain,
+    SignalTear,
+    // Beat-reactive effects (music videos) — pulse on a tempo/onset clock.
+    // EffectStack injects the pulse envelope at params[kBeatPulseSlot].
+    BeatZoom,
+    BeatFlash,
+    BeatShake,
+    BeatChroma,
+    BeatDrop,
     Count
 };
+
+/// Shader param slot that EffectStack fills with clip-local seconds for
+/// procedural effects (the glitch/beat family). Fixed so it is independent
+/// of an effect's user-param count. Shaders read pc.params[15].
+inline constexpr size_t kGlitchTimeSlot = 15;
+
+/// Shader param slot that EffectStack fills with the 0–1 beat-pulse envelope
+/// for beat-reactive effects. Shaders read pc.params[14].
+inline constexpr size_t kBeatPulseSlot = 14;
 
 /// Human-readable name for an effect type
 inline const char* effectTypeName(EffectType t) noexcept
@@ -69,6 +94,18 @@ inline const char* effectTypeName(EffectType t) noexcept
     case EffectType::OtsRight:     return "OTS RIGHT";
     case EffectType::FlipHorizontal: return "Flip Horizontal";
     case EffectType::FlipVertical:   return "Flip Vertical";
+    case EffectType::Scanlines:        return "Scanlines";
+    case EffectType::BlockGlitch:      return "Block Glitch";
+    case EffectType::ChromaticSplit:   return "Chromatic Split";
+    case EffectType::TurbulentDisplace: return "Turbulent Displace";
+    case EffectType::Posterize:        return "Posterize / Banding";
+    case EffectType::Grain:            return "Grain / Noise";
+    case EffectType::SignalTear:       return "Signal Tear";
+    case EffectType::BeatZoom:         return "Beat Zoom Punch";
+    case EffectType::BeatFlash:        return "Beat Flash";
+    case EffectType::BeatShake:        return "Beat Shake";
+    case EffectType::BeatChroma:       return "Beat Chromatic Kick";
+    case EffectType::BeatDrop:         return "Beat Drop";
     case EffectType::FillLeftWithRight: return "Fill Left with Right";
     case EffectType::FillRightWithLeft: return "Fill Right with Left";
     default:                       return "Unknown";
@@ -80,6 +117,42 @@ inline bool isAudioEffect(EffectType t) noexcept
 {
     return t == EffectType::FillLeftWithRight
         || t == EffectType::FillRightWithLeft;
+}
+
+/// Returns true for procedural effects that animate off a continuous clock.
+/// EffectStack::evaluate() injects clip-local seconds at kGlitchTimeSlot for
+/// these so the GPU shader can drive itself without authored keyframes.
+inline bool isProceduralTimeEffect(EffectType t) noexcept
+{
+    switch (t) {
+    case EffectType::Scanlines:
+    case EffectType::BlockGlitch:
+    case EffectType::ChromaticSplit:
+    case EffectType::TurbulentDisplace:
+    case EffectType::Posterize:
+    case EffectType::Grain:
+    case EffectType::SignalTear:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Returns true for the beat-reactive effect family (pulse-driven). These also
+/// receive the clip-local clock at kGlitchTimeSlot; EffectStack additionally
+/// computes their 0–1 pulse envelope and injects it at kBeatPulseSlot.
+inline bool isBeatReactEffect(EffectType t) noexcept
+{
+    switch (t) {
+    case EffectType::BeatZoom:
+    case EffectType::BeatFlash:
+    case EffectType::BeatShake:
+    case EffectType::BeatChroma:
+    case EffectType::BeatDrop:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // ── Parameter descriptor ────────────────────────────────────────────────────

@@ -6,6 +6,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "PathUtils.h"
 
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
@@ -211,7 +212,7 @@ void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
     if (path.empty()) return;
 
     spdlog::warn("[LIVE-RELOAD] refreshChangedMedia '{}' — invalidate + "
-                 "forget + recomposite", path.string());
+                 "forget + recomposite", pathToUtf8(path));
 
     // 0. Release the OS file HANDLE and evict caches WITHOUT reopening
     //    the decoder.  On Windows, a delete-pending file's name cannot be
@@ -250,7 +251,7 @@ void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
             m_compositeService->invalidateMediaTextures(changed);
         // Also drop the compositor's cached path→handle mapping (harmless
         // belt-and-suspenders now that the handle is preserved).
-        m_compositeService->forgetMediaPath(path.string());
+        m_compositeService->forgetMediaPath(pathToUtf8(path));
     }
 
     // 2b. Evict the Project Bin's thumbnail cache and queue a fresh
@@ -413,11 +414,11 @@ void TimelineWorkspace::rescanMediaWatch()
     // nested sequences and shot-boundary prewarm opens the clip walk misses).
     if (m_mediaPool)
         for (const auto& p : m_mediaPool->openMediaPaths())
-            if (!p.empty()) candidates.insert(p.string());
+            if (!p.empty()) candidates.insert(pathToUtf8(p));
     // Project-Bin assets live-reload even before they're on the timeline.
     if (m_projectBin)
         for (const auto& p : m_projectBin->allFiles())
-            if (!p.empty()) candidates.insert(p.string());
+            if (!p.empty()) candidates.insert(pathToUtf8(p));
 
     // Cheap early-out (no I/O): the exact same candidate set is already applied
     // and the watcher still holds paths. A genuine content swap fires
@@ -574,6 +575,12 @@ void TimelineWorkspace::applyMediaWatchScan(
 void TimelineWorkspace::refreshAfterUndoRedo()
 {
     invalidateCompositeCache();
+    // Undo/redo can add, remove, or retime transitions and audio clips, and
+    // audio crossfades are baked into the mixed source.  schedulePostEditWork()
+    // (called below) only *loads* missing sources — it won't rebuild an
+    // already-cached mix — so drop the cache here or an undone/redone audio
+    // cross-dissolve keeps playing its stale (pre-edit) mix.
+    invalidateAudioSources();
 
     // Sync playhead from the Timeline model to the panel and playback
     // controller.  Paste/duplicate commands now move the model's playhead

@@ -3,6 +3,7 @@
 #include "MediaPool.h"
 #include "GpuContext.h"
 #include "Nv12Converter.h"
+#include "PathUtils.h"
 #include "cuda/CudaVulkanInterop.h"
 #include <volk.h>
 #include <spdlog/spdlog.h>
@@ -71,7 +72,7 @@ bool reopenMediaEntryAsSoftware(MediaEntry& entry)
     auto softwareDecoder = std::make_unique<VideoDecoder>();
     if (!softwareDecoder->open(entry.path, /*forceSoftware=*/true)) {
         spdlog::warn("MediaPool: failed to reopen '{}' in software mode for preview fallback",
-                     entry.path.filename().string());
+                     pathToUtf8(entry.path.filename()));
         return false;
     }
 
@@ -492,7 +493,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // Key them to transparent here so the rest of the pipeline
         // (compositor, thumbnails, library) never sees the green.
         if (!cached->pixels.empty()) {
-            std::string fn = entry.path.filename().string();
+            std::string fn = pathToUtf8(entry.path.filename());
             std::transform(fn.begin(), fn.end(), fn.begin(),
                            [](unsigned char c) { return std::toupper(c); });
             if (fn.find("GREEN") != std::string::npos) {
@@ -576,7 +577,7 @@ nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
                                             entry.packedAlpha)) {
             spdlog::warn("[PERF] MediaPool: handle={} '{}' switching preview decode to software after slow hw path ({:.1f}ms total, src={}x{}, dst={}x{}, tier={})",
                          entry.handle,
-                         entry.path.filename().string(),
+                         pathToUtf8(entry.path.filename()),
                          totalMs,
                          decoded.width,
                          decoded.height,
@@ -603,7 +604,7 @@ nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
         decoder.close();
         spdlog::warn("MediaPool: released file handle for still image '{}' "
                      "(handle={}) — live replace enabled",
-                     entry.path.filename().string(), entry.handle);
+                     pathToUtf8(entry.path.filename()), entry.handle);
     }
 
     return cached;

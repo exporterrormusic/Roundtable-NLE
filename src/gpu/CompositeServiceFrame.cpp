@@ -217,9 +217,17 @@ try
                     currentClipIds.insert(clip->id());
             }
         }
+        // Read m_lastActiveClipIds via a snapshot under its dedicated mutex —
+        // the prewarm worker thread may move-assign it concurrently (see the
+        // member declaration). All .find() checks below use the stable copy.
+        std::unordered_set<uint64_t> lastActiveSnapshot;
+        {
+            std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
+            lastActiveSnapshot = m_lastActiveClipIds;
+        }
         bool hasNewClips = false;
         for (auto id : currentClipIds) {
-            if (m_lastActiveClipIds.find(id) == m_lastActiveClipIds.end()) {
+            if (lastActiveSnapshot.find(id) == lastActiveSnapshot.end()) {
                 hasNewClips = true;
                 break;
             }
@@ -233,7 +241,7 @@ try
                     continue;
                 for (auto* clip : track->clipsAtTime(tick)) {
                     if (!clip || !clip->isEnabled()) continue;
-                    if (m_lastActiveClipIds.find(clip->id()) != m_lastActiveClipIds.end())
+                    if (lastActiveSnapshot.find(clip->id()) != lastActiveSnapshot.end())
                         continue;
                     auto* videoClip = dynamic_cast<VideoClip*>(clip);
                     if (!videoClip) continue;
@@ -303,11 +311,18 @@ try
                 }
             }
         }
-        m_lastActiveClipIds = std::move(currentClipIds);
+        // Commit the new active set under the dedicated mutex. Copy (not
+        // move) so currentClipIds stays valid for the spine cleanup below —
+        // that lets the cleanup use the local set instead of touching the
+        // shared member a second time.
+        {
+            std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
+            m_lastActiveClipIds = currentClipIds;
+        }
     #ifdef ROUNDTABLE_HAS_SPINE
         for (auto it = m_lastPreRenderedSpineFrame.begin();
              it != m_lastPreRenderedSpineFrame.end();) {
-            if (m_lastActiveClipIds.find(it->first) == m_lastActiveClipIds.end())
+            if (currentClipIds.find(it->first) == currentClipIds.end())
             it = m_lastPreRenderedSpineFrame.erase(it);
             else
             ++it;

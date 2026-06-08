@@ -422,67 +422,52 @@ void ProjectBin::setupUI()
                 size_t seqIdx = selected->data(0, Qt::UserRole + 4).toULongLong();
                 menu.addAction("Sequence Settings...", this, [this, seqIdx]() {
                     if (!m_project) return;
+                    auto* curSeq = m_project->sequence(seqIdx);
+                    if (!curSeq) return;
                     SequenceDialog dlg(this);
                     dlg.setWindowTitle(tr("Sequence Settings"));
                     dlg.setAcceptButtonText(tr("Save Settings"));
+                    // Edit THIS sequence's own settings — sequences are independent.
                     dlg.setMediaProperties(
-                        m_project->settings().resolution().width,
-                        m_project->settings().resolution().height,
-                        m_project->settings().frameRate());
-                    QString oldName;
-                    if (auto* seq = m_project->sequence(seqIdx))
-                        oldName = QString::fromStdString(seq->name());
+                        curSeq->settings().resolution().width,
+                        curSeq->settings().resolution().height,
+                        curSeq->settings().frameRate());
+                    QString oldName = QString::fromStdString(curSeq->name());
                     dlg.setSequenceName(oldName);
                     if (dlg.exec() != QDialog::Accepted)
                         return;
-                    auto oldRes = m_project->settings().resolution();
-                    double oldFps = m_project->settings().frameRate();
+                    auto oldRes = curSeq->settings().resolution();
+                    double oldFps = curSeq->settings().frameRate();
                     auto newRes = Resolution{dlg.width(), dlg.height()};
                     double newFps = dlg.frameRate();
                     QString newName = dlg.sequenceName();
                     if (newRes == oldRes && newFps == oldFps && newName == oldName)
                         return; // nothing changed
-                    if (m_commandStack) {
-                        m_commandStack->execute(std::make_unique<LambdaCommand>(
-                            "Sequence Settings",
-                            [this, newRes, newFps, newName, seqIdx, oldRes]() {
-                                if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0) {
-                                    if (auto* seq = m_project->sequence(seqIdx))
-                                        scaleClipsToResolution(seq, oldRes, newRes);
-                                }
-                                m_project->settings().setResolution(newRes);
-                                m_project->settings().setFrameRate(newFps);
-                                if (auto* seq = m_project->sequence(seqIdx))
-                                    seq->setName(newName.toStdString());
-                                m_project->setModified(true);
-                                syncListView();
-                                emit sequenceSettingsChanged();
-                            },
-                            [this, oldRes, oldFps, oldName, seqIdx, newRes]() {
-                                if (oldRes != newRes && newRes.width > 0 && newRes.height > 0) {
-                                    if (auto* seq = m_project->sequence(seqIdx))
-                                        scaleClipsToResolution(seq, newRes, oldRes);
-                                }
-                                m_project->settings().setResolution(oldRes);
-                                m_project->settings().setFrameRate(oldFps);
-                                if (auto* seq = m_project->sequence(seqIdx))
-                                    seq->setName(oldName.toStdString());
-                                m_project->setModified(true);
-                                syncListView();
-                                emit sequenceSettingsChanged();
-                            }));
-                    } else {
-                        if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0) {
-                            if (auto* seq = m_project->sequence(seqIdx))
-                                scaleClipsToResolution(seq, oldRes, newRes);
-                        }
-                        m_project->settings().setResolution(newRes);
-                        m_project->settings().setFrameRate(newFps);
-                        if (auto* seq = m_project->sequence(seqIdx))
-                            seq->setName(newName.toStdString());
+                    auto applySeq = [this, seqIdx](const Resolution& res, double fps,
+                                                   const QString& name,
+                                                   const Resolution& from) {
+                        auto* seq = m_project->sequence(seqIdx);
+                        if (!seq) return;
+                        if (from != res && from.width > 0 && from.height > 0)
+                            scaleClipsToResolution(seq, from, res);
+                        seq->settings().setResolution(res);
+                        seq->settings().setFrameRate(fps);
+                        seq->setName(name.toStdString());
                         m_project->setModified(true);
                         syncListView();
                         emit sequenceSettingsChanged();
+                    };
+                    if (m_commandStack) {
+                        m_commandStack->execute(std::make_unique<LambdaCommand>(
+                            "Sequence Settings",
+                            [applySeq, newRes, newFps, newName, oldRes]() {
+                                applySeq(newRes, newFps, newName, oldRes);
+                            },
+                            [applySeq, oldRes, oldFps, oldName, newRes]() {
+                                applySeq(oldRes, oldFps, oldName, newRes);
+                            }));
+                    } else {
+                        applySeq(newRes, newFps, newName, oldRes);
                     }
                 });
                 menu.addAction("Copy", this, [this, seqIdx]() {
@@ -836,67 +821,52 @@ void ProjectBin::setupUI()
         if (isSequence) {
             menu.addAction("Sequence Settings...", this, [this, seqIdx]() {
                 if (!m_project) return;
+                auto* curSeq = m_project->sequence(seqIdx);
+                if (!curSeq) return;
                 SequenceDialog dlg(this);
                 dlg.setWindowTitle(tr("Sequence Settings"));
                 dlg.setAcceptButtonText(tr("Save Settings"));
+                // Edit THIS sequence's own settings — sequences are independent.
                 dlg.setMediaProperties(
-                    m_project->settings().resolution().width,
-                    m_project->settings().resolution().height,
-                    m_project->settings().frameRate());
-                QString oldName;
-                if (auto* seq = m_project->sequence(seqIdx))
-                    oldName = QString::fromStdString(seq->name());
+                    curSeq->settings().resolution().width,
+                    curSeq->settings().resolution().height,
+                    curSeq->settings().frameRate());
+                QString oldName = QString::fromStdString(curSeq->name());
                 dlg.setSequenceName(oldName);
                 if (dlg.exec() != QDialog::Accepted)
                     return;
-                auto oldRes = m_project->settings().resolution();
-                double oldFps = m_project->settings().frameRate();
+                auto oldRes = curSeq->settings().resolution();
+                double oldFps = curSeq->settings().frameRate();
                 auto newRes = Resolution{dlg.width(), dlg.height()};
                 double newFps = dlg.frameRate();
                 QString newName = dlg.sequenceName();
                 if (newRes == oldRes && newFps == oldFps && newName == oldName)
                     return; // nothing changed
-                if (m_commandStack) {
-                    m_commandStack->execute(std::make_unique<LambdaCommand>(
-                        "Sequence Settings",
-                        [this, newRes, newFps, newName, seqIdx, oldRes]() {
-                            if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0) {
-                                if (auto* seq = m_project->sequence(seqIdx))
-                                    scaleClipsToResolution(seq, oldRes, newRes);
-                            }
-                            m_project->settings().setResolution(newRes);
-                            m_project->settings().setFrameRate(newFps);
-                            if (auto* seq = m_project->sequence(seqIdx))
-                                seq->setName(newName.toStdString());
-                            m_project->setModified(true);
-                            syncListView();
-                            emit sequenceSettingsChanged();
-                        },
-                        [this, oldRes, oldFps, oldName, seqIdx, newRes]() {
-                            if (oldRes != newRes && newRes.width > 0 && newRes.height > 0) {
-                                if (auto* seq = m_project->sequence(seqIdx))
-                                    scaleClipsToResolution(seq, newRes, oldRes);
-                            }
-                            m_project->settings().setResolution(oldRes);
-                            m_project->settings().setFrameRate(oldFps);
-                            if (auto* seq = m_project->sequence(seqIdx))
-                                seq->setName(oldName.toStdString());
-                            m_project->setModified(true);
-                            syncListView();
-                            emit sequenceSettingsChanged();
-                        }));
-                } else {
-                    if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0) {
-                        if (auto* seq = m_project->sequence(seqIdx))
-                            scaleClipsToResolution(seq, oldRes, newRes);
-                    }
-                    m_project->settings().setResolution(newRes);
-                    m_project->settings().setFrameRate(newFps);
-                    if (auto* seq = m_project->sequence(seqIdx))
-                        seq->setName(newName.toStdString());
+                auto applySeq = [this, seqIdx](const Resolution& res, double fps,
+                                               const QString& name,
+                                               const Resolution& from) {
+                    auto* seq = m_project->sequence(seqIdx);
+                    if (!seq) return;
+                    if (from != res && from.width > 0 && from.height > 0)
+                        scaleClipsToResolution(seq, from, res);
+                    seq->settings().setResolution(res);
+                    seq->settings().setFrameRate(fps);
+                    seq->setName(name.toStdString());
                     m_project->setModified(true);
                     syncListView();
                     emit sequenceSettingsChanged();
+                };
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        "Sequence Settings",
+                        [applySeq, newRes, newFps, newName, oldRes]() {
+                            applySeq(newRes, newFps, newName, oldRes);
+                        },
+                        [applySeq, oldRes, oldFps, oldName, newRes]() {
+                            applySeq(oldRes, oldFps, oldName, newRes);
+                        }));
+                } else {
+                    applySeq(newRes, newFps, newName, oldRes);
                 }
             });
         } else if (!m_grid->items()[index].isFolder) {

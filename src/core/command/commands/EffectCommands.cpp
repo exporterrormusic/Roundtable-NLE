@@ -4,8 +4,29 @@
  */
 
 #include "command/commands/EffectCommands.h"
+#include "command/CompoundCommand.h"
+
+#include <string>
 
 namespace rt {
+
+// ── Glitch preset → compound add command ────────────────────────────────────
+
+std::unique_ptr<Command>
+makeAddGlitchPresetCommand(EffectStack* stack, GlitchPreset preset)
+{
+    auto effects = buildGlitchPreset(preset);
+    if (!stack || effects.empty()) return nullptr;
+
+    auto compound = std::make_unique<CompoundCommand>(
+        std::string("Apply ") + glitchPresetName(preset) + " glitch");
+    // Append in order; each new effect goes at the current end of the stack.
+    size_t index = stack->effectCount();
+    for (auto& fx : effects)
+        compound->addCommand(
+            std::make_unique<AddEffectCommand>(stack, std::move(fx), index++));
+    return compound;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  AddEffectCommand

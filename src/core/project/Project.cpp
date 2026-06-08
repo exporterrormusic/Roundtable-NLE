@@ -107,11 +107,26 @@ Timeline* Project::setActiveSequence(size_t index)
     return timeline();
 }
 
+const Settings& Project::settings() const noexcept
+{
+    if (const Timeline* tl = timeline())
+        return tl->settings();
+    return m_settings;
+}
+
+Settings& Project::settings() noexcept
+{
+    if (Timeline* tl = timeline())
+        return tl->settings();
+    return m_settings;
+}
+
 Timeline* Project::addSequence(const std::string& name)
 {
     auto tl = std::make_unique<Timeline>();
     std::string seqName = name.empty() ? nextSequenceName() : name;
     tl->setName(seqName);
+    tl->setSettings(m_settings);  // seed from the project default template
     tl->addVideoTrack("Video 1");
     tl->addAudioTrack("Audio 1");
     m_sequences.push_back(std::move(tl));

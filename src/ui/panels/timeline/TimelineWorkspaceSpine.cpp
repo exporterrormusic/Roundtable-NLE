@@ -8,6 +8,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "PathUtils.h"
 #include "panels/monitors/ProgramMonitor.h"
 
 #include "CompositeService.h"
@@ -93,7 +94,7 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
                     atlasFile.seekg(0);
                     shared->atlasText.resize(static_cast<size_t>(sz));
                     atlasFile.read(shared->atlasText.data(), sz);
-                    shared->atlasDir = std::filesystem::path(paths.atlasPath).parent_path().string();
+                    shared->atlasDir = pathToUtf8(std::filesystem::path(paths.atlasPath).parent_path());
                 }
             }
 

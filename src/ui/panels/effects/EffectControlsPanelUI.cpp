@@ -275,16 +275,22 @@ void EffectControlsPanel::setupUI()
 //  Drag & Drop — accept effects dragged from the Effects panel
 // ═════════════════════════════════════════════════════════════════════════════
 
+static bool isEffectDrop(const QMimeData* m)
+{
+    return m->hasFormat(QStringLiteral("application/x-roundtable-effect"))
+        || m->hasFormat(QStringLiteral("application/x-roundtable-glitch-preset"));
+}
+
 void EffectControlsPanel::dragEnterEvent(QDragEnterEvent* event)
 {
-    if (event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect")) && m_clip) {
+    if (isEffectDrop(event->mimeData()) && m_clip) {
         event->acceptProposedAction();
     }
 }
 
 void EffectControlsPanel::dragMoveEvent(QDragMoveEvent* event)
 {
-    if (event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect")) && m_clip) {
+    if (isEffectDrop(event->mimeData()) && m_clip) {
         event->acceptProposedAction();
     }
 }
@@ -292,6 +298,23 @@ void EffectControlsPanel::dragMoveEvent(QDragMoveEvent* event)
 void EffectControlsPanel::dropEvent(QDropEvent* event)
 {
     if (!m_clip || !m_commandStack || !m_timeline) return;
+    auto& stack = m_clip->effects();
+
+    // Glitch preset: a curated multi-effect macro applied as one undo step.
+    if (event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-glitch-preset"))) {
+        bool ok = false;
+        int presetId = event->mimeData()
+            ->data(QStringLiteral("application/x-roundtable-glitch-preset")).toInt(&ok);
+        if (!ok) return;
+        if (auto cmd = makeAddGlitchPresetCommand(&stack, static_cast<GlitchPreset>(presetId))) {
+            m_commandStack->execute(std::move(cmd));
+            refresh();
+            emit propertyChanged();
+        }
+        event->acceptProposedAction();
+        return;
+    }
+
     if (!event->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-effect"))) return;
 
     QByteArray effectData = event->mimeData()->data(QStringLiteral("application/x-roundtable-effect"));
@@ -300,7 +323,6 @@ void EffectControlsPanel::dropEvent(QDropEvent* event)
     if (!ok) return;
 
     auto type = static_cast<EffectType>(effectType);
-    auto& stack = m_clip->effects();
 
     m_commandStack->execute(
         std::make_unique<AddEffectCommand>(&stack, type));

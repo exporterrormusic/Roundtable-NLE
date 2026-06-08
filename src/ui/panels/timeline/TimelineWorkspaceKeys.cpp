@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
 
 #include <QApplication>
 #include <QCursor>
@@ -65,20 +66,17 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     const bool ctrlShift = (mod == (Qt::ControlModifier | Qt::ShiftModifier));
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Transport ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    // Route transport keys to the Source Monitor's controller when it owns
-    // focus (mirrors the I/O routing below).  Without this check, pressing
-    // Space after clicking inside the Source Monitor would bubble up and
-    // play the timeline instead of the loaded source clip.
-    // isAncestorOf(self) is false in Qt; clicking inside the SourceMonitor
-    // calls setFocus() on the monitor widget itself, so we have to accept
-    // both "focus is the monitor" and "focus is inside the monitor".
-    auto sourceMonitorFocused = [this]() {
-        QWidget* fw = QApplication::focusWidget();
-        return m_sourceMonitor && m_sourceMonitor->controller() && fw
-            && (fw == m_sourceMonitor || m_sourceMonitor->isAncestorOf(fw));
-    };
+    // Route transport keys to the Source Monitor's controller when it is the
+    // active transport target.  This is an EXPLICIT, sticky selection set on
+    // clicks / double-click-to-open (see TransportFocusFilter and the bin /
+    // library load handlers) — NOT Qt focus.  The app uses focus-follows-hover
+    // (HoverFocusFilter), so keying transport off focus made Space play
+    // whatever panel the cursor happened to be over: double-clicking a clip
+    // into the Source Monitor never made it active, and hovering away after a
+    // pause silently re-targeted the timeline.  The sticky flag fixes both.
     auto activeController = [&]() -> PlaybackController* {
-        if (sourceMonitorFocused() && m_sourceMonitor->hasClip())
+        if (m_sourceTransportActive && m_sourceMonitor
+            && m_sourceMonitor->controller() && m_sourceMonitor->hasClip())
             return m_sourceMonitor->controller();
         return m_playbackController;
     };
@@ -134,7 +132,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mark In/Out ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_I) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() && sourceMonitorFocused()) {
+        if (m_sourceMonitor && m_sourceMonitor->hasClip() && m_sourceTransportActive) {
             m_sourceMonitor->markIn();
         } else if (m_timeline && m_playbackController) {
             EditOperations::setInPoint(*m_timeline, m_playbackController->currentTick());
@@ -145,7 +143,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     }
     if (noMod && key == Qt::Key_O) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() && sourceMonitorFocused()) {
+        if (m_sourceMonitor && m_sourceMonitor->hasClip() && m_sourceTransportActive) {
             m_sourceMonitor->markOut();
         } else if (m_timeline && m_playbackController) {
             EditOperations::setOutPoint(*m_timeline, m_playbackController->currentTick());
@@ -272,6 +270,9 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                     m_commandStack->execute(std::move(cmd));
                     m_timelinePanel->refreshTrackContents();
                     invalidateCompositeCache();
+                    // Removing an audio cross-dissolve must rebuild the mixed
+                    // audio source so the baked crossfade is actually dropped.
+                    invalidateAudioSources();
                     updateTransformOverlay();
                     if (m_programMonitor) m_programMonitor->requestRefresh();
                     schedulePostEditWork();
@@ -454,13 +455,20 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                     }
                     // Resolve any overlaps with non-selected clips on the
                     // touched tracks (Premiere-style overwrite for nudges
-                    // that bump into a neighbour).
-                    for (const auto& sel : selClips) {
-                        auto fix = EditOperations::resolveOverlaps(
-                            *m_timeline, sel.trackIndex, sel.clipId);
-                        if (fix) {
-                            fix->execute();
-                            compound->addExecuted(std::move(fix));
+                    // that bump into a neighbour).  Pass all selected clip
+                    // IDs as exclusions so they don't cascade-delete each
+                    // other when nudged into overlapping positions.
+                    {
+                        std::unordered_set<uint64_t> nudgedIds;
+                        for (const auto& sel : selClips)
+                            nudgedIds.insert(sel.clipId);
+                        for (const auto& sel : selClips) {
+                            auto fix = EditOperations::resolveOverlaps(
+                                *m_timeline, sel.trackIndex, sel.clipId, nudgedIds);
+                            if (fix) {
+                                fix->execute();
+                                compound->addExecuted(std::move(fix));
+                            }
                         }
                     }
                     if (compound->size() > 0) {
@@ -503,7 +511,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
                 // Load clip in Source Monitor at the matched source time
                 if (m_sourceMonitor && m_mediaPool && !result.mediaPath.empty()) {
-                    auto handle = m_mediaPool->open(std::filesystem::path(result.mediaPath));
+                    auto handle = m_mediaPool->open(result.mediaPath);
                     if (handle != 0) {
                         m_sourceMonitor->loadClip(handle, m_mediaPool);
                         // Seek source monitor to the matched source time

@@ -168,6 +168,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                         // cleared it) so the indicator follows the click
                         // to this transition instead of staying stuck.
                         m_selection.clear();
+                        if (m_gapSelection.active) {
+                            m_gapSelection.active = false;
+                            for (size_t w = 0; w < m_trackWidgets.size(); ++w)
+                                m_trackWidgets[w]->setGapHighlight(-1, -1);
+                        }
                         m_selectedTransitionTrack = ti;
                         m_selectedTransitionIndex = trI;
                         emit selectionChanged();
@@ -185,6 +190,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                         // cleared it) so the indicator follows the click
                         // to this transition instead of staying stuck.
                         m_selection.clear();
+                        if (m_gapSelection.active) {
+                            m_gapSelection.active = false;
+                            for (size_t w = 0; w < m_trackWidgets.size(); ++w)
+                                m_trackWidgets[w]->setGapHighlight(-1, -1);
+                        }
                         m_selectedTransitionTrack = ti;
                         m_selectedTransitionIndex = trI;
                         emit selectionChanged();
@@ -232,6 +242,14 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                         double pxEnd   = m_layoutEngine.timeToPixelX(tEnd);
                         if (px >= pxStart && px <= pxEnd) {
                             m_selection.clear();
+                            // Clear any stale gap selection so Delete removes
+                            // THIS transition rather than ripple-closing a
+                            // previously-selected (and no-longer-shown) gap.
+                            if (m_gapSelection.active) {
+                                m_gapSelection.active = false;
+                                for (size_t w = 0; w < m_trackWidgets.size(); ++w)
+                                    m_trackWidgets[w]->setGapHighlight(-1, -1);
+                            }
                             m_selectedTransitionTrack = ti;
                             m_selectedTransitionIndex = trI;
                             // Update track widgets
@@ -310,10 +328,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                                         && std::abs(pxLocal - clipR) < edgeZone;
 
                 // Clicking within the edge-grab zone of a clip
-                // immediately selects the edit point and primes a
-                // trim/transition operation — first click on an
-                // unselected clip's edge enters edge mode directly,
-                // no need to select the whole clip first.
+                // selects the edit point and shows the bracket so
+                // Ctrl+T can add a transition. The actual trim drag
+                // is deferred until the cursor moves > 5 px (same
+                // deadzone as clip-body moves), preventing accidental
+                // trims on a plain click.
                 // Shift+click bypasses edge mode for selection toggling.
                 const bool shiftClick = event->modifiers() & Qt::ShiftModifier;
                 bool edgeModeOk = (!shiftClick && (nearLeft || nearRight));
@@ -389,6 +408,52 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                                             : EditPointSide::TailOnly;
                         }
 
+                        // ── Transition-handle priority ──────────────────
+                        // If the click is also within range of a
+                        // transition handle on this track, let the
+                        // transition trim take precedence over the clip
+                        // edge trim (the dedicated transition-handle
+                        // check above already covers this for the
+                        // primary hit, but as a safety net re-check here
+                        // in case the first pass missed the handle due
+                        // to a track-boundary or rounding edge case).
+                        {
+                            constexpr double kTransHandleFb = 10.0;
+                            for (size_t trI = 0; trI < hitTrack->transitionCount(); ++trI) {
+                                const Transition* trans = hitTrack->transition(trI);
+                                if (!trans) continue;
+                                int64_t tStart, tEnd;
+                                trans->getRange(tStart, tEnd);
+                                double pxS = m_layoutEngine.timeToPixelX(tStart);
+                                double pxE = m_layoutEngine.timeToPixelX(tEnd);
+                                bool canDragS = (trans->rightClipId == 0)
+                                             || (trans->leftClipId != 0 && trans->rightClipId != 0);
+                                bool canDragE = (trans->leftClipId == 0)
+                                             || (trans->leftClipId != 0 && trans->rightClipId != 0);
+                                bool nearStart = canDragS && std::abs(pxLocal - pxS) < kTransHandleFb;
+                                bool nearEnd   = canDragE && std::abs(pxLocal - pxE) < kTransHandleFb;
+                                if (nearStart || nearEnd) {
+                                    m_dragMode = DragMode::TransitionTrim;
+                                    m_transTrimTrackIndex  = hitRef->trackIndex;
+                                    m_transTrimIndex       = trI;
+                                    m_transTrimIsStart     = nearStart;
+                                    m_transTrimOrigDuration   = trans->duration;
+                                    m_transTrimOrigEditPoint  = trans->editPointTick;
+                                    m_selection.clear();
+                                    if (m_gapSelection.active) {
+                                        m_gapSelection.active = false;
+                                        for (size_t w = 0; w < m_trackWidgets.size(); ++w)
+                                            m_trackWidgets[w]->setGapHighlight(-1, -1);
+                                    }
+                                    m_selectedTransitionTrack = hitRef->trackIndex;
+                                    m_selectedTransitionIndex = trI;
+                                    emit selectionChanged();
+                                    event->accept();
+                                    return;
+                                }
+                            }
+                        }
+
                         // Locate the chosen clip's owning track index.
                         // Always the same as the hit clip's track since
                         // neighbours come from the same hitTrack.
@@ -410,102 +475,38 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                         if (!keepSelection) {
                             // Single-clip edge click — Premiere-style edit
                             // point behaviour: clear selection, show the
-                            // bracket, single-clip trim.  m_lastClickedEdge
-                            // is recorded so Ctrl+T can add a transition.
-                            // Also drop any selected transition so its
-                            // highlight doesn't linger.
+                            // bracket.  m_lastClickedEdge is recorded so
+                            // Ctrl+T can add a transition.  Also drop any
+                            // selected transition so its highlight doesn't
+                            // linger.
                             m_selection.clear();
                             m_selectedTransitionTrack = SIZE_MAX;
                             m_selectedTransitionIndex = SIZE_MAX;
                             emit selectionChanged();
                         }
-                        // Show the edit-point bracket in either case so the
-                        // user gets visual confirmation that an edge was
-                        // grabbed — multi-selection trim previously had no
-                        // bracket at all, which read as "nothing happened".
+                        // Show the edit-point bracket so the user gets
+                        // visual confirmation that an edge was grabbed.
                         setEditPointSelection(trimTrackIdx, seamTick, side);
 
+                        // Defer the trim drag until the cursor actually
+                        // moves (5 px deadzone, same as clip-body clicks).
+                        // The PendingClipClick→trim promotion in
+                        // mouseMoveEvent handles the transition to
+                        // ClipTrimHead / ClipTrimTail when the drag
+                        // begins, including beginMacro + snap init.
                         m_dragClipRef          = trimRef;
                         m_dragOriginalIn       = trimClip->timelineIn();
                         m_dragOriginalSourceIn = trimClip->sourceIn();
                         m_dragOriginalDuration = trimClip->duration();
                         m_dragOriginalTrack    = trimTrackIdx;
-                        m_dragMode = (trimEdge == ClipEdge::Tail)
-                                       ? DragMode::ClipTrimTail
-                                       : DragMode::ClipTrimHead;
-                        m_lastClickedEdge = { m_dragClipRef, trimEdge, true };
+                        m_dragMode             = DragMode::PendingClipClick;
+                        m_lastClickedEdge      = { m_dragClipRef, trimEdge, true };
 
-                        // Wrap all trim-move commands into a single undo
-                        // step so one drag = one Ctrl+Z, not hundreds.
-                        if (m_commandStack)
-                            m_commandStack->beginMacro(
-                                (m_dragMode == DragMode::ClipTrimTail)
-                                    ? "Trim clip tail" : "Trim clip head");
-
-                        // Snapshot every selected clip's original in/
-                        // duration so the trim handlers can extend each
-                        // one by the same delta. For the single-clip case
-                        // (no multi-selection) the snapshot is just the
-                        // grabbed edge's clip.
+                        // Clear any stale drag-snapshot so the promotion
+                        // path starts fresh (m_dragSelectedClips was
+                        // already cleared at press-start).
                         m_dragSelectedClips.clear();
                         m_dragTargetTrack = trimTrackIdx;
-                        if (keepSelection) {
-                            for (const auto& sel : m_selection.clips()) {
-                                Track* selTrack = m_timeline->track(sel.trackIndex);
-                                if (!selTrack) continue;
-                                size_t si = selTrack->findClipIndexById(sel.clipId);
-                                if (si >= selTrack->clipCount()) continue;
-                                DragClipState dcs;
-                                dcs.ref = sel;
-                                dcs.originalIn = selTrack->clip(si)->timelineIn();
-                                dcs.originalDuration = selTrack->clip(si)->duration();
-                                dcs.originalSourceIn = selTrack->clip(si)->sourceIn();
-                                dcs.originalTrack = sel.trackIndex;
-                                m_dragSelectedClips.push_back(dcs);
-                            }
-                        } else {
-                            DragClipState dcs;
-                            dcs.ref = m_dragClipRef;
-                            dcs.originalIn = m_dragOriginalIn;
-                            dcs.originalDuration = m_dragOriginalDuration;
-                            dcs.originalSourceIn = m_dragOriginalSourceIn;
-                            dcs.originalTrack = m_dragOriginalTrack;
-                            m_dragSelectedClips.push_back(dcs);
-                        }
-
-                        m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
-                        std::vector<uint64_t> excludeIds;
-                        excludeIds.reserve(m_dragSelectedClips.size() + 2);
-                        for (const auto& dcs : m_dragSelectedClips)
-                            excludeIds.push_back(dcs.ref.clipId);
-
-                        // Also exclude clip edges that are directly
-                        // adjacent on the same track.  After a split
-                        // the two halves share the same edge position;
-                        // without this exclusion the user must fight
-                        // snapping to the other half just to make a
-                        // tiny frame adjustment.
-                        for (const auto& dcs : m_dragSelectedClips) {
-                            Track* adjTrack = m_timeline->track(dcs.originalTrack);
-                            if (!adjTrack) continue;
-                            size_t idx = adjTrack->findClipIndexById(dcs.ref.clipId);
-                            if (idx >= adjTrack->clipCount()) continue;
-                            // Clip immediately before the dragged clip
-                            if (idx > 0) {
-                                const Clip* prevClip = adjTrack->clip(idx - 1);
-                                if (prevClip && prevClip->timelineOut() == dcs.originalIn)
-                                    excludeIds.push_back(prevClip->id());
-                            }
-                            // Clip immediately after the dragged clip
-                            if (idx + 1 < adjTrack->clipCount()) {
-                                const Clip* nextClip = adjTrack->clip(idx + 1);
-                                if (nextClip && nextClip->timelineIn() == dcs.originalIn + dcs.originalDuration)
-                                    excludeIds.push_back(nextClip->id());
-                            }
-                        }
-
-                        m_snapEngine.buildTargets(*m_timeline, m_playheadTick,
-                                                  0.0, excludeIds);
 
                         event->accept();
                         return;

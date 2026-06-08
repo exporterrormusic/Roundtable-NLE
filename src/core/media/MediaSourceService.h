@@ -4,6 +4,7 @@
 #include "media/AudioFile.h"
 #include "media/MediaPool.h"
 #include "media/ThumbnailGenerator.h"
+#include "PathUtils.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -236,8 +237,8 @@ public:
 
         std::error_code ec;
         const auto canonical = std::filesystem::weakly_canonical(path, ec);
-        const std::string key = ec ? path.lexically_normal().string()
-                                   : canonical.lexically_normal().string();
+        const std::string key = ec ? pathToUtf8(path.lexically_normal())
+                                   : pathToUtf8(canonical.lexically_normal());
         return static_cast<uint64_t>(std::hash<std::string>{}(key));
     }
 

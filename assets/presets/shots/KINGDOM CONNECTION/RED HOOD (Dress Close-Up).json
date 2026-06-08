@@ -21,7 +21,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 2.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -33,7 +33,7 @@
       "isTalking": true,
       "posX": 0.589573,
       "posY": 0.932399,
-      "scale": 2.047106,
+      "scale": 2.281514,
       "rotation": 0.000000,
       "flipX": false,
       "flipY": false,

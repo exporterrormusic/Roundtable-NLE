@@ -145,6 +145,14 @@ public:
     [[nodiscard]] TimelinePanel*    timelinePanel()    const noexcept { return m_timelinePanel; }
     [[nodiscard]] SourceMonitor*    sourceMonitor()    const noexcept { return m_sourceMonitor; }
     [[nodiscard]] ProgramMonitor*   programMonitor()   const noexcept { return m_programMonitor; }
+
+    // ── Transport target (which monitor Space / JKL drive) ───────────────
+    // Sticky selection, set on explicit clicks/loads (NOT hover-focus), so
+    // opening a clip in the Source Monitor keeps it the transport target even
+    // as the cursor hovers other panels.  See activeController() in
+    // TimelineWorkspaceKeys.cpp.
+    void setSourceTransportActive(bool active) noexcept { m_sourceTransportActive = active; }
+    [[nodiscard]] bool sourceTransportActive() const noexcept { return m_sourceTransportActive; }
     [[nodiscard]] ProjectBin*       projectBin()       const noexcept { return m_projectBin; }
     [[nodiscard]] Project*          project()          const noexcept { return m_project; }
     [[nodiscard]] PropertiesPanel*  propertiesPanel()  const noexcept { return m_propertiesPanel; }
@@ -331,6 +339,10 @@ private:
     TimelinePanel*    m_timelinePanel{nullptr};
     SourceMonitor*    m_sourceMonitor{nullptr};
     ProgramMonitor*   m_programMonitor{nullptr};
+
+    // True when the Source Monitor is the transport target (Space/JKL drive
+    // it instead of the timeline).  Updated on explicit user activation.
+    bool              m_sourceTransportActive{false};
     ProjectBin*       m_projectBin{nullptr};
     PropertiesPanel*  m_propertiesPanel{nullptr};
     EffectControlsPanel* m_effectControlsPanel{nullptr};

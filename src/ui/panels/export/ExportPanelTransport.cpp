@@ -4,6 +4,7 @@
 
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
+#include "PathUtils.h"
 
 #include "Theme.h"
 
@@ -437,7 +438,7 @@ void ExportPanel::onAddToQueue()
     }
 
     auto config = buildJobConfig();
-    rememberExportDir(config.outputPath.string());
+    rememberExportDir(pathToUtf8(config.outputPath));
     uint32_t jobId = m_renderQueue->addJob(config);
 
     // Show job in list
@@ -445,11 +446,11 @@ void ExportPanel::onAddToQueue()
     auto* item = new QListWidgetItem(
         QStringLiteral("\u25CB Job %1 \u2014 %2 \u2014 Queued")
             .arg(jobId)
-            .arg(QString::fromStdString(config.outputPath.string())));
+            .arg(QString::fromStdString(pathToUtf8(config.outputPath))));
     item->setData(Qt::UserRole, static_cast<qulonglong>(jobId));
     m_jobList->addItem(item);
 
     m_statusLabel->setText(tr("Job %1 added to queue").arg(jobId));
-    spdlog::info("ExportPanel: added job {} to queue: {}", jobId, config.outputPath.string());
+    spdlog::info("ExportPanel: added job {} to queue: {}", jobId, pathToUtf8(config.outputPath));
 }
 } // namespace rt

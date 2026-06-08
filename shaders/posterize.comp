@@ -1,0 +1,41 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] intensity [1] levels [2] blockQuant
+} pc;
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    float intensity  = pc.params[0];
+    float levels     = max(pc.params[1], 2.0);
+    float blockQuant = pc.params[2];
+
+    vec4 c    = texture(inputImage, uv);
+    vec3 orig = c.rgb;
+
+    // Optional block averaging (snap to block centre) for a compression look.
+    if (blockQuant > 0.0) {
+        float bs   = mix(1.0, 8.0, blockQuant);
+        vec2  bpx  = (floor(vec2(px) / bs) + 0.5) * bs;
+        vec3  bcol = texture(inputImage, clamp(bpx / res, 0.0, 1.0)).rgb;
+        c.rgb = mix(c.rgb, bcol, blockQuant);
+    }
+
+    vec3 q = floor(c.rgb * levels + 0.5) / levels;
+    imageStore(outputImage, px, vec4(mix(orig, q, intensity), c.a));
+}

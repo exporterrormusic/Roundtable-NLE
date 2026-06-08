@@ -66,9 +66,16 @@ public:
     /// file.  Much faster than load() — ideal for project list display.
     [[nodiscard]] static bool readMetadata(const std::filesystem::path& path, Metadata& out);
 
+    /// Read just the project's associated show (Section_ProjectMeta) without
+    /// deserializing the project. Returns "" if unset or unreadable. Scans
+    /// section headers only, so it stays cheap even for large project files.
+    [[nodiscard]] static std::string readProjectShow(const std::filesystem::path& path);
+
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 23;  // v23 = persist Project.show (per-show default shots)
+    static constexpr uint32_t FORMAT_VERSION = 25;  // v25 = per-sequence Settings (resolution/fps/colour/audio independent per sequence)
+                                                    // v24 = persist beat-reactive effect onset times + audio source id
+                                                    // v23 = persist Project.show (per-show default shots)
                                                     // v22 = persist AudioClip audiofx chain (ParametricEQ / Dynamics)
                                                     // v21 = persist Track.isCaptionTrack (subtitle track pinned on top) + CaptionClip type-specific fields
                                                     // v20 = persist Track.isPermanentDivider so user-added dividers don't get hijacked when whoever sits at the V/A boundary is greedily promoted

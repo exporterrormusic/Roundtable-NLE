@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "Constants.h"
+#include "project/Settings.h"
 #include "timeline/Track.h"
 #include "timeline/Marker.h"
 #include "timeline/TimelineObserver.h"
@@ -83,6 +84,13 @@ public:
     void addObserver(TimelineObserver* obs);
     void removeObserver(TimelineObserver* obs);
 
+    // ── Per-sequence settings (resolution, frame rate, colour, audio) ───
+    // Each sequence owns its settings — they are independent, like Premiere
+    // Pro. Project::settings() delegates to the active sequence's settings.
+    [[nodiscard]] const Settings& settings() const noexcept { return m_settings; }
+    [[nodiscard]] Settings&       settings() noexcept { return m_settings; }
+    void setSettings(const Settings& s) { m_settings = s; }
+
     // ── Serialization helpers ───────────────────────────────────────────
     [[nodiscard]] const std::string& name() const noexcept;
     void setName(const std::string& name);
@@ -93,6 +101,7 @@ public:
 
 private:
     std::string                        m_name{"Sequence 1"};
+    Settings                           m_settings;  // per-sequence resolution/fps/etc.
     std::vector<std::unique_ptr<Track>> m_tracks;
     std::vector<Marker>                m_markers;
     TimeTick                           m_playhead{0};

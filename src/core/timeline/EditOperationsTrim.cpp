@@ -44,6 +44,34 @@ static bool isStillImageMediaPath(const std::string& path)
            ext == "tga"  || ext == "dds";
 }
 
+// True for a path carrying a known VIDEO extension. Used to keep a (rare)
+// video background from being treated as an infinite still.
+static bool isVideoMediaPath(const std::string& path)
+{
+    auto pos = path.find_last_of('.');
+    if (pos == std::string::npos) return false;
+    std::string ext = path.substr(pos + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == "mp4"  || ext == "mov"  || ext == "webm" || ext == "mkv" ||
+           ext == "avi"  || ext == "m4v"  || ext == "wmv"  || ext == "flv" ||
+           ext == "mpg"  || ext == "mpeg" || ext == "ts"   || ext == "m2ts";
+}
+
+// A shot-preset BACKGROUND layer (export-to-timeline tags it
+// layerId="background_<N>") resolves to a still image in assets/backgrounds —
+// the renderer only tries .png/.jpg/.jpeg for these. Its STORED path is often
+// a bare name with no extension (e.g. "INTERVIEW"), which isStillImageMediaPath
+// can't classify, leaving the head edge un-extendable. Treat such a background
+// as a still unless its path explicitly names a video file.
+static bool isBackgroundStillClip(const Clip* c)
+{
+    if (!c) return false;
+    auto* vc = dynamic_cast<const VideoClip*>(c);
+    if (!vc) return false;
+    return c->layerId().rfind("background_", 0) == 0
+           && !isVideoMediaPath(vc->mediaPath());
+}
+
 // ─── Split ───────────────────────────────────────────────────────────────────
 
 /// Thread-safe unique group-ID generator (shared across all split operations).
@@ -242,7 +270,8 @@ std::unique_ptr<Command> EditOperations::trimClip(
     // edge backwards past tick 0 of the source.
     auto isLoopingClip = [](const Clip* c) -> bool {
         if (auto* vc = dynamic_cast<const VideoClip*>(c))
-            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath());
+            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath())
+                   || isBackgroundStillClip(c);
         if (dynamic_cast<const ImageClip*>(c))   return true;
         if (dynamic_cast<const SpineClip*>(c))   return true;
         if (dynamic_cast<const GraphicClip*>(c)) return true;
@@ -296,6 +325,24 @@ std::unique_ptr<Command> EditOperations::trimClip(
             if (newDuration < kMinClipDuration)
                 newDuration = kMinClipDuration;
         }
+
+        // DIAG-TRIM-HEAD: surface why a leftward head-extend may be refusing
+        // to move. Logs the still-image/looping classification and the
+        // clamps that fired, so an "infinite" PNG that won't extend can be
+        // traced to either source-clamp (looping=false) or the tick-0 wall.
+        // Only when NOT detected as looping AND the user is dragging the head
+        // LEFT (extend) — that's the case the source clamp can block, so the
+        // log stays quiet once a clip is correctly classified.
+        if (!looping && newEdgeTime < clip->timelineIn()) {
+            std::string mp;
+            if (auto* vc = dynamic_cast<const VideoClip*>(clip)) mp = vc->mediaPath();
+            spdlog::warn("DIAG-TRIM-HEAD clipId={} type={} looping=false layerId='{}' "
+                         "still='{}' reqEdge={} origIn={} -> newIn={} (delta={})",
+                         clipId, static_cast<int>(clip->clipType()), clip->layerId(),
+                         mp.empty() ? "<n/a>" : mp,
+                         newEdgeTime, clip->timelineIn(), newIn,
+                         newEdgeTime - clip->timelineIn());
+        }
     }
     else // Tail
     {
@@ -308,7 +355,8 @@ std::unique_ptr<Command> EditOperations::trimClip(
         // Still-image "videos" (.png/.jpg/...) are also unbounded.
         int64_t srcDur = 0;
         if (auto* vc = dynamic_cast<const VideoClip*>(clip)) {
-            if (!vc->isVideoCharacter() && !isStillImageMediaPath(vc->mediaPath()))
+            if (!vc->isVideoCharacter() && !isStillImageMediaPath(vc->mediaPath())
+                && !isBackgroundStillClip(clip))
                 srcDur = vc->sourceDuration();
         } else if (auto* ac = dynamic_cast<const AudioClip*>(clip)) {
             srcDur = ac->sourceDuration();
@@ -365,7 +413,8 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     // in trimClip above.
     auto isLoopingClip = [](const Clip* c) -> bool {
         if (auto* vc = dynamic_cast<const VideoClip*>(c))
-            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath());
+            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath())
+                   || isBackgroundStillClip(c);
         if (dynamic_cast<const ImageClip*>(c))   return true;
         if (dynamic_cast<const SpineClip*>(c))   return true;
         if (dynamic_cast<const GraphicClip*>(c)) return true;

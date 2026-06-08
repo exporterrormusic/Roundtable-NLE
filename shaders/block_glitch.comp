@@ -1,0 +1,49 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] intensity [1] blockSize [2] speed [3] smear [4] seed
+    // [15] clip-local seconds
+} pc;
+
+float hash21(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    float intensity = pc.params[0];
+    float blockSize = max(pc.params[1], 2.0);
+    float speed     = pc.params[2];
+    float smear     = pc.params[3];
+    float seed      = pc.params[4];
+    float t         = pc.params[15];
+
+    // Blocks re-roll in discrete time steps so the glitch reads as "digital".
+    float tb      = floor(t * max(speed, 0.001));
+    vec2  blockId = floor(vec2(px) / blockSize);
+    float r       = hash21(blockId + vec2(seed) + tb * 7.0);
+
+    vec2 disp = vec2(0.0);
+    if (r > 1.0 - intensity) {
+        float rx = hash21(blockId * 1.7 + tb * 3.1 + seed);
+        disp.x = (rx - 0.5) * smear * 0.5;                       // horizontal datamosh smear
+        disp.y = (hash21(blockId * 2.3 + tb) - 0.5) * 0.05 * intensity;
+    }
+
+    vec2 suv = clamp(uv + disp, 0.0, 1.0);                       // edge-clamped: no border change
+    imageStore(outputImage, px, texture(inputImage, suv));
+}

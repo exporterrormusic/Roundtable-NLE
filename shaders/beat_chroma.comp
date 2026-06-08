@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] amount (px)   [14] pulse (0–1)
+} pc;
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    float amt = pc.params[0] * pc.params[14];           // split (px) on the beat
+    vec2  off = vec2(amt / res.x, 0.0);
+
+    float r = texture(inputImage, clamp(uv + off, 0.0, 1.0)).r;
+    vec4  g = texture(inputImage, uv);
+    float b = texture(inputImage, clamp(uv - off, 0.0, 1.0)).b;
+
+    imageStore(outputImage, px, vec4(r, g.g, b, g.a));
+}

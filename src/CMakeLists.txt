@@ -45,7 +45,15 @@ if(Qt6_FOUND)
     endif()
 
     # ─── Main executable ─────────────────────────────────────────────────
-    add_executable(roundtable WIN32 main.cpp ${ROUNDTABLE_RC_FILE})
+    # roundtable.manifest forces the process Active Code Page to UTF-8 so
+    # std::filesystem::path narrow conversions stop using CP-1252 (which
+    # throws/mangles non-ANSI filenames). MSVC merges it with the default
+    # linker-generated manifest via /MANIFESTINPUT.
+    set(ROUNDTABLE_MANIFEST_FILE "")
+    if(MSVC)
+        set(ROUNDTABLE_MANIFEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/roundtable.manifest")
+    endif()
+    add_executable(roundtable WIN32 main.cpp ${ROUNDTABLE_RC_FILE} ${ROUNDTABLE_MANIFEST_FILE})
 
     # Ensure icon.ico is built before roundtable (the .rc references it)
     if(ROUNDTABLE_RC_FILE)

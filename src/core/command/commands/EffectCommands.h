@@ -14,6 +14,7 @@
 #include "command/Command.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "effects/GlitchEffects.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,12 @@ namespace EffectCmdId {
     inline constexpr int SetEffectParam    = 503;
     inline constexpr int SetEffectEnabled  = 504;
 }
+
+/// Build an undoable command that applies a glitch preset (a curated stack of
+/// building-block effects) to `stack` in one step. Returns nullptr if the
+/// preset is empty. Shared by every entry point (browser, drag-drop, etc.).
+[[nodiscard]] std::unique_ptr<Command>
+makeAddGlitchPresetCommand(EffectStack* stack, GlitchPreset preset);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  AddEffectCommand

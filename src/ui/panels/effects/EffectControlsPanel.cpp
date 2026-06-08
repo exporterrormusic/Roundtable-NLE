@@ -1086,14 +1086,38 @@ void EffectControlsPanel::deleteSelectedEffect()
 
 void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
 {
-    // CTRL+C: copy selected effect
+    // ── Ctrl+C / Ctrl+X / Ctrl+V: keyframe clipboard takes priority ────
+    // When keyframes are selected in the mini-timeline, copy/paste/cut
+    // operates on keyframes, not effects — matching Premiere Pro behavior.
+    if (event->modifiers() & Qt::ControlModifier) {
+        if (event->key() == Qt::Key_C && m_kfTimeline
+            && m_kfTimeline->hasSelectedKeyframes()) {
+            m_kfTimeline->copySelectedKeyframes();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_X && m_kfTimeline
+            && m_kfTimeline->hasSelectedKeyframes()) {
+            m_kfTimeline->cutSelectedKeyframes();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_V && m_kfTimeline
+            && m_kfTimeline->hasKfClipboardData()) {
+            m_kfTimeline->pasteKeyframes();
+            event->accept();
+            return;
+        }
+    }
+
+    // CTRL+C: copy selected effect (only when no keyframes are selected)
     if ((event->key() == Qt::Key_C) && (event->modifiers() & Qt::ControlModifier)
         && m_selectedEffectIndex >= 0) {
         copySelectedEffect();
         event->accept();
         return;
     }
-    // CTRL+V: paste copied effect
+    // CTRL+V: paste copied effect (only when no kf clipboard data)
     if ((event->key() == Qt::Key_V) && (event->modifiers() & Qt::ControlModifier)
         && m_copiedEffect && m_clip) {
         pasteEffect();
@@ -1145,6 +1169,38 @@ void EffectControlsPanel::pasteEffect()
     emit propertyChanged();
     spdlog::info("EffectControlsPanel: pasted effect '{}'",
                  m_copiedEffect->name());
+}
+
+// ── Keyframe clipboard delegation ─────────────────────────────────────────
+
+void EffectControlsPanel::copySelectedKeyframes()
+{
+    if (m_kfTimeline) m_kfTimeline->copySelectedKeyframes();
+}
+
+void EffectControlsPanel::cutSelectedKeyframes()
+{
+    if (m_kfTimeline) m_kfTimeline->cutSelectedKeyframes();
+}
+
+void EffectControlsPanel::pasteKeyframes()
+{
+    if (m_kfTimeline) m_kfTimeline->pasteKeyframes();
+}
+
+bool EffectControlsPanel::hasKfClipboardData() const noexcept
+{
+    return m_kfTimeline && m_kfTimeline->hasKfClipboardData();
+}
+
+bool EffectControlsPanel::hasSelectedKeyframes() const noexcept
+{
+    return m_kfTimeline && m_kfTimeline->hasSelectedKeyframes();
+}
+
+void EffectControlsPanel::clearKfClipboard() noexcept
+{
+    if (m_kfTimeline) m_kfTimeline->clearKfClipboard();
 }
 
 bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)

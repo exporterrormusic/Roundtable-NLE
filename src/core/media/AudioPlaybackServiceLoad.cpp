@@ -722,6 +722,19 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                     // fadeStart lies BEFORE its natural start. Clamping those
                     // collapsed the crossfade into a fade-out-to-silence-then-
                     // fade-in, which is what users were hearing.
+                    if (trans->leftClipId == clipId || trans->rightClipId == clipId) {
+                        // DIAG-XFADE: print the fade range vs the clip's own
+                        // length so a "completely mute" cross-dissolved clip
+                        // can be traced — if [fadeStart,fadeEnd] spans most of
+                        // [0, fullClipSourceFrames], the whole clip is faded.
+                        spdlog::warn("DIAG-XFADE clipId={} side={} editPt={} tRange=[{},{}] "
+                                     "tlIn={} fade=[{},{}] clipLen={} ({:.3f}s)",
+                                     clipId,
+                                     trans->leftClipId == clipId ? "LEFT" : "RIGHT",
+                                     trans->editPointTick, tStart, tEnd, tlIn,
+                                     tStart - tlIn, tEnd - tlIn,
+                                     fullClipSourceFrames, fullClipSourceFrames / 48000.0);
+                    }
                     if (trans->leftClipId == clipId) {
                         const float fadeStartFrame = static_cast<float>(tStart - tlIn);
                         const float fadeEndFrame   = static_cast<float>(tEnd   - tlIn);

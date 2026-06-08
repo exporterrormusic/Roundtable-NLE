@@ -43,6 +43,10 @@ constexpr const char* kTransitionMimeType = "application/x-roundtable-transition
 // (the audiofx::ProcessorKind int) and a distinct item role.
 constexpr const char* kAudioFxMimeType = "application/x-roundtable-audiofx";
 constexpr int kAudioFxRole = Qt::UserRole + 3;
+// Glitch presets are curated multi-effect macros, not a single EffectType, so
+// they carry their own MIME payload (the GlitchPreset int) and item role.
+constexpr const char* kGlitchPresetMimeType = "application/x-roundtable-glitch-preset";
+constexpr int kGlitchPresetRole = Qt::UserRole + 4;
 
 /// QTreeWidget subclass that embeds the effect type in custom MIME data
 /// during drag operations, ensuring cross-window drops work correctly.
@@ -57,12 +61,16 @@ protected:
         auto* drag = new QDrag(this);
         auto* mimeData = new QMimeData;
 
-        // Transition (UserRole+1), audio-FX processor (UserRole+3), or effect (UserRole).
-        QVariant transData  = item->data(0, Qt::UserRole + 1);
+        // Transition (UserRole+1), audio-FX processor (UserRole+3),
+        // glitch preset (UserRole+4), or effect (UserRole).
+        QVariant transData   = item->data(0, Qt::UserRole + 1);
         QVariant audioFxData = item->data(0, kAudioFxRole);
-        QVariant effectData = item->data(0, Qt::UserRole);
+        QVariant glitchData  = item->data(0, kGlitchPresetRole);
+        QVariant effectData  = item->data(0, Qt::UserRole);
 
-        if (transData.isValid()) {
+        if (glitchData.isValid()) {
+            mimeData->setData(kGlitchPresetMimeType, QByteArray::number(glitchData.toInt()));
+        } else if (transData.isValid()) {
             int transType = transData.toInt();
             mimeData->setData(kTransitionMimeType, QByteArray::number(transType));
         } else if (audioFxData.isValid()) {
@@ -378,6 +386,14 @@ void EffectsPanel::populateBrowser()
                                  EffectType::OtsLeft, EffectType::OtsRight,
                                  EffectType::FlipHorizontal,
                                  EffectType::FlipVertical } },
+        { "Glitch",            { EffectType::Scanlines, EffectType::BlockGlitch,
+                                 EffectType::ChromaticSplit, EffectType::TurbulentDisplace,
+                                 EffectType::Posterize, EffectType::Grain,
+                                 EffectType::SignalTear } },
+        { "Glitch Presets",    {} },   // populated separately below (multi-effect macros)
+        { "Beat / Music",      { EffectType::BeatZoom, EffectType::BeatFlash,
+                                 EffectType::BeatShake, EffectType::BeatChroma,
+                                 EffectType::BeatDrop } },
         { "Video Transitions", {} },   // populated separately below
         { "Legacy",            {} },
     };
@@ -413,6 +429,26 @@ void EffectsPanel::populateBrowser()
         }
 
         catItem->setExpanded(false);
+    }
+
+    // ── Populate "Glitch Presets" with the curated multi-effect macros ──
+    {
+        QTreeWidgetItem* presetTop = nullptr;
+        for (int c = 0; c < m_browserTree->topLevelItemCount(); ++c) {
+            if (m_browserTree->topLevelItem(c)->text(0) == "Glitch Presets") {
+                presetTop = m_browserTree->topLevelItem(c);
+                break;
+            }
+        }
+        if (presetTop) {
+            for (int i = 0; i < static_cast<int>(GlitchPreset::Count); ++i) {
+                auto preset = static_cast<GlitchPreset>(i);
+                auto* child = new QTreeWidgetItem(presetTop);
+                child->setText(0, QString::fromUtf8(glitchPresetName(preset)));
+                child->setData(0, kGlitchPresetRole, i);
+                child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
+            }
+        }
     }
 
     // ── Populate "Video Transitions" with organized sub-categories ──
@@ -566,10 +602,26 @@ void EffectsPanel::onAddClicked()
 {
     if (!m_clip) return;
     auto* item = m_browserTree->currentItem();
-    if (!item || !item->data(0, Qt::UserRole).isValid()) return;
-
-    auto type = static_cast<EffectType>(item->data(0, Qt::UserRole).toInt());
+    if (!item) return;
     auto& stack = m_clip->effects();
+
+    // Glitch preset macro: drops a curated stack of building blocks at once.
+    if (item->data(0, kGlitchPresetRole).isValid()) {
+        auto preset = static_cast<GlitchPreset>(item->data(0, kGlitchPresetRole).toInt());
+        if (m_commandStack) {
+            if (auto cmd = makeAddGlitchPresetCommand(&stack, preset))
+                m_commandStack->execute(std::move(cmd));
+        } else {
+            for (auto& fx : buildGlitchPreset(preset))
+                stack.addEffect(std::move(fx));
+        }
+        refreshStack();
+        emit effectAdded();
+        return;
+    }
+
+    if (!item->data(0, Qt::UserRole).isValid()) return;
+    auto type = static_cast<EffectType>(item->data(0, Qt::UserRole).toInt());
 
     if (m_commandStack) {
         m_commandStack->execute(

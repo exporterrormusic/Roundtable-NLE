@@ -1,0 +1,42 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] intensity [1] size [2] color(0=mono,1=rgb)
+    // [15] clip-local seconds
+} pc;
+
+float hash21(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+    vec4 c  = texture(inputImage, uv);
+
+    float intensity = pc.params[0];
+    float size      = max(pc.params[1], 1.0);
+    float color     = pc.params[2];
+    float t         = pc.params[15];
+
+    vec2  gp = floor(vec2(px) / size);
+    float tt = floor(t * 60.0);                  // ~60 Hz grain churn
+
+    vec3 noise = (color > 0.5)
+        ? vec3(hash21(gp + tt * 1.7), hash21(gp + tt * 2.3), hash21(gp + tt * 3.1)) - 0.5
+        : vec3(hash21(gp + tt * 1.7) - 0.5);
+
+    c.rgb = clamp(c.rgb + noise * intensity, 0.0, 1.0);
+    imageStore(outputImage, px, vec4(c.rgb, c.a));
+}

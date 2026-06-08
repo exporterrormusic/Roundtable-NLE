@@ -3,6 +3,7 @@
  */
 
 #include "DiskFrameCache.h"
+#include "PathUtils.h"
 
 #include <algorithm>
 #include <fstream>
@@ -48,7 +49,7 @@ DiskFrameCache::DiskFrameCache(const std::filesystem::path& cacheDir,
     m_writer = std::thread([this]() { writerThread(); });
 
     spdlog::info("DiskFrameCache: dir='{}', budget={:.1f} GB, existing={} entries ({:.1f} MB)",
-                 m_cacheDir.string(),
+                 pathToUtf8(m_cacheDir),
                  m_budget / (1024.0 * 1024.0 * 1024.0),
                  m_entryCount.load(),
                  m_diskUsed.load() / (1024.0 * 1024.0));
@@ -84,7 +85,7 @@ std::string DiskFrameCache::computePathHash(const std::filesystem::path& filePat
 {
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    std::string pathStr = ec ? filePath.string() : canonical.string();
+    std::string pathStr = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 
     auto fileSize = std::filesystem::file_size(filePath, ec);
     auto mtime    = std::filesystem::last_write_time(filePath, ec);
@@ -340,7 +341,7 @@ std::shared_ptr<CachedFrame> DiskFrameCache::readFrame(
     // Max sensible size: 8K × 8K × 4 bytes ≈ 256 MB.
     if (pixelSize > 256ULL * 1024 * 1024) {
         spdlog::warn("DiskFrameCache: corrupt frame file '{}' — pixel size {} bytes",
-                     path.string(), pixelSize);
+                     pathToUtf8(path), pixelSize);
         return nullptr;
     }
 
@@ -349,7 +350,7 @@ std::shared_ptr<CachedFrame> DiskFrameCache::readFrame(
               static_cast<std::streamsize>(pixelSize));
 
     if (!file) {
-        spdlog::warn("DiskFrameCache: truncated frame file '{}'", path.string());
+        spdlog::warn("DiskFrameCache: truncated frame file '{}'", pathToUtf8(path));
         return nullptr;
     }
 
@@ -460,11 +461,11 @@ void DiskFrameCache::scanExistingCache()
 
     for (auto& hashDir : fs::directory_iterator(framesDir, ec)) {
         if (!hashDir.is_directory()) continue;
-        std::string hash = hashDir.path().filename().string();
+        std::string hash = pathToUtf8(hashDir.path().filename());
 
         for (auto& frameFile : fs::directory_iterator(hashDir.path(), ec)) {
             if (!frameFile.is_regular_file()) continue;
-            std::string stem = frameFile.path().stem().string();
+            std::string stem = pathToUtf8(frameFile.path().stem());
 
             // Parse "<frameNumber>_<tier>"
             auto underscorePos = stem.rfind('_');

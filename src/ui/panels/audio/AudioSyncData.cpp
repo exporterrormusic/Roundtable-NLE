@@ -45,6 +45,19 @@ void AudioSync::runAutoSync()
 {
     if (!m_script || m_clips.empty()) return;
 
+    // Optional character scope: when a specific character is selected in the
+    // MATCH-side filter list (not "All", not "UNMATCHED"), restrict the entire
+    // sync to that character — match only its clips/lines and leave every other
+    // character's matches and clip boundaries untouched.
+    QString filterCharQt;
+    if (m_charFilterList && m_charFilterList->currentRow() > 0) {
+        if (auto* item = m_charFilterList->currentItem()) {
+            if (item->text() != "UNMATCHED")
+                filterCharQt = item->text();
+        }
+    }
+    const bool hasCharFilter = !filterCharQt.isEmpty();
+
     // Build a list of script character names to match against filenames.
     // We search for each character name as a standalone word in the filename
     // (case-insensitive, delimited by non-alphanumeric chars) rather than
@@ -119,6 +132,10 @@ void AudioSync::runAutoSync()
         }
     };
 
+    // The merge / re-segment pre-passes re-cut and merge clips across ALL
+    // characters, so they're skipped when syncing a single filtered character
+    // (otherwise a scoped sync would still disturb everyone else's clips).
+    if (!hasCharFilter) {
     updateSyncProgress(5, "Merging short segments...");
 
     // Pre-pass: merge short segments that match script lines better combined
@@ -128,9 +145,8 @@ void AudioSync::runAutoSync()
     // better align with script lines (fixes whisper's arbitrary segmentation)
     updateSyncProgress(15, "Re-segmenting by script lines...");
 
-    updateSyncProgress(15, "Re-segmenting by script lines...");
-
     resegmentByScript();
+    }
 
     // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     // GLOBAL OPTIMAL MATCHING
@@ -159,6 +175,14 @@ void AudioSync::runAutoSync()
         return ScriptMatcher::normalize(text);
     };
 
+    // Normalized name of the filtered character (empty when unfiltered), plus
+    // a predicate for "this clip is in scope for the current sync".
+    const std::string filterCharNorm =
+        hasCharFilter ? normalizeChar(filterCharQt.toStdString()) : std::string{};
+    auto clipInScope = [&](const SyncClip& c) -> bool {
+        return !hasCharFilter || normalizeChar(c.character) == filterCharNorm;
+    };
+
     auto wordOverlap = [](const std::string& a, const std::string& b) -> float {
         std::unordered_set<std::string> aWords, bWords;
         { std::istringstream ss(a); std::string w; while (ss >> w) aWords.insert(w); }
@@ -181,17 +205,21 @@ void AudioSync::runAutoSync()
         }
     }
 
-    // --- Step 2: Group by character (exclude confirmed) ---
+    // --- Step 2: Group by character (exclude confirmed; honour filter) ---
     std::unordered_map<std::string, std::vector<size_t>> clipsByChar;
     for (size_t i = 0; i < m_clips.size(); ++i) {
         if (confirmedClipIds.count(m_clips[i].id)) continue;
-        clipsByChar[normalizeChar(m_clips[i].character)].push_back(i);
+        std::string ck = normalizeChar(m_clips[i].character);
+        if (hasCharFilter && ck != filterCharNorm) continue;
+        clipsByChar[ck].push_back(i);
     }
 
     std::unordered_map<std::string, std::vector<size_t>> linesByChar;
     for (size_t i = 0; i < m_script->lines.size(); ++i) {
         if (confirmedLineNumbers.count(m_script->lines[i].lineNumber)) continue;
-        linesByChar[normalizeChar(m_script->lines[i].character)].push_back(i);
+        std::string ck = normalizeChar(m_script->lines[i].character);
+        if (hasCharFilter && ck != filterCharNorm) continue;
+        linesByChar[ck].push_back(i);
     }
 
     for (const auto& [ch, idx] : clipsByChar)
@@ -205,9 +233,10 @@ void AudioSync::runAutoSync()
 
     updateSyncProgress(30, "Matching clips to script lines...");
 
-    // --- Step 3: Clear non-confirmed matches ---
+    // --- Step 3: Clear non-confirmed matches (only those in scope) ---
     for (auto& clip : m_clips) {
         if (confirmedClipIds.count(clip.id)) continue;
+        if (!clipInScope(clip)) continue;  // keep other characters' matches
         clip.scriptLineNumber = -1;
         clip.confidence       = 0.0f;
         clip.matchState       = 0;
@@ -362,6 +391,7 @@ void AudioSync::runAutoSync()
     for (size_t i = 0; i < m_clips.size(); ++i) {
         auto& clip = m_clips[i];
         if (clip.matchState == 2) continue; // preserve confirmed boundaries
+        if (!clipInScope(clip)) continue;   // don't touch other characters
         auto it = m_audioSamples.find(clip.sourceFile);
         if (it == m_audioSamples.end()) continue;
 
@@ -468,6 +498,7 @@ void AudioSync::runAutoSync()
         auto& b = m_clips[sortedIdx[si + 1]];
         if (a.sourceFile != b.sourceFile) continue;
         if (a.matchState == 2 || b.matchState == 2) continue; // preserve confirmed boundaries
+        if (!clipInScope(a) || !clipInScope(b)) continue;     // scope to filter
         double gap = b.start - a.end;
         if (gap > 0.001 && gap < 0.050) { // only close tiny seam gaps (<50ms)
             // Find the quietest point in the gap to place the boundary
@@ -511,6 +542,7 @@ void AudioSync::runAutoSync()
     // --- Step 6: Auto-confirm high-confidence matches ---
     int autoConfirmed = 0;
     for (auto& clip : m_clips) {
+        if (!clipInScope(clip)) continue;
         if (clip.matchState == 1 && clip.confidence >= 0.90f) {
             clip.matchState = 2;
             ++autoConfirmed;
@@ -523,12 +555,24 @@ void AudioSync::runAutoSync()
     populateClipList();
     updateWorkflowState();
 
-    m_syncStatus->setText(QString("Matched %1/%2 segments")
-        .arg(matchCount).arg(m_clips.size()));
+    // When filtering, report against the number of in-scope clips so the
+    // ratio isn't diluted by every other character's clips.
+    int scopeTotal = static_cast<int>(m_clips.size());
+    if (hasCharFilter) {
+        scopeTotal = 0;
+        for (const auto& clip : m_clips)
+            if (clipInScope(clip)) ++scopeTotal;
+    }
+    m_syncStatus->setText(
+        hasCharFilter
+            ? QString("Matched %1/%2 segments for %3")
+                  .arg(matchCount).arg(scopeTotal).arg(filterCharQt)
+            : QString("Matched %1/%2 segments").arg(matchCount).arg(scopeTotal));
 
-    spdlog::info("AudioSync: Auto-sync matched {}/{} segments",
-                 matchCount, m_clips.size());
-    emit syncCompleted(matchCount, static_cast<int>(m_clips.size()));
+    spdlog::info("AudioSync: Auto-sync matched {}/{} segments{}",
+                 matchCount, scopeTotal,
+                 hasCharFilter ? " (filtered: " + filterCharQt.toStdString() + ")" : "");
+    emit syncCompleted(matchCount, scopeTotal);
 }
 
 

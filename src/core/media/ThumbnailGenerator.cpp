@@ -4,6 +4,7 @@
 
 #include "media/ThumbnailGenerator.h"
 #include "media/MediaPool.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -476,12 +477,12 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::generateImageThumbnail(
     std::ifstream file(resolvedPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         spdlog::warn("ThumbnailGenerator: cannot open image '{}' (resolved: '{}')",
-                     path.string(), resolvedPath.string());
+                     pathToUtf8(path), pathToUtf8(resolvedPath));
         return generatePlaceholder(MediaType::Image, maxWidth);
     }
     auto fileSize = file.tellg();
     if (fileSize <= 0) {
-        spdlog::warn("ThumbnailGenerator: empty image file '{}'", path.string());
+        spdlog::warn("ThumbnailGenerator: empty image file '{}'", pathToUtf8(path));
         return generatePlaceholder(MediaType::Image, maxWidth);
     }
     file.seekg(0);
@@ -497,7 +498,7 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::generateImageThumbnail(
     if (!data || w <= 0 || h <= 0) {
         const char* reason = stbi_failure_reason();
         spdlog::warn("ThumbnailGenerator: stbi decode failed for '{}': {}",
-                     path.string(), reason ? reason : "unknown");
+                     pathToUtf8(path), reason ? reason : "unknown");
         if (data) stbi_image_free(data);
         return generatePlaceholder(MediaType::Image, maxWidth);
     }
@@ -527,7 +528,7 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::generateImageThumbnail(
     }
     stbi_image_free(data);
     spdlog::info("ThumbnailGenerator: image '{}' loaded OK ({}x{} -> {}x{})",
-                path.filename().string(), w, h, outW, outH);
+                pathToUtf8(path.filename()), w, h, outW, outH);
     return thumb;
 }
 
@@ -590,7 +591,7 @@ std::string ThumbnailGenerator::resolveCanonicalPath(
 {
     std::error_code ec;
     auto canonical = std::filesystem::canonical(filePath, ec);
-    return ec ? filePath.string() : canonical.string();
+    return ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 }
 
 } // namespace rt

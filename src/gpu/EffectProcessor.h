@@ -192,6 +192,20 @@ private:
     VkPipeline       m_colorGradingPipeline{VK_NULL_HANDLE};
     VkPipeline       m_otsPipeline{VK_NULL_HANDLE};
     VkPipeline       m_flipPipeline{VK_NULL_HANDLE};
+    // Glitch building blocks
+    VkPipeline       m_scanlinesPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_blockGlitchPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_chromaticSplitPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_turbulentDisplacePipeline{VK_NULL_HANDLE};
+    VkPipeline       m_posterizePipeline{VK_NULL_HANDLE};
+    VkPipeline       m_grainPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_signalTearPipeline{VK_NULL_HANDLE};
+    // Beat-reactive effects
+    VkPipeline       m_beatZoomPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_beatFlashPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_beatShakePipeline{VK_NULL_HANDLE};
+    VkPipeline       m_beatChromaPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_beatDropPipeline{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
 
     // Descriptors

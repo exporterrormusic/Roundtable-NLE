@@ -20,6 +20,7 @@
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "effects/LUT.h"
+#include "effects/BeatEffects.h"
 #include "timeline/OpacityMask.h"
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
@@ -507,6 +508,14 @@ void writeClip(BinaryWriter& w, const Clip& clip)
             // LUT: save file path so it can be reloaded
             if (fx.effectType() == EffectType::LUT)
                 w.writeString(static_cast<const LUT&>(fx).lutPath());
+            // Beat-reactive effects (v24+): persist detected onsets + source.
+            if (isBeatReactEffect(fx.effectType())) {
+                const auto& be = static_cast<const BeatReactEffect&>(fx);
+                w.writeU64(be.audioSourceId());
+                const auto& bt = be.beatTimes();
+                w.writeU32(static_cast<uint32_t>(bt.size()));
+                for (float t : bt) w.writeF32(t);
+            }
         }
     }
 
@@ -547,7 +556,6 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
 {
     auto type = static_cast<ClipType>(r.readU8());
     uint64_t id = r.readU64();
-    (void)id; // IDs are regenerated on load for safety
 
     std::string label = r.readString();
     uint32_t color    = r.readU32();
@@ -590,6 +598,19 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         break;
     default:
         return nullptr;
+    }
+
+    // Restore the saved clip id so transitions (which reference clips by id)
+    // survive reload.  Previously ids were regenerated, leaving every
+    // transition's leftClipId/rightClipId stale and relying on a fragile
+    // geometry relink that fails whenever editPointTick drifts from a clip
+    // boundary (e.g. after trimming) — which is why transitions "often" went
+    // missing on reopen.  Bump the global counter so later clips don't reuse
+    // this id.  id 0 only appears in pre-id legacy saves; keep the fresh id
+    // there and let relinkTransitionsByGeometry recover those.
+    if (id != 0) {
+        clip->setId(id);
+        Clip::reserveId(id);
     }
 
     clip->setLabel(label);
@@ -864,6 +885,14 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                     if (!lutPath.empty())
                         static_cast<LUT*>(fx.get())->loadCubeFile(lutPath);
                 }
+                if (version >= 24 && isBeatReactEffect(fxType)) {
+                    auto* be = static_cast<BeatReactEffect*>(fx.get());
+                    be->setAudioSourceId(r.readU64());
+                    uint32_t n = r.readU32();
+                    std::vector<float> times(n);
+                    for (uint32_t i = 0; i < n; ++i) times[i] = r.readF32();
+                    be->setBeatTimes(std::move(times));
+                }
                 clip->effects().addEffect(std::move(fx));
             } else {
                 // Unknown effect type — skip its data
@@ -873,6 +902,11 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                 }
                 if (fxType == EffectType::LUT)
                     r.readString(); // discard LUT path
+                if (version >= 24 && isBeatReactEffect(fxType)) {
+                    r.readU64();
+                    uint32_t n = r.readU32();
+                    for (uint32_t i = 0; i < n; ++i) r.readF32();
+                }
             }
         }
     }

@@ -7,6 +7,7 @@
 
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -30,7 +31,7 @@ bool reopenPrefetchDecoder(PrefetchDecoderState& state,
     if (!newDecoder->open(task.filePath, /*forceSoftware=*/forceSoftware, /*maxThreads=*/maxThreads)) {
         const char* mode = forceSoftware ? "software" : "hardware";
         spdlog::warn("MediaPool prefetch: failed to reopen '{}' in {} mode after slow path",
-                     task.filePath.filename().string(), mode);
+                     pathToUtf8(task.filePath.filename()), mode);
         return false;
     }
 
@@ -183,7 +184,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
 
         // ── Chroma-key green-screen media (#18FF00) ───────────────────
         if (!cached->pixels.empty()) {
-            std::string fn = task.filePath.filename().string();
+            std::string fn = pathToUtf8(task.filePath.filename());
             std::transform(fn.begin(), fn.end(), fn.begin(),
                            [](unsigned char c) { return std::toupper(c); });
             if (fn.find("GREEN") != std::string::npos) {

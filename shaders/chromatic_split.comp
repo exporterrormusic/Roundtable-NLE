@@ -1,0 +1,45 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] intensity [1] amount(px) [2] angle(deg) [3] jitter [4] speed
+    // [15] clip-local seconds
+} pc;
+
+float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    float intensity = pc.params[0];
+    float amount    = pc.params[1];
+    float angle     = radians(pc.params[2]);
+    float jitter    = pc.params[3];
+    float speed     = pc.params[4];
+    float t         = pc.params[15];
+
+    float amt = amount * intensity;
+    if (jitter > 0.0)
+        amt *= mix(1.0, hash11(floor(t * max(speed, 0.001))) * 2.0, jitter);
+
+    vec2 off = vec2(cos(angle), sin(angle)) * amt / res;
+
+    float r = texture(inputImage, clamp(uv + off, 0.0, 1.0)).r;
+    vec4  g = texture(inputImage, uv);
+    float b = texture(inputImage, clamp(uv - off, 0.0, 1.0)).b;
+
+    imageStore(outputImage, px, vec4(r, g.g, b, g.a));
+}

@@ -1,0 +1,28 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1)        uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+    // [0] amount (fractional zoom)   [14] pulse (0–1)
+} pc;
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+
+    float amt = pc.params[0] * pc.params[14];           // zoom-in at the beat
+    vec2  c   = vec2(0.5);
+    vec2  suv = clamp(c + (uv - c) / (1.0 + amt), 0.0, 1.0);
+
+    imageStore(outputImage, px, texture(inputImage, suv));
+}

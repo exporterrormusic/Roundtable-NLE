@@ -4,6 +4,7 @@
 
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
+#include "PathUtils.h"
 
 #include "Theme.h"
 
@@ -171,7 +172,7 @@ void ExportPanel::setProject(Project* project)
                 // Fall back to a path inside the project's directory
                 std::filesystem::path projDir = project->filePath().parent_path();
                 if (!projDir.empty()) {
-                    QString defaultPath = QString::fromStdString((projDir / (seqName + ".mp4").toStdString()).string());
+                    QString defaultPath = QString::fromStdString(pathToUtf8(projDir / (seqName + ".mp4").toStdString()));
                     m_outputPath->setText(defaultPath);
                 } else {
                     // No project path yet — just show a placeholder hint

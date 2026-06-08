@@ -11,6 +11,7 @@
 
 #include "media/FrameCache.h"
 #include "timeline/Timeline.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -126,7 +127,7 @@ uint32_t RenderQueue::addJob(const ExportJobConfig& config)
     job.config = config;
     job.status = JobStatus::Queued;
     m_jobs.push_back(std::move(job));
-    spdlog::info("RenderQueue: Added job {} → {}", job.id, config.outputPath.string());
+    spdlog::info("RenderQueue: Added job {} → {}", job.id, pathToUtf8(config.outputPath));
     return m_jobs.back().id;
 }
 
@@ -281,7 +282,7 @@ void RenderQueue::workerThread()
 
 void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* compositor)
 {
-    spdlog::info("RenderQueue: Processing job {} → {}", job.id, job.config.outputPath.string());
+    spdlog::info("RenderQueue: Processing job {} → {}", job.id, pathToUtf8(job.config.outputPath));
 
     auto startTime = std::chrono::steady_clock::now();
 

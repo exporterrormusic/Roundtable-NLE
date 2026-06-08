@@ -10,6 +10,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "MediaPoolPrefetchGpu.h"     // tryConvertDecodedToCacheGpu
 #include "media/FrameCache.h"         // chromaKeyInPlace, clearTransparentPixelRGB
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -37,7 +38,7 @@ void releaseStillDecoder(PrefetchDecoderState& state, const PrefetchTask& task)
     state.lastDecodedFrame = -1;
     spdlog::warn("MediaPool: released scrub/prefetch handle for still image "
                  "'{}' (handle={}) — live replace enabled",
-                 task.filePath.filename().string(), task.handle);
+                 pathToUtf8(task.filePath.filename()), task.handle);
 }
 
 } // namespace
@@ -55,7 +56,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     // chroma-key shader and would leave the green background visible.
     bool chromaKeyFile = false;
     {
-        std::string fn = task.filePath.filename().string();
+        std::string fn = pathToUtf8(task.filePath.filename());
         std::transform(fn.begin(), fn.end(), fn.begin(),
                        [](unsigned char c) { return std::toupper(c); });
         chromaKeyFile = (fn.find("GREEN") != std::string::npos);
@@ -164,7 +165,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         if (state.consecutiveSlowHwFrames >= kFallbackSlowFrameThreshold) {
             spdlog::warn("[PERF] MediaPool prefetch: handle={} '{}' switching to software after {} consecutive slow hw frames (last={:.1f}ms total, src={}x{}, dst={}x{}, tier={})",
                          task.handle,
-                         task.filePath.filename().string(),
+                         pathToUtf8(task.filePath.filename()),
                          state.consecutiveSlowHwFrames,
                          totalMs,
                          decoded.width,

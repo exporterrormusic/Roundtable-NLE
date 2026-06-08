@@ -20,5 +20,16 @@ Clip::Clip(ClipType type)
 
 Clip::~Clip() = default;
 
+void Clip::reserveId(uint64_t usedId) noexcept
+{
+    // Bump the shared counter so the next fetch_add yields > usedId.
+    uint64_t cur = s_idCounter.load(std::memory_order_relaxed);
+    while (cur <= usedId &&
+           !s_idCounter.compare_exchange_weak(cur, usedId + 1,
+                                              std::memory_order_relaxed)) {
+        // retry with refreshed `cur`
+    }
+}
+
 } // namespace rt
 

@@ -129,6 +129,53 @@ void TimelineWorkspace::wireEffectDropSignals()
     }
 
     // =====================================================================
+    //  GLITCH-PRESET DRAG-DROP -> ADD CURATED EFFECT STACK TO CLIP
+    // =====================================================================
+    if (m_timelinePanel) {
+        connect(m_timelinePanel, &TimelinePanel::glitchPresetDroppedOnClip,
+                this, [this](size_t trackIdx, uint64_t clipId, int presetId) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_timeline) return;
+            auto* track = m_timeline->track(trackIdx);
+            if (!track) return;
+            size_t clipIdx = track->findClipIndexById(clipId);
+            if (clipIdx == SIZE_MAX) return;
+            auto* clip = track->clip(clipIdx);
+            if (!clip) return;
+
+            auto preset = static_cast<GlitchPreset>(presetId);
+            auto& stack = clip->effects();
+
+            if (m_commandStack) {
+                if (auto cmd = makeAddGlitchPresetCommand(&stack, preset))
+                    m_commandStack->execute(std::move(cmd));
+            } else {
+                for (auto& fx : buildGlitchPreset(preset))
+                    stack.addEffect(std::move(fx));
+            }
+
+            if (m_propertiesPanel) {
+                m_propertiesPanel->setClip(clip, track);
+                m_propertiesPanel->refreshEffects();
+            }
+            if (m_effectControlsPanel) {
+                m_effectControlsPanel->setClip(clip, track);
+                m_effectControlsPanel->refresh();
+            }
+            m_selectedClip = clip;
+            m_selectedTrackIdx = trackIdx;
+            m_selectedClipIdx = clipIdx;
+            m_selectedGraphicLayerIdx = -1;
+
+            invalidateCompositeCache();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+
+            spdlog::info("Glitch preset '{}' added to clip '{}' via drag-drop",
+                         glitchPresetName(preset), clip->label());
+        });
+    }
+
+    // =====================================================================
     //  AUDIO-FX DRAG-DROP -> ADD EQ/DYNAMICS TO CLIP'S FxChain
     // =====================================================================
     if (m_timelinePanel) {
@@ -193,13 +240,6 @@ void TimelineWorkspace::wireEffectDropSignals()
             auto* track = m_timeline->track(trackIdx);
             if (!track) return;
 
-            // Check if a transition already exists at this edit point
-            for (size_t ti = 0; ti < track->transitionCount(); ++ti) {
-                const Transition* existing = track->transition(ti);
-                if (existing && existing->editPointTick == editPointTick)
-                    return; // already exists
-            }
-
             // Find clip indices
             size_t clipIdxA = SIZE_MAX;
             size_t clipIdxB = SIZE_MAX;
@@ -223,6 +263,27 @@ void TimelineWorkspace::wireEffectDropSignals()
             trans.rightClipId = rightClipId;
             trans.editPointTick = editPointTick;
 
+            // Reject if the new transition's range would overlap any
+            // existing transition on this track (not just a duplicate
+            // edit point — a long dissolve can overlap a fade on the
+            // same clip).
+            {
+                int64_t newStart, newEnd;
+                trans.getRange(newStart, newEnd);
+                bool wouldOverlap = false;
+                for (size_t ti = 0; ti < track->transitionCount(); ++ti) {
+                    const Transition* existing = track->transition(ti);
+                    if (!existing) continue;
+                    int64_t exStart, exEnd;
+                    existing->getRange(exStart, exEnd);
+                    if (newStart < exEnd && exStart < newEnd) {
+                        wouldOverlap = true;
+                        break;
+                    }
+                }
+                if (wouldOverlap) return;
+            }
+
             if (m_commandStack) {
                 m_commandStack->execute(
                     std::make_unique<AddTransitionCommand>(track, clipIdxA, clipIdxB, trans));
@@ -231,6 +292,11 @@ void TimelineWorkspace::wireEffectDropSignals()
             }
 
             invalidateCompositeCache();
+            // Rebuild audio sources too — a cross-dissolve on an audio track
+            // bakes its crossfade into the mixed source, so without this the
+            // transition has no audible effect until something else (e.g. a
+            // duration tweak) triggers an audio rebuild.
+            invalidateAudioSources();
             if (m_timelinePanel) m_timelinePanel->rebuildTracks();
             if (m_programMonitor) m_programMonitor->requestRefresh();
 

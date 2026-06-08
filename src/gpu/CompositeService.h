@@ -552,7 +552,15 @@ private:
 
     std::atomic<bool> m_cacheInvalidateRequested{false};
 
-    // Track active clip IDs for shot-boundary detection
+    // Track active clip IDs for shot-boundary detection.
+    // Mutated from BOTH the FrameProducer thread (compositeFrame /
+    // prewarmUpcomingShots, under m_compositeMutex) AND the RenderQueue
+    // prewarm worker (doPrewarmPlaybackResources, under m_openMediaHandlesMutex).
+    // Those are DIFFERENT mutexes, so they don't exclude each other — a
+    // concurrent move-assign/clear here corrupted the hash set's heap nodes
+    // (0xC0000374). This dedicated mutex guards EVERY access; keep it the
+    // innermost lock (never acquire another mutex while holding it).
+    mutable std::mutex           m_lastActiveClipIdsMutex;
     std::unordered_set<uint64_t> m_lastActiveClipIds;
 
     // ── Timeline lookahead prewarm ────────────────────────────────────

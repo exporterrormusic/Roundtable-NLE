@@ -11,6 +11,7 @@
  */
 
 #include "ProResEncoder.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -153,7 +154,7 @@ bool ProResAlphaEncoder::open(const std::filesystem::path& path,
 
     // ── Open output file ────────────────────────────────────────────────
     if (!(m_fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&m_fmtCtx->pb, path.string().c_str(), AVIO_FLAG_WRITE);
+        ret = avio_open(&m_fmtCtx->pb, pathToUtf8(path).c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
             m_lastError = "ProRes: Failed to open output file";
             spdlog::error("{}", m_lastError);

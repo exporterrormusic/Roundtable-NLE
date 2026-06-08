@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <limits>
+#include <limits>
 
 namespace rt {
 
@@ -1016,6 +1017,73 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                 int64_t dist = std::abs(dragTick - t.editPointTick);
                 newDur = std::max(kMinTransDur, dist * 2);
             }
+
+            // ── Clamp: don't overlap clip boundaries or other transitions ──
+            int64_t maxDur = std::numeric_limits<int64_t>::max();
+            if (t.leftClipId == 0) {
+                // Fade-in: extends right into rightClip.
+                // Clip boundary: cannot extend past right clip's end.
+                size_t ri = track->findClipIndexById(t.rightClipId);
+                if (ri < track->clipCount())
+                    maxDur = track->clip(ri)->timelineOut() - t.editPointTick;
+
+                // Adjacent transitions: stop at the nearest transition whose
+                // start is beyond our edit point.
+                for (size_t oi = 0; oi < track->transitionCount(); ++oi) {
+                    if (oi == m_transTrimIndex) continue;
+                    const Transition* ot = track->transition(oi);
+                    int64_t os, oe;
+                    ot->getRange(os, oe);
+                    if (os > t.editPointTick) {
+                        int64_t limit = os - t.editPointTick;
+                        if (limit < maxDur) maxDur = limit;
+                    }
+                }
+            } else if (t.rightClipId == 0) {
+                // Fade-out: extends left into leftClip.
+                size_t li = track->findClipIndexById(t.leftClipId);
+                if (li < track->clipCount())
+                    maxDur = t.editPointTick - track->clip(li)->timelineIn();
+
+                for (size_t oi = 0; oi < track->transitionCount(); ++oi) {
+                    if (oi == m_transTrimIndex) continue;
+                    const Transition* ot = track->transition(oi);
+                    int64_t os, oe;
+                    ot->getRange(os, oe);
+                    if (oe < t.editPointTick) {
+                        int64_t limit = t.editPointTick - oe;
+                        if (limit < maxDur) maxDur = limit;
+                    }
+                }
+            } else {
+                // Cross-dissolve: extends both ways.
+                size_t li = track->findClipIndexById(t.leftClipId);
+                size_t ri = track->findClipIndexById(t.rightClipId);
+                int64_t leftLimit = std::numeric_limits<int64_t>::max();
+                int64_t rightLimit = std::numeric_limits<int64_t>::max();
+                if (li < track->clipCount())
+                    leftLimit = t.editPointTick - track->clip(li)->timelineIn();
+                if (ri < track->clipCount())
+                    rightLimit = track->clip(ri)->timelineOut() - t.editPointTick;
+                maxDur = std::min(leftLimit, rightLimit) * 2;  // dur/2 each side
+
+                for (size_t oi = 0; oi < track->transitionCount(); ++oi) {
+                    if (oi == m_transTrimIndex) continue;
+                    const Transition* ot = track->transition(oi);
+                    int64_t os, oe;
+                    ot->getRange(os, oe);
+                    if (os > t.editPointTick) {
+                        int64_t limit = (os - t.editPointTick) * 2;
+                        if (limit < maxDur) maxDur = limit;
+                    }
+                    if (oe < t.editPointTick) {
+                        int64_t limit = (t.editPointTick - oe) * 2;
+                        if (limit < maxDur) maxDur = limit;
+                    }
+                }
+            }
+            if (maxDur < kMinTransDur) maxDur = kMinTransDur;
+            if (newDur > maxDur) newDur = maxDur;
 
             t.duration = newDur;
 

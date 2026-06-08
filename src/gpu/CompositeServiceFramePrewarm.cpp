@@ -267,6 +267,11 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                     activeIds.insert(clip->id());
             }
         }
+        // Dedicated mutex — the FrameProducer thread mutates this set under
+        // m_compositeMutex (a DIFFERENT lock than the m_openMediaHandlesMutex
+        // held here), so without this guard the two threads' move-assigns race
+        // and corrupt the hash set's heap (0xC0000374).
+        std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
         m_lastActiveClipIds = std::move(activeIds);
     }
 
@@ -426,6 +431,15 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
     m_lastLookaheadScan = now;
     m_lastLookaheadTick = tick;
 
+    // Snapshot the active-clip set once under its dedicated mutex — the
+    // doPrewarmPlaybackResources() worker thread can move-assign it
+    // concurrently. Both .count() checks below read this stable copy.
+    std::unordered_set<uint64_t> lastActiveSnapshot;
+    {
+        std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
+        lastActiveSnapshot = m_lastActiveClipIds;
+    }
+
     constexpr double LOOKAHEAD_SECONDS = 2.0;
     const int64_t lookaheadTicks = static_cast<int64_t>(LOOKAHEAD_SECONDS * kTicksPerSecond);
     const int64_t windowEnd = tick + lookaheadTicks;
@@ -444,7 +458,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
 
             const int64_t clipIn = clip->timelineIn();
             if (clipIn <= tick || clipIn > windowEnd) continue;
-            if (m_lastActiveClipIds.count(clip->id())) continue;
+            if (lastActiveSnapshot.count(clip->id())) continue;
             if (!m_prewarmedClipIds.insert(clip->id()).second) continue;
 
             // Resolve which media path this clip decodes from.  Only
@@ -585,7 +599,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
     // same clip id reappears later on the timeline (looped section) it
     // gets prewarmed again.
     for (auto it = m_prewarmedClipIds.begin(); it != m_prewarmedClipIds.end();) {
-        if (m_lastActiveClipIds.count(*it))
+        if (lastActiveSnapshot.count(*it))
             it = m_prewarmedClipIds.erase(it);
         else
             ++it;

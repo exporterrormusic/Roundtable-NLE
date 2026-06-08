@@ -259,6 +259,56 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
     if (m_manualMatchOpen)
         return QWidget::eventFilter(watched, event);
 
+    // ── Right-click context menu on transcribe file list ────────────────
+    if (watched == m_transcribeFileList && event->type() == QEvent::ContextMenu) {
+        auto* ctxEvent = static_cast<QContextMenuEvent*>(event);
+        QListWidgetItem* item = m_transcribeFileList->itemAt(ctxEvent->pos());
+        if (!item) return QWidget::eventFilter(watched, event);
+        int row = m_transcribeFileList->row(item);
+        if (row < 0 || row >= static_cast<int>(m_audioPaths.size()))
+            return QWidget::eventFilter(watched, event);
+
+        // "Transcribed" if it has segments OR clips (clips can outlive segments
+        // across state restores — match startTranscription's skip rule).
+        const std::string& rowPath = m_audioPaths[static_cast<size_t>(row)];
+        bool transcribed =
+            (row < static_cast<int>(m_allTranscriptionResults.size()) &&
+             !m_allTranscriptionResults[static_cast<size_t>(row)].segments.empty());
+        if (!transcribed)
+            for (const auto& c : m_clips)
+                if (c.sourceFile == rowPath) { transcribed = true; break; }
+
+        QMenu menu(m_transcribeFileList);
+        menu.setStyleSheet(QStringLiteral(
+            "QMenu { background: %1; color: %2; border: 1px solid %3;"
+            "  border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 8px 24px; border-radius: 4px; }"
+            "QMenu::item:selected { background: %4; color: %5; }"
+            "QMenu::item:disabled { color: %6; }"
+            "QMenu::separator { height: 1px; background: %7; margin: 4px 8px; }")
+            .arg(Theme::hex(Theme::colors().surface2))
+            .arg(Theme::hex(Theme::colors().textPrimary))
+            .arg(Theme::hex(Theme::colors().border))
+            .arg(Theme::hex(Theme::colors().accentDim))
+            .arg(Theme::hex(Theme::colors().textPrimary))
+            .arg(Theme::hex(Theme::colors().textTertiary))
+            .arg(Theme::hex(Theme::colors().borderLight)));
+
+        QAction* resetAction = menu.addAction(
+            QStringLiteral("\U0001F504  Reset Transcription"));
+        resetAction->setEnabled(transcribed);
+        menu.addSeparator();
+        QAction* resetAllAction = menu.addAction(
+            QStringLiteral("Reset All Transcriptions"));
+
+        QAction* chosen = menu.exec(m_transcribeFileList->mapToGlobal(ctxEvent->pos()));
+        if (chosen == resetAction)
+            clearTranscriptionForFile(static_cast<size_t>(row));
+        else if (chosen == resetAllAction)
+            clearAllTranscriptions();
+        return true;
+    }
+
     // ── Right-click context menu on script session list ─────────────────
     if (watched == m_scriptSessionList && event->type() == QEvent::ContextMenu) {
         auto* ctxEvent = static_cast<QContextMenuEvent*>(event);
@@ -660,10 +710,36 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
             // Update UI — switchToScript returns early if same session,
             // so refresh manually if this is the active session.
             if (sessionKey == m_activeScriptKey) {
+                // saveCurrentSession() (at the top of loadScript) moved the
+                // live working state — m_clips, m_allTranscriptionResults,
+                // m_audioPaths, m_audioSamples, etc. — into the session, and
+                // updateExistingSessionScript() only updated the *session*.
+                // Restore the (remapped) state into the live members or the
+                // clip list, transcribe list and auto-sync all see empty data
+                // and the in-progress sync is silently wiped.
+                restoreSession(sessionKey);
+                m_syncDone = false;
+
+                // Rebuild the audio file list widget from the restored paths
+                // (it was never cleared, so it would otherwise drift from
+                // m_audioPaths after the move/restore round-trip).
+                if (m_audioFileList) {
+                    m_audioFileList->blockSignals(true);
+                    m_audioFileList->clear();
+                    for (const auto& ap : m_audioPaths)
+                        addAudioFileListItem(QString::fromStdString(ap));
+                    m_audioFileList->blockSignals(false);
+                }
+                if (m_audioStatus)
+                    m_audioStatus->setText(m_audioPaths.empty()
+                        ? "No files imported"
+                        : QString("%1 file(s)").arg(m_audioPaths.size()));
+
                 populateScriptFilter();
                 populateScriptList();
                 if (!m_clips.empty())
                     populateClipList();
+                refreshTranscribeFileList();
                 updateWorkflowState();
                 m_scriptStatus->setText(QString("%1 lines, %2 characters")
                     .arg(m_script ? m_script->lineCount() : 0)
@@ -799,10 +875,21 @@ void AudioSync::startTranscription()
         m_allTranscriptionResults.resize(m_audioPaths.size());
     }
 
+    // A file counts as already transcribed if it has stored segments OR has
+    // already produced clips. Clips persist across some state restores (e.g.
+    // loadScript's preserve block) where the raw segments do not — without the
+    // clip check those files would be needlessly re-transcribed, which is the
+    // "Transcribe All re-does everything" bug.
+    std::unordered_set<std::string> filesWithClips;
+    for (const auto& c : m_clips)
+        filesWithClips.insert(c.sourceFile);
+
     // Build list of file indices that still need transcription
     m_pendingTranscriptionIndices.clear();
     for (size_t i = 0; i < m_audioPaths.size(); ++i) {
-        if (m_allTranscriptionResults[i].segments.empty())
+        const bool hasSegments = !m_allTranscriptionResults[i].segments.empty();
+        const bool hasClips    = filesWithClips.count(m_audioPaths[i]) > 0;
+        if (!hasSegments && !hasClips)
             m_pendingTranscriptionIndices.push_back(i);
     }
 

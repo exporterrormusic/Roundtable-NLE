@@ -216,19 +216,37 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                 masterCompound->addCommand(std::move(cmd));
             }
 
-            for (const auto& fp : finals) {
-                Track* dstTr = m_timeline->track(fp.dstTrack);
-                if (!dstTr) continue;
-                for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
-                    if (dstTr->clip(ci)->timelineIn() == fp.finalIn &&
-                        dstTr->clip(ci)->id() != fp.clipId) {
-                        auto overwrite = EditOperations::resolveOverlaps(
-                            *m_timeline, fp.dstTrack, dstTr->clip(ci)->id());
-                        if (overwrite) {
-                            overwrite->execute();
-                            masterCompound->addCommand(std::move(overwrite));
+            // Collect all newly-added clip IDs so resolveOverlaps won't
+            // cascade-delete them (they're from the same multi-clip drag
+            // and are meant to coexist on the destination track).
+            {
+                std::unordered_set<uint64_t> movedIds;
+                for (const auto& fp : finals) {
+                    Track* dstTr = m_timeline->track(fp.dstTrack);
+                    if (!dstTr) continue;
+                    for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
+                        if (dstTr->clip(ci)->timelineIn() == fp.finalIn) {
+                            movedIds.insert(dstTr->clip(ci)->id());
+                            break;
                         }
-                        break;
+                    }
+                }
+
+                for (const auto& fp : finals) {
+                    Track* dstTr = m_timeline->track(fp.dstTrack);
+                    if (!dstTr) continue;
+                    for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
+                        if (dstTr->clip(ci)->timelineIn() == fp.finalIn &&
+                            dstTr->clip(ci)->id() != fp.clipId) {
+                            auto overwrite = EditOperations::resolveOverlaps(
+                                *m_timeline, fp.dstTrack, dstTr->clip(ci)->id(),
+                                movedIds);
+                            if (overwrite) {
+                                overwrite->execute();
+                                masterCompound->addCommand(std::move(overwrite));
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -339,6 +357,12 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                 masterCompound->addCommand(std::move(addCmd));
             }
 
+            // Collect all moved clip IDs so resolveOverlaps won't
+            // cascade-delete fellow clips from this same multi-clip drag.
+            std::unordered_set<uint64_t> movedIds;
+            for (const auto& fp : finals)
+                movedIds.insert(fp.clipId);
+
             for (const auto& fp : finals) {
                 uint64_t resolveId = fp.clipId;
                 if (fp.srcTrack != fp.dstTrack) {
@@ -353,7 +377,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                     }
                 }
                 auto overwrite = EditOperations::resolveOverlaps(
-                    *m_timeline, fp.dstTrack, resolveId);
+                    *m_timeline, fp.dstTrack, resolveId, movedIds);
                 if (overwrite) {
                     overwrite->execute();
                     masterCompound->addCommand(std::move(overwrite));
@@ -429,21 +453,27 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
 
     // ── PendingClipClick: user clicked an already-selected clip without dragging ──
     if (m_dragMode == DragMode::PendingClipClick) {
-        // Select just the clicked clip (Premiere Pro behaviour) — but
-        // carry its link partner along unless Alt was held, so clicking
-        // a linked video doesn't silently drop its companion audio.
-        const bool isAlt = event->modifiers() & Qt::AltModifier;
-        m_selection.clear();
-        m_selection.selectClip(m_dragClipRef, false);
-        if (!isAlt)
-            setLinkPartnersSelected(m_dragClipRef, true);
-        emit selectionChanged();
-        // Emit clipSelected so panels update
-        Track* trk = m_timeline ? m_timeline->track(m_dragClipRef.trackIndex) : nullptr;
-        if (trk) {
-            size_t clipIdx = trk->findClipIndexById(m_dragClipRef.clipId);
-            if (clipIdx < trk->clipCount())
-                emit clipSelected(m_dragClipRef.trackIndex, clipIdx);
+        // If this was an edge click (m_lastClickedEdge.valid is true),
+        // the edit-point bracket is already showing and the user wants
+        // to keep it for Ctrl+T — don't select the whole clip.
+        if (!m_lastClickedEdge.valid) {
+            // Body click: select just the clicked clip (Premiere Pro
+            // behaviour) — but carry its link partner along unless Alt
+            // was held, so clicking a linked video doesn't silently drop
+            // its companion audio.
+            const bool isAlt = event->modifiers() & Qt::AltModifier;
+            m_selection.clear();
+            m_selection.selectClip(m_dragClipRef, false);
+            if (!isAlt)
+                setLinkPartnersSelected(m_dragClipRef, true);
+            emit selectionChanged();
+            // Emit clipSelected so panels update
+            Track* trk = m_timeline ? m_timeline->track(m_dragClipRef.trackIndex) : nullptr;
+            if (trk) {
+                size_t clipIdx = trk->findClipIndexById(m_dragClipRef.clipId);
+                if (clipIdx < trk->clipCount())
+                    emit clipSelected(m_dragClipRef.trackIndex, clipIdx);
+            }
         }
     }
 

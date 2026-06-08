@@ -4,6 +4,7 @@
  */
 
 #include "widgets/ThumbnailGrid.h"
+#include "PathUtils.h"
 #include "Theme.h"
 #include "media/MediaPool.h"
 
@@ -49,7 +50,7 @@ void ThumbnailGrid::addItem(const std::filesystem::path& filePath,
     ThumbnailItem item;
     item.itemId      = m_nextItemId++;
     item.filePath    = filePath;
-    item.displayName = QString::fromStdString(filePath.filename().string());
+    item.displayName = QString::fromStdString(pathToUtf8(filePath.filename()));
     item.type        = (type == MediaType::Unknown)
                          ? ThumbnailGenerator::detectMediaType(filePath)
                          : type;
@@ -71,7 +72,7 @@ void ThumbnailGrid::addItems(const std::vector<std::filesystem::path>& files)
         ThumbnailItem item;
         item.itemId      = m_nextItemId++;
         item.filePath    = f;
-        item.displayName = QString::fromStdString(f.filename().string());
+        item.displayName = QString::fromStdString(pathToUtf8(f.filename()));
         item.type        = ThumbnailGenerator::detectMediaType(f);
         item.visible     = matchesFilter(item);
         m_items.push_back(std::move(item));
@@ -154,7 +155,7 @@ int ThumbnailGrid::addRestoredItem(const std::filesystem::path& filePath,
     item.itemId      = itemId ? itemId : m_nextItemId++;
     item.filePath    = filePath;
     item.displayName = displayName.isEmpty()
-        ? QString::fromStdString(filePath.filename().string())
+        ? QString::fromStdString(pathToUtf8(filePath.filename()))
         : displayName;
     item.type        = (type == MediaType::Unknown)
                          ? ThumbnailGenerator::detectMediaType(filePath)
@@ -359,7 +360,7 @@ void ThumbnailGrid::loadVisibleThumbnails()
 
     auto isAdjustmentPath = [](const std::filesystem::path& path) {
         for (const auto& part : path) {
-            if (part.string() == "<adjustments>")
+            if (pathToUtf8(part) == "<adjustments>")
                 return true;
         }
         return false;
@@ -399,7 +400,7 @@ void ThumbnailGrid::onThumbnailReady(const std::filesystem::path& path,
     }
     if (!found) {
         spdlog::warn("ThumbnailGrid: thumbnail ready for '{}' but no matching item",
-                     path.filename().string());
+                     pathToUtf8(path.filename()));
     }
     update();
 }
@@ -722,13 +723,13 @@ void ThumbnailGrid::mouseMoveEvent(QMouseEvent* event)
         // create an AdjustmentClip.
         bool isAdjustment = false;
         for (const auto& part : item.filePath) {
-            if (part.string() == "<adjustments>") { isAdjustment = true; break; }
+            if (pathToUtf8(part) == "<adjustments>") { isAdjustment = true; break; }
         }
         if (isAdjustment) {
             mime->setData("application/x-roundtable-adjustment",
                           item.displayName.toUtf8());
         } else {
-            mime->setUrls({QUrl::fromLocalFile(QString::fromStdString(item.filePath.string()))});
+            mime->setUrls({QUrl::fromLocalFile(QString::fromStdString(pathToUtf8(item.filePath)))});
             mime->setData("application/x-roundtable-media",
                           QByteArray::number(static_cast<qulonglong>(item.mediaHandle)));
         }

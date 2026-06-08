@@ -129,9 +129,12 @@ void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, ui
     // Create the project object
     auto project = Project::createNew(name.toStdString());
 
-    // Apply the user's settings directly
+    // Apply the user's settings to the first sequence + the default template
+    // (so later "New Sequence" defaults inherit this choice).
     project->settings().setResolution(resW, resH);
     project->settings().setFrameRate(fps);
+    project->defaultSettings().setResolution(resW, resH);
+    project->defaultSettings().setFrameRate(fps);
 
     // Save it to disk — each project gets its own subfolder
     QString projDir = saveDir.isEmpty() ? projectsDirectory() : saveDir;
@@ -555,6 +558,8 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
     auto project = Project::createNew(projName.toStdString());
     project->settings().setResolution(mediaW, mediaH);
     project->settings().setFrameRate(mediaFps);
+    project->defaultSettings().setResolution(mediaW, mediaH);
+    project->defaultSettings().setFrameRate(mediaFps);
 
     // Save the project
     QString projectFolder = projDir + "/" + projName;

@@ -5,6 +5,7 @@
 
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/WaveformDisplayWidget.h"
+#include "PathUtils.h"
 
 #include "Theme.h"
 #include "media/FrameCache.h"
@@ -158,7 +159,7 @@ void SourceMonitor::startSourceDrag(SourceDragMode mode)
         mimeData->setData("application/x-roundtable-media",
                           QByteArray::number(qulonglong(m_mediaHandle)));
         mimeData->setUrls({QUrl::fromLocalFile(
-            QString::fromStdString(filePath.string()))});
+            QString::fromStdString(pathToUtf8(filePath)))});
 
         // Attach source in/out so the timeline can trim the clip
         mimeData->setData("application/x-roundtable-source-in",

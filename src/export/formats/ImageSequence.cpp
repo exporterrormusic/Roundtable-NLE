@@ -6,12 +6,15 @@
  */
 
 #include "formats/ImageSequence.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <vector>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 // Only define once — if already defined elsewhere, guard it
@@ -21,6 +24,19 @@
 #endif
 
 namespace rt {
+
+namespace {
+// stb_image_write callback that appends encoded bytes to a std::vector,
+// so the file itself is written via a wide-path-safe std::ofstream rather
+// than stb's internal fopen() (which uses the ANSI codepage on Windows and
+// cannot open paths with non-CP_ACP characters).
+void appendToBuffer(void* context, void* data, int size)
+{
+    auto* buf = static_cast<std::vector<uint8_t>*>(context);
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    buf->insert(buf->end(), bytes, bytes + size);
+}
+} // namespace
 
 ImageSequence::ImageSequence() = default;
 ImageSequence::~ImageSequence() { shutdown(); }
@@ -55,7 +71,7 @@ bool ImageSequence::init(const EncoderConfig& config)
     m_initialized = true;
     spdlog::info("ImageSequence: {}x{} format={} to {}",
                  config.width, config.height,
-                 static_cast<int>(config.imageFormat), m_outputDir.string());
+                 static_cast<int>(config.imageFormat), pathToUtf8(m_outputDir));
     return true;
 }
 
@@ -83,27 +99,43 @@ bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
     int h = static_cast<int>(m_config.height);
     int ok = 0;
 
+    // Encode into memory, then write the bytes through std::ofstream, which
+    // takes the std::filesystem::path directly and is wide-path-safe on
+    // Windows.  stb's filename-based writers go through fopen() (ANSI) and
+    // crash/fail on paths containing non-CP_ACP characters.
+    std::vector<uint8_t> encoded;
     switch (m_config.imageFormat) {
         case ImageFormat::PNG:
-            ok = stbi_write_png(path.string().c_str(), w, h, 4, rgbaPixels, w * 4);
+            ok = stbi_write_png_to_func(appendToBuffer, &encoded, w, h, 4, rgbaPixels, w * 4);
             break;
         case ImageFormat::BMP:
-            ok = stbi_write_bmp(path.string().c_str(), w, h, 4, rgbaPixels);
+            ok = stbi_write_bmp_to_func(appendToBuffer, &encoded, w, h, 4, rgbaPixels);
             break;
         case ImageFormat::JPEG:
-            ok = stbi_write_jpg(path.string().c_str(), w, h, 4, rgbaPixels,
-                                m_config.jpegQuality);
+            ok = stbi_write_jpg_to_func(appendToBuffer, &encoded, w, h, 4, rgbaPixels,
+                                        m_config.jpegQuality);
             break;
         default:
             // TIFF/EXR would need FFmpeg or dedicated library
             spdlog::warn("ImageSequence: {} format not implemented, using PNG",
                          static_cast<int>(m_config.imageFormat));
-            ok = stbi_write_png(path.string().c_str(), w, h, 4, rgbaPixels, w * 4);
+            ok = stbi_write_png_to_func(appendToBuffer, &encoded, w, h, 4, rgbaPixels, w * 4);
             break;
     }
 
+    if (ok) {
+        std::ofstream out(path, std::ios::binary);
+        if (out.is_open()) {
+            out.write(reinterpret_cast<const char*>(encoded.data()),
+                      static_cast<std::streamsize>(encoded.size()));
+            ok = out.good() ? 1 : 0;
+        } else {
+            ok = 0;
+        }
+    }
+
     if (!ok) {
-        m_lastError = "ImageSequence: Failed to write " + path.string();
+        m_lastError = "ImageSequence: Failed to write " + pathToUtf8(path);
         spdlog::error("{}", m_lastError);
         return false;
     }

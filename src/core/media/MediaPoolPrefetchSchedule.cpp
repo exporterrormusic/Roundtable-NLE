@@ -9,6 +9,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "MediaPoolPrefetchGpu.h"
 #include "GpuContext.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -486,7 +487,7 @@ void MediaPool::prefetchWorker(int workerId)
             const int swThreads = useHwDecode ? 0 : 2;
             if (!state.decoder->open(task.filePath, /*forceSoftware=*/!useHwDecode, /*maxThreads=*/swThreads)) {
                 spdlog::warn("MediaPool prefetch[{}]: failed to open decoder for handle {} '{}'",
-                             workerId, task.handle, task.filePath.filename().string());
+                             workerId, task.handle, pathToUtf8(task.filePath.filename()));
                 state.decoder.reset();
                 continue;
             }
@@ -494,7 +495,7 @@ void MediaPool::prefetchWorker(int workerId)
                 std::chrono::steady_clock::now() - openT0).count();
             spdlog::info("MediaPool prefetch[{}]: opened {} decoder for handle {} '{}' in {:.0f}ms",
                          workerId, useHwDecode ? "NVDEC" : "SW",
-                         task.handle, task.filePath.filename().string(), openMs);
+                         task.handle, pathToUtf8(task.filePath.filename()), openMs);
         }
 
         auto decT0 = std::chrono::steady_clock::now();

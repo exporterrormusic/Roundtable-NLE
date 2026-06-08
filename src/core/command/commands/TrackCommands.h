@@ -26,6 +26,12 @@ class AddTrackCommand : public Command
 public:
     AddTrackCommand(Timeline* timeline, TrackType type, const std::string& name = "");
 
+    /// Insert a PRE-BUILT track at an explicit index (e.g. paste creating
+    /// overflow video tracks above the existing stack). Unlike the type/name
+    /// ctor — which delegates to addVideoTrack()/addAudioTrack() and lands at
+    /// the section default — this controls the exact insert position.
+    AddTrackCommand(Timeline* timeline, std::unique_ptr<Track> prebuilt, size_t index);
+
     void execute() override;
     void undo() override;
     [[nodiscard]] std::string description() const override;

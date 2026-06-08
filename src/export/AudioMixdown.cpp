@@ -11,6 +11,7 @@
 #include "media/AudioFile.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -255,7 +256,7 @@ bool AudioMixdown::writeWav(const MixdownResult& result,
 
     std::ofstream out(outputPath, std::ios::binary);
     if (!out.is_open()) {
-        spdlog::error("AudioMixdown: Cannot open {} for writing", outputPath.string());
+        spdlog::error("AudioMixdown: Cannot open {} for writing", pathToUtf8(outputPath));
         return false;
     }
 
@@ -292,7 +293,7 @@ bool AudioMixdown::writeWav(const MixdownResult& result,
     }
 
     spdlog::info("AudioMixdown: Wrote {} ({:.1f}s, {} Hz, {} ch)",
-                 outputPath.string(), result.duration, sampleRate, channels);
+                 pathToUtf8(outputPath), result.duration, sampleRate, channels);
     return true;
 }
 

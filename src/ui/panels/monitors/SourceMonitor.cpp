@@ -18,6 +18,7 @@
 #include "media/MediaPool.h"
 #include "media/MediaSourceService.h"
 #include "media/AudioFile.h"
+#include "PathUtils.h"
 #include "media/AudioEngine.h"
 #include "media/AudioPlaybackService.h"
 #include "media/AVSyncClock.h"
@@ -63,7 +64,7 @@ namespace {
 // it "just works" without this guard.
 bool isStillImageSourcePath(const std::filesystem::path& path)
 {
-    auto ext = path.extension().string();
+    auto ext = pathToUtf8(path.extension());
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return ext == ".png"  || ext == ".jpg"  || ext == ".jpeg" || ext == ".bmp" ||
            ext == ".gif"  || ext == ".tif"  || ext == ".tiff" || ext == ".webp" ||
@@ -124,7 +125,7 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
         m_miniTimeline->setFrameRate(m_fps);
 
         // Set clip name from file path
-        setClipName(QString::fromStdString(path.filename().string()));
+        setClipName(QString::fromStdString(pathToUtf8(path.filename())));
     }
 
     // Show first frame (skip for audio-only — no video to decode)

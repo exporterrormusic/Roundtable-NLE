@@ -339,6 +339,7 @@ std::unique_ptr<Timeline> Timeline::clone() const
 {
     auto dup = std::make_unique<Timeline>();
     dup->setName(m_name);
+    dup->setSettings(m_settings);  // per-sequence settings travel with the clone
 
     // Copy all tracks and their clips
     for (size_t ti = 0; ti < m_tracks.size(); ++ti) {

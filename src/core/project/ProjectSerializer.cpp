@@ -94,7 +94,10 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
     // ── Section: Settings ───────────────────────────────────────────────
     {
         BinaryWriter sec;
-        const auto& s = project.settings();
+        // Project default template (NOT a sequence's settings — those are
+        // written per-sequence in Section_Sequences). Kept for the New
+        // Sequence dialog defaults and for loading pre-v25 projects.
+        const auto& s = project.defaultSettings();
         sec.writeU32(s.resolution().width);
         sec.writeU32(s.resolution().height);
         sec.writeF64(s.frameRate());
@@ -249,6 +252,21 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
                 sec.writeString(m.label);
                 sec.writeU32(m.color);
             }
+
+            // Per-sequence settings (v25+) — resolution/fps/colour/audio are
+            // independent per sequence, like Premiere Pro.
+            const auto& ss = tl->settings();
+            sec.writeU32(ss.resolution().width);
+            sec.writeU32(ss.resolution().height);
+            sec.writeF64(ss.frameRate());
+            sec.writeU8(static_cast<uint8_t>(ss.colorSpace()));
+            sec.writeU32(ss.sampleRate());
+            sec.writeU32(ss.audioBitDepth());
+            sec.writeU32(ss.audioChannels());
+            sec.writeString(ss.exportSettings().codec);
+            sec.writeU32(ss.exportSettings().quality);
+            sec.writeU32(ss.exportSettings().audioBitrate);
+            sec.writeString(ss.exportSettings().outputPath);
         }
 
         out.beginSection(Section_Sequences, sec.data());
@@ -427,7 +445,7 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         switch (tag)
         {
         case Section_Settings: {
-            auto& settings = project->settings();
+            auto& settings = project->defaultSettings();
             uint32_t w = sr.readU32();
             uint32_t h = sr.readU32();
             settings.setResolution(w, h);
@@ -691,6 +709,30 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     uint32_t color   = sr.readU32();
                     tl->addMarker(time, label, color);
                 }
+
+                // Per-sequence settings (v25+). Pre-v25 files have none — the
+                // post-load fallback below copies the project default into
+                // every sequence (matches the old global-settings behaviour).
+                if (version >= 25) {
+                    Settings ss;
+                    uint32_t sw = sr.readU32();
+                    uint32_t sh = sr.readU32();
+                    ss.setResolution(sw, sh);
+                    ss.setFrameRate(sr.readF64());
+                    ss.setColorSpace(static_cast<ColorSpace>(sr.readU8()));
+                    AudioFormat af;
+                    af.sampleRate = sr.readU32();
+                    af.bitDepth   = sr.readU32();
+                    af.channels   = sr.readU32();
+                    ss.setAudioFormat(af);
+                    ExportSettings es;
+                    es.codec        = sr.readString();
+                    es.quality      = sr.readU32();
+                    es.audioBitrate = sr.readU32();
+                    es.outputPath   = sr.readString();
+                    ss.setExportSettings(es);
+                    tl->setSettings(ss);
+                }
             }
 
             // Set active sequence
@@ -819,6 +861,16 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         }
     }
 
+    // ── Pre-v25 per-sequence settings migration ─────────────────────────
+    // Before v25 there was a single global Settings shared by all sequences.
+    // Copy the loaded project default into every sequence so old projects keep
+    // their resolution/fps; from here each sequence's settings are independent.
+    if (version < 25) {
+        for (size_t si = 0; si < project->sequenceCount(); ++si)
+            if (Timeline* tl = project->sequence(si))
+                tl->setSettings(project->defaultSettings());
+    }
+
     // ── Frame-align migration ───────────────────────────────────────────
     // Clips placed before drag/export frame-snapping can have boundaries on
     // fractional-frame ticks (timeline ticks run at 48000/sec; a frame is
@@ -922,6 +974,48 @@ bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata
     }
 
     return gotSettings;
+}
+
+std::string ProjectSerializer::readProjectShow(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return {};
+
+    auto readU32 = [&file]() -> uint32_t {
+        uint8_t b[4];
+        file.read(reinterpret_cast<char*>(b), 4);
+        if (!file) return 0;
+        return static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8)
+             | (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
+    };
+
+    // Header: magic(8) + version(u32) + sectionCount(u32) + reserved(16).
+    uint8_t magic[8];
+    file.read(reinterpret_cast<char*>(magic), 8);
+    if (!file) return {};
+    for (int i = 0; i < 8; ++i)
+        if (magic[i] != MAGIC[i]) return {};
+
+    (void)readU32();                       // version
+    uint32_t sectionCount = readU32();
+    file.seekg(16, std::ios::cur);         // reserved
+
+    // Scan section headers; read only the ProjectMeta section's data.
+    for (uint32_t si = 0; si < sectionCount && file; ++si) {
+        uint32_t tag  = readU32();
+        uint32_t size = readU32();
+        if (!file) break;
+        if (tag == Section_ProjectMeta) {
+            std::vector<uint8_t> data(size);
+            file.read(reinterpret_cast<char*>(data.data()),
+                      static_cast<std::streamsize>(size));
+            if (!file) break;
+            BinaryReader sr(data.data(), data.size());
+            return sr.readString();        // first field of ProjectMeta = show
+        }
+        file.seekg(size, std::ios::cur);   // skip this section's data
+    }
+    return {};
 }
 
 } // namespace rt

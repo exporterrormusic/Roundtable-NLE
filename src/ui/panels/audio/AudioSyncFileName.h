@@ -6,12 +6,14 @@
 #include <string>
 #include <vector>
 
+#include "PathUtils.h"
+
 namespace rt {
 
 inline std::string extractCharacterName(const std::string& filePath)
 {
     std::filesystem::path path(filePath);
-    std::string name = path.stem().string();
+    std::string name = pathToUtf8(path.stem());
     if (name.empty()) return "Unknown";
 
     static const std::vector<std::string> prefixes = {
@@ -99,7 +101,7 @@ inline std::string extractCharacterName(const std::string& filePath)
     }
 
     if (name.size() < 2) {
-        std::string stem = path.stem().string();
+        std::string stem = pathToUtf8(path.stem());
         for (size_t i = 0; i < stem.size(); ++i) {
             if (std::isupper(static_cast<unsigned char>(stem[i]))) {
                 size_t j = i + 1;
@@ -113,7 +115,7 @@ inline std::string extractCharacterName(const std::string& filePath)
         }
     }
 
-    if (name.empty()) name = path.stem().string();
+    if (name.empty()) name = pathToUtf8(path.stem());
     if (!name.empty()) {
         name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
         for (size_t i = 1; i < name.size(); ++i)

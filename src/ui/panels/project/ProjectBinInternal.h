@@ -18,6 +18,8 @@
 
 #include <filesystem>
 
+#include "PathUtils.h"
+
 #include "media/ThumbnailGenerator.h"   // MediaType
 
 namespace rt {
@@ -50,7 +52,7 @@ inline constexpr const char* kAdjustmentSentinelExt = ".adj";
 inline bool projectBinIsAdjustmentPath(const std::filesystem::path& path)
 {
     for (const auto& part : path) {
-        if (part.string() == kAdjustmentSentinelDir)
+        if (pathToUtf8(part) == kAdjustmentSentinelDir)
             return true;
     }
     return false;

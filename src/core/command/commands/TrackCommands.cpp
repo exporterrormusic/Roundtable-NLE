@@ -17,6 +17,16 @@ AddTrackCommand::AddTrackCommand(Timeline* timeline, TrackType type, const std::
 {
 }
 
+AddTrackCommand::AddTrackCommand(Timeline* timeline, std::unique_ptr<Track> prebuilt, size_t index)
+    : m_timeline(timeline)
+    , m_type(prebuilt ? prebuilt->type() : TrackType::Video)
+    , m_index(index)
+    , m_track(std::move(prebuilt))
+{
+    // m_track is pre-set, so execute() takes the "redo" branch and inserts at
+    // m_index on the very first run.
+}
+
 void AddTrackCommand::execute()
 {
     if (m_track)

@@ -7,6 +7,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "PathUtils.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "Constants.h"
 #include "CompositeService.h"
@@ -171,6 +172,42 @@ protected:
     }
 };
 
+// Transport-target selector. Unlike HoverFocusFilter (focus-follows-hover for
+// keyboard shortcuts), transport (Space / JKL) must NOT follow the cursor —
+// otherwise opening a clip in the Source Monitor never makes it the play
+// target, and hovering away after a pause silently re-targets the timeline.
+// A mouse press inside the Source Monitor makes it the target; a press inside
+// the Program Monitor or the timeline switches back to the timeline; presses
+// elsewhere leave the (sticky) choice unchanged.
+class TransportFocusFilter : public QObject
+{
+public:
+    explicit TransportFocusFilter(TimelineWorkspace* ws)
+        : QObject(ws), m_ws(ws) {}
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() != QEvent::MouseButtonPress &&
+            event->type() != QEvent::MouseButtonDblClick)
+            return false;
+        auto* w = qobject_cast<QWidget*>(watched);
+        if (!w || !m_ws) return false;
+
+        auto inside = [w](QWidget* panel) {
+            return panel && (w == panel || panel->isAncestorOf(w));
+        };
+        if (inside(m_ws->sourceMonitor())) {
+            m_ws->setSourceTransportActive(true);
+        } else if (inside(m_ws->programMonitor()) ||
+                   inside(m_ws->timelinePanel())) {
+            m_ws->setSourceTransportActive(false);
+        }
+        return false;  // never consume
+    }
+private:
+    TimelineWorkspace* m_ws;
+};
+
 } // namespace
 
 void TimelineWorkspace::createPanelWidgets()
@@ -184,6 +221,9 @@ void TimelineWorkspace::createPanelWidgets()
         qApp->installEventFilter(new HoverFocusFilter(qApp));
         s_hoverFocusInstalled = true;
     }
+
+    // -- Transport-target selector (click-based, NOT hover) ---------------
+    qApp->installEventFilter(new TransportFocusFilter(this));
 
     // -- Floating dock resize filter (Windows only) -----------------------
 #ifdef _WIN32
@@ -527,7 +567,7 @@ void TimelineWorkspace::createPanelWidgets()
         std::error_code ec;
         for (auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_regular_file()) continue;
-            std::string stem = entry.path().stem().string();
+            std::string stem = pathToUtf8(entry.path().stem());
             if (stem.size() > 5 && stem.substr(stem.size() - 5) == "_talk")
                 continue;
             names.push_back(stem);
@@ -613,9 +653,11 @@ void TimelineWorkspace::createPanelWidgets()
             this, [this](const QString& filePath) {
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (!m_sourceMonitor || !m_mediaPool || filePath.isEmpty()) return;
-        const auto handle = m_mediaPool->open(std::filesystem::path(filePath.toStdString()));
+        const auto handle = m_mediaPool->open(filePath.toStdString());
         if (handle == 0) return;
         m_sourceMonitor->loadClip(handle, m_mediaPool);
+        // Make the Source Monitor the transport target (next Space plays it).
+        setSourceTransportActive(true);
     });
     makeDock("Library", m_libraryPanel);
 

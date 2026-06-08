@@ -53,6 +53,11 @@ public:
     /// audio clips a nested-sequence clip expands into) so their playback
     /// provider stays stable across reloads.
     void setId(uint64_t id) noexcept { m_id = id; }
+
+    /// Advance the global id counter so the next auto-assigned id is strictly
+    /// greater than `usedId`.  Call this after restoring a saved clip id (via
+    /// setId) so freshly created clips never collide with restored ones.
+    static void reserveId(uint64_t usedId) noexcept;
     [[nodiscard]] const std::string& label()   const noexcept { return m_label; }
     void setLabel(const std::string& label) { m_label = label; }
 

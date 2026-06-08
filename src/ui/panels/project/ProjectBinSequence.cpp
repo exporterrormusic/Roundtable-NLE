@@ -141,27 +141,39 @@ void ProjectBin::createNewSequence()
     if (!m_project) {
         auto* newProj = new Project();
         newProj->setName("Untitled");
-        newProj->settings().setResolution(w, h);
-        newProj->settings().setFrameRate(fps);
-        // Name the default sequence what the user chose
-        if (newProj->sequenceCount() > 0 && newProj->sequence(0))
+        newProj->defaultSettings().setResolution(w, h);
+        newProj->defaultSettings().setFrameRate(fps);
+        // Name the default sequence what the user chose + give it its own settings
+        if (newProj->sequenceCount() > 0 && newProj->sequence(0)) {
             newProj->sequence(0)->setName(name);
+            newProj->sequence(0)->settings().setResolution(w, h);
+            newProj->sequence(0)->settings().setFrameRate(fps);
+        }
         emit projectCreated(newProj);
         if (!m_project) { delete newProj; return; }
         // Bin already reflects the project — just signal the sequence
         emit sequencesChanged();
         emit sequenceOpened(0);
     } else {
-        // Existing project: update settings and add a new sequence
-        m_project->settings().setResolution(w, h);
-        m_project->settings().setFrameRate(fps);
+        // Existing project: add a new sequence with ITS OWN settings. Do NOT
+        // touch other sequences — they are independent (Premiere-style). The
+        // project default template is updated so the next New Sequence dialog
+        // remembers this choice.
+        m_project->defaultSettings().setResolution(w, h);
+        m_project->defaultSettings().setFrameRate(fps);
+        auto applyNewSeqSettings = [w, h, fps](Timeline* seq) {
+            if (seq) {
+                seq->settings().setResolution(w, h);
+                seq->settings().setFrameRate(fps);
+            }
+        };
         if (m_commandStack) {
             size_t newIdx = m_project->sequenceCount();
             m_commandStack->execute(std::make_unique<LambdaCommand>(
                 "Add Sequence '" + name + "'",
-                [this, name, newIdx]() {
+                [this, name, newIdx, applyNewSeqSettings]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    m_project->addSequence(name);
+                    applyNewSeqSettings(m_project->addSequence(name));
                     syncListView();
                     emit sequencesChanged();
                     emit sequenceOpened(newIdx);
@@ -173,7 +185,7 @@ void ProjectBin::createNewSequence()
                     emit sequencesChanged();
                 }));
         } else {
-            m_project->addSequence(name);
+            applyNewSeqSettings(m_project->addSequence(name));
             syncListView();
             emit sequencesChanged();
             emit sequenceOpened(m_project->sequenceCount() - 1);
@@ -196,7 +208,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
     bool mediaHasAudio = false;
 
     if (m_pool) {
-        uint64_t handle = m_pool->open(filePath.string());
+        uint64_t handle = m_pool->open(filePath);
         if (handle != 0) {
             const auto* info = m_pool->getInfo(handle);
             if (info) {
@@ -215,9 +227,12 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
         mediaH = 1080;
     }
 
-    // Update project settings to match media
-    m_project->settings().setResolution(mediaW, mediaH);
-    m_project->settings().setFrameRate(mediaFps);
+    // The NEW sequence matches the media (Premiere-style). Other sequences are
+    // untouched — settings are per-sequence. The new timeline's own settings
+    // are assigned on builtTimeline below; the project default template is
+    // updated so the next New Sequence dialog remembers this size.
+    m_project->defaultSettings().setResolution(mediaW, mediaH);
+    m_project->defaultSettings().setFrameRate(mediaFps);
 
     // Create a sequence named after the media file
     QString stem = QFileInfo(QString::fromStdString(filePath.string())).completeBaseName();
@@ -244,6 +259,9 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
     // insertSequence/extractSequence (no dangling pointer window).
     auto builtTimeline = std::make_unique<Timeline>();
     builtTimeline->setName(seqName);
+    // This sequence's own resolution/fps match the dragged clip.
+    builtTimeline->settings().setResolution(mediaW, mediaH);
+    builtTimeline->settings().setFrameRate(mediaFps);
     std::string fileStr = filePath.string();
 
     if (isVideo) {

@@ -8,6 +8,7 @@
 
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -44,7 +45,7 @@ void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier, int6
     // Skip clips too long to be a meaningful loop.
     if (info.frameCount > LOOP_PREDECODE_MAX_FRAMES) {
         spdlog::info("[PERF] Loop pre-decode: SKIP handle={} '{}' ({} frames > cap {})",
-                     handle, path.filename().string(),
+                     handle, pathToUtf8(path.filename()),
                      info.frameCount, LOOP_PREDECODE_MAX_FRAMES);
         return;
     }
@@ -55,7 +56,7 @@ void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier, int6
         if (cn == "prores" || cn == "prores_ks" || cn == "prores_aw" ||
             cn == "dnxhd"  || cn == "dnxhr") {
             spdlog::info("[PERF] Loop pre-decode: SKIP handle={} '{}' (codec={} too slow for SW pre-decode)",
-                         handle, path.filename().string(), cn);
+                         handle, pathToUtf8(path.filename()), cn);
             return;
         }
     }
@@ -80,7 +81,7 @@ void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier, int6
     m_loopPreDecodeCv.notify_one();
 
     spdlog::info("[PERF] Loop pre-decode: enqueued handle={} '{}' ({} frames, priority={})",
-                 handle, path.filename().string(), info.frameCount, priority);
+                 handle, pathToUtf8(path.filename()), info.frameCount, priority);
 }
 
 void MediaPool::loopPreDecodeDispatcher()
@@ -103,7 +104,7 @@ void MediaPool::loopPreDecodeDispatcher()
         }
 
         spdlog::info("[PERF] Loop pre-decode: handle={} '{}' starting decode (priority={})",
-                     task.handle, task.path.filename().string(), task.priority);
+                     task.handle, pathToUtf8(task.path.filename()), task.priority);
         loopPreDecodeWorker(task.handle, std::move(task.path), task.info,
                             task.packedAlpha, task.tier);
     }
@@ -122,7 +123,7 @@ void MediaPool::loopPreDecodeWorker(
     VideoDecoder decoder;
     if (!decoder.open(path, /*forceSoftware=*/false, /*maxThreads=*/2)) {
         spdlog::warn("Loop pre-decode: failed to open decoder for handle={} '{}'",
-                     handle, path.filename().string());
+                     handle, pathToUtf8(path.filename()));
         std::lock_guard lock(m_loopPreDecodeMutex);
         m_loopPreDecodeActive.erase(handle);
         return;
@@ -295,7 +296,7 @@ void MediaPool::loopPreDecodeWorker(
 
         // ── Chroma-key green-screen media (#18FF00) ───────────────────
         if (!cached->pixels.empty()) {
-            std::string fn = path.filename().string();
+            std::string fn = pathToUtf8(path.filename());
             std::transform(fn.begin(), fn.end(), fn.begin(),
                            [](unsigned char c) { return std::toupper(c); });
             if (fn.find("GREEN") != std::string::npos) {
@@ -323,7 +324,7 @@ void MediaPool::loopPreDecodeWorker(
 
     spdlog::info("[PERF] Loop pre-decode DONE: handle={} '{}' decoded={} skipped={} "
                  "total={:.0f}ms ({:.1f}ms/frame)",
-                 handle, path.filename().string(),
+                 handle, pathToUtf8(path.filename()),
                  decoded_count, skipped_count, totalMs,
                  decoded_count > 0 ? totalMs / decoded_count : 0.0);
 

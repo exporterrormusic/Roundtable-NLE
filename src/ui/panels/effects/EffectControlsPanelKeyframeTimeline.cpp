@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -814,8 +815,219 @@ void KeyframeTimeline::focusOutEvent(QFocusEvent* event)
     QWidget::focusOutEvent(event);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+//  Keyframe clipboard (Premiere-style copy/paste across properties)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void KeyframeTimeline::copySelectedKeyframes()
+{
+    m_kfClipboard.clear();
+    if (m_selectedKeys.empty()) return;
+
+    // Find earliest time for relative offsets
+    int64_t earliest = std::numeric_limits<int64_t>::max();
+    for (const auto& sk : m_selectedKeys) {
+        if (!sk.track) continue;
+        earliest = std::min(earliest, sk.time);
+    }
+
+    for (const auto& sk : m_selectedKeys) {
+        if (!sk.track) continue;
+        // Find the keyframe at this time to capture full data
+        for (size_t i = 0; i < sk.track->keyframeCount(); ++i) {
+            if (sk.track->keyframe(i).time == sk.time) {
+                const auto& kf = sk.track->keyframe(i);
+                m_kfClipboard.push_back({
+                    sk.track,
+                    kf.time - earliest,
+                    kf.value,
+                    static_cast<int>(kf.interp),
+                    kf.bezierInX, kf.bezierInY,
+                    kf.bezierOutX, kf.bezierOutY,
+                    static_cast<int>(kf.spatialInterp),
+                    kf.spatialInX, kf.spatialInY,
+                    kf.spatialOutX, kf.spatialOutY
+                });
+                break;
+            }
+        }
+    }
+}
+
+void KeyframeTimeline::cutSelectedKeyframes()
+{
+    copySelectedKeyframes();
+    // Delete selected — reuse the same delete logic as keyPressEvent
+    if (!m_selectedKeys.empty()) {
+        if (m_commandStack) {
+            struct KfInfo {
+                KeyframeTrack<float>* track;
+                Keyframe<float> kf;
+            };
+            auto saved = std::make_shared<std::vector<KfInfo>>();
+            for (const auto& sk : m_selectedKeys) {
+                for (size_t i = 0; i < sk.track->keyframeCount(); ++i) {
+                    if (sk.track->keyframe(i).time == sk.time) {
+                        saved->push_back({sk.track, sk.track->keyframe(i)});
+                        break;
+                    }
+                }
+            }
+            for (auto it = m_selectedKeys.rbegin(); it != m_selectedKeys.rend(); ++it) {
+                it->track->removeKeyframeAtTime(it->time);
+            }
+            m_commandStack->pushWithoutExecute(
+                std::make_unique<LambdaCommand>(
+                    "Cut Keyframes",
+                    [saved]() {
+                        for (auto it = saved->rbegin(); it != saved->rend(); ++it)
+                            it->track->removeKeyframeAtTime(it->kf.time);
+                    },
+                    [saved]() {
+                        for (auto& info : *saved) {
+                            info.track->addKeyframe(info.kf.time, info.kf.value, info.kf.interp);
+                            for (size_t i = 0; i < info.track->keyframeCount(); ++i) {
+                                if (info.track->keyframe(i).time == info.kf.time) {
+                                    auto& kf = info.track->keyframe(i);
+                                    kf.bezierInX = info.kf.bezierInX;
+                                    kf.bezierInY = info.kf.bezierInY;
+                                    kf.bezierOutX = info.kf.bezierOutX;
+                                    kf.bezierOutY = info.kf.bezierOutY;
+                                    kf.spatialInX = info.kf.spatialInX;
+                                    kf.spatialInY = info.kf.spatialInY;
+                                    kf.spatialOutX = info.kf.spatialOutX;
+                                    kf.spatialOutY = info.kf.spatialOutY;
+                                    kf.spatialInterp = info.kf.spatialInterp;
+                                    break;
+                                }
+                            }
+                        }
+                    }));
+        } else {
+            for (auto it = m_selectedKeys.rbegin(); it != m_selectedKeys.rend(); ++it) {
+                it->track->removeKeyframeAtTime(it->time);
+            }
+        }
+        m_selectedKeys.clear();
+        update();
+        emit keyframeChanged();
+    }
+}
+
+void KeyframeTimeline::pasteKeyframes()
+{
+    if (m_kfClipboard.empty()) return;
+
+    // Build a set of valid destination tracks currently visible in the panel.
+    // We match clipboard entries to destination tracks by pointer identity —
+    // the clipboard stores the original track pointers which remain valid
+    // as long as the same clip is loaded.
+    std::set<KeyframeTrack<float>*> validTracks;
+    for (const auto* row : m_rows) {
+        for (auto* t : row->allTracks()) {
+            if (t) validTracks.insert(t);
+        }
+    }
+
+    const int64_t pasteTime = m_clip
+        ? (m_playheadTick - m_clip->timelineIn())
+        : m_playheadTick;
+
+    if (m_commandStack) {
+        auto entries = std::make_shared<std::vector<KfClipboardEntry>>(m_kfClipboard);
+        auto addedSnap = std::make_shared<std::vector<std::pair<KeyframeTrack<float>*, int64_t>>>();
+        m_commandStack->execute(
+            std::make_unique<LambdaCommand>(
+                "Paste Keyframes",
+                [entries, pasteTime, validTracks, addedSnap]() {
+                    // Redo: add all pasted keyframes
+                    for (auto& e : *entries) {
+                        if (!e.track || validTracks.count(e.track) == 0) continue;
+                        int64_t t = pasteTime + e.relativeTime;
+                        auto interp = static_cast<InterpMode>(e.interp);
+                        e.track->addKeyframe(t, e.value, interp);
+                        // Restore bezier/spatial handles
+                        for (size_t i = 0; i < e.track->keyframeCount(); ++i) {
+                            if (e.track->keyframe(i).time == t) {
+                                auto& kf = e.track->keyframe(i);
+                                kf.bezierInX  = e.bezierInX;
+                                kf.bezierInY  = e.bezierInY;
+                                kf.bezierOutX = e.bezierOutX;
+                                kf.bezierOutY = e.bezierOutY;
+                                kf.spatialInterp = static_cast<InterpMode>(e.spatialInterp);
+                                kf.spatialInX  = e.spatialInX;
+                                kf.spatialInY  = e.spatialInY;
+                                kf.spatialOutX = e.spatialOutX;
+                                kf.spatialOutY = e.spatialOutY;
+                                break;
+                            }
+                        }
+                        addedSnap->push_back({e.track, t});
+                    }
+                },
+                [addedSnap]() {
+                    // Undo: remove all pasted keyframes
+                    for (auto it = addedSnap->rbegin(); it != addedSnap->rend(); ++it) {
+                        it->first->removeKeyframeAtTime(it->second);
+                    }
+                }));
+    } else {
+        for (auto& e : m_kfClipboard) {
+            if (!e.track || validTracks.count(e.track) == 0) continue;
+            int64_t t = pasteTime + e.relativeTime;
+            auto interp = static_cast<InterpMode>(e.interp);
+            e.track->addKeyframe(t, e.value, interp);
+            for (size_t i = 0; i < e.track->keyframeCount(); ++i) {
+                if (e.track->keyframe(i).time == t) {
+                    auto& kf = e.track->keyframe(i);
+                    kf.bezierInX  = e.bezierInX;
+                    kf.bezierInY  = e.bezierInY;
+                    kf.bezierOutX = e.bezierOutX;
+                    kf.bezierOutY = e.bezierOutY;
+                    kf.spatialInterp = static_cast<InterpMode>(e.spatialInterp);
+                    kf.spatialInX  = e.spatialInX;
+                    kf.spatialInY  = e.spatialInY;
+                    kf.spatialOutX = e.spatialOutX;
+                    kf.spatialOutY = e.spatialOutY;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Select the freshly pasted keyframes
+    m_selectedKeys.clear();
+    for (auto& e : m_kfClipboard) {
+        if (!e.track || validTracks.count(e.track) == 0) continue;
+        int64_t t = pasteTime + e.relativeTime;
+        m_selectedKeys.insert({e.track, t});
+    }
+
+    update();
+    emit keyframeChanged();
+}
+
 void KeyframeTimeline::keyPressEvent(QKeyEvent* event)
 {
+    // ── Ctrl+C / Ctrl+X / Ctrl+V: keyframe clipboard ──────────────────
+    if (event->modifiers() & Qt::ControlModifier) {
+        if (event->key() == Qt::Key_C && !m_selectedKeys.empty()) {
+            copySelectedKeyframes();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_X && !m_selectedKeys.empty()) {
+            cutSelectedKeyframes();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_V && !m_kfClipboard.empty()) {
+            pasteKeyframes();
+            event->accept();
+            return;
+        }
+    }
+
     if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
         && !m_selectedKeys.empty()) {
         if (m_commandStack) {

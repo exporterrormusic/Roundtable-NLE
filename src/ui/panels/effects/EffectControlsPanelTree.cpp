@@ -670,6 +670,8 @@ void EffectControlsPanel::buildPropertyTree()
                 buildLUTUI(fx, effectIdx, rowIdx);
             } else if (fx.effectType() == EffectType::Letterbox) {
                 buildLetterboxUI(fx, effectIdx, rowIdx);
+            } else if (isBeatReactEffect(fx.effectType())) {
+                buildBeatUI(fx, effectIdx, rowIdx);
             } else if (fx.effectType() == EffectType::FlipHorizontal ||
                        fx.effectType() == EffectType::FlipVertical) {
                 // Flip has no user-editable parameters (the axis is fixed

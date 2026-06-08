@@ -7,6 +7,7 @@
  */
 
 #include "ChromaKeyEncoder.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -116,7 +117,7 @@ bool ChromaKeyEncoder::open(const std::filesystem::path& path,
 
     // ── Create output format context (MP4) ──────────────────────────────
     int ret = avformat_alloc_output_context2(&m_fmtCtx, nullptr, "mp4",
-                                              path.string().c_str());
+                                              pathToUtf8(path).c_str());
     if (ret < 0 || !m_fmtCtx) {
         m_lastError = "ChromaKey: Failed to create MP4 output context";
         spdlog::error("{}", m_lastError);
@@ -264,7 +265,7 @@ bool ChromaKeyEncoder::open(const std::filesystem::path& path,
 
     // ── Open output file ────────────────────────────────────────────────
     if (!(m_fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&m_fmtCtx->pb, path.string().c_str(), AVIO_FLAG_WRITE);
+        ret = avio_open(&m_fmtCtx->pb, pathToUtf8(path).c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
             m_lastError = "ChromaKey: Failed to open output file";
             spdlog::error("{}", m_lastError);
@@ -308,7 +309,7 @@ bool ChromaKeyEncoder::open(const std::filesystem::path& path,
 
     m_isOpen = true;
     spdlog::info("ChromaKey: Opened {}x{} @ {}fps → {} [{}]",
-                 m_width, m_height, fps, path.string(),
+                 m_width, m_height, fps, pathToUtf8(path),
                  m_usingNvenc ? "NVENC" : "CPU");
     return true;
 }

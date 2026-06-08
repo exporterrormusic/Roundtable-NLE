@@ -5,6 +5,7 @@
 #include "Muxer.h"
 #include "Encoder.h"
 #include "AudioMixdown.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -73,7 +74,7 @@ bool Muxer::open(const MuxerConfig& config, bool deferHeader)
     }
 
     int ret = avformat_alloc_output_context2(&m_fmtCtx, nullptr, fmtName,
-                                              config.outputPath.string().c_str());
+                                              pathToUtf8(config.outputPath).c_str());
     if (ret < 0 || !m_fmtCtx) {
         m_lastError = "Muxer: Failed to create output context";
         spdlog::error("{}", m_lastError);
@@ -141,9 +142,9 @@ bool Muxer::open(const MuxerConfig& config, bool deferHeader)
 
     // Open output file
     if (!(m_fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&m_fmtCtx->pb, config.outputPath.string().c_str(), AVIO_FLAG_WRITE);
+        ret = avio_open(&m_fmtCtx->pb, pathToUtf8(config.outputPath).c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
-            m_lastError = "Muxer: Failed to open output file: " + config.outputPath.string();
+            m_lastError = "Muxer: Failed to open output file: " + pathToUtf8(config.outputPath);
             spdlog::error("{}", m_lastError);
             avformat_free_context(m_fmtCtx); m_fmtCtx = nullptr;
             return false;
@@ -157,7 +158,7 @@ bool Muxer::open(const MuxerConfig& config, bool deferHeader)
         if (!writeHeader()) return false;
     }
 
-    spdlog::info("Muxer: Opened {} ({})", config.outputPath.string(),
+    spdlog::info("Muxer: Opened {} ({})", pathToUtf8(config.outputPath),
                  containerFormatName(config.format));
     return true;
 }

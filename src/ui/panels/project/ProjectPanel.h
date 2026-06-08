@@ -82,6 +82,7 @@ struct ProjectInfo
     uint32_t  resH{1080};
     double    fps{30.0};
     bool      isCurrent{false};
+    QString   show;        ///< associated show (for the Assign-to-Show checkmark)
 };
 
 /// Project manager panel — create, open, and manage projects.

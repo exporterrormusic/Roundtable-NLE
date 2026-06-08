@@ -4,6 +4,7 @@
 
 #include "Constants.h"
 #include "timeline/Clip.h"
+#include "timeline/Transition.h"
 
 #include <climits>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rt {
@@ -208,14 +210,34 @@ struct ClipboardContents
 {
     struct Entry
     {
-        size_t                trackIndex;  ///< Original track index
-        int64_t               relativeTime;  ///< Offset from earliest clip
-        std::unique_ptr<Clip> clip;         ///< Cloned clip data
+        size_t                trackIndex;     ///< Original track index
+        int64_t               relativeTime;   ///< Offset from earliest clip
+        uint64_t              originalClipId{0}; ///< Source clip id (for transition remap)
+        /// Offset of the source track from its type's "track 1": for video,
+        /// 0 = V1 (bottom, adjacent to the divider) counting upward; for
+        /// audio, 0 = A1 (top, adjacent to the divider) counting downward.
+        /// Captured at copy time so a cross-sequence paste can anchor clips
+        /// at V1/A1 regardless of how many tracks each sequence has (the
+        /// clipboard alone can't recover the source's V1 index when that
+        /// track had no copied clip).
+        int                   trackOffset{0};
+        std::unique_ptr<Clip> clip;           ///< Cloned clip data
     };
     std::vector<Entry> entries;
 
+    /// Transitions attached to copied clips. leftClipId/rightClipId hold the
+    /// ORIGINAL source-clip ids (or 0 for a fade to/from nothing); paste()
+    /// remaps them to the freshly pasted clip ids.  relEditPoint is the edit
+    /// point relative to the earliest copied clip.
+    struct TransitionEntry
+    {
+        Transition transition;
+        int64_t    relEditPoint{0};
+    };
+    std::vector<TransitionEntry> transitions;
+
     [[nodiscard]] bool empty() const noexcept { return entries.empty(); }
-    void clear() { entries.clear(); }
+    void clear() { entries.clear(); transitions.clear(); }
 };
 
 // ─── Edit Tool Types ─────────────────────────────────────────────────────────
@@ -382,6 +404,13 @@ public:
     /// Returns a CompoundCommand, or nullptr if no overlaps exist.
     [[nodiscard]] static std::unique_ptr<Command> resolveOverlaps(
         Timeline& timeline, size_t trackIndex, uint64_t movedClipId);
+
+    /// Resolve overlaps with an exclusion set (clips with these IDs are
+    /// never trimmed or removed by overlap resolution — used when moving
+    /// multiple clips together so they don't cascade-delete each other).
+    [[nodiscard]] static std::unique_ptr<Command> resolveOverlaps(
+        Timeline& timeline, size_t trackIndex, uint64_t movedClipId,
+        const std::unordered_set<uint64_t>& excludeClipIds);
 
     // ── In/Out Points ───────────────────────────────────────────────────
 

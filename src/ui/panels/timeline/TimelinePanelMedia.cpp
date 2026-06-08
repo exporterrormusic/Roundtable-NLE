@@ -4,6 +4,7 @@
  */
 
 #include "panels/timeline/TimelinePanel.h"
+#include "PathUtils.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 
 #include "timeline/Timeline.h"
@@ -53,7 +54,7 @@ static std::filesystem::path resolveThumbnailPath(const std::filesystem::path& p
         const fs::path imgExts[] = {".png", ".jpg", ".jpeg"};
         for (const auto& imgExt : imgExts) {
             for (const auto& dir : searchDirs) {
-                fs::path candidate = dir / fs::path(filename.string() + imgExt.string());
+                fs::path candidate = dir / fs::path(pathToUtf8(filename) + pathToUtf8(imgExt));
                 if (fs::exists(candidate, ec)) return candidate;
             }
         }
@@ -261,8 +262,8 @@ void TimelinePanel::queueThumbnailLoad(const std::string& path)
     std::thread([self, path, generation]() {
         // Resolve the path the same way MediaPool does (bare filenames ->
         // asset search dirs).  Pure filesystem + decode work, no GUI calls.
-        const std::string resolved =
-            resolveThumbnailPath(std::filesystem::path(path)).string();
+        const std::filesystem::path resolved =
+            resolveThumbnailPath(path);
 
         QImage img;  // built off-thread; QPixmap conversion happens on UI thread
         {

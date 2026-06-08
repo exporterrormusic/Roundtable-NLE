@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  roundtable.manifest — forces the process Active Code Page to UTF-8.
+
+  Without this, GetACP() returns the system ANSI code page (CP-1252 on most
+  Western installs). That makes std::filesystem::path's narrow conversions
+  (the std::string ctor and path::string()) use CP-1252, which:
+    * throws std::system_error on characters it can't represent, and
+    * silently mangles UTF-8 byte strings into mojibake (e.g. U+FF5C '｜' in
+      yt-dlp filenames becomes 'ï½œ' → file-not-found).
+
+  Setting activeCodePage=UTF-8 (Windows 10 1903+) makes GetACP() return
+  CP_UTF8 process-wide, so path<->string round-trips are lossless and the
+  whole class of path-encoding bugs disappears. This manifest is merged with
+  the linker-generated manifest (UAC/DPI defaults preserved) via /MANIFESTINPUT.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

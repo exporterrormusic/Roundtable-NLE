@@ -18,6 +18,7 @@
 #include "command/commands/TransitionCmds.h"
 #include "effects/Effect.h"
 #include "media/MediaPool.h"
+#include "PathUtils.h"
 
 #include <QDir>
 #include <QDragEnterEvent>
@@ -53,6 +54,7 @@ void TimelinePanel::dragEnterEvent(QDragEnterEvent* event)
 {
     // Accept effect drags, transition drags, media drags, sequence drags, or external file drops
     if (event->mimeData()->hasFormat("application/x-roundtable-effect") ||
+        event->mimeData()->hasFormat("application/x-roundtable-glitch-preset") ||
         event->mimeData()->hasFormat("application/x-roundtable-audiofx") ||
         event->mimeData()->hasFormat(kTransitionMimeType) ||
         event->mimeData()->hasFormat("application/x-roundtable-media") ||
@@ -206,6 +208,7 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
 
     // ── Effect / audio-FX drag (custom MIME) — same clip highlight ──────
     if (event->mimeData()->hasFormat("application/x-roundtable-effect") ||
+        event->mimeData()->hasFormat("application/x-roundtable-glitch-preset") ||
         event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
         QPointF pos = event->position();
         auto hitRef = hitTestClip(pos);
@@ -403,7 +406,7 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                 if (ok && handle != 0) {
                     const auto* info = m_mediaPool->getInfo(handle);
                     resolvedPath = QString::fromStdString(
-                        m_mediaPool->getPath(handle).string());
+                        pathToUtf8(m_mediaPool->getPath(handle)));
                     if (info && info->duration > 0.0 &&
                         !isStillImagePathDrag(resolvedPath))
                         clipDur = static_cast<int64_t>(info->duration * 48000.0);

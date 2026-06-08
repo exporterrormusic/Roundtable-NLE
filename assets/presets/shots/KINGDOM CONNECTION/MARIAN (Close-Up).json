@@ -7,9 +7,9 @@
   "backgrounds": [
     {
       "path": "INTERVIEW",
-      "posX": 1.039490,
-      "posY": 0.563903,
-      "scale": 2.146946,
+      "posX": 1.039000,
+      "posY": 0.564000,
+      "scale": 2.147000,
       "opacity": 1.000000,
       "nativeWidth": 1920,
       "nativeHeight": 1080,
@@ -21,7 +21,7 @@
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 2.000000
+      "blur": 5.000000
     }
   ],
   "characters": [
@@ -33,7 +33,7 @@
       "isTalking": true,
       "posX": 0.475091,
       "posY": 1.121814,
-      "scale": 2.345785,
+      "scale": 2.633987,
       "rotation": 0.000000,
       "flipX": false,
       "flipY": false,

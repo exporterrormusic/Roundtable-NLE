@@ -4,6 +4,7 @@
 
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
+#include "PathUtils.h"
 
 #include "Theme.h"
 
@@ -277,7 +278,7 @@ void ExportPanel::onStartExport()
         }
     }
 
-    rememberExportDir(config.outputPath.string());
+    rememberExportDir(pathToUtf8(config.outputPath));
     uint32_t jobId = m_renderQueue->addJob(config);
     m_activeJobId = jobId;
 

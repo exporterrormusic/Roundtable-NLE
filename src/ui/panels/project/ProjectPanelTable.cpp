@@ -88,6 +88,7 @@ void ProjectPanel::rebuildTable()
         auto* nameItem = new QTableWidgetItem(QStringLiteral("   ") + display);
         nameItem->setData(Qt::UserRole, info.name);
         nameItem->setData(Qt::UserRole + 1, info.filePath);
+        nameItem->setData(Qt::UserRole + 2, info.show);
         QFont nameFont(t.fontFamily, 26,
                        info.isCurrent ? t.weightBold : t.weightSemiBold);
         nameItem->setFont(nameFont);

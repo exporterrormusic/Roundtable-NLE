@@ -573,6 +573,16 @@ void MainWindow::switchSequence(size_t index, int64_t seekTick)
     if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel())
         m_timelineWorkspace->timelinePanel()->rebuildTracks();
 
+    // Apply the newly-active sequence's own settings (resolution / fps) to the
+    // Program Monitor, playback, and timeline — sequences are independent, so
+    // switching must re-point the live UI at this sequence's settings.
+    {
+        const auto& ss = newTimeline->settings();
+        applySequenceSettingsRefresh(ss.resolution().width,
+                                     ss.resolution().height,
+                                     ss.frameRate());
+    }
+
     // Refresh ProgramMonitor so it shows the new sequence content
     if (auto* pm = programMonitor())
         pm->refresh();
@@ -596,7 +606,8 @@ void MainWindow::onSequenceSettingsRequested(size_t seqIdx)
     dlg.setWindowTitle(tr("Sequence Settings"));
     dlg.setAcceptButtonText(tr("Save Settings"));
 
-    const auto& settings = m_currentProject->settings();
+    // Edit THIS sequence's own settings — sequences are independent.
+    const auto& settings = seq->settings();
     dlg.setMediaProperties(settings.resolution().width,
                            settings.resolution().height,
                            settings.frameRate());
@@ -615,41 +626,47 @@ void MainWindow::onSequenceSettingsRequested(size_t seqIdx)
     if (newRes == oldRes && newFps == oldFps && newName == oldName)
         return; // nothing changed
 
+    // Only refresh the live UI (Program Monitor / playback fps) when the
+    // edited sequence is the one currently open.
+    auto refreshIfActive = [this, seqIdx](uint32_t w, uint32_t h, double fps) {
+        if (m_currentProject &&
+            m_currentProject->activeSequenceIndex() == seqIdx)
+            applySequenceSettingsRefresh(w, h, fps);
+    };
+
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Sequence Settings",
-            [this, newRes, newFps, newName, seqIdx, oldRes]() {
-                if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0) {
-                    if (auto* seq = m_currentProject->sequence(seqIdx))
-                        scaleClipsInSequence(seq, oldRes, newRes);
-                }
-                m_currentProject->settings().setResolution(newRes);
-                m_currentProject->settings().setFrameRate(newFps);
-                if (auto* seq = m_currentProject->sequence(seqIdx))
-                    seq->setName(newName.toStdString());
+            [this, newRes, newFps, newName, seqIdx, oldRes, refreshIfActive]() {
+                auto* seq = m_currentProject->sequence(seqIdx);
+                if (!seq) return;
+                if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0)
+                    scaleClipsInSequence(seq, oldRes, newRes);
+                seq->settings().setResolution(newRes);
+                seq->settings().setFrameRate(newFps);
+                seq->setName(newName.toStdString());
                 m_currentProject->setModified(true);
-                applySequenceSettingsRefresh(newRes.width, newRes.height, newFps);
+                refreshIfActive(newRes.width, newRes.height, newFps);
             },
-            [this, oldRes, oldFps, oldName, seqIdx, newRes]() {
-                if (oldRes != newRes && newRes.width > 0 && newRes.height > 0) {
-                    if (auto* seq = m_currentProject->sequence(seqIdx))
-                        scaleClipsInSequence(seq, newRes, oldRes);
-                }
-                m_currentProject->settings().setResolution(oldRes);
-                m_currentProject->settings().setFrameRate(oldFps);
-                if (auto* seq = m_currentProject->sequence(seqIdx))
-                    seq->setName(oldName.toStdString());
+            [this, oldRes, oldFps, oldName, seqIdx, newRes, refreshIfActive]() {
+                auto* seq = m_currentProject->sequence(seqIdx);
+                if (!seq) return;
+                if (oldRes != newRes && newRes.width > 0 && newRes.height > 0)
+                    scaleClipsInSequence(seq, newRes, oldRes);
+                seq->settings().setResolution(oldRes);
+                seq->settings().setFrameRate(oldFps);
+                seq->setName(oldName.toStdString());
                 m_currentProject->setModified(true);
-                applySequenceSettingsRefresh(oldRes.width, oldRes.height, oldFps);
+                refreshIfActive(oldRes.width, oldRes.height, oldFps);
             }));
     } else {
         if (oldRes != newRes && oldRes.width > 0 && oldRes.height > 0)
             scaleClipsInSequence(seq, oldRes, newRes);
-        m_currentProject->settings().setResolution(newRes);
-        m_currentProject->settings().setFrameRate(newFps);
+        seq->settings().setResolution(newRes);
+        seq->settings().setFrameRate(newFps);
         seq->setName(newName.toStdString());
         m_currentProject->setModified(true);
-        applySequenceSettingsRefresh(newRes.width, newRes.height, newFps);
+        refreshIfActive(newRes.width, newRes.height, newFps);
     }
 }
 

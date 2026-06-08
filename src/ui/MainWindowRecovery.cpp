@@ -204,6 +204,20 @@ void MainWindow::onRestoreFromAutoSave()
         project->setFilePath(projPath);
         project->setModified(true);
         setCurrentProject(std::move(project));
+
+        // setCurrentProject() resets the Audio tab and does NOT repopulate
+        // it — restore the audio-sync blob the same way the normal open path
+        // does, or the restored project shows an empty Audio tab.
+        if (m_audioSync && m_currentProject) {
+            const auto& blob = m_currentProject->audioSyncBlob();
+            if (!blob.empty())
+                m_audioSync->deserializeFromBlob(blob);
+            else
+                m_audioSync->restoreProjectState(
+                    QString::fromStdString(m_currentProject->name()));
+            m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+        }
+
         hideBusyIndicator();
         statusBar()->showMessage("Restored from auto-save", 5000);
         spdlog::info("Restored project from auto-save: {}",
@@ -441,6 +455,24 @@ void MainWindow::checkCrashRecovery()
                 if (project) {
                     project->setFilePath(projPath);
                     setCurrentProject(std::move(project));
+
+                    // Restore audio-sync state (scripts / imported audio /
+                    // matches).  setCurrentProject() RESETS the AudioSync panel
+                    // for the new project and does NOT repopulate it — the
+                    // caller must deserialize the blob, exactly like the normal
+                    // open path (onOpenProject*).  Without this, a recovered
+                    // auto-save loads with an empty Audio tab even though the
+                    // .rtp carries the data.
+                    if (m_audioSync && m_currentProject) {
+                        const auto& blob = m_currentProject->audioSyncBlob();
+                        if (!blob.empty())
+                            m_audioSync->deserializeFromBlob(blob);
+                        else
+                            m_audioSync->restoreProjectState(
+                                QString::fromStdString(m_currentProject->name()));
+                        m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                    }
+
                     statusBar()->showMessage("Recovered from auto-save", 5000);
                     spdlog::info("Recovered project from auto-save: {}",
                                  newestAutoSave.string());

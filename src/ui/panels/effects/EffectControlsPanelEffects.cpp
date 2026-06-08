@@ -11,6 +11,8 @@
 #include "timeline/AudioClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "timeline/OpacityMask.h"
+#include "timeline/Timeline.h"
+#include "timeline/Track.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
@@ -20,17 +22,25 @@
 #include "effects/ChromaKey.h"
 #include "effects/LUT.h"
 #include "effects/Letterbox.h"
+#include "effects/BeatEffects.h"
+#include "media/AudioFile.h"
+#include "media/BeatDetector.h"
+#include "Constants.h"
 
 #include <QFrame>
 #include <QGridLayout>
 #include <QMenu>
 #include <QColorDialog>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QFileInfo>
+
+#include <spdlog/spdlog.h>
 
 namespace rt {
 
@@ -732,6 +742,172 @@ void EffectControlsPanel::buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx)
         m_propLayout->addWidget(fxRow);
         wireEffectParam(fxSpin, effectIdx, LUT::Param::Intensity);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  buildBeatUI — beat-reactive effect: generic params + onset detection
+// ═══════════════════════════════════════════════════════════════════════════
+
+void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
+{
+    const auto& tc = Theme::colors();
+
+    // Standard keyframeable params first (Amount, BPM, Offset, Rate, Attack,
+    // Decay, Mode). Mode: 0 = manual BPM grid, 1 = detected onsets.
+    buildGenericEffectUI(fx, effectIdx, rowIdx);
+
+    // ── Auto-detect section ────────────────────────────────────────────
+    auto* box = new QWidget(m_propContainer);
+    auto* col = new QVBoxLayout(box);
+    col->setContentsMargins(36, 4, 6, 4);
+    col->setSpacing(4);
+
+    const QString lblCss = QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+        .arg(Theme::hex(tc.textSecondary));
+
+    // Source picker row.
+    auto* srcRow = new QWidget(box);
+    auto* srcLay = new QHBoxLayout(srcRow);
+    srcLay->setContentsMargins(0, 0, 0, 0);
+    srcLay->setSpacing(6);
+    auto* srcLabel = new QLabel(QStringLiteral("Beat source"), srcRow);
+    srcLabel->setStyleSheet(lblCss);
+    srcLay->addWidget(srcLabel);
+
+    auto* srcCombo = new QComboBox(srcRow);
+    srcCombo->setFixedHeight(22);
+    srcCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { background: %1; color: %2; border: 1px solid %3; "
+        "border-radius: 3px; padding: 1px 4px; font-size: 11px; }")
+        .arg(Theme::hex(tc.inputBg), Theme::hex(tc.textPrimary),
+             Theme::hex(tc.controlBorder)));
+    srcLay->addWidget(srcCombo, 1);
+    col->addWidget(srcRow);
+
+    // Populate with audio clips from the timeline.
+    auto* beatFx = static_cast<BeatReactEffect*>(&fx);
+    if (m_timeline) {
+        for (size_t t = 0; t < m_timeline->trackCount(); ++t) {
+            auto* tr = m_timeline->track(t);
+            if (!tr) continue;
+            for (size_t c = 0; c < tr->clipCount(); ++c) {
+                auto* cl = tr->clip(c);
+                if (!cl || cl->clipType() != ClipType::Audio) continue;
+                srcCombo->addItem(QString::fromStdString(cl->label()),
+                                  static_cast<qulonglong>(cl->id()));
+                if (cl->id() == beatFx->audioSourceId())
+                    srcCombo->setCurrentIndex(srcCombo->count() - 1);
+            }
+        }
+    }
+    if (srcCombo->count() == 0)
+        srcCombo->addItem(QStringLiteral("(no audio clips)"), 0);
+
+    // Bass-only toggle.
+    auto* bassCheck = new QCheckBox(QStringLiteral("Bass / kick only"), box);
+    bassCheck->setChecked(true);
+    bassCheck->setStyleSheet(lblCss);
+    col->addWidget(bassCheck);
+
+    // Detect button + status.
+    auto* btnRow = new QWidget(box);
+    auto* btnLay = new QHBoxLayout(btnRow);
+    btnLay->setContentsMargins(0, 0, 0, 0);
+    btnLay->setSpacing(6);
+    auto* detectBtn = new QPushButton(QStringLiteral("Detect Beats"), btnRow);
+    detectBtn->setFixedHeight(22);
+    detectBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: %1; color: %2; border: 1px solid %3; "
+        "border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+        "QPushButton:hover { background: %4; }")
+        .arg(Theme::hex(tc.surface3), Theme::hex(tc.textPrimary),
+             Theme::hex(tc.controlBorder), Theme::hex(tc.controlBgHover)));
+    btnLay->addWidget(detectBtn);
+
+    auto* status = new QLabel(box);
+    status->setStyleSheet(lblCss);
+    if (!beatFx->beatTimes().empty())
+        status->setText(QStringLiteral("%1 beats — set Mode = 1")
+                            .arg(beatFx->beatTimes().size()));
+    else
+        status->setText(QStringLiteral("Mode 0 = manual BPM"));
+    btnLay->addWidget(status, 1);
+    col->addWidget(btnRow);
+
+    m_propLayout->addWidget(box);
+
+    // ── Detection action ───────────────────────────────────────────────
+    connect(detectBtn, &QPushButton::clicked, this,
+            [this, effectIdx, srcCombo, bassCheck, status]() {
+        if (!m_clip || !m_timeline) return;
+        const uint64_t srcId = srcCombo->currentData().toULongLong();
+        if (srcId == 0) { status->setText(QStringLiteral("Pick an audio clip")); return; }
+
+        // Locate the source audio clip on the timeline.
+        Clip* audio = nullptr;
+        for (size_t t = 0; t < m_timeline->trackCount() && !audio; ++t) {
+            auto* tr = m_timeline->track(t);
+            if (!tr) continue;
+            for (size_t c = 0; c < tr->clipCount(); ++c) {
+                auto* cl = tr->clip(c);
+                if (cl && cl->id() == srcId) { audio = cl; break; }
+            }
+        }
+        if (!audio || audio->clipType() != ClipType::Audio) {
+            status->setText(QStringLiteral("Source not found"));
+            return;
+        }
+        const std::string path = static_cast<AudioClip*>(audio)->mediaPath();
+
+        AudioFile af;
+        if (!af.open(path)) {
+            status->setText(QStringLiteral("Can't read audio"));
+            spdlog::warn("BeatDetect: failed to open '{}'", path);
+            return;
+        }
+        auto samples = af.readAll();
+        const auto& info = af.info();
+        if (samples.empty() || info.channels == 0) {
+            status->setText(QStringLiteral("Empty audio"));
+            return;
+        }
+
+        BeatDetectorParams bp;
+        bp.bassOnly = bassCheck->isChecked();
+        auto onsets = detectBeatsInterleaved(samples.data(), info.frames,
+                                             info.channels, info.sampleRate, bp);
+
+        // Map file-time onsets → this (video) clip's local seconds via the
+        // timeline positions, so the pulse fires at the right moment.
+        std::vector<float> local;
+        local.reserve(onsets.size());
+        const int64_t aSrcIn = audio->sourceIn();
+        const int64_t aTlIn  = audio->timelineIn();
+        const int64_t aDur   = audio->duration();
+        const int64_t vTlIn  = m_clip->timelineIn();
+        const int64_t vDur   = m_clip->duration();
+        for (float ta : onsets) {
+            const int64_t fileTick = static_cast<int64_t>(ta * kTicksPerSecond);
+            if (fileTick < aSrcIn || fileTick > aSrcIn + aDur) continue;
+            const int64_t localTick = (aTlIn + (fileTick - aSrcIn)) - vTlIn;
+            if (localTick < 0 || localTick > vDur) continue;
+            local.push_back(static_cast<float>(ticksToSeconds(localTick)));
+        }
+
+        auto& st = m_clip->effects();
+        if (effectIdx >= st.effectCount()) return;
+        auto* be = static_cast<BeatReactEffect*>(&st.effect(effectIdx));
+        be->setAudioSourceId(srcId);
+        be->setBeatTimes(std::move(local));
+        // Switch to Auto mode so the detected onsets drive the pulse.
+        be->param(BeatReactEffect::Mode).track.setDefaultValue(1.0f);
+
+        status->setText(QStringLiteral("%1 beats — Mode set to detected")
+                            .arg(be->beatTimes().size()));
+        spdlog::info("BeatDetect: {} onsets from '{}' baked into clip '{}'",
+                     be->beatTimes().size(), audio->label(), m_clip->label());
+        emit propertyChanged();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

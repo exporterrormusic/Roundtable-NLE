@@ -66,6 +66,11 @@ public:
     /// Tries libsndfile first, then falls back to FFmpeg.
     bool open(const std::filesystem::path& path);
 
+    /// Open from a UTF-8-encoded path string. The std::filesystem::path(string)
+    /// constructor decodes via the ANSI codepage on Windows and mangles non-CP_ACP
+    /// characters (e.g. U+FF5C in yt-dlp names); route through utf8ToPath() instead.
+    bool open(const std::string& utf8Path);
+
     /// Close and release all resources.
     void close();
 

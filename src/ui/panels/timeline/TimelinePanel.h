@@ -332,6 +332,10 @@ signals:
     /// Emitted when an effect is dropped onto a timeline clip.
     void effectDroppedOnClip(size_t trackIndex, uint64_t clipId, int effectType);
 
+    /// Emitted when a glitch preset (multi-effect macro) is dropped onto a
+    /// timeline clip. `presetId` is a GlitchPreset value.
+    void glitchPresetDroppedOnClip(size_t trackIndex, uint64_t clipId, int presetId);
+
     /// Emitted when an audio DSP processor (EQ/Dynamics) is dropped onto a
     /// timeline clip. `kind` is an audiofx::ProcessorKind value.
     void audioFxDroppedOnClip(size_t trackIndex, uint64_t clipId, int kind);

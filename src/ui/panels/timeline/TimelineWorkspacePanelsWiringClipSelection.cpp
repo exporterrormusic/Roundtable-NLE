@@ -274,7 +274,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (m_compositeService)
                 handle = m_compositeService->findMediaHandle(mediaPath);
             if (handle == 0) {
-                handle = m_mediaPool->open(std::filesystem::path(mediaPath));
+                handle = m_mediaPool->open(mediaPath);
                 if (handle != 0 && m_compositeService)
                     m_compositeService->registerMediaHandle(mediaPath, handle);
             }
