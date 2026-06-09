@@ -277,7 +277,31 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 const Transition* trans = track->transition(trI);
                 if (!trans) continue;
                 float prog = trans->progress(tick);
-                if (prog < 0.0f) continue; // tick outside transition range
+                if (prog < 0.0f) {
+                    // Sub-frame misalignment guard.  A single-sided fade's
+                    // editPointTick may not sit exactly on the clip's
+                    // frame-aligned head/tail (rounding when the clip was
+                    // trimmed/moved/created), so at a frame-boundary tick the
+                    // playhead can land just OUTSIDE the transition range while
+                    // still inside the clip.  progress() then returns -1 and the
+                    // fade is skipped, leaving the clip at FULL opacity for that
+                    // one frame — the "color matte flashes bright on its first
+                    // frame during playback/export" bug (stepping happened to
+                    // miss the exact tick).  Clamp instead of skipping: an
+                    // incoming single-sided fade (right==clip, no left peer) is
+                    // invisible before its range; an outgoing one (left==clip,
+                    // no right peer) is fully gone after its range.  Two-clip
+                    // transitions stay strictly range-gated (genuine continue).
+                    int64_t rs = 0, re = 0;
+                    trans->getRange(rs, re);
+                    const bool singleIncoming =
+                        (trans->rightClipId == clipId && trans->leftClipId == 0);
+                    const bool singleOutgoing =
+                        (trans->leftClipId == clipId && trans->rightClipId == 0);
+                    if (singleIncoming && tick < rs)       prog = 0.0f;
+                    else if (singleOutgoing && tick >= re) prog = 1.0f;
+                    else continue; // tick genuinely outside transition range
+                }
 
                 if (trans->type == TransitionType::FadeFromBlack) {
                     // Single-clip GPU fade: clip fades in from black.

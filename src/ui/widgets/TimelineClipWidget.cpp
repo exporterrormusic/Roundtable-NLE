@@ -120,12 +120,25 @@ QString TimelineClipWidget::displayLabel(ClipType type, const QString& label)
 }
 
 void TimelineClipWidget::paint(QPainter& painter,
-                                const QRectF& rect,
+                                const QRectF& rectIn,
                                 const ClipVisualStyle& style,
                                 const QString& label,
                                 bool selected,
                                 bool enabled)
 {
+    if (rectIn.width() < 1.0) return;
+
+    // Qt's raster paint engine silently drops primitives whose coordinates
+    // exceed its internal fixed-point range (~±32767). At deep zoom a clip can
+    // be tens of thousands of pixels wide with one edge far outside the
+    // viewport, which made the whole clip body vanish from the timeline even
+    // though it still rendered in the program monitor. Clamp the off-screen
+    // edges to a safe window — the painter already clips to the widget, so any
+    // coordinate well beyond the viewport is invisible and clamping is exact.
+    constexpr qreal kSafeCoord = 16384.0;
+    QRectF rect = rectIn;
+    if (rect.left()  < -kSafeCoord) rect.setLeft(-kSafeCoord);
+    if (rect.right() >  kSafeCoord) rect.setRight(kSafeCoord);
     if (rect.width() < 1.0) return;
 
     painter.save();

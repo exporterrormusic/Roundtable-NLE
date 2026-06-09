@@ -1,0 +1,422 @@
+================================================================================
+ FABLE_FIX.TXT — Crash root-cause analysis + improvement recommendations
+ Roundtable NLE — generated 2026-06-09 by Claude (Fable 5)
+ Scope: logs/crash_log.txt SEH crashes (PRIORITY 1), plus correctness,
+        cleanup and modularization findings from a source audit.
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 0 — CRASH LOG CLASSIFICATION (logs/crash_log.txt)
+────────────────────────────────────────────────────────────────────────────────
+
+The log contains FIVE distinct signatures. Two are real bugs in our code, three
+are external/benign noise:
+
+  A. SEH(HEAP_CORRUPTION) 0xC0000374 — 4 hits, all June 7 (17:14, 18:05,
+     19:07, 19:12). Two with VEH-captured stacks. REAL BUG — root-caused and
+     fixed June 7 (m_lastActiveClipIds data race); zero hits since. See
+     Section 2 for confirmation plan + related hardening defects found.
+
+  B. SEH(ACCESS_VIOLATION) in MSVCP140 Mtx_lock, June 8 04:02, full symbolized
+     stack + minidump. REAL BUG — ROOT-CAUSED in this audit. App-shutdown
+     use-after-free in the GPU teardown ordering. See Section 1.
+
+  C. SEH(ACCESS_VIOLATION) [HOOK:NVIDIA OpenGL driver] nvoglv64.dll, June 8
+     03:24 (x9). External: driver-side fault inside an injected/driver module
+     during TDR; correctly tagged by the HOOK classifier. No action in our
+     code (the FrameSignature static-dtor variant of this was already fixed).
+
+  D. SEH(ACCESS_VIOLATION) ADDR=0x20139398B0 (heap address, no module), June 8
+     03:46, no stack, session continued (next session start 03:48 was a
+     manual restart; no "Unhandled exception" follow-up was logged). Most
+     likely first-chance AV swallowed by the ExportPanel /EHa SEH guard
+     (Vulkan/TDR catch — intentionally kept). Watch for recurrence; if it
+     starts appearing with "Unhandled exception" lines, treat as a dangling
+     function-pointer/vtable call.
+
+  E. SEH(HOOK_RPC_UNAVAIL) 0x000006BA KERNELBASE — 8 hits across June 8-9.
+     Software-raised RPC_S_SERVER_UNAVAILABLE from injected overlay DLLs
+     (GeForce Experience / Discord / OBS hooks), already tagged distinctly
+     by CrashHandler. Benign noise. No action (optionally stop logging it
+     after the first occurrence per session to keep the log clean).
+
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 1 — [P0, FIX NOW] Shutdown ACCESS_VIOLATION: dangling GpuTextureCache*
+             in GpuUploadManager  (the June 8 04:02 MSVCP140 Mtx_lock crash)
+────────────────────────────────────────────────────────────────────────────────
+
+CRASH STACK (from the log, runtime-symbolized — fully reliable):
+    Mtx_lock (MSVCP140)
+    rt::GpuTextureCache::setRecycleFn          GpuTextureCache.cpp:280
+    std::default_delete<rt::GpuUploadManager>
+    std::default_delete<CompositeEngine>
+    rt::CompositeService::~CompositeService
+    rt::TimelineWorkspace::~TimelineWorkspace
+    ... QWidget teardown ... ~App ... main
+
+ROOT CAUSE (confirmed in source):
+
+  1. CompositeEngine.h declares (lines 163-166):
+         std::unique_ptr<GpuWorkSubmission> m_gpuSubmission;
+         std::unique_ptr<StagingRing>       m_stagingRing;
+         std::unique_ptr<GpuUploadManager>  m_uploadManager;   // declared BEFORE
+         std::unique_ptr<GpuTextureCache>   m_gpuTexCache;     // declared AFTER
+
+  2. CompositeEngine::shutdown() (CompositeEngine.cpp:185) calls
+     clearGpuTexCache() which does m_gpuTexCache.reset() — destroying the
+     cache (and its std::mutex m_mtx) — but NEVER informs m_uploadManager,
+     whose raw pointer m_texCache still points at the freed cache.
+     (GpuUploadManager::shutdown() would have cleared it, but nothing calls
+     it during engine shutdown.)
+
+  3. Later, ~CompositeEngine destroys members in reverse declaration order:
+     m_gpuTexCache first (already null), then m_uploadManager. Its destructor
+     calls GpuUploadManager::shutdown() (GpuUploadManager.cpp:59-62, 487-498),
+     which sees m_texCache != nullptr (dangling!) and calls
+     m_texCache->setRecycleFn(nullptr) → std::lock_guard on a DESTROYED
+     std::mutex → Mtx_lock access violation. Exactly the logged stack.
+
+  Note the destruction-order trap is two-layered: even WITHOUT the explicit
+  clearGpuTexCache() in shutdown(), reverse-declaration-order destruction
+  would destroy the cache before the upload manager and produce the same
+  use-after-free.
+
+FIX (do all three — small, safe, layered):
+
+  a) CompositeEngine::shutdown() — break the link BEFORE destroying the
+     cache:
+
+         void CompositeEngine::shutdown()
+         {
+             if (m_device != VK_NULL_HANDLE)
+                 vkDeviceWaitIdle(m_device);
+             destroyTimingPools();
+             destroyCompositeSlot();
+             if (m_uploadManager)
+                 m_uploadManager->shutdown();   // <-- ADD: unhooks recycleFn
+                                                //     while the cache is alive,
+                                                //     clears m_texPool, nulls
+                                                //     m_texCache
+             clearGpuTexCache();
+             ...
+         }
+
+  b) CompositeEngine.h — swap the declaration order so the cache outlives
+     the manager even on paths that bypass shutdown():
+
+         std::unique_ptr<rt::GpuTextureCache>  m_gpuTexCache;   // declare FIRST
+         std::unique_ptr<rt::GpuUploadManager> m_uploadManager; // destroyed FIRST
+
+     (Constructor creates them independently; no init-order dependency —
+      m_uploadManager is created in init() and the cache lazily in
+      CompositeEngineRenderGraph.cpp:195-206 — so this is safe.)
+
+  c) GpuUploadManager::setTextureCache() (GpuUploadManager.h:116) — make
+     rebinding correct and self-protecting:
+
+         void setTextureCache(GpuTextureCache* cache) noexcept
+         {
+             if (m_texCache && m_texCache != cache)
+                 m_texCache->setRecycleFn(nullptr);  // unhook old cache
+             m_texCache = cache;
+             m_recycleHookInstalled = false;          // reinstall on next upload
+         }
+
+     This also fixes a latent (non-crash) bug: m_recycleHookInstalled is never
+     reset, so after a shutdown()+re-init cycle the recycle hook is silently
+     never reinstalled on the NEW cache (the A4 texture-recycling optimization
+     quietly stops working). Also reset m_recycleHookInstalled = false in
+     GpuUploadManager::shutdown().
+
+  Longer-term design note: the recycle hook is a raw-pointer cycle between two
+  peer objects (cache holds a std::function capturing the manager's `this`;
+  manager holds GpuTextureCache*). Consider replacing with an explicit
+  unbind-on-destruction contract or passing the pool as a std::weak_ptr-owned
+  object, so neither side can dangle no matter who dies first. The same
+  pattern exists with GpuContext::registerGpuTextureCache (already handled
+  correctly there via the atomic null-then-reset in clearGpuTexCache —
+  use that as the model).
+
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 2 — [P0, INVESTIGATE/HARDEN] SEH(HEAP_CORRUPTION) 0xC0000374
+────────────────────────────────────────────────────────────────────────────────
+
+WHAT THE LOG SAYS (June 7, 19:07 and 19:12 — identical stacks):
+
+    [ 0-1] roundtable.exe+0xF230 / +0xF6EA      <- the VEH heap-safe logger
+                                                    itself (same TU as
+                                                    crashExceptionFilter@0x102F3)
+    [ 2-10] ntdll RtlReportFatalFailure / heap-validation machinery
+    [11] ucrtbase.dll+0x1E0FB                    <- CRT free()
+    [12] roundtable.exe+0xE1CEF                  <- COMDAT-folded deallocation
+                                                    helper (operator delete /
+                                                    vector _Tidy — folded into an
+                                                    early TU, address is not
+                                                    meaningful by itself)
+    [13] roundtable.exe+0x485E9A   ┐
+    [14] roundtable.exe+0x4882A2   ├ all three sit BETWEEN
+    [15] roundtable.exe+0x487995   ┘ ~CompositeService (0x4784DB) and
+                                     GpuTextureCache::setRecycleFn (0x4A716C)
+                                     in the same binary's layout (anchors taken
+                                     from the June 8 04:02 symbolized crash)
+    [16] roundtable.exe+0x3439D2                 <- std::thread entry thunk
+    [17] ucrtbase thread-start → kernel32 → ntdll
+
+ROOT CAUSE — ALREADY FOUND AND FIXED (2026-06-07, confirmed this audit):
+  The captured stack was symbolized at the time against the matching PDB:
+    [12] std::unordered_set<uint64_t>::clear
+    [14/15] CompositeService::doPrewarmPlaybackResources
+            (CompositeServiceFramePrewarm.cpp:~270)
+    [16] std::thread::_Invoke<RenderQueue worker>
+  It was a DATA RACE on CompositeService::m_lastActiveClipIds (the
+  shot-boundary unordered_set): mutated from the FrameProducer composite path
+  under m_compositeMutex AND from the RenderQueue prewarm worker under
+  m_openMediaHandlesMutex — two different locks, so concurrent
+  std::_Hash::clear corrupted the heap. FIX (landed June 7 evening): a
+  dedicated m_lastActiveClipIdsMutex now guards every access (visible today
+  in e.g. CompositeService.cpp:160). This audit independently localized the
+  crash frames to the same prewarm code region, consistent with that
+  diagnosis.
+
+  STATUS: zero occurrences across ~50 sessions on June 8-9 since the fix.
+  Treat as FIXED-PENDING-CONFIRMATION:
+  - Keep the repro contexts (cross-sequence paste, Wells packed-alpha) in the
+    smoke-test rotation for another release cycle.
+  - The general caveat stands for any FUTURE 0xC0000374: corruption is
+    detected at the free that trips over the damage, not at the code that
+    caused it — symbolize, but audit writers near the victim too.
+  - LESSON TO ENCODE (cheap, prevents the next one): m_lastActiveClipIds was
+    one container guarded by "whichever mutex the call path already held".
+    Audit CompositeService for other members touched by both the composite
+    thread and the RenderQueue/prewarm worker and give each ONE named lock
+    (or fold them into a single state struct + mutex). Candidates seen in
+    reset(): m_prewarmedClipIds, m_headWarmedClipIds, m_stickyLastClipFrame,
+    m_stickyLastCharFrame, m_videoFallbackCache — verify which threads touch
+    each.
+
+EXACT-SYMBOLIZATION IS CURRENTLY IMPOSSIBLE — FIX THE PROCESS (P0):
+  The June 7 binary was overwritten by later local builds; no PDB archive
+  exists (dist/ holds only installers). Every future crash-offset capture is
+  worthless without the matching PDB.
+
+  ACTION: in publish_release.ps1 AND build.ps1 (Release), archive
+  build/bin/Release/roundtable.exe + roundtable.pdb into e.g.
+  dist/symbols/<version-or-git-hash>/ before they can be overwritten. Embed
+  the git hash in version.h so a crash log line can state which build it came
+  from (log it at SESSION START). This single process change converts every
+  future 0xC0000374 from "speculation" into "open the file at the line".
+
+CONFIRMATION PLAN (prove the June 7 fix closed it):
+  1. setup_appverif.ps1 already exists at repo root — enable Application
+     Verifier PageHeap (full) on roundtable.exe and replay the repro
+     (cross-seq paste, Wells packed-alpha scrub/settle, export). PageHeap
+     converts the deferred 0xC0000374 into an immediate AV at the EXACT
+     corrupting instruction, which the existing crashExceptionFilter will
+     symbolize and dump. This is the highest-value 30 minutes available.
+  2. Add an ASan job (-fsanitize=address is supported by MSVC:
+     /fsanitize=address) for the gtest suite — catches the same class of bug
+     in CI at near-zero ongoing cost. Tests are already green (654/654), so
+     any ASan hit is signal.
+
+HARDENING BUGS FOUND DURING THIS AUDIT (each is a real defect; any of them
+could contribute to memory unsafety — fix regardless of whether one of them
+is THE corruptor):
+
+  2a. CachedFrame::ensurePixels() unsynchronized fast path
+      src/core/media/FrameCache.h:222-232
+        if (!pixels.empty()) return true;        // <-- UNLOCKED read
+        std::lock_guard lock(m_readbackMutex);
+        ...
+        lazyReadback(pixels);                    // <-- concurrent WRITE/resize
+      The first empty() check reads the vector's internal pointers while
+      another thread (DiskFrameCache writer vs export vs composite — all call
+      ensurePixels) may be mid-resize inside the lock. A reader can observe a
+      transiently inconsistent (begin,end) pair → returns true → caller reads
+      a stale/dangling data() pointer. Classic TOCTOU on std::vector
+      internals; UB on every execution that races.
+      FIX: replace the fast path with a std::atomic<bool> m_pixelsReady that
+      is set (release) only AFTER lazyReadback fills the vector, and checked
+      (acquire) in the fast path; or simply always take the mutex (readback
+      is rare; the lock is cheap relative to a frame readback).
+
+  2b. Shared Nv12Converter: convert→readback pair is not atomic
+      src/core/media/MediaPoolDecode.cpp:349-360 (NV12) and 381-394 (YUV420P)
+        conv->convertSyncScaled(...);     // locks apiMutex internally, releases
+        conv->readbackOutput(cached->pixels);  // does NOT lock (by design —
+                                               // header Nv12Converter.h:99)
+      Converters are shared per (dstW,dstH) via GpuContext::nv12Converter().
+      If decodeFrame() is ever reached concurrently from two threads (export
+      worker + composite thread + prewarm bulk-open are all plausible), two
+      same-shaped converts interleave and readbackOutput returns the OTHER
+      thread's pixels (wrong-content frames; also races m_config.width/height
+      set in recordConvertScaled:250). The repo already had to fix the
+      stronger form of this for prefetch workers (per-worker
+      convertDecodedToCacheGpu) — this is the residual weak form.
+      FIX: hold conv->apiMutex() (public accessor exists for exactly this —
+      Nv12Converter.h:294-301) across the convertSyncScaled+readbackOutput
+      pair at both call sites. Two lines each.
+
+  2c. PrefetchTask lacks packedTiles → divergent packed-alpha height math
+      - MediaPoolDecode.cpp:315       contentH = h / max(1, packedTiles)  (right)
+      - MediaPoolPrefetchConvert.cpp:97  contentH = packedAlpha ? h/2 : h (hardcoded 2)
+      - MediaPoolPrefetchLoop.cpp:235    same hardcoded h/2
+      For 4-tile luma-packed sources the prefetch paths compute contentH at
+      h/2 instead of h/4 → different tier-cap decision → the SAME
+      (handle, frame, tier) can be produced at DIFFERENT pixel dimensions by
+      the urgent-decode path vs the prefetch path. Downstream consumers that
+      trust cached dims (packed-alpha double-buffer dim checks in LayerBuild
+      — the "wrong-size Alt texture" family, GPU upload sizes) then disagree
+      about buffer sizes. At minimum it reproduces the one-frame wrong-size
+      glitch class; combined with any raw-size assumption it is a buffer-size
+      mismatch generator.
+      FIX: add `int packedTiles{2}` to PrefetchTask (MediaPool.h:128),
+      propagate from entry.info.packedTiles where tasks are enqueued, and use
+      the same divisor formula in all three places — ideally via ONE shared
+      helper (see Section 4.1).
+
+  2d. PixelBufferPool is correct but retains worst-case capacity
+      src/core/media/MediaPool.h:98-125
+      acquire() does buf.resize(size) on a recycled vector — capacity never
+      shrinks, so 32 pooled buffers each pinned at the largest frame ever
+      seen (Wells packed 1080x3776x4 ≈ 16.3 MB) ≈ 0.5 GB retained. Not a
+      crash, but looks like a leak in Task Manager and worsens fragmentation.
+      FIX: if (buf.capacity() > 2 * size) { buf.shrink_to_fit() } after
+      resize, or bucket the pool by size class.
+
+WHAT WAS CHECKED AND CLEARED (so you don't re-audit):
+  - PixelBufferPool acquire/recycle protocol: locked, move-based,
+    double-recycle safe (empty() guard).
+  - CachedFrame custom deleter recycling pixels into the pool: runs at final
+    shared_ptr release; no raw pixel pointers escape that lifetime (staging
+    copies are synchronous at record time).
+  - AnimationVideoCache (the v0.23 AV suspect): D1-D3 landed; all public
+    state accesses now lock m_mutex. Looks sound.
+  - GpuTextureCache: fully mutex-guarded; evictUntilFits documents and obeys
+    the no-reentry rule; pin/unpin paths in GpuUploadManager are
+    composite-thread-only per its documented threading contract.
+  - Row-by-row memcpy converts in MediaPoolDecode/PrefetchConvert/
+    PrefetchLoop: src stride from linesize, dst sized w*h*4, copies w*4 per
+    row — size-consistent.
+  - check_orphans.ps1: green — every .cpp is referenced by CMake (the dead-
+    code discipline holds; the old AudioSync orphans are gone).
+
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 3 — [P1] OTHER KNOWN CORRECTNESS GAPS (confirmed still present)
+────────────────────────────────────────────────────────────────────────────────
+
+  3.1 Track::addTransition has no dedup — src/core/timeline/Track.cpp:134-138
+      Blind push_back. Duplicate transitions on the same edit point compose
+      opacity twice (opacity = progress², fades render too dark) — this was
+      already observed in the transition-opacity investigation and left
+      unfixed. FIX: before push_back, erase any existing transition with the
+      same (clipId pair / edit-point identity); add a regression test.
+
+  3.2 pasteInsert not updated for V1/A1 track anchoring
+      The cross-sequence paste rework (Entry.trackOffset anchoring, overflow
+      track creation) was applied to paste-overwrite only. pasteInsert still
+      uses the old absolute-index mapping → cross-sequence INSERT paste can
+      drop clips or land them on wrong tracks. Port the same anchoring logic;
+      extend the PasteCrossSequence test family to cover insert.
+
+  3.3 Audio FX real-time preview still unwired
+      ParametricEQ/Dynamics run in export mixdown and have Properties-panel
+      UI, but AudioEngine::mixSource does not apply the clip FxChain — users
+      hear the dry signal until export. (Last open item of the audiofx plan.)
+
+  3.4 UTF-8 path-safety sweep is incomplete
+      The U+FF5C class of bugs (path.string() throws under CP-1252, or
+      silently mojibakes) was fixed in the media layer via
+      rt::pathToUtf8/utf8ToPath, but raw .string() remains in ~30 files.
+      Priority order (user-controlled paths first):
+        - core/project: ProjectSerializer.cpp, ProjectSerializerIO.cpp,
+          ClipSerialization.cpp, AssetDatabase.cpp, AutoSave.cpp
+        - core/spine:  ModelManager.cpp, SpineEngine.cpp, SpineAtlas.cpp,
+          ShotPreset.cpp, SpinePrerenderer.cpp, AnimationVideoCache.cpp
+        - core/media:  ThumbnailGenerator.cpp, WaveformCache.cpp,
+          OmniShotDetector.cpp, encoders (ProRes/VP9Alpha)
+        - ui:          MainWindow*.cpp, RelinkMediaDialog.cpp
+      (Files like CrashHandler.cpp using .string() on paths we control are
+      lower risk but trivial to convert while there.)
+      Consider adding a clang-tidy/grep CI check that bans `.string()` on
+      std::filesystem::path outside PathUtils.
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 4 — [P2] CLEANUP / MODULARIZATION RECOMMENDATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+  4.1 Unify the THREE copies of decoded-frame → BGRA conversion
+      MediaPoolDecode.cpp (~290-535), MediaPoolPrefetchConvert.cpp (~60-200),
+      MediaPoolPrefetchLoop.cpp (~230-300) each reimplement: tier cap (incl.
+      packed-alpha contentH), direct-BGRA row copy, sws context cache +
+      BT.709 range pinning, chroma-key filename check, alpha-edge cleanup.
+      They have ALREADY diverged (the packedTiles bug, 2c above; the BT.709
+      comment block exists in two of three). Extract a single
+      `ConvertDecodedFrame` helper (input: DecodedFrame + tier/packed info +
+      sws-cache slot + PixelBufferPool*; output: CachedFrame fields). The
+      prefetch/urgent/loop paths keep their threading wrappers and call the
+      same core. This is the highest-leverage refactor in the codebase: every
+      future pixel-format bug gets fixed once instead of 0-of-3 or 1-of-3
+      times.
+
+  4.2 Preview/export render-path duplication (standing item)
+      CompositeService (preview) and FrameRenderer (export) duplicate
+      frame-mapping and layer-build logic; multiple past bugs had to be fixed
+      twice (loop-frame leak, llround mapping, transition clamp). Extract the
+      frame-map + layer-description step into a shared module consumed by
+      both; keep the export-only policies (forceExact, no shared cache) as
+      parameters rather than parallel code.
+
+  4.3 GPU teardown contracts (beyond the Section 1 fix)
+      Several subsystems hold raw pointers to peers with implicit destruction
+      ordering (upload manager ↔ texture cache; GpuContext diag pointer —
+      handled; CacheCoordinator* in CompositeEngine). Adopt one rule:
+      any class that hands a raw `this`-capturing callback or raw pointer to
+      a peer MUST null/unhook it in its own shutdown()/dtor, and owners must
+      tear down in documented order (add a comment block at the member
+      declarations in CompositeEngine.h, like GpuContext::shutdown's
+      "Destroy in reverse order" block at GpuContext.cpp:210 — that block is
+      the good example to copy).
+
+  4.4 MediaPoolDecode.cpp `goto nv12_done`
+      Two goto's jump over the sws fallback. Works, but converting the GPU
+      paths into early-returning helper calls (per 4.1) removes the goto and
+      the label-scoping hazards for free.
+
+  4.5 Repo hygiene (small)
+      - build_puppet*.log (4 files) and framehash.csv at repo root: move to
+        logs/ or delete + .gitignore.
+      - launch*.bat / *.ps1 sprawl at root (12+ entry scripts): fold into a
+        single launch.ps1 with flags (-debug, -framehash, -spinediag,
+        -validation) so behaviors can't drift apart.
+      - Only 3 TODO/FIXME markers across src/ — genuinely clean; keep it
+        that way by putting new deferred work in docs/ plans instead of code
+        comments (current practice already does this — just noting it works).
+
+  4.6 Crash-log ergonomics
+      - At SESSION START, log app version + git hash + exe timestamp so every
+        crash in crash_log.txt is attributable to a build (pairs with the PDB
+        archiving in Section 2).
+      - HOOK_RPC_UNAVAIL: log once per session, then count silently
+        (same coalescing already used for the repeated nvoglv64 hook AV).
+
+────────────────────────────────────────────────────────────────────────────────
+ SECTION 5 — RECOMMENDED ORDER OF WORK
+────────────────────────────────────────────────────────────────────────────────
+
+  1. Section 1 fix (a+b+c) — ~20 lines, removes a guaranteed shutdown UAF.   [P0]
+  2. PDB/exe archiving in build/publish scripts + version/hash in log.       [P0]
+  3. Hardening 2a (ensurePixels) and 2b (apiMutex around convert+readback).  [P0]
+  4. 2c packedTiles propagation into PrefetchTask (+ shared contentH helper).[P0/P1]
+  5. PageHeap session (setup_appverif.ps1) on the old repro to confirm the
+     June 7 m_lastActiveClipIds fix closed 0xC0000374; ASan test job in CI;
+     audit sibling CompositeService members for the same two-mutex pattern.  [P1]
+  6. Track::addTransition dedup + pasteInsert anchoring + .string() sweep.   [P1]
+  7. Refactor 4.1 (single decode-convert core), then 4.2.                    [P2]
+
+================================================================================
+ END OF FILE
+================================================================================

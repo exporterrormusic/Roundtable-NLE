@@ -362,11 +362,29 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     // ── Smart Render Analysis ───────────────────────────────────────────
     // Determine which frames can be passed through (raw packet copy from
     // source) and which must be composited + re-encoded.
+    // Smart Render passthrough is DISABLED.  It copied raw source packets into
+    // an output stream whose H.264 parameter sets (SPS/PPS) come from the
+    // re-encoder and are written as the mp4 avcC global header (Muxer.cpp).
+    // There is no bitstream filter or per-source extradata reconciliation, so
+    // any passthrough packet whose source SPS/PPS differ from the encoder's
+    // (essentially always — and always when two different source files share
+    // one track) decodes against the wrong parameters: the player shows
+    // unrelated content until the next re-encoded IDR resyncs → the "flickers
+    // to a completely different video" bug.  The analyzer was also blind to
+    // transitions, passing through transition-affected frames at full opacity
+    // (the color-matte "bright first frame" on export).  Re-encoding every
+    // frame is guaranteed correct.  To safely re-enable, this needs: an
+    // h264_mp4toannexb/av_bsf bitstream path, source-extradata handling, a
+    // refusal to mix incompatible/multiple sources, and transition-awareness
+    // in analyzeSmartRender.
+    constexpr bool kEnableSmartRenderPassthrough = false;
     SmartRenderPlan smartPlan;
-    if (timeline) {
-        smartPlan = analyzeSmartRender(*timeline, job.config.encoderConfig,
-                                       job.config.outputWidth, job.config.outputHeight,
-                                       startFrame, endFrame);
+    if constexpr (kEnableSmartRenderPassthrough) {
+        if (timeline) {
+            smartPlan = analyzeSmartRender(*timeline, job.config.encoderConfig,
+                                           job.config.outputWidth, job.config.outputHeight,
+                                           startFrame, endFrame);
+        }
     }
 
     // Open PacketDemuxers for source files used in passthrough.

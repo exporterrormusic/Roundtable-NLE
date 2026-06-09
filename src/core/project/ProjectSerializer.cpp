@@ -20,6 +20,7 @@
 #include <fstream>
 #include <cstring>
 #include <filesystem>
+#include <algorithm>
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -66,6 +67,41 @@ void relinkTransitionsByGeometry(Track& track)
         }
         if (wantLeft  && leftHits  == 1) t.leftClipId  = leftId;
         if (wantRight && rightHits == 1) t.rightClipId = rightId;
+    }
+}
+
+// Remove duplicate transitions left on a track.  Track::addTransition does a
+// blind push_back with no dedup, so a double-add (or a project re-saved after
+// one) leaves two+ identical transitions on the same edit point.  The
+// compositor then applies the same fade twice — opacity becomes prog² and the
+// fade reads as too dark / eased instead of linear.  An edit point is uniquely
+// identified by its (leftClipId, rightClipId) endpoints, so any later
+// transition sharing both endpoints with an earlier one is a duplicate.  Runs
+// AFTER relinkTransitionsByGeometry so endpoints are final.  Fully-unlinked
+// (0,0) entries are never merged — relink may simply have failed to resolve
+// them and they could be genuinely distinct.
+void dedupeTransitions(Track& track)
+{
+    auto& trans = track.transitions();
+    std::vector<Transition> unique;
+    unique.reserve(trans.size());
+    for (const auto& t : trans) {
+        if (t.leftClipId == 0 && t.rightClipId == 0) {
+            unique.push_back(t);
+            continue;
+        }
+        const bool dup = std::any_of(unique.begin(), unique.end(),
+            [&](const Transition& u) {
+                return u.leftClipId == t.leftClipId &&
+                       u.rightClipId == t.rightClipId;
+            });
+        if (!dup)
+            unique.push_back(t);
+    }
+    if (unique.size() != trans.size()) {
+        spdlog::warn("ProjectSerializer: removed {} duplicate transition(s) on track '{}'",
+                     trans.size() - unique.size(), track.name());
+        trans = std::move(unique);
     }
 }
 
@@ -566,6 +602,7 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     }
 
                     relinkTransitionsByGeometry(*track);
+                    dedupeTransitions(*track);
                 }
 
                 // Ensure video tracks are always above audio tracks,
@@ -691,6 +728,7 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     }
 
                     relinkTransitionsByGeometry(*track);
+                    dedupeTransitions(*track);
                 }
 
                 tl->sortTracksByType();
