@@ -40,6 +40,7 @@ class CharacterBrowser;
 class ConversionPanel;
 class ModelManager;
 class ShotComposer;
+class PuppetLibraryPanel;
 
 class CharacterShotPanel : public QWidget
 {
@@ -65,7 +66,7 @@ public:
 
     // ── Sub-rail mode ───────────────────────────────────────────────────
 
-    enum Mode { Library = 0, Convert = 1, Compose = 2, Settings = 3 };
+    enum Mode { Library = 0, Puppets = 1, Convert = 2, Compose = 3, Settings = 4 };
 
     void setMode(Mode mode);
     [[nodiscard]] Mode currentMode() const noexcept;
@@ -85,8 +86,8 @@ private:
     // ── Rail ────────────────────────────────────────────────────────────
     QWidget*       m_rail{nullptr};
     QButtonGroup*  m_railGroup{nullptr};
-    QPushButton*   m_railButtons[4]{};
-    QLabel*        m_railLabels[4]{};
+    QPushButton*   m_railButtons[5]{};
+    QLabel*        m_railLabels[5]{};
 
 
     // ── Letter side panel ───────────────────────────────────────────────
@@ -100,9 +101,10 @@ private:
     QStackedWidget* m_contentStack{nullptr};
 
     // ── Sub-panels ──────────────────────────────────────────────────────
-    CharacterBrowser*  m_characterBrowser{nullptr};
-    ShotComposer*      m_shotComposer{nullptr};
-    ConversionPanel*   m_conversionPanel{nullptr};
+    CharacterBrowser*   m_characterBrowser{nullptr};
+    ShotComposer*       m_shotComposer{nullptr};
+    ConversionPanel*    m_conversionPanel{nullptr};
+    PuppetLibraryPanel* m_puppetLibraryPanel{nullptr};
     QWidget*           m_shotsColumnWidget{nullptr};
     QWidget*           m_charFilterWidget{nullptr};
     QWidget*           m_showFilterWidget{nullptr};

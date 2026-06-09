@@ -183,14 +183,14 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 if (srcTick < 0)
                     srcTick = 0;
 
-                int64_t frameNum = static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                int64_t frameNum = std::llround(ticksToSeconds(srcTick) * fps);
                 const auto* mediaInfo = m_mediaPool->getInfo(handle);
                 if (!mediaInfo)
                     continue;
 
                 if (videoClip->sourceFps() <= 0.0 && mediaInfo->fps > 0.0) {
                     fps = mediaInfo->fps;
-                    frameNum = static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                    frameNum = std::llround(ticksToSeconds(srcTick) * fps);
                 }
 
                 if (mediaInfo->frameCount <= 1) {
@@ -459,7 +459,25 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             const int64_t clipIn = clip->timelineIn();
             if (clipIn <= tick || clipIn > windowEnd) continue;
             if (lastActiveSnapshot.count(clip->id())) continue;
-            if (!m_prewarmedClipIds.insert(clip->id()).second) continue;
+
+            // Two prewarm passes per clip:
+            //   • early pass (~2s out) — opens the decoder so the cut doesn't
+            //     pay a cold 150-200ms open, and seeds frame 0.
+            //   • imminent head re-warm (within kHeadWarmTicks) — re-schedules
+            //     the clip head NOW that its frames sit near the playhead, so
+            //     they survive the bounded prefetch queue instead of being
+            //     evicted by nearer currently-playing frames (the cause of
+            //     cold H.264 clip-starts skipping into the middle of the clip).
+            // The shared body below (open + schedulePrefetch count=30 urgent)
+            // is idempotent, so running it a second time simply refreshes the
+            // head into a surviving queue slot.
+            constexpr int64_t kHeadWarmTicks =
+                static_cast<int64_t>(0.6 * kTicksPerSecond);
+            const bool imminent = (clipIn - tick) <= kHeadWarmTicks;
+            const bool firstPass = m_prewarmedClipIds.insert(clip->id()).second;
+            const bool headPass  =
+                imminent && m_headWarmedClipIds.insert(clip->id()).second;
+            if (!firstPass && !headPass) continue;
 
             // Resolve which media path this clip decodes from.  Only
             // VideoClip has one — SpineClips render via GPU live Spine and
@@ -473,9 +491,10 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             }
             if (mp.empty()) {
                 // Either a non-media clip or a Spine clip with no
-                // pre-rendered video.  Drop the prewarm mark so it can be
+                // pre-rendered video.  Drop the prewarm marks so it can be
                 // re-considered later without duplicate log spam.
                 m_prewarmedClipIds.erase(clip->id());
+                m_headWarmedClipIds.erase(clip->id());
                 continue;
             }
 
@@ -510,6 +529,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
                     if (syncHandle == 0) {
                         // Open failed; let the next scan re-try.
                         m_prewarmedClipIds.erase(clip->id());
+                        m_headWarmedClipIds.erase(clip->id());
                         continue;
                     }
                     // Fall through to the prefetch scheduling below.
@@ -519,6 +539,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
                     // Re-queue: next scan (~100ms later) will schedule prefetch
                     // once the async open completes.
                     m_prewarmedClipIds.erase(clip->id());
+                    m_headWarmedClipIds.erase(clip->id());
                     continue;
                 }
             }
@@ -545,7 +566,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             }
 
             const double srcSecs = static_cast<double>(clip->sourceIn()) / static_cast<double>(kTicksPerSecond);
-            int64_t srcFrame = static_cast<int64_t>(srcSecs * fps);
+            int64_t srcFrame = std::llround(srcSecs * fps);
             if (info->frameCount > 1) {
                 if (isCharacter)
                     srcFrame = ((srcFrame % info->frameCount) + info->frameCount) % info->frameCount;
@@ -601,6 +622,12 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
     for (auto it = m_prewarmedClipIds.begin(); it != m_prewarmedClipIds.end();) {
         if (lastActiveSnapshot.count(*it))
             it = m_prewarmedClipIds.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = m_headWarmedClipIds.begin(); it != m_headWarmedClipIds.end();) {
+        if (lastActiveSnapshot.count(*it))
+            it = m_headWarmedClipIds.erase(it);
         else
             ++it;
     }

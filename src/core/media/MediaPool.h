@@ -246,6 +246,12 @@ public:
     /// the app actually touches rather than re-deriving it from clip types.
     [[nodiscard]] std::vector<std::filesystem::path> openMediaPaths() const;
 
+    /// Clear the set of paths permanently cached as failed-to-open.
+    /// Call this when opening a new project so transient open failures
+    /// (e.g. slow external drives, virus scanner locks) from a previous
+    /// session don't prevent the same files from being opened now.
+    void clearFailedPaths();
+
     /// Set a callback invoked (on the calling thread, outside the pool
     /// mutex) right after a NEW media file is opened. The live file-swap
     /// watcher uses this to arm a watch on the just-opened path. Pass {}

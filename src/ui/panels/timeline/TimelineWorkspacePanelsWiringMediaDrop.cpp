@@ -49,6 +49,8 @@
 #include "timeline/OpacityMask.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/PngPuppetClip.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "timeline/TitleClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/GraphicClip.h"
@@ -143,6 +145,74 @@ void TimelineWorkspace::wireMediaDropSignals()
                     QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Yes);
                 if (result == QMessageBox::Yes)
                     emit requestNewProjectForMedia(filePath, atTick, trackIndex);
+                return;
+            }
+
+            // ── PNG puppet drops (from the Library puppet sub-tab) ───────────
+            // Format: "puppet:<folderName>|<variant>".  Builds a PngPuppetClip
+            // resolved from the puppet's manifest and returns early — puppets
+            // never touch MediaPool (they own their own 4-image pipeline).
+            if (filePath.startsWith(QStringLiteral("puppet:"))) {
+                const QString payload = filePath.mid(7);  // strip "puppet:"
+                const int bar = payload.indexOf(QLatin1Char('|'));
+                const QString folder  = bar >= 0 ? payload.left(bar) : payload;
+                QString variant       = bar >= 0 ? payload.mid(bar + 1) : QStringLiteral("default");
+
+                PuppetManifest manifest;
+                if (!puppetlib::load(folder, manifest)) {
+                    spdlog::warn("puppet drop: cannot load manifest for '{}'",
+                                 folder.toStdString());
+                    return;
+                }
+                if (!manifest.variants.contains(variant) && !manifest.variantOrder.isEmpty())
+                    variant = manifest.variantOrder.first();
+                const PuppetVariant var = manifest.variants.value(variant);
+
+                // Resolve a video track (use the drop target if it's a video
+                // track, else the first existing video track, else create one).
+                Track* track = (trackIndex < m_timeline->trackCount())
+                    ? m_timeline->track(trackIndex) : nullptr;
+                bool createdTrack = false;
+                if (!track || track->type() != TrackType::Video || track->isDivider()) {
+                    track = nullptr;
+                    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                        Track* t = m_timeline->track(i);
+                        if (t && t->type() == TrackType::Video && !t->isDivider()) {
+                            track = t;
+                            break;
+                        }
+                    }
+                    if (!track) {
+                        track = m_timeline->addVideoTrack("V1");
+                        createdTrack = true;
+                    }
+                }
+                if (!track) return;
+
+                auto pc = std::make_unique<PngPuppetClip>(
+                    manifest.displayName.toStdString(), variant.toStdString());
+                for (int f = 0; f < puppetlib::kFaceCount; ++f)
+                    pc->setFacePath(f, var.faces[static_cast<size_t>(f)].toStdString());
+                pc->setTimelineIn(atTick);
+                pc->setDuration(secondsToTicks(5.0));   // stretchable like any character
+                pc->setLabel(manifest.displayName.toStdString());
+                // Seed blink/talk jitter from the CHARACTER (folder), not the
+                // clip id, so two clips of the same character cut together in
+                // phase (motion is evaluated in global time — see the renderer).
+                pc->setSeed(static_cast<uint32_t>(
+                    std::hash<std::string>{}(folder.toStdString()) & 0xFFFFFFFFu));
+
+                if (m_commandStack)
+                    m_commandStack->execute(std::make_unique<AddClipCommand>(track, std::move(pc)));
+                else
+                    track->addClip(std::move(pc));
+
+                if (createdTrack) m_timelinePanel->rebuildTracks();
+                else              m_timelinePanel->refreshTrackContents();
+                invalidateCompositeCache();
+                if (m_programMonitor) m_programMonitor->requestRefresh();
+                spdlog::info("Puppet dropped: '{}' variant '{}' at tick {}",
+                             manifest.displayName.toStdString(), variant.toStdString(), atTick);
                 return;
             }
 

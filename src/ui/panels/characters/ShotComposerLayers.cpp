@@ -6,6 +6,7 @@
 #include "panels/characters/ShotComposer.h"
 
 #include "panels/characters/ShotComposerInternal.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "Theme.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -37,6 +38,42 @@ int ShotComposer::addCharacter(const std::string& characterName,
     ch.isTalking = true;
     ch.videoMutePath = videoMutePath;
     ch.videoTalkPath = videoTalkPath;
+
+    int idx = m_currentShot.addCharacter(ch);
+    if (!m_shotNameEdit->isEnabled())
+        m_shotNameEdit->setEnabled(true);
+    refreshLayerList();
+
+    int layerIdx = m_currentShot.findLayerIndex({LayerType::Character, idx});
+    if (layerIdx >= 0)
+        selectLayer(layerIdx);
+
+    emit shotChanged();
+    return idx;
+}
+
+int ShotComposer::addPuppet(const std::string& puppetFolder,
+                            const std::string& variant)
+{
+    if (puppetFolder.empty()) return -1;
+
+    pushUndoState();
+
+    // Resolve a friendly character name from the manifest's display name.
+    std::string charName = puppetFolder;
+    PuppetManifest man;
+    if (puppetlib::load(QString::fromStdString(puppetFolder), man) &&
+        !man.displayName.isEmpty())
+        charName = man.displayName.toStdString();
+
+    CharacterState ch;
+    ch.characterName = charName;
+    ch.puppetFolder  = puppetFolder;
+    ch.puppetVariant = variant.empty() ? "default" : variant;
+    ch.posX      = 0.5f;
+    ch.posY      = 0.75f;
+    ch.scale     = 1.0f;
+    ch.isTalking = true;
 
     int idx = m_currentShot.addCharacter(ch);
     if (!m_shotNameEdit->isEnabled())

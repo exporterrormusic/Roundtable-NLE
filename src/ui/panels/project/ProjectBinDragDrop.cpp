@@ -68,7 +68,8 @@ bool ProjectBin::handleDropEvent(QEvent* ev)
     const bool hasInternalMime = de->mimeData()->hasFormat("application/x-roundtable-media") ||
                                  de->mimeData()->hasFormat("application/x-roundtable-sequence") ||
                                  de->mimeData()->hasFormat("application/x-roundtable-bin-item") ||
-                                 de->mimeData()->hasFormat("application/x-roundtable-adjustment");
+                                 de->mimeData()->hasFormat("application/x-roundtable-adjustment") ||
+                                 de->mimeData()->hasFormat("application/x-roundtable-tree-item-ptrs");
     bool isInternal = hasInternalMime;
     if (isInternal) {
         de->setDropAction(Qt::MoveAction);
@@ -217,8 +218,9 @@ bool ProjectBin::handleDragEnterEvent(QEvent* ev)
     const bool hasSeq = de->mimeData()->hasFormat("application/x-roundtable-sequence");
     const bool hasBin = de->mimeData()->hasFormat("application/x-roundtable-bin-item");
     const bool hasAdj = de->mimeData()->hasFormat("application/x-roundtable-adjustment");
-    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj) {
-        if (hasMedia || hasSeq || hasBin || hasAdj)
+    const bool hasTreePtrs = de->mimeData()->hasFormat("application/x-roundtable-tree-item-ptrs");
+    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj || hasTreePtrs) {
+        if (hasMedia || hasSeq || hasBin || hasAdj || hasTreePtrs)
             de->setDropAction(Qt::MoveAction);
         else
             de->setDropAction(Qt::CopyAction);
@@ -236,8 +238,9 @@ bool ProjectBin::handleDragMoveEvent(QEvent* ev)
     const bool hasSeq = de->mimeData()->hasFormat("application/x-roundtable-sequence");
     const bool hasBin = de->mimeData()->hasFormat("application/x-roundtable-bin-item");
     const bool hasAdj = de->mimeData()->hasFormat("application/x-roundtable-adjustment");
-    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj) {
-        if (hasMedia || hasSeq || hasBin || hasAdj)
+    const bool hasTreePtrs = de->mimeData()->hasFormat("application/x-roundtable-tree-item-ptrs");
+    if (hasUrls || hasMedia || hasSeq || hasBin || hasAdj || hasTreePtrs) {
+        if (hasMedia || hasSeq || hasBin || hasAdj || hasTreePtrs)
             de->setDropAction(Qt::MoveAction);
         else
             de->setDropAction(Qt::CopyAction);

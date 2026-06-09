@@ -87,6 +87,11 @@ protected:
                << item->data(Qt::UserRole + 1).toString()   // char name
                << item->data(Qt::UserRole + 2).toString()   // mute path
                << item->data(Qt::UserRole + 3).toString();   // talk path
+        } else if (kind == QStringLiteral("puppet")) {
+            // PNG puppet in the Puppets tab
+            ds << QStringLiteral("puppet")
+               << item->data(Qt::UserRole + 1).toString()    // folder name
+               << item->data(Qt::UserRole + 2).toString();   // variant
         } else if (kind == QStringLiteral("video_file")) {
             // Standalone video file
             ds << QStringLiteral("video") << item->text();
@@ -494,6 +499,31 @@ QWidget* ShotComposer::createLeftPanel()
 
     m_libraryTabs->addTab(charTab, "Characters");
 
+    // ── Puppets tab (between Characters and Backgrounds) ─────────────────
+    // PNG puppets are used in COMPOSE just like Spine characters: drag (or
+    // double-click / "Add to Shot") to place them on the canvas. Creation /
+    // editing of puppets lives in the CHARACTERS-page "PUPPETS" sub-panel, so
+    // this tab is drag/select only (no import toolbar here).
+    auto* puppetTab = new QWidget;
+    auto* puppetLayout = new QVBoxLayout(puppetTab);
+    puppetLayout->setContentsMargins(5, 5, 5, 5);
+
+    m_puppetSearchEdit = new QLineEdit;
+    m_puppetSearchEdit->setPlaceholderText(QStringLiteral("\xF0\x9F\x94\x8D Search puppets..."));
+    m_puppetSearchEdit->setClearButtonEnabled(true);
+    puppetLayout->addWidget(m_puppetSearchEdit);
+
+    m_puppetLibrary = new DragAssetList;
+    setupIconList(m_puppetLibrary);
+    m_puppetLibrary->setDragEnabled(true);
+    m_puppetLibrary->setDragDropMode(QAbstractItemView::DragOnly);
+    puppetLayout->addWidget(m_puppetLibrary, 1);
+
+    auto* btnAddPuppet = new QPushButton(QStringLiteral("Add to Shot \xE2\x86\x92"));
+    puppetLayout->addWidget(btnAddPuppet);
+
+    m_libraryTabs->addTab(puppetTab, "Custom");
+
     // â”€â”€ Backgrounds tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     auto* bgTab = new QWidget;
     auto* bgLayout = new QVBoxLayout(bgTab);
@@ -841,6 +871,21 @@ QWidget* ShotComposer::createLeftPanel()
         } else {
             addCharacter(item->data(Qt::UserRole).toString().toStdString());
         }
+    });
+
+    // Puppet library
+    connect(m_puppetSearchEdit, &QLineEdit::textChanged,
+            this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshPuppetLibrary(); });
+    auto addPuppetItem = [this](QListWidgetItem* item) {
+        if (!item || m_destroying.load(std::memory_order_acquire)) return;
+        addPuppet(item->data(Qt::UserRole + 1).toString().toStdString(),
+                  item->data(Qt::UserRole + 2).toString().toStdString());
+    };
+    connect(m_puppetLibrary, &QListWidget::itemDoubleClicked, this, addPuppetItem);
+    connect(btnAddPuppet, &QPushButton::clicked, this, [this, addPuppetItem]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        auto items = m_puppetLibrary->selectedItems();
+        if (!items.isEmpty()) addPuppetItem(items.first());
     });
 
     // Background library

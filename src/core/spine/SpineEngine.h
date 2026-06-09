@@ -206,6 +206,14 @@ private:
     struct SkelDeleter     { void operator()(spine::Skeleton* p) const; };
     struct ClipperDeleter  { void operator()(spine::SkeletonClipping* p) const; };
 
+    /// Build m_slotAlphaAnimated from the loaded skeleton data: marks every slot
+    /// targeted by an alpha-bearing colour timeline (RGBA/Alpha/RGBA2) in any
+    /// animation.  Such slots must NOT be alpha-culled in extractMeshes — a slot
+    /// that fades through ~0 would otherwise pop in/out of the mesh and cause a
+    /// one-frame GPU render glitch on the timeline (e.g. Modernia R_acc_light).
+    void computeAlphaAnimatedSlots();
+
+    std::vector<char>                                     m_slotAlphaAnimated;  ///< by slot index
     std::string                                           m_loadedSkelPath;
     std::string                                           m_loadedAtlasPath;
     SpineAtlas                                            m_atlas;

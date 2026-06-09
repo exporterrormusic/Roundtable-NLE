@@ -153,10 +153,31 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         }
 
         if (!found) {
-            spdlog::error("MediaPool: failed to open '{}' (caching as failed)", pathToUtf8(filePath));
+            // Only cache as permanently failed if the file genuinely
+            // doesn't exist anywhere on disk.  Decoder-open failures on
+            // existing files (transient: locked by scanner, slow external
+            // drive spin-up, NVDEC init race) must be retried — caching
+            // them permanently makes the file unreachable for the rest of
+            // the session.
+            bool fileExistsOnDisk = false;
             {
+                std::error_code ec3;
+                fileExistsOnDisk = fs::exists(filePath, ec3);
+                if (!fileExistsOnDisk) {
+                    for (const auto& candidate : candidates) {
+                        if (fs::exists(candidate, ec3)) {
+                            fileExistsOnDisk = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!fileExistsOnDisk) {
+                spdlog::error("MediaPool: failed to open '{}' (file missing, caching as failed)", pathToUtf8(filePath));
                 std::lock_guard lock(m_mutex);
                 m_failedPaths.insert(key);
+            } else {
+                spdlog::warn("MediaPool: failed to open '{}' (file exists but decoder failed — will retry)", pathToUtf8(filePath));
             }
             return InvalidMedia;
         }
@@ -565,6 +586,15 @@ void MediaPool::setOnMediaOpened(std::function<void(std::filesystem::path)> cb)
 {
     std::lock_guard lock(m_mutex);
     m_onMediaOpened = std::move(cb);
+}
+
+void MediaPool::clearFailedPaths()
+{
+    std::lock_guard lock(m_mutex);
+    size_t count = m_failedPaths.size();
+    m_failedPaths.clear();
+    if (count > 0)
+        spdlog::info("MediaPool: cleared failed-paths cache ({} entries)", count);
 }
 
 void MediaPool::openAsync(const std::filesystem::path& filePath)

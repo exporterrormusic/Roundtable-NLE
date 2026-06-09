@@ -34,6 +34,7 @@ add_library(roundtable_core STATIC
     timeline/AdjustmentClip.cpp
     timeline/SequenceClip.cpp
     timeline/CaptionClip.cpp
+    timeline/PngPuppetClip.cpp
     timeline/Transition.cpp
     timeline/Keyframe.cpp
     timeline/KeyframeTrack.cpp

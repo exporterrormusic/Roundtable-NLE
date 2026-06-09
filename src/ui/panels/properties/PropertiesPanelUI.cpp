@@ -237,6 +237,7 @@ void PropertiesPanel::setupUI()
     setupCharacterSection(m_scrollContainer);
     setupAnimationSection(m_scrollContainer);
     setupSpineSection(m_scrollContainer);   // legacy hidden placeholder
+    setupPuppetSection(m_scrollContainer);
     setupVideoSection(m_scrollContainer);
     setupAudioSection(m_scrollContainer);
     setupTitleSection(m_scrollContainer);

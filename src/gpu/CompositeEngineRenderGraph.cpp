@@ -741,6 +741,21 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     }
                 }
 
+                // Resize EffectProcessor to match this layer's source
+                // resolution so effects are clip-bounded (Premiere Pro
+                // behaviour: effects apply to the clip, not the full frame).
+                // Compute source dimensions from layer info, handling
+                // packed-alpha where the texture height is 2× the logical
+                // frame height.
+                uint32_t srcW = layer.frameWidth;
+                uint32_t srcH = layer.frameHeight;
+                if (srcW == 0 || srcH == 0) {
+                    srcW = outW;
+                    srcH = outH;
+                }
+                if (layer.isPacked && srcH > 1) srcH /= 2;
+                effectProcessor->resize(srcW, srcH);
+
                 VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
                 if (effectProcessor->process(cmd, srcInfo, layer.effects)) {
                     gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
@@ -775,10 +790,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     // layer's textureInfo independent of the shared storage.
                     if (li < m_layerEffectOutputs.size()) {
                         auto& snap = *m_layerEffectOutputs[li];
-                        if (snap.image() == VK_NULL_HANDLE || snap.width() != outW || snap.height() != outH) {
+                        if (snap.image() == VK_NULL_HANDLE || snap.width() != srcW || snap.height() != srcH) {
                             snap.destroy();
                             TextureConfig cfg;
-                            cfg.width = outW; cfg.height = outH;
+                            cfg.width = srcW; cfg.height = srcH;
                             cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
                             cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
                             snap.create(ctx.allocator().handle(), ctx.vkDevice(), cfg);
@@ -801,7 +816,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             VkImageCopy r{};
                             r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                             r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                            r.extent = {outW, outH, 1};
+                            r.extent = {srcW, srcH, 1};
                             vkCmdCopyImage(cmd, ei, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                 snap.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
                             VkImageMemoryBarrier toGen{};
@@ -836,13 +851,28 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         }
                     }
 
-                    // Transform
+                    // ── Transform ─────────────────────────────────────
+                    // Premiere Pro behaviour: effects are clip-bounded —
+                    // they operate at the clip's native resolution and the
+                    // compositor places the result with the same transform
+                    // as the un-effected source.  The upload pass already
+                    // computed the correct transform from the original
+                    // source dimensions; don't recompute it here, because
+                    // the effect output is now at the same resolution as
+                    // the source (we resized the EffectProcessor above).
+                    //
+                    // Exception: OTS (On-The-Shoulder) effects intentionally
+                    // work at full-frame size and override the transform.
                     bool ots = false;
                     for (const auto& s : layer.effects)
                         if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight) { ots = true; break; }
-                    if (ots) gpuLayers[li].transform = Compositor::buildViewportTransform(outW, outH, outW, outH, 0,0,1,1,0,false);
-                    else gpuLayers[li].transform = Compositor::buildViewportTransform(outW, outH, outW, outH,
-                        layer.posX, layer.posY, layer.scX, layer.scY, layer.rot, layer.containFit, layer.anchorX, layer.anchorY);
+                    if (ots) {
+                        gpuLayers[li].transform = Compositor::buildViewportTransform(
+                            outW, outH, outW, outH, 0,0,1,1,0,false);
+                    }
+                    // Non-OTS: keep the transform from the upload pass
+                    // (already set via buildViewportTransform with correct
+                    // srcW/srcH during the Upload pass handler).
                 } else if (pass.optional) {
                     if (m_disabledPasses.insert(pass.name).second)
                         spdlog::warn("[RENDER_GRAPH] Effect pass '{}' failed — disabled for session", pass.name);

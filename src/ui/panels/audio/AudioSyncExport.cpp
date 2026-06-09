@@ -10,9 +10,13 @@
 #include "timeline/AudioClip.h"
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
+#include "timeline/PngPuppetClip.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "Theme.h"
 
 #include <spdlog/spdlog.h>
+
+#include <functional>
 
 #include <unordered_map>
 #include <unordered_set>
@@ -368,7 +372,52 @@ int AudioSync::exportToTimeline(Timeline* timeline)
                     const CharacterState* ch = preset->character(layerRef.index);
                     if (!ch || !ch->visible) continue;
 
-                    if (ch->isVideoCharacter()) {
+                    if (ch->isPuppet()) {
+                        // ── PNG puppet → PngPuppetClip ──────────────────────
+                        PuppetManifest man;
+                        if (!puppetlib::load(
+                                QString::fromStdString(ch->puppetFolder), man)) {
+                            spdlog::warn("exportToTimeline: cannot load puppet "
+                                         "manifest '{}'", ch->puppetFolder);
+                            continue;
+                        }
+                        std::string variant = ch->puppetVariant.empty()
+                            ? "default" : ch->puppetVariant;
+                        auto vit = man.variants.find(QString::fromStdString(variant));
+                        if (vit == man.variants.end() && !man.variantOrder.isEmpty())
+                            vit = man.variants.find(man.variantOrder.first());
+                        if (vit == man.variants.end()) continue;
+
+                        auto pc = std::make_unique<PngPuppetClip>(
+                            ch->characterName, variant);
+                        for (int f = 0; f < puppetlib::kFaceCount; ++f)
+                            pc->setFacePath(f, vit->faces[static_cast<size_t>(f)]
+                                                  .toStdString());
+                        pc->setTimelineIn(group.timelineStart);
+                        pc->setDuration(group.totalDuration);
+                        pc->setTalking(ch->isTalking);
+                        pc->setLabel(ch->characterName);
+                        pc->setShotName(shotName);
+                        pc->setGroupId(groupId);
+                        pc->setLayerId(layerIdStr);
+                        // Seed from the puppet folder (NOT the clip id) so two
+                        // clips of the same character cut together in phase —
+                        // matches the timeline drop handler.
+                        pc->setSeed(static_cast<uint32_t>(
+                            std::hash<std::string>{}(ch->puppetFolder) & 0xFFFFFFFFu));
+
+                        constexpr float ppOutW = 1920.0f;
+                        constexpr float ppOutH = 1080.0f;
+                        pc->positionX().setDefaultValue((ch->posX - 0.5f) * ppOutW);
+                        pc->positionY().setDefaultValue((ch->posY - 0.5f) * ppOutH);
+                        pc->scaleX().setDefaultValue(ch->flipX ? -ch->scale : ch->scale);
+                        pc->scaleY().setDefaultValue(ch->flipY ? -ch->scale : ch->scale);
+                        pc->opacity().setDefaultValue(ch->opacity);
+                        // (PngPuppetClip has no crop support — crop is a
+                        //  Video/Spine-only clip feature.)
+
+                        vTrack->addClip(std::move(pc));
+                    } else if (ch->isVideoCharacter()) {
                         const std::string& videoPath = ch->activeVideoPath();
                         if (videoPath.empty()) continue;
 

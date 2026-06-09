@@ -63,6 +63,7 @@ namespace rt {
 
 class Clip;
 class SpineClip;
+class PngPuppetClip;
 class VideoClip;
 class AudioClip;
 class TitleClip;
@@ -219,6 +220,7 @@ private:
     void setupCharacterSection(QWidget* container);
     void setupAnimationSection(QWidget* container);
     void setupSpineSection(QWidget* container);
+    void setupPuppetSection(QWidget* container);
     void setupVideoSection(QWidget* container);
     void setupAudioSection(QWidget* container);
     void setupTitleSection(QWidget* container);
@@ -274,6 +276,15 @@ private:
     void applySpineTalking();
     void applySpineAnimSpeed();
     void applySpineContinuity();
+
+    // PNG puppet
+    void populateFromPuppet();
+    void applyPuppetTalking();
+    void applyPuppetOutfit();
+    void applyPuppetAction();
+    void applyPuppetFloat(const char* cmdName,
+                          const std::function<void(PngPuppetClip*, float)>& setter,
+                          float newVal, float oldVal);
 
     void applyVideoVolume();
 
@@ -395,6 +406,19 @@ private:
 
     // Legacy spine section pointer (hidden, kept for backward compat)
     QWidget*        m_spineSection{nullptr};
+
+    // PNG puppet section
+    QGroupBox*      m_puppetSection{nullptr};
+    PngPuppetClip*  m_puppetClip{nullptr};
+    QComboBox*      m_puppetOutfitCombo{nullptr};
+    QComboBox*      m_puppetActionCombo{nullptr};
+    QCheckBox*      m_puppetTalkingCheck{nullptr};
+    ScrubbySpinBox* m_puppetTalkSwapSpin{nullptr};
+    ScrubbySpinBox* m_puppetBlinkIntervalSpin{nullptr};
+    ScrubbySpinBox* m_puppetBlinkDurSpin{nullptr};
+    ScrubbySpinBox* m_puppetBreathAmpSpin{nullptr};
+    ScrubbySpinBox* m_puppetBreathSpeedSpin{nullptr};
+    ScrubbySpinBox* m_puppetSwaySpin{nullptr};
 
     // Video section
     QWidget*        m_videoSection{nullptr};

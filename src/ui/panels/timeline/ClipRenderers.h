@@ -17,6 +17,14 @@ namespace rt {
 struct CachedFrame;
 
 class CaptionClip;
+class PngPuppetClip;
+
+/// CPU-render a PngPuppetClip's currently-selected face (1 of 4 PNGs, chosen
+/// deterministically from time) to a native-resolution BGRA CachedFrame.  The
+/// compositor contain-fits + 0.85×-scales it like any other character.  `tick`
+/// is the GLOBAL timeline tick so talk/blink stay continuous across cuts.
+std::shared_ptr<CachedFrame> renderPngPuppetClip(PngPuppetClip* clip, int64_t tick,
+                                                 uint32_t outW, uint32_t outH);
 
 /// CPU-render a CaptionClip as a burned-in (open-caption) subtitle overlay to a
 /// transparent BGRA CachedFrame using QPainter: centered text over a rounded

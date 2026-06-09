@@ -22,6 +22,7 @@
 #include <spine/Attachment.h>
 #include <spine/RegionAttachment.h>
 #include <spine/MeshAttachment.h>
+#include <spine/ColorTimeline.h>
 #include <spine/ClippingAttachment.h>
 #include <spine/Skin.h>
 #include <spine/BlendMode.h>
@@ -182,6 +183,7 @@ bool SpineEngine::loadSkeleton(const std::string& skelPath,
 
     // 7. Init animation state
     m_animation.init(m_skeleton.get(), skelData, 0.2f);
+    computeAlphaAnimatedSlots();
 
     spdlog::info("SpineEngine: loaded skeleton — {} bones, {} slots, {} animations, {} skins",
                  skelData->getBones().size(),
@@ -251,6 +253,7 @@ bool SpineEngine::loadSkeletonFromBuffers(const std::vector<uint8_t>& skelBytes,
 
     // 6. Init animation state
     m_animation.init(m_skeleton.get(), skelData, 0.2f);
+    computeAlphaAnimatedSlots();
 
     spdlog::info("SpineEngine: loaded skeleton from buffers — {} bones, {} slots, {} animations",
                  skelData->getBones().size(),
@@ -417,6 +420,32 @@ SpineBlendMode convertBlendMode(spine::BlendMode mode)
 
 } // anonymous namespace
 
+void SpineEngine::computeAlphaAnimatedSlots()
+{
+    m_slotAlphaAnimated.clear();
+    if (!m_skelData) return;
+    m_slotAlphaAnimated.assign(m_skelData->getSlots().size(), 0);
+
+    auto& anims = m_skelData->getAnimations();
+    for (size_t a = 0; a < anims.size(); ++a) {
+        auto& tls = anims[a]->getTimelines();
+        for (size_t t = 0; t < tls.size(); ++t) {
+            spine::Timeline* tl = tls[t];
+            int slotIdx = -1;
+            // Only alpha-bearing colour timelines matter (RGB/RGB2 animate
+            // colour but not opacity, so those slots can still be culled).
+            if (tl->getRTTI().isExactly(spine::RGBATimeline::rtti))
+                slotIdx = static_cast<spine::RGBATimeline*>(tl)->getSlotIndex();
+            else if (tl->getRTTI().isExactly(spine::AlphaTimeline::rtti))
+                slotIdx = static_cast<spine::AlphaTimeline*>(tl)->getSlotIndex();
+            else if (tl->getRTTI().isExactly(spine::RGBA2Timeline::rtti))
+                slotIdx = static_cast<spine::RGBA2Timeline*>(tl)->getSlotIndex();
+            if (slotIdx >= 0 && static_cast<size_t>(slotIdx) < m_slotAlphaAnimated.size())
+                m_slotAlphaAnimated[slotIdx] = 1;
+        }
+    }
+}
+
 SpineRenderData SpineEngine::extractMeshes()
 {
     SpineRenderData result;
@@ -436,8 +465,20 @@ SpineRenderData SpineEngine::extractMeshes()
             continue;
         }
 
-        // Skip invisible slots (alpha == 0)
-        if (slot->getColor().a < 0.004f) {
+        // Skip invisible slots (alpha ~0) to save meshing/upload/draw — BUT only
+        // for slots whose alpha is NOT animated.  A slot that an animation fades
+        // through ~0 (e.g. Modernia's R_acc_light glow at its trough) must stay
+        // in the mesh: if it pops in/out as alpha crosses the threshold, the
+        // changing vertex/index count produces a one-frame "black" render glitch
+        // on the timeline GPU path (only there; COMPOSE's drifting update(dt)
+        // rarely samples the exact trough frame).  Such a slot renders invisibly
+        // anyway (premultiplied-alpha → zero contribution), so keeping it is free
+        // of visual cost.  Statically-hidden slots are still culled.
+        const int slotIdx = slot->getData().getIndex();
+        const bool alphaAnimated = slotIdx >= 0 &&
+            static_cast<size_t>(slotIdx) < m_slotAlphaAnimated.size() &&
+            m_slotAlphaAnimated[slotIdx];
+        if (!alphaAnimated && slot->getColor().a < 0.004f) {
             m_clipper->clipEnd(*slot);
             continue;
         }

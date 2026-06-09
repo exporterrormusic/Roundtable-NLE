@@ -62,6 +62,10 @@ ClipVisualStyle TimelineClipWidget::defaultStyle(ClipType type)
             style.fillColor   = QColor(0x2E, 0x8B, 0x80); // muted teal
             style.borderColor = QColor(0x2E, 0x8B, 0x80).lighter(140);
             break;
+        case ClipType::PngPuppet:
+            style.fillColor   = QColor(0xC0, 0x5A, 0x8C); // pink puppet
+            style.borderColor = QColor(0xC0, 0x5A, 0x8C).lighter(140);
+            break;
     }
 
     return style;
@@ -80,6 +84,7 @@ QString TimelineClipWidget::typeName(ClipType type)
         case ClipType::Graphic:    return QStringLiteral("Graphic");
         case ClipType::Sequence:   return QStringLiteral("Sequence");
         case ClipType::Caption:    return QStringLiteral("Caption");
+        case ClipType::PngPuppet:  return QStringLiteral("Puppet");
     }
     return QStringLiteral("Unknown");
 }
@@ -97,6 +102,7 @@ QChar TimelineClipWidget::typeIcon(ClipType type)
         case ClipType::Graphic:    return QChar(0x0047); // G
         case ClipType::Sequence:   return QChar(0x229E); // ⊞ nested
         case ClipType::Caption:    return QChar(0x0043); // C (caption)
+        case ClipType::PngPuppet:  return QChar(0x263A); // ☺ puppet face
     }
     return QChar(0x25CF); // ●
 }

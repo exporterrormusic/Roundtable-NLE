@@ -14,6 +14,7 @@
 #include "timeline/ImageClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "timeline/Track.h"
 #include "timeline/Timeline.h"
 #include "timeline/KeyframeTrack.h"
@@ -30,9 +31,13 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QImage>
 #include <QMimeData>
 
 #include <cmath>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace rt {
 
@@ -53,6 +58,33 @@ inline float gainToDb(float gain) noexcept {
     if (db < kAudioVolumeMinDb) db = kAudioVolumeMinDb;
     if (db > kAudioVolumeMaxDb) db = kAudioVolumeMaxDb;
     return db;
+}
+
+// Native pixel dimensions of a PNG puppet's resting face, cached per path to
+// avoid repeated disk decodes.  PngPuppetClip doesn't store its source size
+// (it's just the decoded PNG), so the Scale display probes it the same way the
+// transform overlay does (TimelineWorkspaceOverlay.cpp).
+bool puppetNativeDims(PngPuppetClip* clip, uint32_t& outW, uint32_t& outH)
+{
+    if (!clip) return false;
+    std::string path = clip->facePath(PngPuppetClip::MouthClosedEyesOpen);
+    if (path.empty()) return false;
+
+    static std::mutex s_mtx;
+    static std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> s_cache;
+    std::lock_guard<std::mutex> lock(s_mtx);
+    auto it = s_cache.find(path);
+    if (it == s_cache.end()) {
+        QImage img(QString::fromStdString(path));
+        std::pair<uint32_t, uint32_t> dims{0, 0};
+        if (!img.isNull() && img.width() > 0 && img.height() > 0)
+            dims = {static_cast<uint32_t>(img.width()),
+                    static_cast<uint32_t>(img.height())};
+        it = s_cache.emplace(path, dims).first;
+    }
+    outW = it->second.first;
+    outH = it->second.second;
+    return outW > 0 && outH > 0;
 }
 } // namespace
 
@@ -408,6 +440,19 @@ double EffectControlsPanel::coverFitForCurrentClip() const noexcept
         if (vc->isVideoCharacter()) return 1.0;
         srcW = vc->sourceWidth();
         srcH = vc->sourceHeight();
+    } else if (auto* pc = dynamic_cast<PngPuppetClip*>(m_clip)) {
+        // PNG puppets are composited like characters: CONTAIN-fit the native
+        // PNG into the canvas, then the shared 0.85× compose-fit (see
+        // CompositeServiceLayerBuild.cpp where layer.containFit = true).  So a
+        // stored scale of 1.0 does NOT render the PNG 1:1 — the displayed
+        // percentage must fold in contain-fit × 0.85 the same way image/video
+        // clips fold in cover-fit, otherwise the number always reads 100%.
+        uint32_t pw = 0, ph = 0;
+        if (!puppetNativeDims(pc, pw, ph)) return 1.0;
+        const double sx = static_cast<double>(m_seqW) / static_cast<double>(pw);
+        const double sy = static_cast<double>(m_seqH) / static_cast<double>(ph);
+        constexpr double kComposeFit = 0.85;
+        return std::min(sx, sy) * kComposeFit;
     } else {
         // SpineClip, TitleClip, GraphicClip, etc. — keep existing fill-model
         // Scale numbers.  Their "native pixels" is either an arbitrary cache

@@ -5,6 +5,7 @@
 #include "panels/library/LibraryPanel.h"
 #include "panels/backgrounds/BackgroundDownloadPanel.h"
 #include "panels/characters/CharactersPanel.h"
+#include "panels/characters/PuppetLibraryPanel.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "Theme.h"
 #include "Settings.h"
@@ -182,9 +183,13 @@ void LibraryPanel::buildUI()
                  Theme::hex(tc.controlBgHover)));
     root->addWidget(m_tabs, 1);
 
-    // Tab 1: Characters (delegates to existing panel)
+    // Tab 1: Characters (delegates to existing Spine panel)
     m_characters = new CharactersPanel(this);
     m_tabs->addTab(m_characters, tr("Characters"));
+
+    // Tab 2: Custom — drag-only library (created in CHARACTERS → CUSTOM).
+    m_puppets = new PuppetLibraryPanel(this, /*readOnly=*/true);
+    m_tabs->addTab(m_puppets, tr("Custom"));
 
     // Tab 2: Backgrounds
     {
@@ -297,6 +302,7 @@ void LibraryPanel::setMediaPool(MediaPool* pool)
 void LibraryPanel::refresh()
 {
     if (m_characters) m_characters->refresh();
+    if (m_puppets) m_puppets->refresh();
 
     refreshFolderTree(m_bgTree,    kBackgroundsDir, kImageFilters(),
                       m_bgSearch    ? m_bgSearch->text().trimmed().toLower()    : QString());
@@ -310,26 +316,32 @@ void LibraryPanel::refreshCurrentTab()
 {
     if (!m_tabs) return;
 
+    // Tab order: 0 Characters, 1 PNG Puppets, 2 Backgrounds, 3 NikkeBKG,
+    //            4 Videos, 5 Audio.
     const int index = m_tabs->currentIndex();
     if (index == 0) {
         if (m_characters) m_characters->refresh();
         return;
     }
     if (index == 1) {
+        if (m_puppets) m_puppets->refresh();
+        return;
+    }
+    if (index == 2) {
         refreshFolderTree(m_bgTree, kBackgroundsDir, kImageFilters(),
                           m_bgSearch ? m_bgSearch->text().trimmed().toLower() : QString());
         return;
     }
-    if (index == 2) {
+    if (index == 3) {
         // NikkeBKG — auto-scans via QFileSystemWatcher, no manual refresh needed
         return;
     }
-    if (index == 3) {
+    if (index == 4) {
         refreshFolderTree(m_videoTree, kVideosDir, kVideoFilters(),
                           m_videoSearch ? m_videoSearch->text().trimmed().toLower() : QString());
         return;
     }
-    if (index == 4) {
+    if (index == 5) {
         refreshFolderTree(m_audioTree, kAudioDir, kAudioFilters(),
                           m_audioSearch ? m_audioSearch->text().trimmed().toLower() : QString());
     }

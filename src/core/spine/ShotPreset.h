@@ -94,6 +94,13 @@ struct CharacterState
     std::string     videoMutePath;   ///< Video file when not talking
     std::string     videoTalkPath;   ///< Video file when talking
 
+    // PNG puppet support (empty puppetFolder = not a puppet). A puppet is a
+    // Veadotube-style 4-image character; on the timeline it expands into a
+    // PngPuppetClip. puppetFolder is the on-disk folder under the puppets root
+    // (assets/png_characters/<folder>) and puppetVariant selects the variant.
+    std::string     puppetFolder;
+    std::string     puppetVariant = "default";
+
     // Transform (all in normalized [0–1] or scale-factor space)
     float           posX        = 0.5f;     ///< Horizontal position (0–1)
     float           posY        = 0.75f;    ///< Vertical position (0–1, typically lower)
@@ -117,6 +124,12 @@ struct CharacterState
     [[nodiscard]] bool isVideoCharacter() const noexcept
     {
         return !videoMutePath.empty() || !videoTalkPath.empty();
+    }
+
+    /// True if this character is a PNG puppet (4-image Veadotube-style).
+    [[nodiscard]] bool isPuppet() const noexcept
+    {
+        return !puppetFolder.empty();
     }
 
     /// Return the active video path based on talking state

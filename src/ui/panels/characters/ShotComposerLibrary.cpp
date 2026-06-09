@@ -6,6 +6,7 @@
 #include "panels/characters/ShotComposer.h"
 #include "panels/characters/ShotComposerInternal.h"
 #include "panels/characters/CharacterThumbnailCache.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "Theme.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -112,6 +113,56 @@ void ShotComposer::refreshCharacterLibrary()
             m_characterLibrary->addItem(item);
         }
     }
+}
+
+void ShotComposer::refreshPuppetLibrary()
+{
+    if (!m_puppetLibrary) return;
+    m_puppetLibrary->clear();
+
+    const QString searchTerm = m_puppetSearchEdit
+        ? m_puppetSearchEdit->text().trimmed().toLower() : QString();
+
+    const QStringList folders = puppetlib::listPuppetFolders();
+    for (const QString& folder : folders) {
+        PuppetManifest man;
+        if (!puppetlib::load(folder, man))
+            continue;
+
+        const QString displayName = man.displayName.isEmpty() ? folder : man.displayName;
+        if (!searchTerm.isEmpty() && !displayName.toLower().contains(searchTerm))
+            continue;
+
+        // Use the first variant (default if present) for the drag payload + thumb.
+        QString variant = man.variantOrder.isEmpty()
+            ? QStringLiteral("default") : man.variantOrder.first();
+        if (man.variants.contains(QStringLiteral("default")))
+            variant = QStringLiteral("default");
+
+        // Thumbnail: the resting face (index 0) of the chosen variant.
+        QPixmap thumb;
+        auto vit = man.variants.find(variant);
+        if (vit != man.variants.end()) {
+            const QString facePath = vit->faces[0];
+            if (!facePath.isEmpty()) {
+                QImage img(facePath);
+                if (!img.isNull())
+                    thumb = QPixmap::fromImage(img.scaled(
+                        m_iconSize, m_iconSize,
+                        Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+        }
+
+        auto* item = new QListWidgetItem(QIcon(thumb),
+            displayName + QStringLiteral("\n(puppet)"));
+        item->setData(Qt::UserRole, QStringLiteral("puppet"));
+        item->setData(Qt::UserRole + 1, folder);
+        item->setData(Qt::UserRole + 2, variant);
+        item->setForeground(Theme::colors().accent);
+        m_puppetLibrary->addItem(item);
+    }
+
+    spdlog::debug("ShotComposer: Found {} puppets", m_puppetLibrary->count());
 }
 
 void ShotComposer::refreshBackgroundLibrary()
@@ -393,8 +444,11 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     // Populate outfit combo â€” ensure "default" always appears first
     m_outfitCombo->clear();
     bool isVideoChar = ch.isVideoCharacter();
+    bool isPuppetChar = ch.isPuppet();
     bool videoHasOutfits = false;
-    if (isVideoChar) {
+    if (isPuppetChar) {
+        // Puppets have no Spine outfit/stance/animation — leave the combo empty.
+    } else if (isVideoChar) {
         // Video characters: outfits come from the video-outfit catalog, each
         // swapping the mute/talk video pair (mirrors Spine outfit switching).
         const auto& vcOutfits = videoCharacterOutfitsFor(ch.characterName);
@@ -456,19 +510,21 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     m_flipYCheck->setChecked(ch.flipY);
     m_visibleCheck->setChecked(ch.visible);
 
-    // Hide Spine-specific controls for video characters, but keep the Outfit
-    // combo when the video character has selectable costumes (e.g. Wells).
+    // Hide Spine-specific controls for video characters and puppets, but keep
+    // the Outfit combo when a video character has selectable costumes (Wells).
     bool isVideo = ch.isVideoCharacter();
-    m_outfitCombo->setVisible(!isVideo || videoHasOutfits);
-    m_stanceCombo->setVisible(!isVideo);
-    m_animCombo->setVisible(!isVideo);
-    // Flip is available for ALL character types (Spine + video)
+    bool isPuppet = ch.isPuppet();
+    bool spineLike = !isVideo && !isPuppet;
+    m_outfitCombo->setVisible(spineLike || videoHasOutfits);
+    m_stanceCombo->setVisible(spineLike);
+    m_animCombo->setVisible(spineLike);
+    // Flip + Talking are available for ALL character types (Spine/video/puppet)
 
-    // Hide the "Character" tab entirely for video characters
+    // Hide the "Character" tab entirely for video characters and puppets
     if (m_layerPropsTabs) {
         int charTabIdx = 1; // "Character" tab
-        m_layerPropsTabs->setTabEnabled(charTabIdx, !isVideo);
-        m_layerPropsTabs->setTabVisible(charTabIdx, !isVideo);
+        m_layerPropsTabs->setTabEnabled(charTabIdx, spineLike);
+        m_layerPropsTabs->setTabVisible(charTabIdx, spineLike);
     }
 
     // Crop values are already 0â€“100

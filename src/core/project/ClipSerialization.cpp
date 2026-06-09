@@ -16,6 +16,7 @@
 #include "timeline/ImageClip.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/CaptionClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
@@ -437,6 +438,22 @@ void writeClip(BinaryWriter& w, const Clip& clip)
         w.writeU8(static_cast<uint8_t>(cc.position()));
         break;
     }
+    case ClipType::PngPuppet: {
+        auto& pc = static_cast<const PngPuppetClip&>(clip);
+        w.writeString(pc.characterName());
+        w.writeString(pc.variant());
+        for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
+            w.writeString(pc.facePath(f));
+        w.writeU8(pc.isTalking() ? 1 : 0);
+        w.writeU32(pc.seed());
+        w.writeF32(pc.talkSwapSeconds());
+        w.writeF32(pc.blinkIntervalSeconds());
+        w.writeF32(pc.blinkDurationSeconds());
+        w.writeF32(pc.breathAmplitude());
+        w.writeF32(pc.breathSpeed());
+        w.writeF32(pc.swayAmplitude());
+        break;
+    }
     case ClipType::Graphic: {
         auto& gc = static_cast<const GraphicClip&>(clip);
         w.writeU32(static_cast<uint32_t>(gc.layerCount()));
@@ -595,6 +612,9 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         break;
     case ClipType::Caption:
         clip = std::make_unique<CaptionClip>();
+        break;
+    case ClipType::PngPuppet:
+        clip = std::make_unique<PngPuppetClip>();
         break;
     default:
         return nullptr;
@@ -855,6 +875,22 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         cc->setTextColor(r.readU32());
         cc->setBgColor(r.readU32());
         cc->setPosition(static_cast<CaptionPosition>(r.readU8()));
+        break;
+    }
+    case ClipType::PngPuppet: {
+        auto* pc = static_cast<PngPuppetClip*>(clip.get());
+        pc->setCharacterName(r.readString());
+        pc->setVariant(r.readString());
+        for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
+            pc->setFacePath(f, r.readString());
+        pc->setTalking(r.readU8() != 0);
+        pc->setSeed(r.readU32());
+        pc->setTalkSwapSeconds(r.readF32());
+        pc->setBlinkIntervalSeconds(r.readF32());
+        pc->setBlinkDurationSeconds(r.readF32());
+        pc->setBreathAmplitude(r.readF32());
+        pc->setBreathSpeed(r.readF32());
+        pc->setSwayAmplitude(r.readF32());
         break;
     }
     default:

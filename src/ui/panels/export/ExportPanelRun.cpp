@@ -320,6 +320,24 @@ void ExportPanel::onStartExport()
                 m_cancelButton->setVisible(false);
                 m_statusLabel->setText(success ? tr("Export complete!") : tr("Failed: %1").arg(QString::fromStdString(msg)));
                 m_progressBar->setValue(success ? 100 : 0);
+                // Update the job list item to reflect completion status
+                const qulonglong targetId = static_cast<qulonglong>(id);
+                for (int i = 0; i < m_jobList->count(); ++i) {
+                    auto* listItem = m_jobList->item(i);
+                    if (listItem && listItem->data(Qt::UserRole).toULongLong() == targetId) {
+                        const QString line2 = listItem->text().section(QStringLiteral(" \u2014 "), 1, 1);
+                        if (success) {
+                            listItem->setText(QStringLiteral("\u2713 Job %1 \u2014 %2 \u2014 Complete")
+                                .arg(id).arg(line2));
+                            listItem->setForeground(Qt::darkGreen);
+                        } else {
+                            listItem->setText(QStringLiteral("\u2717 Job %1 \u2014 %2 \u2014 Failed")
+                                .arg(id).arg(line2));
+                            listItem->setForeground(Qt::red);
+                        }
+                        break;
+                    }
+                }
                 if (success)
                     QApplication::beep();
                 emit exportFinished(id, success, QString::fromStdString(msg));
@@ -396,7 +414,18 @@ void ExportPanel::onPollProgress()
 
     int pct = static_cast<int>(j->progress.percent);
     m_progressBar->setValue(pct);
-
+    // Update the active job's list item to show "Running"
+    const qulonglong activeId = static_cast<qulonglong>(m_activeJobId);
+    for (int i = 0; i < m_jobList->count(); ++i) {
+        auto* listItem = m_jobList->item(i);
+        if (listItem && listItem->data(Qt::UserRole).toULongLong() == activeId) {
+            const QString line2 = listItem->text().section(QStringLiteral(" \u2014 "), 1, 1);
+            listItem->setText(QStringLiteral("\u21BB Job %1 \u2014 %2 \u2014 Running %3%")
+                .arg(m_activeJobId).arg(line2).arg(pct));
+            listItem->setForeground(QColor(0, 120, 212)); // blue
+            break;
+        }
+    }
     // Build a rich status string: "Rendering â€” 245/800 frames Â· 14.2 fps Â· ETA 0:39"
     int64_t curFrame   = j->progress.currentFrame;
     int64_t totalFrame = j->progress.totalFrames;

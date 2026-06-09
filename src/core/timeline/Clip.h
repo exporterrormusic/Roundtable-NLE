@@ -30,7 +30,8 @@ enum class ClipType : uint8_t
     Image,       // Static image
     Graphic,     // Multi-layer graphic container (text, shapes)
     Sequence,    // Nested sequence (references another Timeline)
-    Caption      // Subtitle / closed-caption cue (lives on the caption track)
+    Caption,     // Subtitle / closed-caption cue (lives on the caption track)
+    PngPuppet    // Veadotube-style PNG puppet character (4-image talk/blink loop)
 };
 
 /// Base clip class. Derived classes add type-specific data.

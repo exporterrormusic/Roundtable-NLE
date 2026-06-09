@@ -105,7 +105,7 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
         m_audioOnly = (info->videoStreamIndex < 0);
         m_fps          = info->fps > 0.0 ? info->fps : 24.0;
         m_frameCount   = info->frameCount;
-        m_clipDuration = static_cast<int64_t>(info->duration * 48000.0);
+        m_clipDuration = std::llround(info->duration * 48000.0);
 
         // Treat still images uniformly regardless of how FFmpeg's image2
         // demuxer reports them.  JPG comes back with a tiny duration
@@ -575,10 +575,13 @@ void SourceMonitor::updateFrameDisplay()
     }
     else if (m_pool && m_pool->isValid(m_mediaHandle))
     {
-        // Convert tick → frame number
+        // Convert tick → frame number (round, don't truncate —
+        // truncation produces off-by-one errors for non-integer
+        // frame rates like 59.94fps where frame boundaries don't
+        // align to integer ticks).
         int64_t frameNum = 0;
         if (m_fps > 0.0)
-            frameNum = static_cast<int64_t>(
+            frameNum = std::llround(
                 (static_cast<double>(tick) / 48000.0) * m_fps);
         frameNum = std::clamp(frameNum, int64_t(0), std::max(int64_t(0), m_frameCount - 1));
 

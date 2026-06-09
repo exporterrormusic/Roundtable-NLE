@@ -73,7 +73,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 25;  // v25 = per-sequence Settings (resolution/fps/colour/audio independent per sequence)
+    static constexpr uint32_t FORMAT_VERSION = 26;  // v26 = PngPuppetClip (Veadotube-style 4-image PNG puppet character) type-specific fields
+                                                    // v25 = per-sequence Settings (resolution/fps/colour/audio independent per sequence)
                                                     // v24 = persist beat-reactive effect onset times + audio source id
                                                     // v23 = persist Project.show (per-show default shots)
                                                     // v22 = persist AudioClip audiofx chain (ParametricEQ / Dynamics)

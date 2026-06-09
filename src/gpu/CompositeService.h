@@ -568,6 +568,16 @@ private:
     // (file opened + first frame prefetch scheduled) ahead of their
     // timeline-in.  Cleared at shot boundary / reset.
     std::unordered_set<uint64_t> m_prewarmedClipIds;
+    // clip IDs whose first ~0.5s of frames have been re-scheduled once the
+    // clip became IMMINENT (within kHeadWarmTicks of the playhead).  The
+    // early m_prewarmedClipIds pass fires ~2s out, when those head frames sit
+    // far from the playhead and get evicted from the bounded prefetch queue by
+    // nearer (currently-playing) frames — so only the single urgent frame 0
+    // survives and the rest of the clip head is cold when the playhead
+    // arrives.  Re-scheduling when imminent lands the head frames near the
+    // playhead, where they survive the queue and warm before the cut.  Cleared
+    // at shot boundary / reset alongside m_prewarmedClipIds.
+    std::unordered_set<uint64_t> m_headWarmedClipIds;
     // Throttle: only scan the lookahead window every ~100ms during playback.
     std::chrono::steady_clock::time_point m_lastLookaheadScan{};
     // Last tick value passed to prewarmUpcomingShots.  Used to detect

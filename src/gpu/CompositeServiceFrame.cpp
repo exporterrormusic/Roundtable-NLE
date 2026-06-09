@@ -263,7 +263,7 @@ try
                                                  ? videoClip->sourceFps() : 30.0);
                         const double secs = static_cast<double>(clipTickOffset)
                                             / static_cast<double>(rt::kTicksPerSecond);
-                        const int64_t srcFrame = static_cast<int64_t>(secs * srcFps);
+                        const int64_t srcFrame = std::llround(secs * srcFps);
                         // Match the live composite path (charVideoTier):
                         // forceFullResolution wins, otherwise playbackTier().
                         // Previously characters were pinned to Half here,
@@ -495,7 +495,7 @@ try
                         static_cast<int64_t>(localTick * c->effectiveSpeed(localTick));
                     if (srcTick < 0) srcTick = 0;
                     int64_t frameNum =
-                        static_cast<int64_t>(ticksToSeconds(srcTick) * fps);
+                        std::llround(ticksToSeconds(srcTick) * fps);
                     if (info->frameCount <= 1) {
                         frameNum = 0;
                     } else if (vc->isVideoCharacter()) {

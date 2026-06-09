@@ -20,7 +20,7 @@ struct BeatDetectorParams
     bool  bassOnly{true};        ///< low-pass first so kicks/bass dominate
     float bassCutoffHz{180.0f};  ///< low-pass cutoff when bassOnly
     float minIntervalSec{0.12f}; ///< reject onsets closer than this (~500 BPM cap)
-    float sensitivity{1.4f};     ///< threshold = local-mean flux * sensitivity
+    float sensitivity{1.2f};     ///< threshold = local-mean flux * sensitivity (lower = more beats)
 };
 
 /// Detect onsets in mono float PCM. Returns onset times in seconds, ascending.

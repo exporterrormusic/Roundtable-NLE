@@ -521,6 +521,29 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
 
             if (layer.backgroundImage.isNull()) { ++layerZOrder; continue; }
 
+            // ── PNG-puppet breathing (optional, per frame) ──────────────────
+            // Mirrors the timeline PngPuppetClip: a subtle additive sway/rise,
+            // scale pulse, and rotation. Provider writes REF (1920x1080) px.
+            float breathScaleMul = 1.0f;
+            float breathRotDeg   = 0.0f;
+            float breathDxCanvas = 0.0f;
+            float breathDyCanvas = 0.0f;
+            if (layer.breathProvider) {
+                float dxRef = 0.0f, dyRef = 0.0f, sMul = 1.0f, rot = 0.0f;
+                layer.breathProvider(dxRef, dyRef, sMul, rot);
+                breathScaleMul = sMul;
+                breathRotDeg   = rot;
+                breathDxCanvas = dxRef / 1920.0f * canvasW;
+                breathDyCanvas = dyRef / 1080.0f * canvasH;
+            }
+            // Breathing SCALE is applied via the painter transform at draw time
+            // (below), NOT baked into the cached bitmap size.  Baking it in meant
+            // the bitmap was re-scaled to a sub-pixel-drifting size every frame
+            // with FastTransformation, marching a moiré "scanline" band down the
+            // image.  The cache now uses the base scale (stable) and the painter
+            // does a smooth sub-pixel scale.
+            const float effRotation = layer.rotation + breathRotDeg;
+
             // Compute display size
             float imgW = static_cast<float>(layer.backgroundImage.width());
             float imgH = static_cast<float>(layer.backgroundImage.height());
@@ -565,9 +588,10 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
                 layer.scaledBgCacheH = displayH;
             }
 
-            // Position: posX/posY map to canvas coordinates (0.5 = center)
-            float centerX = canvasOriginX + layer.posX * canvasW;
-            float centerY = canvasOriginY + layer.posY * canvasH;
+            // Position: posX/posY map to canvas coordinates (0.5 = center).
+            // Breathing sway/rise is an additive canvas-space offset.
+            float centerX = canvasOriginX + layer.posX * canvasW + breathDxCanvas;
+            float centerY = canvasOriginY + layer.posY * canvasH + breathDyCanvas;
             int bgX = static_cast<int>(centerX - displayW * 0.5f);
             int bgY = static_cast<int>(centerY - displayH * 0.5f);
 
@@ -604,17 +628,25 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
                                 displayW - cL - cR, displayH - cT - cB);
                 bgPainter.setClipRect(clipRect);
             }
-            // Apply rotation around the center of the image
-            bool hasRotation = (std::abs(layer.rotation) > 0.01f);
-            if (hasRotation) {
+            // Centered transform path: needed for rotation, flip, and/or the
+            // breathing scale.  Uses smooth sampling so the per-frame sub-pixel
+            // breathing scale/rotation doesn't alias (no marching scanline).
+            const bool hasBreathScale = std::abs(breathScaleMul - 1.0f) > 0.0005f;
+            const bool useTransform = (std::abs(effRotation) > 0.01f) ||
+                                      layer.breathProvider != nullptr ||
+                                      hasBreathScale;
+            if (useTransform) {
                 bgPainter.save();
+                bgPainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                bgPainter.setRenderHint(QPainter::Antialiasing, true);
                 bgPainter.translate(centerX, centerY);
-                bgPainter.rotate(static_cast<double>(layer.rotation));
-                if (layer.flipX || layer.flipY) {
-                    bgPainter.scale(layer.flipX ? -1.0 : 1.0,
-                                    layer.flipY ? -1.0 : 1.0);
-                }
-                bgPainter.drawImage(-displayW / 2, -displayH / 2, drawImg);
+                if (std::abs(effRotation) > 0.0001f)
+                    bgPainter.rotate(static_cast<double>(effRotation));
+                const double sx = (layer.flipX ? -1.0 : 1.0) * breathScaleMul;
+                const double sy = (layer.flipY ? -1.0 : 1.0) * breathScaleMul;
+                if (sx != 1.0 || sy != 1.0)
+                    bgPainter.scale(sx, sy);
+                bgPainter.drawImage(QPointF(-displayW / 2.0, -displayH / 2.0), drawImg);
                 bgPainter.restore();
             } else if (layer.flipX || layer.flipY) {
                 bgPainter.save();

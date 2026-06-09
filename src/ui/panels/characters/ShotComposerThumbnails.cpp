@@ -784,7 +784,7 @@ void ShotComposer::setLibraryIconSize(int sz)
     QSize icoSz(sz, sz);
     QSize gridSz(sz + 8, sz + 22);
 
-    for (auto* list : {m_characterLibrary, m_backgroundLibrary, m_videoLibrary}) {
+    for (auto* list : {m_characterLibrary, m_puppetLibrary, m_backgroundLibrary, m_videoLibrary}) {
         if (!list) continue;
         list->setIconSize(icoSz);
         list->setGridSize(gridSz);
@@ -794,6 +794,7 @@ void ShotComposer::setLibraryIconSize(int sz)
     refreshCharacterLibrary();
     refreshBackgroundLibrary();
     refreshVideoLibrary();
+    refreshPuppetLibrary();
 }
 
 

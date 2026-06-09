@@ -123,6 +123,18 @@ bool ShotComposer::eventFilter(QObject* obj, QEvent* event)
                         QString name;
                         ds >> name;
                         m_dragThumb = makeCharacterThumbnail(name.toStdString(), 120);
+                    } else if (assetType == QStringLiteral("puppet")) {
+                        QString folder;
+                        ds >> folder;
+                        if (m_puppetLibrary) {
+                            for (int i = 0; i < m_puppetLibrary->count(); ++i) {
+                                auto* item = m_puppetLibrary->item(i);
+                                if (item->data(Qt::UserRole + 1).toString() == folder) {
+                                    m_dragThumb = item->icon().pixmap(120, 120);
+                                    break;
+                                }
+                            }
+                        }
                     } else if (assetType == QStringLiteral("background")) {
                         QString bgName;
                         ds >> bgName;
@@ -220,6 +232,11 @@ bool ShotComposer::eventFilter(QObject* obj, QEvent* event)
                     addCharacter(charName.toStdString(),
                                  mutePath.toStdString(),
                                  talkPath.toStdString());
+                    newLayerIdx = m_currentShot.layerCount() - 1;
+                } else if (assetType == QStringLiteral("puppet")) {
+                    QString folder, variant;
+                    ds >> folder >> variant;
+                    addPuppet(folder.toStdString(), variant.toStdString());
                     newLayerIdx = m_currentShot.layerCount() - 1;
                 } else if (assetType == QStringLiteral("background")) {
                     QString bgName;

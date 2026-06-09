@@ -6,6 +6,8 @@
 #include "panels/characters/ShotComposer.h"
 
 #include "panels/characters/ShotComposerInternal.h"
+#include "panels/characters/PuppetLibrary.h"
+#include "timeline/PngPuppetClip.h"
 #include "Theme.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -154,6 +156,94 @@ void ShotComposer::updatePreview()
 
         if (i == m_selectedLayer)
             selectedCharIdx = ref.index;
+
+        // ── PNG puppet ───────────────────────────────────────────────────
+        // Rendered as an image layer (character-style sizing) whose displayed
+        // face is chosen by the same deterministic talk/blink logic the
+        // timeline/export PngPuppetClip uses, advancing a per-layer clock so
+        // the preview feels alive — just like a Spine idle.
+        if (ch->isPuppet()) {
+            PreviewCharLayer layer;
+            layer.isBackground     = true;   // image layer
+            layer.isVideoCharacter = true;   // character-style 0.85 contain fit
+            layer.visible      = ch->visible;
+            layer.opacity      = ch->opacity;
+            layer.posX         = ch->posX;
+            layer.posY         = ch->posY;
+            layer.scale        = ch->scale;
+            layer.layerIndex   = i;
+            layer.cropLeft     = ch->cropLeft;
+            layer.cropRight    = ch->cropRight;
+            layer.cropTop      = ch->cropTop;
+            layer.cropBottom   = ch->cropBottom;
+            layer.flipX        = ch->flipX;
+            layer.flipY        = ch->flipY;
+            layer.rotation     = ch->rotation;
+            layer.blur         = ch->blur;
+
+            const std::string variant =
+                ch->puppetVariant.empty() ? "default" : ch->puppetVariant;
+            const std::string key = ch->puppetFolder + "|" + variant;
+
+            auto stIt = m_puppetPreview.find(key);
+            if (stIt == m_puppetPreview.end()) {
+                auto st = std::make_shared<PuppetPreviewState>();
+                // Seed from the puppet folder so blinks look natural + stable.
+                uint32_t h = 2166136261u;
+                for (char c : ch->puppetFolder) {
+                    h ^= static_cast<uint8_t>(c);
+                    h *= 16777619u;
+                }
+                st->seed = h ? h : 1u;
+                PuppetManifest man;
+                if (puppetlib::load(QString::fromStdString(ch->puppetFolder), man)) {
+                    auto vit = man.variants.find(QString::fromStdString(variant));
+                    if (vit == man.variants.end() && !man.variantOrder.isEmpty())
+                        vit = man.variants.find(man.variantOrder.first());
+                    if (vit != man.variants.end()) {
+                        for (int f = 0; f < 4; ++f) {
+                            const QString& fp = vit->faces[f];
+                            if (!fp.isEmpty()) st->faces[f] = QImage(fp);
+                        }
+                    }
+                }
+                stIt = m_puppetPreview.emplace(key, std::move(st)).first;
+            }
+            auto state = stIt->second;
+            state->talking = ch->isTalking;
+
+            // Initial frame: resting face.
+            if (!state->faces[0].isNull())
+                layer.backgroundImage = state->faces[0];
+
+            const uint32_t seed = state->seed;
+            layer.videoFrameProvider =
+                [state, seed](float vdt) -> QImage {
+                state->clock += static_cast<double>(vdt);
+                PngPuppetClip eval;
+                eval.setTalking(state->talking);
+                eval.setSeed(seed);
+                int face = eval.selectFace(state->clock);
+                if (face < 0 || face > 3) face = 0;
+                if (!state->faces[face].isNull())
+                    return state->faces[face];
+                return state->faces[0];
+            };
+            // Breathing/sway — same deterministic motion as the timeline clip,
+            // read from the clock the frame provider advances each tick.
+            layer.breathProvider =
+                [state](float& dxRef, float& dyRef, float& scaleMul, float& rotDeg) {
+                PngPuppetClip eval;
+                auto b = eval.breathing(state->clock);
+                dxRef = b.dx;
+                dyRef = b.dy;
+                scaleMul = b.scale;
+                rotDeg = b.rot;
+            };
+
+            previewLayers.push_back(std::move(layer));
+            continue;
+        }
 
         // ── Video character (e.g. Wells) ─────────────────────────────────
         if (ch->isVideoCharacter()) {

@@ -116,6 +116,9 @@ public:
     /// Refresh the character library list widget.
     void refreshCharacterLibrary();
 
+    /// Refresh the PNG-puppet library list widget.
+    void refreshPuppetLibrary();
+
     /// Refresh the shot list and character filter sidebar.
     void refreshShotList();
 
@@ -126,6 +129,10 @@ public:
     int addCharacter(const std::string& characterName,
                      const std::string& videoMutePath = {},
                      const std::string& videoTalkPath = {});
+
+    /// Add a PNG puppet to the current shot by its on-disk folder name.
+    int addPuppet(const std::string& puppetFolder,
+                  const std::string& variant = "default");
 
     /// Remove a character from the current shot by index.
     bool removeCharacter(int index);
@@ -199,6 +206,7 @@ public:
     [[nodiscard]] QListWidget*   shotList()            const noexcept { return m_shotList; }
     [[nodiscard]] QComboBox*     shotCombo()           const noexcept { return m_shotSortCombo; }
     [[nodiscard]] QListWidget*  characterLibrary()    const noexcept { return m_characterLibrary; }
+    [[nodiscard]] QListWidget*  puppetLibrary()       const noexcept { return m_puppetLibrary; }
     [[nodiscard]] QListWidget*  backgroundLibrary()   const noexcept { return m_backgroundLibrary; }
     [[nodiscard]] QListWidget*  videoLibrary()        const noexcept { return m_videoLibrary; }
     [[nodiscard]] QPushButton*  newShotButton()       const noexcept { return m_newShotBtn; }
@@ -432,9 +440,11 @@ private:
     QLineEdit*    m_shotSearchEdit     = nullptr;   ///< Filter shots by name
     QLineEdit*    m_filterSearchEdit   = nullptr;   ///< Character filter search bar
     QListWidget*  m_characterLibrary  = nullptr;
+    QListWidget*  m_puppetLibrary     = nullptr;   ///< PNG-puppet library (drag-only)
     QListWidget*  m_backgroundLibrary = nullptr;
     QListWidget*  m_videoLibrary      = nullptr;
     QLineEdit*    m_charSearchEdit    = nullptr;
+    QLineEdit*    m_puppetSearchEdit  = nullptr;   ///< Puppets tab search
     QLineEdit*    m_bgSearchEdit      = nullptr;   ///< Backgrounds tab search
     QLineEdit*    m_videoSearchEdit   = nullptr;   ///< Videos tab search
     QCheckBox*    m_namedOnlyCheck    = nullptr;
@@ -456,6 +466,19 @@ private:
     std::unordered_map<std::string, QImage>   m_bgImageCache;    ///< Cached static background images
     std::unordered_map<std::string, QPixmap>  m_charThumbCache;  ///< Cached character thumbnails (keyed by "name:size")
     std::unordered_map<std::string, std::shared_ptr<VideoPlaybackState>> m_videoPlayers;
+
+    // ── PNG-puppet preview state ─────────────────────────────────────────
+    // Per (folder|variant) cache of the 4 decoded face images + an advancing
+    // clock so the COMPOSE preview animates talk/blink deterministically,
+    // mirroring how PngPuppetClip selects faces over clip-local time.
+    struct PuppetPreviewState {
+        QImage   faces[4];
+        double   clock    = 0.0;
+        bool     talking  = false;
+        uint32_t seed     = 1;
+        int      lastFace = -1;   ///< last emitted face index (avoid redundant re-uploads)
+    };
+    std::unordered_map<std::string, std::shared_ptr<PuppetPreviewState>> m_puppetPreview;
 
     // ── Properties panel ────────────────────────────────────────────────
     QLineEdit*    m_shotNameEdit      = nullptr;

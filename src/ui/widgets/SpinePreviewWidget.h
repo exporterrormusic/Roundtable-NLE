@@ -73,6 +73,14 @@ struct PreviewCharLayer
     /// Callback that advances video by dt seconds and returns the new frame.
     /// If set, called every timer tick. Return null QImage to keep current frame.
     std::function<QImage(float dt)> videoFrameProvider;
+
+    /// Optional per-frame "breathing" transform for PNG puppets, mirroring the
+    /// timeline's PngPuppetClip breathing.  Writes an additive position offset in
+    /// REF (1920x1080) pixels, a scale multiplier, and an additive rotation in
+    /// degrees.  Queried at paint time (after videoFrameProvider has advanced the
+    /// puppet's clock for this tick).
+    std::function<void(float& dxRef, float& dyRef, float& scaleMul, float& rotDeg)>
+        breathProvider;
 };
 
 class SpinePreviewWidget : public QWidget

@@ -10,6 +10,7 @@
 
 #include "timeline/Clip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/TitleClip.h"
@@ -53,6 +54,9 @@ void PropertiesPanel::setClip(Clip* clip, Track* track)
     m_spineClip = (clip && clip->clipType() == ClipType::Spine)
                       ? static_cast<SpineClip*>(clip)
                       : nullptr;
+    m_puppetClip = (clip && clip->clipType() == ClipType::PngPuppet)
+                      ? static_cast<PngPuppetClip*>(clip)
+                      : nullptr;
 
     // Toggle empty state vs. scroll area
     bool hasClip = (clip != nullptr);
@@ -77,6 +81,7 @@ void PropertiesPanel::clearClip()
     m_clip  = nullptr;
     m_multiSelection.clear();
     m_spineClip = nullptr;
+    m_puppetClip = nullptr;
     m_track = nullptr;
     m_transitionIndex = SIZE_MAX;
     showSectionsForType();
@@ -316,6 +321,8 @@ void PropertiesPanel::showSectionsForType()
         m_audioFxSection->setVisible(hasClip && m_clip->clipType() == ClipType::Audio);
     m_titleSection->setVisible(hasClip && m_clip->clipType() == ClipType::Title);
     m_graphicSection->setVisible(hasClip && m_clip->clipType() == ClipType::Graphic);
+    if (m_puppetSection)
+        m_puppetSection->setVisible(hasClip && m_clip->clipType() == ClipType::PngPuppet);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

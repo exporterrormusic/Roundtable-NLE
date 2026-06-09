@@ -5,6 +5,8 @@
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
 #include "timeline/CaptionClip.h"
+#include "timeline/PngPuppetClip.h"
+#include "Constants.h"
 
 #include <QColor>
 #include <QFont>
@@ -12,10 +14,14 @@
 #include <QImage>
 #include <QPainter>
 #include <QRectF>
+#include <QString>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace rt {
 
@@ -422,6 +428,78 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
     frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
     std::memcpy(frame->pixels.data(), canvas.constBits(), frame->pixels.size());
 
+    return frame;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PngPuppetClip CPU rendering — pick 1 of 4 face PNGs, blit to a BGRA CachedFrame
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Decoded-image cache keyed by file path.  PNGs are small and there are only a
+// handful per puppet, but decoding from disk every frame would be wasteful and
+// would hammer the file system during playback/export.  QImage is implicitly
+// shared, so handing out copies is cheap.
+QImage loadPuppetImage(const std::string& path)
+{
+    static std::mutex s_mtx;
+    static std::unordered_map<std::string, QImage> s_cache;
+
+    std::lock_guard<std::mutex> lock(s_mtx);
+    auto it = s_cache.find(path);
+    if (it != s_cache.end())
+        return it->second;
+
+    QImage img;
+    // Paths are stored UTF-8; QString::fromStdString uses fromUtf8 so Unicode
+    // (e.g. yt-dlp's fullwidth characters) survives on Windows.
+    img.load(QString::fromStdString(path));
+    if (!img.isNull() && img.format() != QImage::Format_ARGB32)
+        img = img.convertToFormat(QImage::Format_ARGB32);
+
+    s_cache.emplace(path, img);   // cache even a null image to avoid retrying disk
+    return img;
+}
+
+} // namespace
+
+std::shared_ptr<CachedFrame> renderPngPuppetClip(
+    PngPuppetClip* clip, int64_t tick, uint32_t outW, uint32_t outH)
+{
+    (void)outW;
+    (void)outH;
+    if (!clip) return nullptr;
+
+    // `tick` is the GLOBAL timeline tick so talk/blink stay phase-continuous
+    // across cuts between same-character clips (their seed is character-derived).
+    const double t = ticksToSeconds(tick);
+    const int faceIdx = clip->selectFace(t);
+
+    std::string path = clip->facePath(faceIdx);
+    if (path.empty())
+        path = clip->facePath(PngPuppetClip::MouthClosedEyesOpen);  // resting fallback
+    if (path.empty())
+        return nullptr;
+
+    QImage img = loadPuppetImage(path);
+    if (img.isNull()) {
+        // The chosen face failed to decode — fall back to the resting face so
+        // a single bad/missing variant image doesn't drop the whole character.
+        const std::string idle = clip->facePath(PngPuppetClip::MouthClosedEyesOpen);
+        if (!idle.empty() && idle != path)
+            img = loadPuppetImage(idle);
+    }
+    if (img.isNull())
+        return nullptr;
+
+    auto frame = std::make_shared<CachedFrame>();
+    frame->width  = static_cast<uint32_t>(img.width());
+    frame->height = static_cast<uint32_t>(img.height());
+    frame->stride = static_cast<uint32_t>(img.bytesPerLine());
+    frame->pixels.resize(static_cast<size_t>(frame->stride) * frame->height);
+    std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
+    frame->unpackedAlpha = true;   // straight-alpha PNG; nothing to unpack
     return frame;
 }
 

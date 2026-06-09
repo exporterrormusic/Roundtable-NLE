@@ -161,6 +161,7 @@ void CompositeService::reset()
         m_lastActiveClipIds.clear();
     }
     m_prewarmedClipIds.clear();
+    m_headWarmedClipIds.clear();
     m_lastLookaheadScan = {};
     m_stickyLastClipFrame.clear();
     m_stickyLastCharFrame.clear();

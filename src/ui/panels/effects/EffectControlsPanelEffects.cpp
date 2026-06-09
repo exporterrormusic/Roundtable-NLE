@@ -765,43 +765,172 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
     const QString lblCss = QStringLiteral("color: %1; font-size: 11px; background: transparent;")
         .arg(Theme::hex(tc.textSecondary));
 
-    // Source picker row.
-    auto* srcRow = new QWidget(box);
-    auto* srcLay = new QHBoxLayout(srcRow);
-    srcLay->setContentsMargins(0, 0, 0, 0);
-    srcLay->setSpacing(6);
-    auto* srcLabel = new QLabel(QStringLiteral("Beat source"), srcRow);
-    srcLabel->setStyleSheet(lblCss);
-    srcLay->addWidget(srcLabel);
-
-    auto* srcCombo = new QComboBox(srcRow);
-    srcCombo->setFixedHeight(22);
-    srcCombo->setStyleSheet(QStringLiteral(
+    const QString comboCss = QStringLiteral(
         "QComboBox { background: %1; color: %2; border: 1px solid %3; "
-        "border-radius: 3px; padding: 1px 4px; font-size: 11px; }")
+        "border-radius: 3px; padding: 1px 4px; font-size: 11px; }"
+        "QComboBox QAbstractItemView { background: %1; color: %2; "
+        "selection-background-color: %4; }")
         .arg(Theme::hex(tc.inputBg), Theme::hex(tc.textPrimary),
-             Theme::hex(tc.controlBorder)));
-    srcLay->addWidget(srcCombo, 1);
-    col->addWidget(srcRow);
+             Theme::hex(tc.controlBorder), Theme::hex(tc.accent));
 
-    // Populate with audio clips from the timeline.
     auto* beatFx = static_cast<BeatReactEffect*>(&fx);
+
+    // ── Track picker row ──────────────────────────────────────────────
+    auto* trkRow = new QWidget(box);
+    auto* trkLay = new QHBoxLayout(trkRow);
+    trkLay->setContentsMargins(0, 0, 0, 0);
+    trkLay->setSpacing(6);
+    auto* trkLabel = new QLabel(QStringLiteral("Track"), trkRow);
+    trkLabel->setStyleSheet(lblCss);
+    trkLabel->setFixedWidth(36);
+    trkLay->addWidget(trkLabel);
+
+    auto* trackCombo = new QComboBox(trkRow);
+    trackCombo->setFixedHeight(22);
+    trackCombo->setStyleSheet(comboCss);
+    trkLay->addWidget(trackCombo, 1);
+    col->addWidget(trkRow);
+
+    // ── Clip picker row ───────────────────────────────────────────────
+    auto* clipRow = new QWidget(box);
+    auto* clipLay = new QHBoxLayout(clipRow);
+    clipLay->setContentsMargins(0, 0, 0, 0);
+    clipLay->setSpacing(6);
+    auto* clipLabel = new QLabel(QStringLiteral("Source"), clipRow);
+    clipLabel->setStyleSheet(lblCss);
+    clipLabel->setFixedWidth(36);
+    clipLay->addWidget(clipLabel);
+
+    auto* clipCombo = new QComboBox(clipRow);
+    clipCombo->setFixedHeight(22);
+    clipCombo->setStyleSheet(comboCss);
+    clipLay->addWidget(clipCombo, 1);
+    col->addWidget(clipRow);
+
+    // ── Populate track combo ──────────────────────────────────────────
+    // Collect tracks that have at least one audio clip. Store track index
+    // as user data so we can look up clips when the track changes.
+    trackCombo->addItem(QStringLiteral("(select track)"), QVariant(-1));
+    int preselectedTrackIdx = -1;
     if (m_timeline) {
         for (size_t t = 0; t < m_timeline->trackCount(); ++t) {
             auto* tr = m_timeline->track(t);
             if (!tr) continue;
+            // Check if this track has any audio clips.
+            bool hasAudio = false;
             for (size_t c = 0; c < tr->clipCount(); ++c) {
                 auto* cl = tr->clip(c);
-                if (!cl || cl->clipType() != ClipType::Audio) continue;
-                srcCombo->addItem(QString::fromStdString(cl->label()),
-                                  static_cast<qulonglong>(cl->id()));
-                if (cl->id() == beatFx->audioSourceId())
-                    srcCombo->setCurrentIndex(srcCombo->count() - 1);
+                if (cl && cl->clipType() == ClipType::Audio) { hasAudio = true; break; }
+            }
+            if (!hasAudio) continue;
+            QString trackName = QString::fromStdString(tr->name());
+            if (trackName.isEmpty())
+                trackName = QStringLiteral("Track %1").arg(t + 1);
+            trackCombo->addItem(trackName, QVariant(static_cast<int>(t)));
+            // If this track contains the previously-selected audio source,
+            // remember it for preselection.
+            if (beatFx->audioSourceId() != 0) {
+                for (size_t c = 0; c < tr->clipCount(); ++c) {
+                    auto* cl = tr->clip(c);
+                    if (cl && cl->id() == beatFx->audioSourceId()) {
+                        preselectedTrackIdx = static_cast<int>(t);
+                        break;
+                    }
+                }
             }
         }
     }
-    if (srcCombo->count() == 0)
-        srcCombo->addItem(QStringLiteral("(no audio clips)"), 0);
+    if (trackCombo->count() == 1) {
+        trackCombo->setItemText(0, QStringLiteral("(no audio tracks)"));
+    }
+    if (preselectedTrackIdx >= 0) {
+        for (int i = 0; i < trackCombo->count(); ++i) {
+            if (trackCombo->itemData(i).toInt() == preselectedTrackIdx) {
+                trackCombo->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+
+    // ── Helper: populate clip combo for a given track index ───────────
+    // (must be a pointer to a shared callable so the connect lambda can
+    //  capture it by value; a local std::function works.)
+    auto populateClipCombo = std::make_shared<std::function<void(int)>>(
+        [this, clipCombo, beatFx](int trackIdx) {
+        clipCombo->blockSignals(true);
+        clipCombo->clear();
+        if (!m_timeline || trackIdx < 0
+            || trackIdx >= static_cast<int>(m_timeline->trackCount())) {
+            clipCombo->addItem(QStringLiteral("(no clips)"), QVariant(0));
+            clipCombo->blockSignals(false);
+            return;
+        }
+        auto* tr = m_timeline->track(static_cast<size_t>(trackIdx));
+        if (!tr) {
+            clipCombo->addItem(QStringLiteral("(no clips)"), QVariant(0));
+            clipCombo->blockSignals(false);
+            return;
+        }
+        bool found = false;
+        for (size_t c = 0; c < tr->clipCount(); ++c) {
+            auto* cl = tr->clip(c);
+            if (!cl || cl->clipType() != ClipType::Audio) continue;
+            found = true;
+            QString lbl = QString::fromStdString(cl->label());
+            if (lbl.isEmpty()) lbl = QStringLiteral("Clip %1").arg(c + 1);
+            clipCombo->addItem(lbl, QVariant(static_cast<qulonglong>(cl->id())));
+            if (cl->id() == beatFx->audioSourceId())
+                clipCombo->setCurrentIndex(clipCombo->count() - 1);
+        }
+        if (!found)
+            clipCombo->addItem(QStringLiteral("(no audio clips)"), QVariant(0));
+        clipCombo->blockSignals(false);
+    });
+
+    // Initial population.
+    int initTrack = preselectedTrackIdx >= 0 ? preselectedTrackIdx
+        : trackCombo->currentData().toInt();
+    (*populateClipCombo)(initTrack);
+
+    // Track selection → repopulate clips.
+    connect(trackCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, trackCombo, populateClipCombo](int) {
+        int ti = trackCombo->currentData().toInt();
+        (*populateClipCombo)(ti);
+    });
+
+    // ── Sensitivity slider ────────────────────────────────────────────
+    auto* sensRow = new QWidget(box);
+    auto* sensLay = new QHBoxLayout(sensRow);
+    sensLay->setContentsMargins(0, 0, 0, 0);
+    sensLay->setSpacing(6);
+    auto* sensLabel = new QLabel(QStringLiteral("Sens."), sensRow);
+    sensLabel->setStyleSheet(lblCss);
+    sensLabel->setFixedWidth(36);
+    sensLay->addWidget(sensLabel);
+
+    auto* sensSlider = new QSlider(Qt::Horizontal, sensRow);
+    sensSlider->setRange(50, 300);  // 0.5 → 3.0
+    sensSlider->setValue(120);      // default 1.2 (more sensitive than old 1.4)
+    sensSlider->setFixedHeight(20);
+    sensSlider->setStyleSheet(QStringLiteral(
+        "QSlider::groove:horizontal { background: %1; height: 4px; border-radius: 2px; }"
+        "QSlider::handle:horizontal { background: %2; width: 12px; height: 12px; "
+        "margin: -4px 0; border-radius: 6px; }"
+        "QSlider::sub-page:horizontal { background: %2; border-radius: 2px; }")
+        .arg(Theme::hex(tc.surface3), Theme::hex(tc.accent)));
+    sensLay->addWidget(sensSlider, 1);
+
+    auto* sensValLabel = new QLabel(QStringLiteral("1.2"), sensRow);
+    sensValLabel->setStyleSheet(lblCss);
+    sensValLabel->setFixedWidth(24);
+    sensValLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    sensLay->addWidget(sensValLabel);
+    col->addWidget(sensRow);
+    connect(sensSlider, &QSlider::valueChanged, this,
+            [sensValLabel](int v) {
+        sensValLabel->setText(QString::number(v / 100.0, 'f', 1));
+    });
 
     // Bass-only toggle.
     auto* bassCheck = new QCheckBox(QStringLiteral("Bass / kick only"), box);
@@ -827,8 +956,7 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
     auto* status = new QLabel(box);
     status->setStyleSheet(lblCss);
     if (!beatFx->beatTimes().empty())
-        status->setText(QStringLiteral("%1 beats — set Mode = 1")
-                            .arg(beatFx->beatTimes().size()));
+        status->setText(QStringLiteral("%1 beats — Auto mode").arg(beatFx->beatTimes().size()));
     else
         status->setText(QStringLiteral("Mode 0 = manual BPM"));
     btnLay->addWidget(status, 1);
@@ -836,11 +964,10 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
 
     m_propLayout->addWidget(box);
 
-    // ── Detection action ───────────────────────────────────────────────
-    connect(detectBtn, &QPushButton::clicked, this,
-            [this, effectIdx, srcCombo, bassCheck, status]() {
+    // ── Detection logic (shared by button + auto-detect) ──────────────
+    auto runDetection = [this, effectIdx, clipCombo, bassCheck, sensSlider, status]() {
         if (!m_clip || !m_timeline) return;
-        const uint64_t srcId = srcCombo->currentData().toULongLong();
+        const uint64_t srcId = clipCombo->currentData().toULongLong();
         if (srcId == 0) { status->setText(QStringLiteral("Pick an audio clip")); return; }
 
         // Locate the source audio clip on the timeline.
@@ -873,7 +1000,8 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
         }
 
         BeatDetectorParams bp;
-        bp.bassOnly = bassCheck->isChecked();
+        bp.bassOnly   = bassCheck->isChecked();
+        bp.sensitivity = sensSlider->value() / 100.0f;
         auto onsets = detectBeatsInterleaved(samples.data(), info.frames,
                                              info.channels, info.sampleRate, bp);
 
@@ -899,14 +1027,28 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
         auto* be = static_cast<BeatReactEffect*>(&st.effect(effectIdx));
         be->setAudioSourceId(srcId);
         be->setBeatTimes(std::move(local));
-        // Switch to Auto mode so the detected onsets drive the pulse.
+        // Switch to Auto mode so the detected onsets drive the pulse
+        // (overrides manual BPM).
         be->param(BeatReactEffect::Mode).track.setDefaultValue(1.0f);
 
-        status->setText(QStringLiteral("%1 beats — Mode set to detected")
-                            .arg(be->beatTimes().size()));
-        spdlog::info("BeatDetect: {} onsets from '{}' baked into clip '{}'",
-                     be->beatTimes().size(), audio->label(), m_clip->label());
+        status->setText(QStringLiteral("%1 beats — Auto mode").arg(be->beatTimes().size()));
+        spdlog::info("BeatDetect: {} onsets from '{}' (sens={:.1f}) baked into clip '{}'",
+                     be->beatTimes().size(), audio->label(),
+                     bp.sensitivity, m_clip->label());
         emit propertyChanged();
+    };
+
+    // ── Wire up ───────────────────────────────────────────────────────
+    // "Detect Beats" button.
+    connect(detectBtn, &QPushButton::clicked, this, runDetection);
+
+    // Auto-detect when a different audio clip is selected — this overrides
+    // BPM and switches to Auto (detected) mode immediately, matching the
+    // expectation that picking a Beat Source drives the effect.
+    connect(clipCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, runDetection, clipCombo](int) {
+        if (clipCombo->currentData().toULongLong() != 0)
+            runDetection();
     });
 }
 

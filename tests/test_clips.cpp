@@ -11,6 +11,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/TitleClip.h"
 #include "timeline/AdjustmentClip.h"
+#include "timeline/PngPuppetClip.h"
 
 using namespace rt;
 
@@ -75,6 +76,105 @@ TEST(SpineClipTest, Clone)
 
     // Clone should have a different ID
     EXPECT_NE(cloned->id(), clip.id());
+}
+
+// ── PngPuppetClip ─────────────────────────────────────────────────────────────
+
+TEST(PngPuppetClipTest, DefaultConstruction)
+{
+    PngPuppetClip clip;
+    EXPECT_EQ(clip.clipType(), ClipType::PngPuppet);
+    EXPECT_EQ(clip.variant(), "default");
+    EXPECT_FALSE(clip.isTalking());
+    EXPECT_GT(clip.blinkIntervalSeconds(), 0.0f);
+    EXPECT_GT(clip.talkSwapSeconds(), 0.0f);
+}
+
+TEST(PngPuppetClipTest, IdleNeverOpensMouth)
+{
+    PngPuppetClip clip;            // talking == false by default
+    // Across a long span the mouth must stay closed (faces 0 or 1 only).
+    for (int i = 0; i < 2000; ++i) {
+        const double t = i * 0.013;  // irregular sampling
+        EXPECT_FALSE(clip.mouthOpenAt(t));
+        const int face = clip.selectFace(t);
+        EXPECT_TRUE(face == PngPuppetClip::MouthClosedEyesOpen ||
+                    face == PngPuppetClip::MouthClosedEyesClosed);
+    }
+}
+
+TEST(PngPuppetClipTest, TalkingOpensMouthSometimes)
+{
+    PngPuppetClip clip;
+    clip.setTalking(true);
+    int open = 0;
+    for (int i = 0; i < 2000; ++i)
+        if (clip.mouthOpenAt(i * clip.talkSwapSeconds())) ++open;
+    // Lively but not stuck: a healthy fraction of frames are open.
+    EXPECT_GT(open, 200);
+    EXPECT_LT(open, 1800);
+}
+
+TEST(PngPuppetClipTest, BlinkHappensAndIsBounded)
+{
+    PngPuppetClip clip;
+    clip.setBlinkIntervalSeconds(4.0f);
+    clip.setBlinkDurationSeconds(0.12f);
+    int closed = 0;
+    const int N = 100000;
+    const double dt = 0.001;
+    for (int i = 0; i < N; ++i)
+        if (clip.eyesClosedAt(i * dt)) ++closed;
+    const double frac = static_cast<double>(closed) / N;
+    // Expected duty cycle ≈ duration/interval = 0.03; allow generous slack.
+    EXPECT_GT(frac, 0.005);
+    EXPECT_LT(frac, 0.10);
+}
+
+TEST(PngPuppetClipTest, FrameSelectionIsDeterministic)
+{
+    PngPuppetClip clip;
+    clip.setTalking(true);
+    // Same time → same face, always (preview/export parity).
+    for (int i = 0; i < 500; ++i) {
+        const double t = i * 0.07;
+        EXPECT_EQ(clip.selectFace(t), clip.selectFace(t));
+    }
+}
+
+TEST(PngPuppetClipTest, SeedChangesBlinkPhase)
+{
+    PngPuppetClip a, b;
+    a.setSeed(1);
+    b.setSeed(99);
+    // Different seeds should desynchronise blinking at some sampled time.
+    bool differ = false;
+    for (int i = 0; i < 5000 && !differ; ++i) {
+        const double t = i * 0.01;
+        if (a.eyesClosedAt(t) != b.eyesClosedAt(t)) differ = true;
+    }
+    EXPECT_TRUE(differ);
+}
+
+TEST(PngPuppetClipTest, CloneCopiesState)
+{
+    PngPuppetClip clip("Alice", "angry");
+    clip.setTalking(true);
+    clip.setFacePath(PngPuppetClip::MouthOpenEyesOpen, "assets/png_characters/Alice/angry/open_open.png");
+    clip.setSeed(42);
+    clip.setBreathAmplitude(12.0f);
+
+    auto cloned = clip.clone();
+    auto* pc = dynamic_cast<PngPuppetClip*>(cloned.get());
+    ASSERT_NE(pc, nullptr);
+    EXPECT_EQ(pc->characterName(), "Alice");
+    EXPECT_EQ(pc->variant(), "angry");
+    EXPECT_TRUE(pc->isTalking());
+    EXPECT_EQ(pc->facePath(PngPuppetClip::MouthOpenEyesOpen),
+              "assets/png_characters/Alice/angry/open_open.png");
+    EXPECT_EQ(pc->seed(), 42u);
+    EXPECT_FLOAT_EQ(pc->breathAmplitude(), 12.0f);
+    EXPECT_NE(pc->id(), clip.id());
 }
 
 // ── VideoClip ───────────────────────────────────────────────────────────────

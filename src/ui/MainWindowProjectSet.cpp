@@ -114,8 +114,10 @@ void MainWindow::setCurrentProject(std::unique_ptr<Project> project)
         }
 
         // Release all media from the old project and clear the frame cache
-        if (m_mediaPool)
+        if (m_mediaPool) {
             m_mediaPool->closeAll();
+            m_mediaPool->clearFailedPaths();  // retry files that failed transiently
+        }
 
         // Clear undo/redo history so old commands don't apply to the new project
         if (m_commandStack)

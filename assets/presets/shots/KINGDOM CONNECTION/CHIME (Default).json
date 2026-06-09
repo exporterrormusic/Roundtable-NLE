@@ -66,9 +66,32 @@
       "cropBottom": 0.000000,
       "blur": 0.000000,
       "visible": true
+    },
+    {
+      "characterName": "Wells",
+      "outfit": "",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "puppetFolder": "Wells",
+      "puppetVariant": "Dress/Idle",
+      "posX": 0.662000,
+      "posY": 0.895000,
+      "scale": 1.975000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": false
     }
   ],
   "layerOrder": [
+    {"type": "ch", "index": 2},
     {"type": "ch", "index": 0},
     {"type": "ch", "index": 1},
     {"type": "bg", "index": 0}

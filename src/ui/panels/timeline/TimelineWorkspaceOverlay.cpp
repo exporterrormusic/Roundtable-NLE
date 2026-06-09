@@ -19,13 +19,16 @@
 #include "timeline/VideoClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/Position2D.h"
 #include "timeline/GraphicLayer.h"
 #include "media/MediaPool.h"
 #include "media/PlaybackController.h"
 #include <QFileInfo>
+#include <QImage>
 #include <algorithm>
+#include <unordered_map>
 #include <functional>
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -960,6 +963,42 @@ void TimelineWorkspace::updateTransformOverlay()
     }
 #endif
 
+    // For PngPuppetClip: probe the resting face PNG to get the character's
+    // native dimensions so the transform bounding box has the correct
+    // (typically tall/portrait) aspect ratio instead of defaulting to the
+    // 16:9 canvas shape.  Match the compositor's contain-fit + 0.85×
+    // compose-scale so the box aligns with the visible character.
+    // Dimensions are cached per path to avoid repeated disk I/O.
+    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<PngPuppetClip*>(m_selectedClip)) {
+        auto* puppetClip = static_cast<PngPuppetClip*>(m_selectedClip);
+        std::string idlePath = puppetClip->facePath(PngPuppetClip::MouthClosedEyesOpen);
+        if (!idlePath.empty()) {
+            static std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> s_dimCache;
+            auto it = s_dimCache.find(idlePath);
+            uint32_t imgW = 0, imgH = 0;
+            if (it != s_dimCache.end()) {
+                imgW = it->second.first;
+                imgH = it->second.second;
+            } else {
+                QImage img(QString::fromStdString(idlePath));
+                if (!img.isNull() && img.width() > 0 && img.height() > 0) {
+                    imgW = static_cast<uint32_t>(img.width());
+                    imgH = static_cast<uint32_t>(img.height());
+                    s_dimCache[idlePath] = {imgW, imgH};
+                }
+            }
+            if (imgW > 0 && imgH > 0) {
+                // Same pre-scale as Spine: fit height × compose factor so
+                // the overlay matches the compositor's final character size.
+                constexpr float refH = 1080.0f;
+                constexpr float kComposeFit = 0.85f;
+                float fitZoom = (refH / static_cast<float>(imgH)) * kComposeFit;
+                info.srcW = static_cast<uint32_t>(static_cast<float>(imgW) * fitZoom);
+                info.srcH = static_cast<uint32_t>(static_cast<float>(imgH) * fitZoom);
+            }
+        }
+    }
+
     // Fallback: if we still don't have dimensions, use the viewport's
     // frame dimensions (the composite output).  This at least makes the
     // bounding box match the visible canvas rather than an arbitrary 16:9.
@@ -992,18 +1031,21 @@ void TimelineWorkspace::updateTransformOverlay()
         }
     }
 
-    // Characters (SpineClip and VideoClip flagged as character) are
-    // composited with CONTAIN-fit, not cover-fit (see
+    // Characters (SpineClip, PngPuppetClip, and VideoClip flagged as
+    // character) are composited with CONTAIN-fit, not cover-fit (see
     // CompositeServiceLayerBuild.cpp where layer.containFit = true is
-    // set for isVideoCharClip || isPreRenderedSpine).  The overlay must
-    // match that fit mode or the bounding box is grossly oversized
-    // (cover-fit overflows for portrait sources, ~2× too big visually).
+    // set for isVideoCharClip || isPreRenderedSpine || isPuppetClip).
+    // The overlay must match that fit mode or the bounding box is
+    // grossly oversized (cover-fit overflows for portrait sources,
+    // ~2× too big visually).
     {
         bool isCharacter = false;
 #ifdef ROUNDTABLE_HAS_SPINE
         if (dynamic_cast<SpineClip*>(m_selectedClip))
             isCharacter = true;
 #endif
+        if (dynamic_cast<PngPuppetClip*>(m_selectedClip))
+            isCharacter = true;
         if (!isCharacter) {
             if (auto* vc = dynamic_cast<VideoClip*>(m_selectedClip))
                 if (vc->isVideoCharacter())

@@ -70,6 +70,7 @@ add_library(roundtable_ui STATIC
     panels/properties/PropertiesPanelUI.cpp
     panels/properties/PropertiesPanelApply.cpp
     panels/properties/PropertiesPanelSpine.cpp
+    panels/properties/PropertiesPanelPuppet.cpp
     panels/properties/PropertiesPanelTransitions.cpp
     panels/properties/PropertiesPanelVideo.cpp
     panels/properties/PropertiesPanelAudio.cpp
@@ -133,6 +134,9 @@ add_library(roundtable_ui STATIC
     panels/characters/CharacterThumbnailCache.cpp
     panels/characters/CharacterShotPanel.cpp
     panels/characters/CharactersPanel.cpp
+    panels/characters/PuppetLibrary.cpp
+    panels/characters/PuppetLibraryPanel.cpp
+    panels/characters/PuppetCreatorDialog.cpp
     panels/library/LibraryPanel.cpp
     panels/backgrounds/BackgroundDownloadPanel.cpp
     panels/backgrounds/BackgroundDownloadUI.cpp

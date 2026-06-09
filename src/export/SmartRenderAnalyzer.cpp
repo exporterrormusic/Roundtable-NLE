@@ -152,7 +152,7 @@ SmartRenderPlan analyzeSmartRender(
         int64_t localOffset = tick - clip->timelineIn();
         int64_t sourceTick = clip->sourceIn() + localOffset;
         double sourceSeconds = static_cast<double>(sourceTick) / kTicksPerSecond;
-        int64_t sourceFrame = static_cast<int64_t>(sourceSeconds * vc->sourceFps());
+        int64_t sourceFrame = std::llround(sourceSeconds * vc->sourceFps());
 
         PassthroughFrame pf;
         pf.mediaPath = vc->mediaPath();

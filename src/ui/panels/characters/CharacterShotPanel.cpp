@@ -5,6 +5,7 @@
 #include "CharacterShotPanel.h"
 #include "CharacterBrowser.h"
 #include "panels/project/ConversionPanel.h"
+#include "panels/characters/PuppetLibraryPanel.h"
 #include "ShotComposer.h"
 #include "Theme.h"
 
@@ -61,7 +62,7 @@ void CharacterShotPanel::setAnimVideoCache(AnimationVideoCache* cache)
 void CharacterShotPanel::setMode(Mode mode)
 {
     int idx = static_cast<int>(mode);
-    if (idx >= 0 && idx < 4 && m_railButtons[idx]) {
+    if (idx >= 0 && idx < 5 && m_railButtons[idx]) {
         m_railButtons[idx]->setChecked(true);
         m_contentStack->setCurrentIndex(idx);
     }
@@ -144,12 +145,13 @@ void CharacterShotPanel::setupUI()
     struct RailEntry { const char* icon; const char* label; const char* tip; };
     RailEntry entries[] = {
         {"\U0001F4DA", "LIBRARY",  "Browse, search & download characters"},
+        {"\U0001F3AD", "CUSTOM",   "Create custom characters from 4 images"},
         {"\U0001F504", "CONVERT",  "Manage Spine animation video conversion"},
         {"\U0001F3AC", "COMPOSE",  "Build shots from characters & backgrounds"},
         {"\u2699",     "SETTINGS", "Character & shot settings"},
     };
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         auto* btn = new QPushButton(QString::fromUtf8(entries[i].icon));
         btn->setToolTip(QString::fromUtf8(entries[i].tip));
         btn->setFixedSize(128, 84);
@@ -171,7 +173,7 @@ void CharacterShotPanel::setupUI()
         m_railLabels[i] = lbl;
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);
 
-        if (i < 3)
+        if (i < 4)
             addRailDivider(railLayout);
     }
 
@@ -193,13 +195,17 @@ void CharacterShotPanel::setupUI()
     m_characterBrowser = new CharacterBrowser(this);
     m_contentStack->addWidget(m_characterBrowser);   // index 0
 
-    // ── Page 1: CONVERT — ConversionPanel ────────────────────────
-    m_conversionPanel = new ConversionPanel(this);
-    m_contentStack->addWidget(m_conversionPanel);    // index 1
+    // ── Page 1: PUPPETS — PNG puppet creator/manager ────────────────────
+    m_puppetLibraryPanel = new PuppetLibraryPanel(this);
+    m_contentStack->addWidget(m_puppetLibraryPanel); // index 1
 
-    // ── Page 2: COMPOSE — ShotComposer ──────────────────────────────────
+    // ── Page 2: CONVERT — ConversionPanel ────────────────────────
+    m_conversionPanel = new ConversionPanel(this);
+    m_contentStack->addWidget(m_conversionPanel);    // index 2
+
+    // ── Page 3: COMPOSE — ShotComposer ──────────────────────────────────
     m_shotComposer = new ShotComposer(this);
-    m_contentStack->addWidget(m_shotComposer);       // index 2
+    m_contentStack->addWidget(m_shotComposer);       // index 3
 
     // ── Shots column (sidebar between rail and content, COMPOSE-only) ──
     m_shotsColumnWidget = m_shotComposer->shotsColumn();
@@ -222,23 +228,29 @@ void CharacterShotPanel::setupUI()
         m_showFilterWidget->setVisible(false);
     }
 
-    // ── Page 3: SETTINGS ────────────────────────────────────────
-    m_contentStack->addWidget(createSettingsPage());  // index 3
+    // ── Page 4: SETTINGS ────────────────────────────────────────
+    m_contentStack->addWidget(createSettingsPage());  // index 4
 
     // Wire rail buttons to page switching
     connect(m_railGroup, &QButtonGroup::idClicked,
             this, [this](int id) {
         m_contentStack->setCurrentIndex(id);
-        static const char* modeNames[] = {"LIBRARY", "CONVERT", "COMPOSE", "SETTINGS"};
-        if (id >= 0 && id < 4)
+        static const char* modeNames[] = {"LIBRARY", "CUSTOM", "CONVERT", "COMPOSE", "SETTINGS"};
+        if (id >= 0 && id < 5)
             spdlog::debug("CharacterShotPanel: switched to {}", modeNames[id]);
-        // Auto show/hide letter nav when switching to/from Library
-        if (id == Library) {
+        // Auto show/hide letter nav when switching to/from Library or Custom
+        // (both have an A-Z–navigable character list). Start each visit with a
+        // clean A-Z selection so a stale letter from another page doesn't leave
+        // the CUSTOM list filtered behind the scenes.
+        if (id == Library || id == Puppets) {
             if (!m_letterPanelVisible)
                 showLetterPanel();
+            if (m_activeLetterBtn) { m_activeLetterBtn->setChecked(false); m_activeLetterBtn = nullptr; }
         } else {
             hideLetterPanel();
         }
+        if (id != Puppets && m_puppetLibraryPanel)
+            m_puppetLibraryPanel->filterByLetter(QChar());  // drop any CUSTOM filter
         // Show shots column only in COMPOSE mode
         if (m_shotsColumnWidget)
             m_shotsColumnWidget->setVisible(id == Compose);
@@ -292,6 +304,16 @@ void CharacterShotPanel::setupUI()
             m_shotComposer->refreshShotList();
         }
     });
+
+    // When a puppet is created/edited/deleted in the PUPPETS sub-page, refresh
+    // the COMPOSE Puppets library tab so it appears there immediately.
+    if (m_puppetLibraryPanel) {
+        connect(m_puppetLibraryPanel, &PuppetLibraryPanel::puppetsChanged,
+                this, [this]() {
+            if (m_shotComposer)
+                m_shotComposer->refreshPuppetLibrary();
+        });
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -398,14 +420,31 @@ void CharacterShotPanel::buildLetterSidePanel()
 
         QChar letter = (i == 0) ? QChar('#') : QChar('A' + (i - 1));
         connect(btn, &QPushButton::clicked, this, [this, btn, letter]() {
+            const int page = m_contentStack ? m_contentStack->currentIndex() : Library;
+
+            // Re-clicking the active letter clears it. A checkable button has
+            // already toggled itself off by the time clicked() fires, so an
+            // unchecked active button means "deselect" → clear the CUSTOM filter.
+            if (m_activeLetterBtn == btn && !btn->isChecked()) {
+                m_activeLetterBtn = nullptr;
+                if (m_puppetLibraryPanel)
+                    m_puppetLibraryPanel->filterByLetter(QChar());  // show all
+                return;
+            }
+
             // Uncheck previous active
             if (m_activeLetterBtn && m_activeLetterBtn != btn)
                 m_activeLetterBtn->setChecked(false);
             m_activeLetterBtn = btn;
             btn->setChecked(true);
 
-            if (m_characterBrowser)
+            // Route to whichever character list is currently showing.
+            if (page == Puppets) {
+                if (m_puppetLibraryPanel)
+                    m_puppetLibraryPanel->filterByLetter(letter);
+            } else if (m_characterBrowser) {
                 m_characterBrowser->scrollToLetter(letter);
+            }
         });
 
         // Each button gets equal stretch so they fill the bar vertically

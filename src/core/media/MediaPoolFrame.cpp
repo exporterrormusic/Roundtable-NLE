@@ -462,12 +462,15 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     }
 
     // Nearby-frame reuse in non-blocking playback.
-    // For packed-alpha character media, allow a wider search radius so we
-    // return a nearby cached frame instead of nullptr during warm-up.
-    // This avoids long runs of invisible characters when exact frame prefetch
-    // lags behind. For non-packed content keep the tight ±1 radius.
-    const int nearbyRadius = isPackedAlpha ? 6 : 1;
+    // Use a modest radius (±3) so the compositor can make forward progress
+    // during the initial playback burst when only frame 0 is cached.
+    // Packed-alpha content keeps a wider radius (±6) because character
+    // media is more expensive to decode and warms up slower.
+    // Search FORWARD first (frame+d) to prefer making visual progress
+    // over going backward, which avoids the "stuck on first frame" freeze.
+    const int nearbyRadius = isPackedAlpha ? 6 : 3;
     for (int d = 1; d <= nearbyRadius; ++d) {
+        // Forward first — prefer advancing the display over repeating old frames
         cached = m_cache->get(handle, frameNumber + d, tier);
         if (cached) {
             m_perf.nearbyHits.fetch_add(1, std::memory_order_relaxed);

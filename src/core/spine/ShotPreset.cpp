@@ -422,6 +422,10 @@ std::string ShotPreset::toJson() const
             o << "      \"videoMutePath\": \"" << jsonEscape(ch.videoMutePath) << "\",\n";
         if (!ch.videoTalkPath.empty())
             o << "      \"videoTalkPath\": \"" << jsonEscape(ch.videoTalkPath) << "\",\n";
+        if (!ch.puppetFolder.empty()) {
+            o << "      \"puppetFolder\": \"" << jsonEscape(ch.puppetFolder) << "\",\n";
+            o << "      \"puppetVariant\": \"" << jsonEscape(ch.puppetVariant) << "\",\n";
+        }
         o << "      \"posX\": " << ch.posX << ",\n";
         o << "      \"posY\": " << ch.posY << ",\n";
         o << "      \"scale\": " << ch.scale << ",\n";
@@ -569,6 +573,8 @@ std::optional<ShotPreset> ShotPreset::fromJson(const std::string& json)
                     else if (fkey == "isTalking")     { auto vt = lex.next(); ch.isTalking = (vt == JTok::True); }
                     else if (fkey == "videoMutePath") { lex.next(); ch.videoMutePath = lex.sval; }
                     else if (fkey == "videoTalkPath") { lex.next(); ch.videoTalkPath = lex.sval; }
+                    else if (fkey == "puppetFolder")  { lex.next(); ch.puppetFolder = lex.sval; }
+                    else if (fkey == "puppetVariant") { lex.next(); ch.puppetVariant = lex.sval; }
                     else if (fkey == "posX")          { lex.next(); ch.posX = static_cast<float>(lex.nval); }
                     else if (fkey == "posY")          { lex.next(); ch.posY = static_cast<float>(lex.nval); }
                     else if (fkey == "scale")         { lex.next(); ch.scale = static_cast<float>(lex.nval); }

@@ -428,6 +428,22 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     std::vector<OwnedPacket> allPackets;
     bool cancelled = false;
 
+    // ── Smart Render passthrough run state ──────────────────────────────
+    // A copied-packet run is only a decodable output GOP if it BEGINS on a
+    // source keyframe and the copied frames are contiguous in source order.
+    // Starting a run on a P/B frame — which happens whenever a clip's
+    // in-point is not GOP-aligned (the common case for long-GOP H.264) —
+    // emits packets that reference frames the output stream never contains,
+    // so the player drops them until the next keyframe.  That is exactly the
+    // "exported clip skips its first frames / jumps into the middle" bug.
+    // We therefore only pass a packet through when it is a keyframe (valid
+    // run start) or it directly continues the current run; otherwise the
+    // frame falls through to composite + re-encode.  This only ever shifts
+    // work from passthrough to re-encode, so it cannot make output worse
+    // than a full re-encode.
+    std::string ptRunMedia;
+    int64_t     ptExpectedSrc = -1;
+
     for (int64_t f = startFrame; f < endFrame; ++f) {
         // Check cancellation
         auto it = m_cancelFlags.find(job.id);
@@ -447,18 +463,39 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
             if (dmxIt != demuxers.end() && dmxIt->second) {
                 EncodedPacket rawPkt{};
                 if (dmxIt->second->readFrame(pf.sourceFrame, rawPkt)) {
-                    // Restamp PTS/DTS to output timeline
-                    rawPkt.pts = frameIdx;
-                    rawPkt.dts = frameIdx;
-                    rawPkt.duration = 1;
+                    // A passthrough packet may only be emitted if it keeps the
+                    // output GOP decodable: it is a source keyframe (a valid
+                    // run start) OR it contiguously continues the current run
+                    // from the same source file.  Otherwise the emitted stream
+                    // would begin mid-GOP and the player would drop the clip's
+                    // leading frames until the next keyframe.
+                    const bool validStart = rawPkt.isKeyframe;
+                    const bool validContinue =
+                        (pf.mediaPath == ptRunMedia &&
+                         pf.sourceFrame == ptExpectedSrc);
+                    if (validStart || validContinue) {
+                        // Restamp PTS/DTS to output timeline
+                        rawPkt.pts = frameIdx;
+                        rawPkt.dts = frameIdx;
+                        rawPkt.duration = 1;
 
-                    allPackets.push_back(makeOwnedPacket(rawPkt));
-                    updateProgress(f);
-                    continue;
+                        allPackets.push_back(makeOwnedPacket(rawPkt));
+                        ptRunMedia    = pf.mediaPath;
+                        ptExpectedSrc = pf.sourceFrame + 1;
+                        updateProgress(f);
+                        continue;
+                    }
+                    // Non-keyframe run start (clip in-point not GOP-aligned):
+                    // fall through to re-encode so the leading frames survive.
                 }
                 // Fall through to normal render if read failed
             }
         }
+        // Reaching here means this frame is composited + re-encoded, which
+        // breaks any in-progress passthrough run.  The next passthrough frame
+        // must re-validate from a keyframe before copying resumes.
+        ptRunMedia.clear();
+        ptExpectedSrc = -1;
 
         {
         // Render frame. Composited frames are BGRA; the encoder's swscale

@@ -72,7 +72,19 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // (e.g. Half when Full was requested) — export always wants full quality.
     if (m_forceFullResolution.load()) {
         auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);
-        if (frame && frame->frameNumber == frameNumber && frame->tier == tier)
+        // Reject loop-pre-decoded cache entries during export.  The loop
+        // pre-decoder (MediaPoolPrefetchLoop) seeks with SeekMode::Precise
+        // and labels frames sequentially, which the rest of the engine
+        // deliberately avoids (scrub/prefetch use Keyframe seek + forward
+        // decode) because Precise seek mislabels the frames right after each
+        // seek/wrap — i.e. source frame 0, the START of every clip.  Trusting
+        // those entries here baked a 1-frame jump/jitter into the very start
+        // of every video-character (Wells) clip in exports, even though
+        // playback (which sees them only transiently) looked fine.  Force the
+        // isolated forceExact decode for loop frames so export gets the exact
+        // frame.  Regular prefetch frames (keyframe-accurate) are still trusted.
+        if (frame && frame->frameNumber == frameNumber && frame->tier == tier &&
+            !frame->isLoopFrame)
             return frame;
         // getFrame() has an alt-tier fallback (e.g. returns Half when Full
         // was requested).  During export/preview we MUST reject wrong-tier

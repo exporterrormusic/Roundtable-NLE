@@ -52,6 +52,7 @@ void ShotComposer::setPresetsDirectory(const std::filesystem::path& dir)
     refreshShotList();
     refreshBackgroundLibrary();
     refreshVideoLibrary();
+    refreshPuppetLibrary();
 }
 
 void ShotComposer::saveDefaults() const

@@ -8,6 +8,7 @@
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/Transition.h"
 #include "media/AudioFile.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
@@ -93,25 +94,81 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             if (!clip || clip->clipType() != ClipType::Audio) continue;
 
             // Get clip timing relative to render range
-            double clipStart = ticksToSeconds(clip->timelineIn());
-            double clipEnd   = ticksToSeconds(clip->timelineOut());
+            const double clipStartSec = ticksToSeconds(clip->timelineIn());
+            const double clipEndSec   = ticksToSeconds(clip->timelineOut());
 
-            // Skip clips outside render range
-            if (clipEnd <= startSec || clipStart >= endSec) continue;
-
-            // Calculate overlap
-            double overlapStart = std::max(clipStart, startSec);
-            double overlapEnd   = std::min(clipEnd, endSec);
-
-            int64_t mixStartFrame = static_cast<int64_t>((overlapStart - startSec) * config.sampleRate);
-            int64_t mixFrameCount = static_cast<int64_t>((overlapEnd - overlapStart) * config.sampleRate);
-
-            if (mixFrameCount <= 0) continue;
+            // Skip clips outside render range (with extension margins — see below)
+            if (clipEndSec <= startSec || clipStartSec >= endSec) continue;
             if (muted) continue;
 
             // Cast to AudioClip to get media path and properties
             const auto* aclip = dynamic_cast<const AudioClip*>(clip);
             if (!aclip || aclip->mediaPath().empty()) continue;
+
+            // ── Compute transition extensions for crossfades ────────────
+            // Cross-dissolve transitions straddle the edit point: the left
+            // clip needs to be read past its natural end, and the right clip
+            // before its natural start. Without this, the overlap needed for
+            // a crossfade doesn't exist and the transition collapses to
+            // fade-out-to-silence then fade-in.
+            const uint64_t clipId = clip->id();
+            double extBeforeSec = 0.0;
+            double extAfterSec  = 0.0;
+
+            // Build transition fade list: for each transition referencing
+            // this clip, record the timeline range and whether we're the
+            // left (fade-out) or right (fade-in) side.
+            struct TransitionFade {
+                double tStartSec;
+                double tEndSec;
+                bool   isLeft;  // true = fade-out, false = fade-in
+            };
+            std::vector<TransitionFade> transFades;
+
+            for (size_t tri = 0; tri < track->transitionCount(); ++tri) {
+                const Transition* trans = track->transition(tri);
+                if (!trans) continue;
+                int64_t tStart, tEnd;
+                trans->getRange(tStart, tEnd);
+                const int64_t tDur = tEnd - tStart;
+                if (tDur <= 0) continue;
+
+                if (trans->leftClipId == clipId) {
+                    // Fade-out: clip extends past its natural end
+                    const double after = ticksToSeconds(tEnd - clip->timelineOut());
+                    if (after > extAfterSec) extAfterSec = after;
+                    transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), true});
+                }
+                if (trans->rightClipId == clipId) {
+                    // Fade-in: clip extends before its natural start
+                    const double before = ticksToSeconds(clip->timelineIn() - tStart);
+                    if (before > extBeforeSec) extBeforeSec = before;
+                    transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), false});
+                }
+            }
+
+            // ── Extended read range ─────────────────────────────────────
+            // Extend the timeline region by transition pre/post-roll, then
+            // clamp to the render range and source file boundaries.
+            const double readStartSec = std::max(clipStartSec - extBeforeSec, startSec);
+            const double readEndSec   = std::min(clipEndSec   + extAfterSec,  endSec);
+            if (readEndSec <= readStartSec) continue;
+
+            const int64_t mixStartFrame = static_cast<int64_t>((readStartSec - startSec) * config.sampleRate);
+            const int64_t mixFrameCount = static_cast<int64_t>((readEndSec - readStartSec) * config.sampleRate);
+            if (mixFrameCount <= 0) continue;
+
+            // Compute source read offset, backing up by the extension
+            double sourceStartSec = ticksToSeconds(clip->sourceIn());
+            sourceStartSec += (readStartSec - clipStartSec);
+            if (sourceStartSec < 0.0) {
+                // Not enough source before sourceIn; shift the timeline
+                // region forward to stay aligned with available source.
+                // The first 'deficit' seconds of the timeline region will
+                // have no source data — this is handled naturally by the
+                // fade envelope (pre-clip-start samples get gain=0).
+                sourceStartSec = 0.0;
+            }
 
             // Open the audio file
             AudioFile audioFile;
@@ -120,16 +177,10 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                 continue;
             }
 
-            // Determine source offset: how far into the source file this clip starts
-            double sourceStartSec = ticksToSeconds(clip->sourceIn());
-            // Adjust if the render range starts partway through the clip
-            sourceStartSec += (overlapStart - clipStart);
-
             uint32_t srcRate = audioFile.info().sampleRate;
             uint16_t srcCh   = audioFile.info().channels;
 
             int64_t srcStartFrame = static_cast<int64_t>(sourceStartSec * srcRate);
-            // How many source frames to read (account for sample rate difference)
             int64_t srcFrameCount = static_cast<int64_t>(
                 static_cast<double>(mixFrameCount) * srcRate / config.sampleRate);
 
@@ -158,17 +209,68 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             }
 
             // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────
-            // Process on a CLONE so the live clip's filter/envelope state is
-            // never touched by the offline render. Runs at the source rate /
-            // channel count, before volume/pan and any resampling.
             if (aclip->audioFx().isActive()) {
                 auto chain = aclip->audioFx().clone();
                 chain.prepare(srcRate, srcCh);
                 chain.process(srcSamples.data(), static_cast<int>(framesRead));
             }
 
-            // Get volume (evaluate at clip start; for full keyframe support
-            // we'd evaluate per-sample, but this gives correct static volume)
+            // ── Build per-sample fade envelope ──────────────────────────
+            // Combines: per-clip fade in/out + transition crossfades.
+            // Applied multiplicatively to each source sample before mixing.
+            const double fadeInSec  = ticksToSeconds(aclip->fadeInDuration());
+            const double fadeOutSec = ticksToSeconds(aclip->fadeOutDuration());
+
+            // Pre-compute fade gains for each source frame
+            const int64_t framesToMix = std::min(mixFrameCount,
+                static_cast<int64_t>(framesRead * config.sampleRate / srcRate));
+            std::vector<float> fadeGains(static_cast<size_t>(framesToMix), 1.0f);
+
+            for (int64_t f = 0; f < framesToMix; ++f) {
+                // Timeline position of this output sample
+                const double tSec = readStartSec +
+                    static_cast<double>(f) / static_cast<double>(config.sampleRate);
+                float gain = 1.0f;
+
+                // ── Per-clip fade in ────────────────────────────────────
+                if (fadeInSec > 0.0) {
+                    const double fadePos = tSec - clipStartSec;
+                    if (fadePos < 0.0) {
+                        gain = 0.0f;  // pre-roll before clip (right-side transition)
+                    } else if (fadePos < fadeInSec) {
+                        gain *= static_cast<float>(fadePos / fadeInSec);
+                    }
+                }
+
+                // ── Per-clip fade out ───────────────────────────────────
+                if (fadeOutSec > 0.0) {
+                    const double fadePos = clipEndSec - tSec;
+                    if (fadePos < 0.0) {
+                        gain = 0.0f;  // post-roll after clip (left-side transition)
+                    } else if (fadePos < fadeOutSec) {
+                        gain *= static_cast<float>(fadePos / fadeOutSec);
+                    }
+                }
+
+                // ── Transition crossfades ───────────────────────────────
+                for (const auto& tf : transFades) {
+                    if (tSec >= tf.tStartSec && tSec < tf.tEndSec) {
+                        const double dur = tf.tEndSec - tf.tStartSec;
+                        const double t = (tSec - tf.tStartSec) / dur;
+                        if (tf.isLeft) {
+                            // Fade-out: 1.0 → 0.0
+                            gain *= static_cast<float>(1.0 - std::clamp(t, 0.0, 1.0));
+                        } else {
+                            // Fade-in: 0.0 → 1.0
+                            gain *= static_cast<float>(std::clamp(t, 0.0, 1.0));
+                        }
+                    }
+                }
+
+                fadeGains[static_cast<size_t>(f)] = gain;
+            }
+
+            // ── Volume and pan ──────────────────────────────────────────
             float volume = aclip->volume().evaluate(clip->timelineIn()) * config.masterVolume;
             float clipPan = aclip->pan().evaluate(clip->timelineIn());
 
@@ -176,48 +278,52 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             float* dst = result.samples.data() + mixStartFrame * config.channels;
             const float* src = srcSamples.data();
 
-            // Determine how many frames to actually mix (clamped to what we read
-            // and adjusted for potential sample rate difference)
-            int64_t framesToMix = std::min(mixFrameCount,
-                                           static_cast<int64_t>(framesRead * config.sampleRate / srcRate));
-            framesToMix = std::min(framesToMix, totalFrames - mixStartFrame);
+            int64_t actualMix = std::min(framesToMix, totalFrames - mixStartFrame);
 
             // Compute stereo pan gains
             const float panL = std::min(1.0f, 1.0f - clipPan);
             const float panR = std::min(1.0f, 1.0f + clipPan);
 
             if (srcRate == config.sampleRate && srcCh == config.channels) {
-                // Fast path: same rate, same channels — add with volume + pan
+                // Fast path: same rate, same channels
                 if (config.channels == 2) {
-                    for (int64_t f = 0; f < framesToMix; ++f) {
+                    for (int64_t f = 0; f < actualMix; ++f) {
                         int64_t si = f * 2;
                         int64_t di = f * 2;
                         if (si + 1 < static_cast<int64_t>(srcSamples.size())) {
-                            dst[di]     += src[si]     * volume * panL;
-                            dst[di + 1] += src[si + 1] * volume * panR;
+                            const float g = fadeGains[static_cast<size_t>(f)] * volume;
+                            dst[di]     += src[si]     * g * panL;
+                            dst[di + 1] += src[si + 1] * g * panR;
                         }
                     }
                 } else {
-                    for (int64_t s = 0; s < framesToMix * config.channels; ++s) {
-                        if (s < static_cast<int64_t>(srcSamples.size()))
-                            dst[s] += src[s] * volume;
+                    for (int64_t f = 0; f < actualMix; ++f) {
+                        int64_t s = f * static_cast<int64_t>(config.channels);
+                        if (s < static_cast<int64_t>(srcSamples.size())) {
+                            const float g = fadeGains[static_cast<size_t>(f)] * volume;
+                            for (uint16_t ch = 0; ch < config.channels; ++ch) {
+                                if (s + ch < static_cast<int64_t>(srcSamples.size()))
+                                    dst[s + ch] += src[s + ch] * g;
+                            }
+                        }
                     }
                 }
             } else {
-                // General path: simple nearest-neighbour resampling + channel mapping
-                for (int64_t f = 0; f < framesToMix; ++f) {
+                // General path: resampling + channel mapping
+                for (int64_t f = 0; f < actualMix; ++f) {
                     int64_t srcIdx = static_cast<int64_t>(
                         static_cast<double>(f) * srcRate / config.sampleRate);
                     if (srcIdx >= framesRead) break;
 
+                    const float g = fadeGains[static_cast<size_t>(f)] * volume;
                     for (uint16_t ch = 0; ch < config.channels; ++ch) {
-                        uint16_t srcChan = (ch < srcCh) ? ch : 0; // mono→stereo: duplicate
+                        uint16_t srcChan = (ch < srcCh) ? ch : 0;
                         int64_t si = srcIdx * srcCh + srcChan;
                         int64_t di = f * config.channels + ch;
                         if (si < static_cast<int64_t>(srcSamples.size()) &&
                             (mixStartFrame * config.channels + di) <
                                 static_cast<int64_t>(result.samples.size())) {
-                            dst[di] += src[si] * volume;
+                            dst[di] += src[si] * g;
                         }
                     }
                 }

@@ -566,6 +566,7 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Image:      typeName = "Image";      break;
     case ClipType::Graphic:    typeName = "Graphic";    break;
     case ClipType::Caption:    typeName = "Caption";    break;
+    case ClipType::PngPuppet:  typeName = "Puppet";     break;
     default:                   break;
     }
     m_headerLabel->setText(QString::fromStdString(m_clip->label()));
@@ -582,6 +583,7 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Image:      badgeColor = QColor(100, 180, 200); break;
     case ClipType::Adjustment: badgeColor = QColor(180, 180, 180); break;
     case ClipType::Caption:    badgeColor = QColor(70, 200, 170);  break;
+    case ClipType::PngPuppet:  badgeColor = QColor(220, 110, 160); break;
     default:                   badgeColor = QColor(150, 150, 150); break;
     }
     {
@@ -747,6 +749,10 @@ void PropertiesPanel::populateFromClip()
 
             m_animationSection->setTitle("Animation");
         }
+    }
+    else if (m_clip->clipType() == ClipType::PngPuppet)
+    {
+        populateFromPuppet();
     }
     else if (m_clip->clipType() == ClipType::Audio)
     {

@@ -864,6 +864,8 @@ void TimelineWorkspace::createPanelWidgets()
         menu.addSeparator();
         QAction* closeAction  = menu.addAction("Close");
         closeAction->setEnabled(m_openSequenceTabs.size() > 1);
+        QAction* closeOthersAction = menu.addAction("Close Other Tabs");
+        closeOthersAction->setEnabled(m_openSequenceTabs.size() > 1);
 
         QAction* chosen = menu.exec(m_sequenceTabBar->mapToGlobal(pos));
         if (chosen == renameAction) {
@@ -883,6 +885,16 @@ void TimelineWorkspace::createPanelWidgets()
             } else {
                 refreshSequenceTabs();
             }
+        } else if (chosen == closeOthersAction) {
+            // Close every other open sequence, keeping only the right-clicked
+            // one (Premiere's "Close Other Tabs"). The kept tab becomes active.
+            if (m_openSequenceTabs.size() <= 1) return;
+            const bool keptWasActive = (m_project->activeSequenceIndex() == seqIdx);
+            m_openSequenceTabs.clear();
+            m_openSequenceTabs.insert(seqIdx);
+            refreshSequenceTabs();
+            if (!keptWasActive)
+                emit sequenceTabChanged(seqIdx);
         }
     });
     centerLayout->addWidget(m_sequenceTabBar);

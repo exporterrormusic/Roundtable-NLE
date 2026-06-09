@@ -25,6 +25,7 @@ namespace rt {
 
 class BackgroundDownloadPanel;
 class CharactersPanel;
+class PuppetLibraryPanel;
 class MediaDragTreeWidget;
 class ModelManager;
 class AnimationVideoCache;
@@ -84,6 +85,7 @@ private:
 
     QTabWidget*          m_tabs{nullptr};
     CharactersPanel*     m_characters{nullptr};
+    PuppetLibraryPanel*  m_puppets{nullptr};
 
     bool                 m_iconMode{false};
     QToolButton*         m_btnDetail{nullptr};
