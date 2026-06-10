@@ -94,7 +94,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
             case ResolutionTier::Quarter: maxDim =  480; break;
             default:                      maxDim = 1920; break;
         }
-        const int contentH = (task.packedAlpha && h > 1) ? h / 2 : h;
+        const int contentH = task.info.contentHeight(h);
         int dstW = w, dstH = h;
         // exportFullRes (export decode) skips the tier cap → native resolution.
         if (!task.exportFullRes && (w > maxDim || contentH > maxDim)) {

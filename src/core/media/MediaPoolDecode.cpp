@@ -312,9 +312,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // The tier clamp must use the NOMINAL height so export/Full tier
         // doesn't crush a 1888-tall character to ~960 because the packed
         // frame (e.g. 3776) exceeds the 1920 Full-tier cap.
-        const int contentH = (entry.info.packedAlpha && h > 1)
-            ? (h / std::max(1, entry.info.packedTiles))
-            : h;
+        const int contentH = entry.info.contentHeight(h);
         int dstW = w, dstH = h;
         if (w > maxDim || contentH > maxDim) {
             const float scale = std::min(
@@ -346,17 +344,23 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             if (gpu.isInitialized()) {
                 Nv12Converter* conv = gpu.nv12Converter(
                     static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH));
-                if (conv && conv->convertSyncScaled(
+                // convertAndReadback* (NOT convertSyncScaled+readbackOutput):
+                // the converter is SHARED per (dstW,dstH) and only the
+                // convertAndReadback wrappers hold m_apiMutex across the
+                // convert + readback pair.  Split calls let another thread's
+                // convert overwrite the output texture between our dispatch
+                // and our readback (wrong-content frames).
+                if (conv && conv->convertAndReadbackNV12Scaled(
                         decoded.data[0], decoded.linesize[0],
                         decoded.data[1], decoded.linesize[1],
                         static_cast<uint32_t>(w), static_cast<uint32_t>(h),
-                        static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH)))
+                        static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH),
+                        cached->pixels))
                 {
                     cached->width  = static_cast<uint32_t>(dstW);
                     cached->height = static_cast<uint32_t>(dstH);
                     cached->stride = static_cast<uint32_t>(dstW) * 4;
                     cached->origin = ConverterOrigin::GpuShader;
-                    conv->readbackOutput(cached->pixels);
                     goto nv12_done;   // skip sws_scale path
                 }
             }
@@ -378,18 +382,20 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             if (gpu.isInitialized()) {
                 Nv12Converter* conv = gpu.nv12Converter(
                     static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH));
-                if (conv && conv->convertYuv420pSyncScaled(
+                // See NV12 branch above: must use the locked
+                // convert-and-readback wrapper on the shared converter.
+                if (conv && conv->convertAndReadbackYuv420pScaled(
                         decoded.data[0], decoded.linesize[0],
                         decoded.data[1], decoded.linesize[1],
                         decoded.data[2], decoded.linesize[2],
                         static_cast<uint32_t>(w), static_cast<uint32_t>(h),
-                        static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH)))
+                        static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH),
+                        cached->pixels))
                 {
                     cached->width  = static_cast<uint32_t>(dstW);
                     cached->height = static_cast<uint32_t>(dstH);
                     cached->stride = static_cast<uint32_t>(dstW) * 4;
                     cached->origin = ConverterOrigin::GpuShader;
-                    conv->readbackOutput(cached->pixels);
                     goto nv12_done;   // skip sws_scale path
                 }
             }

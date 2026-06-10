@@ -709,14 +709,84 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
     }
     if (insertSpan <= 0) return nullptr;
 
-    // Tracks that will actually receive a pasted clip (valid index AND
-    // targeted — same gate as the add loop below). They must ripple to
+    // ── Destination tracks: V1/A1-anchored, create overflow tracks ──────
+    // Same mapping as paste(): clips land relative to V1 (bottom video) /
+    // A1 (top audio) via each entry's captured trackOffset, NOT its
+    // absolute source index — so a cross-sequence insert-paste fills from
+    // V1 instead of landing on (or dropping off) mismatched indices.
+    // Overflow tracks are created up-front and EXECUTED immediately;
+    // CompoundCommand requires all addExecuted entries to precede the
+    // deferred addCommand ones, which holds because nothing below has
+    // been added yet.
+    {
+        int maxVideoOff = -1, maxAudioOff = -1;
+        for (const auto& e : clipboard.entries) {
+            if (!e.clip) continue;
+            if (e.clip->clipType() == ClipType::Audio)
+                maxAudioOff = std::max(maxAudioOff, e.trackOffset);
+            else if (e.clip->clipType() != ClipType::Caption)
+                maxVideoOff = std::max(maxVideoOff, e.trackOffset);
+        }
+        {
+            const auto vids = realVideoTracks(timeline);
+            int need = (maxVideoOff + 1) - static_cast<int>(vids.size());
+            const bool capTop = !vids.empty() ? false
+                : (timeline.trackCount() > 0 && timeline.track(0)
+                   && timeline.track(0)->isCaptionTrack());
+            size_t topInsert = vids.empty() ? (capTop ? 1u : 0u) : vids.front();
+            for (int k = 0; k < need; ++k) {
+                auto cmd = std::make_unique<AddTrackCommand>(
+                    &timeline, std::make_unique<Track>(TrackType::Video, ""), topInsert);
+                cmd->execute();
+                compound->addExecuted(std::move(cmd));
+            }
+        }
+        {
+            const auto auds = realAudioTracks(timeline);
+            int need = (maxAudioOff + 1) - static_cast<int>(auds.size());
+            for (int k = 0; k < need; ++k) {
+                auto cmd = std::make_unique<AddTrackCommand>(
+                    &timeline, std::make_unique<Track>(TrackType::Audio, ""),
+                    timeline.trackCount());
+                cmd->execute();
+                compound->addExecuted(std::move(cmd));
+            }
+        }
+    }
+    const auto finalVids = realVideoTracks(timeline);
+    const auto finalAuds = realAudioTracks(timeline);
+    const size_t capIdx  = captionTrackIndex(timeline);
+
+    // Resolve each entry's destination track once (V1/A1-anchored; caption
+    // cues go to the pinned caption track).  SIZE_MAX = no valid host.
+    auto resolveDest = [&](const ClipboardContents::Entry& entry) -> size_t {
+        if (!entry.clip) return SIZE_MAX;
+        if (entry.clip->clipType() == ClipType::Caption)
+            return capIdx;   // SIZE_MAX when there is no caption track
+        if (entry.clip->clipType() == ClipType::Audio) {
+            if (finalAuds.empty()) return SIZE_MAX;
+            int off = std::clamp(entry.trackOffset, 0,
+                                 static_cast<int>(finalAuds.size()) - 1);
+            return finalAuds[static_cast<size_t>(off)];             // A1 = front
+        }
+        if (finalVids.empty()) return SIZE_MAX;
+        int off = std::clamp(entry.trackOffset, 0,
+                             static_cast<int>(finalVids.size()) - 1);
+        return finalVids[finalVids.size() - 1 - static_cast<size_t>(off)]; // V1 = back
+    };
+    std::vector<size_t> destFor(clipboard.entries.size(), SIZE_MAX);
+    for (size_t i = 0; i < clipboard.entries.size(); ++i)
+        destFor[i] = resolveDest(clipboard.entries[i]);
+
+    // Tracks that will actually receive a pasted clip (valid destination
+    // AND targeted — same gate as the add loop below). They must ripple to
     // make room regardless of their sync-lock state.
     std::unordered_set<size_t> contentTracks;
-    for (const auto& entry : clipboard.entries) {
-        if (entry.trackIndex >= timeline.trackCount()) continue;
-        const Track* t = timeline.track(entry.trackIndex);
-        if (t && t->isTargeted()) contentTracks.insert(entry.trackIndex);
+    for (size_t i = 0; i < clipboard.entries.size(); ++i) {
+        const size_t destIdx = destFor[i];
+        if (destIdx >= timeline.trackCount()) continue;
+        const Track* t = timeline.track(destIdx);
+        if (t && t->isTargeted()) contentTracks.insert(destIdx);
     }
 
     // First: shift existing clips at/after the playhead to the right.
@@ -753,19 +823,64 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
     uint64_t nextGid = freshGroupIdBase(timeline);
     std::unordered_map<uint64_t, uint64_t> gidRemap;
     std::unordered_map<uint64_t, uint64_t> linkRemap;
-    for (const auto& entry : clipboard.entries)
+    // Map original source-clip ids → freshly cloned ids (and dest track) so
+    // copied transitions can be re-anchored to the inserted clips.  Clone
+    // ids are assigned at clone() time, so they're valid before execute().
+    std::unordered_map<uint64_t, uint64_t> clipIdRemap;
+    std::unordered_map<uint64_t, size_t>   newClipTrack;
+    for (size_t i = 0; i < clipboard.entries.size(); ++i)
     {
-        if (entry.trackIndex >= timeline.trackCount()) continue;
-        Track* track = timeline.track(entry.trackIndex);
+        const auto& entry = clipboard.entries[i];
+        const size_t destIdx = destFor[i];
+        if (destIdx >= timeline.trackCount()) continue;
+        Track* track = timeline.track(destIdx);
         if (!track->isTargeted()) continue;
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
         remapClonedGroupId(*cloned, gidRemap, nextGid);
         remapClonedLinkId(*cloned, linkRemap);
+        const uint64_t newClipId = cloned->id();
 
         compound->addCommand(std::make_unique<AddClipCommand>(
             track, std::move(cloned)));
+
+        if (entry.originalClipId != 0) {
+            clipIdRemap[entry.originalClipId] = newClipId;
+            newClipTrack[newClipId] = destIdx;
+        }
+    }
+
+    // Recreate copied transitions on the inserted clips (parity with
+    // paste()): remap clip ids and the edit point to the paste location.
+    // Skipped if any (non-zero) source clip wasn't inserted.  Deferred via
+    // addCommand so they execute after the clip adds above.
+    for (const auto& te : clipboard.transitions) {
+        uint64_t newLeft = 0, newRight = 0;
+        if (te.transition.leftClipId != 0) {
+            auto it = clipIdRemap.find(te.transition.leftClipId);
+            if (it == clipIdRemap.end()) continue;
+            newLeft = it->second;
+        }
+        if (te.transition.rightClipId != 0) {
+            auto it = clipIdRemap.find(te.transition.rightClipId);
+            if (it == clipIdRemap.end()) continue;
+            newRight = it->second;
+        }
+        const uint64_t anchorId = newLeft ? newLeft : newRight;
+        if (anchorId == 0) continue;
+        auto trkIt = newClipTrack.find(anchorId);
+        if (trkIt == newClipTrack.end()) continue;
+        Track* track = timeline.track(trkIt->second);
+        if (!track) continue;
+
+        Transition t    = te.transition;
+        t.leftClipId    = newLeft;
+        t.rightClipId   = newRight;
+        t.editPointTick = playhead + te.relEditPoint;
+
+        compound->addCommand(
+            std::make_unique<AddTransitionCommand>(track, 0, 0, t));
     }
 
     // Compute the end tick of the pasted content for playhead movement.

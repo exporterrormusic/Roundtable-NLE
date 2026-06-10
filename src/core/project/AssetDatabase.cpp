@@ -12,6 +12,8 @@
 #include <map>
 #include <regex>
 #include <set>
+#include "PathUtils.h"
+
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -25,7 +27,7 @@ void AssetDatabase::scanDirectory(const std::filesystem::path& dir)
 {
     if (!std::filesystem::exists(dir))
     {
-        spdlog::warn("AssetDatabase: directory does not exist: {}", dir.string());
+        spdlog::warn("AssetDatabase: directory does not exist: {}", pathToUtf8(dir));
         return;
     }
 
@@ -33,7 +35,7 @@ void AssetDatabase::scanDirectory(const std::filesystem::path& dir)
     {
         if (!entry.is_regular_file()) continue;
 
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         // Lowercase extension for comparison
         std::transform(ext.begin(), ext.end(), ext.begin(),
             [](unsigned char c) { return std::tolower(c); });
@@ -59,7 +61,7 @@ void AssetDatabase::scanDirectory(const std::filesystem::path& dir)
 
         AssetEntry asset;
         asset.type         = type;
-        asset.name         = entry.path().stem().string();
+        asset.name         = pathToUtf8(entry.path().stem());
         asset.path         = std::filesystem::relative(entry.path(), dir);
         asset.absolutePath = std::filesystem::absolute(entry.path());
 
@@ -72,7 +74,7 @@ void AssetDatabase::scanDirectory(const std::filesystem::path& dir)
         addAsset(std::move(asset));
     }
 
-    spdlog::info("AssetDatabase: scanned {} — {} assets found", dir.string(), m_assets.size());
+    spdlog::info("AssetDatabase: scanned {} — {} assets found", pathToUtf8(dir), m_assets.size());
 }
 
 void AssetDatabase::scanImageSequences(const std::filesystem::path& dir)
@@ -104,12 +106,12 @@ void AssetDatabase::scanImageSequences(const std::filesystem::path& dir)
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
 
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         std::transform(ext.begin(), ext.end(), ext.begin(),
             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (seqExts.find(ext) == seqExts.end()) continue;
 
-        std::string stem = entry.path().stem().string();
+        std::string stem = pathToUtf8(entry.path().stem());
         std::smatch m;
         if (std::regex_match(stem, m, numPattern) && m.size() == 4) {
             SeqKey key{entry.path().parent_path(), m[1].str(), ext};
@@ -129,7 +131,7 @@ void AssetDatabase::scanImageSequences(const std::filesystem::path& dir)
         // Scan for actual file to get exact digit width
         int digitWidth = 1;
         for (const auto& entry : std::filesystem::directory_iterator(key.dir)) {
-            std::string fn = entry.path().stem().string();
+            std::string fn = pathToUtf8(entry.path().stem());
             std::smatch m;
             if (std::regex_match(fn, m, numPattern) && m[1].str() == key.prefix) {
                 digitWidth = static_cast<int>(m[2].str().length());
@@ -163,7 +165,7 @@ void AssetDatabase::scanCharacters(const std::filesystem::path& charDir)
 {
     if (!std::filesystem::exists(charDir))
     {
-        spdlog::warn("AssetDatabase: character directory does not exist: {}", charDir.string());
+        spdlog::warn("AssetDatabase: character directory does not exist: {}", pathToUtf8(charDir));
         return;
     }
 
@@ -172,14 +174,14 @@ void AssetDatabase::scanCharacters(const std::filesystem::path& charDir)
         if (!charEntry.is_directory()) continue;
 
         CharacterAsset character;
-        character.name     = charEntry.path().filename().string();
+        character.name     = pathToUtf8(charEntry.path().filename());
         character.basePath = std::filesystem::relative(charEntry.path(), charDir);
 
         // Scan outfits (subdirectories of the character folder)
         for (const auto& outfitEntry : std::filesystem::directory_iterator(charEntry.path()))
         {
             if (!outfitEntry.is_directory()) continue;
-            character.outfits.push_back(outfitEntry.path().filename().string());
+            character.outfits.push_back(pathToUtf8(outfitEntry.path().filename()));
         }
 
         // Default stances for all characters
@@ -188,7 +190,7 @@ void AssetDatabase::scanCharacters(const std::filesystem::path& charDir)
         m_characters.push_back(std::move(character));
     }
 
-    spdlog::info("AssetDatabase: found {} characters in {}", m_characters.size(), charDir.string());
+    spdlog::info("AssetDatabase: found {} characters in {}", m_characters.size(), pathToUtf8(charDir));
 }
 
 // ── Lookup ──────────────────────────────────────────────────────────────────
@@ -284,7 +286,7 @@ std::vector<uint64_t> AssetDatabase::findOfflineAssets() const
         if (!std::filesystem::exists(asset.absolutePath)) {
             offline.push_back(asset.id);
             spdlog::warn("AssetDatabase: offline media — id={} name='{}' path='{}'",
-                         asset.id, asset.name, asset.absolutePath.string());
+                         asset.id, asset.name, pathToUtf8(asset.absolutePath));
         }
     }
     return offline;
@@ -300,7 +302,7 @@ bool AssetDatabase::relinkAsset(uint64_t id, const std::filesystem::path& newPat
     auto& asset = m_assets[it->second];
     asset.absolutePath = std::filesystem::absolute(newPath);
     spdlog::info("AssetDatabase: relinked asset id={} name='{}' -> '{}'",
-                 id, asset.name, asset.absolutePath.string());
+                 id, asset.name, pathToUtf8(asset.absolutePath));
     return true;
 }
 

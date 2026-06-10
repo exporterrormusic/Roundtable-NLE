@@ -26,6 +26,7 @@
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -44,14 +45,17 @@ static std::string resolveVideoPath(const std::string& path)
 {
     if (path.empty()) return path;
     namespace fs = std::filesystem;
-    fs::path p(path);
+    // mediaPath strings are UTF-8 (the project file stores UTF-8).  The
+    // fs::path(std::string) ctor decodes via the ANSI codepage and silently
+    // mojibakes any non-ANSI character (U+FF5C etc.) — must use utf8ToPath.
+    fs::path p = utf8ToPath(path);
 
     // Wells PROXY workflow: remap any old Wells path to the lightweight HEVC
     // packed-alpha for editing (fast NVDEC scrub/playback).  The export
     // renderer transparently substitutes the ProRes master at render time
     // (see FrameRenderer's wellsExportSource()).
     {
-        std::string filename = p.filename().string();
+        std::string filename = pathToUtf8(p.filename());
         std::string lower = filename;
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return std::tolower(c); });
@@ -70,15 +74,15 @@ static std::string resolveVideoPath(const std::string& path)
             hevcPath.replace_filename(hevcName);
             if (fs::exists(hevcPath)) {
                 spdlog::info("ClipSerialization: Wells migration '{}' -> '{}'",
-                             path, hevcPath.string());
-                return hevcPath.string();
+                             path, pathToUtf8(hevcPath));
+                return pathToUtf8(hevcPath);
             }
         }
     }
 
     if (fs::exists(p)) return path;
 
-    auto ext = p.extension().string();
+    auto ext = pathToUtf8(p.extension());
     fs::path alt;
     if (ext == ".mov")       alt = p.replace_extension(".mp4");
     else if (ext == ".mp4")  alt = p.replace_extension(".mov");
@@ -87,8 +91,8 @@ static std::string resolveVideoPath(const std::string& path)
 
     if (fs::exists(alt)) {
         spdlog::info("ClipSerialization: re-resolved missing '{}' → '{}'",
-                     path, alt.string());
-        return alt.string();
+                     path, pathToUtf8(alt));
+        return pathToUtf8(alt);
     }
     return path;
 }

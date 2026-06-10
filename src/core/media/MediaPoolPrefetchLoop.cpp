@@ -232,7 +232,7 @@ void MediaPool::loopPreDecodeWorker(
         int maxDim = (tier == ResolutionTier::Quarter) ? 480
                    : (tier == ResolutionTier::Half)    ? 960
                    :                                     1920;
-        const int contentH = (packedAlpha && h > 1) ? h / 2 : h;
+        const int contentH = info.contentHeight(h);
         int dW = w, dH = h;
         if (w > maxDim || contentH > maxDim) {
             const float scale = std::min(

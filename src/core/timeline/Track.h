@@ -108,7 +108,24 @@ public:
     [[nodiscard]] std::vector<Clip*> clipsAtTime(int64_t timeTick) const;
 
     // ── Transition management ───────────────────────────────────────────
+
+    /// Add a transition, or REPLACE the existing one on the same edit
+    /// point.  An edit point is identified by the (leftClipId, rightClipId)
+    /// pair — a blind second add used to stack two identical transitions on
+    /// one cut, and the compositor then applied the fade twice (opacity =
+    /// progress², fades read too dark).  Fully-unlinked transitions
+    /// (leftClipId == rightClipId == 0) are always appended: their
+    /// endpoints may simply not have been relinked yet and two of them are
+    /// not provably the same edit point.
+    /// @return index of the added (or replaced-in-place) transition.
     size_t addTransition(Transition t);
+
+    /// Index of the transition on the (leftClipId, rightClipId) edit point,
+    /// or kNoTransition.  (0, 0) always returns kNoTransition — see
+    /// addTransition.
+    static constexpr size_t kNoTransition = static_cast<size_t>(-1);
+    [[nodiscard]] size_t findTransition(uint64_t leftClipId,
+                                        uint64_t rightClipId) const noexcept;
     Transition removeTransition(size_t index);
     void setTransition(size_t index, const Transition& t);
     [[nodiscard]] const Transition* transition(size_t index) const noexcept;

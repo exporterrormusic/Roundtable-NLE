@@ -413,6 +413,19 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
         return;
     if (!m_timeline || !m_mediaPool) return;
 
+    // Serialize against the OTHER caller: compositeFrame() (composite
+    // thread) and doPrewarmPlaybackResources() (prewarm thread) both call
+    // this under different outer mutexes, and the warm-sets below are
+    // plain unordered_sets — concurrent insert/erase corrupts the heap
+    // (same 0xC0000374 class as the fixed m_lastActiveClipIds race).
+    // try_to_lock, not a blocking lock: if the other thread is mid-scan,
+    // this scan is redundant (100 ms throttle, identical work) and
+    // blocking the composite thread behind a decoder open would drop
+    // frames.
+    std::unique_lock lookaheadLock(m_lookaheadMutex, std::try_to_lock);
+    if (!lookaheadLock.owns_lock())
+        return;
+
     using namespace std::chrono;
     auto now = steady_clock::now();
     // Bypass the 100 ms throttle when the playhead has jumped.  Continuous

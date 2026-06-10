@@ -113,7 +113,12 @@ public:
     // ── Cache management ───────────────────────────────────────────────
 
     /// Set the GPU texture cache.  May be null (no caching).
-    void setTextureCache(GpuTextureCache* cache) noexcept { m_texCache = cache; }
+    /// Unhooks the recycle callback from any previously-bound cache (it
+    /// captures `this`) and arms re-installation on the new cache — without
+    /// this, rebinding after a shutdown()/re-init cycle would leave the new
+    /// cache without a recycle hook (A4 texture recycling silently off) and
+    /// the old cache with a callback into a manager that may outlive it.
+    void setTextureCache(GpuTextureCache* cache);
 
     /// Get the current GPU texture cache (may be null).
     [[nodiscard]] GpuTextureCache* textureCache() const noexcept { return m_texCache; }

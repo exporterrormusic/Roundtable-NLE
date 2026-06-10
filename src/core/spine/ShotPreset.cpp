@@ -4,6 +4,7 @@
 
 #include "spine/ShotPreset.h"
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -678,7 +679,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
 
     if (!std::filesystem::exists(presetsDir)) {
         spdlog::info("ShotPresetManager: presets directory does not exist: {}",
-                     presetsDir.string());
+                     pathToUtf8(presetsDir));
         return 0;
     }
 
@@ -700,13 +701,13 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
         std::error_code ec;
         for (const auto& entry : std::filesystem::directory_iterator(presetsDir, ec)) {
             if (entry.is_regular_file()) {
-                auto ext = entry.path().extension().string();
+                auto ext = pathToUtf8(entry.path().extension());
                 if (ext != ".json" && ext != ".JSON") continue;
-                auto stem = entry.path().filename().string();
+                auto stem = pathToUtf8(entry.path().filename());
                 if (!stem.empty() && stem.front() == '_') continue; // config files
                 rootFiles.push_back(entry.path());
             } else if (entry.is_directory()) {
-                const std::string dirName = entry.path().filename().string();
+                const std::string dirName = pathToUtf8(entry.path().filename());
                 if (dirName == "thumbnails" ||
                     (!dirName.empty() && dirName.front() == '_'))
                     continue;
@@ -714,7 +715,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
                 for (const auto& sub :
                          std::filesystem::directory_iterator(entry.path(), ec2)) {
                     if (!sub.is_regular_file()) continue;
-                    auto ext = sub.path().extension().string();
+                    auto ext = pathToUtf8(sub.path().extension());
                     if (ext != ".json" && ext != ".JSON") continue;
                     subFiles.emplace_back(dirName, sub.path());
                 }
@@ -729,7 +730,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
                              std::istreambuf_iterator<char>());
         auto preset = ShotPreset::fromJson(content);
         if (preset && preset->name().empty())
-            preset->setName(path.stem().string());
+            preset->setName(pathToUtf8(path.stem()));
         return preset;
     };
 
@@ -737,7 +738,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
     for (const auto& [showDir, file] : subFiles) {
         auto preset = parse(file);
         if (!preset) {
-            spdlog::warn("ShotPresetManager: failed to parse preset: {}", file.string());
+            spdlog::warn("ShotPresetManager: failed to parse preset: {}", pathToUtf8(file));
             continue;
         }
         preset->setShow(showDir);
@@ -751,7 +752,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
     for (const auto& file : rootFiles) {
         auto preset = parse(file);
         if (!preset) {
-            spdlog::warn("ShotPresetManager: failed to parse preset: {}", file.string());
+            spdlog::warn("ShotPresetManager: failed to parse preset: {}", pathToUtf8(file));
             continue;
         }
         const std::string show = preset->show();
@@ -811,7 +812,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
             saveShows();
     }
 
-    spdlog::info("ShotPresetManager: loaded {} presets from {}", count, presetsDir.string());
+    spdlog::info("ShotPresetManager: loaded {} presets from {}", count, pathToUtf8(presetsDir));
     return count;
 }
 

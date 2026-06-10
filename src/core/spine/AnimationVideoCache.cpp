@@ -14,6 +14,7 @@
 #include "SpineEngine.h"
 #include "SpineAnimation.h"
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -77,7 +78,7 @@ void AnimationVideoCache::scanCacheDirectory()
 
     if (!fs::exists(m_cacheDir)) {
         spdlog::info("AnimCache: cache directory does not exist yet: {}",
-                     m_cacheDir.string());
+                     pathToUtf8(m_cacheDir));
         return;
     }
 
@@ -94,11 +95,11 @@ void AnimationVideoCache::scanCacheDirectory()
 
         for (const auto& charDir : fs::directory_iterator(fmtPath)) {
             if (!charDir.is_directory()) continue;
-            std::string charName = charDir.path().filename().string();
+            std::string charName = pathToUtf8(charDir.path().filename());
 
             for (const auto& outfitDir : fs::directory_iterator(charDir.path())) {
                 if (!outfitDir.is_directory()) continue;
-                std::string outfit = outfitDir.path().filename().string();
+                std::string outfit = pathToUtf8(outfitDir.path().filename());
 
                 // First pass: find and clean up interrupted renders
                 for (const auto& f : fs::directory_iterator(outfitDir.path())) {
@@ -112,7 +113,7 @@ void AnimationVideoCache::scanCacheDirectory()
                         std::error_code ec;
                         if (fs::exists(videoPath, ec)) {
                             spdlog::warn("AnimCache: removing incomplete render: {}",
-                                         videoPath.string());
+                                         pathToUtf8(videoPath));
                             fs::remove(videoPath, ec);
                         }
                     }
@@ -134,13 +135,13 @@ void AnimationVideoCache::scanCacheDirectory()
                     auto fileSize = fs::file_size(videoFile.path());
                     if (fileSize == 0) {
                         spdlog::warn("AnimCache: skipping 0-byte file: {}",
-                                     videoFile.path().string());
+                                     pathToUtf8(videoFile.path()));
                         std::error_code removeEc;
                         fs::remove(videoFile.path(), removeEc);
                         continue;
                     }
 
-                    std::string animName = videoFile.path().stem().string();
+                    std::string animName = pathToUtf8(videoFile.path().stem());
                     std::string key = makeKey(charName, outfit, animName);
 
                     // If we already have an entry for this anim, prefer
@@ -243,7 +244,7 @@ std::string AnimationVideoCache::codecForCharacterOutfit(const std::string& char
     std::lock_guard lock(m_mutex);
     for (const auto& [key, entry] : m_entries) {
         if (entry.characterName == characterName && entry.outfit == outfit) {
-            auto ext = entry.videoPath.extension().string();
+            auto ext = pathToUtf8(entry.videoPath.extension());
             // Normalize to lowercase for comparison
             for (auto& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             if (ext == ".mov")  return "ProRes 4444";
@@ -645,7 +646,7 @@ void AnimationVideoCache::workerLoop()
                             if (fs::exists(oldMov, rmEc)) {
                                 fs::remove(oldMov, rmEc);
                                 spdlog::info("AnimCache: removed old .mov after HEVC migration: {}",
-                                             oldMov.string());
+                                             pathToUtf8(oldMov));
                             }
                         }
                     }
@@ -815,7 +816,7 @@ void AnimationVideoCache::removeAllForCharacter(const std::string& characterName
                              fmtName, characterName);
             else
                 spdlog::warn("AnimCache: failed to delete cache dir '{}': {}",
-                             charCacheDir.string(), ec.message());
+                             pathToUtf8(charCacheDir), ec.message());
         }
     }
 
@@ -890,7 +891,7 @@ void AnimationVideoCache::removeAllForCharacterOutfit(const std::string& charact
                              characterName, outfit, fmtName);
             else
                 spdlog::warn("AnimCache: failed to delete outfit cache dir '{}': {}",
-                             outfitCacheDir.string(), ec.message());
+                             pathToUtf8(outfitCacheDir), ec.message());
         }
     }
 

@@ -78,6 +78,22 @@ struct VideoStreamInfo
     // Timebase for PTS conversion
     int         timebaseNum{1};
     int         timebaseDen{1};
+
+    /// Nominal (visible) content height of a decoded frame.  Packed-alpha
+    /// sources stack tiles vertically (2 = RGB+alpha, 4 = luma-packed
+    /// R/G/B/A), so the content is decodedH / tiles.  ALL resolution-tier
+    /// downscale clamps must use this — the urgent-decode, prefetch and
+    /// loop-pre-decode paths previously each had their own copy of the
+    /// formula and two of them hardcoded "/2", which would produce
+    /// different frame dimensions for the same (handle, frame, tier) the
+    /// day a 4-tile source ships.
+    /// packedAlpha with an unset tile count is treated as the legacy
+    /// 2-tile layout (packedAlpha is defined as "2× height").
+    [[nodiscard]] int contentHeight(int decodedH) const noexcept
+    {
+        if (!packedAlpha || decodedH <= 1) return decodedH;
+        return decodedH / (packedTiles < 2 ? 2 : packedTiles);
+    }
 };
 
 /// Seek mode

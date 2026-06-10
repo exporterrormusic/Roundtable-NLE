@@ -160,10 +160,15 @@ public:
 
 private:
     // ── Owned GPU resources ───────────────────────────────────────────
+    // Declaration order is load-bearing: members are destroyed in REVERSE
+    // order, and m_uploadManager holds a raw GpuTextureCache* plus a
+    // StagingRing&.  The texture cache and staging ring must therefore be
+    // declared BEFORE the upload manager so they outlive it during
+    // destruction (shutdown() also tears down in this order explicitly).
     std::unique_ptr<rt::GpuWorkSubmission> m_gpuSubmission;
     std::unique_ptr<rt::StagingRing> m_stagingRing;
-    std::unique_ptr<rt::GpuUploadManager> m_uploadManager;
     std::unique_ptr<rt::GpuTextureCache> m_gpuTexCache;
+    std::unique_ptr<rt::GpuUploadManager> m_uploadManager;
 
     // Layer texture pool
     //

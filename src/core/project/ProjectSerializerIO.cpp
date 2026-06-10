@@ -14,6 +14,8 @@
 #include "timeline/AudioClip.h"
 
 #include <fstream>
+#include "PathUtils.h"
+
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -33,7 +35,7 @@ bool ProjectSerializer::save(const Project& project, const std::filesystem::path
     std::ofstream file(tmpPath, std::ios::binary);
     if (!file.is_open())
     {
-        spdlog::error("ProjectSerializer: cannot open '{}' for writing", path.string());
+        spdlog::error("ProjectSerializer: cannot open '{}' for writing", pathToUtf8(path));
         return false;
     }
 
@@ -43,7 +45,7 @@ bool ProjectSerializer::save(const Project& project, const std::filesystem::path
 
     if (!file.good())
     {
-        spdlog::error("ProjectSerializer: write error to '{}'", path.string());
+        spdlog::error("ProjectSerializer: write error to '{}'", pathToUtf8(path));
         std::error_code ec;
         std::filesystem::remove(tmpPath, ec);
         return false;
@@ -70,12 +72,12 @@ bool ProjectSerializer::save(const Project& project, const std::filesystem::path
         std::filesystem::remove(tmpPath, ec);
         if (ec)
         {
-            spdlog::error("ProjectSerializer: failed to finalize save to '{}'", path.string());
+            spdlog::error("ProjectSerializer: failed to finalize save to '{}'", pathToUtf8(path));
             return false;
         }
     }
 
-    spdlog::info("Saved project to '{}' ({} bytes)", path.string(), data.size());
+    spdlog::info("Saved project to '{}' ({} bytes)", pathToUtf8(path), data.size());
     return true;
 }
 
@@ -84,7 +86,7 @@ std::unique_ptr<Project> ProjectSerializer::load(const std::filesystem::path& pa
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open())
     {
-        spdlog::error("ProjectSerializer: cannot open '{}' for reading", path.string());
+        spdlog::error("ProjectSerializer: cannot open '{}' for reading", pathToUtf8(path));
         return nullptr;
     }
 
@@ -99,7 +101,7 @@ std::unique_ptr<Project> ProjectSerializer::load(const std::filesystem::path& pa
     if (project)
     {
         project->setFilePath(path);
-        spdlog::info("Loaded project from '{}' ({} bytes)", path.string(), static_cast<size_t>(fileSize));
+        spdlog::info("Loaded project from '{}' ({} bytes)", pathToUtf8(path), static_cast<size_t>(fileSize));
     }
     return project;
 }

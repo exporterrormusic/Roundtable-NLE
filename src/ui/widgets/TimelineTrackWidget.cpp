@@ -457,6 +457,12 @@ void TimelineTrackWidget::paintEvent(QPaintEvent* event)
                 0.0f, static_cast<float>(height()));
             QRectF cr(lr.x, lr.y, lr.width, lr.height);
 
+            // Same visible-neighbourhood clamp as paintClip — unclamped
+            // coordinates on a project-long clip exceed the raster engine's
+            // device-space limit and the overlay silently vanishes.
+            if (cr.left() < -64.0)           cr.setLeft(-64.0);
+            if (cr.right() > width() + 64.0) cr.setRight(width() + 64.0);
+
             // Semi-transparent dark overlay (slight darkening)
             painter.fillRect(cr, QColor(0, 0, 0, 55));
 
@@ -702,6 +708,18 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
 
     QRectF qRect(layoutRect.x, layoutRect.y, layoutRect.width, layoutRect.height);
 
+    // Clamp to the widget's visible neighbourhood.  At deep zoom a
+    // project-long clip is millions of pixels wide; unclamped coordinates
+    // exceed the Qt raster engine's ±32767 DEVICE-space limit (which shrinks
+    // further with display scaling) and primitives are silently dropped —
+    // and the offline cross-hatch loop below would iterate width/12 times.
+    // The painter clips to the widget, so this clamp is visually exact.
+    // (TimelineClipWidget::paint clamps the body the same way internally.)
+    constexpr double kPaintMargin = 64.0;
+    const bool rightEdgeOffscreen = qRect.right() > width() + kPaintMargin;
+    if (qRect.left() < -kPaintMargin)  qRect.setLeft(-kPaintMargin);
+    if (rightEdgeOffscreen)            qRect.setRight(width() + kPaintMargin);
+
     bool selected = m_selectedSet.count(clipIndex) > 0;
 
     bool dragging = m_draggedSet.count(clipIndex) > 0;
@@ -780,8 +798,12 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
     }
 
     // ── Draw "VID" / "LIVE" badge on Spine clips ────────────────────────
+    // Right-edge-anchored badges are skipped when the clip's real right
+    // edge is off-screen (qRect was clamped) — same visibility as before
+    // the clamp, without drawing a floating badge at the viewport edge.
 #ifdef ROUNDTABLE_HAS_SPINE
-    if (clip->clipType() == ClipType::Spine && qRect.width() >= 40 && qRect.height() >= 16) {
+    if (clip->clipType() == ClipType::Spine && !rightEdgeOffscreen &&
+        qRect.width() >= 40 && qRect.height() >= 16) {
         painter.save();
         static const QFont badgeFont("Segoe UI", 7, QFont::Bold);
         painter.setFont(badgeFont);
@@ -852,7 +874,7 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
     }
 
     // ── Draw clip badges (FX, speed, keyframes) ──────────────────────────
-    if (qRect.width() > 30 && qRect.height() > 16)
+    if (!rightEdgeOffscreen && qRect.width() > 30 && qRect.height() > 16)
     {
         static const QFont badgeFont("Segoe UI", 6, QFont::Bold);
         painter.setFont(badgeFont);

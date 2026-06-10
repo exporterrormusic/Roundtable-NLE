@@ -519,6 +519,67 @@ TEST(TransitionCmds, AddAndRemove)
     EXPECT_EQ(track.transitionCount(), 1u);
 }
 
+// A second add on the same (leftClipId, rightClipId) edit point must REPLACE
+// the existing transition, not stack a duplicate — duplicates made the
+// compositor apply the fade twice (opacity = progress², fades too dark).
+TEST(TransitionCmds, AddReplacesDuplicateOnSameEditPoint)
+{
+    Track track(TrackType::Video, "V1");
+
+    Transition t;
+    t.type        = TransitionType::CrossDissolve;
+    t.duration    = 24000;
+    t.leftClipId  = 7;
+    t.rightClipId = 9;
+    EXPECT_EQ(track.addTransition(t), 0u);
+
+    Transition t2 = t;
+    t2.duration = 48000;
+    EXPECT_EQ(track.addTransition(t2), 0u);          // replaced in place
+    EXPECT_EQ(track.transitionCount(), 1u);
+    EXPECT_EQ(track.transition(0)->duration, 48000);
+
+    // Fully-unlinked (0,0) transitions are never merged — their endpoints
+    // may simply not have been relinked yet.
+    Transition unlinkedA;
+    unlinkedA.duration = 100;
+    Transition unlinkedB;
+    unlinkedB.duration = 200;
+    track.addTransition(unlinkedA);
+    track.addTransition(unlinkedB);
+    EXPECT_EQ(track.transitionCount(), 3u);
+}
+
+// Undo of an add that replaced an existing transition must restore the
+// replaced value (not remove an unrelated trailing transition).
+TEST(TransitionCmds, UndoRestoresReplacedTransition)
+{
+    Track track(TrackType::Video, "V1");
+
+    Transition original;
+    original.type        = TransitionType::CrossDissolve;
+    original.duration    = 24000;
+    original.leftClipId  = 7;
+    original.rightClipId = 9;
+    track.addTransition(original);
+
+    Transition replacement = original;
+    replacement.duration = 48000;
+
+    CommandStack stack;
+    stack.execute(std::make_unique<AddTransitionCommand>(&track, 0, 1, replacement));
+    EXPECT_EQ(track.transitionCount(), 1u);
+    EXPECT_EQ(track.transition(0)->duration, 48000);
+
+    stack.undo();
+    EXPECT_EQ(track.transitionCount(), 1u);
+    EXPECT_EQ(track.transition(0)->duration, 24000);
+
+    stack.redo();
+    EXPECT_EQ(track.transitionCount(), 1u);
+    EXPECT_EQ(track.transition(0)->duration, 48000);
+}
+
 TEST(TransitionCmds, SetProperty)
 {
     Track track(TrackType::Video, "V1");

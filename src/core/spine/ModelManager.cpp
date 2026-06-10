@@ -6,6 +6,7 @@
 
 #include "spine/ModelManager.h"
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
@@ -217,16 +218,16 @@ void ModelManager::scanStance(const std::string& dir, CharacterStance stance,
     for (auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
 
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
         if (ext == ".skel" && variant.skelPath.empty()) {
-            variant.skelPath = entry.path().string();
+            variant.skelPath = pathToUtf8(entry.path());
         } else if (ext == ".atlas" && variant.atlasPath.empty()) {
-            variant.atlasPath = entry.path().string();
+            variant.atlasPath = pathToUtf8(entry.path());
         } else if (ext == ".png" && variant.texturePath.empty()) {
-            variant.texturePath = entry.path().string();
+            variant.texturePath = pathToUtf8(entry.path());
         }
     }
 
@@ -262,11 +263,11 @@ void ModelManager::scanOutfitDirectory(const std::string& outfitDir,
     scanStance(outfitDir, CharacterStance::Default, outfit);
 
     // Scan aim stance
-    auto aimDir = (fs::path(outfitDir) / "aim").string();
+    auto aimDir = pathToUtf8(utf8ToPath(outfitDir) / "aim");
     scanStance(aimDir, CharacterStance::Aim, outfit);
 
     // Scan cover stance
-    auto coverDir = (fs::path(outfitDir) / "cover").string();
+    auto coverDir = pathToUtf8(utf8ToPath(outfitDir) / "cover");
     scanStance(coverDir, CharacterStance::Cover, outfit);
 
     if (!outfit.variants.empty()) {
@@ -296,12 +297,12 @@ void ModelManager::scanCharacterDirectory(const std::string& charDir,
     for (auto& dirEntry : fs::directory_iterator(charDir)) {
         if (!dirEntry.is_directory()) continue;
 
-        auto outfitName = dirEntry.path().filename().string();
+        auto outfitName = pathToUtf8(dirEntry.path().filename());
 
         // Skip obvious non-outfit directories
         if (outfitName.empty() || outfitName[0] == '.') continue;
 
-        scanOutfitDirectory(dirEntry.path().string(), outfitName, entry);
+        scanOutfitDirectory(pathToUtf8(dirEntry.path()), outfitName, entry);
     }
 
     spdlog::debug("ModelManager: {} \u2014 {} outfits found", charName, entry.outfits.size());
@@ -323,26 +324,26 @@ int ModelManager::scan(const std::string& assetsDir)
     m_assetsDir = assetsDir;
     m_scanned = false;
 
-    auto charsDir = fs::path(assetsDir) / "characters";
+    auto charsDir = utf8ToPath(assetsDir) / "characters";
     if (!fs::exists(charsDir) || !fs::is_directory(charsDir)) {
-        spdlog::warn("ModelManager: characters directory not found: {}", charsDir.string());
+        spdlog::warn("ModelManager: characters directory not found: {}", pathToUtf8(charsDir));
         return 0;
     }
 
     // Load metadata if available
-    auto metadataPath = fs::path(assetsDir) / "character_metadata.json";
+    auto metadataPath = utf8ToPath(assetsDir) / "character_metadata.json";
     if (fs::exists(metadataPath)) {
-        loadMetadata(metadataPath.string());
+        loadMetadata(pathToUtf8(metadataPath));
     }
 
     // Scan each character directory
     for (auto& dirEntry : fs::directory_iterator(charsDir)) {
         if (!dirEntry.is_directory()) continue;
 
-        auto charName = dirEntry.path().filename().string();
+        auto charName = pathToUtf8(dirEntry.path().filename());
         if (charName.empty() || charName[0] == '.') continue;
 
-        scanCharacterDirectory(dirEntry.path().string(), charName);
+        scanCharacterDirectory(pathToUtf8(dirEntry.path()), charName);
     }
 
     // Sort entries by name
@@ -352,23 +353,23 @@ int ModelManager::scan(const std::string& assetsDir)
     m_scanned = true;
 
     spdlog::info("ModelManager: scanned {} characters from {}",
-                 m_entries.size(), charsDir.string());
+                 m_entries.size(), pathToUtf8(charsDir));
 
     return static_cast<int>(m_entries.size());
 }
 
 int ModelManager::scanAdditional(const std::string& assetsDir)
 {
-    auto charsDir = fs::path(assetsDir) / "characters";
+    auto charsDir = utf8ToPath(assetsDir) / "characters";
     if (!fs::exists(charsDir) || !fs::is_directory(charsDir)) {
-        spdlog::debug("ModelManager: additional characters directory not found: {}", charsDir.string());
+        spdlog::debug("ModelManager: additional characters directory not found: {}", pathToUtf8(charsDir));
         return 0;
     }
 
     // Load metadata if available
-    auto metadataPath = fs::path(assetsDir) / "character_metadata.json";
+    auto metadataPath = utf8ToPath(assetsDir) / "character_metadata.json";
     if (fs::exists(metadataPath)) {
-        loadMetadata(metadataPath.string());
+        loadMetadata(pathToUtf8(metadataPath));
     }
 
     int before = static_cast<int>(m_entries.size());
@@ -377,13 +378,13 @@ int ModelManager::scanAdditional(const std::string& assetsDir)
     for (auto& dirEntry : fs::directory_iterator(charsDir)) {
         if (!dirEntry.is_directory()) continue;
 
-        auto charName = dirEntry.path().filename().string();
+        auto charName = pathToUtf8(dirEntry.path().filename());
         if (charName.empty() || charName[0] == '.') continue;
 
         // Skip if this character is already registered
         if (findByName(charName)) continue;
 
-        scanCharacterDirectory(dirEntry.path().string(), charName);
+        scanCharacterDirectory(pathToUtf8(dirEntry.path()), charName);
     }
 
     // Re-sort to keep list consistent
@@ -393,7 +394,7 @@ int ModelManager::scanAdditional(const std::string& assetsDir)
     int added = static_cast<int>(m_entries.size()) - before;
 
     spdlog::info("ModelManager: scanned {} additional characters from {}",
-                 added, charsDir.string());
+                 added, pathToUtf8(charsDir));
 
     return added;
 }

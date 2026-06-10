@@ -10,6 +10,8 @@
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
 
+#include "PathUtils.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -158,7 +160,7 @@ std::filesystem::path AutoSave::findNewestAutoSave(
 
     for (auto& entry : std::filesystem::directory_iterator(folder, ec)) {
         if (!entry.is_regular_file(ec)) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         if (ext != ".rtp") continue;
 
         auto wt = entry.last_write_time(ec);
@@ -205,9 +207,9 @@ std::unique_ptr<Project> AutoSave::loadLatestAutoSave(
         // Set the original project path (not the auto-save path)
         project->setFilePath(projectPath);
         project->setModified(true); // Mark as modified since it's recovered
-        spdlog::info("AutoSave: recovered project from '{}'", asPath.string());
+        spdlog::info("AutoSave: recovered project from '{}'", pathToUtf8(asPath));
     } else {
-        spdlog::warn("AutoSave: failed to load auto-save from '{}'", asPath.string());
+        spdlog::warn("AutoSave: failed to load auto-save from '{}'", pathToUtf8(asPath));
     }
 
     return project;
@@ -231,7 +233,7 @@ void AutoSave::pruneAutoSaves(const std::filesystem::path& folder, size_t maxKee
 
     for (auto& entry : std::filesystem::directory_iterator(folder, ec)) {
         if (!entry.is_regular_file(ec)) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         if (ext != ".rtp") continue;
 
         auto wt = entry.last_write_time(ec);
@@ -249,7 +251,7 @@ void AutoSave::pruneAutoSaves(const std::filesystem::path& folder, size_t maxKee
     for (size_t i = maxKeep; i < files.size(); ++i) {
         std::filesystem::remove(files[i].path, ec);
         if (!ec) {
-            spdlog::trace("AutoSave: pruned '{}'", files[i].path.string());
+            spdlog::trace("AutoSave: pruned '{}'", pathToUtf8(files[i].path));
         }
     }
 }
@@ -290,7 +292,7 @@ bool AutoSave::doSave()
     std::filesystem::create_directories(folder, ec);
     if (ec) {
         spdlog::warn("AutoSave: failed to create folder '{}': {}",
-                     folder.string(), ec.message());
+                     pathToUtf8(folder), ec.message());
         m_stats.failCount++;
         m_stats.status = AutoSaveStatus::Failed;
         if (m_statusCb)
@@ -311,8 +313,12 @@ bool AutoSave::doSave()
         ser = m_ownedSerializer.get();
     }
 
-    // Write to a temporary file first (atomic write pattern)
-    auto tmpPath = std::filesystem::path(savePath.string() + ".tmp");
+    // Write to a temporary file first (atomic write pattern).
+    // Append via path::operator+= — round-tripping through .string() decodes
+    // the path with the ANSI codepage (throws or mojibakes on non-ANSI
+    // project names).
+    auto tmpPath = savePath;
+    tmpPath += ".tmp";
 
     bool success = ser->save(*m_project, tmpPath);
 
@@ -341,7 +347,7 @@ bool AutoSave::doSave()
         m_stats.saveCount++;
         m_stats.lastSaveTime = m_lastSave;
         m_stats.status = AutoSaveStatus::Saved;
-        spdlog::info("AutoSave: saved to '{}'", savePath.string());
+        spdlog::info("AutoSave: saved to '{}'", pathToUtf8(savePath));
 
         // Prune old auto-saves
         pruneAutoSaves(folder, m_maxAutoSaves);
@@ -351,7 +357,7 @@ bool AutoSave::doSave()
     } else {
         m_stats.failCount++;
         m_stats.status = AutoSaveStatus::Failed;
-        spdlog::warn("AutoSave: failed to save to '{}'", savePath.string());
+        spdlog::warn("AutoSave: failed to save to '{}'", pathToUtf8(savePath));
 
         if (m_statusCb)
             m_statusCb(AutoSaveStatus::Failed, "Auto-save failed");

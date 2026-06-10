@@ -21,17 +21,29 @@ AddTransitionCommand::AddTransitionCommand(Track* track, size_t clipIndexA, size
 
 void AddTransitionCommand::execute()
 {
-    m_track->addTransition(m_transition);
+    // addTransition() replaces any existing transition on the same edit
+    // point; capture the prior value so undo can restore it.
+    const size_t existing = m_track->findTransition(
+        m_transition.leftClipId, m_transition.rightClipId);
+    if (existing != Track::kNoTransition) {
+        m_replaced      = true;
+        m_replacedValue = *m_track->transition(existing);
+    } else {
+        m_replaced = false;
+    }
+    m_index   = m_track->addTransition(m_transition);
     m_applied = true;
 }
 
 void AddTransitionCommand::undo()
 {
-    if (m_applied && m_track->transitionCount() > 0)
-    {
-        m_track->removeTransition(m_track->transitionCount() - 1);
-        m_applied = false;
+    if (!m_applied) return;
+    if (m_replaced) {
+        m_track->setTransition(m_index, m_replacedValue);
+    } else if (m_index < m_track->transitionCount()) {
+        m_track->removeTransition(m_index);
     }
+    m_applied = false;
 }
 
 std::string AddTransitionCommand::description() const

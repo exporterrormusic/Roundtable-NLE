@@ -664,6 +664,33 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                             }
                         }
                     }
+
+                    // ── Per-clip audio FX chain (EQ / dynamics) ─────────
+                    // Real-time preview parity with export's AudioMixdown:
+                    // clone the clip's chain and bake it into the window
+                    // buffer here on the load thread — the audio callback
+                    // then mixes pre-processed samples, so the RT path
+                    // stays allocation-free and the user hears the same
+                    // EQ/dynamics the export renders.  COPY before
+                    // processing: `buffer` may alias a shared decode-cache
+                    // page (same reason the channel-fill above copies).
+                    //
+                    // Window-boundary caveat: each window starts with a
+                    // cold processor state (filters/envelopes don't carry
+                    // across window swaps).  The window includes the
+                    // transition pre-roll handles, so state has the head
+                    // of the region to converge over; for typical EQ /
+                    // dynamics settings this is inaudible.
+                    if (ch > 0 && audioClip->audioFx().isActive()) {
+                        auto processed =
+                            std::make_shared<std::vector<float>>(*buffer);
+                        auto chain = audioClip->audioFx().clone();
+                        chain.prepare(48000.0, static_cast<int>(ch));
+                        chain.process(processed->data(),
+                                      static_cast<int>(processed->size() / ch));
+                        buffer = std::move(processed);
+                        newBuffers.push_back(buffer);
+                    }
                 }
             }
 

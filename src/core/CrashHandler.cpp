@@ -4,10 +4,14 @@
 
 #include "CrashHandler.h"
 #include "WorkerBreadcrumb.h"
+#include "../version.h"   // ROUNDTABLE_VERSION — session-marker build attribution
 
 #include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -485,7 +489,20 @@ static LONG WINAPI lastChanceVectoredHandler(EXCEPTION_POINTERS* exInfo)
     // Vulkan ICD is mid-TDR.  Tag it distinctly so users / support can
     // identify the injecting module from the log without a minidump.
     const char* tag = "SEH";
-    if (code == 0x000006BA)         tag = "SEH(HOOK_RPC_UNAVAIL)";
+    if (code == 0x000006BA) {
+        tag = "SEH(HOOK_RPC_UNAVAIL)";
+        // Benign overlay-DLL noise (continuable Win32 error raised as SEH).
+        // Log it once per session for attribution, then count silently —
+        // repeated entries told us nothing new and buried real crashes.
+        static std::atomic<int> s_rpcUnavailCount{0};
+        const int n = s_rpcUnavailCount.fetch_add(1, std::memory_order_relaxed);
+        if (n > 0) {
+            // Already logged this session — skip (suppressed occurrences are
+            // implied by the single logged line; the count is in memory if a
+            // debugger ever needs it).
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
     else if (code == 0xC0000374)    tag = "SEH(HEAP_CORRUPTION)";
     else if (code == EXCEPTION_ACCESS_VIOLATION) tag = "SEH(ACCESS_VIOLATION)";
 
@@ -880,7 +897,37 @@ void CrashHandler::install(const std::filesystem::path& crashDir)
 
     // Write startup marker to verify crash log is writable.
     // Uses the stack-safe raw Win32 path — no heap allocation.
+    //
+    // The marker carries the app version and the PE link timestamp of the
+    // running exe so every crash below it is attributable to an exact
+    // build.  The link timestamp is what ties a "roundtable.exe+0xOFFSET"
+    // frame to the matching archived PDB (dist/symbols/) — without it,
+    // offsets from an overwritten dev build are unsymbolizable (this is
+    // exactly what happened to the June-2026 heap-corruption stacks).
+#ifdef _WIN32
+    {
+        char marker[128] = "=== SESSION START === v" ROUNDTABLE_VERSION;
+        const auto* base =
+            reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+        if (base) {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
+                const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+                    base + dos->e_lfanew);
+                if (nt->Signature == IMAGE_NT_SIGNATURE) {
+                    const size_t len = std::strlen(marker);
+                    std::snprintf(marker + len, sizeof(marker) - len,
+                                  " exe-link=0x%08X",
+                                  static_cast<unsigned>(
+                                      nt->FileHeader.TimeDateStamp));
+                }
+            }
+        }
+        appendCrashLogRawStackSafe(s.crashDirW, marker);
+    }
+#else
     appendCrashLogRawStackSafe(s.crashDirW, "=== SESSION START ===");
+#endif
 
     spdlog::info("CrashHandler installed — crash dir: {}", crashDir.string());
 }

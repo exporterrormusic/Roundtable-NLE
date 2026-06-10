@@ -193,6 +193,14 @@ void CompositeEngine::shutdown()
 
     destroyTimingPools();
     destroyCompositeSlot();
+    // Unhook the upload manager from the texture cache BEFORE the cache is
+    // destroyed: GpuUploadManager holds a raw GpuTextureCache* and has
+    // installed a recycle callback capturing `this`.  If the cache dies
+    // first, the manager's destructor calls setRecycleFn(nullptr) on a
+    // dangling pointer → Mtx_lock on a destroyed std::mutex (the June-8
+    // shutdown ACCESS_VIOLATION).
+    if (m_uploadManager)
+        m_uploadManager->shutdown();
     clearGpuTexCache();
     m_gpuLayerTextures.clear();
     m_gpuMaskTextures.clear();

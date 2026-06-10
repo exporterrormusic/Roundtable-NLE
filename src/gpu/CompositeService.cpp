@@ -152,7 +152,6 @@ void CompositeService::reset()
 {
     invalidateCacheDirect();
     m_openMediaHandles.clear();
-    m_videoFallbackCache.clear();
     if (m_engine) {
         m_engine->clearLru();
     }
@@ -160,9 +159,15 @@ void CompositeService::reset()
         std::lock_guard<std::mutex> g(m_lastActiveClipIdsMutex);
         m_lastActiveClipIds.clear();
     }
-    m_prewarmedClipIds.clear();
-    m_headWarmedClipIds.clear();
-    m_lastLookaheadScan = {};
+    {
+        // Same lock prewarmUpcomingShots holds while mutating these — see
+        // m_lookaheadMutex docs in CompositeService.h.
+        std::lock_guard lg(m_lookaheadMutex);
+        m_prewarmedClipIds.clear();
+        m_headWarmedClipIds.clear();
+        m_lastLookaheadScan = {};
+        m_lastLookaheadTick = INT64_MIN;
+    }
     m_stickyLastClipFrame.clear();
     m_stickyLastCharFrame.clear();
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -380,7 +385,7 @@ void CompositeService::shutdown()
     //    m_lastGoodComposite, m_stickyLastClipFrame,
     //    m_stickyLastCharFrame, m_lastPreRenderedSpineFrame,
     //    m_spineCache (transitively SpineCPUState::cachedFrame),
-    //    m_videoFallbackCache, and the engine's composite LRU.
+    //    and the engine's composite LRU.
     reset();
 
     // 3. Tear down the composite engine — waits for GPU idle, frees

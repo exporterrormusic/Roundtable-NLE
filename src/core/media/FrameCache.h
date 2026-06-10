@@ -219,16 +219,33 @@ struct CachedFrame
     /// Materialise CPU pixels if they are empty and a lazy readback
     /// callback is available.  Returns true when `pixels` is non-empty
     /// after the call.  Safe to call from any thread.
+    ///
+    /// The fast path tests an atomic flag, NOT pixels.empty(): reading the
+    /// vector's internals unsynchronized while another caller is inside
+    /// lazyReadback() resizing it is a data race (a reader could observe a
+    /// transiently inconsistent begin/end pair, return true, and then read
+    /// through a stale data() pointer).  The flag is set with release
+    /// ordering only AFTER pixels is fully written, so an acquire load
+    /// guarantees the vector contents are visible.  pixels is never cleared
+    /// during a frame's lifetime (the pool deleter moves it out only at
+    /// final release), so the flag can never go stale.
     bool ensurePixels()
     {
-        if (!pixels.empty()) return true;
+        if (m_pixelsReady.load(std::memory_order_acquire)) return true;
         std::lock_guard<std::mutex> lock(m_readbackMutex);
-        if (!pixels.empty()) return true;  // double-checked after lock
+        if (!pixels.empty()) {           // filled at decode time, or by an
+                                          // earlier caller — publish the flag
+            m_pixelsReady.store(true, std::memory_order_release);
+            return true;
+        }
         if (lazyReadback) {
             lazyReadback(pixels);
             lazyReadback = nullptr;      // one-shot
         }
-        return !pixels.empty();
+        const bool ok = !pixels.empty();
+        if (ok)
+            m_pixelsReady.store(true, std::memory_order_release);
+        return ok;
     }
 
     /// CPU memory footprint of this frame: pixel data + struct overhead.
@@ -259,6 +276,9 @@ struct CachedFrame
 
 private:
     mutable std::mutex m_readbackMutex;
+    /// Set (release) once `pixels` is fully populated; checked (acquire) as
+    /// ensurePixels()'s lock-free fast path.  See ensurePixels() docs.
+    std::atomic<bool> m_pixelsReady{false};
 };
 
 /// Cache statistics

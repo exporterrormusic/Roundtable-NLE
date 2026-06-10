@@ -113,6 +113,17 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
                 }
             }
 #endif
+            // Audio-FX (EQ/dynamics) edits change the PROCESSED window
+            // samples, which are baked into the source buffers at load time
+            // (AudioPlaybackServiceLoad) — rebuild the audio sources so the
+            // preview reflects the new chain immediately instead of after
+            // the next natural window swap.  Non-blocking variant: same
+            // call the playback-refresh path uses mid-play.
+            if (m_audioPlayback && m_selectedClip &&
+                m_selectedClip->clipType() == ClipType::Audio) {
+                m_audioPlayback->invalidateSources();
+                m_audioPlayback->loadSources(/*allowBlockingMisses=*/false);
+            }
             if (m_programMonitor) m_programMonitor->requestRefresh();
         });
         connect(m_propertiesPanel, &PropertiesPanel::shotSwitchRequested,

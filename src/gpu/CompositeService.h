@@ -281,19 +281,6 @@ public:
     /// decodes the new file. Defined in the .cpp (needs CompositeEngine).
     void invalidateMediaTextures(uint64_t mediaId);
 
-    // ── Video fallback cache ────────────────────────────────────────────
-    struct VideoFallbackInfo {
-        std::string videoPath;  // empty = not a video character
-        uint64_t    handle{0};
-        bool        looked_up{false};
-    };
-    void clearVideoFallbackCache() { m_videoFallbackCache.clear(); }
-    /// Look up a video fallback handle by clip ID. Returns 0 if not found.
-    [[nodiscard]] uint64_t findVideoFallbackHandle(uint64_t clipId) const {
-        auto it = m_videoFallbackCache.find(clipId);
-        return (it != m_videoFallbackCache.end()) ? it->second.handle : 0;
-    }
-
     // ── Title/Graphic rendering ─────────────────────────────────────────
     std::shared_ptr<CachedFrame> renderTitleClip(TitleClip* clip, int64_t tick,
                                                   uint32_t outW, uint32_t outH);
@@ -564,6 +551,18 @@ private:
     std::unordered_set<uint64_t> m_lastActiveClipIds;
 
     // ── Timeline lookahead prewarm ────────────────────────────────────
+    // prewarmUpcomingShots() is called from TWO threads under TWO
+    // DIFFERENT mutexes: compositeFrame() (composite thread, holds
+    // m_compositeMutex) and doPrewarmPlaybackResources() (prewarm thread,
+    // holds m_openMediaHandlesMutex).  Every container below is mutated
+    // inside that function, so without its own lock the two callers race
+    // — the exact unordered_set heap-corruption pattern (0xC0000374) that
+    // m_lastActiveClipIds had.  This mutex serializes the whole scan; the
+    // function try-locks and returns when the other thread is already
+    // scanning (the scan is throttled + idempotent, so skipping is
+    // correct).  Lock order: {m_compositeMutex | m_openMediaHandlesMutex}
+    // → m_lookaheadMutex → m_lastActiveClipIdsMutex (innermost).
+    std::mutex m_lookaheadMutex;
     // clip IDs whose decoders have already been proactively prewarmed
     // (file opened + first frame prefetch scheduled) ahead of their
     // timeline-in.  Cleared at shot boundary / reset.
@@ -623,9 +622,6 @@ private:
     // concurrently with compositeFrame() on the FrameProducer thread.
     std::unordered_map<std::string, uint64_t> m_openMediaHandles;
     mutable std::mutex m_openMediaHandlesMutex;
-
-    // SpineClip video fallback cache
-    std::unordered_map<uint64_t, VideoFallbackInfo> m_videoFallbackCache;
 
     // ── Prewarm thread (Phase 2.A) ─────────────────────────────────────
     struct PrewarmRequest {

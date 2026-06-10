@@ -28,6 +28,7 @@
 #include <spine/BlendMode.h>
 #include <spine/RTTI.h>
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 #include <fstream>
@@ -91,7 +92,7 @@ SpineEngine::ResolvedPaths SpineEngine::resolvePaths(
     ResolvedPaths result;
 
     // Build directory: assets/characters/{Character}/{outfit}/[stance/]
-    fs::path baseDir = fs::path(assetsDir) / "characters" / character / outfit;
+    fs::path baseDir = utf8ToPath(assetsDir) / "characters" / character / outfit;
 
     if (stance == CharacterStance::Aim) {
         baseDir = baseDir / "aim";
@@ -100,29 +101,29 @@ SpineEngine::ResolvedPaths SpineEngine::resolvePaths(
     }
 
     if (!fs::exists(baseDir) || !fs::is_directory(baseDir)) {
-        spdlog::warn("SpineEngine: directory not found: {}", baseDir.string());
+        spdlog::warn("SpineEngine: directory not found: {}", pathToUtf8(baseDir));
         return result;
     }
 
     // Find .skel file in the directory
     for (auto& entry : fs::directory_iterator(baseDir)) {
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
         if (ext == ".skel" && result.skelPath.empty()) {
-            result.skelPath = entry.path().string();
+            result.skelPath = pathToUtf8(entry.path());
         } else if (ext == ".atlas" && result.atlasPath.empty()) {
-            result.atlasPath = entry.path().string();
+            result.atlasPath = pathToUtf8(entry.path());
         } else if (ext == ".png" && result.texturePath.empty()) {
-            result.texturePath = entry.path().string();
+            result.texturePath = pathToUtf8(entry.path());
         }
     }
 
     result.valid = !result.skelPath.empty() && !result.atlasPath.empty();
 
     if (!result.valid) {
-        spdlog::warn("SpineEngine: missing .skel or .atlas in {}", baseDir.string());
+        spdlog::warn("SpineEngine: missing .skel or .atlas in {}", pathToUtf8(baseDir));
     }
 
     return result;
@@ -150,7 +151,7 @@ bool SpineEngine::loadSkeleton(const std::string& skelPath,
     // 1. Detect version
     m_version = detectVersion(skelPath);
     spdlog::info("SpineEngine: loading skeleton '{}' (version: {})",
-                 fs::path(skelPath).filename().string(),
+                 pathToUtf8(utf8ToPath(skelPath).filename()),
                  m_version.empty() ? "unknown" : m_version);
 
     // 2. Load atlas

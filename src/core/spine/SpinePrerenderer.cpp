@@ -22,6 +22,7 @@
 #include "SpineRenderer.h"
 #include "vulkan/Buffer.h"
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 // stb_image for CPU fallback atlas loading (declaration only — impl is in SpineRenderer.cpp)
@@ -45,7 +46,7 @@ PrerenderResult SpinePrerenderer::render(const PrerenderJob& job,
 {
     spdlog::info("SpinePrerenderer: rendering '{}' / '{}' / '{}' → {}",
                  job.characterName, job.outfit, job.animationName,
-                 job.outputPath.string());
+                 pathToUtf8(job.outputPath));
 
     // Ensure output directory exists
     fs::create_directories(job.outputPath.parent_path());

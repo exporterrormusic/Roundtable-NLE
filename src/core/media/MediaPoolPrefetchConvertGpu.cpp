@@ -547,8 +547,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     // clamp must use the nominal height (srcH/2) so export/Full tier
     // doesn't crush a 1888-tall character to ~960 because the packed
     // frame (3776) exceeds the 1920 Full-tier cap.
-    const int nominalH = task.info.packedAlpha
-        ? (srcH / std::max(1, task.info.packedTiles)) : srcH;
+    const int nominalH = task.info.contentHeight(static_cast<int>(srcH));
     const int contentH = srcH;  // packed-2 keeps full stacked height (compositor splits it)
     int dstW = srcW, dstH = contentH;
     // exportFullRes (export decode) skips the tier cap → native resolution.

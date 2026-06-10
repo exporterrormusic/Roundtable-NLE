@@ -133,8 +133,26 @@ std::vector<Clip*> Track::clipsAtTime(int64_t timeTick) const
 
 size_t Track::addTransition(Transition t)
 {
+    // Add-or-replace: one transition per edit point.  See Track.h.
+    const size_t existing = findTransition(t.leftClipId, t.rightClipId);
+    if (existing != kNoTransition) {
+        m_transitions[existing] = t;
+        return existing;
+    }
     m_transitions.push_back(t);
     return m_transitions.size() - 1;
+}
+
+size_t Track::findTransition(uint64_t leftClipId,
+                             uint64_t rightClipId) const noexcept
+{
+    if (leftClipId == 0 && rightClipId == 0) return kNoTransition;
+    for (size_t i = 0; i < m_transitions.size(); ++i) {
+        if (m_transitions[i].leftClipId == leftClipId &&
+            m_transitions[i].rightClipId == rightClipId)
+            return i;
+    }
+    return kNoTransition;
 }
 
 Transition Track::removeTransition(size_t index)

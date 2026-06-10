@@ -10,6 +10,7 @@
 #include <spine/TextureLoader.h>
 #include <spine/Extension.h>
 
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 
 #include <fstream>
@@ -73,7 +74,7 @@ bool SpineAtlas::load(const std::string& atlasPath)
         return false;
     }
 
-    m_directory = p.parent_path().string();
+    m_directory = pathToUtf8(p.parent_path());
 
     // Destroy old atlas FIRST while old textureLoader is still alive,
     // because ~Atlas calls textureLoader->unload() for each page.
@@ -120,7 +121,7 @@ bool SpineAtlas::load(const std::string& atlasPath)
     extractMetadata();
 
     spdlog::info("SpineAtlas: loaded '{}' — {} pages, {} regions",
-                 p.filename().string(), m_pages.size(), m_regions.size());
+                 pathToUtf8(p.filename()), m_pages.size(), m_regions.size());
     return true;
 }
 

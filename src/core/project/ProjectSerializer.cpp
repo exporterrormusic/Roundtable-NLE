@@ -16,6 +16,7 @@
 #include "timeline/Clip.h"
 #include "timeline/Marker.h"
 #include "timeline/Transition.h"
+#include "PathUtils.h"
 
 #include <fstream>
 #include <cstring>
@@ -804,7 +805,7 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     if (std::filesystem::exists(resolved)) {
                         a.absolutePath = std::filesystem::absolute(resolved);
                         spdlog::info("AssetDatabase: re-resolved {} → {}",
-                                     a.path.string(), a.absolutePath.string());
+                                     pathToUtf8(a.path), pathToUtf8(a.absolutePath));
                     }
                 }
 

@@ -482,6 +482,17 @@ void GpuUploadManager::releaseSlotPins(int slotIndex)
     m_slotPins[slotIndex].clear();
 }
 
+// ── Cache management ─────────────────────────────────────────────────────
+
+void GpuUploadManager::setTextureCache(GpuTextureCache* cache)
+{
+    if (m_texCache && m_texCache != cache)
+        m_texCache->setRecycleFn(nullptr);
+    if (m_texCache != cache)
+        m_recycleHookInstalled = false;
+    m_texCache = cache;
+}
+
 // ── Shutdown ─────────────────────────────────────────────────────────────
 
 void GpuUploadManager::shutdown()
@@ -495,6 +506,7 @@ void GpuUploadManager::shutdown()
     }
     m_texPool.clear();
     m_texCache = nullptr;
+    m_recycleHookInstalled = false;
 }
 
 // ── A4: recycled-texture pool ────────────────────────────────────────────

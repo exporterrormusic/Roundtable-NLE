@@ -824,6 +824,93 @@ TEST(EditOperations, PasteCrossSequenceAddsOverflowTracks)
     EXPECT_EQ(after, 0u);
 }
 
+// Insert-paste must use the same V1/A1 anchoring as overwrite paste: clips
+// from a 3-track source land on the destination's BOTTOM three video tracks.
+TEST(EditOperations, PasteInsertCrossSequenceAnchorsAtV1)
+{
+    rt::Timeline src;
+    rt::Track* s0 = src.addVideoTrack("");  // idx0 = top    = V3
+    rt::Track* s1 = src.addVideoTrack("");  // idx1          = V2
+    rt::Track* s2 = src.addVideoTrack("");  // idx2 = bottom = V1
+    addClip(s0, 0.0, 1.0);
+    addClip(s1, 0.0, 1.0);
+    addClip(s2, 0.0, 1.0);
+
+    rt::SelectionSet sel;
+    sel.selectClip({0, s0->clip(0)->id()}, true);
+    sel.selectClip({1, s1->clip(0)->id()}, true);
+    sel.selectClip({2, s2->clip(0)->id()}, true);
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, sel, clipboard);
+
+    rt::Timeline dst;
+    for (int i = 0; i < 5; ++i) dst.addVideoTrack("");  // idx0..4, idx4 = V1
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::pasteInsert(dst, clipboard, 10 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    // Bottom three tracks (V1,V2,V3 = idx 4,3,2) get the clips; top two empty.
+    EXPECT_EQ(dst.track(4)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(3)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(2)->clipCount(), 1u);
+    EXPECT_EQ(dst.track(1)->clipCount(), 0u);
+    EXPECT_EQ(dst.track(0)->clipCount(), 0u);
+}
+
+// Insert-paste from a wider source must create overflow tracks so no clip
+// is dropped, shift existing content right by the inserted span, and undo
+// must restore both the tracks and the shifted positions.
+TEST(EditOperations, PasteInsertCrossSequenceAddsOverflowTracksAndShifts)
+{
+    rt::Timeline src;
+    std::vector<rt::Track*> st;
+    for (int i = 0; i < 4; ++i) st.push_back(src.addVideoTrack(""));
+    rt::SelectionSet sel;
+    for (int i = 0; i < 4; ++i) {
+        addClip(st[static_cast<size_t>(i)], 0.0, 1.0);
+        sel.selectClip({static_cast<size_t>(i), st[static_cast<size_t>(i)]->clip(0)->id()}, true);
+    }
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, sel, clipboard);
+
+    rt::Timeline dst;
+    rt::Track* d0 = dst.addVideoTrack("");
+    dst.addVideoTrack("");
+    // Existing clip at t=0 on the top track — must shift right by the span.
+    addClip(d0, 0.0, 2.0);
+    const int64_t oldIn = d0->clip(0)->timelineIn();
+    const size_t before = dst.trackCount();
+
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::pasteInsert(dst, clipboard, 0);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    EXPECT_EQ(dst.trackCount(), before + 2);  // two overflow video tracks
+    size_t total = 0;
+    for (size_t i = 0; i < dst.trackCount(); ++i) total += dst.track(i)->clipCount();
+    EXPECT_EQ(total, 5u);                     // 4 pasted + 1 pre-existing
+
+    // The pre-existing clip must have rippled right by the inserted span (1s).
+    bool foundShifted = false;
+    for (size_t i = 0; i < dst.trackCount(); ++i) {
+        const rt::Track* t = dst.track(i);
+        for (size_t c = 0; c < t->clipCount(); ++c) {
+            if (t->clip(c)->duration() == 2 * TPS &&
+                t->clip(c)->timelineIn() == oldIn + 1 * TPS)
+                foundShifted = true;
+        }
+    }
+    EXPECT_TRUE(foundShifted);
+
+    stack.undo();
+    EXPECT_EQ(dst.trackCount(), before);      // overflow tracks removed
+    size_t after = 0;
+    for (size_t i = 0; i < dst.trackCount(); ++i) after += dst.track(i)->clipCount();
+    EXPECT_EQ(after, 1u);                     // only the pre-existing clip
+}
+
 TEST(EditOperations, CutSelection)
 {
     TestTimeline tt;

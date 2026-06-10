@@ -84,9 +84,22 @@ if(MSVC)
         # complete.  PDB ships with the build but is not redistributed.
         $<$<CONFIG:Release>:/DEBUG>
     )
+    # AddressSanitizer (MSVC /fsanitize=address).  Opt-in: catches the
+    # heap-corruption / use-after-free class of bugs (0xC0000374 crashes)
+    # at the faulting instruction instead of a deferred ntdll fast-fail.
+    # Intended for the test suite (ctest -L core) and local repro sessions,
+    # not for shipping builds.  Incompatible with /GL+/LTCG and incremental
+    # linking, so it force-disables LTO below.
+    option(ROUNDTABLE_ASAN "Build with AddressSanitizer (disables LTO)" OFF)
+    if(ROUNDTABLE_ASAN)
+        add_compile_options(/fsanitize=address)
+        add_link_options(/INCREMENTAL:NO)
+        message(STATUS "ROUNDTABLE_ASAN=ON — AddressSanitizer enabled, LTO disabled")
+    endif()
+
     # Link-Time Code Generation (very slow — only for final distribution builds)
     option(ROUNDTABLE_LTO "Enable /GL + /LTCG for whole-program optimization (slow)" ON)
-    if(ROUNDTABLE_LTO)
+    if(ROUNDTABLE_LTO AND NOT ROUNDTABLE_ASAN)
         add_compile_options($<$<CONFIG:Release>:/GL>)
         add_link_options($<$<CONFIG:Release>:/LTCG>)
     endif()

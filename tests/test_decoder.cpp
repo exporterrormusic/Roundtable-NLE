@@ -265,7 +265,9 @@ TEST(MediaPool, DefaultConstruction)
 TEST(MediaPool, OpenNonexistentFile)
 {
     MediaPool pool;
-    auto handle = pool.open("nonexistent_test_file.mp4");
+    // Explicit std::string — a raw literal is ambiguous between the
+    // std::filesystem::path and UTF-8 std::string overloads of open().
+    auto handle = pool.open(std::string("nonexistent_test_file.mp4"));
     EXPECT_EQ(handle, InvalidMedia);
     EXPECT_EQ(pool.openCount(), 0u);
 }

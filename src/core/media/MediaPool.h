@@ -104,7 +104,16 @@ public:
         if (!m_pool.empty()) {
             auto buf = std::move(m_pool.back());
             m_pool.pop_back();
-            buf.resize(size);
+            // resize() never shrinks capacity, so once a buffer has held a
+            // large frame (Wells packed 1080x3776x4 ≈ 16 MB) it pins that
+            // capacity forever — 32 pooled buffers ≈ 0.5 GB retained even
+            // when the project switches to small media.  Reallocate when
+            // the recycled capacity is grossly oversized for the request.
+            if (buf.capacity() > 2 * size) {
+                buf = std::vector<uint8_t>(size);
+            } else {
+                buf.resize(size);
+            }
             return buf;
         }
         return std::vector<uint8_t>(size);

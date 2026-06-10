@@ -39,6 +39,13 @@ private:
     size_t     m_clipIndexB;
     Transition m_transition;
     bool       m_applied{false};
+    // Track::addTransition REPLACES an existing transition on the same
+    // (leftClipId, rightClipId) edit point instead of stacking a duplicate.
+    // Undo must distinguish the two outcomes: restore the prior value
+    // (replace) vs remove the appended entry (plain add).
+    size_t     m_index{0};
+    bool       m_replaced{false};
+    Transition m_replacedValue;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

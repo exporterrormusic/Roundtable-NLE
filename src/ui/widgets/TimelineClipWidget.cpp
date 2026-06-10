@@ -11,6 +11,8 @@
 #include <QPainter>
 #include <QPen>
 
+#include <algorithm>
+
 namespace rt {
 
 ClipVisualStyle TimelineClipWidget::defaultStyle(ClipType type)
@@ -128,17 +130,26 @@ void TimelineClipWidget::paint(QPainter& painter,
 {
     if (rectIn.width() < 1.0) return;
 
-    // Qt's raster paint engine silently drops primitives whose coordinates
-    // exceed its internal fixed-point range (~±32767). At deep zoom a clip can
-    // be tens of thousands of pixels wide with one edge far outside the
-    // viewport, which made the whole clip body vanish from the timeline even
-    // though it still rendered in the program monitor. Clamp the off-screen
-    // edges to a safe window — the painter already clips to the widget, so any
-    // coordinate well beyond the viewport is invisible and clamping is exact.
-    constexpr qreal kSafeCoord = 16384.0;
+    // Qt's raster paint engine silently drops primitives whose DEVICE-space
+    // coordinates exceed its internal fixed-point range (~±32767).  The
+    // previous fix clamped to a fixed ±16384 in LOGICAL space, which still
+    // broke on HiDPI: at 200% display scaling (devicePixelRatio 2) logical
+    // 16384 maps to device 32768 — one past the limit — so a project-long
+    // clip vanished again at deep zoom near the end of the project.  Clamp
+    // to the painter's logical window (the widget being painted) plus a
+    // small margin instead: the painter clips to the widget anyway, so the
+    // clamp is visually exact and the coordinates stay tiny at any zoom,
+    // scroll position, or DPR.  An absolute DPR-scaled bound remains as a
+    // fallback for callers with unusual painter windows.
+    const QRectF win = painter.window();
+    constexpr qreal kMargin = 64.0;  // > borderRadius + selection glow width
+    const qreal dpr = std::max<qreal>(1.0, painter.device()->devicePixelRatio());
+    const qreal deviceSafe = 30000.0 / dpr;
+    const qreal lo = std::max(win.left()  - kMargin, -deviceSafe);
+    const qreal hi = std::min(win.right() + kMargin,  deviceSafe);
     QRectF rect = rectIn;
-    if (rect.left()  < -kSafeCoord) rect.setLeft(-kSafeCoord);
-    if (rect.right() >  kSafeCoord) rect.setRight(kSafeCoord);
+    if (rect.left()  < lo) rect.setLeft(lo);
+    if (rect.right() > hi) rect.setRight(hi);
     if (rect.width() < 1.0) return;
 
     painter.save();
@@ -192,7 +203,13 @@ void TimelineClipWidget::paint(QPainter& painter,
         painter.setFont(clipLabelFont);
 
         QRectF textRect = rect.adjusted(style.labelPadding, 2, -style.labelPadding, -2);
-        painter.drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, label);
+        // Premiere-style: when scrolled deep inside a long clip (head far
+        // off-screen left), pin the label to the visible window edge so the
+        // clip stays identifiable instead of carrying its name off-screen.
+        if (textRect.left() < win.left() + style.labelPadding)
+            textRect.setLeft(win.left() + style.labelPadding);
+        if (textRect.width() > 0)
+            painter.drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, label);
     }
 
     // Trim handles (thin lines at edges)

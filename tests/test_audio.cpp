@@ -437,7 +437,9 @@ TEST(AudioFileTest, DefaultState)
 TEST(AudioFileTest, OpenNonexistent)
 {
     AudioFile file;
-    EXPECT_FALSE(file.open("nonexistent_file.wav"));
+    // Explicit std::string — a raw literal is ambiguous between the
+    // std::filesystem::path and UTF-8 std::string overloads of open().
+    EXPECT_FALSE(file.open(std::string("nonexistent_file.wav")));
     EXPECT_FALSE(file.isOpen());
     EXPECT_FALSE(file.lastError().empty());
 }
