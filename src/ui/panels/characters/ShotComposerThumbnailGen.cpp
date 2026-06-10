@@ -4,6 +4,7 @@
  */
 
 #include "panels/characters/ShotComposer.h"
+#include "PathUtils.h"
 #include "panels/characters/ShotComposerInternal.h"
 #include "panels/characters/CharacterThumbnailCache.h"
 
@@ -842,13 +843,13 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
                     static const std::string validExts[] = {".mp4", ".mov", ".webm"};
                     for (const auto& entry : fs::directory_iterator(outfitDir)) {
                         if (!entry.is_regular_file()) continue;
-                        auto ext = entry.path().extension().string();
+                        auto ext = pathToUtf8(entry.path().extension());
                         bool validExt = false;
                         for (const auto& ve : validExts) {
                             if (ext == ve) { validExt = true; break; }
                         }
                         if (!validExt) continue;
-                        std::string animName = entry.path().stem().string();
+                        std::string animName = pathToUtf8(entry.path().stem());
                         frame = const_cast<AnimationVideoCache*>(m_animVideoCache)
                                     ->getFrame(ch->characterName, outfitKey, animName, 0);
                         if (frame && frame->ensurePixels()) break;
@@ -1078,7 +1079,7 @@ QString ShotComposer::shotThumbnailPath(const std::string& shotName) const
         else
             sanitized += c;
     }
-    return QString::fromStdString((thumbDir / (sanitized + ".png")).string());
+    return QString::fromStdString(pathToUtf8(thumbDir / (sanitized + ".png")));
 }
 
 void ShotComposer::saveShotThumbnail(const ShotPreset& shot)

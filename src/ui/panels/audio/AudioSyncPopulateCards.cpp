@@ -3,6 +3,7 @@
  * Extracted from AudioSyncCards.cpp for modularity.
  */
 #include "panels/audio/AudioSync.h"
+#include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
@@ -905,7 +906,7 @@ void AudioSync::populateCards()
                 sortedAudio.reserve(m_audioPaths.size());
                 for (const auto& ap : m_audioPaths) {
                     QString fname = QString::fromStdString(
-                        std::filesystem::path(ap).filename().string());
+                        pathToUtf8(utf8ToPath(ap).filename()));
                     sortedAudio.emplace_back(fname, QString::fromStdString(ap));
                 }
                 std::sort(sortedAudio.begin(), sortedAudio.end(),

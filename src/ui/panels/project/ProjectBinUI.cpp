@@ -6,6 +6,7 @@
  */
 
 #include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 #include "Theme.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
@@ -351,7 +352,7 @@ void ProjectBin::setupUI()
             }
             if (!done) {
                 for (auto& gi : items) {
-                    if (QString::fromStdString(gi.filePath.string()) == filePath) {
+                    if (QString::fromStdString(pathToUtf8(gi.filePath)) == filePath) {
                         gi.displayName = newName;
                         break;
                     }
@@ -653,7 +654,7 @@ void ProjectBin::setupUI()
                             }
                             if (target < 0) {
                                 for (size_t i = 0; i < items.size(); ++i)
-                                    if (QString::fromStdString(items[i].filePath.string()) == filePath) {
+                                    if (QString::fromStdString(pathToUtf8(items[i].filePath)) == filePath) {
                                         target = static_cast<int>(i); break;
                                     }
                             }

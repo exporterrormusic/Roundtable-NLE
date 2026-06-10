@@ -10,6 +10,7 @@
 
 #include "media/FrameCache.h"
 #include "media/MediaPool.h"
+#include "media/VideoFrameMapping.h"
 #include "Constants.h"
 #include "timeline/AdjustmentClip.h"
 #include "timeline/AudioClip.h"
@@ -412,14 +413,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             VkDescriptorImageInfo gpuSpineDescriptor{};
             uint32_t gpuSpineW{0}, gpuSpineH{0};
 
-            // Program monitor video tier follows the playback-resolution
-            // dropdown (Full / 1/2 / 1/4 / 1/8).  Used by the SpineClip
-            // video-fallback path below; the main VideoClip path computes
-            // its own charVideoTier with the same intent + a scrub-time
-            // Half override.  forceFullResolution (ExportPanel) wins.
-            const auto videoTier = m_forceFullResolution.load()
-                ? ResolutionTier::Full
-                : playbackTier();
+            // (Each clip-type branch below computes its own decode tier —
+            // the VideoClip path's baseVideoTier/charVideoTier follow the
+            // playback-resolution dropdown with forceFullResolution and
+            // scrub overrides.)
 
             // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ VideoClip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
             if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
@@ -432,35 +429,15 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     resolveVideoClipHandle(videoClip, playbackNonBlocking, skipClip);
                 if (skipClip) continue;
 
-                // Calculate source frame number — scale localTick by clip
-                // speed so 2x clips advance source 2x as fast (matches
-                // FrameRenderer/EditOperationsTrim).
-                int64_t srcTick = clip->sourceIn() +
-                    static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
-                // Clamp to 0 instead of skipping: during transition overlap
-                // the incoming clip has negative localTick (tick < timelineIn).
-                // Using frame 0 gives the correct visual for the transition.
-                if (srcTick < 0) srcTick = 0;
-
-                double fps = videoClip->sourceFps();
-                if (fps <= 0.0) fps = 24.0;
-
-                // ROUND, don't truncate: ticksToSeconds()*fps is a double and a
-                // frame-aligned tick lands on x.9999999 just as often as x.0000001
-                // (e.g. Wells 30fps on a 30fps timeline: srcTick=1600 → 0.99999…
-                // → truncates to 0 instead of 1).  Truncation biases those frames
-                // one source-frame early, producing an irregular repeat-then-skip
-                // that reads as a "very slight flicker" in motion — in both preview
-                // and export.  At 60fps timelines the 2× oversampling masked it.
-                int64_t frameNum = std::llround(ticksToSeconds(srcTick) * fps);
-
+                // Tick → source-frame mapping: ONE shared authority
+                // (speed scaling, negative clamp, llround, fps priority,
+                // still/character wrap policy) — see VideoFrameMapping.h.
+                // This is the RENDER side; the pending-frame collector and
+                // the lookahead prewarm call the same function, so what
+                // gets prefetched is exactly what gets rendered.
                 auto* mediaInfo = m_mediaPool->getInfo(handle);
-
-                // If clip had no stored fps, use the authoritative MediaPool fps
-                if (videoClip->sourceFps() <= 0.0 && mediaInfo && mediaInfo->fps > 0.0) {
-                    fps = mediaInfo->fps;
-                    frameNum = std::llround(ticksToSeconds(srcTick) * fps);
-                }
+                int64_t frameNum =
+                    mapTickToSourceFrame(*videoClip, tick, mediaInfo).frame;
 
                 const bool isVideoChar = videoClip->isVideoCharacter();
 
@@ -502,22 +479,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     charVideoTier = baseVideoTier;
                 }
 
-                // Clamp frame number to valid range.
-                // For video characters, wrap with modulo so the animation
-                // loops continuously when the clip is stretched beyond the
-                // source video's duration.
-                if (mediaInfo) {
-                    if (mediaInfo->frameCount <= 1) {
-                        frameNum = 0;
-                    } else if (isVideoChar && mediaInfo->frameCount > 1) {
-                        // Looping character animation: modulo wrap
-                        frameNum = ((frameNum % mediaInfo->frameCount) + mediaInfo->frameCount)
-                                   % mediaInfo->frameCount;
-                    } else if (mediaInfo->frameCount > 0) {
-                        frameNum = std::clamp(frameNum, int64_t(0),
-                                              mediaInfo->frameCount - 1);
-                    }
-                }
+                // frameNum is already wrapped/clamped by mapTickToSourceFrame
+                // (still → 0, video character → modulo loop, else clamp).
 
                 // Ã¢â€â‚¬Ã¢â€â‚¬ DIRTY TRACKING: Skip decode when GPU already has this frame Ã¢â€â‚¬Ã¢â€â‚¬
                 // If the GPU texture cache already has this (mediaId, frameNumber),

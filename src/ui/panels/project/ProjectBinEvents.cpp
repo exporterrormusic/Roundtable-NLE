@@ -8,6 +8,7 @@
  */
 
 #include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 #include "panels/project/ProjectBinInternal.h"
 #include "Theme.h"
 #include "widgets/MediaDragTreeWidget.h"
@@ -148,7 +149,7 @@ ProjectBin::captureClipboardEntry(QTreeWidgetItem* item) const
     }
     if (src) {
         e.displayName = src->displayName.isEmpty()
-            ? QString::fromStdString(src->filePath.filename().string())
+            ? QString::fromStdString(pathToUtf8(src->filePath.filename()))
             : src->displayName;
         e.labelColor  = src->labelColor;
         e.type        = src->type;
@@ -233,7 +234,7 @@ void ProjectBin::applyClipboardEntry(
         for (const auto& gi : m_grid->items()) {
             if (gi.isFolder) continue;
             QString n = gi.displayName.isEmpty()
-                ? QString::fromStdString(gi.filePath.filename().string())
+                ? QString::fromStdString(pathToUtf8(gi.filePath.filename()))
                 : gi.displayName;
             if (n == cand) return true;
         }
@@ -246,8 +247,8 @@ void ProjectBin::applyClipboardEntry(
         // editable (e.g. recolour a Color Matte).
         std::error_code ec;
         std::filesystem::path dir = e.filePath.parent_path();
-        std::string stem = e.filePath.stem().string();
-        std::string ext  = e.filePath.extension().string();
+        std::string stem = pathToUtf8(e.filePath.stem());
+        std::string ext  = pathToUtf8(e.filePath.extension());
         std::filesystem::path dst;
         for (int i = 2; i < 100000; ++i) {
             dst = dir / (stem + " " + std::to_string(i) + ext);
@@ -257,7 +258,7 @@ void ProjectBin::applyClipboardEntry(
             std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
             spdlog::error("ProjectBin: failed to copy asset '{}' → '{}': {}",
-                          e.filePath.string(), dst.string(), ec.message());
+                          pathToUtf8(e.filePath), pathToUtf8(dst), ec.message());
             return;
         }
         if (m_grid->hasItem(dst)) return;
@@ -277,7 +278,7 @@ void ProjectBin::applyClipboardEntry(
         }
         createdFiles.push_back(dst);
         spdlog::info("ProjectBin: duplicated asset '{}' → '{}'",
-                     e.filePath.string(), dst.string());
+                     pathToUtf8(e.filePath), pathToUtf8(dst));
         return;
     }
 
@@ -314,7 +315,7 @@ void ProjectBin::applyClipboardEntry(
         recordInFolder(mitems[static_cast<size_t>(newIdx)].itemId);
     }
     spdlog::info("ProjectBin: duplicated media '{}' as '{}'",
-                 e.filePath.string(), newName.toStdString());
+                 pathToUtf8(e.filePath), newName.toStdString());
 }
 
 bool ProjectBin::hasClipboard() const noexcept
@@ -857,7 +858,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                     std::make_shared<std::vector<MatteFileBackup>>();
                 for (const auto& p : propagationPaths) {
                     if (!ProjectBin::isColorMatte(p)) continue;
-                    QFile mf(QString::fromStdString(p.string()));
+                    QFile mf(QString::fromStdString(pathToUtf8(p)));
                     if (mf.open(QIODevice::ReadOnly)) {
                         MatteFileBackup b;
                         b.path = p; b.bytes = mf.readAll(); b.active = true;
@@ -874,7 +875,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                 auto restoreMatteFiles = [matteBackups]() {
                     for (const auto& b : *matteBackups) {
                         if (!b.active) continue;
-                        QFile out(QString::fromStdString(b.path.string()));
+                        QFile out(QString::fromStdString(pathToUtf8(b.path)));
                         if (out.open(QIODevice::WriteOnly))
                             out.write(b.bytes);
                     }
@@ -989,7 +990,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                     std::make_shared<std::vector<MatteFileBackup>>();
                 for (const auto& p : contents) {
                     if (!ProjectBin::isColorMatte(p)) continue;
-                    QFile mf(QString::fromStdString(p.string()));
+                    QFile mf(QString::fromStdString(pathToUtf8(p)));
                     if (mf.open(QIODevice::ReadOnly)) {
                         MatteFileBackup b;
                         b.path = p; b.bytes = mf.readAll(); b.active = true;
@@ -1006,7 +1007,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                 auto restoreMatteFiles = [matteBackups]() {
                     for (const auto& b : *matteBackups) {
                         if (!b.active) continue;
-                        QFile out(QString::fromStdString(b.path.string()));
+                        QFile out(QString::fromStdString(pathToUtf8(b.path)));
                         if (out.open(QIODevice::WriteOnly))
                             out.write(b.bytes);
                     }
@@ -1098,7 +1099,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                     // when this is the last bin reference to it.
                     auto matteBackup = std::make_shared<MatteFileBackup>();
                     if (refsForPath <= 1 && ProjectBin::isColorMatte(mediaPath)) {
-                        QFile mf(QString::fromStdString(mediaPath.string()));
+                        QFile mf(QString::fromStdString(pathToUtf8(mediaPath)));
                         if (mf.open(QIODevice::ReadOnly)) {
                             matteBackup->path  = mediaPath;
                             matteBackup->bytes = mf.readAll();
@@ -1113,7 +1114,7 @@ bool ProjectBin::eventFilter(QObject* obj, QEvent* event)
                     auto restoreMatteFile = [matteBackup]() {
                         if (!matteBackup->active) return;
                         QFile out(QString::fromStdString(
-                            matteBackup->path.string()));
+                            pathToUtf8(matteBackup->path)));
                         if (out.open(QIODevice::WriteOnly))
                             out.write(matteBackup->bytes);
                     };

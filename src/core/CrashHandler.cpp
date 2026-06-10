@@ -3,6 +3,7 @@
  */
 
 #include "CrashHandler.h"
+#include "PathUtils.h"
 #include "WorkerBreadcrumb.h"
 #include "../version.h"   // ROUNDTABLE_VERSION — session-marker build attribution
 
@@ -648,7 +649,7 @@ LONG WINAPI crashExceptionFilter(EXCEPTION_POINTERS* exInfo)
             info.dumpFilePath = dumpPath;
     }
     if (!info.dumpFilePath.empty()) {
-        appendCrashLog(logPath, "  Dump written: " + info.dumpFilePath.string());
+        appendCrashLog(logPath, "  Dump written: " + pathToUtf8(info.dumpFilePath));
     }
 
     // 4. Capture and write stack trace (SEH-protected via helper)
@@ -814,7 +815,7 @@ void CrashHandler::install(const std::filesystem::path& crashDir)
         std::filesystem::create_directories(crashDir);
     } catch (const std::exception& e) {
         spdlog::error("CrashHandler: failed to create crash dir '{}': {}",
-                       crashDir.string(), e.what());
+                       pathToUtf8(crashDir), e.what());
     }
 
     installPlatformHandler();
@@ -929,7 +930,7 @@ void CrashHandler::install(const std::filesystem::path& crashDir)
     appendCrashLogRawStackSafe(s.crashDirW, "=== SESSION START ===");
 #endif
 
-    spdlog::info("CrashHandler installed — crash dir: {}", crashDir.string());
+    spdlog::info("CrashHandler installed — crash dir: {}", pathToUtf8(crashDir));
 }
 
 void CrashHandler::uninstall()
@@ -1059,8 +1060,8 @@ void CrashHandler::writeCrashMarker(const CrashInfo& info)
         marker << "address=0x" << std::hex
                << reinterpret_cast<uintptr_t>(info.exceptionAddress) << "\n";
         marker << "summary=" << info.summary << "\n";
-        marker << "dump=" << info.dumpFilePath.string() << "\n";
-        marker << "log=" << info.logFilePath.string() << "\n";
+        marker << "dump=" << pathToUtf8(info.dumpFilePath) << "\n";
+        marker << "log=" << pathToUtf8(info.logFilePath) << "\n";
         marker.close();
     } catch (...) {
         // Best-effort — marker is non-critical

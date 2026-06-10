@@ -1,6 +1,7 @@
 /* OmniShotDetector — AI scene cut detection via OmniShotCut subprocess.
  * No Qt dependency — pure Win32 CreateProcess with stdout pipe for progress. */
 #include "media/OmniShotDetector.h"
+#include "PathUtils.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 #include <cstdio>
@@ -103,11 +104,11 @@ void OmniShotDetector::workerFunc(
     std::filesystem::path mp, int64_t, int64_t, float,
     SceneDetectProgressFn onP, SceneDetectCompleteFn onC, SceneDetectErrorFn onE)
 {
-    spdlog::info("OmniShot: {}", mp.string());
+    spdlog::info("OmniShot: {}", pathToUtf8(mp));
 
-    std::string outPath = (std::filesystem::temp_directory_path() / "omni_out.json").string();
-    std::string errPath = (std::filesystem::temp_directory_path() / "omni_err.txt").string();
-    std::string batPath = (std::filesystem::temp_directory_path() / "omni_run.bat").string();
+    std::string outPath = pathToUtf8(std::filesystem::temp_directory_path() / "omni_out.json");
+    std::string errPath = pathToUtf8(std::filesystem::temp_directory_path() / "omni_err.txt");
+    std::string batPath = pathToUtf8(std::filesystem::temp_directory_path() / "omni_run.bat");
     std::remove(outPath.c_str());
     std::remove(errPath.c_str());
 
@@ -115,9 +116,9 @@ void OmniShotDetector::workerFunc(
     {
         std::ofstream bat(batPath);
         bat << "@echo off\r\n";
-        bat << "cd /d \"" << std::filesystem::current_path().string() << "\"\r\n";
+        bat << "cd /d \"" << pathToUtf8(std::filesystem::current_path()) << "\"\r\n";
         bat << "python tools/omnishotcut/detect.py"
-            << " --input \"" << mp.string() << "\""
+            << " --input \"" << pathToUtf8(mp) << "\""
             << " --checkpoint tools/omnishotcut/checkpoints/OmniShotCut_ckpt.pth"
             << " --output \"" << outPath << "\""
             << " 2>\"" << errPath << "\"\r\n";

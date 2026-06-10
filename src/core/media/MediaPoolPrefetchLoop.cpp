@@ -9,6 +9,7 @@
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
+#include "media/ConvertDecodedFrame.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -151,7 +152,9 @@ void MediaPool::loopPreDecodeWorker(
         decoder.seek(0.0, SeekMode::Precise);
     }
 
-    SwsContext* sws = nullptr;
+    // Caller-owned sws cache slot for the shared conversion core (freed at
+    // the end of this function).
+    void* swsCtx = nullptr;
     int swsSrcW = 0, swsSrcH = 0, swsSrcFmt = -1;
     int swsDstW = 0, swsDstH = 0;
 
@@ -213,18 +216,8 @@ void MediaPool::loopPreDecodeWorker(
         cached->origin      = ConverterOrigin::CpuLoop;
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
-        AVPixelFormat srcFmt = AV_PIX_FMT_YUV420P;
-        if (raw.rawFormat >= 0) {
-            srcFmt = static_cast<AVPixelFormat>(raw.rawFormat);
-        } else {
-            switch (raw.format) {
-                case PixelFormat::YUV420P: srcFmt = AV_PIX_FMT_YUV420P; break;
-                case PixelFormat::NV12:    srcFmt = AV_PIX_FMT_NV12;    break;
-                case PixelFormat::BGRA:    srcFmt = AV_PIX_FMT_BGRA;    break;
-                case PixelFormat::RGBA:    srcFmt = AV_PIX_FMT_RGBA;    break;
-                default:                   srcFmt = AV_PIX_FMT_YUV420P; break;
-            }
-        }
+        const AVPixelFormat srcFmt =
+            static_cast<AVPixelFormat>(resolveDecodedAvFormat(raw));
 
         const int w = static_cast<int>(raw.width);
         const int h = static_cast<int>(raw.height);
@@ -242,67 +235,16 @@ void MediaPool::loopPreDecodeWorker(
             dH = std::max(2, static_cast<int>(h * scale) & ~1);
         }
 
-        const bool needsResize = (dW != w || dH != h);
-
-        if (srcFmt == AV_PIX_FMT_BGRA && !needsResize) {
-            cached->stride = w * 4;
-            cached->pixels.resize(static_cast<size_t>(w) * h * 4);
-            for (int y = 0; y < h; ++y) {
-                std::memcpy(cached->pixels.data() + y * cached->stride,
-                            raw.data[0] + y * raw.linesize[0],
-                            static_cast<size_t>(w) * 4);
-            }
-        } else {
-            if (!sws || swsSrcW != w || swsSrcH != h ||
-                swsSrcFmt != static_cast<int>(srcFmt) ||
-                swsDstW != dW || swsDstH != dH) {
-                if (sws) sws_freeContext(sws);
-                sws = sws_getContext(w, h, srcFmt,
-                                     dW, dH, AV_PIX_FMT_BGRA,
-                                     SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-                // Pin BT.709 limited→full so loop pre-decode produces the
-                // SAME RGB as the GPU Nv12Converter shaders that fill the
-                // same frames during live playback.  Otherwise a looping
-                // character's cache is a mix of BT.601 (predecode) and
-                // BT.709 (prefetch) frames → brightness flicker across loops.
-                if (sws && srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
-                    const int* t = sws_getCoefficients(SWS_CS_ITU709);
-                    sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
-                                             t, /*dstRange=*/1,
-                                             0, 1 << 16, 1 << 16);
-                }
-                swsSrcW = w;  swsSrcH = h;
-                swsSrcFmt = static_cast<int>(srcFmt);
-                swsDstW = dW; swsDstH = dH;
-            }
-            if (!sws) continue;
-
-            cached->width  = static_cast<uint32_t>(dW);
-            cached->height = static_cast<uint32_t>(dH);
-            cached->stride = static_cast<uint32_t>(dW) * 4;
-            cached->pixels.resize(static_cast<size_t>(dW) * dH * 4);
-
-            uint8_t* dstData[1] = { cached->pixels.data() };
-            int dstLinesize[1] = { static_cast<int>(cached->stride) };
-
-            sws_scale(sws, raw.data, raw.linesize, 0, h,
-                      dstData, dstLinesize);
-        }
-
-        if (info.hasAlpha && !packedAlpha && !cached->pixels.empty()) {
-            clearTransparentPixelRGB(cached->pixels.data(),
-                                     cached->pixels.size() / 4);
-        }
-
-        // ── Chroma-key green-screen media (#18FF00) ───────────────────
-        if (!cached->pixels.empty()) {
-            std::string fn = pathToUtf8(path.filename());
-            std::transform(fn.begin(), fn.end(), fn.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
-            if (fn.find("GREEN") != std::string::npos) {
-                chromaKeyInPlace(cached->pixels.data(),
-                                 cached->pixels.size() / 4);
-            }
+        // Shared CPU conversion core (sws cache lives in the locals above;
+        // BT.709 pinning, alpha-RGB clear and GREEN chroma key included).
+        if (!convertDecodedToBgra(
+                raw, static_cast<int>(srcFmt), dW, dH,
+                info, path,
+                SwsCacheRef{swsCtx, swsSrcW, swsSrcH, swsSrcFmt,
+                            swsDstW, swsDstH},
+                /*pool=*/nullptr, *cached))
+        {
+            continue;   // sws_getContext failed — skip this frame
         }
 #endif
 
@@ -317,7 +259,7 @@ void MediaPool::loopPreDecodeWorker(
         }
     }
 
-    if (sws) sws_freeContext(sws);
+    if (swsCtx) sws_freeContext(static_cast<SwsContext*>(swsCtx));
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();

@@ -3,6 +3,7 @@
  */
 
 #include "media/WaveformCache.h"
+#include "PathUtils.h"
 #include "media/AudioFile.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -98,11 +99,11 @@ void WaveformCache::computeAsync(uint64_t mediaId,
         [this, mediaId, audioPath, progress = std::move(progress)]()
     {
         spdlog::info("WaveformCache: computing waveform for '{}'",
-                     audioPath.filename().string());
+                     pathToUtf8(audioPath.filename()));
 
         AudioFile audioFile;
         if (!audioFile.open(audioPath)) {
-            spdlog::error("WaveformCache: failed to open '{}'", audioPath.string());
+            spdlog::error("WaveformCache: failed to open '{}'", pathToUtf8(audioPath));
             std::lock_guard lock(m_mutex);
             m_status[mediaId] = WaveformStatus::Error;
             return;
@@ -111,7 +112,7 @@ void WaveformCache::computeAsync(uint64_t mediaId,
         const auto& info = audioFile.info();
         auto samples = audioFile.readAll();
         if (samples.empty()) {
-            spdlog::error("WaveformCache: no samples in '{}'", audioPath.string());
+            spdlog::error("WaveformCache: no samples in '{}'", pathToUtf8(audioPath));
             std::lock_guard lock(m_mutex);
             m_status[mediaId] = WaveformStatus::Error;
             return;
@@ -128,7 +129,7 @@ void WaveformCache::computeAsync(uint64_t mediaId,
         // Store result
         auto data = std::make_shared<WaveformData>();
         data->mediaId     = mediaId;
-        data->filePath    = audioPath.string();
+        data->filePath    = pathToUtf8(audioPath);
         data->sampleRate  = info.sampleRate;
         data->channels    = info.channels;
         data->totalFrames = info.frames;
@@ -309,13 +310,13 @@ bool WaveformCache::loadFromDisk(uint64_t mediaId,
     file.read(reinterpret_cast<char*>(&version), 4);
 
     if (magic != kWaveformMagic || version != kWaveformVersion) {
-        spdlog::warn("WaveformCache: invalid cache file '{}'", path.string());
+        spdlog::warn("WaveformCache: invalid cache file '{}'", pathToUtf8(path));
         return false;
     }
 
     auto data = std::make_shared<WaveformData>();
     data->mediaId = mediaId;
-    data->filePath = audioPath.string();
+    data->filePath = pathToUtf8(audioPath);
 
     file.read(reinterpret_cast<char*>(&data->sampleRate), 4);
     file.read(reinterpret_cast<char*>(&data->channels), 2);
@@ -339,7 +340,7 @@ bool WaveformCache::loadFromDisk(uint64_t mediaId,
     }
 
     if (!file) {
-        spdlog::warn("WaveformCache: truncated cache file '{}'", path.string());
+        spdlog::warn("WaveformCache: truncated cache file '{}'", pathToUtf8(path));
         return false;
     }
 
@@ -452,7 +453,7 @@ std::string WaveformCache::cacheKey(const std::filesystem::path& path)
     const auto modTime  = std::filesystem::last_write_time(path, ec);
 
     uint64_t hash = kFnvOffsetBasis;
-    const auto pathStr = path.string();
+    const auto pathStr = pathToUtf8(path);
     for (char c : pathStr) {
         hash ^= static_cast<uint64_t>(c);
         hash *= kFnvPrime;

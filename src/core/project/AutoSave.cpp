@@ -314,7 +314,7 @@ bool AutoSave::doSave()
     }
 
     // Write to a temporary file first (atomic write pattern).
-    // Append via path::operator+= — round-tripping through .string() decodes
+    // Append via path::operator+= — round-tripping through path::string() decodes
     // the path with the ANSI codepage (throws or mojibakes on non-ANSI
     // project names).
     auto tmpPath = savePath;

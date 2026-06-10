@@ -281,7 +281,7 @@ void ThumbnailGenerator::cancelAll()
 
 MediaType ThumbnailGenerator::detectMediaType(const std::filesystem::path& path)
 {
-    std::string ext = path.extension().string();
+    std::string ext = pathToUtf8(path.extension());
     // Lowercase the extension
     std::transform(ext.begin(), ext.end(), ext.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

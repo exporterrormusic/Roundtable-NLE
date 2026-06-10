@@ -10,6 +10,7 @@
  */
 
 #include "panels/properties/PropertiesPanel.h"
+#include "PathUtils.h"
 #include "widgets/ScrubbySpinBox.h"
 
 #include "timeline/Clip.h"
@@ -67,7 +68,7 @@ void PropertiesPanel::applySpineOutfit()
         // Compute new paths based on the new outfit
         namespace fs = std::filesystem;
         std::string animName = vc->animationName().empty() ? "idle" : vc->animationName();
-        std::string ext = fs::path(vc->mediaPath()).extension().string();
+        std::string ext = pathToUtf8(utf8ToPath(vc->mediaPath()).extension());
         if (ext.empty()) ext = ".mov";
         // Preserve the format subdirectory from the existing media path
         std::string oldPath = vc->mediaPath();
@@ -78,7 +79,7 @@ void PropertiesPanel::applySpineOutfit()
             // Walk up from the file to find the format directory
             // Path: .../converted/{fmtDir}/{char}/{outfit}/{anim}.ext
             if (p.parent_path().has_parent_path() && p.parent_path().parent_path().has_parent_path()) {
-                auto candidate = p.parent_path().parent_path().parent_path().filename().string();
+                auto candidate = pathToUtf8(p.parent_path().parent_path().parent_path().filename());
                 if (candidate == "H264_Green" || candidate == "H264_Blue" ||
                     candidate == "H264_Custom" || candidate == "ProRes")
                     fmtDir = candidate;
@@ -170,7 +171,7 @@ void PropertiesPanel::applySpineAnimation()
         auto newLabel = vc->characterName() + " - " + newAnim;
         namespace fs = std::filesystem;
         std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
-        std::string ext = fs::path(vc->mediaPath()).extension().string();
+        std::string ext = pathToUtf8(utf8ToPath(vc->mediaPath()).extension());
         if (ext.empty()) ext = ".mov";
         // Preserve the format subdirectory from the existing media path
         std::string fmtDir = "H264_Green";
@@ -178,7 +179,7 @@ void PropertiesPanel::applySpineAnimation()
             namespace fs = std::filesystem;
             auto p = fs::path(oldMedia);
             if (p.parent_path().has_parent_path() && p.parent_path().parent_path().has_parent_path()) {
-                auto candidate = p.parent_path().parent_path().parent_path().filename().string();
+                auto candidate = pathToUtf8(p.parent_path().parent_path().parent_path().filename());
                 if (candidate == "H264_Green" || candidate == "H264_Blue" ||
                     candidate == "H264_Custom" || candidate == "ProRes")
                     fmtDir = candidate;

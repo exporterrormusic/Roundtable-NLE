@@ -8,6 +8,7 @@
  */
 
 #include "diag/FrameSignature.h"
+#include "PathUtils.h"
 #include "GpuContext.h"
 #include "GpuScheduler.h"
 
@@ -79,7 +80,7 @@ bool FrameSignature::init(GpuContext& ctx) {
     }
     m_shader = loadSpv(m_device, spv);
     if (m_shader == VK_NULL_HANDLE) {
-        spdlog::error("FrameSignature: failed to load {}", spv.string());
+        spdlog::error("FrameSignature: failed to load {}", pathToUtf8(spv));
         return false;
     }
 

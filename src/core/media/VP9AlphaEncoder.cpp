@@ -47,7 +47,7 @@ bool VP9AlphaEncoder::open(const std::filesystem::path& path,
 
     // ── Create output format context (WebM) ─────────────────────────────
     int ret = avformat_alloc_output_context2(&m_fmtCtx, nullptr, "webm",
-                                              path.string().c_str());
+                                              pathToUtf8(path).c_str());
     if (ret < 0 || !m_fmtCtx) {
         m_lastError = "VP9Alpha: Failed to create WebM output context";
         spdlog::error("{}", m_lastError);
@@ -175,7 +175,7 @@ bool VP9AlphaEncoder::open(const std::filesystem::path& path,
 
     m_isOpen = true;
     spdlog::info("VP9Alpha: Opened {}x{} @ {}fps CRF={} → {}",
-                 m_width, m_height, fps, crf, path.string());
+                 m_width, m_height, fps, crf, pathToUtf8(path));
     return true;
 }
 

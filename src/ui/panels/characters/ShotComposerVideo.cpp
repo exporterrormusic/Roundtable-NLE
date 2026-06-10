@@ -4,6 +4,7 @@
  */
 
 #include "panels/characters/ShotComposer.h"
+#include "PathUtils.h"
 
 #include "panels/characters/ShotComposerInternal.h"
 #include "Theme.h"
@@ -353,7 +354,7 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
 
     // Detect GREEN-suffixed chroma-key files
     {
-        std::string fn = resolvedPath.filename().string();
+        std::string fn = pathToUtf8(resolvedPath.filename());
         std::transform(fn.begin(), fn.end(), fn.begin(),
                        [](unsigned char c) { return std::toupper(c); });
         state->needsChromaKey = (fn.find("GREEN") != std::string::npos);

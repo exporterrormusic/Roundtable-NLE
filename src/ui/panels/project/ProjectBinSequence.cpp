@@ -6,6 +6,7 @@
  */
 
 #include "QtHelpers.h"
+#include "PathUtils.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/project/ProjectBinInternal.h"
 #include "Theme.h"
@@ -49,7 +50,7 @@ bool writeMattePng(const std::filesystem::path& path,
     if (w <= 0 || h <= 0) { w = 1920; h = 1080; }
     QImage img(w, h, QImage::Format_ARGB32_Premultiplied);
     img.fill(color);
-    return img.save(QString::fromStdString(path.string()), "PNG");
+    return img.save(QString::fromStdString(pathToUtf8(path)), "PNG");
 }
 } // namespace
 
@@ -61,7 +62,7 @@ bool ProjectBin::isAdjustmentLayer(const std::filesystem::path& path)
 bool ProjectBin::isColorMatte(const std::filesystem::path& path)
 {
     for (const auto& part : path) {
-        std::string s = part.string();
+        std::string s = pathToUtf8(part);
         std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c){ return std::tolower(c); });
         if (s == "mattes") return true;
@@ -73,7 +74,7 @@ void ProjectBin::editColorMatte(const std::filesystem::path& mattePath)
 {
     // Seed the picker with the matte's current colour and preserve its
     // dimensions so the edit is a pure recolour.
-    QImage current(QString::fromStdString(mattePath.string()));
+    QImage current(QString::fromStdString(pathToUtf8(mattePath)));
     QColor seed = current.isNull() ? QColor(Qt::white)
                                    : current.pixelColor(0, 0);
     int w = current.isNull() ? 1920 : current.width();
@@ -85,12 +86,12 @@ void ProjectBin::editColorMatte(const std::filesystem::path& mattePath)
         return;
 
     if (!writeMattePng(mattePath, color, w, h)) {
-        spdlog::error("Failed to rewrite color matte: {}", mattePath.string());
+        spdlog::error("Failed to rewrite color matte: {}", pathToUtf8(mattePath));
         QMessageBox::warning(this, tr("Error"),
                              tr("Failed to update color matte image."));
         return;
     }
-    spdlog::info("ProjectBin: recoloured matte '{}'", mattePath.string());
+    spdlog::info("ProjectBin: recoloured matte '{}'", pathToUtf8(mattePath));
 
     // Re-decode everywhere it's used (timeline/program monitor) — handled
     // by the MainWindow listener.
@@ -235,7 +236,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
     m_project->defaultSettings().setFrameRate(mediaFps);
 
     // Create a sequence named after the media file
-    QString stem = QFileInfo(QString::fromStdString(filePath.string())).completeBaseName();
+    QString stem = QFileInfo(QString::fromStdString(pathToUtf8(filePath))).completeBaseName();
     if (stem.isEmpty()) stem = QStringLiteral("Sequence");
     std::string seqName = stem.toStdString();
 
@@ -245,7 +246,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
         clipDuration = secondsToTicks(5.0); // default 5 seconds
 
     // Determine media type from extension
-    std::string ext = filePath.extension().string();
+    std::string ext = pathToUtf8(filePath.extension());
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const bool isVideo = (ext == ".mp4" || ext == ".mov" || ext == ".mkv" ||
                           ext == ".webm" || ext == ".avi" || ext == ".m4v");
@@ -262,7 +263,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
     // This sequence's own resolution/fps match the dragged clip.
     builtTimeline->settings().setResolution(mediaW, mediaH);
     builtTimeline->settings().setFrameRate(mediaFps);
-    std::string fileStr = filePath.string();
+    std::string fileStr = pathToUtf8(filePath);
 
     if (isVideo) {
         // Replace default V1+A1 with our populated tracks
@@ -401,7 +402,7 @@ void ProjectBin::createColorMatte()
 
     // 5. Create the solid-color PNG (1920x1080 like Premiere's default)
     if (!writeMattePng(mattePath, color, 1920, 1080)) {
-        spdlog::error("Failed to save color matte: {}", mattePath.string());
+        spdlog::error("Failed to save color matte: {}", pathToUtf8(mattePath));
         QMessageBox::warning(this, tr("Error"),
                              tr("Failed to save color matte image."));
         return;
@@ -410,7 +411,7 @@ void ProjectBin::createColorMatte()
     // 6. Import the generated matte into the bin
     addFiles({mattePath});
     spdlog::info("ProjectBin: created color matte '{}' at {}",
-                 name.toStdString(), mattePath.string());
+                 name.toStdString(), pathToUtf8(mattePath));
 }
 
 // -----------------------------------------------------------------------------

@@ -8,6 +8,7 @@
  */
 
 #include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 #include "panels/project/ProjectBinInternal.h"
 #include "Theme.h"
 #include "widgets/MediaDragTreeWidget.h"
@@ -107,7 +108,7 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
         // Synthetic adjustment-layer items: no source media to open, no
         // thumbnail to load. Recreate them with their existing name.
         if (projectBinIsAdjustmentPath(f)) {
-            QString name = QString::fromStdString(f.stem().string());
+            QString name = QString::fromStdString(pathToUtf8(f.stem()));
             m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
                                     /*itemId*/ 0, name,
                                     /*labelColor*/ 0xFFFFAA44);
@@ -145,7 +146,7 @@ void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
         if (m_grid->hasItem(f))
             continue;
         if (projectBinIsAdjustmentPath(f)) {
-            QString name = QString::fromStdString(f.stem().string());
+            QString name = QString::fromStdString(pathToUtf8(f.stem()));
             m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
                                     /*itemId*/ 0, name,
                                     /*labelColor*/ 0xFFFFAA44);
@@ -189,7 +190,7 @@ void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
         }
         if (bin) {
             for (const auto& f : files) {
-                QString key = QString::fromStdString(f.string());
+                QString key = QString::fromStdString(pathToUtf8(f));
                 for (int i = m_listWidget->topLevelItemCount() - 1; i >= 0; --i) {
                     auto* it = m_listWidget->topLevelItem(i);
                     if (it->data(0, Qt::UserRole).toString() == key) {
@@ -277,7 +278,7 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
 
     // Move the newly-added files into the target bin
     for (const auto& f : files) {
-        QString key = QString::fromStdString(f.string());
+        QString key = QString::fromStdString(pathToUtf8(f));
         for (int i = m_listWidget->topLevelItemCount() - 1; i >= 0; --i) {
             auto* it = m_listWidget->topLevelItem(i);
             if (it->data(0, Qt::UserRole).toString() == key) {
@@ -328,7 +329,7 @@ void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
     int gridIdx = -1;
     for (size_t i = 0; i < items.size(); ++i) {
         if (items[i].itemId == itemId ||
-            items[i].filePath.string() == oldPath.toStdString()) {
+            pathToUtf8(items[i].filePath) == oldPath.toStdString()) {
             gridIdx = static_cast<int>(i);
             break;
         }
@@ -361,7 +362,7 @@ void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
     settings.setValue("Import/lastDir", QFileInfo(newFile).absolutePath());
 
     const std::filesystem::path newPath(newFile.toStdString());
-    if (newPath.string() == oldPath.toStdString()) return;
+    if (pathToUtf8(newPath) == oldPath.toStdString()) return;
 
     // Open the new file via MediaPool
     uint64_t newHandle = 0;
@@ -388,7 +389,7 @@ void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
     m_grid->loadVisibleThumbnails();
 
     spdlog::info("ProjectBin: replaced '{}' with '{}'",
-                 oldPath.toStdString(), newPath.string());
+                 oldPath.toStdString(), pathToUtf8(newPath));
 }
 
 void ProjectBin::clearAll()

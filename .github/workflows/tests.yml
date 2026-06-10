@@ -38,6 +38,10 @@ jobs:
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check_orphans.ps1
 
+      - name: Check for banned path::string() call sites
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check_path_string.ps1
+
       - name: Configure CMake (with tests)
         shell: pwsh
         run: |

@@ -1,91 +1,50 @@
 ================================================================================
  FABLE_FIX.TXT — Remaining work
- Roundtable NLE — last updated 2026-06-09 by Claude (Fable 5)
+ Roundtable NLE — last updated 2026-06-10 by Claude (Fable 5)
 
- All previously-listed code work has been applied and verified (Release build
- clean, 688/688 core tests green) — see git history.  Latest batch: dead
- m_videoFallbackCache removed, PixelBufferPool capacity shrink, and audio-FX
- REAL-TIME PREVIEW (clip FxChain is now baked into the playback window
- buffers at load time in AudioPlaybackServiceLoad.cpp, mirroring export;
- EQ/Dynamics edits in the Properties panel rebuild the audio sources
- immediately).  This file tracks only what is left.
-================================================================================
+ ALL code work from this plan is complete (Release build clean, 688/688 core
+ tests green) — see git history.  Final batch: full .string() elimination
+ (125 sites) + check_path_string.ps1 CI guard, diagnostic-launcher
+ consolidation into launch.ps1 (launch.bat untouched — stays the fast pure-
+ batch path), the 4.1 refactor (ConvertDecodedFrame.{h,cpp} — ONE CPU
+ decode→BGRA core shared by urgent/prefetch/loop paths), and the 4.2 slice
+ (VideoFrameMapping.h mapTickToSourceFrame — ONE tick→source-frame
+ authority; fixed a real fps-priority mismatch where the pending-frame
+ collector could prefetch a different frame than the renderer requested).
+ Net session footprint: ~50 files, −380 lines.
 
-────────────────────────────────────────────────────────────────────────────────
- 1. VERIFICATION (needs a human at the keyboard)
-────────────────────────────────────────────────────────────────────────────────
-
-  1.1 Runtime-verify the June-9 fixes in a normal session:
-      - Launch, edit, quit: confirm clean shutdown (the old MSVCP140
-        Mtx_lock AV fired in ~CompositeEngine during app close).
-      - Zoom deep near the end of the project on the Bar.png layer:
-        confirm the clip body stays visible while scrubbing/playing.
-        If it still vanishes, report your Windows display-scaling % —
-        that decides whether the DPR theory needs revisiting.
-      - Audio FX preview: put a Parametric EQ with an obvious setting
-        (e.g. -12 dB output trim, or High Cut at 1 kHz) on a dialogue
-        clip and play — you should hear it immediately, and hear the
-        change live when you scrub an EQ knob during playback.  Also
-        listen across a playback window swap on a LONG audio clip for
-        any tick at the boundary (cold-start filter state — fix is a
-        warmup pass if it's ever audible).
-
-  1.2 PageHeap confirmation session for the (believed fixed) 0xC0000374:
-      run setup_appverif.ps1 to enable full PageHeap on roundtable.exe,
-      replay the old repro (cross-sequence paste + Wells packed-alpha
-      scrub/settle + export), then disable PageHeap.  A clean session
-      closes the heap-corruption investigation for good.
-
-  1.3 Trigger .github/workflows/asan.yml once via workflow_dispatch to
-      validate it on the GitHub runner (it is unexercised).  After a few
-      clean weekly runs, consider promoting it to a PR gate.
+ What remains is verification only:
 
 ────────────────────────────────────────────────────────────────────────────────
- 2. CLEANUP (small, low risk)
+ VERIFICATION (needs a human at the keyboard)
 ────────────────────────────────────────────────────────────────────────────────
 
-  2.1 Low-priority remainder of the .string() sweep: core/media encoders
-      (ProResEncoder, VP9AlphaEncoder, ThumbnailGenerator, WaveformCache,
-      OmniShotDetector), gpu/ (CompositeServiceSpine, FrameSignature,
-      Nv12ConverterPipeline, SpineRenderer, vulkan/Pipeline), ui/
-      (MainWindow*, RelinkMediaDialog), core/effects/Ots, CrashHandler,
-      main.cpp.  LOW priority because roundtable.manifest already forces
-      process ACP = UTF-8 on Win10 1903+ — these sites only misbehave in
-      the manifest-less test executables or on pre-1903 Windows.
-      Optional follow-up: a CI grep that bans new `.string()` on
-      std::filesystem::path outside PathUtils.h.
+  1. Runtime smoke of the June-10 refactors in a normal editing session —
+     the decode/convert and frame-mapping unification preserved each path's
+     behavior by construction, but pixels on screen are the real test:
+       - Scrub + play a project with Wells (packed-alpha), GREEN-keyed
+         media, a looping character, and a still PNG: colors stable (no
+         brightness/saturation flicker across cache churn), characters
+         loop, stills don't vanish.
+       - Play at 2x and on a speed-changed clip: motion stays smooth
+         (no repeat/skip judder at clip starts).
+       - Audio FX preview: EQ/Dynamics audible immediately and live while
+         scrubbing a knob during playback; listen across a window swap on
+         a LONG audio clip for boundary ticks.
+       - The diagnostic launchers (launch_debug.bat, launch-framehash.bat,
+         launch-spinediag.bat, launch_with_validation.bat) now route
+         through launch.ps1 — run whichever you use next and confirm it
+         behaves as before.
 
-  2.2 Root-script sprawl: 12+ launch*/setup*/publish* scripts at the repo
-      root.  Optional: fold the launch variants into one launch.ps1 with
-      flags (-debug, -framehash, -spinediag, -validation) so behaviors
-      can't drift apart.
+  2. PageHeap confirmation session for the (believed fixed) 0xC0000374:
+     setup_appverif.ps1 → replay the old repro (cross-sequence paste +
+     Wells packed-alpha scrub/settle + export) → disable.  A clean session
+     closes the heap-corruption investigation for good.
 
-────────────────────────────────────────────────────────────────────────────────
- 3. REFACTORS (largest items — schedule deliberately)
-────────────────────────────────────────────────────────────────────────────────
-
-  3.1 Unify the THREE copies of decoded-frame → BGRA conversion:
-      MediaPoolDecode.cpp (~290-535), MediaPoolPrefetchConvert.cpp
-      (~60-200), MediaPoolPrefetchLoop.cpp (~230-300) each reimplement the
-      tier cap, direct-BGRA row copy, sws context cache + BT.709 range
-      pinning, chroma-key filename check, and alpha-edge cleanup.  They had
-      already diverged once (the packedTiles bug — now unified via
-      VideoStreamInfo::contentHeight(), but that was one formula of many).
-      Extract a single ConvertDecodedFrame helper (input: DecodedFrame +
-      tier/packed info + sws-cache slot + PixelBufferPool*; output:
-      CachedFrame fields); the urgent/prefetch/loop paths keep their
-      threading wrappers and call the same core.  Removes the two `goto
-      nv12_done`s for free.  Highest-leverage refactor in the codebase:
-      every future pixel-format bug gets fixed once instead of 1-of-3
-      times.
-
-  3.2 Preview/export render-path duplication: CompositeService (preview)
-      and FrameRenderer (export) duplicate frame-mapping and layer-build
-      logic; multiple past bugs had to be fixed twice (loop-frame leak,
-      llround mapping, transition clamp).  Extract the frame-map +
-      layer-description step into a shared module consumed by both; keep
-      the export-only policies (forceExact, no shared cache/prefetch) as
-      parameters rather than parallel code.
+  3. Trigger .github/workflows/asan.yml once via workflow_dispatch to
+     validate it on the runner; promote to a PR gate after a clean streak.
+     The new path::string() guard runs in the regular tests.yml on the
+     next push — no action needed beyond watching it pass.
 
 ================================================================================
  END OF FILE

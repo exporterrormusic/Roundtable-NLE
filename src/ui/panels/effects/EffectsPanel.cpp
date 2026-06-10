@@ -4,6 +4,7 @@
  */
 
 #include "panels/effects/EffectsPanel.h"
+#include "PathUtils.h"
 
 #include "Theme.h"
 
@@ -812,7 +813,7 @@ void EffectsPanel::loadPresetsFromDisk()
                              std::istreambuf_iterator<char>());
 
         // Simple JSON parse for "name" field
-        std::string presetName = entry.path().stem().string();
+        std::string presetName = pathToUtf8(entry.path().stem());
         auto namePos = content.find("\"name\"");
         if (namePos != std::string::npos) {
             auto colonPos = content.find(':', namePos);
@@ -826,7 +827,7 @@ void EffectsPanel::loadPresetsFromDisk()
         child->setText(0, QString::fromStdString(presetName));
         child->setData(0, Qt::UserRole + 1, true);  // Mark as preset item
         child->setData(0, Qt::UserRole + 2,
-                       QString::fromStdString(entry.path().string()));
+                       QString::fromStdString(pathToUtf8(entry.path())));
         child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
     }
 }

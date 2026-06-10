@@ -3,6 +3,7 @@
  */
 
 #include "dialogs/RelinkMediaDialog.h"
+#include "PathUtils.h"
 #include "project/AssetDatabase.h"
 #include "media/MediaPool.h"
 #include "Theme.h"
@@ -82,7 +83,7 @@ void RelinkMediaDialog::populateList()
 
         auto* item = new QTreeWidgetItem;
         item->setText(0, QString::fromStdString(entry->name));
-        item->setText(1, QString::fromStdString(entry->absolutePath.string()));
+        item->setText(1, QString::fromStdString(pathToUtf8(entry->absolutePath)));
         item->setText(2, tr("Offline"));
         item->setForeground(2, QColor(220, 60, 60));
         item->setData(0, Qt::UserRole, QVariant::fromValue(static_cast<quint64>(id)));
@@ -128,17 +129,17 @@ void RelinkMediaDialog::relinkAll()
         if (!entry) continue;
 
         // Search recursively by filename
-        std::string filename = entry->absolutePath.filename().string();
+        std::string filename = pathToUtf8(entry->absolutePath.filename());
         for (auto it = std::filesystem::recursive_directory_iterator(
                  searchDir, std::filesystem::directory_options::skip_permission_denied);
              it != std::filesystem::recursive_directory_iterator(); ++it) {
             if (!it->is_regular_file()) continue;
-            if (it->path().filename().string() == filename) {
+            if (pathToUtf8(it->path().filename()) == filename) {
                 if (m_assetDb->relinkAsset(id, it->path())) {
                     m_relinked.push_back(id);
                     item->setText(2, tr("Relinked"));
                     item->setForeground(2, QColor(80, 200, 80));
-                    item->setText(1, QString::fromStdString(it->path().string()));
+                    item->setText(1, QString::fromStdString(pathToUtf8(it->path())));
                     ++found;
                 }
                 break;
@@ -161,7 +162,7 @@ void RelinkMediaDialog::locateFile(QTreeWidgetItem* item)
     QString file = QFileDialog::getOpenFileName(
         this,
         tr("Locate \"%1\"").arg(QString::fromStdString(entry->name)),
-        QString::fromStdString(entry->absolutePath.parent_path().string()),
+        QString::fromStdString(pathToUtf8(entry->absolutePath.parent_path())),
         filter);
     if (file.isEmpty()) return;
 

@@ -7,6 +7,7 @@
  */
 
 #include "effects/Ots.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -146,7 +147,7 @@ bool Ots::saveAsDefault() const
 
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
-        spdlog::warn("Ots: cannot write defaults to {}", path.string());
+        spdlog::warn("Ots: cannot write defaults to {}", pathToUtf8(path));
         return false;
     }
 

@@ -4,6 +4,7 @@
  */
 
 #include <volk.h>
+#include "PathUtils.h"
 #include "vulkan/Pipeline.h"
 #include "vulkan/Device.h"
 
@@ -101,7 +102,7 @@ VkShaderModule PipelineManager::loadShader(const std::filesystem::path& spirvPat
     std::ifstream file(spirvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
     {
-        spdlog::error("Failed to open shader file: {}", spirvPath.string());
+        spdlog::error("Failed to open shader file: {}", pathToUtf8(spirvPath));
         return VK_NULL_HANDLE;
     }
 
@@ -119,12 +120,12 @@ VkShaderModule PipelineManager::loadShader(const std::filesystem::path& spirvPat
     VkResult result = vkCreateShaderModule(m_device, &createInfo, nullptr, &shaderModule);
     if (result != VK_SUCCESS)
     {
-        spdlog::error("Failed to create shader module from {}", spirvPath.string());
+        spdlog::error("Failed to create shader module from {}", pathToUtf8(spirvPath));
         return VK_NULL_HANDLE;
     }
 
     m_shaders.push_back(shaderModule);
-    spdlog::debug("Loaded shader: {}", spirvPath.filename().string());
+    spdlog::debug("Loaded shader: {}", pathToUtf8(spirvPath.filename()));
     return shaderModule;
 }
 

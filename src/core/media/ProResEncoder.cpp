@@ -75,7 +75,7 @@ bool ProResAlphaEncoder::open(const std::filesystem::path& path,
 
     // ── Create output format context (MOV) ──────────────────────────────
     int ret = avformat_alloc_output_context2(&m_fmtCtx, nullptr, "mov",
-                                              path.string().c_str());
+                                              pathToUtf8(path).c_str());
     if (ret < 0 || !m_fmtCtx) {
         m_lastError = "ProRes: Failed to create MOV output context";
         spdlog::error("{}", m_lastError);
@@ -198,7 +198,7 @@ bool ProResAlphaEncoder::open(const std::filesystem::path& path,
 
     m_isOpen = true;
     spdlog::info("ProRes: Opened {}x{} @ {}fps profile={} → {}",
-                 m_width, m_height, fps, profile, path.string());
+                 m_width, m_height, fps, profile, pathToUtf8(path));
     return true;
 }
 

@@ -6,6 +6,7 @@
  */
 
 #include "panels/project/ConversionPanel.h"
+#include "PathUtils.h"
 #include "QtHelpers.h"
 #include "Theme.h"
 
@@ -843,7 +844,7 @@ void ConversionPanel::onTableContextMenu(const QPoint& pos)
             // format subdirs (H264_Green/H264_Blue/H264_Custom/ProRes); prefer
             // the active encoder format, then fall back to whichever exists.
             const QString cacheRoot = QString::fromStdString(
-                m_animVideoCache->cacheDirectory().string());
+                pathToUtf8(m_animVideoCache->cacheDirectory()));
 
             auto outfitDirFor = [&](SpineCacheFormat fmt) {
                 return cacheRoot + "/"

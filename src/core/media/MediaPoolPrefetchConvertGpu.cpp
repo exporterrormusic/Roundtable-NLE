@@ -16,6 +16,7 @@
  */
 
 #include "MediaPool.h"
+#include "PathUtils.h"
 #include "MediaPoolPrefetchGpu.h"
 #include "PrefetchTexturePool.h"
 #include "WorkerBreadcrumb.h"
@@ -1047,7 +1048,7 @@ bool WorkerGpuState::ensureChromaKeyPass()
     }
     std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        spdlog::warn("ChromaKeyPass: failed to open {}", spvPath.string());
+        spdlog::warn("ChromaKeyPass: failed to open {}", pathToUtf8(spvPath));
         return false;
     }
     const size_t fileSize = static_cast<size_t>(file.tellg());

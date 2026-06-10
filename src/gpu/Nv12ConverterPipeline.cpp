@@ -7,6 +7,7 @@
  */
 
 #include <volk.h>
+#include "PathUtils.h"
 #include "Nv12Converter.h"
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
@@ -151,7 +152,7 @@ bool Nv12Converter::createPipeline()
     // Read SPIR-V binary
     std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        spdlog::error("Nv12Converter: failed to open {}", spvPath.string());
+        spdlog::error("Nv12Converter: failed to open {}", pathToUtf8(spvPath));
         return false;
     }
     size_t fileSize = static_cast<size_t>(file.tellg());
@@ -294,7 +295,7 @@ bool Nv12Converter::createYuv420pPipeline()
 
     std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        spdlog::error("Nv12Converter: failed to open {}", spvPath.string());
+        spdlog::error("Nv12Converter: failed to open {}", pathToUtf8(spvPath));
         return false;
     }
     size_t fileSize = static_cast<size_t>(file.tellg());
@@ -433,7 +434,7 @@ bool Nv12Converter::createP010Pipeline()
 
     std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        spdlog::error("Nv12Converter: failed to open {}", spvPath.string());
+        spdlog::error("Nv12Converter: failed to open {}", pathToUtf8(spvPath));
         return false;
     }
     size_t fileSize = static_cast<size_t>(file.tellg());
@@ -568,7 +569,7 @@ bool Nv12Converter::createYuva444p12Pipeline()
 
     std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        spdlog::error("Nv12Converter: failed to open {}", spvPath.string());
+        spdlog::error("Nv12Converter: failed to open {}", pathToUtf8(spvPath));
         return false;
     }
     size_t fileSize = static_cast<size_t>(file.tellg());

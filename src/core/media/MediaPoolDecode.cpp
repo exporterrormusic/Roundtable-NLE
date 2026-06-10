@@ -4,6 +4,7 @@
 #include "GpuContext.h"
 #include "Nv12Converter.h"
 #include "PathUtils.h"
+#include "media/ConvertDecodedFrame.h"
 #include "cuda/CudaVulkanInterop.h"
 #include <volk.h>
 #include <spdlog/spdlog.h>
@@ -273,20 +274,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
     if (decoded.data[0] && decoded.width > 0 && decoded.height > 0) {
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
-        // Convert any pixel format â†’ BGRA using sws_scale
-        AVPixelFormat srcFmt = AV_PIX_FMT_YUV420P; // default guess
-        if (decoded.rawFormat >= 0) {
-            // Use the actual pixel format from the decoder for accurate conversion
-            srcFmt = static_cast<AVPixelFormat>(decoded.rawFormat);
-        } else {
-            switch (decoded.format) {
-                case PixelFormat::YUV420P: srcFmt = AV_PIX_FMT_YUV420P; break;
-                case PixelFormat::NV12:    srcFmt = AV_PIX_FMT_NV12;    break;
-                case PixelFormat::BGRA:    srcFmt = AV_PIX_FMT_BGRA;    break;
-                case PixelFormat::RGBA:    srcFmt = AV_PIX_FMT_RGBA;    break;
-                default:                   srcFmt = AV_PIX_FMT_YUV420P; break;
-            }
-        }
+        // Convert any pixel format → BGRA (shared core; see
+        // ConvertDecodedFrame.h for everything the helper covers).
+        const AVPixelFormat srcFmt =
+            static_cast<AVPixelFormat>(resolveDecodedAvFormat(decoded));
 
         const int w = static_cast<int>(decoded.width);
         const int h = static_cast<int>(decoded.height);
@@ -403,109 +394,25 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
 
         // NOTE: ProRes 4444 GPU convert intentionally not wired yet — the
         // shared Nv12Converter command pool is not safe across the threads
-        // that reach this path.  ProRes uses CPU sws_scale below until the
+        // that reach this path.  ProRes uses the CPU core below until the
         // per-worker GPU path lands.
-        if (srcFmt == AV_PIX_FMT_BGRA && !needsResize) {
-            // Already BGRA at target size â€” direct copy
-            const uint32_t stride = static_cast<uint32_t>(decoded.linesize[0]);
-            cached->stride = w * 4;
-            cached->pixels.resize(static_cast<size_t>(w) * h * 4);
-            for (int y = 0; y < h; ++y) {
-                std::memcpy(cached->pixels.data() + y * cached->stride,
-                            decoded.data[0] + y * stride,
-                            static_cast<size_t>(w) * 4);
-            }
-        } else {
-            // Convert (and optionally resize) â†’ BGRA via sws_scale.
+        if (srcFmt != AV_PIX_FMT_BGRA || needsResize) {
             if (entry.decodePathLogged < 6) {
                 spdlog::info("MediaPool: handle={} -> CPU sws_scale ({}x{} -> {}x{} fmt={} packedAlpha={})",
                              entry.handle, w, h, dstW, dstH,
                              static_cast<int>(srcFmt), entry.packedAlpha);
                 entry.decodePathLogged = 6;
             }
-            SwsContext* sws = nullptr;
-            if (entry.swsCtx && entry.swsSrcW == w && entry.swsSrcH == h &&
-                entry.swsSrcFmt == static_cast<int>(srcFmt) &&
-                entry.swsDstW == dstW && entry.swsDstH == dstH) {
-                sws = static_cast<SwsContext*>(entry.swsCtx);
-            } else {
-                if (entry.swsCtx) {
-                    sws_freeContext(static_cast<SwsContext*>(entry.swsCtx));
-                    entry.swsCtx = nullptr;
-                }
-                sws = sws_getContext(
-                    w, h, srcFmt,
-                    dstW, dstH, AV_PIX_FMT_BGRA,
-                    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-                if (sws) {
-                    // Pin BT.709 limited→full so this on-demand/scrub CPU
-                    // path produces the SAME RGB as the GPU Nv12Converter
-                    // shaders and the prefetch CPU path.  Mismatched
-                    // colorspace = brightness/saturation flicker when the
-                    // cache mixes frames from different decoders.
-                    if (srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
-                        const int* t = sws_getCoefficients(SWS_CS_ITU709);
-                        sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
-                                                 t, /*dstRange=*/1,
-                                                 0, 1 << 16, 1 << 16);
-                    }
-                    entry.swsCtx    = sws;
-                    entry.swsSrcW   = w;
-                    entry.swsSrcH   = h;
-                    entry.swsSrcFmt = static_cast<int>(srcFmt);
-                    entry.swsDstW   = dstW;
-                    entry.swsDstH   = dstH;
-                }
-            }
-
-            if (sws) {
-                cached->width  = static_cast<uint32_t>(dstW);
-                cached->height = static_cast<uint32_t>(dstH);
-                cached->stride = static_cast<uint32_t>(dstW) * 4;
-                cached->pixels.resize(static_cast<size_t>(dstW) * dstH * 4);
-
-                uint8_t* dstData[1] = { cached->pixels.data() };
-                int dstLinesize[1] = { static_cast<int>(cached->stride) };
-
-                sws_scale(sws,
-                          decoded.data, decoded.linesize,
-                          0, h,
-                          dstData, dstLinesize);
-
-                // SwsContext is cached in entry â€” do NOT free here
-            } else {
-                spdlog::warn("MediaPool: sws_getContext failed for handle {} frame {}",
-                             entry.handle, frameNumber);
-            }
         }
-
-        // ── Clear transparent-pixel RGB for native-alpha video ────────
-        // sws_scale produces straight-alpha BGRA.  Transparent pixels may
-        // have non-zero RGB.  Zeroing those prevents GPU linear filtering
-        // from bleeding stale colour into visible edges.
-        // Skip transparent-pixel RGB clear for packed-alpha frames:
-        // the alpha lives in a separate tile region, not in the BGRA
-        // alpha channel, so clearing based on A=0 would nuke real colour.
-        if (entry.info.hasAlpha && entry.info.packedTiles == 0 &&
-            !cached->pixels.empty())
+        if (!convertDecodedToBgra(
+                decoded, static_cast<int>(srcFmt), dstW, dstH,
+                entry.info, entry.path,
+                SwsCacheRef{entry.swsCtx, entry.swsSrcW, entry.swsSrcH,
+                            entry.swsSrcFmt, entry.swsDstW, entry.swsDstH},
+                /*pool=*/nullptr, *cached))
         {
-            clearTransparentPixelRGB(cached->pixels.data(),
-                                     cached->pixels.size() / 4);
-        }
-
-        // ── Chroma-key green-screen media (#18FF00) ───────────────────
-        // GREEN-suffixed .mp4 files are H.264 renders of originally-
-        // alpha content placed on a chroma-key green background.
-        // Key them to transparent here so the rest of the pipeline
-        // (compositor, thumbnails, library) never sees the green.
-        if (!cached->pixels.empty()) {
-            std::string fn = pathToUtf8(entry.path.filename());
-            std::transform(fn.begin(), fn.end(), fn.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
-            if (fn.find("GREEN") != std::string::npos) {
-                chromaKeyInPlace(cached->pixels.data(),
-                                 cached->pixels.size() / 4);
-            }
+            spdlog::warn("MediaPool: sws_getContext failed for handle {} frame {}",
+                         entry.handle, frameNumber);
         }
 
 nv12_done:  // GPU NV12 fast-path jumps here after successful conversion

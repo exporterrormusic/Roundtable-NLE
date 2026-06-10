@@ -1,6 +1,7 @@
 // ROUNDTABLE NLE — entry point
 
 #include <QApplication>
+#include "PathUtils.h"
 #include <QGuiApplication>
 #include <QScreen>
 #include <QDir>
@@ -93,7 +94,7 @@ int main(int argc, char* argv[])
 
     // Crash handler — install with unified log root as crash directory
     rt::CrashHandler::install(logRoot);
-    spdlog::info("Crash logs → {}", logRoot.string());
+    spdlog::info("Crash logs → {}", rt::pathToUtf8(logRoot));
 
     // Deduplicate the crash log from previous sessions so it doesn't
     // balloon during crash loops (e.g., paint recursion or TDR storms).
@@ -106,7 +107,7 @@ int main(int argc, char* argv[])
         try {
             auto logPath = logRoot / "perf_log.txt";
             file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-                logPath.string(), /*truncate=*/true);
+                rt::pathToUtf8(logPath), /*truncate=*/true);
         } catch (const std::exception& e) {
             spdlog::warn("Could not create file logger: {}", e.what());
         }

@@ -8,6 +8,7 @@
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
+#include "media/ConvertDecodedFrame.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -72,18 +73,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
 
     if (decoded.data[0] && decoded.width > 0 && decoded.height > 0) {
 #ifdef ROUNDTABLE_HAS_FFMPEG
-        AVPixelFormat srcFmt = AV_PIX_FMT_YUV420P;
-        if (decoded.rawFormat >= 0) {
-            srcFmt = static_cast<AVPixelFormat>(decoded.rawFormat);
-        } else {
-            switch (decoded.format) {
-                case PixelFormat::YUV420P: srcFmt = AV_PIX_FMT_YUV420P; break;
-                case PixelFormat::NV12:    srcFmt = AV_PIX_FMT_NV12;    break;
-                case PixelFormat::BGRA:    srcFmt = AV_PIX_FMT_BGRA;    break;
-                case PixelFormat::RGBA:    srcFmt = AV_PIX_FMT_RGBA;    break;
-                default:                   srcFmt = AV_PIX_FMT_YUV420P; break;
-            }
-        }
+        const AVPixelFormat srcFmt =
+            static_cast<AVPixelFormat>(resolveDecodedAvFormat(decoded));
 
         const int w = static_cast<int>(decoded.width);
         const int h = static_cast<int>(decoded.height);
@@ -105,92 +96,20 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
             dstH = std::max(2, static_cast<int>(h * scale) & ~1);
         }
 
-        const bool needsResize = (dstW != w || dstH != h);
-
         // NOTE: ProRes 4444 (yuva444p12le) GPU convert is intentionally NOT
         // wired here — the prefetch path runs on MULTIPLE worker threads, and
         // the shared Nv12Converter's command pool (GpuContext::m_cmdPool) is
-        // NOT safe for concurrent use.  ProRes goes through CPU sws_scale below
-        // (correct, just slower).  The GPU path will be added via the
-        // per-worker convertDecodedToCacheGpu path instead.  See git history.
-        if (srcFmt == AV_PIX_FMT_BGRA && !needsResize) {
-            const uint32_t stride = static_cast<uint32_t>(decoded.linesize[0]);
-            cached->stride = w * 4;
-            cached->pixels = pool->acquire(static_cast<size_t>(w) * h * 4);
-            for (int y = 0; y < h; ++y) {
-                std::memcpy(cached->pixels.data() + y * cached->stride,
-                            decoded.data[0] + y * stride,
-                            static_cast<size_t>(w) * 4);
-            }
-        } else {
-            SwsContext* sws = nullptr;
-            if (state.swsCtx && state.swsSrcW == w && state.swsSrcH == h &&
-                state.swsSrcFmt == static_cast<int>(srcFmt) &&
-                state.swsDstW == dstW && state.swsDstH == dstH) {
-                sws = static_cast<SwsContext*>(state.swsCtx);
-            } else {
-                if (state.swsCtx) {
-                    sws_freeContext(static_cast<SwsContext*>(state.swsCtx));
-                    state.swsCtx = nullptr;
-                }
-                sws = sws_getContext(
-                    w, h, srcFmt,
-                    dstW, dstH, AV_PIX_FMT_BGRA,
-                    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-                if (sws) {
-                    // Pin BT.709 limited→full so this CPU path produces the
-                    // SAME RGB as the GPU Nv12Converter shaders.  Without it
-                    // swscale defaults to BT.601, and frames for the same
-                    // (handle,frame,tier) filled by the GPU vs CPU path
-                    // differ → brightness/saturation flicker once the cache
-                    // churns. srcRange=0 (studio swing in), dstRange=1 (full RGB).
-                    if (srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
-                        const int* t = sws_getCoefficients(SWS_CS_ITU709);
-                        sws_setColorspaceDetails(sws, t, /*srcRange=*/0,
-                                                 t, /*dstRange=*/1,
-                                                 0, 1 << 16, 1 << 16);
-                    }
-                    state.swsCtx    = sws;
-                    state.swsSrcW   = w;
-                    state.swsSrcH   = h;
-                    state.swsSrcFmt = static_cast<int>(srcFmt);
-                    state.swsDstW   = dstW;
-                    state.swsDstH   = dstH;
-                }
-            }
-
-            if (sws) {
-                cached->width  = static_cast<uint32_t>(dstW);
-                cached->height = static_cast<uint32_t>(dstH);
-                cached->stride = static_cast<uint32_t>(dstW) * 4;
-                cached->pixels = pool->acquire(static_cast<size_t>(dstW) * dstH * 4);
-
-                uint8_t* dstData[1] = { cached->pixels.data() };
-                int dstLinesize[1] = { static_cast<int>(cached->stride) };
-
-                sws_scale(sws,
-                          decoded.data, decoded.linesize,
-                          0, h,
-                          dstData, dstLinesize);
-            } else {
-                return nullptr;
-            }
-        }
-
-        if (task.info.hasAlpha && !task.packedAlpha && !cached->pixels.empty()) {
-            clearTransparentPixelRGB(cached->pixels.data(),
-                                     cached->pixels.size() / 4);
-        }
-
-        // ── Chroma-key green-screen media (#18FF00) ───────────────────
-        if (!cached->pixels.empty()) {
-            std::string fn = pathToUtf8(task.filePath.filename());
-            std::transform(fn.begin(), fn.end(), fn.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
-            if (fn.find("GREEN") != std::string::npos) {
-                chromaKeyInPlace(cached->pixels.data(),
-                                 cached->pixels.size() / 4);
-            }
+        // NOT safe for concurrent use.  ProRes goes through the shared CPU
+        // core below (correct, just slower).  The GPU path will be added via
+        // the per-worker convertDecodedToCacheGpu path instead.
+        if (!convertDecodedToBgra(
+                decoded, static_cast<int>(srcFmt), dstW, dstH,
+                task.info, task.filePath,
+                SwsCacheRef{state.swsCtx, state.swsSrcW, state.swsSrcH,
+                            state.swsSrcFmt, state.swsDstW, state.swsDstH},
+                pool.get(), *cached))
+        {
+            return nullptr;   // sws_getContext failed
         }
 #else
         return nullptr;

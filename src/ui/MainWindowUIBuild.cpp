@@ -8,6 +8,7 @@
  */
 
 #include "MainWindow.h"
+#include "PathUtils.h"
 #include "ShortcutManager.h"
 
 // Composite service (for modal-dialog compositor suppression)
@@ -352,7 +353,7 @@ void MainWindow::buildPanels()
                 const auto& sc = m_audioSync->clip(i);
                 if (sc.matchState != 2 || sc.sourceFile.empty()) continue;
                 std::filesystem::path p(sc.sourceFile);
-                if (seen.insert(p.string()).second)
+                if (seen.insert(pathToUtf8(p)).second)
                     allAudioPaths.push_back(p);
             }
             // Drop everything into a single root-level "VO" folder. Don't
@@ -531,7 +532,7 @@ void MainWindow::buildPanels()
                 handle = m_mediaPool->open(filePath);
             if (handle == 0 || !m_mediaPool->isValid(handle)) {
                 spdlog::warn("loadInSourceMonitor: no valid media handle for '{}'",
-                             filePath.string());
+                             pathToUtf8(filePath));
                 return;
             }
 
@@ -600,8 +601,8 @@ void MainWindow::buildPanels()
             ProjectSerializer serializer;
             if (serializer.save(*project, savePath)) {
                 spdlog::info("Auto-created project saved to: {}",
-                             savePath.string());
-                addToRecentFiles(QString::fromStdString(savePath.string()));
+                             pathToUtf8(savePath));
+                addToRecentFiles(QString::fromStdString(pathToUtf8(savePath)));
             } else {
                 spdlog::warn("Failed to save auto-created project '{}'",
                              projName.toStdString());

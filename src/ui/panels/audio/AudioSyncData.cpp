@@ -3,6 +3,7 @@
  * Split from AudioSync.cpp for maintainability.
  */
 #include "panels/audio/AudioSync.h"
+#include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
@@ -82,7 +83,7 @@ void AudioSync::runAutoSync()
         // extractCharacterName() can't handle names embedded deeper in filenames
         // like "OVERSPEC AD - ANIS.wav".  The script names always take priority.
         std::filesystem::path fp(clip.sourceFile);
-        std::string stem = fp.stem().string();
+        std::string stem = pathToUtf8(fp.stem());
         std::string stemLower = stem;
         for (auto& c : stemLower)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

@@ -4,6 +4,7 @@
  */
 
 #include "CompositeService.h"
+#include "PathUtils.h"
 #include "ClipRenderers.h"
 
 #include "media/FrameCache.h"
@@ -92,7 +93,7 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
             shared->atlasText.resize(static_cast<size_t>(sz));
             atlasFile.read(shared->atlasText.data(), sz);
             // Store directory for atlas texture path resolution
-            shared->atlasDir = std::filesystem::path(paths.atlasPath).parent_path().string();
+            shared->atlasDir = pathToUtf8(utf8ToPath(paths.atlasPath).parent_path());
         }
     }
 

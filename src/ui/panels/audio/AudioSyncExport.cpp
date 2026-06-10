@@ -3,6 +3,7 @@
  * Split from AudioSyncData.cpp for maintainability.
  */
 #include "panels/audio/AudioSync.h"
+#include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "spine/ShotPreset.h"
 #include "timeline/Timeline.h"
@@ -33,7 +34,7 @@ static std::string sourceBasename(const std::string& path)
 {
     if (path.empty()) return {};
     try {
-        return std::filesystem::path(path).filename().string();
+        return pathToUtf8(utf8ToPath(path).filename());
     } catch (...) {
         auto p = path.find_last_of("/\\");
         return p == std::string::npos ? path : path.substr(p + 1);
@@ -349,7 +350,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
                     vClip->setTimelineIn(group.timelineStart);
                     vClip->setDuration(group.totalDuration);
                     // Use original filename (no extension) as label
-                    std::string bgLabel = std::filesystem::path(bg->path).stem().string();
+                    std::string bgLabel = pathToUtf8(utf8ToPath(bg->path).stem());
                     vClip->setLabel(bgLabel);
                     vClip->setShotName(shotName);
                     vClip->setGroupId(groupId);

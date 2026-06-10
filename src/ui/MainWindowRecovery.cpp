@@ -4,6 +4,7 @@
  */
 
 #include "MainWindow.h"
+#include "PathUtils.h"
 #include "ShortcutManager.h"
 #include "Theme.h"
 #include "widgets/DockTitleBar.h"
@@ -140,7 +141,7 @@ void MainWindow::onRestoreFromAutoSave()
     std::vector<Entry> files;
     for (auto& entry : std::filesystem::directory_iterator(folder, ec)) {
         if (!entry.is_regular_file(ec)) continue;
-        auto ext = entry.path().extension().string();
+        auto ext = pathToUtf8(entry.path().extension());
         if (ext != ".rtp") continue;
         auto wt = entry.last_write_time(ec);
         if (ec) continue;
@@ -192,7 +193,7 @@ void MainWindow::onRestoreFromAutoSave()
     auto reply = QMessageBox::warning(this, "Restore from Auto-Save",
         QString("This will replace the current project state with:\n\n%1\n\n"
                 "Any unsaved changes will be lost. Continue?")
-            .arg(QString::fromStdString(files[static_cast<size_t>(idx)].path.filename().string())),
+            .arg(QString::fromStdString(pathToUtf8(files[static_cast<size_t>(idx)].path.filename()))),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
     if (reply != QMessageBox::Yes) return;
@@ -221,7 +222,7 @@ void MainWindow::onRestoreFromAutoSave()
         hideBusyIndicator();
         statusBar()->showMessage("Restored from auto-save", 5000);
         spdlog::info("Restored project from auto-save: {}",
-                     files[static_cast<size_t>(idx)].path.string());
+                     pathToUtf8(files[static_cast<size_t>(idx)].path));
     } else {
         hideBusyIndicator();
         QMessageBox::warning(this, "Restore Failed",
@@ -250,7 +251,7 @@ void MainWindow::onAutoSave()
     std::filesystem::create_directories(folder, ec);
     if (ec) {
         spdlog::warn("Auto-save: failed to create folder '{}': {}",
-                     folder.string(), ec.message());
+                     pathToUtf8(folder), ec.message());
         return;
     }
 
@@ -268,7 +269,7 @@ void MainWindow::onAutoSave()
         size_t maxKeep = static_cast<size_t>(s.value("MaxAutoSaves", 20).toInt());
         AutoSave::pruneAutoSaves(folder, maxKeep);
 
-        spdlog::info("Auto-saved to {}", savePath.string());
+        spdlog::info("Auto-saved to {}", pathToUtf8(savePath));
 
         statusBar()->showMessage("Auto-saved", 2000);
     }
@@ -295,7 +296,7 @@ void MainWindow::checkCrashRecovery()
         const QString summary = QString::fromStdString(crashInfo.summary);
         const QString stack   = QString::fromStdString(crashInfo.stackTrace);
         const QString logDir  = QString::fromStdString(
-            CrashHandler::crashDirectory().string());
+            pathToUtf8(CrashHandler::crashDirectory()));
 
         QDialog dlg(this);
         dlg.setWindowTitle(QStringLiteral("Crash Recovery"));
@@ -446,7 +447,7 @@ void MainWindow::checkCrashRecovery()
                         "Click No to load the last manually saved version "
                         "(changes since then will be lost).")
                     .arg(lastPath)
-                    .arg(QString::fromStdString(newestAutoSave.filename().string())),
+                    .arg(QString::fromStdString(pathToUtf8(newestAutoSave.filename()))),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
 
             if (reply == QMessageBox::Yes) {
@@ -475,7 +476,7 @@ void MainWindow::checkCrashRecovery()
 
                     statusBar()->showMessage("Recovered from auto-save", 5000);
                     spdlog::info("Recovered project from auto-save: {}",
-                                 newestAutoSave.string());
+                                 pathToUtf8(newestAutoSave));
                     recovered = true;
                 } else {
                     QMessageBox::warning(this, "Recovery Failed",

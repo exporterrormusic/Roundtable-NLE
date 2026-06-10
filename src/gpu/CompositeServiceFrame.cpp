@@ -17,6 +17,7 @@
 // Media / timeline
 #include "media/FrameCache.h"
 #include "media/MediaPool.h"
+#include "media/VideoFrameMapping.h"
 #include "media/UnifiedCache.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
@@ -488,23 +489,14 @@ try
                     const auto* info = m_mediaPool->getInfo(handle);
                     if (!info) continue;
 
-                    double fps = (info->fps > 0.0) ? info->fps
-                               : (vc->sourceFps() > 0.0 ? vc->sourceFps() : 24.0);
-                    const int64_t localTick = atTick - c->timelineIn();
-                    int64_t srcTick = c->sourceIn() +
-                        static_cast<int64_t>(localTick * c->effectiveSpeed(localTick));
-                    if (srcTick < 0) srcTick = 0;
-                    int64_t frameNum =
-                        std::llround(ticksToSeconds(srcTick) * fps);
-                    if (info->frameCount <= 1) {
-                        frameNum = 0;
-                    } else if (vc->isVideoCharacter()) {
-                        frameNum = ((frameNum % info->frameCount) + info->frameCount)
-                                   % info->frameCount;
-                    } else {
-                        frameNum = std::clamp(frameNum, int64_t(0),
-                                              info->frameCount - 1);
-                    }
+                    // Shared mapping authority (VideoFrameMapping.h).  This
+                    // collector previously resolved fps in a DIFFERENT
+                    // priority order than the renderer (media fps first
+                    // instead of clip fps first), so it could prefetch a
+                    // different frame than the renderer would request —
+                    // wasted prefetch + a cache miss on the real frame.
+                    const int64_t frameNum =
+                        mapTickToSourceFrame(*vc, atTick, info).frame;
 
                     if (!m_mediaPool->isFrameCached(handle, frameNum, wantTier))
                         pending.push_back({handle, frameNum, wantTier});

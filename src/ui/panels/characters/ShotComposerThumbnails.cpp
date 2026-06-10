@@ -4,6 +4,7 @@
  */
 
 #include "panels/characters/ShotComposer.h"
+#include "PathUtils.h"
 #include "panels/characters/ShotComposerInternal.h"
 
 #include "Theme.h"
@@ -619,7 +620,7 @@ void ShotComposer::refreshLayerList()
         if (ref.type == LayerType::Background) {
             const auto* bg = m_currentShot.background(ref.index);
             if (bg) {
-                auto fname = std::filesystem::path(bg->path).filename().string();
+                auto fname = pathToUtf8(utf8ToPath(bg->path).filename());
                 typeIcon = bg->isVideo()
                     ? QStringLiteral("\xF0\x9F\x8E\xAC")   // Ã°Å¸Å½Â¬
                     : QStringLiteral("\xF0\x9F\x96\xBC");   // Ã°Å¸â€“Â¼

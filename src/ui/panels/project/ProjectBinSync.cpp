@@ -6,6 +6,7 @@
  */
 
 #include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 #include "Theme.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
@@ -131,7 +132,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
         const QString searchText = m_searchField->text().trimmed();
         if (!searchText.isEmpty()) {
             QString name = item.displayName.isEmpty()
-                ? QString::fromStdString(item.filePath.filename().string())
+                ? QString::fromStdString(pathToUtf8(item.filePath.filename()))
                 : item.displayName;
             if (!name.contains(searchText, Qt::CaseInsensitive))
                 continue;
@@ -150,10 +151,10 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
         // Name column ï¿½ use displayName if set, otherwise filename
         QString name = item.displayName.isEmpty()
-            ? QString::fromStdString(item.filePath.filename().string())
+            ? QString::fromStdString(pathToUtf8(item.filePath.filename()))
             : item.displayName;
         treeItem->setText(0, name);
-        treeItem->setData(0, Qt::UserRole, QString::fromStdString(item.filePath.string()));
+        treeItem->setData(0, Qt::UserRole, QString::fromStdString(pathToUtf8(item.filePath)));
         treeItem->setData(0, Qt::UserRole + 1, QVariant::fromValue(item.mediaHandle));
         treeItem->setData(0, kBinItemIdRole,
                           QVariant::fromValue(static_cast<qulonglong>(item.itemId)));
@@ -200,7 +201,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             offlineFont.setItalic(true);
             treeItem->setFont(0, offlineFont);
             treeItem->setToolTip(0, QStringLiteral("Media Offline â ") +
-                QString::fromStdString(item.filePath.string()));
+                QString::fromStdString(pathToUtf8(item.filePath)));
         }
 
         // Type column
@@ -439,7 +440,7 @@ void ProjectBin::syncIconView()
     // -- Set visibility on media items -----------------------------------
     for (auto& item : items) {
         if (item.isFolder) continue;
-        std::string key = item.filePath.string();
+        std::string key = pathToUtf8(item.filePath);
         item.visible = visiblePaths.count(key) > 0;
     }
 

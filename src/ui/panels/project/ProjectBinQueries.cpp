@@ -6,6 +6,7 @@
  */
 
 #include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 #include "panels/project/ProjectBinInternal.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
@@ -32,7 +33,7 @@ std::vector<Project::BinItem> ProjectBin::exportBinItems() const
         bi.id          = it.itemId;
         bi.path        = it.filePath;
         bi.displayName = (it.displayName.isEmpty()
-            ? QString::fromStdString(it.filePath.filename().string())
+            ? QString::fromStdString(pathToUtf8(it.filePath.filename()))
             : it.displayName).toStdString();
         bi.labelColor  = it.labelColor;
         out.push_back(std::move(bi));

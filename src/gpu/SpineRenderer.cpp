@@ -4,6 +4,7 @@
  */
 
 #include <volk.h>   // Must come before any vulkan.h include
+#include "PathUtils.h"
 #include "SpineRenderer.h"
 #include "GpuContext.h"
 #include "GpuScheduler.h"
@@ -518,7 +519,7 @@ int SpineRenderer::loadAtlasTextures(const SpineAtlas& atlas)
 
         // If texturePath is relative, resolve against atlas directory
         if (!fs::path(texPath).is_absolute() && !atlas.directory().empty()) {
-            texPath = (fs::path(atlas.directory()) / texPath).string();
+            texPath = pathToUtf8(fs::path(atlas.directory()) / texPath);
         }
 
         if (!fs::exists(texPath)) {

@@ -4,6 +4,7 @@
  */
 
 #include "MainWindow.h"
+#include "PathUtils.h"
 #include "ShortcutManager.h"
 #include "Theme.h"
 #include "widgets/DockTitleBar.h"
@@ -256,7 +257,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         auto settings = rt::appSettings();
         if (m_currentProject && !m_currentProject->filePath().empty())
             settings.setValue("LastProjectPath",
-                              QString::fromStdString(m_currentProject->filePath().string()));
+                              QString::fromStdString(pathToUtf8(m_currentProject->filePath())));
         else
             settings.remove("LastProjectPath");
     }

@@ -11,6 +11,7 @@
  */
 
 #include "MainWindow.h"
+#include "PathUtils.h"
 
 #include "panels/audio/AudioSync.h"
 #include "panels/project/ProjectPanel.h"
@@ -90,7 +91,7 @@ void MainWindow::beginAsyncProjectLoad(
         double ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0).count();
         spdlog::warn("[OPEN-PERF] [ASYNC-OPEN] serializer.load '{}' off-thread in {:.0f}ms",
-                     p.string(), ms);
+                     pathToUtf8(p), ms);
         QMetaObject::invokeMethod(qApp, [this, raw, cont]() {
             std::unique_ptr<Project> project(raw);
             if (m_destroying.load(std::memory_order_acquire)) return;
@@ -156,19 +157,19 @@ void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, ui
 
     ProjectSerializer serializer;
     if (serializer.save(*project, path)) {
-        spdlog::info("Project saved to: {}", path.string());
+        spdlog::info("Project saved to: {}", pathToUtf8(path));
         setCurrentProject(std::move(project));
         // Reset the Timeline dock layout to the canonical default
         // (loads the "USE_AS_DEFAULT" workspace preset from QSettings)
         // so new projects start with the correct panel arrangement.
         if (m_timelineWorkspace)
             m_timelineWorkspace->resetToDefaultDockLayout();
-        addToRecentFiles(QString::fromStdString(path.string()));
+        addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
         refreshProjectsList();
         statusBar()->showMessage(
             QString("Project '%1' created").arg(name), 3000);
     } else {
-        spdlog::error("Failed to save new project: {}", path.string());
+        spdlog::error("Failed to save new project: {}", pathToUtf8(path));
         QMessageBox::warning(this, "Error",
             QString("Failed to save project '%1'.\n\n"
                     "Check that the destination folder is writable and has\n"
@@ -216,12 +217,12 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
 
     std::filesystem::path path = filePath.toStdWString();
 
-    spdlog::info("OPEN: dispatching async load for {}", path.string());
+    spdlog::info("OPEN: dispatching async load for {}", pathToUtf8(path));
     beginAsyncProjectLoad(path, tr("Opening project…"),
         [this, name, path, t0](std::unique_ptr<Project> project) {
             if (!project) {
                 disengageLoadingOverlay();
-                spdlog::error("Failed to load project: {}", path.string());
+                spdlog::error("Failed to load project: {}", pathToUtf8(path));
                 QMessageBox::warning(this, "Error",
                     QString("Failed to open project '%1'").arg(name));
                 return;
@@ -278,7 +279,7 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
                 std::chrono::steady_clock::now() - t0).count();
             spdlog::info("=== OPEN PROJECT COMPLETE: {} total ms ===", dt);
 
-            addToRecentFiles(QString::fromStdString(path.string()));
+            addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
             statusBar()->showMessage(QString("Opened '%1'").arg(name), 3000);
 
             // Release the input lock — or keep the overlay up until the
@@ -571,7 +572,7 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
 
     ProjectSerializer serializer;
     if (serializer.save(*project, path)) {
-        spdlog::info("Project saved to: {}", path.string());
+        spdlog::info("Project saved to: {}", pathToUtf8(path));
         setCurrentProject(std::move(project));
         // Reset the Timeline dock layout to the canonical default
         // (loads the "USE_AS_DEFAULT" workspace preset from QSettings).
@@ -603,7 +604,7 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
                 emit tlp->mediaDropped(filePath, handle, atTick, trackIndex);
         }
     } else {
-        spdlog::error("Failed to save new project: {}", path.string());
+        spdlog::error("Failed to save new project: {}", pathToUtf8(path));
         QMessageBox::warning(this, "Error",
             QString("Failed to create project '%1'").arg(projName));
     }
@@ -863,7 +864,7 @@ void MainWindow::onSaveProject()
         settings.setValue("Project/" + QString::fromStdString(m_currentProject->name()) + "/activePage",
                           static_cast<int>(currentPage()));
 
-        addToRecentFiles(QString::fromStdString(path.string()));
+        addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
         statusBar()->showMessage("Project saved", 3000);
     } else {
         QMessageBox::warning(this, "Error", "Failed to save project.");

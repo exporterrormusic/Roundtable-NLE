@@ -4,6 +4,7 @@
  */
 
 #include "viewport/VulkanViewport.h"
+#include "PathUtils.h"
 #include "Theme.h"
 #include "GpuContext.h"
 #include "vulkan/Swapchain.h"
@@ -398,8 +399,8 @@ bool VulkanViewport::createPipeline()
         return false;
     }
 
-    auto vertSpirv = loadSpirv(vertPath.string());
-    auto fragSpirv = loadSpirv(fragPath.string());
+    auto vertSpirv = loadSpirv(pathToUtf8(vertPath));
+    auto fragSpirv = loadSpirv(pathToUtf8(fragPath));
     m_vertShader = createShaderModule(device, vertSpirv);
     m_fragShader = createShaderModule(device, fragSpirv);
     if (!m_vertShader || !m_fragShader) return false;

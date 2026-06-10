@@ -10,6 +10,7 @@
  */
 
 #include "CompositeService.h"
+#include "PathUtils.h"
 #include "ClipRenderers.h"
 #include "CompositeServiceBlend.h"
 #include "CompositeServiceLayerBuild.h"
@@ -17,6 +18,7 @@
 // Media / timeline
 #include "media/FrameCache.h"
 #include "media/MediaPool.h"
+#include "media/VideoFrameMapping.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
@@ -173,34 +175,15 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 if (handle == 0)
                     continue;
 
-                double fps = videoClip->sourceFps();
-                if (fps <= 0.0)
-                    fps = 24.0;
-
-                const int64_t localTick = tick - clip->timelineIn();
-                int64_t srcTick = clip->sourceIn() +
-                    static_cast<int64_t>(localTick * clip->effectiveSpeed(localTick));
-                if (srcTick < 0)
-                    srcTick = 0;
-
-                int64_t frameNum = std::llround(ticksToSeconds(srcTick) * fps);
                 const auto* mediaInfo = m_mediaPool->getInfo(handle);
                 if (!mediaInfo)
                     continue;
 
-                if (videoClip->sourceFps() <= 0.0 && mediaInfo->fps > 0.0) {
-                    fps = mediaInfo->fps;
-                    frameNum = std::llround(ticksToSeconds(srcTick) * fps);
-                }
-
-                if (mediaInfo->frameCount <= 1) {
-                    frameNum = 0;
-                } else if (videoClip->isVideoCharacter()) {
-                    frameNum = ((frameNum % mediaInfo->frameCount) + mediaInfo->frameCount)
-                               % mediaInfo->frameCount;
-                } else {
-                    frameNum = std::clamp(frameNum, int64_t(0), mediaInfo->frameCount - 1);
-                }
+                // Shared tick → source-frame mapping authority
+                // (VideoFrameMapping.h) — must agree exactly with the
+                // render path so the warmed frame is the rendered frame.
+                const int64_t frameNum =
+                    mapTickToSourceFrame(*videoClip, tick, mediaInfo).frame;
 
                 // Match the live composite path (CompositeServiceLayerBuild.cpp
                 // charVideoTier / spineVideoTier): forceFullResolution wins,
@@ -537,7 +520,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
                                  static_cast<double>(leadTicks)
                                      / static_cast<double>(kTicksPerSecond)
                                      * 1000.0,
-                                 std::filesystem::path(mp).filename().string(),
+                                 pathToUtf8(utf8ToPath(mp).filename()),
                                  syncHandle);
                     if (syncHandle == 0) {
                         // Open failed; let the next scan re-try.
@@ -622,7 +605,7 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             if (++s_lookaheadLog <= 30 || s_lookaheadLog % 20 == 0) {
                 spdlog::info("[LOOKAHEAD] prewarm clip {} '{}' frame {} tier={} frames={} (starts in {:.0f}ms)",
                              clip->id(),
-                             std::filesystem::path(mp).filename().string(),
+                             pathToUtf8(utf8ToPath(mp).filename()),
                              srcFrame, static_cast<int>(warmTier),
                              info->frameCount, leadMs);
             }
