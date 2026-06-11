@@ -56,6 +56,7 @@ add_library(roundtable_ui STATIC
     panels/monitors/SourceMonitorUI.cpp
     panels/monitors/ProgramMonitor.cpp
     panels/monitors/ProgramMonitorUI.cpp
+    panels/monitors/MonitorUiKit.cpp
     panels/project/ProjectBin.cpp
     panels/project/ProjectBinConfig.cpp
     panels/project/ProjectBinUI.cpp

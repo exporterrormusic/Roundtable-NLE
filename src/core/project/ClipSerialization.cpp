@@ -50,10 +50,10 @@ static std::string resolveVideoPath(const std::string& path)
     // mojibakes any non-ANSI character (U+FF5C etc.) — must use utf8ToPath.
     fs::path p = utf8ToPath(path);
 
-    // Wells PROXY workflow: remap any old Wells path to the lightweight HEVC
-    // packed-alpha for editing (fast NVDEC scrub/playback).  The export
-    // renderer transparently substitutes the ProRes master at render time
-    // (see FrameRenderer's wellsExportSource()).
+    // Wells path remap: point any old Wells path at the lightweight HEVC
+    // packed-alpha source (fast NVDEC scrub/playback).  This source is used
+    // for preview AND export — the old export-time ProRes-master
+    // substitution (wellsExportSource) was removed with FrameRenderer.
     {
         std::string filename = pathToUtf8(p.filename());
         std::string lower = filename;

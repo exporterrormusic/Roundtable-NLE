@@ -1,4 +1,4 @@
-#include "panels/timeline/ClipRenderers.h"
+#include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 
 #include "media/FrameCache.h"
 #include "timeline/TitleClip.h"

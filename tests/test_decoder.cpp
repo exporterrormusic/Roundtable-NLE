@@ -194,7 +194,12 @@ TEST(FrameCache, Statistics)
     EXPECT_NEAR(s.hitRate(), 2.0 / 3.0, 1e-9);
 }
 
-TEST(FrameCache, DuplicateInsertReplacesOld)
+// FrameCache::put is FIRST-DECODE-WINS for duplicate keys: NVDEC and the
+// software decoder render H.264 with subtly different RGB, and replacing
+// the cached frame when both pipelines raced caused visible flicker on
+// dark areas (see the comment in FrameCache::put).  A duplicate put keeps
+// the original pixels and just promotes the entry to MRU.
+TEST(FrameCache, DuplicateInsertKeepsFirst)
 {
     FrameCache cache(1024 * 1024);
 
@@ -209,7 +214,7 @@ TEST(FrameCache, DuplicateInsertReplacesOld)
     EXPECT_EQ(cache.frameCount(), 1u);
     auto result = cache.get(1, 0);
     ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->pixels[0], 0x22);
+    EXPECT_EQ(result->pixels[0], 0x11);  // first decode wins
 }
 
 TEST(FrameCache, OversizedFrameRejected)

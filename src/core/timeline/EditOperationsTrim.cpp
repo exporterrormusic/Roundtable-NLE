@@ -147,7 +147,7 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
     rightClip->setDuration(rightDuration);
     // leftDuration is in timeline ticks; convert to source ticks for sourceIn.
     // Use truncation (static_cast) to match the compositor's sourceTick
-    // calculation (CompositeServiceLayerBuild / FrameRenderer), so the right
+    // calculation (CompositeServiceLayerBuild), so the right
     // half's first frame matches the left half's last.
     const double clipSpd = std::max(clip->speed(), 0.01);
     int64_t rightSrcIn = clip->sourceIn() + static_cast<int64_t>(static_cast<double>(leftDuration) * clipSpd);

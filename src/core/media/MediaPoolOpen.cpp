@@ -114,7 +114,8 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
 
         // Common image extensions — for presets that reference background
         // images as bare filenames without extension (e.g. "TABLE_LARGE_FINAL")
-        const std::vector<fs::path> imgExts = {".png", ".jpg", ".jpeg"};
+        const std::vector<fs::path> imgExts = {".png", ".jpg", ".jpeg",
+                                               ".webp", ".bmp", ".tga"};
         for (const auto& imgExt : imgExts) {
             altExts.push_back(fs::path(filePath).replace_extension(imgExt));
         }

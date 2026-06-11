@@ -4,6 +4,7 @@
 
 #include "media/AudioFile.h"
 #include "PathUtils.h"
+#include "media/SharedFileIO.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
 #include <libavutil/error.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
@@ -53,122 +55,6 @@ namespace {
 // On POSIX this collapses to a regular FILE* — POSIX has no exclusive
 // open by default, so there's nothing to fix there.
 
-#ifdef _WIN32
-using SharedFileHandle = HANDLE;
-// const (not constexpr): INVALID_HANDLE_VALUE casts (LONG_PTR)-1 to a
-// pointer, which isn't a core constant expression under MSVC C++17/20.
-const SharedFileHandle kInvalidShared = INVALID_HANDLE_VALUE;
-#else
-using SharedFileHandle = FILE*;
-constexpr SharedFileHandle kInvalidShared = nullptr;
-#endif
-
-SharedFileHandle openSharedReadHandle(const std::filesystem::path& p)
-{
-#ifdef _WIN32
-    HANDLE h = ::CreateFileW(p.wstring().c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    // Share-mode self-test — see VideoDecoderInit.cpp for the rationale.
-    if (h != INVALID_HANDLE_VALUE) {
-        HANDLE h2 = ::CreateFileW(p.wstring().c_str(),
-            DELETE | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h2 != INVALID_HANDLE_VALUE) {
-            spdlog::debug("AudioFile: share-mode self-test PASSED '{}'",
-                         pathToUtf8(p));
-            ::CloseHandle(h2);
-        } else {
-            DWORD err = ::GetLastError();
-            spdlog::warn("AudioFile: share-mode self-test FAILED '{}' "
-                         "GetLastError={} — FILE_SHARE_DELETE not active",
-                         pathToUtf8(p), err);
-        }
-    }
-    return h;
-#else
-    return std::fopen(pathToUtf8(p).c_str(), "rb");
-#endif
-}
-
-void closeSharedHandle(SharedFileHandle h)
-{
-    if (h == kInvalidShared) return;
-#ifdef _WIN32
-    ::CloseHandle(h);
-#else
-    std::fclose(h);
-#endif
-}
-
-#ifdef ROUNDTABLE_HAS_FFMPEG
-constexpr int kAudioAvioBufSize = 32 * 1024;
-
-int audioAvioRead(void* opaque, uint8_t* buf, int bufSize)
-{
-#ifdef _WIN32
-    HANDLE h = static_cast<HANDLE>(opaque);
-    DWORD got = 0;
-    if (!::ReadFile(h, buf, static_cast<DWORD>(bufSize), &got, nullptr))
-        return AVERROR(EIO);
-    if (got == 0) return AVERROR_EOF;
-    return static_cast<int>(got);
-#else
-    FILE* fp = static_cast<FILE*>(opaque);
-    size_t n = std::fread(buf, 1, static_cast<size_t>(bufSize), fp);
-    if (n == 0) {
-        if (std::feof(fp)) return AVERROR_EOF;
-        return AVERROR(errno ? errno : EIO);
-    }
-    return static_cast<int>(n);
-#endif
-}
-
-int64_t audioAvioSeek(void* opaque, int64_t offset, int whence)
-{
-#ifdef _WIN32
-    HANDLE h = static_cast<HANDLE>(opaque);
-    if (whence == AVSEEK_SIZE) {
-        LARGE_INTEGER sz;
-        if (!::GetFileSizeEx(h, &sz)) return AVERROR(EIO);
-        return sz.QuadPart;
-    }
-    DWORD mode = FILE_BEGIN;
-    switch (whence & ~AVSEEK_FORCE) {
-        case SEEK_SET: mode = FILE_BEGIN;   break;
-        case SEEK_CUR: mode = FILE_CURRENT; break;
-        case SEEK_END: mode = FILE_END;     break;
-        default: return AVERROR(EINVAL);
-    }
-    LARGE_INTEGER off;    off.QuadPart    = offset;
-    LARGE_INTEGER newPos; newPos.QuadPart = 0;
-    if (!::SetFilePointerEx(h, off, &newPos, mode))
-        return AVERROR(EIO);
-    return newPos.QuadPart;
-#else
-    FILE* fp = static_cast<FILE*>(opaque);
-    if (whence == AVSEEK_SIZE) {
-        long cur = std::ftell(fp);
-        if (std::fseek(fp, 0, SEEK_END) != 0) return AVERROR(errno);
-        long sz = std::ftell(fp);
-        std::fseek(fp, cur, SEEK_SET);
-        return sz < 0 ? AVERROR(errno) : sz;
-    }
-    int stdWhence = SEEK_SET;
-    switch (whence & ~AVSEEK_FORCE) {
-        case SEEK_SET: stdWhence = SEEK_SET; break;
-        case SEEK_CUR: stdWhence = SEEK_CUR; break;
-        case SEEK_END: stdWhence = SEEK_END; break;
-        default: return AVERROR(EINVAL);
-    }
-    if (std::fseek(fp, static_cast<long>(offset), stdWhence) != 0)
-        return AVERROR(errno);
-    return std::ftell(fp);
-#endif
-}
-#endif // ROUNDTABLE_HAS_FFMPEG
 
 #ifdef ROUNDTABLE_HAS_SNDFILE
 // libsndfile virtual IO bound to a raw Win32 HANDLE — bypasses MSVCRT
@@ -271,6 +157,97 @@ std::vector<float> resampleInterleavedLinear(const std::vector<float>& samples,
     }
 
     return resampled;
+}
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+/// Resample an interleaved float buffer via swresample (windowed-sinc).
+/// Same contract as resampleInterleavedLinear: output frame d corresponds to
+/// source position d * srcRate / dstRate, length ≈ ceil(srcFrames * ratio).
+/// The polyphase filter has a short warm-up transient at the start of the
+/// buffer (zero-padded history) — callers that extract a sub-region must
+/// decode with a pre-roll margin (kResampleMarginFrames) so the transient
+/// never lands inside the extracted window.
+std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
+                                          uint16_t channels,
+                                          uint32_t srcSampleRate,
+                                          uint32_t dstSampleRate)
+{
+    if (samples.empty() || channels == 0 || srcSampleRate == 0 ||
+        srcSampleRate == dstSampleRate) {
+        return samples;
+    }
+
+    const int64_t srcFrames = static_cast<int64_t>(samples.size() / channels);
+    if (srcFrames <= 0) {
+        return {};
+    }
+
+    AVChannelLayout layout;
+    av_channel_layout_default(&layout, channels);
+
+    SwrContext* ctx = nullptr;
+    if (swr_alloc_set_opts2(&ctx,
+                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(dstSampleRate),
+                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(srcSampleRate),
+                            0, nullptr) < 0 || !ctx || swr_init(ctx) < 0) {
+        if (ctx) swr_free(&ctx);
+        av_channel_layout_uninit(&layout);
+        return resampleInterleavedLinear(samples, channels, srcSampleRate, dstSampleRate);
+    }
+
+    const int64_t maxOutFrames =
+        av_rescale_rnd(srcFrames, dstSampleRate, srcSampleRate, AV_ROUND_UP) + 64;
+    std::vector<float> out(static_cast<size_t>(maxOutFrames * channels));
+
+    const uint8_t* inPlanes  = reinterpret_cast<const uint8_t*>(samples.data());
+    uint8_t*       outPlanes = reinterpret_cast<uint8_t*>(out.data());
+    int total = swr_convert(ctx, &outPlanes, static_cast<int>(maxOutFrames),
+                            &inPlanes, static_cast<int>(srcFrames));
+    if (total < 0) {
+        swr_free(&ctx);
+        av_channel_layout_uninit(&layout);
+        return resampleInterleavedLinear(samples, channels, srcSampleRate, dstSampleRate);
+    }
+
+    // Drain the filter tail so the final frames are not silently dropped.
+    if (total < maxOutFrames) {
+        uint8_t* tail = reinterpret_cast<uint8_t*>(out.data() +
+                            static_cast<size_t>(total) * channels);
+        const int drained = swr_convert(ctx, &tail,
+                                        static_cast<int>(maxOutFrames - total),
+                                        nullptr, 0);
+        if (drained > 0) total += drained;
+    }
+
+    swr_free(&ctx);
+    av_channel_layout_uninit(&layout);
+
+    // Preserve the linear resampler's length contract so the position math
+    // in extractResampledRegion keeps lining up across chunk boundaries.
+    const int64_t expected = static_cast<int64_t>(std::ceil(
+        srcFrames * static_cast<double>(dstSampleRate) / srcSampleRate));
+    out.resize(static_cast<size_t>(std::min<int64_t>(total, expected) * channels));
+    return out;
+}
+#endif // ROUNDTABLE_HAS_FFMPEG
+
+/// Source-frame pre/post-roll decoded around a resampled window so the
+/// swr filter warm-up/tail transients fall outside the extracted region.
+/// swresample's FIR spans a few dozen taps; 256 frames is comfortably past it.
+constexpr int64_t kResampleMarginFrames = 256;
+
+/// Rate-convert an interleaved float buffer.  swresample when available
+/// (windowed-sinc — no HF roll-off/aliasing), linear interpolation otherwise.
+std::vector<float> resampleInterleaved(const std::vector<float>& samples,
+                                       uint16_t channels,
+                                       uint32_t srcSampleRate,
+                                       uint32_t dstSampleRate)
+{
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    return resampleInterleavedSwr(samples, channels, srcSampleRate, dstSampleRate);
+#else
+    return resampleInterleavedLinear(samples, channels, srcSampleRate, dstSampleRate);
+#endif
 }
 
 /// Extract the requested region from a resampled buffer.
@@ -566,8 +543,11 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
 #ifdef ROUNDTABLE_HAS_SNDFILE
         if (m_backend == AudioBackend::Sndfile && m_impl->sndFile) {
             const double invRatio = static_cast<double>(m_info.sampleRate) / targetSampleRate;
-            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio));
-            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio)) + 1;
+            // Margin keeps the swr filter warm-up/tail outside the window.
+            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio))
+                               - kResampleMarginFrames;
+            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio))
+                             + 1 + kResampleMarginFrames;
             srcStart = std::max<int64_t>(0, srcStart);
             srcEnd = std::min<int64_t>(m_info.frames, srcEnd);
             if (srcEnd <= srcStart) {
@@ -584,7 +564,7 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
             }
             region.resize(static_cast<size_t>(read * m_info.channels));
 
-            auto resampled = resampleInterleavedLinear(region, m_info.channels,
+            auto resampled = resampleInterleaved(region, m_info.channels,
                                                        m_info.sampleRate, targetSampleRate);
             return extractResampledRegion(resampled, m_info.channels, srcStart,
                                           m_info.sampleRate, targetSampleRate,
@@ -595,8 +575,11 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
 #ifdef ROUNDTABLE_HAS_FFMPEG
         if (m_backend == AudioBackend::FFmpeg) {
             const double invRatio = static_cast<double>(m_info.sampleRate) / targetSampleRate;
-            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio));
-            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio)) + 1;
+            // Margin keeps the swr filter warm-up/tail outside the window.
+            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio))
+                               - kResampleMarginFrames;
+            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio))
+                             + 1 + kResampleMarginFrames;
             srcStart = std::max<int64_t>(0, srcStart);
             srcEnd = std::min<int64_t>(m_info.frames, srcEnd);
             if (srcEnd <= srcStart) {
@@ -611,7 +594,7 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
             }
             region.resize(static_cast<size_t>(read * m_info.channels));
 
-            auto resampled = resampleInterleavedLinear(region, m_info.channels,
+            auto resampled = resampleInterleaved(region, m_info.channels,
                                                        m_info.sampleRate, targetSampleRate);
             return extractResampledRegion(resampled, m_info.channels, srcStart,
                                           m_info.sampleRate, targetSampleRate,
@@ -698,7 +681,7 @@ std::vector<float> AudioFile::readAllResampled(uint32_t targetSampleRate)
         return samples;
     }
 
-    return resampleInterleavedLinear(samples, m_info.channels,
+    return resampleInterleaved(samples, m_info.channels,
                                      m_info.sampleRate, targetSampleRate);
 }
 
@@ -713,8 +696,8 @@ bool AudioFile::openSndfile([[maybe_unused]] const std::filesystem::path& path)
     // hand libsndfile a virtual IO bound to that FILE*. sf_open() would
     // open via default fopen and re-lock the file on Windows, defeating
     // the un-lock work done for the FFmpeg path.
-    SharedFileHandle sndHandle = openSharedReadHandle(path);
-    if (sndHandle == kInvalidShared) {
+    SharedFileHandle sndHandle = openSharedReadHandle(path, "AudioFile");
+    if (!sndHandle) {
         m_lastError = "Cannot open audio file (shared mode): " + pathToUtf8(path);
         return false;
     }
@@ -783,15 +766,15 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
 {
 #ifdef ROUNDTABLE_HAS_FFMPEG
     // Shared-mode open + custom AVIO (see header for rationale).
-    SharedFileHandle sh = openSharedReadHandle(path);
-    if (sh == kInvalidShared) {
+    SharedFileHandle sh = openSharedReadHandle(path, "AudioFile");
+    if (!sh) {
         m_lastError = "Cannot open audio file (shared mode): " + pathToUtf8(path);
         return false;
     }
     m_impl->avioFile = static_cast<void*>(sh);
     spdlog::debug("AudioFile/FFmpeg: shared-mode open '{}' (raw HANDLE)", pathToUtf8(path));
 
-    auto* buf = static_cast<uint8_t*>(av_malloc(kAudioAvioBufSize));
+    auto* buf = static_cast<uint8_t*>(av_malloc(kSharedAvioBufSize));
     if (!buf) {
         closeSharedHandle(sh);
         m_impl->avioFile = nullptr;
@@ -799,12 +782,12 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
         return false;
     }
 
-    m_impl->avioCtx = avio_alloc_context(buf, kAudioAvioBufSize,
+    m_impl->avioCtx = avio_alloc_context(buf, kSharedAvioBufSize,
                                          /*write_flag=*/0,
                                          /*opaque=*/static_cast<void*>(sh),
-                                         &audioAvioRead,
+                                         &sharedAvioRead,
                                          /*write_packet=*/nullptr,
-                                         &audioAvioSeek);
+                                         &sharedAvioSeek);
     if (!m_impl->avioCtx) {
         av_free(buf);
         closeSharedHandle(sh);

@@ -727,11 +727,13 @@ try
                 int64_t tickDelta = std::abs(tick - m_lastGoodCompositeTick);
                 if (tickDelta <= kMaxStaleTicks) {
                     if (postInvalidate) {
-                        spdlog::warn("[LIVE-RELOAD] compositeFrame tick={}: "
-                                     "returning STALE m_lastGoodComposite "
-                                     "(lastTick={}, clipsAtTick={}, delta={})",
-                                     tick, m_lastGoodCompositeTick,
-                                     clipsAtTick, tickDelta);
+                        // debug-level: routine stale-fallback during settle,
+                        // not an anomaly (see LIVE-RELOAD FRESH note below).
+                        spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: "
+                                      "returning STALE m_lastGoodComposite "
+                                      "(lastTick={}, clipsAtTick={}, delta={})",
+                                      tick, m_lastGoodCompositeTick,
+                                      clipsAtTick, tickDelta);
                     }
                     return m_lastGoodComposite;
                 }
@@ -839,12 +841,15 @@ try
                         m_lastGoodCompositeClipIds.push_back(L.clipId);
                 }
                 if (postInvalidate) {
-                    spdlog::warn("[LIVE-RELOAD] compositeFrame tick={}: stored "
-                                 "FRESH composite (gpuView=0x{:X}, {}x{}, "
-                                 "sameAsPrev={})",
-                                 tick, gpuResult ? gpuResult->gpuImageView : 0,
-                                 gpuResult ? gpuResult->width : 0,
-                                 gpuResult ? gpuResult->height : 0, wasStale);
+                    // debug-level: fires for every composite after any
+                    // invalidate (edits, scrub settle) — was the single
+                    // biggest source of perf_log spam.
+                    spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: stored "
+                                  "FRESH composite (gpuView=0x{:X}, {}x{}, "
+                                  "sameAsPrev={})",
+                                  tick, gpuResult ? gpuResult->gpuImageView : 0,
+                                  gpuResult ? gpuResult->width : 0,
+                                  gpuResult ? gpuResult->height : 0, wasStale);
                 }
                 if (clipsAtTick == 0 ||
                     static_cast<int>(layers.size()) >= clipsAtTick)

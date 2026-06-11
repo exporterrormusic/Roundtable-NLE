@@ -14,7 +14,7 @@
 #include "SpineAnimation.h"
 #include "timeline/SpineClip.h"  // for CharacterStance, resolvePaths
 
-#include "media/ProResEncoder.h"
+#include "media/ProResAlphaEncoder.h"
 #include "media/HWAlphaEncoder.h"
 #include "media/ChromaKeyEncoder.h"
 #include "GpuContext.h"

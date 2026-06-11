@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "engine/EngineContracts.h"
+#include "media/EngineContracts.h"
 #include "media/AudioFile.h"
 #include "media/MediaPool.h"
 #include "media/ThumbnailGenerator.h"

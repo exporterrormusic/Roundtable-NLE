@@ -85,6 +85,7 @@ class AudioPlaybackService;
 class AnimationVideoCache;
 class Clip;
 class CompositeService;
+struct OpacityMask;
 class DockLayoutManager;
 class PlaybackController;
 class ShotPresetManager;
@@ -546,6 +547,28 @@ private:
     float  m_scaleYAtDragStart{1.0f};             ///< True SIGNED scaleY from the clip at drag start (preserves flip)
     void updateTransformOverlay();
     void scheduleOverlayRefresh();  ///< Deferred overlay re-sync via QTimer
+
+    // ── Transform-overlay drag handlers ─────────────────────────────────
+    // Shared by BOTH wiring sites: the GPU TransformOverlayWidget
+    // (wireTransformOverlaySignals) and the software Viewport
+    // (wireViewportTransformSignals).  They used to be duplicated lambda
+    // bodies in the two wiring files and drifted apart (the Viewport copy
+    // was missing group-move); single implementations live in
+    // TimelineWorkspaceWiringTransformOverlay.cpp.
+    void onOverlayPositionChanged(float posX, float posY);
+    void onOverlayScaleChanged(float scX, float scY);
+    void onOverlayRotationChanged(float rot);
+    void onOverlayDragFinished(float oldPosX, float oldPosY,
+                               float oldScX, float oldScY, float oldRot,
+                               float newPosX, float newPosY,
+                               float newScX, float newScY, float newRot);
+    void onOverlayAnchorChanged(float ax, float ay);
+    void onOverlayAnchorDragFinished(float oldX, float oldY,
+                                     float newX, float newY);
+    void onOverlayMaskDragFinished(int maskIndex, const OpacityMask& oldMask,
+                                   const OpacityMask& newMask);
+    void onOverlayEmptyAreaClicked(float frameX, float frameY,
+                                   Qt::KeyboardModifiers mods);
 
     /// Reference canvas resolution for GraphicClip layout (text/shape
     /// layer posX/posY space). This is the project/sequence resolution

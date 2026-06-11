@@ -14,6 +14,8 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QEventLoop>
+#include <QThread>
 
 // MiniTimeline and Viewport are Qt widgets, need headers
 #include "widgets/MiniTimeline.h"
@@ -24,7 +26,9 @@
 #include "media/FrameCache.h"
 #include "timeline/Timeline.h"
 
+#include <atomic>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -63,8 +67,10 @@ protected:
     void SetUp() override
     {
         mt = std::make_unique<MiniTimeline>();
-        // Give it a known width for predictable coordinate mapping
-        mt->resize(408, MiniTimeline::kBarHeight);  // barWidth = 408 - 2*4 = 400
+        // Give it a known width for predictable coordinate mapping.
+        // Derive from kMarginH so a margin change can't silently rot
+        // the coordinate expectations below: barWidth is always 400.
+        mt->resize(400 + 2 * MiniTimeline::kMarginH, MiniTimeline::kBarHeight);
     }
 
     std::unique_ptr<MiniTimeline> mt;
@@ -127,35 +133,37 @@ TEST_F(MiniTimelineTest, ClampTickZeroDuration)
 TEST_F(MiniTimelineTest, PositionToTick)
 {
     mt->setDuration(48000);  // 1 second, barWidth=400
+    const double m = MiniTimeline::kMarginH;
 
-    // Left edge (margin=4) → tick 0
-    EXPECT_EQ(mt->positionToTick(4.0), 0);
+    // Left edge (x = margin) → tick 0
+    EXPECT_EQ(mt->positionToTick(m), 0);
 
-    // Right edge (4+400=404) → tick 48000
-    EXPECT_EQ(mt->positionToTick(404.0), 48000);
+    // Right edge (margin + barWidth) → tick 48000
+    EXPECT_EQ(mt->positionToTick(m + 400.0), 48000);
 
-    // Middle (4+200=204) → tick 24000
-    EXPECT_EQ(mt->positionToTick(204.0), 24000);
+    // Middle → tick 24000
+    EXPECT_EQ(mt->positionToTick(m + 200.0), 24000);
 
     // Before left edge → clamped to 0
     EXPECT_EQ(mt->positionToTick(-10.0), 0);
 
     // After right edge → clamped to 48000
-    EXPECT_EQ(mt->positionToTick(500.0), 48000);
+    EXPECT_EQ(mt->positionToTick(m + 500.0), 48000);
 }
 
 TEST_F(MiniTimelineTest, TickToPosition)
 {
     mt->setDuration(48000);  // barWidth=400
+    const double m = MiniTimeline::kMarginH;
 
     // Tick 0 → left edge
-    EXPECT_DOUBLE_EQ(mt->tickToPosition(0), 4.0);
+    EXPECT_DOUBLE_EQ(mt->tickToPosition(0), m);
 
     // Tick 48000 → right edge
-    EXPECT_DOUBLE_EQ(mt->tickToPosition(48000), 404.0);
+    EXPECT_DOUBLE_EQ(mt->tickToPosition(48000), m + 400.0);
 
     // Tick 24000 → middle
-    EXPECT_DOUBLE_EQ(mt->tickToPosition(24000), 204.0);
+    EXPECT_DOUBLE_EQ(mt->tickToPosition(24000), m + 200.0);
 }
 
 TEST_F(MiniTimelineTest, PositionToTickRoundtrip)
@@ -183,10 +191,13 @@ TEST_F(MiniTimelineTest, InOutPoints)
     EXPECT_TRUE(mt->hasOutPoint());
     EXPECT_EQ(mt->outPoint(), 40000);
 
-    // Clamped
+    // Negative input means "not set" (the -1 sentinel) — the widget
+    // deliberately does NOT clamp negatives to 0 (see setInPoint).
     mt->setInPoint(-100);
-    EXPECT_EQ(mt->inPoint(), 0);
+    EXPECT_EQ(mt->inPoint(), -1);
+    EXPECT_FALSE(mt->hasInPoint());
 
+    // Positive overshoot IS clamped to the duration.
     mt->setOutPoint(99000);
     EXPECT_EQ(mt->outPoint(), 48000);
 }
@@ -355,8 +366,13 @@ TEST_F(ViewportTest, FitModeSwitch)
     EXPECT_EQ(vp->fitMode(), ViewportFitMode::Fit);
 }
 
+// Fit mode reserves a 5% margin on EVERY side (kFitPadding = 0.90 in
+// Viewport.cpp) so the frame never touches the monitor edges — matching
+// Premiere's monitor styling.  The expectations below bake that in.
 TEST_F(ViewportTest, FrameRectFitMode)
 {
+    constexpr double kFitPadding = 0.90;  // mirrors Viewport.cpp Fit mode
+
     // 640x360 widget, 1920x1080 frame (same aspect ratio 16:9)
     std::vector<uint8_t> pixels(1920 * 1080 * 4, 100);
     vp->displayRaw(pixels.data(), 1920, 1080);
@@ -364,29 +380,31 @@ TEST_F(ViewportTest, FrameRectFitMode)
     vp->setFitMode(ViewportFitMode::Fit);
     QRectF fr = vp->frameRect();
 
-    // Should fill the entire widget since aspect ratio matches
-    EXPECT_NEAR(fr.width(), 640.0, 1.0);
-    EXPECT_NEAR(fr.height(), 360.0, 1.0);
-    EXPECT_NEAR(fr.x(), 0.0, 1.0);
-    EXPECT_NEAR(fr.y(), 0.0, 1.0);
+    // Aspect matches the widget, so the frame fills the padded box:
+    // 640*0.9 = 576 wide, 360*0.9 = 324 tall, centered.
+    EXPECT_NEAR(fr.width(), 640.0 * kFitPadding, 1.0);
+    EXPECT_NEAR(fr.height(), 360.0 * kFitPadding, 1.0);
+    EXPECT_NEAR(fr.x(), (640.0 - 640.0 * kFitPadding) / 2.0, 1.0);
+    EXPECT_NEAR(fr.y(), (360.0 - 360.0 * kFitPadding) / 2.0, 1.0);
 }
 
 TEST_F(ViewportTest, FrameRectFitModeLetterbox)
 {
+    constexpr double kFitPadding = 0.90;  // mirrors Viewport.cpp Fit mode
     vp->resize(640, 640);  // Square widget
 
-    // 1920x1080 frame in square widget → letterbox (horizontal bars)
+    // 1920x1080 frame in square widget → letterbox (horizontal bars).
     std::vector<uint8_t> pixels(1920 * 1080 * 4, 100);
     vp->displayRaw(pixels.data(), 1920, 1080);
 
     vp->setFitMode(ViewportFitMode::Fit);
     QRectF fr = vp->frameRect();
 
-    // Width fills 640, height = 640 * (1080/1920) = 360
-    EXPECT_NEAR(fr.width(), 640.0, 1.0);
-    EXPECT_NEAR(fr.height(), 360.0, 1.0);
-    // Centered vertically: y = (640 - 360) / 2 = 140
-    EXPECT_NEAR(fr.y(), 140.0, 1.0);
+    // Width limited: 640*0.9 = 576, height = 576 * (1080/1920) = 324.
+    EXPECT_NEAR(fr.width(), 640.0 * kFitPadding, 1.0);
+    EXPECT_NEAR(fr.height(), 640.0 * kFitPadding * (1080.0 / 1920.0), 1.0);
+    // Centered vertically: y = (640 - 324) / 2 = 158
+    EXPECT_NEAR(fr.y(), (640.0 - 640.0 * kFitPadding * (1080.0 / 1920.0)) / 2.0, 1.0);
 }
 
 TEST_F(ViewportTest, FrameRectFitModePillarbox)
@@ -400,11 +418,12 @@ TEST_F(ViewportTest, FrameRectFitModePillarbox)
     vp->setFitMode(ViewportFitMode::Fit);
     QRectF fr = vp->frameRect();
 
-    // Height fills 640, width = 640 * (1080/1920) = 360
-    EXPECT_NEAR(fr.height(), 640.0, 1.0);
-    EXPECT_NEAR(fr.width(), 360.0, 1.0);
-    // Centered horizontally: x = (640 - 360) / 2 = 140
-    EXPECT_NEAR(fr.x(), 140.0, 1.0);
+    // Height limited: 640*0.9 = 576, width = 576 * (1080/1920) = 324.
+    constexpr double kFitPadding = 0.90;  // mirrors Viewport.cpp Fit mode
+    EXPECT_NEAR(fr.height(), 640.0 * kFitPadding, 1.0);
+    EXPECT_NEAR(fr.width(), 640.0 * kFitPadding * (1080.0 / 1920.0), 1.0);
+    // Centered horizontally: x = (640 - 324) / 2 = 158
+    EXPECT_NEAR(fr.x(), (640.0 - 640.0 * kFitPadding * (1080.0 / 1920.0)) / 2.0, 1.0);
 }
 
 TEST_F(ViewportTest, FrameRectFillMode)
@@ -659,19 +678,40 @@ TEST_F(ProgramMonitorTest, SetCompositeCallback)
     EXPECT_FALSE(called);
 }
 
-TEST_F(ProgramMonitorTest, RefreshWithCallbackAndController)
+// refresh() is ASYNCHRONOUS: it posts a frame request to the playback
+// pipeline (PlaybackScheduler → FrameProducer thread), which invokes the
+// composite callback on the PRODUCER thread — never synchronously on the
+// UI thread (see the "SYNC PATH" comment in ProgramMonitor::updateDisplay
+// and PLAYBACK_ARCHITECTURE.md).  These tests poll with a timeout.
+// Request coalescing/scheduling policy itself is covered by
+// test_playback_scheduler.
+namespace {
+bool pollUntil(const std::function<bool()>& done, int timeoutMs = 3000)
+{
+    for (int elapsed = 0; elapsed < timeoutMs; elapsed += 10) {
+        if (done()) return true;
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QThread::msleep(10);
+    }
+    return done();
+}
+} // namespace
+
+TEST_F(ProgramMonitorTest, RefreshInvokesCallbackAsync)
 {
     PlaybackController ctrl;
     pm->setController(&ctrl);
 
-    int64_t capturedTick = -1;
+    std::atomic<int64_t> capturedTick{-100};
     pm->setCompositeCallback([&](int64_t tick, uint32_t /*w*/, uint32_t /*h*/, bool /*scrub*/) -> std::shared_ptr<CachedFrame> {
-        capturedTick = tick;
+        capturedTick.store(tick);
         return nullptr;
     });
 
     pm->refresh();
-    EXPECT_EQ(capturedTick, 0);  // Controller starts at tick 0
+    ASSERT_TRUE(pollUntil([&] { return capturedTick.load() != -100; }))
+        << "composite callback never invoked by the producer thread";
+    EXPECT_EQ(capturedTick.load(), 0);  // Controller starts at tick 0
 }
 
 TEST_F(ProgramMonitorTest, RefreshWithFrameData)
@@ -692,30 +732,38 @@ TEST_F(ProgramMonitorTest, RefreshWithFrameData)
 
     pm->refresh();
 
-    // Viewport should now have a frame
-    EXPECT_TRUE(pm->viewport()->hasFrame());
+    // The produced frame travels producer → presenter → present callback
+    // → viewport, with the poll timer marshalling onto the UI thread —
+    // poll the event loop until it lands.
+    ASSERT_TRUE(pollUntil([&] { return pm->viewport()->hasFrame(); }))
+        << "frame never reached the viewport through the async pipeline";
     EXPECT_EQ(pm->viewport()->frameWidth(), 320u);
     EXPECT_EQ(pm->viewport()->frameHeight(), 240u);
 }
 
-TEST_F(ProgramMonitorTest, RefreshSkipsSameTick)
+// Explicit refresh() FORCES a re-render even at an unchanged tick (it
+// resets m_lastRenderedTick — that is its purpose after edits).  The
+// same-tick dedup only applies to passive poll cycles.
+TEST_F(ProgramMonitorTest, RefreshForcesRerenderAtSameTick)
 {
     PlaybackController ctrl;
     pm->setController(&ctrl);
 
-    int callCount = 0;
+    std::atomic<int> callCount{0};
     pm->setCompositeCallback([&](int64_t /*tick*/, uint32_t /*w*/, uint32_t /*h*/, bool /*scrub*/) -> std::shared_ptr<CachedFrame> {
-        callCount++;
+        callCount.fetch_add(1);
         return nullptr;
     });
 
     pm->refresh();
-    EXPECT_EQ(callCount, 1);
+    ASSERT_TRUE(pollUntil([&] { return callCount.load() >= 1; }));
+    const int afterFirst = callCount.load();
 
-    // Second refresh at the same tick should be skipped (no change in position)
-    // But refresh() forces a re-render by resetting lastRenderedTick
+    // The playhead hasn't moved, but an explicit refresh still forces a
+    // re-render (that's what makes edits show up immediately).
     pm->refresh();
-    EXPECT_EQ(callCount, 2);
+    ASSERT_TRUE(pollUntil([&] { return callCount.load() > afterFirst; }))
+        << "explicit refresh at the same tick did not force a re-render";
 }
 
 TEST_F(ProgramMonitorTest, SizeHint)

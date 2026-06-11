@@ -72,12 +72,20 @@ void AVSyncClock::reset(int64_t tick) noexcept
 #else
         void* caller = nullptr;
 #endif
-        // warn-level so it survives the warn+ filter.  Single-line to
-        // stay parseable next to the existing [DIAG-CLOCK] JUMP entries.
-        spdlog::warn("[DIAG-CLOCK BACK] prev={} new={} delta={} running={} caller=0x{:X}",
-                     prevTick, tick, tick - prevTick,
-                     m_running.load(std::memory_order_relaxed) ? 1 : 0,
-                     reinterpret_cast<uintptr_t>(caller));
+        // Backwards while RUNNING is a genuine sync anomaly — keep it at
+        // warn so it survives the warn+ filter.  Backwards while paused is
+        // just the user scrubbing left; debug-level so it doesn't flood
+        // perf_log.txt (it produced dozens of lines per scrub session).
+        // Single-line to stay parseable next to [DIAG-CLOCK] JUMP entries.
+        if (m_running.load(std::memory_order_relaxed)) {
+            spdlog::warn("[DIAG-CLOCK BACK] prev={} new={} delta={} running=1 caller=0x{:X}",
+                         prevTick, tick, tick - prevTick,
+                         reinterpret_cast<uintptr_t>(caller));
+        } else {
+            spdlog::debug("[DIAG-CLOCK BACK] prev={} new={} delta={} running=0 caller=0x{:X}",
+                          prevTick, tick, tick - prevTick,
+                          reinterpret_cast<uintptr_t>(caller));
+        }
     }
 
     m_tick.store(tick, std::memory_order_release);

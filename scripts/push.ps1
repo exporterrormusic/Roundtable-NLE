@@ -19,7 +19,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location -Path $PSScriptRoot
+# This script lives in scripts\; the repo root is one level up.
+Set-Location -Path (Split-Path -Parent $PSScriptRoot)
 
 # Make sure we're in a git repo
 git rev-parse --is-inside-work-tree *> $null

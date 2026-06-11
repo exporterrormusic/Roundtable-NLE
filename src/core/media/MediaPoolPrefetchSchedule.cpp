@@ -79,7 +79,7 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
         if (m_cache->contains(handle, 0, tier))
             return;
         count = 1;
-        // CONSUMERS (CompositeServiceLayerBuild, FrameRenderer, …) always
+        // CONSUMERS (CompositeServiceLayerBuild, …) always
         // look up still images at frame 0.  If we left afterFrame as-is
         // (e.g. 20 because the timeline playhead is on tick 20), the task
         // below sets task.frameNumber = afterFrame, the decoded result is

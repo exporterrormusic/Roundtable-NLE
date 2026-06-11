@@ -754,7 +754,11 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                         // length so a "completely mute" cross-dissolved clip
                         // can be traced — if [fadeStart,fadeEnd] spans most of
                         // [0, fullClipSourceFrames], the whole clip is faded.
-                        spdlog::warn("DIAG-XFADE clipId={} side={} editPt={} tRange=[{},{}] "
+                        // debug-level: the mute-crossfade investigation is
+                        // resolved (see the un-clamped fade NOTE above); this
+                        // was dumping every transition on every window rebuild
+                        // into the warn-filtered perf log.
+                        spdlog::debug("DIAG-XFADE clipId={} side={} editPt={} tRange=[{},{}] "
                                      "tlIn={} fade=[{},{}] clipLen={} ({:.3f}s)",
                                      clipId,
                                      trans->leftClipId == clipId ? "LEFT" : "RIGHT",

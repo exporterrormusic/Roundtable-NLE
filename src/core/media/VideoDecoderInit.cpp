@@ -21,6 +21,7 @@ extern "C" {
 
 #include "media/VideoDecoder.h"
 #include "PathUtils.h"
+#include "media/SharedFileIO.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 #include <cstdio>
@@ -48,142 +49,6 @@ namespace rt {
 // custom AVIOContext. On POSIX, fopen() doesn't take exclusive locks at
 // all — the call here collapses to a plain fopen and is a no-op.
 
-namespace {
-
-constexpr int kAvioBufSize = 32 * 1024;   // FFmpeg recommended
-
-// On Windows we bypass the CRT entirely and drive Win32 ReadFile /
-// SetFilePointerEx directly from the AVIO callbacks. _open_osfhandle +
-// _fdopen LOOK like a clean wrapper around our shared-mode HANDLE, but
-// some MSVCRT builds silently re-acquire the share state when the CRT
-// touches the descriptor, which would defeat FILE_SHARE_DELETE. Using
-// the raw HANDLE end-to-end guarantees the share mode set at CreateFile
-// time is what the kernel sees for the entire lifetime of the open.
-// On POSIX, FILE* is fine (no exclusive sharing happens there).
-
-#ifdef _WIN32
-using SharedFileHandle = HANDLE;
-// const (not constexpr): INVALID_HANDLE_VALUE casts (LONG_PTR)-1 to a
-// pointer, which isn't a core constant expression under MSVC C++17/20.
-const SharedFileHandle kInvalidShared = INVALID_HANDLE_VALUE;
-#else
-using SharedFileHandle = FILE*;
-constexpr SharedFileHandle kInvalidShared = nullptr;
-#endif
-
-SharedFileHandle openSharedRead(const std::filesystem::path& p)
-{
-#ifdef _WIN32
-    HANDLE h = ::CreateFileW(p.wstring().c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-
-    // Share-mode self-test. If h was really opened with FILE_SHARE_DELETE,
-    // we can immediately reopen the SAME file from our own process with
-    // DELETE access (kernel-enforced). If this fails, our first open
-    // didn't actually get FILE_SHARE_DELETE — that's a bug we own. If it
-    // succeeds, the file is shared-delete-able and any "locked" complaint
-    // from Explorer must be coming from a different process or a Windows
-    // service (Defender, indexer, etc.).
-    if (h != INVALID_HANDLE_VALUE) {
-        HANDLE h2 = ::CreateFileW(p.wstring().c_str(),
-            DELETE | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h2 != INVALID_HANDLE_VALUE) {
-            // warn-level on purpose: perf_log.txt is filtered to warn+,
-            // so info lines never appear. This is a temporary diagnostic.
-            spdlog::debug("VideoDecoder: share-mode self-test PASSED '{}'",
-                          pathToUtf8(p));
-            ::CloseHandle(h2);
-        } else {
-            DWORD err = ::GetLastError();
-            spdlog::warn("VideoDecoder: share-mode self-test FAILED '{}' "
-                         "GetLastError={} — FILE_SHARE_DELETE not active",
-                         pathToUtf8(p), err);
-        }
-    }
-    return h;
-#else
-    return std::fopen(pathToUtf8(p).c_str(), "rb");
-#endif
-}
-
-void closeShared(SharedFileHandle h)
-{
-    if (h == kInvalidShared) return;
-#ifdef _WIN32
-    ::CloseHandle(h);
-#else
-    std::fclose(h);
-#endif
-}
-
-int avioReadShared(void* opaque, uint8_t* buf, int bufSize)
-{
-#ifdef _WIN32
-    HANDLE h = static_cast<HANDLE>(opaque);
-    DWORD got = 0;
-    if (!::ReadFile(h, buf, static_cast<DWORD>(bufSize), &got, nullptr))
-        return AVERROR(EIO);
-    if (got == 0) return AVERROR_EOF;
-    return static_cast<int>(got);
-#else
-    FILE* fp = static_cast<FILE*>(opaque);
-    size_t n = std::fread(buf, 1, static_cast<size_t>(bufSize), fp);
-    if (n == 0) {
-        if (std::feof(fp)) return AVERROR_EOF;
-        return AVERROR(errno ? errno : EIO);
-    }
-    return static_cast<int>(n);
-#endif
-}
-
-int64_t avioSeekShared(void* opaque, int64_t offset, int whence)
-{
-#ifdef _WIN32
-    HANDLE h = static_cast<HANDLE>(opaque);
-    if (whence == AVSEEK_SIZE) {
-        LARGE_INTEGER sz;
-        if (!::GetFileSizeEx(h, &sz)) return AVERROR(EIO);
-        return sz.QuadPart;
-    }
-    DWORD mode = FILE_BEGIN;
-    switch (whence & ~AVSEEK_FORCE) {
-        case SEEK_SET: mode = FILE_BEGIN;   break;
-        case SEEK_CUR: mode = FILE_CURRENT; break;
-        case SEEK_END: mode = FILE_END;     break;
-        default: return AVERROR(EINVAL);
-    }
-    LARGE_INTEGER off;    off.QuadPart    = offset;
-    LARGE_INTEGER newPos; newPos.QuadPart = 0;
-    if (!::SetFilePointerEx(h, off, &newPos, mode))
-        return AVERROR(EIO);
-    return newPos.QuadPart;
-#else
-    FILE* fp = static_cast<FILE*>(opaque);
-    if (whence == AVSEEK_SIZE) {
-        long cur = std::ftell(fp);
-        if (std::fseek(fp, 0, SEEK_END) != 0) return AVERROR(errno);
-        long sz = std::ftell(fp);
-        std::fseek(fp, cur, SEEK_SET);
-        return sz < 0 ? AVERROR(errno) : sz;
-    }
-    int stdWhence = SEEK_SET;
-    switch (whence & ~AVSEEK_FORCE) {
-        case SEEK_SET: stdWhence = SEEK_SET; break;
-        case SEEK_CUR: stdWhence = SEEK_CUR; break;
-        case SEEK_END: stdWhence = SEEK_END; break;
-        default: return AVERROR(EINVAL);
-    }
-    if (std::fseek(fp, static_cast<long>(offset), stdWhence) != 0)
-        return AVERROR(errno);
-    return std::ftell(fp);
-#endif
-}
-
-} // namespace
 
 // ── Shared hardware-decoder device contexts (UPGRADE_PLAN item 3) ───────
 //
@@ -302,20 +167,6 @@ static AVPixelFormat getHwFormat(AVCodecContext* /*ctx*/,
     return AV_PIX_FMT_NONE;
 }
 
-static PixelFormat convertPixFmt(AVPixelFormat fmt)
-{
-    switch (fmt)
-    {
-    case AV_PIX_FMT_NV12:    return PixelFormat::NV12;
-    case AV_PIX_FMT_YUV420P: return PixelFormat::YUV420P;
-    case AV_PIX_FMT_BGRA:    return PixelFormat::BGRA;
-    case AV_PIX_FMT_RGBA:    return PixelFormat::RGBA;
-    case AV_PIX_FMT_CUDA:    return PixelFormat::NV12;
-    case AV_PIX_FMT_QSV:    return PixelFormat::NV12;
-    default:                  return PixelFormat::Unknown;
-    }
-}
-
 // ── Open ────────────────────────────────────────────────────────────────────
 
 bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
@@ -339,8 +190,8 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     // ── Open the file ourselves in shared mode (read | write | delete)
     //    and feed FFmpeg via a custom AVIOContext. This is what stops
     //    Explorer from refusing overwrite/delete on the source file.
-    SharedFileHandle sh = openSharedRead(path);
-    if (sh == kInvalidShared) {
+    SharedFileHandle sh = openSharedReadHandle(path, "VideoDecoder");
+    if (!sh) {
         m_lastError = "Cannot open file (shared mode): " + pathStr;
         spdlog::error("VideoDecoder: {}", m_lastError);
         return false;
@@ -350,9 +201,9 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     spdlog::debug("VideoDecoder: shared-mode open '{}' (FILE_SHARE_READ|WRITE|DELETE, raw HANDLE)",
                  pathStr);
 
-    auto* buf = static_cast<uint8_t*>(av_malloc(kAvioBufSize));
+    auto* buf = static_cast<uint8_t*>(av_malloc(kSharedAvioBufSize));
     if (!buf) {
-        closeShared(sh);
+        closeSharedHandle(sh);
         m_avioFile = nullptr;
         m_lastError = "av_malloc(AVIO buffer) failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
@@ -360,16 +211,16 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     }
     m_avioBuf = buf;
 
-    m_avioCtx = avio_alloc_context(buf, kAvioBufSize,
+    m_avioCtx = avio_alloc_context(buf, kSharedAvioBufSize,
                                    /*write_flag=*/0,
                                    /*opaque=*/static_cast<void*>(sh),
-                                   &avioReadShared,
+                                   &sharedAvioRead,
                                    /*write_packet=*/nullptr,
-                                   &avioSeekShared);
+                                   &sharedAvioSeek);
     if (!m_avioCtx) {
         av_free(buf);
         m_avioBuf = nullptr;
-        closeShared(sh);
+        closeSharedHandle(sh);
         m_avioFile = nullptr;
         m_lastError = "avio_alloc_context failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
@@ -381,7 +232,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         av_freep(&m_avioCtx->buffer);
         avio_context_free(&m_avioCtx);
         m_avioBuf = nullptr;
-        closeShared(sh);
+        closeSharedHandle(sh);
         m_avioFile = nullptr;
         m_lastError = "avformat_alloc_context failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
@@ -409,7 +260,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
             avio_context_free(&m_avioCtx);
         }
         m_avioBuf = nullptr;
-        closeShared(sh);
+        closeSharedHandle(sh);
         m_avioFile = nullptr;
         return false;
     }
@@ -682,7 +533,7 @@ void VideoDecoder::close()
     m_avioBuf = nullptr;
     if (m_avioFile)
     {
-        closeShared(static_cast<SharedFileHandle>(m_avioFile));
+        closeSharedHandle(static_cast<SharedFileHandle>(m_avioFile));
         m_avioFile = nullptr;
     }
     if (m_hwDeviceCtx)

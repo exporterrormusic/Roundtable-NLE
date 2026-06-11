@@ -75,6 +75,7 @@ add_library(roundtable_core STATIC
     media/AudioEngine.cpp
     media/TimeStretch.cpp
     media/AudioFile.cpp
+    media/SharedFileIO.cpp
     media/FrameCache.cpp
     media/CacheCoordinator.cpp
     media/UnifiedCache.cpp
@@ -108,7 +109,7 @@ add_library(roundtable_core STATIC
     media/VP9AlphaEncoder.cpp
     media/HWAlphaEncoder.cpp
     media/ChromaKeyEncoder.cpp
-    media/ProResEncoder.cpp
+    media/ProResAlphaEncoder.cpp
 
     # Audio DSP (EQ, dynamics) — real-time-safe processors
     audiofx/ParametricEQ.cpp

@@ -10,7 +10,7 @@
  * instant random-access seeking (O(1) per frame).
  */
 
-#include "ProResEncoder.h"
+#include "ProResAlphaEncoder.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>

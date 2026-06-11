@@ -688,6 +688,7 @@ void ProjectPanel::buildSidePanel()
         m_createBtn->setStyleSheet(QStringLiteral(
             "QPushButton { background: %1; color: white; border: none;"
             "  font-size: 13px; font-weight: 700; padding: 8px 18px; }"
+            "QPushButton:hover { background: %2; }"
             "QPushButton:pressed { background: %3; }")
             .arg(Theme::rgb(c.primaryBtnBg))
             .arg(Theme::rgb(c.primaryBtnHover))

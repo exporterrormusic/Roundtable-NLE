@@ -11,6 +11,31 @@
  * GPU resources (command buffers, staging ring, texture cache, upload
  * manager, layer pool) are owned by CompositeEngine, accessible via
  * engine().
+ *
+ * ── The "Composite*" layer map (top → bottom) ──────────────────────────────
+ *
+ *   CompositeService          THIS FILE.  The API the rest of the app calls
+ *     │                       (compositeFrame for preview AND export).
+ *     │                       Layer building (CompositeServiceLayerBuild),
+ *     │                       prewarm, spine, safe-mode/sticky-frame policy.
+ *     ▼
+ *   CompositeEngine           GPU resource owner + per-frame orchestration:
+ *     │                       upload → effects → transitions → composite →
+ *     │                       readback, in one submit.  Owns StagingRing,
+ *     │                       GpuUploadManager, GpuTextureCache, layer pool.
+ *     ▼
+ *   GpuRenderGraph            (render_graph/) DAG pass scheduler — builds
+ *     │                       the frame's pass list from the execution plan,
+ *     │                       computes barriers, dispatches into the command
+ *     │                       buffer.  See CompositeEngineRenderGraph.cpp.
+ *     ▼
+ *   Compositor (: ICompositor)  Lowest level — the Vulkan draw itself
+ *                             (pipelines, descriptor sets, blend modes).
+ *                             ICompositor exists so tests can mock it.
+ *
+ * Specialised renderers (SpineRenderer, TransitionRenderer, TextRenderer,
+ * EffectProcessor, Nv12Converter) are siblings invoked by CompositeEngine /
+ * CompositeService, not layers of this stack.
  */
 
 #pragma once

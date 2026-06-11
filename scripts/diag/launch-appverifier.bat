@@ -1,6 +1,6 @@
 @echo off
 REM ════════════════════════════════════════════════════════════════════
-REM  launch-debug.bat — Run roundtable.exe under Application Verifier
+REM  launch-appverifier.bat — Run roundtable.exe under Application Verifier
 REM
 REM  Purpose: catch heap corruption (0xC0000374) at the WRITE site
 REM  instead of later in ntdll's heap-metadata detector.  AppVerifier
@@ -28,6 +28,7 @@ REM ═════════════════════════�
 
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+set "ROOT=%~dp0..\..\"
 
 REM ── Admin check (AppVerifier requires elevation) ────────────────────
 net session >nul 2>&1
@@ -36,7 +37,7 @@ if %errorLevel% neq 0 (
     echo This launcher requires Administrator privileges.
     echo AppVerifier writes to HKLM\...\Image File Execution Options.
     echo.
-    echo Right-click launch-debug.bat and choose "Run as administrator".
+    echo Right-click launch-appverifier.bat and choose "Run as administrator".
     echo.
     pause
     exit /b 1
@@ -53,32 +54,32 @@ if %errorLevel% neq 0 (
 
 REM ── Locate the target exe ───────────────────────────────────────────
 REM Prefer Release ^(matches what the user runs day-to-day per CLAUDE.md^).
-if exist "%~dp0build\bin\Release\roundtable.exe" (
-    set "TARGET=%~dp0build\bin\Release\roundtable.exe"
+if exist "%ROOT%build\bin\Release\roundtable.exe" (
+    set "TARGET=%ROOT%build\bin\Release\roundtable.exe"
     set "EXE_NAME=roundtable.exe"
     echo Using Release build.
-) else if exist "%~dp0build\bin\RelWithDebInfo\roundtable.exe" (
-    set "TARGET=%~dp0build\bin\RelWithDebInfo\roundtable.exe"
+) else if exist "%ROOT%build\bin\RelWithDebInfo\roundtable.exe" (
+    set "TARGET=%ROOT%build\bin\RelWithDebInfo\roundtable.exe"
     set "EXE_NAME=roundtable.exe"
     echo Using RelWithDebInfo build ^(symbols included^).
-) else if exist "%~dp0build\bin\Debug\roundtable.exe" (
-    set "TARGET=%~dp0build\bin\Debug\roundtable.exe"
+) else if exist "%ROOT%build\bin\Debug\roundtable.exe" (
+    set "TARGET=%ROOT%build\bin\Debug\roundtable.exe"
     set "EXE_NAME=roundtable.exe"
     echo Using Debug build.
-) else if exist "%~dp0roundtable.exe" (
-    set "TARGET=%~dp0roundtable.exe"
+) else if exist "%ROOT%roundtable.exe" (
+    set "TARGET=%ROOT%roundtable.exe"
     set "EXE_NAME=roundtable.exe"
     echo Using installed roundtable.exe.
 ) else (
     echo ERROR: roundtable.exe not found.
-    echo Looked in: %~dp0build\bin\Release\ , RelWithDebInfo\ , Debug\ , %~dp0
+    echo Looked in: %ROOT%build\bin\Release\ , RelWithDebInfo\ , Debug\ , %ROOT%
     pause
     exit /b 1
 )
 
 REM ── Qt + FFmpeg PATH ^(mirrors launch.bat^) ──────────────────────────
-if exist "%~dp0third_party\qt\6.8.3\msvc2022_64\bin" (
-    set "PATH=%~dp0third_party\qt\6.8.3\msvc2022_64\bin;%PATH%"
+if exist "%ROOT%third_party\qt\6.8.3\msvc2022_64\bin" (
+    set "PATH=%ROOT%third_party\qt\6.8.3\msvc2022_64\bin;%PATH%"
 ) else if exist "C:\Qt\6.8.3\msvc2022_64\bin" (
     set "PATH=C:\Qt\6.8.3\msvc2022_64\bin;%PATH%"
 ) else (
@@ -87,8 +88,8 @@ if exist "%~dp0third_party\qt\6.8.3\msvc2022_64\bin" (
     exit /b 1
 )
 
-if exist "%~dp0third_party\ffmpeg\bin" (
-    set "PATH=%~dp0third_party\ffmpeg\bin;%PATH%"
+if exist "%ROOT%third_party\ffmpeg\bin" (
+    set "PATH=%ROOT%third_party\ffmpeg\bin;%PATH%"
 )
 
 REM ── Enable Application Verifier ─────────────────────────────────────
@@ -115,7 +116,7 @@ echo ═════════════════════════
 echo.
 
 REM ── Run (console visible, stdout+stderr to debug-heap.log) ──────────
-"!TARGET!" >"%~dp0debug-heap.log" 2>&1
+"!TARGET!" >"%ROOT%debug-heap.log" 2>&1
 set "EXITCODE=!errorlevel!"
 
 REM ── Disable AppVerifier so launch.bat is unaffected ─────────────────

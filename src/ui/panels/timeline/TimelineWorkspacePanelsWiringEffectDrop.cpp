@@ -7,7 +7,7 @@
 #include <set>
 
 #include "panels/timeline/TimelineWorkspace.h"
-#include "panels/timeline/ClipRenderers.h"
+#include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"

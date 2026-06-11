@@ -51,9 +51,12 @@ void ProjectBin::importFiles()
         "Import Media",
         lastDir,
         "All Files (*.*);;"
-        "Video (*.mp4 *.mkv *.avi *.mov *.webm);;"
-        "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp);;"
-        "Audio (*.wav *.mp3 *.flac *.ogg *.aac);;"
+        "Video (*.mp4 *.m4v *.mkv *.avi *.mov *.webm *.ts *.mts *.m2ts "
+        "*.mpg *.mpeg *.wmv *.flv *.mxf *.gif);;"
+        "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp *.tif *.tiff "
+        "*.avif *.jxl);;"
+        "Audio (*.wav *.mp3 *.flac *.ogg *.aac *.m4a *.opus *.wma *.aif "
+        "*.aiff);;"
         "Spine (*.skel *.json)");
 
     if (files.isEmpty()) return;
@@ -66,7 +69,7 @@ void ProjectBin::importFiles()
     std::vector<std::filesystem::path> paths;
     paths.reserve(files.size());
     for (const auto& f : files)
-        paths.emplace_back(f.toStdString());
+        paths.emplace_back(utf8ToPath(f.toStdString()));
 
     // If the user has a bin selected, import into that bin instead of root.
     // Uses selectedItems() (not currentItem()) to avoid the persistent
@@ -353,15 +356,18 @@ void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
         QStringLiteral("Replace Media — %1").arg(displayName),
         lastDir,
         QStringLiteral("All Files (*.*);;"
-            "Video (*.mp4 *.mkv *.avi *.mov *.webm);;"
-            "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp);;"
-            "Audio (*.wav *.mp3 *.flac *.ogg *.aac)"));
+            "Video (*.mp4 *.m4v *.mkv *.avi *.mov *.webm *.ts *.mts *.m2ts "
+            "*.mpg *.mpeg *.wmv *.flv *.mxf *.gif);;"
+            "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp *.tif "
+            "*.tiff *.avif *.jxl);;"
+            "Audio (*.wav *.mp3 *.flac *.ogg *.aac *.m4a *.opus *.wma "
+            "*.aif *.aiff)"));
 
     if (newFile.isEmpty()) return;
 
     settings.setValue("Import/lastDir", QFileInfo(newFile).absolutePath());
 
-    const std::filesystem::path newPath(newFile.toStdString());
+    const std::filesystem::path newPath = utf8ToPath(newFile.toStdString());
     if (pathToUtf8(newPath) == oldPath.toStdString()) return;
 
     // Open the new file via MediaPool

@@ -148,7 +148,11 @@ public:
         return s;
     }
 
-    std::filesystem::path readPath() { return std::filesystem::path(readString()); }
+    // The stored string is UTF-8 (writePath uses pathToUtf8).  The raw
+    // fs::path(std::string) ctor would decode it via the ANSI codepage and
+    // mojibake non-ANSI characters (U+FF5C etc.) on pre-1903 Windows and in
+    // test exes without the UTF-8 ACP manifest — always go through utf8ToPath.
+    std::filesystem::path readPath() { return utf8ToPath(readString()); }
 
     void skip(size_t n) { m_pos = std::min(m_pos + n, m_size); }
 

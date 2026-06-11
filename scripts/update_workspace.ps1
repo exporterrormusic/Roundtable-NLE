@@ -12,7 +12,8 @@
 # ============================================================================
 
 $ErrorActionPreference = "Stop"
-$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# This script lives in scripts\; the repo root (project dir) is one level up.
+$projectDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Push-Location $projectDir
 
 # ═══════════════════════════════════════════════════════════════════════════

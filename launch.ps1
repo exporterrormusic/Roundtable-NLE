@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
     ROUNDTABLE NLE - unified DIAGNOSTIC launcher.  Single source of truth
-    for the diagnostic launch modes; launch_debug.bat / launch-framehash.bat
-    / launch-spinediag.bat / launch_with_validation.bat are thin delegates
-    into this script so the variants can't drift.
+    for the diagnostic launch modes; the thin delegates in scripts\diag\
+    (launch-crtdebug.bat / launch-framehash.bat / launch-spinediag.bat /
+    launch-validation.bat) route into this script so the variants can't
+    drift.
 
     NOTE: launch.bat is intentionally NOT routed through here - it stays
     pure batch -> launch.vbs so the everyday launch has zero PowerShell
@@ -11,28 +12,31 @@
 
 .PARAMETER Debug
     Keep the console visible, prefer the Debug build (CRT heap validation),
-    and capture stdout+stderr to debug.log.  (Replaces launch_debug.bat.)
+    and capture stdout+stderr to debug.log.
+    (Delegate: scripts\diag\launch-crtdebug.bat.)
 .PARAMETER FrameHash
     A/B render-path verification harness (#18): sets ROUNDTABLE_FRAMEHASH so
     every composited frame is GPU-signatured to framehash.csv
     (tag,frame,width,height,s0..s7; tag = preview | export).  Playback is
-    intentionally slow in this mode.  (Replaces launch-framehash.bat.)
+    intentionally slow in this mode.
+    (Delegate: scripts\diag\launch-framehash.bat.)
 .PARAMETER SpineDiag
     Sets ROUNDTABLE_SPINE_DIAG=1 so the per-clip [SPINE-BLEND-DIAG] logger
     fires (warn-level, survives the warn+ filter).  Read logs/perf_log.txt
-    after reproducing.  (Replaces launch-spinediag.bat.)
+    after reproducing.  (Delegate: scripts\diag\launch-spinediag.bat.)
 .PARAMETER Validation
     Vulkan validation layers (ROUNDTABLE_VALIDATION=1, SYNC_VALIDATION=1,
     VALIDATION_FATAL=0).  Messages land in logs/perf_log.txt as
     [Vulkan VALIDATION ERROR] lines.  Significantly slows the app.
-    (Replaces launch_with_validation.bat.)
+    (Delegate: scripts\diag\launch-validation.bat.)
 .PARAMETER NoGpuDecode
     Kill-switch: ROUNDTABLE_GPU_RESIDENT_DECODE=0 forces the legacy CPU
     upload path (for diagnosing GPU-resident decode regressions).
 
 .NOTES
     AppVerifier/PageHeap launching is NOT here - it needs Administrator and
-    IFEO registry edits with guaranteed cleanup; use launch-debug.bat.
+    IFEO registry edits with guaranteed cleanup; use
+    scripts\diag\launch-appverifier.bat.
     Keep this file pure ASCII (PowerShell 5.1 reads BOM-less files as ANSI).
 #>
 param(

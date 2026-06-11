@@ -1,0 +1,742 @@
+================================================================================
+FABLE_CLEANUP.TXT — Codebase audit & cleanup work plan
+Roundtable NLE — 2026-06-11
+Scope: dead code, duplication, modularization, render/playback architecture
+vs Premiere Pro, format compatibility. ~640 files / ~174k lines audited.
+================================================================================
+
+How this report was produced: every .cpp on disk was diffed against the
+explicit CMake source lists; every header was checked for inclusion anywhere;
+an 8-line normalized-window hash scan was run across all 637 files to find
+copy-paste duplication mechanically; and the decode/cache/playback/export
+stack was read against Premiere Pro's known architecture (importer model,
+Mercury 32-bit float pipeline, proxy/preview-render workflow, audio conform).
+
+Verdict up front: the codebase is in better shape than most projects this
+size — explicit CMake lists, a unified preview/export render path, real
+tests (654 green), three-tier caching, hardware decode AND encode with
+multi-vendor fallback. The problems are concentrated in three places:
+
+  1. UI "god classes" split across dozens of translation units instead of
+     decomposed into real classes (TimelineWorkspace = 21 files).
+  2. Copy-paste duplication in predictable clusters (monitors, export
+     encoders, wiring files, serialization helpers).
+  3. The media pipeline is 8-bit BGRA with hardcoded BT.709 color, which is
+     the single biggest gap vs Premiere for pro-format ambitions.
+
+
+================================================================================
+PROGRESS LOG (updated as phases execute)
+================================================================================
+2026-06-11  PHASE 0 — EXECUTED (build verification pending at last edit)
+  [x] 1.1  ShotPanel.cpp deleted
+  [x] 1.3  EngineServices.h deleted; EngineContracts.h moved to
+           src/core/media/ (includers updated); src/core/engine/ removed
+  [x] 1.4-1.6  CommandTypes.h, CompositeGpuSlot.h, MonitorOverlayLayout.h
+           deleted
+  [x] 1.8  Stale FrameRenderer/wellsExportSource comments rewritten in
+           MediaPoolPrefetchSchedule.cpp, ClipSerialization.cpp,
+           EditOperationsTrim.cpp, ShotComposerLibrary.cpp.
+           RenderQueue.cpp/.h comments KEPT deliberately — they accurately
+           document the removal and name the live path.
+  [x] 1.9  17 completed plan docs + root Fable_fix.txt moved to
+           docs/archive/ (docs/ is GITIGNORED — these are local-only files,
+           so they were moved, never deleted). Live docs kept:
+           architecture.md, BOOST_MODE_PLAN.md, THIRD_PARTY_LICENSES.md.
+  [x] 3.7  Root script cleanup (executed now instead of waiting for
+           Phase 3, as planned):
+           - scripts/diag/ created: launch-framehash.bat,
+             launch-spinediag.bat, launch-validation.bat (was
+             launch_with_validation.bat), launch-crtdebug.bat (was
+             launch_debug.bat), launch-appverifier.bat (was
+             launch-debug.bat — NOT a duplicate of launch_debug.bat as
+             first reported: it is the AppVerifier/PageHeap harness; the
+             confusable names were the real bug), setup_appverif.ps1.
+             All internal %~dp0 paths re-anchored to the repo root.
+           - scripts/: push.ps1, update_workspace.ps1 (root .bat
+             forwarders updated; $PSScriptRoot logic re-anchored),
+             publish.example.ps1. scripts/README.md added.
+           - KEPT AT ROOT (externally referenced): build.*, launch.bat/
+             .ps1/.vbs, setup.*, publish-gui.*, publish_release.ps1,
+             create_setup.* (installer.iss, .vscode/tasks.json, README.md
+             reference these), icon.png (CMake builds icon.ico from it),
+             qt.conf, installer.iss.
+  [ ] 1.7  Render-bar stub — kept, pending decision on preview renders
+           (Section 4.6).
+  Phase 0 verification: full Release build (app + all 34 test exes)
+  succeeded after the deletions — compile+link gate passed.
+
+2026-06-11  PHASE 1 — EXECUTED AND VERIFIED
+  Verification: incremental Release rebuild (app + tests) succeeded;
+  ctest -L core = 688/688 PASSED (15s).  NOTE for future sessions: the
+  core label is the practical per-phase gate; the full no-label suite
+  includes GPU/UI tests that are far slower.
+  [x] 2.7  ClipRenderers.h dedupe — ui copy deleted; 11 ui includers
+           repointed at the canonical src/core/ClipRenderers.h.
+  [x] 1.2  BinaryIO.h inversion — ClipSerialization.h now includes
+           project/BinaryIO.h instead of carrying a 140-line verbatim
+           copy.  BONUS FIX: BinaryReader::readPath() used the raw
+           fs::path(std::string) ctor (the known ANSI-mojibake trap);
+           now goes through utf8ToPath.
+  [x] 2.6  core/media/ProResEncoder.{h,cpp} renamed to
+           ProResAlphaEncoder.{h,cpp} to match the class it defines
+           (SpinePrerenderer include + CMake updated).  No more name
+           collision with export/formats/ProResEncoder.
+  [x] 4.5  swr resampler — resampleInterleavedSwr() added to
+           AudioFile.cpp (swresample windowed-sinc; falls back to the
+           linear version when FFmpeg is absent or swr init fails).
+           All 3 fetch sites switched via a resampleInterleaved()
+           wrapper.  The two windowed sites (readRegionResampled
+           sndfile + ffmpeg branches) now decode with a 256-source-
+           frame pre/post-roll margin so the polyphase filter's
+           warm-up transient lands outside the extracted window —
+           preserving seamless chunk boundaries in
+           AudioPlaybackService's windowed loading.
+  [x] 4.8  Import filters widened (ProjectBinImport.cpp both dialogs):
+           video += m4v/ts/mts/m2ts/mpg/mpeg/wmv/flv/mxf/gif,
+           images += tif/tiff/avif/jxl, audio += m4a/opus/wma/aif/aiff.
+           Everything still routes through the FFmpeg probe, so this is
+           discoverability, not new decode risk.  Bare-name probe in
+           MediaPoolOpen.cpp += webp/bmp/tga.  BONUS FIX: two
+           fs::path(toStdString()) ANSI traps in ProjectBinImport
+           switched to utf8ToPath.
+  [x] 3.6  GPU "Composite*" layer diagram written at the top of
+           CompositeService.h (Service → Engine → RenderGraph →
+           Compositor/ICompositor, with the sibling renderers noted).
+  [x] 3.4  src/core/media/PLAYBACK_ARCHITECTURE.md added — thread/
+           ownership map of PlaybackController, FrameClock,
+           FrameProducer, FramePresenter, AVSyncClock,
+           PlaybackScheduler, FrameScheduler + the 5 invariants
+           (audio-master clock, non-blocking tick, scrub coalescing,
+           last-good-frame holds, export bypasses this machinery).
+           CORRECTION to Section 3.4: FrameScheduler is NOT vestigial —
+           CompositeServiceFrame.cpp drives it via setPlayhead().
+
+2026-06-11  PHASE 2 — IN PROGRESS
+  [x] 2.4  FfmpegEncoderBase (src/export/FfmpegEncoderBase.{h,cpp}) —
+           all five export encoders (H264/H265/AV1/ProRes/DNxHR) are now
+           thin subclasses providing only codec identity + a
+           configureCodecOptions() hook.  The base owns: state, the
+           NVENC-hw-frames → NVENC-sw-input → CPU ladder, BGRA→YUV sws
+           convert, hw upload, send/receive packet drain, flush,
+           shutdown.  ~1,460 lines of encoder code became ~350 + a
+           360-line base (one source of truth; adding a codec is now a
+           ~70-line file).  Intra-codec quirks preserved exactly: ProRes/
+           DNxHR get NO colr tags / bit_rate / gop_size (dnxhd validates
+           bit_rate against its CBR table).  sws context is now a
+           per-instance member instead of a per-TU thread_local (two
+           live encoders on one thread previously shared one context).
+           VERIFIED: roundtable_export builds clean; test_export 43/43
+           PASSED.  (A real export smoke run from the app is still
+           recommended before the next release.)
+  [~] 2.6  Conversion encoders (core/media ChromaKey/HWAlpha/ProResAlpha/
+           VP9Alpha) NOT folded into FfmpegEncoderBase: they live in
+           roundtable_core which export links (circular), and they
+           implement a different interface (file-writing, own muxing).
+           Their mutual duplication is a smaller, separate base within
+           core/media — deferred.
+  [x] 2.5  SharedFileIO (src/core/media/SharedFileIO.{h,cpp}) — the
+           Win32 share-mode open (FILE_SHARE_READ|WRITE|DELETE raw-HANDLE
+           + self-test) and the FFmpeg AVIO read/seek callbacks existed
+           as verbatim copies in VideoDecoderInit.cpp AND AudioFile.cpp
+           (~170 lines each).  Single implementation now; both callers
+           repointed (log tag parameterised), AudioFile keeps only its
+           libsndfile-specific vio wrappers.  Also removed a dead
+           duplicate convertPixFmt() in VideoDecoderInit (live copy is
+           in VideoDecoderDecode.cpp).
+           VERIFIED: test_audio 45/45, test_decoder 24/24.
+  [x] 2.1  Wiring-lambda extraction — the ~950-line
+           wireTransformOverlaySignals() lambda bodies are now eight
+           named private handlers on TimelineWorkspace
+           (onOverlayPositionChanged / ScaleChanged / RotationChanged /
+           DragFinished / AnchorChanged / AnchorDragFinished /
+           MaskDragFinished / EmptyAreaClicked, defined in
+           TimelineWorkspaceWiringTransformOverlay.cpp).  BOTH wiring
+           sites (GPU TransformOverlayWidget + software Viewport) now
+           connect to the same handlers; wireViewportTransformSignals()
+           shrank from ~400 duplicated lambda lines to 4 connects
+           (file: 746 → 365 lines).  INTENTIONAL BEHAVIOR UNIFICATION:
+           the Viewport copy had drifted and was MISSING group-move
+           support — the software path now gets it.
+           VERIFIED: roundtable_ui + roundtable.exe build clean,
+           test_timeline_ui 65/65 PASSED.
+  [x] 2.2  Monitor dedupe via MonitorUiKit
+           (src/ui/panels/monitors/MonitorUiKit.{h,cpp}) — the shared
+           Premiere-style chrome (control bar, timecode label/edit pair,
+           fit-mode combo, playback-res combo, safe-area icon+button,
+           export-frame button, zoom/duration labels, full transport bar
+           with 6 TransportButtons + dividers + screenshot + loop +
+           shuttle label, and 4 shared style sheets) is built once in
+           rt::monitorui::*.  ProgramMonitorUI.cpp 640 → ~440 lines,
+           SourceMonitorUI.cpp 653 → 448.  Each monitor keeps its own
+           connections/behavior (chose builder-kit over a base-class
+           merge: zero ownership/lifetime churn in two live QWidget
+           classes; a future MonitorPanelBase can still sit on top).
+           VERIFIED: builds clean; test_monitors 48 passed / 8 failed —
+           IDENTICAL pass/fail set on the pre-change tree (verified via
+           git stash + rebuild), so the 8 failures are PRE-EXISTING.
+  [x] PRE-EXISTING TEST FAILURES — TRIAGED AND FIXED (2026-06-11).
+           All 8 were STALE TESTS asserting obsolete contracts; ZERO
+           real regressions.  test_monitors is now 56/56 PASSED (async
+           tests stress-run 5x, stable):
+           - MiniTimeline TickToPosition: widget margin is kMarginH=8,
+             tests assumed 4 (PositionToTick had only been passing by
+             arithmetic coincidence — clamping + exact midpoint).
+             Tests + fixture now DERIVE from MiniTimeline::kMarginH so
+             a margin change can't rot them again.
+           - MiniTimeline InOutPoints: setInPoint(-100) → -1 is the
+             documented sentinel semantics ("-1 means not set — don't
+             clamp to 0"); test expected clamping.  Fixed.
+           - Viewport FrameRectFitMode/Letterbox/Pillarbox: tests
+             predate the deliberate kFitPadding=0.90 (5% margin per
+             side, documented in Viewport.cpp as a fix over the old
+             0.95-scale).  Expectations now derived from the padding.
+           - ProgramMonitor Refresh×3: tests asserted the REMOVED
+             synchronous refresh path ("never call compositeFrame()
+             from the UI thread" — the async pipeline replaced it).
+             Rewritten as async-aware (poll-with-timeout, atomics for
+             cross-thread state):
+               RefreshWithCallbackAndController →
+                 RefreshInvokesCallbackAsync
+               RefreshWithFrameData → polls the producer→presenter→
+                 viewport chain
+               RefreshSkipsSameTick → RefreshForcesRerenderAtSameTick
+                 (the OLD name asserted the opposite of the current
+                 contract: explicit refresh() deliberately FORCES a
+                 re-render at the same tick so edits show immediately;
+                 only passive poll cycles dedup on tick).
+  [~] 2.3  Thumbnail dedupe DEFERRED (deliberately).
+           CharacterThumbnailCache.cpp's renderAndCacheCharacterThumbnail
+           and ShotComposer::makeCharacterThumbnail/makeShotThumbnail
+           share the Spine-to-QImage CPU rasterization core (skeleton
+           load, idle-pick, bounds, the kThumbCropAdj per-character crop
+           table — which CharacterThumbnailCache's own comment admits
+           "mirrors ShotComposerThumbnailGen" — atlas page loading,
+           triangle rasterization).  Plan: extract a shared
+           renderCharacterPoseImage(charName, outfit, maxDim, padding)
+           → QImage in characters/, parameterized for the shot-composer's
+           multi-character placement.  Deferred because thumbnails have
+           ZERO automated coverage (output is visual) — do this with the
+           app running for eyeball verification, not at the end of a
+           long refactor session.  The crop table should move to one
+           shared location in the same change.
+  [x] BONUS FINDING — STALE TEST MASKED BY CI LABELS: test_decoder is in
+           ctest group "gpu", which CI's `-L core` gate never runs.
+           FrameCache.DuplicateInsertReplacesOld still asserted the OLD
+           replace-on-duplicate semantics; FrameCache::put was long ago
+           deliberately changed to FIRST-DECODE-WINS (the NVDEC-vs-
+           software flicker fix documented in the put() comment).  Test
+           renamed DuplicateInsertKeepsFirst and fixed to assert the
+           current contract.  RECOMMENDATION: run the gpu/export/ui test
+           groups at least per-release; core-only CI let this rot.
+
+
+================================================================================
+SECTION 1 — DEAD CODE (delete now; zero behavioral risk)
+================================================================================
+
+1.1  src/ui/panels/characters/ShotPanel.cpp           [766 lines]
+     Not in any CMakeLists. Includes "panels/characters/ShotPanel.h" which
+     DOES NOT EXIST on disk. Superseded by CharacterShotPanel.cpp.
+     This is the only uncompiled .cpp in the tree. DELETE.
+
+1.2  src/core/project/BinaryIO.h                      [160 lines]
+     Included by NOTHING. Its entire contents (writeU32/readU32/writeString/
+     writePath/section tags...) exist as a verbatim copy inside
+     ClipSerialization.h (107 duplicated 8-line windows — byte-level match).
+     PREFERRED FIX: invert it — make ClipSerialization.h include BinaryIO.h
+     and delete the inlined copy, so the serialization primitives live in
+     exactly one place. (Plain deletion also works but keeps the dup.)
+
+1.3  src/core/engine/EngineServices.h                 [66 lines]
+     Orphaned (never included). The engine/ directory holds only this +
+     EngineContracts.h. EngineContracts.h IS used (3 includers: it's just
+     the RenderRequestType/RenderQuality enums). DELETE EngineServices.h,
+     then fold EngineContracts.h into core/ (or media/) and delete the
+     src/core/engine/ directory — a 2-file directory for one enum header
+     is structure noise.
+
+1.4  src/core/command/CommandTypes.h                  [52 lines]   orphaned. DELETE.
+1.5  src/gpu/CompositeGpuSlot.h                       [27 lines]   orphaned. DELETE.
+1.6  src/ui/panels/monitors/MonitorOverlayLayout.h    [26 lines]   orphaned. DELETE.
+
+1.7  Render-bar stub: TimelineRuler::setRenderBar / clearRenderBar /
+     RenderBarStatus (src/ui/widgets/TimelineRuler.cpp:83-143).
+     The red/yellow/green render bar is fully painted but NOTHING in the
+     codebase ever calls setRenderBar — it is an unwired feature stub.
+     Decision needed: wire it (see Section 5.6 — it becomes the status
+     display for a preview-render system) or delete it. Recommend KEEP and
+     wire, since 5.6 is on the roadmap; if 5.6 is declined, delete.
+
+1.8  Stale comments referencing deleted code (7 hits):
+     - "FrameRenderer" (class deleted when export was unified):
+       MediaPoolPrefetchSchedule.cpp:82, ClipSerialization.cpp:56,
+       EditOperationsTrim.cpp:150, RenderQueue.cpp:292, RenderQueue.h:188
+     - "wellsExportSource()" (dead API): ClipSerialization.cpp:56,
+       ShotComposerLibrary.cpp:91
+     Rewrite these comments to name the live equivalents
+     (CompositeService::compositeFrame etc.). Misleading comments cost
+     real debugging time.
+
+1.9  Stale docs. docs/ contains ~15 one-shot plan files that are complete
+     or superseded (FINAL_CLEANUP.txt, COMPLETED_TASKS_FINAL_SUMMARY.txt,
+     FINAL_SUMMARY_v1.txt, CLAUDE_IMPROVEMENT_PLAN.txt, UPGRADE_PLAN.txt,
+     SPINE_SWAP.txt, SPINE_FALLBACK_PLAN.txt, WELLS_HEVC_UPGRADE_PLAN.txt,
+     JUNE_UPDATE.txt, JUNE_PRIORITIZATION.txt, feel_upgrade.txt, ...).
+     Move all completed plans to docs/archive/. Keep live: architecture.md,
+     BOOST_MODE_PLAN.md, THIRD_PARTY_LICENSES.md, POST-RELEASE-UPGRADE*.
+     Also: Fable_fix.txt sits at repo ROOT and its P0 batch already landed
+     — archive it.
+
+
+================================================================================
+SECTION 2 — DUPLICATION (mechanically detected; ranked by duplicated
+8-line windows between file pairs)
+================================================================================
+
+2.1  [300 windows] TimelineWorkspaceWiringTransformOverlay.cpp (1028 ln)
+                   <-> TimelineWorkspaceWiringViewport.cpp (746 ln)
+     wireTransformOverlaySignals() is a single ~950-LINE FUNCTION whose
+     lambda bodies are largely copy-pasted from wireViewportTransformSignals
+     / wireOverlayToolSignals in the sibling file. Two parallel wiring paths
+     for overlay-transform behavior. FIX: extract the shared lambda bodies
+     into named private methods (or a TransformBinding helper object) called
+     from both wiring sites; the 950-line function should become a list of
+     ~20 one-line connect() statements.
+
+2.2  [159 windows] ProgramMonitorUI.cpp <-> SourceMonitorUI.cpp
+     Classic NLE duplication — Premiere solved this with one shared monitor
+     component. Extract a MonitorPanelBase (transport row, safe-area overlay,
+     zoom combo, timecode displays, layout) with Program/Source subclasses
+     owning only their unique behavior (drag-to-timeline vs. timeline-bound
+     playback). The monitors directory is 5.7k lines; expect ~1.5-2k to fold.
+
+2.3  [107 windows] CharacterThumbnailCache.cpp <-> ShotComposerThumbnailGen.cpp
+     Two thumbnail render/cache implementations in the characters module.
+     Extract shared thumbnail compositing/caching into one service.
+
+2.4  [~95-25 windows each, all pairs] src/export/formats/* encoders:
+     AV1Encoder <-> H265Encoder (95), DNxHR <-> ProRes (40), AV1 <-> DNxHR
+     (28), AV1 <-> ProRes (28), H265 <-> ProRes (25), H265 <-> DNxHR (25).
+     All five wrap the same FFmpeg pattern: find codec → alloc ctx → set
+     common opts → open → sws BGRA→target → send/receive → flush/packets.
+     FIX: FfmpegEncoderBase implementing init/encodeFrame/flush/packet
+     plumbing once, with per-codec subclasses overriding only codec
+     selection + option dictionaries. Should cut export/formats roughly in
+     half and make adding codecs (VP9, lossless, etc.) a ~50-line job.
+
+2.5  [53 windows] AudioFile.cpp <-> VideoDecoderInit.cpp
+     Duplicated FFmpeg open/probe boilerplate (avformat_open_input, stream
+     scan, codec open, error-cleanup ladders). Extract FfmpegOpen helper
+     (open + best-stream + codec ctx + RAII cleanup). This also gives one
+     place to enforce the UTF-8 path discipline from PathUtils.
+
+2.6  [45 windows] ChromaKeyEncoder.cpp <-> HWAlphaEncoder.cpp
+     [25 windows] core/media/ProResEncoder.cpp <-> VP9AlphaEncoder.cpp
+     The four character-conversion encoders repeat the same encode plumbing.
+     Same fix as 2.4 — they should sit on the SAME FfmpegEncoderBase. Note
+     core/media/ProResEncoder.h is class ProResAlphaEncoder while
+     export/formats/ProResEncoder.h is class ProResEncoder — two files with
+     identical names in different dirs doing different things. Rename the
+     core one to ProResAlphaEncoder.{h,cpp} to match its class.
+
+2.7  src/core/ClipRenderers.h <-> src/ui/panels/timeline/ClipRenderers.h
+     BYTE-IDENTICAL files (diff-verified) in two locations. Whichever
+     include path wins is luck-of-the-include-dirs. Keep the core copy,
+     delete the ui copy, fix includers.
+
+2.8  [35/30 windows] Nv12ConverterConvert.cpp <-> Nv12ConverterYuv420p.cpp /
+     Nv12ConverterP010.cpp — per-format converter files share descriptor/
+     pipeline setup blocks. Lower priority (deliberate per-format split),
+     but the Vulkan boilerplate could move into Nv12ConverterPipeline.
+
+2.9  Smaller, same pattern (do opportunistically when touching the files):
+     - AudioSyncData <-> AudioSyncHandlers (39)
+     - PropertiesPanelTransitions <-> PropertiesPanelUI (39)
+     - SequenceDialog <-> ProjectPanelSidePanelBuild (31) — sequence-settings
+       form built twice; extract a SequenceSettingsForm widget
+     - AudioPlaybackServiceCache <-> AudioPlaybackServiceLoad (29)
+     - SpineClip <-> VideoClip (24)
+     - CompositorInit <-> TransitionRenderer (24)
+
+
+================================================================================
+SECTION 3 — MODULARIZATION / ORGANIZATION
+================================================================================
+
+3.1  THE GOD-CLASS-BY-TRANSLATION-UNIT PATTERN (biggest structural issue)
+     Several huge classes are "modularized" by splitting METHOD DEFINITIONS
+     across many .cpp files while remaining one class with one giant header:
+
+       TimelineWorkspace : 21 .cpp files, 635-line header, ~106 methods
+       TimelinePanel     : 15 .cpp files, 682-line header
+       MediaPool         :  9 .cpp files (+ MediaPoolPrefetchInternal.h)
+       MainWindow        : 10 .cpp files
+       ShotComposer      :  6 .cpp files
+       EffectControlsPanel: 4 .cpp files
+
+     This hides the problem instead of fixing it: every file still sees every
+     member, anything can mutate anything, and the wiring files (2.1) show
+     the result. Since aggressive restructuring is approved, decompose by
+     RESPONSIBILITY into real classes:
+
+     TimelineWorkspace → keep as a thin composition root that owns:
+       - PanelFactory        (PanelsCreate)
+       - PlaybackBindings    (PanelsPlayback, transport wiring)
+       - SelectionBindings   (PanelsWiringClipSelection)
+       - DropController      (PanelsWiringMediaDrop / EffectDrop / Nest)
+       - OverlayController   (Overlay, WiringTransformOverlay, WiringViewport)
+       - CompositeBridge     (Composite, Spine)
+       - EditCommandRouter   (EditCommands, Keys, PanelsShortcuts)
+     Each binder is a small QObject taking only the collaborators it needs.
+     Mechanical migration: move the member variables each binder touches,
+     leave accessors on TimelineWorkspace during transition.
+
+     MainWindowProject*.cpp (4 files) → ProjectController class (open/save/
+     recent/recovery already half-isolated in MainWindowRecovery.cpp).
+
+     MediaPool: acceptable as a facade, but the prefetch engine
+     (MediaPoolPrefetch*.cpp, 6 files incl. the 1247-line ConvertGpu) wants
+     to be its own PrefetchEngine class — it already has a private internal
+     header, which is the tell.
+
+     Naming bug while you're there: the wiring files inconsistently use two
+     prefixes — TimelineWorkspaceWiring* AND TimelineWorkspacePanelsWiring*.
+
+3.2  src/core/media IS A GRAB-BAG (74 files mixing six concerns)
+     Current contents: decoding (VideoDecoder*), caching (FrameCache,
+     DiskFrameCache, UnifiedCache, CacheCoordinator, PrefetchTexturePool,
+     WaveformCache), playback engine (PlaybackController, PlaybackScheduler,
+     FrameProducer, FramePresenter, FrameClock, AVSyncClock, FrameScheduler),
+     audio (AudioEngine, AudioFile, AudioPlaybackService*, TimeStretch),
+     CONVERSION ENCODERS (ChromaKeyEncoder, HWAlphaEncoder,
+     ProResAlphaEncoder, VP9AlphaEncoder), analysis (BeatDetector,
+     OmniShotDetector), thumbnails, MediaPool.
+     Proposed layout (aggressive approved):
+       core/decode/    VideoDecoder*, ConvertDecodedFrame, VideoFrameMapping
+       core/cache/     FrameCache, DiskFrameCache, unified coordinator (3.3)
+       core/playback/  PlaybackController/Scheduler, FrameProducer/Presenter,
+                       FrameClock, AVSyncClock, MediaPool + prefetch engine
+       core/audio/     AudioEngine, AudioFile, AudioPlaybackService*,
+                       TimeStretch, WaveformCache, BeatDetector
+       core/convert/   the four character-pipeline encoders (+ shared
+                       FfmpegEncoderBase from 2.4/2.6)
+       core/analysis/  OmniShotDetector
+     This makes "what touches the realtime path" auditable at a glance.
+
+3.3  TWO CACHE COORDINATORS WITH OVERLAPPING MANDATES
+     UnifiedCache.h:    "Coordinator over FrameCache + GpuTextureCache +
+                         composite LRU"
+     CacheCoordinator.h:"Unified cache management... coordinates up to three
+                         caches (CPU FrameCache, DiskFrameCache) ... VRAM"
+     Both are live (both wired in App.cpp/CompositeService). Budgets in one,
+     access/eviction policy in the other, both talking to the same caches
+     from different threads. MERGE into one CachePolicy object with two
+     documented sub-roles. Until merged, every cache bug requires reading
+     both. Also: chromaKeyInPlace() and clearTransparentPixelRGB() are
+     inline PIXEL-PROCESSING functions defined in FrameCache.h — move to a
+     PixelOps.h; they have nothing to do with caching.
+
+3.4  TRANSPORT/CLOCK CLASS SPRAWL (7 classes)
+     PlaybackController, PlaybackScheduler, FrameProducer, FramePresenter,
+     FrameClock, AVSyncClock, FrameScheduler. FrameScheduler is referenced
+     ONLY by MediaPool.h (member + accessor) — verify the accessor has real
+     callers; if not, this whole class may be vestigial. The rest are
+     defensible (controller / thread / producer / presenter / 2 clocks) but
+     there is no document explaining who owns time. Add a one-page
+     core/playback/README.md with the thread + ownership diagram; this is
+     the subsystem where every past A/V-sync bug lived.
+
+3.5  CLIPTYPE SWITCHES IN 42 FILES (missing polymorphism)
+     grep ClipType:: → 42 files; worst: PropertiesPanelApply.cpp (34),
+     ClipSerialization.cpp (32), TimelineClipWidget.cpp (31),
+     PropertiesPanel.cpp (17). Every new clip type (PngPuppet was the latest)
+     means hunting ~42 call sites. Two-step fix:
+       a) Cheap: centralize capability queries on Clip — virtual
+          hasVisual(), hasAudio(), supportsTransform(), supportsSpeed(),
+          displayCategory() — and replace the boolean-ish switches (most of
+          the 42) with those.
+       b) Structural: per-type serializers (registry keyed by ClipType) for
+          ClipSerialization, and per-type property-page builders for the
+          PropertiesPanel* family. TimelineClipWidget paint can stay a
+          switch (rendering IS type-specific) but should dispatch to small
+          per-type paint helpers (partially exists in ClipRenderers).
+
+3.6  GPU MODULE LAYER NAMING
+     ICompositor / Compositor / CompositeEngine / CompositeService /
+     CompositeEngineRenderGraph / render_graph/GpuRenderGraph — six
+     "composite" names with no doc stating the layering. The code layering
+     is actually fine (Service = API for UI; Engine = orchestration;
+     Compositor = Vulkan draw; RenderGraph = pass scheduling). Write the
+     4-line layer diagram at the top of CompositeService.h and consider
+     renames: Compositor → VulkanCompositor, CompositeService →
+     RenderService. Cheap, high clarity payoff.
+
+3.7  ROOT DIRECTORY CLUTTER
+     21 loose scripts/files at root: launch.bat, launch.ps1, launch.vbs,
+     launch-debug.bat, launch_debug.bat (BOTH dash and underscore variants!),
+     launch-framehash.bat, launch-spinediag.bat, launch_with_validation.bat,
+     build.bat/ps1, setup.bat/ps1, setup_appverif.ps1, create_setup.*,
+     publish-gui.*, publish.example.ps1, publish_release.ps1, push.bat/ps1,
+     icon.png (512 KB; icon.ico already exists), Fable_fix.txt.
+     Move scripts to scripts/ (keep build.bat + launch.bat as one-line
+     forwarders at root if muscle memory matters). Merge launch-debug.bat
+     vs launch_debug.bat — having both is a footgun. Confirm logs/, dist/,
+     projects/ are gitignored.
+
+3.8  TESTS: tests/ is flat with 34 test files auto-wired by name (good
+     system). When core/ is re-foldered (3.2), mirror the folders in tests/
+     so ctest labels stay meaningful.
+
+
+================================================================================
+SECTION 4 — RENDER/PLAYBACK ARCHITECTURE VS PREMIERE PRO
+================================================================================
+
+What you ALREADY match Premiere on (don't let cleanup regress these):
+  + HW decode chain with fallback: NVDEC/CUDA → D3D11VA → QSV → SW
+    (VideoDecoderInit.cpp:618+), shared hw device contexts.
+  + HW encode multi-vendor: NVENC → QSV → AMF (Encoder.cpp:61-77), plus
+    AV1/ProRes/DNxHR/image-sequence export and MP4/MOV/MKV muxing.
+  + Three-tier cache: RAM FrameCache (50% RAM) + GpuTextureCache (60% VRAM)
+    + persistent DiskFrameCache — Premiere's media cache analog, plus
+    adaptive budgets (PerformanceProfile).
+  + Latest-wins scrub coalescing on a producer thread (FrameProducer
+    m_pendingScrub) — correct architecture for responsive scrubbing.
+  + JKL shuttle with speed doubling, loop, edit-point navigation.
+  + Resolution tiers (Full/Half/Quarter ≈ Premiere playback resolution).
+  + Smart render passthrough with keyframe-boundary gating, all 5 codecs.
+  + Unified preview/export compositor (Premiere parity; many NLEs fail this).
+  + Disk-persisted waveform peaks (≈ Premiere .pek).
+  + PortAudio/WASAPI audio engine, A/V sync clock, baked audio FX windows.
+  + VFR *detection*, packed-alpha pipeline, interpret-footage (fps override).
+
+GAPS, ranked by impact on your stated goals (scrub smoothness, broad
+formats, export quality):
+
+4.1  COLOR MANAGEMENT IS HARDCODED BT.709            ** top format gap **
+     ConvertDecodedFrame.cpp:102 forces SWS_CS_ITU709, limited range, for
+     EVERY source. Consequences today:
+       - SD / BT.601 content (old web video, DVDs): visibly wrong colors.
+       - BT.2020/HDR (PQ/HLG phone + camera footage, very common from
+         yt-dlp): wrong primaries, no tone-map — washed out or oversaturated.
+       - Full-range JPEG/MJPEG sources: crushed levels.
+     Premiere reads colr atoms / stream colorspace per clip and converts
+     through a managed pipeline. FIX (incremental):
+       a) Read AVFrame/stream colorspace+range+primaries+trc in
+          VideoDecoderInit; store in VideoStreamInfo.
+       b) Pass them to sws_setColorspaceDetails per-source instead of the
+          constant (one call site thanks to the unified ConvertDecodedFrame
+          — the unification you already did makes this cheap).
+       c) Later: HDR→SDR tone-map (zscale or a GPU shader) for PQ/HLG.
+
+4.2  8-BIT BGRA PIPELINE END-TO-END                  ** top quality gap **
+     CachedFrame = std::vector<uint8_t> BGRA (FrameCache.h:133). 10-bit
+     HEVC (P010), 12-bit ProRes 4444, banding-sensitive gradients — all
+     quantized to 8-bit at convert time, then composited, then re-encoded.
+     Premiere composites in 32-bit float on GPU (Mercury). You don't need
+     float32 everywhere; the pragmatic path:
+       - GPU path: extend Nv12Converter to output RGBA16F (P010 and
+         yuva444p12 converters already exist and are throwing away depth at
+         the final step), composite in 16F, dither down only at the
+         viewport/encoder boundary.
+       - CPU/cache fallback stays 8-bit; CachedFrame grows a format field
+         (it already has 'origin', 'tier' — add 'depth').
+     Big job; schedule after the structural cleanup, but every pro-format
+     ambition (ProRes RAW, DNxHR HQX, HDR delivery) is gated on it.
+
+4.3  VFR DETECTED BUT IGNORED                        ** top robustness gap **
+     VideoDecoderInit.cpp:489 sets m_info.isVFR — and that is the ONLY
+     reference in the tree; nothing reads it. Frame lookup is constant-fps
+     math (VideoFrameMapping::mapTickToSourceFrame). On VFR sources (phone
+     recordings, OBS/game captures, most yt-dlp output — your stated
+     intake!) audio drifts against video over minutes and frame-stepping
+     stutters. Premiere offers PTS-true mapping / conform. FIX options:
+       a) Honest minimum: surface a "VFR detected — may drift" badge in the
+          project bin + InterpretFootageDialog.
+       b) Real fix: when isVFR, build a PTS index at open (you already
+          decode-scan for keyframes) and map tick→frame through it inside
+          mapTickToSourceFrame — the unified mapping function means ONE
+          call site again.
+       c) Premiere-style optional conform-to-CFR on import (you already
+          have the conversion pipeline infrastructure in core/convert).
+
+4.4  SINGLE AUDIO STREAM PER FILE
+     VideoDecoderInit.cpp:437 takes the FIRST audio stream;
+     AudioFile.cpp:853 takes av_find_best_stream. Multicam interviews,
+     camera files with scratch+lav tracks, OBS multi-track recordings: the
+     other streams are unreachable. Premiere exposes all streams with
+     channel mapping. FIX: enumerate audio streams into VideoStreamInfo;
+     UI affordance = stream picker in InterpretFootageDialog (or clip
+     right-click → Audio Stream). Storage format bump for the choice.
+
+4.5  LINEAR-INTERPOLATION RESAMPLER IN THE AUDIO PATH
+     AudioFile.cpp:241 resampleInterleavedLinear() — hand-rolled linear
+     interp used at three real fetch sites (lines 584, 611, 698) even
+     though swresample is already linked and used elsewhere in the same
+     file. Linear interp = audible HF rolloff + aliasing on 44.1→48k
+     conversions. FIX: route those three sites through the existing swrCtx
+     (or soxr engine flag). Small, high-value, isolated.
+
+4.6  NO PREVIEW-RENDER / BACKGROUND-RENDER SYSTEM
+     The render-bar UI stub exists (1.7) but there is no render-in-to-out,
+     no preview-file cache keyed to timeline segments, no background
+     rendering. Your DiskFrameCache partially substitutes (it persists
+     composited?? — no: it persists DECODED source frames). For heavy
+     sections (stacked effects, 4K long-GOP, glitch macros) Premiere users
+     render previews and export can even reuse them. ROADMAP ITEM, not
+     cleanup: a SegmentRenderCache that (a) hashes timeline segment state
+     (clip ids + effect params + transitions — you already have
+     FrameSignature infrastructure for hashing!), (b) renders segments
+     in idle time through the existing compositor, (c) feeds the render
+     bar, (d) lets export consume green segments. This is the single
+     biggest playback-smoothness feature you're missing; everything else
+     in the realtime path is already sound.
+
+4.7  NO PROXY WORKFLOW
+     Resolution tiers downscale at decode time, but heavy codecs still pay
+     full decode cost (your own ProRes-at-1/2-res workaround is the
+     symptom). Premiere: attach/generate proxies, toggle. You already have
+     every ingredient: conversion encoders, a converted-assets directory
+     convention (assets/converted), MediaPool handle indirection. A
+     ProxyManager that generates (e.g. half-res NVENC H.264 AQ or DNxHR LB)
+     and lets MediaPool transparently swap source paths per handle would
+     mostly reuse existing code. Lower priority than 4.6 given tiers exist.
+
+4.8  IMAGE FORMAT INTAKE IS NARROW
+     MediaPoolOpen.cpp:117: imgExts = {.png, .jpg, .jpeg}. No TIFF, WebP,
+     EXR/DPX (pro), GIF, BMP, AVIF — and no NUMBERED IMAGE SEQUENCE import
+     (export-side ImageSequence exists, import doesn't). FFmpeg can decode
+     most of these already — for several formats it may be a whitelist
+     problem, not a decoder problem. Cheap win: route unknown image
+     extensions through the FFmpeg probe before rejecting.
+
+4.9  SMALLER PREMIERE-PARITY NOTES (file under "later"):
+     - Growing-file refresh (OBS recordings open mid-write): not supported.
+     - Audio conform: windowed decode w/ 16s lookahead is fine for editing,
+       but long-timeline random seeks rebuild windows; Premiere's
+       conform-once-to-CFA avoids that. Revisit only if audio scrub feels
+       laggy on hour-long timelines.
+     - Timecode: no start-TC offset / drop-frame display (matters for
+       broadcast interchange only).
+     - Field order / interlace handling: absent; fine unless old TV content
+       is in scope ("anything from the internet" occasionally is).
+     - Captions: burn-in only per current design; sidecar SRT export exists
+       (SrtIO) — embedded 608/708 is Premiere-land you likely don't need.
+
+
+================================================================================
+SECTION 5 — EXPORT PIPELINE NOTES
+================================================================================
+
+5.1  Architecture is right: export reuses the preview compositor with
+     forceExact + cache bypass (the historical two-path problem is solved;
+     keep enforcing VideoFrameMapping + ConvertDecodedFrame as the ONLY
+     tick→frame and convert entry points for new code — add a comment block
+     saying so at the top of each).
+5.2  Encoder boilerplate dedup is Section 2.4 — biggest export-code win.
+5.3  Smart render: keyframe-or-contiguous gate landed (RenderQueue.cpp) but
+     is marked "not yet runtime-verified" — add an export test that round-
+     trips a long-GOP source through passthrough and frame-hashes the output
+     before refactoring anything near it.
+5.4  Color/depth gaps 4.1/4.2 apply doubly to export: today a 10-bit HEVC
+     master exported to 10-bit HEVC silently transits 8-bit BGRA.
+5.5  AudioMixdown: verify output loudness path uses swr (not 4.5's linear
+     resampler) — same fix applies if not.
+
+
+================================================================================
+SECTION 6 — SUGGESTED EXECUTION ORDER
+================================================================================
+
+PHASE 0 — Pure deletion (1 session, zero risk)
+    1.1-1.6 dead files, 1.8 stale comments, 1.9 + 3.7 doc/script
+    archiving and root cleanup. Build + 654 tests green = done.
+
+PHASE 1 — High-value small fixes (1-2 sessions)
+    4.5 swr resampler at 3 call sites
+    2.7 ClipRenderers.h dedupe
+    1.2 BinaryIO.h inversion
+    2.6 ProResAlphaEncoder rename
+    4.8 image-extension probe widening
+    3.6 layer-diagram comments + core/playback README (3.4)
+
+PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
+    2.4 + 2.6 FfmpegEncoderBase (export + conversion encoders)
+    2.2 MonitorPanelBase
+    2.1 wiring-lambda extraction
+    2.3 thumbnail service
+    2.5 FfmpegOpen helper
+
+SESSION HANDOFF NOTES (2026-06-11, end of execution session)
+    Everything above marked [x] is build-verified and test-verified but
+    NOT committed and NOT runtime-smoke-tested.  Before/with the next
+    session:
+      1. Run the app: drag a clip transform in the program monitor
+         (position/scale/rotate/anchor + Ctrl-Z), click with the Text
+         tool, check both monitors' control/transport bars look right,
+         and run one export per codec (esp. NVENC H.264/H.265).
+      2. Commit in logical chunks (deletions; Phase 1; encoder base;
+         SharedFileIO; wiring; MonitorUiKit) or as one cleanup commit.
+      3. Remaining Phase 2: thumbnail dedupe (see 2.3 note), conversion
+         encoder base in core/media.
+      4. [DONE] Triage of the 8 pre-existing ui/gpu test failures —
+         all stale tests, all fixed; test_monitors 56/56.
+      5. Then Phase 3 below, ideally one module per session.
+      6. CI RECOMMENDATION (now proven twice — FrameCache + these 8):
+         add the gpu/ui/export ctest labels to a nightly or pre-release
+         job.  tests.yml currently runs only `-L core`, which is how
+         9 stale tests rotted invisibly.
+
+2026-06-11  POST-SMOKE PERF-LOG REVIEW (user ran the app on the KINGDOM
+            CONNECTION project; playback/scrub healthy — 100% GPU-resident
+            decode after warmup, caches in budget, fast project open)
+  [x] FIXED: QString::arg "Argument missing" warning — the Create
+      Project button stylesheet (ProjectPanelSidePanelBuild.cpp) had
+      three .arg() calls but its :hover rule (%2) had been lost, so the
+      pressed state silently showed the hover colour and the button had
+      no hover state.  Rule restored.
+  [x] FIXED: perf-log spam from resolved investigations (~100 of the
+      161 lines in the session log were leftover instrumentation):
+      - DIAG-XFADE (AudioPlaybackServiceLoad) → debug; the mute-
+        crossfade investigation it traced is resolved.  NOTE: the
+        related duplicate-transition issue (Track::addTransition has
+        no dedup) is still open — re-enable debug logging if needed.
+      - DIAG-CLOCK BACK (AVSyncClock) → split: still WARN when the
+        clock goes backwards DURING PLAYBACK (real anomaly tripwire),
+        debug when paused (= user scrubbing left; all occurrences in
+        the session were running=0).
+      - LIVE-RELOAD FRESH/STALE composite traces
+        (CompositeServiceFrame) → debug; they fire on every composite
+        after any invalidate.
+      DIAG-CLOCK JUMP kept at warn (single occurrence, real detector).
+  [ ] NOT OURS: share-mode self-test failure on one PNG (G: archive
+      drive) — another process held the file without delete-sharing;
+      single file, single occurrence.
+      Verification: app rebuilt; ctest -L core 688/688 PASSED.
+
+PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
+          less code has to move)
+    3.2 core/media split into decode/cache/playback/audio/convert/analysis
+    3.3 cache-coordinator merge
+    3.1 TimelineWorkspace/MainWindow decomposition into binder classes
+    3.5 ClipType capability virtuals, then per-type serializer registry
+
+PHASE 4 — Premiere-parity features (each is its own project)
+    4.1 per-stream color management        (small, do first)
+    4.3 VFR PTS mapping                    (medium)
+    4.4 multi-audio-stream support         (medium)
+    4.6 segment preview-render + render bar(large)
+    4.7 proxy workflow                     (large)
+    4.2 16-bit float GPU pipeline          (largest; last)
+
+Ground rules for all phases (from the repo's own history):
+    - Rebuild Release roundtable.exe target for verification, not just libs.
+    - Run the full ctest suite per phase; add tests BEFORE refactoring
+      smart-render, mapping, or cache code.
+    - Never reintroduce a second tick→frame mapping or CPU convert path.
+    - Archive exe+pdb per release (heap-corruption postmortems need it).
+
+================================================================================
+END OF REPORT
+================================================================================
