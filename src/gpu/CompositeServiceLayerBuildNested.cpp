@@ -12,7 +12,7 @@
 
 #include "CompositeService.h"
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/Timeline.h"
 #include "project/Project.h"

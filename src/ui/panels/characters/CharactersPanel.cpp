@@ -16,7 +16,7 @@
 #include "spine/ModelManager.h"
 #include "spine/SpineEngine.h"
 #endif
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <QDir>
 #include <QHBoxLayout>

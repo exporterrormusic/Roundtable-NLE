@@ -10,8 +10,8 @@
 #include "CompositeService.h"
 #include "CompositeServiceLayerBuild.h"
 
-#include "media/FrameCache.h"
-#include "media/MediaPool.h"
+#include "cache/FrameCache.h"
+#include "playback/MediaPool.h"
 #include "Constants.h"
 #include "timeline/SpineClip.h"
 #include "timeline/Track.h"

@@ -1,6 +1,6 @@
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 #include "timeline/TitleClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"

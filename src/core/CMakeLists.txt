@@ -55,45 +55,45 @@ add_library(roundtable_core STATIC
     command/commands/MarkerCommands.cpp
 
     # Media
-    media/MediaPool.cpp
-    media/MediaPoolOpen.cpp
-    media/MediaPoolFrame.cpp
-    media/MediaPoolPerf.cpp
-    media/MediaPoolQueries.cpp
-    media/ConvertDecodedFrame.cpp
-    media/MediaPoolDecode.cpp
-    media/MediaPoolPrefetch.cpp
-    media/MediaPoolPrefetchLoop.cpp
-    media/MediaPoolPrefetchSchedule.cpp
-    media/MediaPoolPrefetchConvert.cpp
-    media/MediaPoolPrefetchConvertGpu.cpp
-    media/MediaPoolPrefetchDecode.cpp
-    media/PrefetchTexturePool.cpp
-    media/VideoDecoder.cpp
-    media/VideoDecoderInit.cpp
-    media/VideoDecoderDecode.cpp
-    media/AudioEngine.cpp
-    media/TimeStretch.cpp
-    media/AudioFile.cpp
-    media/SharedFileIO.cpp
-    media/FrameCache.cpp
-    media/CacheCoordinator.cpp
-    media/UnifiedCache.cpp
-    media/DiskFrameCache.cpp
-    media/WaveformCache.cpp
-    media/BeatDetector.cpp
-    media/AVSyncClock.cpp
-    media/PlaybackController.cpp
-    media/PlaybackScheduler.cpp
-    media/FrameClock.cpp
-    media/FrameProducer.cpp
-    media/FramePresenter.cpp
-    media/FrameScheduler.cpp
-    media/ThumbnailGenerator.cpp
-    media/AudioPlaybackService.cpp
-    media/AudioPlaybackServiceLoad.cpp
-    media/AudioPlaybackServiceCache.cpp
-    media/OmniShotDetector.cpp
+    playback/MediaPool.cpp
+    playback/MediaPoolOpen.cpp
+    playback/MediaPoolFrame.cpp
+    playback/MediaPoolPerf.cpp
+    playback/MediaPoolQueries.cpp
+    decode/ConvertDecodedFrame.cpp
+    playback/MediaPoolDecode.cpp
+    playback/MediaPoolPrefetch.cpp
+    playback/MediaPoolPrefetchLoop.cpp
+    playback/MediaPoolPrefetchSchedule.cpp
+    playback/MediaPoolPrefetchConvert.cpp
+    playback/MediaPoolPrefetchConvertGpu.cpp
+    playback/MediaPoolPrefetchDecode.cpp
+    cache/PrefetchTexturePool.cpp
+    decode/VideoDecoder.cpp
+    decode/VideoDecoderInit.cpp
+    decode/VideoDecoderDecode.cpp
+    audio/AudioEngine.cpp
+    audio/TimeStretch.cpp
+    audio/AudioFile.cpp
+    decode/SharedFileIO.cpp
+    cache/FrameCache.cpp
+    cache/CacheCoordinator.cpp
+    cache/UnifiedCache.cpp
+    cache/DiskFrameCache.cpp
+    audio/WaveformCache.cpp
+    audio/BeatDetector.cpp
+    playback/AVSyncClock.cpp
+    playback/PlaybackController.cpp
+    playback/PlaybackScheduler.cpp
+    playback/FrameClock.cpp
+    playback/FrameProducer.cpp
+    playback/FramePresenter.cpp
+    playback/FrameScheduler.cpp
+    decode/ThumbnailGenerator.cpp
+    audio/AudioPlaybackService.cpp
+    audio/AudioPlaybackServiceLoad.cpp
+    audio/AudioPlaybackServiceCache.cpp
+    analysis/OmniShotDetector.cpp
 
     # Spine
     spine/SpineEngine.cpp
@@ -106,10 +106,11 @@ add_library(roundtable_core STATIC
     spine/AnimationVideoCache.cpp
 
     # Media (alpha encoding for pre-rendered animation cache)
-    media/VP9AlphaEncoder.cpp
-    media/HWAlphaEncoder.cpp
-    media/ChromaKeyEncoder.cpp
-    media/ProResAlphaEncoder.cpp
+    convert/VP9AlphaEncoder.cpp
+    convert/HWAlphaEncoder.cpp
+    convert/ChromaKeyEncoder.cpp
+    convert/MediaFileEncoderBase.cpp
+    convert/ProResAlphaEncoder.cpp
 
     # Audio DSP (EQ, dynamics) — real-time-safe processors
     audiofx/ParametricEQ.cpp
@@ -144,7 +145,7 @@ add_library(roundtable_core STATIC
 # (access violations, etc.) so the producer thread survives GPU crashes
 # instead of aborting silently via std::terminate.
 if(MSVC)
-    set_source_files_properties(media/FrameProducer.cpp PROPERTIES COMPILE_FLAGS "/EHa")
+    set_source_files_properties(playback/FrameProducer.cpp PROPERTIES COMPILE_FLAGS "/EHa")
 endif()
 
 target_include_directories(roundtable_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

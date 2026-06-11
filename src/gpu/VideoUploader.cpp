@@ -7,7 +7,7 @@
 
 #include "VideoUploader.h"
 
-#include <media/FrameCache.h>
+#include <cache/FrameCache.h>
 
 #include <spdlog/spdlog.h>
 #include <unordered_map>

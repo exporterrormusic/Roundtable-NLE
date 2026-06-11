@@ -10,7 +10,7 @@
 #include "panels/project/ProjectBinInternal.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
-#include "media/MediaSourceService.h"
+#include "playback/MediaSourceService.h"
 
 #include <QTreeWidgetItem>
 

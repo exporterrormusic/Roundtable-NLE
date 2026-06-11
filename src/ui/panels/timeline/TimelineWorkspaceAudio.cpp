@@ -3,7 +3,7 @@
  * Qt-specific scheduling + video media pre-opening.
  *
  * The heavy audio decode/cache/prefetch logic now lives in
- * core/media/AudioPlaybackService.  This file keeps only Qt-dependent
+ * core/audio/AudioPlaybackService.  This file keeps only Qt-dependent
  * scheduling (QTimer::singleShot) and the video-media pre-opening that
  * is shared with the composite pipeline.
  */
@@ -12,9 +12,9 @@
 #include "PathUtils.h"
 
 #include "CompositeService.h"
-#include "media/AudioPlaybackService.h"
-#include "media/MediaPool.h"
-#include "media/PlaybackController.h"
+#include "audio/AudioPlaybackService.h"
+#include "playback/MediaPool.h"
+#include "playback/PlaybackController.h"
 #include "panels/monitors/ProgramMonitor.h"  // for requestRefresh() after warmup
 
 #include "timeline/Timeline.h"

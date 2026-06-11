@@ -9,7 +9,7 @@
 #include "GpuContext.h"
 #include "vulkan/Swapchain.h"
 #include "vulkan/Texture.h"
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 
 #include <volk.h>
 #include <vk_mem_alloc.h>

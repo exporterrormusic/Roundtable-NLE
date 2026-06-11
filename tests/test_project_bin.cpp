@@ -6,7 +6,7 @@
 
 #include <gtest/gtest.h>
 
-#include "media/ThumbnailGenerator.h"
+#include "decode/ThumbnailGenerator.h"
 #include "widgets/ThumbnailGrid.h"
 #include "panels/project/ProjectBin.h"
 

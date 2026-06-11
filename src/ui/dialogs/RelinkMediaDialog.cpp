@@ -5,7 +5,7 @@
 #include "dialogs/RelinkMediaDialog.h"
 #include "PathUtils.h"
 #include "project/AssetDatabase.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 #include "Theme.h"
 
 #include <QFileDialog>

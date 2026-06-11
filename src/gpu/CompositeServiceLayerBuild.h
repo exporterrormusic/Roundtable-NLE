@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "media/FrameCache.h"       // CachedFrame
+#include "cache/FrameCache.h"       // CachedFrame
 #include "timeline/Transition.h"    // TransitionType
 #include "effects/EffectStack.h"    // EffectStack::EffectSnapshot
 

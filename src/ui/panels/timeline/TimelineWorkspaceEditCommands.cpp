@@ -18,7 +18,7 @@
 #include "command/CommandStack.h"
 #include "command/commands/ClipCommands.h"
 #include "project/Project.h"
-#include "media/PlaybackController.h"
+#include "playback/PlaybackController.h"
 #include "timeline/EditOperations.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/Timeline.h"

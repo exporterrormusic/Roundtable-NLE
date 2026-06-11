@@ -6,7 +6,7 @@
 #include "widgets/ThumbnailGrid.h"
 #include "PathUtils.h"
 #include "Theme.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <spdlog/spdlog.h>
 

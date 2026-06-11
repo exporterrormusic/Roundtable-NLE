@@ -18,9 +18,9 @@
 #include "command/CompoundCommand.h"
 #include "command/CommandStack.h"
 #include "effects/EffectStack.h"
-#include "media/AudioFile.h"
-#include "media/OmniShotDetector.h"
-#include "media/VideoDecoder.h"
+#include "audio/AudioFile.h"
+#include "analysis/OmniShotDetector.h"
+#include "decode/VideoDecoder.h"
 #include "Constants.h"
 
 #include <QMenu>

@@ -8,7 +8,7 @@
 #include "command/CommandStack.h"
 #include "command/commands/TransitionCmds.h"
 #include "MainWindow.h"
-#include "media/PlaybackController.h"
+#include "playback/PlaybackController.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/monitors/ProgramMonitor.h"

@@ -10,7 +10,7 @@
 #include "ShortcutManager.h"
 #include "Theme.h"
 #include "command/CommandStack.h"
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 #include "project/Project.h"
 #include "dialogs/ProjectSettingsDialog.h"
 #include "panels/effects/EffectControlsPanel.h"

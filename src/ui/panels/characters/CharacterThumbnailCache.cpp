@@ -107,9 +107,69 @@ std::string cachedCharacterOutfitFullBodyPath(const std::string& charName,
         + charName + "_" + outfit + "_full.png";
 }
 
-#ifdef ROUNDTABLE_HAS_SPINE
+// ── Shared thumbnail framing helpers (see header) ───────────────────────
+// NOT inside the ROUNDTABLE_HAS_SPINE guard: ShotComposer's video-character
+// thumbnail fallback uses these regardless of Spine availability.
 
-static QColor extractDominantColorForThumb(const QImage& img)
+ThumbCropAdj thumbCropAdjustmentFor(const std::string& charName,
+                                    bool* hasManualAdjustment)
+{
+    static const std::unordered_map<std::string, ThumbCropAdj> kThumbCropAdj = {
+        {"Kilo",    { 0.0f,   0.0f,  1.5f, 0.7f}},
+        {"Chime",   { 0.15f,  0.0f,  1.0f, 1.0f}},
+        {"Crown",   { 0.15f,  0.0f,  1.0f, 1.0f}},
+        {"Dorothy", {-0.15f, -0.08f, 1.0f, 1.0f}},
+        {"Wells",   { 0.0f,  -0.05f, 1.0f, 1.0f}},
+        {"Bahamut", {-0.15f,  0.0f,  1.0f, 1.0f}},
+        {"Ingrid",  { 0.0f,  -0.15f, 1.0f, 1.0f}},
+    };
+    auto it = kThumbCropAdj.find(charName);
+    if (hasManualAdjustment) *hasManualAdjustment = (it != kThumbCropAdj.end());
+    return it != kThumbCropAdj.end() ? it->second : ThumbCropAdj{};
+}
+
+QRect computeThumbCropRect(const QRect& content, int frameW, int frameH,
+                           const ThumbCropAdj& adj)
+{
+    const int cW = content.width();
+    const int cH = content.height();
+    const int cCX = content.left() + cW / 2;
+
+    int cropH = static_cast<int>(cH * 0.55f * adj.zoomH);
+    if (cropH < 10) cropH = cH;
+    cropH = std::min(cropH, frameH);
+    int cropW = static_cast<int>(cW * 0.80f * adj.zoomW);
+    if (cropW < 10) cropW = cW;
+    cropW = std::min(cropW, frameW);
+    int cropX = cCX - cropW / 2 + static_cast<int>(cW * adj.hShift);
+    int cropY = content.top() + static_cast<int>(cH * adj.vShift);
+    cropX = std::clamp(cropX, 0, frameW - cropW);
+    cropY = std::clamp(cropY, 0, frameH - cropH);
+    return QRect(cropX, cropY, cropW, cropH);
+}
+
+QRect thumbContentBoundingBox(const QImage& img)
+{
+    const int w = img.width();
+    const int h = img.height();
+    int minX = w, maxX = 0, minY = h, maxY = 0;
+    for (int y = 0; y < h; ++y) {
+        const uchar* row = img.constScanLine(y);
+        for (int x = 0; x < w; ++x) {
+            if (row[x * 4 + 3] > 10) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+    if (maxX <= minX || maxY <= minY)
+        return QRect(0, 0, w, h);
+    return QRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+}
+
+QColor extractDominantThumbColor(const QImage& img)
 {
     int hueBins[18] = {};
     float satSum[18] = {};
@@ -141,6 +201,8 @@ static QColor extractDominantColorForThumb(const QImage& img)
     }
     return QColor(30, 30, 35);
 }
+
+#ifdef ROUNDTABLE_HAS_SPINE
 
 bool renderAndCacheCharacterThumbnail(const std::string& charName,
                                       const std::string& outfit)
@@ -201,22 +263,10 @@ bool renderAndCacheCharacterThumbnail(const std::string& charName,
         return false;
     }
 
-    // Per-character thumbnail crop adjustments (mirrors ShotComposerThumbnailGen)
-    struct ThumbCropAdj { float hShift; float vShift; float zoomW; float zoomH; };
-    static const std::unordered_map<std::string, ThumbCropAdj> kThumbCropAdj = {
-        {"Kilo",    { 0.0f,   0.0f,  1.5f, 0.7f}},
-        {"Chime",   { 0.15f,  0.0f,  1.0f, 1.0f}},
-        {"Crown",   { 0.15f,  0.0f,  1.0f, 1.0f}},
-        {"Dorothy", {-0.15f, -0.08f, 1.0f, 1.0f}},
-        {"Wells",   { 0.0f,  -0.05f, 1.0f, 1.0f}},
-        {"Bahamut", {-0.15f,  0.0f,  1.0f, 1.0f}},
-        {"Ingrid",  { 0.0f,  -0.15f, 1.0f, 1.0f}},
-    };
-    ThumbCropAdj cropAdj{0.0f, 0.0f, 1.0f, 1.0f};
-    {
-        auto adjIt = kThumbCropAdj.find(charName);
-        if (adjIt != kThumbCropAdj.end()) cropAdj = adjIt->second;
-    }
+    // Per-character thumbnail crop adjustments (shared with ShotComposer's
+    // video-character fallback so tuning a character is done once).
+    bool hasManualAdj = false;
+    ThumbCropAdj cropAdj = thumbCropAdjustmentFor(charName, &hasManualAdj);
 
     // Render size: 512px on the longest side for crisp thumbnails
     const float padding = 0.85f;
@@ -356,49 +406,21 @@ bool renderAndCacheCharacterThumbnail(const std::string& charName,
                      QImage::Format_RGBA8888);
 
     // Find bounding box of non-transparent content
-    int cMinX = static_cast<int>(renderW), cMaxX = 0;
-    int cMinY = static_cast<int>(renderH), cMaxY = 0;
-    for (int y = 0; y < static_cast<int>(renderH); ++y) {
-        const uint8_t* row = frameBuf.data() + y * renderW * 4;
-        for (int x = 0; x < static_cast<int>(renderW); ++x) {
-            if (row[x * 4 + 3] > 10) {
-                if (x < cMinX) cMinX = x;
-                if (x > cMaxX) cMaxX = x;
-                if (y < cMinY) cMinY = y;
-                if (y > cMaxY) cMaxY = y;
-            }
-        }
-    }
-    if (cMaxX <= cMinX || cMaxY <= cMinY) {
-        cMinX = 0; cMaxX = static_cast<int>(renderW) - 1;
-        cMinY = 0; cMaxY = static_cast<int>(renderH) - 1;
-    }
-    int cW = cMaxX - cMinX + 1;
-    int cH = cMaxY - cMinY + 1;
+    const QRect content = thumbContentBoundingBox(fullFrame);
 
     // For tall/thin characters not in the manual adjustment table (e.g. Drake),
     // apply Kilo-like defaults: tighter vertical zoom to focus on the head/face,
     // wider horizontal zoom to give breathing room, keep crop anchored at top.
-    if (cW > 0 && static_cast<float>(cH) / static_cast<float>(cW) > 2.2f) {
-        bool hasManualAdj = kThumbCropAdj.find(charName) != kThumbCropAdj.end();
-        if (!hasManualAdj) {
-            cropAdj.zoomH = 0.7f;   // tighter vertically → headshot
-            cropAdj.zoomW = 1.5f;   // wider horizontally → breathing room
-        }
+    if (content.width() > 0 && !hasManualAdj &&
+        static_cast<float>(content.height()) /
+            static_cast<float>(content.width()) > 2.2f) {
+        cropAdj.zoomH = 0.7f;   // tighter vertically → headshot
+        cropAdj.zoomW = 1.5f;   // wider horizontally → breathing room
     }
 
-    int cCX = cMinX + cW / 2;
-
-    int cropH = static_cast<int>(cH * 0.55f * cropAdj.zoomH);
-    if (cropH < 10) cropH = cH;
-    cropH = std::min(cropH, static_cast<int>(renderH));
-    int cropW = static_cast<int>(cW * 0.80f * cropAdj.zoomW);
-    if (cropW < 10) cropW = cW;
-    cropW = std::min(cropW, static_cast<int>(renderW));
-    int cropX = cCX - cropW / 2 + static_cast<int>(cW * cropAdj.hShift);
-    int cropY = cMinY + static_cast<int>(cH * cropAdj.vShift);
-    cropX = std::clamp(cropX, 0, static_cast<int>(renderW) - cropW);
-    cropY = std::clamp(cropY, 0, static_cast<int>(renderH) - cropH);
+    const QRect crop = computeThumbCropRect(content,
+                                            static_cast<int>(renderW),
+                                            static_cast<int>(renderH), cropAdj);
 
     // Save full-body render (uncropped, transparent background) for shot thumbnails
     {
@@ -444,8 +466,8 @@ bool renderAndCacheCharacterThumbnail(const std::string& charName,
         }
     }
 
-    QImage cropped = fullFrame.copy(cropX, cropY, cropW, cropH);
-    QColor bgColor = extractDominantColorForThumb(fullFrame);
+    QImage cropped = fullFrame.copy(crop);
+    QColor bgColor = extractDominantThumbColor(fullFrame);
 
     // Composite onto background color
     QImage final(cropped.width(), cropped.height(), QImage::Format_ARGB32);

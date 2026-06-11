@@ -10,8 +10,8 @@
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
 #include "project/Project.h"
-#include "media/MediaPool.h"
-#include "media/MediaSourceService.h"
+#include "playback/MediaPool.h"
+#include "playback/MediaSourceService.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 

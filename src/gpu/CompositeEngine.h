@@ -18,7 +18,7 @@
 
 #pragma once
 
-#include "media/FrameCache.h"            // rt::CachedFrame
+#include "cache/FrameCache.h"            // rt::CachedFrame
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
 #include "Compositor.h"                  // rt::Compositor, rt::BlendMode, rt::ABPair
 #include "TransitionRenderer.h"          // rt::GpuTransitionType, rt::TransitionSourceInfo

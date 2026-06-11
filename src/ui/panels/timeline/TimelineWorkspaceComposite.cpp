@@ -4,7 +4,7 @@
  */
 #include "panels/timeline/TimelineWorkspace.h"
 #include "CompositeService.h"
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 
 namespace rt {
 

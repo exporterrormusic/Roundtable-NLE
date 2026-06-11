@@ -10,7 +10,7 @@
 #include "viewport/OverlayMath.h"
 #include "Theme.h"
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 
 #include <QPainter>
 #include <QMouseEvent>

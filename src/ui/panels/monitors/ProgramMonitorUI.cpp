@@ -6,7 +6,7 @@
 
 
 #include "panels/monitors/ProgramMonitor.h"
-#include "media/PlaybackScheduler.h"
+#include "playback/PlaybackScheduler.h"
 
 #include "Theme.h"
 #include "UiScale.h"
@@ -18,8 +18,8 @@
 #include "panels/monitors/MonitorUiKit.h"
 #include "widgets/MiniTimeline.h"
 #include "widgets/TransportButton.h"
-#include "media/PlaybackController.h"
-#include "media/FrameCache.h"
+#include "playback/PlaybackController.h"
+#include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
 
 #include <QHBoxLayout>

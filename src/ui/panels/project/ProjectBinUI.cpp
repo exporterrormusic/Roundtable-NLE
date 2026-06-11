@@ -17,7 +17,7 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "timeline/Timeline.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <QColorDialog>
 #include <QDesktopServices>

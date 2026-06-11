@@ -8,9 +8,9 @@
 #include "ClipRenderers.h"
 #include "CompositeServiceBlend.h"
 
-#include "media/FrameCache.h"
-#include "media/MediaPool.h"
-#include "media/VideoFrameMapping.h"
+#include "cache/FrameCache.h"
+#include "playback/MediaPool.h"
+#include "decode/VideoFrameMapping.h"
 #include "Constants.h"
 #include "timeline/AdjustmentClip.h"
 #include "timeline/AudioClip.h"

@@ -5,8 +5,8 @@
 #include "dialogs/AppPreferencesDialog.h"
 #include "Theme.h"
 #include "GpuContext.h"
-#include "media/AudioEngine.h"
-#include "media/VideoDecoder.h"
+#include "audio/AudioEngine.h"
+#include "decode/VideoDecoder.h"
 #include "HardwareDiagnostics.h"
 
 #include <QComboBox>

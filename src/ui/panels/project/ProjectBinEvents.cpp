@@ -14,7 +14,7 @@
 #include "widgets/MediaDragTreeWidget.h"
 #include "widgets/ThumbnailGrid.h"
 #include "project/Project.h"
-#include "media/MediaSourceService.h"
+#include "playback/MediaSourceService.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"

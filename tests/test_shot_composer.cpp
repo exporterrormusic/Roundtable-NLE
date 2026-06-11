@@ -1041,8 +1041,10 @@ TEST_F(ShotComposerUITest, DeselectLayer)
 
 TEST_F(ShotComposerUITest, LibraryTabCount)
 {
-    // Characters, Backgrounds, NikkeBKG, Videos
-    EXPECT_EQ(m_panel->libraryTabs()->count(), 4);
+    // Characters, Custom (PNG puppets), Backgrounds, NikkeBKG, Videos —
+    // the Custom tab was added with the puppet feature and this count
+    // was never updated (this test group isn't in the CI core gate).
+    EXPECT_EQ(m_panel->libraryTabs()->count(), 5);
 }
 
 TEST_F(ShotComposerUITest, StanceComboOptions)

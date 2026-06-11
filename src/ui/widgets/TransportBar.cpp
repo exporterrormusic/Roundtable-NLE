@@ -6,7 +6,7 @@
 #include "widgets/TransportBar.h"
 #include "Theme.h"
 
-#include "media/PlaybackController.h"
+#include "playback/PlaybackController.h"
 
 #include <QHBoxLayout>
 #include <QKeyEvent>

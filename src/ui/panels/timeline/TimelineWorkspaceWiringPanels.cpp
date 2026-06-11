@@ -43,9 +43,9 @@
 #include "command/commands/EffectCommands.h"
 #include "project/Project.h"
 #include "MainWindow.h"
-#include "media/AudioEngine.h"
-#include "media/MediaPool.h"
-#include "media/PlaybackController.h"
+#include "audio/AudioEngine.h"
+#include "playback/MediaPool.h"
+#include "playback/PlaybackController.h"
 #include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
 #include "timeline/ImageClip.h"
@@ -62,8 +62,8 @@
 #include "timeline/VideoClip.h"
 
 #include "effects/ChromaKey.h"
-#include "media/FrameCache.h"
-#include "media/AudioPlaybackService.h"
+#include "cache/FrameCache.h"
+#include "audio/AudioPlaybackService.h"
 
 #include "panels/characters/ShotComposerInternal.h"
 #include "spine/ShotPreset.h"

@@ -17,7 +17,7 @@
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TransitionCmds.h"
 #include "effects/Effect.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <QDir>
 #include <QDragEnterEvent>

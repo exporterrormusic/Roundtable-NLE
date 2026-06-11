@@ -14,7 +14,7 @@
 #include "project/Settings.h"
 #include "timeline/Timeline.h"
 #include "timeline/AudioClip.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <QLineEdit>
 #include <QPainter>

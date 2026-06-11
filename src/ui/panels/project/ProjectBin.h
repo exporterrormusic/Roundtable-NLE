@@ -31,7 +31,7 @@
 
 #pragma once
 
-#include "media/ThumbnailGenerator.h"
+#include "decode/ThumbnailGenerator.h"
 #include "project/Project.h"   // Project::BinItem (rich bin model)
 
 #include <QComboBox>

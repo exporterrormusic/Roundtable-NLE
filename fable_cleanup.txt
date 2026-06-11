@@ -3,6 +3,14 @@ FABLE_CLEANUP.TXT — Codebase audit & cleanup work plan
 Roundtable NLE — 2026-06-11
 Scope: dead code, duplication, modularization, render/playback architecture
 vs Premiere Pro, format compatibility. ~640 files / ~174k lines audited.
+
+CURRENT STATUS (2026-06-11, end of execution session 2):
+  Phases 0 / 1 / 2 ........ COMPLETE (all items, test-verified)
+  Phase 3 ................. 3.2 core/media split DONE; 3.1/3.3/3.5/3.8 open
+  Phase 4 ................. not started (4.1 color management is next)
+  → Jump to "NEXT SESSION — START HERE" (search that string) for the
+    handoff: uncommitted-work warning, remaining-work order, standing
+    items.  The PROGRESS LOG below records everything executed.
 ================================================================================
 
 How this report was produced: every .cpp on disk was diffed against the
@@ -28,7 +36,7 @@ multi-vendor fallback. The problems are concentrated in three places:
 ================================================================================
 PROGRESS LOG (updated as phases execute)
 ================================================================================
-2026-06-11  PHASE 0 — EXECUTED (build verification pending at last edit)
+2026-06-11  PHASE 0 — EXECUTED AND VERIFIED (full build + tests green)
   [x] 1.1  ShotPanel.cpp deleted
   [x] 1.3  EngineServices.h deleted; EngineContracts.h moved to
            src/core/media/ (includers updated); src/core/engine/ removed
@@ -112,7 +120,7 @@ PROGRESS LOG (updated as phases execute)
            CORRECTION to Section 3.4: FrameScheduler is NOT vestigial —
            CompositeServiceFrame.cpp drives it via setPlayhead().
 
-2026-06-11  PHASE 2 — IN PROGRESS
+2026-06-11  PHASE 2 — COMPLETE (all six duplication targets executed)
   [x] 2.4  FfmpegEncoderBase (src/export/FfmpegEncoderBase.{h,cpp}) —
            all five export encoders (H264/H265/AV1/ProRes/DNxHR) are now
            thin subclasses providing only codec identity + a
@@ -205,6 +213,49 @@ PROGRESS LOG (updated as phases execute)
                  contract: explicit refresh() deliberately FORCES a
                  re-render at the same tick so edits show immediately;
                  only passive poll cycles dedup on tick).
+  [x] 2.3  Thumbnail dedupe — DONE 2026-06-11 (turned out far better
+           than planned: most of the "duplication" was DEAD CODE).
+           The two big duplicated Spine-raster blocks in ShotComposer::
+           makeCharacterThumbnail were inside #if 0 (disabled with
+           "too expensive at startup" comments) — ~450 lines deleted
+           (ShotComposerThumbnailGen.cpp 1145 → ~700), along with the
+           dead kThumbnailOutfitOverrides table the blocks consumed.
+           The genuinely-shared LIVE pieces are now single-sourced in
+           CharacterThumbnailCache.{h,cpp}: ThumbCropAdj +
+           thumbCropAdjustmentFor() (the per-character crop table now
+           exists ONCE — tune a character once, both the cache renderer
+           and the video-char fallback agree), computeThumbCropRect()
+           (the 0.55/0.80 head-and-shoulders math),
+           thumbContentBoundingBox(), extractDominantThumbColor().
+           VERIFIED: app builds; test_shot_composer 72/72.
+           USER EYEBALL: check Wells' thumbnail in the CHARACTERS page
+           (the video-fallback path) — crop/background should look
+           unchanged.
+  [x] 2.6  Conversion-encoder base — DONE 2026-06-11
+           (src/core/media/MediaFileEncoderBase.{h,cpp}).  ChromaKey/
+           HWAlpha/ProResAlpha/VP9Alpha are now subclasses; the base owns
+           the container setup (avformat output ctx + stream + avio +
+           header with the error-cleanup ladders), the NVENC H.264
+           all-intra open block (parameterised by color range — MPEG for
+           ChromaKey, JPEG for HWAlpha's alpha-in-luma), the software
+           intra fallback, the CUDA-upload send path, the packet-drain/
+           interleaved-write loop, flush, finalize, and the NVENC
+           availability probe (was copy-pasted in ChromaKey + HWAlpha).
+           Encoder cpps: 1,687 → 651 lines + 433-line base (~600 net
+           saved; headers also collapsed).  Preserved quirks: HWAlpha's
+           packed_alpha metadata tag + movflags, full-range sws
+           colorspace details, packing buffer released in its finalize
+           override; ProRes/VP9 keep their full codec-option blocks.
+           VERIFIED: core+app build, ctest -L core 688/688,
+           test_animation_cache (the encoders' main consumer) 53/53.
+           Runtime note: next character conversion run (CONVERT page)
+           doubles as the end-to-end encode smoke.
+           PHASE 2 IS NOW COMPLETE.
+  [x] BONUS: 10th stale test fixed — ShotComposerUITest.LibraryTabCount
+           expected 4 tabs; the Custom (PNG puppets) tab made it 5 and
+           the test was never updated (same core-only-CI rot).
+           Pre-existing: verified failing on the unmodified tree.
+  [SUPERSEDED — original deferral note follows]
   [~] 2.3  Thumbnail dedupe DEFERRED (deliberately).
            CharacterThumbnailCache.cpp's renderAndCacheCharacterThumbnail
            and ShotComposer::makeCharacterThumbnail/makeShotThumbnail
@@ -668,25 +719,78 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.3 thumbnail service
     2.5 FfmpegOpen helper
 
-SESSION HANDOFF NOTES (2026-06-11, end of execution session)
-    Everything above marked [x] is build-verified and test-verified but
-    NOT committed and NOT runtime-smoke-tested.  Before/with the next
-    session:
-      1. Run the app: drag a clip transform in the program monitor
-         (position/scale/rotate/anchor + Ctrl-Z), click with the Text
-         tool, check both monitors' control/transport bars look right,
-         and run one export per codec (esp. NVENC H.264/H.265).
-      2. Commit in logical chunks (deletions; Phase 1; encoder base;
-         SharedFileIO; wiring; MonitorUiKit) or as one cleanup commit.
-      3. Remaining Phase 2: thumbnail dedupe (see 2.3 note), conversion
-         encoder base in core/media.
-      4. [DONE] Triage of the 8 pre-existing ui/gpu test failures —
-         all stale tests, all fixed; test_monitors 56/56.
-      5. Then Phase 3 below, ideally one module per session.
-      6. CI RECOMMENDATION (now proven twice — FrameCache + these 8):
-         add the gpu/ui/export ctest labels to a nightly or pre-release
-         job.  tests.yml currently runs only `-L core`, which is how
-         9 stale tests rotted invisibly.
+════════════════════════════════════════════════════════════════════════
+NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 2)
+════════════════════════════════════════════════════════════════════════
+STATE: Phases 0, 1, 2 COMPLETE.  Phase 3 item 3.2 (core/media split)
+COMPLETE.  All work build-verified + test-verified (688 core + monitors
+56 / shot_composer 72 / animation_cache 53 / export 43 / decoder 24 /
+audio 45 / timeline_ui 65, all green).  User runtime-smoked playback/
+scrub/project-open mid-session (perf log healthy).
+
+UNCOMMITTED at handoff (user committed+pushed once mid-session; since
+then): thumbnail dedupe, MediaFileEncoderBase, perf-log fixes (hover
+rule + log demotions), 10 stale-test fixes, and the ENTIRE core/media
+split (79 renames).  COMMIT FIRST THING — the renames get more painful
+to merge the longer they sit.
+
+REMAINING WORK, in recommended order:
+  P3-a  TimelineWorkspace/MainWindow god-class decomposition (§3.1) —
+        largest; one binder class at a time; 65 timeline_ui tests +
+        688 core gate per step.
+  P3-b  ClipType capability virtuals + per-type serializer registry
+        (§3.5) — 42 files but very incremental.
+  P3-c  UnifiedCache + CacheCoordinator merge (§3.3) — both now live in
+        core/cache/ side by side.
+  P3-d  Mirror the new core/ module folders in tests/ (§3.8) — tests/
+        is still flat; optional, low priority.
+  P4    Premiere-parity features (see PHASE 4 below) — start with 4.1
+        per-stream color management: ConvertDecodedFrame.cpp is the
+        single convert entry point, so it's a small, contained change
+        with outsized correctness payoff.
+
+STANDING ITEMS:
+  - Runtime smokes still owed: overlay drag + Ctrl-Z, Text tool, one
+    export per codec (NVENC paths), one character conversion run
+    (exercises MediaFileEncoderBase end-to-end).
+  - CI: add gpu/ui/export ctest labels to a nightly job — TEN stale
+    tests rotted invisibly under core-only CI this session.
+  - Open bug (pre-existing, from memory): Track::addTransition has no
+    dedup → duplicate transitions possible (opacity = prog², fades too
+    dark).  Unrelated to cleanup; fix when convenient.
+  - src/core/media/ NO LONGER EXISTS — older notes referencing
+    media/X.h: the file now lives in decode/cache/playback/audio/
+    convert/analysis.
+════════════════════════════════════════════════════════════════════════
+
+2026-06-11  PHASE 3 STARTED — core/media SPLIT EXECUTED (§3.2)
+  [x] The 79-file src/core/media/ grab-bag is now six modules:
+         core/decode/    VideoDecoder*, ConvertDecodedFrame,
+                         VideoFrameMapping, SharedFileIO,
+                         ThumbnailGenerator
+         core/cache/     FrameCache, DiskFrameCache, UnifiedCache,
+                         CacheCoordinator, PrefetchTexturePool
+         core/playback/  MediaPool* (incl. prefetch engine), Playback-
+                         Controller/Scheduler, FrameProducer/Presenter,
+                         FrameClock, AVSyncClock, FrameScheduler,
+                         MediaSourceService, EngineContracts,
+                         PLAYBACK_ARCHITECTURE.md
+         core/audio/     AudioEngine, AudioFile, AudioPlaybackService*,
+                         TimeStretch, WaveformCache, BeatDetector
+         core/convert/   MediaFileEncoderBase + the four character-
+                         conversion encoders
+         core/analysis/  OmniShotDetector
+       Mechanics: git mv (history-preserving) + scripted include/CMake
+       rewrite (151 files updated across src/ + tests/) + 7 cross-module
+       bare includes qualified.  docs/architecture.md updated.
+       VERIFIED (final): full -All rebuild clean (app + every test exe
+       compiles/links against the new layout); ctest -L core 688/688;
+       test_monitors 56, test_shot_composer 72, test_animation_cache 53,
+       test_export 43, test_decoder 24, test_audio 45, test_timeline_ui
+       65 — all PASSED.
+       NOTE for future sessions: src/core/media/ NO LONGER EXISTS — any
+       older doc/note referencing media/X.h means the file now lives in
+       one of the six modules above.
 
 2026-06-11  POST-SMOKE PERF-LOG REVIEW (user ran the app on the KINGDOM
             CONNECTION project; playback/scrub healthy — 100% GPU-resident
@@ -717,18 +821,34 @@ SESSION HANDOFF NOTES (2026-06-11, end of execution session)
 
 PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
           less code has to move)
-    3.2 core/media split into decode/cache/playback/audio/convert/analysis
-    3.3 cache-coordinator merge
-    3.1 TimelineWorkspace/MainWindow decomposition into binder classes
-    3.5 ClipType capability virtuals, then per-type serializer registry
+    [DONE] 3.2 core/media split into decode/cache/playback/audio/
+               convert/analysis (2026-06-11; see log entry above)
+    [    ] 3.3 cache-coordinator merge (both in core/cache/ now)
+    [    ] 3.1 TimelineWorkspace/MainWindow decomposition into binder
+               classes (largest remaining structural item)
+    [    ] 3.5 ClipType capability virtuals, then per-type serializer
+               registry
+    [    ] 3.8 mirror new core/ folders in tests/ (optional)
 
-PHASE 4 — Premiere-parity features (each is its own project)
-    4.1 per-stream color management        (small, do first)
-    4.3 VFR PTS mapping                    (medium)
-    4.4 multi-audio-stream support         (medium)
-    4.6 segment preview-render + render bar(large)
-    4.7 proxy workflow                     (large)
-    4.2 16-bit float GPU pipeline          (largest; last)
+PHASE 4 — Premiere-parity features (each is its own project; none
+          started)
+    4.1 per-stream color management        (small, do first —
+        ConvertDecodedFrame.cpp:~100 is the single SWS_CS_ITU709 site;
+        read stream colorspace/range/primaries/trc in VideoDecoderInit
+        into VideoStreamInfo, pass to sws_setColorspaceDetails)
+    4.3 VFR PTS mapping                    (medium — isVFR is set at
+        decode/VideoDecoderInit.cpp but never read; build a PTS index
+        and consume it in decode/VideoFrameMapping.h)
+    4.4 multi-audio-stream support         (medium — first-stream-only
+        today in VideoDecoderInit + AudioFile)
+    4.6 segment preview-render + render bar(large — render-bar UI stub
+        already exists in TimelineRuler; FrameSignature infra can hash
+        segment state)
+    4.7 proxy workflow                     (large — conversion encoders
+        + MediaPool handle indirection are the building blocks)
+    4.2 16-bit float GPU pipeline          (largest; last — P010/
+        yuva444p12 converters already exist, they just discard depth at
+        the final step)
 
 Ground rules for all phases (from the repo's own history):
     - Rebuild Release roundtable.exe target for verification, not just libs.

@@ -15,11 +15,11 @@
 
 #include <gtest/gtest.h>
 
-#include <media/FrameCache.h>
-#include <media/MediaPool.h>
+#include <cache/FrameCache.h>
+#include <playback/MediaPool.h>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
-#include <media/VideoDecoder.h>
+#include <decode/VideoDecoder.h>
 #endif
 
 #include <filesystem>
@@ -387,7 +387,7 @@ TEST_F(VideoDecoderFileTest, DecodeMultipleFrames)
 //  DiskFrameCache tests
 // ═════════════════════════════════════════════════════════════════════════════
 
-#include <media/DiskFrameCache.h>
+#include <cache/DiskFrameCache.h>
 #include <fstream>
 #include <thread>
 

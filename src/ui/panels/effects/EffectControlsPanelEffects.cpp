@@ -23,8 +23,8 @@
 #include "effects/LUT.h"
 #include "effects/Letterbox.h"
 #include "effects/BeatEffects.h"
-#include "media/AudioFile.h"
-#include "media/BeatDetector.h"
+#include "audio/AudioFile.h"
+#include "audio/BeatDetector.h"
 #include "Constants.h"
 
 #include <QFrame>

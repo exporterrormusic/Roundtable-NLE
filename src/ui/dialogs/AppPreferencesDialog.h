@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 
 #include <QDialog>
 #include <QLabel>

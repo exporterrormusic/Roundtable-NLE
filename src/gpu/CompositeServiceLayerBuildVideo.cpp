@@ -11,9 +11,9 @@
 
 #include "CompositeService.h"
 
-#include "media/FrameCache.h"
-#include "media/MediaPool.h"
-#include "media/UnifiedCache.h"
+#include "cache/FrameCache.h"
+#include "playback/MediaPool.h"
+#include "cache/UnifiedCache.h"
 #include "Constants.h"
 #include "timeline/VideoClip.h"
 #include "timeline/Track.h"

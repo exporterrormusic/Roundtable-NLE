@@ -12,10 +12,10 @@
 #include <filesystem>
 #include <fstream>
 
-#include "media/AudioFile.h"
-#include "media/AudioEngine.h"
-#include "media/AVSyncClock.h"
-#include "media/WaveformCache.h"
+#include "audio/AudioFile.h"
+#include "audio/AudioEngine.h"
+#include "playback/AVSyncClock.h"
+#include "audio/WaveformCache.h"
 
 namespace rt {
 namespace {

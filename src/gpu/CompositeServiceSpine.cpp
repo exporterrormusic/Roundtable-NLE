@@ -7,7 +7,7 @@
 #include "PathUtils.h"
 #include "ClipRenderers.h"
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 #include "timeline/SpineClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"

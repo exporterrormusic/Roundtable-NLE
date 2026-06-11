@@ -36,7 +36,7 @@
 #include "panels/project/HistoryPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"
-#include "media/PlaybackScheduler.h"
+#include "playback/PlaybackScheduler.h"
 #include "viewport/Viewport.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/properties/PropertiesPanel.h"
@@ -46,10 +46,10 @@
 
 // Core
 #include "command/CommandStack.h"
-#include "media/AudioEngine.h"
-#include "media/PlaybackController.h"
-#include "media/MediaPool.h"
-#include "media/MediaSourceService.h"
+#include "audio/AudioEngine.h"
+#include "playback/PlaybackController.h"
+#include "playback/MediaPool.h"
+#include "playback/MediaSourceService.h"
 #include "spine/ModelManager.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"

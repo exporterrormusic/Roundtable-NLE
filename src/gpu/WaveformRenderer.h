@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "media/WaveformCache.h"
+#include "audio/WaveformCache.h"
 
 #include <glm/glm.hpp>
 

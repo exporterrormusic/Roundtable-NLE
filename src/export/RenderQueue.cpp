@@ -9,7 +9,7 @@
 #include "SmartRenderAnalyzer.h"
 #include "PacketDemuxer.h"
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
 #include "PathUtils.h"
 

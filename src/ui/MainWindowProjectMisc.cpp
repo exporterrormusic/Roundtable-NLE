@@ -11,8 +11,8 @@
 #include "panels/timeline/TimelineWorkspace.h"
 #include "panels/timeline/TimelinePanel.h"
 
-#include "media/FrameCache.h"
-#include "media/PlaybackController.h"
+#include "cache/FrameCache.h"
+#include "playback/PlaybackController.h"
 #include "timeline/Timeline.h"
 
 #include "project/Project.h"

@@ -32,7 +32,7 @@
 
 #pragma once
 
-#include "media/ThumbnailGenerator.h"
+#include "decode/ThumbnailGenerator.h"
 
 #include <QScrollArea>
 #include <QWidget>

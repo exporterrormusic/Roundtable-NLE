@@ -10,7 +10,7 @@ class GraphicClip;
 
 namespace rt {
 
-// CachedFrame actually lives in namespace rt (media/FrameCache.h); forward-
+// CachedFrame actually lives in namespace rt (cache/FrameCache.h); forward-
 // declare it here so the renderCaptionClip return type resolves to the same
 // rt::CachedFrame as its definition (the global `struct CachedFrame;` above is
 // only kept for the legacy renderTitle/Graphic signatures).

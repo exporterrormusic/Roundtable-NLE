@@ -20,7 +20,7 @@
 #include "timeline/KeyframeTrack.h"
 #include "timeline/GraphicLayer.h"
 #include "timeline/GraphicClip.h"
-#include "media/PlaybackController.h"
+#include "playback/PlaybackController.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"

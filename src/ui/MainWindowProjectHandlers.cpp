@@ -28,10 +28,10 @@
 #include "panels/characters/CharactersPanel.h"
 
 #include "command/CommandStack.h"
-#include "media/AudioEngine.h"
-#include "media/MediaPool.h"
-#include "media/PlaybackController.h"
-#include "media/PlaybackScheduler.h"
+#include "audio/AudioEngine.h"
+#include "playback/MediaPool.h"
+#include "playback/PlaybackController.h"
+#include "playback/PlaybackScheduler.h"
 #include "timeline/Timeline.h"
 
 #include "project/Project.h"

@@ -23,8 +23,8 @@
 #include "timeline/GraphicClip.h"
 #include "timeline/Position2D.h"
 #include "timeline/GraphicLayer.h"
-#include "media/MediaPool.h"
-#include "media/PlaybackController.h"
+#include "playback/MediaPool.h"
+#include "playback/PlaybackController.h"
 #include <QFileInfo>
 #include <QImage>
 #include <algorithm>

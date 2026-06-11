@@ -15,8 +15,8 @@
 
 #include <gtest/gtest.h>
 
-#include "media/PlaybackController.h"
-#include "media/AVSyncClock.h"
+#include "playback/PlaybackController.h"
+#include "playback/AVSyncClock.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"

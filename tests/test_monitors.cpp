@@ -22,8 +22,8 @@
 #include "viewport/Viewport.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/ProgramMonitor.h"
-#include "media/PlaybackController.h"
-#include "media/FrameCache.h"
+#include "playback/PlaybackController.h"
+#include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
 
 #include <atomic>

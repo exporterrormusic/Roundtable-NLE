@@ -17,9 +17,9 @@
 #include "ClipRenderers.h"
 
 // Media / timeline
-#include "media/CacheCoordinator.h"
-#include "media/FrameCache.h"
-#include "media/MediaPool.h"
+#include "cache/CacheCoordinator.h"
+#include "cache/FrameCache.h"
+#include "playback/MediaPool.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SequenceClip.h"

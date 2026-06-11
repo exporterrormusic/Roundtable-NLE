@@ -24,7 +24,7 @@
 
 #ifdef ROUNDTABLE_HAS_SPINE
 
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 
 #include <atomic>
 #include <condition_variable>

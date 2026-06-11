@@ -14,12 +14,12 @@
 #include "viewport/Viewport.h"
 #include "widgets/MiniTimeline.h"
 #include "widgets/TransportButton.h"
-#include "media/PlaybackController.h"
-#include "media/MediaPool.h"
-#include "media/AudioFile.h"
-#include "media/AudioEngine.h"
-#include "media/AudioPlaybackService.h"
-#include "media/AVSyncClock.h"
+#include "playback/PlaybackController.h"
+#include "playback/MediaPool.h"
+#include "audio/AudioFile.h"
+#include "audio/AudioEngine.h"
+#include "audio/AudioPlaybackService.h"
+#include "playback/AVSyncClock.h"
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>

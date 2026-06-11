@@ -15,10 +15,10 @@
 #include "CompositeServiceLayerBuild.h"
 
 // Media / timeline
-#include "media/FrameCache.h"
-#include "media/MediaPool.h"
-#include "media/VideoFrameMapping.h"
-#include "media/UnifiedCache.h"
+#include "cache/FrameCache.h"
+#include "playback/MediaPool.h"
+#include "decode/VideoFrameMapping.h"
+#include "cache/UnifiedCache.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"

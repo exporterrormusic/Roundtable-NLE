@@ -12,8 +12,8 @@
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/VideoClip.h"
-#include "media/AudioFile.h"
-#include "media/VideoDecoder.h"
+#include "audio/AudioFile.h"
+#include "decode/VideoDecoder.h"
 #include "widgets/TimelineTrackWidget.h"
 
 #include <QImage>

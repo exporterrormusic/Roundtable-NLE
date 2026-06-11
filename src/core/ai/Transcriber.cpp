@@ -29,7 +29,7 @@
 #endif
 
 #ifdef ROUNDTABLE_HAS_SNDFILE
-#include "media/AudioFile.h"
+#include "audio/AudioFile.h"
 #endif
 
 namespace rt {

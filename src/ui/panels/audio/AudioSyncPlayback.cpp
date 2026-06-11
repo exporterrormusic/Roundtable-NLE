@@ -5,8 +5,8 @@
 
 #include "panels/audio/AudioSync.h"
 
-#include "media/AudioEngine.h"
-#include "media/AudioFile.h"
+#include "audio/AudioEngine.h"
+#include "audio/AudioFile.h"
 #include "widgets/MiniWaveformWidget.h"
 
 #include <QCoreApplication>

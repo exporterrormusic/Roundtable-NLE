@@ -7,7 +7,7 @@
 #include "QtHelpers.h"
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 #include "widgets/MiniWaveformWidget.h"
 #include "Theme.h"
 

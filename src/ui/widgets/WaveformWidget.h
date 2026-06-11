@@ -27,7 +27,7 @@
 
 #pragma once
 
-#include "media/WaveformCache.h"
+#include "audio/WaveformCache.h"
 
 #include <QColor>
 #include <QWidget>

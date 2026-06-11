@@ -9,7 +9,7 @@
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/Transition.h"
-#include "media/AudioFile.h"
+#include "audio/AudioFile.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "PathUtils.h"

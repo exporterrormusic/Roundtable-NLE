@@ -18,7 +18,7 @@
 
 #include <cmath>
 
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 
 #include <algorithm>
 #include <filesystem>

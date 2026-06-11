@@ -58,8 +58,8 @@ struct VkDescriptorImageInfo_T;
 struct VkDescriptorImageInfo;
 
 #include "CompositeServiceLayerBuild.h"
-#include "media/FrameCache.h"
-#include "media/MediaSourceService.h"  // ResolutionTier
+#include "cache/FrameCache.h"
+#include "playback/MediaSourceService.h"  // ResolutionTier
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "spine/SpineEngine.h"
 #endif

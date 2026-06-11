@@ -11,7 +11,7 @@
 #include "TransitionRenderer.h"
 #include "EffectProcessor.h"
 
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 
 #include <spdlog/spdlog.h>
 

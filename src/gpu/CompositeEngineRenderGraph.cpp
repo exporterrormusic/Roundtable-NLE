@@ -10,7 +10,7 @@
 
 #include "CompositeEngine.h"
 #include "render_graph/GpuRenderGraph.h"
-#include "media/CacheCoordinator.h"
+#include "cache/CacheCoordinator.h"
 #include "StagingRing.h"
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
 #include "CompositeServiceBlend.h"       // rasterizeMasks
@@ -23,7 +23,7 @@
 #include "vulkan/Texture.h"
 #include "TransitionRenderer.h"
 #include "EffectProcessor.h"
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "effects/LUT.h"

@@ -32,7 +32,7 @@
 
 namespace rt {
 
-struct CachedFrame;  // from media/FrameCache.h
+struct CachedFrame;  // from cache/FrameCache.h
 
 /// How the frame is fitted into the viewport area.
 enum class ViewportFitMode : uint8_t

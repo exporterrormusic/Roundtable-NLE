@@ -11,7 +11,7 @@
 
 #include <spdlog/spdlog.h>
 #include <glm/gtc/matrix_transform.hpp>
-#include "media/FrameCache.h"
+#include "cache/FrameCache.h"
 
 #include <algorithm>
 #include <cstring>

@@ -5,7 +5,7 @@
 #include "panels/audio/AudioSync.h"
 #include "ai/Transcriber.h"
 #include "ai/ScriptMatcher.h"
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 #include "Theme.h"
 
 #include <spdlog/spdlog.h>

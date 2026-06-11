@@ -7,7 +7,7 @@
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
-#include "media/AudioEngine.h"
+#include "audio/AudioEngine.h"
 #include "widgets/MiniWaveformWidget.h"
 #include "widgets/ManualMatchDialog.h"
 #include "Theme.h"

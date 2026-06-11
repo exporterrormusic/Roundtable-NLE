@@ -20,7 +20,7 @@
 
 #include "PathUtils.h"
 
-#include "media/ThumbnailGenerator.h"   // MediaType
+#include "decode/ThumbnailGenerator.h"   // MediaType
 
 namespace rt {
 

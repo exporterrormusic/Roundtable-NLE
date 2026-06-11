@@ -8,7 +8,7 @@
 #include "widgets/MediaDragTreeWidget.h"
 #include "Theme.h"
 #include "project/Project.h"
-#include "media/MediaPool.h"
+#include "playback/MediaPool.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 

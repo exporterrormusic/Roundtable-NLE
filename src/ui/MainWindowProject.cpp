@@ -22,8 +22,8 @@
 #include "panels/timeline/TimelineWorkspace.h"
 
 #include "QtHelpers.h"
-#include "media/MediaPool.h"
-#include "media/PlaybackController.h"
+#include "playback/MediaPool.h"
+#include "playback/PlaybackController.h"
 #include "timeline/Timeline.h"
 
 #include "project/Project.h"

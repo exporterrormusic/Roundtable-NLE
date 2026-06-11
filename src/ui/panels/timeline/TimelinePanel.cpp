@@ -39,8 +39,8 @@
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TransitionCmds.h"
 #include "ShortcutManager.h"
-#include "media/AudioFile.h"
-#include "media/VideoDecoder.h"
+#include "audio/AudioFile.h"
+#include "decode/VideoDecoder.h"
 
 #include <QPixmap>
 #include <QFontMetrics>

@@ -32,7 +32,7 @@
 #include "panels/timeline/TimelineWorkspace.h"
 
 #include "CompositeService.h"
-#include "media/AudioPlaybackService.h"
+#include "audio/AudioPlaybackService.h"
 #include "panels/timeline/DockLayoutManager.h"
 
 #include "panels/monitors/ProgramMonitor.h"

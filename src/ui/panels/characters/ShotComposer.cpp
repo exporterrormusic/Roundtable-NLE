@@ -16,7 +16,7 @@
 #endif
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
-#include "media/VideoDecoder.h"
+#include "decode/VideoDecoder.h"
 extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>

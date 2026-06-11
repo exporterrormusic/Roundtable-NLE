@@ -30,9 +30,9 @@
 #include <QShowEvent>
 #include <QSplitter>
 
-#include "media/AudioEngine.h"
-#include "media/FrameCache.h"
-#include "media/PlaybackController.h"
+#include "audio/AudioEngine.h"
+#include "cache/FrameCache.h"
+#include "playback/PlaybackController.h"
 #include "project/Project.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"

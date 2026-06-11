@@ -36,9 +36,9 @@
 // Core
 #include "CrashHandler.h"
 #include "command/CommandStack.h"
-#include "media/AudioEngine.h"
-#include "media/FrameCache.h"
-#include "media/PlaybackController.h"
+#include "audio/AudioEngine.h"
+#include "cache/FrameCache.h"
+#include "playback/PlaybackController.h"
 #include "spine/ModelManager.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
