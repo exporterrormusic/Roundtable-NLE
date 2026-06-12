@@ -3,6 +3,7 @@
  * Split from TimelineWorkspace.cpp for maintainability.
  */
 
+#include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelineWorkspace.h"
 
 #include "panels/effects/EffectControlsPanel.h"
@@ -48,12 +49,12 @@ namespace rt {
 // when a QLineEdit (e.g. ProjectBin search) has focus.
 // ÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚Â
 
-void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
+void ShortcutController::handleKeyPress(QKeyEvent* event)
 {
 
     // Tilde (`) key toggles maximize/restore
     if (event->key() == Qt::Key_QuoteLeft || event->key() == Qt::Key_AsciiTilde) {
-        togglePanelMaximize();
+        m_ws->togglePanelMaximize();
         event->accept();
         return;
     }
@@ -75,10 +76,10 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // into the Source Monitor never made it active, and hovering away after a
     // pause silently re-targeted the timeline.  The sticky flag fixes both.
     auto activeController = [&]() -> PlaybackController* {
-        if (m_sourceTransportActive && m_sourceMonitor
-            && m_sourceMonitor->controller() && m_sourceMonitor->hasClip())
-            return m_sourceMonitor->controller();
-        return m_playbackController;
+        if (m_ws->m_sourceTransportActive && m_ws->m_sourceMonitor
+            && m_ws->m_sourceMonitor->controller() && m_ws->m_sourceMonitor->hasClip())
+            return m_ws->m_sourceMonitor->controller();
+        return m_ws->m_playbackController;
     };
 
     if (noMod && key == Qt::Key_Space) {
@@ -132,48 +133,48 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mark In/Out ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_I) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() && m_sourceTransportActive) {
-            m_sourceMonitor->markIn();
-        } else if (m_timeline && m_playbackController) {
-            EditOperations::setInPoint(*m_timeline, m_playbackController->currentTick());
-            if (m_timelinePanel) m_timelinePanel->updateInOutRange();
-            syncProgramMonitorInOut();
+        if (m_ws->m_sourceMonitor && m_ws->m_sourceMonitor->hasClip() && m_ws->m_sourceTransportActive) {
+            m_ws->m_sourceMonitor->markIn();
+        } else if (m_ws->m_timeline && m_ws->m_playbackController) {
+            EditOperations::setInPoint(*m_ws->m_timeline, m_ws->m_playbackController->currentTick());
+            if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->updateInOutRange();
+            m_ws->syncProgramMonitorInOut();
         }
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_O) {
         // Route to source monitor if it has focus, otherwise timeline
-        if (m_sourceMonitor && m_sourceMonitor->hasClip() && m_sourceTransportActive) {
-            m_sourceMonitor->markOut();
-        } else if (m_timeline && m_playbackController) {
-            EditOperations::setOutPoint(*m_timeline, m_playbackController->currentTick());
-            if (m_timelinePanel) m_timelinePanel->updateInOutRange();
-            syncProgramMonitorInOut();
+        if (m_ws->m_sourceMonitor && m_ws->m_sourceMonitor->hasClip() && m_ws->m_sourceTransportActive) {
+            m_ws->m_sourceMonitor->markOut();
+        } else if (m_ws->m_timeline && m_ws->m_playbackController) {
+            EditOperations::setOutPoint(*m_ws->m_timeline, m_ws->m_playbackController->currentTick());
+            if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->updateInOutRange();
+            m_ws->syncProgramMonitorInOut();
         }
         event->accept(); return;
     }
     // Ctrl+I = Import media (open file dialog, same as double-clicking Project Bin)
     if (ctrlOnly && key == Qt::Key_I) {
-        if (m_projectBin) {
-            m_projectBin->importFiles();
+        if (m_ws->m_projectBin) {
+            m_ws->m_projectBin->importFiles();
         }
         event->accept(); return;
     }
 
     // X = Mark Clip (set in/out around selected clip)
     if (noMod && key == Qt::Key_X) {
-        if (m_timeline && m_timelinePanel) {
-            auto sel = m_timelinePanel->selection().singleSelection();
+        if (m_ws->m_timeline && m_ws->m_timelinePanel) {
+            auto sel = m_ws->m_timelinePanel->selection().singleSelection();
             if (sel) {
-                auto* track = m_timeline->track(sel->trackIndex);
+                auto* track = m_ws->m_timeline->track(sel->trackIndex);
                 if (track) {
                     for (size_t i = 0; i < track->clipCount(); ++i) {
                         auto* clip = track->clip(i);
                         if (clip && clip->id() == sel->clipId) {
-                            m_timeline->setInPoint(clip->timelineIn());
-                            m_timeline->setOutPoint(clip->timelineIn() + clip->duration());
-                            m_timelinePanel->updateInOutRange();
-                            syncProgramMonitorInOut();
+                            m_ws->m_timeline->setInPoint(clip->timelineIn());
+                            m_ws->m_timeline->setOutPoint(clip->timelineIn() + clip->duration());
+                            m_ws->m_timelinePanel->updateInOutRange();
+                            m_ws->syncProgramMonitorInOut();
                             break;
                         }
                     }
@@ -185,44 +186,44 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tools (FCP7) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_A) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Selection);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Selection);
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_B) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Razor);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Razor);
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_R) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Rolling);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Rolling);
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_S) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Slip);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Slip);
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_T) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Text);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Text);
         event->accept(); return;
     }
     if (noMod && key == Qt::Key_Z) {
-        if (m_timelinePanel) m_timelinePanel->setActiveTool(EditTool::Zoom);
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->setActiveTool(EditTool::Zoom);
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Delete = Lift ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && (key == Qt::Key_Delete || key == Qt::Key_Backspace)) {
         // If Essential Graphics panel has focus, delete the selected layer (not the clip)
-        if (m_GraphicsEditorPanel && m_GraphicsEditorPanel->isAncestorOf(
+        if (m_ws->m_GraphicsEditorPanel && m_ws->m_GraphicsEditorPanel->isAncestorOf(
                 QApplication::focusWidget())) {
-            m_GraphicsEditorPanel->deleteSelectedLayer();
-            invalidateCompositeCache();
-            updateTransformOverlay();
-            if (m_programMonitor) m_programMonitor->requestRefresh();
+            m_ws->m_GraphicsEditorPanel->deleteSelectedLayer();
+            m_ws->invalidateCompositeCache();
+            m_ws->updateTransformOverlay();
+            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
             event->accept(); return;
         }
         // If an effect is selected in Effect Controls, delete that instead of clips
-        if (m_effectControlsPanel && m_effectControlsPanel->hasSelectedEffect()) {
-            m_effectControlsPanel->deleteSelectedEffect();
+        if (m_ws->m_effectControlsPanel && m_ws->m_effectControlsPanel->hasSelectedEffect()) {
+            m_ws->m_effectControlsPanel->deleteSelectedEffect();
             event->accept(); return;
         }
         // If keyboard focus is anywhere inside Effect Controls (mini
@@ -232,73 +233,73 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
         // just let Qt's keyboard event loop route to them instead of
         // clobbering the whole clip when the user meant to remove a
         // single keyframe.
-        if (m_effectControlsPanel && m_effectControlsPanel->isAncestorOf(
+        if (m_ws->m_effectControlsPanel && m_ws->m_effectControlsPanel->isAncestorOf(
                 QApplication::focusWidget())) {
             event->ignore(); return;
         }
-        if (m_timeline && m_timelinePanel && m_commandStack) {
+        if (m_ws->m_timeline && m_ws->m_timelinePanel && m_ws->m_commandStack) {
             // Check for gap selection first — ripple close the gap
-            auto& gap = m_timelinePanel->gapSelection();
-            if (gap.active && gap.trackIndex < m_timeline->trackCount()) {
+            auto& gap = m_ws->m_timelinePanel->gapSelection();
+            if (gap.active && gap.trackIndex < m_ws->m_timeline->trackCount()) {
                 int64_t gapDuration = gap.endTick - gap.startTick;
                 if (gapDuration > 0) {
                     auto cmd = EditOperations::closeGap(
-                        *m_timeline, gap.trackIndex,
+                        *m_ws->m_timeline, gap.trackIndex,
                         gap.startTick, gap.endTick);
                     if (cmd) {
-                        m_timelinePanel->clearGapSelection();
-                        m_commandStack->execute(std::move(cmd));
-                        m_timelinePanel->refreshTrackContents();
-                        invalidateAudioSources();
-                        invalidateCompositeCache();
-                        updateTransformOverlay();
-                        if (m_programMonitor) m_programMonitor->requestRefresh();
-                        schedulePostEditWork();
+                        m_ws->m_timelinePanel->clearGapSelection();
+                        m_ws->m_commandStack->execute(std::move(cmd));
+                        m_ws->m_timelinePanel->refreshTrackContents();
+                        m_ws->invalidateAudioSources();
+                        m_ws->invalidateCompositeCache();
+                        m_ws->updateTransformOverlay();
+                        if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                        m_ws->schedulePostEditWork();
                     }
                 }
                 event->accept(); return;
             }
 
             // Check for selected transition — delete it
-            size_t transTrack = m_timelinePanel->selectedTransitionTrack();
-            size_t transIndex = m_timelinePanel->selectedTransitionIndex();
-            if (transTrack < m_timeline->trackCount()) {
-                Track* track = m_timeline->track(transTrack);
+            size_t transTrack = m_ws->m_timelinePanel->selectedTransitionTrack();
+            size_t transIndex = m_ws->m_timelinePanel->selectedTransitionIndex();
+            if (transTrack < m_ws->m_timeline->trackCount()) {
+                Track* track = m_ws->m_timeline->track(transTrack);
                 if (track && transIndex < track->transitionCount()) {
                     auto cmd = std::make_unique<RemoveTransitionCommand>(track, transIndex);
-                    m_timelinePanel->clearTransitionSelection();
-                    m_commandStack->execute(std::move(cmd));
-                    m_timelinePanel->refreshTrackContents();
-                    invalidateCompositeCache();
+                    m_ws->m_timelinePanel->clearTransitionSelection();
+                    m_ws->m_commandStack->execute(std::move(cmd));
+                    m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->invalidateCompositeCache();
                     // Removing an audio cross-dissolve must rebuild the mixed
                     // audio source so the baked crossfade is actually dropped.
-                    invalidateAudioSources();
-                    updateTransformOverlay();
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
-                    schedulePostEditWork();
+                    m_ws->invalidateAudioSources();
+                    m_ws->updateTransformOverlay();
+                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                    m_ws->schedulePostEditWork();
                     event->accept(); return;
                 }
             }
 
-            auto cmd = EditOperations::deleteSelection(*m_timeline,
-                m_timelinePanel->selection());
+            auto cmd = EditOperations::deleteSelection(*m_ws->m_timeline,
+                m_ws->m_timelinePanel->selection());
             if (cmd) {
-                m_timelinePanel->selection().clear();
-                m_commandStack->execute(std::move(cmd));
+                m_ws->m_timelinePanel->selection().clear();
+                m_ws->m_commandStack->execute(std::move(cmd));
                 // Refresh the timeline UI so deleted clips disappear immediately
-                m_timelinePanel->refreshTrackContents();
-                invalidateAudioSources();
-                invalidateCompositeCache();
+                m_ws->m_timelinePanel->refreshTrackContents();
+                m_ws->invalidateAudioSources();
+                m_ws->invalidateCompositeCache();
                 // Clear panels that were showing the now-deleted clip
-                m_selectedClip = nullptr;
-                m_selectedGraphicLayerIdx = -1;
-                if (m_effectControlsPanel) m_effectControlsPanel->clearClip();
-                if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->clearClip();
-                if (m_ColorGradingPanel) m_ColorGradingPanel->clearClip();
-                if (m_propertiesPanel) m_propertiesPanel->clearClip();
-                updateTransformOverlay();
-                if (m_programMonitor) m_programMonitor->requestRefresh();
-                schedulePostEditWork();
+                m_ws->m_selection.clip = nullptr;
+                m_ws->m_selection.graphicLayerIdx = -1;
+                if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->clearClip();
+                if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->clearClip();
+                if (m_ws->m_ColorGradingPanel) m_ws->m_ColorGradingPanel->clearClip();
+                if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->clearClip();
+                m_ws->updateTransformOverlay();
+                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                m_ws->schedulePostEditWork();
             }
         }
         event->accept(); return;
@@ -306,16 +307,16 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Snapping toggle (N) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_N) {
-        if (m_timelinePanel) {
-            bool current = m_timelinePanel->snapEngine().isEnabled();
-            m_timelinePanel->setSnappingEnabled(!current);
+        if (m_ws->m_timelinePanel) {
+            bool current = m_ws->m_timelinePanel->snapEngine().isEnabled();
+            m_ws->m_timelinePanel->setSnappingEnabled(!current);
         }
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shift+Z = Zoom to Fit ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (shiftOnly && key == Qt::Key_Z) {
-        if (m_timelinePanel) m_timelinePanel->zoomToFit();
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->zoomToFit();
         event->accept(); return;
     }
 
@@ -323,26 +324,26 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     // If any clips are selected, split every selected clip the playhead
     // crosses; otherwise split all clips at the playhead.
     if (noMod && key == Qt::Key_F) {
-        if (m_timeline && m_playbackController && m_commandStack) {
-            int64_t tick = m_playbackController->currentTick();
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_commandStack) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
             std::unique_ptr<Command> cmd;
 
-            if (m_timelinePanel) {
-                const auto& sel = m_timelinePanel->selection();
+            if (m_ws->m_timelinePanel) {
+                const auto& sel = m_ws->m_timelinePanel->selection();
                 if (!sel.empty()) {
                     // Split every selected clip that the playhead crosses.
                     auto compound = std::make_unique<CompoundCommand>("Split selected");
                     bool anySplit = false;
                     for (const auto& ref : sel.clips()) {
-                        if (ref.trackIndex >= m_timeline->trackCount()) continue;
-                        Track* trk = m_timeline->track(ref.trackIndex);
+                        if (ref.trackIndex >= m_ws->m_timeline->trackCount()) continue;
+                        Track* trk = m_ws->m_timeline->track(ref.trackIndex);
                         if (!trk || trk->isLocked()) continue;
                         size_t ci = trk->findClipIndexById(ref.clipId);
                         if (ci >= trk->clipCount()) continue;
                         const Clip* c = trk->clip(ci);
                         if (tick > c->timelineIn() && tick < c->timelineOut()) {
                             auto sc = EditOperations::splitClip(
-                                *m_timeline, ref.trackIndex, ref.clipId, tick);
+                                *m_ws->m_timeline, ref.trackIndex, ref.clipId, tick);
                             if (sc) {
                                 compound->addCommand(std::move(sc));
                                 anySplit = true;
@@ -356,34 +357,34 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
             // Fallback: split all clips at playhead
             if (!cmd) {
-                cmd = EditOperations::splitAllAtPlayhead(*m_timeline, tick);
+                cmd = EditOperations::splitAllAtPlayhead(*m_ws->m_timeline, tick);
             }
 
             if (cmd) {
-                m_commandStack->execute(std::move(cmd));
-                if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+                m_ws->m_commandStack->execute(std::move(cmd));
+                if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
                 // After a split, the original clip becomes the LEFT half.
                 // Select the RIGHT half(s) instead — the clip starting at
                 // the playhead is what the user wants to work with next.
-                if (m_timelinePanel && m_timeline) {
-                    m_timelinePanel->selection().clear();
-                    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                        Track* trk = m_timeline->track(ti);
+                if (m_ws->m_timelinePanel && m_ws->m_timeline) {
+                    m_ws->m_timelinePanel->selection().clear();
+                    for (size_t ti = 0; ti < m_ws->m_timeline->trackCount(); ++ti) {
+                        Track* trk = m_ws->m_timeline->track(ti);
                         if (!trk || trk->isLocked()) continue;
                         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                             const Clip* c = trk->clip(ci);
                             if (c && c->timelineIn() == tick) {
-                                m_timelinePanel->selection().selectClip(
+                                m_ws->m_timelinePanel->selection().selectClip(
                                     ClipRef{ti, c->id()}, true);
                             }
                         }
                     }
                 }
-                invalidateAudioSources();
-                invalidateCompositeCache();
-                updateTransformOverlay();
-                if (m_programMonitor) m_programMonitor->requestRefresh();
-                schedulePostEditWork();
+                m_ws->invalidateAudioSources();
+                m_ws->invalidateCompositeCache();
+                m_ws->updateTransformOverlay();
+                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                m_ws->schedulePostEditWork();
             }
         }
         event->accept(); return;
@@ -391,17 +392,17 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shift+F = Split all tracks at playhead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (shiftOnly && key == Qt::Key_F) {
-        if (m_timeline && m_playbackController && m_commandStack) {
-            int64_t tick = m_playbackController->currentTick();
-            auto cmd = EditOperations::splitAllAtPlayhead(*m_timeline, tick);
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_commandStack) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
+            auto cmd = EditOperations::splitAllAtPlayhead(*m_ws->m_timeline, tick);
             if (cmd) {
-                m_commandStack->execute(std::move(cmd));
-                if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                invalidateAudioSources();
-                invalidateCompositeCache();
-                updateTransformOverlay();
-                if (m_programMonitor) m_programMonitor->requestRefresh();
-                schedulePostEditWork();
+                m_ws->m_commandStack->execute(std::move(cmd));
+                if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                m_ws->invalidateAudioSources();
+                m_ws->invalidateCompositeCache();
+                m_ws->updateTransformOverlay();
+                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                m_ws->schedulePostEditWork();
             }
         }
         event->accept(); return;
@@ -416,10 +417,10 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
     const bool keyLeft  = (key == Qt::Key_Comma  || key == Qt::Key_Less);
     const bool keyRight = (key == Qt::Key_Period || key == Qt::Key_Greater);
     if ((keyLeft || keyRight) && (noMod || shiftOnly)) {
-        if (m_timeline && m_commandStack && m_timelinePanel && m_project) {
-            const auto& selClips = m_timelinePanel->selection().clips();
+        if (m_ws->m_timeline && m_ws->m_commandStack && m_ws->m_timelinePanel && m_ws->m_project) {
+            const auto& selClips = m_ws->m_timelinePanel->selection().clips();
             if (!selClips.empty()) {
-                const int64_t ticksPerFrame = m_project->settings().ticksPerFrame();
+                const int64_t ticksPerFrame = m_ws->m_project->settings().ticksPerFrame();
                 const int frames = (shiftOnly ? 5 : 1) * (keyLeft ? -1 : 1);
                 int64_t deltaTicks = frames * ticksPerFrame;
 
@@ -427,7 +428,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                 // slide past tick 0 (matches the drag-move group clamp).
                 int64_t minIn = std::numeric_limits<int64_t>::max();
                 for (const auto& sel : selClips) {
-                    Track* tr = m_timeline->track(sel.trackIndex);
+                    Track* tr = m_ws->m_timeline->track(sel.trackIndex);
                     if (!tr) continue;
                     size_t ci = tr->findClipIndexById(sel.clipId);
                     if (ci >= tr->clipCount()) continue;
@@ -442,7 +443,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                     auto compound = std::make_unique<CompoundCommand>(
                         keyLeft ? "Nudge left" : "Nudge right");
                     for (const auto& sel : selClips) {
-                        Track* tr = m_timeline->track(sel.trackIndex);
+                        Track* tr = m_ws->m_timeline->track(sel.trackIndex);
                         if (!tr) continue;
                         size_t ci = tr->findClipIndexById(sel.clipId);
                         if (ci >= tr->clipCount()) continue;
@@ -464,7 +465,7 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                             nudgedIds.insert(sel.clipId);
                         for (const auto& sel : selClips) {
                             auto fix = EditOperations::resolveOverlaps(
-                                *m_timeline, sel.trackIndex, sel.clipId, nudgedIds);
+                                *m_ws->m_timeline, sel.trackIndex, sel.clipId, nudgedIds);
                             if (fix) {
                                 fix->execute();
                                 compound->addExecuted(std::move(fix));
@@ -472,13 +473,13 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
                         }
                     }
                     if (compound->size() > 0) {
-                        m_commandStack->pushWithoutExecute(std::move(compound));
-                        m_timelinePanel->refreshTrackContents();
-                        invalidateAudioSources();
-                        invalidateCompositeCache();
-                        updateTransformOverlay();
-                        if (m_programMonitor) m_programMonitor->requestRefresh();
-                        schedulePostEditWork();
+                        m_ws->m_commandStack->pushWithoutExecute(std::move(compound));
+                        m_ws->m_timelinePanel->refreshTrackContents();
+                        m_ws->invalidateAudioSources();
+                        m_ws->invalidateCompositeCache();
+                        m_ws->updateTransformOverlay();
+                        if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                        m_ws->schedulePostEditWork();
                     }
                 }
             }
@@ -488,34 +489,34 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ M = Add marker at playhead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_M) {
-        if (m_timeline && m_playbackController && m_commandStack) {
-            int64_t tick = m_playbackController->currentTick();
-            m_commandStack->execute(
-                std::make_unique<AddMarkerCommand>(m_timeline, tick, "Marker"));
-            if (m_timelinePanel) m_timelinePanel->update();
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_commandStack) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
+            m_ws->m_commandStack->execute(
+                std::make_unique<AddMarkerCommand>(m_ws->m_timeline, tick, "Marker"));
+            if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->update();
         }
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ G = Match frame (select clip under playhead) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && key == Qt::Key_G) {
-        if (m_timeline && m_playbackController && m_timelinePanel) {
-            int64_t tick = m_playbackController->currentTick();
-            auto result = EditOperations::matchFrameEx(*m_timeline, tick);
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_timelinePanel) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
+            auto result = EditOperations::matchFrameEx(*m_ws->m_timeline, tick);
             if (result.valid) {
                 // Select the matched clip on the timeline
-                m_timelinePanel->selection().clear();
-                m_timelinePanel->selection().selectClip(
+                m_ws->m_timelinePanel->selection().clear();
+                m_ws->m_timelinePanel->selection().selectClip(
                     {result.trackIndex, result.clipId}, false);
-                m_timelinePanel->update();
+                m_ws->m_timelinePanel->update();
 
                 // Load clip in Source Monitor at the matched source time
-                if (m_sourceMonitor && m_mediaPool && !result.mediaPath.empty()) {
-                    auto handle = m_mediaPool->open(result.mediaPath);
+                if (m_ws->m_sourceMonitor && m_ws->m_mediaPool && !result.mediaPath.empty()) {
+                    auto handle = m_ws->m_mediaPool->open(result.mediaPath);
                     if (handle != 0) {
-                        m_sourceMonitor->loadClip(handle, m_mediaPool);
+                        m_ws->m_sourceMonitor->loadClip(handle, m_ws->m_mediaPool);
                         // Seek source monitor to the matched source time
-                        m_sourceMonitor->scrubTo(result.sourceTime);
+                        m_ws->m_sourceMonitor->scrubTo(result.sourceTime);
                     }
                 }
 
@@ -528,19 +529,19 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ ; = Lift (remove I/O range, leave gap) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Semicolon) {
-        if (m_timeline && m_commandStack) {
-            int64_t inPt = m_timeline->inPoint();
-            int64_t outPt = m_timeline->outPoint();
+        if (m_ws->m_timeline && m_ws->m_commandStack) {
+            int64_t inPt = m_ws->m_timeline->inPoint();
+            int64_t outPt = m_ws->m_timeline->outPoint();
             if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
-                auto cmd = EditOperations::liftInOut(*m_timeline, inPt, outPt);
+                auto cmd = EditOperations::liftInOut(*m_ws->m_timeline, inPt, outPt);
                 if (cmd) {
-                    m_commandStack->execute(std::move(cmd));
-                    if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                    invalidateAudioSources();
-                    invalidateCompositeCache();
-                    updateTransformOverlay();
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
-                    schedulePostEditWork();
+                    m_ws->m_commandStack->execute(std::move(cmd));
+                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->invalidateAudioSources();
+                    m_ws->invalidateCompositeCache();
+                    m_ws->updateTransformOverlay();
+                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                    m_ws->schedulePostEditWork();
                 }
             }
         }
@@ -549,19 +550,19 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ ' = Extract (remove I/O range, close gaps) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Apostrophe) {
-        if (m_timeline && m_commandStack) {
-            int64_t inPt = m_timeline->inPoint();
-            int64_t outPt = m_timeline->outPoint();
+        if (m_ws->m_timeline && m_ws->m_commandStack) {
+            int64_t inPt = m_ws->m_timeline->inPoint();
+            int64_t outPt = m_ws->m_timeline->outPoint();
             if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
-                auto cmd = EditOperations::extractInOut(*m_timeline, inPt, outPt);
+                auto cmd = EditOperations::extractInOut(*m_ws->m_timeline, inPt, outPt);
                 if (cmd) {
-                    m_commandStack->execute(std::move(cmd));
-                    if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                    invalidateAudioSources();
-                    invalidateCompositeCache();
-                    updateTransformOverlay();
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
-                    schedulePostEditWork();
+                    m_ws->m_commandStack->execute(std::move(cmd));
+                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->invalidateAudioSources();
+                    m_ws->invalidateCompositeCache();
+                    m_ws->updateTransformOverlay();
+                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                    m_ws->schedulePostEditWork();
                 }
             }
         }
@@ -570,16 +571,16 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ Shift+G = Close all gaps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (shiftOnly && key == Qt::Key_G) {
-        if (m_timeline && m_commandStack) {
-            auto cmd = EditOperations::closeAllGaps(*m_timeline);
+        if (m_ws->m_timeline && m_ws->m_commandStack) {
+            auto cmd = EditOperations::closeAllGaps(*m_ws->m_timeline);
             if (cmd) {
-                m_commandStack->execute(std::move(cmd));
-                if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                invalidateAudioSources();
-                invalidateCompositeCache();
-                updateTransformOverlay();
-                if (m_programMonitor) m_programMonitor->requestRefresh();
-                schedulePostEditWork();
+                m_ws->m_commandStack->execute(std::move(cmd));
+                if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                m_ws->invalidateAudioSources();
+                m_ws->invalidateCompositeCache();
+                m_ws->updateTransformOverlay();
+                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                m_ws->schedulePostEditWork();
             }
         }
         event->accept(); return;
@@ -587,14 +588,14 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ Shift+M = Go to next marker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (shiftOnly && key == Qt::Key_M) {
-        if (m_timeline && m_playbackController) {
-            int64_t cur = m_playbackController->currentTick();
-            const auto& markers = m_timeline->markers();
+        if (m_ws->m_timeline && m_ws->m_playbackController) {
+            int64_t cur = m_ws->m_playbackController->currentTick();
+            const auto& markers = m_ws->m_timeline->markers();
             for (const auto& mk : markers) {
                 if (mk.time > cur) {
-                    m_playbackController->seekTo(mk.time);
-                    if (m_timelinePanel) m_timelinePanel->update();
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
+                    m_ws->m_playbackController->seekTo(mk.time);
+                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->update();
+                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
                     break;
                 }
             }
@@ -604,14 +605,14 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ Ctrl+Shift+M = Go to previous marker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (ctrlShift && key == Qt::Key_M) {
-        if (m_timeline && m_playbackController) {
-            int64_t cur = m_playbackController->currentTick();
-            const auto& markers = m_timeline->markers();
+        if (m_ws->m_timeline && m_ws->m_playbackController) {
+            int64_t cur = m_ws->m_playbackController->currentTick();
+            const auto& markers = m_ws->m_timeline->markers();
             for (auto it = markers.rbegin(); it != markers.rend(); ++it) {
                 if (it->time < cur) {
-                    m_playbackController->seekTo(it->time);
-                    if (m_timelinePanel) m_timelinePanel->update();
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
+                    m_ws->m_playbackController->seekTo(it->time);
+                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->update();
+                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
                     break;
                 }
             }
@@ -621,24 +622,24 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ Q = Ripple trim head to playhead â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Q) {
-        if (m_timeline && m_playbackController && m_commandStack) {
-            int64_t tick = m_playbackController->currentTick();
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_commandStack) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
             // Find the topmost clip under the playhead
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                Track* track = m_timeline->track(ti);
+            for (size_t ti = 0; ti < m_ws->m_timeline->trackCount(); ++ti) {
+                Track* track = m_ws->m_timeline->track(ti);
                 if (!track) continue;
                 const Clip* c = EditOperations::clipAtTime(*track, tick);
                 if (c && tick > c->timelineIn() && tick < c->timelineOut()) {
                     auto cmd = EditOperations::rippleTrim(
-                        *m_timeline, ti, c->id(), ClipEdge::Head, tick);
+                        *m_ws->m_timeline, ti, c->id(), ClipEdge::Head, tick);
                     if (cmd) {
-                        m_commandStack->execute(std::move(cmd));
-                        if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                        invalidateAudioSources();
-                        invalidateCompositeCache();
-                        updateTransformOverlay();
-                        if (m_programMonitor) m_programMonitor->requestRefresh();
-                        schedulePostEditWork();
+                        m_ws->m_commandStack->execute(std::move(cmd));
+                        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                        m_ws->invalidateAudioSources();
+                        m_ws->invalidateCompositeCache();
+                        m_ws->updateTransformOverlay();
+                        if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                        m_ws->schedulePostEditWork();
                     }
                     break;
                 }
@@ -649,23 +650,23 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ W = Ripple trim tail to playhead â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_W) {
-        if (m_timeline && m_playbackController && m_commandStack) {
-            int64_t tick = m_playbackController->currentTick();
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                Track* track = m_timeline->track(ti);
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_commandStack) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
+            for (size_t ti = 0; ti < m_ws->m_timeline->trackCount(); ++ti) {
+                Track* track = m_ws->m_timeline->track(ti);
                 if (!track) continue;
                 const Clip* c = EditOperations::clipAtTime(*track, tick);
                 if (c && tick > c->timelineIn() && tick < c->timelineOut()) {
                     auto cmd = EditOperations::rippleTrim(
-                        *m_timeline, ti, c->id(), ClipEdge::Tail, tick);
+                        *m_ws->m_timeline, ti, c->id(), ClipEdge::Tail, tick);
                     if (cmd) {
-                        m_commandStack->execute(std::move(cmd));
-                        if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-                        invalidateAudioSources();
-                        invalidateCompositeCache();
-                        updateTransformOverlay();
-                        if (m_programMonitor) m_programMonitor->requestRefresh();
-                        schedulePostEditWork();
+                        m_ws->m_commandStack->execute(std::move(cmd));
+                        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
+                        m_ws->invalidateAudioSources();
+                        m_ws->invalidateCompositeCache();
+                        m_ws->updateTransformOverlay();
+                        if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                        m_ws->schedulePostEditWork();
                     }
                     break;
                 }
@@ -676,42 +677,42 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // â”€â”€ = / + = Timeline zoom in â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && (key == Qt::Key_Equal || key == Qt::Key_Plus)) {
-        if (m_timelinePanel) {
-            auto& engine = m_timelinePanel->layoutEngine();
+        if (m_ws->m_timelinePanel) {
+            auto& engine = m_ws->m_timelinePanel->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
             engine.zoomAt(anchorPx, 1.3);
-            m_timelinePanel->notifyZoomChanged();
+            m_ws->m_timelinePanel->notifyZoomChanged();
         }
         event->accept(); return;
     }
 
     // â”€â”€ - = Timeline zoom out â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Minus) {
-        if (m_timelinePanel) {
-            auto& engine = m_timelinePanel->layoutEngine();
+        if (m_ws->m_timelinePanel) {
+            auto& engine = m_ws->m_timelinePanel->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
             engine.zoomAt(anchorPx, 1.0 / 1.3);
-            m_timelinePanel->notifyZoomChanged();
+            m_ws->m_timelinePanel->notifyZoomChanged();
         }
         event->accept(); return;
     }
 
     // â”€â”€ \ = Zoom to fit (alternate binding) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Backslash) {
-        if (m_timelinePanel) m_timelinePanel->zoomToFit();
+        if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->zoomToFit();
         event->accept(); return;
     }
 
     // â”€â”€ D = Select clip at playhead â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_D) {
-        if (m_timeline && m_playbackController && m_timelinePanel) {
-            int64_t tick = m_playbackController->currentTick();
-            auto result = EditOperations::matchFrame(*m_timeline, tick);
+        if (m_ws->m_timeline && m_ws->m_playbackController && m_ws->m_timelinePanel) {
+            int64_t tick = m_ws->m_playbackController->currentTick();
+            auto result = EditOperations::matchFrame(*m_ws->m_timeline, tick);
             if (result.valid) {
-                m_timelinePanel->selection().clear();
-                m_timelinePanel->selection().selectClip(
+                m_ws->m_timelinePanel->selection().clear();
+                m_ws->m_timelinePanel->selection().selectClip(
                     {result.trackIndex, result.clipId}, false);
-                m_timelinePanel->update();
+                m_ws->m_timelinePanel->update();
             }
         }
         event->accept(); return;
@@ -719,11 +720,11 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 
     // ── ` (backtick / tilde) = Toggle panel maximize (Premiere Pro style) ──
     if (noMod && (key == Qt::Key_QuoteLeft || key == Qt::Key_AsciiTilde)) {
-        togglePanelMaximize();
+        m_ws->togglePanelMaximize();
         event->accept(); return;
     }
 
-    QWidget::keyPressEvent(event);
+    event->ignore();  // unhandled - workspace override forwards to QWidget
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -732,16 +733,16 @@ void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
 // the regular J/L (no K) ramp is unaffected and stays running until K or
 // space is pressed.
 // ─────────────────────────────────────────────────────────────────────────────
-void TimelineWorkspace::keyReleaseEvent(QKeyEvent* event)
+void ShortcutController::handleKeyRelease(QKeyEvent* event)
 {
-    if (event->isAutoRepeat()) { QWidget::keyReleaseEvent(event); return; }
+    if (event->isAutoRepeat()) { event->ignore(); return; }
 
     QWidget* fw = QApplication::focusWidget();
-    auto* ctl = (m_sourceMonitor && m_sourceMonitor->controller()
-                 && m_sourceMonitor->hasClip() && fw
-                 && (fw == m_sourceMonitor || m_sourceMonitor->isAncestorOf(fw)))
-        ? m_sourceMonitor->controller()
-        : m_playbackController;
+    auto* ctl = (m_ws->m_sourceMonitor && m_ws->m_sourceMonitor->controller()
+                 && m_ws->m_sourceMonitor->hasClip() && fw
+                 && (fw == m_ws->m_sourceMonitor || m_ws->m_sourceMonitor->isAncestorOf(fw)))
+        ? m_ws->m_sourceMonitor->controller()
+        : m_ws->m_playbackController;
 
     const int key = event->key();
     if (key == Qt::Key_K) {
@@ -758,7 +759,7 @@ void TimelineWorkspace::keyReleaseEvent(QKeyEvent* event)
         event->accept(); return;
     }
 
-    QWidget::keyReleaseEvent(event);
+    event->ignore();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

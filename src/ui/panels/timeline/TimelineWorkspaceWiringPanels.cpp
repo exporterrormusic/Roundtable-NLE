@@ -93,8 +93,8 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             // Refresh timeline track widgets so clip label changes are visible
             if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
             // Spine character/outfit changes may require reloading the engine
-            if (m_compositeService && m_selectedClip && m_selectedClip->clipType() == ClipType::Spine) {
-                auto* spineClip = dynamic_cast<SpineClip*>(m_selectedClip);
+            if (m_compositeService && m_selection.clip && m_selection.clip->clipType() == ClipType::Spine) {
+                auto* spineClip = dynamic_cast<SpineClip*>(m_selection.clip);
                 if (spineClip) {
                     const uint64_t clipId = spineClip->id();
                     m_compositeService->evictSpineState(clipId);
@@ -119,8 +119,8 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             // preview reflects the new chain immediately instead of after
             // the next natural window swap.  Non-blocking variant: same
             // call the playback-refresh path uses mid-play.
-            if (m_audioPlayback && m_selectedClip &&
-                m_selectedClip->clipType() == ClipType::Audio) {
+            if (m_audioPlayback && m_selection.clip &&
+                m_selection.clip->clipType() == ClipType::Audio) {
                 m_audioPlayback->invalidateSources();
                 m_audioPlayback->loadSources(/*allowBlockingMisses=*/false);
             }
@@ -189,7 +189,7 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_programMonitor, &ProgramMonitor::frameDisplayed,
                 this, [this](int64_t) {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_selectedClip && m_selectedGraphicLayerIdx >= 0)
+            if (m_selection.clip && m_selection.graphicLayerIdx >= 0)
                 updateTransformOverlay();
         });
     }
@@ -252,12 +252,12 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
                 float b = p[0] / 255.0f;
 
                 // Write into the Ultra Key effect's KeyColor params
-                if (m_selectedClip) {
-                    auto& st = m_selectedClip->effects();
+                if (m_selection.clip) {
+                    auto& st = m_selection.clip->effects();
                     if (m_eyedropperEffectIdx < st.effectCount()) {
                         auto& fx = st.effect(m_eyedropperEffectIdx);
                         int64_t t = m_playbackController
-                            ? m_playbackController->currentTick() - m_selectedClip->timelineIn()
+                            ? m_playbackController->currentTick() - m_selection.clip->timelineIn()
                             : 0;
                         fx.param(ChromaKey::KeyColorR).track.writeValue(t, r);
                         fx.param(ChromaKey::KeyColorG).track.writeValue(t, g);
@@ -284,7 +284,7 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_GraphicsEditorPanel, &GraphicsEditorPanel::layerSelected,
                 this, [this](GraphicLayer* layer, int layerIdx) {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            m_selectedGraphicLayerIdx = layerIdx;
+            m_selection.graphicLayerIdx = layerIdx;
             // Premiere-style per-layer Motion: route the Effect Controls
             // panel's Position/Scale/Rotation/Opacity rows through the
             // selected layer's transform. Passing nullptr falls back to
@@ -300,7 +300,7 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
                 &GraphicsEditorPanel::layerSelectionSetChanged,
                 this, [this](const std::vector<int>& stackIdxs) {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            m_selectedGraphicLayerIdxs = stackIdxs;
+            m_selection.graphicLayerIdxs = stackIdxs;
             // Repopulate the overlay so the sibling outline boxes
             // (drawn for non-focused multi-selected layers) appear /
             // disappear in sync with the selection set.

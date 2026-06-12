@@ -33,6 +33,8 @@
 #include <QMap>
 #include <QString>
 
+#include "panels/timeline/SelectionState.h"
+
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -86,9 +88,12 @@ class Clip;
 class CompositeService;
 struct OpacityMask;
 class DockLayoutManager;
+class DropController;
 class MediaWatchController;
+class OverlayController;
 class PanelMaximizeController;
 class PlaybackController;
+class ShortcutController;
 class ShotPresetManager;
 class SpineClip;
 class TitleClip;
@@ -100,6 +105,13 @@ class Project;
 class TimelineWorkspace : public QWidget
 {
     Q_OBJECT
+
+    /// Transitional (god-class decomposition): these binder controllers
+    /// hold a back-pointer and reach workspace members directly while
+    /// their dependency surfaces are narrowed in follow-up steps.
+    friend class OverlayController;
+    friend class DropController;
+    friend class ShortcutController;
 
 public:
     explicit TimelineWorkspace(QWidget* parent = nullptr);
@@ -123,14 +135,14 @@ public:
     void wirePanelSignals();
     void wireClipSelectionSignals();
     // Sub-groups of wireClipSelectionSignals(), split across sibling .cpp files:
-    void wireViewportTransformSignals();   // TimelineWorkspaceWiringViewport.cpp
-    void wireTransformOverlaySignals();    // TimelineWorkspaceWiringTransformOverlay.cpp
-    void wireOverlayToolSignals();         // TimelineWorkspaceWiringViewport.cpp
+    void wireViewportTransformSignals();   // shim → OverlayController
+    void wireTransformOverlaySignals();    // shim → OverlayController
+    void wireOverlayToolSignals();         // shim → OverlayController
     void wireTimelineContentSignals();     // TimelineWorkspaceWiringViewport.cpp
     void wirePanelFeedbackSignals();       // TimelineWorkspaceWiringPanels.cpp
-    void wireMediaDropSignals();
-    void wireNestSignals();
-    void wireEffectDropSignals();
+    void wireMediaDropSignals();           // shim → DropController
+    void wireNestSignals();                // shim → DropController
+    void wireEffectDropSignals();          // shim → DropController
     void wireTrackSignals();
 
     /// Rebuild the sequence tab bar from the current project.
@@ -279,13 +291,6 @@ private:
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
 
-    // ── JKL key state ──────────────────────────────────────────────────
-    // Tracks held-key state for Premiere-style K+J / K+L slow shuttle.
-    // When K is held and J/L is pressed, we engage a 0.5× scrub that
-    // stops the moment J/L is released.
-    bool              m_kHeld{false};
-    bool              m_kSlowShuttleActive{false};
-
     // Panels (owned by splitter hierarchy)
     TimelinePanel*    m_timelinePanel{nullptr};
     SourceMonitor*    m_sourceMonitor{nullptr};
@@ -393,11 +398,6 @@ private:
     /// Destruction guard — checked by lambdas and callbacks.
     std::atomic<bool> m_destroying{false};
 
-    /// Re-entrancy guard for the Text tool empty-area click handler.
-    /// Prevents duplicate clip creation when the overlay click signal
-    /// fires twice on the first interaction after project open.
-    std::atomic<bool> m_textToolBusy{false};
-
 
 
 
@@ -436,75 +436,32 @@ private:
     void preloadSpineAssets();
 #endif
 
-    // Transform overlay state — tracks the selected clip for Program Monitor
-    Clip* m_selectedClip{nullptr};
-    size_t m_selectedTrackIdx{0};
-    size_t m_selectedClipIdx{0};
-    int    m_selectedGraphicLayerIdx{-1};  ///< Selected layer within GraphicClip (-1 = whole clip)
+    // Current clip/layer selection — drives the Program Monitor transform
+    // overlay, properties/effect panels, and edit shortcuts.  See
+    // SelectionState.h (extracted so binder controllers can take a
+    // SelectionState* instead of the whole workspace).
+    SelectionState m_selection;
 
-    /// Stack indices of every layer selected in the Essential Graphics
-    /// layer list (Shift / Ctrl multi-select). Includes the focused
-    /// layer. Empty when nothing is selected. Drives group-move on the
-    /// program monitor: a single body drag applies the same Δ to every
-    /// layer in this set.
-    std::vector<int> m_selectedGraphicLayerIdxs;
-
-    /// Per-layer snapshot of (posX, posY) at the moment a group-move
-    /// drag begins. Used to apply the focused-layer Δ to siblings
-    /// without accumulating per-tick error. Cleared on drag finished.
-    struct GroupMoveStart { int idx; float posX; float posY; };
-    std::vector<GroupMoveStart> m_groupMoveStart;
-    bool  m_groupMoveActive{false};
-    float m_groupMoveFocusStartX{0.0f};
-    float m_groupMoveFocusStartY{0.0f};
-
-    /// Text snapshot taken when in-place text editing begins. The layer's
-    /// text is temporarily cleared during editing so the rendered text
-    /// doesn't show through behind the editor box (Premiere Pro behavior).
-    /// Restored on cancel, replaced with new text on commit.
-    std::string m_preEditOriginalText;
-    bool        m_inlineTextEditActive{false};
-    uint32_t m_overlayRefreshGen{0};          ///< Generation counter for deferred overlay updates
     size_t m_eyedropperEffectIdx{0};           ///< Effect index pending eyedropper pick
     uint8_t m_savedEditToolBeforeEyedropper{0}; ///< Saved edit tool to restore after pick
-    bool   m_scaleDragActive{false};              ///< True while a program-monitor scale drag is in progress
-    bool   m_scaleXWasStaticAtDragStart{true};    ///< Saved scaleX static state at drag start
-    bool   m_scaleYWasStaticAtDragStart{true};    ///< Saved scaleY static state at drag start
-    float  m_scaleXAtDragStart{1.0f};             ///< True SIGNED scaleX from the clip at drag start (preserves flip)
-    float  m_scaleYAtDragStart{1.0f};             ///< True SIGNED scaleY from the clip at drag start (preserves flip)
+
+    // ── Transform overlay (state + handlers live in OverlayController) ──
+    // The drag-session state (group-move snapshots, scale-drag flip
+    // capture, inline-text-edit snapshot) and the shared onOverlay*
+    // drag/click handlers moved into OverlayController; these shims keep
+    // the many intra-workspace call sites unchanged.
+    std::unique_ptr<OverlayController> m_overlay;
     void updateTransformOverlay();
     void scheduleOverlayRefresh();  ///< Deferred overlay re-sync via QTimer
 
-    // ── Transform-overlay drag handlers ─────────────────────────────────
-    // Shared by BOTH wiring sites: the GPU TransformOverlayWidget
-    // (wireTransformOverlaySignals) and the software Viewport
-    // (wireViewportTransformSignals).  They used to be duplicated lambda
-    // bodies in the two wiring files and drifted apart (the Viewport copy
-    // was missing group-move); single implementations live in
-    // TimelineWorkspaceWiringTransformOverlay.cpp.
-    void onOverlayPositionChanged(float posX, float posY);
-    void onOverlayScaleChanged(float scX, float scY);
-    void onOverlayRotationChanged(float rot);
-    void onOverlayDragFinished(float oldPosX, float oldPosY,
-                               float oldScX, float oldScY, float oldRot,
-                               float newPosX, float newPosY,
-                               float newScX, float newScY, float newRot);
-    void onOverlayAnchorChanged(float ax, float ay);
-    void onOverlayAnchorDragFinished(float oldX, float oldY,
-                                     float newX, float newY);
-    void onOverlayMaskDragFinished(int maskIndex, const OpacityMask& oldMask,
-                                   const OpacityMask& newMask);
-    void onOverlayEmptyAreaClicked(float frameX, float frameY,
-                                   Qt::KeyboardModifiers mods);
+    /// Drag-and-drop binder (media / effect / nest drops); the
+    /// wire*DropSignals()/wireNestSignals() methods above are shims to it.
+    std::unique_ptr<DropController> m_drop;
 
-    /// Reference canvas resolution for GraphicClip layout (text/shape
-    /// layer posX/posY space). This is the project/sequence resolution
-    /// that renderGraphicClip() composites at — NOT the ProgramMonitor
-    /// preview resolution, which can be lower (e.g. a 1920 preview of a
-    /// 4K project). The transform overlay, the text-tool click→posX
-    /// conversion, and layer hit-testing must all use this so they agree
-    /// with where the compositor actually draws the layer.
-    void graphicCanvasRes(uint32_t& w, uint32_t& h) const;
+    /// Keyboard routing binder (key handling incl. JKL slow-shuttle state,
+    /// QShortcut registration).  keyPressEvent/keyReleaseEvent are thin
+    /// wrappers over it; registerKeyboardShortcuts() is a shim.
+    std::unique_ptr<ShortcutController> m_shortcuts;
 
     /// Sync ProgramMonitor MiniTimeline in/out points from the Timeline.
     void syncProgramMonitorInOut();

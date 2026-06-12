@@ -297,17 +297,17 @@ void TimelineWorkspace::refreshAfterUndoRedo()
 
     // After undo/redo, clips may have been added or removed. Clear any
     // selected-clip / ShotPanel pointer that might now be dangling.
-    if (m_selectedClip && m_timeline) {
+    if (m_selection.clip && m_timeline) {
         bool found = false;
         for (size_t ti = 0; ti < m_timeline->trackCount() && !found; ++ti) {
             auto* track = m_timeline->track(ti);
             for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                if (track->clip(ci) == m_selectedClip) { found = true; break; }
+                if (track->clip(ci) == m_selection.clip) { found = true; break; }
             }
         }
         if (!found) {
-            m_selectedClip = nullptr;
-            m_selectedGraphicLayerIdx = -1;
+            m_selection.clip = nullptr;
+            m_selection.graphicLayerIdx = -1;
             if (m_propertiesPanel) m_propertiesPanel->clearClip();
             if (m_effectControlsPanel) m_effectControlsPanel->clearClip();
         }
@@ -341,7 +341,7 @@ void TimelineWorkspace::refreshAfterUndoRedo()
 #endif
 
     // If selected clip still exists, refresh property panels to reflect undo/redo
-    if (m_selectedClip) {
+    if (m_selection.clip) {
         if (m_propertiesPanel) m_propertiesPanel->refreshEffects();
         if (m_effectControlsPanel) m_effectControlsPanel->refresh();
     } else if (m_effectControlsPanel && m_effectControlsPanel->clip()) {

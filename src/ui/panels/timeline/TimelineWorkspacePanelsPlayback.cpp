@@ -148,7 +148,7 @@ void TimelineWorkspace::wirePlaybackSignals()
             // monitor box in real time. Without this, the box stayed at the
             // value sampled at selection time and only refreshed when the
             // user deselected + reselected the clip.
-            if (m_selectedClip)
+            if (m_selection.clip)
                 updateTransformOverlay();
         }
         // Keyboard transport (arrow keys, Home/End, edit-point nav) and any

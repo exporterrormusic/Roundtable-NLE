@@ -37,8 +37,11 @@
 #include "CompositeService.h"
 #include "audio/AudioPlaybackService.h"
 #include "panels/timeline/DockLayoutManager.h"
+#include "panels/timeline/DropController.h"
 #include "panels/timeline/MediaWatchController.h"
+#include "panels/timeline/OverlayController.h"
 #include "panels/timeline/PanelMaximizeController.h"
+#include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelinePanel.h"
 
 #include "panels/monitors/ProgramMonitor.h"
@@ -79,11 +82,56 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
         /*dockWidgets=*/    &m_dockWidgets,
         /*fallbackPanel=*/  [this] { return static_cast<QWidget*>(m_timelinePanel); },
     });
+
+    // Program Monitor transform-overlay binder (drag handlers, overlay
+    // sync, drag-session state).
+    m_overlay = std::make_unique<OverlayController>(this);
+
+    // Drag-and-drop binder (media / effect / nest drops).
+    m_drop = std::make_unique<DropController>(this);
+
+    // Keyboard routing binder (key handling + QShortcut registration).
+    m_shortcuts = std::make_unique<ShortcutController>(this);
 }
 
 void TimelineWorkspace::togglePanelMaximize()
 {
     m_panelMaximize->toggle();
+}
+
+// ── OverlayController shims ──────────────────────────────────────────────
+// Keep the many intra-workspace call sites unchanged while the overlay
+// logic lives in OverlayController.
+
+void TimelineWorkspace::updateTransformOverlay()       { m_overlay->updateTransformOverlay(); }
+void TimelineWorkspace::scheduleOverlayRefresh()       { m_overlay->scheduleOverlayRefresh(); }
+void TimelineWorkspace::wireTransformOverlaySignals()  { m_overlay->wireTransformOverlaySignals(); }
+void TimelineWorkspace::wireViewportTransformSignals() { m_overlay->wireViewportTransformSignals(); }
+void TimelineWorkspace::wireOverlayToolSignals()       { m_overlay->wireOverlayToolSignals(); }
+
+// ── DropController shims ─────────────────────────────────────────────────
+void TimelineWorkspace::wireMediaDropSignals()         { m_drop->wireMediaDropSignals(); }
+void TimelineWorkspace::wireEffectDropSignals()        { m_drop->wireEffectDropSignals(); }
+void TimelineWorkspace::wireNestSignals()              { m_drop->wireNestSignals(); }
+
+// ── ShortcutController shims / wrappers ──────────────────────────────────
+// The controller accepts events it handles and leaves unhandled ones
+// ignored; only those fall through to the QWidget default.
+
+void TimelineWorkspace::registerKeyboardShortcuts()    { m_shortcuts->registerKeyboardShortcuts(); }
+
+void TimelineWorkspace::keyPressEvent(QKeyEvent* event)
+{
+    m_shortcuts->handleKeyPress(event);
+    if (!event->isAccepted())
+        QWidget::keyPressEvent(event);
+}
+
+void TimelineWorkspace::keyReleaseEvent(QKeyEvent* event)
+{
+    m_shortcuts->handleKeyRelease(event);
+    if (!event->isAccepted())
+        QWidget::keyReleaseEvent(event);
 }
 
 TimelineWorkspace::~TimelineWorkspace()

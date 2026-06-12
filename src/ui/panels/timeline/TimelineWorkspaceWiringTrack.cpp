@@ -130,7 +130,7 @@ void TimelineWorkspace::wireTrackSignals()
                 if (insertAt >= m_timeline->trackCount()) return;
                 // Clear selection state so we don't dangle a Clip* belonging
                 // to the removed track.
-                m_selectedClip = nullptr;
+                m_selection.clip = nullptr;
                 if (m_propertiesPanel) m_propertiesPanel->clearClip();
                 m_timeline->removeTrack(insertAt);
                 if (m_timelinePanel) m_timelinePanel->rebuildTracks();
@@ -177,10 +177,10 @@ void TimelineWorkspace::wireTrackSignals()
 
             // Clear selection state BEFORE removing the track so we don't
             // hold a dangling Clip* that belonged to the deleted track.
-            m_selectedClip = nullptr;
-            m_selectedTrackIdx = 0;
-            m_selectedClipIdx  = 0;
-            m_selectedGraphicLayerIdx = -1;
+            m_selection.clip = nullptr;
+            m_selection.trackIdx = 0;
+            m_selection.clipIdx  = 0;
+            m_selection.graphicLayerIdx = -1;
             if (m_propertiesPanel) m_propertiesPanel->clearClip();
 
             m_timeline->removeTrack(trackIndex);

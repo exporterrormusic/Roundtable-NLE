@@ -1,4 +1,4 @@
-// TimelineWorkspaceWiringEffectDrop.cpp - Effect/transition drop signal wiring.
+// DropControllerEffectDrop.cpp - Effect/transition drop signal wiring.
 // Extracted from TimelineWorkspaceWiring.cpp for maintainability.
 
 #include <volk.h>
@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 
+#include "panels/timeline/DropController.h"
 #include "panels/timeline/TimelineWorkspace.h"
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 #include "CompositeService.h"
@@ -79,17 +80,17 @@
 
 namespace rt {
 
-void TimelineWorkspace::wireEffectDropSignals()
+void DropController::wireEffectDropSignals()
 {
     // =====================================================================
     //  EFFECT DRAG-DROP -> ADD EFFECT TO CLIP
     // =====================================================================
-    if (m_timelinePanel) {
-        connect(m_timelinePanel, &TimelinePanel::effectDroppedOnClip,
+    if (m_ws->m_timelinePanel) {
+        connect(m_ws->m_timelinePanel, &TimelinePanel::effectDroppedOnClip,
                 this, [this](size_t trackIdx, uint64_t clipId, int effectType) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_timeline) return;
-            auto* track = m_timeline->track(trackIdx);
+            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_ws->m_timeline) return;
+            auto* track = m_ws->m_timeline->track(trackIdx);
             if (!track) return;
             size_t clipIdx = track->findClipIndexById(clipId);
             if (clipIdx == SIZE_MAX) return;
@@ -99,29 +100,29 @@ void TimelineWorkspace::wireEffectDropSignals()
             auto type = static_cast<EffectType>(effectType);
             auto& stack = clip->effects();
 
-            if (m_commandStack) {
-                m_commandStack->execute(
+            if (m_ws->m_commandStack) {
+                m_ws->m_commandStack->execute(
                     std::make_unique<AddEffectCommand>(&stack, type));
             } else {
                 stack.addEffect(createEffect(type));
             }
 
             // Select the clip and refresh Effect Controls + Program Monitor
-            if (m_propertiesPanel) {
-                m_propertiesPanel->setClip(clip, track);
-                m_propertiesPanel->refreshEffects();
+            if (m_ws->m_propertiesPanel) {
+                m_ws->m_propertiesPanel->setClip(clip, track);
+                m_ws->m_propertiesPanel->refreshEffects();
             }
-            if (m_effectControlsPanel) {
-                m_effectControlsPanel->setClip(clip, track);
-                m_effectControlsPanel->refresh();
+            if (m_ws->m_effectControlsPanel) {
+                m_ws->m_effectControlsPanel->setClip(clip, track);
+                m_ws->m_effectControlsPanel->refresh();
             }
-            m_selectedClip = clip;
-            m_selectedTrackIdx = trackIdx;
-            m_selectedClipIdx = clipIdx;
-            m_selectedGraphicLayerIdx = -1;
+            m_ws->m_selection.clip = clip;
+            m_ws->m_selection.trackIdx = trackIdx;
+            m_ws->m_selection.clipIdx = clipIdx;
+            m_ws->m_selection.graphicLayerIdx = -1;
 
-            invalidateCompositeCache();
-            if (m_programMonitor) m_programMonitor->requestRefresh();
+            m_ws->invalidateCompositeCache();
+            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
 
             spdlog::info("Effect '{}' added to clip '{}' via drag-drop",
                          effectTypeName(type), clip->label());
@@ -131,12 +132,12 @@ void TimelineWorkspace::wireEffectDropSignals()
     // =====================================================================
     //  GLITCH-PRESET DRAG-DROP -> ADD CURATED EFFECT STACK TO CLIP
     // =====================================================================
-    if (m_timelinePanel) {
-        connect(m_timelinePanel, &TimelinePanel::glitchPresetDroppedOnClip,
+    if (m_ws->m_timelinePanel) {
+        connect(m_ws->m_timelinePanel, &TimelinePanel::glitchPresetDroppedOnClip,
                 this, [this](size_t trackIdx, uint64_t clipId, int presetId) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_timeline) return;
-            auto* track = m_timeline->track(trackIdx);
+            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_ws->m_timeline) return;
+            auto* track = m_ws->m_timeline->track(trackIdx);
             if (!track) return;
             size_t clipIdx = track->findClipIndexById(clipId);
             if (clipIdx == SIZE_MAX) return;
@@ -146,29 +147,29 @@ void TimelineWorkspace::wireEffectDropSignals()
             auto preset = static_cast<GlitchPreset>(presetId);
             auto& stack = clip->effects();
 
-            if (m_commandStack) {
+            if (m_ws->m_commandStack) {
                 if (auto cmd = makeAddGlitchPresetCommand(&stack, preset))
-                    m_commandStack->execute(std::move(cmd));
+                    m_ws->m_commandStack->execute(std::move(cmd));
             } else {
                 for (auto& fx : buildGlitchPreset(preset))
                     stack.addEffect(std::move(fx));
             }
 
-            if (m_propertiesPanel) {
-                m_propertiesPanel->setClip(clip, track);
-                m_propertiesPanel->refreshEffects();
+            if (m_ws->m_propertiesPanel) {
+                m_ws->m_propertiesPanel->setClip(clip, track);
+                m_ws->m_propertiesPanel->refreshEffects();
             }
-            if (m_effectControlsPanel) {
-                m_effectControlsPanel->setClip(clip, track);
-                m_effectControlsPanel->refresh();
+            if (m_ws->m_effectControlsPanel) {
+                m_ws->m_effectControlsPanel->setClip(clip, track);
+                m_ws->m_effectControlsPanel->refresh();
             }
-            m_selectedClip = clip;
-            m_selectedTrackIdx = trackIdx;
-            m_selectedClipIdx = clipIdx;
-            m_selectedGraphicLayerIdx = -1;
+            m_ws->m_selection.clip = clip;
+            m_ws->m_selection.trackIdx = trackIdx;
+            m_ws->m_selection.clipIdx = clipIdx;
+            m_ws->m_selection.graphicLayerIdx = -1;
 
-            invalidateCompositeCache();
-            if (m_programMonitor) m_programMonitor->requestRefresh();
+            m_ws->invalidateCompositeCache();
+            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
 
             spdlog::info("Glitch preset '{}' added to clip '{}' via drag-drop",
                          glitchPresetName(preset), clip->label());
@@ -178,12 +179,12 @@ void TimelineWorkspace::wireEffectDropSignals()
     // =====================================================================
     //  AUDIO-FX DRAG-DROP -> ADD EQ/DYNAMICS TO CLIP'S FxChain
     // =====================================================================
-    if (m_timelinePanel) {
-        connect(m_timelinePanel, &TimelinePanel::audioFxDroppedOnClip,
+    if (m_ws->m_timelinePanel) {
+        connect(m_ws->m_timelinePanel, &TimelinePanel::audioFxDroppedOnClip,
                 this, [this](size_t trackIdx, uint64_t clipId, int kindInt) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_timeline) return;
-            auto* track = m_timeline->track(trackIdx);
+            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_ws->m_timeline) return;
+            auto* track = m_ws->m_timeline->track(trackIdx);
             if (!track) return;
             size_t clipIdx = track->findClipIndexById(clipId);
             if (clipIdx == SIZE_MAX) return;
@@ -201,23 +202,23 @@ void TimelineWorkspace::wireEffectDropSignals()
                 static_cast<audiofx::Dynamics*>(proc)->loadVoicePreset();
 
             auto refresh = [this, trackIdx, clipId]() {
-                if (m_destroying.load(std::memory_order_acquire) || !m_timeline) return;
-                auto* tr = m_timeline->track(trackIdx);
+                if (m_ws->m_destroying.load(std::memory_order_acquire) || !m_ws->m_timeline) return;
+                auto* tr = m_ws->m_timeline->track(trackIdx);
                 if (!tr) return;
                 size_t ci = tr->findClipIndexById(clipId);
                 if (ci == SIZE_MAX) return;
                 auto* c = tr->clip(ci);
-                if (m_propertiesPanel) m_propertiesPanel->setClip(c, tr);
-                m_selectedClip = c;
-                m_selectedTrackIdx = trackIdx;
-                m_selectedClipIdx = ci;
-                m_selectedGraphicLayerIdx = -1;
+                if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->setClip(c, tr);
+                m_ws->m_selection.clip = c;
+                m_ws->m_selection.trackIdx = trackIdx;
+                m_ws->m_selection.clipIdx = ci;
+                m_ws->m_selection.graphicLayerIdx = -1;
             };
             auto redo = [aclip, after, refresh]() { aclip->audioFx() = after->clone(); refresh(); };
             auto undo = [aclip, before, refresh]() { aclip->audioFx() = before->clone(); refresh(); };
 
-            if (m_commandStack)
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+            if (m_ws->m_commandStack)
+                m_ws->m_commandStack->execute(std::make_unique<LambdaCommand>(
                     std::string("Add ") + audiofx::processorKindName(kind), redo, undo));
             else
                 redo();
@@ -230,14 +231,14 @@ void TimelineWorkspace::wireEffectDropSignals()
     // =====================================================================
     //  TRANSITION DRAG-DROP -> ADD TRANSITION AT CLIP EDGE
     // =====================================================================
-    if (m_timelinePanel) {
-        connect(m_timelinePanel, &TimelinePanel::transitionDroppedAtEdge,
+    if (m_ws->m_timelinePanel) {
+        connect(m_ws->m_timelinePanel, &TimelinePanel::transitionDroppedAtEdge,
                 this, [this](size_t trackIdx, uint64_t leftClipId,
                              uint64_t rightClipId, int64_t editPointTick,
                              int transitionType) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_timeline) return;
-            auto* track = m_timeline->track(trackIdx);
+            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_ws->m_timeline) return;
+            auto* track = m_ws->m_timeline->track(trackIdx);
             if (!track) return;
 
             // Find clip indices
@@ -284,21 +285,21 @@ void TimelineWorkspace::wireEffectDropSignals()
                 if (wouldOverlap) return;
             }
 
-            if (m_commandStack) {
-                m_commandStack->execute(
+            if (m_ws->m_commandStack) {
+                m_ws->m_commandStack->execute(
                     std::make_unique<AddTransitionCommand>(track, clipIdxA, clipIdxB, trans));
             } else {
                 track->addTransition(trans);
             }
 
-            invalidateCompositeCache();
+            m_ws->invalidateCompositeCache();
             // Rebuild audio sources too — a cross-dissolve on an audio track
             // bakes its crossfade into the mixed source, so without this the
             // transition has no audible effect until something else (e.g. a
             // duration tweak) triggers an audio rebuild.
-            invalidateAudioSources();
-            if (m_timelinePanel) m_timelinePanel->rebuildTracks();
-            if (m_programMonitor) m_programMonitor->requestRefresh();
+            m_ws->invalidateAudioSources();
+            if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->rebuildTracks();
+            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
 
             spdlog::info("Transition type {} added via drag-drop at edit point {}",
                          transitionType, editPointTick);

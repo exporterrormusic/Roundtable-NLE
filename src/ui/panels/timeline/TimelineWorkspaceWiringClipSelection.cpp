@@ -80,25 +80,6 @@
 
 namespace rt {
 
-void TimelineWorkspace::graphicCanvasRes(uint32_t& w, uint32_t& h) const
-{
-    // Mirror renderGraphicClip()'s reference: the project/sequence
-    // resolution. Fall back to the monitor preview res, then 1920×1080.
-    w = 0;
-    h = 0;
-    if (m_project) {
-        const auto& res = m_project->settings().resolution();
-        w = res.width;
-        h = res.height;
-    }
-    if ((w == 0 || h == 0) && m_programMonitor) {
-        w = m_programMonitor->outputWidth();
-        h = m_programMonitor->outputHeight();
-    }
-    if (w == 0) w = 1920;
-    if (h == 0) h = 1080;
-}
-
 // Returns true for still-image media. Such files have no real "source duration",
 
 void TimelineWorkspace::wireClipSelectionSignals() {
@@ -117,17 +98,17 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             auto* clip = track->clip(clipIdx);
             if (clip) {
                 auto cs0 = std::chrono::steady_clock::now();
-                // Set m_selectedClip BEFORE setClip, because setClip's
+                // Set m_selection.clip BEFORE setClip, because setClip's
                 // layerSelected signal triggers updateTransformOverlay()
-                // which reads m_selectedClip.
-                // Only reset m_selectedGraphicLayerIdx when the clip
+                // which reads m_selection.clip.
+                // Only reset m_selection.graphicLayerIdx when the clip
                 // actually changes â€” if same clip, setClip returns early
                 // and layerSelected won't fire to re-establish the index.
-                if (clip != m_selectedClip)
-                    m_selectedGraphicLayerIdx = -1;
-                m_selectedClip = clip;
-                m_selectedTrackIdx = trackIdx;
-                m_selectedClipIdx = clipIdx;
+                if (clip != m_selection.clip)
+                    m_selection.graphicLayerIdx = -1;
+                m_selection.clip = clip;
+                m_selection.trackIdx = trackIdx;
+                m_selection.clipIdx = clipIdx;
                 if (m_effectControlsPanel) {
                     auto* dock = dockForPanel(QStringLiteral("Effect Controls"));
                     if (!dock || dock->isVisible())
@@ -135,7 +116,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 }
                 if (m_GraphicsEditorPanel) {
                     // Always call setClip for Graphic clips � the layerSelected
-                    // signal is required to set m_selectedGraphicLayerIdx for
+                    // signal is required to set m_selection.graphicLayerIdx for
                     // per-layer transform overlay mode.
                     bool isGraphic = (clip->clipType() == ClipType::Graphic);
                     auto* dock = dockForPanel(QStringLiteral("Graphics Editor"));
@@ -287,7 +268,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (!m_timeline) return;
             auto* track = m_timeline->track(trackIdx);
             if (!track || transIdx >= track->transitionCount()) return;
-            m_selectedClip = nullptr;
+            m_selection.clip = nullptr;
             if (m_propertiesPanel) {
                 m_propertiesPanel->setTransition(track, transIdx);
                 if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
@@ -305,8 +286,8 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->clearClip();
                 if (m_ColorGradingPanel) m_ColorGradingPanel->clearClip();
                 if (m_propertiesPanel) m_propertiesPanel->clearClip();
-                m_selectedClip = nullptr;
-                m_selectedGraphicLayerIdx = -1;
+                m_selection.clip = nullptr;
+                m_selection.graphicLayerIdx = -1;
                 if (m_programMonitor && m_programMonitor->viewport())
                     m_programMonitor->viewport()->clearTransformOverlay();
                 if (m_programMonitor && m_programMonitor->transformOverlay())
@@ -321,12 +302,12 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     if (idx < trk->clipCount()) {
                         auto* clip = trk->clip(idx);
                         // Set clip state BEFORE setClip so layerSelected
-                        // handler can see the correct m_selectedClip.
-                        if (clip != m_selectedClip)
-                            m_selectedGraphicLayerIdx = -1;
-                        m_selectedClip = clip;
-                        m_selectedTrackIdx = ref.trackIndex;
-                        m_selectedClipIdx = idx;
+                        // handler can see the correct m_selection.clip.
+                        if (clip != m_selection.clip)
+                            m_selection.graphicLayerIdx = -1;
+                        m_selection.clip = clip;
+                        m_selection.trackIdx = ref.trackIndex;
+                        m_selection.clipIdx = idx;
                         if (m_effectControlsPanel) m_effectControlsPanel->setClip(clip, trk);
                         if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->setClip(clip, trk);
                         if (m_ColorGradingPanel) m_ColorGradingPanel->setClip(clip, trk);

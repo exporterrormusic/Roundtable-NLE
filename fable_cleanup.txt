@@ -4,11 +4,14 @@ Roundtable NLE — 2026-06-11
 Scope: dead code, duplication, modularization, render/playback architecture
 vs Premiere Pro, format compatibility. ~640 files / ~174k lines audited.
 
-CURRENT STATUS (2026-06-11, end of execution session 3):
+CURRENT STATUS (2026-06-11, end of execution session 5):
   Phases 0 / 1 / 2 ........ COMPLETE (all items, test-verified)
-  Phase 3 ................. 3.2 DONE; 3.1 STARTED (2 binders extracted +
-                            wiring-prefix rename; overlay/selection binders
-                            next, gated on a runtime smoke); 3.3/3.5/3.8 open
+  Phase 3 ................. 3.2 DONE; 3.1 TimelineWorkspace side ESSENTIALLY
+                            DONE (6 binders: MediaWatch, PanelMaximize,
+                            SelectionState, Overlay, Drop, Shortcut; 25 TUs
+                            → 18, header 545 → 435); MainWindow
+                            ProjectController + friend-narrowing remain;
+                            3.3/3.5/3.8 open
   Phase 4 ................. not started (4.1 color management is next)
   → Jump to "NEXT SESSION — START HERE" (search that string) for the
     handoff: uncommitted-work warning, remaining-work order, standing
@@ -722,43 +725,36 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.5 FfmpegOpen helper
 
 ════════════════════════════════════════════════════════════════════════
-NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 3)
+NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 5)
 ════════════════════════════════════════════════════════════════════════
-STATE: Phases 0, 1, 2 COMPLETE.  3.2 (core/media split) COMPLETE and
-committed (83b650f).  3.1 (god-class decomposition) STARTED this
-session: MediaWatchController + PanelMaximizeController extracted,
-TimelineWorkspaceToggleMaximize.cpp deleted, the six PanelsWiring*
-files renamed to Wiring*, build.ps1 -NoLto fixed.  All of session 3 is
-build-verified (roundtable.exe ×3) + ctest -L core 688/688.
+STATE: Phases 0, 1, 2 + 3.2 COMPLETE (committed).  3.1 TimelineWorkspace
+side essentially done: six binders extracted across sessions 3-5
+(MediaWatchController, PanelMaximizeController, SelectionState,
+OverlayController, DropController, ShortcutController) + ShotSwitch
+split + wiring rename.  TimelineWorkspace: 25 TUs → 18, header
+545 → 435 lines, and the class no longer holds overlay/drop/keyboard/
+media-watch/maximize state.  Sessions 3+4 were smoked by the user;
+session 5 is build-verified (roundtable.exe) + ctest -L core 688/688.
 
-UNCOMMITTED at handoff: the entire session-3 batch (2 new controller
-file pairs, 1 deletion, 6 renames, ~8 modified files).  COMMIT FIRST —
-the renames merge painfully if they sit.
+UNCOMMITTED at handoff: sessions 4+5 batch (user said they'd commit:
+5 new headers, 7 git-mv renames, ShotSwitch.cpp, ~10 modified TUs).
 
-RUNTIME SMOKE NEEDED BEFORE THE NEXT BINDER: the next target is
-OverlayController (Overlay + WiringTransformOverlay + WiringViewport,
-~2.4k lines), but that code's Phase-2.1 unification has STILL not been
-runtime-smoked.  Ask the user to: drag a clip in the Program Monitor
-(body/scale/rotate) + Ctrl-Z each, group-move multi-selected graphic
-layers, use the Text tool once, and toggle tilde maximize/restore +
-overwrite a watched PNG in Explorer (exercises BOTH new controllers).
-Only then refactor the overlay cluster.
+RUNTIME SMOKE OWED for session 5: drag media from bin/Explorer onto
+the timeline (incl. a drop with NO project open → auto-create), drag
+an effect + a transition onto clips, drop a sequence to nest + open a
+nested sequence from the context menu, and a keyboard pass —
+Space/J/K/L incl. K+J / K+L slow shuttle and its release behavior,
+I/O, Delete with focus in Effect Controls vs timeline, Ctrl+X/C/V,
+tilde maximize, D match-frame, backslash zoom-to-fit.
 
 REMAINING WORK, in recommended order:
-  P3-a (continue)  TimelineWorkspace binders, one per gated step:
-        1. SelectionState extraction (m_selectedClip/TrackIdx/ClipIdx/
-           GraphicLayerIdx/Idxs → small struct/class on the workspace,
-           passed by pointer) — prerequisite for the overlay binder;
-           touches 12 TUs mechanically.
-        2. OverlayController (drag-session state + 8 onOverlay* handlers
-           + updateTransformOverlay/scheduleOverlayRefresh/
-           graphicCanvasRes; keep thin delegating shims on the workspace
-           so the ~50 intra-cluster call sites don't churn).  NOTE:
-           applyShotSwitch (598 lines in Overlay.cpp) is an edit command,
-           not overlay — move it to EditCommands or its own file instead.
-        3. DropController (WiringMediaDrop/EffectDrop/Nest — state-light,
-           mostly mechanical), then Keys/transport router, then
-           MainWindowProject*.cpp → ProjectController (§3.1 second half).
+  P3-a (finish)
+        1. MainWindowProject*.cpp + MainWindowRecovery.cpp →
+           ProjectController (§3.1 second half, ~2k lines; same
+           friend-transitional pattern works — MainWindow is the host).
+        2. Follow-up: narrow the friend back-pointers (Overlay/Drop/
+           Shortcut controllers) to injected collaborators, one
+           controller per gated step, once their smokes have passed.
         Gate per step: roundtable.exe build + ctest -L core (the
         timeline_ui suite does NOT cover TimelineWorkspace — see the
         session-3 log entry — so runtime smoke matters doubly).
@@ -774,10 +770,9 @@ REMAINING WORK, in recommended order:
         with outsized correctness payoff.
 
 STANDING ITEMS:
-  - Runtime smokes still owed: overlay drag + Ctrl-Z, Text tool (now
-    BLOCKING the overlay binder, see above), tilde maximize + PNG
-    overwrite (new controllers), one export per codec (NVENC paths),
-    one character conversion run (MediaFileEncoderBase end-to-end).
+  - Runtime smokes owed: session-5 drop/keyboard smoke (see above),
+    one export per codec (NVENC paths), one character conversion run
+    (MediaFileEncoderBase end-to-end).
   - CI: add gpu/ui/export ctest labels to a nightly job — TEN stale
     tests rotted invisibly under core-only CI in session 2.
   - Open bug (pre-existing, from memory): Track::addTransition has no
@@ -786,7 +781,89 @@ STANDING ITEMS:
   - src/core/media/ NO LONGER EXISTS — older notes referencing
     media/X.h: the file now lives in decode/cache/playback/audio/
     convert/analysis.
+  - REGEX-SWEEP RULE (learned session 4): before any mechanical member
+    rename, grep the symbol across ALL of src/ first — sibling classes
+    reuse member names (AudioSync::m_selectedClipIdx).
 ════════════════════════════════════════════════════════════════════════
+
+2026-06-11  SESSION 5 — §3.1 CONTINUED (user smoked session 4;
+            DropController + ShortcutController landed)
+  [x] Binder #4: DropController (panels/timeline/DropController.h +
+      DropControllerMediaDrop/EffectDrop/Nest.cpp, git-mv'd from the
+      three TimelineWorkspaceWiring{MediaDrop,EffectDrop,Nest}.cpp TUs,
+      ~2.1k lines) — wireMediaDropSignals (incl. the no-project
+      bootstrap that emits requestNewProjectForMedia, now via
+      `emit m_ws->...`), wireEffectDropSignals, wireNestSignals.
+      State-light; same friend-transitional pattern.  Workspace keeps
+      3 one-line shims.  One fix: bare QWidget call `window()` →
+      m_ws->window() (controller is a plain QObject).
+  [x] Binder #5: ShortcutController (panels/timeline/ShortcutController
+      .h + ShortcutControllerKeys.cpp + ShortcutControllerRegister.cpp,
+      from TimelineWorkspaceKeys.cpp + TimelineWorkspacePanelsShortcuts
+      .cpp, ~1.2k lines) — the keyPressEvent/keyReleaseEvent BODIES are
+      now handleKeyPress/handleKeyRelease on the controller; the QWidget
+      overrides stay on the workspace as thin wrappers that forward to
+      QWidget::key*Event only when the controller left the event
+      ignored (the old trailing QWidget::key*Event fallthroughs became
+      event->ignore(); semantics preserved incl. the mid-body
+      Delete-in-EffectControls ignore path).  JKL slow-shuttle state
+      (m_kHeld/m_kSlowShuttleActive) moved to the controller.
+      QShortcuts stay parented to the workspace WIDGET
+      (new QShortcut(key, m_ws)) so WidgetWithChildrenShortcut context
+      is unchanged.  Fixes found by the compile gate: bare widget calls
+      parentWidget()/setFocus() → m_ws->..., and the method-prefix
+      regex needs (?<![>.:\w]) — it mangled the STATIC-qualified
+      EditOperations::setInPoint into EditOperations::m_ws->setInPoint
+      (':' was missing from the lookbehind class).
+      VERIFIED (both binders): roundtable.exe builds, ctest -L core
+      688/688.  TimelineWorkspace: 25 TUs → 18, header 545 → 435.
+      RUNTIME SMOKE OWED: drag media from bin/Explorer onto timeline
+      (incl. drop with NO project open), drag an effect + a transition
+      onto clips, drop a sequence to nest + open nested sequence from
+      context menu, keyboard pass (Space/J/K/L incl. K+J / K+L slow
+      shuttle and release behavior, I/O in-out, Delete with focus in
+      Effect Controls vs timeline, Ctrl+X/C/V, tilde maximize, D
+      match-frame, backslash zoom-to-fit).
+
+2026-06-11  SESSION 4 — §3.1 CONTINUED (user runtime-smoked session 3 +
+            pushed; SelectionState + OverlayController landed)
+  [x] SelectionState (panels/timeline/SelectionState.h) — the five
+      selection members (m_selectedClip/TrackIdx/ClipIdx/
+      GraphicLayerIdx/Idxs) are now one value struct
+      `SelectionState m_selection` (clip/trackIdx/clipIdx/
+      graphicLayerIdx/graphicLayerIdxs); ~210 references across 12 TUs
+      rewritten mechanically (longest-name-first regex).  GOTCHA hit and
+      fixed: AudioSync has its OWN unrelated m_selectedClipIdx member —
+      the sweep initially renamed it; reverted via git checkout (the
+      session-3 coupling report had flagged exactly this false positive).
+  [x] applyShotSwitch (598 lines) split out of TimelineWorkspaceOverlay
+      .cpp into TimelineWorkspaceShotSwitch.cpp — it is an edit command,
+      not overlay code; this left Overlay.cpp purely overlay-sync.
+  [x] Binder #3: OverlayController (panels/timeline/OverlayController
+      .{h,cpp} + OverlayControllerHandlers.cpp) — the whole transform-
+      overlay subsystem moved out of TimelineWorkspace (~1.9k lines):
+      updateTransformOverlay (525 ln), scheduleOverlayRefresh,
+      graphicCanvasRes, the 8 shared onOverlay* drag/click handlers,
+      wireTransformOverlaySignals / wireViewportTransformSignals /
+      wireOverlayToolSignals (inline text editing incl. captions), and
+      ALL drag-session state (group-move snapshots, scale-drag flip
+      capture, inline-text snapshot, overlay refresh generation,
+      text-tool re-entrancy guard).  TimelineWorkspaceOverlay.cpp and
+      TimelineWorkspaceWiringTransformOverlay.cpp are GONE (git mv);
+      WiringViewport.cpp shrank 331 → 129 (keeps only
+      wireTimelineContentSignals).  TRANSITIONAL DESIGN, deliberate:
+      controller is a friend with a TimelineWorkspace* back-pointer
+      (m_X → m_ws->m_X), so the moved code is byte-comparable to the
+      smoked original; narrowing to injected collaborators (à la
+      MediaWatchController::Config) is follow-up work.  The workspace
+      keeps 5 one-line shims (updateTransformOverlay,
+      scheduleOverlayRefresh, the 3 wire methods) so ~50 intra-workspace
+      call sites didn't churn.  TimelineWorkspace.h: 545 → 430 lines.
+      VERIFIED: roundtable.exe builds (3 gates this session),
+      ctest -L core 688/688.
+      RUNTIME SMOKE OWED (same list as 2.1): overlay drag + Ctrl-Z,
+      group-move, Text tool, inline text edit, caption inline edit —
+      the code moved again, so the smoke must be repeated.
 
 2026-06-11  SESSION 3 — §3.1 GOD-CLASS DECOMPOSITION STARTED (TimelineWorkspace)
   Pre-step: a parallel-agent map of all 25 TimelineWorkspace*.cpp files
@@ -904,11 +981,13 @@ PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
                convert/analysis (2026-06-11; see log entry above)
     [    ] 3.3 cache-coordinator merge (both in core/cache/ now)
     [STARTED] 3.1 TimelineWorkspace/MainWindow decomposition into binder
-               classes — MediaWatchController + PanelMaximizeController
-               extracted, wiring-prefix rename done (session 3); next:
-               SelectionState → OverlayController (after runtime smoke)
-               → DropController → Keys router → MainWindow
-               ProjectController
+               classes — sessions 3-5: MediaWatchController,
+               PanelMaximizeController, SelectionState, OverlayController,
+               DropController, ShortcutController (+ShotSwitch split,
+               wiring-prefix rename) all landed; TimelineWorkspace side
+               essentially done (25 TUs → 18, header 545 → 435);
+               remaining: MainWindow ProjectController → narrow the
+               friend back-pointers to injected collaborators
     [    ] 3.5 ClipType capability virtuals, then per-type serializer
                registry
     [    ] 3.8 mirror new core/ folders in tests/ (optional)
