@@ -50,7 +50,6 @@
 
 
 class QDockWidget;
-class QFileSystemWatcher;
 class QLabel;
 class QSettings;
 class QTabBar;
@@ -87,6 +86,8 @@ class Clip;
 class CompositeService;
 struct OpacityMask;
 class DockLayoutManager;
+class MediaWatchController;
+class PanelMaximizeController;
 class PlaybackController;
 class ShotPresetManager;
 class SpineClip;
@@ -189,23 +190,6 @@ public:
     /// the program monitor so every timeline instance updates live.
     void refreshChangedMedia(const std::filesystem::path& path);
 
-    /// Rescan the timeline for referenced media files and (re)arm a
-    /// QFileSystemWatcher on each. When a watched file is overwritten in
-    /// Windows Explorer (e.g. replacing a .png with a new version of the
-    /// same name) this live-swaps it into the project/program monitor,
-    /// just like Premiere Pro. Cheap and idempotent — safe to call after
-    /// any timeline mutation, project load, or media import.
-    void rescanMediaWatch();
-
-    /// UI-thread apply step for rescanMediaWatch(): given the off-thread
-    /// existence + (size,mtime) results, diff the QFileSystemWatcher, arm the
-    /// poll fallback for unwatchable paths, and seed content signatures. Never
-    /// touches the filesystem itself, so it stays cheap on the GUI thread.
-    void applyMediaWatchScan(
-        const std::set<std::string>& candidates,
-        const std::set<std::string>& existing,
-        const std::map<std::string, std::pair<std::uintmax_t, std::int64_t>>& sigs);
-
     /// Backward compat — returns the QDockWidget wrapping the named panel.
     [[nodiscard]] QDockWidget* dockForPanel(const QString& panelName) const;
 
@@ -287,44 +271,10 @@ private:
 
     // ── Live media file-swap watcher ────────────────────────────────────
     // Watches every media file the timeline references so overwriting one
-    // in Windows Explorer (replace a .png with a same-named new version)
-    // hot-reloads it into the project, Premiere-style. fileChanged is
-    // debounced because editors/Explorer often write in several bursts.
-    QFileSystemWatcher* m_mediaWatcher{nullptr};
-    QTimer*             m_mediaWatchDebounce{nullptr};
-    std::set<std::string> m_mediaWatchPending;   ///< paths awaiting debounced reload
-    std::atomic<bool>   m_mediaWatchRescanQueued{false}; ///< coalesces MediaPool open notifications
-    /// Single-shot debounce for the MediaPool onMediaOpened → rescan path.
-    /// MediaPool opens files constantly (prewarm, lookahead, still-image
-    /// live-replace re-opens); rescanning the watcher on every open turned
-    /// into a GUI-thread storm (stat ×N on a cloud drive + watcher churn).
-    /// Coalesce a burst of opens into ONE rescan ~1.5 s later.
-    QTimer*             m_mediaWatchRescanTimer{nullptr};
-    /// Last media-path set rescanMediaWatch() actually applied — lets a
-    /// (debounced) rescan early-out as a cheap no-op when nothing changed.
-    std::set<std::string> m_lastMediaWatchWant;
-    /// Per-path (size, mtime) signature so a fileChanged whose content
-    /// didn't actually change (Windows delivers spurious/coalesced events
-    /// on window restore, attribute touches, etc.) does NOT trigger a
-    /// reload+composite-invalidate — that left the Program Monitor blank
-    /// on minimize/restore.
-    std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> m_mediaWatchSig;
-
-    // ── Polling fallback for unwatchable paths ─────────────────────────
-    // QFileSystemWatcher::addPath() silently fails on some network/external
-    // drives (G:).  For these paths, we fall back to a 2-second poll timer
-    // that compares (size, mtime) signatures and triggers refreshChangedMedia
-    // when content changes.
-    QTimer* m_mediaWatchPollTimer{nullptr};
-    /// Paths that QFileSystemWatcher could not watch — polled instead.
-    std::set<std::string> m_mediaWatchPollSet;
-    /// Last-known sig for polled paths (same format as m_mediaWatchSig).
-    std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> m_mediaWatchPollSig;
-    /// rescanMediaWatch() runs its filesystem stats (exists + size/mtime) on a
-    /// background thread so a cold network drive (G:) can't freeze the UI for
-    /// seconds at project-open. These coalesce overlapping scan requests.
-    bool m_mediaWatchScanInFlight{false};   ///< a background stat pass is running
-    bool m_mediaWatchScanQueued{false};     ///< a rescan was requested mid-flight
+    // in Windows Explorer hot-reloads it into the project, Premiere-style.
+    // The watcher/debounce/poll machinery lives in MediaWatchController;
+    // the reload reaction is refreshChangedMedia() above.
+    std::unique_ptr<MediaWatchController> m_mediaWatch;
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
@@ -393,33 +343,10 @@ private:
     bool m_panelsBuilt{false};
 
     // ── Panel maximize (Premiere Pro tilde key) ─────────────────────────
-    // When active, a single panel is reparented out of the dock system to
-    // fill the entire workspace.  Pressing tilde again restores the layout.
-    bool m_panelMaximized{false};
-    QWidget* m_maximizedWidget{nullptr};       // the panel widget being shown fullscreen
-    QDockWidget* m_maximizedDock{nullptr};      // its owning dock (nullptr = central widget)
-
-    /// Snapshot of the inner QMainWindow dock state taken just before the
-    /// panel was maximized.  Used by saveDockLayout() so that saving while
-    /// maximized writes the pre-maximize arrangement instead of the broken
-    /// state where the maximized dock is reparented out and all others hidden.
-    QByteArray m_dockStateBeforeMaximize;
-
-    /// Exact visibility snapshot captured at maximize time so restore can
-    /// revert to PRECISELY the prior layout (panels the user had closed
-    /// stay closed).  No widget is ever reparented — the maximized panel
-    /// just gets all the space because its siblings are hidden — so the
-    /// program monitor's native Vulkan surface is never destroyed.
-    std::unordered_map<QDockWidget*, bool> m_dockVisBeforeMax;
-    std::vector<std::pair<QMainWindow*, bool>> m_edgeVisBeforeMax;
-    /// saveState() for EVERY dock-hosting window (inner + each edge
-    /// column).  Each edge column is its own QMainWindow with its own
-    /// internal dock heights; restoring only the inner one left the edge
-    /// columns' stacked panels relaying to default proportions.
-    std::vector<std::pair<QMainWindow*, QByteArray>> m_dockStatesBeforeMax;
-    QByteArray m_edgeSplitterStateBeforeMax;
-    QWidget*   m_centralBeforeMax{nullptr};
-    bool       m_centralVisBeforeMax{true};
+    // When active, every sibling panel/column is hidden so a single panel
+    // fills the workspace; tilde again restores the exact prior layout.
+    // All state + logic live in PanelMaximizeController.
+    std::unique_ptr<PanelMaximizeController> m_panelMaximize;
 public:
     void togglePanelMaximize();
 private:

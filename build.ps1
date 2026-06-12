@@ -150,12 +150,12 @@ $ltoIsOn = Select-String -Path "build\CMakeCache.txt" -Pattern "^ROUNDTABLE_LTO:
 if ($NoLto -and $Lto) {
     Write-Host "Both -NoLto and -Lto given; ignoring, keeping current LTO setting." -ForegroundColor Yellow
 } elseif ($NoLto -and $ltoIsOn) {
-    Write-Host "Disabling LTO (/GL + /LTCG) — reconfiguring (one-time full rebuild)..." -ForegroundColor Yellow
+    Write-Host "Disabling LTO (/GL + /LTCG) -- reconfiguring (one-time full rebuild)..." -ForegroundColor Yellow
     & $cmakeExe -B build -DROUNDTABLE_LTO=OFF
     if ($LASTEXITCODE -ne 0) { Write-Host "Reconfiguration failed." -ForegroundColor Red; exit 1 }
     $ltoIsOn = $false
 } elseif ($Lto -and -not $ltoIsOn) {
-    Write-Host "Enabling LTO (/GL + /LTCG) — reconfiguring (one-time full rebuild)..." -ForegroundColor Yellow
+    Write-Host "Enabling LTO (/GL + /LTCG) -- reconfiguring (one-time full rebuild)..." -ForegroundColor Yellow
     & $cmakeExe -B build -DROUNDTABLE_LTO=ON
     if ($LASTEXITCODE -ne 0) { Write-Host "Reconfiguration failed." -ForegroundColor Red; exit 1 }
     $ltoIsOn = $true

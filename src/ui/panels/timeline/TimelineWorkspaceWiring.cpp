@@ -1,4 +1,4 @@
-// TimelineWorkspacePanelsWiring.cpp - Signal wiring for TimelineWorkspace.
+// TimelineWorkspaceWiring.cpp - Signal wiring for TimelineWorkspace.
 // Split from TimelineWorkspacePanels.cpp for maintainability.
 
 #include <volk.h>

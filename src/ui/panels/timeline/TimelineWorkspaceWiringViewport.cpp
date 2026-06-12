@@ -1,7 +1,7 @@
 // TimelineWorkspaceWiringViewport.cpp
 // Software-viewport transform, overlay tool-change, and program-monitor
 // content-refresh signal wiring for TimelineWorkspace.
-// Extracted from TimelineWorkspacePanelsWiringClipSelection.cpp for file size.
+// Extracted from TimelineWorkspaceWiringClipSelection.cpp for file size.
 
 #include <volk.h>
 

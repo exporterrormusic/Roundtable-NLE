@@ -1,5 +1,5 @@
-// TimelineWorkspacePanelsWiringTrack.cpp - Track management signal wiring.
-// Extracted from TimelineWorkspacePanelsWiring.cpp for maintainability.
+// TimelineWorkspaceWiringTrack.cpp - Track management signal wiring.
+// Extracted from TimelineWorkspaceWiring.cpp for maintainability.
 
 #include <volk.h>
 

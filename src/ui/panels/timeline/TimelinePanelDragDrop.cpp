@@ -431,7 +431,7 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                     }
                 }
                 // Fallback per clip (also covers stills — 5s default matches
-                // what TimelineWorkspacePanelsWiringMediaDrop.cpp creates).
+                // what TimelineWorkspaceWiringMediaDrop.cpp creates).
                 if (clipDur <= 0)
                     clipDur = static_cast<int64_t>(5.0 * 48000.0);
                 clipDurations.push_back(clipDur);

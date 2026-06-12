@@ -1,5 +1,5 @@
-// TimelineWorkspacePanelsWiringEffectDrop.cpp - Effect/transition drop signal wiring.
-// Extracted from TimelineWorkspacePanelsWiring.cpp for maintainability.
+// TimelineWorkspaceWiringEffectDrop.cpp - Effect/transition drop signal wiring.
+// Extracted from TimelineWorkspaceWiring.cpp for maintainability.
 
 #include <volk.h>
 

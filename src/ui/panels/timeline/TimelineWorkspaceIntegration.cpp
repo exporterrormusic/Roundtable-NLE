@@ -30,25 +30,14 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
-#include "timeline/VideoClip.h"
-#include "timeline/ImageClip.h"
-#include "timeline/AudioClip.h"
 #include "timeline/SpineClip.h"
 
-#include <QFileSystemWatcher>
+#include "panels/timeline/MediaWatchController.h"
+
 #include <QTimer>
 
 #include <chrono>
 #include <filesystem>
-#include <map>
-#include <set>
-#include <string>
-#include <thread>
-#include <vector>
-
-#include <QMetaObject>
-#include <QSet>
-#include <QStringList>
 
 #include <spdlog/spdlog.h>
 
@@ -57,23 +46,6 @@
 #include <unordered_set>
 
 namespace rt {
-
-namespace {
-// (size, mtime-ticks) content signature for live-reload change detection.
-// Returns {0,0} if the file can't be stat'd (treated as "changed" so a
-// genuine first appearance still reloads).
-std::pair<std::uintmax_t, std::int64_t> mediaFileSig(const std::string& p)
-{
-    std::error_code ec;
-    std::uintmax_t sz = std::filesystem::file_size(p, ec);
-    if (ec) sz = 0;
-    std::error_code ec2;
-    auto lwt = std::filesystem::last_write_time(p, ec2);
-    std::int64_t mt = ec2 ? 0
-        : static_cast<std::int64_t>(lwt.time_since_epoch().count());
-    return {sz, mt};
-}
-} // namespace
 
 void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // [OPEN-PERF] Temporary warn-level phase timers to locate the slow part of
@@ -191,7 +163,7 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
 
     // Arm the live file-swap watcher for the new project's media.
     if (timeline)
-        rescanMediaWatch();
+        m_mediaWatch->rescan();
 
     spdlog::warn("[OPEN-PERF] setTimeline: TOTAL {:.0f}ms", _opMs(_opT0));
 }
@@ -294,282 +266,12 @@ void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
     QTimer::singleShot(1000, this, [kickRefresh]() { kickRefresh(3); });
 
     // QFileSystemWatcher stops watching a path once the file is replaced
-    // (Explorer's "overwrite" is a delete+create / rename). Re-arm so a
-    // second swap of the same file is still detected.
-    //
-    // IMPORTANT: Qt delivers fileChanged synchronously but may update its
-    // internal files() list asynchronously.  The early-out in
-    // rescanMediaWatch checks files() to see if a path was dropped, but
-    // since files() may still be stale, we clear m_lastMediaWatchWant to
-    // FORCE a full rescan — guaranteeing the path is re-added regardless
-    // of what the stale files() reports.
-    //
-    // ALSO: on network/external drives (G:), the new file may not appear
-    // in the filesystem by the time rescanMediaWatch runs (Explorer is
-    // still mid-copy).  The exists() gate silently drops it from the want
-    // set and addPath never fires.  Schedule a delayed re-scan to catch
-    // the file once the copy completes (typical LAN copy finishes within
-    // 2-3 seconds for small PNGs).
-    m_lastMediaWatchWant.clear();
-    rescanMediaWatch();
-    QTimer::singleShot(3000, this, [this]() {
-        if (m_destroying.load(std::memory_order_acquire)) return;
-        m_lastMediaWatchWant.clear();
-        rescanMediaWatch();
-    });
-}
-
-void TimelineWorkspace::rescanMediaWatch()
-{
-    if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_timeline) return;
-
-    // Lazily create the watcher + its debounce timer on first use.
-    if (!m_mediaWatcher) {
-        m_mediaWatcher = new QFileSystemWatcher(this);
-        m_mediaWatchDebounce = new QTimer(this);
-        m_mediaWatchDebounce->setSingleShot(true);
-        m_mediaWatchDebounce->setInterval(250);  // coalesce write bursts
-
-        connect(m_mediaWatcher, &QFileSystemWatcher::fileChanged, this,
-                [this](const QString& path) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            spdlog::warn("[LIVE-RELOAD] QFileSystemWatcher::fileChanged fired "
-                         "for '{}'", path.toStdString());
-            m_mediaWatchPending.insert(path.toStdString());
-            m_mediaWatchDebounce->start();
-        });
-
-        connect(m_mediaWatchDebounce, &QTimer::timeout, this, [this]() {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            auto pending = std::move(m_mediaWatchPending);
-            m_mediaWatchPending.clear();
-            for (const auto& p : pending) {
-                std::error_code ec;
-                // A still-missing file is mid-rewrite — requeue and wait.
-                if (!std::filesystem::exists(p, ec)) {
-                    spdlog::warn("[LIVE-RELOAD] debounce: '{}' missing "
-                                 "(mid-rewrite) — requeue", p);
-                    m_mediaWatchPending.insert(p);
-                    continue;
-                }
-                // Content-change guard: QFileSystemWatcher fires on
-                // attribute touches and Windows replays buffered events on
-                // window restore. Only reload if (size, mtime) actually
-                // changed — otherwise we'd needlessly invalidate the
-                // composite cache and leave the Program Monitor blank.
-                auto sig = mediaFileSig(p);
-                auto prev = m_mediaWatchSig.find(p);
-                if (prev != m_mediaWatchSig.end() && prev->second == sig) {
-                    spdlog::warn("[LIVE-RELOAD] debounce: '{}' unchanged "
-                                 "(size+mtime same) — skip (spurious event). "
-                                 "Handle already released by fileChanged handler.",
-                                 p);
-                    // Even though the content sig matches, fileChanged
-                    // already dropped this path from the watcher.  Re-arm
-                    // so the NEXT overwrite is still detected.
-                    // m_lastMediaWatchWant must be cleared first so the
-                    // early-out in rescanMediaWatch doesn't block us.
-                    // Also schedule a delayed re-scan for network drives
-                    // where the new file may not appear immediately.
-                    m_lastMediaWatchWant.clear();
-                    rescanMediaWatch();
-                    QTimer::singleShot(3000, this, [this]() {
-                        if (m_destroying.load(std::memory_order_acquire)) return;
-                        m_lastMediaWatchWant.clear();
-                        rescanMediaWatch();
-                    });
-                    continue;
-                }
-                m_mediaWatchSig[p] = sig;
-                spdlog::warn("[LIVE-RELOAD] debounce: '{}' content changed — "
-                             "refreshing", p);
-                refreshChangedMedia(std::filesystem::path(p));
-            }
-            if (!m_mediaWatchPending.empty())
-                m_mediaWatchDebounce->start();
-        });
-    }
-
-    // ── Gather candidate media paths (UI thread, NO filesystem I/O) ──────
-    // We only read the (thread-unsafe) Timeline / MediaPool / ProjectBin here,
-    // which is cheap. The existence checks and (size, mtime) stats — which on a
-    // cold network drive (G:) blocked the UI for 3–10 s at project-open — are
-    // deferred to a background thread below.
-    std::set<std::string> candidates;
-    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-        auto* track = m_timeline->track(ti);
-        if (!track) continue;
-        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-            auto* clip = track->clip(ci);
-            if (!clip) continue;
-            std::string mp;
-            if      (auto* v = dynamic_cast<VideoClip*>(clip)) mp = v->mediaPath();
-            else if (auto* i = dynamic_cast<ImageClip*>(clip)) mp = i->mediaPath();
-            else if (auto* a = dynamic_cast<AudioClip*>(clip)) mp = a->mediaPath();
-            if (!mp.empty()) candidates.insert(std::move(mp));
-        }
-    }
-    // The MediaPool is ground truth for files the app actually has open (catches
-    // nested sequences and shot-boundary prewarm opens the clip walk misses).
-    if (m_mediaPool)
-        for (const auto& p : m_mediaPool->openMediaPaths())
-            if (!p.empty()) candidates.insert(pathToUtf8(p));
-    // Project-Bin assets live-reload even before they're on the timeline.
-    if (m_projectBin)
-        for (const auto& p : m_projectBin->allFiles())
-            if (!p.empty()) candidates.insert(pathToUtf8(p));
-
-    // Cheap early-out (no I/O): the exact same candidate set is already applied
-    // and the watcher still holds paths. A genuine content swap fires
-    // fileChanged on an already-watched path and is handled separately; those
-    // handlers clear m_lastMediaWatchWant to force a real rescan here.
-    if (candidates == m_lastMediaWatchWant
-        && m_mediaWatcher && !m_mediaWatcher->files().isEmpty())
-        return;
-
-    // Coalesce: never run two stat passes concurrently. If one is in flight,
-    // record the request and let its completion handler re-run us.
-    if (m_mediaWatchScanInFlight) {
-        m_mediaWatchScanQueued = true;
-        return;
-    }
-    m_lastMediaWatchWant = candidates;
-    m_mediaWatchScanInFlight = true;
-
-    // Snapshot the currently-watched paths so the worker can stat them too
-    // (to refresh/seed signatures) without touching Qt off the UI thread.
-    std::vector<std::string> watchedSnapshot;
-    for (const QString& w : m_mediaWatcher->files())
-        watchedSnapshot.push_back(w.toStdString());
-
-    // ── Background: existence + (size, mtime) for every path ─────────────
-    std::thread([this, candidates, watchedSnapshot]() {
-        std::set<std::string> existing;
-        std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> sigs;
-        std::set<std::string> all = candidates;
-        all.insert(watchedSnapshot.begin(), watchedSnapshot.end());
-        for (const auto& p : all) {
-            std::error_code ec;
-            if (std::filesystem::exists(p, ec) && !ec) {
-                existing.insert(p);
-                sigs.emplace(p, mediaFileSig(p));
-            }
-        }
-        // Hop back to the UI thread to mutate the QFileSystemWatcher.
-        QMetaObject::invokeMethod(this,
-            [this, candidates, existing = std::move(existing),
-             sigs = std::move(sigs)]() mutable {
-                m_mediaWatchScanInFlight = false;
-                if (m_destroying.load(std::memory_order_acquire)) return;
-                applyMediaWatchScan(candidates, existing, sigs);
-                if (m_mediaWatchScanQueued) {
-                    m_mediaWatchScanQueued = false;
-                    m_lastMediaWatchWant.clear();  // force the queued rescan
-                    rescanMediaWatch();
-                }
-            });
-    }).detach();
-}
-
-// UI-thread apply step for rescanMediaWatch(): arm/diff the watcher using the
-// off-thread existence + signature results. Does NO filesystem I/O itself.
-void TimelineWorkspace::applyMediaWatchScan(
-    const std::set<std::string>& candidates,
-    const std::set<std::string>& existing,
-    const std::map<std::string, std::pair<std::uintmax_t, std::int64_t>>& sigs)
-{
-    if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_mediaWatcher) return;
-    const auto _t0 = std::chrono::steady_clock::now();
-
-    // Validated want-set = candidates that actually exist on disk.
-    QStringList want;
-    for (const auto& c : candidates)
-        if (existing.count(c)) want << QString::fromStdString(c);
-    const QSet<QString> wantSet(want.begin(), want.end());
-
-    // Diff against the currently-watched set: drop stale, add new.
-    QStringList toRemove;
-    for (const QString& w : m_mediaWatcher->files())
-        if (!wantSet.contains(w)) toRemove << w;
-    if (!toRemove.isEmpty())
-        m_mediaWatcher->removePaths(toRemove);
-
-    int addFailed = 0;
-    for (const QString& w : want)
-        if (!m_mediaWatcher->addPath(w)) ++addFailed;
-
-    const QStringList nowWatched = m_mediaWatcher->files();
-    const QSet<QString> nowWatchedSet(nowWatched.begin(), nowWatched.end());
-
-    // Wanted paths the watcher couldn't take (network/external) → poll fallback.
-    std::set<std::string> unwatchable;
-    for (const QString& w : want)
-        if (!nowWatchedSet.contains(w)) unwatchable.insert(w.toStdString());
-
-    if (!unwatchable.empty() && !m_mediaWatchPollTimer) {
-        m_mediaWatchPollTimer = new QTimer(this);
-        m_mediaWatchPollTimer->setInterval(2000);  // poll every 2s
-        connect(m_mediaWatchPollTimer, &QTimer::timeout, this, [this]() {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            for (const auto& p : m_mediaWatchPollSet) {
-                std::error_code ec;
-                if (!std::filesystem::exists(p, ec)) continue;
-                auto sig = mediaFileSig(p);
-                auto prev = m_mediaWatchPollSig.find(p);
-                if (prev != m_mediaWatchPollSig.end() && prev->second == sig)
-                    continue;  // unchanged
-                m_mediaWatchPollSig[p] = sig;
-                spdlog::debug("[LIVE-RELOAD] poll detected change in '{}' — "
-                              "refreshing", p);
-                refreshChangedMedia(std::filesystem::path(p));
-            }
-        });
-    }
-    m_mediaWatchPollSet = std::move(unwatchable);
-    // Seed poll sigs from the worker's stats (no UI-thread I/O).
-    for (const auto& p : m_mediaWatchPollSet) {
-        auto it = sigs.find(p);
-        if (it != sigs.end()) m_mediaWatchPollSig.emplace(p, it->second);
-    }
-    for (auto it = m_mediaWatchPollSig.begin(); it != m_mediaWatchPollSig.end(); )
-        it = (m_mediaWatchPollSet.count(it->first) == 0)
-                 ? m_mediaWatchPollSig.erase(it) : std::next(it);
-    if (m_mediaWatchPollTimer) {
-        if (m_mediaWatchPollSet.empty())
-            m_mediaWatchPollTimer->stop();
-        else if (!m_mediaWatchPollTimer->isActive())
-            m_mediaWatchPollTimer->start();
-    }
-
-    // Seed the content signature for every watched path (only if absent — never
-    // clobber a sig the debounce handler already advanced), from worker stats.
-    std::set<std::string> watchedSet;
-    for (const QString& w : nowWatched) {
-        std::string s = w.toStdString();
-        watchedSet.insert(s);
-        auto it = sigs.find(s);
-        if (it != sigs.end()) m_mediaWatchSig.emplace(s, it->second);
-    }
-    for (auto it = m_mediaWatchSig.begin(); it != m_mediaWatchSig.end(); )
-        it = (watchedSet.count(it->first) == 0)
-                 ? m_mediaWatchSig.erase(it) : std::next(it);
-
-    const double ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - _t0).count();
-    // One concise summary line. Stay quiet at warn level unless the apply was
-    // unexpectedly slow (watcher mutation is normally a few ms).
-    if (ms > 100.0)
-        spdlog::warn("[LIVE-RELOAD] media watch apply SLOW: {} wanted, {} watched, "
-                     "{} polled, {} unwatched ({:.0f}ms UI)",
-                     want.size(), nowWatched.size(), m_mediaWatchPollSet.size(),
-                     addFailed, ms);
-    else
-        spdlog::debug("[LIVE-RELOAD] media watch updated: {} wanted, {} watched, "
-                      "{} polled, {} unwatched ({:.0f}ms UI)",
-                      want.size(), nowWatched.size(), m_mediaWatchPollSet.size(),
-                      addFailed, ms);
+    // (Explorer's "overwrite" is a delete+create / rename). Force a re-arm
+    // so a second swap of the same file is still detected, plus a delayed
+    // one for network drives where the new file may not exist yet
+    // (rationale documented in MediaWatchController).
+    m_mediaWatch->forceRescan();
+    m_mediaWatch->scheduleDelayedForceRescan(3000);
 }
 
 void TimelineWorkspace::refreshAfterUndoRedo()
@@ -664,7 +366,7 @@ void TimelineWorkspace::refreshAfterUndoRedo()
 
     // Clips may have been added/removed/relinked — keep the live file-swap
     // watcher in sync with the timeline's current media set.
-    rescanMediaWatch();
+    m_mediaWatch->rescan();
 
     schedulePostEditWork();
 }

@@ -1,4 +1,4 @@
-// TimelineWorkspacePanelsWiring.cpp - Signal wiring for TimelineWorkspace.
+// TimelineWorkspaceWiringClipSelection.cpp - Clip-selection signal wiring.
 // Split from TimelineWorkspacePanels.cpp for maintainability.
 
 #include <volk.h>

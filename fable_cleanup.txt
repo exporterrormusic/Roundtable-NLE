@@ -4,9 +4,11 @@ Roundtable NLE — 2026-06-11
 Scope: dead code, duplication, modularization, render/playback architecture
 vs Premiere Pro, format compatibility. ~640 files / ~174k lines audited.
 
-CURRENT STATUS (2026-06-11, end of execution session 2):
+CURRENT STATUS (2026-06-11, end of execution session 3):
   Phases 0 / 1 / 2 ........ COMPLETE (all items, test-verified)
-  Phase 3 ................. 3.2 core/media split DONE; 3.1/3.3/3.5/3.8 open
+  Phase 3 ................. 3.2 DONE; 3.1 STARTED (2 binders extracted +
+                            wiring-prefix rename; overlay/selection binders
+                            next, gated on a runtime smoke); 3.3/3.5/3.8 open
   Phase 4 ................. not started (4.1 color management is next)
   → Jump to "NEXT SESSION — START HERE" (search that string) for the
     handoff: uncommitted-work warning, remaining-work order, standing
@@ -720,41 +722,64 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.5 FfmpegOpen helper
 
 ════════════════════════════════════════════════════════════════════════
-NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 2)
+NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 3)
 ════════════════════════════════════════════════════════════════════════
-STATE: Phases 0, 1, 2 COMPLETE.  Phase 3 item 3.2 (core/media split)
-COMPLETE.  All work build-verified + test-verified (688 core + monitors
-56 / shot_composer 72 / animation_cache 53 / export 43 / decoder 24 /
-audio 45 / timeline_ui 65, all green).  User runtime-smoked playback/
-scrub/project-open mid-session (perf log healthy).
+STATE: Phases 0, 1, 2 COMPLETE.  3.2 (core/media split) COMPLETE and
+committed (83b650f).  3.1 (god-class decomposition) STARTED this
+session: MediaWatchController + PanelMaximizeController extracted,
+TimelineWorkspaceToggleMaximize.cpp deleted, the six PanelsWiring*
+files renamed to Wiring*, build.ps1 -NoLto fixed.  All of session 3 is
+build-verified (roundtable.exe ×3) + ctest -L core 688/688.
 
-UNCOMMITTED at handoff (user committed+pushed once mid-session; since
-then): thumbnail dedupe, MediaFileEncoderBase, perf-log fixes (hover
-rule + log demotions), 10 stale-test fixes, and the ENTIRE core/media
-split (79 renames).  COMMIT FIRST THING — the renames get more painful
-to merge the longer they sit.
+UNCOMMITTED at handoff: the entire session-3 batch (2 new controller
+file pairs, 1 deletion, 6 renames, ~8 modified files).  COMMIT FIRST —
+the renames merge painfully if they sit.
+
+RUNTIME SMOKE NEEDED BEFORE THE NEXT BINDER: the next target is
+OverlayController (Overlay + WiringTransformOverlay + WiringViewport,
+~2.4k lines), but that code's Phase-2.1 unification has STILL not been
+runtime-smoked.  Ask the user to: drag a clip in the Program Monitor
+(body/scale/rotate) + Ctrl-Z each, group-move multi-selected graphic
+layers, use the Text tool once, and toggle tilde maximize/restore +
+overwrite a watched PNG in Explorer (exercises BOTH new controllers).
+Only then refactor the overlay cluster.
 
 REMAINING WORK, in recommended order:
-  P3-a  TimelineWorkspace/MainWindow god-class decomposition (§3.1) —
-        largest; one binder class at a time; 65 timeline_ui tests +
-        688 core gate per step.
+  P3-a (continue)  TimelineWorkspace binders, one per gated step:
+        1. SelectionState extraction (m_selectedClip/TrackIdx/ClipIdx/
+           GraphicLayerIdx/Idxs → small struct/class on the workspace,
+           passed by pointer) — prerequisite for the overlay binder;
+           touches 12 TUs mechanically.
+        2. OverlayController (drag-session state + 8 onOverlay* handlers
+           + updateTransformOverlay/scheduleOverlayRefresh/
+           graphicCanvasRes; keep thin delegating shims on the workspace
+           so the ~50 intra-cluster call sites don't churn).  NOTE:
+           applyShotSwitch (598 lines in Overlay.cpp) is an edit command,
+           not overlay — move it to EditCommands or its own file instead.
+        3. DropController (WiringMediaDrop/EffectDrop/Nest — state-light,
+           mostly mechanical), then Keys/transport router, then
+           MainWindowProject*.cpp → ProjectController (§3.1 second half).
+        Gate per step: roundtable.exe build + ctest -L core (the
+        timeline_ui suite does NOT cover TimelineWorkspace — see the
+        session-3 log entry — so runtime smoke matters doubly).
   P3-b  ClipType capability virtuals + per-type serializer registry
         (§3.5) — 42 files but very incremental.
   P3-c  UnifiedCache + CacheCoordinator merge (§3.3) — both now live in
-        core/cache/ side by side.
-  P3-d  Mirror the new core/ module folders in tests/ (§3.8) — tests/
-        is still flat; optional, low priority.
+        core/cache/ side by side; unlike the UI work this IS covered by
+        the 688-test core suite, so it can interleave anytime.
+  P3-d  Mirror the new core/ module folders in tests/ (§3.8) — optional.
   P4    Premiere-parity features (see PHASE 4 below) — start with 4.1
         per-stream color management: ConvertDecodedFrame.cpp is the
         single convert entry point, so it's a small, contained change
         with outsized correctness payoff.
 
 STANDING ITEMS:
-  - Runtime smokes still owed: overlay drag + Ctrl-Z, Text tool, one
-    export per codec (NVENC paths), one character conversion run
-    (exercises MediaFileEncoderBase end-to-end).
+  - Runtime smokes still owed: overlay drag + Ctrl-Z, Text tool (now
+    BLOCKING the overlay binder, see above), tilde maximize + PNG
+    overwrite (new controllers), one export per codec (NVENC paths),
+    one character conversion run (MediaFileEncoderBase end-to-end).
   - CI: add gpu/ui/export ctest labels to a nightly job — TEN stale
-    tests rotted invisibly under core-only CI this session.
+    tests rotted invisibly under core-only CI in session 2.
   - Open bug (pre-existing, from memory): Track::addTransition has no
     dedup → duplicate transitions possible (opacity = prog², fades too
     dark).  Unrelated to cleanup; fix when convenient.
@@ -762,6 +787,60 @@ STANDING ITEMS:
     media/X.h: the file now lives in decode/cache/playback/audio/
     convert/analysis.
 ════════════════════════════════════════════════════════════════════════
+
+2026-06-11  SESSION 3 — §3.1 GOD-CLASS DECOMPOSITION STARTED (TimelineWorkspace)
+  Pre-step: a parallel-agent map of all 25 TimelineWorkspace*.cpp files
+  was produced (per-cluster member/method usage + whole-tree coupling
+  grep).  KEY FINDINGS that shape the rest of P3-a:
+    - Only THREE TimelineWorkspace symbols are referenced outside its own
+      file cluster, all from MainWindow: refreshChangedMedia,
+      invalidateAudioSources, ensureAudioSourcesLoaded.  Everything else
+      can move freely.
+    - test_timeline_ui does NOT test TimelineWorkspace at all (it tests
+      core's TimelineLayoutEngine; zero tests reference TimelineWorkspace
+      anywhere).  The practical gate for P3-a is therefore
+      compile+link of roundtable.exe + ctest -L core + RUNTIME SMOKE.
+    - Selection state (m_selectedClip/...Idx) fans out across 12 TUs —
+      it must become its own SelectionState/Bindings before or with the
+      overlay binder; drag-session overlay state is confined to the
+      overlay TUs.
+  [x] Binder #1: MediaWatchController (panels/timeline/
+      MediaWatchController.{h,cpp}) — the live file-swap watcher
+      (QFileSystemWatcher + 250ms debounce + content-sig guard + 2s poll
+      fallback + background stat pass + MediaPool onMediaOpened
+      coalescing) moved out of Integration/Deps wholesale: 12 m_mediaWatch*
+      members + rescanMediaWatch + applyMediaWatchScan + mediaFileSig.
+      Collaborators injected as accessor std::functions (Config pattern,
+      like DockLayoutManager); reload reaction stays in
+      TimelineWorkspace::refreshChangedMedia (public, MainWindow-facing),
+      injected as onMediaChanged.  Integration.cpp 675 → ~380 lines.
+      VERIFIED: app builds, ctest -L core 688/688.
+  [x] Binder #2: PanelMaximizeController (panels/timeline/
+      PanelMaximizeController.{h,cpp}) — tilde maximize/restore: 10
+      *BeforeMax members + togglePanelMaximize body moved;
+      TimelineWorkspaceToggleMaximize.cpp DELETED.  Workspace keeps a
+      one-line togglePanelMaximize() shim (MainWindow + Keys call it).
+      saveDockLayout reads isMaximized()/preMaximizeDockState();
+      doResetToDefaultDockLayout calls clear().  NOTE: clear() now also
+      clears the pre-max dock-state snapshot on restore (was harmlessly
+      left stale before — unreachable either way).
+      VERIFIED: app builds clean.
+  [x] §3.1 naming bug: the six TimelineWorkspacePanelsWiring*.cpp files
+      renamed (git mv) onto the TimelineWorkspaceWiring* prefix; the
+      umbrella TimelineWorkspacePanelsWiring.cpp is now
+      TimelineWorkspaceWiring.cpp.  CMake + comments updated.
+      VERIFIED: app builds, ctest -L core 688/688.
+  [x] BONUS FIX: build.ps1 -NoLto/-Lto were BROKEN — the em dash in their
+      Write-Host strings, read as ANSI by PS 5.1, decodes to a smart
+      quote that terminates the string early → CommandNotFoundException
+      and the script aborts before reconfiguring.  Both dashes now ASCII.
+      (The no-flag path never executed those lines, which is why normal
+      builds worked.)
+  [~] Binder #3 (OverlayController) DELIBERATELY DEFERRED: the overlay
+      handler unification from Phase 2.1 is still on the owed-runtime-
+      smoke list (overlay drag + Ctrl-Z, Text tool).  Refactoring that
+      same code again before the smoke would stack unverified changes.
+      Smoke first, then extract.
 
 2026-06-11  PHASE 3 STARTED — core/media SPLIT EXECUTED (§3.2)
   [x] The 79-file src/core/media/ grab-bag is now six modules:
@@ -824,8 +903,12 @@ PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
     [DONE] 3.2 core/media split into decode/cache/playback/audio/
                convert/analysis (2026-06-11; see log entry above)
     [    ] 3.3 cache-coordinator merge (both in core/cache/ now)
-    [    ] 3.1 TimelineWorkspace/MainWindow decomposition into binder
-               classes (largest remaining structural item)
+    [STARTED] 3.1 TimelineWorkspace/MainWindow decomposition into binder
+               classes — MediaWatchController + PanelMaximizeController
+               extracted, wiring-prefix rename done (session 3); next:
+               SelectionState → OverlayController (after runtime smoke)
+               → DropController → Keys router → MainWindow
+               ProjectController
     [    ] 3.5 ClipType capability virtuals, then per-type serializer
                registry
     [    ] 3.8 mirror new core/ folders in tests/ (optional)

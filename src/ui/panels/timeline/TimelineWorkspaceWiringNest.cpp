@@ -1,5 +1,5 @@
-// TimelineWorkspacePanelsWiringNest.cpp - Nest/sequence signal wiring.
-// Extracted from TimelineWorkspacePanelsWiring.cpp for maintainability.
+// TimelineWorkspaceWiringNest.cpp - Nest/sequence signal wiring.
+// Extracted from TimelineWorkspaceWiring.cpp for maintainability.
 
 #include <volk.h>
 

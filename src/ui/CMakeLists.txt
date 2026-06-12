@@ -157,26 +157,27 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelineWorkspaceEditCommands.cpp
     panels/timeline/TimelineWorkspaceDeps.cpp
     panels/timeline/TimelineWorkspaceDock.cpp
-    panels/timeline/TimelineWorkspaceToggleMaximize.cpp
+    panels/timeline/PanelMaximizeController.cpp
     panels/timeline/TimelineWorkspacePanels.cpp
     panels/timeline/TimelineWorkspacePanelsCreate.cpp
     panels/timeline/TimelineWorkspacePanelsLayout.cpp
     panels/timeline/TimelineWorkspacePanelsPlayback.cpp
     panels/timeline/TimelineWorkspacePanelsShortcuts.cpp
-    panels/timeline/TimelineWorkspacePanelsWiring.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringClipSelection.cpp
+    panels/timeline/TimelineWorkspaceWiring.cpp
+    panels/timeline/TimelineWorkspaceWiringClipSelection.cpp
     panels/timeline/TimelineWorkspaceWiringViewport.cpp
     panels/timeline/TimelineWorkspaceWiringTransformOverlay.cpp
     panels/timeline/TimelineWorkspaceWiringPanels.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringMediaDrop.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringNest.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringEffectDrop.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringTrack.cpp
+    panels/timeline/TimelineWorkspaceWiringMediaDrop.cpp
+    panels/timeline/TimelineWorkspaceWiringNest.cpp
+    panels/timeline/TimelineWorkspaceWiringEffectDrop.cpp
+    panels/timeline/TimelineWorkspaceWiringTrack.cpp
     panels/timeline/TimelineWorkspaceComposite.cpp
     panels/timeline/TimelineWorkspaceOverlay.cpp
     panels/timeline/TimelineWorkspaceSpine.cpp
     panels/timeline/TimelineWorkspaceAudio.cpp
     panels/timeline/TimelineWorkspaceKeys.cpp
+    panels/timeline/MediaWatchController.cpp
     panels/timeline/DockLayoutManager.cpp
     panels/timeline/ClipRenderers.cpp
 
@@ -237,10 +238,10 @@ set_source_files_properties(
     panels/timeline/TimelinePanelPaintEvents.cpp
     panels/timeline/TimelinePanelHitTest.cpp
     panels/timeline/TimelinePanelCommands.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringMediaDrop.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringNest.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringEffectDrop.cpp
-    panels/timeline/TimelineWorkspacePanelsWiringTrack.cpp
+    panels/timeline/TimelineWorkspaceWiringMediaDrop.cpp
+    panels/timeline/TimelineWorkspaceWiringNest.cpp
+    panels/timeline/TimelineWorkspaceWiringEffectDrop.cpp
+    panels/timeline/TimelineWorkspaceWiringTrack.cpp
     panels/timeline/TimelineWorkspaceWiringViewport.cpp
     panels/timeline/TimelineWorkspaceWiringTransformOverlay.cpp
     panels/timeline/TimelineWorkspaceWiringPanels.cpp
@@ -248,7 +249,8 @@ set_source_files_properties(
     panels/timeline/TimelineWorkspaceEditCommands.cpp
     panels/timeline/TimelineWorkspaceDeps.cpp
     panels/timeline/TimelineWorkspaceDock.cpp
-    panels/timeline/TimelineWorkspaceToggleMaximize.cpp
+    panels/timeline/MediaWatchController.cpp
+    panels/timeline/PanelMaximizeController.cpp
     panels/timeline/DockTabBarWatcher.cpp
     panels/timeline/DockTabDragFilter.cpp
     panels/timeline/DockEdgeOverlay.cpp

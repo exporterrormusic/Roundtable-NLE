@@ -1,24 +1,10 @@
 /*
- * TimelineWorkspaceToggleMaximize.cpp — Panel maximize/restore (tilde/`).
- *
- * Premiere-style: pressing ` maximizes the panel under the cursor; pressing
- * it again reverts to EXACTLY the prior layout.
- *
- * Design (deliberately minimal):
- *   - Maximize never reparents any widget.  It simply hides every sibling
- *     panel/column so the target dock/panel gets all the space.  This is
- *     critical because the Program Monitor hosts a native Vulkan surface;
- *     reparenting it (the old implementation did) destroys + recreates the
- *     native window and the swapchain, which is why the monitor went blank.
- *   - Restore re-applies an EXACT visibility snapshot captured at maximize
- *     time, plus QMainWindow::restoreState() for the inner dock arrangement.
- *     Panels the user had closed stay closed (the old code force-showed
- *     every panel/dock unconditionally — the reported bug).
+ * PanelMaximizeController.cpp — panel maximize/restore (tilde/`).
+ * See the header for the design rationale; lifted from
+ * TimelineWorkspaceToggleMaximize.cpp during the god-class decomposition.
  */
 
-#include "panels/timeline/TimelineWorkspace.h"
-
-#include "panels/timeline/TimelinePanel.h"
+#include "panels/timeline/PanelMaximizeController.h"
 
 #include <QApplication>
 #include <QCursor>
@@ -27,13 +13,14 @@
 #include <QEventLoop>
 #include <QMainWindow>
 #include <QPoint>
+#include <QSplitter>
 
 #include <spdlog/spdlog.h>
 
 namespace rt {
 
 // Walk up to the first QMainWindow ancestor (the dock's owning window —
-// either m_innerMainWindow or one of the edge-column QMainWindows).
+// either the inner main window or one of the edge-column QMainWindows).
 static QMainWindow* ownerMainWindow(QWidget* w)
 {
     for (QWidget* p = w ? w->parentWidget() : nullptr; p; p = p->parentWidget())
@@ -42,15 +29,32 @@ static QMainWindow* ownerMainWindow(QWidget* w)
     return nullptr;
 }
 
-void TimelineWorkspace::togglePanelMaximize()
+void PanelMaximizeController::clear()
 {
-    if (!m_panelsBuilt || !m_innerMainWindow)
+    m_maximized = false;
+    m_maximizedWidget = nullptr;
+    m_maximizedDock   = nullptr;
+    m_dockStateBeforeMaximize.clear();
+    m_dockVisBeforeMax.clear();
+    m_edgeVisBeforeMax.clear();
+    m_dockStatesBeforeMax.clear();
+    m_edgeSplitterStateBeforeMax.clear();
+    m_centralBeforeMax = nullptr;
+}
+
+void PanelMaximizeController::toggle()
+{
+    QMainWindow* innerMainWindow = m_cfg.innerMainWindow ? m_cfg.innerMainWindow() : nullptr;
+    if ((m_cfg.ready && !m_cfg.ready()) || !innerMainWindow || !m_cfg.dockWidgets)
         return;
+
+    QSplitter* edgeSplitter = m_cfg.edgeSplitter ? m_cfg.edgeSplitter() : nullptr;
+    const QMap<QString, QDockWidget*>& dockWidgets = *m_cfg.dockWidgets;
 
     // ──────────────────────────────────────────────────────────────────
     // RESTORE — revert to precisely the pre-maximize layout
     // ──────────────────────────────────────────────────────────────────
-    if (m_panelMaximized) {
+    if (m_maximized) {
         // ORDER MATTERS.  QMainWindow::restoreState() distributes dock
         // sizes against the inner window's CURRENT size.  While maximized
         // the edge columns are hidden, so the inner window is at its wide
@@ -67,8 +71,8 @@ void TimelineWorkspace::togglePanelMaximize()
 
         // 2. Splitter pane geometry (saveState/restoreState is far more
         //    reliable than setSizes() across hidden/shown panes).
-        if (m_edgeSplitter && !m_edgeSplitterStateBeforeMax.isEmpty())
-            m_edgeSplitter->restoreState(m_edgeSplitterStateBeforeMax);
+        if (edgeSplitter && !m_edgeSplitterStateBeforeMax.isEmpty())
+            edgeSplitter->restoreState(m_edgeSplitterStateBeforeMax);
 
         // 3. Flush pending layout so the inner QMainWindow is back at its
         //    pre-maximize size BEFORE its dock state is restored.
@@ -88,14 +92,7 @@ void TimelineWorkspace::togglePanelMaximize()
         for (auto& [dock, vis] : m_dockVisBeforeMax)
             if (dock) dock->setVisible(vis);
 
-        m_panelMaximized = false;
-        m_maximizedWidget = nullptr;
-        m_maximizedDock   = nullptr;
-        m_dockVisBeforeMax.clear();
-        m_edgeVisBeforeMax.clear();
-        m_dockStatesBeforeMax.clear();
-        m_edgeSplitterStateBeforeMax.clear();
-        m_centralBeforeMax = nullptr;
+        clear();
         spdlog::info("[togglePanelMaximize] restored prior layout");
         return;
     }
@@ -103,10 +100,11 @@ void TimelineWorkspace::togglePanelMaximize()
     // ──────────────────────────────────────────────────────────────────
     // MAXIMIZE — pick the panel under the cursor (then focus fallback)
     // ──────────────────────────────────────────────────────────────────
+    QWidget* fallbackPanel = m_cfg.fallbackPanel ? m_cfg.fallbackPanel() : nullptr;
     QWidget* target = nullptr;
     const QPoint gm = QCursor::pos();
 
-    for (auto it = m_dockWidgets.begin(); it != m_dockWidgets.end(); ++it) {
+    for (auto it = dockWidgets.begin(); it != dockWidgets.end(); ++it) {
         QDockWidget* dock = it.value();
         if (dock && dock->isVisible() &&
             dock->rect().contains(dock->mapFromGlobal(gm))) {
@@ -114,21 +112,21 @@ void TimelineWorkspace::togglePanelMaximize()
             break;
         }
     }
-    if (!target && m_timelinePanel && m_timelinePanel->isVisible() &&
-        m_timelinePanel->rect().contains(m_timelinePanel->mapFromGlobal(gm)))
-        target = m_timelinePanel;
+    if (!target && fallbackPanel && fallbackPanel->isVisible() &&
+        fallbackPanel->rect().contains(fallbackPanel->mapFromGlobal(gm)))
+        target = fallbackPanel;
     if (!target) {
         QWidget* fw = QApplication::focusWidget();
-        for (auto it = m_dockWidgets.begin(); it != m_dockWidgets.end(); ++it) {
+        for (auto it = dockWidgets.begin(); it != dockWidgets.end(); ++it) {
             QDockWidget* dock = it.value();
             if (dock && dock->isVisible() && fw && dock->isAncestorOf(fw)) {
                 target = dock;
                 break;
             }
         }
-        if (!target && m_timelinePanel && m_timelinePanel->isVisible() &&
-            fw && m_timelinePanel->isAncestorOf(fw))
-            target = m_timelinePanel;
+        if (!target && fallbackPanel && fallbackPanel->isVisible() &&
+            fw && fallbackPanel->isAncestorOf(fw))
+            target = fallbackPanel;
     }
     if (!target)
         return;
@@ -138,10 +136,10 @@ void TimelineWorkspace::togglePanelMaximize()
                                                           : target);
 
     // ── Snapshot the exact current state for a faithful restore ────────
-    m_dockStateBeforeMaximize = m_innerMainWindow->saveState(4);
+    m_dockStateBeforeMaximize = innerMainWindow->saveState(4);
 
     m_dockVisBeforeMax.clear();
-    for (auto it = m_dockWidgets.begin(); it != m_dockWidgets.end(); ++it)
+    for (auto it = dockWidgets.begin(); it != dockWidgets.end(); ++it)
         if (it.value())
             m_dockVisBeforeMax[it.value()] = it.value()->isVisible();
 
@@ -150,27 +148,27 @@ void TimelineWorkspace::togglePanelMaximize()
     // stacked panels — restoring only the inner one left the leftmost
     // column's bottom panel taller than the original).
     m_dockStatesBeforeMax.clear();
-    m_dockStatesBeforeMax.push_back({m_innerMainWindow,
-                                     m_innerMainWindow->saveState(4)});
+    m_dockStatesBeforeMax.push_back({innerMainWindow,
+                                     innerMainWindow->saveState(4)});
 
     m_edgeVisBeforeMax.clear();
-    if (m_edgeSplitter) {
-        for (int i = 0; i < m_edgeSplitter->count(); ++i)
-            if (auto* win = qobject_cast<QMainWindow*>(m_edgeSplitter->widget(i))) {
+    if (edgeSplitter) {
+        for (int i = 0; i < edgeSplitter->count(); ++i)
+            if (auto* win = qobject_cast<QMainWindow*>(edgeSplitter->widget(i))) {
                 m_edgeVisBeforeMax.push_back({win, win->isVisible()});
-                if (win != m_innerMainWindow)
+                if (win != innerMainWindow)
                     m_dockStatesBeforeMax.push_back({win, win->saveState(4)});
             }
-        m_edgeSplitterStateBeforeMax = m_edgeSplitter->saveState();
+        m_edgeSplitterStateBeforeMax = edgeSplitter->saveState();
     }
 
-    m_centralBeforeMax    = m_innerMainWindow->centralWidget();
+    m_centralBeforeMax    = innerMainWindow->centralWidget();
     m_centralVisBeforeMax = m_centralBeforeMax ? m_centralBeforeMax->isVisible()
                                                : true;
 
     // ── Hide everything except the target (no reparenting) ─────────────
     // Sibling docks.
-    for (auto it = m_dockWidgets.begin(); it != m_dockWidgets.end(); ++it) {
+    for (auto it = dockWidgets.begin(); it != dockWidgets.end(); ++it) {
         QDockWidget* dock = it.value();
         if (dock && dock != targetDock)
             dock->setVisible(false);
@@ -200,7 +198,7 @@ void TimelineWorkspace::togglePanelMaximize()
 
     m_maximizedWidget = target;
     m_maximizedDock   = targetDock;
-    m_panelMaximized  = true;
+    m_maximized       = true;
     spdlog::info("[togglePanelMaximize] maximized '{}'",
                  target->objectName().toStdString());
 }

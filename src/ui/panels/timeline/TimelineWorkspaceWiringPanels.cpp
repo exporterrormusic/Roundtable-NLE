@@ -1,6 +1,6 @@
 // TimelineWorkspaceWiringPanels.cpp
 // Properties / Effect Controls / Graphics / Color panel feedback wiring.
-// Extracted from TimelineWorkspacePanelsWiringClipSelection.cpp for file size.
+// Extracted from TimelineWorkspaceWiringClipSelection.cpp for file size.
 
 #include <volk.h>
 

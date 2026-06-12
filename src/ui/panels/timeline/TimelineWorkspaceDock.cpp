@@ -8,6 +8,7 @@
 
 #include "panels/timeline/TimelineWorkspace.h"
 #include "panels/timeline/DockLayoutManager.h"
+#include "panels/timeline/PanelMaximizeController.h"
 
 #include "panels/monitors/ProgramMonitor.h"
 
@@ -35,12 +36,13 @@ void TimelineWorkspace::saveDockLayout(QSettings& settings)
     if (!m_dockLayoutManager) return;
 
     // If a panel is maximized, the inner QMainWindow's dock layout is broken:
-    // the maximized dock has been reparented out and all other docks hidden.
-    // Save using the pre-maximize snapshot so the restored layout is correct.
-    if (m_panelMaximized && !m_dockStateBeforeMaximize.isEmpty()) {
+    // all sibling docks are hidden for the maximized panel.  Save using the
+    // pre-maximize snapshot so the restored layout is correct.
+    const QByteArray& preMax = m_panelMaximize->preMaximizeDockState();
+    if (m_panelMaximize->isMaximized() && !preMax.isEmpty()) {
         spdlog::info("saveDockLayout: panel is maximized, using pre-maximize dock state ({} bytes)",
-                     m_dockStateBeforeMaximize.size());
-        m_dockLayoutManager->save(settings, m_dockStateBeforeMaximize);
+                     preMax.size());
+        m_dockLayoutManager->save(settings, preMax);
     } else {
         m_dockLayoutManager->save(settings);
     }
@@ -153,12 +155,9 @@ void TimelineWorkspace::doResetToDefaultDockLayout()
     // ── Fall back to bare programmatic default ──────────────────────────
     if (m_defaultDockState.isEmpty()) return;
 
-    if (m_panelMaximized) {
-        m_panelMaximized = false;
-        m_maximizedWidget = nullptr;
-        m_maximizedDock = nullptr;
-        m_dockStateBeforeMaximize.clear();
-    }
+    // Forget any maximize state without restoring — the layout is being
+    // reset wholesale below.
+    m_panelMaximize->clear();
 
     // Destroy any edge columns in the splitter
     if (m_edgeSplitter) {

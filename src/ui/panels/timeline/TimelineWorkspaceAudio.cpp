@@ -16,6 +16,7 @@
 #include "playback/MediaPool.h"
 #include "playback/PlaybackController.h"
 #include "panels/monitors/ProgramMonitor.h"  // for requestRefresh() after warmup
+#include "panels/timeline/MediaWatchController.h"
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -108,9 +109,9 @@ void TimelineWorkspace::schedulePostEditWork()
         auto t2 = clk::now();
         // Re-arm the live file-swap watcher: a clip may have just been
         // added/relinked (e.g. media dragged onto the timeline), so its
-        // source file isn't watched yet.  rescanMediaWatch() diffs against
-        // the already-watched set, so this is cheap when nothing changed.
-        rescanMediaWatch();
+        // source file isn't watched yet.  rescan() diffs against the
+        // already-watched set, so this is cheap when nothing changed.
+        m_mediaWatch->rescan();
         auto t3 = clk::now();
         auto ms = [](clk::time_point a, clk::time_point b) {
             return std::chrono::duration<double, std::milli>(b - a).count();
