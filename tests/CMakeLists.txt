@@ -67,8 +67,16 @@ function(add_roundtable_test name)
     set(options USES_QT)
     set(oneValue GROUP)
     cmake_parse_arguments(ART "${options}" "${oneValue}" "LIBS" ${ARGN})
+    if (NOT ART_GROUP)
+        set(ART_GROUP core)
+    endif()
 
-    add_executable(${name} ${name}.cpp)
+    # Test sources live in a subfolder named for their run-group, which is
+    # also the source library they exercise: core/ gpu/ export/ ui/
+    # (mirrors src/).  The group thus selects BOTH the ctest LABEL and the
+    # source path — adding a test = drop test_X.cpp into tests/<group>/ and
+    # call add_roundtable_test(test_X LIBS ... [GROUP <group>]).
+    add_executable(${name} ${ART_GROUP}/${name}.cpp)
     target_link_libraries(${name} PRIVATE ${ART_LIBS} GTest::gtest_main)
 
     if(ART_USES_QT)

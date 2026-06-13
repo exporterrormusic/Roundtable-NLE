@@ -10,7 +10,8 @@ CURRENT STATUS (2026-06-12, end of execution session 8):
                             3.2 COMPLETE; 3.3 COMPLETE (CachePolicy merge
                             + PixelOps move); 3.5 COMPLETE (capability API
                             + long tail + serializer registry + per-type
-                            populate builders); 3.8 optional/open
+                            populate builders); 3.8 COMPLETE (tests/
+                            mirrored to core/gpu/export/ui)
   Phase 4 ................. not started — USER DECISION: Phase 4 is LAST;
                             finish all remaining cleanup first
   Also done ............... §5.5 AudioMixdown resampler bug FIXED (swr);
@@ -21,8 +22,8 @@ CURRENT STATUS (2026-06-12, end of execution session 8):
                             (s8) + Drop (s9) + Overlay + Shortcut (s10) all
                             work via public accessors — NO friend classes
                             remain on TimelineWorkspace
-  Remaining before Phase 4: §3.8 test-folder mirroring (optional, low
-                            priority) — then Phase 4
+  Remaining before Phase 4: NONE — all cleanup done (§2.8/2.9 dedup is
+                            opportunistic-only).  PHASE 4 IS NEXT.
   → Jump to "NEXT SESSION — START HERE" (search that string).
 ================================================================================
 
@@ -735,15 +736,15 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.5 FfmpegOpen helper
 
 ════════════════════════════════════════════════════════════════════════
-NEXT SESSION — START HERE  (handoff updated 2026-06-12, end of session 10)
+NEXT SESSION — START HERE  (handoff updated 2026-06-13, end of session 11)
 ════════════════════════════════════════════════════════════════════════
-STATE: USER DECISION — finish ALL remaining cleanup before Phase 4.
-FRIEND-NARROWING IS COMPLETE (4/4) — no friend classes remain on
-TimelineWorkspace.  Sessions 3-8 are COMMITTED ("Update" commits).
-Sessions 9+10 (Drop, then Overlay+Shortcut friend-narrowing) are
-UNCOMMITTED at handoff — 7 modified files: TimelineWorkspace.h + the 3
-DropController*.cpp + OverlayController{,Handlers}.cpp +
-ShortcutController{Keys,Register}.cpp.  Session 7 landed:
+STATE: ALL CLEANUP (Phases 0-3) IS DONE — PHASE 4 IS NEXT.
+Friend-narrowing COMPLETE (4/4, no friend classes remain); §3.8 test-
+folder mirroring COMPLETE.  Sessions 3-10 are COMMITTED (sessions 9+10
+friend-narrowing landed as commit 692404c, smoked OK by the user).
+Session 11 (§3.8 tests/ reorg into core/gpu/export/ui) is UNCOMMITTED at
+handoff — 35 paths: tests/CMakeLists.txt + the 33 git-mv'd test files +
+tests/gpu/test_gpu_spine.cpp (__FILE__ depth +1).  Session 7 landed:
 round-trip serialization tests for ALL clip types + effects + masks
 (test_project 37 tests), §3.5(b) serializer REGISTRY in
 ClipSerialization.cpp (three switches → one table), per-type populate
@@ -767,34 +768,16 @@ analyzer/planner — which stays live and feeds the future re-enable —
 is now fully unit-tested instead (eligibility rules + source-frame
 mapping locked down).
 
-RUNTIME SMOKE OWED (sessions 9+10 — friend-narrowing of Drop/Overlay/
-Shortcut; the user chose to batch all three for ONE combined smoke):
-  - [Drop] drag media from the Project Bin / Explorer / Source Monitor
-    onto the timeline INCL. the no-project bootstrap (drop with nothing
-    open → "create project for media"); drag an effect + a transition
-    onto clips; drop a sequence to nest + open the nested sequence from
-    its context menu.
-  - [Overlay] Program-Monitor transform-overlay drag (move/scale/rotate)
-    + Ctrl-Z; group-move of multiple graphic layers; Text tool create +
-    inline text edit; caption inline edit on a caption clip.
-  - [Shortcut] keyboard pass: Space/J/K/L transport incl. K+J / K+L slow
-    shuttle and release; I/O in-out; Home/End; Delete/ripple with focus
-    in Effect Controls vs timeline; Ctrl+X/C/V; tilde maximize; D
-    match-frame; backslash zoom-to-fit; the tool keys (V/A/... set the
-    edit-tool buttons' focus + active state).
-  Same behavior expected throughout — these are PURE accessor-routing
-  changes (build + core 695/695 after EACH controller + a 4-agent
-  adversarial review of every mapping/exposure all green), but they ARE
-  the live interactive paths the three controllers drive.
-  - [session 8 — ProjectController, if not yet smoked] project lifecycle:
-    new/open/save/save-as, recents menu, delete/rename/duplicate from
-    panel, auto-save + restore-from-auto-save, auto-created-project
-    startup path.
+RUNTIME SMOKE: sessions 9+10 (Drop/Overlay/Shortcut friend-narrowing)
+were smoked by the user ("tested and all good") and committed (692404c).
+Session 11 (§3.8) is a build-system / test-tree reorg ONLY — no runtime
+smoke needed; validated by full build + ctest -L core 695/695 + -L export
+51/51 (gpu/ui labels build + discover identically — run per-release).
 
-REMAINING WORK before Phase 4, in recommended order:
-  1. §3.8 mirror core/ folders in tests/ (optional, low priority).
-  2. §2.8/2.9 opportunistic dedup — only when touching those files.
-  THEN Phase 4, starting with 4.1 per-stream color management.
+REMAINING WORK before Phase 4:
+  NONE — all of Phases 0-3 are done.  §2.8/2.9 opportunistic dedup remains
+  but is do-it-only-when-touching-those-files, not a gating item.
+  PHASE 4 IS NEXT, starting with 4.1 per-stream color management.
   (Friend-narrowing 4/4 is DONE — Project s8, Drop s9, Overlay+Shortcut
   s10.  Proven recipe, for reference if a new binder is ever extracted:
   survey `m_ws->m_*` members + `m_ws->method()` calls + writes; reuse
@@ -833,6 +816,41 @@ STANDING ITEMS:
     change the byte format); the loader frame-aligns clip boundaries
     (tpf=1600 at defaults) so tests must use frame-aligned ticks.
 ════════════════════════════════════════════════════════════════════════
+
+2026-06-13  SESSION 11 — §3.8 COMPLETE: tests/ mirrored to the source
+            library layout (core/gpu/export/ui)
+  [x] The flat tests/ dir (33 test_*.cpp) is now foldered into
+      tests/{core,gpu,export,ui}/ — one folder per ctest run-group, which
+      is also the source library each test exercises (mirrors src/).
+      git mv (history-preserving; all 33 show as renames).  Split: core 18,
+      gpu 6, export 1, ui 8.
+  [x] CMake wiring: the add_roundtable_test() helper now derives the source
+      path from the GROUP (add_executable(${name} ${ART_GROUP}/${name}.cpp),
+      default group=core) — so the 33 add_roundtable_test(...) CALL LINES
+      are UNCHANGED; only the helper + the file locations moved.  GROUP now
+      selects BOTH the ctest LABEL and the source folder.  ctest labels are
+      assigned exactly as before (PROPERTIES LABELS ${CRT_GROUP}), so
+      discovery/labels are untouched.
+  [x] DECISION: mirrored at LIBRARY granularity (core/gpu/export/ui), NOT
+      the deeper §3.2 core/ module split (decode/cache/playback/audio/
+      convert/analysis).  Reason: the label axis and the module axis
+      conflict (e.g. test_decoder is decode-MODULE but gpu-GROUP because it
+      needs a Vulkan device; test_integration/test_audio_sync/test_waveform
+      are cross-cutting with no single module home).  Library-level folders
+      keep folder == label == linked lib, which is the stated §3.8 goal
+      ("ctest labels stay meaningful") with zero ambiguous placements.
+  [x] FIX: tests/gpu/test_gpu_spine.cpp resolves its assets/ dir via
+      fs::path(__FILE__).parent_path()… — moving it one level deeper
+      needed +1 parent_path() to still reach the repo root (it also has
+      current_path() fallbacks, so it never actually broke).  test_spine's
+      existing 3× parent_path() became CORRECT at the new tests/core/ depth
+      (no edit).  No test uses relative #includes; CI uses ctest -L labels
+      (no hardcoded file paths) — both confirmed by grep before the move.
+      VERIFIED: cmake reconfigure resolves all 33 new paths; full all-
+      targets build clean (every test exe compiles+links from its new
+      folder); ctest -L core 695/695 + -L export 51/51.  NO runtime smoke
+      needed (build-system change only).
+      §3.8 IS NOW COMPLETE — all of Phases 0-3 are done; PHASE 4 IS NEXT.
 
 2026-06-12  SESSION 10 — FRIEND-NARROWING 4/4 COMPLETE: Overlay + Shortcut
             (user chose to batch both, build+core after EACH, ONE combined
@@ -1304,7 +1322,9 @@ PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
     [STARTED] 3.5 ClipType capability virtuals — API + exemplar
                conversions landed (session 6); long tail (~50 sites) +
                3.5(b) per-type serializer registry remain
-    [    ] 3.8 mirror new core/ folders in tests/ (optional)
+    [DONE] 3.8 tests/ mirrored to the source library layout
+               (core/gpu/export/ui; folder == ctest group == linked lib,
+               helper derives source path from GROUP) — 2026-06-13, s11
 
 PHASE 4 — Premiere-parity features (each is its own project; none
           started)

@@ -40,7 +40,8 @@ namespace fs = std::filesystem;
 static std::string findAssetsDir()
 {
     fs::path candidates[] = {
-        fs::path(__FILE__).parent_path().parent_path() / "assets",
+        // tests/gpu/test_gpu_spine.cpp → up 3 to repo root → assets/
+        fs::path(__FILE__).parent_path().parent_path().parent_path() / "assets",
         fs::current_path() / "assets",
         fs::current_path().parent_path() / "assets",
         fs::current_path().parent_path().parent_path() / "assets",
