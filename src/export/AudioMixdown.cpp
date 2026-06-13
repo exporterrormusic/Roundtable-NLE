@@ -170,10 +170,13 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                 sourceStartSec = 0.0;
             }
 
-            // Open the audio file
+            // Open the audio file on the clip's chosen audio stream (-1 =
+            // auto/best) so a 10-min export uses the SAME stream the user
+            // picked for preview.
             AudioFile audioFile;
-            if (!audioFile.open(aclip->mediaPath())) {
-                spdlog::warn("AudioMixdown: Cannot open '{}'", aclip->mediaPath());
+            if (!audioFile.open(aclip->mediaPath(), aclip->audioStreamIndex())) {
+                spdlog::warn("AudioMixdown: Cannot open '{}' (audio stream {})",
+                             aclip->mediaPath(), aclip->audioStreamIndex());
                 continue;
             }
 

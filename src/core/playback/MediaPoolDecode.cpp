@@ -315,6 +315,14 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
 
         const bool needsResize = (dstW != w || dstH != h);
 
+        // Colourspace gate (Phase 4.1): the GPU NV12/YUV420P shaders hardcode
+        // BT.709 + limited range + SDR.  Only take the GPU fast-paths below
+        // when the source matches; otherwise fall through to the CPU sws core,
+        // which honours the source's matrix/range (resolveColorConversion).
+        // Mirrors the gate in convertDecodedToCacheGpu so the urgent/scrub
+        // and prefetch paths agree on which sources are GPU-eligible.
+        const bool gpuColorOk = resolveColorConversion(entry.info).isGpuShaderDefault;
+
         // ── GPU NV12 → BGRA with integrated downscale ──────────────────
         // Uses Nv12Converter compute shader to convert AND downscale in a
         // single GPU dispatch.  Input uploaded at srcW×srcH, shader writes
@@ -323,7 +331,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // 4-tile luma-packed alpha needs special GPU unpack (handled above);
         // 2-tile stacked-alpha (e.g. Wells HEVC) works fine with normal
         // NV12→BGRA conversion — the compositor splits via isPacked.
-        if (entry.info.packedTiles != 4 &&
+        if (gpuColorOk && entry.info.packedTiles != 4 &&
             (srcFmt == AV_PIX_FMT_NV12 || decoded.format == PixelFormat::NV12)
             && w <= 16384 && h <= 16384) {
             if (entry.decodePathLogged < 4) {
@@ -360,7 +368,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         // ── GPU YUV420P → BGRA with integrated downscale ───────────────
         // 4-tile luma-packed alpha needs special GPU unpack (handled above);
         // 2-tile stacked-alpha works fine with normal YUV420P→BGRA conversion.
-        if (entry.info.packedTiles != 4 &&
+        if (gpuColorOk && entry.info.packedTiles != 4 &&
             (srcFmt == AV_PIX_FMT_YUV420P || decoded.format == PixelFormat::YUV420P) &&
             w <= 16384 && h <= 16384 && decoded.data[0] && decoded.data[1] && decoded.data[2])
         {

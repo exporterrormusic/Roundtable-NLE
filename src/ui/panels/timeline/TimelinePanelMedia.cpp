@@ -28,6 +28,15 @@
 
 namespace rt {
 
+// Waveform cache key = (media path, audio-stream ordinal). Two clips on
+// different audio streams of the same file must NOT share one waveform, so
+// the ordinal is folded into the path-keyed waveform caches. -1 (auto/best)
+// keeps the legacy single-stream key shape distinct from explicit picks.
+static std::string waveformCacheKey(const std::string& path, int audioStreamOrdinal)
+{
+    return path + "|" + std::to_string(audioStreamOrdinal);
+}
+
 // Mirror of MediaPool::open() / ThumbnailGenerator path-fallback search.
 // loadThumbnails() opens VideoDecoder directly (it does not go through
 // MediaPool), so bare filenames like "MARIAN_WALL_HD.png" miss the asset
@@ -85,46 +94,61 @@ void TimelinePanel::loadWaveforms()
             // Skip if already cached by clip ID
             if (m_waveformPeaks.count(clip->id())) continue;
 
-            // Fast path: another clip with the same source file was
-            // already decoded (e.g. after a split) - just copy peaks.
-            auto byPathIt = m_waveformByPath.find(path);
+            // Fast path: another clip with the same source file AND the same
+            // audio stream was already decoded (e.g. after a split) - just
+            // copy peaks. Keyed by (path, ordinal) so a clip pointing at a
+            // different stream of the same file gets its own waveform.
+            const int ord = audioClip->audioStreamIndex();
+            const std::string key = waveformCacheKey(path, ord);
+            auto byPathIt = m_waveformByPath.find(key);
             if (byPathIt != m_waveformByPath.end()) {
                 m_waveformPeaks[clip->id()] = byPathIt->second;
                 continue;
             }
 
-            if (!m_failedWaveformPaths.count(path)) {
-                queueWaveformLoad(path);
+            if (!m_failedWaveformPaths.count(key)) {
+                queueWaveformLoad(path, ord);
             }
         }
     }
 }
 
-void TimelinePanel::queueWaveformLoad(const std::string& path)
+void TimelinePanel::invalidateClipWaveform(uint64_t clipId)
 {
-    if (path.empty() || m_waveformByPath.count(path) ||
-        m_pendingWaveformPaths.count(path) || m_failedWaveformPaths.count(path)) {
+    // Erase this clip's cached peaks (keyed by clip id) and re-run the loader,
+    // which re-queues a decode under the clip's CURRENT (path, ordinal) key.
+    // For a stream change the key always differs, so a fresh decode is queued
+    // and applyWaveformPeaks() repaints when it lands.
+    m_waveformPeaks.erase(clipId);
+    loadWaveforms();
+}
+
+void TimelinePanel::queueWaveformLoad(const std::string& path, int audioStreamOrdinal)
+{
+    const std::string key = waveformCacheKey(path, audioStreamOrdinal);
+    if (path.empty() || m_waveformByPath.count(key) ||
+        m_pendingWaveformPaths.count(key) || m_failedWaveformPaths.count(key)) {
         return;
     }
 
-    m_pendingWaveformPaths.insert(path);
+    m_pendingWaveformPaths.insert(key);
     QPointer<TimelinePanel> self(this);
     const uint64_t generation = m_waveformLoadGeneration;
 
-    std::thread([self, path, generation]() {
+    std::thread([self, path, key, audioStreamOrdinal, generation]() {
         constexpr int64_t kPeakWindowFrames = 480; // 10ms at 48 kHz
 
         AudioFile file;
-        if (!file.open(path)) {
+        if (!file.open(path, audioStreamOrdinal)) {
             if (!self) {
                 return;
             }
-            QMetaObject::invokeMethod(self, [self, path, generation]() {
+            QMetaObject::invokeMethod(self, [self, path, key, generation]() {
                 if (!self || self->m_waveformLoadGeneration != generation) {
                     return;
                 }
-                self->m_pendingWaveformPaths.erase(path);
-                self->m_failedWaveformPaths.insert(path);
+                self->m_pendingWaveformPaths.erase(key);
+                self->m_failedWaveformPaths.insert(key);
                 spdlog::warn("loadWaveforms: failed to open '{}'", path);
             }, Qt::QueuedConnection);
             return;
@@ -137,12 +161,12 @@ void TimelinePanel::queueWaveformLoad(const std::string& path)
             if (!self) {
                 return;
             }
-            QMetaObject::invokeMethod(self, [self, path, generation]() {
+            QMetaObject::invokeMethod(self, [self, key, generation]() {
                 if (!self || self->m_waveformLoadGeneration != generation) {
                     return;
                 }
-                self->m_pendingWaveformPaths.erase(path);
-                self->m_failedWaveformPaths.insert(path);
+                self->m_pendingWaveformPaths.erase(key);
+                self->m_failedWaveformPaths.insert(key);
             }, Qt::QueuedConnection);
             return;
         }
@@ -151,34 +175,34 @@ void TimelinePanel::queueWaveformLoad(const std::string& path)
             return;
         }
 
-        QMetaObject::invokeMethod(self, [self, generation, path,
+        QMetaObject::invokeMethod(self, [self, generation, key,
                                          peaks = std::move(peaks)]() mutable {
             if (!self) {
                 return;
             }
-            self->applyWaveformPeaks(generation, path, std::move(peaks));
+            self->applyWaveformPeaks(generation, key, std::move(peaks));
         }, Qt::QueuedConnection);
     }).detach();
 }
 
 void TimelinePanel::applyWaveformPeaks(uint64_t generation,
-                                       const std::string& path,
+                                       const std::string& key,
                                        std::vector<float> peaks)
 {
     if (m_waveformLoadGeneration != generation) {
         return;
     }
 
-    m_pendingWaveformPaths.erase(path);
+    m_pendingWaveformPaths.erase(key);
     if (peaks.empty()) {
-        m_failedWaveformPaths.insert(path);
+        m_failedWaveformPaths.insert(key);
         return;
     }
 
-    m_failedWaveformPaths.erase(path);
-    auto it = m_waveformByPath.find(path);
+    m_failedWaveformPaths.erase(key);
+    auto it = m_waveformByPath.find(key);
     if (it == m_waveformByPath.end()) {
-        it = m_waveformByPath.emplace(path, std::move(peaks)).first;
+        it = m_waveformByPath.emplace(key, std::move(peaks)).first;
     } else {
         it->second = std::move(peaks);
     }
@@ -192,7 +216,10 @@ void TimelinePanel::applyWaveformPeaks(uint64_t generation,
                 auto* clip = track->clip(ci);
                 auto* audioClip = dynamic_cast<AudioClip*>(clip);
                 if (!audioClip || !clip->isEnabled()) continue;
-                if (audioClip->mediaPath() != path) continue;
+                // Match by (path, ordinal) — only clips on this exact stream
+                // of this file get these peaks.
+                if (waveformCacheKey(audioClip->mediaPath(),
+                                     audioClip->audioStreamIndex()) != key) continue;
                 m_waveformPeaks[clip->id()] = it->second;
             }
         }
@@ -203,7 +230,7 @@ void TimelinePanel::applyWaveformPeaks(uint64_t generation,
     }
 
     spdlog::info("loadWaveforms: loaded {} peaks asynchronously for '{}'",
-                 it->second.size(), path);
+                 it->second.size(), key);
 }
 
 void TimelinePanel::loadThumbnails()

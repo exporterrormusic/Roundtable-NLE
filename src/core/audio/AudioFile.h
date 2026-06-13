@@ -33,6 +33,8 @@ struct AudioFileInfo
     std::string codec;           // e.g. "PCM 16-bit", "Float 32-bit"
     std::string format;          // e.g. "WAV", "AIFF", "FLAC"
     uint32_t    bitDepth{0};
+    int         streamOrdinal{-1}; // Audio-stream ordinal actually opened
+                                   // (-1 until open; 0 = first audio stream).
 
     /// Total sample count (frames * channels)
     [[nodiscard]] int64_t totalSamples() const noexcept { return frames * channels; }
@@ -52,6 +54,23 @@ enum class AudioBackend : uint8_t
     FFmpeg,     // FFmpeg (for MP3, OGG, video containers, etc.)
 };
 
+/// Describes one audio stream in a container, for the audio-stream picker.
+/// `ordinal` is the 0-based index AMONG AUDIO STREAMS (not the absolute
+/// AVStream index) — it is the stable value persisted on a clip and passed
+/// back to AudioFile::open(). Multicam / camera scratch+lav / OBS multi-track
+/// files expose several of these.
+struct AudioStreamDesc
+{
+    int         ordinal{0};       // 0-based position among the file's audio streams
+    int         channels{0};
+    int         sampleRate{0};
+    std::string codec;            // e.g. "aac", "pcm_s16le"
+    std::string language;         // ISO tag from stream metadata, "" if none
+    std::string title;            // stream title metadata, "" if none
+    bool        isDefault{false}; // AV_DISPOSITION_DEFAULT
+    double      durationSec{0.0};
+};
+
 class AudioFile
 {
 public:
@@ -64,12 +83,26 @@ public:
 
     /// Open an audio file. Returns true on success.
     /// Tries libsndfile first, then falls back to FFmpeg.
-    bool open(const std::filesystem::path& path);
+    ///
+    /// `audioStreamOrdinal` selects WHICH audio stream to decode, 0-based among
+    /// the file's audio streams; -1 (default) keeps the legacy behavior of
+    /// FFmpeg's "best" stream. An ordinal >= 1 forces the FFmpeg backend
+    /// (libsndfile cannot reach a non-first stream). An out-of-range ordinal
+    /// falls back to the best stream (e.g. a relinked/remuxed file).
+    bool open(const std::filesystem::path& path, int audioStreamOrdinal = -1);
 
     /// Open from a UTF-8-encoded path string. The std::filesystem::path(string)
     /// constructor decodes via the ANSI codepage on Windows and mangles non-CP_ACP
     /// characters (e.g. U+FF5C in yt-dlp names); route through utf8ToPath() instead.
-    bool open(const std::string& utf8Path);
+    bool open(const std::string& utf8Path, int audioStreamOrdinal = -1);
+
+    /// Enumerate the audio streams of a media file WITHOUT opening a decoder
+    /// (header probe only — avformat_find_stream_info, no codec/HW-decoder
+    /// init). Returns one descriptor per audio stream in ordinal order, or an
+    /// empty vector if the file has no audio / cannot be probed. Used by the
+    /// audio-stream picker UI. FFmpeg-backed; returns {} when built without it.
+    [[nodiscard]] static std::vector<AudioStreamDesc>
+        enumerateAudioStreams(const std::filesystem::path& path);
 
     /// Close and release all resources.
     void close();
@@ -118,7 +151,7 @@ public:
 
 private:
     bool openSndfile(const std::filesystem::path& path);
-    bool openFFmpeg(const std::filesystem::path& path);
+    bool openFFmpeg(const std::filesystem::path& path, int desiredAudioOrdinal);
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
     std::vector<float> readAllFFmpeg();

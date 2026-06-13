@@ -23,6 +23,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libswresample/swresample.h>
 #include <libavutil/error.h>
+#include <libavutil/dict.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
@@ -347,12 +348,12 @@ AudioFile::~AudioFile()
 
 // ─── Open ───────────────────────────────────────────────────────────────────
 
-bool AudioFile::open(const std::string& utf8Path)
+bool AudioFile::open(const std::string& utf8Path, int audioStreamOrdinal)
 {
-    return open(utf8ToPath(utf8Path));
+    return open(utf8ToPath(utf8Path), audioStreamOrdinal);
 }
 
-bool AudioFile::open(const std::filesystem::path& path)
+bool AudioFile::open(const std::filesystem::path& path, int audioStreamOrdinal)
 {
     std::lock_guard lock(m_mutex);
     close();
@@ -365,11 +366,15 @@ bool AudioFile::open(const std::filesystem::path& path)
         return false;
     }
 
-    // Try libsndfile first
+    // Try libsndfile first — but only when the first/auto stream is wanted.
+    // libsndfile is single-stream by nature, so an ordinal >= 1 must go
+    // straight to the FFmpeg backend (the only one that can reach a
+    // non-first audio stream of a multi-track container).
 #ifdef ROUNDTABLE_HAS_SNDFILE
-    if (openSndfile(path)) {
+    if (audioStreamOrdinal <= 0 && openSndfile(path)) {
         m_isOpen  = true;
         m_backend = AudioBackend::Sndfile;
+        m_info.streamOrdinal = 0;   // libsndfile exposes exactly one stream
         spdlog::info("AudioFile: opened '{}' via libsndfile ({} ch, {} Hz, {} frames)",
                      pathToUtf8(path.filename()), m_info.channels,
                      m_info.sampleRate, m_info.frames);
@@ -379,12 +384,12 @@ bool AudioFile::open(const std::filesystem::path& path)
 
     // Fallback to FFmpeg
 #ifdef ROUNDTABLE_HAS_FFMPEG
-    if (openFFmpeg(path)) {
+    if (openFFmpeg(path, audioStreamOrdinal)) {
         m_isOpen  = true;
         m_backend = AudioBackend::FFmpeg;
-        spdlog::info("AudioFile: opened '{}' via FFmpeg ({} ch, {} Hz, {} frames)",
+        spdlog::info("AudioFile: opened '{}' via FFmpeg ({} ch, {} Hz, {} frames, audio stream #{})",
                      pathToUtf8(path.filename()), m_info.channels,
-                     m_info.sampleRate, m_info.frames);
+                     m_info.sampleRate, m_info.frames, m_info.streamOrdinal);
         return true;
     }
 #endif
@@ -762,7 +767,8 @@ bool AudioFile::openSndfile([[maybe_unused]] const std::filesystem::path& path)
 
 // ─── FFmpeg backend ─────────────────────────────────────────────────────────
 
-bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
+bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path,
+                           [[maybe_unused]] int desiredAudioOrdinal)
 {
 #ifdef ROUNDTABLE_HAS_FFMPEG
     // Shared-mode open + custom AVIO (see header for rationale).
@@ -832,14 +838,51 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
         return false;
     }
 
-    // Find best audio stream
-    m_impl->audioStreamIdx = av_find_best_stream(
-        m_impl->fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    // Select the audio stream. A caller-requested ordinal (0-based among
+    // AUDIO streams) wins; otherwise — or if it is out of range, e.g. a
+    // relinked/remuxed file with fewer streams — fall back to FFmpeg's
+    // "best" heuristic so we never regress to "no audio".
+    m_impl->audioStreamIdx = -1;
+    if (desiredAudioOrdinal >= 0) {
+        int ord = 0;
+        for (unsigned i = 0; i < m_impl->fmtCtx->nb_streams; ++i) {
+            if (m_impl->fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                if (ord == desiredAudioOrdinal) {
+                    m_impl->audioStreamIdx = static_cast<int>(i);
+                    break;
+                }
+                ++ord;
+            }
+        }
+        if (m_impl->audioStreamIdx < 0) {
+            spdlog::warn("AudioFile: audio stream ordinal {} out of range for '{}' "
+                         "— falling back to best stream",
+                         desiredAudioOrdinal, pathToUtf8(path.filename()));
+        }
+    }
+    if (m_impl->audioStreamIdx < 0) {
+        m_impl->audioStreamIdx = av_find_best_stream(
+            m_impl->fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    }
 
     if (m_impl->audioStreamIdx < 0) {
         m_lastError = "FFmpeg: no audio stream found";
         avformat_close_input(&m_impl->fmtCtx);
         return false;
+    }
+
+    // Record which audio ordinal we actually opened (for callers / tests).
+    {
+        int ord = 0;
+        for (unsigned i = 0; i < m_impl->fmtCtx->nb_streams; ++i) {
+            if (m_impl->fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                if (static_cast<int>(i) == m_impl->audioStreamIdx) {
+                    m_info.streamOrdinal = ord;
+                    break;
+                }
+                ++ord;
+            }
+        }
     }
 
     const auto* stream  = m_impl->fmtCtx->streams[m_impl->audioStreamIdx];
@@ -913,6 +956,83 @@ bool AudioFile::openFFmpeg([[maybe_unused]] const std::filesystem::path& path)
 #else
     return false;
 #endif
+}
+
+// ─── Audio stream enumeration (header probe, no decoder open) ────────────────
+
+std::vector<AudioStreamDesc>
+AudioFile::enumerateAudioStreams([[maybe_unused]] const std::filesystem::path& path)
+{
+    std::vector<AudioStreamDesc> streams;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    // Shared-mode open + custom AVIO (same non-locking policy as openFFmpeg),
+    // but we stop after avformat_find_stream_info — no codec / HW-decoder init.
+    SharedFileHandle sh = openSharedReadHandle(path, "AudioFile/enum");
+    if (!sh) return streams;
+
+    AVFormatContext* fmtCtx  = nullptr;
+    AVIOContext*     avioCtx = nullptr;
+    uint8_t*         buf     = static_cast<uint8_t*>(av_malloc(kSharedAvioBufSize));
+
+    // With AVFMT_FLAG_CUSTOM_IO, avformat_close_input frees neither our AVIO
+    // context nor its buffer — we own that teardown. avformat_open_input nulls
+    // fmtCtx on failure, so the guarded close is safe on every path.
+    auto cleanup = [&]() {
+        if (fmtCtx)  avformat_close_input(&fmtCtx);
+        if (avioCtx) { av_freep(&avioCtx->buffer); avio_context_free(&avioCtx); }
+        else if (buf) av_free(buf);
+        closeSharedHandle(sh);
+    };
+
+    if (!buf) { cleanup(); return streams; }
+
+    avioCtx = avio_alloc_context(buf, kSharedAvioBufSize, /*write_flag=*/0,
+                                 static_cast<void*>(sh),
+                                 &sharedAvioRead, /*write_packet=*/nullptr,
+                                 &sharedAvioSeek);
+    if (!avioCtx) { cleanup(); return streams; }
+    buf = nullptr;   // ownership transferred to avioCtx
+
+    fmtCtx = avformat_alloc_context();
+    if (!fmtCtx) { cleanup(); return streams; }
+    fmtCtx->pb     = avioCtx;
+    fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+    if (avformat_open_input(&fmtCtx, pathToUtf8(path).c_str(), nullptr, nullptr) < 0) {
+        cleanup();
+        return streams;
+    }
+    if (avformat_find_stream_info(fmtCtx, nullptr) < 0) {
+        cleanup();
+        return streams;
+    }
+
+    int ordinal = 0;
+    for (unsigned i = 0; i < fmtCtx->nb_streams; ++i) {
+        AVStream* s = fmtCtx->streams[i];
+        if (s->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+
+        AudioStreamDesc d;
+        d.ordinal    = ordinal++;
+        d.channels   = s->codecpar->ch_layout.nb_channels;
+        d.sampleRate = s->codecpar->sample_rate;
+        if (const char* cn = avcodec_get_name(s->codecpar->codec_id))
+            d.codec = cn;
+        if (AVDictionaryEntry* lang = av_dict_get(s->metadata, "language", nullptr, 0))
+            d.language = lang->value ? lang->value : "";
+        if (AVDictionaryEntry* title = av_dict_get(s->metadata, "title", nullptr, 0))
+            d.title = title->value ? title->value : "";
+        d.isDefault = (s->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        if (s->duration > 0 && s->time_base.den > 0)
+            d.durationSec = static_cast<double>(s->duration) * s->time_base.num / s->time_base.den;
+        else if (fmtCtx->duration > 0)
+            d.durationSec = static_cast<double>(fmtCtx->duration) / AV_TIME_BASE;
+        streams.push_back(std::move(d));
+    }
+
+    cleanup();
+#endif
+    return streams;
 }
 
 // ─── FFmpeg: read all samples ───────────────────────────────────────────────

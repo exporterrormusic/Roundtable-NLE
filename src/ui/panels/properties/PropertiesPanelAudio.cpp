@@ -16,6 +16,7 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 
+#include <QComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
 
@@ -95,6 +96,30 @@ void PropertiesPanel::applyAudioFadeOut()
     }
 }
 
+void PropertiesPanel::applyAudioStream()
+{
+    if (m_updating || !m_clip || !m_clip->isAudio() || !m_audioStreamCombo) return;
+    auto* ac = static_cast<AudioClip*>(m_clip);
+    const QVariant data = m_audioStreamCombo->currentData();
+    if (!data.isValid()) return;
+    const int newVal = data.toInt();
+    const int oldVal = ac->audioStreamIndex();
+    if (newVal == oldVal) return;
+    const quint64 clipId = ac->id();
+    // propertyChanged rebuilds the audio sources (new cache key -> new stream);
+    // audioStreamChanged tells the timeline to re-decode this clip's waveform.
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Change audio stream",
+            [ac, newVal, clipId, this]() { ac->setAudioStreamIndex(newVal); populateFromClip(); emit propertyChanged(); emit audioStreamChanged(clipId); },
+            [ac, oldVal, clipId, this]() { ac->setAudioStreamIndex(oldVal); populateFromClip(); emit propertyChanged(); emit audioStreamChanged(clipId); }));
+    } else {
+        ac->setAudioStreamIndex(newVal);
+        emit propertyChanged();
+        emit audioStreamChanged(clipId);
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Audio section UI
 // ═════════════════════════════════════════════════════════════════════════════
@@ -106,6 +131,17 @@ void PropertiesPanel::setupAudioSection(QWidget* container)
     auto* form = new QFormLayout(m_audioSection);
     form->setContentsMargins(m.spacingXs, 18, m.spacingXs, m.spacingXs);
     form->setSpacing(m.spacingSm);
+
+    // Audio stream picker — for multicam / camera scratch+lav / OBS multi-track
+    // sources. Populated per-clip in populateFromAudio(); disabled when the
+    // file has a single audio stream (nothing to choose).
+    m_audioStreamCombo = new QComboBox(m_audioSection);
+    m_audioStreamCombo->setToolTip(tr("Which audio stream of the source file to use"));
+    m_audioStreamCombo->setEditable(false);
+    m_audioStreamCombo->installEventFilter(this);
+    connect(m_audioStreamCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { if (m_updating) return; applyAudioStream(); });
+    form->addRow("Audio Stream:", m_audioStreamCombo);
 
     m_audioVolumeSpin = createScrubby(0.0, 2.0, 0.01, 3);
     m_audioVolumeSpin->setToolTip(tr("Audio clip volume (0 = mute, 1.0 = full)"));

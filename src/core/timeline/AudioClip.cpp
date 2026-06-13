@@ -58,11 +58,12 @@ std::unique_ptr<Clip> AudioClip::clone() const
     }
 
     // AudioClip-specific
-    copy->m_mediaPath      = m_mediaPath;
-    copy->m_mediaId        = m_mediaId;
-    copy->m_sampleRate     = m_sampleRate;
-    copy->m_channels       = m_channels;
-    copy->m_sourceDuration = m_sourceDuration;
+    copy->m_mediaPath        = m_mediaPath;
+    copy->m_mediaId          = m_mediaId;
+    copy->m_sampleRate       = m_sampleRate;
+    copy->m_channels         = m_channels;
+    copy->m_sourceDuration   = m_sourceDuration;
+    copy->m_audioStreamIndex = m_audioStreamIndex;
     copy->m_volume         = m_volume;
     copy->m_pan            = m_pan;
     copy->m_fadeIn         = m_fadeIn;

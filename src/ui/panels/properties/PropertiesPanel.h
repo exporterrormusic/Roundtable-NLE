@@ -188,6 +188,7 @@ public:
     [[nodiscard]] ScrubbySpinBox* panSpin()          const noexcept { return m_panSpin; }
     [[nodiscard]] ScrubbySpinBox* fadeInSpin()       const noexcept { return m_fadeInSpin; }
     [[nodiscard]] ScrubbySpinBox* fadeOutSpin()      const noexcept { return m_fadeOutSpin; }
+    [[nodiscard]] QComboBox*      audioStreamCombo() const noexcept { return m_audioStreamCombo; }
 
     // Title-specific
     [[nodiscard]] QLineEdit*      textEdit()         const noexcept { return m_textEdit; }
@@ -206,6 +207,12 @@ public:
 signals:
     /// Emitted when any property changes via the panel.
     void propertyChanged();
+
+    /// Emitted specifically when an audio clip's chosen audio stream changes,
+    /// so the timeline can re-decode that clip's waveform (the generic
+    /// propertyChanged fires on every volume/pan nudge and must NOT trigger a
+    /// waveform re-decode). Carries the affected clip id.
+    void audioStreamChanged(quint64 clipId);
 
     /// Emitted when the bound clip changes (or is cleared).
     void clipChanged(Clip* clip);
@@ -300,6 +307,7 @@ private:
     void applyAudioPan();
     void applyAudioFadeIn();
     void applyAudioFadeOut();
+    void applyAudioStream();
 
     void applyTitleText();
     void applyTitleFontFamily();
@@ -435,6 +443,7 @@ private:
 
     // Audio section
     QWidget*        m_audioSection{nullptr};
+    QComboBox*      m_audioStreamCombo{nullptr};
     ScrubbySpinBox* m_audioVolumeSpin{nullptr};
     ScrubbySpinBox* m_panSpin{nullptr};
     ScrubbySpinBox* m_fadeInSpin{nullptr};

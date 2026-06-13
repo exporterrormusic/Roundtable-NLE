@@ -19,6 +19,8 @@
 #include "command/CommandStack.h"
 #include "effects/EffectStack.h"
 #include "audio/AudioFile.h"
+#include "AudioStreamLabels.h"
+#include "PathUtils.h"
 #include "analysis/OmniShotDetector.h"
 #include "decode/VideoDecoder.h"
 #include "Constants.h"
@@ -121,9 +123,28 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     // ── Normalize Audio (AudioClip only) ────────────────────────────────
     QAction* normalizeAction = nullptr;
     QAction* audioGainAction = nullptr;
-    if (dynamic_cast<AudioClip*>(clip)) {
+    QMenu*   audioStreamMenu = nullptr;   // "Audio Stream ▸" — multi-track sources
+    if (auto* ac = dynamic_cast<AudioClip*>(clip)) {
         normalizeAction = menu.addAction("Normalize Audio...");
         audioGainAction = menu.addAction("Audio Gain...");
+
+        // Offer a stream picker only when the source actually has more than
+        // one audio stream (multicam / camera scratch+lav / OBS multi-track).
+        const auto streams = AudioFile::enumerateAudioStreams(utf8ToPath(ac->mediaPath()));
+        if (streams.size() > 1) {
+            audioStreamMenu = menu.addMenu("Audio Stream");
+            const int current = ac->audioStreamIndex();
+            QAction* autoAct = audioStreamMenu->addAction(tr("Auto (best)"));
+            autoAct->setCheckable(true);
+            autoAct->setChecked(current < 0);
+            autoAct->setData(-1);
+            for (const auto& s : streams) {
+                QAction* a = audioStreamMenu->addAction(audioStreamLabel(s));
+                a->setCheckable(true);
+                a->setChecked(current == s.ordinal);
+                a->setData(s.ordinal);
+            }
+        }
     }
 
     // ── Rename ──────────────────────────────────────────────────────────
@@ -724,6 +745,33 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
                 }
                 onScrollChanged();
                 emit contentChanged();
+            }
+        }
+    }
+    else if (audioStreamMenu && audioStreamMenu->actions().contains(chosen)) {
+        auto* ac = dynamic_cast<AudioClip*>(clip);
+        if (ac && chosen->data().isValid()) {
+            const int newVal = chosen->data().toInt();
+            const int oldVal = ac->audioStreamIndex();
+            if (newVal != oldVal) {
+                const uint64_t clipId = ac->id();
+                // contentChanged() rebuilds the audio sources (via the
+                // workspace's invalidateAudioSources); invalidateClipWaveform
+                // re-decodes the waveform for the newly chosen stream.
+                auto applyStream = [this, ac, clipId](int ord) {
+                    ac->setAudioStreamIndex(ord);
+                    invalidateClipWaveform(clipId);
+                    onScrollChanged();
+                    emit contentChanged();
+                };
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        "Change audio stream",
+                        [applyStream, newVal]() { applyStream(newVal); },
+                        [applyStream, oldVal]() { applyStream(oldVal); }));
+                } else {
+                    applyStream(newVal);
+                }
             }
         }
     }

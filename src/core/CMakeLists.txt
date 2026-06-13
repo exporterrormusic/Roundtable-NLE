@@ -61,6 +61,7 @@ add_library(roundtable_core STATIC
     playback/MediaPoolPerf.cpp
     playback/MediaPoolQueries.cpp
     decode/ConvertDecodedFrame.cpp
+    decode/ColorConversion.cpp
     playback/MediaPoolDecode.cpp
     playback/MediaPoolPrefetch.cpp
     playback/MediaPoolPrefetchLoop.cpp

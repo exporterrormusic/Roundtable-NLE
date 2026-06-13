@@ -39,6 +39,14 @@ public:
     [[nodiscard]] int64_t sourceDuration() const noexcept { return m_sourceDuration; }
     void setSourceDuration(int64_t d) noexcept { m_sourceDuration = d; }
 
+    // ── Audio-stream selection ──────────────────────────────────────────
+    /// Which audio stream of the media file to decode, 0-based AMONG AUDIO
+    /// STREAMS; -1 = auto/best (the legacy single-stream behavior). Lets a
+    /// multicam / camera scratch+lav / OBS multi-track file expose any of its
+    /// audio streams. Honored by playback, export, and the waveform.
+    [[nodiscard]] int audioStreamIndex() const noexcept { return m_audioStreamIndex; }
+    void setAudioStreamIndex(int ordinal) noexcept { m_audioStreamIndex = ordinal; }
+
     // ── Keyframeable audio properties ───────────────────────────────────
     KeyframeTrack<float>& volume() noexcept { return m_volume; }
     KeyframeTrack<float>& pan()    noexcept { return m_pan; }
@@ -68,6 +76,7 @@ private:
     uint32_t    m_sampleRate{48000};
     uint16_t    m_channels{2};
     int64_t     m_sourceDuration{0};
+    int         m_audioStreamIndex{-1};   // -1 = auto/best audio stream
 
     KeyframeTrack<float> m_volume{1.0f};   // 0.0 = silence, 1.0 = unity
     KeyframeTrack<float> m_pan{0.0f};      // -1.0 = left, 0.0 = center, 1.0 = right

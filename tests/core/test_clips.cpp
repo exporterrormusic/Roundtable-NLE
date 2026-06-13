@@ -263,6 +263,7 @@ TEST(AudioClipTest, Clone)
     clip.setSampleRate(44100);
     clip.setChannels(1);
     clip.setFadeInDuration(4800);
+    clip.setAudioStreamIndex(1);   // copy/paste/undo must preserve the choice
 
     auto cloned = clip.clone();
     auto* ac = dynamic_cast<AudioClip*>(cloned.get());
@@ -271,6 +272,13 @@ TEST(AudioClipTest, Clone)
     EXPECT_EQ(ac->sampleRate(), 44100u);
     EXPECT_EQ(ac->channels(), 1u);
     EXPECT_EQ(ac->fadeInDuration(), 4800);
+    EXPECT_EQ(ac->audioStreamIndex(), 1);
+}
+
+TEST(AudioClipTest, DefaultAudioStreamIsAuto)
+{
+    AudioClip clip;
+    EXPECT_EQ(clip.audioStreamIndex(), -1);  // -1 = auto/best (legacy behavior)
 }
 
 // ── TitleClip ───────────────────────────────────────────────────────────────

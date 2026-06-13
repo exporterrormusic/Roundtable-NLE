@@ -56,6 +56,19 @@ struct DecodedFrame
     AVFrame*    avFrame{nullptr}; // Caller must NOT free — owned by decoder
 };
 
+/// YUV→RGB matrix family (selects the Kr/Kb coefficients).  Mapped from the
+/// source's tagged AVColorSpace at open; `Unspecified` falls back to the
+/// SD(≤576 lines)→BT.601 / HD→BT.709 height heuristic at convert time.
+enum class ColorMatrix : uint8_t { Unspecified, BT601, BT709, BT2020, Other };
+
+/// Luma/chroma sample range.  `Full` = JPEG/PC swing (0–255), `Limited` =
+/// studio swing (16–235).  Mapped from AVColorRange (+ yuvj* pixel formats).
+enum class ColorRange : uint8_t { Unspecified, Limited, Full };
+
+/// Transfer characteristic (EOTF).  Only the HDR curves are distinguished;
+/// every SDR curve (BT.709 / sRGB / gamma) collapses to `Sdr`.
+enum class ColorTransfer : uint8_t { Unspecified, Sdr, PQ, HLG };
+
 /// Stream information extracted from container
 struct VideoStreamInfo
 {
@@ -74,6 +87,17 @@ struct VideoStreamInfo
     bool        isVFR{false};           ///< True if variable frame rate detected
     int         audioStreamIndex{-1};
     int         videoStreamIndex{-1};
+
+    // ── Colour management (Phase 4.1) ───────────────────────────────────
+    // Read from the source's codec/container tags at open.  Drive the
+    // per-source YUV→RGB conversion (see resolveColorConversion); untagged
+    // sources fall back to the SD/HD height heuristic.  Default values mean
+    // "untagged" so a file with no colour metadata behaves exactly as it did
+    // before this feature (heuristic 709/601, limited range).
+    ColorMatrix   colorMatrix{ColorMatrix::Unspecified};
+    ColorRange    colorRange{ColorRange::Unspecified};
+    ColorTransfer colorTransfer{ColorTransfer::Unspecified};
+    int           colorPrimaries{2};    ///< Raw AVColorPrimaries (2 = unspecified); informational / future gamut work.
 
     // Timebase for PTS conversion
     int         timebaseNum{1};
@@ -95,6 +119,27 @@ struct VideoStreamInfo
         return decodedH / (packedTiles < 2 ? 2 : packedTiles);
     }
 };
+
+/// The conversion decision derived from a VideoStreamInfo's colour tags
+/// (falling back to the SD/HD height heuristic when untagged).  Computed
+/// once and shared by the CPU sws_scale path (ConvertDecodedFrame) and the
+/// GPU convert gate so a clip's frames never mix colourspaces across the
+/// GPU/CPU cache boundary — a mismatch shows as brightness/saturation
+/// flicker as the cache churns between the two producers.
+struct ColorConversion
+{
+    ColorMatrix matrix{ColorMatrix::BT709};
+    bool        fullRange{false};
+    bool        isHdr{false};               ///< PQ/HLG — needs tone-map (4.1c, deferred).
+    bool        isGpuShaderDefault{false};  ///< BT.709 + limited + SDR: exactly what the convert shaders hardcode.
+};
+
+/// Resolve the effective YUV→RGB conversion for `info`.  Pure; FFmpeg-free,
+/// so it is unit-testable and callable from both the core CPU convert path
+/// and the GPU gate.  Untagged sources resolve via the broadcast height
+/// heuristic (≤576 visible lines → BT.601, otherwise BT.709) at limited
+/// range.  See VideoDecoderInit.cpp for where the tags are read.
+[[nodiscard]] ColorConversion resolveColorConversion(const VideoStreamInfo& info) noexcept;
 
 /// Seek mode
 enum class SeekMode : uint8_t

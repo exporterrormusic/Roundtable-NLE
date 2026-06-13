@@ -131,6 +131,15 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             if (m_destroying.load(std::memory_order_acquire)) return;
             applyShotSwitch(groupId, newShotName);
         });
+        // An audio-stream change re-decodes that clip's waveform so the drawn
+        // shape follows the audible stream. (propertyChanged above already
+        // rebuilt the audio sources; it must NOT also re-decode the waveform
+        // on every volume/pan nudge, hence this dedicated signal.)
+        connect(m_propertiesPanel, &PropertiesPanel::audioStreamChanged,
+                this, [this](quint64 clipId) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_timelinePanel) m_timelinePanel->invalidateClipWaveform(clipId);
+        });
     }
 
     // Refresh Program Monitor when Effect Controls change

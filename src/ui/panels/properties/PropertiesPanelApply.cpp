@@ -15,6 +15,9 @@
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
+#include "audio/AudioFile.h"
+#include "AudioStreamLabels.h"
+#include "PathUtils.h"
 #include "timeline/TitleClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/Track.h"
@@ -775,6 +778,27 @@ void PropertiesPanel::populateFromVideo()
 void PropertiesPanel::populateFromAudio()
 {
     auto* ac = static_cast<AudioClip*>(m_clip);
+
+    // Audio stream picker: enumerate the source file's audio streams (header
+    // probe, no decode) and select the clip's current choice. "Auto" = -1 =
+    // legacy best-stream behavior. Disabled when there's only one stream.
+    if (m_audioStreamCombo) {
+        m_audioStreamCombo->blockSignals(true);
+        m_audioStreamCombo->clear();
+        const auto streams = AudioFile::enumerateAudioStreams(utf8ToPath(ac->mediaPath()));
+        m_audioStreamCombo->addItem(tr("Auto (best)"), -1);
+        for (const auto& s : streams)
+            m_audioStreamCombo->addItem(audioStreamLabel(s), s.ordinal);
+        const int want = ac->audioStreamIndex();
+        int sel = 0;  // default to "Auto"
+        for (int i = 0; i < m_audioStreamCombo->count(); ++i) {
+            if (m_audioStreamCombo->itemData(i).toInt() == want) { sel = i; break; }
+        }
+        m_audioStreamCombo->setCurrentIndex(sel);
+        m_audioStreamCombo->setEnabled(streams.size() > 1);
+        m_audioStreamCombo->blockSignals(false);
+    }
+
     m_audioVolumeSpin->setValue(ac->volume().evaluate(0));
     m_panSpin->setValue(ac->pan().evaluate(0));
     m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));

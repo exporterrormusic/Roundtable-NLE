@@ -504,6 +504,64 @@ TEST(AudioFileTest, OpenWavStereo)
     std::filesystem::remove(path);
 }
 
+// ─── Phase 4.4: per-clip audio-stream selection ─────────────────────────────
+// A single-stream WAV exercises enumeration + the ordinal-mapping / graceful
+// fallback paths. True multi-stream SELECTION (decoding the 2nd of 2 streams)
+// needs a muxed multi-track fixture and is covered by the runtime smoke
+// (fable_cleanup.txt §4.4 verification) — the test target has no FFmpeg
+// muxing headers to build one here.
+
+TEST(AudioFileTest, EnumerateAudioStreamsSingleStream)
+{
+    auto sine = generateSine(440.0f, 48000, 0.2f, 2);
+    auto path = testTempDir() / "test_enum.wav";
+    ASSERT_TRUE(writeWavFloat32(path, sine.data(),
+                static_cast<int64_t>(sine.size() / 2), 2, 48000));
+
+    const auto streams = AudioFile::enumerateAudioStreams(path);
+    if (streams.empty()) {
+        std::filesystem::remove(path);
+        GTEST_SKIP() << "FFmpeg unavailable — cannot enumerate audio streams";
+    }
+    ASSERT_EQ(streams.size(), 1u);
+    EXPECT_EQ(streams[0].ordinal, 0);
+    EXPECT_EQ(streams[0].channels, 2);
+    EXPECT_EQ(streams[0].sampleRate, 48000);
+
+    std::filesystem::remove(path);
+}
+
+TEST(AudioFileTest, OpenAudioStreamOrdinalAndFallback)
+{
+    auto sine = generateSine(440.0f, 48000, 0.2f, 1);
+    auto path = testTempDir() / "test_ordinal.wav";
+    ASSERT_TRUE(writeWavFloat32(path, sine.data(),
+                static_cast<int64_t>(sine.size()), 1, 48000));
+
+    // Explicit first audio stream resolves to ordinal 0.
+    AudioFile f0;
+    if (!f0.open(path, 0)) {
+        std::filesystem::remove(path);
+        GTEST_SKIP() << "No audio backend: " << f0.lastError();
+    }
+    EXPECT_TRUE(f0.isOpen());
+    EXPECT_EQ(f0.info().streamOrdinal, 0);
+    f0.close();
+
+    // An out-of-range ordinal (e.g. a relinked/remuxed file with fewer
+    // streams) must gracefully fall back to the best stream, not fail.
+    // ordinal >= 1 forces the FFmpeg backend, so skip if it's unavailable.
+    AudioFile f1;
+    if (!f1.open(path, 99)) {
+        std::filesystem::remove(path);
+        GTEST_SKIP() << "FFmpeg backend unavailable for fallback: " << f1.lastError();
+    }
+    EXPECT_TRUE(f1.isOpen());
+    EXPECT_GT(f1.info().frames, 0);
+
+    std::filesystem::remove(path);
+}
+
 TEST(AudioFileTest, ReadRegion)
 {
     auto sine = generateSine(440.0f, 48000, 1.0f, 1);

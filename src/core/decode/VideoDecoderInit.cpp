@@ -357,6 +357,48 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
     m_info.codecName = codec ? codec->name : "unknown";
 
+    // ── Colour management metadata (Phase 4.1) ───────────────────────────
+    // Translate the source's tagged AVColorSpace / AVColorRange / transfer
+    // into rt:: enums so the rest of the pipeline (resolveColorConversion)
+    // stays FFmpeg-free.  Untagged values stay Unspecified and resolve via
+    // the SD/HD height heuristic at convert time.
+    switch (codecpar->color_space) {
+        case AVCOL_SPC_BT709:        m_info.colorMatrix = ColorMatrix::BT709;  break;
+        case AVCOL_SPC_BT470BG:      // BT.601 625-line (PAL)
+        case AVCOL_SPC_SMPTE170M:    m_info.colorMatrix = ColorMatrix::BT601;  break; // BT.601 525-line (NTSC)
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:    m_info.colorMatrix = ColorMatrix::BT2020; break;
+        case AVCOL_SPC_UNSPECIFIED:  m_info.colorMatrix = ColorMatrix::Unspecified; break;
+        default:                     m_info.colorMatrix = ColorMatrix::Other;  break; // FCC / SMPTE240M / RGB → height heuristic
+    }
+    switch (codecpar->color_range) {
+        case AVCOL_RANGE_MPEG: m_info.colorRange = ColorRange::Limited; break;
+        case AVCOL_RANGE_JPEG: m_info.colorRange = ColorRange::Full;    break;
+        default:               m_info.colorRange = ColorRange::Unspecified; break;
+    }
+    // Deprecated yuvj* pixel formats imply full range even when the stream
+    // leaves color_range unset (some MJPEG paths).  Belt-and-suspenders so
+    // JPEG levels aren't crushed.
+    if (m_info.colorRange == ColorRange::Unspecified) {
+        switch (codecpar->format) {
+            case AV_PIX_FMT_YUVJ420P:
+            case AV_PIX_FMT_YUVJ422P:
+            case AV_PIX_FMT_YUVJ444P:
+            case AV_PIX_FMT_YUVJ440P:
+            case AV_PIX_FMT_YUVJ411P:
+                m_info.colorRange = ColorRange::Full;
+                break;
+            default: break;
+        }
+    }
+    switch (codecpar->color_trc) {
+        case AVCOL_TRC_SMPTE2084:    m_info.colorTransfer = ColorTransfer::PQ;  break;
+        case AVCOL_TRC_ARIB_STD_B67: m_info.colorTransfer = ColorTransfer::HLG; break;
+        case AVCOL_TRC_UNSPECIFIED:  m_info.colorTransfer = ColorTransfer::Unspecified; break;
+        default:                     m_info.colorTransfer = ColorTransfer::Sdr; break;
+    }
+    m_info.colorPrimaries = static_cast<int>(codecpar->color_primaries);
+
     // Alpha channel detection
     bool hasAlpha = false;
     {
@@ -495,6 +537,34 @@ done_open:
                  pathToUtf8(path.filename()), m_info.width, m_info.height,
                  m_info.fps, m_info.duration, m_info.codecName,
                  m_hwAccel ? "GPU-accelerated" : "software");
+    // Colour decision (Phase 4.1): observable in the log so a wrong-colour
+    // report can be traced to the matrix/range chosen.  Warn only for YUV
+    // sources that actually take the non-default CPU sws path; everything
+    // else stays at debug.  RGB sources (PNG/BMP/rgba/gbrp/...) take the
+    // BGRA/RGBA passthrough where the YUV matrix/range never applies, so the
+    // decision is moot for them — warning would just spam the log (still
+    // images reopen per frame-grab).
+    {
+        const ColorConversion cc = resolveColorConversion(m_info);
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(
+            static_cast<AVPixelFormat>(codecpar->format));
+        const bool srcIsRgb = d && (d->flags & AV_PIX_FMT_FLAG_RGB);
+        const char* mtx = (cc.matrix == ColorMatrix::BT601)  ? "BT.601"
+                        : (cc.matrix == ColorMatrix::BT2020) ? "BT.2020"
+                        :                                       "BT.709";
+        if (srcIsRgb || cc.isGpuShaderDefault) {
+            spdlog::debug("VideoDecoder: '{}' colour {} {}{} ({})",
+                          pathToUtf8(path.filename()), mtx,
+                          cc.fullRange ? "full" : "limited",
+                          cc.isHdr ? " HDR" : " SDR",
+                          srcIsRgb ? "RGB passthrough" : "GPU-eligible");
+        } else {
+            spdlog::warn("VideoDecoder: '{}' colour {} {}{} — CPU sws path",
+                         pathToUtf8(path.filename()), mtx,
+                         cc.fullRange ? "full" : "limited",
+                         cc.isHdr ? " HDR(no tone-map yet)" : "");
+        }
+    }
     return true;
 }
 

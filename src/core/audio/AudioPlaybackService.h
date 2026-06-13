@@ -159,7 +159,10 @@ private:
     std::mutex m_warmFilesMutex;
     std::unordered_map<std::string, std::unique_ptr<AudioFile>> m_warmFiles;
 
-    /// Resolve (or open + insert) the persistent AudioFile for `path`.
+    /// Resolve (or open + insert) the persistent AudioFile for `path` decoding
+    /// audio-stream ordinal `audioStreamOrdinal` (-1 = auto/best). The cache is
+    /// keyed by (ordinal, path) so two clips on different streams of the SAME
+    /// file get distinct decoders instead of aliasing one another's PCM.
     /// Returns nullptr on open failure.  Safe to call from any thread;
     /// the map mutex is held only for the lookup / insertion — the
     /// AudioFile's own internal mutex (see AudioFile.h "Thread-safe:
@@ -176,7 +179,7 @@ private:
     /// visible in logs/perf_log.txt at 20:43:46-50.  Both paths now
     /// share this method, so a single sndfile+FFmpeg probe is paid
     /// once per source file per project session.
-    AudioFile* getOrOpenCachedAudioFile(const std::string& path);
+    AudioFile* getOrOpenCachedAudioFile(const std::string& path, int audioStreamOrdinal);
 };
 
 } // namespace rt

@@ -93,15 +93,25 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
                 dstW, dstH, AV_PIX_FMT_BGRA,
                 SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
             if (ctx) {
-                // Pin BT.709 limited→full so every CPU path produces the
-                // SAME RGB as the GPU Nv12Converter shaders.  swscale
-                // defaults to BT.601; a cache that mixes BT.601 and BT.709
-                // frames for the same media flickers in brightness /
-                // saturation as it churns.  srcRange=0 (studio swing in),
-                // dstRange=1 (full-range RGB out).
+                // Per-source colourspace (Phase 4.1).  swscale defaults to
+                // BT.601 for everything; instead we derive the matrix + range
+                // from the source's tags (resolveColorConversion) so SD/BT.601,
+                // full-range JPEG, and BT.2020 content convert correctly rather
+                // than all being forced through 709-limited.  The GPU convert
+                // path runs only for the 709-limited-SDR case (see the gate in
+                // convertDecodedToCacheGpu) and defers everything else here, so
+                // a clip's frames never mix matrices across the CPU/GPU cache
+                // boundary.  dstRange=1 = full-range RGB out (unchanged).
                 if (srcFmt != AV_PIX_FMT_BGRA && srcFmt != AV_PIX_FMT_RGBA) {
-                    const int* t = sws_getCoefficients(SWS_CS_ITU709);
-                    sws_setColorspaceDetails(ctx, t, /*srcRange=*/0,
+                    const ColorConversion cc = resolveColorConversion(info);
+                    int swsCs = SWS_CS_ITU709;
+                    switch (cc.matrix) {
+                        case ColorMatrix::BT601:  swsCs = SWS_CS_ITU601;  break;
+                        case ColorMatrix::BT2020: swsCs = SWS_CS_BT2020;  break;
+                        default:                  swsCs = SWS_CS_ITU709;  break;
+                    }
+                    const int* t = sws_getCoefficients(swsCs);
+                    sws_setColorspaceDetails(ctx, t, /*srcRange=*/cc.fullRange ? 1 : 0,
                                              t, /*dstRange=*/1,
                                              0, 1 << 16, 1 << 16);
                 }

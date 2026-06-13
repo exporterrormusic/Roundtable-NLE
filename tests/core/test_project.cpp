@@ -306,6 +306,7 @@ protected:
         audio1->setSampleRate(44100);
         audio1->setChannels(1);
         audio1->setSourceDuration(192000);
+        audio1->setAudioStreamIndex(2);   // v27: non-default audio stream
         audio1->setFadeInDuration(2400);
         audio1->setFadeOutDuration(4800);
         audio1->setTimelineIn(0);
@@ -611,8 +612,38 @@ TEST_F(SerializerTest, AudioClipRoundTrip)
     EXPECT_EQ(ac->sampleRate(), 44100u);
     EXPECT_EQ(ac->channels(), 1u);
     EXPECT_EQ(ac->sourceDuration(), 192000);
+    EXPECT_EQ(ac->audioStreamIndex(), 2);   // v27 per-clip audio stream
     EXPECT_EQ(ac->fadeInDuration(), 2400);
     EXPECT_EQ(ac->fadeOutDuration(), 4800);
+}
+
+// A clip that never had a stream chosen (and every pre-v27 project) must
+// load as -1 = auto/best, reproducing the legacy single-stream behavior.
+TEST_F(SerializerTest, AudioClipDefaultStreamIsAuto)
+{
+    auto p = std::make_unique<Project>();
+    auto* tl = p->timeline();
+    auto* at = tl->addAudioTrack("Audio 1");
+    auto audio = std::make_unique<AudioClip>();
+    audio->setMediaPath("audio/voice.wav");
+    audio->setDuration(48000);
+    // Note: audioStreamIndex left at its constructed default.
+    EXPECT_EQ(audio->audioStreamIndex(), -1);
+    at->addClip(std::move(audio));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    const AudioClip* ac = nullptr;
+    for (size_t ti = 0; ti < loaded->timeline()->trackCount() && !ac; ++ti) {
+        auto* tr = loaded->timeline()->track(ti);
+        for (size_t ci = 0; ci < tr->clipCount(); ++ci) {
+            if (auto* a = dynamic_cast<AudioClip*>(tr->clip(ci))) { ac = a; break; }
+        }
+    }
+    ASSERT_NE(ac, nullptr);
+    EXPECT_EQ(ac->audioStreamIndex(), -1);
 }
 
 TEST_F(SerializerTest, AdjustmentClipRoundTrip)

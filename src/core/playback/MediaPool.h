@@ -64,6 +64,15 @@ struct MediaEntry
     VideoStreamInfo                info;
     int                            refCount{0};
 
+    /// On-disk mtime captured when this entry's stream info was last probed.
+    /// open() compares it to the current mtime and re-probes when they differ,
+    /// so stream info (hasAudio, dimensions, fps) self-heals when a file is
+    /// regenerated in place — e.g. a converted "_H264" file re-rendered with
+    /// audio.  Without this, open() dedups purely by path and the stale info
+    /// (and thus the drag-ghost / drop audio companion) persists for the whole
+    /// session.  Default {} means "unknown" — never triggers a re-probe.
+    std::filesystem::file_time_type lastWriteTime{};
+
     // Sequential-decode tracking (avoids expensive seek for sequential playback)
     int64_t                        lastDecodedFrame{-1};
 

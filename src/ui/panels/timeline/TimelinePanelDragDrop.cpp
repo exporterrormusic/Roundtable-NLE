@@ -522,13 +522,34 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         // shows when the cursor leaves the existing tracks (e.g. dragging
         // above the topmost video to create a new track).
         bool mediaHasAudio = false;
-        if (!isAudio && m_mediaPool && !handleTokens.isEmpty()) {
-            bool firstOk = false;
-            uint64_t firstH = handleTokens.first().toULongLong(&firstOk);
-            if (firstOk && firstH != 0) {
-                const auto* info = m_mediaPool->getInfo(firstH);
-                if (info && info->hasAudio)
-                    mediaHasAudio = true;
+        if (!isAudio && m_mediaPool) {
+            // Resolve the first dragged item's path and open() it — not just
+            // getInfo() on the cached handle.  open() self-heals stale stream
+            // info for a file regenerated in place (e.g. a converted "_H264"
+            // re-rendered with audio), and a missing/zero handle still
+            // resolves by path.  This mirrors what the actual drop does
+            // (DropControllerMediaDrop opens the path), so the ghost's audio
+            // lane matches the companion clip the drop will create.  The file
+            // is already open here (from import or the duration loop above),
+            // so this hits MediaPool's cheap fast path; release() balances the
+            // refcount the open() takes.
+            std::string firstPath;
+            if (!handleTokens.isEmpty()) {
+                bool ok = false;
+                uint64_t h = handleTokens.first().toULongLong(&ok);
+                if (ok && h != 0)
+                    firstPath = pathToUtf8(m_mediaPool->getPath(h));
+            }
+            if (firstPath.empty() && !urls.isEmpty())
+                firstPath = urls.first().toLocalFile().toStdString();
+            if (!firstPath.empty()) {
+                uint64_t h = m_mediaPool->open(firstPath);
+                if (h != 0) {
+                    const auto* info = m_mediaPool->getInfo(h);
+                    if (info && info->hasAudio)
+                        mediaHasAudio = true;
+                    m_mediaPool->release(h);
+                }
             }
         }
         // Video-only drag never spawns the companion audio clip.

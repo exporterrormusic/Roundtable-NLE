@@ -67,6 +67,7 @@ struct CachedAudioPageRequest {
     std::string cacheKey;
     int64_t startFrame{0};
     int64_t frameCount{0};
+    int      audioStreamOrdinal{-1};
 };
 
 struct CachedAudioRegionView {
@@ -128,12 +129,18 @@ private:
     std::atomic<std::shared_ptr<const TimelineAudioProviderState>> m_state;
 };
 
-std::string makeAudioPageCacheKey(const std::string& path, int64_t startFrame)
+// Decode-page cache key. MUST stay byte-identical to the copy in
+// AudioPlaybackServiceCache.cpp — the prefetch thread populates m_decodeCache
+// and loadSources reads it, keyed by this string. The audio-stream ordinal is
+// part of the key so two clips on different streams of one file never alias.
+std::string makeAudioPageCacheKey(const std::string& path, int audioStreamOrdinal,
+                                  int64_t startFrame)
 {
-    return path + "|" + std::to_string(startFrame);
+    return path + "|" + std::to_string(audioStreamOrdinal) + "|" + std::to_string(startFrame);
 }
 
 std::vector<CachedAudioPageRequest> makeAudioPageRequests(const std::string& path,
+                                                          int audioStreamOrdinal,
                                                           int64_t startFrame,
                                                           int64_t frameCount)
 {
@@ -147,9 +154,10 @@ std::vector<CachedAudioPageRequest> makeAudioPageRequests(const std::string& pat
     for (int64_t pageStart = firstPageStart; pageStart < regionEndFrame; pageStart += kAudioDecodePageFrames) {
         requests.push_back(CachedAudioPageRequest{
             path,
-            makeAudioPageCacheKey(path, pageStart),
+            makeAudioPageCacheKey(path, audioStreamOrdinal, pageStart),
             pageStart,
-            kAudioDecodePageFrames
+            kAudioDecodePageFrames,
+            audioStreamOrdinal
         });
     }
     return requests;
@@ -551,8 +559,9 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
             int64_t cachedFrames = 0;
             if (region) {
                 const uint64_t requestCount = m_cacheRequests.fetch_add(1, std::memory_order_relaxed) + 1;
+                const int audioOrdinal = audioClip->audioStreamIndex();
                 const auto pageRequests = makeAudioPageRequests(
-                    path, region->sourceStartFrame, region->sourceFrameCount);
+                    path, audioOrdinal, region->sourceStartFrame, region->sourceFrameCount);
                 {
                     std::lock_guard<std::mutex> lock(m_decodeMutex);
                     CachedAudioRegionView cachedRegion;
@@ -587,7 +596,7 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                         // 3.4 s stall and the subsequent
                         // COMPOSITE-SLOW cascade.  Cache lookup is
                         // near-zero cost on the steady state.
-                        AudioFile* file = getOrOpenCachedAudioFile(path);
+                        AudioFile* file = getOrOpenCachedAudioFile(path, audioOrdinal);
                         if (!file) {
                             // getOrOpenCachedAudioFile already logged
                             // the open failure; no need to spam here.

@@ -153,20 +153,27 @@ void AudioPlaybackService::ensureSourcesLoaded()
 
 // ---- Persistent AudioFile cache --------------------------------------------
 
-AudioFile* AudioPlaybackService::getOrOpenCachedAudioFile(const std::string& path)
+AudioFile* AudioPlaybackService::getOrOpenCachedAudioFile(const std::string& path,
+                                                          int audioStreamOrdinal)
 {
+    // Key by (ordinal, path): distinct streams of the same file must NOT share
+    // one AudioFile, or two clips picking different streams would swap PCM.
+    // The ordinal prefix makes the key injective regardless of path contents.
+    const std::string key = std::to_string(audioStreamOrdinal) + "|" + path;
+
     std::lock_guard<std::mutex> lock(m_warmFilesMutex);
-    auto it = m_warmFiles.find(path);
+    auto it = m_warmFiles.find(key);
     if (it != m_warmFiles.end())
         return it->second.get();
 
     auto fresh = std::make_unique<AudioFile>();
-    if (!fresh->open(path)) {
-        spdlog::warn("AudioPlaybackService: failed to open '{}'", path);
+    if (!fresh->open(path, audioStreamOrdinal)) {
+        spdlog::warn("AudioPlaybackService: failed to open '{}' (audio stream {})",
+                     path, audioStreamOrdinal);
         return nullptr;
     }
     AudioFile* raw = fresh.get();
-    m_warmFiles.emplace(path, std::move(fresh));
+    m_warmFiles.emplace(key, std::move(fresh));
     return raw;
 }
 

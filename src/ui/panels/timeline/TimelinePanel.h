@@ -169,6 +169,12 @@ public:
     /// deletes, cuts, pastes within existing tracks, razor).
     void refreshTrackContents();
 
+    /// Drop one clip's cached waveform peaks so loadWaveforms() re-decodes the
+    /// (media path, audio-stream ordinal) it now points at. Call when a clip's
+    /// chosen audio stream changes so the drawn waveform follows the audible
+    /// stream.
+    void invalidateClipWaveform(uint64_t clipId);
+
     /// Ensure a single divider track sits between the video and audio
     /// sections (Premiere-style). Mutates the timeline model; call before
     /// (re)building track widgets.
@@ -619,9 +625,9 @@ private:
 
     /// Load waveform peaks for all audio clips.
     void loadWaveforms();
-    void queueWaveformLoad(const std::string& path);
+    void queueWaveformLoad(const std::string& path, int audioStreamOrdinal);
     void applyWaveformPeaks(uint64_t generation,
-                            const std::string& path,
+                            const std::string& key,
                             std::vector<float> peaks);
 
     /// Load video thumbnails for all video clips (decode runs on a background

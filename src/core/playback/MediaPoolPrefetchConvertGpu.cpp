@@ -256,6 +256,18 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     if (!wgs.ready())                                  return nullptr;
     if (!m_prefetchTexPool)                            return nullptr;
 
+    // ── Colourspace gate (Phase 4.1) ────────────────────────────────────
+    // The convert shaders (nv12/yuv420p/p010/yuva444p12) hardcode the BT.709
+    // matrix + studio-swing range + SDR transfer.  Sources tagged otherwise —
+    // BT.601 SD, full-range JPEG, BT.2020/HDR — must take the CPU sws_scale
+    // path, which honours the source's actual matrix/range (see
+    // ConvertDecodedFrame.cpp).  Bailing here also keeps a clip's frames from
+    // mixing a GPU-709 frame with a CPU-601 frame in the same cache, which
+    // would flicker.  resolveColorConversion is the SAME decision the CPU
+    // path makes, so the GPU/CPU split is clean per-clip.
+    if (!resolveColorConversion(task.info).isGpuShaderDefault)
+        return nullptr;   // → caller falls back to convertDecodedToCache (CPU)
+
     // Packed-alpha sources (Wells and other video characters) used to bail
     // here, which forced them onto the CPU bounce path (transferHardwareFrame
     // + sws_scale + per-frame PCIe re-upload).  That's the dominant cost on

@@ -44,14 +44,19 @@ struct CachedAudioPageRequest {
     std::string cacheKey;
     int64_t startFrame{0};
     int64_t frameCount{0};
+    int      audioStreamOrdinal{-1};
 };
 
-std::string makeAudioPageCacheKey(const std::string& path, int64_t startFrame)
+// MUST stay byte-identical to the copy in AudioPlaybackServiceLoad.cpp: this
+// background thread populates m_decodeCache, loadSources reads it by this key.
+std::string makeAudioPageCacheKey(const std::string& path, int audioStreamOrdinal,
+                                  int64_t startFrame)
 {
-    return path + "|" + std::to_string(startFrame);
+    return path + "|" + std::to_string(audioStreamOrdinal) + "|" + std::to_string(startFrame);
 }
 
 std::vector<CachedAudioPageRequest> makeAudioPageRequests(const std::string& path,
+                                                          int audioStreamOrdinal,
                                                           int64_t startFrame,
                                                           int64_t frameCount)
 {
@@ -65,9 +70,10 @@ std::vector<CachedAudioPageRequest> makeAudioPageRequests(const std::string& pat
     for (int64_t pageStart = firstPageStart; pageStart < regionEndFrame; pageStart += kAudioDecodePageFrames) {
         requests.push_back(CachedAudioPageRequest{
             path,
-            makeAudioPageCacheKey(path, pageStart),
+            makeAudioPageCacheKey(path, audioStreamOrdinal, pageStart),
             pageStart,
-            kAudioDecodePageFrames
+            kAudioDecodePageFrames,
+            audioStreamOrdinal
         });
     }
     return requests;
@@ -228,6 +234,7 @@ void AudioPlaybackService::warmCacheAsync()
         std::string cacheKey;
         int64_t startFrame{0};
         int64_t frameCount{0};
+        int      audioStreamOrdinal{-1};
     };
     std::vector<PendingPage> uncachedPages;
     const auto audioWindows = prefetchTimelineAudioWindows(m_playbackController);
@@ -246,13 +253,15 @@ void AudioPlaybackService::warmCacheAsync()
                     if (path.empty()) continue;
                     const auto region = computeTimelineAudioRegion(*audioClip, &audioWindow);
                     if (!region) continue;
+                    const int audioOrdinal = audioClip->audioStreamIndex();
                     const auto pageRequests = makeAudioPageRequests(
-                        path, region->sourceStartFrame, region->sourceFrameCount);
+                        path, audioOrdinal, region->sourceStartFrame, region->sourceFrameCount);
                     for (const auto& request : pageRequests) {
                         if (m_decodeCache.find(request.cacheKey) == m_decodeCache.end()) {
                             uncachedPages.push_back(PendingPage{
                                 request.path, request.cacheKey,
-                                request.startFrame, request.frameCount
+                                request.startFrame, request.frameCount,
+                                request.audioStreamOrdinal
                             });
                         }
                     }
@@ -290,7 +299,7 @@ void AudioPlaybackService::warmCacheAsync()
                 // (UPGRADE_PLAN item 4) so a single source file is
                 // probed once per project session, regardless of how
                 // many code paths touch its audio.
-                AudioFile* file = getOrOpenCachedAudioFile(page.path);
+                AudioFile* file = getOrOpenCachedAudioFile(page.path, page.audioStreamOrdinal);
                 if (!file) continue;
 
                 auto buffer = std::make_shared<std::vector<float>>();

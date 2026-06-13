@@ -420,6 +420,10 @@ void writeAudioFields(BinaryWriter& w, const Clip& clip)
     writeKeyframeTrack(w, const_cast<AudioClip&>(ac).pan());
     w.writeI64(ac.fadeInDuration());
     w.writeI64(ac.fadeOutDuration());
+    // v27: chosen audio-stream ordinal (-1 = auto/best). Appended at the end
+    // so the byte layout stays forward-compatible; no writeI32 exists so the
+    // int round-trips through writeU32 (-1 <-> 0xFFFFFFFF).
+    w.writeU32(static_cast<uint32_t>(ac.audioStreamIndex()));
 }
 
 void readAudioFields(BinaryReader& r, Clip& clip, uint32_t version)
@@ -434,6 +438,10 @@ void readAudioFields(BinaryReader& r, Clip& clip, uint32_t version)
     readKeyframeTrack(r, ac->pan(), version);
     ac->setFadeInDuration(r.readI64());
     ac->setFadeOutDuration(r.readI64());
+    // v27: chosen audio-stream ordinal. Pre-v27 projects leave it at -1
+    // (auto/best), so they load byte-identically in effect.
+    if (version >= 27)
+        ac->setAudioStreamIndex(static_cast<int32_t>(r.readU32()));
 }
 
 // ── Title ──────────────────────────────────────────────────────────────────

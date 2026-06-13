@@ -55,7 +55,17 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     auto canonical = std::filesystem::canonical(filePath, ec);
     std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
 
+    // Current on-disk mtime (one stat; canonical() above already did I/O on
+    // this path).  Used to self-heal stale stream info when a file is
+    // regenerated in place.  On a missing file canonical() fails → wtEc set →
+    // haveWriteTime=false, so the self-heal never false-triggers.
+    std::error_code wtEc;
+    const auto currentWriteTime =
+        std::filesystem::last_write_time(ec ? filePath : canonical, wtEc);
+    const bool haveWriteTime = !wtEc;
+
     // ── Fast path: already open or known-failed? ─────────────────────
+    bool needsReprobe = false;
     {
         std::lock_guard lock(m_mutex);
 
@@ -69,13 +79,45 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         if (pathIt != m_pathToHandle.end()) {
             auto entryIt = m_entries.find(pathIt->second);
             if (entryIt != m_entries.end()) {
-                entryIt->second.refCount++;
-                spdlog::debug("MediaPool: reusing handle {} for '{}' (refCount={})",
-                              pathIt->second, pathToUtf8(filePath.filename()),
-                              entryIt->second.refCount);
-                return pathIt->second;
+                // Self-heal: if the file changed on disk since we cached it
+                // (a converted/_H264 file re-rendered in place; or a change
+                // the live file-swap watcher didn't catch), re-probe so
+                // entry.info — hasAudio, dimensions, fps — is current instead
+                // of stale for the whole session.
+                const bool fileChanged = haveWriteTime
+                    && entryIt->second.lastWriteTime != std::filesystem::file_time_type{}
+                    && currentWriteTime != entryIt->second.lastWriteTime;
+                if (!fileChanged) {
+                    entryIt->second.refCount++;
+                    spdlog::debug("MediaPool: reusing handle {} for '{}' (refCount={})",
+                                  pathIt->second, pathToUtf8(filePath.filename()),
+                                  entryIt->second.refCount);
+                    return pathIt->second;
+                }
+                needsReprobe = true;
             }
         }
+    }
+
+    // File regenerated in place — re-point the SAME handle at the new content.
+    // invalidatePath refreshes entry.info + reopens the decoder + evicts the
+    // CPU/disk frame caches, keeping the handle valid so existing clip/handle
+    // holders keep working.  Done OUTSIDE m_mutex (invalidatePath takes it).
+    if (needsReprobe) {
+        MediaHandle h = invalidatePath(filePath, /*reopenDecoder=*/true);
+        if (h != InvalidMedia) {
+            std::lock_guard lock(m_mutex);
+            auto entryIt = m_entries.find(h);
+            if (entryIt != m_entries.end()) {
+                entryIt->second.refCount++;
+                spdlog::warn("MediaPool: '{}' changed on disk — re-probed stale "
+                             "stream info (handle {}, hasAudio now {})",
+                             pathToUtf8(filePath.filename()), h,
+                             entryIt->second.info.hasAudio);
+                return h;
+            }
+        }
+        // Entry vanished during re-probe — fall through to a fresh open below.
     }
 
     // ── Slow path: open decoder WITHOUT holding the mutex ────────────
@@ -224,6 +266,13 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
     entry.packedAlpha = entry.info.packedAlpha;  // propagate packed-alpha detection
     entry.decoder     = std::move(decoder);
     entry.refCount    = 1;
+    // Capture the actually-opened file's mtime so open() can detect a later
+    // in-place regeneration and re-probe (see MediaEntry::lastWriteTime).
+    {
+        std::error_code wec;
+        auto wt = std::filesystem::last_write_time(actualPath, wec);
+        if (!wec) entry.lastWriteTime = wt;
+    }
 
     spdlog::info("MediaPool: opened '{}' handle={} ({}x{}, {:.2f}fps, {:.1f}s, {} frames, hw={})",
                  pathToUtf8(actualPath.filename()), handle,
@@ -468,6 +517,11 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
             if (entry.decoder->open(entry.path)) {
                 entry.info        = entry.decoder->info();
                 entry.packedAlpha = entry.info.packedAlpha;
+                // Track the refreshed file's mtime so open() doesn't re-probe
+                // the same change again on its next call.
+                std::error_code wec;
+                auto wt = std::filesystem::last_write_time(entry.path, wec);
+                if (!wec) entry.lastWriteTime = wt;
             } else {
                 spdlog::warn("MediaPool: invalidate reopen failed for '{}' "
                              "(handle {}) — will retry on next getFrame",
