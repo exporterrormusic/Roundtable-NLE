@@ -52,7 +52,7 @@ PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
     // frames resident (smoother scrub-back over already-seen footage) than
     // the one-size-fits-the-weakest-machine floor — WITHOUT the aggressive
     // sizing that thrashed VRAM on a busy timeline.  Cache fields left at 0
-    // fall through to CacheCoordinator's existing conservative formula.
+    // fall through to CachePolicy's existing conservative formula.
     //
     // Deliberately conservative:
     //   • Only the cache working set scales — the throughput knobs
@@ -72,9 +72,9 @@ PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
     // textures vary wildly (1080p ≈ 8 MB, a tall packed-alpha clip ≈ 16 MB),
     // so an entry count can't predict VRAM use.  The entry cap is set high
     // enough that the byte budget is the binding limit.  Values are a modest
-    // step above CacheCoordinator's ~2 GB / ~1 GB floor, with lots of VRAM/RAM
+    // step above CachePolicy's ~2 GB / ~1 GB floor, with lots of VRAM/RAM
     // headroom left.
-    size_t gpuBudget    = 0;   // 0 ⇒ CacheCoordinator's conservative default
+    size_t gpuBudget    = 0;   // 0 ⇒ CachePolicy's conservative default
     size_t gpuEntryCap  = 0;
     size_t frameBudget  = 0;
     size_t frameEntries = 0;

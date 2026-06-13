@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "PathUtils.h"
+#include "ProjectController.h"
 #include "ShortcutManager.h"
 
 // Composite service (for modal-dialog compositor suppression)
@@ -611,7 +612,7 @@ void MainWindow::buildPanels()
 
         // MainWindow takes ownership of the auto-created project
         m_currentProject.reset(project);
-        m_lastSavedAudioSyncBlob = {};
+        m_projectController->clearLastSavedAudioSyncBlob();
         if (m_currentProject->timeline()) {
             m_timeline = m_currentProject->timeline();
             if (m_timelineWorkspace)

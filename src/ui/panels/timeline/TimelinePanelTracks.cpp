@@ -131,7 +131,7 @@ void TimelinePanel::rebuildTracks()
                 return true;
             for (size_t ci = 0; ci < t->clipCount(); ++ci) {
                 const Clip* c = t->clip(ci);
-                if (c && c->clipType() == ClipType::Caption) return true;
+                if (c && c->isCaption()) return true;
             }
             return false;
         };

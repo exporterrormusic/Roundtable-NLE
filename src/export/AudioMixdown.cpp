@@ -91,7 +91,7 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
         // Process each audio clip in this track
         for (size_t ci = 0; ci < track->clipCount(); ++ci) {
             const Clip* clip = track->clip(ci);
-            if (!clip || clip->clipType() != ClipType::Audio) continue;
+            if (!clip || !clip->isAudio()) continue;
 
             // Get clip timing relative to render range
             const double clipStartSec = ticksToSeconds(clip->timelineIn());
@@ -177,19 +177,21 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                 continue;
             }
 
-            uint32_t srcRate = audioFile.info().sampleRate;
-            uint16_t srcCh   = audioFile.info().channels;
+            uint16_t srcCh = audioFile.info().channels;
 
-            int64_t srcStartFrame = static_cast<int64_t>(sourceStartSec * srcRate);
-            int64_t srcFrameCount = static_cast<int64_t>(
-                static_cast<double>(mixFrameCount) * srcRate / config.sampleRate);
+            // Read the region in the OUTPUT sample-rate domain.
+            // readRegionResampled converts through swresample (windowed
+            // sinc) when the source rate differs — the old path read raw
+            // source-rate samples and nearest-neighbor-mapped them during
+            // mixing, which aliased every 44.1 kHz source in a 48 kHz
+            // export (fable_cleanup.txt §5.5).
+            int64_t mixDomainStart = static_cast<int64_t>(
+                sourceStartSec * config.sampleRate);
+            if (mixDomainStart < 0) mixDomainStart = 0;
 
-            if (srcStartFrame < 0) srcStartFrame = 0;
-            if (srcFrameCount <= 0) continue;
-
-            // Read the audio region
             std::vector<float> srcSamples;
-            int64_t framesRead = audioFile.readRegion(srcStartFrame, srcFrameCount, srcSamples);
+            int64_t framesRead = audioFile.readRegionResampled(
+                mixDomainStart, mixFrameCount, config.sampleRate, srcSamples);
             if (framesRead <= 0) continue;
 
             // ── Apply audio effects (channel fill) on stereo ────────────
@@ -209,9 +211,10 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             }
 
             // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────
+            // Samples are already in the output sample-rate domain.
             if (aclip->audioFx().isActive()) {
                 auto chain = aclip->audioFx().clone();
-                chain.prepare(srcRate, srcCh);
+                chain.prepare(config.sampleRate, srcCh);
                 chain.process(srcSamples.data(), static_cast<int>(framesRead));
             }
 
@@ -221,9 +224,8 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             const double fadeInSec  = ticksToSeconds(aclip->fadeInDuration());
             const double fadeOutSec = ticksToSeconds(aclip->fadeOutDuration());
 
-            // Pre-compute fade gains for each source frame
-            const int64_t framesToMix = std::min(mixFrameCount,
-                static_cast<int64_t>(framesRead * config.sampleRate / srcRate));
+            // Pre-compute fade gains for each frame (output-rate domain)
+            const int64_t framesToMix = std::min(mixFrameCount, framesRead);
             std::vector<float> fadeGains(static_cast<size_t>(framesToMix), 1.0f);
 
             for (int64_t f = 0; f < framesToMix; ++f) {
@@ -284,8 +286,9 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             const float panL = std::min(1.0f, 1.0f - clipPan);
             const float panR = std::min(1.0f, 1.0f + clipPan);
 
-            if (srcRate == config.sampleRate && srcCh == config.channels) {
-                // Fast path: same rate, same channels
+            if (srcCh == config.channels) {
+                // Fast path: same channel count (rate already matches —
+                // readRegionResampled delivered output-rate samples)
                 if (config.channels == 2) {
                     for (int64_t f = 0; f < actualMix; ++f) {
                         int64_t si = f * 2;
@@ -309,16 +312,14 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                     }
                 }
             } else {
-                // General path: resampling + channel mapping
+                // General path: channel mapping (rate already matches)
                 for (int64_t f = 0; f < actualMix; ++f) {
-                    int64_t srcIdx = static_cast<int64_t>(
-                        static_cast<double>(f) * srcRate / config.sampleRate);
-                    if (srcIdx >= framesRead) break;
+                    if (f >= framesRead) break;
 
                     const float g = fadeGains[static_cast<size_t>(f)] * volume;
                     for (uint16_t ch = 0; ch < config.channels; ++ch) {
                         uint16_t srcChan = (ch < srcCh) ? ch : 0;
-                        int64_t si = srcIdx * srcCh + srcChan;
+                        int64_t si = f * srcCh + srcChan;
                         int64_t di = f * config.channels + ch;
                         if (si < static_cast<int64_t>(srcSamples.size()) &&
                             (mixStartFrame * config.channels + di) <

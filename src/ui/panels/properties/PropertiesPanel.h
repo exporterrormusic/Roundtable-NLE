@@ -232,6 +232,14 @@ private:
 
     void showSectionsForType();
     void populateFromClip();
+    // Per-type section populate helpers, dispatched from populateFromClip()
+    // (PngPuppet and Caption have theirs in their own TUs: populateFromPuppet
+    // / populateFromCaption).
+    void populateFromSpine();
+    void populateFromVideo();
+    void populateFromAudio();
+    void populateFromTitle();
+    void populateFromGraphic();
     void populateFromTransition();
     void updateShotSection();
     void onShotChanged(const std::string& newShotName);

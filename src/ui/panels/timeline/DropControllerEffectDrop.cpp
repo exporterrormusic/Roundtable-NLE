@@ -189,7 +189,7 @@ void DropController::wireEffectDropSignals()
             size_t clipIdx = track->findClipIndexById(clipId);
             if (clipIdx == SIZE_MAX) return;
             auto* clip = track->clip(clipIdx);
-            if (!clip || clip->clipType() != ClipType::Audio) return;
+            if (!clip || !clip->isAudio()) return;
             auto* aclip = static_cast<AudioClip*>(clip);
             const auto kind = static_cast<audiofx::ProcessorKind>(kindInt);
 

@@ -388,6 +388,12 @@ void MainWindow::engageLoadingOverlay(const QString& message)
     m_loadingWatchdog->start(30000);
 }
 
+void MainWindow::setLoadingOverlayText(const QString& message)
+{
+    if (m_loadingOverlayLabel)
+        m_loadingOverlayLabel->setText(message);
+}
+
 void MainWindow::disengageLoadingOverlay()
 {
     if (m_loadingWatchdog) m_loadingWatchdog->stop();

@@ -674,7 +674,7 @@ void OverlayController::wireOverlayToolSignals()
 
             // Caption clip selected → edit the caption's text in place,
             // just like a graphic text layer.
-            if (m_ws->m_selection.clip && m_ws->m_selection.clip->clipType() == ClipType::Caption) {
+            if (m_ws->m_selection.clip && m_ws->m_selection.clip->isCaption()) {
                 auto* cc = static_cast<CaptionClip*>(m_ws->m_selection.clip);
                 m_preEditOriginalText = cc->text();
                 m_inlineTextEditActive = true;
@@ -788,7 +788,7 @@ void OverlayController::wireOverlayToolSignals()
             if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
 
             // Caption clip: commit the edited text back to the caption.
-            if (m_ws->m_selection.clip && m_ws->m_selection.clip->clipType() == ClipType::Caption) {
+            if (m_ws->m_selection.clip && m_ws->m_selection.clip->isCaption()) {
                 auto* cc = static_cast<CaptionClip*>(m_ws->m_selection.clip);
                 const std::string newVal = newText.toStdString();
                 const std::string oldVal = m_preEditOriginalText;

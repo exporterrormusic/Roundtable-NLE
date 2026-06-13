@@ -10,7 +10,7 @@
 
 #include "CompositeEngine.h"
 #include "render_graph/GpuRenderGraph.h"
-#include "cache/CacheCoordinator.h"
+#include "cache/CachePolicy.h"
 #include "StagingRing.h"
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
 #include "CompositeServiceBlend.h"       // rasterizeMasks
@@ -196,9 +196,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         const auto memStats = ctx.allocator().queryStats();
         const size_t gpuVram = memStats.deviceLocalBudgetBytes;
         size_t budget;
-        if (m_cacheCoordinator) {
-            budget = m_cacheCoordinator->recommendedGpuTexCacheBudget(gpuVram);
-            m_cacheCoordinator->onGpuAvailable(gpuVram);
+        if (m_cachePolicy) {
+            budget = m_cachePolicy->recommendedGpuTexCacheBudget(gpuVram);
+            m_cachePolicy->onGpuAvailable(gpuVram);
         } else {
             budget = std::clamp<size_t>(
                 gpuVram / 4, 512ull * 1024 * 1024, 8ull * 1024 * 1024 * 1024);
@@ -206,16 +206,16 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         m_gpuTexCache = std::make_unique<GpuTextureCache>(budget);
         // UPGRADE_PLAN 2026-05-22 v3 — Premiere-style bounded working
         // set.  Cap the entry count to a small absolute number, not a
-        // percentage of VRAM.  CacheCoordinator computes the recommended
+        // percentage of VRAM.  CachePolicy computes the recommended
         // value based on installed VRAM but stays in the 40-180 range
         // even on 24 GB cards.  Without this cap the texture cache
         // grew unbounded (1469 entries / 11.5 GB observed at the 50s
         // mark in 21:51 perf logs), VMA-tracked VRAM crossed the OS
         // budget, and the driver started paging textures to system
         // RAM — submit stalls 50-250 ms / frame.
-        if (m_cacheCoordinator) {
+        if (m_cachePolicy) {
             const size_t maxEntries =
-                m_cacheCoordinator->recommendedGpuTexCacheMaxEntries(gpuVram);
+                m_cachePolicy->recommendedGpuTexCacheMaxEntries(gpuVram);
             m_gpuTexCache->setMaxEntries(maxEntries);
             spdlog::info("[PERF] GpuTexCache max entries: {} "
                          "(Premiere-style bounded working set)",
@@ -226,8 +226,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // (see GpuContext::registerGpuTextureCache rationale).  Cleared
         // in shutdown() / clearTextureCache().
         ctx.registerGpuTextureCache(m_gpuTexCache.get());
-        if (m_cacheCoordinator) {
-            m_cacheCoordinator->setVramPressureFn(
+        if (m_cachePolicy) {
+            m_cachePolicy->setVramPressureFn(
                 [this](size_t* budgetOut) -> bool {
                     if (!m_gpuTexCache) return false;
                     *budgetOut = m_gpuTexCache->budget();
@@ -266,12 +266,12 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     return vmaUsage > 0.85;
                 });
             // Bidirectional pressure: when the CPU FrameCache is over its
-            // high-water mark, CacheCoordinator calls this to shrink the
+            // high-water mark, CachePolicy calls this to shrink the
             // GPU budget (which evicts cold textures and releases their
             // shared_ptr ownerships).  GpuTextureCache::setBudget triggers
             // eviction down to the new size.  Called back to restore the
             // original budget when CPU pressure subsides.
-            m_cacheCoordinator->setGpuBudgetFn(
+            m_cachePolicy->setGpuBudgetFn(
                 [this](size_t newBudget) {
                     if (m_gpuTexCache)
                         m_gpuTexCache->setBudget(newBudget);
@@ -1295,8 +1295,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                          effectLayerCount, effectPassCount, transitionCount);
         }
 
-        if (m_cacheCoordinator)
-            m_cacheCoordinator->onFrameCompleted();
+        if (m_cachePolicy)
+            m_cachePolicy->onFrameCompleted();
 
         return result;
     }

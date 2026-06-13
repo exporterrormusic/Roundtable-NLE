@@ -21,6 +21,16 @@
 #include "timeline/AudioClip.h"
 #include "timeline/TitleClip.h"
 #include "timeline/AdjustmentClip.h"
+#include "timeline/ImageClip.h"
+#include "timeline/SequenceClip.h"
+#include "timeline/CaptionClip.h"
+#include "timeline/PngPuppetClip.h"
+#include "timeline/GraphicClip.h"
+#include "timeline/GraphicLayer.h"
+#include "timeline/OpacityMask.h"
+#include "effects/EffectStack.h"
+#include "effects/ColorCorrect.h"
+#include "effects/Blur.h"
 #include "timeline/Marker.h"
 #include "timeline/Transition.h"
 #include "timeline/KeyframeTrack.h"
@@ -778,4 +788,394 @@ TEST_F(SerializerTest, KeyframeTrackRoundTrip)
     EXPECT_EQ(opTrack.keyframe(1).interp, InterpMode::Bezier);
     EXPECT_FLOAT_EQ(opTrack.keyframe(2).value, 0.5f);
     EXPECT_EQ(opTrack.keyframe(2).interp, InterpMode::Hold);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-clip-type round-trips for the types makeTestProject() doesn't cover.
+// One test per ClipType so the per-type serializer code paths each have a
+// dedicated safety net (pre-requisite for the serializer-registry refactor).
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_F(SerializerTest, ImageClipRoundTrip)
+{
+    auto p = Project::createNew("Image Test");
+
+    auto img = std::make_unique<ImageClip>();
+    img->setMediaPath("images/background.png");
+    img->setMediaId(77);
+    img->setSourceResolution(2560, 1440);
+    img->setCrop(1.5f, 2.5f, 3.5f, 4.5f);
+    // Use frame-aligned ticks (tpf=1600 at default settings) — the loader
+    // snaps clip boundaries to frame multiples.
+    img->setTimelineIn(12800);
+    img->setDuration(60800);
+    img->setLabel("Background");
+    p->timeline()->track(0)->addClip(std::move(img));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    ASSERT_GE(loaded->timeline()->track(0)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_EQ(clip->clipType(), ClipType::Image);
+
+    auto* ic = static_cast<ImageClip*>(clip);
+    EXPECT_EQ(ic->mediaPath(), "images/background.png");
+    EXPECT_EQ(ic->mediaId(), 77u);
+    EXPECT_EQ(ic->sourceWidth(), 2560u);
+    EXPECT_EQ(ic->sourceHeight(), 1440u);
+    EXPECT_FLOAT_EQ(ic->cropLeft(), 1.5f);
+    EXPECT_FLOAT_EQ(ic->cropRight(), 2.5f);
+    EXPECT_FLOAT_EQ(ic->cropTop(), 3.5f);
+    EXPECT_FLOAT_EQ(ic->cropBottom(), 4.5f);
+    EXPECT_EQ(ic->timelineIn(), 12800);
+    EXPECT_EQ(ic->duration(), 60800);
+    EXPECT_EQ(ic->label(), "Background");
+}
+
+TEST_F(SerializerTest, SequenceClipRoundTrip)
+{
+    auto p = Project::createNew("Nest Test");
+
+    auto seq = std::make_unique<SequenceClip>();
+    seq->setSequenceIndex(2);
+    seq->setSequenceName("Episode Intro");
+    seq->setTimelineIn(24000);
+    seq->setDuration(96000);
+    p->timeline()->track(0)->addClip(std::move(seq));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    ASSERT_GE(loaded->timeline()->track(0)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_EQ(clip->clipType(), ClipType::Sequence);
+
+    auto* sc = static_cast<SequenceClip*>(clip);
+    EXPECT_EQ(sc->sequenceIndex(), 2u);
+    EXPECT_EQ(sc->sequenceName(), "Episode Intro");
+    EXPECT_EQ(sc->timelineIn(), 24000);
+    EXPECT_EQ(sc->duration(), 96000);
+}
+
+TEST_F(SerializerTest, CaptionClipRoundTrip)
+{
+    auto p = Project::createNew("Caption Test");
+    auto* ct = p->timeline()->addCaptionTrack();
+    ASSERT_NE(ct, nullptr);
+
+    auto cap = std::make_unique<CaptionClip>();
+    cap->setText("Hello there.");
+    cap->setSpeaker("Wells");
+    cap->setFontFamily("Verdana");
+    cap->setFontSize(40.0f);
+    cap->setTextColor(0xFFFFEE00);
+    cap->setBgColor(0x99000000);
+    cap->setPosition(CaptionPosition::Top);
+    cap->setTimelineIn(4800);
+    cap->setDuration(9600);
+    ct->addClip(std::move(cap));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    auto* lct = loaded->timeline()->captionTrack();
+    ASSERT_NE(lct, nullptr);
+    ASSERT_GE(lct->clipCount(), 1u);
+    auto* clip = lct->clip(0);
+    ASSERT_EQ(clip->clipType(), ClipType::Caption);
+
+    auto* cc = static_cast<CaptionClip*>(clip);
+    EXPECT_EQ(cc->text(), "Hello there.");
+    EXPECT_EQ(cc->speaker(), "Wells");
+    EXPECT_EQ(cc->fontFamily(), "Verdana");
+    EXPECT_FLOAT_EQ(cc->fontSize(), 40.0f);
+    EXPECT_EQ(cc->textColor(), 0xFFFFEE00u);
+    EXPECT_EQ(cc->bgColor(), 0x99000000u);
+    EXPECT_EQ(cc->position(), CaptionPosition::Top);
+    EXPECT_EQ(cc->timelineIn(), 4800);
+    EXPECT_EQ(cc->duration(), 9600);
+}
+
+TEST_F(SerializerTest, PngPuppetClipRoundTrip)
+{
+    auto p = Project::createNew("Puppet Test");
+
+    auto pup = std::make_unique<PngPuppetClip>();
+    pup->setCharacterName("Mascot");
+    pup->setVariant("winter");
+    pup->setFacePath(PngPuppetClip::MouthClosedEyesOpen,   "puppets/mascot/idle.png");
+    pup->setFacePath(PngPuppetClip::MouthClosedEyesClosed, "puppets/mascot/blink.png");
+    pup->setFacePath(PngPuppetClip::MouthOpenEyesOpen,     "puppets/mascot/talk.png");
+    pup->setFacePath(PngPuppetClip::MouthOpenEyesClosed,   "puppets/mascot/talk_blink.png");
+    pup->setTalking(true);
+    pup->setSeed(1234567u);
+    pup->setTalkSwapSeconds(0.11f);
+    pup->setBlinkIntervalSeconds(3.25f);
+    pup->setBlinkDurationSeconds(0.18f);
+    pup->setBreathAmplitude(6.5f);
+    pup->setBreathSpeed(0.3f);
+    pup->setSwayAmplitude(2.75f);
+    pup->setTimelineIn(0);
+    pup->setDuration(48000);
+    p->timeline()->track(0)->addClip(std::move(pup));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    ASSERT_GE(loaded->timeline()->track(0)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_EQ(clip->clipType(), ClipType::PngPuppet);
+
+    auto* pc = static_cast<PngPuppetClip*>(clip);
+    EXPECT_EQ(pc->characterName(), "Mascot");
+    EXPECT_EQ(pc->variant(), "winter");
+    EXPECT_EQ(pc->facePath(PngPuppetClip::MouthClosedEyesOpen),   "puppets/mascot/idle.png");
+    EXPECT_EQ(pc->facePath(PngPuppetClip::MouthClosedEyesClosed), "puppets/mascot/blink.png");
+    EXPECT_EQ(pc->facePath(PngPuppetClip::MouthOpenEyesOpen),     "puppets/mascot/talk.png");
+    EXPECT_EQ(pc->facePath(PngPuppetClip::MouthOpenEyesClosed),   "puppets/mascot/talk_blink.png");
+    EXPECT_TRUE(pc->isTalking());
+    EXPECT_EQ(pc->seed(), 1234567u);
+    EXPECT_FLOAT_EQ(pc->talkSwapSeconds(), 0.11f);
+    EXPECT_FLOAT_EQ(pc->blinkIntervalSeconds(), 3.25f);
+    EXPECT_FLOAT_EQ(pc->blinkDurationSeconds(), 0.18f);
+    EXPECT_FLOAT_EQ(pc->breathAmplitude(), 6.5f);
+    EXPECT_FLOAT_EQ(pc->breathSpeed(), 0.3f);
+    EXPECT_FLOAT_EQ(pc->swayAmplitude(), 2.75f);
+}
+
+TEST_F(SerializerTest, GraphicClipRoundTrip)
+{
+    auto p = Project::createNew("Graphic Test");
+
+    auto gfx = std::make_unique<GraphicClip>();
+    gfx->setTimelineIn(0);
+    gfx->setDuration(72000);
+
+    // Text layer with non-default everything + appearance stacks + keyframes
+    auto text = std::make_unique<TextLayer>();
+    text->setName("Headline");
+    text->setVisible(false);
+    text->setLocked(true);
+    text->setText("BREAKING NEWS");
+    text->setFontFamily("Futura");
+    text->setFontSize(88.0f);
+    text->setFontWeight(700);
+    text->setItalic(true);
+    text->setAllCaps(true);
+    text->setSmallCaps(false);
+    text->setAlignment(GTextAlign::Right);
+    text->setVAlignment(GTextVAlign::Bottom);
+    text->setBoxWidth(800.0f);
+    text->setBoxHeight(200.0f);
+    text->setUseParagraphBox(true);
+    text->tracking().addKeyframe(0, 1.5f, InterpMode::Linear);
+    text->tracking().addKeyframe(24000, 3.0f, InterpMode::Linear);
+    text->transform().posX.addKeyframe(0, -100.0f, InterpMode::Linear);
+    text->transform().posX.addKeyframe(12000, 100.0f, InterpMode::Bezier);
+    text->transform().opacity.setDefaultValue(0.85f);
+    {
+        // The TextLayer ctor seeds a default fill — clear the stacks so the
+        // test owns the exact appearance contents.
+        text->appearance().fills.clear();
+        text->appearance().strokes.clear();
+        text->appearance().shadows.clear();
+        FillEntry f; f.color = 0xFFFF8800; f.opacity = 0.9f; f.enabled = true;
+        text->appearance().fills.push_back(f);
+        StrokeEntry s; s.color = 0xFF112233; s.width = 5.0f;
+        s.position = StrokePosition::Outer; s.opacity = 0.7f; s.enabled = false;
+        text->appearance().strokes.push_back(s);
+        ShadowEntry sh; sh.color = 0xAA000000; sh.distance = 12.0f;
+        sh.angle = 45.0f; sh.softness = 8.0f; sh.opacity = 0.5f; sh.enabled = true;
+        text->appearance().shadows.push_back(sh);
+    }
+    gfx->addLayer(std::move(text));
+
+    // Shape layer
+    auto shape = std::make_unique<ShapeLayer>();
+    shape->setName("Lower Third BG");
+    shape->setShapeType(ShapeType::RoundedRect);
+    shape->setShapeWidth(640.0f);
+    shape->setShapeHeight(160.0f);
+    shape->setCornerRadius(24.0f);
+    shape->setFillColor(0xFF224466);
+    gfx->addLayer(std::move(shape));
+
+    p->timeline()->track(0)->addClip(std::move(gfx));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    ASSERT_GE(loaded->timeline()->track(0)->clipCount(), 1u);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_EQ(clip->clipType(), ClipType::Graphic);
+
+    auto* gc = static_cast<GraphicClip*>(clip);
+    ASSERT_EQ(gc->layerCount(), 2u);
+
+    // Layer order must be preserved (rendered bottom-to-top)
+    ASSERT_EQ(gc->layer(0)->layerType(), GraphicLayerType::Text);
+    auto* tl = static_cast<TextLayer*>(gc->layer(0));
+    EXPECT_EQ(tl->name(), "Headline");
+    EXPECT_FALSE(tl->isVisible());
+    EXPECT_TRUE(tl->isLocked());
+    EXPECT_EQ(tl->text(), "BREAKING NEWS");
+    EXPECT_EQ(tl->fontFamily(), "Futura");
+    EXPECT_FLOAT_EQ(tl->fontSize(), 88.0f);
+    EXPECT_EQ(tl->fontWeight(), 700);
+    EXPECT_TRUE(tl->isItalic());
+    EXPECT_TRUE(tl->allCaps());
+    EXPECT_FALSE(tl->smallCaps());
+    EXPECT_EQ(tl->alignment(), GTextAlign::Right);
+    EXPECT_EQ(tl->vAlignment(), GTextVAlign::Bottom);
+    EXPECT_FLOAT_EQ(tl->boxWidth(), 800.0f);
+    EXPECT_FLOAT_EQ(tl->boxHeight(), 200.0f);
+    EXPECT_TRUE(tl->useParagraphBox());
+
+    ASSERT_EQ(tl->tracking().keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(tl->tracking().keyframe(1).value, 3.0f);
+    ASSERT_EQ(tl->transform().posX.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(tl->transform().posX.keyframe(0).value, -100.0f);
+    EXPECT_EQ(tl->transform().posX.keyframe(1).interp, InterpMode::Bezier);
+    EXPECT_FLOAT_EQ(tl->transform().opacity.defaultValue(), 0.85f);
+
+    ASSERT_EQ(tl->appearance().fills.size(), 1u);
+    EXPECT_EQ(tl->appearance().fills[0].color, 0xFFFF8800u);
+    EXPECT_FLOAT_EQ(tl->appearance().fills[0].opacity, 0.9f);
+    ASSERT_EQ(tl->appearance().strokes.size(), 1u);
+    EXPECT_EQ(tl->appearance().strokes[0].color, 0xFF112233u);
+    EXPECT_FLOAT_EQ(tl->appearance().strokes[0].width, 5.0f);
+    EXPECT_EQ(tl->appearance().strokes[0].position, StrokePosition::Outer);
+    EXPECT_FALSE(tl->appearance().strokes[0].enabled);
+    ASSERT_EQ(tl->appearance().shadows.size(), 1u);
+    EXPECT_EQ(tl->appearance().shadows[0].color, 0xAA000000u);
+    EXPECT_FLOAT_EQ(tl->appearance().shadows[0].distance, 12.0f);
+    EXPECT_FLOAT_EQ(tl->appearance().shadows[0].angle, 45.0f);
+
+    ASSERT_EQ(gc->layer(1)->layerType(), GraphicLayerType::Shape);
+    auto* sl = static_cast<ShapeLayer*>(gc->layer(1));
+    EXPECT_EQ(sl->name(), "Lower Third BG");
+    EXPECT_EQ(sl->shapeType(), ShapeType::RoundedRect);
+    EXPECT_FLOAT_EQ(sl->shapeWidth(), 640.0f);
+    EXPECT_FLOAT_EQ(sl->shapeHeight(), 160.0f);
+    EXPECT_FLOAT_EQ(sl->cornerRadius(), 24.0f);
+    EXPECT_EQ(sl->fillColor(), 0xFF224466u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Common writeClip/readClip sections with no prior coverage: the effect
+// stack (v10+) and opacity masks (v11+).
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST_F(SerializerTest, EffectStackRoundTrip)
+{
+    auto p = Project::createNew("FX Stack Test");
+
+    auto video = std::make_unique<VideoClip>();
+    video->setMediaPath("videos/clip.mp4");
+    video->setTimelineIn(0);
+    video->setDuration(48000);
+
+    auto cc = std::make_unique<ColorCorrect>();
+    cc->param(0).track.setDefaultValue(0.25f);                    // static value
+    cc->param(1).track.addKeyframe(0, -0.5f, InterpMode::Linear); // animated
+    cc->param(1).track.addKeyframe(24000, 0.5f, InterpMode::Hold);
+    video->effects().addEffect(std::move(cc));
+
+    auto blur = std::make_unique<Blur>();
+    blur->param(0).track.setDefaultValue(14.0f);
+    blur->setEnabled(false);  // exercise the per-effect enabled flag
+    video->effects().addEffect(std::move(blur));
+
+    p->timeline()->track(0)->addClip(std::move(video));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_NE(clip, nullptr);
+    auto& stack = clip->effects();
+    ASSERT_EQ(stack.effectCount(), 2u);
+
+    auto& lcc = stack.effect(0);
+    EXPECT_EQ(lcc.effectType(), EffectType::ColorCorrect);
+    EXPECT_TRUE(lcc.isEnabled());
+    EXPECT_FLOAT_EQ(lcc.param(0).track.defaultValue(), 0.25f);
+    ASSERT_EQ(lcc.param(1).track.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(lcc.param(1).track.keyframe(0).value, -0.5f);
+    EXPECT_FLOAT_EQ(lcc.param(1).track.keyframe(1).value, 0.5f);
+    EXPECT_EQ(lcc.param(1).track.keyframe(1).interp, InterpMode::Hold);
+
+    auto& lblur = stack.effect(1);
+    EXPECT_EQ(lblur.effectType(), EffectType::Blur);
+    EXPECT_FALSE(lblur.isEnabled());
+    EXPECT_FLOAT_EQ(lblur.param(0).track.defaultValue(), 14.0f);
+}
+
+TEST_F(SerializerTest, OpacityMaskRoundTrip)
+{
+    auto p = Project::createNew("Mask Test");
+
+    auto video = std::make_unique<VideoClip>();
+    video->setMediaPath("videos/clip.mp4");
+    video->setTimelineIn(0);
+    video->setDuration(48000);
+
+    OpacityMask ellipse;
+    ellipse.shape = MaskShape::Ellipse;
+    ellipse.centerX = 0.3f;  ellipse.centerY = 0.6f;
+    ellipse.width = 0.4f;    ellipse.height = 0.2f;
+    ellipse.rotation = 30.0f;
+    ellipse.feather = 16.0f;
+    ellipse.expansion = -4.0f;
+    ellipse.maskOpacity = 0.8f;
+    ellipse.inverted = true;
+    ellipse.name = "Vignette";
+    video->addMask(std::move(ellipse));
+
+    OpacityMask bezier;
+    bezier.shape = MaskShape::FreeDrawBezier;
+    bezier.name = "Outline";
+    MaskVertex v1; v1.x = 0.1f; v1.y = 0.1f; v1.outTanX = 0.05f; v1.outTanY = 0.02f;
+    MaskVertex v2; v2.x = 0.9f; v2.y = 0.1f; v2.inTanX = -0.05f;
+    MaskVertex v3; v3.x = 0.5f; v3.y = 0.9f; v3.inTanY = -0.03f; v3.outTanY = 0.03f;
+    bezier.vertices = {v1, v2, v3};
+    video->addMask(std::move(bezier));
+
+    p->timeline()->track(0)->addClip(std::move(video));
+
+    auto data = serializer.serialize(*p);
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_NE(clip, nullptr);
+    const auto& masks = clip->masks();
+    ASSERT_EQ(masks.size(), 2u);
+
+    EXPECT_EQ(masks[0].shape, MaskShape::Ellipse);
+    EXPECT_FLOAT_EQ(masks[0].centerX, 0.3f);
+    EXPECT_FLOAT_EQ(masks[0].centerY, 0.6f);
+    EXPECT_FLOAT_EQ(masks[0].width, 0.4f);
+    EXPECT_FLOAT_EQ(masks[0].height, 0.2f);
+    EXPECT_FLOAT_EQ(masks[0].rotation, 30.0f);
+    EXPECT_FLOAT_EQ(masks[0].feather, 16.0f);
+    EXPECT_FLOAT_EQ(masks[0].expansion, -4.0f);
+    EXPECT_FLOAT_EQ(masks[0].maskOpacity, 0.8f);
+    EXPECT_TRUE(masks[0].inverted);
+    EXPECT_EQ(masks[0].name, "Vignette");
+
+    EXPECT_EQ(masks[1].shape, MaskShape::FreeDrawBezier);
+    ASSERT_EQ(masks[1].vertices.size(), 3u);
+    EXPECT_FLOAT_EQ(masks[1].vertices[0].x, 0.1f);
+    EXPECT_FLOAT_EQ(masks[1].vertices[0].outTanX, 0.05f);
+    EXPECT_FLOAT_EQ(masks[1].vertices[1].inTanX, -0.05f);
+    EXPECT_FLOAT_EQ(masks[1].vertices[2].y, 0.9f);
+    EXPECT_FLOAT_EQ(masks[1].vertices[2].outTanY, 0.03f);
 }

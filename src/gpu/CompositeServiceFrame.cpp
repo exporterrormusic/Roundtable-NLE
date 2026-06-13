@@ -18,7 +18,7 @@
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
 #include "decode/VideoFrameMapping.h"
-#include "cache/UnifiedCache.h"
+#include "cache/CachePolicy.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
@@ -127,15 +127,15 @@ try
     // temporarily unlocks to allow async media opens.
     std::unique_lock lock(m_compositeMutex);
 
-    // Phase B: advance the UnifiedCache generation counter and run its
+    // Phase B: advance the CachePolicy generation counter and run its
     // throttled eviction + adaptive-budget passes.  These are very cheap
     // — eviction is gated by a 3s throttle, rebalance is gated by a
     // 30-frame throttle — but having the call site here ensures every
     // composite tick contributes to its LRU view.
-    if (m_unifiedCache) {
-        m_unifiedCache->onFrameStart();
-        m_unifiedCache->runEvictionPass();
-        m_unifiedCache->rebalanceBudgets();
+    if (m_cachePolicy) {
+        m_cachePolicy->onFrameStart();
+        m_cachePolicy->runEvictionPass();
+        m_cachePolicy->rebalanceBudgets();
     }
 
     // Check deferred cache invalidation request (set by requestCacheInvalidation

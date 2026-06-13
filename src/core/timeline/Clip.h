@@ -49,6 +49,81 @@ public:
 
     // ── Identity ────────────────────────────────────────────────────────
     [[nodiscard]] ClipType          clipType() const noexcept { return m_type; }
+
+    // ── Capability queries (fable_cleanup.txt §3.5) ─────────────────────
+    // Centralized replacements for the boolean-ish ClipType:: comparisons
+    // that used to be scattered across ~42 files.  Adding a new clip type
+    // means reviewing THIS block (and overriding where the default is
+    // wrong) instead of hunting call sites.  Exhaustive per-type dispatch
+    // (serialization, rendering, UI labels) deliberately stays switch-based.
+
+    /// Audio payload (the Audio clip type only — video clips' audio lives
+    /// in their linked companion Audio clip).
+    [[nodiscard]] virtual bool isAudio() const noexcept {
+        return m_type == ClipType::Audio;
+    }
+
+    /// Renders visual content on a track.  Everything except Audio —
+    /// including Caption, which paints a burn-in overlay.  (Sites that
+    /// need "visual but not caption" should also test isCaption().)
+    [[nodiscard]] virtual bool isVisual() const noexcept {
+        return m_type != ClipType::Audio;
+    }
+
+    /// Subtitle/caption cue (lives on the pinned caption track).
+    [[nodiscard]] bool isCaption() const noexcept {
+        return m_type == ClipType::Caption;
+    }
+
+    /// Character clip: shows animation/talking/costume controls.
+    /// Spine + PngPuppet always; VideoClip overrides to add
+    /// isVideoCharacter() video characters.
+    [[nodiscard]] virtual bool isCharacter() const noexcept {
+        return m_type == ClipType::Spine || m_type == ClipType::PngPuppet;
+    }
+
+    /// Program-monitor transform overlay (move/scale/rotate the clip on
+    /// the canvas).  Everything visual except Adjustment (no bounds of
+    /// its own).
+    [[nodiscard]] virtual bool supportsClipTransform() const noexcept {
+        return m_type != ClipType::Audio && m_type != ClipType::Adjustment;
+    }
+
+    /// Crop L/R/T/B UI.  Spine + Video only (matches the existing
+    /// EffectControls gate; Image deliberately excluded — its crop
+    /// fields are not surfaced there today).
+    [[nodiscard]] virtual bool supportsCrop() const noexcept {
+        return m_type == ClipType::Spine || m_type == ClipType::Video;
+    }
+
+    /// Per-layer transforms (Essential Graphics layer list).
+    [[nodiscard]] virtual bool supportsLayerTransform() const noexcept {
+        return m_type == ClipType::Graphic;
+    }
+
+    /// In-place text editing in the Program Monitor (double-click).
+    [[nodiscard]] virtual bool supportsTextEdit() const noexcept {
+        return m_type == ClipType::Caption || m_type == ClipType::Title
+            || m_type == ClipType::Graphic;
+    }
+
+    /// References an external media file (mediaPath() on the subclass).
+    [[nodiscard]] virtual bool hasMediaPath() const noexcept {
+        return m_type == ClipType::Video || m_type == ClipType::Audio
+            || m_type == ClipType::Image;
+    }
+
+    // ── Crop accessors (percent cropped per edge) ───────────────────────
+    // Defaults are no-crop / no-op; Spine, Video and Image carry the real
+    // fields (their existing methods implicitly override these).  UI code
+    // must still gate on supportsCrop() — Image stores crop but does not
+    // surface it in the crop UI.
+    [[nodiscard]] virtual float cropLeft()   const noexcept { return 0.0f; }
+    [[nodiscard]] virtual float cropRight()  const noexcept { return 0.0f; }
+    [[nodiscard]] virtual float cropTop()    const noexcept { return 0.0f; }
+    [[nodiscard]] virtual float cropBottom() const noexcept { return 0.0f; }
+    virtual void setCrop(float /*l*/, float /*r*/, float /*t*/, float /*b*/) {}
+
     [[nodiscard]] uint64_t          id()       const noexcept { return m_id; }
     /// Override the auto-assigned id. Used for synthetic clips (e.g. the
     /// audio clips a nested-sequence clip expands into) so their playback

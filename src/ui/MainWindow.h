@@ -98,6 +98,8 @@ enum class Page : int
     Export     = 4
 };
 
+class ProjectController;
+
 /// The main application window (tabbed pages).
 class MainWindow : public QMainWindow
 {
@@ -179,6 +181,34 @@ public:
     [[nodiscard]] ShotComposer*         shotComposer()        const noexcept;
     [[nodiscard]] TimelineWorkspace*    timelineWorkspace()   const noexcept { return m_timelineWorkspace; }
     [[nodiscard]] ExportPanel*          exportPanel()         const noexcept { return m_exportPanel; }
+
+    // ── Core-service accessors ───────────────────────────────────────────
+    // The explicit surface ProjectController works through — replaces the
+    // former `friend class ProjectController`.
+    [[nodiscard]] Project*            currentProject()     const noexcept { return m_currentProject.get(); }
+    [[nodiscard]] Timeline*           timeline()           const noexcept { return m_timeline; }
+    [[nodiscard]] CommandStack*       commandStack()       const noexcept { return m_commandStack; }
+    [[nodiscard]] PlaybackController* playbackController() const noexcept { return m_playbackController; }
+    [[nodiscard]] MediaPool*          mediaPool()          const noexcept { return m_mediaPool; }
+    [[nodiscard]] AudioEngine*        audioEngine()        const noexcept { return m_audioEngine; }
+    [[nodiscard]] QMenu*              recentProjectsMenu() const noexcept { return m_recentProjectsMenu; }
+    /// True once the destructor has started (guards async continuations).
+    [[nodiscard]] bool isDestroying() const noexcept {
+        return m_destroying.load(std::memory_order_acquire);
+    }
+    /// Transfer ownership of the current project in / out.  Project
+    /// lifecycle only — ProjectController::setCurrentProject is the
+    /// intended caller.  (Defined out-of-line: unique_ptr<Project> needs
+    /// the complete type.)
+    void adoptCurrentProject(std::unique_ptr<Project> p);
+    [[nodiscard]] std::unique_ptr<Project> takeCurrentProject();
+
+    /// Raise the full-window non-interactive overlay and set m_projectLoading.
+    void engageLoadingOverlay(const QString& message);
+    /// Drop the overlay and clear m_projectLoading (idempotent).
+    void disengageLoadingOverlay();
+    /// Update the loading-overlay message without touching its progress state.
+    void setLoadingOverlayText(const QString& message);
 
     // Delegate through TimelineWorkspace for backward compatibility
     [[nodiscard]] TimelinePanel*    timelinePanel()    const noexcept;
@@ -375,10 +405,6 @@ private:
         const QString& busyMessage,
         std::function<void(std::unique_ptr<Project>)> continuation);
 
-    /// Raise the full-window non-interactive overlay and set m_projectLoading.
-    void engageLoadingOverlay(const QString& message);
-    /// Drop the overlay and clear m_projectLoading (idempotent).
-    void disengageLoadingOverlay();
     /// Slot: background media warmup finished — release the overlay if a load
     /// was pending on it.
     void onBackgroundWarmupFinished();
@@ -392,7 +418,12 @@ private:
     QMenu*        m_editMenu{nullptr};
 
     std::unique_ptr<Project> m_currentProject;
-    std::vector<uint8_t>     m_lastSavedAudioSyncBlob;
+    // (the last-saved AudioSync blob moved into ProjectController — it is
+    //  project-lifecycle state)
+
+    /// Project lifecycle binder — owns the implementation of the project/
+    /// recovery methods shimmed above (fable_cleanup.txt §3.1).
+    std::unique_ptr<ProjectController> m_projectController;
 
     // ── Auto-update ─────────────────────────────────────────────────────
     rt::UpdateChecker* m_updateChecker{nullptr};

@@ -5,6 +5,7 @@
  * Contains: onImportSrt(), onExportSrt(), captureProjectThumbnail().
  */
 
+#include "ProjectController.h"
 #include "MainWindow.h"
 
 #include "panels/project/ProjectPanel.h"
@@ -35,7 +36,7 @@ namespace rt {
 // SRT subtitle import / export
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::onImportSrt()
+void ProjectController::onImportSrt()
 {
     auto settings = rt::appSettings();
     QString lastDir = settings.value("Import/lastDir", QString()).toString();
@@ -43,7 +44,7 @@ void MainWindow::onImportSrt()
         lastDir = QDir::homePath();
 
     QString path = QFileDialog::getOpenFileName(
-        this, "Import SRT Subtitles", lastDir,
+        m_mw, "Import SRT Subtitles", lastDir,
         "SRT Files (*.srt);;All Files (*)");
     if (path.isEmpty()) return;
 
@@ -53,30 +54,30 @@ void MainWindow::onImportSrt()
 
     auto entries = parseSrt(std::filesystem::path(path.toStdWString()));
     if (entries.empty()) {
-        QMessageBox::information(this, "Import SRT", "No subtitle entries found.");
+        QMessageBox::information(m_mw, "Import SRT", "No subtitle entries found.");
         return;
     }
 
-    int count = importSrt(*m_timeline, entries);
-    statusBar()->showMessage(
+    int count = importSrt(*m_mw->timeline(), entries);
+    m_mw->statusBar()->showMessage(
         QString("Imported %1 subtitle(s)").arg(count), 3000);
-    if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel())
-        m_timelineWorkspace->timelinePanel()->rebuildTracks();
+    if (m_mw->timelineWorkspace() && m_mw->timelineWorkspace()->timelinePanel())
+        m_mw->timelineWorkspace()->timelinePanel()->rebuildTracks();
 }
 
-void MainWindow::onExportSrt()
+void ProjectController::onExportSrt()
 {
     QString path = QFileDialog::getSaveFileName(
-        this, "Export SRT Subtitles", QString(),
+        m_mw, "Export SRT Subtitles", QString(),
         "SRT Files (*.srt)");
     if (path.isEmpty()) return;
 
-    int count = exportSrt(*m_timeline, std::filesystem::path(path.toStdWString()));
+    int count = exportSrt(*m_mw->timeline(), std::filesystem::path(path.toStdWString()));
     if (count > 0)
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Exported %1 subtitle(s)").arg(count), 3000);
     else
-        QMessageBox::information(this, "Export SRT",
+        QMessageBox::information(m_mw, "Export SRT",
             "No text/graphic clips found to export.");
 }
 
@@ -84,24 +85,24 @@ void MainWindow::onExportSrt()
 // Auto-capture project thumbnail from current playhead frame
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::captureProjectThumbnail()
+void ProjectController::captureProjectThumbnail()
 {
-    if (!m_currentProject) return;
-    if (!m_projectPanel) return;
+    if (!m_mw->currentProject()) return;
+    if (!m_mw->projectPanel()) return;
 
-    QString projectName = QString::fromStdString(m_currentProject->name());
+    QString projectName = QString::fromStdString(m_mw->currentProject()->name());
 
     // Always composite a 16:9 (project-aspect) frame at the current playhead.
     // Previously a Strategy-1 fallback grabbed the program-monitor viewport widget,
     // which captured letterbox bars when the monitor dock was in portrait orientation.
     // The composited path below renders at exactly the project resolution, so the
     // thumbnail aspect always matches the project (e.g. 1920x1080 -> 480x270).
-    if (!m_timelineWorkspace || !m_playbackController) return;
+    if (!m_mw->timelineWorkspace() || !m_mw->playbackController()) return;
 
-    int64_t tick = m_playbackController->currentTick();
+    int64_t tick = m_mw->playbackController()->currentTick();
 
-    uint32_t projW = m_currentProject->settings().resolution().width;
-    uint32_t projH = m_currentProject->settings().resolution().height;
+    uint32_t projW = m_mw->currentProject()->settings().resolution().width;
+    uint32_t projH = m_mw->currentProject()->settings().resolution().height;
     if (projW == 0 || projH == 0) { projW = 1920; projH = 1080; }
 
     double aspect = static_cast<double>(projW) / static_cast<double>(projH);
@@ -112,14 +113,14 @@ void MainWindow::captureProjectThumbnail()
 
     // Force CPU readback — GPU display mode skips pixel readback entirely,
     // leaving CachedFrame::pixels empty and ensurePixels() failing.
-    const bool wasGpuMode = m_timelineWorkspace->gpuDisplayMode();
+    const bool wasGpuMode = m_mw->timelineWorkspace()->gpuDisplayMode();
     if (wasGpuMode)
-        m_timelineWorkspace->setGpuDisplayMode(false);
+        m_mw->timelineWorkspace()->setGpuDisplayMode(false);
 
-    auto frame = m_timelineWorkspace->compositeFrame(tick, thumbW, thumbH, true);
+    auto frame = m_mw->timelineWorkspace()->compositeFrame(tick, thumbW, thumbH, true);
 
     if (wasGpuMode)
-        m_timelineWorkspace->setGpuDisplayMode(true);
+        m_mw->timelineWorkspace()->setGpuDisplayMode(true);
     if (!frame) {
         spdlog::warn("captureProjectThumbnail: compositeFrame returned null");
         return;
@@ -134,7 +135,7 @@ void MainWindow::captureProjectThumbnail()
         return;
     }
 
-    m_projectPanel->setThumbnailFromPixels(
+    m_mw->projectPanel()->setThumbnailFromPixels(
         projectName,
         frame->pixels.data(),
         frame->width,

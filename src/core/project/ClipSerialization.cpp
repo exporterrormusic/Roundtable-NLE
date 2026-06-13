@@ -292,6 +292,471 @@ static void readAudioFx(BinaryReader& r, audiofx::FxChain& chain)
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+//  Per-type serializer registry
+//
+//  Each clip type contributes three functions — factory, type-specific field
+//  writer, type-specific field reader — registered in ONE table below.
+//  writeClip/readClip handle the fields common to all clips and dispatch the
+//  type-specific payload through the registry, so adding a new clip type
+//  means writing the three functions and adding a single table entry
+//  (instead of hunting three separate switches).
+//
+//  The byte format is unchanged: each writeXxxFields/readXxxFields body is
+//  the former switch-case body, verbatim.
+// ═════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+struct TypeSerializer
+{
+    std::unique_ptr<Clip> (*make)();
+    void (*writeFields)(BinaryWriter& w, const Clip& clip);
+    void (*readFields)(BinaryReader& r, Clip& clip, uint32_t version);
+};
+
+template <typename T>
+std::unique_ptr<Clip> makeClip() { return std::make_unique<T>(); }
+
+// ── Spine ──────────────────────────────────────────────────────────────────
+
+void writeSpineFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& sc = static_cast<const SpineClip&>(clip);
+    w.writeString(sc.characterName());
+    w.writeString(sc.outfit());
+    w.writeU8(static_cast<uint8_t>(sc.stance()));
+    w.writeString(sc.animationName());
+    w.writeU8(sc.isLooping() ? 1 : 0);
+    w.writeU8(sc.isTalking() ? 1 : 0);
+    w.writeF32(sc.animationSpeed());
+    w.writeU8(sc.useGlobalTime() ? 1 : 0);
+    w.writeF32(sc.cropLeft());
+    w.writeF32(sc.cropRight());
+    w.writeF32(sc.cropTop());
+    w.writeF32(sc.cropBottom());
+}
+
+void readSpineFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* sc = static_cast<SpineClip*>(&clip);
+    sc->setCharacterName(r.readString());
+    sc->setOutfit(r.readString());
+    sc->setStance(static_cast<CharacterStance>(r.readU8()));
+    sc->setAnimationName(r.readString());
+    sc->setLooping(r.readU8() != 0);
+    sc->setTalking(r.readU8() != 0);
+    sc->setAnimationSpeed(r.readF32());
+    sc->setUseGlobalTime(r.readU8() != 0);
+    float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
+    sc->setCrop(cl, cr, ct, cb);
+}
+
+// ── Video ──────────────────────────────────────────────────────────────────
+
+void writeVideoFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& vc = static_cast<const VideoClip&>(clip);
+    w.writeString(vc.mediaPath());
+    w.writeU64(vc.mediaId());
+    w.writeU32(vc.sourceWidth());
+    w.writeU32(vc.sourceHeight());
+    w.writeF64(vc.sourceFps());
+    w.writeI64(vc.sourceDuration());
+    w.writeU8(vc.hasAudio() ? 1 : 0);
+    w.writeF32(vc.volume());
+    w.writeF32(vc.cropLeft());
+    w.writeF32(vc.cropRight());
+    w.writeF32(vc.cropTop());
+    w.writeF32(vc.cropBottom());
+    // v9: video character metadata
+    w.writeString(vc.characterName());
+    w.writeU8(vc.isTalking() ? 1 : 0);
+    w.writeString(vc.videoMutePath());
+    w.writeString(vc.videoTalkPath());
+    // v12: outfit + animation name for AnimationVideoCache characters
+    w.writeString(vc.outfit());
+    w.writeString(vc.animationName());
+}
+
+void readVideoFields(BinaryReader& r, Clip& clip, uint32_t version)
+{
+    auto* vc = static_cast<VideoClip*>(&clip);
+    vc->setMediaPath(resolveVideoPath(r.readString()));
+    vc->setMediaId(r.readU64());
+    uint32_t sw = r.readU32(), sh = r.readU32();
+    vc->setSourceResolution(sw, sh);
+    vc->setSourceFps(r.readF64());
+    vc->setSourceDuration(r.readI64());
+    vc->setHasAudio(r.readU8() != 0);
+    vc->setVolume(r.readF32());
+    if (version >= 3) {
+        float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
+        vc->setCrop(cl, cr, ct, cb);
+    }
+    if (version >= 9) {
+        vc->setCharacterName(r.readString());
+        vc->setTalking(r.readU8() != 0);
+        vc->setVideoMutePath(resolveVideoPath(r.readString()));
+        vc->setVideoTalkPath(resolveVideoPath(r.readString()));
+    }
+    if (version >= 12) {
+        vc->setOutfit(r.readString());
+        vc->setAnimationName(r.readString());
+    }
+}
+
+// ── Audio ──────────────────────────────────────────────────────────────────
+
+void writeAudioFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& ac = static_cast<const AudioClip&>(clip);
+    w.writeString(ac.mediaPath());
+    w.writeU64(ac.mediaId());
+    w.writeU32(ac.sampleRate());
+    w.writeU32(static_cast<uint32_t>(ac.channels()));
+    w.writeI64(ac.sourceDuration());
+    writeKeyframeTrack(w, const_cast<AudioClip&>(ac).volume());
+    writeKeyframeTrack(w, const_cast<AudioClip&>(ac).pan());
+    w.writeI64(ac.fadeInDuration());
+    w.writeI64(ac.fadeOutDuration());
+}
+
+void readAudioFields(BinaryReader& r, Clip& clip, uint32_t version)
+{
+    auto* ac = static_cast<AudioClip*>(&clip);
+    ac->setMediaPath(r.readString());
+    ac->setMediaId(r.readU64());
+    ac->setSampleRate(r.readU32());
+    ac->setChannels(static_cast<uint16_t>(r.readU32()));
+    ac->setSourceDuration(r.readI64());
+    readKeyframeTrack(r, ac->volume(), version);
+    readKeyframeTrack(r, ac->pan(), version);
+    ac->setFadeInDuration(r.readI64());
+    ac->setFadeOutDuration(r.readI64());
+}
+
+// ── Title ──────────────────────────────────────────────────────────────────
+
+void writeTitleFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& tc = static_cast<const TitleClip&>(clip);
+    w.writeString(tc.text());
+    w.writeString(tc.fontFamily());
+    w.writeF32(tc.fontSize());
+    w.writeU8(tc.isBold() ? 1 : 0);
+    w.writeU8(tc.isItalic() ? 1 : 0);
+    w.writeU8(static_cast<uint8_t>(tc.alignment()));
+    w.writeU8(static_cast<uint8_t>(tc.verticalAlignment()));
+    w.writeU32(tc.textColor());
+    w.writeU32(tc.bgColor());
+    w.writeU32(tc.outlineColor());
+    w.writeF32(tc.outlineWidth());
+    writeKeyframeTrack(w, const_cast<TitleClip&>(tc).tracking());
+    writeKeyframeTrack(w, const_cast<TitleClip&>(tc).lineHeight());
+}
+
+void readTitleFields(BinaryReader& r, Clip& clip, uint32_t version)
+{
+    auto* tc = static_cast<TitleClip*>(&clip);
+    tc->setText(r.readString());
+    tc->setFontFamily(r.readString());
+    tc->setFontSize(r.readF32());
+    tc->setBold(r.readU8() != 0);
+    tc->setItalic(r.readU8() != 0);
+    tc->setAlignment(static_cast<TextAlign>(r.readU8()));
+    tc->setVerticalAlignment(static_cast<TextVAlign>(r.readU8()));
+    tc->setTextColor(r.readU32());
+    tc->setBgColor(r.readU32());
+    tc->setOutlineColor(r.readU32());
+    tc->setOutlineWidth(r.readF32());
+    readKeyframeTrack(r, tc->tracking(), version);
+    readKeyframeTrack(r, tc->lineHeight(), version);
+}
+
+// ── Adjustment ─────────────────────────────────────────────────────────────
+
+void writeAdjustmentFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& ac = static_cast<const AdjustmentClip&>(clip);
+    w.writeU8(ac.blendMode());
+    w.writeU8(ac.affectsSingleTrack() ? 1 : 0);
+}
+
+void readAdjustmentFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* ac = static_cast<AdjustmentClip*>(&clip);
+    ac->setBlendMode(r.readU8());
+    ac->setAffectsSingleTrack(r.readU8() != 0);
+}
+
+// ── Image ──────────────────────────────────────────────────────────────────
+
+void writeImageFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& ic = static_cast<const ImageClip&>(clip);
+    w.writeString(ic.mediaPath());
+    w.writeU64(ic.mediaId());
+    w.writeU32(ic.sourceWidth());
+    w.writeU32(ic.sourceHeight());
+    w.writeF32(ic.cropLeft());
+    w.writeF32(ic.cropRight());
+    w.writeF32(ic.cropTop());
+    w.writeF32(ic.cropBottom());
+}
+
+void readImageFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* ic = static_cast<ImageClip*>(&clip);
+    ic->setMediaPath(r.readString());
+    ic->setMediaId(r.readU64());
+    uint32_t sw = r.readU32(), sh = r.readU32();
+    ic->setSourceResolution(sw, sh);
+    float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
+    ic->setCrop(cl, cr, ct, cb);
+}
+
+// ── Sequence (nest) ────────────────────────────────────────────────────────
+
+void writeSequenceFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& sc = static_cast<const SequenceClip&>(clip);
+    w.writeU32(static_cast<uint32_t>(sc.sequenceIndex()));
+    w.writeString(sc.sequenceName());
+}
+
+void readSequenceFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* sc = static_cast<SequenceClip*>(&clip);
+    sc->setSequenceIndex(static_cast<size_t>(r.readU32()));
+    sc->setSequenceName(r.readString());
+}
+
+// ── Caption ────────────────────────────────────────────────────────────────
+
+void writeCaptionFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& cc = static_cast<const CaptionClip&>(clip);
+    w.writeString(cc.text());
+    w.writeString(cc.speaker());
+    w.writeString(cc.fontFamily());
+    w.writeF32(cc.fontSize());
+    w.writeU32(cc.textColor());
+    w.writeU32(cc.bgColor());
+    w.writeU8(static_cast<uint8_t>(cc.position()));
+}
+
+void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* cc = static_cast<CaptionClip*>(&clip);
+    cc->setText(r.readString());
+    cc->setSpeaker(r.readString());
+    cc->setFontFamily(r.readString());
+    cc->setFontSize(r.readF32());
+    cc->setTextColor(r.readU32());
+    cc->setBgColor(r.readU32());
+    cc->setPosition(static_cast<CaptionPosition>(r.readU8()));
+}
+
+// ── PngPuppet ──────────────────────────────────────────────────────────────
+
+void writePngPuppetFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& pc = static_cast<const PngPuppetClip&>(clip);
+    w.writeString(pc.characterName());
+    w.writeString(pc.variant());
+    for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
+        w.writeString(pc.facePath(f));
+    w.writeU8(pc.isTalking() ? 1 : 0);
+    w.writeU32(pc.seed());
+    w.writeF32(pc.talkSwapSeconds());
+    w.writeF32(pc.blinkIntervalSeconds());
+    w.writeF32(pc.blinkDurationSeconds());
+    w.writeF32(pc.breathAmplitude());
+    w.writeF32(pc.breathSpeed());
+    w.writeF32(pc.swayAmplitude());
+}
+
+void readPngPuppetFields(BinaryReader& r, Clip& clip, uint32_t)
+{
+    auto* pc = static_cast<PngPuppetClip*>(&clip);
+    pc->setCharacterName(r.readString());
+    pc->setVariant(r.readString());
+    for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
+        pc->setFacePath(f, r.readString());
+    pc->setTalking(r.readU8() != 0);
+    pc->setSeed(r.readU32());
+    pc->setTalkSwapSeconds(r.readF32());
+    pc->setBlinkIntervalSeconds(r.readF32());
+    pc->setBlinkDurationSeconds(r.readF32());
+    pc->setBreathAmplitude(r.readF32());
+    pc->setBreathSpeed(r.readF32());
+    pc->setSwayAmplitude(r.readF32());
+}
+
+// ── Graphic ────────────────────────────────────────────────────────────────
+
+void writeGraphicFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& gc = static_cast<const GraphicClip&>(clip);
+    w.writeU32(static_cast<uint32_t>(gc.layerCount()));
+    for (size_t li = 0; li < gc.layerCount(); ++li) {
+        const auto* layer = gc.layer(li);
+        w.writeU8(static_cast<uint8_t>(layer->layerType()));
+        w.writeString(layer->name());
+        w.writeU8(layer->isVisible() ? 1 : 0);
+        w.writeU8(layer->isLocked() ? 1 : 0);
+        // Layer transform (8 keyframe tracks)
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().posX);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().posY);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().scaleX);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().scaleY);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().rotation);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().anchorX);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().anchorY);
+        writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().opacity);
+        // Appearance
+        const auto& app = layer->appearance();
+        w.writeU32(static_cast<uint32_t>(app.fills.size()));
+        for (auto& f : app.fills) { w.writeU32(f.color); w.writeF32(f.opacity); w.writeU8(f.enabled ? 1 : 0); }
+        w.writeU32(static_cast<uint32_t>(app.strokes.size()));
+        for (auto& s : app.strokes) { w.writeU32(s.color); w.writeF32(s.width); w.writeU8(static_cast<uint8_t>(s.position)); w.writeF32(s.opacity); w.writeU8(s.enabled ? 1 : 0); }
+        w.writeU32(static_cast<uint32_t>(app.shadows.size()));
+        for (auto& s : app.shadows) { w.writeU32(s.color); w.writeF32(s.distance); w.writeF32(s.angle); w.writeF32(s.softness); w.writeF32(s.opacity); w.writeU8(s.enabled ? 1 : 0); }
+        // Type-specific layer data
+        if (layer->layerType() == GraphicLayerType::Text) {
+            auto* tl = static_cast<const TextLayer*>(layer);
+            w.writeString(tl->text());
+            w.writeString(tl->fontFamily());
+            w.writeF32(tl->fontSize());
+            w.writeU32(static_cast<uint32_t>(tl->fontWeight()));
+            w.writeU8(tl->isItalic() ? 1 : 0);
+            w.writeU8(tl->allCaps() ? 1 : 0);
+            w.writeU8(tl->smallCaps() ? 1 : 0);
+            w.writeU8(static_cast<uint8_t>(tl->alignment()));
+            w.writeU8(static_cast<uint8_t>(tl->vAlignment()));
+            writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->tracking());
+            writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->leading());
+            writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->baselineShift());
+            w.writeF32(tl->boxWidth());
+            w.writeF32(tl->boxHeight());
+            w.writeU8(tl->useParagraphBox() ? 1 : 0);
+        } else if (layer->layerType() == GraphicLayerType::Shape) {
+            auto* sl = static_cast<const ShapeLayer*>(layer);
+            w.writeU8(static_cast<uint8_t>(sl->shapeType()));
+            w.writeF32(sl->shapeWidth());
+            w.writeF32(sl->shapeHeight());
+            w.writeF32(sl->cornerRadius());
+            w.writeU32(sl->fillColor());
+        }
+    }
+}
+
+void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
+{
+    auto* gc = static_cast<GraphicClip*>(&clip);
+    uint32_t layerCount = r.readU32();
+    for (uint32_t li = 0; li < layerCount; ++li) {
+        auto layerType = static_cast<GraphicLayerType>(r.readU8());
+        std::string layerName = r.readString();
+        bool visible = r.readU8() != 0;
+        bool locked  = r.readU8() != 0;
+        std::unique_ptr<GraphicLayer> layer;
+        if (layerType == GraphicLayerType::Text)
+            layer = std::make_unique<TextLayer>();
+        else
+            layer = std::make_unique<ShapeLayer>();
+        layer->setName(layerName);
+        layer->setVisible(visible);
+        layer->setLocked(locked);
+        // Layer transform (8 keyframe tracks)
+        readKeyframeTrack(r, layer->transform().posX, version);
+        readKeyframeTrack(r, layer->transform().posY, version);
+        readKeyframeTrack(r, layer->transform().scaleX, version);
+        readKeyframeTrack(r, layer->transform().scaleY, version);
+        readKeyframeTrack(r, layer->transform().rotation, version);
+        readKeyframeTrack(r, layer->transform().anchorX, version);
+        readKeyframeTrack(r, layer->transform().anchorY, version);
+        readKeyframeTrack(r, layer->transform().opacity, version);
+        // Appearance
+        auto& app = layer->appearance();
+        app.fills.clear();
+        uint32_t fillCount = r.readU32();
+        for (uint32_t fi = 0; fi < fillCount; ++fi) {
+            FillEntry fe; fe.color = r.readU32(); fe.opacity = r.readF32(); fe.enabled = r.readU8() != 0;
+            app.fills.push_back(fe);
+        }
+        app.strokes.clear();
+        uint32_t strokeCount = r.readU32();
+        for (uint32_t si = 0; si < strokeCount; ++si) {
+            StrokeEntry se; se.color = r.readU32(); se.width = r.readF32(); se.position = static_cast<StrokePosition>(r.readU8()); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
+            app.strokes.push_back(se);
+        }
+        app.shadows.clear();
+        uint32_t shadowCount = r.readU32();
+        for (uint32_t si = 0; si < shadowCount; ++si) {
+            ShadowEntry se; se.color = r.readU32(); se.distance = r.readF32(); se.angle = r.readF32(); se.softness = r.readF32(); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
+            app.shadows.push_back(se);
+        }
+        // Type-specific
+        if (layerType == GraphicLayerType::Text) {
+            auto* tl = static_cast<TextLayer*>(layer.get());
+            tl->setText(r.readString());
+            tl->setFontFamily(r.readString());
+            tl->setFontSize(r.readF32());
+            tl->setFontWeight(static_cast<int>(r.readU32()));
+            tl->setItalic(r.readU8() != 0);
+            tl->setAllCaps(r.readU8() != 0);
+            tl->setSmallCaps(r.readU8() != 0);
+            tl->setAlignment(static_cast<GTextAlign>(r.readU8()));
+            tl->setVAlignment(static_cast<GTextVAlign>(r.readU8()));
+            readKeyframeTrack(r, tl->tracking(), version);
+            readKeyframeTrack(r, tl->leading(), version);
+            readKeyframeTrack(r, tl->baselineShift(), version);
+            tl->setBoxWidth(r.readF32());
+            tl->setBoxHeight(r.readF32());
+            tl->setUseParagraphBox(r.readU8() != 0);
+        } else if (layerType == GraphicLayerType::Shape) {
+            auto* sl = static_cast<ShapeLayer*>(layer.get());
+            sl->setShapeType(static_cast<ShapeType>(r.readU8()));
+            sl->setShapeWidth(r.readF32());
+            sl->setShapeHeight(r.readF32());
+            sl->setCornerRadius(r.readF32());
+            sl->setFillColor(r.readU32());
+        }
+        gc->addLayer(std::move(layer));
+    }
+}
+
+// ── The registry ───────────────────────────────────────────────────────────
+// ONE entry per ClipType.  New clip types: add the three functions above and
+// one line here.
+
+struct RegistryEntry { ClipType type; TypeSerializer s; };
+
+constexpr RegistryEntry kClipSerializers[] = {
+    { ClipType::Spine,      { makeClip<SpineClip>,      writeSpineFields,      readSpineFields      } },
+    { ClipType::Video,      { makeClip<VideoClip>,      writeVideoFields,      readVideoFields      } },
+    { ClipType::Audio,      { makeClip<AudioClip>,      writeAudioFields,      readAudioFields      } },
+    { ClipType::Title,      { makeClip<TitleClip>,      writeTitleFields,      readTitleFields      } },
+    { ClipType::Adjustment, { makeClip<AdjustmentClip>, writeAdjustmentFields, readAdjustmentFields } },
+    { ClipType::Image,      { makeClip<ImageClip>,      writeImageFields,      readImageFields      } },
+    { ClipType::Sequence,   { makeClip<SequenceClip>,   writeSequenceFields,   readSequenceFields   } },
+    { ClipType::Caption,    { makeClip<CaptionClip>,    writeCaptionFields,    readCaptionFields    } },
+    { ClipType::PngPuppet,  { makeClip<PngPuppetClip>,  writePngPuppetFields,  readPngPuppetFields  } },
+    { ClipType::Graphic,    { makeClip<GraphicClip>,    writeGraphicFields,    readGraphicFields    } },
+};
+
+const TypeSerializer* serializerFor(ClipType type)
+{
+    for (const auto& e : kClipSerializers)
+        if (e.type == type)
+            return &e.s;
+    return nullptr;
+}
+
+} // namespace
+
 // ── Serialize a single clip ─────────────────────────────────────────────────
 
 void writeClip(BinaryWriter& w, const Clip& clip)
@@ -334,186 +799,12 @@ void writeClip(BinaryWriter& w, const Clip& clip)
     // Maintain pitch flag (v7+)
     w.writeU8(clip.maintainPitch() ? 1 : 0);
 
-    // Type-specific fields
-    switch (clip.clipType())
-    {
-    case ClipType::Spine: {
-        auto& sc = static_cast<const SpineClip&>(clip);
-        w.writeString(sc.characterName());
-        w.writeString(sc.outfit());
-        w.writeU8(static_cast<uint8_t>(sc.stance()));
-        w.writeString(sc.animationName());
-        w.writeU8(sc.isLooping() ? 1 : 0);
-        w.writeU8(sc.isTalking() ? 1 : 0);
-        w.writeF32(sc.animationSpeed());
-        w.writeU8(sc.useGlobalTime() ? 1 : 0);
-        w.writeF32(sc.cropLeft());
-        w.writeF32(sc.cropRight());
-        w.writeF32(sc.cropTop());
-        w.writeF32(sc.cropBottom());
-        break;
-    }
-    case ClipType::Video: {
-        auto& vc = static_cast<const VideoClip&>(clip);
-        w.writeString(vc.mediaPath());
-        w.writeU64(vc.mediaId());
-        w.writeU32(vc.sourceWidth());
-        w.writeU32(vc.sourceHeight());
-        w.writeF64(vc.sourceFps());
-        w.writeI64(vc.sourceDuration());
-        w.writeU8(vc.hasAudio() ? 1 : 0);
-        w.writeF32(vc.volume());
-        w.writeF32(vc.cropLeft());
-        w.writeF32(vc.cropRight());
-        w.writeF32(vc.cropTop());
-        w.writeF32(vc.cropBottom());
-        // v9: video character metadata
-        w.writeString(vc.characterName());
-        w.writeU8(vc.isTalking() ? 1 : 0);
-        w.writeString(vc.videoMutePath());
-        w.writeString(vc.videoTalkPath());
-        // v12: outfit + animation name for AnimationVideoCache characters
-        w.writeString(vc.outfit());
-        w.writeString(vc.animationName());
-        break;
-    }
-    case ClipType::Audio: {
-        auto& ac = static_cast<const AudioClip&>(clip);
-        w.writeString(ac.mediaPath());
-        w.writeU64(ac.mediaId());
-        w.writeU32(ac.sampleRate());
-        w.writeU32(static_cast<uint32_t>(ac.channels()));
-        w.writeI64(ac.sourceDuration());
-        writeKeyframeTrack(w, const_cast<AudioClip&>(ac).volume());
-        writeKeyframeTrack(w, const_cast<AudioClip&>(ac).pan());
-        w.writeI64(ac.fadeInDuration());
-        w.writeI64(ac.fadeOutDuration());
-        break;
-    }
-    case ClipType::Title: {
-        auto& tc = static_cast<const TitleClip&>(clip);
-        w.writeString(tc.text());
-        w.writeString(tc.fontFamily());
-        w.writeF32(tc.fontSize());
-        w.writeU8(tc.isBold() ? 1 : 0);
-        w.writeU8(tc.isItalic() ? 1 : 0);
-        w.writeU8(static_cast<uint8_t>(tc.alignment()));
-        w.writeU8(static_cast<uint8_t>(tc.verticalAlignment()));
-        w.writeU32(tc.textColor());
-        w.writeU32(tc.bgColor());
-        w.writeU32(tc.outlineColor());
-        w.writeF32(tc.outlineWidth());
-        writeKeyframeTrack(w, const_cast<TitleClip&>(tc).tracking());
-        writeKeyframeTrack(w, const_cast<TitleClip&>(tc).lineHeight());
-        break;
-    }
-    case ClipType::Adjustment: {
-        auto& ac = static_cast<const AdjustmentClip&>(clip);
-        w.writeU8(ac.blendMode());
-        w.writeU8(ac.affectsSingleTrack() ? 1 : 0);
-        break;
-    }
-    case ClipType::Image: {
-        auto& ic = static_cast<const ImageClip&>(clip);
-        w.writeString(ic.mediaPath());
-        w.writeU64(ic.mediaId());
-        w.writeU32(ic.sourceWidth());
-        w.writeU32(ic.sourceHeight());
-        w.writeF32(ic.cropLeft());
-        w.writeF32(ic.cropRight());
-        w.writeF32(ic.cropTop());
-        w.writeF32(ic.cropBottom());
-        break;
-    }
-    case ClipType::Sequence: {
-        auto& sc = static_cast<const SequenceClip&>(clip);
-        w.writeU32(static_cast<uint32_t>(sc.sequenceIndex()));
-        w.writeString(sc.sequenceName());
-        break;
-    }
-    case ClipType::Caption: {
-        auto& cc = static_cast<const CaptionClip&>(clip);
-        w.writeString(cc.text());
-        w.writeString(cc.speaker());
-        w.writeString(cc.fontFamily());
-        w.writeF32(cc.fontSize());
-        w.writeU32(cc.textColor());
-        w.writeU32(cc.bgColor());
-        w.writeU8(static_cast<uint8_t>(cc.position()));
-        break;
-    }
-    case ClipType::PngPuppet: {
-        auto& pc = static_cast<const PngPuppetClip&>(clip);
-        w.writeString(pc.characterName());
-        w.writeString(pc.variant());
-        for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
-            w.writeString(pc.facePath(f));
-        w.writeU8(pc.isTalking() ? 1 : 0);
-        w.writeU32(pc.seed());
-        w.writeF32(pc.talkSwapSeconds());
-        w.writeF32(pc.blinkIntervalSeconds());
-        w.writeF32(pc.blinkDurationSeconds());
-        w.writeF32(pc.breathAmplitude());
-        w.writeF32(pc.breathSpeed());
-        w.writeF32(pc.swayAmplitude());
-        break;
-    }
-    case ClipType::Graphic: {
-        auto& gc = static_cast<const GraphicClip&>(clip);
-        w.writeU32(static_cast<uint32_t>(gc.layerCount()));
-        for (size_t li = 0; li < gc.layerCount(); ++li) {
-            const auto* layer = gc.layer(li);
-            w.writeU8(static_cast<uint8_t>(layer->layerType()));
-            w.writeString(layer->name());
-            w.writeU8(layer->isVisible() ? 1 : 0);
-            w.writeU8(layer->isLocked() ? 1 : 0);
-            // Layer transform (8 keyframe tracks)
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().posX);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().posY);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().scaleX);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().scaleY);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().rotation);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().anchorX);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().anchorY);
-            writeKeyframeTrack(w, const_cast<GraphicLayer*>(layer)->transform().opacity);
-            // Appearance
-            const auto& app = layer->appearance();
-            w.writeU32(static_cast<uint32_t>(app.fills.size()));
-            for (auto& f : app.fills) { w.writeU32(f.color); w.writeF32(f.opacity); w.writeU8(f.enabled ? 1 : 0); }
-            w.writeU32(static_cast<uint32_t>(app.strokes.size()));
-            for (auto& s : app.strokes) { w.writeU32(s.color); w.writeF32(s.width); w.writeU8(static_cast<uint8_t>(s.position)); w.writeF32(s.opacity); w.writeU8(s.enabled ? 1 : 0); }
-            w.writeU32(static_cast<uint32_t>(app.shadows.size()));
-            for (auto& s : app.shadows) { w.writeU32(s.color); w.writeF32(s.distance); w.writeF32(s.angle); w.writeF32(s.softness); w.writeF32(s.opacity); w.writeU8(s.enabled ? 1 : 0); }
-            // Type-specific layer data
-            if (layer->layerType() == GraphicLayerType::Text) {
-                auto* tl = static_cast<const TextLayer*>(layer);
-                w.writeString(tl->text());
-                w.writeString(tl->fontFamily());
-                w.writeF32(tl->fontSize());
-                w.writeU32(static_cast<uint32_t>(tl->fontWeight()));
-                w.writeU8(tl->isItalic() ? 1 : 0);
-                w.writeU8(tl->allCaps() ? 1 : 0);
-                w.writeU8(tl->smallCaps() ? 1 : 0);
-                w.writeU8(static_cast<uint8_t>(tl->alignment()));
-                w.writeU8(static_cast<uint8_t>(tl->vAlignment()));
-                writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->tracking());
-                writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->leading());
-                writeKeyframeTrack(w, const_cast<TextLayer*>(tl)->baselineShift());
-                w.writeF32(tl->boxWidth());
-                w.writeF32(tl->boxHeight());
-                w.writeU8(tl->useParagraphBox() ? 1 : 0);
-            } else if (layer->layerType() == GraphicLayerType::Shape) {
-                auto* sl = static_cast<const ShapeLayer*>(layer);
-                w.writeU8(static_cast<uint8_t>(sl->shapeType()));
-                w.writeF32(sl->shapeWidth());
-                w.writeF32(sl->shapeHeight());
-                w.writeF32(sl->cornerRadius());
-                w.writeU32(sl->fillColor());
-            }
-        }
-        break;
-    }
-    }
+    // Type-specific fields — dispatched through the per-type registry
+    if (const TypeSerializer* ts = serializerFor(clip.clipType()))
+        ts->writeFields(w, clip);
+    else
+        spdlog::error("ClipSerialization: no serializer registered for clip type {}",
+                      static_cast<int>(clip.clipType()));
 
     // ── Effect stack (v10+) ────────────────────────────────────────────
     {
@@ -586,43 +877,10 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
     int64_t srcIn     = r.readI64();
     double speed      = r.readF64();
 
-    std::unique_ptr<Clip> clip;
-
-    switch (type)
-    {
-    case ClipType::Spine:
-        clip = std::make_unique<SpineClip>();
-        break;
-    case ClipType::Video:
-        clip = std::make_unique<VideoClip>();
-        break;
-    case ClipType::Audio:
-        clip = std::make_unique<AudioClip>();
-        break;
-    case ClipType::Title:
-        clip = std::make_unique<TitleClip>();
-        break;
-    case ClipType::Adjustment:
-        clip = std::make_unique<AdjustmentClip>();
-        break;
-    case ClipType::Image:
-        clip = std::make_unique<ImageClip>();
-        break;
-    case ClipType::Graphic:
-        clip = std::make_unique<GraphicClip>();
-        break;
-    case ClipType::Sequence:
-        clip = std::make_unique<SequenceClip>();
-        break;
-    case ClipType::Caption:
-        clip = std::make_unique<CaptionClip>();
-        break;
-    case ClipType::PngPuppet:
-        clip = std::make_unique<PngPuppetClip>();
-        break;
-    default:
+    const TypeSerializer* ts = serializerFor(type);
+    if (!ts)
         return nullptr;
-    }
+    std::unique_ptr<Clip> clip = ts->make();
 
     // Restore the saved clip id so transitions (which reference clips by id)
     // survive reload.  Previously ids were regenerated, leaving every
@@ -700,206 +958,8 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
     if (version >= 7)
         clip->setMaintainPitch(r.readU8() != 0);
 
-    // Type-specific fields
-    switch (type)
-    {
-    case ClipType::Spine: {
-        auto* sc = static_cast<SpineClip*>(clip.get());
-        sc->setCharacterName(r.readString());
-        sc->setOutfit(r.readString());
-        sc->setStance(static_cast<CharacterStance>(r.readU8()));
-        sc->setAnimationName(r.readString());
-        sc->setLooping(r.readU8() != 0);
-        sc->setTalking(r.readU8() != 0);
-        sc->setAnimationSpeed(r.readF32());
-        sc->setUseGlobalTime(r.readU8() != 0);
-        float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
-        sc->setCrop(cl, cr, ct, cb);
-        break;
-    }
-    case ClipType::Video: {
-        auto* vc = static_cast<VideoClip*>(clip.get());
-        vc->setMediaPath(resolveVideoPath(r.readString()));
-        vc->setMediaId(r.readU64());
-        uint32_t sw = r.readU32(), sh = r.readU32();
-        vc->setSourceResolution(sw, sh);
-        vc->setSourceFps(r.readF64());
-        vc->setSourceDuration(r.readI64());
-        vc->setHasAudio(r.readU8() != 0);
-        vc->setVolume(r.readF32());
-        if (version >= 3) {
-            float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
-            vc->setCrop(cl, cr, ct, cb);
-        }
-        if (version >= 9) {
-            vc->setCharacterName(r.readString());
-            vc->setTalking(r.readU8() != 0);
-            vc->setVideoMutePath(resolveVideoPath(r.readString()));
-            vc->setVideoTalkPath(resolveVideoPath(r.readString()));
-        }
-        if (version >= 12) {
-            vc->setOutfit(r.readString());
-            vc->setAnimationName(r.readString());
-        }
-        break;
-    }
-    case ClipType::Audio: {
-        auto* ac = static_cast<AudioClip*>(clip.get());
-        ac->setMediaPath(r.readString());
-        ac->setMediaId(r.readU64());
-        ac->setSampleRate(r.readU32());
-        ac->setChannels(static_cast<uint16_t>(r.readU32()));
-        ac->setSourceDuration(r.readI64());
-        readKeyframeTrack(r, ac->volume(), version);
-        readKeyframeTrack(r, ac->pan(), version);
-        ac->setFadeInDuration(r.readI64());
-        ac->setFadeOutDuration(r.readI64());
-        break;
-    }
-    case ClipType::Title: {
-        auto* tc = static_cast<TitleClip*>(clip.get());
-        tc->setText(r.readString());
-        tc->setFontFamily(r.readString());
-        tc->setFontSize(r.readF32());
-        tc->setBold(r.readU8() != 0);
-        tc->setItalic(r.readU8() != 0);
-        tc->setAlignment(static_cast<TextAlign>(r.readU8()));
-        tc->setVerticalAlignment(static_cast<TextVAlign>(r.readU8()));
-        tc->setTextColor(r.readU32());
-        tc->setBgColor(r.readU32());
-        tc->setOutlineColor(r.readU32());
-        tc->setOutlineWidth(r.readF32());
-        readKeyframeTrack(r, tc->tracking(), version);
-        readKeyframeTrack(r, tc->lineHeight(), version);
-        break;
-    }
-    case ClipType::Adjustment: {
-        auto* ac = static_cast<AdjustmentClip*>(clip.get());
-        ac->setBlendMode(r.readU8());
-        ac->setAffectsSingleTrack(r.readU8() != 0);
-        break;
-    }
-    case ClipType::Image: {
-        auto* ic = static_cast<ImageClip*>(clip.get());
-        ic->setMediaPath(r.readString());
-        ic->setMediaId(r.readU64());
-        uint32_t sw = r.readU32(), sh = r.readU32();
-        ic->setSourceResolution(sw, sh);
-        float cl = r.readF32(), cr = r.readF32(), ct = r.readF32(), cb = r.readF32();
-        ic->setCrop(cl, cr, ct, cb);
-        break;
-    }
-    case ClipType::Graphic: {
-        auto* gc = static_cast<GraphicClip*>(clip.get());
-        uint32_t layerCount = r.readU32();
-        for (uint32_t li = 0; li < layerCount; ++li) {
-            auto layerType = static_cast<GraphicLayerType>(r.readU8());
-            std::string layerName = r.readString();
-            bool visible = r.readU8() != 0;
-            bool locked  = r.readU8() != 0;
-            std::unique_ptr<GraphicLayer> layer;
-            if (layerType == GraphicLayerType::Text)
-                layer = std::make_unique<TextLayer>();
-            else
-                layer = std::make_unique<ShapeLayer>();
-            layer->setName(layerName);
-            layer->setVisible(visible);
-            layer->setLocked(locked);
-            // Layer transform (8 keyframe tracks)
-            readKeyframeTrack(r, layer->transform().posX, version);
-            readKeyframeTrack(r, layer->transform().posY, version);
-            readKeyframeTrack(r, layer->transform().scaleX, version);
-            readKeyframeTrack(r, layer->transform().scaleY, version);
-            readKeyframeTrack(r, layer->transform().rotation, version);
-            readKeyframeTrack(r, layer->transform().anchorX, version);
-            readKeyframeTrack(r, layer->transform().anchorY, version);
-            readKeyframeTrack(r, layer->transform().opacity, version);
-            // Appearance
-            auto& app = layer->appearance();
-            app.fills.clear();
-            uint32_t fillCount = r.readU32();
-            for (uint32_t fi = 0; fi < fillCount; ++fi) {
-                FillEntry fe; fe.color = r.readU32(); fe.opacity = r.readF32(); fe.enabled = r.readU8() != 0;
-                app.fills.push_back(fe);
-            }
-            app.strokes.clear();
-            uint32_t strokeCount = r.readU32();
-            for (uint32_t si = 0; si < strokeCount; ++si) {
-                StrokeEntry se; se.color = r.readU32(); se.width = r.readF32(); se.position = static_cast<StrokePosition>(r.readU8()); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
-                app.strokes.push_back(se);
-            }
-            app.shadows.clear();
-            uint32_t shadowCount = r.readU32();
-            for (uint32_t si = 0; si < shadowCount; ++si) {
-                ShadowEntry se; se.color = r.readU32(); se.distance = r.readF32(); se.angle = r.readF32(); se.softness = r.readF32(); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
-                app.shadows.push_back(se);
-            }
-            // Type-specific
-            if (layerType == GraphicLayerType::Text) {
-                auto* tl = static_cast<TextLayer*>(layer.get());
-                tl->setText(r.readString());
-                tl->setFontFamily(r.readString());
-                tl->setFontSize(r.readF32());
-                tl->setFontWeight(static_cast<int>(r.readU32()));
-                tl->setItalic(r.readU8() != 0);
-                tl->setAllCaps(r.readU8() != 0);
-                tl->setSmallCaps(r.readU8() != 0);
-                tl->setAlignment(static_cast<GTextAlign>(r.readU8()));
-                tl->setVAlignment(static_cast<GTextVAlign>(r.readU8()));
-                readKeyframeTrack(r, tl->tracking(), version);
-                readKeyframeTrack(r, tl->leading(), version);
-                readKeyframeTrack(r, tl->baselineShift(), version);
-                tl->setBoxWidth(r.readF32());
-                tl->setBoxHeight(r.readF32());
-                tl->setUseParagraphBox(r.readU8() != 0);
-            } else if (layerType == GraphicLayerType::Shape) {
-                auto* sl = static_cast<ShapeLayer*>(layer.get());
-                sl->setShapeType(static_cast<ShapeType>(r.readU8()));
-                sl->setShapeWidth(r.readF32());
-                sl->setShapeHeight(r.readF32());
-                sl->setCornerRadius(r.readF32());
-                sl->setFillColor(r.readU32());
-            }
-            gc->addLayer(std::move(layer));
-        }
-        break;
-    }
-    case ClipType::Sequence: {
-        auto* sc = static_cast<SequenceClip*>(clip.get());
-        sc->setSequenceIndex(static_cast<size_t>(r.readU32()));
-        sc->setSequenceName(r.readString());
-        break;
-    }
-    case ClipType::Caption: {
-        auto* cc = static_cast<CaptionClip*>(clip.get());
-        cc->setText(r.readString());
-        cc->setSpeaker(r.readString());
-        cc->setFontFamily(r.readString());
-        cc->setFontSize(r.readF32());
-        cc->setTextColor(r.readU32());
-        cc->setBgColor(r.readU32());
-        cc->setPosition(static_cast<CaptionPosition>(r.readU8()));
-        break;
-    }
-    case ClipType::PngPuppet: {
-        auto* pc = static_cast<PngPuppetClip*>(clip.get());
-        pc->setCharacterName(r.readString());
-        pc->setVariant(r.readString());
-        for (int f = 0; f < PngPuppetClip::FaceCount; ++f)
-            pc->setFacePath(f, r.readString());
-        pc->setTalking(r.readU8() != 0);
-        pc->setSeed(r.readU32());
-        pc->setTalkSwapSeconds(r.readF32());
-        pc->setBlinkIntervalSeconds(r.readF32());
-        pc->setBlinkDurationSeconds(r.readF32());
-        pc->setBreathAmplitude(r.readF32());
-        pc->setBreathSpeed(r.readF32());
-        pc->setSwayAmplitude(r.readF32());
-        break;
-    }
-    default:
-        break;
-    }
+    // Type-specific fields — dispatched through the per-type registry
+    ts->readFields(r, *clip, version);
 
     // ── Effect stack (v10+) ────────────────────────────────────────────
     if (version >= 10 && clip) {

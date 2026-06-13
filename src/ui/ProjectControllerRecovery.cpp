@@ -3,6 +3,7 @@
  * Split from MainWindowProject.cpp.
  */
 
+#include "ProjectController.h"
 #include "MainWindow.h"
 #include "PathUtils.h"
 #include "ShortcutManager.h"
@@ -109,17 +110,17 @@ namespace rt {
 //  Restore from Auto-Save
 // ═══════════════════════════════════════════════════════════════════════════
 
-void MainWindow::onRestoreFromAutoSave()
+void ProjectController::onRestoreFromAutoSave()
 {
-    if (!m_currentProject) {
-        QMessageBox::information(this, "Restore from Auto-Save",
+    if (!m_mw->currentProject()) {
+        QMessageBox::information(m_mw, "Restore from Auto-Save",
             "No project is open. Open a project first.");
         return;
     }
 
-    auto projPath = m_currentProject->filePath();
+    auto projPath = m_mw->currentProject()->filePath();
     if (projPath.empty()) {
-        QMessageBox::information(this, "Restore from Auto-Save",
+        QMessageBox::information(m_mw, "Restore from Auto-Save",
             "Project has not been saved yet — no auto-saves exist.");
         return;
     }
@@ -127,7 +128,7 @@ void MainWindow::onRestoreFromAutoSave()
     auto folder = AutoSave::autoSaveFolder(projPath);
     std::error_code ec;
     if (!std::filesystem::exists(folder, ec)) {
-        QMessageBox::information(this, "Restore from Auto-Save",
+        QMessageBox::information(m_mw, "Restore from Auto-Save",
             "No auto-save folder found for this project.");
         return;
     }
@@ -149,7 +150,7 @@ void MainWindow::onRestoreFromAutoSave()
     }
 
     if (files.empty()) {
-        QMessageBox::information(this, "Restore from Auto-Save",
+        QMessageBox::information(m_mw, "Restore from Auto-Save",
             "No auto-save files found.");
         return;
     }
@@ -180,7 +181,7 @@ void MainWindow::onRestoreFromAutoSave()
 
     bool ok = false;
     QString selected = QInputDialog::getItem(
-        this, "Restore from Auto-Save",
+        m_mw, "Restore from Auto-Save",
         "Select an auto-save to restore:\n"
         "(Current unsaved changes will be lost)",
         items, 0, false, &ok);
@@ -190,7 +191,7 @@ void MainWindow::onRestoreFromAutoSave()
     int idx = items.indexOf(selected);
     if (idx < 0 || idx >= static_cast<int>(files.size())) return;
 
-    auto reply = QMessageBox::warning(this, "Restore from Auto-Save",
+    auto reply = QMessageBox::warning(m_mw, "Restore from Auto-Save",
         QString("This will replace the current project state with:\n\n%1\n\n"
                 "Any unsaved changes will be lost. Continue?")
             .arg(QString::fromStdString(pathToUtf8(files[static_cast<size_t>(idx)].path.filename()))),
@@ -198,7 +199,7 @@ void MainWindow::onRestoreFromAutoSave()
 
     if (reply != QMessageBox::Yes) return;
 
-    showBusyIndicator(tr("Restoring auto-save..."));
+    m_mw->showBusyIndicator(tr("Restoring auto-save..."));
     ProjectSerializer serializer;
     auto project = serializer.load(files[static_cast<size_t>(idx)].path);
     if (project) {
@@ -209,40 +210,40 @@ void MainWindow::onRestoreFromAutoSave()
         // setCurrentProject() resets the Audio tab and does NOT repopulate
         // it — restore the audio-sync blob the same way the normal open path
         // does, or the restored project shows an empty Audio tab.
-        if (m_audioSync && m_currentProject) {
-            const auto& blob = m_currentProject->audioSyncBlob();
+        if (m_mw->audioSync() && m_mw->currentProject()) {
+            const auto& blob = m_mw->currentProject()->audioSyncBlob();
             if (!blob.empty())
-                m_audioSync->deserializeFromBlob(blob);
+                m_mw->audioSync()->deserializeFromBlob(blob);
             else
-                m_audioSync->restoreProjectState(
-                    QString::fromStdString(m_currentProject->name()));
-            m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                m_mw->audioSync()->restoreProjectState(
+                    QString::fromStdString(m_mw->currentProject()->name()));
+            m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
         }
 
-        hideBusyIndicator();
-        statusBar()->showMessage("Restored from auto-save", 5000);
+        m_mw->hideBusyIndicator();
+        m_mw->statusBar()->showMessage("Restored from auto-save", 5000);
         spdlog::info("Restored project from auto-save: {}",
                      pathToUtf8(files[static_cast<size_t>(idx)].path));
     } else {
-        hideBusyIndicator();
-        QMessageBox::warning(this, "Restore Failed",
+        m_mw->hideBusyIndicator();
+        QMessageBox::warning(m_mw, "Restore Failed",
             "Could not load the selected auto-save file.");
     }
 }
-void MainWindow::onAutoSave()
+void ProjectController::onAutoSave()
 {
-    if (!m_currentProject) return;
+    if (!m_mw->currentProject()) return;
 
     bool audioSyncDirty = false;
     std::vector<uint8_t> currentAudioSyncBlob;
-    if (m_audioSync) {
-        currentAudioSyncBlob = m_audioSync->serializeToBlob();
+    if (m_mw->audioSync()) {
+        currentAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
         audioSyncDirty = (currentAudioSyncBlob != m_lastSavedAudioSyncBlob);
     }
 
-    if (!m_currentProject->isModified() && !audioSyncDirty) return;
+    if (!m_mw->currentProject()->isModified() && !audioSyncDirty) return;
 
-    auto projPath = m_currentProject->filePath();
+    auto projPath = m_mw->currentProject()->filePath();
     if (projPath.empty()) return;  // not yet saved to disk
 
     // Save to "Roundtable Auto-Save" folder with timestamped filename
@@ -256,14 +257,14 @@ void MainWindow::onAutoSave()
     }
 
     auto savePath = AutoSave::makeTimestampedPath(
-        folder, m_currentProject->name());
+        folder, m_mw->currentProject()->name());
 
     // Capture AudioSync state into blob before serializing
-    if (m_audioSync)
-        m_currentProject->setAudioSyncBlob(std::move(currentAudioSyncBlob));
+    if (m_mw->audioSync())
+        m_mw->currentProject()->setAudioSyncBlob(std::move(currentAudioSyncBlob));
 
     ProjectSerializer serializer;
-    if (serializer.save(*m_currentProject, savePath)) {
+    if (serializer.save(*m_mw->currentProject(), savePath)) {
         // Prune old auto-saves (keep max 20)
         auto s = rt::appSettings();
         size_t maxKeep = static_cast<size_t>(s.value("MaxAutoSaves", 20).toInt());
@@ -271,7 +272,7 @@ void MainWindow::onAutoSave()
 
         spdlog::info("Auto-saved to {}", pathToUtf8(savePath));
 
-        statusBar()->showMessage("Auto-saved", 2000);
+        m_mw->statusBar()->showMessage("Auto-saved", 2000);
     }
 }
 
@@ -279,7 +280,7 @@ void MainWindow::onAutoSave()
 //  Crash recovery
 // Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
-void MainWindow::checkCrashRecovery()
+void ProjectController::checkCrashRecovery()
 {
     auto settings = rt::appSettings();
     QString lastPath = settings.value("LastProjectPath").toString();
@@ -298,7 +299,7 @@ void MainWindow::checkCrashRecovery()
         const QString logDir  = QString::fromStdString(
             pathToUtf8(CrashHandler::crashDirectory()));
 
-        QDialog dlg(this);
+        QDialog dlg(m_mw);
         dlg.setWindowTitle(QStringLiteral("Crash Recovery"));
         auto* vbox = new QVBoxLayout(&dlg);
 
@@ -389,7 +390,7 @@ void MainWindow::checkCrashRecovery()
             spdlog::info("Crash recovery: user chose to reset layout");
 
             // ── Reset dock layout to defaults ──────────────────────────
-            applyDefaultLayout();
+            m_mw->applyDefaultLayout();
 
             // ── Clear GPU cache settings ──────────────────────────────
             // Force safe mode on next composite by clearing GPU state
@@ -403,7 +404,7 @@ void MainWindow::checkCrashRecovery()
             // ── Clear any stored GPU cache paths ──────────────────────
             settings.remove("GpuCachePath");
 
-            statusBar()->showMessage(
+            m_mw->statusBar()->showMessage(
                 QStringLiteral("Layout reset to defaults (previous crash detected)"), 5000);
 
             // ── Shortcut config diagnostic ────────────────────────────
@@ -438,7 +439,7 @@ void MainWindow::checkCrashRecovery()
         auto newestAutoSave = AutoSave::findNewestAutoSave(projPath);
         if (!newestAutoSave.empty()) {
             auto reply = QMessageBox::question(
-                this, "Recover Auto-Save",
+                m_mw, "Recover Auto-Save",
                 QString("An auto-save was found for:\n\n%1\n\n"
                         "Auto-save: %2\n\n"
                         "This auto-save is newer than your last saved version.\n"
@@ -464,22 +465,22 @@ void MainWindow::checkCrashRecovery()
                     // open path (onOpenProject*).  Without this, a recovered
                     // auto-save loads with an empty Audio tab even though the
                     // .rtp carries the data.
-                    if (m_audioSync && m_currentProject) {
-                        const auto& blob = m_currentProject->audioSyncBlob();
+                    if (m_mw->audioSync() && m_mw->currentProject()) {
+                        const auto& blob = m_mw->currentProject()->audioSyncBlob();
                         if (!blob.empty())
-                            m_audioSync->deserializeFromBlob(blob);
+                            m_mw->audioSync()->deserializeFromBlob(blob);
                         else
-                            m_audioSync->restoreProjectState(
-                                QString::fromStdString(m_currentProject->name()));
-                        m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                            m_mw->audioSync()->restoreProjectState(
+                                QString::fromStdString(m_mw->currentProject()->name()));
+                        m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
                     }
 
-                    statusBar()->showMessage("Recovered from auto-save", 5000);
+                    m_mw->statusBar()->showMessage("Recovered from auto-save", 5000);
                     spdlog::info("Recovered project from auto-save: {}",
                                  pathToUtf8(newestAutoSave));
                     recovered = true;
                 } else {
-                    QMessageBox::warning(this, "Recovery Failed",
+                    QMessageBox::warning(m_mw, "Recovery Failed",
                         "Could not load the auto-save file. Opening the last saved version.");
                 }
             }
@@ -492,7 +493,7 @@ void MainWindow::checkCrashRecovery()
 //  Recent files
 // Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
-void MainWindow::addToRecentFiles(const QString& filePath)
+void ProjectController::addToRecentFiles(const QString& filePath)
 {
     auto settings = rt::appSettings();
     QStringList recent = settings.value("RecentFiles").toStringList();
@@ -508,20 +509,20 @@ void MainWindow::addToRecentFiles(const QString& filePath)
     updateRecentFilesMenu();
 }
 
-void MainWindow::updateRecentFilesMenu()
+void ProjectController::updateRecentFilesMenu()
 {
-    if (!m_recentProjectsMenu) return;
-    m_recentProjectsMenu->clear();
+    if (!m_mw->recentProjectsMenu()) return;
+    m_mw->recentProjectsMenu()->clear();
 
     auto settings = rt::appSettings();
     QStringList recent = settings.value("RecentFiles").toStringList();
 
     if (recent.isEmpty()) {
-        m_recentProjectsMenu->setEnabled(false);
+        m_mw->recentProjectsMenu()->setEnabled(false);
         return;
     }
 
-    m_recentProjectsMenu->setEnabled(true);
+    m_mw->recentProjectsMenu()->setEnabled(true);
     for (const QString& path : recent) {
         QFileInfo fi(path);
 #if !defined(ROUNDTABLE_DEBUG) && !defined(ROUNDTABLE_DEV_BUILD)
@@ -529,7 +530,7 @@ void MainWindow::updateRecentFilesMenu()
         if (QFileInfo::exists(fi.absolutePath() + "/_dev"))
             continue;
 #endif
-        auto* act = m_recentProjectsMenu->addAction(fi.fileName());
+        auto* act = m_mw->recentProjectsMenu()->addAction(fi.fileName());
         act->setData(path);
         connect(act, &QAction::triggered, this, [this, path]() {
             ProjectSerializer serializer;
@@ -537,15 +538,15 @@ void MainWindow::updateRecentFilesMenu()
             if (proj) {
                 setCurrentProject(std::move(proj));
                 addToRecentFiles(path);
-                statusBar()->showMessage("Opened: " + QFileInfo(path).fileName(), 3000);
+                m_mw->statusBar()->showMessage("Opened: " + QFileInfo(path).fileName(), 3000);
             } else {
-                QMessageBox::warning(this, "Error", "Failed to open " + path);
+                QMessageBox::warning(m_mw, "Error", "Failed to open " + path);
             }
         });
     }
 
-    m_recentProjectsMenu->addSeparator();
-    m_recentProjectsMenu->addAction("Clear Recent", this, [this]() {
+    m_mw->recentProjectsMenu()->addSeparator();
+    m_mw->recentProjectsMenu()->addAction("Clear Recent", this, [this]() {
         auto s = rt::appSettings();
         s.remove("RecentFiles");
         updateRecentFilesMenu();
@@ -558,7 +559,7 @@ void MainWindow::updateRecentFilesMenu()
 //  we never try to re-init in-place.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void MainWindow::showGpuFatalError()
+void ProjectController::showGpuFatalError()
 {
     static bool s_alreadyShown = false;
     if (s_alreadyShown) return;
@@ -566,11 +567,11 @@ void MainWindow::showGpuFatalError()
 
     // Stop playback immediately so the FrameProducer / FramePresenter stop
     // hammering Vulkan with stale handles while the user reads the dialog.
-    if (m_playbackController) {
-        m_playbackController->pause();
+    if (m_mw->playbackController()) {
+        m_mw->playbackController()->pause();
     }
 
-    QMessageBox box(this);
+    QMessageBox box(m_mw);
     box.setIcon(QMessageBox::Critical);
     box.setWindowTitle("GPU Error");
     box.setText("The GPU renderer has crashed and cannot continue.");

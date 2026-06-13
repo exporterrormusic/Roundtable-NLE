@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TimelineTrackWidget.cpp — Track clip area renderer.
  * Step 12: Timeline Panel — Core UI
  */
@@ -1034,7 +1034,7 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
     // Peaks are generated for the ENTIRE source file. During rendering we
     // map the clip's visible source window [sourceIn .. sourceIn+duration)
     // into the peak array so that trimming correctly reveals/crops audio.
-    if (clip->clipType() == ClipType::Audio && m_waveformCache && qRect.width() > 4)
+    if (clip->isAudio() && m_waveformCache && qRect.width() > 4)
     {
         auto it = m_waveformCache->find(clip->id());
         if (it != m_waveformCache->end())
@@ -1106,7 +1106,7 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
         float maxVal = 1.0f;
         QColor curveColor;
 
-        if (clip->clipType() == ClipType::Audio) {
+        if (clip->isAudio()) {
             auto* audioClip = dynamic_cast<const AudioClip*>(clip);
             if (audioClip) {
                 kfTrack = &const_cast<AudioClip*>(audioClip)->volume();

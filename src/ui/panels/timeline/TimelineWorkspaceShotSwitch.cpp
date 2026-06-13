@@ -103,7 +103,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         bool trackHasGroupVisual = false;
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
             Clip* c = trk->clip(ci);
-            if (c && c->groupId() == groupId && c->clipType() != ClipType::Audio) {
+            if (c && c->groupId() == groupId && c->isVisual()) {
                 const int64_t cIn  = c->timelineIn();
                 const int64_t cOut = c->timelineOut();
                 if (!foundGroupTime) {
@@ -133,7 +133,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         Track* trk = m_timeline->track(ti);
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
             Clip* c = trk->clip(ci);
-            if (c && c->groupId() == groupId && c->clipType() != ClipType::Audio) {
+            if (c && c->groupId() == groupId && c->isVisual()) {
                 if (oldShotName->empty() && !c->shotName().empty())
                     *oldShotName = c->shotName();
                 auto snapClone = c->clone();
@@ -485,7 +485,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             if (!trk) continue;
             for (int ci = static_cast<int>(trk->clipCount()) - 1; ci >= 0; --ci) {
                 Clip* c = trk->clip(static_cast<size_t>(ci));
-                if (c && c->groupId() == groupId && c->clipType() != ClipType::Audio)
+                if (c && c->groupId() == groupId && c->isVisual())
                     trk->removeClip(static_cast<size_t>(ci));
             }
         }
@@ -568,7 +568,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             if (!trk) continue;
             for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                 Clip* c = trk->clip(ci);
-                if (c && c->groupId() == groupId && c->clipType() != ClipType::Audio) {
+                if (c && c->groupId() == groupId && c->isVisual()) {
                     picked = c; break;
                 }
             }

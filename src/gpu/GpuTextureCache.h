@@ -216,7 +216,7 @@ private:
     // Entry-count ceiling for the Premiere-style bounded working set.
     // Default 120 — at 8 MB / 1080p frame that's ~1 GB max VRAM hostage,
     // safe on any GPU that's running the GPU-resident decode path at
-    // all.  Tuned per-system by CacheCoordinator.  0 = uncapped.
+    // all.  Tuned per-system by CachePolicy.  0 = uncapped.
     size_t m_maxEntries{120};
     size_t m_hits{0};
     size_t m_misses{0};

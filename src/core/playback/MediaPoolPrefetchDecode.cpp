@@ -9,7 +9,7 @@
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
 #include "MediaPoolPrefetchGpu.h"     // tryConvertDecodedToCacheGpu
-#include "cache/FrameCache.h"         // chromaKeyInPlace, clearTransparentPixelRGB
+#include "cache/FrameCache.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>

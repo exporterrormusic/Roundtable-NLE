@@ -661,9 +661,7 @@ void EffectControlsPanel::applyTransformLive()
 
 bool EffectControlsPanel::clipHasCrop() const noexcept
 {
-    if (!m_clip) return false;
-    return m_clip->clipType() == ClipType::Video ||
-           m_clip->clipType() == ClipType::Spine;
+    return m_clip && m_clip->supportsCrop();
 }
 
 void EffectControlsPanel::writeCropFromSpins()
@@ -1195,7 +1193,7 @@ void EffectControlsPanel::pasteEffect()
     // Guard: audio effects (FillLeft/Right) only on AudioClip;
     // video/image effects only on non-AudioClip.
     const bool effectIsAudio = isAudioEffect(m_copiedEffect->effectType());
-    const bool clipIsAudio   = (m_clip->clipType() == ClipType::Audio);
+    const bool clipIsAudio   = (m_clip->isAudio());
     if (effectIsAudio != clipIsAudio) {
         spdlog::warn("EffectControlsPanel: refusing to paste {} effect '{}' onto {} clip '{}'",
                      effectIsAudio ? "audio" : "video",

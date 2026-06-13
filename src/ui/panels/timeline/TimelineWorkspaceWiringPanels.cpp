@@ -120,7 +120,7 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             // the next natural window swap.  Non-blocking variant: same
             // call the playback-refresh path uses mid-play.
             if (m_audioPlayback && m_selection.clip &&
-                m_selection.clip->clipType() == ClipType::Audio) {
+                m_selection.clip->isAudio()) {
                 m_audioPlayback->invalidateSources();
                 m_audioPlayback->loadSources(/*allowBlockingMisses=*/false);
             }

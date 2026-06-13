@@ -69,10 +69,10 @@ std::vector<CaptionClip*> PropertiesPanel::captionTargets() const
     std::vector<CaptionClip*> out;
     if (!m_multiSelection.empty()) {
         for (auto* c : m_multiSelection)
-            if (c && c->clipType() == ClipType::Caption)
+            if (c && c->isCaption())
                 out.push_back(static_cast<CaptionClip*>(c));
     }
-    if (out.empty() && m_clip && m_clip->clipType() == ClipType::Caption)
+    if (out.empty() && m_clip && m_clip->isCaption())
         out.push_back(static_cast<CaptionClip*>(m_clip));
     return out;
 }
@@ -81,7 +81,7 @@ std::vector<CaptionClip*> PropertiesPanel::captionTargets() const
 
 void PropertiesPanel::applyCaptionText()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Caption) return;
+    if (m_updating || !m_clip || !m_clip->isCaption()) return;
     auto* cc = static_cast<CaptionClip*>(m_clip);
     std::string newVal = m_capTextEdit->toPlainText().toStdString();
     if (newVal == cc->text()) return;
@@ -97,7 +97,7 @@ void PropertiesPanel::applyCaptionText()
 
 void PropertiesPanel::applyCaptionSpeaker()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Caption) return;
+    if (m_updating || !m_clip || !m_clip->isCaption()) return;
     auto* cc = static_cast<CaptionClip*>(m_clip);
     std::string newVal = m_capSpeakerEdit->text().toStdString();
     if (newVal == cc->speaker()) return;
@@ -402,7 +402,7 @@ void PropertiesPanel::applyTextPreset(int index)
     const TextStylePreset preset = m_textPresets[static_cast<size_t>(index - 1)];
     auto* self = this;
 
-    if (m_clip->clipType() == ClipType::Caption) {
+    if (m_clip->isCaption()) {
         auto targets = captionTargets();
         if (targets.empty()) return;
         struct Old { CaptionClip* cc; std::string font; float size; uint32_t tcol; uint32_t bcol; CaptionPosition pos; };
@@ -486,7 +486,7 @@ void PropertiesPanel::saveTextPresetAs()
     if (!m_clip) return;
     TextStylePreset p;
 
-    if (m_clip->clipType() == ClipType::Caption) {
+    if (m_clip->isCaption()) {
         auto targets = captionTargets();
         if (targets.empty()) return;
         CaptionClip* cc = targets.front();

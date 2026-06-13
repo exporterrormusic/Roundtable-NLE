@@ -1,4 +1,4 @@
-﻿/*
+/*
  * MainWindowProject.cpp — Project lifecycle coordinator.
  *
  * Thin coordinator after extracting setCurrentProject → MainWindowProjectSet.cpp,
@@ -14,6 +14,7 @@
  *   MainWindowProjectMisc.cpp      — SRT import/export, captureProjectThumbnail()
  */
 
+#include "ProjectController.h"
 #include "MainWindow.h"
 
 #include "panels/audio/AudioSync.h"
@@ -51,7 +52,7 @@ namespace rt {
 // Project management helpers
 // ═════════════════════════════════════════════════════════════════════════════
 
-QString MainWindow::projectsDirectory() const
+QString ProjectController::projectsDirectory() const
 {
     // F14: Check for user-configured projects directory
     auto settings = rt::appSettings();
@@ -90,18 +91,18 @@ QString MainWindow::projectsDirectory() const
     return rt::userDataDir() + "/projects";
 }
 
-bool MainWindow::checkUnsavedChanges()
+bool ProjectController::checkUnsavedChanges()
 {
     bool audioSyncDirty = false;
-    if (m_currentProject && m_audioSync)
-        audioSyncDirty = (m_audioSync->serializeToBlob() != m_lastSavedAudioSyncBlob);
+    if (m_mw->currentProject() && m_mw->audioSync())
+        audioSyncDirty = (m_mw->audioSync()->serializeToBlob() != m_lastSavedAudioSyncBlob);
 
-    if (!m_currentProject || (!m_currentProject->isModified() && !audioSyncDirty))
+    if (!m_mw->currentProject() || (!m_mw->currentProject()->isModified() && !audioSyncDirty))
         return true; // nothing to save
 
-    QString name = QString::fromStdString(m_currentProject->name());
+    QString name = QString::fromStdString(m_mw->currentProject()->name());
     auto reply = QMessageBox::question(
-        this, "Unsaved Changes",
+        m_mw, "Unsaved Changes",
         QString("Project '%1' has unsaved changes.\n\n"
                 "Do you want to save before continuing?").arg(name),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
@@ -117,15 +118,15 @@ bool MainWindow::checkUnsavedChanges()
     return true;
 }
 
-void MainWindow::refreshProjectsList()
+void ProjectController::refreshProjectsList()
 {
-    if (!m_projectPanel) return;
+    if (!m_mw->projectPanel()) return;
 
     QString projDir = projectsDirectory();
     QDir dir(projDir);
     if (!dir.exists()) {
         dir.mkpath(".");
-        m_projectPanel->setProjects({});
+        m_mw->projectPanel()->setProjects({});
         return;
     }
 
@@ -214,8 +215,8 @@ void MainWindow::refreshProjectsList()
     projects.reserve(entries.size());
 
     QString currentName;
-    if (m_currentProject)
-        currentName = QString::fromStdString(m_currentProject->name());
+    if (m_mw->currentProject())
+        currentName = QString::fromStdString(m_mw->currentProject()->name());
 
     for (const auto& entry : entries) {
         ProjectInfo info;
@@ -236,8 +237,8 @@ void MainWindow::refreshProjectsList()
         }
         // For the currently-open project prefer the in-memory show (may be
         // assigned but not yet saved); otherwise read it from the file.
-        if (info.isCurrent && m_currentProject)
-            info.show = QString::fromStdString(m_currentProject->show());
+        if (info.isCurrent && m_mw->currentProject())
+            info.show = QString::fromStdString(m_mw->currentProject()->show());
         else
             info.show = QString::fromStdString(ProjectSerializer::readProjectShow(
                 entry.absoluteFilePath().toStdWString()));
@@ -245,13 +246,13 @@ void MainWindow::refreshProjectsList()
         projects.append(info);
     }
 
-    m_projectPanel->setProjects(projects);
+    m_mw->projectPanel()->setProjects(projects);
 
     // Also feed recent projects
-    m_projectPanel->setRecentProjects(recent);
+    m_mw->projectPanel()->setRecentProjects(recent);
 
     spdlog::info("Refreshed projects list: {} projects found", entries.size());
-    statusBar()->showMessage(
+    m_mw->statusBar()->showMessage(
         QString("%1 project(s) found").arg(entries.size()), 3000);
 }
 

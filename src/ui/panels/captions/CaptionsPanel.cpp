@@ -313,7 +313,7 @@ void CaptionsPanel::refresh()
 
  for (size_t ci = 0; ci < track->clipCount(); ++ci) {
  Clip* clip = track->clip(ci);
- if (clip->clipType() != ClipType::Caption) continue;
+ if (!clip->isCaption()) continue;
 
  auto* cc = static_cast<CaptionClip*>(clip);
  CaptionEntry entry;
@@ -871,7 +871,7 @@ std::vector<CaptionTranscribeSource> CaptionsPanel::findTranscriptionSources() c
  Clip* clip = track->clip(ci);
  if (!clip) continue;
  std::string path;
- if (clip->clipType() == ClipType::Audio) {
+ if (clip->isAudio()) {
  path = static_cast<AudioClip*>(clip)->mediaPath();
  } else if (clip->clipType() == ClipType::Video) {
  auto* vc = static_cast<VideoClip*>(clip);

@@ -18,8 +18,8 @@
 #include "playback/AVSyncClock.h"
 #include "playback/MediaPool.h"
 #include "playback/MediaSourceService.h"
-#include "cache/CacheCoordinator.h"
-#include "cache/UnifiedCache.h"
+#include "cache/CachePolicy.h"
+#include "cache/CachePolicy.h"
 #include "cache/FrameCache.h"
 #include "cache/DiskFrameCache.h"
 #include "playback/PlaybackController.h"
@@ -229,15 +229,10 @@ bool App::init()
         spdlog::warn("App: AudioEngine failed to initialize — playback disabled");
     }
 
-    // ── Cache coordinator (system-adaptive budgets) ─────────────────
-    m_cacheCoordinator = std::make_unique<CacheCoordinator>();
-
-    // ── Unified cache coordinator (generation + playhead-window) ────
-    // Phase B: overlays the existing CPU + GPU caches with a single
-    // generation counter and per-media playback-window pinning.  See
-    // UnifiedCache.h for the design rationale (coordinator vs full
-    // replacement).
-    m_unifiedCache = std::make_unique<UnifiedCache>();
+    // ── Cache policy (budgets + pressure + access/eviction policy) ──
+    // One object, two sub-roles — see CachePolicy.h (merged from the
+    // former CacheCoordinator + UnifiedCache).
+    m_cachePolicy = std::make_unique<CachePolicy>();
 
     // ── AV sync clock (audio-driven master clock) ────────────────────
     m_syncClock = std::make_unique<AVSyncClock>();
@@ -245,10 +240,9 @@ bool App::init()
     // ── Media pool (shared video decoders + frame cache) ────────
     {
         // Create FrameCache with a reasonable initial budget; the
-        // CacheCoordinator will override it with a system-adaptive budget.
+        // CachePolicy will override it with a system-adaptive budget.
         auto frameCache = std::make_shared<FrameCache>(8ull * 1024 * 1024 * 1024);
-        m_cacheCoordinator->setFrameCache(frameCache.get());
-        m_unifiedCache->setFrameCache(frameCache.get());
+        m_cachePolicy->setFrameCache(frameCache.get());
         m_mediaPool = std::make_unique<MediaPool>(std::move(frameCache));
     }
 
@@ -257,7 +251,7 @@ bool App::init()
         auto diskCache = std::make_shared<DiskFrameCache>(
             std::filesystem::path(rt::userDataDir().toStdString()) / "cache/frames",
             8ull * 1024 * 1024 * 1024);  // initial budget, coordinator will adjust
-        m_cacheCoordinator->setDiskCache(diskCache.get());
+        m_cachePolicy->setDiskCache(diskCache.get());
         m_mediaPool->setDiskCache(std::move(diskCache));
     }
 
@@ -342,7 +336,7 @@ bool App::init()
                 // that the profile is installed so its tier-scaled values take
                 // effect.  GPU texture-cache budgets are applied lazily on
                 // first composite and already see the profile.
-                if (m_cacheCoordinator) m_cacheCoordinator->reapplyBudgets();
+                if (m_cachePolicy) m_cachePolicy->reapplyBudgets();
 
                 // UPGRADE_PLAN: arm the GPU-resident prefetch decode
                 // path now that GpuContext is up.  MediaPool was
@@ -363,8 +357,8 @@ bool App::init()
     }
 
     // System-adaptive FrameCache budget has been applied by
-    // CacheCoordinator::setFrameCache().  Log it.
-    m_cacheCoordinator->logBudgets();
+    // CachePolicy::setFrameCache().  Log it.
+    m_cachePolicy->logBudgets();
 
     // Register NLE keyboard defaults
     m_shortcutManager->registerNLEDefaults();
@@ -494,7 +488,7 @@ bool App::createMainWindow()
     }
 #endif
 
-    // ── Wire CacheCoordinator + UnifiedCache into CompositeService ───
+    // ── Wire CachePolicy + CachePolicy into CompositeService ───
     // Must happen after MainWindow builds panels (which creates
     // TimelineWorkspace → CompositeService → CompositeEngine).
     {
@@ -502,11 +496,10 @@ bool App::createMainWindow()
         if (tw) {
             auto* cs = tw->compositeService();
             if (cs) {
-                cs->setCacheCoordinator(m_cacheCoordinator.get());
-                cs->setUnifiedCache(m_unifiedCache.get());
+                cs->setCachePolicy(m_cachePolicy.get());
             }
         }
-        m_cacheCoordinator->logBudgets();
+        m_cachePolicy->logBudgets();
     }
 
     spdlog::info("App::createMainWindow() — UI ready");

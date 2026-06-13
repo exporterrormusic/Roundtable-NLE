@@ -2,7 +2,7 @@
  * PerformanceProfile — single owner of every runtime performance knob.
  *
  * Historically these values lived as scattered `static constexpr` literals
- * across MediaPool, CacheCoordinator, DiskFrameCache, ThumbnailGenerator and
+ * across MediaPool, CachePolicy, DiskFrameCache, ThumbnailGenerator and
  * the audio waveform path — each tuned independently and documented with its
  * own multi-paragraph rationale.  This struct consolidates them so the whole
  * machine-adaptive policy (and the future "Boost" toggle) is one object that
@@ -39,7 +39,7 @@ struct PerformanceProfile
     int nvdecWorkers         = 2;    ///< workers [0..n) eligible for NVDEC (was PREFETCH_NVDEC_WORKERS)
 
     // ── Cache working sets ────────────────────────────────────────────────
-    // 0 == "let CacheCoordinator compute the adaptive default" (its existing
+    // 0 == "let CachePolicy compute the adaptive default" (its existing
     // recommended*() methods stay the policy).  Phase 3 fills these in to
     // override on capable machines.
     size_t frameCacheBudgetBytes  = 0;

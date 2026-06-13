@@ -489,7 +489,7 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
     if (m_multiSelection.size() > 1) {
         visualClips.reserve(m_multiSelection.size());
         for (auto* c : m_multiSelection) {
-            if (c && c->clipType() != ClipType::Audio)
+            if (c && c->isVisual())
                 visualClips.push_back(c);
         }
     } else {
@@ -624,218 +624,223 @@ void PropertiesPanel::populateFromClip()
     m_rotationSpin->setValue(m_clip->rotation().evaluate(0));
     m_opacitySpin->setValue(m_clip->opacity().evaluate(0) * 100.0);
 
-    // Crop (from SpineClip or VideoClip â€” not on base Clip)
-    float cl = 0, cr = 0, ct = 0, cb = 0;
-    if (m_clip->clipType() == ClipType::Spine) {
-        auto* sc = static_cast<SpineClip*>(m_clip);
-        cl = sc->cropLeft(); cr = sc->cropRight();
-        ct = sc->cropTop();  cb = sc->cropBottom();
-    } else if (m_clip->clipType() == ClipType::Video) {
-        auto* vc = static_cast<VideoClip*>(m_clip);
-        cl = vc->cropLeft(); cr = vc->cropRight();
-        ct = vc->cropTop();  cb = vc->cropBottom();
-    }
-    m_tfCropLeftSpin->setValue(static_cast<double>(cl));
-    m_tfCropRightSpin->setValue(static_cast<double>(cr));
-    m_tfCropTopSpin->setValue(static_cast<double>(ct));
-    m_tfCropBottomSpin->setValue(static_cast<double>(cb));
+    // Crop — only Spine/Video surface it; the base accessors return 0 for
+    // everything else, matching the old zero defaults.
+    const bool hasCrop = m_clip->supportsCrop();
+    m_tfCropLeftSpin->setValue(hasCrop ? static_cast<double>(m_clip->cropLeft()) : 0.0);
+    m_tfCropRightSpin->setValue(hasCrop ? static_cast<double>(m_clip->cropRight()) : 0.0);
+    m_tfCropTopSpin->setValue(hasCrop ? static_cast<double>(m_clip->cropTop()) : 0.0);
+    m_tfCropBottomSpin->setValue(hasCrop ? static_cast<double>(m_clip->cropBottom()) : 0.0);
 
-    // Type-specific
-    if (m_clip->clipType() == ClipType::Spine)
+    // Type-specific sections — per-type populate helpers (exhaustive
+    // dispatch stays a switch, per fable_cleanup.txt §3.5)
+    switch (m_clip->clipType())
     {
-        auto* sc = static_cast<SpineClip*>(m_clip);
-        m_spineClip = sc;
-
-        // Restore animation section defaults (may have been hidden for video chars)
-        m_animationSection->setTitle("Animation");
-        m_loopingCheck->setVisible(true);
-        m_animationCombo->setVisible(true);
-        m_animSpeedSpin->setVisible(true);
-        m_continuityCheck->setVisible(true);
-        m_outfitCombo->setVisible(true);
-        m_stanceCombo->setVisible(true);
-        if (m_characterSection)
-            m_characterSection->setTitle("Character");
-
-        // Populate dropdowns (order matters: character → outfit → stance → animation)
-        populateCharacterDropdown();
-        {
-            // Find by folder name stored in item data
-            int idx = m_characterCombo->findData(QString::fromStdString(sc->characterName()));
-            if (idx >= 0)
-                m_characterCombo->setCurrentIndex(idx);
-            else
-                m_characterCombo->setCurrentText(QString::fromStdString(sc->characterName()));
-        }
-        populateOutfitDropdown();
-        m_outfitCombo->setCurrentText(QString::fromStdString(sc->outfit()));
-        populateStanceDropdown();
-        m_stanceCombo->setCurrentIndex(static_cast<int>(sc->stance()));
-        populateAnimationDropdown();
-        m_animationCombo->setCurrentText(QString::fromStdString(sc->animationName()));
-
-        m_loopingCheck->setChecked(sc->isLooping());
-        m_talkingCheck->setChecked(sc->isTalking());
-        m_animSpeedSpin->setValue(sc->animationSpeed());
-        m_continuityCheck->setChecked(sc->useGlobalTime());
-    }
-    else if (m_clip->clipType() == ClipType::Video)
-    {
-        auto* vc = static_cast<VideoClip*>(m_clip);
-        m_mediaPathLabel->setText(QString::fromStdString(vc->mediaPath()));
-        m_volumeSpin->setValue(vc->volume());
-
-        // Video character controls
-        if (vc->isVideoCharacter()) {
-            // Character section — show name + outfit dropdown
-            m_characterCombo->blockSignals(true);
-            m_characterCombo->clear();
-            m_characterCombo->addItem(QString::fromStdString(vc->characterName()));
-            m_characterCombo->setCurrentIndex(0);
-            m_characterCombo->blockSignals(false);
-
-            // Populate outfit dropdown from ModelManager
-            m_outfitCombo->setVisible(true);
-            m_outfitCombo->blockSignals(true);
-            m_outfitCombo->clear();
-            if (m_modelManager) {
-                auto outfits = m_modelManager->getMetadataOutfits(vc->characterName());
-                for (const auto& outfit : outfits)
-                    m_outfitCombo->addItem(QString::fromStdString(outfit.key));
-            }
-            if (m_outfitCombo->count() == 0)
-                m_outfitCombo->addItem(QString::fromStdString(
-                    vc->outfit().empty() ? "default" : vc->outfit()));
-            {
-                QString cur = QString::fromStdString(
-                    vc->outfit().empty() ? "default" : vc->outfit());
-                int idx = m_outfitCombo->findText(cur);
-                if (idx >= 0) m_outfitCombo->setCurrentIndex(idx);
-                else m_outfitCombo->setCurrentIndex(0);
-            }
-            m_outfitCombo->blockSignals(false);
-
-            m_stanceCombo->setVisible(false);
-            if (m_characterSection)
-                m_characterSection->setTitle(
-                    QString("Character: %1").arg(
-                        QString::fromStdString(vc->characterName())));
-
-            // Animation section — talking toggle + animation dropdown
-            m_talkingCheck->setChecked(vc->isTalking());
-            m_loopingCheck->setVisible(false);
-            m_animSpeedSpin->setVisible(false);
-            m_continuityCheck->setVisible(false);
-
-            // Populate animation dropdown from video cache directory
-            m_animationCombo->setVisible(true);
-            m_animationCombo->blockSignals(true);
-            m_animationCombo->clear();
-            if (m_videoAnimNamesProvider) {
-                std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
-                auto anims = m_videoAnimNamesProvider(vc->characterName(), outfit);
-                for (const auto& a : anims)
-                    m_animationCombo->addItem(QString::fromStdString(a));
-            }
-            if (m_animationCombo->count() == 0 && !vc->animationName().empty())
-                m_animationCombo->addItem(QString::fromStdString(vc->animationName()));
-            {
-                QString cur = QString::fromStdString(vc->animationName());
-                int idx = m_animationCombo->findText(cur);
-                if (idx >= 0) m_animationCombo->setCurrentIndex(idx);
-                else if (m_animationCombo->count() > 0) m_animationCombo->setCurrentIndex(0);
-            }
-            m_animationCombo->blockSignals(false);
-
-            m_animationSection->setTitle("Animation");
-        }
-    }
-    else if (m_clip->clipType() == ClipType::PngPuppet)
-    {
-        populateFromPuppet();
-    }
-    else if (m_clip->clipType() == ClipType::Audio)
-    {
-        auto* ac = static_cast<AudioClip*>(m_clip);
-        m_audioVolumeSpin->setValue(ac->volume().evaluate(0));
-        m_panSpin->setValue(ac->pan().evaluate(0));
-        m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));
-        m_fadeOutSpin->setValue(static_cast<double>(ac->fadeOutDuration()));
-        if (m_audioFxSection) m_audioFxSection->setClip(ac, m_commandStack);
-    }
-    else if (m_clip->clipType() == ClipType::Caption)
-    {
+    case ClipType::Spine:     populateFromSpine();   break;
+    case ClipType::Video:     populateFromVideo();   break;
+    case ClipType::PngPuppet: populateFromPuppet();  break;
+    case ClipType::Audio:     populateFromAudio();   break;
+    case ClipType::Caption:
         populateFromCaption();
         // The header showed the whole transcript line (CaptionClip label ==
         // its text); trim it so it doesn't dominate the title bar.
-        QString hdr = m_headerLabel->text();
-        if (hdr.length() > 40)
-            m_headerLabel->setText(hdr.left(37) + QStringLiteral("..."));
-    }
-    else if (m_clip->clipType() == ClipType::Title)
-    {
-        auto* tc = static_cast<TitleClip*>(m_clip);
-        m_textEdit->setText(QString::fromStdString(tc->text()));
-        m_fontFamilyEdit->setText(QString::fromStdString(tc->fontFamily()));
-        m_fontSizeSpin->setValue(tc->fontSize());
-        m_boldCheck->setChecked(tc->isBold());
-        m_italicCheck->setChecked(tc->isItalic());
-        m_alignCombo->setCurrentIndex(static_cast<int>(tc->alignment()));
-    }
-    else if (m_clip->clipType() == ClipType::Graphic)
-    {
-        auto* gc = static_cast<GraphicClip*>(m_clip);
-        // Populate from the first text layer (if any)
-        TextLayer* tl = nullptr;
-        for (size_t i = 0; i < gc->layerCount(); ++i) {
-            if (gc->layer(i)->layerType() == GraphicLayerType::Text) {
-                tl = static_cast<TextLayer*>(gc->layer(i));
-                break;
-            }
+        {
+            QString hdr = m_headerLabel->text();
+            if (hdr.length() > 40)
+                m_headerLabel->setText(hdr.left(37) + QStringLiteral("..."));
         }
-        if (tl) {
-            m_gfxTextEdit->setText(QString::fromStdString(tl->text()));
-            m_gfxFontFamilyEdit->setText(QString::fromStdString(tl->fontFamily()));
-            m_gfxFontSizeSpin->setValue(static_cast<double>(tl->fontSize()));
-            m_gfxFontWeightSpin->setValue(tl->fontWeight());
-            m_gfxItalicCheck->setChecked(tl->isItalic());
-            m_gfxAllCapsCheck->setChecked(tl->allCaps());
-            m_gfxAlignCombo->setCurrentIndex(static_cast<int>(tl->alignment()));
-
-            const auto& app = tl->appearance();
-            // Fill color button
-            if (!app.fills.empty()) {
-                uint32_t fc = app.fills[0].color;
-                QColor fillCol(static_cast<int>((fc>>16)&0xFF),
-                               static_cast<int>((fc>>8)&0xFF),
-                               static_cast<int>(fc&0xFF));
-                m_gfxFillColorBtn->setStyleSheet(
-                    QStringLiteral("QPushButton { background: %1; border: 1px solid #555; min-width: 40px; min-height: 18px; }")
-                    .arg(fillCol.name()));
-            }
-            // Stroke
-            if (!app.strokes.empty()) {
-                m_gfxStrokeCheck->setChecked(app.strokes[0].enabled);
-                m_gfxStrokeWidthSpin->setValue(static_cast<double>(app.strokes[0].width));
-                uint32_t sc = app.strokes[0].color;
-                QColor strokeCol(static_cast<int>((sc>>16)&0xFF),
-                                 static_cast<int>((sc>>8)&0xFF),
-                                 static_cast<int>(sc&0xFF));
-                m_gfxStrokeColorBtn->setStyleSheet(
-                    QStringLiteral("QPushButton { background: %1; border: 1px solid #555; min-width: 40px; min-height: 18px; }")
-                    .arg(strokeCol.name()));
-            }
-            // Shadow
-            if (!app.shadows.empty()) {
-                m_gfxShadowCheck->setChecked(app.shadows[0].enabled);
-            }
-        }
+        break;
+    case ClipType::Title:     populateFromTitle();   break;
+    case ClipType::Graphic:   populateFromGraphic(); break;
+    default: break; // Adjustment/Image/Sequence: no type-specific section
     }
 
     m_updating = false;
 
     // Refresh applied effects list
     refreshEffects();
+}
+
+void PropertiesPanel::populateFromSpine()
+{
+    auto* sc = static_cast<SpineClip*>(m_clip);
+    m_spineClip = sc;
+
+    // Restore animation section defaults (may have been hidden for video chars)
+    m_animationSection->setTitle("Animation");
+    m_loopingCheck->setVisible(true);
+    m_animationCombo->setVisible(true);
+    m_animSpeedSpin->setVisible(true);
+    m_continuityCheck->setVisible(true);
+    m_outfitCombo->setVisible(true);
+    m_stanceCombo->setVisible(true);
+    if (m_characterSection)
+        m_characterSection->setTitle("Character");
+
+    // Populate dropdowns (order matters: character → outfit → stance → animation)
+    populateCharacterDropdown();
+    {
+        // Find by folder name stored in item data
+        int idx = m_characterCombo->findData(QString::fromStdString(sc->characterName()));
+        if (idx >= 0)
+            m_characterCombo->setCurrentIndex(idx);
+        else
+            m_characterCombo->setCurrentText(QString::fromStdString(sc->characterName()));
+    }
+    populateOutfitDropdown();
+    m_outfitCombo->setCurrentText(QString::fromStdString(sc->outfit()));
+    populateStanceDropdown();
+    m_stanceCombo->setCurrentIndex(static_cast<int>(sc->stance()));
+    populateAnimationDropdown();
+    m_animationCombo->setCurrentText(QString::fromStdString(sc->animationName()));
+
+    m_loopingCheck->setChecked(sc->isLooping());
+    m_talkingCheck->setChecked(sc->isTalking());
+    m_animSpeedSpin->setValue(sc->animationSpeed());
+    m_continuityCheck->setChecked(sc->useGlobalTime());
+}
+
+void PropertiesPanel::populateFromVideo()
+{
+    auto* vc = static_cast<VideoClip*>(m_clip);
+    m_mediaPathLabel->setText(QString::fromStdString(vc->mediaPath()));
+    m_volumeSpin->setValue(vc->volume());
+
+    // Video character controls
+    if (vc->isVideoCharacter()) {
+        // Character section — show name + outfit dropdown
+        m_characterCombo->blockSignals(true);
+        m_characterCombo->clear();
+        m_characterCombo->addItem(QString::fromStdString(vc->characterName()));
+        m_characterCombo->setCurrentIndex(0);
+        m_characterCombo->blockSignals(false);
+
+        // Populate outfit dropdown from ModelManager
+        m_outfitCombo->setVisible(true);
+        m_outfitCombo->blockSignals(true);
+        m_outfitCombo->clear();
+        if (m_modelManager) {
+            auto outfits = m_modelManager->getMetadataOutfits(vc->characterName());
+            for (const auto& outfit : outfits)
+                m_outfitCombo->addItem(QString::fromStdString(outfit.key));
+        }
+        if (m_outfitCombo->count() == 0)
+            m_outfitCombo->addItem(QString::fromStdString(
+                vc->outfit().empty() ? "default" : vc->outfit()));
+        {
+            QString cur = QString::fromStdString(
+                vc->outfit().empty() ? "default" : vc->outfit());
+            int idx = m_outfitCombo->findText(cur);
+            if (idx >= 0) m_outfitCombo->setCurrentIndex(idx);
+            else m_outfitCombo->setCurrentIndex(0);
+        }
+        m_outfitCombo->blockSignals(false);
+
+        m_stanceCombo->setVisible(false);
+        if (m_characterSection)
+            m_characterSection->setTitle(
+                QString("Character: %1").arg(
+                    QString::fromStdString(vc->characterName())));
+
+        // Animation section — talking toggle + animation dropdown
+        m_talkingCheck->setChecked(vc->isTalking());
+        m_loopingCheck->setVisible(false);
+        m_animSpeedSpin->setVisible(false);
+        m_continuityCheck->setVisible(false);
+
+        // Populate animation dropdown from video cache directory
+        m_animationCombo->setVisible(true);
+        m_animationCombo->blockSignals(true);
+        m_animationCombo->clear();
+        if (m_videoAnimNamesProvider) {
+            std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
+            auto anims = m_videoAnimNamesProvider(vc->characterName(), outfit);
+            for (const auto& a : anims)
+                m_animationCombo->addItem(QString::fromStdString(a));
+        }
+        if (m_animationCombo->count() == 0 && !vc->animationName().empty())
+            m_animationCombo->addItem(QString::fromStdString(vc->animationName()));
+        {
+            QString cur = QString::fromStdString(vc->animationName());
+            int idx = m_animationCombo->findText(cur);
+            if (idx >= 0) m_animationCombo->setCurrentIndex(idx);
+            else if (m_animationCombo->count() > 0) m_animationCombo->setCurrentIndex(0);
+        }
+        m_animationCombo->blockSignals(false);
+
+        m_animationSection->setTitle("Animation");
+    }
+}
+
+void PropertiesPanel::populateFromAudio()
+{
+    auto* ac = static_cast<AudioClip*>(m_clip);
+    m_audioVolumeSpin->setValue(ac->volume().evaluate(0));
+    m_panSpin->setValue(ac->pan().evaluate(0));
+    m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));
+    m_fadeOutSpin->setValue(static_cast<double>(ac->fadeOutDuration()));
+    if (m_audioFxSection) m_audioFxSection->setClip(ac, m_commandStack);
+}
+
+void PropertiesPanel::populateFromTitle()
+{
+    auto* tc = static_cast<TitleClip*>(m_clip);
+    m_textEdit->setText(QString::fromStdString(tc->text()));
+    m_fontFamilyEdit->setText(QString::fromStdString(tc->fontFamily()));
+    m_fontSizeSpin->setValue(tc->fontSize());
+    m_boldCheck->setChecked(tc->isBold());
+    m_italicCheck->setChecked(tc->isItalic());
+    m_alignCombo->setCurrentIndex(static_cast<int>(tc->alignment()));
+}
+
+void PropertiesPanel::populateFromGraphic()
+{
+    auto* gc = static_cast<GraphicClip*>(m_clip);
+    // Populate from the first text layer (if any)
+    TextLayer* tl = nullptr;
+    for (size_t i = 0; i < gc->layerCount(); ++i) {
+        if (gc->layer(i)->layerType() == GraphicLayerType::Text) {
+            tl = static_cast<TextLayer*>(gc->layer(i));
+            break;
+        }
+    }
+    if (tl) {
+        m_gfxTextEdit->setText(QString::fromStdString(tl->text()));
+        m_gfxFontFamilyEdit->setText(QString::fromStdString(tl->fontFamily()));
+        m_gfxFontSizeSpin->setValue(static_cast<double>(tl->fontSize()));
+        m_gfxFontWeightSpin->setValue(tl->fontWeight());
+        m_gfxItalicCheck->setChecked(tl->isItalic());
+        m_gfxAllCapsCheck->setChecked(tl->allCaps());
+        m_gfxAlignCombo->setCurrentIndex(static_cast<int>(tl->alignment()));
+
+        const auto& app = tl->appearance();
+        // Fill color button
+        if (!app.fills.empty()) {
+            uint32_t fc = app.fills[0].color;
+            QColor fillCol(static_cast<int>((fc>>16)&0xFF),
+                           static_cast<int>((fc>>8)&0xFF),
+                           static_cast<int>(fc&0xFF));
+            m_gfxFillColorBtn->setStyleSheet(
+                QStringLiteral("QPushButton { background: %1; border: 1px solid #555; min-width: 40px; min-height: 18px; }")
+                .arg(fillCol.name()));
+        }
+        // Stroke
+        if (!app.strokes.empty()) {
+            m_gfxStrokeCheck->setChecked(app.strokes[0].enabled);
+            m_gfxStrokeWidthSpin->setValue(static_cast<double>(app.strokes[0].width));
+            uint32_t sc = app.strokes[0].color;
+            QColor strokeCol(static_cast<int>((sc>>16)&0xFF),
+                             static_cast<int>((sc>>8)&0xFF),
+                             static_cast<int>(sc&0xFF));
+            m_gfxStrokeColorBtn->setStyleSheet(
+                QStringLiteral("QPushButton { background: %1; border: 1px solid #555; min-width: 40px; min-height: 18px; }")
+                .arg(strokeCol.name()));
+        }
+        // Shadow
+        if (!app.shadows.empty()) {
+            m_gfxShadowCheck->setChecked(app.shadows[0].enabled);
+        }
+    }
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -939,16 +944,8 @@ void PropertiesPanel::applyTransformLive()
     clip->scaleY().writeValue(t, static_cast<float>(m_scaleYSpin->value() / 100.0));
     clip->rotation().writeValue(t, static_cast<float>(m_rotationSpin->value()));
     clip->opacity().writeValue(t, static_cast<float>(m_opacitySpin->value() / 100.0));
-    if (clip->clipType() == ClipType::Spine) {
-        auto* sc = static_cast<SpineClip*>(clip);
-        sc->setCrop(
-            static_cast<float>(m_tfCropLeftSpin->value()),
-            static_cast<float>(m_tfCropRightSpin->value()),
-            static_cast<float>(m_tfCropTopSpin->value()),
-            static_cast<float>(m_tfCropBottomSpin->value()));
-    } else if (clip->clipType() == ClipType::Video) {
-        auto* vc = static_cast<VideoClip*>(clip);
-        vc->setCrop(
+    if (clip->supportsCrop()) {
+        clip->setCrop(
             static_cast<float>(m_tfCropLeftSpin->value()),
             static_cast<float>(m_tfCropRightSpin->value()),
             static_cast<float>(m_tfCropTopSpin->value()),
@@ -979,22 +976,13 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
         const float oldV = static_cast<float>(oldUi);
         const float newV = static_cast<float>(newUi);
         auto setEdge = [clip, edge](float v) {
-            float l = 0, r = 0, tp = 0, b = 0;
-            if (clip->clipType() == ClipType::Spine) {
-                auto* c = static_cast<SpineClip*>(clip);
-                l = c->cropLeft(); r = c->cropRight(); tp = c->cropTop(); b = c->cropBottom();
-            } else if (clip->clipType() == ClipType::Video) {
-                auto* c = static_cast<VideoClip*>(clip);
-                l = c->cropLeft(); r = c->cropRight(); tp = c->cropTop(); b = c->cropBottom();
-            } else {
+            if (!clip->supportsCrop())
                 return;
-            }
+            float l = clip->cropLeft(), r = clip->cropRight();
+            float tp = clip->cropTop(), b = clip->cropBottom();
             switch (edge) { case 0: l = v; break; case 1: r = v; break;
                             case 2: tp = v; break; default: b = v; break; }
-            if (clip->clipType() == ClipType::Spine)
-                static_cast<SpineClip*>(clip)->setCrop(l, r, tp, b);
-            else if (clip->clipType() == ClipType::Video)
-                static_cast<VideoClip*>(clip)->setCrop(l, r, tp, b);
+            clip->setCrop(l, r, tp, b);
         };
         m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
             "Change crop",
@@ -1093,15 +1081,8 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 //  Graphic property changes
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-static TextLayer* firstTextLayer(GraphicClip* gc)
-{
-    for (size_t i = 0; i < gc->layerCount(); ++i)
-        if (gc->layer(i)->layerType() == GraphicLayerType::Text)
-            return static_cast<TextLayer*>(gc->layer(i));
-    return nullptr;
-}
-
 // -- Graphic methods are in PropertiesPanelGraphic.cpp --
+// (their firstTextLayer() helper lives there too)
 
 } // namespace rt
 

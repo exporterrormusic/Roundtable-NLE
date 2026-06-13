@@ -192,7 +192,7 @@ void TimelinePanel::dropEvent(QDropEvent* event)
 
         // Audio DSP only applies to audio clips.
         const Clip* clip = track->clip(clipIdx);
-        if (!clip || clip->clipType() != ClipType::Audio) { event->ignore(); return; }
+        if (!clip || !clip->isAudio()) { event->ignore(); return; }
 
         emit audioFxDroppedOnClip(hitRef->trackIndex, hitRef->clipId, kind);
         event->acceptProposedAction();

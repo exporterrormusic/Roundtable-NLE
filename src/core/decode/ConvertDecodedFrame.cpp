@@ -6,7 +6,8 @@
 #include "decode/ConvertDecodedFrame.h"
 #include "PathUtils.h"
 
-#include "cache/FrameCache.h"     // CachedFrame + clearTransparentPixelRGB + chromaKeyInPlace
+#include "cache/FrameCache.h"     // CachedFrame
+#include "decode/PixelOps.h"      // clearTransparentPixelRGB + chromaKeyInPlace
 #include "playback/MediaPool.h"      // PixelBufferPool
 #include "decode/VideoDecoder.h"   // DecodedFrame, VideoStreamInfo
 

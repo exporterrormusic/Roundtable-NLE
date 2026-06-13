@@ -142,7 +142,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
     // to every selected caption at once.
     bool allCaptions = true;
     for (auto* c : clips)
-        if (!c || c->clipType() != ClipType::Caption) { allCaptions = false; break; }
+        if (!c || !c->isCaption()) { allCaptions = false; break; }
     if (allCaptions) {
         m_clip = clips.front();
         m_track = nullptr;
@@ -231,7 +231,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
         // visual to replace).
         Clip* visualRep = nullptr;
         for (auto* c : clips) {
-            if (c && c->clipType() != ClipType::Audio) { visualRep = c; break; }
+            if (c && c->isVisual()) { visualRep = c; break; }
         }
         m_clip = visualRep;
         m_track = nullptr;
@@ -274,10 +274,10 @@ void PropertiesPanel::refresh()
 void PropertiesPanel::showSectionsForType()
 {
     bool hasClip = (m_clip != nullptr);
-    bool isCaption = (hasClip && m_clip->clipType() == ClipType::Caption);
+    bool isCaption = (hasClip && m_clip->isCaption());
     // Audio clips have no spatial representation, so the Transform section
     // (position / scale / rotation / anchor) does not apply to them.
-    bool isAudio = (hasClip && m_clip->clipType() == ClipType::Audio);
+    bool isAudio = (hasClip && m_clip->isAudio());
     // Identity section always hidden (data binding kept internally)
     m_identitySection->setVisible(false);
     // Captions are positioned via their own Position control, not the generic
@@ -316,9 +316,9 @@ void PropertiesPanel::showSectionsForType()
         updateShotSection();
 
     m_videoSection->setVisible(hasClip && m_clip->clipType() == ClipType::Video);
-    m_audioSection->setVisible(hasClip && m_clip->clipType() == ClipType::Audio);
+    m_audioSection->setVisible(hasClip && m_clip->isAudio());
     if (m_audioFxSection)
-        m_audioFxSection->setVisible(hasClip && m_clip->clipType() == ClipType::Audio);
+        m_audioFxSection->setVisible(hasClip && m_clip->isAudio());
     m_titleSection->setVisible(hasClip && m_clip->clipType() == ClipType::Title);
     m_graphicSection->setVisible(hasClip && m_clip->clipType() == ClipType::Graphic);
     if (m_puppetSection)

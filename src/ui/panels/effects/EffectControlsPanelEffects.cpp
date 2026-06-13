@@ -820,7 +820,7 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
             bool hasAudio = false;
             for (size_t c = 0; c < tr->clipCount(); ++c) {
                 auto* cl = tr->clip(c);
-                if (cl && cl->clipType() == ClipType::Audio) { hasAudio = true; break; }
+                if (cl && cl->isAudio()) { hasAudio = true; break; }
             }
             if (!hasAudio) continue;
             QString trackName = QString::fromStdString(tr->name());
@@ -874,7 +874,7 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
         bool found = false;
         for (size_t c = 0; c < tr->clipCount(); ++c) {
             auto* cl = tr->clip(c);
-            if (!cl || cl->clipType() != ClipType::Audio) continue;
+            if (!cl || !cl->isAudio()) continue;
             found = true;
             QString lbl = QString::fromStdString(cl->label());
             if (lbl.isEmpty()) lbl = QStringLiteral("Clip %1").arg(c + 1);
@@ -980,7 +980,7 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
                 if (cl && cl->id() == srcId) { audio = cl; break; }
             }
         }
-        if (!audio || audio->clipType() != ClipType::Audio) {
+        if (!audio || !audio->isAudio()) {
             status->setText(QStringLiteral("Source not found"));
             return;
         }

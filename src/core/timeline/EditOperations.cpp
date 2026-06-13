@@ -512,9 +512,9 @@ std::unique_ptr<Command> EditOperations::paste(
         int maxVideoOff = -1, maxAudioOff = -1;
         for (const auto& e : clipboard.entries) {
             if (!e.clip) continue;
-            if (e.clip->clipType() == ClipType::Audio)
+            if (e.clip->isAudio())
                 maxAudioOff = std::max(maxAudioOff, e.trackOffset);
-            else if (e.clip->clipType() != ClipType::Caption)
+            else if (!e.clip->isCaption())
                 maxVideoOff = std::max(maxVideoOff, e.trackOffset);
         }
         // Overflow VIDEO tracks at the TOP (existing V1..Vn keep their slots;
@@ -573,10 +573,10 @@ std::unique_ptr<Command> EditOperations::paste(
         // overflow tracks created above guarantee the offset is in range, but
         // clamp defensively so a stray offset never indexes out of bounds.
         size_t destIdx;
-        if (entry.clip->clipType() == ClipType::Caption) {
+        if (entry.clip->isCaption()) {
             if (capIdx == SIZE_MAX) continue;   // no caption track to host it
             destIdx = capIdx;
-        } else if (entry.clip->clipType() == ClipType::Audio) {
+        } else if (entry.clip->isAudio()) {
             if (finalAuds.empty()) continue;
             int off = std::clamp(entry.trackOffset, 0,
                                  static_cast<int>(finalAuds.size()) - 1);
@@ -722,9 +722,9 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
         int maxVideoOff = -1, maxAudioOff = -1;
         for (const auto& e : clipboard.entries) {
             if (!e.clip) continue;
-            if (e.clip->clipType() == ClipType::Audio)
+            if (e.clip->isAudio())
                 maxAudioOff = std::max(maxAudioOff, e.trackOffset);
-            else if (e.clip->clipType() != ClipType::Caption)
+            else if (!e.clip->isCaption())
                 maxVideoOff = std::max(maxVideoOff, e.trackOffset);
         }
         {
@@ -761,9 +761,9 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
     // cues go to the pinned caption track).  SIZE_MAX = no valid host.
     auto resolveDest = [&](const ClipboardContents::Entry& entry) -> size_t {
         if (!entry.clip) return SIZE_MAX;
-        if (entry.clip->clipType() == ClipType::Caption)
+        if (entry.clip->isCaption())
             return capIdx;   // SIZE_MAX when there is no caption track
-        if (entry.clip->clipType() == ClipType::Audio) {
+        if (entry.clip->isAudio()) {
             if (finalAuds.empty()) return SIZE_MAX;
             int off = std::clamp(entry.trackOffset, 0,
                                  static_cast<int>(finalAuds.size()) - 1);

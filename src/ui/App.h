@@ -31,8 +31,7 @@ namespace rt {
 // Forward declarations
 class AudioEngine;
 class AVSyncClock;
-class CacheCoordinator;
-class UnifiedCache;
+class CachePolicy;
 class CommandStack;
 class MainWindow;
 class MediaPool;
@@ -101,14 +100,10 @@ private:
 
     bool m_initialized{false};
 
-    // ── Cache coordinator (system-adaptive budgets + VRAM pressure) ──
-    std::unique_ptr<CacheCoordinator> m_cacheCoordinator;
-
-    // ── UnifiedCache (Phase B coordinator over CPU + GPU caches) ─────
-    // Provides generation tracking, playhead-window pinning, and
-    // coordinated eviction.  Does not own frames — it overlays the
-    // existing FrameCache + GpuTextureCache.  See UnifiedCache.h.
-    std::unique_ptr<UnifiedCache> m_unifiedCache;
+    // ── Cache policy (budgets + VRAM pressure + access/eviction policy) ─
+    // One object, two documented sub-roles — see CachePolicy.h (merged
+    // from the former CacheCoordinator + UnifiedCache).
+    std::unique_ptr<CachePolicy> m_cachePolicy;
 
     // ── Core subsystems (owned) ─────────────────────────────────────────
     std::unique_ptr<Timeline>        m_timeline;

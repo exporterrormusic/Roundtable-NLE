@@ -185,7 +185,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (!clip) return;
 
             // CaptionClip: focus the Captions panel and select this cue.
-            if (clip->clipType() == ClipType::Caption) {
+            if (clip->isCaption()) {
                 if (m_captionsPanel) {
                     if (auto* dock = qobject_cast<QDockWidget*>(
                             m_captionsPanel->parentWidget())) {
@@ -244,7 +244,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             std::string mediaPath;
             if (clip->clipType() == ClipType::Video) {
                 mediaPath = static_cast<VideoClip*>(clip)->mediaPath();
-            } else if (clip->clipType() == ClipType::Audio) {
+            } else if (clip->isAudio()) {
                 mediaPath = static_cast<AudioClip*>(clip)->mediaPath();
             } else if (clip->clipType() == ClipType::Image) {
                 mediaPath = static_cast<ImageClip*>(clip)->mediaPath();

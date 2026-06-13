@@ -77,8 +77,7 @@ add_library(roundtable_core STATIC
     audio/AudioFile.cpp
     decode/SharedFileIO.cpp
     cache/FrameCache.cpp
-    cache/CacheCoordinator.cpp
-    cache/UnifiedCache.cpp
+    cache/CachePolicy.cpp
     cache/DiskFrameCache.cpp
     audio/WaveformCache.cpp
     audio/BeatDetector.cpp

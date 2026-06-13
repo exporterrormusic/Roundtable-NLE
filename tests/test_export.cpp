@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <thread>
 
 using namespace rt;
@@ -611,3 +612,192 @@ TEST(ExportRenderQueue, JobSequentialIds)
 // ═════════════════════════════════════════════════════════════════════════════
 // Total: ~50 tests
 // ═════════════════════════════════════════════════════════════════════════════
+
+// =============================================================================
+// SmartRenderAnalyzer — passthrough planning (fable_cleanup.txt section 5.3)
+//
+// NOTE: the passthrough EXECUTION path in RenderQueue is currently disabled
+// (kEnableSmartRenderPassthrough = false; see the SPS/PPS extradata rationale
+// in RenderQueue.cpp).  The ANALYZER below is the live planning brain that
+// will drive it once the bitstream-filter work re-enables passthrough, so its
+// eligibility rules and source-frame mapping are locked down here.
+// =============================================================================
+
+#include "SmartRenderAnalyzer.h"
+#include "timeline/VideoClip.h"
+#include "timeline/OpacityMask.h"
+
+namespace {
+
+constexpr int64_t kTpfAt30 = 1600;  // 48000 ticks/s at 30 fps
+
+/// An identity VideoClip that matches the default EncoderConfig
+/// (h264, 1920x1080, 30 fps) — passthrough-eligible by construction.
+std::unique_ptr<VideoClip> makeIdentityVideoClip(int64_t inFrames, int64_t durFrames)
+{
+    auto vc = std::make_unique<VideoClip>();
+    vc->setMediaPath("C:/test/source.mp4");
+    vc->setSourceResolution(1920, 1080);
+    vc->setSourceFps(30.0);
+    vc->setSourceCodecName("h264");
+    vc->setSourceDuration(10 * 60 * 48000);
+    vc->setTimelineIn(inFrames * kTpfAt30);
+    vc->setDuration(durFrames * kTpfAt30);
+    return vc;
+}
+
+} // namespace
+
+TEST(SmartRenderAnalyzer, IdentityClipAllPassthrough)
+{
+    Timeline tl;
+    auto* vt = tl.addVideoTrack("V1");
+    vt->addClip(makeIdentityVideoClip(0, 90));
+
+    EncoderConfig enc;  // h264, 1920x1080, 30 fps
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 90);
+
+    EXPECT_EQ(plan.totalFrames, 90);
+    EXPECT_EQ(plan.passthroughCount, 90);
+    EXPECT_EQ(plan.reEncodeCount, 0);
+    // Source-frame mapping: timelineIn==0, sourceIn==0 -> frame f reads f
+    ASSERT_TRUE(plan.passthroughFrames.count(0));
+    EXPECT_EQ(plan.passthroughFrames.at(0).sourceFrame, 0);
+    ASSERT_TRUE(plan.passthroughFrames.count(89));
+    EXPECT_EQ(plan.passthroughFrames.at(89).sourceFrame, 89);
+    EXPECT_EQ(plan.passthroughFrames.at(0).mediaPath, "C:/test/source.mp4");
+}
+
+TEST(SmartRenderAnalyzer, SourceInOffsetMapsSourceFrames)
+{
+    Timeline tl;
+    auto* vt = tl.addVideoTrack("V1");
+    auto clip = makeIdentityVideoClip(10, 60);   // starts at timeline frame 10
+    clip->setSourceIn(20 * kTpfAt30);            // trimmed 20 frames into source
+    vt->addClip(std::move(clip));
+
+    EncoderConfig enc;
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 70);
+
+    // Frames [0,10) are a gap -> re-encode; [10,70) are passthrough.
+    EXPECT_EQ(plan.passthroughCount, 60);
+    EXPECT_EQ(plan.reEncodeCount, 10);
+    // Export frame 10 = clip local frame 0 = source frame 20
+    ASSERT_TRUE(plan.passthroughFrames.count(10));
+    EXPECT_EQ(plan.passthroughFrames.at(10).sourceFrame, 20);
+    ASSERT_TRUE(plan.passthroughFrames.count(69));
+    EXPECT_EQ(plan.passthroughFrames.at(69).sourceFrame, 79);
+    EXPECT_FALSE(plan.passthroughFrames.count(9));
+}
+
+TEST(SmartRenderAnalyzer, StartFrameWindowIsZeroBasedInPlan)
+{
+    Timeline tl;
+    auto* vt = tl.addVideoTrack("V1");
+    vt->addClip(makeIdentityVideoClip(0, 90));
+
+    EncoderConfig enc;
+    // Export only frames [30, 60) -> plan keys are 0-based within the window.
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 30, 60);
+
+    EXPECT_EQ(plan.totalFrames, 30);
+    EXPECT_EQ(plan.passthroughCount, 30);
+    ASSERT_TRUE(plan.passthroughFrames.count(0));
+    EXPECT_EQ(plan.passthroughFrames.at(0).sourceFrame, 30);
+}
+
+TEST(SmartRenderAnalyzer, DisqualifiersForceReEncode)
+{
+    // Each mutation must disqualify every frame from passthrough.
+    struct Case {
+        const char* name;
+        std::function<void(VideoClip&)> mutate;
+    };
+    const Case cases[] = {
+        { "position",   [](VideoClip& c){ c.positionX().setDefaultValue(50.0f); } },
+        { "scale",      [](VideoClip& c){ c.scaleX().setDefaultValue(1.5f); } },
+        { "rotation",   [](VideoClip& c){ c.rotation().setDefaultValue(15.0f); } },
+        { "opacity",    [](VideoClip& c){ c.opacity().setDefaultValue(0.5f); } },
+        { "opacityKf",  [](VideoClip& c){ c.opacity().addKeyframe(0, 1.0f); } },
+        { "speed",      [](VideoClip& c){ c.setSpeed(0.5); } },
+        { "speedRamp",  [](VideoClip& c){ c.speedRamp().setDefaultValue(2.0f); } },
+        { "crop",       [](VideoClip& c){ c.setCrop(5.0f, 0.0f, 0.0f, 0.0f); } },
+        { "blendMode",  [](VideoClip& c){ c.setBlendMode(3); } },
+        { "mask",       [](VideoClip& c){ c.addMask(OpacityMask{}); } },
+        { "resolution", [](VideoClip& c){ c.setSourceResolution(1280, 720); } },
+        { "codec",      [](VideoClip& c){ c.setSourceCodecName("hevc"); } },
+        { "fps",        [](VideoClip& c){ c.setSourceFps(24.0); } },
+        { "disabled",   [](VideoClip& c){ c.setEnabled(false); } },
+    };
+
+    for (const auto& cs : cases) {
+        Timeline tl;
+        auto* vt = tl.addVideoTrack("V1");
+        auto clip = makeIdentityVideoClip(0, 30);
+        cs.mutate(*clip);
+        vt->addClip(std::move(clip));
+
+        EncoderConfig enc;
+        auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 30);
+        EXPECT_EQ(plan.passthroughCount, 0) << "disqualifier: " << cs.name;
+        EXPECT_EQ(plan.reEncodeCount, 30)   << "disqualifier: " << cs.name;
+    }
+}
+
+TEST(SmartRenderAnalyzer, OverlappingClipsReEncode)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    auto* v2 = tl.addVideoTrack("V2");
+    v1->addClip(makeIdentityVideoClip(0, 60));
+    v2->addClip(makeIdentityVideoClip(30, 60));   // overlaps [30,60)
+
+    EncoderConfig enc;
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 90);
+
+    // [0,30) single clip, [30,60) two clips, [60,90) single clip.
+    EXPECT_EQ(plan.passthroughCount, 60);
+    EXPECT_EQ(plan.reEncodeCount, 30);
+    EXPECT_TRUE(plan.passthroughFrames.count(0));
+    EXPECT_FALSE(plan.passthroughFrames.count(45));
+    EXPECT_TRUE(plan.passthroughFrames.count(75));
+}
+
+TEST(SmartRenderAnalyzer, MutedTrackClipIgnored)
+{
+    Timeline tl;
+    auto* vt = tl.addVideoTrack("V1");
+    vt->addClip(makeIdentityVideoClip(0, 30));
+    vt->setMuted(true);
+
+    EncoderConfig enc;
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 30);
+
+    // No active clips -> nothing to pass through.
+    EXPECT_EQ(plan.passthroughCount, 0);
+    EXPECT_EQ(plan.reEncodeCount, 30);
+}
+
+TEST(SmartRenderAnalyzer, ImageSequenceNeverPassthrough)
+{
+    Timeline tl;
+    auto* vt = tl.addVideoTrack("V1");
+    vt->addClip(makeIdentityVideoClip(0, 30));
+
+    EncoderConfig enc;
+    enc.codec = EncoderCodec::ImageSequence;
+    auto plan = analyzeSmartRender(tl, enc, 1920, 1080, 0, 30);
+
+    EXPECT_EQ(plan.passthroughCount, 0);
+    EXPECT_EQ(plan.reEncodeCount, 30);
+}
+
+TEST(SmartRenderAnalyzer, CodecToSourceNameMapping)
+{
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::H264), "h264");
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::H265), "hevc");
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::AV1), "av1");
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::ProRes), "prores");
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::DNxHR), "dnxhd");
+    EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::ImageSequence), "");
+}

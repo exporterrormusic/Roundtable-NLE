@@ -37,7 +37,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace rt { class CacheCoordinator; }
+namespace rt { class CachePolicy; }
 
 // ── Composite result LRU entry ──────────────────────────────────────────────
 
@@ -105,10 +105,10 @@ public:
         { return m_gpuCompositeState > 0; }
 
     // ── Cache coordinator ───────────────────────────────────────────────
-    /// Set the CacheCoordinator for system-adaptive budgets and VRAM
+    /// Set the CachePolicy for system-adaptive budgets and VRAM
     /// pressure monitoring.  Must be called before the first composite frame.
-    void setCacheCoordinator(rt::CacheCoordinator* coordinator) noexcept
-        { m_cacheCoordinator = coordinator; }
+    void setCachePolicy(rt::CachePolicy* coordinator) noexcept
+        { m_cachePolicy = coordinator; }
 
     // ── Texture cache ───────────────────────────────────────────────────
     [[nodiscard]] rt::GpuTextureCache* textureCache() const noexcept
@@ -209,7 +209,7 @@ private:
     std::vector<std::unique_ptr<rt::Texture>> m_gpuLayerTexturesAlt;
 
     // Cache coordinator (optional — for dynamic budgets + VRAM pressure)
-    rt::CacheCoordinator* m_cacheCoordinator{nullptr};
+    rt::CachePolicy* m_cachePolicy{nullptr};
 
     // GPU state machine: 0 = untested, 1 = enabled, -1 = permanently failed
     int m_gpuCompositeState{0};

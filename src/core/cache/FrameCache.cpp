@@ -435,7 +435,7 @@ void FrameCache::evictUntilFits(size_t neededBytes)
 
             // Check if this frame is OUTSIDE the protected playback window
             // for its media.  Default extent is 5 behind / 0 ahead (matches
-            // pre-Phase-B behavior).  UnifiedCache::setPlayheadWindow can
+            // pre-Phase-B behavior).  CachePolicy::setPlayheadWindow can
             // widen the window per media via FrameCache::setPlayheadWindow.
             auto phIt = m_playheads.find(key.mediaId);
             if (phIt != m_playheads.end()) {

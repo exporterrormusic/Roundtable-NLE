@@ -87,6 +87,12 @@ public:
     /// True when this VideoClip represents a character from ShotComposer.
     [[nodiscard]] bool isVideoCharacter() const noexcept { return !m_characterName.empty(); }
 
+    /// Video characters get the character capability (animation/costume
+    /// controls) on top of the base Spine/PngPuppet set.
+    [[nodiscard]] bool isCharacter() const noexcept override {
+        return Clip::isCharacter() || isVideoCharacter();
+    }
+
     // ── Clone ───────────────────────────────────────────────────────────
     [[nodiscard]] std::unique_ptr<Clip> clone() const override;
 

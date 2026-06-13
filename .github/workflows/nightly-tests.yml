@@ -1,0 +1,89 @@
+# ROUNDTABLE — Nightly extended test labels
+#
+# Why this exists (fable_cleanup.txt, session-2 finding): the push/PR CI runs
+# only the "core" ctest label, and TEN stale tests rotted invisibly in the
+# gpu/ui/export groups before anyone noticed.  This nightly job RUNS the
+# export and ui labels so contract rot shows up within a day, not months.
+#
+# Runner constraints (windows-latest is headless, no GPU):
+#   - "gpu"-labeled tests need a real Vulkan device — they are compile-covered
+#     by the main CI build but CANNOT execute here.  They remain a per-release
+#     local task (see fable_cleanup.txt standing items).
+#   - "ui"-labeled Qt widget tests run under QT_QPA_PLATFORM=offscreen; any
+#     that require a swapchain may fail on the runner.
+#   - Both steps are continue-on-error for now: observe a few nights, then
+#     remove the flag from any step that is reliably green so it becomes a
+#     hard gate.  A red step in the nightly log IS the signal — check it.
+
+name: Nightly Extended Tests
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  extended-tests:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Visual Studio
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Configure CMake (with tests)
+        shell: pwsh
+        run: |
+          $cmake = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\cmake.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $cmake) { $cmake = "cmake" }
+          $cmakeDir = Split-Path -Parent $cmake
+          $env:PATH = "${cmakeDir};${env:PATH}"
+          & $cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DROUNDTABLE_BUILD_TESTS=ON `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\third_party\qt\6.8.3\msvc2022_64"
+
+      - name: Build (all targets)
+        shell: pwsh
+        run: |
+          $cmake = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\cmake.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $cmake) { $cmake = "cmake" }
+          $cmakeDir = Split-Path -Parent $cmake
+          $env:PATH = "${cmakeDir};${env:PATH}"
+          & $cmake --build build --config Release --parallel
+
+      - name: Run export tests
+        continue-on-error: true   # harden to required once observed green
+        shell: pwsh
+        run: |
+          $ctest = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\ctest.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ctest) { $ctest = "ctest" }
+          & $ctest --test-dir build -C Release -L export --output-on-failure --timeout 300
+
+      - name: Run ui tests (offscreen Qt)
+        continue-on-error: true   # harden to required once observed green
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $ctest = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\ctest.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ctest) { $ctest = "ctest" }
+          & $ctest --test-dir build -C Release -L ui --output-on-failure --timeout 300
+
+      - name: Run core tests (hard gate — same as push CI)
+        shell: pwsh
+        run: |
+          $ctest = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\ctest.exe" |
+                   Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ctest) { $ctest = "ctest" }
+          & $ctest --test-dir build -C Release -L core --output-on-failure

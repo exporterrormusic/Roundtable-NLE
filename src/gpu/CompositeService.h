@@ -73,8 +73,7 @@ namespace rt {
 // Forward declarations
 class AnimationVideoCache;
 class AudioEngine;
-class CacheCoordinator;
-class UnifiedCache;
+class CachePolicy;
 class Clip;
 class GraphicClip;
 class MediaPool;
@@ -312,15 +311,11 @@ public:
     std::shared_ptr<CachedFrame> renderGraphicClip(GraphicClip* clip, int64_t tick,
                                                     uint32_t outW, uint32_t outH);
 
-    // ── Cache coordinator ───────────────────────────────────────────────
-    /// Set the CacheCoordinator for system-adaptive budgets and VRAM
-    /// pressure monitoring.  Forwards to CompositeEngine.
-    void setCacheCoordinator(rt::CacheCoordinator* coordinator);
-
-    /// Phase B: install the UnifiedCache coordinator.  May be null.
-    /// CompositeService stores the pointer and forwards per-frame
-    /// generation ticks + playhead window updates.
-    void setUnifiedCache(rt::UnifiedCache* uc) noexcept { m_unifiedCache = uc; }
+    // ── Cache policy ────────────────────────────────────────────────────
+    /// Install the CachePolicy (may be null).  CompositeService stores the
+    /// pointer for per-frame generation ticks + playhead-window updates,
+    /// and forwards it to CompositeEngine for budgets/VRAM pressure.
+    void setCachePolicy(rt::CachePolicy* policy);
 
     // ── Composite engine access ─────────────────────────────────────────
     [[nodiscard]] CompositeEngine* engine() const noexcept { return m_engine.get(); }
@@ -557,10 +552,10 @@ private:
     // can't freeze playback indefinitely.
     static constexpr int kSettleWindowMs = 250;
 
-    // Phase B: UnifiedCache coordinator (non-owning pointer).  Wired by
+    // Phase B: CachePolicy coordinator (non-owning pointer).  Wired by
     // App::createMainWindow after CompositeService is constructed.  May
     // be null in tests and during early startup.
-    UnifiedCache* m_unifiedCache{nullptr};
+    CachePolicy* m_cachePolicy{nullptr};
 
     std::atomic<bool> m_cacheInvalidateRequested{false};
 

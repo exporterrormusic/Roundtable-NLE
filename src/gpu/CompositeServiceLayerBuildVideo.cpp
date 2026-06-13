@@ -13,7 +13,7 @@
 
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
-#include "cache/UnifiedCache.h"
+#include "cache/CachePolicy.h"
 #include "Constants.h"
 #include "timeline/VideoClip.h"
 #include "timeline/Track.h"
@@ -47,17 +47,17 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         return nullptr;
 
     // Phase B: declare a protected playback window for this media on each
-    // resolve.  The window stays alive in FrameCache (via UnifiedCache
+    // resolve.  The window stays alive in FrameCache (via CachePolicy
     // forwarding) so background eviction won't drop frames the user is
     // about to scrub onto.  Values chosen to match the existing prefetch
     // scheduler defaults: 8 behind (small backwards-scrub buffer) and
     // 60 ahead (~2s at 30fps — covers typical seek-then-play patterns).
-    if (m_unifiedCache) {
-        m_unifiedCache->setPlayheadWindow(handle, frameNumber,
+    if (m_cachePolicy) {
+        m_cachePolicy->setPlayheadWindow(handle, frameNumber,
                                           /*aheadCount=*/60,
                                           /*behindCount=*/8,
                                           tier);
-        m_unifiedCache->markAccess({handle, frameNumber, tier});
+        m_cachePolicy->markAccess({handle, frameNumber, tier});
     }
     // During export (forceFullRes), first try the cache via tryGetFrame
     // — this sets the playhead + extends the interactive playback window

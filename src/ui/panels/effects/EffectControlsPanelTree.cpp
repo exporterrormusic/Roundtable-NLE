@@ -305,7 +305,7 @@ void EffectControlsPanel::buildPropertyTree()
     };
 
     // Audio clips only show Speed â€” no visual transform
-    bool isAudio = (m_clip->clipType() == ClipType::Audio);
+    bool isAudio = (m_clip->isAudio());
 
     // â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // â•‘  VIDEO / VISUAL PROPERTIES â€” Motion, Crop, Opacity
@@ -883,12 +883,9 @@ void EffectControlsPanel::populateFromClip()
     // spins at 0 (the compositor ignores crop for them anyway).
     if (m_cropLeftSpin && m_cropRightSpin && m_cropTopSpin && m_cropBottomSpin) {
         float cl = 0, cr = 0, ct = 0, cb = 0;
-        if (auto* vc = dynamic_cast<VideoClip*>(m_clip)) {
-            cl = vc->cropLeft(); cr = vc->cropRight();
-            ct = vc->cropTop();  cb = vc->cropBottom();
-        } else if (auto* sc = dynamic_cast<SpineClip*>(m_clip)) {
-            cl = sc->cropLeft(); cr = sc->cropRight();
-            ct = sc->cropTop();  cb = sc->cropBottom();
+        if (m_clip->supportsCrop()) {
+            cl = m_clip->cropLeft(); cr = m_clip->cropRight();
+            ct = m_clip->cropTop();  cb = m_clip->cropBottom();
         }
         m_cropLeftSpin->setValue(static_cast<double>(cl));
         m_cropRightSpin->setValue(static_cast<double>(cr));

@@ -10,6 +10,7 @@
  * onOpenProject, onSaveProject, onSaveProjectAs.
  */
 
+#include "ProjectController.h"
 #include "MainWindow.h"
 #include "PathUtils.h"
 
@@ -71,12 +72,12 @@ namespace rt {
 // every step that touches those (setCurrentProject) stays on the UI thread in
 // the continuation.  The full-window input lock is engaged for the duration so
 // the user can't interact with the old/half-wired project mid-load.
-void MainWindow::beginAsyncProjectLoad(
+void ProjectController::beginAsyncProjectLoad(
     const std::filesystem::path& path,
     const QString& busyMessage,
     std::function<void(std::unique_ptr<Project>)> continuation)
 {
-    engageLoadingOverlay(busyMessage);
+    m_mw->engageLoadingOverlay(busyMessage);
 
     auto t0 = std::chrono::steady_clock::now();
     std::filesystem::path p = path;  // owned copy for the worker thread
@@ -94,7 +95,7 @@ void MainWindow::beginAsyncProjectLoad(
                      pathToUtf8(p), ms);
         QMetaObject::invokeMethod(qApp, [this, raw, cont]() {
             std::unique_ptr<Project> project(raw);
-            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_mw->isDestroying()) return;
             (*cont)(std::move(project));
         }, Qt::QueuedConnection);
     }).detach();
@@ -103,15 +104,15 @@ void MainWindow::beginAsyncProjectLoad(
 // Common tail for the async open paths: drop the input lock now, or keep the
 // overlay up until the background media warmup finishes (whichever applies).
 // Centralized so every entry point releases the lock identically.
-void MainWindow::releaseOpenLock()
+void ProjectController::releaseOpenLock()
 {
-    if (m_timelineWorkspace && m_timelineWorkspace->isBackgroundWarmupActive()) {
+    if (m_mw->timelineWorkspace() && m_mw->timelineWorkspace()->isBackgroundWarmupActive()) {
         // Overlay stays up; backgroundWarmupFinished() drops it once the
         // timeline's media is warm and safe to interact with.
-        showBusyIndicator(tr("Loading media…"));
-        if (m_loadingOverlayLabel) m_loadingOverlayLabel->setText(tr("Loading media…"));
+        m_mw->showBusyIndicator(tr("Loading media…"));
+        m_mw->setLoadingOverlayText(tr("Loading media…"));
     } else {
-        disengageLoadingOverlay();
+        m_mw->disengageLoadingOverlay();
     }
 }
 
@@ -119,7 +120,7 @@ void MainWindow::releaseOpenLock()
 // Project CRUD — panel-backed operations
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, uint32_t resH,
+void ProjectController::onCreateProjectFromPanel(const QString& name, uint32_t resW, uint32_t resH,
                                           double fps, const QString& saveDir)
 {
     if (!checkUnsavedChanges()) return;
@@ -144,7 +145,7 @@ void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, ui
     if (!projectDir.exists() && !projectDir.mkpath(".")) {
         spdlog::error("Failed to create project folder: {}",
                       projectFolder.toStdString());
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to create project folder.\n"
                     "The save location may be read-only or the path invalid:\n%1")
                 .arg(projDir));
@@ -162,15 +163,15 @@ void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, ui
         // Reset the Timeline dock layout to the canonical default
         // (loads the "USE_AS_DEFAULT" workspace preset from QSettings)
         // so new projects start with the correct panel arrangement.
-        if (m_timelineWorkspace)
-            m_timelineWorkspace->resetToDefaultDockLayout();
+        if (m_mw->timelineWorkspace())
+            m_mw->timelineWorkspace()->resetToDefaultDockLayout();
         addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Project '%1' created").arg(name), 3000);
     } else {
         spdlog::error("Failed to save new project: {}", pathToUtf8(path));
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to save project '%1'.\n\n"
                     "Check that the destination folder is writable and has\n"
                     "enough free space:\n%2")
@@ -178,7 +179,7 @@ void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, ui
     }
 }
 
-void MainWindow::onOpenProjectFromPanel(const QString& name)
+void ProjectController::onOpenProjectFromPanel(const QString& name)
 {
     if (!checkUnsavedChanges()) return;
 
@@ -189,18 +190,18 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
     // UI thread up-front, while the old project is still fully wired — the
     // input lock (engaged inside beginAsyncProjectLoad) prevents the user from
     // touching it during the off-thread parse that follows.
-    if (m_currentProject && m_audioSync) {
+    if (m_mw->currentProject() && m_mw->audioSync()) {
         spdlog::info("OPEN: saving current project audio sync state");
-        m_audioSync->saveProjectState(
-            QString::fromStdString(m_currentProject->name()));
+        m_mw->audioSync()->saveProjectState(
+            QString::fromStdString(m_mw->currentProject()->name()));
 
         // Save which page was active — but NOT if we're on the Projects page,
         // because we're here specifically to switch projects.  Saving 0 (Projects)
         // would cause the next open to stay on the Projects tab.
-        Page curPage = currentPage();
+        Page curPage = m_mw->currentPage();
         if (curPage != Page::Projects) {
             auto settings = rt::appSettings();
-            settings.setValue("Project/" + QString::fromStdString(m_currentProject->name()) + "/activePage",
+            settings.setValue("Project/" + QString::fromStdString(m_mw->currentProject()->name()) + "/activePage",
                               static_cast<int>(curPage));
         }
     }
@@ -210,8 +211,8 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
     // ensures projects saved to custom locations or discovered via the
     // recent-files list are opened at their actual on-disk location.
     QString filePath;
-    if (m_projectPanel)
-        filePath = m_projectPanel->projectFilePath(name);
+    if (m_mw->projectPanel())
+        filePath = m_mw->projectPanel()->projectFilePath(name);
     if (filePath.isEmpty())
         filePath = projectsDirectory() + "/" + name + "/" + name + ".rtp";
 
@@ -221,9 +222,9 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
     beginAsyncProjectLoad(path, tr("Opening project…"),
         [this, name, path, t0](std::unique_ptr<Project> project) {
             if (!project) {
-                disengageLoadingOverlay();
+                m_mw->disengageLoadingOverlay();
                 spdlog::error("Failed to load project: {}", pathToUtf8(path));
-                QMessageBox::warning(this, "Error",
+                QMessageBox::warning(m_mw, "Error",
                     QString("Failed to open project '%1'").arg(name));
                 return;
             }
@@ -241,38 +242,38 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
             // session snapshot.  If neither exists (new project / fresh
             // install), resetToDefaultDockLayout() loads the user's
             // "USE_AS_DEFAULT" workspace preset from QSettings.
-            if (!restoreWorkspace("project/" + name)
-                && !restoreWorkspace("last_session")) {
+            if (!m_mw->restoreWorkspace("project/" + name)
+                && !m_mw->restoreWorkspace("last_session")) {
                 spdlog::info("OPEN: no saved workspace — resetting to default layout");
-                if (m_timelineWorkspace)
-                    m_timelineWorkspace->resetToDefaultDockLayout();
+                if (m_mw->timelineWorkspace())
+                    m_mw->timelineWorkspace()->resetToDefaultDockLayout();
             }
 
             // Stay on the current tab (Projects) instead of restoring the
             // last active page for this project.
-            setCurrentPage(Page::Projects);
+            m_mw->setCurrentPage(Page::Projects);
 
             spdlog::info("OPEN: restoring audio sync state");
             // Prefer the blob embedded in the .rtp file (backed up + versioned)
             // over QSettings (which has no backup).
-            if (m_audioSync) {
-                const auto& blob = m_currentProject->audioSyncBlob();
+            if (m_mw->audioSync()) {
+                const auto& blob = m_mw->currentProject()->audioSyncBlob();
                 spdlog::info("OPEN: AudioSync blob size={}", blob.size());
                 if (!blob.empty()) {
-                    m_audioSync->deserializeFromBlob(blob);
+                    m_mw->audioSync()->deserializeFromBlob(blob);
                     spdlog::info("OPEN: after deserialize — audioPaths.size={}",
-                                 m_audioSync->audioPaths().size());
+                                 m_mw->audioSync()->audioPaths().size());
                 } else {
-                    m_audioSync->restoreProjectState(name);
+                    m_mw->audioSync()->restoreProjectState(name);
                 }
                 // Re-baseline the dirty tracker to the canonical in-memory
                 // serialization. The on-disk bytes can differ (unordered_map
                 // session ordering, filtered missing audio paths), so comparing
                 // against them would falsely mark the project dirty right after
                 // opening — triggering spurious auto-saves / unsaved prompts.
-                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
             } else {
-                spdlog::warn("OPEN: m_audioSync is null — cannot restore audio state");
+                spdlog::warn("OPEN: m_mw->audioSync() is null — cannot restore audio state");
             }
 
             auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -280,7 +281,7 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
             spdlog::info("=== OPEN PROJECT COMPLETE: {} total ms ===", dt);
 
             addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
-            statusBar()->showMessage(QString("Opened '%1'").arg(name), 3000);
+            m_mw->statusBar()->showMessage(QString("Opened '%1'").arg(name), 3000);
 
             // Release the input lock — or keep the overlay up until the
             // background media warmup finishes if it's still running.
@@ -288,9 +289,9 @@ void MainWindow::onOpenProjectFromPanel(const QString& name)
         });
 }
 
-void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& filePath)
+void ProjectController::onDeleteProjectFromPanel(const QString& name, const QString& filePath)
 {
-    auto reply = QMessageBox::question(this, "Delete Project",
+    auto reply = QMessageBox::question(m_mw, "Delete Project",
         QString("Delete project '%1'? This cannot be undone.").arg(name),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
@@ -300,23 +301,23 @@ void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& fi
     // so subsequent operations (create, open) don't think it's still open.
     // Important: clean up all references BEFORE destroying the project,
     // otherwise dangling pointers in subsystems cause use-after-free crashes.
-    if (m_currentProject) {
-        QString currentName = QString::fromStdString(m_currentProject->name());
+    if (m_mw->currentProject()) {
+        QString currentName = QString::fromStdString(m_mw->currentProject()->name());
         if (currentName == name) {
             // 1. Stop audio playback / transport
-            if (m_playbackController && m_playbackController->isPlaying())
-                m_playbackController->stop();
+            if (m_mw->playbackController() && m_mw->playbackController()->isPlaying())
+                m_mw->playbackController()->stop();
 
             // 2. Stop the async composite pipeline (FrameProducer thread)
-            if (m_timelineWorkspace) {
-                if (auto* pm = m_timelineWorkspace->programMonitor()) {
+            if (m_mw->timelineWorkspace()) {
+                if (auto* pm = m_mw->timelineWorkspace()->programMonitor()) {
                     pm->stopPolling();
                     if (auto* pl = pm->pipeline())
                         pl->stop();
                 }
             }
-            if (m_timelineWorkspace) {
-                if (auto* sm = m_timelineWorkspace->sourceMonitor()) {
+            if (m_mw->timelineWorkspace()) {
+                if (auto* sm = m_mw->timelineWorkspace()->sourceMonitor()) {
                     if (auto* ctrl = sm->controller()) {
                         if (ctrl->isPlaying()) ctrl->stop();
                     }
@@ -325,69 +326,69 @@ void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& fi
 
             // 3. Disconnect old timeline from all consumers so no subsystem
             //    accesses destroyed project data.
-            if (m_timelineWorkspace) {
-                if (auto* pm = m_timelineWorkspace->programMonitor())
+            if (m_mw->timelineWorkspace()) {
+                if (auto* pm = m_mw->timelineWorkspace()->programMonitor())
                     pm->setCompositeCallback(nullptr);
-                m_timelineWorkspace->setTimeline(nullptr);
+                m_mw->timelineWorkspace()->setTimeline(nullptr);
             }
-            if (m_playbackController)
-                m_playbackController->setTimeline(nullptr);
-            m_timeline = nullptr;
+            if (m_mw->playbackController())
+                m_mw->playbackController()->setTimeline(nullptr);
+            m_mw->setTimeline(nullptr);
 
             // 4. Release all media from the old project and clear the frame cache
-            if (m_mediaPool)
-                m_mediaPool->closeAll();
+            if (m_mw->mediaPool())
+                m_mw->mediaPool()->closeAll();
 
             // 5. Reset per-project panels
-            if (m_audioSync)
-                m_audioSync->resetForNewProject();
+            if (m_mw->audioSync())
+                m_mw->audioSync()->resetForNewProject();
 
             // 6. Clear undo/redo history
-            if (m_commandStack)
-                m_commandStack->clear();
+            if (m_mw->commandStack())
+                m_mw->commandStack()->clear();
 
             // 7. Clear export panel references
-            if (m_exportPanel) {
-                m_exportPanel->setTimeline(nullptr);
-                m_exportPanel->setProject(nullptr);
+            if (m_mw->exportPanel()) {
+                m_mw->exportPanel()->setTimeline(nullptr);
+                m_mw->exportPanel()->setProject(nullptr);
             }
 
             // 8. Clear project bin items and project references so stale
             //    media items and sequences don't linger in the bin UI
             //    after project deletion.
-            if (auto* bin = projectBin()) {
+            if (auto* bin = m_mw->projectBin()) {
                 bin->clearAll();
                 bin->setProject(nullptr);
             }
 
             // 9. Clear stale clip / project references from detail panels
             //    that may still point into the about-to-be-destroyed project.
-            if (m_timelineWorkspace) {
-                m_timelineWorkspace->setProject(nullptr);
-                if (auto* props = m_timelineWorkspace->propertiesPanel())
+            if (m_mw->timelineWorkspace()) {
+                m_mw->timelineWorkspace()->setProject(nullptr);
+                if (auto* props = m_mw->timelineWorkspace()->propertiesPanel())
                     props->clearClip();
-                if (auto* ecp = m_timelineWorkspace->effectControlsPanel())
+                if (auto* ecp = m_mw->timelineWorkspace()->effectControlsPanel())
                     ecp->clearClip();
-                if (auto* eff = m_timelineWorkspace->effectsPanel())
+                if (auto* eff = m_mw->timelineWorkspace()->effectsPanel())
                     eff->setClip(nullptr);
-                if (auto* sm = m_timelineWorkspace->sourceMonitor())
+                if (auto* sm = m_mw->timelineWorkspace()->sourceMonitor())
                     sm->clearClip();
-                if (auto* lib = m_timelineWorkspace->libraryPanel())
+                if (auto* lib = m_mw->timelineWorkspace()->libraryPanel())
                     lib->refresh();
-                if (auto* chars = m_timelineWorkspace->charactersPanel())
+                if (auto* chars = m_mw->timelineWorkspace()->charactersPanel())
                     chars->refresh();
             }
 
             // 10. Update UI state
-            if (m_projectPanel)
-                m_projectPanel->setCurrentProjectName({});
-            if (auto* bin = projectBin())
+            if (m_mw->projectPanel())
+                m_mw->projectPanel()->setCurrentProjectName({});
+            if (auto* bin = m_mw->projectBin())
                 bin->setProjectName({});
-            setWindowTitle(QString("ROUNDTABLE NLE %1").arg(ROUNDTABLE_VERSION));
+            m_mw->setWindowTitle(QString("ROUNDTABLE NLE %1").arg(ROUNDTABLE_VERSION));
 
             // 11. Now safe to destroy the old project
             m_lastSavedAudioSyncBlob = {};
-            m_currentProject.reset();
+            m_mw->adoptCurrentProject(nullptr);
         }
     }
 
@@ -407,22 +408,22 @@ void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& fi
         spdlog::info("Deleted project: {} (folder: {})",
                      name.toStdString(), projectFolder.toStdString());
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Project '%1' deleted").arg(name), 3000);
     } else {
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to delete '%1'").arg(name));
     }
 }
 
-void MainWindow::onRenameProjectFromPanel(const QString& oldName, const QString& newName)
+void ProjectController::onRenameProjectFromPanel(const QString& oldName, const QString& newName)
 {
     spdlog::info("Renaming project '{}' -> '{}'", oldName.toStdString(), newName.toStdString());
 
     QString projDir = projectsDirectory();
 
     if (QDir(projDir + "/" + newName).exists()) {
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("A project named '%1' already exists.").arg(newName));
         return;
     }
@@ -441,24 +442,24 @@ void MainWindow::onRenameProjectFromPanel(const QString& oldName, const QString&
 
     if (renamed) {
         // If the renamed project is the currently loaded one, update it
-        if (m_currentProject &&
-            QString::fromStdString(m_currentProject->name()) == oldName) {
-            m_currentProject->setName(newName.toStdString());
-            m_currentProject->setFilePath(newFilePath.toStdWString());
-            if (m_projectPanel) m_projectPanel->setCurrentProjectName(newName);
-            if (auto* bin = projectBin()) bin->setProjectName(newName);
-            setWindowTitle(QString("ROUNDTABLE NLE %1 — %2").arg(ROUNDTABLE_VERSION).arg(newName));
+        if (m_mw->currentProject() &&
+            QString::fromStdString(m_mw->currentProject()->name()) == oldName) {
+            m_mw->currentProject()->setName(newName.toStdString());
+            m_mw->currentProject()->setFilePath(newFilePath.toStdWString());
+            if (m_mw->projectPanel()) m_mw->projectPanel()->setCurrentProjectName(newName);
+            if (auto* bin = m_mw->projectBin()) bin->setProjectName(newName);
+            m_mw->setWindowTitle(QString("ROUNDTABLE NLE %1 — %2").arg(ROUNDTABLE_VERSION).arg(newName));
         }
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Renamed '%1' to '%2'").arg(oldName, newName), 3000);
     } else {
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to rename '%1'").arg(oldName));
     }
 }
 
-void MainWindow::onDuplicateProjectFromPanel(const QString& name)
+void ProjectController::onDuplicateProjectFromPanel(const QString& name)
 {
     spdlog::info("Duplicating project: {}", name.toStdString());
 
@@ -484,23 +485,23 @@ void MainWindow::onDuplicateProjectFromPanel(const QString& name)
             QFile::copy(srcThumb, newFolder + "/" + newName + ".png");
 
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Duplicated as '%1'").arg(newName), 3000);
     } else {
         QDir(newFolder).removeRecursively();
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to duplicate '%1'").arg(name));
     }
 }
 
-void MainWindow::onRevealProjectInExplorer(const QString& name)
+void ProjectController::onRevealProjectInExplorer(const QString& name)
 {
     // Use the actual file path from the project info, not a reconstructed
     // path that assumes <projDir>/<name>/<name>.rtp — the folder or file
     // name may differ from the project's display name (e.g. after a rename,
     // import, or manual move).
-    QString filePath = m_projectPanel
-        ? m_projectPanel->projectFilePath(name)
+    QString filePath = m_mw->projectPanel()
+        ? m_mw->projectPanel()->projectFilePath(name)
         : QString();
     if (filePath.isEmpty()) {
         // Fallback to the conventional layout if the panel lookup fails
@@ -518,17 +519,17 @@ void MainWindow::onRevealProjectInExplorer(const QString& name)
 // New project from dropped media
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, size_t trackIndex)
+void ProjectController::onNewProjectForMedia(const QString& filePath, int64_t atTick, size_t trackIndex)
 {
     if (!checkUnsavedChanges()) return;
 
     // Read media properties to set sequence resolution / frame rate
     uint32_t mediaW = 1920, mediaH = 1080;
     double mediaFps = 30.0;
-    if (!filePath.isEmpty() && m_mediaPool) {
-        uint64_t h = m_mediaPool->open(filePath.toStdString());
+    if (!filePath.isEmpty() && m_mw->mediaPool()) {
+        uint64_t h = m_mw->mediaPool()->open(filePath.toStdString());
         if (h != 0) {
-            const auto* info = m_mediaPool->getInfo(h);
+            const auto* info = m_mw->mediaPool()->getInfo(h);
             if (info) {
                 if (info->width  > 0) mediaW = info->width;
                 if (info->height > 0) mediaH = info->height;
@@ -576,36 +577,36 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
         setCurrentProject(std::move(project));
         // Reset the Timeline dock layout to the canonical default
         // (loads the "USE_AS_DEFAULT" workspace preset from QSettings).
-        if (m_timelineWorkspace)
-            m_timelineWorkspace->resetToDefaultDockLayout();
+        if (m_mw->timelineWorkspace())
+            m_mw->timelineWorkspace()->resetToDefaultDockLayout();
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             QString("Project '%1' created from dropped media").arg(projName), 3000);
 
         // Switch to the TIMELINE page so the user sees the result
-        setCurrentPage(Page::Timeline);
+        m_mw->setCurrentPage(Page::Timeline);
 
         // ── Place the dropped media on the timeline now that a project/sequence exists ──
         if (!filePath.isEmpty()) {
             // Add the file to the Project Bin
-            if (auto* bin = projectBin()) {
+            if (auto* bin = m_mw->projectBin()) {
                 namespace fs = std::filesystem;
                 bin->addFiles({ fs::path(filePath.toStdWString()) });
             }
 
             // Open in MediaPool to get a handle for the clip
             uint64_t handle = 0;
-            if (m_mediaPool)
-                handle = m_mediaPool->open(filePath.toStdString());
+            if (m_mw->mediaPool())
+                handle = m_mw->mediaPool()->open(filePath.toStdString());
 
             // Re-emit mediaDropped so the normal clip-creation path places the
             // asset on the timeline at the exact position the user dragged it to.
-            if (auto* tlp = timelinePanel())
+            if (auto* tlp = m_mw->timelinePanel())
                 emit tlp->mediaDropped(filePath, handle, atTick, trackIndex);
         }
     } else {
         spdlog::error("Failed to save new project: {}", pathToUtf8(path));
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             QString("Failed to create project '%1'").arg(projName));
     }
 }
@@ -614,7 +615,7 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
 // Recent / Import / Export project handlers
 // ═════════════════════════════════════════════════════════════════════════════
 
-void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath)
+void ProjectController::onOpenRecentProjectFromPanel(const QString& filePath)
 {
     if (!checkUnsavedChanges()) return;
 
@@ -624,8 +625,8 @@ void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath)
     beginAsyncProjectLoad(path, tr("Opening project…"),
         [this, filePath, path](std::unique_ptr<Project> project) {
             if (!project) {
-                disengageLoadingOverlay();
-                QMessageBox::warning(this, "Error", "Failed to open " + filePath);
+                m_mw->disengageLoadingOverlay();
+                QMessageBox::warning(m_mw, "Error", "Failed to open " + filePath);
                 return;
             }
             const QString loadedName = QFileInfo(filePath).baseName();
@@ -637,25 +638,25 @@ void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath)
 
             // Stay on the current tab (Projects) instead of restoring the
             // last active page for this project.
-            setCurrentPage(Page::Projects);
+            m_mw->setCurrentPage(Page::Projects);
 
             // Restore audio sync state — prefer blob embedded in .rtp over QSettings
-            if (m_audioSync) {
-                const auto& blob = m_currentProject->audioSyncBlob();
+            if (m_mw->audioSync()) {
+                const auto& blob = m_mw->currentProject()->audioSyncBlob();
                 if (!blob.empty())
-                    m_audioSync->deserializeFromBlob(blob);
+                    m_mw->audioSync()->deserializeFromBlob(blob);
                 else
-                    m_audioSync->restoreProjectState(loadedName);
+                    m_mw->audioSync()->restoreProjectState(loadedName);
                 // Re-baseline the dirty tracker (see onOpenProjectFromPanel).
-                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
             }
 
-            statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
+            m_mw->statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
             releaseOpenLock();
         });
 }
 
-void MainWindow::onImportProject(const QString& srcPath)
+void ProjectController::onImportProject(const QString& srcPath)
 {
     spdlog::info("Importing project from: {}", srcPath.toStdString());
 
@@ -693,16 +694,16 @@ void MainWindow::onImportProject(const QString& srcPath)
         }
 
         refreshProjectsList();
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             "Imported: " + name, 3000);
     } else {
         QDir(projectFolder).removeRecursively();
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             "Failed to import project from " + srcPath);
     }
 }
 
-void MainWindow::onExportProject(const QString& name, const QString& dstPath)
+void ProjectController::onExportProject(const QString& name, const QString& dstPath)
 {
     spdlog::info("Exporting project '{}' to: {}", name.toStdString(), dstPath.toStdString());
 
@@ -712,40 +713,40 @@ void MainWindow::onExportProject(const QString& name, const QString& dstPath)
     QString srcPath = projDir + "/" + name + "/" + name + ".rtp";
 
     if (QFile::copy(srcPath, dstPath)) {
-        statusBar()->showMessage(
+        m_mw->statusBar()->showMessage(
             "Exported '" + name + "' to " + QFileInfo(dstPath).dir().path(), 3000);
     } else {
-        QMessageBox::warning(this, "Error",
+        QMessageBox::warning(m_mw, "Error",
             "Failed to export project '" + name + "'");
     }
 }
 
-void MainWindow::onProjectsDirChanged(const QString& newDir)
+void ProjectController::onProjectsDirChanged(const QString& newDir)
 {
     spdlog::info("Projects directory changed to: {}", newDir.toStdString());
     auto settings = rt::appSettings();
     settings.setValue("ProjectsDirectory", newDir);
     refreshProjectsList();
-    statusBar()->showMessage(
+    m_mw->statusBar()->showMessage(
         "Projects folder: " + newDir, 3000);
 }
 
-void MainWindow::onNewProject()
+void ProjectController::onNewProject()
 {
     spdlog::info("File > New Project");
     // Switch to Projects page so user can name the project
-    setCurrentPage(Page::Projects);
-    if (m_projectPanel)
-        m_projectPanel->nameInput()->setFocus();
+    m_mw->setCurrentPage(Page::Projects);
+    if (m_mw->projectPanel())
+        m_mw->projectPanel()->nameInput()->setFocus();
 }
 
-void MainWindow::onOpenProject()
+void ProjectController::onOpenProject()
 {
     if (!checkUnsavedChanges()) return;
 
     spdlog::info("File > Open Project");
     QString path = QFileDialog::getOpenFileName(
-        this, "Open Project", projectsDirectory(),
+        m_mw, "Open Project", projectsDirectory(),
         "ROUNDTABLE Projects (*.rtp);;All Files (*)");
 
     if (path.isEmpty()) return;
@@ -754,8 +755,8 @@ void MainWindow::onOpenProject()
     beginAsyncProjectLoad(fsPath, tr("Opening project…"),
         [this, fsPath](std::unique_ptr<Project> project) {
             if (!project) {
-                disengageLoadingOverlay();
-                QMessageBox::warning(this, "Error",
+                m_mw->disengageLoadingOverlay();
+                QMessageBox::warning(m_mw, "Error",
                     "Failed to open the selected project file.");
                 return;
             }
@@ -765,40 +766,40 @@ void MainWindow::onOpenProject()
                 project->setName(loadedName.toStdString());
             project->setFilePath(fsPath);
             setCurrentProject(std::move(project));
-            if (!restoreWorkspace("project/" + loadedName)
-                && !restoreWorkspace("last_session")) {
-                if (m_timelineWorkspace)
-                    m_timelineWorkspace->resetToDefaultDockLayout();
+            if (!m_mw->restoreWorkspace("project/" + loadedName)
+                && !m_mw->restoreWorkspace("last_session")) {
+                if (m_mw->timelineWorkspace())
+                    m_mw->timelineWorkspace()->resetToDefaultDockLayout();
             }
             addToRecentFiles(QString::fromStdWString(fsPath.wstring()));
             // Stay on the current tab (Projects) instead of switching to Timeline
-            setCurrentPage(Page::Projects);
+            m_mw->setCurrentPage(Page::Projects);
 
             // Restore audio sync state
-            if (m_audioSync) {
-                const auto& blob = m_currentProject->audioSyncBlob();
+            if (m_mw->audioSync()) {
+                const auto& blob = m_mw->currentProject()->audioSyncBlob();
                 if (!blob.empty())
-                    m_audioSync->deserializeFromBlob(blob);
+                    m_mw->audioSync()->deserializeFromBlob(blob);
                 else
-                    m_audioSync->restoreProjectState(loadedName);
+                    m_mw->audioSync()->restoreProjectState(loadedName);
                 // Re-baseline the dirty tracker (see onOpenProjectFromPanel).
-                m_lastSavedAudioSyncBlob = m_audioSync->serializeToBlob();
+                m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
             }
 
-            statusBar()->showMessage("Project opened", 3000);
+            m_mw->statusBar()->showMessage("Project opened", 3000);
             releaseOpenLock();
         });
 }
 
-void MainWindow::onSaveProject()
+void ProjectController::onSaveProject()
 {
     spdlog::info("File > Save");
-    if (!m_currentProject) {
-        statusBar()->showMessage("No project to save", 3000);
+    if (!m_mw->currentProject()) {
+        m_mw->statusBar()->showMessage("No project to save", 3000);
         return;
     }
 
-    auto path = m_currentProject->filePath();
+    auto path = m_mw->currentProject()->filePath();
     if (path.empty()) {
         onSaveProjectAs();
         return;
@@ -808,15 +809,15 @@ void MainWindow::onSaveProject()
     {
         // Persist only what is explicitly in the Project Bin.
         std::vector<std::filesystem::path> binFiles;
-        if (auto* bin = projectBin()) {
+        if (auto* bin = m_mw->projectBin()) {
             binFiles = bin->allFiles();
-            m_currentProject->setBinItems(bin->exportBinItems());
+            m_mw->currentProject()->setBinItems(bin->exportBinItems());
         }
 
-        m_currentProject->setBinFiles(binFiles);
+        m_mw->currentProject()->setBinFiles(binFiles);
 
         // Capture bin folder structure
-        if (auto* bin = projectBin()) {
+        if (auto* bin = m_mw->projectBin()) {
             auto uiFolders = bin->binFolderState();
             std::vector<Project::BinFolder> projFolders;
             projFolders.reserve(uiFolders.size());
@@ -827,60 +828,60 @@ void MainWindow::onSaveProject()
                 pf.childKeys = std::move(f.childKeys);
                 projFolders.push_back(std::move(pf));
             }
-            m_currentProject->setBinFolders(std::move(projFolders));
+            m_mw->currentProject()->setBinFolders(std::move(projFolders));
             spdlog::info("onSaveProject: captured bin state — {} files, {} folders",
                          binFiles.size(), uiFolders.size());
         } else {
-            spdlog::warn("onSaveProject: projectBin() returned nullptr — bin state NOT saved");
+            spdlog::warn("onSaveProject: m_mw->projectBin() returned nullptr — bin state NOT saved");
         }
     }
 
     // Capture AudioSync state into the project blob BEFORE serializing
-    if (m_audioSync) {
-        auto blob = m_audioSync->serializeToBlob();
+    if (m_mw->audioSync()) {
+        auto blob = m_mw->audioSync()->serializeToBlob();
         spdlog::info("onSaveProject: AudioSync blob {} bytes", blob.size());
-        m_currentProject->setAudioSyncBlob(std::move(blob));
+        m_mw->currentProject()->setAudioSyncBlob(std::move(blob));
     } else {
-        spdlog::warn("onSaveProject: m_audioSync is null");
+        spdlog::warn("onSaveProject: m_mw->audioSync() is null");
     }
 
     ProjectSerializer serializer;
-    if (serializer.save(*m_currentProject, path)) {
-        m_currentProject->setModified(false);
-        m_lastSavedAudioSyncBlob = m_currentProject->audioSyncBlob();
+    if (serializer.save(*m_mw->currentProject(), path)) {
+        m_mw->currentProject()->setModified(false);
+        m_lastSavedAudioSyncBlob = m_mw->currentProject()->audioSyncBlob();
 
-        saveWorkspace("project/" + QString::fromStdString(m_currentProject->name()));
-        saveWorkspace("last_session");
+        m_mw->saveWorkspace("project/" + QString::fromStdString(m_mw->currentProject()->name()));
+        m_mw->saveWorkspace("last_session");
 
         // Auto-capture thumbnail from current playhead frame
         captureProjectThumbnail();
 
         // Save audio sync state (transcriptions, matches, clips)
-        if (m_audioSync)
-            m_audioSync->saveProjectState(QString::fromStdString(m_currentProject->name()));
+        if (m_mw->audioSync())
+            m_mw->audioSync()->saveProjectState(QString::fromStdString(m_mw->currentProject()->name()));
 
         // Save active page per project
         auto settings = rt::appSettings();
-        settings.setValue("Project/" + QString::fromStdString(m_currentProject->name()) + "/activePage",
-                          static_cast<int>(currentPage()));
+        settings.setValue("Project/" + QString::fromStdString(m_mw->currentProject()->name()) + "/activePage",
+                          static_cast<int>(m_mw->currentPage()));
 
         addToRecentFiles(QString::fromStdString(pathToUtf8(path)));
-        statusBar()->showMessage("Project saved", 3000);
+        m_mw->statusBar()->showMessage("Project saved", 3000);
     } else {
-        QMessageBox::warning(this, "Error", "Failed to save project.");
+        QMessageBox::warning(m_mw, "Error", "Failed to save project.");
     }
 }
 
-void MainWindow::onSaveProjectAs()
+void ProjectController::onSaveProjectAs()
 {
     spdlog::info("File > Save As");
-    if (!m_currentProject) {
-        statusBar()->showMessage("No project to save", 3000);
+    if (!m_mw->currentProject()) {
+        m_mw->statusBar()->showMessage("No project to save", 3000);
         return;
     }
 
     QString path = QFileDialog::getSaveFileName(
-        this, "Save Project As", projectsDirectory(),
+        m_mw, "Save Project As", projectsDirectory(),
         "ROUNDTABLE Projects (*.rtp)");
 
     if (path.isEmpty()) return;
@@ -896,19 +897,19 @@ void MainWindow::onSaveProjectAs()
     QDir().mkpath(projectFolder);
     path = projectFolder + "/" + projectName + ".rtp";
 
-    m_currentProject->setFilePath(path.toStdString());
-    m_currentProject->setName(projectName.toStdString());
+    m_mw->currentProject()->setFilePath(path.toStdString());
+    m_mw->currentProject()->setName(projectName.toStdString());
 
     // ── Capture bin state into the project before serialization ─────────
     {
         std::vector<std::filesystem::path> binFiles;
-        if (auto* bin = projectBin()) {
+        if (auto* bin = m_mw->projectBin()) {
             binFiles = bin->allFiles();
-            m_currentProject->setBinItems(bin->exportBinItems());
+            m_mw->currentProject()->setBinItems(bin->exportBinItems());
         }
-        m_currentProject->setBinFiles(binFiles);
+        m_mw->currentProject()->setBinFiles(binFiles);
 
-        if (auto* bin = projectBin()) {
+        if (auto* bin = m_mw->projectBin()) {
             auto uiFolders = bin->binFolderState();
             std::vector<Project::BinFolder> projFolders;
             projFolders.reserve(uiFolders.size());
@@ -918,43 +919,43 @@ void MainWindow::onSaveProjectAs()
                 pf.childKeys = std::move(f.childKeys);
                 projFolders.push_back(std::move(pf));
             }
-            m_currentProject->setBinFolders(std::move(projFolders));
+            m_mw->currentProject()->setBinFolders(std::move(projFolders));
             spdlog::info("onSaveProjectAs: captured bin state — {} files, {} folders",
                          binFiles.size(), uiFolders.size());
         }
     }
 
     // Capture AudioSync state into blob before serializing
-    if (m_audioSync)
-        m_currentProject->setAudioSyncBlob(m_audioSync->serializeToBlob());
+    if (m_mw->audioSync())
+        m_mw->currentProject()->setAudioSyncBlob(m_mw->audioSync()->serializeToBlob());
 
     ProjectSerializer serializer;
-    if (serializer.save(*m_currentProject, path.toStdString())) {
-        m_currentProject->setModified(false);
-        m_lastSavedAudioSyncBlob = m_currentProject->audioSyncBlob();
+    if (serializer.save(*m_mw->currentProject(), path.toStdString())) {
+        m_mw->currentProject()->setModified(false);
+        m_lastSavedAudioSyncBlob = m_mw->currentProject()->audioSyncBlob();
 
-        saveWorkspace("project/" + QString::fromStdString(m_currentProject->name()));
-        saveWorkspace("last_session");
+        m_mw->saveWorkspace("project/" + QString::fromStdString(m_mw->currentProject()->name()));
+        m_mw->saveWorkspace("last_session");
 
         // Auto-capture thumbnail from current playhead frame
         captureProjectThumbnail();
 
         // Save audio sync state BEFORE moving the project (transcriptions, matches, clips)
-        if (m_audioSync)
-            m_audioSync->saveProjectState(QFileInfo(path).baseName());
+        if (m_mw->audioSync())
+            m_mw->audioSync()->saveProjectState(QFileInfo(path).baseName());
 
-        setCurrentProject(std::move(m_currentProject)); // refresh title
+        setCurrentProject(m_mw->takeCurrentProject()); // refresh title
 
         // Save active page per project (use the new name from path)
         auto settings = rt::appSettings();
         settings.setValue("Project/" + QFileInfo(path).baseName() + "/activePage",
-                          static_cast<int>(currentPage()));
+                          static_cast<int>(m_mw->currentPage()));
 
         refreshProjectsList();
         addToRecentFiles(path);
-        statusBar()->showMessage("Project saved", 3000);
+        m_mw->statusBar()->showMessage("Project saved", 3000);
     } else {
-        QMessageBox::warning(this, "Error", "Failed to save project.");
+        QMessageBox::warning(m_mw, "Error", "Failed to save project.");
     }
 }
 

@@ -19,6 +19,7 @@
  */
 
 #include "MainWindow.h"
+#include "ProjectController.h"
 
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/timeline/TimelineWorkspace.h"
@@ -48,6 +49,10 @@ MainWindow::MainWindow(QWidget* parent)
     setObjectName("MainWindow");
     setWindowTitle(QString("ROUNDTABLE NLE %1").arg(ROUNDTABLE_VERSION));
     setMinimumSize(1280, 720);
+
+    // Project lifecycle binder (open/save/recovery/auto-save/recents);
+    // the MainWindow project methods are one-line shims to it.
+    m_projectController = std::make_unique<ProjectController>(this);
 
     setDocumentMode(true);
 
@@ -148,10 +153,77 @@ MainWindow::~MainWindow()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// ProjectController shims — keep the public/slot surface (menu + panel
+// connects, main.cpp, App.cpp) unchanged while the implementations live in
+// ProjectController*.cpp (god-class decomposition, fable_cleanup.txt §3.1).
+// ═════════════════════════════════════════════════════════════════════════════
+
+QString MainWindow::projectsDirectory() const { return m_projectController->projectsDirectory(); }
+bool MainWindow::checkUnsavedChanges()        { return m_projectController->checkUnsavedChanges(); }
+void MainWindow::refreshProjectsList()        { m_projectController->refreshProjectsList(); }
+void MainWindow::captureProjectThumbnail()    { m_projectController->captureProjectThumbnail(); }
+void MainWindow::releaseOpenLock()            { m_projectController->releaseOpenLock(); }
+void MainWindow::addToRecentFiles(const QString& filePath) { m_projectController->addToRecentFiles(filePath); }
+void MainWindow::updateRecentFilesMenu()      { m_projectController->updateRecentFilesMenu(); }
+void MainWindow::checkCrashRecovery()         { m_projectController->checkCrashRecovery(); }
+void MainWindow::showGpuFatalError()          { m_projectController->showGpuFatalError(); }
+void MainWindow::onAutoSave()                 { m_projectController->onAutoSave(); }
+void MainWindow::onRestoreFromAutoSave()      { m_projectController->onRestoreFromAutoSave(); }
+void MainWindow::onNewProject()               { m_projectController->onNewProject(); }
+void MainWindow::onOpenProject()              { m_projectController->onOpenProject(); }
+void MainWindow::onSaveProject()              { m_projectController->onSaveProject(); }
+void MainWindow::onSaveProjectAs()            { m_projectController->onSaveProjectAs(); }
+void MainWindow::onImportSrt()                { m_projectController->onImportSrt(); }
+void MainWindow::onExportSrt()                { m_projectController->onExportSrt(); }
+
+void MainWindow::setCurrentProject(std::unique_ptr<Project> project)
+{
+    m_projectController->setCurrentProject(std::move(project));
+}
+
+void MainWindow::beginAsyncProjectLoad(
+    const std::filesystem::path& path,
+    const QString& busyMessage,
+    std::function<void(std::unique_ptr<Project>)> continuation)
+{
+    m_projectController->beginAsyncProjectLoad(path, busyMessage, std::move(continuation));
+}
+
+void MainWindow::onCreateProjectFromPanel(const QString& name, uint32_t resW, uint32_t resH,
+                                          double fps, const QString& saveDir)
+{
+    m_projectController->onCreateProjectFromPanel(name, resW, resH, fps, saveDir);
+}
+void MainWindow::onOpenProjectFromPanel(const QString& name)   { m_projectController->onOpenProjectFromPanel(name); }
+void MainWindow::onDeleteProjectFromPanel(const QString& name, const QString& filePath)
+{
+    m_projectController->onDeleteProjectFromPanel(name, filePath);
+}
+void MainWindow::onRenameProjectFromPanel(const QString& oldName, const QString& newName)
+{
+    m_projectController->onRenameProjectFromPanel(oldName, newName);
+}
+void MainWindow::onDuplicateProjectFromPanel(const QString& name) { m_projectController->onDuplicateProjectFromPanel(name); }
+void MainWindow::onRevealProjectInExplorer(const QString& name)   { m_projectController->onRevealProjectInExplorer(name); }
+void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, size_t trackIndex)
+{
+    m_projectController->onNewProjectForMedia(filePath, atTick, trackIndex);
+}
+void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath) { m_projectController->onOpenRecentProjectFromPanel(filePath); }
+void MainWindow::onImportProject(const QString& srcPath)              { m_projectController->onImportProject(srcPath); }
+void MainWindow::onExportProject(const QString& name, const QString& dstPath)
+{
+    m_projectController->onExportProject(name, dstPath);
+}
+void MainWindow::onProjectsDirChanged(const QString& newDir)          { m_projectController->onProjectsDirChanged(newDir); }
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Dependency injection
 // ═════════════════════════════════════════════════════════════════════════════
 
 void MainWindow::setTimeline(Timeline* timeline) { m_timeline = timeline; }
+void MainWindow::adoptCurrentProject(std::unique_ptr<Project> p) { m_currentProject = std::move(p); }
+std::unique_ptr<Project> MainWindow::takeCurrentProject() { return std::move(m_currentProject); }
 void MainWindow::setCommandStack(CommandStack* stack) { m_commandStack = stack; }
 void MainWindow::setShortcutManager(ShortcutManager* mgr) { m_shortcutManager = mgr; }
 void MainWindow::setAudioEngine(AudioEngine* engine) { m_audioEngine = engine; }

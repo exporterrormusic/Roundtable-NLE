@@ -4,18 +4,25 @@ Roundtable NLE — 2026-06-11
 Scope: dead code, duplication, modularization, render/playback architecture
 vs Premiere Pro, format compatibility. ~640 files / ~174k lines audited.
 
-CURRENT STATUS (2026-06-11, end of execution session 5):
-  Phases 0 / 1 / 2 ........ COMPLETE (all items, test-verified)
-  Phase 3 ................. 3.2 DONE; 3.1 TimelineWorkspace side ESSENTIALLY
-                            DONE (6 binders: MediaWatch, PanelMaximize,
-                            SelectionState, Overlay, Drop, Shortcut; 25 TUs
-                            → 18, header 545 → 435); MainWindow
-                            ProjectController + friend-narrowing remain;
-                            3.3/3.5/3.8 open
-  Phase 4 ................. not started (4.1 color management is next)
-  → Jump to "NEXT SESSION — START HERE" (search that string) for the
-    handoff: uncommitted-work warning, remaining-work order, standing
-    items.  The PROGRESS LOG below records everything executed.
+CURRENT STATUS (2026-06-12, end of execution session 8):
+  Phases 0 / 1 / 2 ........ COMPLETE
+  Phase 3 ................. 3.1 COMPLETE (7 binders + SelectionState);
+                            3.2 COMPLETE; 3.3 COMPLETE (CachePolicy merge
+                            + PixelOps move); 3.5 COMPLETE (capability API
+                            + long tail + serializer registry + per-type
+                            populate builders); 3.8 optional/open
+  Phase 4 ................. not started — USER DECISION: Phase 4 is LAST;
+                            finish all remaining cleanup first
+  Also done ............... §5.5 AudioMixdown resampler bug FIXED (swr);
+                            §5.3 SmartRenderAnalyzer test suite (planner;
+                            passthrough EXECUTION is disabled by design —
+                            see session-7 log); nightly CI added;
+                            friend-narrowing 1/4: ProjectController DONE
+                            (no friend; works via MainWindow public
+                            accessors; session-8 log)
+  Remaining before Phase 4: friend-narrowing on Overlay/Drop/Shortcut
+                            (one per gated step), §3.8 optional
+  → Jump to "NEXT SESSION — START HERE" (search that string).
 ================================================================================
 
 How this report was produced: every .cpp on disk was diffed against the
@@ -699,6 +706,8 @@ SECTION 5 — EXPORT PIPELINE NOTES
      master exported to 10-bit HEVC silently transits 8-bit BGRA.
 5.5  AudioMixdown: verify output loudness path uses swr (not 4.5's linear
      resampler) — same fix applies if not.
+     [DONE 2026-06-12 — it was WORSE than suspected: nearest-neighbor
+     index mapping.  Fixed via readRegionResampled; see session-6 log.]
 
 
 ================================================================================
@@ -725,66 +734,254 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.5 FfmpegOpen helper
 
 ════════════════════════════════════════════════════════════════════════
-NEXT SESSION — START HERE  (handoff written 2026-06-11, end of session 5)
+NEXT SESSION — START HERE  (handoff updated 2026-06-12, end of session 8)
 ════════════════════════════════════════════════════════════════════════
-STATE: Phases 0, 1, 2 + 3.2 COMPLETE (committed).  3.1 TimelineWorkspace
-side essentially done: six binders extracted across sessions 3-5
-(MediaWatchController, PanelMaximizeController, SelectionState,
-OverlayController, DropController, ShortcutController) + ShotSwitch
-split + wiring rename.  TimelineWorkspace: 25 TUs → 18, header
-545 → 435 lines, and the class no longer holds overlay/drop/keyboard/
-media-watch/maximize state.  Sessions 3+4 were smoked by the user;
-session 5 is build-verified (roundtable.exe) + ctest -L core 688/688.
+STATE: USER DECISION — finish ALL remaining cleanup before Phase 4.
+Sessions 3-5 committed+pushed+smoked.  Sessions 6+7 are UNCOMMITTED at
+handoff (one combined batch in the working tree).  Session 7 landed:
+round-trip serialization tests for ALL clip types + effects + masks
+(test_project 37 tests), §3.5(b) serializer REGISTRY in
+ClipSerialization.cpp (three switches → one table), per-type populate
+builders in PropertiesPanelApply (populateFromSpine/Video/Audio/Title/
+Graphic), crop virtuals on Clip (cropLeft/Right/Top/Bottom + setCrop;
+UI gates on supportsCrop()), §3.5 long-tail conversions (all ==/!=
+Audio → isAudio(), ==/!= Caption → isCaption(), crop cast-pairs →
+supportsCrop()+virtuals), §5.3 SmartRenderAnalyzer test suite (8 tests
+in test_export).  All gates green: full all-targets build + core
+695/695 + export 51/51.
 
-UNCOMMITTED at handoff: sessions 4+5 batch (user said they'd commit:
-5 new headers, 7 git-mv renames, ShotSwitch.cpp, ~10 modified TUs).
+KEY FINDING (session 7): Smart Render passthrough EXECUTION is
+hard-disabled (kEnableSmartRenderPassthrough=false, RenderQueue.cpp
+~line 380, part of the June-9 Fable_fix P0 batch) because raw packet
+copy lacks SPS/PPS extradata reconciliation — see the comment block
+there for the full re-enable checklist (h264_mp4toannexb bsf, source
+extradata handling, refuse mixed sources, transition-awareness).  The
+§5.3 "frame-hash a passthrough round-trip" runtime test is therefore
+MOOT until that feature work happens (it would test dead code); the
+analyzer/planner — which stays live and feeds the future re-enable —
+is now fully unit-tested instead (eligibility rules + source-frame
+mapping locked down).
 
-RUNTIME SMOKE OWED for session 5: drag media from bin/Explorer onto
-the timeline (incl. a drop with NO project open → auto-create), drag
-an effect + a transition onto clips, drop a sequence to nest + open a
-nested sequence from the context menu, and a keyboard pass —
-Space/J/K/L incl. K+J / K+L slow shuttle and its release behavior,
-I/O, Delete with focus in Effect Controls vs timeline, Ctrl+X/C/V,
-tilde maximize, D match-frame, backslash zoom-to-fit.
+RUNTIME SMOKE OWED (session 8 — sessions 6+7 were smoked OK):
+  - project lifecycle AGAIN: new/open/save/save-as, recents menu,
+    delete/rename/duplicate from panel, auto-save + restore-from-
+    auto-save, and the auto-created-project startup path
+    [session 8: ProjectController friend-narrowing rewired every one
+    of its ~310 MainWindow accesses through public accessors; same
+    behavior expected, but these are THE paths it touches]
 
-REMAINING WORK, in recommended order:
-  P3-a (finish)
-        1. MainWindowProject*.cpp + MainWindowRecovery.cpp →
-           ProjectController (§3.1 second half, ~2k lines; same
-           friend-transitional pattern works — MainWindow is the host).
-        2. Follow-up: narrow the friend back-pointers (Overlay/Drop/
-           Shortcut controllers) to injected collaborators, one
-           controller per gated step, once their smokes have passed.
-        Gate per step: roundtable.exe build + ctest -L core (the
-        timeline_ui suite does NOT cover TimelineWorkspace — see the
-        session-3 log entry — so runtime smoke matters doubly).
-  P3-b  ClipType capability virtuals + per-type serializer registry
-        (§3.5) — 42 files but very incremental.
-  P3-c  UnifiedCache + CacheCoordinator merge (§3.3) — both now live in
-        core/cache/ side by side; unlike the UI work this IS covered by
-        the 688-test core suite, so it can interleave anytime.
-  P3-d  Mirror the new core/ module folders in tests/ (§3.8) — optional.
-  P4    Premiere-parity features (see PHASE 4 below) — start with 4.1
-        per-stream color management: ConvertDecodedFrame.cpp is the
-        single convert entry point, so it's a small, contained change
-        with outsized correctness payoff.
+REMAINING WORK before Phase 4, in recommended order:
+  1. Friend-narrowing (2 of 4 remaining steps) — convert Overlay/
+     Drop/Shortcut controllers off friend back-pointers, ONE per gated
+     step (build + core + user smoke between each).  ProjectController
+     DONE in session 8 — RECIPE: survey `m_X->m_*` members + method
+     calls; reuse existing public accessors; add missing accessors to
+     the host's public section (out-of-line if they move a unique_ptr
+     of a fwd-declared type!); MOVE members used (almost) only by the
+     controller into it; handle ownership-transfer writes with
+     adopt/take methods; regex-sweep special writes BEFORE generic
+     reads; delete the friend decl LAST and let the compiler find
+     stragglers.  Remaining surface (distinct private members / total
+     back-pointer uses): ShortcutController ~15/~390, DropController
+     ~14/~338, OverlayController ~14/~306 — these also touch private
+     TimelineWorkspace METHODS and other binders' state, so survey
+     first; some shared state may need to move to SelectionState or a
+     dedicated struct instead of accessors.
+  2. §3.8 mirror core/ folders in tests/ (optional, low priority).
+  3. §2.8/2.9 opportunistic dedup — only when touching those files.
+  THEN Phase 4, starting with 4.1 per-stream color management.
 
 STANDING ITEMS:
-  - Runtime smokes owed: session-5 drop/keyboard smoke (see above),
-    one export per codec (NVENC paths), one character conversion run
-    (MediaFileEncoderBase end-to-end).
-  - CI: add gpu/ui/export ctest labels to a nightly job — TEN stale
-    tests rotted invisibly under core-only CI in session 2.
-  - Open bug (pre-existing, from memory): Track::addTransition has no
-    dedup → duplicate transitions possible (opacity = prog², fades too
-    dark).  Unrelated to cleanup; fix when convenient.
-  - src/core/media/ NO LONGER EXISTS — older notes referencing
-    media/X.h: the file now lives in decode/cache/playback/audio/
-    convert/analysis.
-  - REGEX-SWEEP RULE (learned session 4): before any mechanical member
-    rename, grep the symbol across ALL of src/ first — sibling classes
-    reuse member names (AudioSync::m_selectedClipIdx).
+  - Runtime smokes owed: list above + one export per codec (NVENC
+    paths) + one character conversion run (MediaFileEncoderBase).
+  - Nightly CI: after a few nights, check the export/ui steps in
+    nightly-tests.yml and remove continue-on-error from any that are
+    reliably green (they are observe-only until then).
+  - Open bug (pre-existing): Track::addTransition has no dedup →
+    duplicate transitions possible (opacity = prog², fades too dark).
+  - Smart Render passthrough re-enable checklist lives in
+    RenderQueue.cpp ~line 365 (feature work, Phase-4-adjacent).
+  - src/core/media/ NO LONGER EXISTS; CacheCoordinator/UnifiedCache NO
+    LONGER EXIST (now core/cache/CachePolicy); MainWindowProject*/
+    MainWindowRecovery.cpp are now ProjectController*.cpp.
+  - REGEX-SWEEP RULES (learned sessions 4-7): grep symbols across ALL
+    of src/ before mechanical renames (sibling classes reuse member
+    names); method-prefix regexes need (?<![>.:\w]) lookbehind
+    (EditOperations::setInPoint); bare QWidget calls + dialog `this`
+    parents (often on the NEXT line) break when code moves to a
+    QObject controller; serializer-side ClipType checks stay TYPE-based
+    (never capability-based — a future isAudio() override must not
+    change the byte format); the loader frame-aligns clip boundaries
+    (tpf=1600 at defaults) so tests must use frame-aligned ticks.
 ════════════════════════════════════════════════════════════════════════
+
+2026-06-12  SESSION 6 — §3.1 COMPLETE (user smoked + pushed session 5;
+            decision: finish ALL remaining cleanup before Phase 4)
+  [x] Binder #7: ProjectController (src/ui/ProjectController.h +
+      ProjectController{,Set,Handlers,Misc,Recovery}.cpp, git-mv'd from
+      MainWindowProject*.cpp + MainWindowRecovery.cpp, ~2k lines) — the
+      whole project lifecycle: new/open/save/save-as/import/export/
+      rename/delete/duplicate/reveal, projects dir, recent files,
+      beginAsyncProjectLoad + releaseOpenLock, setCurrentProject,
+      auto-save, crash/auto-save recovery, SRT import/export,
+      showGpuFatalError.  Same friend-transitional pattern; MainWindow
+      keeps its full public/slot surface as 30 one-line shims (in
+      MainWindowUI.cpp) so menu/panel connects, main.cpp
+      (&MainWindow::checkCrashRecovery) and App.cpp are untouched.
+      Dialogs re-parented this → m_mw.  NEW TRANSFORM GOTCHAS (now part
+      of the recipe): MainWindow ACCESSOR calls (projectBin(),
+      timelinePanel(), ...) are bare in moved code → m_mw-> prefix; and
+      dialog-static `this` parents are often on the NEXT line
+      (QFileDialog::getOpenFileName(\n this, ...)) — the parent regex
+      must allow \s* between '(' and 'this'.
+      VERIFIED: roundtable.exe builds, ctest -L core 688/688.
+      §3.1 IS NOW COMPLETE (7 binders + SelectionState across both god
+      classes).  RUNTIME SMOKE OWED: new/open/save/save-as project,
+      recent-files menu, delete/rename/duplicate from the panel,
+      auto-save fire + restore-from-auto-save, SRT import/export.
+  [x] §3.3 CACHE-POLICY MERGE — CacheCoordinator + UnifiedCache are now
+      ONE class: core/cache/CachePolicy.{h,cpp} (git-mv'd from
+      CacheCoordinator.*, UnifiedCache.* DELETED).  Two documented
+      sub-roles in the header: ROLE 1 budgets & cross-cache pressure
+      (former CacheCoordinator), ROLE 2 access tracking / playhead
+      windows / eviction policy (former UnifiedCache).  ONE
+      setFrameCache binds both roles; App now owns a single
+      unique_ptr<CachePolicy>; CompositeService::setCachePolicy stores
+      the pointer AND forwards to CompositeEngine (replaces the
+      setCacheCoordinator + setUnifiedCache pair).  FINDING preserved
+      as-was: setGpuTexCache (ROLE 2's GPU binding) was never wired
+      anywhere — rebalanceBudgets/stats always saw a null GPU cache;
+      left unwired (behavior-preserving), wire it when ROLE-2 eviction
+      gets real.
+  [x] §3.3 PIXEL-OPS MOVE — chromaKeyInPlace + clearTransparentPixelRGB
+      moved out of FrameCache.h into core/decode/PixelOps.h (they are
+      pixel processing, not caching); consumers repointed
+      (ConvertDecodedFrame, ShotComposerVideo).
+  [x] §3.5(a) CAPABILITY VIRTUALS — Clip now has the capability API:
+      isAudio / isVisual / isCaption / isCharacter (VideoClip overrides
+      to add isVideoCharacter()) / supportsClipTransform / supportsCrop
+      / supportsLayerTransform / supportsTextEdit / hasMediaPath,
+      designed from a full survey of all ~150 ClipType:: comparison
+      sites (six idioms; ~40 exhaustive-dispatch switches stay
+      switches).  Exemplar conversions landed: EffectControlsPanel
+      clipHasCrop → supportsCrop(); the `!= ClipType::Audio` visual
+      checks in PropertiesPanel/PropertiesPanelApply/ShotSwitch →
+      isVisual().  SURVEY TRAPS recorded: the WiringClipSelection
+      auto-raise routes PngPuppet to Effect Controls (NOT Properties),
+      so isCharacter() must NOT be used there; crop is Spine+Video only
+      (Image's crop fields are not surfaced); Caption counts as visual.
+      LONG TAIL (~50 more convertible sites) = opportunistic followups;
+      §3.5(b) per-type serializer registry is still open.
+  [x] §5.5 AUDIOMIXDOWN RESAMPLER — REAL BUG FOUND AND FIXED: the
+      mixdown's general path resampled by NEAREST-NEIGHBOR index
+      mapping (srcIdx = f*srcRate/outRate, integer truncation) — worse
+      than the linear interp the plan suspected.  Every 44.1 kHz source
+      in a 48 kHz project exported with aliasing.  Now reads through
+      AudioFile::readRegionResampled (swresample windowed-sinc, the
+      §4.5 path) in the output-rate domain; the per-clip FX chain
+      prepares at the output rate; the mix paths split on channel
+      count only.  RUNTIME SMOKE OWED: export a project containing a
+      44.1 kHz audio file, listen for cleanliness.
+  [x] CI NIGHTLY — .github/workflows/nightly-tests.yml added (cron
+      06:00 UTC): runs export + ui ctest labels (ui under
+      QT_QPA_PLATFORM=offscreen) + core as hard gate.  export/ui steps
+      are continue-on-error until observed green on the headless
+      runner — flip them to required after a few nights.  gpu label
+      still can't execute on a GPU-less runner; remains per-release
+      local.
+
+2026-06-12  SESSION 8 — FRIEND-NARROWING 1/4: ProjectController
+            (user smoked sessions 6+7 OK; this is the next gated step)
+  [x] `friend class ProjectController` REMOVED from MainWindow.  The
+      controller now works exclusively through MainWindow's public
+      surface.  Changes:
+      - MainWindow.h grew a "Core-service accessors" public block:
+        currentProject() / timeline() / commandStack() /
+        playbackController() / mediaPool() / audioEngine() /
+        recentProjectsMenu() / isDestroying() + ownership-transfer
+        adoptCurrentProject()/takeCurrentProject() (defined OUT-OF-LINE
+        in MainWindowUI.cpp — unique_ptr<Project> of a fwd-declared
+        type can't move inline) + engage/disengage/setLoadingOverlayText
+        moved/added to public.
+      - m_lastSavedAudioSyncBlob MOVED MainWindow → ProjectController
+        (project-lifecycle state; the one external clear in
+        MainWindowUIBuild.cpp now calls
+        m_projectController->clearLastSavedAudioSyncBlob()).
+      - All ~310 m_mw->m_X uses in ProjectController*.cpp swept to
+        accessors (ownership writes converted manually FIRST:
+        .reset()→adoptCurrentProject(nullptr),
+        std::move(m_mw->m_currentProject)→takeCurrentProject(),
+        assignment→adoptCurrentProject(std::move(p)); m_timeline
+        assignments→the existing setTimeline() which is a pure
+        assignment).
+      VERIFIED: full all-targets build + ctest core 695/695.  The
+      compiler is the proof of completeness (no friend = any missed
+      private access is a build error).
+      RUNTIME SMOKE OWED: project lifecycle (see list above).
+
+2026-06-12  SESSION 7 — §3.5 COMPLETE + §5.3 (smoked OK with session 6;
+            sessions 6-8 are one uncommitted batch)
+  [x] ROUND-TRIP SERIALIZATION TESTS — test_project gained per-type
+      round-trips for the 5 previously uncovered clip types (Image,
+      Sequence, Caption [via addCaptionTrack], PngPuppet, Graphic with
+      Text+Shape layers / appearance stacks / layer-transform
+      keyframes) plus the two common writeClip/readClip sections that
+      had NO coverage: the effect stack (ColorCorrect+Blur, static
+      values + keyframes + enabled flag) and opacity masks (ellipse +
+      free-draw bezier with tangents).  test_project 30 → 37 tests.
+      GOTCHAS learned: the loader frame-aligns clip boundaries
+      (tpf=1600) so use frame-aligned ticks; TextLayer's ctor seeds a
+      default fill (clear appearance stacks in tests); the legacy
+      clip-color migration resets known palette values to 0xFF888888
+      (don't use those colors in tests).
+  [x] §3.5(b) SERIALIZER REGISTRY — ClipSerialization.cpp's THREE
+      per-type switches (write fields / factory / read fields) are now
+      ONE registry table: TypeSerializer {make, writeFields,
+      readFields} × 10 entries (kClipSerializers).  Each type's three
+      functions are colocated; adding a clip type = three functions +
+      one table entry.  Byte format unchanged (bodies moved verbatim;
+      the 37 round-trip tests prove it).  RULE: serializer-side type
+      checks stay ClipType-based, NOT capability-based — the audioFx
+      v22 sections still compare clipType()==Audio on purpose.
+  [x] §3.5(b) PER-TYPE PROPERTY-PAGE BUILDERS — PropertiesPanelApply's
+      ~190-line populateFromClip if/else chain → switch dispatching to
+      populateFromSpine/Video/Audio/Title/Graphic (joining the existing
+      populateFromPuppet/populateFromCaption in their own TUs).  Dead
+      duplicate static firstTextLayer() in Apply.cpp deleted (the live
+      one is in PropertiesPanelGraphic.cpp).
+  [x] CROP VIRTUALS ON CLIP — cropLeft/Right/Top/Bottom + setCrop are
+      now virtuals on Clip (defaults 0 / no-op); Spine/Video/Image's
+      existing methods implicitly override (base setCrop is NOT
+      noexcept because VideoClip/ImageClip's aren't).  UI gates on
+      supportsCrop() (Spine+Video) — Image stores crop but doesn't
+      surface it, so unconditional virtual reads would CHANGE behavior
+      for Image clips; always gate.  Converted: PropertiesPanelApply
+      populate + applyTransformImmediate + crop-edge undo lambda,
+      EffectControlsPanelTree dynamic_cast pair.  NOT converted:
+      CompositeServiceLayerBuild (the Spine branch remaps crop coords
+      — genuinely type-specific), SmartRenderAnalyzer (already typed).
+  [x] §3.5 LONG TAIL — all remaining capability-style comparisons
+      converted: ==/!= ClipType::Audio → isAudio() (~25 sites across
+      EditOperations, EffectControls*, AudioMixdown, drop/wiring,
+      TimelineTrackWidget, PropertiesPanel*), ==/!= ClipType::Caption
+      → isCaption() (~17 sites).  What REMAINS as clipType() checks is
+      intentional: identity-before-static_cast guards, exhaustive
+      dispatch (paint/serialize/labels/badges), the WiringClipSelection
+      auto-raise routing (trap), and ProjectControllerSet's legacy
+      position-migration gate (pinned to historic Spine/Video by
+      design).  §3.5 IS NOW COMPLETE.
+  [x] §5.3 SMART-RENDER TEST — FINDING: passthrough execution is
+      hard-disabled (kEnableSmartRenderPassthrough=false, June-9 P0
+      batch) pending SPS/PPS bitstream work (checklist in
+      RenderQueue.cpp ~365).  A runtime frame-hash round-trip would
+      test dead code, so instead the LIVE planner is now fully tested:
+      8 SmartRenderAnalyzer tests in test_export (identity passthrough
+      + source-frame mapping with sourceIn/window offsets, 14
+      disqualifiers via parameterized battery, overlap/mute/gap
+      re-encode, ImageSequence opt-out, codec-name mapping).
+      test_export 43 → 51 tests.
+      VERIFIED: full all-targets build + ctest core 695/695 + export
+      51/51.
 
 2026-06-11  SESSION 5 — §3.1 CONTINUED (user smoked session 4;
             DropController + ShortcutController landed)
@@ -979,17 +1176,17 @@ PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
           less code has to move)
     [DONE] 3.2 core/media split into decode/cache/playback/audio/
                convert/analysis (2026-06-11; see log entry above)
-    [    ] 3.3 cache-coordinator merge (both in core/cache/ now)
-    [STARTED] 3.1 TimelineWorkspace/MainWindow decomposition into binder
-               classes — sessions 3-5: MediaWatchController,
-               PanelMaximizeController, SelectionState, OverlayController,
-               DropController, ShortcutController (+ShotSwitch split,
-               wiring-prefix rename) all landed; TimelineWorkspace side
-               essentially done (25 TUs → 18, header 545 → 435);
-               remaining: MainWindow ProjectController → narrow the
-               friend back-pointers to injected collaborators
-    [    ] 3.5 ClipType capability virtuals, then per-type serializer
-               registry
+    [DONE] 3.3 cache-coordinator merge → core/cache/CachePolicy +
+               PixelOps move (2026-06-12, session 6)
+    [DONE] 3.1 TimelineWorkspace/MainWindow decomposition — 7 binders +
+               SelectionState across sessions 3-6 (MediaWatch,
+               PanelMaximize, Overlay, Drop, Shortcut, Project
+               controllers + ShotSwitch split, wiring-prefix rename);
+               follow-up open: narrow friend back-pointers to injected
+               collaborators
+    [STARTED] 3.5 ClipType capability virtuals — API + exemplar
+               conversions landed (session 6); long tail (~50 sites) +
+               3.5(b) per-type serializer registry remain
     [    ] 3.8 mirror new core/ folders in tests/ (optional)
 
 PHASE 4 — Premiere-parity features (each is its own project; none

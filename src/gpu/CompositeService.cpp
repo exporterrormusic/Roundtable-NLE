@@ -17,7 +17,7 @@
 #include "ClipRenderers.h"
 
 // Media / timeline
-#include "cache/CacheCoordinator.h"
+#include "cache/CachePolicy.h"
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
 #include "timeline/AudioClip.h"
@@ -332,12 +332,13 @@ void CompositeService::requestCacheInvalidationRange(int64_t fromTick, int64_t t
     }
 }
 
-// ── Cache coordinator ───────────────────────────────────────────────────────
+// ── Cache policy ─────────────────────────────────────────────────────────────
 
-void CompositeService::setCacheCoordinator(rt::CacheCoordinator* coordinator)
+void CompositeService::setCachePolicy(rt::CachePolicy* policy)
 {
+    m_cachePolicy = policy;
     if (m_engine)
-        m_engine->setCacheCoordinator(coordinator);
+        m_engine->setCachePolicy(policy);
 }
 
 // ── Shutdown ────────────────────────────────────────────────────────────────

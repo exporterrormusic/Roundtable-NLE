@@ -102,7 +102,7 @@ inline const std::unordered_map<std::string, VCInfo>& videoCharacterFiles()
 {
     // Wells uses H.264 GREEN-suffixed .mp4 files with a chroma-key
     // green background (#18FF00).  The chroma key is applied inline
-    // after decode (see chromaKeyInPlace in FrameCache.h) so the
+    // after decode (see chromaKeyInPlace in decode/PixelOps.h) so the
     // green is never visible anywhere — compositor, thumbnails,
     // library, export — all see a clean alpha frame.
     // NVDEC hardware decode (fast) replaces the ProRes 4444 .mov

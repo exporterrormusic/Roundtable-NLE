@@ -11,7 +11,7 @@
 
 #include "CompositeEngine.h"
 #include "render_graph/GpuRenderGraph.h"
-#include "cache/CacheCoordinator.h"
+#include "cache/CachePolicy.h"
 #include "StagingRing.h"
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
 #include "CompositeServiceBlend.h"       // rasterizeMasks

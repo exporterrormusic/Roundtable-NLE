@@ -10,11 +10,11 @@ add_library(roundtable_ui STATIC
     MainWindowUINav.cpp
     MainWindowUIWorkspace.cpp
     MainWindowMenus.cpp
-    MainWindowProject.cpp
-    MainWindowProjectSet.cpp
-    MainWindowProjectHandlers.cpp
-    MainWindowProjectMisc.cpp
-    MainWindowRecovery.cpp
+    ProjectController.cpp
+    ProjectControllerSet.cpp
+    ProjectControllerHandlers.cpp
+    ProjectControllerMisc.cpp
+    ProjectControllerRecovery.cpp
     ShortcutManager.cpp
     SplashScreen.cpp
     Theme.cpp
@@ -277,9 +277,9 @@ set_source_files_properties(
     MainWindowUIBuild.cpp
     MainWindowUINav.cpp
     MainWindowUIWorkspace.cpp
-    MainWindowProjectSet.cpp
-    MainWindowProjectHandlers.cpp
-    MainWindowProjectMisc.cpp
+    ProjectControllerSet.cpp
+    ProjectControllerHandlers.cpp
+    ProjectControllerMisc.cpp
     App.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
 )

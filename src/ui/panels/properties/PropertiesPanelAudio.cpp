@@ -27,7 +27,7 @@ namespace rt {
 
 void PropertiesPanel::applyAudioVolume()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Audio) return;
+    if (m_updating || !m_clip || !m_clip->isAudio()) return;
     auto* ac = static_cast<AudioClip*>(m_clip);
     float newVal = static_cast<float>(m_audioVolumeSpin->value());
     float oldVal = ac->volume().evaluate(0);
@@ -44,7 +44,7 @@ void PropertiesPanel::applyAudioVolume()
 
 void PropertiesPanel::applyAudioPan()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Audio) return;
+    if (m_updating || !m_clip || !m_clip->isAudio()) return;
     auto* ac = static_cast<AudioClip*>(m_clip);
     float newVal = static_cast<float>(m_panSpin->value());
     float oldVal = ac->pan().evaluate(0);
@@ -61,7 +61,7 @@ void PropertiesPanel::applyAudioPan()
 
 void PropertiesPanel::applyAudioFadeIn()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Audio) return;
+    if (m_updating || !m_clip || !m_clip->isAudio()) return;
     auto* ac = static_cast<AudioClip*>(m_clip);
     int64_t newVal = static_cast<int64_t>(m_fadeInSpin->value());
     int64_t oldVal = ac->fadeInDuration();
@@ -79,7 +79,7 @@ void PropertiesPanel::applyAudioFadeIn()
 
 void PropertiesPanel::applyAudioFadeOut()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Audio) return;
+    if (m_updating || !m_clip || !m_clip->isAudio()) return;
     auto* ac = static_cast<AudioClip*>(m_clip);
     int64_t newVal = static_cast<int64_t>(m_fadeOutSpin->value());
     int64_t oldVal = ac->fadeOutDuration();
