@@ -262,12 +262,28 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
                 treeItem->setText(2, "--:--:--:--");
             }
 
-            // Frame rate
-            if (info->fps > 0.0)
-                treeItem->setText(3, QString::number(info->fps, 'f',
-                    (info->fps == std::floor(info->fps)) ? 0 : 2));
-            else
+            // Frame rate.  VFR sources get a "VFR" badge + explanatory
+            // tooltip (Phase 4.3a): the reported rate is the AVERAGE and
+            // frame timing is uneven.  Playback/export are time-anchored
+            // (seek-by-PTS), so this does NOT desync audio, but frame
+            // stepping can look slightly irregular; Interpret Footage lets
+            // the user assume a constant rate.
+            if (info->fps > 0.0) {
+                QString fpsText = QString::number(info->fps, 'f',
+                    (info->fps == std::floor(info->fps)) ? 0 : 2);
+                if (info->isVFR) {
+                    fpsText += QStringLiteral(" VFR");
+                    treeItem->setToolTip(3, tr(
+                        "Variable frame rate detected — %1 fps is the average. "
+                        "Frame timing is uneven, so stepping may look slightly "
+                        "irregular (audio stays in sync). Use Interpret Footage "
+                        "to assume a constant rate.")
+                        .arg(QString::number(info->fps, 'f', 2)));
+                }
+                treeItem->setText(3, fpsText);
+            } else {
                 treeItem->setText(3, "--");
+            }
 
             // Resolution
             if (info->width > 0 && info->height > 0)

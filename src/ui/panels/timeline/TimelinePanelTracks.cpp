@@ -14,6 +14,7 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "timeline/RenderComplexity.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/TrackCommands.h"
@@ -732,11 +733,49 @@ void TimelinePanel::rebuildTracks()
     // header+row) so Hide/Show survives a rebuild and project reload.
     applyCaptionTrackVisibility();
 
+    // Refresh the Premiere-style render bar (§4.6 slice 1): a static
+    // estimate of which stretches are cheap (RealTime) vs heavy (NeedsRender,
+    // i.e. carry effects).  Recomputed on every rebuild — cheap, and rebuilds
+    // already happen on the edits that change complexity (clip add/move/cut,
+    // effect drop).
+    refreshRenderBar();
+
     // NOTE: no setUpdatesEnabled(true)/repaint() pair here — we never
     // disabled updates, and reused widgets already hold valid painted
     // content.  Newly-added widgets will get their first paintEvent on
     // the next event-loop iteration like any normal child widget.
     updateGeometry();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  refreshRenderBar — map the core render-complexity analysis onto the
+//  ruler's render-bar segments (§4.6 slice 1, read-out only).
+// ─────────────────────────────────────────────────────────────────────────
+void TimelinePanel::refreshRenderBar()
+{
+    if (!m_ruler) return;
+    if (!m_timeline) { m_ruler->clearRenderBar(); return; }
+
+    const auto analysis = analyzeRenderComplexity(*m_timeline);
+
+    std::vector<RenderBarSegment> bar;
+    bar.reserve(analysis.size());
+    for (const auto& seg : analysis) {
+        // Gaps draw nothing; only the cost-bearing runs get a bar.  RealTime
+        // is the translucent green, NeedsRender the red "pre-render me".
+        // (Mixed/Cached are reserved for slice 2's segment-render cache.)
+        if (seg.complexity == RenderComplexity::Empty) continue;
+        RenderBarSegment b;
+        b.startTick = seg.startTick;
+        b.endTick   = seg.endTick;
+        b.status    = (seg.complexity == RenderComplexity::NeedsRender)
+                          ? RenderBarStatus::NeedsRender
+                          : RenderBarStatus::RealTime;
+        bar.push_back(b);
+    }
+
+    m_ruler->setRenderBar(std::move(bar));
+    m_ruler->update();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1153,6 +1192,9 @@ void TimelinePanel::refreshTrackContents()
 
     // Repaint all track widgets so the new clip geometry is visible.
     onScrollChanged();
+
+    // Layout changed (split/delete/razor/paste) → render-bar segments shift.
+    refreshRenderBar();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

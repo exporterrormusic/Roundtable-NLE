@@ -71,15 +71,31 @@ PHASE 4 — Premiere-parity features (in recommended order)
      (GPU-eligibility is logged at open: 709-limited-SDR = debug "GPU-eligible",
      everything else = warn "CPU sws path").  Not yet runtime-verified.
 
-4.3  VFR DETECTED BUT IGNORED             ** top robustness gap **
-     VideoDecoderInit sets m_info.isVFR and NOTHING reads it; frame lookup is
-     constant-fps math.  On VFR sources (phone recordings, OBS / game
-     captures, most yt-dlp output) audio drifts against video over minutes and
-     frame-stepping stutters.
-       a) Honest minimum: a "VFR detected — may drift" badge in the project
-          bin + InterpretFootageDialog.
-       b) Real fix: build a PTS index at open and map tick->frame through it
-          inside core/decode/VideoFrameMapping (ONE call site).
+4.3  VFR DETECTED BUT IGNORED             ** a) DONE 2026-06-13; b) DEFERRED **
+     VideoDecoderInit sets m_info.isVFR (also copied to MediaSourceService::
+     isVariableFrameRate) and it was read NOWHERE; frame lookup is constant-fps
+     math (VideoFrameMapping::mapTickToSourceFrame).
+       a) DONE — "VFR" badge + explanatory tooltip in the project bin Frame
+          Rate column (ProjectBinSync.cpp) and an amber warning in
+          InterpretFootageDialog (new isVFR ctor arg, wired from
+          info->isVFR in ProjectBinUI).
+       b) DEFERRED (intentionally, after code review).  CORRECTION to the
+          original premise: there is NO cumulative A/V drift in this codebase.
+          mapTickToSourceFrame's frame number is converted back to a TIME
+          (targetTime = frameNumber/fps) and BOTH the preview and scrub decode
+          paths seek by TIMESTAMP (decoder.seek(targetTime) then decode-forward
+          until pts>=target — MediaPoolPrefetchDecode.cpp:85, MediaPoolDecode.cpp
+          :167); video never uses index-based seekToFrame (that's audio-only).
+          targetTime is a linear fn of the timeline tick recomputed every frame,
+          and audio is time-based too, so both are anchored to source-TIME — no
+          drift accumulates.  What VFR actually causes here is bounded ~±half-
+          frame jitter in WHICH frame is picked (cache key/seek target is
+          quantised to the average-fps grid while real frames are uneven):
+          slightly irregular frame-stepping, not desync.  The PTS-index rewrite
+          touches the ONE unified tick->frame mapping (preview AND export) — the
+          single riskiest change in the plan — for an UNVERIFIED payoff.  Do it
+          only if a concrete repro on a real VFR clip shows the jitter is
+          objectionable; then tests-FIRST per the ground rules.
        c) Optional Premiere-style conform-to-CFR on import (core/convert
           infrastructure already exists).
 
@@ -91,7 +107,7 @@ PHASE 4 — Premiere-parity features (in recommended order)
      InterpretFootageDialog (or clip right-click -> Audio Stream).  Storage
      format bump for the choice.
 
-4.6  SEGMENT PREVIEW-RENDER + RENDER BAR  ** biggest playback-smoothness win **
+4.6  SEGMENT PREVIEW-RENDER + RENDER BAR  ** slice 1 DONE 2026-06-13 **
      No render-in-to-out / preview cache / background render.  The render-bar
      UI is fully painted but unwired (TimelineRuler::setRenderBar).  The
      DiskFrameCache persists DECODED source frames, not composited output.
@@ -100,6 +116,28 @@ PHASE 4 — Premiere-parity features (in recommended order)
      hashes), (b) renders segments in idle time through the existing
      compositor, (c) feeds the render bar, (d) lets export consume green
      segments.
+
+     PHASING (smallest-value-first):
+       SLICE 1 — bar read-out only.  DONE 2026-06-13.  Pure core analysis
+         core/timeline/RenderComplexity.{h,cpp} (analyzeRenderComplexity:
+         Timeline -> coalesced [start,end) segments of Empty/RealTime/
+         NeedsRender), unit-tested (tests/core/test_render_complexity.cpp, 8
+         tests).  TimelinePanel::refreshRenderBar() maps it onto
+         TimelineRuler::RenderBarSegment (Empty->no bar, RealTime->translucent
+         green, NeedsRender->red) and is called from rebuildTracks() +
+         refreshTrackContents().  v1 NeedsRender heuristic = "an active visual
+         clip carries active effects" ONLY — deliberately conservative so the
+         bar doesn't cry wolf.  NOT yet considered (need real frame-time
+         measurement = slice 2): transitions, layer count, decode cost.  No
+         cache, no background thread, no state hash yet.  Runtime-eyeball owed.
+       SLICE 2 — state-hash + background segment render + "Render In to Out"
+         (the real engine; gate tests-first, leans on compositor + cache).
+       SLICE 3 — export reuse of green FULL-RES segments (tier gate: preview
+         renders Half/Quarter, export wants Full).
+     HARD PARTS for slices 2-3: invalidation correctness (state hash must cover
+     EVERYTHING affecting a composited pixel — global/sequence settings, nested
+     seqs, speed, caption burn-in, upstream layers — or you show stale frames);
+     resolution tiers; GPU-queue contention vs prefetch/compositor; disk budget.
 
 4.7  PROXY WORKFLOW
      Resolution tiers downscale at decode time, but heavy codecs still pay

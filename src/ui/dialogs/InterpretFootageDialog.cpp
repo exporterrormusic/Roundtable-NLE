@@ -17,6 +17,7 @@ namespace rt {
 
 InterpretFootageDialog::InterpretFootageDialog(const FootageInterpretation& current,
                                                 double nativeFps,
+                                                bool isVFR,
                                                 QWidget* parent)
     : QDialog(parent)
     , m_nativeFps(nativeFps)
@@ -32,6 +33,20 @@ InterpretFootageDialog::InterpretFootageDialog(const FootageInterpretation& curr
 
     auto* nativeLabel = new QLabel(tr("Native: %1 fps").arg(nativeFps, 0, 'f', 3), this);
     fpsForm->addRow(nativeLabel);
+
+    // Phase 4.3a: warn on variable-frame-rate sources.  The native rate
+    // above is the AVERAGE; real frame timing is uneven.  Playback/export
+    // are time-anchored so audio stays in sync, but assuming a constant
+    // rate here makes frame timing uniform.
+    if (isVFR) {
+        auto* vfrLabel = new QLabel(
+            tr("⚠ Variable frame rate detected — the native rate is the "
+               "average. Assume a constant rate below to conform timing."),
+            this);
+        vfrLabel->setWordWrap(true);
+        vfrLabel->setStyleSheet(QStringLiteral("color: #d8a000;"));
+        fpsForm->addRow(vfrLabel);
+    }
 
     m_fpsSpin = new QDoubleSpinBox(this);
     m_fpsSpin->setRange(0.0, 240.0);

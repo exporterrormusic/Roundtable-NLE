@@ -169,6 +169,11 @@ public:
     /// deletes, cuts, pastes within existing tracks, razor).
     void refreshTrackContents();
 
+    /// Recompute the Premiere-style render bar from the timeline's static
+    /// compositing complexity (§4.6 slice 1) and push it to the ruler.
+    /// Cheap; called from the track rebuild/refresh paths.
+    void refreshRenderBar();
+
     /// Drop one clip's cached waveform peaks so loadWaveforms() re-decodes the
     /// (media path, audio-stream ordinal) it now points at. Call when a clip's
     /// chosen audio stream changes so the drawn waveform follows the audible

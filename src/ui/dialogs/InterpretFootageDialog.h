@@ -21,6 +21,7 @@ class InterpretFootageDialog : public QDialog
 public:
     explicit InterpretFootageDialog(const FootageInterpretation& current,
                                     double nativeFps,
+                                    bool isVFR = false,
                                     QWidget* parent = nullptr);
 
     [[nodiscard]] FootageInterpretation result() const;

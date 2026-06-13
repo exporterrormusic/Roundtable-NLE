@@ -23,6 +23,7 @@ add_library(roundtable_core STATIC
     # Timeline
     timeline/Timeline.cpp
     timeline/Track.cpp
+    timeline/RenderComplexity.cpp
     timeline/Clip.cpp
     timeline/SpineClip.cpp
     timeline/VideoClip.cpp

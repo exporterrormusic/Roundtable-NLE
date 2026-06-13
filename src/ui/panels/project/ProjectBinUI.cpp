@@ -671,15 +671,16 @@ void ProjectBin::setupUI()
                         auto* db = m_project->assets();
                         std::filesystem::path fp(selected->data(0, Qt::UserRole).toString().toStdString());
                         double nativeFps = 30.0;
+                        bool isVFR = false;
                         uint64_t mediaHandle = selected->data(0, Qt::UserRole + 1).toULongLong();
                         if (m_pool && mediaHandle) {
                             auto* info = m_pool->getInfo(mediaHandle);
-                            if (info) nativeFps = info->fps;
+                            if (info) { nativeFps = info->fps; isVFR = info->isVFR; }
                         }
                         AssetEntry* entry = db->findByPath(fp);
                         FootageInterpretation current;
                         if (entry) current = entry->interpretation;
-                        InterpretFootageDialog dlg(current, nativeFps, this);
+                        InterpretFootageDialog dlg(current, nativeFps, isVFR, this);
                         if (dlg.exec() == QDialog::Accepted && entry) {
                             entry->interpretation = dlg.result();
                         }
