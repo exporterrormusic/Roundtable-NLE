@@ -86,11 +86,11 @@ void DropController::wireNestSignals()
     // =====================================================================
     //  NEST SELECTED CLIPS -> CREATE NESTED SEQUENCE
     // =====================================================================
-    if (m_ws->m_timelinePanel && m_ws->m_timeline) {
-        connect(m_ws->m_timelinePanel, &TimelinePanel::nestSelectedClips,
+    if (m_ws->timelinePanel() && m_ws->timeline()) {
+        connect(m_ws->timelinePanel(), &TimelinePanel::nestSelectedClips,
                 this, [this](const std::vector<ClipRef>& clips, const QString& nestName) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_ws->m_timeline || !m_ws->m_project || !m_ws->m_commandStack || clips.empty()) return;
+            if (m_ws->isDestroying()) return;
+            if (!m_ws->timeline() || !m_ws->project() || !m_ws->commandStack() || clips.empty()) return;
 
             // Find the time range spanned by selected clips
             int64_t minTick = std::numeric_limits<int64_t>::max();
@@ -98,7 +98,7 @@ void DropController::wireNestSignals()
             size_t targetTrackIdx = SIZE_MAX;
 
             for (const auto& cr : clips) {
-                auto* trk = m_ws->m_timeline->track(cr.trackIndex);
+                auto* trk = m_ws->timeline()->track(cr.trackIndex);
                 if (!trk) continue;
                 size_t ci = trk->findClipIndexById(cr.clipId);
                 if (ci >= trk->clipCount()) continue;
@@ -122,7 +122,7 @@ void DropController::wireNestSignals()
             };
             auto savedClips = std::make_shared<std::vector<SavedClip>>();
             for (const auto& cr : clips) {
-                auto* trk = m_ws->m_timeline->track(cr.trackIndex);
+                auto* trk = m_ws->timeline()->track(cr.trackIndex);
                 if (!trk) continue;
                 size_t ci = trk->findClipIndexById(cr.clipId);
                 if (ci >= trk->clipCount()) continue;
@@ -144,35 +144,35 @@ void DropController::wireNestSignals()
             auto name       = nestName.toStdString();
 
             auto refreshAfter = [this]() {
-                if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-                m_ws->m_selection.clip = nullptr;
-                m_ws->m_selection.graphicLayerIdx = -1;
-                m_ws->m_timelinePanel->selection().clear();
-                if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->clearClip();
-                if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->clearClip();
-                if (m_ws->m_ColorGradingPanel) m_ws->m_ColorGradingPanel->clearClip();
-                if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->clearClip();
-                if (m_ws->m_programMonitor && m_ws->m_programMonitor->viewport())
-                    m_ws->m_programMonitor->viewport()->clearTransformOverlay();
-                if (m_ws->m_programMonitor && m_ws->m_programMonitor->transformOverlay())
-                    m_ws->m_programMonitor->transformOverlay()->clearTransformOverlay();
-                m_ws->m_timelinePanel->refreshTrackContents();
-                emit m_ws->m_timelinePanel->selectionChanged();
+                if (m_ws->isDestroying()) return;
+                m_ws->selection().clip = nullptr;
+                m_ws->selection().graphicLayerIdx = -1;
+                m_ws->timelinePanel()->selection().clear();
+                if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->clearClip();
+                if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->clearClip();
+                if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->clearClip();
+                if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->clearClip();
+                if (m_ws->programMonitor() && m_ws->programMonitor()->viewport())
+                    m_ws->programMonitor()->viewport()->clearTransformOverlay();
+                if (m_ws->programMonitor() && m_ws->programMonitor()->transformOverlay())
+                    m_ws->programMonitor()->transformOverlay()->clearTransformOverlay();
+                m_ws->timelinePanel()->refreshTrackContents();
+                emit m_ws->timelinePanel()->selectionChanged();
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
-                if (m_ws->m_projectBin) {
-                    m_ws->m_projectBin->refreshSequences();
-                    emit m_ws->m_projectBin->sequencesChanged();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+                if (m_ws->projectBin()) {
+                    m_ws->projectBin()->refreshSequences();
+                    emit m_ws->projectBin()->sequencesChanged();
                 }
             };
 
-            m_ws->m_commandStack->execute(std::make_unique<LambdaCommand>(
+            m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                 "Nest Selected Clips",
                 /* execute / redo */
                 [this, savedClips, seqIdx, seqClipId, targetTk, savedMin, savedMax, name, refreshAfter]() {
                     // Create a new sequence for the nested content
-                    *seqIdx = m_ws->m_project->sequenceCount();
-                    auto* nestedTimeline = m_ws->m_project->addSequence(name);
+                    *seqIdx = m_ws->project()->sequenceCount();
+                    auto* nestedTimeline = m_ws->project()->addSequence(name);
                     if (!nestedTimeline) return;
 
                     // Strip the default V1+A1 tracks
@@ -187,14 +187,14 @@ void DropController::wireNestSignals()
                     // Mirror tracks: video first, then audio
                     std::map<size_t, size_t> trackMap;
                     for (size_t si : usedTrackIndices) {
-                        auto* srcTrack = m_ws->m_timeline->track(si);
+                        auto* srcTrack = m_ws->timeline()->track(si);
                         if (!srcTrack || srcTrack->type() != TrackType::Video) continue;
                         size_t ni = nestedTimeline->trackCount();
                         nestedTimeline->addVideoTrack(srcTrack->name());
                         trackMap[si] = ni;
                     }
                     for (size_t si : usedTrackIndices) {
-                        auto* srcTrack = m_ws->m_timeline->track(si);
+                        auto* srcTrack = m_ws->timeline()->track(si);
                         if (!srcTrack || srcTrack->type() != TrackType::Audio) continue;
                         size_t ni = nestedTimeline->trackCount();
                         nestedTimeline->addAudioTrack(srcTrack->name());
@@ -219,7 +219,7 @@ void DropController::wireNestSignals()
                     // On redo after undo, undo restored clips with new IDs, so
                     // we use restoredId (which undo captured).
                     for (auto& sc : *savedClips) {
-                        auto* trk = m_ws->m_timeline->track(sc.trackIndex);
+                        auto* trk = m_ws->timeline()->track(sc.trackIndex);
                         if (!trk) continue;
                         uint64_t removeId = (sc.restoredId != 0) ? sc.restoredId : sc.clipId;
                         trk->removeClipById(removeId);
@@ -227,7 +227,7 @@ void DropController::wireNestSignals()
                     }
 
                     // Insert a SequenceClip in their place
-                    auto* targetTrack = m_ws->m_timeline->track(*targetTk);
+                    auto* targetTrack = m_ws->timeline()->track(*targetTk);
                     if (targetTrack && targetTrack->type() == TrackType::Video) {
                         auto seqClip = std::make_unique<SequenceClip>();
                         seqClip->setSequenceIndex(*seqIdx);
@@ -244,8 +244,8 @@ void DropController::wireNestSignals()
                 /* undo */
                 [this, savedClips, seqIdx, seqClipId, targetTk, refreshAfter]() {
                     // Remove the SequenceClip from the target track
-                    if (*targetTk < m_ws->m_timeline->trackCount()) {
-                        auto* trk = m_ws->m_timeline->track(*targetTk);
+                    if (*targetTk < m_ws->timeline()->trackCount()) {
+                        auto* trk = m_ws->timeline()->track(*targetTk);
                         if (trk) trk->removeClipById(*seqClipId);
                     }
 
@@ -253,7 +253,7 @@ void DropController::wireNestSignals()
                     // fresh IDs, we capture the new ID on each SavedClip so
                     // that redo can find and remove them again.
                     for (auto& sc : *savedClips) {
-                        auto* trk = m_ws->m_timeline->track(sc.trackIndex);
+                        auto* trk = m_ws->timeline()->track(sc.trackIndex);
                         if (!trk) continue;
                         auto restored = sc.clonedClip->clone();
                         sc.restoredId = restored->id();
@@ -261,8 +261,8 @@ void DropController::wireNestSignals()
                     }
 
                     // Remove the created nested sequence
-                    if (*seqIdx < m_ws->m_project->sequenceCount())
-                        m_ws->m_project->extractSequence(*seqIdx);
+                    if (*seqIdx < m_ws->project()->sequenceCount())
+                        m_ws->project()->extractSequence(*seqIdx);
 
                     refreshAfter();
                 }));
@@ -272,20 +272,20 @@ void DropController::wireNestSignals()
         });
 
         // -- Sequence dropped from project bin or Source Monitor --------
-        connect(m_ws->m_timelinePanel, &TimelinePanel::sequenceDropped,
+        connect(m_ws->timelinePanel(), &TimelinePanel::sequenceDropped,
                 this, [this](size_t sequenceIndex, int64_t atTick, size_t trackIndex,
                              int64_t sourceIn, int64_t sourceOut, int dragMode) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (m_ws->isDestroying()) return;
             const bool dropVideo = (dragMode != TimelinePanel::DragAudioOnly);
             const bool dropAudio = (dragMode != TimelinePanel::DragVideoOnly);
-            if (!m_ws->m_timeline || !m_ws->m_project || !m_ws->m_commandStack) return;
-            if (sequenceIndex >= m_ws->m_project->sequenceCount()) return;
+            if (!m_ws->timeline() || !m_ws->project() || !m_ws->commandStack()) return;
+            if (sequenceIndex >= m_ws->project()->sequenceCount()) return;
 
-            auto* nestedTimeline = m_ws->m_project->sequence(sequenceIndex);
+            auto* nestedTimeline = m_ws->project()->sequence(sequenceIndex);
             if (!nestedTimeline) return;
 
             // Prevent dropping a sequence into itself (infinite recursion)
-            if (nestedTimeline == m_ws->m_timeline) {
+            if (nestedTimeline == m_ws->timeline()) {
                 spdlog::warn("Cannot nest a sequence into itself");
                 return;
             }
@@ -308,12 +308,12 @@ void DropController::wireNestSignals()
             const bool forceGhostVideoTrack = (trackIndex == (SIZE_MAX - 1));
             if (forceGhostVideoTrack)
                 needsNewTrack = true;
-            if (trackIndex < m_ws->m_timeline->trackCount() &&
-                m_ws->m_timeline->track(trackIndex)->type() == TrackType::Video)
+            if (trackIndex < m_ws->timeline()->trackCount() &&
+                m_ws->timeline()->track(trackIndex)->type() == TrackType::Video)
                 targetTrackIdx = trackIndex;
             if (targetTrackIdx == SIZE_MAX) {
-                for (size_t i = m_ws->m_timeline->trackCount(); i > 0; --i) {
-                    if (m_ws->m_timeline->track(i - 1)->type() == TrackType::Video) {
+                for (size_t i = m_ws->timeline()->trackCount(); i > 0; --i) {
+                    if (m_ws->timeline()->track(i - 1)->type() == TrackType::Video) {
                         targetTrackIdx = i - 1;
                         break;
                     }
@@ -347,9 +347,9 @@ void DropController::wireNestSignals()
             // audio track). Captured by Track* so it survives any video
             // track insertion that shifts indices before audio placement.
             Track* preferredAudioTrack = nullptr;
-            if (trackIndex < m_ws->m_timeline->trackCount() &&
-                m_ws->m_timeline->track(trackIndex)->type() == TrackType::Audio)
-                preferredAudioTrack = m_ws->m_timeline->track(trackIndex);
+            if (trackIndex < m_ws->timeline()->trackCount() &&
+                m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio)
+                preferredAudioTrack = m_ws->timeline()->track(trackIndex);
 
             auto audioClipId      = std::make_shared<uint64_t>(0);
             auto audioTkIdx       = std::make_shared<size_t>(SIZE_MAX);
@@ -357,19 +357,19 @@ void DropController::wireNestSignals()
             auto audioOverlapCmd  = std::make_shared<std::unique_ptr<Command>>(nullptr);
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
-                if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+                if (m_ws->isDestroying()) return;
                 if (trackStructureChanged)
-                    m_ws->m_timelinePanel->rebuildTracks();
+                    m_ws->timelinePanel()->rebuildTracks();
                 else
-                    m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->timelinePanel()->refreshTrackContents();
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 // Audio topology changed — reload sources so the next play
                 // pulls audio from the newly-nested sequence.
                 m_ws->invalidateAudioSources();
             };
 
-            m_ws->m_commandStack->execute(std::make_unique<LambdaCommand>(
+            m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                 "Add Sequence to Timeline",
                 /* execute / redo */
                 [this, sequenceIndex, atTick, sourceIn, sourceOut, dur,
@@ -384,18 +384,18 @@ void DropController::wireNestSignals()
                             Track* t = nullptr;
                             if (forceGhostVideoTrack) {
                                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
-                                t = m_ws->m_timeline->insertTrack(0, std::move(newTrack));
+                                t = m_ws->timeline()->insertTrack(0, std::move(newTrack));
                             } else {
-                                t = m_ws->m_timeline->addVideoTrack("V1");
+                                t = m_ws->timeline()->addVideoTrack("V1");
                             }
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i) == t) {
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i) == t) {
                                     *tkIdx = i; break;
                                 }
                             }
                             *createdTk = true;
                         }
-                        auto* track = m_ws->m_timeline->track(*tkIdx);
+                        auto* track = m_ws->timeline()->track(*tkIdx);
                         if (track) {
                             auto seqClip = std::make_unique<SequenceClip>();
                             seqClip->setSequenceIndex(sequenceIndex);
@@ -425,7 +425,7 @@ void DropController::wireNestSignals()
                             track->addClip(std::move(seqClip));
 
                             *overlapCmd2 = EditOperations::resolveOverlaps(
-                                *m_ws->m_timeline, *tkIdx, *clipId);
+                                *m_ws->timeline(), *tkIdx, *clipId);
                             if (*overlapCmd2) (*overlapCmd2)->execute();
                         }
                     }
@@ -443,32 +443,32 @@ void DropController::wireNestSignals()
                         // 1) Drop target audio track (resolved by identity so
                         //    a just-inserted video track doesn't misalign it).
                         if (preferredAudioTrack) {
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i) == preferredAudioTrack) {
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i) == preferredAudioTrack) {
                                     aIdx = i; break;
                                 }
                             }
                         }
                         // 2) Otherwise the first existing audio track.
                         if (aIdx == SIZE_MAX) {
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i)->type() == TrackType::Audio) {
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i)->type() == TrackType::Audio) {
                                     aIdx = i; break;
                                 }
                             }
                         }
                         // 3) None exist — create one.
                         if (aIdx == SIZE_MAX) {
-                            Track* nt = m_ws->m_timeline->addAudioTrack("A1");
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i) == nt) {
+                            Track* nt = m_ws->timeline()->addAudioTrack("A1");
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i) == nt) {
                                     aIdx = i; break;
                                 }
                             }
                             *createdAudioTk = true;
                         }
                         if (aIdx != SIZE_MAX) {
-                            auto* aTrack = m_ws->m_timeline->track(aIdx);
+                            auto* aTrack = m_ws->timeline()->track(aIdx);
                             if (aTrack) {
                                 auto aClip = std::make_unique<SequenceClip>();
                                 aClip->setSequenceIndex(sequenceIndex);
@@ -493,7 +493,7 @@ void DropController::wireNestSignals()
                                 *audioTkIdx = aIdx;
 
                                 *audioOverlapCmd = EditOperations::resolveOverlaps(
-                                    *m_ws->m_timeline, aIdx, *audioClipId);
+                                    *m_ws->timeline(), aIdx, *audioClipId);
                                 if (*audioOverlapCmd) (*audioOverlapCmd)->execute();
                             }
                         }
@@ -508,25 +508,25 @@ void DropController::wireNestSignals()
                     const bool trackStructureChanged = *createdTk || *createdAudioTk;
 
                     if (*audioOverlapCmd) (*audioOverlapCmd)->undo();
-                    if (*audioTkIdx < m_ws->m_timeline->trackCount() && *audioClipId != 0) {
-                        auto* aTrack = m_ws->m_timeline->track(*audioTkIdx);
+                    if (*audioTkIdx < m_ws->timeline()->trackCount() && *audioClipId != 0) {
+                        auto* aTrack = m_ws->timeline()->track(*audioTkIdx);
                         if (aTrack) aTrack->removeClipById(*audioClipId);
                     }
 
                     if (*overlapCmd2) (*overlapCmd2)->undo();
 
-                    if (*tkIdx < m_ws->m_timeline->trackCount()) {
-                        auto* track = m_ws->m_timeline->track(*tkIdx);
+                    if (*tkIdx < m_ws->timeline()->trackCount()) {
+                        auto* track = m_ws->timeline()->track(*tkIdx);
                         if (track) track->removeClipById(*clipId);
                     }
                     if (*createdTk) {
-                        m_ws->m_timeline->removeTrack(*tkIdx);
+                        m_ws->timeline()->removeTrack(*tkIdx);
                         *tkIdx = SIZE_MAX;
                         *createdTk = false;
                     }
                     if (*createdAudioTk && *audioTkIdx != SIZE_MAX &&
-                        *audioTkIdx < m_ws->m_timeline->trackCount()) {
-                        m_ws->m_timeline->removeTrack(*audioTkIdx);
+                        *audioTkIdx < m_ws->timeline()->trackCount()) {
+                        m_ws->timeline()->removeTrack(*audioTkIdx);
                         *audioTkIdx = SIZE_MAX;
                         *createdAudioTk = false;
                     }
@@ -538,20 +538,20 @@ void DropController::wireNestSignals()
         });
 
         // -- Open nested sequence (from context menu) --------------------
-        connect(m_ws->m_timelinePanel, &TimelinePanel::openNestedSequence,
+        connect(m_ws->timelinePanel(), &TimelinePanel::openNestedSequence,
                 this, [this](size_t sequenceIndex) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_ws->m_project || sequenceIndex >= m_ws->m_project->sequenceCount()) return;
+            if (m_ws->isDestroying()) return;
+            if (!m_ws->project() || sequenceIndex >= m_ws->project()->sequenceCount()) return;
             auto* mw = qobject_cast<MainWindow*>(m_ws->window());
             if (mw) mw->switchSequence(sequenceIndex);
         });
 
         // -- Reveal in Project Bin (from clip context menu) --------------
-        connect(m_ws->m_timelinePanel, &TimelinePanel::revealInProjectBin,
+        connect(m_ws->timelinePanel(), &TimelinePanel::revealInProjectBin,
                 this, [this](const QString& filePath) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (m_ws->m_projectBin) {
-                m_ws->m_projectBin->revealByPath(filePath);
+            if (m_ws->isDestroying()) return;
+            if (m_ws->projectBin()) {
+                m_ws->projectBin()->revealByPath(filePath);
                 // Raise the Project Bin dock so the user sees the selection
                 if (auto* dock = m_ws->dockForPanel(QStringLiteral("Project")))  {
                     dock->setVisible(true);

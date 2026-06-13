@@ -88,8 +88,8 @@ void OverlayController::wireTransformOverlaySignals()
 {
     // -- GPU TransformOverlayWidget: route every drag/click signal to the
     //    shared onOverlay* handlers (also used by the software Viewport) --
-    if (m_ws->m_programMonitor && m_ws->m_programMonitor->transformOverlay()) {
-        auto* ov = m_ws->m_programMonitor->transformOverlay();
+    if (m_ws->programMonitor() && m_ws->programMonitor()->transformOverlay()) {
+        auto* ov = m_ws->programMonitor()->transformOverlay();
         connect(ov, &TransformOverlayWidget::transformPositionChanged,
                 this, &OverlayController::onOverlayPositionChanged);
         connect(ov, &TransformOverlayWidget::transformScaleChanged,
@@ -110,15 +110,15 @@ void OverlayController::wireTransformOverlaySignals()
         // -- Mask / motion-path live updates: refresh composite during drag --
         connect(ov, &TransformOverlayWidget::maskLiveUpdate,
                 this, [this]() {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (m_ws->isDestroying()) return;
             m_ws->invalidateCompositeCache();
-            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
         });
         connect(ov, &TransformOverlayWidget::motionPathLiveUpdate,
                 this, [this]() {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (m_ws->isDestroying()) return;
             m_ws->invalidateCompositeCache();
-            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
         });
     }
 }
@@ -129,15 +129,15 @@ void OverlayController::wireTransformOverlaySignals()
 
 void OverlayController::onOverlayPositionChanged(float posX, float posY)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip) return;
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip) return;
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : 0;
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-            auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+            auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
 
             // Group-move bootstrap: on the FIRST tick of a body drag
             // with multi-selection active, snapshot every selected
@@ -145,14 +145,14 @@ void OverlayController::onOverlayPositionChanged(float posX, float posY)
             // start position is the reference; each subsequent tick
             // applies (posX - focusStart) as Δ to siblings, so they
             // travel in lockstep without accumulating drift.
-            if (!m_groupMoveActive && m_ws->m_selection.graphicLayerIdxs.size() > 1) {
+            if (!m_groupMoveActive && m_ws->selection().graphicLayerIdxs.size() > 1) {
                 m_groupMoveActive = true;
                 m_groupMoveFocusStartX = layer->transform().posX.evaluate(relTick);
                 m_groupMoveFocusStartY = layer->transform().posY.evaluate(relTick);
                 m_groupMoveStart.clear();
-                m_groupMoveStart.reserve(m_ws->m_selection.graphicLayerIdxs.size());
-                for (int idx : m_ws->m_selection.graphicLayerIdxs) {
-                    if (idx == m_ws->m_selection.graphicLayerIdx) continue;
+                m_groupMoveStart.reserve(m_ws->selection().graphicLayerIdxs.size());
+                for (int idx : m_ws->selection().graphicLayerIdxs) {
+                    if (idx == m_ws->selection().graphicLayerIdx) continue;
                     if (idx < 0 || idx >= static_cast<int>(gc->layerCount())) continue;
                     auto* el = gc->layer(static_cast<size_t>(idx));
                     m_groupMoveStart.push_back({
@@ -178,30 +178,30 @@ void OverlayController::onOverlayPositionChanged(float posX, float posY)
             }
         }
     } else {
-        m_ws->m_selection.clip->positionX().writeValue(relTick, posX);
-        m_ws->m_selection.clip->positionY().writeValue(relTick, posY);
+        m_ws->selection().clip->positionX().writeValue(relTick, posX);
+        m_ws->selection().clip->positionY().writeValue(relTick, posY);
     }
-    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->syncValuesFromClip();
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->syncValuesFromClip();
     // For text/shape layers the modified transform lives on the
     // layer, not the clip — refresh the Essential Graphics panel
     // so its posX/posY/scale/rotation spinboxes reflect the drag.
     // No-op when no graphic layer is selected (early return inside).
-    if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 }
 
 void OverlayController::onOverlayScaleChanged(float scX, float scY)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip) return;
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip) return;
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : 0;
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-            auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+            auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
             if (!m_scaleDragActive) {
                 m_scaleDragActive = true;
                 m_scaleXWasStaticAtDragStart = layer->transform().scaleX.isStatic();
@@ -220,75 +220,75 @@ void OverlayController::onOverlayScaleChanged(float scX, float scY)
     } else {
         if (!m_scaleDragActive) {
             m_scaleDragActive = true;
-            m_scaleXWasStaticAtDragStart = m_ws->m_selection.clip->scaleX().isStatic();
-            m_scaleYWasStaticAtDragStart = m_ws->m_selection.clip->scaleY().isStatic();
+            m_scaleXWasStaticAtDragStart = m_ws->selection().clip->scaleX().isStatic();
+            m_scaleYWasStaticAtDragStart = m_ws->selection().clip->scaleY().isStatic();
             // Capture the TRUE signed scale (incl. flip) before the
             // first drag write, so the undo command restores the
             // flipped value rather than the overlay's clamped/stale
             // baseline (which would silently revert a flip).
-            m_scaleXAtDragStart = m_ws->m_selection.clip->scaleX().evaluate(relTick);
-            m_scaleYAtDragStart = m_ws->m_selection.clip->scaleY().evaluate(relTick);
+            m_scaleXAtDragStart = m_ws->selection().clip->scaleX().evaluate(relTick);
+            m_scaleYAtDragStart = m_ws->selection().clip->scaleY().evaluate(relTick);
         }
         // Preserve Flip H/V (stored as the SIGN of scaleX/scaleY): the
         // viewport reports a positive magnitude from the resize handle,
         // so re-apply the clip's current sign — otherwise resizing a
         // flipped clip silently un-flips it.
-        if (m_ws->m_selection.clip->scaleX().evaluate(relTick) < 0.0f)
+        if (m_ws->selection().clip->scaleX().evaluate(relTick) < 0.0f)
             scX = (scX < 0.0f ? scX : -scX);
-        if (m_ws->m_selection.clip->scaleY().evaluate(relTick) < 0.0f)
+        if (m_ws->selection().clip->scaleY().evaluate(relTick) < 0.0f)
             scY = (scY < 0.0f ? scY : -scY);
-        if (!m_ws->m_selection.clip->scaleX().isStatic() || !m_ws->m_selection.clip->scaleY().isStatic()) {
-            m_ws->m_selection.clip->scaleX().addKeyframe(relTick, scX);
-            m_ws->m_selection.clip->scaleY().addKeyframe(relTick, scY);
+        if (!m_ws->selection().clip->scaleX().isStatic() || !m_ws->selection().clip->scaleY().isStatic()) {
+            m_ws->selection().clip->scaleX().addKeyframe(relTick, scX);
+            m_ws->selection().clip->scaleY().addKeyframe(relTick, scY);
         } else {
-            m_ws->m_selection.clip->scaleX().setDefaultValue(scX);
-            m_ws->m_selection.clip->scaleY().setDefaultValue(scY);
+            m_ws->selection().clip->scaleX().setDefaultValue(scX);
+            m_ws->selection().clip->scaleY().setDefaultValue(scY);
         }
     }
-    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->syncValuesFromClip();
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->syncValuesFromClip();
     // See onOverlayPositionChanged — refresh the Essential Graphics panel.
-    if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 }
 
 void OverlayController::onOverlayRotationChanged(float rot)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip) return;
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip) return;
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : 0;
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-            auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+            auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
             layer->transform().rotation.writeValue(relTick, rot);
         }
     } else {
-        m_ws->m_selection.clip->rotation().writeValue(relTick, rot);
+        m_ws->selection().clip->rotation().writeValue(relTick, rot);
     }
-    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->syncValuesFromClip();
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->syncValuesFromClip();
     // See onOverlayPositionChanged — refresh the Essential Graphics panel.
-    if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 }
 
 // Anchor handle drag → write to the selected graphic layer's
 // anchorX/anchorY tracks, or the clip-level anchor otherwise.
 void OverlayController::onOverlayAnchorChanged(float ax, float ay)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip) return;
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip) return;
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : 0;
     bool wroteLayer = false;
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-            auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+            auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
             layer->transform().anchorX.writeValue(relTick, ax);
             layer->transform().anchorY.writeValue(relTick, ay);
             wroteLayer = true;
@@ -296,13 +296,13 @@ void OverlayController::onOverlayAnchorChanged(float ax, float ay)
     }
     if (!wroteLayer) {
         // Clip-level anchor (video / image / spine / etc.).
-        m_ws->m_selection.clip->anchorX().writeValue(relTick, ax);
-        m_ws->m_selection.clip->anchorY().writeValue(relTick, ay);
+        m_ws->selection().clip->anchorX().writeValue(relTick, ax);
+        m_ws->selection().clip->anchorY().writeValue(relTick, ay);
     }
-    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->syncValuesFromClip();
-    if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->syncValuesFromClip();
+    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 }
 
 // Anchor drag finished → push an undo command. The per-move signal
@@ -312,21 +312,21 @@ void OverlayController::onOverlayAnchorChanged(float ax, float ay)
 void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
                                                     float newX, float newY)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip || !m_ws->m_commandStack) return;
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip || !m_ws->commandStack()) return;
     if (std::abs(oldX - newX) < 1e-4f && std::abs(oldY - newY) < 1e-4f) return;
-    Clip* clip = m_ws->m_selection.clip;
+    Clip* clip = m_ws->selection().clip;
     // For graphic layers, undo writes to the LAYER's anchor; for
     // everything else, to the clip's anchor. Resolve via clipType
     // and the current layer-idx, captured by value so a later
     // selection change doesn't redirect the undo.
     const bool toLayer = clip->clipType() == ClipType::Graphic
-                      && m_ws->m_selection.graphicLayerIdx >= 0
-                      && m_ws->m_selection.graphicLayerIdx < static_cast<int>(
+                      && m_ws->selection().graphicLayerIdx >= 0
+                      && m_ws->selection().graphicLayerIdx < static_cast<int>(
                              static_cast<GraphicClip*>(clip)->layerCount());
-    const int  layerIdx = m_ws->m_selection.graphicLayerIdx;
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - clip->timelineIn())
+    const int  layerIdx = m_ws->selection().graphicLayerIdx;
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - clip->timelineIn())
         : 0;
     auto apply = [clip, toLayer, layerIdx, relTick](float ax, float ay) {
         if (toLayer) {
@@ -342,23 +342,23 @@ void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
         }
     };
     auto* panel = this;
-    m_ws->m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+    m_ws->commandStack()->pushWithoutExecute(std::make_unique<LambdaCommand>(
         "Anchor Point",
         [apply, newX, newY, panel]() {
             apply(newX, newY);
-            if (panel->m_ws->m_effectControlsPanel) panel->m_ws->m_effectControlsPanel->syncValuesFromClip();
-            if (panel->m_ws->m_GraphicsEditorPanel) panel->m_ws->m_GraphicsEditorPanel->refresh();
+            if (panel->m_ws->effectControlsPanel()) panel->m_ws->effectControlsPanel()->syncValuesFromClip();
+            if (panel->m_ws->graphicsEditorPanel()) panel->m_ws->graphicsEditorPanel()->refresh();
             panel->m_ws->invalidateCompositeCache();
             panel->scheduleOverlayRefresh();
-            if (panel->m_ws->m_programMonitor) panel->m_ws->m_programMonitor->requestRefresh();
+            if (panel->m_ws->programMonitor()) panel->m_ws->programMonitor()->requestRefresh();
         },
         [apply, oldX, oldY, panel]() {
             apply(oldX, oldY);
-            if (panel->m_ws->m_effectControlsPanel) panel->m_ws->m_effectControlsPanel->syncValuesFromClip();
-            if (panel->m_ws->m_GraphicsEditorPanel) panel->m_ws->m_GraphicsEditorPanel->refresh();
+            if (panel->m_ws->effectControlsPanel()) panel->m_ws->effectControlsPanel()->syncValuesFromClip();
+            if (panel->m_ws->graphicsEditorPanel()) panel->m_ws->graphicsEditorPanel()->refresh();
             panel->m_ws->invalidateCompositeCache();
             panel->scheduleOverlayRefresh();
-            if (panel->m_ws->m_programMonitor) panel->m_ws->m_programMonitor->requestRefresh();
+            if (panel->m_ws->programMonitor()) panel->m_ws->programMonitor()->requestRefresh();
         }));
 }
 
@@ -366,7 +366,7 @@ void OverlayController::onOverlayDragFinished(
     float oldPosX, float oldPosY, float oldScX, float oldScY, float oldRot,
     float newPosX, float newPosY, float newScX, float newScY, float newRot)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+    if (m_ws->isDestroying()) return;
     // Capture pre-drag static state before resetting
     bool sxWasStatic = m_scaleXWasStaticAtDragStart;
     bool syWasStatic = m_scaleYWasStaticAtDragStart;
@@ -383,15 +383,15 @@ void OverlayController::onOverlayDragFinished(
     m_groupMoveActive = false;
     m_groupMoveStart.clear();
     updateTransformOverlay();
-    if (m_ws->m_selection.clip) {
-        auto* track = m_ws->m_timeline ? m_ws->m_timeline->track(m_ws->m_selection.trackIdx) : nullptr;
-        if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->setClip(m_ws->m_selection.clip, track);
-        if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->setClip(m_ws->m_selection.clip, track);
-        if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+    if (m_ws->selection().clip) {
+        auto* track = m_ws->timeline() ? m_ws->timeline()->track(m_ws->selection().trackIdx) : nullptr;
+        if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(m_ws->selection().clip, track);
+        if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->setClip(m_ws->selection().clip, track);
+        if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
     }
-    if (m_ws->m_selection.clip && m_ws->m_commandStack) {
-        const int64_t relTick = m_ws->m_playbackController
-            ? std::max<int64_t>(0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    if (m_ws->selection().clip && m_ws->commandStack()) {
+        const int64_t relTick = m_ws->playbackController()
+            ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
             : 0;
         // Source scale old/new from the actual transform track (signed)
         // rather than the overlay-reported values. The overlay clamps
@@ -401,17 +401,17 @@ void OverlayController::onOverlayDragFinished(
         if (wasScaleDrag) {
             oldScX = m_scaleXAtDragStart;
             oldScY = m_scaleYAtDragStart;
-            if (m_ws->m_selection.clip->clipType() == ClipType::Graphic
-                && m_ws->m_selection.graphicLayerIdx >= 0) {
-                auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-                if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-                    auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+            if (m_ws->selection().clip->clipType() == ClipType::Graphic
+                && m_ws->selection().graphicLayerIdx >= 0) {
+                auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+                if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+                    auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
                     newScX = layer->transform().scaleX.evaluate(relTick);
                     newScY = layer->transform().scaleY.evaluate(relTick);
                 }
             } else {
-                newScX = m_ws->m_selection.clip->scaleX().evaluate(relTick);
-                newScY = m_ws->m_selection.clip->scaleY().evaluate(relTick);
+                newScX = m_ws->selection().clip->scaleX().evaluate(relTick);
+                newScY = m_ws->selection().clip->scaleY().evaluate(relTick);
             }
         }
         bool posChanged = (std::abs(oldPosX - newPosX) > 0.01f ||
@@ -432,9 +432,9 @@ void OverlayController::onOverlayDragFinished(
         };
 
         if (posChanged || scaleChanged || rotChanged) {
-            if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-                auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-                int layerIdx = m_ws->m_selection.graphicLayerIdx;
+            if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+                auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+                int layerIdx = m_ws->selection().graphicLayerIdx;
                 if (layerIdx < static_cast<int>(gc->layerCount())) {
                     auto* layer = gc->layer(static_cast<size_t>(layerIdx));
                     bool pxC = posChanged && kfCreated(layer->transform().posX, oldPosX);
@@ -572,13 +572,13 @@ void OverlayController::onOverlayDragFinished(
                             "Group Move");
                         compound->addCommand(std::move(cmd));
                         compound->addCommand(std::move(sibCmd));
-                        m_ws->m_commandStack->pushWithoutExecute(std::move(compound));
+                        m_ws->commandStack()->pushWithoutExecute(std::move(compound));
                     } else {
-                        m_ws->m_commandStack->pushWithoutExecute(std::move(cmd));
+                        m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
                     }
                 }
             } else {
-                Clip* clip = m_ws->m_selection.clip;
+                Clip* clip = m_ws->selection().clip;
                 bool pxC = posChanged && kfCreated(clip->positionX(), oldPosX);
                 bool pyC = posChanged && kfCreated(clip->positionY(), oldPosY);
                 bool sxC = scaleChanged && kfCreated(clip->scaleX(), oldScX);
@@ -633,7 +633,7 @@ void OverlayController::onOverlayDragFinished(
                             else clip->rotation().writeValue(relTick, oldRot);
                         }
                     });
-                m_ws->m_commandStack->pushWithoutExecute(std::move(cmd));
+                m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
             }
         }
     }
@@ -644,15 +644,15 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
                                                   const OpacityMask& oldMask,
                                                   const OpacityMask& newMask)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_selection.clip || !m_ws->m_commandStack) return;
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->selection().clip || !m_ws->commandStack()) return;
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
-    if (m_ws->m_effectControlsPanel) {
-        auto* track = m_ws->m_timeline ? m_ws->m_timeline->track(m_ws->m_selection.trackIdx) : nullptr;
-        m_ws->m_effectControlsPanel->setClip(m_ws->m_selection.clip, track);
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+    if (m_ws->effectControlsPanel()) {
+        auto* track = m_ws->timeline() ? m_ws->timeline()->track(m_ws->selection().trackIdx) : nullptr;
+        m_ws->effectControlsPanel()->setClip(m_ws->selection().clip, track);
     }
-    Clip* clip = m_ws->m_selection.clip;
+    Clip* clip = m_ws->selection().clip;
     int mi = maskIndex;
     auto cmd = std::make_unique<LambdaCommand>(
         "Move Mask",
@@ -664,7 +664,7 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
             if (mi >= 0 && static_cast<size_t>(mi) < clip->masks().size())
                 clip->masks()[static_cast<size_t>(mi)] = oldMask;
         });
-    m_ws->m_commandStack->pushWithoutExecute(std::move(cmd));
+    m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
 }
 
 // Click on empty area: layer selection (Selection tool) or text creation
@@ -672,16 +672,16 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
 void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
                                                   Qt::KeyboardModifiers mods)
 {
-    if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_ws->m_timelinePanel || !m_ws->m_timeline) return;
+    if (m_ws->isDestroying()) return;
+    if (!m_ws->timelinePanel() || !m_ws->timeline()) return;
     const bool addToSelection =
         (mods & (Qt::ShiftModifier | Qt::ControlModifier)) != 0;
 
     // -- Selection/Text tool: hit-test layers across all GraphicClips at playhead --
-    if (m_ws->m_timelinePanel->activeTool() == EditTool::Selection ||
-        m_ws->m_timelinePanel->activeTool() == EditTool::Text)
+    if (m_ws->timelinePanel()->activeTool() == EditTool::Selection ||
+        m_ws->timelinePanel()->activeTool() == EditTool::Text)
     {
-        if (!m_ws->m_GraphicsEditorPanel) goto skipHitTest;
+        if (!m_ws->graphicsEditorPanel()) goto skipHitTest;
 
         {
         // Layer posX/posY live in PROJECT-resolution space (what
@@ -695,17 +695,17 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         // Scale to project resolution to match text layout space.
         float hitX = frameX;
         float hitY = frameY;
-        if (m_ws->m_programMonitor) {
-            uint32_t cW = m_ws->m_programMonitor->compositeWidth();
-            uint32_t cH = m_ws->m_programMonitor->compositeHeight();
+        if (m_ws->programMonitor()) {
+            uint32_t cW = m_ws->programMonitor()->compositeWidth();
+            uint32_t cH = m_ws->programMonitor()->compositeHeight();
             if (cW > 0 && cH > 0) {
                 hitX = frameX * static_cast<float>(outW) / static_cast<float>(cW);
                 hitY = frameY * static_cast<float>(outH) / static_cast<float>(cH);
             }
         }
 
-        int64_t playheadTick = m_ws->m_playbackController
-            ? m_ws->m_playbackController->currentTick() : 0;
+        int64_t playheadTick = m_ws->playbackController()
+            ? m_ws->playbackController()->currentTick() : 0;
 
         // Lambda: hit-test all layers in a GraphicClip, returns layer index or -1
         // skipIdx: if >= 0, skip that layer (used for cycling)
@@ -793,8 +793,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         };
 
         // 1) First try the already-selected clip (lowest latency)
-        if (m_ws->m_selection.clip && m_ws->m_selection.clip->clipType() == ClipType::Graphic) {
-            auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
+        if (m_ws->selection().clip && m_ws->selection().clip->clipType() == ClipType::Graphic) {
+            auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
             int hitIdx = hitTestGraphicClip(gc);
             if (hitIdx >= 0) {
                 if (addToSelection) {
@@ -802,46 +802,46 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
                     // monitor: toggle its membership in the
                     // multi-selection so a subsequent body drag
                     // moves every selected layer in lockstep.
-                    m_ws->m_GraphicsEditorPanel->toggleLayerInSelection(hitIdx);
-                } else if (hitIdx != m_ws->m_selection.graphicLayerIdx) {
-                    m_ws->m_GraphicsEditorPanel->selectLayerByStackIndex(hitIdx);
+                    m_ws->graphicsEditorPanel()->toggleLayerInSelection(hitIdx);
+                } else if (hitIdx != m_ws->selection().graphicLayerIdx) {
+                    m_ws->graphicsEditorPanel()->selectLayerByStackIndex(hitIdx);
                 } else {
                     // Already-selected layer was hit cycle to next
                     // layer underneath by skipping the current one
                     int cycleIdx = hitTestGraphicClip(gc, hitIdx);
                     if (cycleIdx >= 0)
-                        m_ws->m_GraphicsEditorPanel->selectLayerByStackIndex(cycleIdx);
+                        m_ws->graphicsEditorPanel()->selectLayerByStackIndex(cycleIdx);
                 }
                 return;
             }
         }
 
         // 2) Search all other GraphicClips at the playhead (top tracks first)
-        for (size_t ti = 0; ti < m_ws->m_timeline->trackCount(); ++ti) {
-            auto* trk = m_ws->m_timeline->track(ti);
+        for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
+            auto* trk = m_ws->timeline()->track(ti);
             if (!trk || trk->type() != TrackType::Video) continue;
             for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                 auto* clip = trk->clip(ci);
                 if (!clip || clip->clipType() != ClipType::Graphic) continue;
-                if (clip == m_ws->m_selection.clip) continue;
+                if (clip == m_ws->selection().clip) continue;
                 if (playheadTick < clip->timelineIn() || playheadTick >= clip->timelineOut()) continue;
 
                 auto* gc = static_cast<GraphicClip*>(clip);
                 int hitIdx = hitTestGraphicClip(gc);
                 if (hitIdx >= 0) {
                     // Switch to this clip and select the hit layer
-                    m_ws->m_selection.clip = clip;
-                    m_ws->m_selection.trackIdx = ti;
-                    m_ws->m_selection.clipIdx = ci;
-                    m_ws->m_selection.graphicLayerIdx = -1;
-                    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->setClip(clip, trk);
-                    if (m_ws->m_GraphicsEditorPanel) {
-                        m_ws->m_GraphicsEditorPanel->setClip(clip, trk);
-                        m_ws->m_GraphicsEditorPanel->selectLayerByStackIndex(hitIdx);
+                    m_ws->selection().clip = clip;
+                    m_ws->selection().trackIdx = ti;
+                    m_ws->selection().clipIdx = ci;
+                    m_ws->selection().graphicLayerIdx = -1;
+                    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->setClip(clip, trk);
+                    if (m_ws->graphicsEditorPanel()) {
+                        m_ws->graphicsEditorPanel()->setClip(clip, trk);
+                        m_ws->graphicsEditorPanel()->selectLayerByStackIndex(hitIdx);
                     }
-                    if (m_ws->m_ColorGradingPanel) m_ws->m_ColorGradingPanel->setClip(clip, trk);
-                    if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->setClip(clip, trk);
-                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->selection().selectClip(ClipRef{ti, clip->id()}, false);
+                    if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->setClip(clip, trk);
+                    if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(clip, trk);
+                    if (m_ws->timelinePanel()) m_ws->timelinePanel()->selection().selectClip(ClipRef{ti, clip->id()}, false);
                     scheduleOverlayRefresh();
                     return;
                 }
@@ -850,7 +850,7 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         } // end scope for outW/outH/playheadTick
     }
     skipHitTest:
-    if (m_ws->m_timelinePanel->activeTool() != EditTool::Text) return;
+    if (m_ws->timelinePanel()->activeTool() != EditTool::Text) return;
 
     // Re-entrancy guard: if the overlay click signal fires twice
     // (seen on first interaction after project open), only process
@@ -864,8 +864,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     // Find the topmost video track.
     Track* targetTrack = nullptr;
     size_t targetTrackIdx = 0;
-    for (size_t ti = 0; ti < m_ws->m_timeline->trackCount(); ++ti) {
-        auto* trk = m_ws->m_timeline->track(ti);
+    for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
+        auto* trk = m_ws->timeline()->track(ti);
         if (trk && trk->type() == TrackType::Video) {
             targetTrack = trk;
             targetTrackIdx = ti;
@@ -875,8 +875,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
 
     // Get playhead position
     int64_t tick = 0;
-    if (m_ws->m_playbackController)
-        tick = m_ws->m_playbackController->currentTick();
+    if (m_ws->playbackController())
+        tick = m_ws->playbackController()->currentTick();
 
     // Check if the topmost track is occupied at this position.
     bool topmostOccupied = false;
@@ -899,8 +899,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     if (!targetTrack || topmostOccupied) {
         // Build a name that matches addVideoTrack() numbering.
         int videoCount = 0;
-        for (size_t ti2 = 0; ti2 < m_ws->m_timeline->trackCount(); ++ti2) {
-            auto* t = m_ws->m_timeline->track(ti2);
+        for (size_t ti2 = 0; ti2 < m_ws->timeline()->trackCount(); ++ti2) {
+            auto* t = m_ws->timeline()->track(ti2);
             if (t && t->type() == TrackType::Video && !t->isDivider()
                 && !t->isCaptionTrack())
                 ++videoCount;
@@ -909,14 +909,14 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
 
         auto newTrack = std::make_unique<Track>(TrackType::Video, trackName);
         targetTrack = newTrack.get();
-        m_ws->m_timeline->insertTrack(0, std::move(newTrack));
+        m_ws->timeline()->insertTrack(0, std::move(newTrack));
         targetTrackIdx = 0;
         createdNewTrack = true;
 
-        if (m_ws->m_commandStack) {
+        if (m_ws->commandStack()) {
             textCompound = std::make_unique<CompoundCommand>("Add Text Layer");
             // Undo: remove the track we just inserted at index 0.
-            Timeline* tl = m_ws->m_timeline;
+            Timeline* tl = m_ws->timeline();
             textCompound->addExecuted(std::make_unique<LambdaCommand>(
                 "Add Track",
                 [](){},  // already executed above
@@ -965,8 +965,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     // worsening with distance from center. Use the same project
     // resolution the compositor does.
     auto* tl = gc->addTextLayer("Text");
-    uint32_t compW = m_ws->m_programMonitor->compositeWidth();
-    uint32_t compH = m_ws->m_programMonitor->compositeHeight();
+    uint32_t compW = m_ws->programMonitor()->compositeWidth();
+    uint32_t compH = m_ws->programMonitor()->compositeHeight();
     uint32_t canvasW = 0, canvasH = 0;
     graphicCanvasRes(canvasW, canvasH);
     // Scale the default font size to project resolution. The TextLayer
@@ -1001,9 +1001,9 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         auto clipCmd = std::make_unique<AddClipCommand>(targetTrack, std::move(gc));
         clipCmd->execute();
         textCompound->addExecuted(std::move(clipCmd));
-        m_ws->m_commandStack->pushWithoutExecute(std::move(textCompound));
-    } else if (m_ws->m_commandStack) {
-        m_ws->m_commandStack->execute(
+        m_ws->commandStack()->pushWithoutExecute(std::move(textCompound));
+    } else if (m_ws->commandStack()) {
+        m_ws->commandStack()->execute(
             std::make_unique<AddClipCommand>(targetTrack, std::move(gc)));
     } else {
         targetTrack->addClip(std::move(gc));
@@ -1016,30 +1016,30 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     if (clipIdx >= targetTrack->clipCount()) return;
     Clip* ptr = targetTrack->clip(clipIdx);
     if (!ptr) return;
-    m_ws->m_selection.clip = ptr;
-    m_ws->m_selection.trackIdx = targetTrackIdx;
-    m_ws->m_selection.clipIdx = clipIdx;
-    m_ws->m_selection.graphicLayerIdx = -1;
+    m_ws->selection().clip = ptr;
+    m_ws->selection().trackIdx = targetTrackIdx;
+    m_ws->selection().clipIdx = clipIdx;
+    m_ws->selection().graphicLayerIdx = -1;
 
     // Refresh everything — rebuildTracks if the track set changed,
     // otherwise just refresh the contents of existing widgets.
-    if (m_ws->m_timelinePanel) {
+    if (m_ws->timelinePanel()) {
         if (createdNewTrack)
-            m_ws->m_timelinePanel->rebuildTracks();
+            m_ws->timelinePanel()->rebuildTracks();
         else
-            m_ws->m_timelinePanel->refreshTrackContents();
+            m_ws->timelinePanel()->refreshTrackContents();
     }
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 
     // Select in panels — setClip triggers layerSelected which sets
-    // m_ws->m_selection.graphicLayerIdx and calls updateTransformOverlay().
+    // m_ws->selection().graphicLayerIdx and calls updateTransformOverlay().
     // We must NOT call updateTransformOverlay() before setClip,
     // otherwise it runs with layerIdx == -1 → full-canvas overlay.
-    if (m_ws->m_effectControlsPanel) m_ws->m_effectControlsPanel->setClip(ptr, targetTrack);
-    if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->setClip(ptr, targetTrack);
-    if (m_ws->m_ColorGradingPanel) m_ws->m_ColorGradingPanel->setClip(ptr, targetTrack);
-    if (m_ws->m_propertiesPanel) m_ws->m_propertiesPanel->setClip(ptr, targetTrack);
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->setClip(ptr, targetTrack);
+    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->setClip(ptr, targetTrack);
+    if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->setClip(ptr, targetTrack);
+    if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(ptr, targetTrack);
     scheduleOverlayRefresh();
 
     // Raise Essential Graphics for the new graphic clip

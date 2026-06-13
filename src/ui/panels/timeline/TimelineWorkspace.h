@@ -106,12 +106,10 @@ class TimelineWorkspace : public QWidget
 {
     Q_OBJECT
 
-    /// Transitional (god-class decomposition): these binder controllers
-    /// hold a back-pointer and reach workspace members directly while
-    /// their dependency surfaces are narrowed in follow-up steps.
-    friend class OverlayController;
-    friend class DropController;
-    friend class ShortcutController;
+    // God-class decomposition (§3.1 friend-narrowing — COMPLETE): the four
+    // binder controllers (Project / Drop / Overlay / Shortcut) were all
+    // narrowed off friend access; each reaches the workspace only through
+    // the public binder-accessor block below.  No friend classes remain.
 
 public:
     explicit TimelineWorkspace(QWidget* parent = nullptr);
@@ -177,6 +175,45 @@ public:
     [[nodiscard]] ScopesPanel*      scopesPanel()      const noexcept { return m_scopesPanel; }
     [[nodiscard]] CharactersPanel*   charactersPanel()   const noexcept { return m_charactersPanel; }
     [[nodiscard]] LibraryPanel*      libraryPanel()      const noexcept { return m_libraryPanel; }
+
+    // ── Binder/controller accessors (god-class decomposition, §3.1) ─────
+    // Public surface the extracted binder controllers (DropController, ...)
+    // use in place of friend back-pointer access while their dependency
+    // surfaces are narrowed off the workspace.
+    [[nodiscard]] Timeline*            timeline()            const noexcept { return m_timeline; }
+    [[nodiscard]] CommandStack*        commandStack()        const noexcept { return m_commandStack; }
+    [[nodiscard]] MediaPool*           mediaPool()           const noexcept { return m_mediaPool; }
+    [[nodiscard]] PlaybackController*  playbackController()  const noexcept { return m_playbackController; }
+    [[nodiscard]] ShotPresetManager*   shotPresetManager()   const noexcept { return m_shotPresetManager; }
+    [[nodiscard]] GraphicsEditorPanel* graphicsEditorPanel() const noexcept { return m_GraphicsEditorPanel; }
+    [[nodiscard]] ColorGradingPanel*   colorGradingPanel()   const noexcept { return m_ColorGradingPanel; }
+    [[nodiscard]] CaptionsPanel*       captionsPanel()       const noexcept { return m_captionsPanel; }
+    [[nodiscard]] SelectionState&       selection()       noexcept { return m_selection; }
+    [[nodiscard]] const SelectionState& selection() const noexcept { return m_selection; }
+    /// The 8 edit-tool buttons (Selection..Zoom), for keyboard-shortcut
+    /// focus-policy / active-tool sync.  Returns a reference to the array.
+    [[nodiscard]] QToolButton* (&toolButtons() noexcept)[8] { return m_toolButtons; }
+    /// True once destruction has begun (lambdas/callbacks must bail).
+    [[nodiscard]] bool isDestroying() const noexcept { return m_destroying.load(std::memory_order_acquire); }
+
+    /// Flush the composite result LRU cache (call when transforms change).
+    void invalidateCompositeCache();
+    /// A3: drop only LRU entries whose tick is in [fromTick, toTick].
+    /// Edit commands that affect a known time slice (trim, split, ripple
+    /// of a single clip) should call this instead of the full-flush form,
+    /// to keep cached frames outside the affected range alive across
+    /// stepping/scrubbing — a major Premiere-vs-current responsiveness gap.
+    void invalidateCompositeCacheRange(int64_t fromTick, int64_t toTick);
+    /// Warm the audio decode cache asynchronously (post-edit work).
+    void warmAudioCacheAsync();
+    /// Sync the ProgramMonitor MiniTimeline in/out from the Timeline.
+    void syncProgramMonitorInOut();
+    /// Rebuild the Program Monitor transform overlay (shim → OverlayController).
+    void updateTransformOverlay();
+    /// Deferred overlay re-sync via QTimer (shim → OverlayController).
+    void scheduleOverlayRefresh();
+    /// Deferred post-edit audio/spine warm-up (split/delete/paste).
+    void schedulePostEditWork();
 
     /// Get the animation video cache (may be nullptr if Spine disabled).
     [[nodiscard]] const AnimationVideoCache* animVideoCache() const noexcept;
@@ -366,13 +403,14 @@ private:
     // .cpp files that implement TimelineWorkspace methods can still call).
     void loadAudioSources(bool allowBlockingMisses = true);
     void scheduleAudioPlaybackWindowRefresh();
-    void warmAudioCacheAsync();
     void logTimelineAudioPerfSnapshot(const char* reason);
+    // warmAudioCacheAsync() moved to the public binder-accessor block above.
     bool m_audioWindowRefreshScheduled{false};
 
     // Deferred post-edit work — avoids blocking the main thread with audio /
     // spine warm-up during split / delete / paste operations.
-    void schedulePostEditWork();
+    // schedulePostEditWork() is in the public binder-accessor block above
+    // (called by ShortcutController).
     bool m_postEditScheduled{false};
 
     // Video compositing
@@ -414,15 +452,8 @@ private:
     /// Register keyboard shortcuts (Home/End, I/O, Ctrl+X/C/V, etc.).
     void registerKeyboardShortcuts();
 
-    /// Flush the composite result LRU cache (call when transforms change).
-    void invalidateCompositeCache();
-
-    /// A3: drop only LRU entries whose tick is in [fromTick, toTick].
-    /// Edit commands that affect a known time slice (trim, split, ripple
-    /// of a single clip) should call this instead of the full-flush form,
-    /// to keep cached frames outside the affected range alive across
-    /// stepping/scrubbing — a major Premiere-vs-current responsiveness gap.
-    void invalidateCompositeCacheRange(int64_t fromTick, int64_t toTick);
+    // invalidateCompositeCache() / invalidateCompositeCacheRange() moved to
+    // the public binder-accessor block above (called by DropController).
 
 #ifdef ROUNDTABLE_HAS_SPINE
     /// Schedule an async spine shared-data load (runs on UI thread via Qt).
@@ -451,8 +482,9 @@ private:
     // drag/click handlers moved into OverlayController; these shims keep
     // the many intra-workspace call sites unchanged.
     std::unique_ptr<OverlayController> m_overlay;
-    void updateTransformOverlay();
-    void scheduleOverlayRefresh();  ///< Deferred overlay re-sync via QTimer
+    // updateTransformOverlay() / scheduleOverlayRefresh() are in the public
+    // binder-accessor block above (shims → m_overlay; called by
+    // ShortcutController and intra-workspace edit code).
 
     /// Drag-and-drop binder (media / effect / nest drops); the
     /// wire*DropSignals()/wireNestSignals() methods above are shims to it.
@@ -463,8 +495,8 @@ private:
     /// wrappers over it; registerKeyboardShortcuts() is a shim.
     std::unique_ptr<ShortcutController> m_shortcuts;
 
-    /// Sync ProgramMonitor MiniTimeline in/out points from the Timeline.
-    void syncProgramMonitorInOut();
+    // syncProgramMonitorInOut() is in the public binder-accessor block above
+    // (called by ShortcutController).
 
     /// Apply a shot preset to a clip group, wrapped in an undo command.
     void applyShotSwitch(uint64_t groupId, const std::string& newShotName);

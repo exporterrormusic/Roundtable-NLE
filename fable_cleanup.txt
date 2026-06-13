@@ -17,11 +17,12 @@ CURRENT STATUS (2026-06-12, end of execution session 8):
                             §5.3 SmartRenderAnalyzer test suite (planner;
                             passthrough EXECUTION is disabled by design —
                             see session-7 log); nightly CI added;
-                            friend-narrowing 1/4: ProjectController DONE
-                            (no friend; works via MainWindow public
-                            accessors; session-8 log)
-  Remaining before Phase 4: friend-narrowing on Overlay/Drop/Shortcut
-                            (one per gated step), §3.8 optional
+                            friend-narrowing COMPLETE (4/4): ProjectController
+                            (s8) + Drop (s9) + Overlay + Shortcut (s10) all
+                            work via public accessors — NO friend classes
+                            remain on TimelineWorkspace
+  Remaining before Phase 4: §3.8 test-folder mirroring (optional, low
+                            priority) — then Phase 4
   → Jump to "NEXT SESSION — START HERE" (search that string).
 ================================================================================
 
@@ -734,11 +735,15 @@ PHASE 2 — Duplication collapse (3-5 sessions, mechanical, test-backed)
     2.5 FfmpegOpen helper
 
 ════════════════════════════════════════════════════════════════════════
-NEXT SESSION — START HERE  (handoff updated 2026-06-12, end of session 8)
+NEXT SESSION — START HERE  (handoff updated 2026-06-12, end of session 10)
 ════════════════════════════════════════════════════════════════════════
 STATE: USER DECISION — finish ALL remaining cleanup before Phase 4.
-Sessions 3-5 committed+pushed+smoked.  Sessions 6+7 are UNCOMMITTED at
-handoff (one combined batch in the working tree).  Session 7 landed:
+FRIEND-NARROWING IS COMPLETE (4/4) — no friend classes remain on
+TimelineWorkspace.  Sessions 3-8 are COMMITTED ("Update" commits).
+Sessions 9+10 (Drop, then Overlay+Shortcut friend-narrowing) are
+UNCOMMITTED at handoff — 7 modified files: TimelineWorkspace.h + the 3
+DropController*.cpp + OverlayController{,Handlers}.cpp +
+ShortcutController{Keys,Register}.cpp.  Session 7 landed:
 round-trip serialization tests for ALL clip types + effects + masks
 (test_project 37 tests), §3.5(b) serializer REGISTRY in
 ClipSerialization.cpp (three switches → one table), per-type populate
@@ -762,34 +767,48 @@ analyzer/planner — which stays live and feeds the future re-enable —
 is now fully unit-tested instead (eligibility rules + source-frame
 mapping locked down).
 
-RUNTIME SMOKE OWED (session 8 — sessions 6+7 were smoked OK):
-  - project lifecycle AGAIN: new/open/save/save-as, recents menu,
-    delete/rename/duplicate from panel, auto-save + restore-from-
-    auto-save, and the auto-created-project startup path
-    [session 8: ProjectController friend-narrowing rewired every one
-    of its ~310 MainWindow accesses through public accessors; same
-    behavior expected, but these are THE paths it touches]
+RUNTIME SMOKE OWED (sessions 9+10 — friend-narrowing of Drop/Overlay/
+Shortcut; the user chose to batch all three for ONE combined smoke):
+  - [Drop] drag media from the Project Bin / Explorer / Source Monitor
+    onto the timeline INCL. the no-project bootstrap (drop with nothing
+    open → "create project for media"); drag an effect + a transition
+    onto clips; drop a sequence to nest + open the nested sequence from
+    its context menu.
+  - [Overlay] Program-Monitor transform-overlay drag (move/scale/rotate)
+    + Ctrl-Z; group-move of multiple graphic layers; Text tool create +
+    inline text edit; caption inline edit on a caption clip.
+  - [Shortcut] keyboard pass: Space/J/K/L transport incl. K+J / K+L slow
+    shuttle and release; I/O in-out; Home/End; Delete/ripple with focus
+    in Effect Controls vs timeline; Ctrl+X/C/V; tilde maximize; D
+    match-frame; backslash zoom-to-fit; the tool keys (V/A/... set the
+    edit-tool buttons' focus + active state).
+  Same behavior expected throughout — these are PURE accessor-routing
+  changes (build + core 695/695 after EACH controller + a 4-agent
+  adversarial review of every mapping/exposure all green), but they ARE
+  the live interactive paths the three controllers drive.
+  - [session 8 — ProjectController, if not yet smoked] project lifecycle:
+    new/open/save/save-as, recents menu, delete/rename/duplicate from
+    panel, auto-save + restore-from-auto-save, auto-created-project
+    startup path.
 
 REMAINING WORK before Phase 4, in recommended order:
-  1. Friend-narrowing (2 of 4 remaining steps) — convert Overlay/
-     Drop/Shortcut controllers off friend back-pointers, ONE per gated
-     step (build + core + user smoke between each).  ProjectController
-     DONE in session 8 — RECIPE: survey `m_X->m_*` members + method
-     calls; reuse existing public accessors; add missing accessors to
-     the host's public section (out-of-line if they move a unique_ptr
-     of a fwd-declared type!); MOVE members used (almost) only by the
-     controller into it; handle ownership-transfer writes with
-     adopt/take methods; regex-sweep special writes BEFORE generic
-     reads; delete the friend decl LAST and let the compiler find
-     stragglers.  Remaining surface (distinct private members / total
-     back-pointer uses): ShortcutController ~15/~390, DropController
-     ~14/~338, OverlayController ~14/~306 — these also touch private
-     TimelineWorkspace METHODS and other binders' state, so survey
-     first; some shared state may need to move to SelectionState or a
-     dedicated struct instead of accessors.
-  2. §3.8 mirror core/ folders in tests/ (optional, low priority).
-  3. §2.8/2.9 opportunistic dedup — only when touching those files.
+  1. §3.8 mirror core/ folders in tests/ (optional, low priority).
+  2. §2.8/2.9 opportunistic dedup — only when touching those files.
   THEN Phase 4, starting with 4.1 per-stream color management.
+  (Friend-narrowing 4/4 is DONE — Project s8, Drop s9, Overlay+Shortcut
+  s10.  Proven recipe, for reference if a new binder is ever extracted:
+  survey `m_ws->m_*` members + `m_ws->method()` calls + writes; reuse
+  existing public accessors; add missing accessors to the public
+  binder-accessor block in TimelineWorkspace.h (out-of-line if they move
+  a unique_ptr of a fwd-declared type); expose any private METHODS the
+  controller calls; MOVE controller-only members into the controller;
+  ownership-transfer writes need adopt/take methods; sweep
+  longest-member-name FIRST (m_timelinePanel before m_timeline,
+  m_projectBin before m_project), replace the full
+  `m_destroying.load(std::memory_order_acquire)` with `isDestroying()`,
+  and KEEP bare QWidget calls (setFocus/setFocusPolicy/parentWidget) as
+  `m_ws->…` — public inheritance, never needed friend; delete the friend
+  decl LAST and let the compiler prove completeness.)
 
 STANDING ITEMS:
   - Runtime smokes owed: list above + one export per codec (NVENC
@@ -814,6 +833,103 @@ STANDING ITEMS:
     change the byte format); the loader frame-aligns clip boundaries
     (tpf=1600 at defaults) so tests must use frame-aligned ticks.
 ════════════════════════════════════════════════════════════════════════
+
+2026-06-12  SESSION 10 — FRIEND-NARROWING 4/4 COMPLETE: Overlay + Shortcut
+            (user chose to batch both, build+core after EACH, ONE combined
+            smoke; no friend classes remain on TimelineWorkspace)
+  [x] OverlayController (3/4) — `friend class OverlayController` REMOVED.
+      Pure consumer (only selection() struct-field writes, no ownership
+      writes).  TWO new accessors added to TimelineWorkspace.h binder
+      block: playbackController() [PlaybackController*] + captionsPanel()
+      [CaptionsPanel*]; everything else reused existing accessors
+      (incl. compositeService() which returns m_compositeService.get()).
+      ~306 m_ws->m_X accesses across OverlayController.cpp +
+      OverlayControllerHandlers.cpp swept; the 12 m_destroying.load(acquire)
+      → isDestroying().  Methods it calls (invalidateCompositeCache,
+      dockForPanel) were already public.  Zero residual `m_ws->m_`.
+      VERIFIED: build clean + ctest core 695/695.
+  [x] ShortcutController (4/4 — LAST friend) — `friend class
+      ShortcutController` REMOVED.  ONE new accessor: toolButtons()
+      returning a REFERENCE to the QToolButton*[8] array
+      (`QToolButton* (&toolButtons() noexcept)[8]`) so the single
+      `for (auto* btn : m_ws->toolButtons())` range-for stays equivalent.
+      FOUR private methods MOVED private→public (ShortcutController calls
+      them): syncProgramMonitorInOut, updateTransformOverlay,
+      scheduleOverlayRefresh, schedulePostEditWork (togglePanelMaximize +
+      invalidate*/invalidateAudioSources were already public).  ~390
+      m_ws->m_X accesses across ShortcutControllerKeys.cpp +
+      ShortcutControllerRegister.cpp swept; bare QWidget calls
+      (setFocus/setFocusPolicy/parentWidget) KEPT as m_ws->… (public
+      inheritance — never needed friend); emit m_ws->m_timelinePanel->…
+      → emit m_ws->timelinePanel()->….  GOTCHA: the first sed pass
+      dropped m_propertiesPanel from its expression list — caught by the
+      zero-residual grep, fixed in a 2nd pass (always grep `m_ws->m_` to
+      0 AFTER the sweep).  ShortcutController has NO member/ownership
+      writes; selection() field writes only; JKL slow-shuttle state
+      already on the controller.  No m_destroying use here.
+      VERIFIED: build clean + ctest core 695/695.
+  [x] ADVERSARIAL REVIEW (4 Explore agents, 2 lenses × 2 controllers):
+      mapping-correctness + behavioral-equivalence/QWidget-safety/
+      method-exposure — ALL FOUR returned CLEAN (anyIssues:false).  Every
+      Overlay (15) + Shortcut (16) accessor mapping faithful; selection()
+      reference writes mutate the real member; isDestroying() preserves
+      acquire ordering; the 4 method exposures are public/single-decl/
+      definitions-unchanged; toolButtons() range-for equivalent; QWidget
+      calls correctly left untouched.
+      FRIEND-NARROWING IS NOW COMPLETE (4/4).  RUNTIME SMOKE OWED: the
+      combined Drop+Overlay+Shortcut list in the handoff above.
+
+2026-06-12  SESSION 9 — FRIEND-NARROWING 2/4: DropController
+            (next gated step after session 8's ProjectController)
+  [x] `friend class DropController` REMOVED from TimelineWorkspace.  The
+      controller now works exclusively through TimelineWorkspace's public
+      surface.  Changes:
+      - TimelineWorkspace.h grew a public "Binder/controller accessors"
+        block: timeline() / commandStack() / mediaPool() /
+        shotPresetManager() / graphicsEditorPanel() / colorGradingPanel()
+        / selection() [SelectionState&, const + non-const overloads] /
+        isDestroying() [bool, loads m_destroying with memory_order_acquire].
+        timelinePanel()/programMonitor()/projectBin()/project()/
+        propertiesPanel()/effectControlsPanel() already existed and were
+        reused.
+      - invalidateCompositeCache() / invalidateCompositeCacheRange() /
+        warmAudioCacheAsync() MOVED from private → public (DropController
+        calls the first and third; the .cpp definitions are untouched,
+        access level only).
+      - All ~338 m_ws->m_X back-pointer accesses across the 3 DropController
+        TUs (MediaDrop/EffectDrop/Nest) swept to accessors.  Sweep was
+        ordered longest-member-first (m_timelinePanel before m_timeline,
+        m_projectBin before m_project) to avoid substring corruption; the
+        full `m_destroying.load(std::memory_order_acquire)` expression →
+        isDestroying(); selection struct-field writes → selection().field;
+        `emit m_ws->m_timelinePanel->sig()` → `emit m_ws->timelinePanel()
+        ->sig()`.  Zero residual `m_ws->m_` after the sweep.
+      - DropController is a PURE CONSUMER: no owned state moved into it, NO
+        ownership-transfer writes (the only writes are selection() struct
+        fields).  m_ws->window()/dockForPanel() were already public and
+        left as-is.  emit of TimelineWorkspace's own signal
+        (requestNewProjectForMedia) and of panel signals work without
+        friend (Qt signals are public).
+      VERIFIED: full Release roundtable.exe build clean (the compiler is
+      the completeness proof — no friend = any missed private access is a
+      build error) + ctest -L core 695/695.  A 3-agent adversarial review
+      (mapping correctness / behavioral equivalence / completeness+safety)
+      returned CLEAN on all three lenses — every one of the 14 member
+      mappings is faithful, selection() returns a real SelectionState&
+      (writes mutate the member, not a copy), and the access-level moves
+      changed nothing else.
+      RUNTIME SMOKE OWED: see the handoff list above (media/effect/
+      transition/nest drops incl. the no-project bootstrap).
+  [x] SURVEYED the two remaining controllers for their gated steps (do NOT
+      execute without a user smoke between each):
+      - OverlayController: LOW; only NEW accessor is captionsPanel(); all
+        called methods already public; no members move in.
+      - ShortcutController: MEDIUM; NEW toolButtons() accessor + expose the
+        private methods syncProgramMonitorInOut / updateTransformOverlay /
+        scheduleOverlayRefresh / schedulePostEditWork; keep the bare
+        QWidget calls (setFocus/setFocusPolicy/parentWidget) as m_ws->…
+        (public inheritance, no friend needed).
+      (Recipe details in REMAINING WORK item 1 above.)
 
 2026-06-12  SESSION 6 — §3.1 COMPLETE (user smoked + pushed session 5;
             decision: finish ALL remaining cleanup before Phase 4)
@@ -1182,8 +1298,9 @@ PHASE 3 — Structural reorganization (the big one; do after Phase 2 so
                SelectionState across sessions 3-6 (MediaWatch,
                PanelMaximize, Overlay, Drop, Shortcut, Project
                controllers + ShotSwitch split, wiring-prefix rename);
-               follow-up open: narrow friend back-pointers to injected
-               collaborators
+               follow-up: narrow friend back-pointers to public accessors
+               — COMPLETE 4/4 (Project s8, Drop s9, Overlay+Shortcut s10);
+               NO friend classes remain on TimelineWorkspace
     [STARTED] 3.5 ClipType capability virtuals — API + exemplar
                conversions landed (session 6); long tail (~50 sites) +
                3.5(b) per-type serializer registry remain

@@ -66,7 +66,7 @@ void OverlayController::scheduleOverlayRefresh()
 
     // Also force a recomposite so the displayed frame matches compositeWidth.
     m_ws->invalidateCompositeCache();
-    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 
     // Schedule deferred overlay updates at increasing intervals.
     // By the time the later callbacks fire, the pipeline will have
@@ -81,25 +81,25 @@ void OverlayController::scheduleOverlayRefresh()
 
 void OverlayController::updateTransformOverlay()
 {
-    if (!m_ws->m_programMonitor || !m_ws->m_programMonitor->viewport()) return;
-    auto* vp = m_ws->m_programMonitor->viewport();
+    if (!m_ws->programMonitor() || !m_ws->programMonitor()->viewport()) return;
+    auto* vp = m_ws->programMonitor()->viewport();
 
-    if (!m_ws->m_selection.clip || !m_ws->m_timeline) {
+    if (!m_ws->selection().clip || !m_ws->timeline()) {
         vp->clearTransformOverlay();
-        if (m_ws->m_programMonitor->transformOverlay())
-            m_ws->m_programMonitor->transformOverlay()->clearTransformOverlay();
+        if (m_ws->programMonitor()->transformOverlay())
+            m_ws->programMonitor()->transformOverlay()->clearTransformOverlay();
         return;
     }
 
     // Hide overlay when playhead is outside the clip's time range.
-    int64_t clipEnd = m_ws->m_selection.clip->timelineOut();
-    int64_t clipIn = m_ws->m_selection.clip->timelineIn();
-    if (m_ws->m_playbackController) {
-        int64_t curTick = m_ws->m_playbackController->currentTick();
+    int64_t clipEnd = m_ws->selection().clip->timelineOut();
+    int64_t clipIn = m_ws->selection().clip->timelineIn();
+    if (m_ws->playbackController()) {
+        int64_t curTick = m_ws->playbackController()->currentTick();
         if (curTick < clipIn || curTick > clipEnd) {
             vp->clearTransformOverlay();
-            if (m_ws->m_programMonitor->transformOverlay())
-                m_ws->m_programMonitor->transformOverlay()->clearTransformOverlay();
+            if (m_ws->programMonitor()->transformOverlay())
+                m_ws->programMonitor()->transformOverlay()->clearTransformOverlay();
             return;
         }
     }
@@ -108,16 +108,16 @@ void OverlayController::updateTransformOverlay()
     info.visible  = true;
 
     // Evaluate at the current playhead position relative to clip start
-    const int64_t relTick = m_ws->m_playbackController
-        ? std::max(int64_t{0}, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn())
+    const int64_t relTick = m_ws->playbackController()
+        ? std::max(int64_t{0}, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : int64_t{0};
 
     // Per-layer transform for GraphicClip: when a specific layer is selected
     // in Essential Graphics, show the overlay sized around that layer only.
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && m_ws->m_selection.graphicLayerIdx >= 0) {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_selection.graphicLayerIdx < static_cast<int>(gc->layerCount())) {
-            auto* layer = gc->layer(static_cast<size_t>(m_ws->m_selection.graphicLayerIdx));
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && m_ws->selection().graphicLayerIdx >= 0) {
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        if (m_ws->selection().graphicLayerIdx < static_cast<int>(gc->layerCount())) {
+            auto* layer = gc->layer(static_cast<size_t>(m_ws->selection().graphicLayerIdx));
             const auto& xf = layer->transform();
             info.posX     = xf.posX.evaluate(relTick);
             info.posY     = xf.posY.evaluate(relTick);
@@ -150,7 +150,7 @@ void OverlayController::updateTransformOverlay()
                 // renderGraphicClip() renders at full project res then
                 // downscales and adds posX raw in that space, so the
                 // overlay must measure/place in the SAME space. This is
-                // NOT m_ws->m_programMonitor->outputWidth() (the preview res,
+                // NOT m_ws->programMonitor()->outputWidth() (the preview res,
                 // which can be a 1920 preview of a 4K project — that
                 // mismatch drifted the box from the text proportionally
                 // to distance from center).
@@ -237,53 +237,53 @@ void OverlayController::updateTransformOverlay()
 
             // Clip-level (outer) transform — applied by compositor on top of layer transform.
             {
-                auto p2 = evaluatePosition2D(m_ws->m_selection.clip->positionX(),
-                                             m_ws->m_selection.clip->positionY(), relTick);
+                auto p2 = evaluatePosition2D(m_ws->selection().clip->positionX(),
+                                             m_ws->selection().clip->positionY(), relTick);
                 info.clipPosX = p2.first;
                 info.clipPosY = p2.second;
             }
-            info.clipScaleX   = m_ws->m_selection.clip->scaleX().evaluate(relTick);
-            info.clipScaleY   = m_ws->m_selection.clip->scaleY().evaluate(relTick);
-            info.clipRotation = m_ws->m_selection.clip->rotation().evaluate(relTick);
+            info.clipScaleX   = m_ws->selection().clip->scaleX().evaluate(relTick);
+            info.clipScaleY   = m_ws->selection().clip->scaleY().evaluate(relTick);
+            info.clipRotation = m_ws->selection().clip->rotation().evaluate(relTick);
         }
     } else {
         {
-            auto p2 = evaluatePosition2D(m_ws->m_selection.clip->positionX(),
-                                         m_ws->m_selection.clip->positionY(), relTick);
+            auto p2 = evaluatePosition2D(m_ws->selection().clip->positionX(),
+                                         m_ws->selection().clip->positionY(), relTick);
             info.posX = p2.first;
             info.posY = p2.second;
         }
-        info.scaleX   = m_ws->m_selection.clip->scaleX().evaluate(relTick);
-        info.scaleY   = m_ws->m_selection.clip->scaleY().evaluate(relTick);
-        info.rotation = m_ws->m_selection.clip->rotation().evaluate(relTick);
-        info.anchorX  = m_ws->m_selection.clip->anchorX().evaluate(relTick);
-        info.anchorY  = m_ws->m_selection.clip->anchorY().evaluate(relTick);
+        info.scaleX   = m_ws->selection().clip->scaleX().evaluate(relTick);
+        info.scaleY   = m_ws->selection().clip->scaleY().evaluate(relTick);
+        info.rotation = m_ws->selection().clip->rotation().evaluate(relTick);
+        info.anchorX  = m_ws->selection().clip->anchorX().evaluate(relTick);
+        info.anchorY  = m_ws->selection().clip->anchorY().evaluate(relTick);
     }
 
     // Determine source dimensions for the bounding box.
     // For VideoClip / SpineClipÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢video fallback, look up the media info.
     // For GraphicClip, use the output resolution (graphics fill the canvas).
     // For GraphicClip without per-layer bounding box, use output resolution
-    if (m_ws->m_selection.clip->clipType() == ClipType::Graphic && info.srcW == 0 && info.srcH == 0) {
-        info.srcW = m_ws->m_programMonitor->outputWidth();
-        info.srcH = m_ws->m_programMonitor->outputHeight();
+    if (m_ws->selection().clip->clipType() == ClipType::Graphic && info.srcW == 0 && info.srcH == 0) {
+        info.srcW = m_ws->programMonitor()->outputWidth();
+        info.srcH = m_ws->programMonitor()->outputHeight();
     }
 
-    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<ImageClip*>(m_ws->m_selection.clip)) {
-        auto* imageClip = dynamic_cast<ImageClip*>(m_ws->m_selection.clip);
+    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<ImageClip*>(m_ws->selection().clip)) {
+        auto* imageClip = dynamic_cast<ImageClip*>(m_ws->selection().clip);
         // Use stored source dimensions first
         if (imageClip->sourceWidth() > 0 && imageClip->sourceHeight() > 0) {
             info.srcW = imageClip->sourceWidth();
             info.srcH = imageClip->sourceHeight();
-        } else if (m_ws->m_mediaPool) {
-            uint64_t handle = m_ws->m_compositeService->findMediaHandle(imageClip->mediaPath());
+        } else if (m_ws->mediaPool()) {
+            uint64_t handle = m_ws->compositeService()->findMediaHandle(imageClip->mediaPath());
             if (handle == 0) {
-                handle = m_ws->m_mediaPool->open(imageClip->mediaPath());
+                handle = m_ws->mediaPool()->open(imageClip->mediaPath());
                 if (handle != 0)
-                    m_ws->m_compositeService->registerMediaHandle(imageClip->mediaPath(), handle);
+                    m_ws->compositeService()->registerMediaHandle(imageClip->mediaPath(), handle);
             }
             if (handle != 0) {
-                const auto* mi = m_ws->m_mediaPool->getInfo(handle);
+                const auto* mi = m_ws->mediaPool()->getInfo(handle);
                 if (mi) {
                     info.srcW = mi->width;
                     info.srcH = mi->height;
@@ -292,15 +292,15 @@ void OverlayController::updateTransformOverlay()
         }
     }
 
-    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<VideoClip*>(m_ws->m_selection.clip)) {
-        auto* videoClip = dynamic_cast<VideoClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_mediaPool) {
+    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<VideoClip*>(m_ws->selection().clip)) {
+        auto* videoClip = dynamic_cast<VideoClip*>(m_ws->selection().clip);
+        if (m_ws->mediaPool()) {
             // Try cached handle first
-            uint64_t handle = m_ws->m_compositeService->findMediaHandle(videoClip->mediaPath());
+            uint64_t handle = m_ws->compositeService()->findMediaHandle(videoClip->mediaPath());
             if (handle == 0) {
                 // Media not opened yet ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â open it now so we get correct dimensions.
                 // compositeFrame() will find this handle on its next pass.
-                handle = m_ws->m_mediaPool->open(videoClip->mediaPath());
+                handle = m_ws->mediaPool()->open(videoClip->mediaPath());
                 if (handle == 0) {
                     // Try alternate extension (.webm ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â .mov)
                     namespace fs = std::filesystem;
@@ -309,24 +309,24 @@ void OverlayController::updateTransformOverlay()
                     if (vidPath.extension() == ".webm") alt.replace_extension(".mov");
                     else if (vidPath.extension() == ".mov") alt.replace_extension(".webm");
                     if (alt != vidPath) {
-                        handle = m_ws->m_mediaPool->open(alt);
+                        handle = m_ws->mediaPool()->open(alt);
                         if (handle == 0) {
                             fs::path candidate = fs::path("assets") / "videos" / alt.filename();
                             if (fs::exists(candidate))
-                                handle = m_ws->m_mediaPool->open(candidate);
+                                handle = m_ws->mediaPool()->open(candidate);
                         }
                     }
                     if (handle == 0) {
                         fs::path candidate = fs::path("assets") / "videos" / vidPath.filename();
                         if (fs::exists(candidate))
-                            handle = m_ws->m_mediaPool->open(candidate);
+                            handle = m_ws->mediaPool()->open(candidate);
                     }
                 }
                 if (handle != 0)
-                    m_ws->m_compositeService->registerMediaHandle(videoClip->mediaPath(), handle);
+                    m_ws->compositeService()->registerMediaHandle(videoClip->mediaPath(), handle);
             }
             if (handle != 0) {
-                const auto* mi = m_ws->m_mediaPool->getInfo(handle);
+                const auto* mi = m_ws->mediaPool()->getInfo(handle);
                 if (mi) {
                     info.srcW = mi->width;
                     info.srcH = mi->height;
@@ -336,10 +336,10 @@ void OverlayController::updateTransformOverlay()
     }
 #ifdef ROUNDTABLE_HAS_SPINE
     // For SpineClip: use shared spine bounds for the overlay size.
-    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<SpineClip*>(m_ws->m_selection.clip)) {
-        auto* spineClip = static_cast<SpineClip*>(m_ws->m_selection.clip);
-        if (m_ws->m_compositeService) {
-            const auto* shared = m_ws->m_compositeService->getSpineSharedDataForOverlay(
+    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<SpineClip*>(m_ws->selection().clip)) {
+        auto* spineClip = static_cast<SpineClip*>(m_ws->selection().clip);
+        if (m_ws->compositeService()) {
+            const auto* shared = m_ws->compositeService()->getSpineSharedDataForOverlay(
                 spineClip->characterName(), spineClip->outfit(),
                 static_cast<int>(spineClip->stance()));
             // Match the renderer: it frames the character to THIS animation's
@@ -372,8 +372,8 @@ void OverlayController::updateTransformOverlay()
     // 16:9 canvas shape.  Match the compositor's contain-fit + 0.85×
     // compose-scale so the box aligns with the visible character.
     // Dimensions are cached per path to avoid repeated disk I/O.
-    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<PngPuppetClip*>(m_ws->m_selection.clip)) {
-        auto* puppetClip = static_cast<PngPuppetClip*>(m_ws->m_selection.clip);
+    if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<PngPuppetClip*>(m_ws->selection().clip)) {
+        auto* puppetClip = static_cast<PngPuppetClip*>(m_ws->selection().clip);
         std::string idlePath = puppetClip->facePath(PngPuppetClip::MouthClosedEyesOpen);
         if (!idlePath.empty()) {
             static std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> s_dimCache;
@@ -421,11 +421,11 @@ void OverlayController::updateTransformOverlay()
     // previously the software path got the un-adjusted (full packed)
     // height, producing a 2×-tall bounding box for packed-alpha clips.
     if (info.srcW > 0 && info.srcH > 0 && !info.directSize && !info.useContentRect) {
-        if (auto* vc = dynamic_cast<VideoClip*>(m_ws->m_selection.clip)) {
-            if (m_ws->m_mediaPool) {
-                uint64_t h = m_ws->m_compositeService->findMediaHandle(vc->mediaPath());
+        if (auto* vc = dynamic_cast<VideoClip*>(m_ws->selection().clip)) {
+            if (m_ws->mediaPool()) {
+                uint64_t h = m_ws->compositeService()->findMediaHandle(vc->mediaPath());
                 if (h != 0) {
-                    const auto* mi2 = m_ws->m_mediaPool->getInfo(h);
+                    const auto* mi2 = m_ws->mediaPool()->getInfo(h);
                     if (mi2 && mi2->packedAlpha) {
                         if (info.srcH > 1) info.srcH /= 2;
                     }
@@ -444,13 +444,13 @@ void OverlayController::updateTransformOverlay()
     {
         bool isCharacter = false;
 #ifdef ROUNDTABLE_HAS_SPINE
-        if (dynamic_cast<SpineClip*>(m_ws->m_selection.clip))
+        if (dynamic_cast<SpineClip*>(m_ws->selection().clip))
             isCharacter = true;
 #endif
-        if (dynamic_cast<PngPuppetClip*>(m_ws->m_selection.clip))
+        if (dynamic_cast<PngPuppetClip*>(m_ws->selection().clip))
             isCharacter = true;
         if (!isCharacter) {
-            if (auto* vc = dynamic_cast<VideoClip*>(m_ws->m_selection.clip))
+            if (auto* vc = dynamic_cast<VideoClip*>(m_ws->selection().clip))
                 if (vc->isVideoCharacter())
                     isCharacter = true;
         }
@@ -467,14 +467,14 @@ void OverlayController::updateTransformOverlay()
     // as thin dashed rectangles (no handles) so the user can see at a
     // glance which layers will travel together in a group-move drag.
     std::vector<TransformOverlayInfo> secondaries;
-    if (m_ws->m_selection.clip
-        && m_ws->m_selection.clip->clipType() == ClipType::Graphic
-        && m_ws->m_selection.graphicLayerIdxs.size() > 1)
+    if (m_ws->selection().clip
+        && m_ws->selection().clip->clipType() == ClipType::Graphic
+        && m_ws->selection().graphicLayerIdxs.size() > 1)
     {
-        auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
-        secondaries.reserve(m_ws->m_selection.graphicLayerIdxs.size());
-        for (int idx : m_ws->m_selection.graphicLayerIdxs) {
-            if (idx == m_ws->m_selection.graphicLayerIdx) continue;
+        auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+        secondaries.reserve(m_ws->selection().graphicLayerIdxs.size());
+        for (int idx : m_ws->selection().graphicLayerIdxs) {
+            if (idx == m_ws->selection().graphicLayerIdx) continue;
             if (idx < 0 || idx >= static_cast<int>(gc->layerCount())) continue;
             auto* layer = gc->layer(static_cast<size_t>(idx));
             if (!layer) continue;
@@ -567,25 +567,25 @@ void OverlayController::updateTransformOverlay()
     }
 
     // Also update the GPU overlay widget (TransformOverlayWidget)
-    if (auto* overlay = m_ws->m_programMonitor->transformOverlay()) {
+    if (auto* overlay = m_ws->programMonitor()->transformOverlay()) {
         overlay->setTransformOverlay(info);
         overlay->setSecondaryOverlays(secondaries);
 
         // Pass mask data for overlay drawing
-        if (m_ws->m_selection.clip && m_ws->m_selection.clip->maskCount() > 0)
-            overlay->setMasks(&m_ws->m_selection.clip->masks());
+        if (m_ws->selection().clip && m_ws->selection().clip->maskCount() > 0)
+            overlay->setMasks(&m_ws->selection().clip->masks());
         else
             overlay->setMasks(nullptr);
 
         // Pass Position tracks so the overlay can draw the motion path and
         // expose the right-click "Spatial Interpolation" menu on waypoints.
-        if (m_ws->m_selection.clip
-            && m_ws->m_selection.clip->positionX().keyframeCount() >= 2
-            && m_ws->m_selection.clip->positionY().keyframeCount() >= 2)
+        if (m_ws->selection().clip
+            && m_ws->selection().clip->positionX().keyframeCount() >= 2
+            && m_ws->selection().clip->positionY().keyframeCount() >= 2)
         {
-            overlay->setMotionPathTracks(&m_ws->m_selection.clip->positionX(),
-                                         &m_ws->m_selection.clip->positionY(),
-                                         m_ws->m_commandStack);
+            overlay->setMotionPathTracks(&m_ws->selection().clip->positionX(),
+                                         &m_ws->selection().clip->positionY(),
+                                         m_ws->commandStack());
         } else {
             overlay->clearMotionPath();
         }
@@ -612,14 +612,14 @@ void OverlayController::graphicCanvasRes(uint32_t& w, uint32_t& h) const
     // resolution. Fall back to the monitor preview res, then 1920×1080.
     w = 0;
     h = 0;
-    if (m_ws->m_project) {
-        const auto& res = m_ws->m_project->settings().resolution();
+    if (m_ws->project()) {
+        const auto& res = m_ws->project()->settings().resolution();
         w = res.width;
         h = res.height;
     }
-    if ((w == 0 || h == 0) && m_ws->m_programMonitor) {
-        w = m_ws->m_programMonitor->outputWidth();
-        h = m_ws->m_programMonitor->outputHeight();
+    if ((w == 0 || h == 0) && m_ws->programMonitor()) {
+        w = m_ws->programMonitor()->outputWidth();
+        h = m_ws->programMonitor()->outputHeight();
     }
     if (w == 0) w = 1920;
     if (h == 0) h = 1080;
@@ -632,8 +632,8 @@ void OverlayController::wireViewportTransformSignals()
     //    TimelineWorkspaceWiringTransformOverlay.cpp).  These used to be
     //    duplicated lambda bodies that drifted apart — the Viewport copy
     //    was missing group-move support.  Keep them unified.
-    if (m_ws->m_programMonitor && m_ws->m_programMonitor->viewport()) {
-        auto* vp = m_ws->m_programMonitor->viewport();
+    if (m_ws->programMonitor() && m_ws->programMonitor()->viewport()) {
+        auto* vp = m_ws->programMonitor()->viewport();
         connect(vp, &Viewport::transformPositionChanged,
                 this, &OverlayController::onOverlayPositionChanged);
         connect(vp, &Viewport::transformScaleChanged,
@@ -648,9 +648,9 @@ void OverlayController::wireViewportTransformSignals()
 void OverlayController::wireOverlayToolSignals()
 {
     // -- Forward tool changes to TransformOverlayWidget -------------------
-    if (m_ws->m_timelinePanel && m_ws->m_programMonitor && m_ws->m_programMonitor->transformOverlay()) {
-        auto* ov2 = m_ws->m_programMonitor->transformOverlay();
-        connect(m_ws->m_timelinePanel, &TimelinePanel::toolChanged,
+    if (m_ws->timelinePanel() && m_ws->programMonitor() && m_ws->programMonitor()->transformOverlay()) {
+        auto* ov2 = m_ws->programMonitor()->transformOverlay();
+        connect(m_ws->timelinePanel(), &TimelinePanel::toolChanged,
                 this, [ov2](EditTool tool) {
             ov2->setEditTool(static_cast<uint8_t>(tool));
         });
@@ -662,26 +662,26 @@ void OverlayController::wireOverlayToolSignals()
         // selectedLayer() is the authoritative source for which layer
         // we're editing.
         auto currentTextLayer = [this]() -> TextLayer* {
-            if (!m_ws->m_GraphicsEditorPanel) return nullptr;
-            GraphicLayer* gl = m_ws->m_GraphicsEditorPanel->selectedLayer();
+            if (!m_ws->graphicsEditorPanel()) return nullptr;
+            GraphicLayer* gl = m_ws->graphicsEditorPanel()->selectedLayer();
             if (!gl || gl->layerType() != GraphicLayerType::Text) return nullptr;
             return static_cast<TextLayer*>(gl);
         };
 
         connect(ov2, &TransformOverlayWidget::textEditRequested,
                 this, [this, ov2, currentTextLayer](float, float) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (m_ws->isDestroying()) return;
 
             // Caption clip selected → edit the caption's text in place,
             // just like a graphic text layer.
-            if (m_ws->m_selection.clip && m_ws->m_selection.clip->isCaption()) {
-                auto* cc = static_cast<CaptionClip*>(m_ws->m_selection.clip);
+            if (m_ws->selection().clip && m_ws->selection().clip->isCaption()) {
+                auto* cc = static_cast<CaptionClip*>(m_ws->selection().clip);
                 m_preEditOriginalText = cc->text();
                 m_inlineTextEditActive = true;
                 updateTransformOverlay();
                 cc->setText(std::string{});           // hide while editing
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 QColor textColor = QColor::fromRgba(cc->textColor());
                 ov2->beginInlineTextEdit(
                     QString::fromStdString(m_preEditOriginalText),
@@ -712,7 +712,7 @@ void OverlayController::wireOverlayToolSignals()
             m_preEditOriginalText = tl->text();
             m_inlineTextEditActive = true;
 
-            // Sync m_ws->m_selection.graphicLayerIdx to the layer we're about to
+            // Sync m_ws->selection().graphicLayerIdx to the layer we're about to
             // edit. updateTransformOverlay()'s per-layer branch is gated
             // on this index (>= 0); when it's -1 the overlay falls back
             // to a full-frame box, whose centroid is the frame center —
@@ -721,12 +721,12 @@ void OverlayController::wireOverlayToolSignals()
             // layerSelected signal hasn't propagated yet for a brand-new
             // clip auto-selected by setClip). selectedLayer() is the
             // authoritative source, so derive the index directly.
-            if (m_ws->m_selection.clip &&
-                m_ws->m_selection.clip->clipType() == ClipType::Graphic) {
-                auto* gc = static_cast<GraphicClip*>(m_ws->m_selection.clip);
+            if (m_ws->selection().clip &&
+                m_ws->selection().clip->clipType() == ClipType::Graphic) {
+                auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
                 size_t idx = gc->findLayerIndex(tl->layerId());
                 if (idx != SIZE_MAX)
-                    m_ws->m_selection.graphicLayerIdx = static_cast<int>(idx);
+                    m_ws->selection().graphicLayerIdx = static_cast<int>(idx);
             }
 
             // Force a synchronous overlay update with the current text bounds.
@@ -736,7 +736,7 @@ void OverlayController::wireOverlayToolSignals()
             // the editor box (Premiere Pro).
             tl->setText(std::string{});
             m_ws->invalidateCompositeCache();
-            if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 
             // Pass the layer's font in REFERENCE units. The renderer
             // multiplies the rasterised glyphs by the layer's vertical
@@ -749,9 +749,9 @@ void OverlayController::wireOverlayToolSignals()
             // larger.
             float scaleX = 1.0f;
             float scaleY = 1.0f;
-            if (m_ws->m_selection.clip && m_ws->m_playbackController) {
+            if (m_ws->selection().clip && m_ws->playbackController()) {
                 const int64_t localTick = std::max<int64_t>(
-                    0, m_ws->m_playbackController->currentTick() - m_ws->m_selection.clip->timelineIn());
+                    0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn());
                 scaleX = tl->transform().scaleX.evaluate(localTick);
                 scaleY = tl->transform().scaleY.evaluate(localTick);
                 if (!std::isfinite(scaleX) || scaleX <= 0.0f) scaleX = 1.0f;
@@ -785,25 +785,25 @@ void OverlayController::wireOverlayToolSignals()
 
         connect(ov2, &TransformOverlayWidget::inlineTextCommitted,
                 this, [this, currentTextLayer](const QString& newText) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+            if (m_ws->isDestroying()) return;
 
             // Caption clip: commit the edited text back to the caption.
-            if (m_ws->m_selection.clip && m_ws->m_selection.clip->isCaption()) {
-                auto* cc = static_cast<CaptionClip*>(m_ws->m_selection.clip);
+            if (m_ws->selection().clip && m_ws->selection().clip->isCaption()) {
+                auto* cc = static_cast<CaptionClip*>(m_ws->selection().clip);
                 const std::string newVal = newText.toStdString();
                 const std::string oldVal = m_preEditOriginalText;
                 m_inlineTextEditActive = false;
                 m_preEditOriginalText.clear();
                 auto capRefresh = [this]() {
                     m_ws->invalidateCompositeCache();
-                    if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                     scheduleOverlayRefresh();
-                    if (m_ws->m_timelinePanel) m_ws->m_timelinePanel->refreshTrackContents();
-                    if (m_ws->m_captionsPanel) m_ws->m_captionsPanel->refresh();
+                    if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
+                    if (m_ws->captionsPanel()) m_ws->captionsPanel()->refresh();
                 };
                 if (newVal == oldVal) { cc->setText(oldVal); capRefresh(); return; }
-                if (m_ws->m_commandStack) {
-                    m_ws->m_commandStack->execute(std::make_unique<LambdaCommand>(
+                if (m_ws->commandStack()) {
+                    m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                         "Edit Caption Text",
                         [cc, newVal, capRefresh]() { cc->setText(newVal); capRefresh(); },
                         [cc, oldVal, capRefresh]() { cc->setText(oldVal); capRefresh(); }));
@@ -823,9 +823,9 @@ void OverlayController::wireOverlayToolSignals()
             m_preEditOriginalText.clear();
 
             auto refresh = [this]() {
-                if (m_ws->m_GraphicsEditorPanel) m_ws->m_GraphicsEditorPanel->refresh();
+                if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 scheduleOverlayRefresh();
             };
 
@@ -842,9 +842,9 @@ void OverlayController::wireOverlayToolSignals()
             // Route through the command stack so Ctrl+Z reverts to the
             // pre-edit text. The layer is currently "" (cleared on begin),
             // so execute() sets it to newVal and undo restores oldVal.
-            if (m_ws->m_commandStack) {
+            if (m_ws->commandStack()) {
                 TextLayer* target = tl;
-                m_ws->m_commandStack->execute(std::make_unique<LambdaCommand>(
+                m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                     "Edit Text",
                     [target, newVal, refresh]() {
                         target->setText(newVal);

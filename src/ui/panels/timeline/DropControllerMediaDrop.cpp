@@ -99,18 +99,18 @@ void DropController::wireMediaDropSignals()
     // =====================================================================
     //  MEDIA DRAG-DROP -> CREATE CLIP ON TIMELINE
     // =====================================================================
-    if (m_ws->m_timelinePanel && m_ws->m_timeline) {
-        connect(m_ws->m_timelinePanel, &TimelinePanel::mediaDropped,
+    if (m_ws->timelinePanel() && m_ws->timeline()) {
+        connect(m_ws->timelinePanel(), &TimelinePanel::mediaDropped,
                 this, [this](const QString& filePath, uint64_t /*mediaHandle*/,
                              int64_t atTick, size_t trackIndex,
                              int dragMode) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_ws->m_timeline) return;
+            if (m_ws->isDestroying()) return;
+            if (!m_ws->timeline()) return;
             const bool forceAudioOnly = (dragMode == TimelinePanel::DragAudioOnly);
             const bool forceVideoOnly = (dragMode == TimelinePanel::DragVideoOnly);
 
             // If no project or no sequences exist, prompt to create one
-            if (!m_ws->m_project || m_ws->m_project->sequenceCount() == 0) {
+            if (!m_ws->project() || m_ws->project()->sequenceCount() == 0) {
                 // For Spine animation drops, just create a default sequence
                 if (filePath.startsWith(QStringLiteral("spine:"))) {
                     emit m_ws->requestNewProjectForMedia(QString(), atTick, trackIndex);
@@ -118,10 +118,10 @@ void DropController::wireMediaDropSignals()
                 }
                 uint32_t fileW = 0, fileH = 0;
                 double fileFps = 30.0;
-                if (m_ws->m_mediaPool) {
-                    uint64_t h = m_ws->m_mediaPool->open(filePath.toStdString());
+                if (m_ws->mediaPool()) {
+                    uint64_t h = m_ws->mediaPool()->open(filePath.toStdString());
                     if (h != 0) {
-                        const auto* info = m_ws->m_mediaPool->getInfo(h);
+                        const auto* info = m_ws->mediaPool()->getInfo(h);
                         if (info) {
                             fileW = info->width;
                             fileH = info->height;
@@ -134,7 +134,7 @@ void DropController::wireMediaDropSignals()
                     : QString("Unknown");
                 QString fpsStr = QString::number(fileFps, 'f', 2);
                 auto result = QMessageBox::question(
-                    m_ws->m_timelinePanel, "Create Sequence",
+                    m_ws->timelinePanel(), "Create Sequence",
                     QString("No sequence is open.\n\n"
                             "Do you want to create a new sequence with this media?\n\n"
                             "File: %1\n"
@@ -171,20 +171,20 @@ void DropController::wireMediaDropSignals()
 
                 // Resolve a video track (use the drop target if it's a video
                 // track, else the first existing video track, else create one).
-                Track* track = (trackIndex < m_ws->m_timeline->trackCount())
-                    ? m_ws->m_timeline->track(trackIndex) : nullptr;
+                Track* track = (trackIndex < m_ws->timeline()->trackCount())
+                    ? m_ws->timeline()->track(trackIndex) : nullptr;
                 bool createdTrack = false;
                 if (!track || track->type() != TrackType::Video || track->isDivider()) {
                     track = nullptr;
-                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                        Track* t = m_ws->m_timeline->track(i);
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        Track* t = m_ws->timeline()->track(i);
                         if (t && t->type() == TrackType::Video && !t->isDivider()) {
                             track = t;
                             break;
                         }
                     }
                     if (!track) {
-                        track = m_ws->m_timeline->addVideoTrack("V1");
+                        track = m_ws->timeline()->addVideoTrack("V1");
                         createdTrack = true;
                     }
                 }
@@ -203,15 +203,15 @@ void DropController::wireMediaDropSignals()
                 pc->setSeed(static_cast<uint32_t>(
                     std::hash<std::string>{}(folder.toStdString()) & 0xFFFFFFFFu));
 
-                if (m_ws->m_commandStack)
-                    m_ws->m_commandStack->execute(std::make_unique<AddClipCommand>(track, std::move(pc)));
+                if (m_ws->commandStack())
+                    m_ws->commandStack()->execute(std::make_unique<AddClipCommand>(track, std::move(pc)));
                 else
                     track->addClip(std::move(pc));
 
-                if (createdTrack) m_ws->m_timelinePanel->rebuildTracks();
-                else              m_ws->m_timelinePanel->refreshTrackContents();
+                if (createdTrack) m_ws->timelinePanel()->rebuildTracks();
+                else              m_ws->timelinePanel()->refreshTrackContents();
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 spdlog::info("Puppet dropped: '{}' variant '{}' at tick {}",
                              manifest.displayName.toStdString(), variant.toStdString(), atTick);
                 return;
@@ -328,9 +328,9 @@ void DropController::wireMediaDropSignals()
                 }
 
                 // Load the default shot preset to get character transform
-                if (!vcCharName.empty() && m_ws->m_shotPresetManager) {
+                if (!vcCharName.empty() && m_ws->shotPresetManager()) {
                     std::string presetName = vcCharName + " (Default)";
-                    auto preset = m_ws->m_shotPresetManager->load(presetName);
+                    auto preset = m_ws->shotPresetManager()->load(presetName);
                     if (preset) {
                         for (int ci2 = 0; ci2 < preset->characterCount(); ++ci2) {
                             auto* ch = preset->character(ci2);
@@ -360,10 +360,10 @@ void DropController::wireMediaDropSignals()
             // Never feed that to MediaPool::open — it tries to decode it as
             // a video file, fails, logs an error, and caches the URI as a
             // failed media handle.  SpineClip uses its own pipeline.
-            if (m_ws->m_mediaPool && !isSpineAnimDrop) {
-                auto handle = m_ws->m_mediaPool->open(path);
+            if (m_ws->mediaPool() && !isSpineAnimDrop) {
+                auto handle = m_ws->mediaPool()->open(path);
                 if (handle != InvalidMedia) {
-                    const auto* info = m_ws->m_mediaPool->getInfo(handle);
+                    const auto* info = m_ws->mediaPool()->getInfo(handle);
                     if (info) {
                         spdlog::info("DIAG-DROP mediaDropped '{}': info->duration={:.3f}s, "
                                      "frameCount={}, fps={:.2f}, hasAudio={}, videoIdx={}, audioIdx={}",
@@ -409,13 +409,13 @@ void DropController::wireMediaDropSignals()
             } else if (!isAudio && forceGhostVideoTrack) {
                 needsNewTrack = true;
             } else if (isAudio) {
-                if (trackIndex < m_ws->m_timeline->trackCount() &&
-                    m_ws->m_timeline->track(trackIndex)->type() == TrackType::Audio &&
-                    !m_ws->m_timeline->track(trackIndex)->isDivider())
+                if (trackIndex < m_ws->timeline()->trackCount() &&
+                    m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio &&
+                    !m_ws->timeline()->track(trackIndex)->isDivider())
                     targetTrackIdx = trackIndex;
                 if (targetTrackIdx == SIZE_MAX) {
-                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                        Track* tr = m_ws->m_timeline->track(i);
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        Track* tr = m_ws->timeline()->track(i);
                         if (tr->type() == TrackType::Audio && !tr->isDivider()) {
                             targetTrackIdx = i;
                             break;
@@ -429,9 +429,9 @@ void DropController::wireMediaDropSignals()
                 // (not a real index); fall through to the bottom-video
                 // fallback below.
                 if (!forceGhostAudioCompanion &&
-                    trackIndex < m_ws->m_timeline->trackCount() &&
-                    m_ws->m_timeline->track(trackIndex)->type() == TrackType::Video &&
-                    !m_ws->m_timeline->track(trackIndex)->isDivider())
+                    trackIndex < m_ws->timeline()->trackCount() &&
+                    m_ws->timeline()->track(trackIndex)->type() == TrackType::Video &&
+                    !m_ws->timeline()->track(trackIndex)->isDivider())
                     targetTrackIdx = trackIndex;
                 if (targetTrackIdx == SIZE_MAX) {
                     // Drop-on-audio fallback: land on the BOTTOM video layer
@@ -439,8 +439,8 @@ void DropController::wireMediaDropSignals()
                     // user is dropping, and matches Premiere's behaviour).
                     // Scan BACKWARD for the highest-index video, SKIPPING the
                     // divider itself (it's TrackType::Video but rejects clips).
-                    for (size_t i = m_ws->m_timeline->trackCount(); i > 0; --i) {
-                        Track* tr = m_ws->m_timeline->track(i - 1);
+                    for (size_t i = m_ws->timeline()->trackCount(); i > 0; --i) {
+                        Track* tr = m_ws->timeline()->track(i - 1);
                         if (tr->type() == TrackType::Video && !tr->isDivider()) {
                             targetTrackIdx = i - 1;
                             break;
@@ -475,14 +475,14 @@ void DropController::wireMediaDropSignals()
                     // ghost zone with a video+audio file.
                     needsNewAudioTrack = true;
                 } else {
-                    if (trackIndex < m_ws->m_timeline->trackCount() &&
-                        m_ws->m_timeline->track(trackIndex)->type() == TrackType::Audio &&
-                        !m_ws->m_timeline->track(trackIndex)->isDivider()) {
+                    if (trackIndex < m_ws->timeline()->trackCount() &&
+                        m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio &&
+                        !m_ws->timeline()->track(trackIndex)->isDivider()) {
                         audioTargetIdx = trackIndex;
                     }
                     if (audioTargetIdx == SIZE_MAX) {
-                        for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                            Track* tr = m_ws->m_timeline->track(i);
+                        for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                            Track* tr = m_ws->timeline()->track(i);
                             if (tr->type() == TrackType::Audio && !tr->isDivider()) {
                                 audioTargetIdx = i;
                                 break;
@@ -498,18 +498,18 @@ void DropController::wireMediaDropSignals()
             auto audioOverlapCmd  = std::make_shared<std::unique_ptr<Command>>(nullptr);
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
-                if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+                if (m_ws->isDestroying()) return;
                 if (trackStructureChanged)
-                    m_ws->m_timelinePanel->rebuildTracks();
+                    m_ws->timelinePanel()->rebuildTracks();
                 else
-                    m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->timelinePanel()->refreshTrackContents();
                 m_ws->invalidateAudioSources();
                 m_ws->invalidateCompositeCache();
                 m_ws->warmAudioCacheAsync();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
             };
 
-            if (m_ws->m_commandStack) {
+            if (m_ws->commandStack()) {
                 auto cmd = std::make_unique<LambdaCommand>(
                     "Add Media to Timeline",
                     /* execute / redo */
@@ -533,8 +533,8 @@ void DropController::wireMediaDropSignals()
                             // making rebuildTracks recompute dividerHeight
                             // from it and scale every divider with it.
                             float refTrackHeight = 0.0f;
-                            for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                                Track* tr = m_ws->m_timeline->track(ri);
+                            for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                                Track* tr = m_ws->timeline()->track(ri);
                                 if (!tr || tr->isDivider()) continue;
                                 float h = tr->height();
                                 if (h >= 1.0f) { refTrackHeight = h; break; }
@@ -545,24 +545,24 @@ void DropController::wireMediaDropSignals()
                                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                                 if (refTrackHeight >= 1.0f)
                                     newTrack->setHeight(refTrackHeight);
-                                t = m_ws->m_timeline->insertTrack(0, std::move(newTrack));
+                                t = m_ws->timeline()->insertTrack(0, std::move(newTrack));
                             } else if (isAudio && forceGhostAudioTrack) {
-                                t = m_ws->m_timeline->addAudioTrack("A1");
+                                t = m_ws->timeline()->addAudioTrack("A1");
                                 if (t && refTrackHeight >= 1.0f)
                                     t->setHeight(refTrackHeight);
                             } else {
-                                t = isAudio ? m_ws->m_timeline->addAudioTrack("A1")
-                                            : m_ws->m_timeline->addVideoTrack("V1");
+                                t = isAudio ? m_ws->timeline()->addAudioTrack("A1")
+                                            : m_ws->timeline()->addVideoTrack("V1");
                                 if (t && refTrackHeight >= 1.0f)
                                     t->setHeight(refTrackHeight);
                             }
                             // Find the index of the newly added track
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i) == t) { *tkIdx = i; break; }
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i) == t) { *tkIdx = i; break; }
                             }
                             *createdTk = true;
                         }
-                        Track* track = m_ws->m_timeline->track(*tkIdx);
+                        Track* track = m_ws->timeline()->track(*tkIdx);
                         if (!track) return;
                         spdlog::info("DIAG-DROP mediaDropped execute: resolved track idx={} name='{}' type={}",
                                      *tkIdx, track->name(),
@@ -635,16 +635,16 @@ void DropController::wireMediaDropSignals()
                         // straddle cases that openGap intentionally skips.
                         const bool insertMode =
                             (QGuiApplication::keyboardModifiers() & Qt::ControlModifier);
-                        if (insertMode && *tkIdx < m_ws->m_timeline->trackCount()) {
+                        if (insertMode && *tkIdx < m_ws->timeline()->trackCount()) {
                             auto openCmd = EditOperations::openGap(
-                                *m_ws->m_timeline, *tkIdx, atTick, dur);
+                                *m_ws->timeline(), *tkIdx, atTick, dur);
                             if (openCmd) openCmd->execute();
                         }
                         track->addClip(std::move(clip));
 
                         // Resolve overlaps (overwrite like Premiere Pro)
                         *overlapCmd = EditOperations::resolveOverlaps(
-                            *m_ws->m_timeline, *tkIdx, *clipId);
+                            *m_ws->timeline(), *tkIdx, *clipId);
                         if (*overlapCmd) (*overlapCmd)->execute();
 
                         // Verify clip state after overlap resolution
@@ -667,33 +667,33 @@ void DropController::wireMediaDropSignals()
                                 // so the companion audio track doesn't tower
                                 // over its neighbours.
                                 float refTrackHeight = 0.0f;
-                                for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                                    Track* tr = m_ws->m_timeline->track(ri);
+                                for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                                    Track* tr = m_ws->timeline()->track(ri);
                                     if (!tr || tr->isDivider()) continue;
                                     float h = tr->height();
                                     if (h >= 1.0f) { refTrackHeight = h; break; }
                                 }
-                                Track* at = m_ws->m_timeline->addAudioTrack("A1");
+                                Track* at = m_ws->timeline()->addAudioTrack("A1");
                                 if (at && refTrackHeight >= 1.0f)
                                     at->setHeight(refTrackHeight);
-                                for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                    if (m_ws->m_timeline->track(i) == at) { *audioTkIdx = i; break; }
+                                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                    if (m_ws->timeline()->track(i) == at) { *audioTkIdx = i; break; }
                                 }
                                 *audioCreatedTk = true;
                             } else if (*audioTkIdx != SIZE_MAX) {
                                 // Re-validate audio track index — a new video track may have been
                                 // inserted at index 0 above, shifting all existing track indices.
-                                if (*audioTkIdx >= m_ws->m_timeline->trackCount() ||
-                                    m_ws->m_timeline->track(*audioTkIdx)->type() != TrackType::Audio) {
-                                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                        if (m_ws->m_timeline->track(i)->type() == TrackType::Audio) {
+                                if (*audioTkIdx >= m_ws->timeline()->trackCount() ||
+                                    m_ws->timeline()->track(*audioTkIdx)->type() != TrackType::Audio) {
+                                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                        if (m_ws->timeline()->track(i)->type() == TrackType::Audio) {
                                             *audioTkIdx = i;
                                             break;
                                         }
                                     }
                                 }
                             }
-                            Track* audioTrack = m_ws->m_timeline->track(*audioTkIdx);
+                            Track* audioTrack = m_ws->timeline()->track(*audioTkIdx);
                             if (audioTrack) {
                                 auto ac = std::make_unique<AudioClip>(path);
                                 ac->setTimelineIn(atTick);
@@ -708,14 +708,14 @@ void DropController::wireMediaDropSignals()
                                 // Mirror the insert on the audio track when Ctrl
                                 // was held — the companion needs the same room
                                 // as the video so the pair stays in sync.
-                                if (insertMode && *audioTkIdx < m_ws->m_timeline->trackCount()) {
+                                if (insertMode && *audioTkIdx < m_ws->timeline()->trackCount()) {
                                     auto openAudio = EditOperations::openGap(
-                                        *m_ws->m_timeline, *audioTkIdx, atTick, dur);
+                                        *m_ws->timeline(), *audioTkIdx, atTick, dur);
                                     if (openAudio) openAudio->execute();
                                 }
                                 audioTrack->addClip(std::move(ac));
                                 *audioOverlapCmd = EditOperations::resolveOverlaps(
-                                    *m_ws->m_timeline, *audioTkIdx, *audioClipId);
+                                    *m_ws->timeline(), *audioTkIdx, *audioClipId);
                                 if (*audioOverlapCmd) (*audioOverlapCmd)->execute();
                             }
                         }
@@ -731,12 +731,12 @@ void DropController::wireMediaDropSignals()
                         // Undo audio companion first
                         if (mediaHasAudio) {
                             if (*audioOverlapCmd) (*audioOverlapCmd)->undo();
-                            if (*audioTkIdx < m_ws->m_timeline->trackCount()) {
-                                Track* at = m_ws->m_timeline->track(*audioTkIdx);
+                            if (*audioTkIdx < m_ws->timeline()->trackCount()) {
+                                Track* at = m_ws->timeline()->track(*audioTkIdx);
                                 if (at) at->removeClipById(*audioClipId);
                             }
                             if (*audioCreatedTk) {
-                                m_ws->m_timeline->removeTrack(*audioTkIdx);
+                                m_ws->timeline()->removeTrack(*audioTkIdx);
                                 *audioTkIdx = SIZE_MAX;
                                 *audioCreatedTk = false;
                             }
@@ -745,19 +745,19 @@ void DropController::wireMediaDropSignals()
                         // Undo overlap resolution first
                         if (*overlapCmd) (*overlapCmd)->undo();
 
-                        if (*tkIdx < m_ws->m_timeline->trackCount()) {
-                            Track* track = m_ws->m_timeline->track(*tkIdx);
+                        if (*tkIdx < m_ws->timeline()->trackCount()) {
+                            Track* track = m_ws->timeline()->track(*tkIdx);
                             if (track) track->removeClipById(*clipId);
                         }
                         if (*createdTk) {
-                            m_ws->m_timeline->removeTrack(*tkIdx);
+                            m_ws->timeline()->removeTrack(*tkIdx);
                             *tkIdx = SIZE_MAX;
                             *createdTk = false;
                         }
                         refreshAfter(trackStructureChanged);
                     }
                 );
-                m_ws->m_commandStack->execute(std::move(cmd));
+                m_ws->commandStack()->execute(std::move(cmd));
             } else {
                 // No command stack — fall back to direct add
                 Track* track = nullptr;
@@ -768,8 +768,8 @@ void DropController::wireMediaDropSignals()
                     // divider heights up with it via rebuildTracks'
                     // dividerHeight = refTrackHeight * 0.25 rule.
                     float refTrackHeight = 0.0f;
-                    for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                        Track* tr = m_ws->m_timeline->track(ri);
+                    for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                        Track* tr = m_ws->timeline()->track(ri);
                         if (!tr || tr->isDivider()) continue;
                         float h = tr->height();
                         if (h >= 1.0f) { refTrackHeight = h; break; }
@@ -778,23 +778,23 @@ void DropController::wireMediaDropSignals()
                         auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                         if (refTrackHeight >= 1.0f)
                             newTrack->setHeight(refTrackHeight);
-                        track = m_ws->m_timeline->insertTrack(0, std::move(newTrack));
+                        track = m_ws->timeline()->insertTrack(0, std::move(newTrack));
                         trackStructureChanged = true;
                     } else if (isAudio && forceGhostAudioTrack) {
-                        track = m_ws->m_timeline->addAudioTrack("A1");
+                        track = m_ws->timeline()->addAudioTrack("A1");
                         if (track && refTrackHeight >= 1.0f)
                             track->setHeight(refTrackHeight);
                         trackStructureChanged = true;
                     } else {
-                        track = isAudio ? m_ws->m_timeline->addAudioTrack("A1")
-                                        : m_ws->m_timeline->addVideoTrack("V1");
+                        track = isAudio ? m_ws->timeline()->addAudioTrack("A1")
+                                        : m_ws->timeline()->addVideoTrack("V1");
                         if (track && refTrackHeight >= 1.0f)
                             track->setHeight(refTrackHeight);
                         trackStructureChanged = true;
                     }
                 }
                 else
-                    track = m_ws->m_timeline->track(targetTrackIdx);
+                    track = m_ws->timeline()->track(targetTrackIdx);
                 if (!track) return;
 
                 std::unique_ptr<Clip> clip;
@@ -837,20 +837,20 @@ void DropController::wireMediaDropSignals()
 
                 // Resolve overlaps in fallback path
                 size_t fbTkIdx = SIZE_MAX;
-                for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                    if (m_ws->m_timeline->track(i) == track) { fbTkIdx = i; break; }
+                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                    if (m_ws->timeline()->track(i) == track) { fbTkIdx = i; break; }
                 }
                 if (fbTkIdx != SIZE_MAX) {
-                    auto cmd = EditOperations::resolveOverlaps(*m_ws->m_timeline, fbTkIdx, cid);
+                    auto cmd = EditOperations::resolveOverlaps(*m_ws->timeline(), fbTkIdx, cid);
                     if (cmd) cmd->execute();
                 }
 
                 // -- Create companion AudioClip for video+audio media (fallback path) --
                 if (mediaHasAudio) {
                     Track* audioTrack = nullptr;
-                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                        if (m_ws->m_timeline->track(i)->type() == TrackType::Audio) {
-                            audioTrack = m_ws->m_timeline->track(i);
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        if (m_ws->timeline()->track(i)->type() == TrackType::Audio) {
+                            audioTrack = m_ws->timeline()->track(i);
                             break;
                         }
                     }
@@ -859,13 +859,13 @@ void DropController::wireMediaDropSignals()
                         // track matches the existing standard track height
                         // instead of using Track's default 80px.
                         float refTrackHeight = 0.0f;
-                        for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                            Track* tr = m_ws->m_timeline->track(ri);
+                        for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                            Track* tr = m_ws->timeline()->track(ri);
                             if (!tr || tr->isDivider()) continue;
                             float h = tr->height();
                             if (h >= 1.0f) { refTrackHeight = h; break; }
                         }
-                        audioTrack = m_ws->m_timeline->addAudioTrack("A1");
+                        audioTrack = m_ws->timeline()->addAudioTrack("A1");
                         if (audioTrack && refTrackHeight >= 1.0f)
                             audioTrack->setHeight(refTrackHeight);
                         trackStructureChanged = true;
@@ -880,11 +880,11 @@ void DropController::wireMediaDropSignals()
                         uint64_t acid = ac->id();
                         audioTrack->addClip(std::move(ac));
                         size_t fbAudioIdx = SIZE_MAX;
-                        for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                            if (m_ws->m_timeline->track(i) == audioTrack) { fbAudioIdx = i; break; }
+                        for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                            if (m_ws->timeline()->track(i) == audioTrack) { fbAudioIdx = i; break; }
                         }
                         if (fbAudioIdx != SIZE_MAX) {
-                            auto acmd = EditOperations::resolveOverlaps(*m_ws->m_timeline, fbAudioIdx, acid);
+                            auto acmd = EditOperations::resolveOverlaps(*m_ws->timeline(), fbAudioIdx, acid);
                             if (acmd) acmd->execute();
                         }
                     }
@@ -898,13 +898,13 @@ void DropController::wireMediaDropSignals()
         });
 
         // Source Monitor drag with in/out region
-        connect(m_ws->m_timelinePanel, &TimelinePanel::mediaDroppedWithRegion,
+        connect(m_ws->timelinePanel(), &TimelinePanel::mediaDroppedWithRegion,
                 this, [this](const QString& filePath, uint64_t /*mediaHandle*/,
                              int64_t atTick, size_t trackIndex,
                              int64_t sourceIn, int64_t sourceOut,
                              int dragMode) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_ws->m_timeline) return;
+            if (m_ws->isDestroying()) return;
+            if (!m_ws->timeline()) return;
             const bool forceAudioOnly = (dragMode == TimelinePanel::DragAudioOnly);
             const bool forceVideoOnly = (dragMode == TimelinePanel::DragVideoOnly);
 
@@ -929,10 +929,10 @@ void DropController::wireMediaDropSignals()
             int64_t sourceDur = dur;  // fallback: region length
             double sourceFps = 0.0;
             bool mediaHasAudio = false;
-            if (m_ws->m_mediaPool) {
-                auto handle = m_ws->m_mediaPool->open(path);
+            if (m_ws->mediaPool()) {
+                auto handle = m_ws->mediaPool()->open(path);
                 if (handle != InvalidMedia) {
-                    const auto* info = m_ws->m_mediaPool->getInfo(handle);
+                    const auto* info = m_ws->mediaPool()->getInfo(handle);
                     if (info) {
                         spdlog::info("DIAG-DROP mediaDroppedWithRegion '{}': info->duration={:.3f}s, "
                                      "frameCount={}, fps={:.2f}, hasAudio={}",
@@ -1018,9 +1018,9 @@ void DropController::wireMediaDropSignals()
                     }
                 }
 
-                if (!vcCharName2.empty() && m_ws->m_shotPresetManager) {
+                if (!vcCharName2.empty() && m_ws->shotPresetManager()) {
                     std::string presetName = vcCharName2 + " (Default)";
-                    auto preset = m_ws->m_shotPresetManager->load(presetName);
+                    auto preset = m_ws->shotPresetManager()->load(presetName);
                     if (preset) {
                         for (int ci2 = 0; ci2 < preset->characterCount(); ++ci2) {
                             auto* ch = preset->character(ci2);
@@ -1048,13 +1048,13 @@ void DropController::wireMediaDropSignals()
             } else if (!isAudio && forceGhostVideoTrack) {
                 needsNewTrack = true;
             } else if (isAudio) {
-                if (trackIndex < m_ws->m_timeline->trackCount() &&
-                    m_ws->m_timeline->track(trackIndex)->type() == TrackType::Audio &&
-                    !m_ws->m_timeline->track(trackIndex)->isDivider())
+                if (trackIndex < m_ws->timeline()->trackCount() &&
+                    m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio &&
+                    !m_ws->timeline()->track(trackIndex)->isDivider())
                     targetTrackIdx = trackIndex;
                 if (targetTrackIdx == SIZE_MAX) {
-                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                        Track* tr = m_ws->m_timeline->track(i);
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        Track* tr = m_ws->timeline()->track(i);
                         if (tr->type() == TrackType::Audio && !tr->isDivider()) {
                             targetTrackIdx = i; break;
                         }
@@ -1062,15 +1062,15 @@ void DropController::wireMediaDropSignals()
                 }
                 if (targetTrackIdx == SIZE_MAX) needsNewTrack = true;
             } else {
-                if (trackIndex < m_ws->m_timeline->trackCount() &&
-                    m_ws->m_timeline->track(trackIndex)->type() == TrackType::Video &&
-                    !m_ws->m_timeline->track(trackIndex)->isDivider())
+                if (trackIndex < m_ws->timeline()->trackCount() &&
+                    m_ws->timeline()->track(trackIndex)->type() == TrackType::Video &&
+                    !m_ws->timeline()->track(trackIndex)->isDivider())
                     targetTrackIdx = trackIndex;
                 if (targetTrackIdx == SIZE_MAX) {
                     // Bottom video layer (highest video index, skipping the
                     // divider). See the mediaDropped variant for rationale.
-                    for (size_t i = m_ws->m_timeline->trackCount(); i > 0; --i) {
-                        Track* tr = m_ws->m_timeline->track(i - 1);
+                    for (size_t i = m_ws->timeline()->trackCount(); i > 0; --i) {
+                        Track* tr = m_ws->timeline()->track(i - 1);
                         if (tr->type() == TrackType::Video && !tr->isDivider()) {
                             targetTrackIdx = i - 1; break;
                         }
@@ -1092,8 +1092,8 @@ void DropController::wireMediaDropSignals()
             size_t audioTargetIdx2 = SIZE_MAX;
             bool needsNewAudioTrack2 = false;
             if (mediaHasAudio) {
-                for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                    Track* tr = m_ws->m_timeline->track(i);
+                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                    Track* tr = m_ws->timeline()->track(i);
                     if (tr->type() == TrackType::Audio && !tr->isDivider()) {
                         audioTargetIdx2 = i; break;
                     }
@@ -1106,18 +1106,18 @@ void DropController::wireMediaDropSignals()
             auto audioOverlapCmd2  = std::make_shared<std::unique_ptr<Command>>(nullptr);
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
-                if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+                if (m_ws->isDestroying()) return;
                 if (trackStructureChanged)
-                    m_ws->m_timelinePanel->rebuildTracks();
+                    m_ws->timelinePanel()->rebuildTracks();
                 else
-                    m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->timelinePanel()->refreshTrackContents();
                 m_ws->invalidateAudioSources();
                 m_ws->invalidateCompositeCache();
                 m_ws->warmAudioCacheAsync();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
             };
 
-            if (m_ws->m_commandStack) {
+            if (m_ws->commandStack()) {
                 auto cmd = std::make_unique<LambdaCommand>(
                     "Add Source Region to Timeline",
                     /* execute / redo */
@@ -1132,8 +1132,8 @@ void DropController::wireMediaDropSignals()
                             // Match the existing standard track height —
                             // see comment in the mediaDropped variant.
                             float refTrackHeight = 0.0f;
-                            for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                                Track* tr = m_ws->m_timeline->track(ri);
+                            for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                                Track* tr = m_ws->timeline()->track(ri);
                                 if (!tr || tr->isDivider()) continue;
                                 float h = tr->height();
                                 if (h >= 1.0f) { refTrackHeight = h; break; }
@@ -1143,23 +1143,23 @@ void DropController::wireMediaDropSignals()
                                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                                 if (refTrackHeight >= 1.0f)
                                     newTrack->setHeight(refTrackHeight);
-                                t = m_ws->m_timeline->insertTrack(0, std::move(newTrack));
+                                t = m_ws->timeline()->insertTrack(0, std::move(newTrack));
                             } else if (isAudio && forceGhostAudioTrack) {
-                                t = m_ws->m_timeline->addAudioTrack("A1");
+                                t = m_ws->timeline()->addAudioTrack("A1");
                                 if (t && refTrackHeight >= 1.0f)
                                     t->setHeight(refTrackHeight);
                             } else {
-                                t = isAudio ? m_ws->m_timeline->addAudioTrack("A1")
-                                            : m_ws->m_timeline->addVideoTrack("V1");
+                                t = isAudio ? m_ws->timeline()->addAudioTrack("A1")
+                                            : m_ws->timeline()->addVideoTrack("V1");
                                 if (t && refTrackHeight >= 1.0f)
                                     t->setHeight(refTrackHeight);
                             }
-                            for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                if (m_ws->m_timeline->track(i) == t) { *tkIdx = i; break; }
+                            for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                if (m_ws->timeline()->track(i) == t) { *tkIdx = i; break; }
                             }
                             *createdTk = true;
                         }
-                        Track* track = m_ws->m_timeline->track(*tkIdx);
+                        Track* track = m_ws->timeline()->track(*tkIdx);
                         if (!track) return;
                         spdlog::info("DIAG-DROP mediaDroppedWithRegion execute: resolved track idx={} name='{}' type={}",
                                      *tkIdx, track->name(),
@@ -1209,7 +1209,7 @@ void DropController::wireMediaDropSignals()
 
                         // Resolve overlaps (overwrite like Premiere Pro)
                         *overlapCmd2 = EditOperations::resolveOverlaps(
-                            *m_ws->m_timeline, *tkIdx, *clipId);
+                            *m_ws->timeline(), *tkIdx, *clipId);
                         if (*overlapCmd2) (*overlapCmd2)->execute();
 
                         // Verify clip state after overlap resolution
@@ -1231,33 +1231,33 @@ void DropController::wireMediaDropSignals()
                                 // Match existing track height — see comment
                                 // in the mediaDropped variant.
                                 float refTrackHeight = 0.0f;
-                                for (size_t ri = 0; ri < m_ws->m_timeline->trackCount(); ++ri) {
-                                    Track* tr = m_ws->m_timeline->track(ri);
+                                for (size_t ri = 0; ri < m_ws->timeline()->trackCount(); ++ri) {
+                                    Track* tr = m_ws->timeline()->track(ri);
                                     if (!tr || tr->isDivider()) continue;
                                     float h = tr->height();
                                     if (h >= 1.0f) { refTrackHeight = h; break; }
                                 }
-                                Track* at = m_ws->m_timeline->addAudioTrack("A1");
+                                Track* at = m_ws->timeline()->addAudioTrack("A1");
                                 if (at && refTrackHeight >= 1.0f)
                                     at->setHeight(refTrackHeight);
-                                for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                    if (m_ws->m_timeline->track(i) == at) { *audioTkIdx2 = i; break; }
+                                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                    if (m_ws->timeline()->track(i) == at) { *audioTkIdx2 = i; break; }
                                 }
                                 *audioCreatedTk2 = true;
                             } else if (*audioTkIdx2 != SIZE_MAX) {
                                 // Re-validate audio track index — a new video track may have been
                                 // inserted at index 0 above, shifting all existing track indices.
-                                if (*audioTkIdx2 >= m_ws->m_timeline->trackCount() ||
-                                    m_ws->m_timeline->track(*audioTkIdx2)->type() != TrackType::Audio) {
-                                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                                        if (m_ws->m_timeline->track(i)->type() == TrackType::Audio) {
+                                if (*audioTkIdx2 >= m_ws->timeline()->trackCount() ||
+                                    m_ws->timeline()->track(*audioTkIdx2)->type() != TrackType::Audio) {
+                                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                                        if (m_ws->timeline()->track(i)->type() == TrackType::Audio) {
                                             *audioTkIdx2 = i;
                                             break;
                                         }
                                     }
                                 }
                             }
-                            Track* audioTrack = m_ws->m_timeline->track(*audioTkIdx2);
+                            Track* audioTrack = m_ws->timeline()->track(*audioTkIdx2);
                             if (audioTrack) {
                                 auto ac = std::make_unique<AudioClip>(path);
                                 ac->setTimelineIn(atTick);
@@ -1269,7 +1269,7 @@ void DropController::wireMediaDropSignals()
                                 *audioClipId2 = ac->id();
                                 audioTrack->addClip(std::move(ac));
                                 *audioOverlapCmd2 = EditOperations::resolveOverlaps(
-                                    *m_ws->m_timeline, *audioTkIdx2, *audioClipId2);
+                                    *m_ws->timeline(), *audioTkIdx2, *audioClipId2);
                                 if (*audioOverlapCmd2) (*audioOverlapCmd2)->execute();
                             }
                         }
@@ -1285,12 +1285,12 @@ void DropController::wireMediaDropSignals()
                         // Undo audio companion first
                         if (mediaHasAudio) {
                             if (*audioOverlapCmd2) (*audioOverlapCmd2)->undo();
-                            if (*audioTkIdx2 < m_ws->m_timeline->trackCount()) {
-                                Track* at = m_ws->m_timeline->track(*audioTkIdx2);
+                            if (*audioTkIdx2 < m_ws->timeline()->trackCount()) {
+                                Track* at = m_ws->timeline()->track(*audioTkIdx2);
                                 if (at) at->removeClipById(*audioClipId2);
                             }
                             if (*audioCreatedTk2) {
-                                m_ws->m_timeline->removeTrack(*audioTkIdx2);
+                                m_ws->timeline()->removeTrack(*audioTkIdx2);
                                 *audioTkIdx2 = SIZE_MAX;
                                 *audioCreatedTk2 = false;
                             }
@@ -1299,19 +1299,19 @@ void DropController::wireMediaDropSignals()
                         // Undo overlap resolution
                         if (*overlapCmd2) (*overlapCmd2)->undo();
 
-                        if (*tkIdx < m_ws->m_timeline->trackCount()) {
-                            Track* track = m_ws->m_timeline->track(*tkIdx);
+                        if (*tkIdx < m_ws->timeline()->trackCount()) {
+                            Track* track = m_ws->timeline()->track(*tkIdx);
                             if (track) track->removeClipById(*clipId);
                         }
                         if (*createdTk) {
-                            m_ws->m_timeline->removeTrack(*tkIdx);
+                            m_ws->timeline()->removeTrack(*tkIdx);
                             *tkIdx = SIZE_MAX;
                             *createdTk = false;
                         }
                         refreshAfter(trackStructureChanged);
                     }
                 );
-                m_ws->m_commandStack->execute(std::move(cmd));
+                m_ws->commandStack()->execute(std::move(cmd));
             }
 
             spdlog::info("Source region dropped on timeline: '{}' at tick {}, sourceIn={} dur={}",
@@ -1319,19 +1319,19 @@ void DropController::wireMediaDropSignals()
         });
 
         // External file drop from Windows Explorer — add to bin + timeline
-        connect(m_ws->m_timelinePanel, &TimelinePanel::externalFileDropped,
+        connect(m_ws->timelinePanel(), &TimelinePanel::externalFileDropped,
                 this, [this](const QString& filePath,
                              int64_t atTick, size_t trackIndex) {
-            if (!m_ws->m_timeline) return;
+            if (!m_ws->timeline()) return;
 
             // If no project or no sequences exist, prompt to create one
-            if (!m_ws->m_project || m_ws->m_project->sequenceCount() == 0) {
+            if (!m_ws->project() || m_ws->project()->sequenceCount() == 0) {
                 uint32_t fileW = 0, fileH = 0;
                 double fileFps = 30.0;
-                if (m_ws->m_mediaPool) {
-                    uint64_t h = m_ws->m_mediaPool->open(filePath.toStdString());
+                if (m_ws->mediaPool()) {
+                    uint64_t h = m_ws->mediaPool()->open(filePath.toStdString());
                     if (h != 0) {
-                        const auto* info = m_ws->m_mediaPool->getInfo(h);
+                        const auto* info = m_ws->mediaPool()->getInfo(h);
                         if (info) {
                             fileW = info->width;
                             fileH = info->height;
@@ -1344,7 +1344,7 @@ void DropController::wireMediaDropSignals()
                     : QString("Unknown");
                 QString fpsStr = QString::number(fileFps, 'f', 2);
                 auto result = QMessageBox::question(
-                    m_ws->m_timelinePanel, "Create Sequence",
+                    m_ws->timelinePanel(), "Create Sequence",
                     QString("No sequence is open.\n\n"
                             "Do you want to create a new sequence with this media?\n\n"
                             "File: %1\n"
@@ -1360,27 +1360,27 @@ void DropController::wireMediaDropSignals()
             }
 
             // Auto-add to the Project Bin (skip if already present)
-            if (m_ws->m_projectBin) {
+            if (m_ws->projectBin()) {
                 namespace fs = std::filesystem;
-                m_ws->m_projectBin->addFiles({ fs::path(filePath.toStdWString()) });
+                m_ws->projectBin()->addFiles({ fs::path(filePath.toStdWString()) });
             }
 
             // Open in MediaPool and forward to the normal media-drop path
             uint64_t handle = 0;
-            if (m_ws->m_mediaPool)
-                handle = m_ws->m_mediaPool->open(filePath.toStdString());
+            if (m_ws->mediaPool())
+                handle = m_ws->mediaPool()->open(filePath.toStdString());
 
-            emit m_ws->m_timelinePanel->mediaDropped(filePath, handle, atTick, trackIndex);
+            emit m_ws->timelinePanel()->mediaDropped(filePath, handle, atTick, trackIndex);
         });
 
         // =================================================================
         //  ADJUSTMENT-LAYER DRAG-DROP -> CREATE AdjustmentClip ON TIMELINE
         // =================================================================
-        connect(m_ws->m_timelinePanel, &TimelinePanel::adjustmentDropped,
+        connect(m_ws->timelinePanel(), &TimelinePanel::adjustmentDropped,
                 this, [this](const QString& name, int64_t atTick,
                              size_t trackIndex) {
-            if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
-            if (!m_ws->m_timeline) return;
+            if (m_ws->isDestroying()) return;
+            if (!m_ws->timeline()) return;
 
             const int64_t dur = secondsToTicks(5.0);
             const bool forceGhostVideoTrack = (trackIndex == (SIZE_MAX - 1));
@@ -1390,27 +1390,27 @@ void DropController::wireMediaDropSignals()
             // audio track / empty area, fall back to the top-most video
             // track. Create one if the sequence has none.
             auto resolveVideoTrack = [&]() -> Track* {
-                if (forceGhostVideoTrack || trackIndex >= m_ws->m_timeline->trackCount() ||
-                    m_ws->m_timeline->track(trackIndex)->type() != TrackType::Video ||
-                    m_ws->m_timeline->track(trackIndex)->isDivider()) {
-                    for (size_t i = 0; i < m_ws->m_timeline->trackCount(); ++i) {
-                        Track* tr = m_ws->m_timeline->track(i);
+                if (forceGhostVideoTrack || trackIndex >= m_ws->timeline()->trackCount() ||
+                    m_ws->timeline()->track(trackIndex)->type() != TrackType::Video ||
+                    m_ws->timeline()->track(trackIndex)->isDivider()) {
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        Track* tr = m_ws->timeline()->track(i);
                         if (tr && tr->type() == TrackType::Video && !tr->isDivider())
                             return tr;
                     }
                     return nullptr;
                 }
-                return m_ws->m_timeline->track(trackIndex);
+                return m_ws->timeline()->track(trackIndex);
             };
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
-                if (m_ws->m_destroying.load(std::memory_order_acquire)) return;
+                if (m_ws->isDestroying()) return;
                 if (trackStructureChanged)
-                    m_ws->m_timelinePanel->rebuildTracks();
+                    m_ws->timelinePanel()->rebuildTracks();
                 else
-                    m_ws->m_timelinePanel->refreshTrackContents();
+                    m_ws->timelinePanel()->refreshTrackContents();
                 m_ws->invalidateCompositeCache();
-                if (m_ws->m_programMonitor) m_ws->m_programMonitor->requestRefresh();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
             };
 
             // If no video track exists, create one (matches the media-drop
@@ -1418,7 +1418,7 @@ void DropController::wireMediaDropSignals()
             bool createdTrack = false;
             Track* track = resolveVideoTrack();
             if (!track) {
-                track = m_ws->m_timeline->addVideoTrack("Video 1");
+                track = m_ws->timeline()->addVideoTrack("Video 1");
                 createdTrack = true;
                 if (!track) return;
             }
@@ -1428,8 +1428,8 @@ void DropController::wireMediaDropSignals()
             clip->setDuration(dur);
             clip->setLabel(name.toStdString());
 
-            if (m_ws->m_commandStack) {
-                m_ws->m_commandStack->execute(std::make_unique<AddClipCommand>(
+            if (m_ws->commandStack()) {
+                m_ws->commandStack()->execute(std::make_unique<AddClipCommand>(
                     track, std::move(clip)));
             } else {
                 track->addClip(std::move(clip));
