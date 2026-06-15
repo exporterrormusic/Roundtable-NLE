@@ -130,8 +130,59 @@ PHASE 4 — Premiere-parity features (in recommended order)
          bar doesn't cry wolf.  NOT yet considered (need real frame-time
          measurement = slice 2): transitions, layer count, decode cost.  No
          cache, no background thread, no state hash yet.  Runtime-eyeball owed.
-       SLICE 2 — state-hash + background segment render + "Render In to Out"
-         (the real engine; gate tests-first, leans on compositor + cache).
+       SLICE 2 — the real engine.  Sub-steps:
+         2a — config state-hash.  DONE 2026-06-13.  core/project/RenderStateHash
+           .{h,cpp}: hashCompositeConfigAt(timeline, tick) -> u64, the cache
+           INVALIDATION key.  Hashes the FULL serialized form of each active
+           clip (reuses writeClip → can't miss a persisted field; cosmetic
+           fields over-invalidate, the SAFE direction) + cross-track mute/solo
+           + sequence Settings (res/fps/colour) + active transitions.  Excludes
+           the tick value itself (same config across ticks hashes equal; cache
+           key = tick+tier+configHash).  Unit-tested (tests/core/test_render_
+           state_hash.cpp, 10 tests incl. every-edit-invalidates + inactive-
+           clip-edit-does-NOT).  KNOWN GAP to close before 2c trusts it: nested
+           SequenceClip inner-timeline edits (writeClip stores only the ref —
+           needs Project recursion).  See the header for the full gap list.
+         2b — SegmentRenderCache store.  DONE 2026-06-13.  core/cache/
+           SegmentRenderCache.{h,cpp}: in-memory cache of COMPOSITED frames
+           keyed (tick, tier); each entry remembers its configHash and a
+           lookup hits only when the caller's CURRENT hash matches (any edit →
+           silent miss, no separate invalidation bookkeeping).  Keyed by
+           (tick,tier) not (tick,tier,hash) so a re-render REPLACES the stale
+           frame.  LRU byte budget (own, separate from FrameCache), thread-safe
+           (2c writes / UI reads).  hasFresh() = non-dropping probe for the bar.
+           get() drops stale entries proactively (callers always query the
+           current hash).  Unit-tested (tests/core/test_segment_render_cache.cpp,
+           8 tests).  Disk write-behind (mirror DiskFrameCache) deferred — 2b is
+           the in-memory store + staleness semantics.
+         2c — render DRIVER.  APPROACH CHOSEN 2026-06-13: explicit "Render In
+           to Out" (foreground, mirrors export), NOT continuous idle render.
+           De-risked / findings (write-side, not yet built):
+             * compositeFrame() is sole-compositor ONLY during playback; one-
+               shot callers already drive it directly when playback is STOPPED
+               (export via the MainWindowUIBuild:648 callback; thumbnail grabs
+               in ProjectControllerMisc.cpp:120).  The driver fits that pattern:
+               stop playback, then call compositeFrame(tick,outW,outH,...) per
+               frame-aligned tick over [in,out].
+             * Cache lives IN CompositeService (TimelineWorkspace owns the
+               CompositeService — no App plumbing needed).  Add m_segmentRender
+               Cache + accessor + renderRangeToCache(from,to).
+             * Composite OUTPUT may be GPU-ring-buffer-backed → call
+               frame->ensurePixels() to force CPU pixels BEFORE put() or a
+               replayed frame shows garbage.
+             * DO NOT use a modal QProgressDialog: the s_modalDialogActive guard
+               in compositeFrame() suppresses compositing while a modal exec is
+               up (returns last-good).  Use a non-modal progress + processEvents,
+               or chunk via the event loop; support cancel + skip-already-fresh.
+             * tier: render at the current m_playbackTier so playback consult
+               (next step) keys match.  configHash = hashCompositeConfigAt.
+         2c-read (next, isolated, GPU-verify): compositeFrame() consults the
+           cache at its top (non-nested, matching tier + outW/outH + configHash)
+           and early-returns the cached frame — the actual playback speedup.
+           Kept separate because it edits the crash-sensitive hot path.
+         2d — UI: "Render In to Out" command (TimelineWorkspace hub) + bar
+           Cached(green)/Mixed via SegmentRenderCache::hasFresh in
+           refreshRenderBar (per-segment representative tick).
        SLICE 3 — export reuse of green FULL-RES segments (tier gate: preview
          renders Half/Quarter, export wants Full).
      HARD PARTS for slices 2-3: invalidation correctness (state hash must cover

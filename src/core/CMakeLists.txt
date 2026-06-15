@@ -6,6 +6,7 @@ add_library(roundtable_core STATIC
     project/ProjectSerializer.cpp
     project/ProjectSerializerIO.cpp
     project/ClipSerialization.cpp
+    project/RenderStateHash.cpp
     project/AssetDatabase.cpp
     project/Settings.cpp
     project/AutoSave.cpp
@@ -81,6 +82,7 @@ add_library(roundtable_core STATIC
     cache/FrameCache.cpp
     cache/CachePolicy.cpp
     cache/DiskFrameCache.cpp
+    cache/SegmentRenderCache.cpp
     audio/WaveformCache.cpp
     audio/BeatDetector.cpp
     playback/AVSyncClock.cpp
