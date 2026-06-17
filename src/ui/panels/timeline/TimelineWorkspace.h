@@ -252,6 +252,25 @@ public:
     std::shared_ptr<struct CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                        bool scrubMode = false);
 
+    /// Re-probe the segment cache and repaint the timeline render bar.  Call
+    /// after anything that changes cache state behind the timeline's back —
+    /// e.g. returning to the Timeline page after an export populated it.
+    void refreshRenderBar();
+
+    /// §4.6 slice 3 export write-through: store a finished EXPORT frame (full-
+    /// res, pixels present) into the segment cache so a first export populates
+    /// it (re-exports reuse).  Forwards to CompositeService::cacheExportFrame.
+    void cacheExportFrame(int64_t tick,
+                          const std::shared_ptr<struct CachedFrame>& frame);
+
+    /// §4.6 2d: "Render In to Out" — pre-render the marked in/out range into
+    /// the segment cache at the current playback composite size, then enable
+    /// the cache-read consult so playback replays the green segment.  Stops
+    /// playback first (mirrors export).
+    /// Returns: >=0 frames newly rendered; -1 no valid in/out range; -2 no
+    /// composite service / zero output size.  Caller shows the user feedback.
+    int renderInToOut();
+
     /// Force Full resolution for ExportPanel preview/export frames (wraps CompositeService).
     void setForceFullResolution(bool force);
 
@@ -327,6 +346,9 @@ private:
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
+    // Guards re-entrant renderInToOut() (its processEvents pump could redispatch
+    // the Ctrl+Shift+R action mid-render).
+    bool m_renderingInToOut{false};
 
     // Panels (owned by splitter hierarchy)
     TimelinePanel*    m_timelinePanel{nullptr};

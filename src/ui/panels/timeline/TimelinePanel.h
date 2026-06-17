@@ -45,6 +45,7 @@ class CommandStack;
 class ShortcutManager;
 class GhostTrackOverlay;
 class MediaPool;
+class CompositeService;
 
 /// Track header widget (name, V/A icon, lock/mute/solo, height handle).
 class TrackHeader : public QWidget
@@ -157,6 +158,14 @@ public:
     /// Number of track widgets currently laid out (used to detect when the
     /// timeline's track count changed and a full rebuild is required).
     [[nodiscard]] size_t laidOutTrackCount() const { return m_trackWidgets.size(); }
+
+    /// Audio anchor the last media dragMove resolved — the drop handler reads
+    /// this so its placement matches the ghost preview exactly (first audio
+    /// track index the streams occupy; past the last existing audio track means
+    /// the user dragged into new-track space).  SIZE_MAX when no audio.
+    [[nodiscard]] size_t ghostDropAudioAnchor() const { return m_ghostDropAudioAnchor; }
+    /// Number of discrete audio streams in the source of the last media drag.
+    [[nodiscard]] int ghostDropAudioStreams() const { return m_ghostDropAudioStreams; }
 
     /// Incremental track insertion — creates a header + widget for one new
     /// track without destroying existing widgets.  Avoids the blank flash
@@ -290,6 +299,10 @@ public:
 
     /// Set pointer to media pool (for drag preview duration lookup).
     void setMediaPool(MediaPool* pool) noexcept { m_mediaPool = pool; }
+
+    /// Set pointer to the composite service so the render bar can show which
+    /// segments are pre-rendered (green) via the segment cache (§4.6 2d).
+    void setCompositeService(CompositeService* svc) noexcept { m_compositeService = svc; }
 
     /// Last clicked clip edge (for Ctrl+T default transition).
     /// Returns { clipRef, edge, valid } — valid is false if no edge was clicked.
@@ -471,6 +484,7 @@ private:
     // Animation video cache (for Spine clip cached-vs-live color override)
     const AnimationVideoCache* m_animVideoCache{nullptr};
     MediaPool* m_mediaPool{nullptr};
+    CompositeService* m_compositeService{nullptr};
 
     // Step 13: Editing state
     EditTool          m_activeTool{EditTool::Selection};
@@ -572,6 +586,15 @@ private:
     bool   m_ghostTrackOnExisting{false}; // true = ghost overlay positioned on an existing track (multi-clip drag)
     int    m_ghostTrackY{0};           // Y position of ghost track in panel coords
     int    m_ghostTrackHeight{60};     // height of the ghost track
+    // Audio anchor resolved by the LAST dragMove for the current media drag.
+    // The drop reuses this exact decision instead of re-deriving routing from
+    // coarse above/below booleans — eliminates ghost/drop divergence (the
+    // multi-stream "always new tracks" and single-stream "below won't create"
+    // bugs).  m_ghostDropAudioAnchor is the first audio track index the streams
+    // occupy; if it points PAST the last existing audio track the user dragged
+    // into new-track space (so every stream is brand-new).  SIZE_MAX = no audio.
+    size_t m_ghostDropAudioAnchor{SIZE_MAX};
+    int    m_ghostDropAudioStreams{1}; // discrete audio streams in the dragged source
     GhostTrackOverlay* m_ghostOverlay{nullptr};
     // Second overlay for the companion side of a video+audio drag — so
     // both the video destination AND the audio destination can show

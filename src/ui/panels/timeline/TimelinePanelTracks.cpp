@@ -15,6 +15,8 @@
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
 #include "timeline/RenderComplexity.h"
+#include "CompositeService.h"
+#include "Constants.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/TrackCommands.h"
@@ -28,6 +30,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace rt {
 
@@ -758,20 +761,96 @@ void TimelinePanel::refreshRenderBar()
 
     const auto analysis = analyzeRenderComplexity(*m_timeline);
 
+    // Frame grid for sampling the segment cache (its keys are frame-aligned
+    // ticks; segment boundaries from RenderComplexity are not, so we must
+    // snap to the grid or every probe would miss).
+    double fps = m_timeline->settings().frameRate();
+    if (!(fps > 0.0)) fps = 30.0;
+    const double ticksPerFrame = static_cast<double>(kTicksPerSecond) / fps;
+
     std::vector<RenderBarSegment> bar;
     bar.reserve(analysis.size());
+
+    // Subdivide a NeedsRender span into CACHED (green) and not-yet (red) runs
+    // by walking frame-aligned ticks and coalescing equal-state runs — so the
+    // bar shows green EXACTLY over the pre-rendered frames (like Premiere),
+    // rather than collapsing a partially-rendered clip into one vague colour.
+    // (Probing hashes the config per frame, so cap the probe count on huge
+    // spans — pixel resolution on the bar is the practical limit anyway.)
+    auto appendNeedsRender = [&](int64_t segStart, int64_t segEnd) {
+        if (!m_compositeService) {
+            bar.push_back({segStart, segEnd, RenderBarStatus::NeedsRender});
+            return;
+        }
+        const int64_t firstF = static_cast<int64_t>(
+            std::ceil(static_cast<double>(segStart) / ticksPerFrame));
+        const int64_t lastF = static_cast<int64_t>(
+            std::floor(static_cast<double>(segEnd - 1) / ticksPerFrame));
+        if (lastF < firstF) {
+            bar.push_back({segStart, segEnd, RenderBarStatus::NeedsRender});
+            return;
+        }
+        const int64_t span = lastF - firstF + 1;
+        const int64_t step = std::max<int64_t>(1, span / 4000);
+        auto tickOf = [&](int64_t f) {
+            return static_cast<int64_t>(std::llround(static_cast<double>(f) * ticksPerFrame));
+        };
+        auto statusOf = [](bool cached) {
+            return cached ? RenderBarStatus::Cached : RenderBarStatus::NeedsRender;
+        };
+
+        int64_t runStart  = segStart;
+        bool    runCached = m_compositeService->isTickCached(tickOf(firstF));
+        for (int64_t f = firstF + step; f <= lastF; f += step) {
+            const int64_t tick = tickOf(f);
+            const bool cached = m_compositeService->isTickCached(tick);
+            if (cached != runCached) {
+                bar.push_back({runStart, tick, statusOf(runCached)});
+                runStart  = tick;
+                runCached = cached;
+            }
+        }
+        bar.push_back({runStart, segEnd, statusOf(runCached)});
+    };
+
+    // Measured-cost override: the static heuristic only counts effects/layers/
+    // transitions — it can't tell 6 cheap PNGs from 6 streams of 4K ProRes.
+    // Where we have REAL measured composite times from playing a span, let them
+    // reclassify it: a span that actually blew the frame budget becomes Needs-
+    // Render even if "cheap" statically, and a span that played comfortably
+    // becomes RealTime even if "heavy" statically.  Cheap: a few map lookups
+    // per segment, no hashing.  Spans never played fall back to the static guess.
+    const double budgetMs = 1000.0 / fps;   // 1 frame at the sequence fps
+    auto effectiveComplexity = [&](const RenderComplexitySegment& seg) {
+        if (!m_compositeService) return seg.complexity;
+        const int64_t firstF = static_cast<int64_t>(
+            std::ceil(static_cast<double>(seg.startTick) / ticksPerFrame));
+        const int64_t lastF = static_cast<int64_t>(
+            std::floor(static_cast<double>(seg.endTick - 1) / ticksPerFrame));
+        if (lastF < firstF) return seg.complexity;
+        const int64_t step = std::max<int64_t>(1, (lastF - firstF + 1) / 8);
+        int samples = 0, overBudget = 0;
+        for (int64_t f = firstF; f <= lastF; f += step) {
+            const float ms = m_compositeService->measuredFrameCostMs(
+                static_cast<int64_t>(std::llround(static_cast<double>(f) * ticksPerFrame)));
+            if (ms < 0.0f) continue;           // never measured
+            ++samples;
+            if (ms > budgetMs) ++overBudget;
+        }
+        if (samples == 0) return seg.complexity;            // no data → trust static
+        return (overBudget * 2 >= samples) ? RenderComplexity::NeedsRender
+                                           : RenderComplexity::RealTime;
+    };
+
     for (const auto& seg : analysis) {
         // Gaps draw nothing; only the cost-bearing runs get a bar.  RealTime
         // is the translucent green, NeedsRender the red "pre-render me".
-        // (Mixed/Cached are reserved for slice 2's segment-render cache.)
         if (seg.complexity == RenderComplexity::Empty) continue;
-        RenderBarSegment b;
-        b.startTick = seg.startTick;
-        b.endTick   = seg.endTick;
-        b.status    = (seg.complexity == RenderComplexity::NeedsRender)
-                          ? RenderBarStatus::NeedsRender
-                          : RenderBarStatus::RealTime;
-        bar.push_back(b);
+        if (effectiveComplexity(seg) == RenderComplexity::NeedsRender) {
+            appendNeedsRender(seg.startTick, seg.endTick);
+        } else {
+            bar.push_back({seg.startTick, seg.endTick, RenderBarStatus::RealTime});
+        }
     }
 
     m_ruler->setRenderBar(std::move(bar));

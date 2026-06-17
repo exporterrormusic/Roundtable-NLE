@@ -545,6 +545,11 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         }
         encodePixels = cframe->pixels.data();
 
+        // §4.6 export write-through: this frame is full-res with CPU pixels
+        // ready — store it in the segment cache so a re-export reuses it.
+        if (m_frameStoreCb)
+            m_frameStoreCb(tick, cframe);
+
         // Encode frame
         if (encoder->encodeFrame(encodePixels, f - startFrame)) {
             const auto& lp = encoder->lastPacket();
@@ -553,9 +558,13 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
             for (const auto& ep : encoder->pendingPackets())
                 allPackets.push_back(makeOwnedPacket(ep));
         } else {
-            spdlog::warn("RndQ[{}]: encodeFrame returned false at f={}", job.id, f);
-            // Even when encodeFrame returns false, there may be pending
-            // packets (encoder buffered frames but hadn't output them yet).
+            // NOT an error: the encoder produced no packet THIS call — normal
+            // while it fills its look-ahead/B-frame buffer (every frame at the
+            // start of a clip), and during reordering.  Buffered packets are
+            // emitted on later calls / flush().  Debug-only so it doesn't read
+            // as a failure in perf_log.
+            spdlog::debug("RndQ[{}]: encoder buffering at f={} (no packet yet)",
+                          job.id, f);
             for (const auto& ep : encoder->pendingPackets())
                 allPackets.push_back(makeOwnedPacket(ep));
         }

@@ -283,6 +283,33 @@ void MainWindow::buildTimelineMenu(QMenuBar* menuBar)
             if (m_timelineWorkspace) m_timelineWorkspace->clearInOut();
         });
     }
+    menu->addSeparator();
+    {
+        // Render In to Out (§4.6 2d) — pre-render the marked range into the
+        // segment cache for smoother playback.  Shortcut set on the action so
+        // it works whenever the window is active (Ctrl+Shift+R doesn't clash
+        // with text entry, unlike the single-letter I/O marks).
+        auto* act = menu->addAction("Render In to Out");
+        act->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+        connect(act, &QAction::triggered, this, [this]() {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_timelineWorkspace) return;
+            // renderInToOut drives its own non-modal progress dialog + cancel,
+            // so no wait cursor / success box here — the progress dialog and the
+            // green render bar are the feedback.  Only surface the error cases.
+            const int r = m_timelineWorkspace->renderInToOut();
+            if (r == -1) {
+                QMessageBox::information(this, "Render In to Out",
+                    "Set an In and Out point first (press I and O on the "
+                    "timeline to mark the range to pre-render).");
+            } else if (r == -2) {
+                QMessageBox::warning(this, "Render In to Out",
+                    "Could not render — no active sequence or output size.");
+            }
+            // r >= 0 (incl. a cancelled partial render) and the busy re-entry
+            // sentinel: progress dialog already gave feedback; nothing to show.
+        });
+    }
 
 }
 

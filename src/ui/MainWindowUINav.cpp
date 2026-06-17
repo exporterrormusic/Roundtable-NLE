@@ -7,6 +7,7 @@
  */
 
 #include "MainWindow.h"
+#include "panels/timeline/TimelineWorkspace.h"
 
 #include "Theme.h"
 #include "Settings.h"
@@ -502,6 +503,11 @@ void MainWindow::onPageTabChanged(int index)
     if (index == static_cast<int>(Page::Timeline)) {
         if (auto* pm = programMonitor())
             pm->requestRefresh();
+        // The segment cache may have changed while we were away (e.g. an export
+        // populated it via write-through), so re-probe and repaint the render
+        // bar — otherwise it keeps showing its stale pre-export state.
+        if (m_timelineWorkspace)
+            m_timelineWorkspace->refreshRenderBar();
     }
 
     // When switching TO the Projects page, refresh the known-shows list so the

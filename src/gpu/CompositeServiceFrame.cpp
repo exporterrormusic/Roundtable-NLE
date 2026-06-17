@@ -16,9 +16,11 @@
 
 // Media / timeline
 #include "cache/FrameCache.h"
+#include "cache/SegmentRenderCache.h"
 #include "playback/MediaPool.h"
 #include "decode/VideoFrameMapping.h"
 #include "cache/CachePolicy.h"
+#include "project/RenderStateHash.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
@@ -42,8 +44,11 @@
 #include "stb_image.h"
 #endif
 
+#include <algorithm>
+#include <cmath>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 
 // GPU compositing
 #include "CompositeEngine.h"
@@ -163,6 +168,62 @@ try
             // so post-invalidation views get the same first-view grace.
             m_lastFullCompositeAt = std::chrono::steady_clock::time_point{};
             m_lastFullLayerCount  = 0;
+        }
+    }
+
+    // ── §4.6 2c-read: serve a pre-rendered ("green") segment from cache ──
+    // After invalidation handling (so a just-consumed edit can't serve stale)
+    // and only for a top-level composite whose effective tier + output size
+    // match the cached render.  configHash gates correctness: any edit changes
+    // the hash, so a stale entry silently misses.  The cached frame is a CPU
+    // snapshot (gpuReady=false) — a presentation path the modal fallback above
+    // already exercises.  Default ON now that it's verified; the count()==0
+    // fast-out makes it free (no per-frame hashing) until something is cached.
+    // The consult also fires during export (forceFullResolution): export reuses
+    // pre-rendered FULL-tier segments, and effectiveCacheTier() keeps export
+    // (Full) and reduced playback (Half/…) keyed apart.
+    if ((m_segmentCacheReadEnabled.load(std::memory_order_relaxed)
+             || m_forceFullResolution.load(std::memory_order_relaxed))
+            && !isNestedRecursion && m_segmentRenderCache
+            && m_segmentRenderCache->count() > 0) {
+        const ResolutionTier tier = effectiveCacheTier();
+        const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+        auto cached = m_segmentRenderCache->get(tick, tier, cfgHash);
+        if (!cached) {
+            // The (tick,tier,hash) key isn't present — the common, expected
+            // case for any not-yet-rendered frame.  Debug-only tally.
+            const uint64_t n = ++m_segCacheKeyMiss;
+            if (n == 1 || (n % 600) == 0)
+                spdlog::debug("[SEGCACHE] miss #{}: tick={} tier={} cfgHash={:#x}",
+                              n, tick, static_cast<int>(tier), cfgHash);
+        }
+        if (cached) {
+            if (cached->width == outW && cached->height == outH
+                    && !cached->pixels.empty()) {
+                // Keep the last-good fallback coherent with what we present.
+                {
+                    std::lock_guard lg(m_lastCompositeMtx);
+                    m_lastGoodComposite     = cached;
+                    m_lastGoodCompositeTick = tick;
+                }
+                const uint64_t n = ++m_segCacheHits;
+                if (n == 1 || (n % 300) == 0)
+                    spdlog::debug("[SEGCACHE] served {} frame(s) from cache "
+                                  "(tick={} {}x{} tier={})",
+                                  n, tick, outW, outH, static_cast<int>(tier));
+                return cached;
+            } else {
+                // Entry exists but the size differs — a real misconfiguration
+                // (e.g. exporting at a resolution other than what was pre-
+                // rendered): the segment silently won't be reused.  Keep this
+                // at warn, throttled, so it's discoverable without spamming.
+                const uint64_t n = ++m_segCacheSizeMiss;
+                if (n == 1 || (n % 60) == 0)
+                    spdlog::warn("[SEGCACHE] {} cached frame(s) NOT reused — size "
+                                 "mismatch: cached {}x{} vs requested {}x{} "
+                                 "(re-render at the current playback resolution)",
+                                 n, cached->width, cached->height, outW, outH);
+            }
         }
     }
 
@@ -831,6 +892,15 @@ try
                 const bool wasStale = (m_lastGoodComposite == gpuResult);
                 m_lastGoodComposite     = gpuResult;
                 m_lastGoodCompositeTick = tick;
+                // Measured-cost render bar: remember how long this FRESH
+                // real-time composite took (perfT0 = start of composite work).
+                // Skip scrub/render passes — those aren't representative of the
+                // playback budget and use a different tick grid.
+                if (!scrubMode) {
+                    const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::high_resolution_clock::now() - perfT0).count();
+                    recordFrameCost(tick, static_cast<float>(ms));
+                }
                 // Record which clips produced this composite so the
                 // shot-boundary check below can skip the stale fallback
                 // when active clips have entirely changed.
@@ -923,6 +993,144 @@ std::shared_ptr<CachedFrame> CompositeService::renderGraphicClip(
         refH = m_project->settings().resolution().height;
     }
     return rt::renderGraphicClip(clip, tick, outW, outH, refW, refH);
+}
+
+namespace {
+// Clean CPU-only snapshot of a composite output frame.  compositeFrame returns
+// the SHARED m_lastGoodComposite which the next tick reuses, so the cache must
+// own an independent copy (the same aliasing the nested-sequence builder guards
+// against).  GPU handles are deliberately dropped — this is a CPU frame.
+std::shared_ptr<CachedFrame> snapshotForCache(const CachedFrame& frame,
+                                              ResolutionTier tier)
+{
+    auto snap = std::make_shared<CachedFrame>();
+    snap->width              = frame.width;
+    snap->height             = frame.height;
+    snap->stride             = frame.stride ? frame.stride : frame.width * 4;
+    snap->pixels             = frame.pixels;
+    snap->tier               = tier;
+    snap->origin             = frame.origin;
+    snap->unpackedAlpha      = frame.unpackedAlpha;
+    snap->premultipliedAlpha = frame.premultipliedAlpha;
+    return snap;
+}
+} // namespace
+
+void CompositeService::cacheExportFrame(
+    int64_t tick, const std::shared_ptr<CachedFrame>& frame)
+{
+    if (!frame || !m_segmentRenderCache || !m_timeline) return;
+    if (frame->pixels.empty()) return;   // caller hands us pixel-ready frames
+
+    // Export is always full-resolution → key at the Full tier (what the
+    // export consult and full-res playback look up).
+    constexpr ResolutionTier tier = ResolutionTier::Full;
+    const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+    if (m_segmentRenderCache->hasFresh(tick, tier, cfgHash)) return;  // already cached
+
+    m_segmentRenderCache->put(tick, tier, cfgHash,
+                              snapshotForCache(*frame, tier));
+
+    const uint64_t n = ++m_segCacheWrites;
+    if (n == 1 || (n % 120) == 0)
+        spdlog::debug("[SEGCACHE] export write-through stored {} frame(s) "
+                      "(tick={} {}x{})", n, tick, frame->width, frame->height);
+}
+
+void CompositeService::recordFrameCost(int64_t tick, float ms)
+{
+    std::lock_guard lk(m_frameCostMtx);
+    // Bound: drop everything if we somehow accumulate a very long session's
+    // worth (rolling estimate — replaying repopulates it cheaply).
+    if (m_frameCostMs.size() >= kMaxFrameCostEntries)
+        m_frameCostMs.clear();
+    m_frameCostMs[tick] = ms;
+}
+
+float CompositeService::measuredFrameCostMs(int64_t tick) const
+{
+    std::lock_guard lk(m_frameCostMtx);
+    auto it = m_frameCostMs.find(tick);
+    return it != m_frameCostMs.end() ? it->second : -1.0f;
+}
+
+bool CompositeService::isTickCached(int64_t tick) const
+{
+    if (!m_segmentRenderCache || !m_timeline) return false;
+    const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+    // "Render In to Out" pre-renders at Full (it serves export + full-res
+    // playback), so the bar must probe Full to light green from the editing
+    // (reduced-tier) context too.  Also accept the current effective tier so a
+    // reduced-tier pre-render still shows.
+    return m_segmentRenderCache->hasFresh(tick, ResolutionTier::Full, cfgHash)
+        || m_segmentRenderCache->hasFresh(tick, effectiveCacheTier(), cfgHash);
+}
+
+// ── §4.6 slice 2c: "Render In to Out" foreground driver ─────────────────────
+int CompositeService::renderRangeToCache(
+    int64_t fromTick, int64_t toTick, uint32_t outW, uint32_t outH,
+    const std::function<bool()>& shouldCancel,
+    const std::function<void(int, int)>& onProgress)
+{
+    if (!m_timeline || !m_segmentRenderCache || outW == 0 || outH == 0)
+        return 0;
+    if (toTick < fromTick) std::swap(fromTick, toTick);
+
+    // Ticks are 48kHz sample-accurate; the frame grid comes from the
+    // sequence fps.  Render exactly the frame-aligned ticks the playback
+    // clock would land on (see RenderQueue's frame->tick mapping), so the
+    // 2c-read consult later keys identically.
+    double fps = m_timeline->settings().frameRate();
+    if (!(fps > 0.0)) fps = 30.0;
+    const double ticksPerFrame = static_cast<double>(kTicksPerSecond) / fps;
+
+    // Frame indices whose tick falls within [fromTick, toTick] (inclusive).
+    const int64_t firstFrame = static_cast<int64_t>(
+        std::ceil(static_cast<double>(fromTick) / ticksPerFrame));
+    const int64_t lastFrame = static_cast<int64_t>(
+        std::floor(static_cast<double>(toTick) / ticksPerFrame));
+    if (lastFrame < firstFrame) return 0;
+
+    const ResolutionTier tier  = effectiveCacheTier();
+    const int            total = static_cast<int>(lastFrame - firstFrame + 1);
+
+    // Force CPU readback so the composited pixels are materialised before we
+    // snapshot them — GPU display mode leaves CachedFrame::pixels empty (the
+    // same convention as the thumbnail grab in ProjectControllerMisc).
+    const bool wasGpuMode = m_gpuDisplayMode;
+    m_gpuDisplayMode = false;
+
+    int rendered  = 0;
+    int processed = 0;
+    for (int64_t f = firstFrame; f <= lastFrame; ++f) {
+        if (shouldCancel && shouldCancel()) break;
+
+        const int64_t tick = static_cast<int64_t>(
+            std::llround(static_cast<double>(f) * ticksPerFrame));
+        const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+
+        // Skip frames already cached under the current config (idempotent /
+        // resumable — re-running over an unchanged range is nearly free).
+        if (!m_segmentRenderCache->hasFresh(tick, tier, cfgHash)) {
+            auto frame = compositeFrame(tick, outW, outH, /*scrubMode=*/true);
+            if (frame && frame->ensurePixels() && !frame->pixels.empty()) {
+                m_segmentRenderCache->put(tick, tier, cfgHash,
+                                          snapshotForCache(*frame, tier));
+                ++rendered;
+            }
+        }
+
+        ++processed;
+        if (onProgress) onProgress(processed, total);
+    }
+
+    m_gpuDisplayMode = wasGpuMode;
+
+    spdlog::debug("renderRangeToCache: [{}, {}] tier={} -> {} of {} frames "
+                  "rendered ({} MB cached)",
+                  fromTick, toTick, static_cast<int>(tier), rendered, total,
+                  m_segmentRenderCache->sizeBytes() / (1024 * 1024));
+    return rendered;
 }
 
 

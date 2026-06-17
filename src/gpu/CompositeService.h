@@ -42,6 +42,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -81,6 +82,7 @@ class ModelManager;
 class SpineClip;
 class VideoClip;
 class Project;
+class SegmentRenderCache;
 class SequenceClip;
 class ShotPresetManager;
 class Timeline;
@@ -260,6 +262,65 @@ public:
     [[nodiscard]] ResolutionTier playbackTier() const noexcept {
         return static_cast<ResolutionTier>(
             m_playbackTier.load(std::memory_order_relaxed));
+    }
+
+    // ── Segment render cache (§4.6 slice 2c — preview pre-render) ────────
+    // Cache of COMPOSITED output frames so a pre-rendered ("green") stretch
+    // replays from cache instead of re-compositing.  Owned here because the
+    // compositor is its sole producer/consumer.  May be null before init.
+    [[nodiscard]] SegmentRenderCache* segmentRenderCache() noexcept {
+        return m_segmentRenderCache.get();
+    }
+
+    /// FOREGROUND "Render In to Out" driver: composite every frame-aligned
+    /// tick in [fromTick, toTick] and store the output in the segment cache.
+    /// Mirrors export — the CALLER MUST STOP PLAYBACK first (this is not the
+    /// playback compositor's thread).  Frames render at the current
+    /// playbackTier(); already-fresh frames (matching configHash) are skipped.
+    /// Returns the number of frames newly rendered.  `shouldCancel`, if set,
+    /// is polled before each frame to allow a non-modal UI to abort; do NOT
+    /// drive this from a modal dialog (the s_modalDialogActive guard would
+    /// suppress compositing).  `onProgress(done,total)` reports progress.
+    int renderRangeToCache(int64_t fromTick, int64_t toTick,
+                           uint32_t outW, uint32_t outH,
+                           const std::function<bool()>& shouldCancel = {},
+                           const std::function<void(int, int)>& onProgress = {});
+
+    /// Measured wall-time (ms) the compositor last spent producing a FRESH
+    /// frame at `tick` during real-time playback, or -1 if never measured.
+    /// Feeds the render bar's measured-cost classification (a clip the static
+    /// heuristic thinks is cheap but that actually blows the frame budget shows
+    /// red, and vice-versa).  Free: the time is already measured for the
+    /// COMPOSITE-SLOW diagnostic; this just remembers it.
+    [[nodiscard]] float measuredFrameCostMs(int64_t tick) const;
+
+    /// True if a composited frame for `tick` is fresh in the segment cache at
+    /// the current playbackTier and config — used by the render bar to paint a
+    /// pre-rendered ("green") span.  Cheap: hashes the config at `tick` and
+    /// probes the cache without disturbing LRU order.
+    [[nodiscard]] bool isTickCached(int64_t tick) const;
+
+    /// Export write-through: store a finished EXPORT frame (full-res, CPU
+    /// pixels already present) into the segment cache at the Full tier, keyed
+    /// by configHash.  Called by RenderQueue right where it hands the frame to
+    /// the encoder, so a FIRST export populates the cache and a re-export (or
+    /// post-edit re-export, per configHash) reuses it.  The caller guarantees
+    /// this is a full-resolution frame, so this does NOT gate on
+    /// forceFullResolution (it runs on the export worker thread, after that
+    /// flag has been reset).  Skips frames already fresh.  Thread-safe.
+    void cacheExportFrame(int64_t tick,
+                          const std::shared_ptr<CachedFrame>& frame);
+
+    /// Enable/disable the 2c-READ consult: when on, compositeFrame() early-
+    /// returns a matching cached segment frame instead of re-compositing —
+    /// the actual playback speedup.  DEFAULT ON (runtime-verified): a cold
+    /// cache is free via the count()==0 fast-out, so this only does work once
+    /// a range has been pre-rendered.  Kept as a kill switch.
+    void setSegmentCacheReadEnabled(bool on) noexcept {
+        m_segmentCacheReadEnabled.store(on, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool segmentCacheReadEnabled() const noexcept {
+        return m_segmentCacheReadEnabled.load(std::memory_order_relaxed);
     }
 
     // Force Full resolution — used by ExportPanel for preview and export
@@ -528,6 +589,39 @@ private:
     std::recursive_mutex m_compositeMutex;
     mutable std::mutex   m_lastCompositeMtx;
     std::shared_ptr<CachedFrame> m_lastGoodComposite;
+
+    // The tier a cached composite is keyed under: Full when forcing full
+    // resolution (export / full-res preview) so an export never reuses a
+    // reduced-tier playback frame (which decoded its layers at lower res →
+    // visibly softer), otherwise the live playback tier.  Render and consult
+    // both use this, so the two only ever match at equal decode quality.
+    [[nodiscard]] ResolutionTier effectiveCacheTier() const noexcept {
+        return forceFullResolution() ? ResolutionTier::Full : playbackTier();
+    }
+
+    // §4.6 slice 2c: composited-output cache (in-memory, own byte budget).
+    // Produced/consumed only by the compositor, so it lives here.  Entries are
+    // configHash-gated, so a stale sequence's frames silently miss / get
+    // replaced — no explicit clear on timeline/project switch needed.
+    std::unique_ptr<SegmentRenderCache> m_segmentRenderCache;
+    // 2c-read consult gate (default ON — runtime-verified; count()==0 fast-out
+    // keeps a cold cache free).  Kept as a kill switch.
+    std::atomic<bool> m_segmentCacheReadEnabled{true};
+
+    // Measured per-frame composite cost (ms), keyed by frame-aligned tick, for
+    // the render bar's measured-cost classification.  Written on the fresh-
+    // composite hot path (one cheap store), read by the bar on refresh.  A
+    // rolling estimate — not cleared on edits (cost barely moves), bounded so
+    // it can't grow without limit.
+    void recordFrameCost(int64_t tick, float ms);
+    mutable std::mutex                  m_frameCostMtx;
+    std::unordered_map<int64_t, float>  m_frameCostMs;
+    static constexpr size_t             kMaxFrameCostEntries = 100000;
+    // Debug tallies: frames served from cache / size-rejected / key-missed.
+    std::atomic<uint64_t> m_segCacheHits{0};
+    std::atomic<uint64_t> m_segCacheSizeMiss{0};
+    std::atomic<uint64_t> m_segCacheKeyMiss{0};
+    std::atomic<uint64_t> m_segCacheWrites{0};
     int64_t m_lastGoodCompositeTick{-1};
     /// Clip ids that produced m_lastGoodComposite. Used to detect shot
     /// boundaries: if NONE of the currently active clips overlap with

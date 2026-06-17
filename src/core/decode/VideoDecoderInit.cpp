@@ -469,7 +469,30 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     };
     const bool stillImageCodec = isStillImageCodec(codecpar->codec_id);
 
-    if (hasAlpha || stillImageCodec)
+    // NVDEC chroma/bit-depth limits: it CANNOT decode 4:2:2 (any codec), and
+    // for H.264 it's 8-bit 4:2:0 only (no 10-bit, no 4:4:4).  Such streams
+    // silently come back BLACK from the hardware decoder with no error — e.g. a
+    // Sony A7S II "All-Intra" clip is H.264 High 4:2:2 Intra, yuv422p10le.
+    // libavcodec decodes these fine in software, so force that path.
+    const bool nvdecUnsupportedFormat = [&]() -> bool {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(
+            static_cast<AVPixelFormat>(codecpar->format));
+        if (!d || (d->flags & AV_PIX_FMT_FLAG_RGB)) return false;
+        const int  bitDepth = d->comp[0].depth;
+        const bool is422 = (d->log2_chroma_w == 1 && d->log2_chroma_h == 0);
+        const bool is444 = (d->log2_chroma_w == 0 && d->log2_chroma_h == 0);
+        if (is422) return true;   // unsupported by NVDEC for every codec
+        if (codecpar->codec_id == AV_CODEC_ID_H264 && (bitDepth > 8 || is444))
+            return true;          // NVDEC H.264 is 8-bit 4:2:0 only
+        return false;
+    }();
+    if (nvdecUnsupportedFormat)
+        spdlog::info("VideoDecoder: '{}' pixel format {} unsupported by NVDEC — "
+                     "forcing software decode",
+                     pathToUtf8(path.filename()),
+                     av_get_pix_fmt_name(static_cast<AVPixelFormat>(codecpar->format)));
+
+    if (hasAlpha || stillImageCodec || nvdecUnsupportedFormat)
     {
         spdlog::debug("VideoDecoder: '{}' has alpha channel — forcing software decode "
                       "(NVDEC drops alpha)", pathToUtf8(path.filename()));

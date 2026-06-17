@@ -21,6 +21,7 @@
 #include "cache/CachePolicy.h"
 #include "cache/CachePolicy.h"
 #include "cache/FrameCache.h"
+#include "cache/SegmentRenderCache.h"
 #include "cache/DiskFrameCache.h"
 #include "playback/PlaybackController.h"
 #include "timeline/Timeline.h"
@@ -87,6 +88,23 @@ size_t computeFrameCacheBudget()
     constexpr size_t kMax = 24 * kGiB;
     if (totalRam == 0) return 12 * kGiB;
     size_t budget = totalRam / 3;         // 33%
+    return std::clamp(budget, kMin, kMax);
+}
+
+/// Compute the SegmentRenderCache budget (§4.6).  Holds full-canvas
+/// composited BGRA frames (~8 MB each at 1080p), so the 512 MB default only
+/// covers ~2 s of pre-rendered range.  Target ~15% of RAM, clamped 2–8 GB,
+/// so a "Render In to Out" of a normal-length range survives without LRU
+/// evicting the head before playback reaches it.  Kept well below the
+/// FrameCache's 33% so the two don't fight over RAM.
+size_t computeSegmentCacheBudget()
+{
+    const size_t totalRam = queryTotalPhysicalRam();
+    constexpr size_t kGiB = 1024ull * 1024ull * 1024ull;
+    constexpr size_t kMin = 2 * kGiB;
+    constexpr size_t kMax = 8 * kGiB;
+    if (totalRam == 0) return 4 * kGiB;
+    size_t budget = totalRam * 15 / 100;  // 15%
     return std::clamp(budget, kMin, kMax);
 }
 
@@ -497,6 +515,20 @@ bool App::createMainWindow()
             auto* cs = tw->compositeService();
             if (cs) {
                 cs->setCachePolicy(m_cachePolicy.get());
+                if (auto* src = cs->segmentRenderCache()) {
+                    const size_t budget = computeSegmentCacheBudget();
+                    src->setBudgetBytes(budget);
+                    spdlog::info("SegmentRenderCache budget: {} MB",
+                                 budget / (1024 * 1024));
+                    // Disk persistence so pre-rendered segments survive a
+                    // restart (content-addressed by configHash — safe across
+                    // sessions).  Disk is cheap; cap generously but bounded so
+                    // LRU scans stay quick.
+                    src->enableDiskCache(
+                        std::filesystem::path(rt::userDataDir().toStdString())
+                            / "cache/segments",
+                        16ull * 1024 * 1024 * 1024);
+                }
             }
         }
         m_cachePolicy->logBudgets();

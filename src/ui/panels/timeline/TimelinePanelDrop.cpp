@@ -307,7 +307,25 @@ void TimelinePanel::dropEvent(QDropEvent* event)
             QString firstPath;
             if (!urls.isEmpty())
                 firstPath = urls.first().toLocalFile();
-            if (firstOk && firstHandle != 0 && m_mediaPool) {
+            // Resolve media info the SAME way the ghost preview does: open() the
+            // path so a file whose stream info was cached stale (e.g. a
+            // re-rendered "_H264" that gained an audio track) self-heals.  Using
+            // getInfo(handle) alone left dropMediaHasAudio=false even when the
+            // ghost showed an audio lane — silently dropping the audio companion
+            // and its below-the-stack new track (the single-track drop bug).
+            bool resolved = false;
+            if (m_mediaPool && !firstPath.isEmpty()) {
+                uint64_t h = m_mediaPool->open(firstPath.toStdString());
+                if (h != 0) {
+                    if (const auto* info = m_mediaPool->getInfo(h)) {
+                        isAudioDrop = (info->videoStreamIndex < 0);
+                        dropMediaHasAudio = info->hasAudio;
+                        resolved = true;
+                    }
+                    m_mediaPool->release(h);
+                }
+            }
+            if (!resolved && firstOk && firstHandle != 0 && m_mediaPool) {
                 if (const auto* info = m_mediaPool->getInfo(firstHandle)) {
                     isAudioDrop = (info->videoStreamIndex < 0);
                     dropMediaHasAudio = info->hasAudio;
@@ -335,16 +353,35 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         bool aboveTopVideo = false;
         bool belowBottomAudio = false;
         computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+
+        // The audio routing is driven by the anchor dragMove already resolved
+        // for this drag (m_ghostDropAudioAnchor) — that guarantees the drop
+        // lands exactly where the ghost previewed it.  The coarse below-zone
+        // geometry is only a fallback for the rare drop with no preceding
+        // dragMove.  Anchor points PAST the last existing audio track ⇒ the
+        // user dragged into new-track space ⇒ create a fresh track block.
+        const size_t audioAnchor = m_ghostDropAudioAnchor;
+        const bool haveAnchor = (audioAnchor != SIZE_MAX);
+        const bool anchorExisting =
+            haveAnchor && m_timeline && audioAnchor < m_timeline->trackCount()
+            && m_timeline->track(audioAnchor)->type() == TrackType::Audio
+            && !m_timeline->track(audioAnchor)->isDivider();
+        const bool audioGoesBelow =
+            haveAnchor ? !anchorExisting
+                       : ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio);
+
         if (!isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
             trackIdx = kGhostDropTrackVideoAbove;
-        else if (isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio))
+        else if (isAudioDrop && audioGoesBelow && !ghostWasOnExisting)
             trackIdx = kGhostDropTrackAudioBelow;
-        // Video+audio file dropped in the audio-below ghost zone: the video
-        // takes its normal target (bottom existing video), but the audio
-        // companion needs a brand-new audio track. Distinct sentinel so the
-        // handler can route the two halves to different destinations.
-        else if (!isAudioDrop && dropMediaHasAudio && !ghostWasOnExisting
-                 && ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio))
+        // Video+audio file dragged below the audio stack: the video takes its
+        // normal target (bottom existing video), but the audio companion (and,
+        // for a multi-stream source, every stream) needs a brand-new track.
+        // Distinct sentinel so the handler routes the two halves separately.
+        // When NOT below, the sentinel is intentionally NOT set: the handler
+        // then reuses the cursor's audio track (multi-stream extends downward,
+        // creating tracks only as needed) — matching the ghost preview.
+        else if (!isAudioDrop && dropMediaHasAudio && audioGoesBelow && !ghostWasOnExisting)
             trackIdx = kGhostDropTrackAudioCompanionBelow;
 
         // Check for source in/out points (from Source Monitor drag)

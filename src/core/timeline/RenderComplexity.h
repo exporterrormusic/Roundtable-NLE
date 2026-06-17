@@ -9,18 +9,25 @@
  * and unit-tested (tests/core/test_render_complexity.cpp), and the UI just
  * maps the result onto TimelineRuler::RenderBarSegment.
  *
- * v1 heuristic (deliberately conservative so the bar doesn't cry wolf):
+ * Heuristic (escalate on what actually costs the compositor per-frame work,
+ * strongest signal first; stay conservative on the cheap stuff so the bar
+ * doesn't cry wolf):
  *   - Empty       : no visual clip active here (a gap).
- *   - NeedsRender : at least one active visual clip carries active effects —
- *                   the strong "extra GPU passes per frame" signal, and the
- *                   one users hit hardest (glitch/beat macros).
- *   - RealTime    : visual content with no effects.
+ *   - NeedsRender : any of —
+ *       • an active clip carries active EFFECTS (extra GPU passes — glitch/beat
+ *         macros, grades; the signal users hit hardest), OR
+ *       • a nested SEQUENCE clip is active (recursively composites a whole
+ *         inner timeline — genuinely expensive), OR
+ *       • a TRANSITION overlaps a busy stack (>=3 visual layers), OR
+ *       • the layer stack is very tall (>=6 visual layers — decode/upload/blend
+ *         volume threatens real-time even without effects).
+ *   - RealTime    : visual content below all those bars (a lone clip, a 2–3
+ *                   layer comp, a plain dissolve — the GPU handles these live).
  *
- * Intentionally NOT yet factored in (they need real frame-time measurement,
- * which is slice 2's segment-render cache, not a static guess): transitions,
- * the number of stacked layers, and source decode cost (ProRes etc.).  The
- * compositor blits/blends layers cheaply on the GPU, so flagging every
- * dissolve or multi-layer comp red would just make the bar noise.
+ * Still a STATIC estimate (no decode-cost / measured frame-time input).  A
+ * codec-aware or measured-cost upgrade could ride on the segment cache's real
+ * composite timings later; until then a tall stack of cheap stills and a tall
+ * stack of 4K ProRes read the same here.
  */
 
 #pragma once

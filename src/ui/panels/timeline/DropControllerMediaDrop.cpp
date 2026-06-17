@@ -46,6 +46,8 @@
 #include "timeline/AdjustmentClip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
+#include "audio/AudioFile.h"
+#include "PathUtils.h"
 #include "timeline/ImageClip.h"
 #include "timeline/OpacityMask.h"
 #include "timeline/SequenceClip.h"
@@ -93,6 +95,108 @@ static bool isStillImagePath(const std::string& path)
     };
     return kImageExts.contains(ext);
 }
+
+// ── Multi-stream audio drop (Premiere-style) ────────────────────────────────
+// A multicam/broadcast file (e.g. an 8-track MXF) carries several discrete
+// audio streams.  On drop we lay EACH stream onto its own audio track as one
+// linked group — the caller's existing companion clip is stream 0, and these
+// helpers add streams 1..N-1 on the consecutive audio tracks BELOW it, reusing
+// existing audio tracks and creating new ones only when there aren't enough.
+
+namespace {
+
+struct AudioStreamSibling {
+    uint64_t                 clipId{0};
+    Track*                   track{nullptr};
+    bool                     trackCreated{false};
+    std::unique_ptr<Command> overlapCmd;
+};
+
+// Returns how many audio streams `path` has (0/1 = nothing to explode).
+int probeAudioStreamCount(const std::string& path)
+{
+    return static_cast<int>(
+        AudioFile::enumerateAudioStreams(utf8ToPath(path)).size());
+}
+
+// Create one AudioClip per stream 1..streamCount-1 on the audio tracks below
+// baseAudioTkIdx.  Records each into `out` for undo.  Stream 0 is the caller's
+// own companion clip (already placed) — set its ordinal to 0 separately.
+void createAudioStreamSiblings(Timeline* tl, const std::string& path,
+                               int64_t in, int64_t dur, int64_t srcDur,
+                               int64_t sourceIn, const std::string& label,
+                               uint64_t linkId, size_t baseAudioTkIdx,
+                               int streamCount,
+                               std::vector<AudioStreamSibling>& out)
+{
+    if (!tl) return;
+    // Match a created track's height to the existing tracks so the new ones
+    // don't tower over their neighbours (Track's default is 80px).
+    float refTrackHeight = 0.0f;
+    for (size_t ri = 0; ri < tl->trackCount(); ++ri) {
+        Track* tr = tl->track(ri);
+        if (!tr || tr->isDivider()) continue;
+        if (tr->height() >= 1.0f) { refTrackHeight = tr->height(); break; }
+    }
+    for (int i = 1; i < streamCount; ++i) {
+        const size_t targetIdx = baseAudioTkIdx + static_cast<size_t>(i);
+        Track* t = nullptr;
+        bool   created = false;
+        if (targetIdx < tl->trackCount() && tl->track(targetIdx) &&
+            tl->track(targetIdx)->type() == TrackType::Audio &&
+            !tl->track(targetIdx)->isDivider()) {
+            t = tl->track(targetIdx);                       // reuse existing track
+        } else {
+            // Empty name → Timeline auto-numbers it (A<next>), and the
+            // rebuildTracks renumber pass corrects it to its final position —
+            // i.e. normal A1/A2/A3… naming, never a hardcoded guess.
+            t = tl->addAudioTrack("");
+            if (t && refTrackHeight >= 1.0f) t->setHeight(refTrackHeight);
+            created = true;
+        }
+        if (!t) continue;
+
+        auto ac = std::make_unique<AudioClip>(path);
+        ac->setTimelineIn(in);
+        ac->setDuration(dur);
+        ac->setSourceDuration(srcDur);
+        ac->setSourceIn(sourceIn);
+        ac->setLabel(label);
+        ac->setAudioStreamIndex(i);     // this clip decodes stream i
+        ac->setLinkId(linkId);          // same group as the video + siblings
+        const uint64_t cid = ac->id();
+        t->addClip(std::move(ac));
+
+        size_t tIdx = SIZE_MAX;
+        for (size_t k = 0; k < tl->trackCount(); ++k)
+            if (tl->track(k) == t) { tIdx = k; break; }
+        std::unique_ptr<Command> ov;
+        if (tIdx != SIZE_MAX) {
+            ov = EditOperations::resolveOverlaps(*tl, tIdx, cid);
+            if (ov) ov->execute();
+        }
+        out.push_back({cid, t, created, std::move(ov)});
+    }
+}
+
+// Reverse of the above (called from the drop command's undo).
+void undoAudioStreamSiblings(Timeline* tl, std::vector<AudioStreamSibling>& sibs)
+{
+    if (!tl) { sibs.clear(); return; }
+    for (auto it = sibs.rbegin(); it != sibs.rend(); ++it) {
+        if (it->overlapCmd) it->overlapCmd->undo();
+        size_t tIdx = SIZE_MAX;
+        for (size_t k = 0; k < tl->trackCount(); ++k)
+            if (tl->track(k) == it->track) { tIdx = k; break; }
+        if (tIdx != SIZE_MAX) {
+            tl->track(tIdx)->removeClipById(it->clipId);
+            if (it->trackCreated) tl->removeTrack(tIdx);
+        }
+    }
+    sibs.clear();
+}
+
+} // namespace
 
 void DropController::wireMediaDropSignals()
 {
@@ -466,10 +570,40 @@ void DropController::wireMediaDropSignals()
             // companion there (mirrors the "drop video higher to pick upper
             // video track" behavior).  Otherwise fall back to the first audio
             // track.
+            // Multi-stream (multicam/broadcast MXF): how many discrete audio
+            // streams the source has.  Probed first because it decides the
+            // companion's target track below.
+            const int audioStreamCount =
+                mediaHasAudio ? probeAudioStreamCount(path) : 0;
+
             size_t audioTargetIdx = SIZE_MAX;
             bool needsNewAudioTrack = false;
             if (mediaHasAudio) {
-                if (forceGhostAudioCompanion) {
+                if (audioStreamCount > 1) {
+                    // Multi-stream: START on the audio track under the cursor
+                    // (just like a normal file), or the FIRST audio track when
+                    // the cursor is on a video track.  When the cursor is in the
+                    // audio-BELOW ghost zone, create a fresh block starting just
+                    // below the existing tracks — every stream is a new track
+                    // (matches the ghost dragged below the stack).
+                    if (forceGhostAudioCompanion) {
+                        needsNewAudioTrack = true;
+                    } else if (trackIndex < m_ws->timeline()->trackCount() &&
+                        m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio &&
+                        !m_ws->timeline()->track(trackIndex)->isDivider()) {
+                        audioTargetIdx = trackIndex;
+                    }
+                    if (!needsNewAudioTrack && audioTargetIdx == SIZE_MAX) {
+                        for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                            Track* tr = m_ws->timeline()->track(i);
+                            if (tr && tr->type() == TrackType::Audio && !tr->isDivider()) {
+                                audioTargetIdx = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (audioTargetIdx == SIZE_MAX) needsNewAudioTrack = true;
+                } else if (forceGhostAudioCompanion) {
                     // Force a fresh audio track at the bottom for the
                     // companion when the user dropped in the audio-below
                     // ghost zone with a video+audio file.
@@ -496,6 +630,8 @@ void DropController::wireMediaDropSignals()
             auto audioCreatedTk   = std::make_shared<bool>(false);
             auto audioTkIdx       = std::make_shared<size_t>(audioTargetIdx);
             auto audioOverlapCmd  = std::make_shared<std::unique_ptr<Command>>(nullptr);
+            auto audioSiblings =
+                std::make_shared<std::vector<AudioStreamSibling>>();
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
                 if (m_ws->isDestroying()) return;
@@ -518,6 +654,7 @@ void DropController::wireMediaDropSignals()
                      needsNewTrack, needsNewAudioTrack, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd,
                      audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
+                     audioStreamCount, audioSiblings,
                      refreshAfter,
                      vcCharName, vcMutePath, vcTalkPath, vcOutfit, vcAnimName,
                      vcPosX, vcPosY, vcScale, vcOpacity, vcIsTalking,
@@ -701,10 +838,16 @@ void DropController::wireMediaDropSignals()
                                 ac->setSourceDuration(dur);
                                 ac->setLabel(label);
                                 ac->setLinkId(*clipId);  // pair with companion video
+                                // Multicam/broadcast source: this companion plays
+                                // stream 0; the other streams get their own clips
+                                // on the tracks below (Premiere-style).
+                                if (audioStreamCount > 1)
+                                    ac->setAudioStreamIndex(0);
                                 *audioClipId = ac->id();
                                 spdlog::info("DIAG-DROP mediaDropped audioCompanion id={} "
-                                             "in={} dur={} ({:.3f}s)",
-                                             *audioClipId, atTick, dur, dur/48000.0);
+                                             "in={} dur={} ({:.3f}s) streams={}",
+                                             *audioClipId, atTick, dur, dur/48000.0,
+                                             audioStreamCount);
                                 // Mirror the insert on the audio track when Ctrl
                                 // was held — the companion needs the same room
                                 // as the video so the pair stays in sync.
@@ -717,19 +860,33 @@ void DropController::wireMediaDropSignals()
                                 *audioOverlapCmd = EditOperations::resolveOverlaps(
                                     *m_ws->timeline(), *audioTkIdx, *audioClipId);
                                 if (*audioOverlapCmd) (*audioOverlapCmd)->execute();
+
+                                // Lay every remaining audio stream onto its own
+                                // track below, as one linked group.
+                                if (audioStreamCount > 1) {
+                                    createAudioStreamSiblings(
+                                        m_ws->timeline(), path, atTick, dur, dur,
+                                        /*sourceIn=*/0, label, *clipId, *audioTkIdx,
+                                        audioStreamCount, *audioSiblings);
+                                }
                             }
                         }
 
-                        const bool trackStructureChanged = (*createdTk || *audioCreatedTk);
+                        const bool trackStructureChanged =
+                            (*createdTk || *audioCreatedTk || !audioSiblings->empty());
                         refreshAfter(trackStructureChanged);
                     },
                     /* undo */
                     [this, clipId, createdTk, tkIdx, overlapCmd,
                      mediaHasAudio, audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
-                     refreshAfter]() {
-                        const bool trackStructureChanged = (*createdTk || *audioCreatedTk);
+                     audioSiblings, refreshAfter]() {
+                        const bool trackStructureChanged =
+                            (*createdTk || *audioCreatedTk || !audioSiblings->empty());
                         // Undo audio companion first
                         if (mediaHasAudio) {
+                            // Remove the per-stream siblings (+ any tracks they
+                            // created) before the companion, since they sit below.
+                            undoAudioStreamSiblings(m_ws->timeline(), *audioSiblings);
                             if (*audioOverlapCmd) (*audioOverlapCmd)->undo();
                             if (*audioTkIdx < m_ws->timeline()->trackCount()) {
                                 Track* at = m_ws->timeline()->track(*audioTkIdx);
@@ -1089,13 +1246,30 @@ void DropController::wireMediaDropSignals()
             auto overlapCmd2 = std::make_shared<std::unique_ptr<Command>>(nullptr);
 
             // Audio-companion state for video+audio media
+            // Audio-below ghost zone sentinel (same value the drop emits) — the
+            // user dropped a video+audio file below the bottom audio track.
+            const bool forceGhostAudioCompanion2 = (trackIndex == (SIZE_MAX - 3));
+            const int audioStreamCount2 =
+                mediaHasAudio ? probeAudioStreamCount(path) : 0;
             size_t audioTargetIdx2 = SIZE_MAX;
             bool needsNewAudioTrack2 = false;
             if (mediaHasAudio) {
-                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
-                    Track* tr = m_ws->timeline()->track(i);
-                    if (tr->type() == TrackType::Audio && !tr->isDivider()) {
-                        audioTargetIdx2 = i; break;
+                // Follow the cursor like the bin drag: start on the audio track
+                // under the cursor, the first audio track when on a video track,
+                // or a brand-new block below when dropped in the audio-below zone.
+                if (forceGhostAudioCompanion2) {
+                    needsNewAudioTrack2 = true;
+                } else if (trackIndex < m_ws->timeline()->trackCount() &&
+                    m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio &&
+                    !m_ws->timeline()->track(trackIndex)->isDivider()) {
+                    audioTargetIdx2 = trackIndex;
+                }
+                if (!needsNewAudioTrack2 && audioTargetIdx2 == SIZE_MAX) {
+                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                        Track* tr = m_ws->timeline()->track(i);
+                        if (tr->type() == TrackType::Audio && !tr->isDivider()) {
+                            audioTargetIdx2 = i; break;
+                        }
                     }
                 }
                 if (audioTargetIdx2 == SIZE_MAX) needsNewAudioTrack2 = true;
@@ -1104,6 +1278,8 @@ void DropController::wireMediaDropSignals()
             auto audioCreatedTk2   = std::make_shared<bool>(false);
             auto audioTkIdx2       = std::make_shared<size_t>(audioTargetIdx2);
             auto audioOverlapCmd2  = std::make_shared<std::unique_ptr<Command>>(nullptr);
+            auto audioSiblings2 =
+                std::make_shared<std::vector<AudioStreamSibling>>();
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
                 if (m_ws->isDestroying()) return;
@@ -1125,6 +1301,7 @@ void DropController::wireMediaDropSignals()
                      needsNewTrack, needsNewAudioTrack2, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd2,
                      audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
+                     audioStreamCount2, audioSiblings2,
                      refreshAfter,
                      vcCharName2, vcMutePath2, vcTalkPath2, vcOutfit2, vcAnimName2,
                      vcPosX2, vcPosY2, vcScale2, vcOpacity2, vcIsTalking2]() {
@@ -1266,24 +1443,38 @@ void DropController::wireMediaDropSignals()
                                 ac->setSourceIn(sourceIn);
                                 ac->setLabel(label);
                                 ac->setLinkId(*clipId);  // pair with companion video
+                                if (audioStreamCount2 > 1)
+                                    ac->setAudioStreamIndex(0);  // companion = stream 0
                                 *audioClipId2 = ac->id();
                                 audioTrack->addClip(std::move(ac));
                                 *audioOverlapCmd2 = EditOperations::resolveOverlaps(
                                     *m_ws->timeline(), *audioTkIdx2, *audioClipId2);
                                 if (*audioOverlapCmd2) (*audioOverlapCmd2)->execute();
+
+                                // Lay every remaining audio stream onto its own
+                                // track below, as one linked group.
+                                if (audioStreamCount2 > 1) {
+                                    createAudioStreamSiblings(
+                                        m_ws->timeline(), path, atTick, dur, sourceDur,
+                                        sourceIn, label, *clipId, *audioTkIdx2,
+                                        audioStreamCount2, *audioSiblings2);
+                                }
                             }
                         }
 
-                        const bool trackStructureChanged = (*createdTk || *audioCreatedTk2);
+                        const bool trackStructureChanged =
+                            (*createdTk || *audioCreatedTk2 || !audioSiblings2->empty());
                         refreshAfter(trackStructureChanged);
                     },
                     /* undo */
                     [this, clipId, createdTk, tkIdx, overlapCmd2,
                      mediaHasAudio, audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
-                     refreshAfter]() {
-                        const bool trackStructureChanged = (*createdTk || *audioCreatedTk2);
+                     audioSiblings2, refreshAfter]() {
+                        const bool trackStructureChanged =
+                            (*createdTk || *audioCreatedTk2 || !audioSiblings2->empty());
                         // Undo audio companion first
                         if (mediaHasAudio) {
+                            undoAudioStreamSiblings(m_ws->timeline(), *audioSiblings2);
                             if (*audioOverlapCmd2) (*audioOverlapCmd2)->undo();
                             if (*audioTkIdx2 < m_ws->timeline()->trackCount()) {
                                 Track* at = m_ws->timeline()->track(*audioTkIdx2);

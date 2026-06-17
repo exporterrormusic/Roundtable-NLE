@@ -11,7 +11,9 @@
 #include "cache/SegmentRenderCache.h"
 #include "cache/FrameCache.h"   // CachedFrame, ResolutionTier
 
+#include <filesystem>
 #include <memory>
+#include <system_error>
 
 namespace rt {
 namespace {
@@ -21,6 +23,26 @@ std::shared_ptr<CachedFrame> makeFrame(size_t pixelBytes)
     auto f = std::make_shared<CachedFrame>();
     f->pixels.resize(pixelBytes);   // drives memoryUsage()
     return f;
+}
+
+// Disk round-trip needs real dims (the reader sanity-checks pixel count).
+std::shared_ptr<CachedFrame> makeFrameWH(uint32_t w, uint32_t h, uint8_t fill)
+{
+    auto f = std::make_shared<CachedFrame>();
+    f->width  = w;
+    f->height = h;
+    f->stride = w * 4;
+    f->pixels.assign(static_cast<size_t>(w) * h * 4, fill);
+    return f;
+}
+
+std::filesystem::path makeTempDir(const char* name)
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt_segcache_test" / name;
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    return dir;
 }
 
 TEST(SegmentRenderCache, HitRequiresMatchingConfigHash)
@@ -122,6 +144,67 @@ TEST(SegmentRenderCache, ClearEmptiesEverything)
     cache.clear();
     EXPECT_EQ(cache.count(), 0u);
     EXPECT_EQ(cache.sizeBytes(), 0u);
+}
+
+// ── Disk persistence (survives restart) ─────────────────────────────────────
+
+TEST(SegmentRenderCache, DiskPersistsAcrossRestart)
+{
+    auto dir = makeTempDir("persist");
+    {
+        SegmentRenderCache cache;
+        cache.enableDiskCache(dir, 64ull * 1024 * 1024);
+        cache.put(1000, ResolutionTier::Full, 0xABCD, makeFrameWH(4, 2, 0x7F));
+        // ~SegmentRenderCache drains the write-behind queue + joins the writer.
+    }
+    // "Restart": a fresh cache over the same dir rebuilds its index from disk.
+    SegmentRenderCache cache2;
+    cache2.enableDiskCache(dir, 64ull * 1024 * 1024);
+    EXPECT_TRUE(cache2.hasFresh(1000, ResolutionTier::Full, 0xABCD));
+
+    auto f = cache2.get(1000, ResolutionTier::Full, 0xABCD);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(f->width, 4u);
+    EXPECT_EQ(f->height, 2u);
+    ASSERT_EQ(f->pixels.size(), static_cast<size_t>(4 * 2 * 4));
+    EXPECT_EQ(f->pixels[0], 0x7F);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(SegmentRenderCache, DiskMissOnDifferentConfigHash)
+{
+    auto dir = makeTempDir("confighash");
+    {
+        SegmentRenderCache cache;
+        cache.enableDiskCache(dir, 64ull * 1024 * 1024);
+        cache.put(1000, ResolutionTier::Full, 0x1111, makeFrameWH(4, 2, 0x10));
+    }
+    SegmentRenderCache cache2;
+    cache2.enableDiskCache(dir, 64ull * 1024 * 1024);
+    EXPECT_TRUE(cache2.hasFresh(1000, ResolutionTier::Full, 0x1111));
+    // An edit changes the configHash → different filename → not the same frame.
+    EXPECT_FALSE(cache2.hasFresh(1000, ResolutionTier::Full, 0x2222));
+    EXPECT_EQ(cache2.get(1000, ResolutionTier::Full, 0x2222), nullptr);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(SegmentRenderCache, NoDiskMeansNoPersistence)
+{
+    auto dir = makeTempDir("disabled");
+    {
+        SegmentRenderCache cache;   // disk never enabled
+        cache.put(1000, ResolutionTier::Full, 0x1, makeFrameWH(4, 2, 0x1));
+    }
+    SegmentRenderCache cache2;
+    cache2.enableDiskCache(dir, 64ull * 1024 * 1024);   // dir is empty
+    EXPECT_FALSE(cache2.hasFresh(1000, ResolutionTier::Full, 0x1));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 } // namespace

@@ -620,6 +620,10 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         event->accept(); return;
     }
 
+    // Note: Render In to Out (Ctrl+Shift+R) is handled by the Timeline-menu
+    // QAction shortcut (MainWindowMenus.cpp) so it fires regardless of which
+    // panel holds focus — no keyPressEvent handler needed here.
+
     // â”€â”€ Q = Ripple trim head to playhead â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (noMod && key == Qt::Key_Q) {
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {

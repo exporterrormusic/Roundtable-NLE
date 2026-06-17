@@ -1,6 +1,6 @@
 ================================================================================
 FABLE_CLEANUP.TXT — Remaining work
-Roundtable NLE — as of 2026-06-13
+Roundtable NLE — as of 2026-06-16
 ================================================================================
 
 Phases 0-3 of the codebase cleanup audit are COMPLETE and committed: dead-code
@@ -13,8 +13,11 @@ friend-narrowing of all four (no friend classes remain); and the tests/
 re-folder into core/gpu/export/ui.  The full blow-by-blow execution history
 lives in this file's prior git revisions and the commit log.
 
-What's left is PHASE 4 — Premiere-parity FEATURES.  Each is its own project;
-none are started.  Standing items are at the bottom.
+What's left is PHASE 4 — Premiere-parity FEATURES.  Each is its own project.
+Progress as of 2026-06-16: 4.1 colour (a+b) DONE, 4.3 VFR (a) DONE, 4.4 multi-
+audio DONE, 4.6 segment render cache + render bar DONE (runtime-verified).
+Not started: 4.7 proxy, 4.2 16-bit float; deferred: 4.1c HDR tone-map, 4.3b
+PTS-index.  Per-item status is inline below.  Standing items are at the bottom.
 
 GROUND RULES (from the repo's history):
   - Build the Release `roundtable` target to verify, not just the libs; use
@@ -99,15 +102,16 @@ PHASE 4 — Premiere-parity features (in recommended order)
        c) Optional Premiere-style conform-to-CFR on import (core/convert
           infrastructure already exists).
 
-4.4  SINGLE AUDIO STREAM PER FILE
-     VideoDecoderInit takes the FIRST audio stream; AudioFile uses
-     av_find_best_stream.  Multicam interviews, camera scratch+lav tracks, OBS
-     multi-track recordings: the other streams are unreachable.  Fix:
-     enumerate audio streams into VideoStreamInfo; UI = stream picker in
-     InterpretFootageDialog (or clip right-click -> Audio Stream).  Storage
-     format bump for the choice.
+4.4  MULTI AUDIO STREAM PER FILE             ** DONE 2026-06-13 **
+     Was: VideoDecoderInit/AudioFile took only the first/best audio stream, so
+     multicam interviews, camera scratch+lav tracks, and OBS multi-track
+     recordings had unreachable streams.  DONE: per-clip audio-stream pick —
+     AudioClip carries an ordinal (-1 = auto) at format v27; AudioFile::open(
+     path, ordinal) + enumerateAudioStreams; PATH-keyed decode/waveform caches
+     re-keyed by ordinal; video audio via a companion AudioClip; Properties
+     combo + right-click "Audio Stream" submenu.  Not yet runtime-smoke-verified.
 
-4.6  SEGMENT PREVIEW-RENDER + RENDER BAR  ** slice 1 DONE 2026-06-13 **
+4.6  SEGMENT PREVIEW-RENDER + RENDER BAR  ** DONE 2026-06-16 (runtime-verified) **
      No render-in-to-out / preview cache / background render.  The render-bar
      UI is fully painted but unwired (TimelineRuler::setRenderBar).  The
      DiskFrameCache persists DECODED source frames, not composited output.
@@ -125,11 +129,26 @@ PHASE 4 — Premiere-parity features (in recommended order)
          tests).  TimelinePanel::refreshRenderBar() maps it onto
          TimelineRuler::RenderBarSegment (Empty->no bar, RealTime->translucent
          green, NeedsRender->red) and is called from rebuildTracks() +
-         refreshTrackContents().  v1 NeedsRender heuristic = "an active visual
-         clip carries active effects" ONLY — deliberately conservative so the
-         bar doesn't cry wolf.  NOT yet considered (need real frame-time
-         measurement = slice 2): transitions, layer count, decode cost.  No
-         cache, no background thread, no state hash yet.  Runtime-eyeball owed.
+         refreshTrackContents().  HEURISTIC UPGRADED 2026-06-15 (was "active
+         clip has effects" ONLY): NeedsRender now also fires on a nested
+         SequenceClip (recursive inner composite), a transition overlapping a
+         busy stack (>=3 visual layers), or a tall stack (>=6 layers); plain
+         clips / 2-3 layer comps / lone dissolves stay RealTime (conservative
+         bars so the bar doesn't cry wolf).  Transition start/end are now also
+         complexity edges.  6 new tests (Nested/Dissolve/Transition/3-layer/
+         5-vs-6-layer).  MEASURED-COST OVERRIDE DONE 2026-06-16: compositeFrame
+         records the wall-time of each FRESH real-time composite (perfT0→commit,
+         !scrubMode) into CompositeService::m_frameCostMs keyed by tick (one
+         cheap store on the hot path — the time was already measured for the
+         COMPOSITE-SLOW log; bounded, rolling, not cleared on edits).  refresh
+         RenderBar's effectiveComplexity() samples measuredFrameCostMs across a
+         segment and, where data exists, reclassifies: majority of sampled
+         frames over the 1000/fps budget → NeedsRender (catches e.g. 3×4K ProRes
+         the static guess called cheap), comfortably under → RealTime (stops
+         crying wolf on a light effect); unplayed spans fall back to static.  No
+         hot-path hashing; bar cost is a few map lookups per segment.  NOTE: like
+         the cache, measured ticks use the FrameClock integer-ticksPerFrame grid
+         so non-integer fps (29.97) may not line up — degrades to static, no harm.
        SLICE 2 — the real engine.  Sub-steps:
          2a — config state-hash.  DONE 2026-06-13.  core/project/RenderStateHash
            .{h,cpp}: hashCompositeConfigAt(timeline, tick) -> u64, the cache
@@ -140,9 +159,14 @@ PHASE 4 — Premiere-parity features (in recommended order)
            the tick value itself (same config across ticks hashes equal; cache
            key = tick+tier+configHash).  Unit-tested (tests/core/test_render_
            state_hash.cpp, 10 tests incl. every-edit-invalidates + inactive-
-           clip-edit-does-NOT).  KNOWN GAP to close before 2c trusts it: nested
-           SequenceClip inner-timeline edits (writeClip stores only the ref —
-           needs Project recursion).  See the header for the full gap list.
+           clip-edit-does-NOT).  NESTED-SEQUENCE GAP CLOSED 2026-06-15:
+           hashCompositeConfigAt now takes an optional Project* and recurses
+           into each active nested sequence (mapping the outer tick through
+           timelineIn + sourceIn exactly as buildSequenceClipFrame), folding in
+           the inner config; cycle/depth guarded; kHashVersion bumped 1->2.  6
+           new tests (NestedInnerEdit*, NestedSettings*, NestedSourceIn*,
+           SelfReferencing*).  Remaining known gap: app/global render prefs that
+           bypass per-sequence Settings (none today).  See the header.
          2b — SegmentRenderCache store.  DONE 2026-06-13.  core/cache/
            SegmentRenderCache.{h,cpp}: in-memory cache of COMPOSITED frames
            keyed (tick, tier); each entry remembers its configHash and a
@@ -155,9 +179,20 @@ PHASE 4 — Premiere-parity features (in recommended order)
            current hash).  Unit-tested (tests/core/test_segment_render_cache.cpp,
            8 tests).  Disk write-behind (mirror DiskFrameCache) deferred — 2b is
            the in-memory store + staleness semantics.
-         2c — render DRIVER.  APPROACH CHOSEN 2026-06-13: explicit "Render In
-           to Out" (foreground, mirrors export), NOT continuous idle render.
-           De-risked / findings (write-side, not yet built):
+         2c — render DRIVER.  WRITE SIDE DONE 2026-06-15.  CompositeService now
+           owns m_segmentRenderCache (built in ctor) + segmentRenderCache()
+           accessor + renderRangeToCache(from,to,outW,outH,cancel,progress) in
+           CompositeServiceFrame.cpp: foreground, mirrors export — forces CPU
+           display mode, iterates frame-aligned ticks (kTicksPerSecond / seq
+           fps) over [in,out], skips already-fresh ticks, snapshots each
+           composite into a clean CPU-only CachedFrame (avoids aliasing the
+           shared m_lastGoodComposite) and put()s it keyed (tick, effectiveCache
+           Tier, hashCompositeConfigAt).  Caller must stop playback; non-modal
+           cancel/progress hooks provided.  RUNTIME-VERIFIED 2026-06-16 (via the
+           2d command).  NOTE: the tier was later changed from playbackTier to
+           effectiveCacheTier (Full during the pre-render) — see slice 3.
+           APPROACH (2026-06-13): explicit "Render In to Out", NOT continuous
+           idle render.  De-risked / findings:
              * compositeFrame() is sole-compositor ONLY during playback; one-
                shot callers already drive it directly when playback is STOPPED
                (export via the MainWindowUIBuild:648 callback; thumbnail grabs
@@ -176,19 +211,119 @@ PHASE 4 — Premiere-parity features (in recommended order)
                or chunk via the event loop; support cancel + skip-already-fresh.
              * tier: render at the current m_playbackTier so playback consult
                (next step) keys match.  configHash = hashCompositeConfigAt.
-         2c-read (next, isolated, GPU-verify): compositeFrame() consults the
-           cache at its top (non-nested, matching tier + outW/outH + configHash)
-           and early-returns the cached frame — the actual playback speedup.
-           Kept separate because it edits the crash-sensitive hot path.
+         2c-read — RUNTIME-VERIFIED 2026-06-15 (perf_log: playback served 60+
+           frames from the segment cache at 1920x1080, no crash; scrub/seek
+           legitimately miss — non-frame-aligned ticks + half-size).  Budget
+           gotcha found+fixed: full-canvas BGRA frames are ~8 MB at 1080p, so
+           the 512 MB default held only ~61 frames (~2 s) and LRU evicted the
+           head of a 6 s range; App now sets SegmentRenderCache budget to ~15%
+           RAM (clamped 2-8 GB) via computeSegmentCacheBudget (App.cpp).
+         2c-read — DONE 2026-06-15, DEFAULT ON after verification (see FINALIZED
+           note below).  compositeFrame() consults the cache after invalidation
+           handling (non-nested, matching effectiveCacheTier + outW/outH +
+           configHash) and early-returns the cached CPU snapshot (gpuReady=false
+           — the same presentation path the modal fallback uses), refreshing
+           m_lastGoodComposite so the fallback stays coherent.  setSegmentCache
+           ReadEnabled remains as a kill switch; a count()==0 fast-out keeps a
+           cold cache free.
          2d — UI: "Render In to Out" command (TimelineWorkspace hub) + bar
            Cached(green)/Mixed via SegmentRenderCache::hasFresh in
            refreshRenderBar (per-segment representative tick).
-       SLICE 3 — export reuse of green FULL-RES segments (tier gate: preview
-         renders Half/Quarter, export wants Full).
-     HARD PARTS for slices 2-3: invalidation correctness (state hash must cover
-     EVERYTHING affecting a composited pixel — global/sequence settings, nested
-     seqs, speed, caption burn-in, upstream layers — or you show stale frames);
-     resolution tiers; GPU-queue contention vs prefetch/compositor; disk budget.
+           DONE 2026-06-16 (runtime-verified).  TimelineWorkspace::renderInToOut()
+           — reads Timeline::inPoint()/outPoint(), renders at FULL res + the
+           sequence resolution (sets forceFullResolution for the pass — see
+           slice 3; this superseded the original program-monitor-size approach so
+           the entries also serve export), stops playback, calls renderRange
+           ToCache; exposed as a "Render In to Out" QAction in the &Timeline menu
+           (MainWindowMenus.cpp) with the shortcut SET ON THE ACTION (Ctrl+Shift+R)
+           so it fires window-wide regardless of panel focus — the earlier
+           keyPressEvent binding only fired when the timeline workspace had focus,
+           so it appeared dead.  GREEN BAR DONE: refreshRenderBar (TimelinePanel
+           Tracks) SUBDIVIDES each NeedsRender span into green(cached)/red(un-
+           cached) runs by probing isTickCached per frame-aligned tick (no more
+           vague Mixed/yellow for partial coverage); the bar refreshes on return
+           to the Timeline page (onPageTabChanged) so an export's results show.
+           NON-MODAL PROGRESS DONE 2026-06-16: renderInToOut drives a non-modal
+           QProgressDialog (show(), never exec() — a modal exec would trip
+           compositeFrame's s_modalDialogActive guard and stall the render) and
+           feeds renderRangeToCache's shouldCancel (wasCanceled) + onProgress
+           (setValue + QCoreApplication::processEvents + throttled live green-bar
+           fill every 30 frames) hooks.  minimumDuration(500ms) so short ranges
+           don't flash a dialog; m_renderingInToOut re-entrancy guard (the
+           processEvents pump can redispatch Ctrl+Shift+R); the menu handler
+           dropped its wait-cursor + success box (the dialog + bar are the
+           feedback).  Cancel leaves a partial (valid) cache.
+       SLICE 3 — export reuse of green FULL-RES segments.  DONE 2026-06-15.
+         Correctness foundation: the cache is now keyed by effectiveCacheTier()
+         = forceFullResolution() ? Full : playbackTier(), used by the consult,
+         renderRangeToCache(put), and isTickCached — so export (Full) NEVER
+         reuses a reduced-tier playback frame (which decoded layers softer).
+         "Render In to Out" now renders at FULL res + the sequence resolution
+         (sets forceFullResolution for the pass) so its entries serve export
+         AND full-res playback; reduced-tier playback just recomposites (already
+         fast).  The compositeFrame consult now also fires when forceFullResol-
+         ution is set, so EXPORT reuses the pre-rendered Full segments with NO
+         export-side wiring (the export preview callback already wraps
+         compositeFrame in setForceFullResolution).  isTickCached probes Full so
+         the bar lights green from the editing context.  Reuse is visible in
+         perf_log via the existing [SEGCACHE] served/MISS lines during export.
+         LIMITATIONS (documented, acceptable v1): (a) export must match the
+         sequence RESOLUTION and integer FPS for the tick/size keys to line up
+         — a 720p export from a 1080p sequence, or 29.97 vs 30, misses and
+         recomposites (correct, just no speedup); (b) budget (~15% RAM, 2-8 GB)
+         bounds how long a Full-res range fits.  [Export WRITE-THROUGH so a first
+         export populates the cache: DONE — see the EXPORT WRITE-THROUGH note.]
+     FINALIZED 2026-06-15: read-consult is now DEFAULT ON (runtime-verified;
+       m_segmentCacheReadEnabled{true}) with a SegmentRenderCache::count()==0
+       fast-out so a cold cache costs nothing (no per-frame hashing until a
+       range is pre-rendered) — kept as a kill switch.  Diagnostics quieted:
+       [SEGCACHE] served/miss + renderRangeToCache summary → debug; only the
+       size-mismatch ("NOT reused") stays at warn (throttled) since it flags a
+       real export-res ≠ pre-render-res misconfig; renderInToOut summary → info.
+       Also fixed a PRE-EXISTING misleading export log: RenderQueue's "encode-
+       Frame returned false" (which is just the encoder buffering look-ahead/
+       B-frames, not a failure) → debug, reworded.  Feature chain complete:
+       smarter bar → Render In to Out (Full) → full-res playback reuse + EXPORT
+       reuse, all runtime-verified; output confirmed correct.
+     EXPORT WRITE-THROUGH — DONE 2026-06-16 (runtime-verified: export turns the
+       bar green).  IMPORTANT design lesson: the FIRST attempt hooked the export
+       PREVIEW callback (MainWindowUIBuild) — WRONG: that callback only fires for
+       the preview frame (tick=0), and at that point the GPU-resident output has
+       no CPU pixels yet ("no CPU pixels" skip).  The export render LOOP pulls
+       frames via RenderQueue::m_frameRenderCb → pipelineComposite, and the only
+       place a finished full-res frame has CPU pixels is in RenderQueue right
+       before it feeds the encoder (RenderQueue.cpp ~546).  FIX: RenderQueue got
+       a FrameStoreFn (setFrameStoreCallback) called there with (tick, cframe);
+       ExportPanel forwards it (setFrameStoreCallback) from MainWindowUIBuild →
+       TimelineWorkspace::cacheExportFrame → CompositeService::cacheExportFrame,
+       which stores at the Full tier + configHash (NO forceFull gate — runs on
+       the export worker thread after that flag reset; caller guarantees full-
+       res + pixels), skipping already-fresh ticks, via snapshotForCache.  Stored
+       frames also persist to disk, so a re-export OR a restart reuses them.
+     DISK PERSISTENCE — DONE 2026-06-15.  SegmentRenderCache gained an embedded
+       disk layer (enableDiskCache(dir,budget); App wires userDataDir()/cache/
+       segments @ 16 GB).  Two-level: in-mem LRU backed by disk; put() writes
+       behind on a background thread, get()/hasFresh() fall through to disk on a
+       miss (synchronous read + promote).  Files are content-addressed
+       seg_<tier>_<tick>_<hash16>.rtsc (magic/version header, validated on read)
+       so they're valid across sessions; an edit changes the hash → new file →
+       never stale.  Index rebuilt by scanning the dir at startup; LRU-by-mtime
+       disk-budget enforcement; writer drains on dtor (no loss on quit).  3 new
+       tests (DiskPersistsAcrossRestart / DiskMissOnDifferentConfigHash /
+       NoDiskMeansNoPersistence); 750 core green.
+     RENDER-BAR REFRESH FIX 2026-06-15: the bar only re-probed on track
+       rebuilds / after Render In to Out, so an EXPORT that populated the cache
+       (write-through) left the bar showing its stale pre-export RED state.
+       onPageTabChanged (MainWindowUINav) now calls TimelineWorkspace::
+       refreshRenderBar() when switching TO the Timeline page, so returning from
+       Export repaints green/yellow.  (Disk persistence confirmed working: a
+       reopened project shows the pre-rendered range from disk.)
+     ALL SLICES + follow-ups (measured-cost bar, export write-through, disk
+     persistence, non-modal progress) DONE 2026-06-16 — feature complete.
+     Durable invalidation note: the state hash covers each active clip's full
+     writeClip form + mute/solo + sequence Settings + transitions + recursed
+     nested sequences; the only known uncovered input is app/global render prefs
+     that bypass per-sequence Settings (none exist today).
 
 4.7  PROXY WORKFLOW
      Resolution tiers downscale at decode time, but heavy codecs still pay

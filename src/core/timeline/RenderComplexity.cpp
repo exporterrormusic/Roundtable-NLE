@@ -15,6 +15,12 @@ namespace rt {
 
 namespace {
 
+/// A composite carrying this many simultaneous visual layers is flagged heavy
+/// even with no effects: that many per-frame decodes + uploads + blends starts
+/// to threaten real-time on ordinary hardware.  Kept high so a routine 2–3
+/// layer comp (which the GPU blends trivially) stays RealTime.
+constexpr int kHeavyLayerCount = 6;
+
 /// True for tracks whose clips appear in the composited picture.
 bool isVisualTrack(const Track& tr) noexcept
 {
@@ -22,10 +28,21 @@ bool isVisualTrack(const Track& tr) noexcept
 }
 
 /// Classify the composition active at a single tick.
+///
+/// "NeedsRender" = worth pre-rendering because it likely won't sustain real-
+/// time.  We escalate on the signals that actually cost the compositor extra
+/// per-frame work, ordered strongest first, while staying conservative on the
+/// cheap ones (a lone dissolve, a 2–3 layer stack) so the bar doesn't cry wolf:
+///   - any active EFFECT         → extra GPU passes (glitch/beat macros, grades)
+///   - a nested SEQUENCE         → recursively composites a whole inner timeline
+///   - a TRANSITION over a busy stack (>=3 layers) → blend pass atop real work
+///   - a very TALL layer stack (>=kHeavyLayerCount) → decode/upload/blend volume
 RenderComplexity classifyAt(const Timeline& timeline, int64_t tick)
 {
     int  visualLayers = 0;
     bool anyEffects   = false;
+    bool anyNested    = false;
+    int  transitions  = 0;
 
     for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
         const Track* tr = timeline.track(ti);
@@ -37,12 +54,28 @@ RenderComplexity classifyAt(const Timeline& timeline, int64_t tick)
             // Half-open: a clip ending exactly at `tick` is no longer active.
             if (tick < c->timelineIn() || tick >= c->timelineOut()) continue;
             ++visualLayers;
-            if (c->effects().hasActiveEffects()) anyEffects = true;
+            if (c->effects().hasActiveEffects())        anyEffects = true;
+            if (c->clipType() == ClipType::Sequence)    anyNested  = true;
+        }
+
+        for (const Transition& t : tr->transitions()) {
+            int64_t ts = 0, te = 0;
+            t.getRange(ts, te);
+            if (tick >= ts && tick < te) ++transitions;
         }
     }
 
     if (visualLayers == 0) return RenderComplexity::Empty;
-    return anyEffects ? RenderComplexity::NeedsRender : RenderComplexity::RealTime;
+
+    // Strong, always-heavy signals.
+    if (anyEffects) return RenderComplexity::NeedsRender;
+    if (anyNested)  return RenderComplexity::NeedsRender;
+
+    // Volume / combination signals (conservative bars — see the doc comment).
+    if (transitions > 0 && visualLayers >= 3) return RenderComplexity::NeedsRender;
+    if (visualLayers >= kHeavyLayerCount)     return RenderComplexity::NeedsRender;
+
+    return RenderComplexity::RealTime;
 }
 
 } // namespace
@@ -67,6 +100,17 @@ std::vector<RenderComplexitySegment> analyzeRenderComplexity(const Timeline& tim
             edges.push_back(in);
             edges.push_back(out);
             maxEnd = std::max(maxEnd, out);
+        }
+
+        // Transition start/end are also complexity edges (a dissolve over a
+        // busy stack flips a sub-span to NeedsRender), so the bar must be able
+        // to break there even mid-clip.
+        for (const Transition& t : tr->transitions()) {
+            int64_t ts = 0, te = 0;
+            t.getRange(ts, te);
+            edges.push_back(ts);
+            edges.push_back(te);
+            maxEnd = std::max(maxEnd, te);
         }
     }
 

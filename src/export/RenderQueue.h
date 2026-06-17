@@ -37,6 +37,12 @@ using FrameRenderFn = std::function<std::shared_ptr<CachedFrame>(
     int64_t tick, int64_t nextTick,
     uint32_t width, uint32_t height, bool scrubMode)>;
 
+/// Optional: receives each finished export frame (full-res, CPU pixels ready)
+/// right before it is encoded, so it can be written into the segment render
+/// cache (§4.6 export write-through).  Called on the export worker thread.
+using FrameStoreFn = std::function<void(int64_t tick,
+                                        const std::shared_ptr<CachedFrame>&)>;
+
 // ── Export preset ────────────────────────────────────────────────────────────
 
 /// Pre-configured export settings
@@ -188,6 +194,10 @@ public:
     /// The old internal FrameRenderer fallback was removed (#18).
     void setFrameRenderCallback(FrameRenderFn fn) { m_frameRenderCb = std::move(fn); }
 
+    /// Optional segment-cache write-through (§4.6): called with each finished
+    /// full-res frame just before encoding (pixels guaranteed present).
+    void setFrameStoreCallback(FrameStoreFn fn) { m_frameStoreCb = std::move(fn); }
+
     // processJob is public so the SEH-safe wrapper (safeProcessJob in
     // RenderQueue.cpp) can call it.  It is NOT part of the public API.
     void processJob(ExportJob& job, Timeline* timeline, Compositor* compositor);
@@ -208,6 +218,7 @@ private:
     JobProgressFn               m_progressCb;
     JobCompleteFn               m_completeCb;
     FrameRenderFn               m_frameRenderCb;
+    FrameStoreFn                m_frameStoreCb;
 
     // Per-job cancellation
     std::unordered_map<uint32_t, std::atomic<bool>> m_cancelFlags;

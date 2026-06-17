@@ -23,11 +23,17 @@
 
 #include "cache/FrameCache.h"   // CachedFrame, ResolutionTier
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <filesystem>
 #include <list>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rt {
 
@@ -36,9 +42,18 @@ class SegmentRenderCache
 public:
     /// Default 512 MB; App can override from installed RAM like FrameCache does.
     explicit SegmentRenderCache(size_t budgetBytes = 512ULL * 1024 * 1024);
+    ~SegmentRenderCache();
 
     SegmentRenderCache(const SegmentRenderCache&) = delete;
     SegmentRenderCache& operator=(const SegmentRenderCache&) = delete;
+
+    /// Enable disk-backed persistence so pre-rendered segments survive an app
+    /// restart.  Frames are written behind on a background thread and read back
+    /// on an in-memory miss.  The on-disk key is (tick, tier, configHash) — it
+    /// is content-addressed, so a file is valid for ANY session whose config
+    /// hashes equal (an edit changes the hash → a different file → never stale).
+    /// Seeds the in-memory index by scanning `dir`.  Safe to call once at init.
+    void enableDiskCache(const std::filesystem::path& dir, size_t budgetBytes);
 
     /// Store the composited frame for (tick, tier), produced under configHash.
     /// Replaces any existing entry for (tick, tier).  Null frame is ignored.
@@ -96,12 +111,67 @@ private:
 
     void dropEntry_locked(Map::iterator it);
     void evictToFit_locked();
+    // Insert into the in-memory store only (no disk write-behind) — shared by
+    // put() and the disk-read promotion path.
+    void insertMemory_locked(const Key& key, uint64_t configHash,
+                             std::shared_ptr<CachedFrame> frame);
 
     mutable std::mutex m_mtx;
     Map                m_entries;
     std::list<Key>     m_lru;          // front = most-recently used
     size_t             m_budgetBytes;
     size_t             m_curBytes{0};
+
+    // ── Disk persistence (optional, enabled via enableDiskCache) ─────────
+    static constexpr uint32_t kDiskMagic   = 0x47534752; // "RGSG" (LE)
+    static constexpr uint32_t kDiskVersion = 1;
+    static constexpr size_t   kMaxWriteQueue = 24;       // bounds pinned RAM
+
+    struct DiskKey {
+        int64_t  tick;
+        uint8_t  tier;
+        uint64_t configHash;
+        bool operator==(const DiskKey& o) const noexcept {
+            return tick == o.tick && tier == o.tier && configHash == o.configHash;
+        }
+    };
+    struct DiskKeyHash {
+        size_t operator()(const DiskKey& k) const noexcept {
+            size_t h = std::hash<int64_t>{}(k.tick);
+            h ^= std::hash<uint64_t>{}(k.configHash) + 0x9e3779b97f4a7c15ULL
+               + (h << 6) + (h >> 2);
+            h ^= static_cast<size_t>(k.tier) * 0x9e3779b9u;
+            return h;
+        }
+    };
+    struct PendingWrite {
+        DiskKey                      key;
+        std::shared_ptr<CachedFrame> frame;
+    };
+
+    [[nodiscard]] std::filesystem::path diskPathFor(const DiskKey& k) const;
+    [[nodiscard]] static bool parseDiskName(const std::string& filename, DiskKey& out);
+    [[nodiscard]] bool writeFrameToDisk(const std::filesystem::path& path,
+                                        const DiskKey& k,
+                                        const CachedFrame& frame) const;
+    [[nodiscard]] std::shared_ptr<CachedFrame> readFrameFromDisk(
+        const std::filesystem::path& path, const DiskKey& k) const;
+    void enqueueDiskWrite(const DiskKey& k, std::shared_ptr<CachedFrame> frame);
+    void diskWriterLoop();
+    void scanDiskCache();              // rebuild index + used-bytes from dir
+    void enforceDiskBudget();          // LRU-by-mtime delete when over budget
+
+    bool                  m_diskEnabled{false};
+    std::filesystem::path m_diskDir;
+    size_t                m_diskBudget{0};
+    std::unordered_set<DiskKey, DiskKeyHash> m_diskIndex; // guarded by m_mtx
+    std::atomic<size_t>   m_diskUsed{0};
+
+    std::thread             m_writer;
+    mutable std::mutex      m_writerMtx;
+    std::condition_variable m_writerCv;
+    std::deque<PendingWrite> m_writeQueue;
+    std::atomic<bool>       m_writerRunning{false};
 };
 
 } // namespace rt

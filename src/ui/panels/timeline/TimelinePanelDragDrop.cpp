@@ -19,6 +19,7 @@
 #include "effects/Effect.h"
 #include "playback/MediaPool.h"
 #include "PathUtils.h"
+#include "audio/AudioFile.h"
 
 #include <QDir>
 #include <QDragEnterEvent>
@@ -522,6 +523,7 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         // shows when the cursor leaves the existing tracks (e.g. dragging
         // above the topmost video to create a new track).
         bool mediaHasAudio = false;
+        int  mediaAudioStreams = 1;   // ghost shows one audio lane per stream
         if (!isAudio && m_mediaPool) {
             // Resolve the first dragged item's path and open() it — not just
             // getInfo() on the cached handle.  open() self-heals stale stream
@@ -546,8 +548,22 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                 uint64_t h = m_mediaPool->open(firstPath);
                 if (h != 0) {
                     const auto* info = m_mediaPool->getInfo(h);
-                    if (info && info->hasAudio)
+                    if (info && info->hasAudio) {
                         mediaHasAudio = true;
+                        // Cache the audio-stream count PER PATH so we don't
+                        // re-probe (enumerateAudioStreams reopens the file) on
+                        // every drag-move — that would lag the drag.  The ghost
+                        // then shows one audio lane per stream.
+                        static std::string s_probedPath;
+                        static int         s_streamCount = 1;
+                        if (firstPath != s_probedPath) {
+                            s_probedPath = firstPath;
+                            s_streamCount = std::max<int>(1,
+                                static_cast<int>(AudioFile::enumerateAudioStreams(
+                                    utf8ToPath(firstPath)).size()));
+                        }
+                        mediaAudioStreams = s_streamCount;
+                    }
                     m_mediaPool->release(h);
                 }
             }
@@ -575,7 +591,38 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                     }
                 }
             }
+            // The N streams (N>=1) form a contiguous block anchored at
+            // audioTrackIdx.  Let the user drag that block DOWN past the last
+            // audio track into NEW-track space (Premiere-style) — when the
+            // cursor is below the bottom audio track, anchor on the first
+            // to-be-created track so every stream becomes a new track.  Applies
+            // to single-stream files too: dragging one below the stack must
+            // create a fresh track, not snap back to the first audio track.
+            {
+                size_t lastAudio = SIZE_MAX;
+                for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                    Track* t = m_timeline->track(i);
+                    if (t && t->type() == TrackType::Audio && !t->isDivider())
+                        lastAudio = i;
+                }
+                if (lastAudio != SIZE_MAX && lastAudio < m_trackWidgets.size()) {
+                    QWidget* lastTw = m_trackWidgets[lastAudio].data();
+                    if (lastTw) {
+                        const int lastBotY =
+                            lastTw->mapTo(this, QPoint(0, lastTw->height())).y();
+                        // Cursor below the bottom audio track → anchor on the
+                        // first to-be-created track, so the whole block is new.
+                        if (pos.y() > lastBotY)
+                            audioTrackIdx = lastAudio + 1;
+                    }
+                }
+            }
         }
+        // Publish the resolved audio anchor so dropEvent places clips exactly
+        // where this preview shows them (instead of re-deriving routing from
+        // coarse above/below flags, which diverged from the ghost).
+        m_ghostDropAudioAnchor  = (isAudio || mediaHasAudio) ? audioTrackIdx : SIZE_MAX;
+        m_ghostDropAudioStreams = mediaAudioStreams;
         // Find target video track index for companion preview whenever
         // the cursor isn't over a real video track (over audio, below
         // the audio area, or anywhere else). Premiere routes the video
@@ -618,11 +665,24 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         // and the case where no ghost is showing still need a per-track
         // preview so the user can see where the clips will land.
         const bool multiClipDrag = (clipDurations.size() > 1);
+        // A multicam/broadcast source spawns one audio clip per stream on the
+        // consecutive audio tracks at/below audioTrackIdx — preview all of them
+        // (clamped to the audio tracks that currently exist; tracks the drop
+        // will newly create can't be ghosted on a row that isn't there yet).
+        auto isAudioLane = [&](size_t i) -> bool {
+            if (!mediaHasAudio || audioTrackIdx == SIZE_MAX) return false;
+            if (i < audioTrackIdx ||
+                i >= audioTrackIdx + static_cast<size_t>(mediaAudioStreams))
+                return false;
+            Track* tr = (m_timeline && i < m_timeline->trackCount())
+                            ? m_timeline->track(i) : nullptr;
+            return tr && tr->type() == TrackType::Audio && !tr->isDivider();
+        };
         for (size_t i = 0; i < m_trackWidgets.size(); ++i) {
             if (multiClipDrag) {
                 // Audio companion: combined per-track ghost so the audio
                 // drop zone is still visually marked.
-                if (mediaHasAudio && i == audioTrackIdx)
+                if (isAudioLane(i))
                     m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, true);
                 // Video side: combined per-track ghost on the existing video
                 // track. Without this, dragging multi-clip video files with
@@ -632,11 +692,15 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                     m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, false);
                 else
                     m_trackWidgets[i]->clearMediaDragPreview();
+            } else if (isAudioLane(i)) {
+                // An audio LANE wins over the cursor-track preview: for a
+                // video+audio multicam file the first audio track must show a
+                // green audio lane, not the blue video preview that the
+                // `i == trackIdx` branch would paint when the cursor is on it.
+                m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, true);
             } else if (i == trackIdx && trackCompatible) {
                 spdlog::debug("GHOST-CLIP: >> setting preview on trackIdx={}", i);
                 m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, isAudio);
-            } else if (mediaHasAudio && i == audioTrackIdx) {
-                m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, true);
             } else if (!isAudio && i == videoTrackIdx) {
                 m_trackWidgets[i]->setMediaDragPreview(tick, previewDur, false);
             } else {
@@ -688,7 +752,33 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
             int ghostX = scrollOrig.x();
             int ghostW = m_verticalScroll->width();
 
-            if (!isAudio && firstVideoTw && pos.y() < firstTop.y()) {
+            // Multi-stream audio: the streams occupy tracks
+            // [audioTrackIdx, audioTrackIdx + N).  Any that fall beyond the last
+            // EXISTING audio track are brand-new and get a stacked ghost row.
+            // (audioTrackIdx may itself be a virtual index below the stack when
+            // the cursor is dragged into new-track space — then ALL N are new.)
+            int extraTracks = 0;
+            if (mediaHasAudio && mediaAudioStreams > 1 &&
+                audioTrackIdx != SIZE_MAX && lastAudioIdx != SIZE_MAX) {
+                const long long lastStream =
+                    static_cast<long long>(audioTrackIdx) + mediaAudioStreams - 1;
+                extraTracks = static_cast<int>(std::max<long long>(
+                    0, lastStream - static_cast<long long>(lastAudioIdx)));
+                extraTracks = std::min(extraTracks, mediaAudioStreams);
+            }
+            int ghostRows = 1;
+
+            if (extraTracks > 0 && lastAudioTw) {
+                // Multi-stream: ghost the to-be-created audio tracks below the
+                // last existing audio track — one stacked row per new stream.
+                const int rowH = std::max(lastAudioTw->height(), 30);
+                m_ghostTrackVisible    = true;
+                m_ghostTrackIsAbove    = false;
+                m_ghostTrackOnExisting = false;
+                m_ghostTrackHeight     = rowH * extraTracks;
+                m_ghostTrackY          = lastBot.y();
+                ghostRows              = extraTracks;
+            } else if (!isAudio && firstVideoTw && pos.y() < firstTop.y()) {
                 // Above topmost video track → ghost new video track above
                 m_ghostTrackVisible = true;
                 m_ghostTrackIsAbove = true;
@@ -775,6 +865,7 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
 
                 m_ghostOverlay->isAbove = m_ghostTrackIsAbove;
                 m_ghostOverlay->onExistingTrack = m_ghostTrackOnExisting;
+                m_ghostOverlay->rowCount = ghostRows;
                 m_ghostOverlay->setGeometry(ghostX, m_ghostTrackY, ghostW, m_ghostTrackHeight);
                 m_ghostOverlay->raise();
                 m_ghostOverlay->show();
@@ -794,7 +885,13 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
                         if (trackIdx < m_trackWidgets.size() && trackCompatible && !isAudio)
                             m_trackWidgets[trackIdx]->clearMediaDragPreview();
                     } else {
-                        if (audioTrackIdx < m_trackWidgets.size())
+                        // A multi-stream source REUSES the existing audio tracks
+                        // at [audioTrackIdx ..] (only the streams that overflow
+                        // spill into the new ghost rows below). Their green lane
+                        // previews — including the A1 anchor — must stay. Only the
+                        // single-track audio-below ghost moves the audio off its
+                        // old track, so clear there.
+                        if (mediaAudioStreams <= 1 && audioTrackIdx < m_trackWidgets.size())
                             m_trackWidgets[audioTrackIdx]->clearMediaDragPreview();
                         if (trackIdx < m_trackWidgets.size() && trackCompatible && isAudio)
                             m_trackWidgets[trackIdx]->clearMediaDragPreview();
@@ -906,6 +1003,8 @@ void TimelinePanel::dragLeaveEvent(QDragLeaveEvent* event)
     m_transitionDropTarget.reset();
     m_ghostTrackVisible = false;
     m_ghostTrackOnExisting = false;
+    m_ghostDropAudioAnchor = SIZE_MAX;
+    m_ghostDropAudioStreams = 1;
     if (m_ghostOverlayAudio) {
         m_ghostOverlayAudio->setClipPreviews({});
         m_ghostOverlayAudio->hide();

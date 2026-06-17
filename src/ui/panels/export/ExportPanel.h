@@ -101,6 +101,10 @@ public:
     using PreviewCallback = std::function<std::shared_ptr<struct CachedFrame>(int64_t tick, uint32_t w, uint32_t h, bool scrub)>;
     void setPreviewCallback(PreviewCallback cb);
 
+    /// Optional: receives each finished full-res export frame for segment-cache
+    /// write-through (§4.6).  Wired through to RenderQueue::setFrameStoreCallback.
+    void setFrameStoreCallback(FrameStoreFn cb) { m_frameStoreCallback = std::move(cb); }
+
     /// Update the preview thumbnail (called when panel becomes visible).
     void refreshPreview();
 
@@ -243,6 +247,7 @@ private:
     QLabel*       m_previewInfoLabel{nullptr};
     ExportMiniTimeline* m_miniTimeline{nullptr};
     PreviewCallback m_previewCallback;
+    FrameStoreFn    m_frameStoreCallback;
 
     // Transport controls
     QPushButton*  m_skipToStartBtn{nullptr};

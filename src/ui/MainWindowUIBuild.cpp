@@ -643,13 +643,24 @@ void MainWindow::buildPanels()
             if (m_timelineWorkspace) {
                 // Force Full resolution for export preview (characters too).
                 // This is always reset on the next call, and the Program/Source
-                // Monitors never go through this callback.
+                // Monitors never go through this callback.  (forceFull also lets
+                // compositeFrame's consult REUSE pre-rendered Full-tier segments
+                // during export — §4.6 slice 3 read side.)
                 m_timelineWorkspace->setForceFullResolution(true);
                 auto result = m_timelineWorkspace->compositeFrame(tick, w, h, scrub);
                 m_timelineWorkspace->setForceFullResolution(false);
                 return result;
             }
             return nullptr;
+        });
+    // §4.6 export write-through: RenderQueue hands each finished full-res frame
+    // here (worker thread, pixels ready) → store it in the segment cache so a
+    // re-export reuses it and the render bar shows it green.
+    m_exportPanel->setFrameStoreCallback(
+        [this](int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_timelineWorkspace)
+                m_timelineWorkspace->cacheExportFrame(tick, frame);
         });
     m_pageStack->addWidget(m_exportPanel);
 

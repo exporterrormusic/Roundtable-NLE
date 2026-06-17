@@ -21,11 +21,16 @@
  * since soloing one track hides the others) and the sequence's pixel-affecting
  * Settings (resolution / fps / colour space) fold in globally.
  *
- * KNOWN COVERAGE GAPS — must be closed before the cache (slice 2b/2c) trusts
- * this hash for invalidation:
- *   - Nested SequenceClip inner-timeline edits: writeClip stores only the
- *     sequence reference, not its inner content.  Recurse into the referenced
- *     sequence (needs the Project) before relying on this for nested comps.
+ * NESTED SEQUENCES: writeClip stores only the SequenceClip's reference, not the
+ * referenced sequence's inner content — so an edit INSIDE a nested sequence
+ * would not, on its own, change the parent's hash (→ stale cached frame).  When
+ * a Project is supplied, hashCompositeConfigAt recurses into each active nested
+ * sequence (mapping the outer tick through the clip's timelineIn + sourceIn,
+ * exactly as the compositor does) and folds its inner config in.  Cycles and
+ * runaway depth are guarded.  Pass the Project for correct nested invalidation;
+ * omit it only for flat single-sequence timelines (e.g. unit tests).
+ *
+ * KNOWN COVERAGE GAPS — must be closed before the cache trusts this hash:
  *   - Global/app-level render prefs that bypass per-sequence Settings.
  */
 
@@ -36,10 +41,14 @@
 namespace rt {
 
 class Timeline;
+class Project;
 
 /// 64-bit hash of the compositing configuration governing `tick`.  Pure
-/// (depends only on the timeline state), so it is deterministic and unit-
-/// tested.  See the file header for what is / isn't covered.
-[[nodiscard]] uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick);
+/// (depends only on timeline/project state), so it is deterministic and unit-
+/// tested.  See the file header for what is / isn't covered.  Supply `project`
+/// so edits inside active NESTED sequences invalidate the parent's hash; pass
+/// nullptr (the default) for a flat timeline with no nested sequences.
+[[nodiscard]] uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
+                                             const Project* project = nullptr);
 
 } // namespace rt

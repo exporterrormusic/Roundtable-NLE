@@ -1012,6 +1012,7 @@ void TimelineWorkspace::createPanelWidgets()
     // -- Timeline Panel ----------------------------------------------------
     m_timelinePanel = new TimelinePanel(this);
     if (m_timeline) m_timelinePanel->setTimeline(m_timeline);
+    if (m_compositeService) m_timelinePanel->setCompositeService(m_compositeService.get());
     if (m_commandStack) m_timelinePanel->setCommandStack(m_commandStack);
     if (m_shortcutManager) m_timelinePanel->setShortcutManager(m_shortcutManager);
     if (m_mediaPool) m_timelinePanel->setMediaPool(m_mediaPool);

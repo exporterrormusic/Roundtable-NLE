@@ -19,6 +19,7 @@
 // Media / timeline
 #include "cache/CachePolicy.h"
 #include "cache/FrameCache.h"
+#include "cache/SegmentRenderCache.h"
 #include "playback/MediaPool.h"
 #include "timeline/AudioClip.h"
 #include "timeline/ImageClip.h"
@@ -118,6 +119,9 @@ void initGpuResidentDecodeFromEnv()
 CompositeService::CompositeService()
 {
     initGpuResidentDecodeFromEnv();
+
+    // §4.6 slice 2c: composited-output cache for "Render In to Out".
+    m_segmentRenderCache = std::make_unique<SegmentRenderCache>();
 
     // Create the composite engine (owns GPU compositing pipeline).
     m_engine = std::make_unique<CompositeEngine>();

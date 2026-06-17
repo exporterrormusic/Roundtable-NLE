@@ -7,10 +7,14 @@
 #include "project/ClipSerialization.h"   // writeClip — full per-clip serialization
 #include "project/BinaryIO.h"            // BinaryWriter
 #include "project/Settings.h"
+#include "project/Project.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "timeline/SequenceClip.h"
 #include "timeline/Transition.h"
+
+#include <vector>
 
 namespace rt {
 
@@ -23,7 +27,13 @@ constexpr uint64_t kFnvPrime  = 1099511628211ull;
 
 // Bump to force every cached segment to re-render after the hash algorithm
 // or its coverage changes (old keys can never collide with new ones).
-constexpr uint32_t kHashVersion = 1;
+// v2: nested-sequence inner config now folds in.
+constexpr uint32_t kHashVersion = 2;
+
+// Belt-and-braces ceiling on nested-sequence recursion; the explicit cycle
+// guard (the ancestor stack) already prevents infinite loops, this just caps
+// absurdly deep but acyclic nests.
+constexpr int kMaxNestDepth = 16;
 
 [[nodiscard]] uint64_t fnv1a(const uint8_t* data, size_t n)
 {
@@ -42,13 +52,14 @@ constexpr uint32_t kHashVersion = 1;
     return tr.type() == TrackType::Video && !tr.isDivider();
 }
 
-} // namespace
-
-uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick)
+// Append the full compositing config governing `tick` of `timeline` into `w`.
+// Recurses into active nested sequences when `project` is supplied; `ancestors`
+// is the stack of timelines already being hashed up the recursion, used to break
+// reference cycles (a sequence that nests itself, directly or transitively).
+void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t tick,
+                           const Project* project, int depth,
+                           std::vector<const Timeline*>& ancestors)
 {
-    BinaryWriter w;
-    w.writeU32(kHashVersion);
-
     // ── Sequence settings that affect pixels ────────────────────────────
     const Settings& s = timeline.settings();
     w.writeU32(s.resolution().width);
@@ -80,6 +91,34 @@ uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick)
             w.writeU8(0x01);                              // active-clip marker
             w.writeU32(static_cast<uint32_t>(ti));        // its track (layer order)
             writeClip(w, *c);                             // FULL serialized state
+
+            // Nested sequence: writeClip captured only the reference, so fold
+            // in the referenced sequence's inner config at the mapped tick —
+            // otherwise an edit inside the nested sequence wouldn't invalidate
+            // this composite.  Map the outer tick exactly as the compositor:
+            // localTick = tick - timelineIn, innerTick = localTick + sourceIn
+            // (see CompositeServiceLayerBuildNested::buildSequenceClipFrame).
+            if (project && c->clipType() == ClipType::Sequence && depth < kMaxNestDepth) {
+                const auto* seqClip = static_cast<const SequenceClip*>(c);
+                const Timeline* inner =
+                    seqClip->sequenceIndex() < project->sequenceCount()
+                        ? project->sequence(seqClip->sequenceIndex())
+                        : nullptr;
+                // Cycle guard: skip if `inner` is already on the ancestor stack
+                // (including the timeline we're currently hashing).
+                bool onStack = (inner == &timeline);
+                for (const Timeline* a : ancestors)
+                    if (a == inner) { onStack = true; break; }
+                if (inner && !onStack) {
+                    int64_t innerTick = (tick - c->timelineIn()) + c->sourceIn();
+                    if (innerTick < 0) innerTick = 0;
+                    w.writeU8(0x03);                      // nested-config marker
+                    ancestors.push_back(&timeline);
+                    appendCompositeConfig(w, *inner, innerTick, project,
+                                          depth + 1, ancestors);
+                    ancestors.pop_back();
+                }
+            }
         }
 
         for (const Transition& t : tr->transitions()) {
@@ -94,6 +133,18 @@ uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick)
             w.writeU64(t.rightClipId);
         }
     }
+}
+
+} // namespace
+
+uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
+                               const Project* project)
+{
+    BinaryWriter w;
+    w.writeU32(kHashVersion);
+
+    std::vector<const Timeline*> ancestors;
+    appendCompositeConfig(w, timeline, tick, project, /*depth=*/0, ancestors);
 
     return fnv1a(w.data().data(), w.data().size());
 }

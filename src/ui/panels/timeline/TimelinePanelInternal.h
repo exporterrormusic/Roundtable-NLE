@@ -39,6 +39,11 @@ public:
     // during drag; it only previews the clips themselves.
     bool onExistingTrack = false;
 
+    // Number of brand-new track rows this ghost represents.  >1 when a
+    // multi-stream source (e.g. an 8-track MXF) will spawn several new audio
+    // tracks at once — the overlay then draws that many stacked ghost rows.
+    int rowCount = 1;
+
     struct GhostClipPreview {
         int x{0};          // left edge in overlay-local coords
         int width{0};      // width in pixels
@@ -76,68 +81,78 @@ protected:
             return;
         }
 
-        // Only paint the track-row tint + dashed border when we're
-        // previewing a brand-new track. On an existing track the
-        // background must stay clean — Premiere shows only the clip
-        // outlines, not a full-row highlight.
-        if (!onExistingTrack) {
-            QColor ghostColor = isAbove
-                ? QColor(80, 130, 200, 60)    // video = blue tint
-                : QColor(60, 160, 90, 60);    // audio = green tint
-            QColor borderColor = isAbove
-                ? QColor(80, 130, 200, 140)
-                : QColor(60, 160, 90, 140);
-
-            p.fillRect(rect(), ghostColor);
-
-            QPen pen(borderColor, 2, Qt::DashLine);
-            p.setPen(pen);
-            p.drawRect(rect().adjusted(1, 1, -1, -1));
-        }
-
-        // Draw clip previews within the ghost track
-        const int h = rect().height();
+        // The overlay can represent several stacked new-track rows (multi-
+        // stream audio).  Draw each row identically; rowCount==1 is the normal
+        // single-track ghost.
+        const int rows   = std::max(1, rowCount);
+        const int totalH = rect().height();
         constexpr float kPad = 2.0f;
-        for (const auto& cp : m_clipPreviews) {
-            QRectF clipRect(cp.x, kPad, cp.width, h - 2.0f * kPad);
 
-            // Fill with semi-transparent clip color
-            QColor fill((cp.color >> 24) & 0xFF,
-                        (cp.color >> 16) & 0xFF,
-                        (cp.color >> 8) & 0xFF,
-                        160);
-            QColor border((cp.color >> 24) & 0xFF,
-                          (cp.color >> 16) & 0xFF,
-                          (cp.color >> 8) & 0xFF,
-                          220);
+        for (int r = 0; r < rows; ++r) {
+            const int y0 = r * totalH / rows;
+            const int y1 = (r + 1) * totalH / rows;
+            const QRect rowRect(0, y0, rect().width(), y1 - y0);
 
-            p.fillRect(clipRect, fill);
-            p.setPen(QPen(border, 1));
-            p.drawRect(clipRect);
+            // Only paint the track-row tint + dashed border when we're
+            // previewing a brand-new track. On an existing track the
+            // background must stay clean — Premiere shows only the clip
+            // outlines, not a full-row highlight.
+            if (!onExistingTrack) {
+                QColor ghostColor = isAbove
+                    ? QColor(80, 130, 200, 60)    // video = blue tint
+                    : QColor(60, 160, 90, 60);    // audio = green tint
+                QColor borderColor = isAbove
+                    ? QColor(80, 130, 200, 140)
+                    : QColor(60, 160, 90, 140);
 
-            // Clip label
-            if (!cp.label.isEmpty() && cp.width > 20) {
-                p.setPen(QColor(255, 255, 255, 200));
-                QFont f = p.font();
-                f.setPixelSize(10);
-                p.setFont(f);
-                p.drawText(clipRect.adjusted(4, 0, -4, 0),
-                           Qt::AlignVCenter | Qt::AlignLeft,
-                           p.fontMetrics().elidedText(cp.label, Qt::ElideRight, cp.width - 8));
+                p.fillRect(rowRect, ghostColor);
+
+                QPen pen(borderColor, 2, Qt::DashLine);
+                p.setPen(pen);
+                p.drawRect(rowRect.adjusted(1, 1, -1, -1));
             }
-        }
 
-        // "+ New Track" label only makes sense when we're previewing
-        // a brand-new track row; suppress on existing tracks.
-        if (m_clipPreviews.empty() && !onExistingTrack) {
-            p.setPen(QColor(200, 200, 200, 180));
-            QFont f = p.font();
-            f.setPixelSize(12);
-            p.setFont(f);
-            QString label = isAbove
-                ? QStringLiteral("+ New Video Track")
-                : QStringLiteral("+ New Audio Track");
-            p.drawText(rect(), Qt::AlignCenter, label);
+            // Draw clip previews within this ghost row.
+            for (const auto& cp : m_clipPreviews) {
+                QRectF clipRect(cp.x, rowRect.y() + kPad,
+                                cp.width, rowRect.height() - 2.0f * kPad);
+
+                QColor fill((cp.color >> 24) & 0xFF,
+                            (cp.color >> 16) & 0xFF,
+                            (cp.color >> 8) & 0xFF,
+                            160);
+                QColor border((cp.color >> 24) & 0xFF,
+                              (cp.color >> 16) & 0xFF,
+                              (cp.color >> 8) & 0xFF,
+                              220);
+
+                p.fillRect(clipRect, fill);
+                p.setPen(QPen(border, 1));
+                p.drawRect(clipRect);
+
+                if (!cp.label.isEmpty() && cp.width > 20) {
+                    p.setPen(QColor(255, 255, 255, 200));
+                    QFont f = p.font();
+                    f.setPixelSize(10);
+                    p.setFont(f);
+                    p.drawText(clipRect.adjusted(4, 0, -4, 0),
+                               Qt::AlignVCenter | Qt::AlignLeft,
+                               p.fontMetrics().elidedText(cp.label, Qt::ElideRight, cp.width - 8));
+                }
+            }
+
+            // "+ New Track" label only makes sense when previewing a brand-new
+            // track row; suppress on existing tracks.
+            if (m_clipPreviews.empty() && !onExistingTrack) {
+                p.setPen(QColor(200, 200, 200, 180));
+                QFont f = p.font();
+                f.setPixelSize(12);
+                p.setFont(f);
+                QString label = isAbove
+                    ? QStringLiteral("+ New Video Track")
+                    : QStringLiteral("+ New Audio Track");
+                p.drawText(rowRect, Qt::AlignCenter, label);
+            }
         }
     }
 

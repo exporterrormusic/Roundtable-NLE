@@ -379,6 +379,11 @@ void ExportPanel::onStartExport()
                 return pipelineComposite(tick, nextTick, w, h, scrub);
             });
     }
+    // §4.6 export write-through: store each finished full-res frame into the
+    // segment cache so a re-export reuses it (called on the worker thread with
+    // pixels already present).
+    if (m_frameStoreCallback)
+        m_renderQueue->setFrameStoreCallback(m_frameStoreCallback);
 
     // Start rendering
     m_renderQueue->start(m_timeline, m_compositor);
