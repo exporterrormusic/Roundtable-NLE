@@ -26,10 +26,14 @@ enum class AudioCodec : uint8_t
 {
     PCM_S16LE,   // 16-bit PCM (WAV)
     PCM_F32LE,   // 32-bit float PCM (WAV)
-    AAC,         // AAC (for MP4/MOV muxing)
+    AAC,         // AAC (for MP4/MOV muxing, or standalone .m4a)
     FLAC,        // Lossless
+    MP3,         // MP3 (libmp3lame) — standalone .mp3
     Count
 };
+
+/// File extension (with leading dot) for a standalone audio export in `codec`.
+[[nodiscard]] const char* audioCodecExtension(AudioCodec codec) noexcept;
 
 struct AudioMixdownConfig
 {
@@ -97,6 +101,16 @@ public:
     /// Write existing mix result to a WAV file.
     static bool writeWav(const MixdownResult& result,
                          const std::filesystem::path& outputPath);
+
+    /// Write an existing mix result to a standalone audio file in the given
+    /// codec/format.  PCM_S16LE goes through writeWav(); MP3/AAC/FLAC are
+    /// encoded + muxed via FFmpeg (container chosen to match the codec).
+    /// `bitrate` (bits/sec) applies to the lossy codecs (MP3/AAC) only.
+    /// Returns false on error (e.g. the encoder isn't available in the build).
+    static bool writeAudioFile(const MixdownResult& result,
+                               const std::filesystem::path& outputPath,
+                               AudioCodec codec,
+                               int bitrate = 192000);
 
     /// Encode mix result to AAC (via FFmpeg). Returns encoded bytes.
     static std::vector<uint8_t> encodeAAC(const MixdownResult& result,

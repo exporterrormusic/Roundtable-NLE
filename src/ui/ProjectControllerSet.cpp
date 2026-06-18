@@ -307,6 +307,13 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
                     m_mw->currentProject()->setModified(true);
             });
         }
+
+        // Restart the auto-save countdown so a freshly-opened project gets a
+        // full interval before its first auto-save.  Without this the timer
+        // free-runs from app launch, so opening a project late in a session
+        // could auto-save seconds later — which then triggers the recovery
+        // prompt on the next launch even for a quick "open to test" session.
+        m_mw->resetAutoSaveTimer();
     } else {
         if (m_mw->projectPanel())
             m_mw->projectPanel()->setCurrentProjectName({});

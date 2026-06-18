@@ -1,6 +1,11 @@
 /*
  * ExportPanelUI.cpp - UI setup for ExportPanel.
  * Split from ExportPanel.cpp for maintainability.
+ *
+ * Premiere-style layout: a header block (File Name / Location / Preset /
+ * Format) over collapsible VIDEO / AUDIO / RANGE sections. VIDEO and AUDIO
+ * each carry a blue enable switch; turning VIDEO off (or just leaving AUDIO on)
+ * makes the export audio-only.
  */
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
@@ -10,6 +15,9 @@
 #include "Encoder.h"
 #include "Muxer.h"
 
+#include "widgets/CollapsibleSection.h"
+#include "widgets/ToggleSwitch.h"
+
 #include "audio/AudioEngine.h"
 #include "cache/FrameCache.h"
 #include "playback/PlaybackController.h"
@@ -17,16 +25,17 @@
 #include "project/Settings.h"
 #include "timeline/Timeline.h"
 
+#include <QAction>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
-#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
 #include <QSplitter>
+#include <QToolButton>
 
 #include <cmath>
 
@@ -42,17 +51,17 @@ void ExportPanel::setupUI()
     mainLayout->setContentsMargins(m.spacingXl, m.spacingXl, m.spacingXl, m.spacingXl);
     mainLayout->setSpacing(m.spacingLg);
 
-    // â”€â”€ Title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Title ───────────────────────────────────────────────────────────
     auto* title = new QLabel(tr("Export"), this);
     title->setObjectName(QStringLiteral("PanelTitle"));
     mainLayout->addWidget(title);
 
-    // â”€â”€ Horizontal splitter: Settings (left) | Preview (right) â”€â”€â”€â”€â”€
+    // ── Horizontal splitter: Settings (left) | Preview (right) ──────────
     auto* splitter = new QSplitter(Qt::Horizontal, this);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
     // LEFT: Settings panel (scrollable)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
     auto* settingsScroll = new QScrollArea;
     settingsScroll->setWidgetResizable(true);
     settingsScroll->setFrameShape(QFrame::NoFrame);
@@ -61,98 +70,138 @@ void ExportPanel::setupUI()
     auto* settingsWidget = new QWidget;
     auto* settingsLayout = new QVBoxLayout(settingsWidget);
     settingsLayout->setContentsMargins(0, 0, 10, 0);
-    settingsLayout->setSpacing(m.spacingSm);
+    settingsLayout->setSpacing(m.spacingMd);
 
-    // â”€â”€ Output Path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    auto* outputGroup = new QGroupBox(tr("OUTPUT"), settingsWidget);
-    auto* outputLayout = new QVBoxLayout(outputGroup);
-    outputLayout->setSpacing(m.spacingSm);
+    // ── Header: File Name / Location / Preset / Format ──────────────────
+    // m_outputPath holds the authoritative full path (hidden); File Name and
+    // Location are editable views onto it.
+    m_outputPath = new QLineEdit(settingsWidget);
+    m_outputPath->setVisible(false);
 
-    auto* outputRow = new QHBoxLayout();
-    m_outputPath = new QLineEdit(outputGroup);
-    m_outputPath->setToolTip(tr("Output file path for the exported video"));
-    m_outputPath->setPlaceholderText(tr("Select output file..."));
-    m_browseButton = new QPushButton(tr("Browse"), outputGroup);
-    m_browseButton->setToolTip(tr("Browse for output file location"));
+    auto* headerForm = new QFormLayout();
+    headerForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    headerForm->setVerticalSpacing(m.spacingMd);
+    headerForm->setHorizontalSpacing(m.spacingLg);
+
+    // File Name
+    m_fileNameEdit = new QLineEdit(settingsWidget);
+    m_fileNameEdit->setPlaceholderText(tr("export.mp4"));
+    m_fileNameEdit->setToolTip(tr("Output file name"));
+    connect(m_fileNameEdit, &QLineEdit::editingFinished, this,
+            [this] { syncOutputPathFromParts(); updateFileEstimate(); });
+    headerForm->addRow(tr("File Name"), m_fileNameEdit);
+
+    // Location (clickable link to change the folder) + Browse for a full path
+    auto* locRow = new QHBoxLayout();
+    locRow->setSpacing(m.spacingSm);
+    m_locationLabel = new QLabel(settingsWidget);
+    m_locationLabel->setTextFormat(Qt::RichText);
+    m_locationLabel->setToolTip(tr("Output folder — click to change"));
+    m_locationLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    m_locationLabel->setOpenExternalLinks(false);
+    connect(m_locationLabel, &QLabel::linkActivated, this, [this](const QString&) {
+        const QString start = QFileInfo(m_outputPath->text()).absolutePath();
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Choose Output Folder"), start);
+        if (dir.isEmpty()) return;
+        QString name = m_fileNameEdit->text().trimmed();
+        if (name.isEmpty()) name = QStringLiteral("export");
+        m_outputPath->setText(dir + QStringLiteral("/") + name);
+        syncPartsFromOutputPath();
+        updateFileEstimate();
+    });
+    m_browseButton = new QPushButton(tr("Browse"), settingsWidget);
     m_browseButton->setObjectName(QStringLiteral("BrowseBtn"));
+    m_browseButton->setToolTip(tr("Browse for the output file location"));
     connect(m_browseButton, &QPushButton::clicked, this, &ExportPanel::onBrowseOutput);
-    outputRow->addWidget(m_outputPath, 1);
-    outputRow->addWidget(m_browseButton);
-    outputLayout->addLayout(outputRow);
+    locRow->addWidget(m_locationLabel, 1);
+    locRow->addWidget(m_browseButton);
+    headerForm->addRow(tr("Location"), locRow);
 
-    // Estimated file size
-    m_estimateLabel = new QLabel(tr(""), outputGroup);
-    m_estimateLabel->setObjectName(QStringLiteral("EstimateLbl"));
-    outputLayout->addWidget(m_estimateLabel);
-
-    settingsLayout->addWidget(outputGroup);
-
-    // â”€â”€ Preset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    auto* presetGroup = new QGroupBox(tr("PRESET"), settingsWidget);
-    auto* presetLayout = new QHBoxLayout(presetGroup);
-    m_presetCombo = new QComboBox(presetGroup);
+    // Preset + "⋯" menu (Save / Delete)
+    auto* presetRow = new QHBoxLayout();
+    presetRow->setSpacing(m.spacingSm);
+    m_presetCombo = new QComboBox(settingsWidget);
     m_presetCombo->setToolTip(tr("Select an export preset"));
     populatePresets();
-    presetLayout->addWidget(m_presetCombo, 1);
-    m_savePresetBtn = new QPushButton(tr("Save..."), presetGroup);
-    m_savePresetBtn->setToolTip(tr("Save current export settings as a new preset"));
-    m_deletePresetBtn = new QPushButton(tr("Delete"), presetGroup);
-    m_deletePresetBtn->setToolTip(tr("Delete the selected custom preset"));
-    m_deletePresetBtn->setEnabled(false);
-    presetLayout->addWidget(m_savePresetBtn);
-    presetLayout->addWidget(m_deletePresetBtn);
+    m_presetMenuBtn = new QToolButton(settingsWidget);
+    m_presetMenuBtn->setText(QStringLiteral("⋯"));   // horizontal ellipsis
+    m_presetMenuBtn->setToolTip(tr("Save or delete export presets"));
+    m_presetMenuBtn->setPopupMode(QToolButton::InstantPopup);
+    {
+        auto* presetMenu = new QMenu(m_presetMenuBtn);
+        auto* saveAct = presetMenu->addAction(tr("Save Preset..."));
+        m_deletePresetAction = presetMenu->addAction(tr("Delete Preset"));
+        m_deletePresetAction->setEnabled(false);
+        connect(saveAct, &QAction::triggered, this, &ExportPanel::onSavePreset);
+        connect(m_deletePresetAction, &QAction::triggered, this, &ExportPanel::onDeletePreset);
+        m_presetMenuBtn->setMenu(presetMenu);
+    }
     connect(m_presetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ExportPanel::onPresetChanged);
-    connect(m_savePresetBtn, &QPushButton::clicked, this, &ExportPanel::onSavePreset);
-    connect(m_deletePresetBtn, &QPushButton::clicked, this, &ExportPanel::onDeletePreset);
-    settingsLayout->addWidget(presetGroup);
-    // Match Sequence Settings checkbox (Premiere Pro style)
-    m_matchSequenceCheck = new QCheckBox(tr("Match Sequence Settings"), settingsWidget);
+    presetRow->addWidget(m_presetCombo, 1);
+    presetRow->addWidget(m_presetMenuBtn);
+    headerForm->addRow(tr("Preset"), presetRow);
+
+    // Format = the top-level output format / video codec.
+    m_codecCombo = new QComboBox(settingsWidget);
+    m_codecCombo->setToolTip(tr("Output format / video codec"));
+    populateCodecs();
+    connect(m_codecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ExportPanel::onCodecChanged);
+    headerForm->addRow(tr("Format"), m_codecCombo);
+
+    settingsLayout->addLayout(headerForm);
+
+    // Estimated file size
+    m_estimateLabel = new QLabel(QString(), settingsWidget);
+    m_estimateLabel->setObjectName(QStringLiteral("EstimateLbl"));
+    settingsLayout->addWidget(m_estimateLabel);
+
+    // ── VIDEO section (collapsible + blue enable switch) ────────────────
+    m_videoSection = new CollapsibleSection(tr("VIDEO"), /*withToggle=*/true, settingsWidget);
+
+    // Match Sequence Settings (Premiere Pro style) — top of the VIDEO section.
+    m_matchSequenceCheck = new QCheckBox(tr("Match Sequence Settings"));
     m_matchSequenceCheck->setToolTip(
         tr("When checked, resolution and frame rate are locked to the active sequence settings."));
     connect(m_matchSequenceCheck, &QCheckBox::toggled, this, [this](bool checked) {
         if (checked)
             syncMatchSequenceSettings();
-        // Null-check guards: the checkbox is created before the video
-        // widgets in setupUI(), so the toggled signal may fire before
-        // m_widthSpin/m_heightSpin/m_fpsCombo are constructed.
         if (m_widthSpin)  m_widthSpin->setEnabled(!checked);
         if (m_heightSpin) m_heightSpin->setEnabled(!checked);
         if (m_fpsCombo)   m_fpsCombo->setEnabled(!checked);
     });
-    m_matchSequenceCheck->setChecked(true);
-    settingsLayout->addWidget(m_matchSequenceCheck);
+    m_videoSection->addContentWidget(m_matchSequenceCheck);
 
-    // â”€â”€ Video Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    auto* videoGroup = new QGroupBox(tr("VIDEO"), settingsWidget);
-    auto* videoForm  = new QFormLayout(videoGroup);
+    auto* videoForm = new QFormLayout();
     videoForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     videoForm->setVerticalSpacing(8);
     videoForm->setHorizontalSpacing(10);
 
-    // Resolution
+    // Frame size
     auto* resLayout = new QHBoxLayout();
     resLayout->setSpacing(m.spacingSm);
-    m_widthSpin = new QSpinBox(videoGroup);
+    m_widthSpin = new QSpinBox();
     m_widthSpin->setToolTip(tr("Output video width in pixels"));
     m_widthSpin->setRange(128, 7680);
     m_widthSpin->setValue(1920);
     m_widthSpin->setSingleStep(2);
-    m_heightSpin = new QSpinBox(videoGroup);
+    m_heightSpin = new QSpinBox();
     m_heightSpin->setToolTip(tr("Output video height in pixels"));
     m_heightSpin->setRange(128, 4320);
     m_heightSpin->setValue(1080);
     m_heightSpin->setSingleStep(2);
-    auto* xLabel = new QLabel(QStringLiteral("\u00D7"), videoGroup); // Ã—
+    auto* xLabel = new QLabel(QStringLiteral("×"));   // ×
     xLabel->setAlignment(Qt::AlignCenter);
     xLabel->setFixedWidth(16);
     resLayout->addWidget(m_widthSpin, 1);
     resLayout->addWidget(xLabel);
     resLayout->addWidget(m_heightSpin, 1);
-    videoForm->addRow(tr("Resolution"), resLayout);
+    videoForm->addRow(tr("Frame Size"), resLayout);
 
-    // FPS
-    m_fpsCombo = new QComboBox(videoGroup);
+    // Frame rate
+    m_fpsCombo = new QComboBox();
     m_fpsCombo->setToolTip(tr("Output frame rate"));
     m_fpsCombo->addItem(QStringLiteral("23.976"), 24);
     m_fpsCombo->addItem(QStringLiteral("24"), 24);
@@ -165,30 +214,32 @@ void ExportPanel::setupUI()
     m_fpsCombo->setCurrentIndex(4); // 30 fps
     videoForm->addRow(tr("Frame Rate"), m_fpsCombo);
 
-    // Codec
-    m_codecCombo = new QComboBox(videoGroup);
-    m_codecCombo->setToolTip(tr("Video codec for encoding"));
-    populateCodecs();
-    connect(m_codecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ExportPanel::onCodecChanged);
-    videoForm->addRow(tr("Codec"), m_codecCombo);
+    // Codec profile (ProRes / DNxHR) — shown/hidden by onCodecChanged.
+    m_profileCombo = new QComboBox();
+    m_profileCombo->setToolTip(tr("Codec quality profile (e.g. ProRes 422 HQ / 4444, DNxHR HQX)"));
+    m_profileLabel = new QLabel(tr("Profile"));
+    connect(m_profileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateAlphaAvailability(); updateFileEstimate(); });
+    videoForm->addRow(m_profileLabel, m_profileCombo);
+    m_profileLabel->setVisible(false);
+    m_profileCombo->setVisible(false);
 
     // Hardware acceleration
-    m_accelCombo = new QComboBox(videoGroup);
+    m_accelCombo = new QComboBox();
     m_accelCombo->setToolTip(tr("Hardware acceleration mode for encoding"));
     populateAccel();
     videoForm->addRow(tr("Acceleration"), m_accelCombo);
 
-    // Quality (user-friendly slider â†’ internal CRF)
+    // Quality (friendly slider -> internal CRF)
     auto* crfLayout = new QHBoxLayout();
     crfLayout->setSpacing(8);
-    m_crfSlider = new QSlider(Qt::Horizontal, videoGroup);
+    m_crfSlider = new QSlider(Qt::Horizontal);
     m_crfSlider->setToolTip(tr("Quality level (higher = better quality, larger file)"));
     m_crfSlider->setRange(0, 100);
     m_crfSlider->setValue(75);  // Default = High quality
     m_crfSlider->setTickPosition(QSlider::TicksBelow);
     m_crfSlider->setTickInterval(25);
-    m_crfLabel = new QLabel(QStringLiteral("High"), videoGroup);
+    m_crfLabel = new QLabel(QStringLiteral("High"));
     m_crfLabel->setMinimumWidth(60);
     m_crfLabel->setAlignment(Qt::AlignCenter);
     connect(m_crfSlider, &QSlider::valueChanged, this, &ExportPanel::onCrfChanged);
@@ -197,42 +248,85 @@ void ExportPanel::setupUI()
     videoForm->addRow(tr("Quality"), crfLayout);
 
     // Container
-    m_containerCombo = new QComboBox(videoGroup);
+    m_containerCombo = new QComboBox();
     m_containerCombo->setToolTip(tr("Output container format"));
     populateContainers();
     videoForm->addRow(tr("Container"), m_containerCombo);
 
-    settingsLayout->addWidget(videoGroup);
+    // Alpha channel — enabled by onCodecChanged only for alpha-capable targets.
+    m_alphaCheck = new QCheckBox(tr("Export with alpha (transparent background)"));
+    m_alphaCheck->setToolTip(tr("Preserve transparency — requires ProRes 4444 / 4444 XQ or a PNG image sequence"));
+    m_alphaCheck->setEnabled(false);
+    connect(m_alphaCheck, &QCheckBox::toggled, this, [this](bool) { updateFileEstimate(); });
+    videoForm->addRow(QString(), m_alphaCheck);
 
-    // â”€â”€ Audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    auto* audioGroup = new QGroupBox(tr("AUDIO"), settingsWidget);
-    auto* audioLayout = new QHBoxLayout(audioGroup);
-    m_audioCheck = new QCheckBox(tr("Include Audio"), audioGroup);
-    m_audioCheck->setToolTip(tr("Include audio tracks in the exported file"));
-    m_audioCheck->setChecked(true);
-    audioLayout->addWidget(m_audioCheck);
-    settingsLayout->addWidget(audioGroup);
+    m_videoSection->addContentLayout(videoForm);
+    settingsLayout->addWidget(m_videoSection);
+    connect(m_videoSection->toggle(), &QAbstractButton::toggled,
+            this, &ExportPanel::onVideoEnabledChanged);
 
-    // â”€â”€ Range â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    auto* rangeGroup = new QGroupBox(tr("RANGE"), settingsWidget);
-    auto* rangeLayout = new QHBoxLayout(rangeGroup);
-    m_rangeCombo = new QComboBox(rangeGroup);
+    // ── AUDIO section (collapsible + blue enable switch) ────────────────
+    m_audioSection = new CollapsibleSection(tr("AUDIO"), /*withToggle=*/true, settingsWidget);
+    auto* audioForm = new QFormLayout();
+    audioForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    audioForm->setVerticalSpacing(8);
+    audioForm->setHorizontalSpacing(10);
+
+    m_audioFormatCombo = new QComboBox();
+    m_audioFormatCombo->setToolTip(
+        tr("Audio file format. Used when exporting audio only; video exports always mux AAC."));
+    populateAudioFormats();
+    connect(m_audioFormatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &ExportPanel::onAudioFormatChanged);
+    m_audioFormatLabel = new QLabel(tr("Audio Format"));
+    audioForm->addRow(m_audioFormatLabel, m_audioFormatCombo);
+
+    m_audioBitrateCombo = new QComboBox();
+    m_audioBitrateCombo->setToolTip(tr("Audio bitrate for the exported MP3 / AAC file"));
+    m_audioBitrateCombo->addItem(tr("128 kbps"), 128000);
+    m_audioBitrateCombo->addItem(tr("192 kbps"), 192000);
+    m_audioBitrateCombo->addItem(tr("256 kbps"), 256000);
+    m_audioBitrateCombo->addItem(tr("320 kbps"), 320000);
+    m_audioBitrateCombo->setCurrentIndex(1); // 192 kbps
+    connect(m_audioBitrateCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateFileEstimate(); });
+    m_audioBitrateLabel = new QLabel(tr("Bitrate"));
+    audioForm->addRow(m_audioBitrateLabel, m_audioBitrateCombo);
+
+    m_audioSection->addContentLayout(audioForm);
+    settingsLayout->addWidget(m_audioSection);
+    connect(m_audioSection->toggle(), &QAbstractButton::toggled,
+            this, &ExportPanel::onAudioEnabledChanged);
+
+    // ── RANGE section (collapsible, no enable switch) ───────────────────
+    m_rangeSection = new CollapsibleSection(tr("RANGE"), /*withToggle=*/false, settingsWidget);
+    m_rangeCombo = new QComboBox();
     m_rangeCombo->setToolTip(tr("Export the entire sequence or only the In-to-Out range"));
     m_rangeCombo->addItem(tr("Entire Sequence"), 0);
     m_rangeCombo->addItem(tr("In to Out"), 1);
     connect(m_rangeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ExportPanel::onRangeChanged);
-    rangeLayout->addWidget(m_rangeCombo);
-    settingsLayout->addWidget(rangeGroup);
+    m_rangeSection->addContentWidget(m_rangeCombo);
+    settingsLayout->addWidget(m_rangeSection);
+
+    // Default: VIDEO expanded, AUDIO + RANGE collapsed.
+    m_videoSection->setExpanded(true);
+    m_audioSection->setExpanded(false);
+    m_rangeSection->setExpanded(false);
+
+    // Apply initial audio-section state, then default Match Sequence on (this
+    // fires the handler now that all video widgets exist).
+    updateAudioSectionState();
+    m_matchSequenceCheck->setChecked(true);
 
     settingsLayout->addStretch();
 
     settingsScroll->setWidget(settingsWidget);
     splitter->addWidget(settingsScroll);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
     // RIGHT: Preview panel
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
     auto* previewWidget = new QWidget;
     auto* previewLayout = new QVBoxLayout(previewWidget);
     previewLayout->setContentsMargins(10, 0, 0, 0);
@@ -251,14 +345,14 @@ void ExportPanel::setupUI()
     m_previewImageLabel->setScaledContents(false);
     previewLayout->addWidget(m_previewImageLabel, 1);
 
-    // Mini timeline scrub bar (Premiere Proâ€“style)
+    // Mini timeline scrub bar (Premiere-style)
     m_miniTimeline = new ExportMiniTimeline(previewWidget);
     connect(m_miniTimeline, &ExportMiniTimeline::scrubbed, this, [this](int64_t tick) {
         // Stop playback if scrubbing manually
         if (m_playing) {
             m_playing = false;
             m_playbackTimer->stop();
-            m_playPauseBtn->setText(QStringLiteral("\u25B6")); // ▶
+            m_playPauseBtn->setText(QStringLiteral("▶")); // ▶
             if (m_playbackController) {
                 m_playbackController->pause();
                 // Restore the main timeline's saved playhead so scrubbing
@@ -304,11 +398,11 @@ void ExportPanel::setupUI()
         transportBar->setContentsMargins(0, m.spacingXs, 0, m.spacingXs);
         transportBar->setSpacing(m.spacingSm);
 
-        m_skipToStartBtn  = new QPushButton(QStringLiteral("\u23EE"), previewWidget); // â®
-        m_stepBackBtn     = new QPushButton(QStringLiteral("\u23F4"), previewWidget); // â´
-        m_playPauseBtn    = new QPushButton(QStringLiteral("\u25B6"), previewWidget); // â–¶
-        m_stepForwardBtn  = new QPushButton(QStringLiteral("\u23F5"), previewWidget); // âµ
-        m_skipToEndBtn    = new QPushButton(QStringLiteral("\u23ED"), previewWidget); // â­
+        m_skipToStartBtn  = new QPushButton(QStringLiteral("⏮"), previewWidget);
+        m_stepBackBtn     = new QPushButton(QStringLiteral("⏴"), previewWidget);
+        m_playPauseBtn    = new QPushButton(QStringLiteral("▶"), previewWidget);
+        m_stepForwardBtn  = new QPushButton(QStringLiteral("⏵"), previewWidget);
+        m_skipToEndBtn    = new QPushButton(QStringLiteral("⏭"), previewWidget);
 
         m_skipToStartBtn->setToolTip(tr("Skip to Start (Home)"));
         m_stepBackBtn->setToolTip(tr("Step Back (Left)"));
@@ -330,23 +424,23 @@ void ExportPanel::setupUI()
         transportBar->addWidget(m_stepForwardBtn);
         transportBar->addWidget(m_skipToEndBtn);
 
-        // ── In/Out point controls ──────────────────────────────────────
+        // In/Out point controls
         transportBar->addSpacing(12);
-        m_inPointBtn = new QPushButton(QStringLiteral("\u25B6|"), previewWidget);
+        m_inPointBtn = new QPushButton(QStringLiteral("▶|"), previewWidget);
         m_inPointBtn->setToolTip(tr("Set In Point (I)"));
         m_inPointBtn->setObjectName(QStringLiteral("TransportBtn"));
         m_inPointBtn->setFocusPolicy(Qt::NoFocus);
         m_inPointBtn->setCursor(Qt::PointingHandCursor);
         connect(m_inPointBtn, &QPushButton::clicked, this, &ExportPanel::onSetInPoint);
 
-        m_outPointBtn = new QPushButton(QStringLiteral("|\u25C0"), previewWidget);
+        m_outPointBtn = new QPushButton(QStringLiteral("|◀"), previewWidget);
         m_outPointBtn->setToolTip(tr("Set Out Point (O)"));
         m_outPointBtn->setObjectName(QStringLiteral("TransportBtn"));
         m_outPointBtn->setFocusPolicy(Qt::NoFocus);
         m_outPointBtn->setCursor(Qt::PointingHandCursor);
         connect(m_outPointBtn, &QPushButton::clicked, this, &ExportPanel::onSetOutPoint);
 
-        m_clearInOutBtn = new QPushButton(QStringLiteral("\u2716"), previewWidget);
+        m_clearInOutBtn = new QPushButton(QStringLiteral("✖"), previewWidget);
         m_clearInOutBtn->setToolTip(tr("Clear In/Out Points (Ctrl+Shift+X / Delete)"));
         m_clearInOutBtn->setObjectName(QStringLiteral("TransportBtn"));
         m_clearInOutBtn->setFocusPolicy(Qt::NoFocus);
@@ -384,9 +478,9 @@ void ExportPanel::setupUI()
     splitter->setSizes({380, 620});
     mainLayout->addWidget(splitter, 1);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
     // BOTTOM: Progress + actions
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ════════════════════════════════════════════════════════════════════
 
     // Progress bar
     m_progressBar = new QProgressBar(this);
@@ -428,7 +522,7 @@ void ExportPanel::setupUI()
 
     mainLayout->addLayout(actionLayout);
 
-    // â”€â”€ Job Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Job Queue ───────────────────────────────────────────────────────
     m_jobList = new QListWidget(this);
     m_jobList->setToolTip(tr("Export job queue (right-click for options)"));
     m_jobList->setObjectName(QStringLiteral("JobList"));
@@ -472,7 +566,7 @@ void ExportPanel::setupUI()
     });
     mainLayout->addWidget(m_jobList);
 
-    // â”€â”€ Wire up estimate updates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Wire up estimate updates ──────────────────────────────────────────
     auto updateEstimate = [this]() { updateFileEstimate(); };
     connect(m_widthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, updateEstimate);
     connect(m_heightSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, updateEstimate);

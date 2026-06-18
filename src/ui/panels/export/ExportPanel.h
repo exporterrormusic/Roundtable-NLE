@@ -63,6 +63,9 @@
 #include <memory>
 #include <mutex>
 
+class QToolButton;
+class QAction;
+
 namespace rt {
 
 class Project;
@@ -72,6 +75,8 @@ class ExportMiniTimeline;
 class PlaybackController;
 class AudioEngine;
 class CommandStack;
+class CollapsibleSection;
+class ToggleSwitch;
 
 /// Export panel — configure and launch video/audio exports.
 class ExportPanel : public QWidget, public TimelineObserver
@@ -136,10 +141,15 @@ public:
     [[nodiscard]] QComboBox*   fpsCombo()       const { return m_fpsCombo; }
     [[nodiscard]] QComboBox*   codecCombo()     const { return m_codecCombo; }
     [[nodiscard]] QComboBox*   accelCombo()     const { return m_accelCombo; }
+
+    /// True when the user requested an alpha export AND the current target
+    /// supports it (the checkbox is only enabled for alpha-capable targets).
+    /// The Export Panel preview callback reads this to put the compositor in
+    /// straight-alpha mode for the export.
+    [[nodiscard]] bool exportAlphaRequested() const;
     [[nodiscard]] QSlider*     crfSlider()      const { return m_crfSlider; }
     [[nodiscard]] QLabel*      crfLabel()       const { return m_crfLabel; }
     [[nodiscard]] QComboBox*   containerCombo() const { return m_containerCombo; }
-    [[nodiscard]] QCheckBox*   audioCheck()     const { return m_audioCheck; }
     [[nodiscard]] QLineEdit*   outputPath()     const { return m_outputPath; }
     [[nodiscard]] QPushButton* startButton()    const { return m_startButton; }
     [[nodiscard]] QPushButton* cancelButton()   const { return m_cancelButton; }
@@ -169,6 +179,12 @@ signals:
 private slots:
     void onPresetChanged(int index);
     void onCodecChanged(int index);
+    /// VIDEO/AUDIO section enable switches. Turning VIDEO off makes the export
+    /// audio-only; the two can't both be off.
+    void onVideoEnabledChanged(bool on);
+    void onAudioEnabledChanged(bool on);
+    /// Audio-only file format (AAC/MP3/WAV/FLAC) changed in the AUDIO section.
+    void onAudioFormatChanged(int index);
     void onCrfChanged(int value);
     void onBrowseOutput();
     void onStartExport();
@@ -208,9 +224,40 @@ private:
     /// decides to cancel the export when warned about offline clips.
     bool checkOfflineMedia();
     void populatePresets();
+    /// Populate the AUDIO section's file-format combo (AAC / MP3 / WAV / FLAC).
+    /// Each item carries its AudioCodec int as data.
+    void populateAudioFormats();
     void populateCodecs();
     void populateContainers();
     void populateAccel();
+    /// Replace the output path's extension with `dotExt` (e.g. ".mp3") so the
+    /// filename tracks the chosen export format.  No-op if the field is empty.
+    void applyOutputExtension(const QString& dotExt);
+
+    /// True when the VIDEO / AUDIO section enable switches are on. Audio-only
+    /// export = video off + audio on.
+    [[nodiscard]] bool videoEnabled() const;
+    [[nodiscard]] bool audioEnabled() const;
+
+    /// Refresh the AUDIO section's enable/visibility state: the Audio Format
+    /// combo is only editable for audio-only exports (muxed audio is AAC), and
+    /// the bitrate row only shows for lossy audio-only formats (MP3/AAC).
+    void updateAudioSectionState();
+
+    /// Format-combo data encoding: video codecs store their EncoderCodec value
+    /// (0..Count-1); audio-only formats (MP3/WAV/AAC/FLAC) store
+    /// kAudioFormatBase + AudioCodec, so the single Format dropdown offers both
+    /// (Premiere-style — picking an audio format hides the VIDEO section).
+    static constexpr int kAudioFormatBase = static_cast<int>(EncoderCodec::Count);
+    [[nodiscard]] static bool isAudioFormatData(int data) { return data >= kAudioFormatBase; }
+
+    /// Keep m_outputPath (authoritative full path) and the File Name / Location
+    /// header fields in sync with each other.
+    void syncOutputPathFromParts();
+    void syncPartsFromOutputPath();
+    /// Enable the "Export with alpha" checkbox only for alpha-capable targets
+    /// (ProRes 4444 / 4444 XQ, or Image Sequence/PNG); uncheck it otherwise.
+    void updateAlphaAvailability();
     void updateUIFromPreset(ExportPreset preset);
     void onSavePreset();
     void onDeletePreset();
@@ -220,26 +267,37 @@ private:
 
     // ── Widgets ─────────────────────────────────────────────────────────
 
-    // Preset
+    // Header (Premiere-style): File Name, Location, Preset, Format.
+    QLineEdit*    m_fileNameEdit{nullptr};   // basename view onto m_outputPath
+    QLabel*       m_locationLabel{nullptr};  // folder view (clickable link)
     QComboBox*    m_presetCombo{nullptr};
+    QToolButton*  m_presetMenuBtn{nullptr};  // "⋯" → Save / Delete preset
+    QAction*      m_deletePresetAction{nullptr};
     QCheckBox*    m_matchSequenceCheck{nullptr};
-    QPushButton*  m_savePresetBtn{nullptr};
-    QPushButton*  m_deletePresetBtn{nullptr};
 
-    // Video
+    // Video — lives in m_videoSection; the section's toggle = "include video".
+    CollapsibleSection* m_videoSection{nullptr};
     QSpinBox*     m_widthSpin{nullptr};
     QSpinBox*     m_heightSpin{nullptr};
     QComboBox*    m_fpsCombo{nullptr};
     QComboBox*    m_codecCombo{nullptr};
+    QComboBox*    m_profileCombo{nullptr};   // ProRes / DNxHR quality profile
+    QLabel*       m_profileLabel{nullptr};   // row label (hidden for codecs without a profile)
     QComboBox*    m_accelCombo{nullptr};
     QSlider*      m_crfSlider{nullptr};
     QLabel*       m_crfLabel{nullptr};
     QComboBox*    m_containerCombo{nullptr};
+    QCheckBox*    m_alphaCheck{nullptr};   // "Export with alpha" (ProRes 4444 / PNG)
 
-    // Audio
-    QCheckBox*    m_audioCheck{nullptr};
+    // Audio — lives in m_audioSection; the section's toggle = "include audio".
+    CollapsibleSection* m_audioSection{nullptr};
+    QComboBox*    m_audioFormatCombo{nullptr};    // audio-only file format (AAC/MP3/WAV/FLAC)
+    QLabel*       m_audioFormatLabel{nullptr};
+    QLabel*       m_audioBitrateLabel{nullptr};   // shown for lossy formats (MP3/AAC)
+    QComboBox*    m_audioBitrateCombo{nullptr};
 
     // Range
+    CollapsibleSection* m_rangeSection{nullptr};
     QComboBox*    m_rangeCombo{nullptr};
 
     // Preview

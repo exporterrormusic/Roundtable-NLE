@@ -41,11 +41,19 @@ bool ProResEncoder::init(const EncoderConfig& config)
     const bool alpha = config.proresProfile >= ProResProfile::_4444;
     const int pixFmt = alpha ? AV_PIX_FMT_YUVA444P10LE : AV_PIX_FMT_YUV422P10LE;
 
-    if (!initCpuCodec(config, "prores_ks", AV_CODEC_ID_PRORES, pixFmt))
+    // prores_aw (Anatoliy) is markedly faster than the reference prores_ks but
+    // supports ONLY the four non-4444 profiles — no 4:4:4 / alpha.  Use it for
+    // Proxy/LT/Standard/HQ and keep prores_ks for 4444 / 4444 XQ.  initCpuCodec
+    // falls back to AV_CODEC_ID_PRORES (→ prores_ks) if the named encoder is
+    // unavailable, so this degrades gracefully.
+    const char* encName = alpha ? "prores_ks" : "prores_aw";
+
+    if (!initCpuCodec(config, encName, AV_CODEC_ID_PRORES, pixFmt))
         return false;
 
-    spdlog::info("ProResEncoder: {}x{} profile={}", config.width, config.height,
-                 proresProfileIndex(config.proresProfile));
+    spdlog::info("ProResEncoder: {}x{} profile={} encoder={}", config.width, config.height,
+                 proresProfileIndex(config.proresProfile),
+                 m_codecCtx ? m_codecCtx->codec->name : encName);
     return true;
 }
 
@@ -53,8 +61,14 @@ void ProResEncoder::configureCodecOptions(AVCodecContext* ctx,
                                           const EncoderConfig& config,
                                           bool /*hwPath*/)
 {
-    av_opt_set_int(ctx->priv_data, "profile",
-                   proresProfileIndex(config.proresProfile), 0);
+    // Set the profile on BOTH paths so whichever encoder was selected picks it
+    // up: prores_ks reads its priv_data "profile" option (defaults to -1/auto
+    // — must be set explicitly); prores_aw reads the generic ctx->profile
+    // (FF_PROFILE_PRORES_*, same 0-5 numbering).  Setting both is harmless —
+    // av_opt_set_int no-ops if the option is absent.
+    const int prof = proresProfileIndex(config.proresProfile);
+    ctx->profile = prof;
+    av_opt_set_int(ctx->priv_data, "profile", prof, 0);
 }
 
 int ProResEncoder::avCodecId() const noexcept

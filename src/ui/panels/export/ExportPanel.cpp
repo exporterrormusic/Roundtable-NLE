@@ -122,6 +122,9 @@ void ExportPanel::setTimeline(Timeline* timeline)
                 tr("e.g. %1.mp4").arg(seqName));
     }
 
+    // Reflect any path change in the File Name / Location header fields.
+    syncPartsFromOutputPath();
+
     // Defer refreshPreview to the next event-loop iteration.
     // Calling compositeFrame synchronously during setCurrentProject can
     // crash because GPU resources (VMA allocator / readback buffer) may
@@ -186,6 +189,9 @@ void ExportPanel::setProject(Project* project)
     // Sync match-sequence settings now that we have project settings
     if (m_matchSequenceCheck && m_matchSequenceCheck->isChecked())
         syncMatchSequenceSettings();
+
+    // Reflect the (possibly auto-filled) path in the File Name / Location fields.
+    syncPartsFromOutputPath();
 }
 
 void ExportPanel::syncMatchSequenceSettings()
@@ -376,6 +382,9 @@ void ExportPanel::showEvent(QShowEvent* event)
             }
         }
     }
+
+    // Reflect the resolved path in the File Name / Location header fields.
+    syncPartsFromOutputPath();
 
     // Defer refreshPreview to the next event-loop iteration to avoid
     // triggering GPU composition + widget state changes synchronously

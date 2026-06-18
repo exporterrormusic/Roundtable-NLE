@@ -25,6 +25,14 @@ std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrame(
         : nullptr;
 }
 
+std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrame16f(
+    int64_t tick, uint32_t outW, uint32_t outH)
+{
+    return m_compositeService
+        ? m_compositeService->tryBuild16fPassthrough(tick, outW, outH)
+        : nullptr;
+}
+
 void TimelineWorkspace::prewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH)
 {
     if (m_compositeService)
@@ -132,6 +140,12 @@ void TimelineWorkspace::setForceFullResolution(bool force)
 {
     if (m_compositeService)
         m_compositeService->setForceFullResolution(force);
+}
+
+void TimelineWorkspace::setExportAlpha(bool keep)
+{
+    if (m_compositeService)
+        m_compositeService->setExportAlpha(keep);
 }
 
 bool TimelineWorkspace::gpuDisplayMode() const noexcept

@@ -44,6 +44,9 @@ public:
     ~FfmpegEncoderBase() override;
 
     bool encodeFrame(const uint8_t* bgraPixels, int64_t frameIndex) override;
+    bool encodeFrame16f(const uint16_t* rgba16f, int srcStrideBytes,
+                        int64_t frameIndex) override;
+    [[nodiscard]] bool is10BitTarget() const noexcept override;
     int  flush() override;
     void shutdown() override;
 
@@ -103,6 +106,11 @@ protected:
 
     /// avcodec_send_frame + drain loop into m_lastPacket/m_pendingPackets.
     bool sendFrame(AVFrame* frame);
+
+    /// Shared tail of encodeFrame / encodeFrame16f: stamp m_frame->pts, take
+    /// the CUDA hw-upload branch when active, else send m_frame directly.
+    /// m_frame must already be filled by the caller.
+    bool finishFrame(int64_t frameIndex);
 #endif
 
     AVCodecContext* m_codecCtx{nullptr};

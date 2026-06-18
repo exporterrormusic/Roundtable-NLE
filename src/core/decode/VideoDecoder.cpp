@@ -76,6 +76,16 @@ double VideoDecoder::ptsToSeconds(int64_t pts) const noexcept
     return static_cast<double>(pts) * m_info.timebaseNum / m_info.timebaseDen;
 }
 
+HbdPlaneFormat hbdPlaneFormat(const DecodedFrame& f) noexcept
+{
+    switch (f.rawFormat) {
+        case AV_PIX_FMT_P010LE:
+        case AV_PIX_FMT_P016LE:       return HbdPlaneFormat::P010;
+        case AV_PIX_FMT_YUVA444P12LE: return HbdPlaneFormat::Yuva444p12;
+        default:                      return HbdPlaneFormat::None;
+    }
+}
+
 } // namespace rt
 
 #else // !ROUNDTABLE_HAS_FFMPEG
@@ -113,6 +123,8 @@ double VideoDecoder::ptsToSeconds(int64_t) const noexcept { return 0.0; }
 
 void prewarmHardwareDecoders() {}
 void shutdownHardwareDecoders() noexcept {}
+
+HbdPlaneFormat hbdPlaneFormat(const DecodedFrame&) noexcept { return HbdPlaneFormat::None; }
 
 } // namespace rt
 #endif // ROUNDTABLE_HAS_FFMPEG

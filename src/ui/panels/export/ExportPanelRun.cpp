@@ -60,6 +60,49 @@ void ExportPanel::rememberExportDir(const std::string& outputPath)
     settings.setValue(QStringLiteral("export/lastOutputDir"), dir);
 }
 
+void ExportPanel::syncPartsFromOutputPath()
+{
+    if (!m_outputPath) return;
+    const QString full = m_outputPath->text().trimmed();
+    QFileInfo fi(full);
+
+    if (m_fileNameEdit) {
+        const QString name = fi.fileName();
+        if (m_fileNameEdit->text() != name)
+            m_fileNameEdit->setText(name);
+    }
+    if (m_locationLabel) {
+        const QString dir = fi.path();
+        if (full.isEmpty() || dir.isEmpty() || dir == QStringLiteral(".")) {
+            m_locationLabel->setText(tr("<a href=\"#\">(choose a location)</a>"));
+            m_locationLabel->setToolTip(tr("Output folder — click to change"));
+        } else {
+            const QString shown = QDir::toNativeSeparators(dir);
+            m_locationLabel->setText(QStringLiteral("<a href=\"#\">%1</a>")
+                                         .arg(shown.toHtmlEscaped()));
+            m_locationLabel->setToolTip(shown);
+        }
+    }
+}
+
+void ExportPanel::syncOutputPathFromParts()
+{
+    if (!m_outputPath || !m_fileNameEdit) return;
+    const QString name = m_fileNameEdit->text().trimmed();
+    if (name.isEmpty()) return;
+
+    QString dir = QFileInfo(m_outputPath->text()).path();
+    if (dir.isEmpty() || dir == QStringLiteral(".")) {
+        QSettings settings(QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
+        dir = settings.value(QStringLiteral("export/lastOutputDir")).toString();
+    }
+    const QString full = dir.isEmpty() ? name : (dir + QStringLiteral("/") + name);
+    if (m_outputPath->text() != full) {
+        m_outputPath->setText(full);
+        syncPartsFromOutputPath();   // dir may have come from settings
+    }
+}
+
 void ExportPanel::onBrowseOutput()
 {
     // Use the CURRENT output path text as the starting point, so the dialog
@@ -67,6 +110,14 @@ void ExportPanel::onBrowseOutput()
     // (or project name) if the field is empty.
     QSettings settings(QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
     QString currentPath = m_outputPath->text().trimmed();
+
+    // Audio-only export (VIDEO switch off) → suggest the matching audio
+    // extension + filter.
+    const bool audioOnly = !videoEnabled();
+    const QString audioExt = (audioOnly && m_audioFormatCombo)
+        ? QString::fromLatin1(audioCodecExtension(
+              static_cast<AudioCodec>(m_audioFormatCombo->currentData().toInt())))
+        : QString();
 
     QString defaultPath;
     if (!currentPath.isEmpty()) {
@@ -81,6 +132,8 @@ void ExportPanel::onBrowseOutput()
         }
         if (defaultName.isEmpty())
             defaultName = QStringLiteral("export");
+        if (audioOnly && QFileInfo(defaultName).suffix().isEmpty())
+            defaultName += audioExt;
 
         QString lastDir = settings.value(QStringLiteral("export/lastOutputDir")).toString();
         defaultPath = (lastDir.isEmpty() || !QDir(lastDir).exists())
@@ -88,10 +141,14 @@ void ExportPanel::onBrowseOutput()
                           : lastDir + QStringLiteral("/") + defaultName;
     }
 
-    QString filter = tr("Video Files (*.mp4 *.mov *.mkv *.webm *.avi);;All Files (*)");
+    QString filter = audioOnly
+        ? tr("Audio Files (*.wav *.mp3 *.m4a *.flac);;All Files (*)")
+        : tr("Video Files (*.mp4 *.mov *.mkv *.webm *.avi);;All Files (*)");
     QString path = QFileDialog::getSaveFileName(this, tr("Export Output"), defaultPath, filter);
     if (!path.isEmpty()) {
         m_outputPath->setText(path);
+        syncPartsFromOutputPath();    // refresh File Name + Location header fields
+        updateFileEstimate();
         // Persist the chosen directory for next time
         QFileInfo fi(path);
         settings.setValue(QStringLiteral("export/lastOutputDir"), fi.absolutePath());
@@ -108,8 +165,22 @@ ExportJobConfig ExportPanel::buildJobConfig() const
 
     cfg.encoderConfig.width  = cfg.outputWidth;
     cfg.encoderConfig.height = cfg.outputHeight;
-    cfg.encoderConfig.codec  = static_cast<EncoderCodec>(
-        m_codecCombo->currentData().toInt());
+    // The Format dropdown holds video codecs (EncoderCodec) plus audio-only
+    // formats (kAudioFormatBase + AudioCodec).  Only the video entries map to
+    // an encoder codec; audio-only exports ignore encoderConfig entirely.
+    const int formatData = m_codecCombo->currentData().toInt();
+    if (!isAudioFormatData(formatData))
+        cfg.encoderConfig.codec = static_cast<EncoderCodec>(formatData);
+    // Codec profile (ProRes / DNxHR brand) from the profile combo, which
+    // onCodecChanged populates for exactly those two codecs.
+    if (m_profileCombo && m_profileCombo->currentData().isValid()) {
+        if (cfg.encoderConfig.codec == EncoderCodec::ProRes)
+            cfg.encoderConfig.proresProfile =
+                static_cast<ProResProfile>(m_profileCombo->currentData().toInt());
+        else if (cfg.encoderConfig.codec == EncoderCodec::DNxHR)
+            cfg.encoderConfig.dnxhrProfile =
+                static_cast<DNxHRProfile>(m_profileCombo->currentData().toInt());
+    }
     // Index 0 is the "Auto" item — resolve it to whatever hardware
     // encoder is actually available rather than blindly assuming NVENC.
     if (m_accelCombo->currentIndex() == 0) {
@@ -132,8 +203,25 @@ ExportJobConfig ExportPanel::buildJobConfig() const
     cfg.encoderConfig.fpsDen = 1;
 
     cfg.containerFormat = static_cast<uint8_t>(m_containerCombo->currentData().toInt());
-    cfg.includeAudio = m_audioCheck->isChecked();
     cfg.preset = static_cast<ExportPreset>(m_presetCombo->currentData().toInt());
+
+    // The VIDEO / AUDIO enable switches drive what's exported:
+    //   video off  → audio-only file (WAV/MP3/AAC/FLAC from the AUDIO section)
+    //   video on   → normal video export; audio switch = include muxed audio
+    const bool videoOn = videoEnabled();
+    const bool audioOn = audioEnabled();
+    cfg.includeAudio = audioOn;
+    if (!videoOn) {
+        cfg.audioOnly = true;
+        cfg.includeAudio = true;
+        cfg.audioConfig.codec = m_audioFormatCombo
+            ? static_cast<AudioCodec>(m_audioFormatCombo->currentData().toInt())
+            : AudioCodec::AAC;
+        cfg.audioConfig.sampleRate = 48000;
+        cfg.audioConfig.channels = 2;
+        if (m_audioBitrateCombo && m_audioBitrateCombo->currentData().isValid())
+            cfg.audioConfig.bitrate = m_audioBitrateCombo->currentData().toInt();
+    }
 
     // Range: convert In/Out ticks to frame indices and audio times
     if (m_rangeCombo && m_rangeCombo->currentIndex() == 1 && m_timeline) {
@@ -223,57 +311,61 @@ void ExportPanel::onStartExport()
         return;
     }
 
-    if (!m_previewCallback) {
-        QMessageBox::warning(this, tr("Export"), tr("No renderer available — cannot export."));
-        return;
-    }
-
-    // Check for offline media and warn the user
-    if (!checkOfflineMedia())
-        return;
-
     auto config = buildJobConfig();
 
-    // ── Pascal NVENC pre-flight ───────────────────────────────────────
-    // NVIDIA Pascal consumer GPUs (GTX 10xx) cap concurrent NVENC
-    // sessions at 2 in hardware.  If Discord / OBS / another encoder
-    // app is running we'll fail NVENC init and silently fall back to
-    // CPU encoding.  Warn the user upfront so they can close those
-    // apps now instead of discovering it after a long, slow export.
-    // Suppressed for one session via Cancel-then-tick, persisted via
-    // QSettings if they choose "Don't warn again".
-    if (config.encoderConfig.hwAccel != HardwareAccel::None) {
-        const auto* app = App::instance();
-        const bool isPascal = app && app->diagnosticsGpu().arch
-                              == HardwareDiagnostics::GpuArchitecture::NvidiaPascal;
-        if (isPascal) {
-            QSettings cfg(QStringLiteral("RoundtableMedia"),
-                          QStringLiteral("RoundtableNLE"));
-            const bool suppressed = cfg.value(
-                QStringLiteral("export/pascalNvencHintSuppressed"), false).toBool();
-            if (!suppressed) {
-                QMessageBox box(this);
-                box.setIcon(QMessageBox::Information);
-                box.setWindowTitle(tr("Pascal NVENC reminder"));
-                box.setText(tr(
-                    "Your GPU is a Pascal-class card (GTX 10xx). Pascal consumer "
-                    "GPUs are limited to <b>2 concurrent NVENC encoder sessions</b> "
-                    "in hardware.<br><br>"
-                    "If <b>Discord</b>, <b>OBS</b>, or another screen-recording app "
-                    "is running it may be holding an encoder session and this "
-                    "export will fall back to CPU encoding (much slower).<br><br>"
-                    "Close those apps for the fastest HW-accelerated export. "
-                    "Continue anyway?"));
-                auto* dontShow = new QCheckBox(tr("Don't show this again"), &box);
-                box.setCheckBox(dontShow);
-                box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
-                box.setDefaultButton(QMessageBox::Yes);
-                int rc = box.exec();
-                if (dontShow->isChecked()) {
-                    cfg.setValue(
-                        QStringLiteral("export/pascalNvencHintSuppressed"), true);
+    // Video-export pre-flight (skipped entirely for audio-only exports, which
+    // need neither the compositor nor a hardware video encoder).
+    if (!config.audioOnly) {
+        if (!m_previewCallback) {
+            QMessageBox::warning(this, tr("Export"), tr("No renderer available — cannot export."));
+            return;
+        }
+
+        // Check for offline media and warn the user
+        if (!checkOfflineMedia())
+            return;
+
+        // ── Pascal NVENC pre-flight ───────────────────────────────────────
+        // NVIDIA Pascal consumer GPUs (GTX 10xx) cap concurrent NVENC
+        // sessions at 2 in hardware.  If Discord / OBS / another encoder
+        // app is running we'll fail NVENC init and silently fall back to
+        // CPU encoding.  Warn the user upfront so they can close those
+        // apps now instead of discovering it after a long, slow export.
+        // Suppressed for one session via Cancel-then-tick, persisted via
+        // QSettings if they choose "Don't warn again".
+        if (config.encoderConfig.hwAccel != HardwareAccel::None) {
+            const auto* app = App::instance();
+            const bool isPascal = app && app->diagnosticsGpu().arch
+                                  == HardwareDiagnostics::GpuArchitecture::NvidiaPascal;
+            if (isPascal) {
+                QSettings cfg(QStringLiteral("RoundtableMedia"),
+                              QStringLiteral("RoundtableNLE"));
+                const bool suppressed = cfg.value(
+                    QStringLiteral("export/pascalNvencHintSuppressed"), false).toBool();
+                if (!suppressed) {
+                    QMessageBox box(this);
+                    box.setIcon(QMessageBox::Information);
+                    box.setWindowTitle(tr("Pascal NVENC reminder"));
+                    box.setText(tr(
+                        "Your GPU is a Pascal-class card (GTX 10xx). Pascal consumer "
+                        "GPUs are limited to <b>2 concurrent NVENC encoder sessions</b> "
+                        "in hardware.<br><br>"
+                        "If <b>Discord</b>, <b>OBS</b>, or another screen-recording app "
+                        "is running it may be holding an encoder session and this "
+                        "export will fall back to CPU encoding (much slower).<br><br>"
+                        "Close those apps for the fastest HW-accelerated export. "
+                        "Continue anyway?"));
+                    auto* dontShow = new QCheckBox(tr("Don't show this again"), &box);
+                    box.setCheckBox(dontShow);
+                    box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+                    box.setDefaultButton(QMessageBox::Yes);
+                    int rc = box.exec();
+                    if (dontShow->isChecked()) {
+                        cfg.setValue(
+                            QStringLiteral("export/pascalNvencHintSuppressed"), true);
+                    }
+                    if (rc != QMessageBox::Yes) return;
                 }
-                if (rc != QMessageBox::Yes) return;
             }
         }
     }
@@ -458,8 +550,9 @@ void ExportPanel::onPollProgress()
     }
     m_statusLabel->setText(status);
 
-    // Update preview with the current frame being rendered
-    if (m_previewCallback && m_timeline && m_previewImageLabel) {
+    // Update preview with the current frame being rendered (video only —
+    // an audio-only export has no frames to composite).
+    if (!j->config.audioOnly && m_previewCallback && m_timeline && m_previewImageLabel) {
         int64_t frameIdx = curFrame + j->config.startFrame;
         double frameFps = static_cast<double>(j->config.encoderConfig.fpsNum) /
                      std::max<uint32_t>(j->config.encoderConfig.fpsDen, 1u);

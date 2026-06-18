@@ -8,16 +8,8 @@
 
 namespace rt {
 
-/// DNxHR quality profile
-enum class DNxHRProfile : uint8_t
-{
-    LB,     // Low Bandwidth (8-bit 4:2:2, ~36 Mbps @ 1080p30)
-    SQ,     // Standard Quality (8-bit 4:2:2, ~145 Mbps)
-    HQ,     // High Quality (8-bit 4:2:2, ~220 Mbps)
-    HQX,    // High Quality 10-bit (10-bit 4:2:2, ~220 Mbps)
-    _444,   // 4:4:4 10-bit (~350 Mbps)
-    Count
-};
+// DNxHRProfile is defined in Encoder.h (beside ProResProfile) so EncoderConfig
+// can carry it.
 
 class DNxHREncoder : public FfmpegEncoderBase
 {

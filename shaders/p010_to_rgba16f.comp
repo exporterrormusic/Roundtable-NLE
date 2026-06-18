@@ -1,0 +1,49 @@
+#version 450
+// P010 → RGBA16F color-space conversion compute shader (Phase 4.2).
+//
+// Identical math to p010_to_bgra.comp, but the output is a half-float
+// RGBA16F storage image instead of 8-bit BGRA, so the 10-bit precision the
+// shader already computes survives to the export packer (Rgba16fPack) instead
+// of being quantised to 8 bits.  Two differences from the BGRA sibling:
+//   1. the storage-image qualifier is `rgba16f` (MUST match the
+//      VK_FORMAT_R16G16B16A16_SFLOAT view bound by the converter);
+//   2. the output is STRAIGHT RGBA (channel 0 = R), because the consumer is
+//      the CPU packer reading .r/.g/.b/.a — not Qt's BGRA byte order.
+// See p010_to_bgra.comp for the full derivation of the studio-swing constants.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D yPlane;   // R16_UNORM
+layout(binding = 1) uniform sampler2D uvPlane;  // R16G16_UNORM
+
+layout(binding = 2, rgba16f) uniform writeonly image2D outputImage;
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+} pc;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.width || pixel.y >= pc.height) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
+
+    float y = texture(yPlane, uv).r;
+    vec2 cbcr = texture(uvPlane, uv).rg;
+
+    // 10-bit studio swing: black=0.0625, scale=1.1690 (see BGRA sibling).
+    float y_scaled = clamp((y - 0.0625) * 1.1690, 0.0, 1.0);
+
+    float cb = (cbcr.r - 0.5) * 1.1428;
+    float cr = (cbcr.g - 0.5) * 1.1428;
+
+    // BT.709 YCbCr → R'G'B' (non-linear; bit-depth independent coefficients).
+    float r = clamp(y_scaled + 1.5748 * cr,                       0.0, 1.0);
+    float g = clamp(y_scaled - 0.1873 * cb - 0.4681 * cr,         0.0, 1.0);
+    float b = clamp(y_scaled + 1.8556 * cb,                       0.0, 1.0);
+
+    // Straight RGBA (R in channel 0) — consumed by Rgba16fPack on the CPU.
+    imageStore(outputImage, pixel, vec4(r, g, b, 1.0));
+}

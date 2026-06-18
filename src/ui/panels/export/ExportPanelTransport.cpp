@@ -336,6 +336,33 @@ void ExportPanel::updateFileEstimate()
         return;
     }
 
+    auto humanSize = [](double bytes) -> QString {
+        if (bytes >= 1024.0 * 1024.0 * 1024.0)
+            return QString::number(bytes / (1024.0 * 1024.0 * 1024.0), 'f', 2) + " GB";
+        if (bytes >= 1024.0 * 1024.0)
+            return QString::number(bytes / (1024.0 * 1024.0), 'f', 1) + " MB";
+        return QString::number(bytes / 1024.0, 'f', 0) + " KB";
+    };
+
+    // Audio-only export (VIDEO switch off): estimate from the audio config,
+    // not a video bitrate.
+    if (!videoEnabled()) {
+        AudioMixdownConfig ac;
+        ac.codec = m_audioFormatCombo
+            ? static_cast<AudioCodec>(m_audioFormatCombo->currentData().toInt())
+            : AudioCodec::AAC;
+        ac.sampleRate = 48000;
+        ac.channels = 2;
+        if (m_audioBitrateCombo && m_audioBitrateCombo->currentData().isValid())
+            ac.bitrate = m_audioBitrateCombo->currentData().toInt();
+        const double sizeBytes = static_cast<double>(
+            AudioMixdown::estimateFileSize(ac, durSec));
+        m_estimateLabel->setText(tr("Est. %1 — %2s (audio only)")
+            .arg(humanSize(sizeBytes))
+            .arg(QString::number(durSec, 'f', 1)));
+        return;
+    }
+
     int w = m_widthSpin->value();
     int h = m_heightSpin->value();
     int fps = m_fpsCombo->currentData().toInt();
@@ -380,17 +407,11 @@ void ExportPanel::updateFileEstimate()
     // Calculate estimated file size
     double sizeBytes = (bitrateKbps * 1000.0 / 8.0) * durSec;
     // Add ~10% for audio if included
-    if (m_audioCheck && m_audioCheck->isChecked())
+    if (audioEnabled())
         sizeBytes *= 1.10;
 
     // Format human-readable
-    QString sizeStr;
-    if (sizeBytes >= 1024.0 * 1024.0 * 1024.0)
-        sizeStr = QString::number(sizeBytes / (1024.0 * 1024.0 * 1024.0), 'f', 2) + " GB";
-    else if (sizeBytes >= 1024.0 * 1024.0)
-        sizeStr = QString::number(sizeBytes / (1024.0 * 1024.0), 'f', 1) + " MB";
-    else
-        sizeStr = QString::number(sizeBytes / 1024.0, 'f', 0) + " KB";
+    QString sizeStr = humanSize(sizeBytes);
 
     int64_t totalFrames = static_cast<int64_t>(durSec * fps);
     m_estimateLabel->setText(

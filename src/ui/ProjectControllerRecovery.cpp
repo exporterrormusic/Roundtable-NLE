@@ -438,6 +438,27 @@ void ProjectController::checkCrashRecovery()
     if (AutoSave::hasRecoverableAutoSave(projPath)) {
         auto newestAutoSave = AutoSave::findNewestAutoSave(projPath);
         if (!newestAutoSave.empty()) {
+            // ── Don't re-prompt for an auto-save the user already declined ──
+            // The auto-save folder isn't touched when the user picks "No", so
+            // the same file stays newer than the project and the prompt would
+            // reappear on every launch.  Remember the declined auto-save
+            // (project + file + mtime) and skip the prompt while it's still
+            // the newest one — declining once means "use the older version".
+            // A genuinely newer auto-save (different file/mtime) still prompts.
+            std::error_code mec;
+            auto asMtime = std::filesystem::last_write_time(newestAutoSave, mec);
+            const qint64 asMtimeCount = mec ? 0
+                : static_cast<qint64>(asMtime.time_since_epoch().count());
+            const QString asPathQ = QString::fromStdString(pathToUtf8(newestAutoSave));
+
+            if (settings.value("AutoSaveRecovery/declinedProject").toString() == lastPath &&
+                settings.value("AutoSaveRecovery/declinedFile").toString() == asPathQ &&
+                settings.value("AutoSaveRecovery/declinedMtime").toLongLong() == asMtimeCount) {
+                spdlog::info("Auto-save recovery: '{}' was previously declined — "
+                             "not prompting again", pathToUtf8(newestAutoSave));
+                return;
+            }
+
             auto reply = QMessageBox::question(
                 m_mw, "Recover Auto-Save",
                 QString("An auto-save was found for:\n\n%1\n\n"
@@ -451,7 +472,18 @@ void ProjectController::checkCrashRecovery()
                     .arg(QString::fromStdString(pathToUtf8(newestAutoSave.filename()))),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
 
-            if (reply == QMessageBox::Yes) {
+            if (reply != QMessageBox::Yes) {
+                // Declined — remember this auto-save so the next launch loads
+                // the older saved version silently instead of asking again.
+                settings.setValue("AutoSaveRecovery/declinedProject", lastPath);
+                settings.setValue("AutoSaveRecovery/declinedFile", asPathQ);
+                settings.setValue("AutoSaveRecovery/declinedMtime", asMtimeCount);
+                spdlog::info("Auto-save recovery: user declined '{}' — remembered",
+                             pathToUtf8(newestAutoSave));
+                return;
+            }
+
+            {
                 ProjectSerializer serializer;
                 auto project = serializer.load(newestAutoSave);
                 if (project) {
@@ -474,6 +506,12 @@ void ProjectController::checkCrashRecovery()
                                 QString::fromStdString(m_mw->currentProject()->name()));
                         m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
                     }
+
+                    // Recovered — drop any stale "declined" marker so a later
+                    // decline of a future auto-save is honoured cleanly.
+                    settings.remove("AutoSaveRecovery/declinedProject");
+                    settings.remove("AutoSaveRecovery/declinedFile");
+                    settings.remove("AutoSaveRecovery/declinedMtime");
 
                     m_mw->statusBar()->showMessage("Recovered from auto-save", 5000);
                     spdlog::info("Recovered project from auto-save: {}",

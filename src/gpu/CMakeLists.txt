@@ -47,6 +47,7 @@ add_library(roundtable_gpu STATIC
     # Composite service (extracted from TimelineWorkspaceComposite.cpp)
     CompositeService.cpp
     CompositeServiceFrame.cpp
+    CompositeService16f.cpp
     CompositeServiceFramePrewarm.cpp
     CompositeServiceBlend.cpp
     CompositeServiceSpine.cpp

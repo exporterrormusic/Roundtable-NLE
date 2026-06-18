@@ -99,6 +99,15 @@ struct VideoStreamInfo
     ColorTransfer colorTransfer{ColorTransfer::Unspecified};
     int           colorPrimaries{2};    ///< Raw AVColorPrimaries (2 = unspecified); informational / future gamut work.
 
+    // ── Source bit depth (Phase 4.2) ────────────────────────────────────
+    // Bits per luma component of the SOURCE pixel format (8 for 8-bit
+    // 4:2:0 / NV12, 10 for P010 / HEVC Main10, 12 for ProRes 4444).  Read
+    // at open from av_pix_fmt_desc_get(...)->comp[0].depth; defaults to 8 so
+    // an untagged / 8-bit source behaves exactly as before.  Drives the 16F
+    // GPU convert routing (a source with bitDepth > 8 may produce RGBA16F
+    // cache frames instead of the 8-bit BGRA default — see CachedFrame::depth).
+    int           bitDepth{8};
+
     // Timebase for PTS conversion
     int         timebaseNum{1};
     int         timebaseDen{1};
@@ -147,6 +156,19 @@ enum class SeekMode : uint8_t
     Keyframe,   // Seek to nearest keyframe (fast, imprecise)
     Precise,    // Seek to keyframe then decode forward to exact frame (slow, precise)
 };
+
+/// High-bit-depth planar layout of a decoded frame (Phase 4.2 export
+/// passthrough).  Maps DecodedFrame::rawFormat (an AVPixelFormat) to the two
+/// >8-bit layouts the 16F GPU converter understands; everything else (8-bit,
+/// or an unsupported HBD format) is None.  Kept here (FFmpeg-free at the call
+/// site) so the GPU layer can branch on it without pulling in libav.
+enum class HbdPlaneFormat : uint8_t { None, P010, Yuva444p12 };
+
+/// Classify a decoded frame's high-bit-depth planar layout.  P010/P016 →
+/// P010 (Y + interleaved UV, 10/16-bit); yuva444p12le → Yuva444p12 (4 planar
+/// 12-bit planes Y/U/V/A).  CPU-decoded frames only (rawFormat reflects the
+/// software pixel format).
+[[nodiscard]] HbdPlaneFormat hbdPlaneFormat(const DecodedFrame& f) noexcept;
 
 class VideoDecoder
 {

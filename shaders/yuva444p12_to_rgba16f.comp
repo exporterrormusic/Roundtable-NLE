@@ -1,0 +1,53 @@
+#version 450
+// YUVA444P12LE → RGBA16F color-space conversion compute shader (Phase 4.2).
+//
+// Identical math to yuva444p12_to_bgra.comp, but writes a half-float RGBA16F
+// storage image instead of 8-bit BGRA, so the 12-bit precision (and the real
+// alpha plane) survive to the export packer (Rgba16fPack) instead of being
+// quantised to 8 bits.  Two differences from the BGRA sibling:
+//   1. the storage-image qualifier is `rgba16f` (MUST match the
+//      VK_FORMAT_R16G16B16A16_SFLOAT view bound by the converter);
+//   2. the output is STRAIGHT RGBA (channel 0 = R) with the real alpha — the
+//      consumer is the CPU packer reading .r/.g/.b/.a, not Qt's BGRA order.
+// See yuva444p12_to_bgra.comp for the full derivation.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D yPlane;   // R16_UNORM, full res
+layout(binding = 1) uniform sampler2D uPlane;   // R16_UNORM, full res (Cb)
+layout(binding = 2) uniform sampler2D vPlane;   // R16_UNORM, full res (Cr)
+layout(binding = 3) uniform sampler2D aPlane;   // R16_UNORM, full res (alpha)
+
+layout(binding = 4, rgba16f) uniform writeonly image2D outputImage;
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+} pc;
+
+// 12-bit value in the low 12 bits of a 16-bit word → [0,1] (see BGRA sibling).
+const float k12bitToUnit = 65535.0 / 4095.0;   // ≈ 16.0037
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.width || pixel.y >= pc.height) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
+
+    float y = texture(yPlane, uv).r * k12bitToUnit;
+    float u = texture(uPlane, uv).r * k12bitToUnit;
+    float v = texture(vPlane, uv).r * k12bitToUnit;
+    float a = texture(aPlane, uv).r * k12bitToUnit;   // alpha is full range
+
+    float y_scaled = clamp((y - 0.0627) * 1.1644, 0.0, 1.0);
+    float cb = (u - 0.50196) * 1.13839;
+    float cr = (v - 0.50196) * 1.13839;
+
+    float r = clamp(y_scaled + 1.5748 * cr,                       0.0, 1.0);
+    float g = clamp(y_scaled - 0.1873 * cb - 0.4681 * cr,         0.0, 1.0);
+    float b = clamp(y_scaled + 1.8556 * cb,                       0.0, 1.0);
+
+    // Straight RGBA (R in channel 0), real straight alpha preserved.
+    imageStore(outputImage, pixel, vec4(r, g, b, clamp(a, 0.0, 1.0)));
+}

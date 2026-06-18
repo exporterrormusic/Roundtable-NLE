@@ -30,7 +30,8 @@ layout(binding = 3) uniform sampler2D maskTextures[32];
 layout(push_constant) uniform PushConstants {
     int width;
     int height;
-    int hqSample;   // 1 = Catmull-Rom bicubic (export), 0 = bilinear (preview)
+    int hqSample;     // 1 = Catmull-Rom bicubic (export), 0 = bilinear (preview)
+    int preserveAlpha; // 1 = keep straight RGBA (alpha export), 0 = flatten over black
 } pc;
 
 vec4 blendNormal(vec4 base, vec4 over)
@@ -407,11 +408,16 @@ void main()
         }
     }
 
-    // Convert straight-alpha result to display-over-black.
-    // Without a background layer the intermediate alpha may be < 1;
-    // premultiplying by alpha dims semi-transparent edges correctly
-    // instead of showing them at full brightness.
-    result = vec4(result.rgb * result.a, 1.0);
+    // Alpha export keeps the STRAIGHT-alpha result (transparent background) so
+    // the encoder (ProRes 4444 → YUVA, PNG → RGBA) writes a real alpha channel.
+    // Otherwise convert straight-alpha → display-over-black: without a
+    // background layer the intermediate alpha may be < 1, and premultiplying by
+    // alpha dims semi-transparent edges correctly instead of showing them at
+    // full brightness.
+    if (pc.preserveAlpha != 0)
+        result = vec4(result.rgb, clamp(result.a, 0.0, 1.0));
+    else
+        result = vec4(result.rgb * result.a, 1.0);
 
     // Swizzle R↔B to output BGRA byte order, which matches Qt's ARGB32
     // (BGRA in memory on little-endian).  This avoids a per-pixel CPU swap

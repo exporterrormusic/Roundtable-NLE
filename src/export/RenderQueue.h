@@ -82,6 +82,11 @@ struct ExportJobConfig
     AudioMixdownConfig    audioConfig;
     bool                  includeAudio{true};
 
+    // Audio-only export: skip all video work and write a standalone audio file
+    // (WAV / MP3 / AAC / FLAC) using audioConfig.codec.  outputPath carries the
+    // matching extension.  See RenderQueue::processAudioOnlyJob.
+    bool                  audioOnly{false};
+
     // Range (frames). 0,0 = full timeline.
     int64_t               startFrame{0};
     int64_t               endFrame{0};
@@ -204,6 +209,11 @@ public:
 
 private:
     void workerThread();
+
+    /// Audio-only job: mix the timeline's audio and write a standalone audio
+    /// file (no video encode/composite).  Called from processJob when
+    /// job.config.audioOnly is set.
+    void processAudioOnlyJob(ExportJob& job, Timeline* timeline);
 
     mutable std::mutex          m_mutex;
     std::vector<ExportJob>      m_jobs;

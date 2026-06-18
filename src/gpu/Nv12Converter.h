@@ -220,6 +220,18 @@ public:
                                        uint32_t dstW, uint32_t dstH,
                                        std::vector<uint8_t>& outPixels);
 
+    /// Phase 4.2 — convert P010 to RGBA16F (half-float) and read the raw
+    /// halfs back to CPU (8 bytes/px, straight RGBA, non-linear BT.709 R'G'B').
+    /// Feeds the export 16F passthrough packer (Rgba16fPack) so a 10-bit HEVC/
+    /// AV1 master exports to real 10-bit instead of transiting 8-bit BGRA.
+    /// Same locking discipline as the 8-bit variant; falls back (returns false)
+    /// if the 16F shader/pipeline is unavailable.
+    bool convertAndReadbackP010Scaled16F(const uint8_t* yData, int yLinesize,
+                                          const uint8_t* uvData, int uvLinesize,
+                                          uint32_t srcW, uint32_t srcH,
+                                          uint32_t dstW, uint32_t dstH,
+                                          std::vector<uint8_t>& outHalfRgba);
+
     // ── YUVA444P12 (ProRes 4444 — 4:4:4 10/12-bit + alpha) ───────────
     //
     // FFmpeg decodes ProRes 4444 to planar yuva444p12le: four FULL-resolution
@@ -250,6 +262,17 @@ public:
                                             uint32_t srcW, uint32_t srcH,
                                             uint32_t dstW, uint32_t dstH,
                                             std::vector<uint8_t>& outPixels);
+
+    /// Phase 4.2 — convert ProRes 4444 (yuva444p12le) to RGBA16F and read the
+    /// raw halfs back to CPU (8 bytes/px, straight RGBA + real straight alpha).
+    /// Feeds the export 16F passthrough packer; see the P010 16F variant.
+    bool convertAndReadbackYuva444p12Scaled16F(const uint8_t* yData, int yLinesize,
+                                               const uint8_t* uData, int uLinesize,
+                                               const uint8_t* vData, int vLinesize,
+                                               const uint8_t* aData, int aLinesize,
+                                               uint32_t srcW, uint32_t srcH,
+                                               uint32_t dstW, uint32_t dstH,
+                                               std::vector<uint8_t>& outHalfRgba);
 
     // ── Resize ──────────────────────────────────────────────────────────
 
@@ -311,6 +334,33 @@ private:
     bool ensureP010Pipeline();   // lazy — first P010 frame triggers init
     bool ensureYuva444p12Pipeline(); // lazy — first ProRes 4444 frame
 
+    // ── Phase 4.2 — RGBA16F output variants (export passthrough) ──────────
+    // Additive: share the input textures / descriptor sets / pipeline layouts
+    // with the 8-bit paths, differing only in the output texture
+    // (R16G16B16A16_SFLOAT) and the bound pipeline.  ensureOutputSize16F
+    // tracks its OWN dimensions (m_output16W/H) and must NOT touch m_config
+    // (which readbackOutput reads).  The record bodies are shared with the
+    // 8-bit path via the *Impl helpers below (out16f selects the output
+    // texture + pipeline), so the 8-bit Vulkan command stream is unchanged.
+    bool ensureOutputSize16F(uint32_t w, uint32_t h);
+    bool ensureP010Pipeline16F();
+    bool ensureYuva444p12Pipeline16F();
+    bool readbackOutput16F(std::vector<uint8_t>& outHalfRgba);
+    bool recordConvertP010ScaledImpl(
+        VkCommandBuffer cmd,
+        const uint8_t* yData, int yLinesize,
+        const uint8_t* uvData, int uvLinesize,
+        uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH,
+        bool out16f, std::vector<Texture::StagingCleanup>& stagingOut);
+    bool recordConvertYuva444p12ScaledImpl(
+        VkCommandBuffer cmd,
+        const uint8_t* yData, int yLinesize,
+        const uint8_t* uData, int uLinesize,
+        const uint8_t* vData, int vLinesize,
+        const uint8_t* aData, int aLinesize,
+        uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH,
+        bool out16f, std::vector<Texture::StagingCleanup>& stagingOut);
+
     Device*      m_device{nullptr};
     Allocator*   m_allocator{nullptr};
     CommandPool* m_cmdPool{nullptr};
@@ -371,6 +421,17 @@ private:
     VkPipelineLayout      m_yuva444PipeLayout{VK_NULL_HANDLE};
     VkPipeline            m_yuva444Pipeline{VK_NULL_HANDLE};
     VkShaderModule        m_yuva444ShaderModule{VK_NULL_HANDLE};
+
+    // Phase 4.2 — RGBA16F output (export passthrough).  Its OWN size
+    // bookkeeping (NOT m_config), and one extra pipeline per high-bit-depth
+    // format reusing the matching 8-bit descriptor set + pipeline layout.
+    Texture        m_output16FTexture;             // VK_FORMAT_R16G16B16A16_SFLOAT
+    uint32_t       m_output16W{0};
+    uint32_t       m_output16H{0};
+    VkPipeline     m_p010Pipeline16F{VK_NULL_HANDLE};
+    VkShaderModule m_p010ShaderModule16F{VK_NULL_HANDLE};
+    VkPipeline     m_yuva444Pipeline16F{VK_NULL_HANDLE};
+    VkShaderModule m_yuva444ShaderModule16F{VK_NULL_HANDLE};
 
     // Serialises convertAndReadback* against concurrent prefetch-worker
     // calls. The plain convertSync*/readbackOutput methods are NOT

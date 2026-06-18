@@ -284,6 +284,13 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
 {
     spdlog::info("RenderQueue: Processing job {} → {}", job.id, pathToUtf8(job.config.outputPath));
 
+    // Audio-only export: no compositor / encoder / frame loop — just mix the
+    // timeline audio and write a standalone WAV/MP3/AAC/FLAC file.
+    if (job.config.audioOnly) {
+        processAudioOnlyJob(job, timeline);
+        return;
+    }
+
     auto startTime = std::chrono::steady_clock::now();
 
     // ── Step 1: Frame renderer setup ────────────────────────────────
@@ -534,6 +541,29 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
                 static_cast<double>(f + 1) * 48000.0 * fpsDen / fpsNum);
         }
         cframe = m_frameRenderCb(tick, nextTick, outW, outH, true);
+
+        // §4.2 export 16F passthrough: a single full-frame opaque >8-bit clip
+        // arrives as a dual-payload frame (RGBA16F + an 8-bit BGRA copy).  For
+        // a 10-bit encoder, feed the RGBA16F directly — real 10-bit, no lossy
+        // BGRA round-trip — and SKIP the 8-bit segment write-through (the cache
+        // is BGRA-only).  8-bit encoders / non-passthrough frames fall through
+        // to the normal path below.
+        if (cframe && cframe->depth == 16 && !cframe->rgba16f.empty()
+                && encoder->is10BitTarget()) {
+            const bool got = encoder->encodeFrame16f(
+                reinterpret_cast<const uint16_t*>(cframe->rgba16f.data()),
+                static_cast<int>(cframe->rgba16fStride), f - startFrame);
+            if (got)
+                allPackets.push_back(makeOwnedPacket(encoder->lastPacket()));
+            else
+                spdlog::debug("RndQ[{}]: encoder buffering at f={} (16F, no packet yet)",
+                              job.id, f);
+            for (const auto& ep : encoder->pendingPackets())
+                allPackets.push_back(makeOwnedPacket(ep));
+            updateProgress(f);
+            continue;
+        }
+
         // The callback MUST have populated CPU pixels on the main thread before
         // returning (it does ensurePixels inside the BlockingQueuedConnection
         // dispatch). We do NOT call ensurePixels() here — it may trigger a GPU
@@ -657,6 +687,89 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     double totalElapsed = std::chrono::duration<double>(endTime - startTime).count();
     spdlog::info("RenderQueue: Job {} complete ({:.1f}s, {:.0f} fps)",
                  job.id, totalElapsed, totalFrames / totalElapsed);
+
+    if (m_completeCb) m_completeCb(job.id, true, "");
+}
+
+void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
+{
+    spdlog::info("RndQ[{}]: audio-only export → {}", job.id, pathToUtf8(job.config.outputPath));
+
+    if (!timeline) {
+        job.status = JobStatus::Failed;
+        job.error  = "No timeline loaded — nothing to export";
+        if (m_completeCb) m_completeCb(job.id, false, job.error);
+        return;
+    }
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    auto isCancelled = [&]() {
+        auto it = m_cancelFlags.find(job.id);
+        return m_cancelAll.load() || (it != m_cancelFlags.end() && it->second.load());
+    };
+
+    job.progress.totalFrames = 1;
+    job.progress.statusText  = "Mixing audio...";
+    if (m_progressCb) m_progressCb(job.id, job.progress);
+
+    if (isCancelled()) {
+        job.status = JobStatus::Cancelled;
+        if (m_completeCb) m_completeCb(job.id, false, "Cancelled");
+        return;
+    }
+
+    // Mix every audio track over the configured range.  Mixdown progress maps
+    // to 0–90%; the file write takes the last slice.
+    AudioMixdown mixdown;
+    MixdownResult result = mixdown.mix(
+        *timeline, job.config.audioConfig,
+        [&](float p, const std::string& s) {
+            job.progress.percent    = p * 90.0f;
+            job.progress.statusText = s;
+            if (m_progressCb) m_progressCb(job.id, job.progress);
+        });
+
+    if (isCancelled()) {
+        job.status = JobStatus::Cancelled;
+        if (m_completeCb) m_completeCb(job.id, false, "Cancelled");
+        return;
+    }
+
+    if (!result.isValid()) {
+        job.status = JobStatus::Failed;
+        job.error  = mixdown.lastError().empty()
+            ? "No audio to export (the timeline has no audio in this range)"
+            : mixdown.lastError();
+        if (m_completeCb) m_completeCb(job.id, false, job.error);
+        return;
+    }
+
+    job.progress.percent    = 92.0f;
+    job.progress.statusText = "Writing audio file...";
+    if (m_progressCb) m_progressCb(job.id, job.progress);
+
+    const bool ok = AudioMixdown::writeAudioFile(
+        result, job.config.outputPath,
+        job.config.audioConfig.codec, job.config.audioConfig.bitrate);
+
+    if (!ok) {
+        job.status = JobStatus::Failed;
+        job.error  = "Failed to write the audio file (the encoder or output path "
+                     "may be unavailable — see the log for details)";
+        if (m_completeCb) m_completeCb(job.id, false, job.error);
+        return;
+    }
+
+    job.status              = JobStatus::Completed;
+    job.progress.currentFrame = 1;
+    job.progress.percent    = 100.0f;
+    job.progress.statusText = "Complete";
+
+    double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - startTime).count();
+    spdlog::info("RndQ[{}]: audio-only export complete ({:.1f}s, {:.1f}s of audio)",
+                 job.id, elapsed, result.duration);
 
     if (m_completeCb) m_completeCb(job.id, true, "");
 }

@@ -96,6 +96,22 @@ static bool isStillImagePath(const std::string& path)
     return kImageExts.contains(ext);
 }
 
+// Index at which a brand-new "above the top video track" video track should be
+// inserted. That's the position of the topmost REAL video track — i.e. just
+// below the pinned caption track (TrackType::Video but not media-hostable).
+// When no caption track exists this is 0, matching the historical behaviour.
+static size_t topVideoInsertIndex(Timeline* tl)
+{
+    if (!tl) return 0;
+    for (size_t i = 0; i < tl->trackCount(); ++i) {
+        Track* tr = tl->track(i);
+        if (tr && tr->type() == TrackType::Video &&
+            !tr->isDivider() && !tr->isCaptionTrack())
+            return i;
+    }
+    return 0;
+}
+
 // ── Multi-stream audio drop (Premiere-style) ────────────────────────────────
 // A multicam/broadcast file (e.g. an 8-track MXF) carries several discrete
 // audio streams.  On drop we lay EACH stream onto its own audio track as one
@@ -535,7 +551,8 @@ void DropController::wireMediaDropSignals()
                 if (!forceGhostAudioCompanion &&
                     trackIndex < m_ws->timeline()->trackCount() &&
                     m_ws->timeline()->track(trackIndex)->type() == TrackType::Video &&
-                    !m_ws->timeline()->track(trackIndex)->isDivider())
+                    !m_ws->timeline()->track(trackIndex)->isDivider() &&
+                    !m_ws->timeline()->track(trackIndex)->isCaptionTrack())
                     targetTrackIdx = trackIndex;
                 if (targetTrackIdx == SIZE_MAX) {
                     // Drop-on-audio fallback: land on the BOTTOM video layer
@@ -545,7 +562,8 @@ void DropController::wireMediaDropSignals()
                     // divider itself (it's TrackType::Video but rejects clips).
                     for (size_t i = m_ws->timeline()->trackCount(); i > 0; --i) {
                         Track* tr = m_ws->timeline()->track(i - 1);
-                        if (tr->type() == TrackType::Video && !tr->isDivider()) {
+                        if (tr->type() == TrackType::Video && !tr->isDivider() &&
+                            !tr->isCaptionTrack()) {
                             targetTrackIdx = i - 1;
                             break;
                         }
@@ -682,7 +700,8 @@ void DropController::wireMediaDropSignals()
                                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                                 if (refTrackHeight >= 1.0f)
                                     newTrack->setHeight(refTrackHeight);
-                                t = m_ws->timeline()->insertTrack(0, std::move(newTrack));
+                                t = m_ws->timeline()->insertTrack(
+                                    topVideoInsertIndex(m_ws->timeline()), std::move(newTrack));
                             } else if (isAudio && forceGhostAudioTrack) {
                                 t = m_ws->timeline()->addAudioTrack("A1");
                                 if (t && refTrackHeight >= 1.0f)
@@ -935,7 +954,8 @@ void DropController::wireMediaDropSignals()
                         auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                         if (refTrackHeight >= 1.0f)
                             newTrack->setHeight(refTrackHeight);
-                        track = m_ws->timeline()->insertTrack(0, std::move(newTrack));
+                        track = m_ws->timeline()->insertTrack(
+                            topVideoInsertIndex(m_ws->timeline()), std::move(newTrack));
                         trackStructureChanged = true;
                     } else if (isAudio && forceGhostAudioTrack) {
                         track = m_ws->timeline()->addAudioTrack("A1");
@@ -1320,7 +1340,8 @@ void DropController::wireMediaDropSignals()
                                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                                 if (refTrackHeight >= 1.0f)
                                     newTrack->setHeight(refTrackHeight);
-                                t = m_ws->timeline()->insertTrack(0, std::move(newTrack));
+                                t = m_ws->timeline()->insertTrack(
+                                    topVideoInsertIndex(m_ws->timeline()), std::move(newTrack));
                             } else if (isAudio && forceGhostAudioTrack) {
                                 t = m_ws->timeline()->addAudioTrack("A1");
                                 if (t && refTrackHeight >= 1.0f)
@@ -1550,18 +1571,61 @@ void DropController::wireMediaDropSignals()
                 return;
             }
 
-            // Auto-add to the Project Bin (skip if already present)
+            namespace fs = std::filesystem;
+            const fs::path droppedPath = fs::path(filePath.toStdWString());
+
+            // Was this file ALREADY in the bin before this drop?  If so, undo
+            // must not remove it (the user dragged a clip in; only the clip and
+            // a *newly* auto-added bin entry should be reversed by one Ctrl+Z).
+            bool alreadyInBin = false;
             if (m_ws->projectBin()) {
-                namespace fs = std::filesystem;
-                m_ws->projectBin()->addFiles({ fs::path(filePath.toStdWString()) });
+                std::error_code ec;
+                const fs::path target = fs::weakly_canonical(droppedPath, ec);
+                for (const auto& f : m_ws->projectBin()->allFiles()) {
+                    std::error_code ec2;
+                    if (f == droppedPath ||
+                        (!target.empty() && fs::weakly_canonical(f, ec2) == target)) {
+                        alreadyInBin = true;
+                        break;
+                    }
+                }
             }
 
-            // Open in MediaPool and forward to the normal media-drop path
+            // Group the bin auto-add and the timeline clip creation into ONE
+            // undo step so a single Ctrl+Z removes BOTH the dropped clip and the
+            // bin entry it auto-created.  The timeline command is pushed by the
+            // mediaDropped handler below and joins this macro.
+            auto* stack = m_ws->commandStack();
+            if (stack) stack->beginMacro("Add Media to Timeline");
+
+            // Auto-add to the Project Bin (skip if already present).  When it's
+            // a brand-new entry, route it through the command stack so undo
+            // removes it; a pre-existing entry is left untouched on undo.
+            if (m_ws->projectBin()) {
+                if (stack && !alreadyInBin) {
+                    stack->execute(std::make_unique<LambdaCommand>(
+                        "Add to Project Bin",
+                        [this, droppedPath]() {
+                            if (m_ws->isDestroying() || !m_ws->projectBin()) return;
+                            m_ws->projectBin()->addFiles({ droppedPath });
+                        },
+                        [this, droppedPath]() {
+                            if (m_ws->isDestroying() || !m_ws->projectBin()) return;
+                            m_ws->projectBin()->removeFile(droppedPath);
+                        }));
+                } else {
+                    m_ws->projectBin()->addFiles({ droppedPath });
+                }
+            }
+
+            // Open in MediaPool and forward to the normal media-drop path.
             uint64_t handle = 0;
             if (m_ws->mediaPool())
                 handle = m_ws->mediaPool()->open(filePath.toStdString());
 
             emit m_ws->timelinePanel()->mediaDropped(filePath, handle, atTick, trackIndex);
+
+            if (stack) stack->endMacro();
         });
 
         // =================================================================

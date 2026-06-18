@@ -86,9 +86,10 @@ struct CompositePushConstants
 {
     int32_t width;
     int32_t height;
-    int32_t hqSample;   // 1 = Catmull-Rom bicubic sampling (export), 0 = bilinear (preview)
+    int32_t hqSample;       // 1 = Catmull-Rom bicubic sampling (export), 0 = bilinear (preview)
+    int32_t preserveAlpha;  // 1 = keep straight RGBA (alpha export), 0 = flatten over black
 };
-static_assert(sizeof(CompositePushConstants) == 12);
+static_assert(sizeof(CompositePushConstants) == 16);
 
 // ── Layer descriptor ────────────────────────────────────────────────────────
 
@@ -243,6 +244,13 @@ public:
     /// stay sharp.  See composite.comp.
     void setHighQualitySampling(bool hq) noexcept { m_hqSampling = hq; }
 
+    /// Alpha export (Phase 4.2): when true the composite output keeps its
+    /// STRAIGHT-alpha result (transparent background) instead of flattening
+    /// over black, so ProRes 4444 / PNG export gets a real alpha channel.
+    /// Set per-composite by CompositeService from its export-alpha flag;
+    /// defaults false so viewport/playback are unaffected.
+    void setPreserveAlpha(bool keep) noexcept { m_preserveAlpha = keep; }
+
     // ── Resize ──────────────────────────────────────────────────────────
 
     /// Resize the output image.
@@ -315,6 +323,7 @@ public:
 
 private:
     bool m_hqSampling{false};  // bicubic layer sampling (export); see composite.comp
+    bool m_preserveAlpha{false}; // keep straight RGBA for alpha export; see composite.comp
     bool createOutputTexture();
     /// Rotate m_outputTexture to the next slot in the output ring.  Called
     /// at the start of every composite() so each composited frame writes

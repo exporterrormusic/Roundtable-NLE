@@ -76,6 +76,28 @@ struct CachedFrame
 
     std::vector<uint8_t> pixels; // BGRA pixel data (pre-converted)
 
+    /// Bits-per-channel of this frame's representation (Phase 4.2).
+    ///   8  → CPU `pixels` / GPU texture is 8-bit BGRA (the universal default).
+    ///   16 → GPU texture is RGBA16F (half-float); set ONLY on GPU-resident
+    ///        frames produced by the 16F convert path for >8-bit sources.
+    /// The CPU `pixels` fallback ALWAYS stays 8-bit BGRA: when a 16F frame is
+    /// materialised on the CPU (ensurePixels / disk write), the readback
+    /// dithers down to 8-bit, so `depth==16` never implies 16-bit `pixels`.
+    /// Used by cache byte-accounting and the compositor's 16F gate; a plain
+    /// 8-bit frame (the overwhelming majority) leaves this untouched.
+    uint8_t  depth{8};
+
+    /// Export 16F passthrough payload (Phase 4.2).  When non-empty (and
+    /// depth==16), this frame ALSO carries the source picture as RGBA16F
+    /// (4 IEEE-754 binary16 halfs/px, straight RGBA, non-linear BT.709
+    /// R'G'B') for the encoder's encodeFrame16f — real 10-bit export that
+    /// bypasses the 8-bit BGRA compositor.  `pixels` still holds an 8-bit BGRA
+    /// copy (dithered from the 16F) so display / export-preview consumers work
+    /// unchanged.  Only CompositeService::tryBuild16fPassthrough sets this; it
+    /// is NEVER written to the 8-bit disk / segment caches.
+    std::vector<uint8_t> rgba16f;
+    uint32_t rgba16fStride{0};   ///< bytes per row of `rgba16f` (= width*8).
+
     /// True when this frame was decoded from a packed-alpha video and has
     /// already been unpacked (top-half RGB + bottom-half alpha → BGRA).
     /// Downstream code checks this to avoid double-unpacking.

@@ -86,10 +86,39 @@ bool Nv12Converter::recordConvertYuva444p12Scaled(
     uint32_t dstW, uint32_t dstH,
     std::vector<Texture::StagingCleanup>& stagingOut)
 {
+    // 8-bit BGRA output (the original path) — out16f=false reproduces the
+    // exact Vulkan command stream this function always emitted.
+    return recordConvertYuva444p12ScaledImpl(
+        cmd, yData, yLinesize, uData, uLinesize, vData, vLinesize,
+        aData, aLinesize, srcW, srcH, dstW, dstH, /*out16f=*/false, stagingOut);
+}
+
+bool Nv12Converter::recordConvertYuva444p12ScaledImpl(
+    VkCommandBuffer cmd,
+    const uint8_t* yData, int yLinesize,
+    const uint8_t* uData, int uLinesize,
+    const uint8_t* vData, int vLinesize,
+    const uint8_t* aData, int aLinesize,
+    uint32_t srcW, uint32_t srcH,
+    uint32_t dstW, uint32_t dstH,
+    bool out16f,
+    std::vector<Texture::StagingCleanup>& stagingOut)
+{
     if (!m_initialized) return false;
     if (cmd == VK_NULL_HANDLE) return false;
-    if (!ensureYuva444p12Pipeline()) return false;
-    if (!ensureOutputSize(dstW, dstH)) return false;
+    // 8-bit vs 16F differ only in the bound pipeline + output texture; the
+    // four R16 input planes, descriptor set, and pipeline layout are shared.
+    if (out16f) {
+        if (!ensureYuva444p12Pipeline16F()) return false;
+        if (!ensureOutputSize16F(dstW, dstH)) return false;
+    } else {
+        if (!ensureYuva444p12Pipeline()) return false;
+        if (!ensureOutputSize(dstW, dstH)) return false;
+    }
+    const VkImageView outputView =
+        out16f ? m_output16FTexture.imageView() : m_outputTexture.imageView();
+    const VkPipeline  outputPipe =
+        out16f ? m_yuva444Pipeline16F : m_yuva444Pipeline;
 
     // All four planes are full-resolution (4:4:4 + alpha).
     if (!uploadR16Plane(m_yuvaYTexture, m_allocator, m_device, yData, yLinesize,
@@ -120,7 +149,7 @@ bool Nv12Converter::recordConvertYuva444p12Scaled(
         VkDescriptorImageInfo vInfo = m_yuvaVTexture.descriptorInfo();
         VkDescriptorImageInfo aInfo = m_yuvaATexture.descriptorInfo();
         VkDescriptorImageInfo outInfo{};
-        outInfo.imageView   = m_outputTexture.imageView();
+        outInfo.imageView   = outputView;
         outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
         const VkDescriptorImageInfo* infos[4] = { &yInfo, &uInfo, &vInfo, &aInfo };
@@ -144,7 +173,7 @@ bool Nv12Converter::recordConvertYuva444p12Scaled(
     }
 
     // Dispatch at OUTPUT dimensions.
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_yuva444Pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, outputPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             m_yuva444PipeLayout, 0, 1, &m_yuva444DescSet,
                             0, nullptr);
@@ -212,6 +241,30 @@ bool Nv12Converter::convertAndReadbackYuva444p12Scaled(
                                      srcW, srcH, dstW, dstH))
         return false;
     return readbackOutput(outPixels);
+}
+
+bool Nv12Converter::convertAndReadbackYuva444p12Scaled16F(
+    const uint8_t* yData, int yLinesize,
+    const uint8_t* uData, int uLinesize,
+    const uint8_t* vData, int vLinesize,
+    const uint8_t* aData, int aLinesize,
+    uint32_t srcW, uint32_t srcH,
+    uint32_t dstW, uint32_t dstH,
+    std::vector<uint8_t>& outHalfRgba)
+{
+    if (!m_initialized || !m_cmdPool) return false;
+    std::lock_guard<std::mutex> apiLock(m_apiMutex);
+    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
+
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+    std::vector<Texture::StagingCleanup> staging;
+    const bool ok = recordConvertYuva444p12ScaledImpl(
+        cmd, yData, yLinesize, uData, uLinesize, vData, vLinesize,
+        aData, aLinesize, srcW, srcH, dstW, dstH, /*out16f=*/true, staging);
+    m_cmdPool->endSingleTime(cmd, m_queue);
+    for (auto& s : staging) s.destroy();
+    if (!ok) return false;
+    return readbackOutput16F(outHalfRgba);
 }
 
 } // namespace rt

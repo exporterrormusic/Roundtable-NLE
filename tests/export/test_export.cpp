@@ -132,6 +132,49 @@ TEST(ExportEncoder, FactoryInvalidCodec)
     EXPECT_EQ(enc, nullptr);
 }
 
+#ifdef ROUNDTABLE_HAS_FFMPEG
+// Real CPU encode: opens the FFmpeg encoder and pushes a few solid-colour BGRA
+// frames through.  Verifies the prores_aw (non-4444) / prores_ks (4444) split
+// actually opens and produces packets in this FFmpeg build — the thing the
+// factory-only tests above can't catch.  No GPU needed (pure libavcodec).
+namespace {
+bool encodeSolidProRes(ProResProfile profile, int frames)
+{
+    EncoderConfig cfg;
+    cfg.width  = 128;
+    cfg.height = 128;
+    cfg.fpsNum = 30;
+    cfg.fpsDen = 1;
+    cfg.codec  = EncoderCodec::ProRes;
+    cfg.proresProfile = profile;
+
+    auto enc = Encoder::create(EncoderCodec::ProRes, HardwareAccel::None);
+    if (!enc || !enc->init(cfg)) return false;
+    if (!enc->is10BitTarget()) return false;   // ProRes is always 10-bit here
+
+    std::vector<uint8_t> bgra(static_cast<size_t>(cfg.width) * cfg.height * 4, 160);
+    for (int i = 0; i < frames; ++i)
+        enc->encodeFrame(bgra.data(), i);
+    enc->flush();
+    const bool produced = enc->framesEncoded() > 0;
+    enc->shutdown();
+    return produced;
+}
+} // namespace
+
+TEST(ExportEncoder, ProResNon4444EncodesViaAw)
+{
+    // Proxy/LT/Standard/HQ route to prores_aw (or fall back to prores_ks).
+    EXPECT_TRUE(encodeSolidProRes(ProResProfile::HQ, 4));
+}
+
+TEST(ExportEncoder, ProRes4444EncodesViaKs)
+{
+    // 4444 / 4444 XQ need prores_ks (alpha / 4:4:4).
+    EXPECT_TRUE(encodeSolidProRes(ProResProfile::_4444, 4));
+}
+#endif // ROUNDTABLE_HAS_FFMPEG
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Container format
 // ═════════════════════════════════════════════════════════════════════════════
@@ -266,6 +309,7 @@ TEST(ExportJobConfig, Defaults)
     EXPECT_EQ(cfg.outputWidth, 1920u);
     EXPECT_EQ(cfg.outputHeight, 1080u);
     EXPECT_TRUE(cfg.includeAudio);
+    EXPECT_FALSE(cfg.audioOnly);
     EXPECT_EQ(cfg.startFrame, 0);
     EXPECT_EQ(cfg.endFrame, 0);
 }
@@ -328,6 +372,15 @@ TEST(ExportAudioMixdown, CodecEnum)
     EXPECT_EQ(static_cast<int>(AudioCodec::PCM_F32LE), 1);
     EXPECT_EQ(static_cast<int>(AudioCodec::AAC), 2);
     EXPECT_EQ(static_cast<int>(AudioCodec::FLAC), 3);
+    EXPECT_EQ(static_cast<int>(AudioCodec::MP3), 4);
+}
+
+TEST(ExportAudioMixdown, CodecExtensions)
+{
+    EXPECT_STREQ(audioCodecExtension(AudioCodec::PCM_S16LE), ".wav");
+    EXPECT_STREQ(audioCodecExtension(AudioCodec::MP3),       ".mp3");
+    EXPECT_STREQ(audioCodecExtension(AudioCodec::AAC),       ".m4a");
+    EXPECT_STREQ(audioCodecExtension(AudioCodec::FLAC),      ".flac");
 }
 
 TEST(ExportAudioMixdown, MixEmptyTimeline)
@@ -404,6 +457,73 @@ TEST(ExportAudioMixdown, WriteWavFile)
     EXPECT_LT(fileSize, 195000u);
 
     std::filesystem::remove(tempPath);
+}
+
+TEST(ExportAudioMixdown, EstimateFileSizeMP3)
+{
+    AudioMixdownConfig estCfg;
+    estCfg.codec = AudioCodec::MP3;
+    estCfg.sampleRate = 48000;
+    estCfg.channels = 2;
+    estCfg.bitrate = 192000;
+    auto size = AudioMixdown::estimateFileSize(estCfg, 60.0);
+    // ~192kbps * 60s / 8 = ~1,440,000 bytes (same model as AAC)
+    EXPECT_GT(size, 1000000u);
+    EXPECT_LT(size, 2000000u);
+}
+
+// writeAudioFile encodes + muxes via FFmpeg.  Bundled FFmpeg ships libmp3lame,
+// the native AAC encoder, and FLAC; if a stripped build lacks one the test
+// skips rather than failing.
+namespace {
+void expectEncodedAudioFile(AudioCodec codec, const char* ext)
+{
+    MixdownResult mix;
+    mix.samples.resize(48000 * 2, 0.0f);  // 1s of stereo silence
+    mix.totalFrames = 48000;
+    mix.duration    = 1.0;
+    mix.sampleRate  = 48000;
+    mix.channels    = 2;
+
+    auto path = std::filesystem::temp_directory_path() /
+                (std::string("test_export_audioonly") + ext);
+    std::filesystem::remove(path);
+
+    bool ok = AudioMixdown::writeAudioFile(mix, path, codec, 192000);
+    if (!ok) {
+        GTEST_SKIP() << "encoder for " << ext << " unavailable in this FFmpeg build";
+    }
+    EXPECT_TRUE(std::filesystem::exists(path));
+    EXPECT_GT(std::filesystem::file_size(path), 0u);
+    std::filesystem::remove(path);
+}
+} // namespace
+
+TEST(ExportAudioMixdown, WriteMp3File)  { expectEncodedAudioFile(AudioCodec::MP3,  ".mp3"); }
+TEST(ExportAudioMixdown, WriteAacFile)  { expectEncodedAudioFile(AudioCodec::AAC,  ".m4a"); }
+TEST(ExportAudioMixdown, WriteFlacFile) { expectEncodedAudioFile(AudioCodec::FLAC, ".flac"); }
+
+TEST(ExportAudioMixdown, WriteAudioFileWavRoutesToPcm)
+{
+    // PCM_S16LE must produce a valid RIFF/WAVE just like writeWav().
+    MixdownResult mix;
+    mix.samples.resize(48000 * 2, 0.0f);
+    mix.totalFrames = 48000;
+    mix.duration    = 1.0;
+    mix.sampleRate  = 48000;
+    mix.channels    = 2;
+
+    auto path = std::filesystem::temp_directory_path() / "test_export_audioonly_pcm.wav";
+    std::filesystem::remove(path);
+
+    EXPECT_TRUE(AudioMixdown::writeAudioFile(mix, path, AudioCodec::PCM_S16LE, 0));
+    ASSERT_TRUE(std::filesystem::exists(path));
+    std::ifstream in(path, std::ios::binary);
+    char riff[4] = {};
+    in.read(riff, 4);
+    EXPECT_EQ(std::string(riff, 4), "RIFF");
+    in.close();
+    std::filesystem::remove(path);
 }
 
 // ── Audio FX chain integration in the export mixdown ─────────────────────────

@@ -307,6 +307,12 @@ public:
     void onCheckForUpdatesSilent();
     void onAutoUpdateCheck(bool available, const QString &version);
 
+    /// Restart the auto-save interval countdown from now. Called by the
+    /// ProjectController whenever a project is loaded so a freshly-opened
+    /// project gets a full interval before its first auto-save (opening the
+    /// app "just to test" and closing within the interval never auto-saves).
+    void resetAutoSaveTimer();
+
 private:
     void buildFileMenu(QMenuBar* menuBar);
     void buildEditMenu(QMenuBar* menuBar);

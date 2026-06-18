@@ -399,6 +399,15 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     }
     m_info.colorPrimaries = static_cast<int>(codecpar->color_primaries);
 
+    // Source bit depth (Phase 4.2): bits per luma component of the source
+    // pixel format.  8 for NV12 / yuv420p, 10 for P010 / HEVC Main10, 12 for
+    // ProRes 4444 (yuva444p12le).  Drives 16F GPU convert routing; RGB and
+    // unrecognised formats stay at the 8-bit default.
+    if (const AVPixFmtDescriptor* depthDesc = av_pix_fmt_desc_get(
+            static_cast<AVPixelFormat>(codecpar->format));
+        depthDesc && depthDesc->nb_components > 0 && depthDesc->comp[0].depth > 0)
+        m_info.bitDepth = depthDesc->comp[0].depth;
+
     // Alpha channel detection
     bool hasAlpha = false;
     {

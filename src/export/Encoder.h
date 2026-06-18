@@ -71,8 +71,20 @@ enum class ProResProfile : uint8_t
     LT,
     Standard,
     HQ,
-    _4444,      // ProRes 4444
-    _4444XQ,    // ProRes 4444 XQ
+    _4444,      // ProRes 4444    (10-bit 4:4:4 + alpha)
+    _4444XQ,    // ProRes 4444 XQ (10-bit 4:4:4 + alpha, higher bitrate)
+    Count
+};
+
+/// DNxHR quality profile (defined here, beside ProResProfile, so EncoderConfig
+/// can carry it; DNxHREncoder consumes it).
+enum class DNxHRProfile : uint8_t
+{
+    LB,     // Low Bandwidth     (8-bit 4:2:2)
+    SQ,     // Standard Quality  (8-bit 4:2:2)
+    HQ,     // High Quality      (8-bit 4:2:2)
+    HQX,    // High Quality 10-bit (10-bit 4:2:2)
+    _444,   // 4:4:4 10-bit
     Count
 };
 
@@ -106,8 +118,9 @@ struct EncoderConfig
     int            maxBitrateMbps{0};   // 0 = uncapped; for VBR
     int            gopSize{0};          // 0 = auto (2 * fps)
 
-    // ── ProRes specific ─────────────────────────────────────────────────
+    // ── ProRes / DNxHR specific ─────────────────────────────────────────
     ProResProfile  proresProfile{ProResProfile::HQ};
+    DNxHRProfile   dnxhrProfile{DNxHRProfile::HQ};
 
     // ── Image sequence specific ─────────────────────────────────────────
     ImageFormat    imageFormat{ImageFormat::PNG};
@@ -152,6 +165,21 @@ public:
     /// Returns true if an encoded packet is produced (may be delayed).
     virtual bool encodeFrame(const uint8_t* bgraPixels,
                              int64_t frameIndex) = 0;
+
+    /// True when this encoder is opened at a >8-bit pixel format (ProRes is
+    /// always 10-bit; DNxHR HQX/444 are 10-bit; everything else is 8-bit).
+    /// The export 16F passthrough (Phase 4.2) gates on this BEFORE compositing
+    /// in 16F — an 8-bit target never takes the passthrough path.
+    [[nodiscard]] virtual bool is10BitTarget() const noexcept { return false; }
+
+    /// Encode one frame directly from RGBA16F (4 IEEE-754 binary16 halfs per
+    /// pixel, `srcStrideBytes` row pitch), packing to the encoder's native
+    /// 10-bit YUV WITHOUT the lossy BGRA→YUV swscale step.  Only meaningful
+    /// when is10BitTarget(); the default (and any 8-bit encoder) returns false
+    /// so the caller falls back to encodeFrame(BGRA).  See Rgba16fPack.
+    virtual bool encodeFrame16f(const uint16_t* /*rgba16f*/,
+                                int /*srcStrideBytes*/,
+                                int64_t /*frameIndex*/) { return false; }
 
     /// Flush remaining buffered frames. Call after the last frame.
     /// Returns the number of flushed packets.

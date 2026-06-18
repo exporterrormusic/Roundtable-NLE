@@ -14,10 +14,12 @@ re-folder into core/gpu/export/ui.  The full blow-by-blow execution history
 lives in this file's prior git revisions and the commit log.
 
 What's left is PHASE 4 — Premiere-parity FEATURES.  Each is its own project.
-Progress as of 2026-06-16: 4.1 colour (a+b) DONE, 4.3 VFR (a) DONE, 4.4 multi-
-audio DONE, 4.6 segment render cache + render bar DONE (runtime-verified).
-Not started: 4.7 proxy, 4.2 16-bit float; deferred: 4.1c HDR tone-map, 4.3b
-PTS-index.  Per-item status is inline below.  Standing items are at the bottom.
+Progress as of 2026-06-17: 4.1 colour (a+b) DONE, 4.3 VFR (a) DONE, 4.4 multi-
+audio DONE, 4.6 segment render cache + render bar DONE (runtime-verified), 4.2
+16-bit float TARGETED EXPORT PASSTHROUGH code-complete (builds + 828/828
+core/export tests green; pending GPU runtime verify — see 4.2).  Not started:
+4.7 proxy, 4.2 full-16F-compositor; deferred: 4.1c HDR tone-map, 4.3b PTS-index.
+Per-item status is inline below.  Standing items are at the bottom.
 
 GROUND RULES (from the repo's history):
   - Build the Release `roundtable` target to verify, not just the libs; use
@@ -333,7 +335,8 @@ PHASE 4 — Premiere-parity features (in recommended order)
      (half-res NVENC H.264 or DNxHR LB) and lets MediaPool transparently swap
      source paths per handle.  Lower priority than 4.6.
 
-4.2  16-BIT FLOAT GPU PIPELINE            ** top quality gap; largest; last **
+4.2  16-BIT FLOAT GPU PIPELINE   ** TARGETED EXPORT PASSTHROUGH code-complete
+                                    2026-06-17; pending GPU runtime verify **
      CachedFrame is 8-bit BGRA end-to-end.  10-bit HEVC (P010), 12-bit ProRes
      4444, and banding-sensitive gradients are all quantized to 8-bit at
      convert, composited, then re-encoded.  Pragmatic path: extend
@@ -343,6 +346,92 @@ PHASE 4 — Premiere-parity features (in recommended order)
      8-bit (CachedFrame grows a 'depth' field beside its existing 'origin' /
      'tier').  Gates every pro-format ambition (ProRes RAW, DNxHR HQX, HDR
      delivery).
+
+     DECISION (2026-06-17): a FULL 16F compositor is the largest/riskiest slice
+     (touches the shared 8-bit blend target).  Since real 10-bit reaches the
+     encoder ONLY if the WHOLE chain source→encoder is >8-bit and the compositor
+     re-quantizes to 8-bit (Compositor.h:81 RGBA8 target, read by BOTH viewport
+     and encoder readback), we instead shipped a TARGETED EXPORT PASSTHROUGH:
+     for an export tick whose segment is a single full-frame opaque >8-bit clip
+     rendered 1:1 (no fx/transition/opacity/transform/blend/mask/retime/caption/
+     adjustment), skip the 8-bit compositor entirely — decode that source frame,
+     GPU-convert to RGBA16F, pack to the encoder's native 10-bit YUV.  Multi-
+     layer / effected segments keep the 8-bit path (documented v1 limit).  Every
+     failure falls back to 8-bit, so a bug only degrades export, never corrupts.
+
+       PERMANENT pieces (reused verbatim by a future full-16F compositor):
+         A. VideoStreamInfo.bitDepth (VideoDecoderInit, from comp[0].depth) +
+            CachedFrame.depth{8} — plumbing, no behaviour change.
+         1. src/export/Rgba16fPack.{h,cpp} — PURE FFmpeg/Vulkan-free RGBA16F →
+            10-bit planar YUV (P010 high-bits / *P10LE low-bits, BT.709 limited,
+            4:2:0/4:2:2 box-average, NO dither — round-to-nearest; ≤2-bit loss is
+            below SDR threshold).  tests/export/test_rgba16f_pack.cpp (12 tests).
+         2. Encoder::is10BitTarget() + encodeFrame16f(rgba16f) bypassing the
+            BGRA swscale (fills m_frame's native 10-bit planes directly via
+            packRgba16fToYuv); finishFrame() extracted (shared HW/sendFrame tail,
+            8-bit path byte-identical); initCpuCodec tags BT.709-limited on the
+            10-bit intra formats so Resolve/Premiere read levels right.
+         3. shaders/p010_to_rgba16f.comp + yuva444p12_to_rgba16f.comp (verbatim
+            math, rgba16f output, STRAIGHT RGBA so the CPU packer reads .r/.g/.b).
+         4. Nv12Converter RGBA16F output texture/pipelines/readback
+            (convertAndReadback{P010,Yuva444p12}Scaled16F) — ADDITIVE: shares the
+            input textures + descriptor sets + pipeline layouts; the 8-bit path
+            emits identical commands via the shared *Impl(out16f=false).  16F
+            output has its OWN size bookkeeping (m_output16W/H), NEVER m_config.
+         5. core/timeline/PassthroughEligibility.{h,cpp} evaluatePassthroughAt —
+            clip-derived (NOT LayerInfo: that folds 0.85× contain-fit into scale)
+            timeline-level predicate.  tests/core/test_passthrough_eligibility
+            .cpp (15 tests).  Source-level gates (bitDepth>8, dims==out, !packed/
+            VFR, BT.709-limited-SDR) live in the compositor where the info is.
+       INTERIM glue (deleted when the compositor itself goes 16F):
+         6. CachedFrame.rgba16f + rgba16fStride side-channel (dual-payload: also
+            an 8-bit BGRA copy so the export-preview display works); core/decode
+            hbdPlaneFormat(DecodedFrame); CompositeService::tryBuild16fPassthrough
+            (gpu/CompositeService16f.cpp — eligibility → resolve handle/info →
+            source gates → mapTickToSourceFrame → software decode → converter 16F
+            → dual-payload CachedFrame; runs on the compositor/main thread, uses
+            the shared GpuContext converter); TimelineWorkspace::compositeFrame16f;
+            the ExportPanel preview lambda (MainWindowUIBuild) tries it FIRST.
+         7. RenderQueue: depth==16 + rgba16f + is10BitTarget → encodeFrame16f,
+            skip the 8-bit segment write-through.
+       STATUS: full app builds+links; 828/828 core+export tests green.  NOT YET
+       RUNTIME-VERIFIED — needs a GPU + real media (Step 8): (a) Vulkan-validation
+       clean on the 16F convert (format-match the rgba16f qualifier vs the
+       R16G16B16A16_SFLOAT view); (b) export a 10-bit HEVC/AV1 + a ProRes-4444
+       master to ProRes422/DNxHR-HQX, ffprobe the output is yuv422p10le/444p10le,
+       confirm NO red/blue swap (straight-RGBA channel order), NO brightness/
+       saturation shift (BT.709-limited tags), visibly less banding vs 8-bit;
+       (c) eligibility fires (grep "[16F-PASS]") and adding an fx/transition/
+       caption/transform silently reverts to 8-bit; (d) a portrait/rotated 10-bit
+       clip is not sideways (VideoStreamInfo has NO rotation field — if it ships
+       sideways, add one + reject non-zero); (e) 8-bit H.264 export byte-identical.
+       NEXT (full 16F, when wanted): make the Compositor target RGBA16F + dither
+       in the present shader; then 4.1c HDR tone-map rides on that float headroom.
+
+     EXPORT-UI ENABLERS (2026-06-17, needed to actually reach the 10-bit / alpha
+     paths from the UI; build green, 63/63 export):
+       * ProRes / DNxHR PROFILE selector — the export panel only exposed codec +
+         container, so ProRes was stuck at the HQ default and DNxHR's profile was
+         never wired to EncoderConfig at all.  Added a "Profile" combo (ExportPanel
+         UI/Presets, shown for ProRes/DNxHR), DNxHRProfile moved into Encoder.h +
+         EncoderConfig.dnxhrProfile, DNxHREncoder::init reads it; buildJobConfig
+         sets proresProfile/dnxhrProfile; persisted in custom presets.  Picking
+         ProRes 4444 / DNxHR HQX|444 is what gives the 16F passthrough a 10-bit
+         target.
+       * ALPHA EXPORT — composite.comp FLATTENED alpha to opaque at its last line
+         (vec4(rgb*a, 1.0)); everything else (ProRes 4444 YUVA, BGRA→YUVA sws, PNG
+         RGBA) already carried alpha.  Added a `preserveAlpha` push-constant
+         (appended, so existing offsets unchanged → normal composite byte-
+         identical) that emits straight RGBA instead; plumbed Compositor::set-
+         PreserveAlpha ← CompositeService::m_exportAlpha (set per-composite in
+         tryCompositeOnGpu) ← TimelineWorkspace::setExportAlpha ← the Export Panel
+         preview lambda reading a new "Export with alpha (transparent background)"
+         checkbox (enabled only for ProRes 4444/4444XQ or Image-Sequence/PNG).
+         The single-clip 16F passthrough already preserves source alpha via the
+         yuva444 path.  ALSO needs GPU runtime verify: export a multi-layer comp
+         over transparency to ProRes 4444 + confirm the alpha channel in Resolve /
+         ffprobe (pix_fmt yuva444p10le, real alpha), and a PNG sequence is
+         transparent; viewport/playback unchanged (preserveAlpha defaults 0).
 
 4.9  SMALLER PARITY NOTES (file under "later"):
      - Growing-file refresh (OBS recordings opened mid-write): unsupported.

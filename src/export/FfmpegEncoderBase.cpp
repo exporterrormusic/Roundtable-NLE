@@ -4,6 +4,7 @@
  */
 
 #include "FfmpegEncoderBase.h"
+#include "Rgba16fPack.h"
 
 #include <spdlog/spdlog.h>
 
@@ -186,6 +187,34 @@ bool FfmpegEncoderBase::initCpuCodec(const EncoderConfig& config,
                       /*tagColors=*/false, /*setRateControl=*/false);
     configureCodecOptions(m_codecCtx, config, /*hwPath=*/false);
 
+    // Multi-thread the intra encode — running on ONE core is the single
+    // biggest reason ProRes/DNxHR export feels glacial.  thread_count = 0 lets
+    // libavcodec pick the logical-core count; the thread_type default
+    // (FRAME|SLICE) lets each encoder use its best mode: prores_ks / dnxhd
+    // SLICE-thread (no reorder latency, bit-identical), while prores_aw
+    // FRAME-threads.  For a batch export the frame-thread reorder latency is
+    // irrelevant (the drain loop already collects delayed packets).  No-op for
+    // codecs that don't thread; safe to set before open.
+    m_codecCtx->thread_count = 0;            // 0 = auto (all logical cores)
+
+    // Phase 4.2: for the 10-bit intra targets the export passthrough authors
+    // real BT.709 limited-range YCbCr (and the BGRA→YUV swscale for composited
+    // frames also yields BT.709 limited), so tag the stream accordingly —
+    // otherwise Resolve/Premiere may misread the levels.  Gated on the 10-bit
+    // pixel formats only, so 8-bit ProRes/DNxHR output stays byte-identical.
+    // These are pure metadata fields (unlike bit_rate/gop) that prores_ks and
+    // dnxhd accept at open.
+    const bool tenBit = (pixFmt == AV_PIX_FMT_YUV422P10LE ||
+                         pixFmt == AV_PIX_FMT_YUV444P10LE ||
+                         pixFmt == AV_PIX_FMT_YUVA444P10LE ||
+                         pixFmt == AV_PIX_FMT_P010LE);
+    if (tenBit && config.bt709) {
+        m_codecCtx->color_primaries = AVCOL_PRI_BT709;
+        m_codecCtx->color_trc       = AVCOL_TRC_BT709;
+        m_codecCtx->colorspace      = AVCOL_SPC_BT709;
+        m_codecCtx->color_range     = AVCOL_RANGE_MPEG;
+    }
+
     if (avcodec_open2(m_codecCtx, codec, nullptr) < 0) {
         m_lastError = std::string(logName()) + ": failed to open codec";
         spdlog::error("{}", m_lastError);
@@ -244,11 +273,68 @@ bool FfmpegEncoderBase::encodeFrame(const uint8_t* bgraPixels, int64_t frameInde
     int srcLines = std::min(static_cast<int>(m_config.height), m_frame->height);
     sws_scale(m_swsCtx, srcSlice, srcStride, 0, srcLines,
               m_frame->data, m_frame->linesize);
+
+    return finishFrame(frameIndex);
+}
+
+bool FfmpegEncoderBase::is10BitTarget() const noexcept
+{
+    if (!m_codecCtx) return false;
+    switch (m_codecCtx->pix_fmt) {
+        case AV_PIX_FMT_YUV422P10LE:
+        case AV_PIX_FMT_YUV444P10LE:
+        case AV_PIX_FMT_YUVA444P10LE:
+        case AV_PIX_FMT_P010LE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool FfmpegEncoderBase::encodeFrame16f(const uint16_t* rgba16f, int srcStrideBytes,
+                                       int64_t frameIndex)
+{
+    if (!m_initialized) { spdlog::error("{}: !initialized", logName()); return false; }
+    if (!rgba16f || !is10BitTarget()) return false;   // caller falls back to encodeFrame(BGRA)
+
+    PackTarget target;
+    switch (m_codecCtx->pix_fmt) {
+        case AV_PIX_FMT_YUV422P10LE:  target = PackTarget::YUV422P10LE;  break;
+        case AV_PIX_FMT_YUV444P10LE:  target = PackTarget::YUV444P10LE;  break;
+        case AV_PIX_FMT_YUVA444P10LE: target = PackTarget::YUVA444P10LE; break;
+        case AV_PIX_FMT_P010LE:       target = PackTarget::P010LE;       break;
+        default:                      return false;
+    }
+
+    av_frame_make_writable(m_frame);
+
+    // Pack RGBA16F directly into the AVFrame's native 10-bit planes — no
+    // swscale, no 8-bit intermediate.  linesizes are in BYTES (FFmpeg may pad
+    // them past width*2), which packRgba16fToYuv honours.
+    PackPlanes planes;
+    planes.y = reinterpret_cast<uint16_t*>(m_frame->data[0]); planes.yStride = m_frame->linesize[0];
+    planes.u = reinterpret_cast<uint16_t*>(m_frame->data[1]); planes.uStride = m_frame->linesize[1];
+    planes.v = reinterpret_cast<uint16_t*>(m_frame->data[2]); planes.vStride = m_frame->linesize[2];
+    if (target == PackTarget::YUVA444P10LE) {
+        planes.a = reinterpret_cast<uint16_t*>(m_frame->data[3]);
+        planes.aStride = m_frame->linesize[3];
+    }
+    packRgba16fToYuv(rgba16f, srcStrideBytes,
+                     static_cast<int>(m_config.width), static_cast<int>(m_config.height),
+                     target, planes);
+
+    return finishFrame(frameIndex);
+}
+
+bool FfmpegEncoderBase::finishFrame(int64_t frameIndex)
+{
     m_frame->pts = frameIndex;
 
     // ── HW path: upload the software frame to a CUDA frame ──────────────
     // hw_frames_ctx may be null if avcodec_open2 rejected our frames ctx
     // and reverted to software input — fall through to the SW path then.
+    // (ProRes/DNxHR are CPU intra codecs with m_hwAccel=false, so the 16F
+    // passthrough always takes the direct sendFrame path below.)
     if (m_hwAccel && m_codecCtx->hw_frames_ctx) {
         AVFrame* hwFrame = av_frame_alloc();
         hwFrame->format = AV_PIX_FMT_CUDA;
@@ -355,6 +441,8 @@ void FfmpegEncoderBase::shutdown()
 
 FfmpegEncoderBase::~FfmpegEncoderBase() = default;
 bool FfmpegEncoderBase::encodeFrame(const uint8_t*, int64_t) { return false; }
+bool FfmpegEncoderBase::encodeFrame16f(const uint16_t*, int, int64_t) { return false; }
+bool FfmpegEncoderBase::is10BitTarget() const noexcept { return false; }
 int  FfmpegEncoderBase::flush() { return 0; }
 void FfmpegEncoderBase::shutdown() {}
 

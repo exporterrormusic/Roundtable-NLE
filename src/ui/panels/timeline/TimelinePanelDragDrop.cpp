@@ -514,7 +514,10 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         if (m_timeline && trackIdx < m_timeline->trackCount()) {
             const Track* targetTr = m_timeline->track(trackIdx);
             TrackType tt = targetTr->type();
-            const bool isRealVideo = (tt == TrackType::Video) && !targetTr->isDivider();
+            // Caption tracks are TrackType::Video but only hold CaptionClips —
+            // reject media/clip drops on them.
+            const bool isRealVideo = (tt == TrackType::Video) &&
+                                     !targetTr->isDivider() && !targetTr->isCaptionTrack();
             const bool isRealAudio = (tt == TrackType::Audio) && !targetTr->isDivider();
             trackCompatible = isAudio ? isRealAudio : isRealVideo;
         }
@@ -714,11 +717,15 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
             // they're TrackType::Video but not real tracks, and treating
             // them as bottom-of-video / top-of-audio would put the ghost
             // zones in the wrong place.
+            // Skip the caption track too — it's TrackType::Video but pinned at
+            // the top and can't host media; anchoring the "above top video"
+            // ghost to it would put the zone above the captions (unreachable),
+            // which is why dropping above the top real video stopped working.
             size_t firstVideoIdx = SIZE_MAX, lastVideoIdx = SIZE_MAX;
             size_t firstAudioIdx = SIZE_MAX, lastAudioIdx = SIZE_MAX;
             for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
                 Track* t = m_timeline->track(i);
-                if (!t || t->isDivider()) continue;
+                if (!t || t->isDivider() || t->isCaptionTrack()) continue;
                 if (t->type() == TrackType::Video) {
                     if (firstVideoIdx == SIZE_MAX) firstVideoIdx = i;
                     lastVideoIdx = i;

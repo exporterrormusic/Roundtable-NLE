@@ -41,6 +41,12 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
     auto* effectProcessor = ctx.effectProcessor(outW, outH);
     auto* transitionRenderer = ctx.transitionRenderer(outW, outH);
 
+    // Alpha export: tell the (shared, per-size) compositor whether to keep a
+    // straight-alpha transparent background.  Set every composite so it can't
+    // leak into a later non-alpha composite on the same cached instance.
+    if (compositor)
+        compositor->setPreserveAlpha(m_exportAlpha.load(std::memory_order_relaxed));
+
     auto perfTgpuUp = perfT0;
     auto perfTcomp = perfT0;
 

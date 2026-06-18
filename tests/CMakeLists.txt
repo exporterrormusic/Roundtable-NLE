@@ -95,6 +95,7 @@ add_roundtable_test(test_keyframe      LIBS roundtable_core)
 add_roundtable_test(test_clips         LIBS roundtable_core)
 add_roundtable_test(test_color_conversion LIBS roundtable_core)
 add_roundtable_test(test_render_complexity LIBS roundtable_core)
+add_roundtable_test(test_passthrough_eligibility LIBS roundtable_core)
 add_roundtable_test(test_render_state_hash LIBS roundtable_core)
 add_roundtable_test(test_segment_render_cache LIBS roundtable_core)
 add_roundtable_test(test_command       LIBS roundtable_core)
@@ -127,6 +128,7 @@ add_roundtable_test(test_gpu_resource_manager LIBS roundtable_gpu roundtable_cor
 
 # Export tests
 add_roundtable_test(test_export        LIBS roundtable_export roundtable_core GROUP export)
+add_roundtable_test(test_rgba16f_pack  LIBS roundtable_export roundtable_core GROUP export)
 
 # UI tests (Qt required)
 add_roundtable_test(test_monitors        LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

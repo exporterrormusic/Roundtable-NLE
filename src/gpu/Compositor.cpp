@@ -265,9 +265,10 @@ bool Compositor::composite(VkCommandBuffer cmd)
 
     // Push constants
     CompositePushConstants pc;
-    pc.width    = static_cast<int32_t>(m_config.outputWidth);
-    pc.height   = static_cast<int32_t>(m_config.outputHeight);
-    pc.hqSample = m_hqSampling ? 1 : 0;
+    pc.width         = static_cast<int32_t>(m_config.outputWidth);
+    pc.height        = static_cast<int32_t>(m_config.outputHeight);
+    pc.hqSample      = m_hqSampling ? 1 : 0;
+    pc.preserveAlpha = m_preserveAlpha ? 1 : 0;
     vkCmdPushConstants(cmd, m_pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 

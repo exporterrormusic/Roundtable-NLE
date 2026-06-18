@@ -167,6 +167,29 @@ void Nv12Converter::shutdown()
         m_yuva444DescSetLayout = VK_NULL_HANDLE;
     }
 
+    // Phase 4.2 — RGBA16F output resources.  These reuse the P010 / yuva444
+    // descriptor sets + pipeline layouts (freed above), so only the extra
+    // pipelines, shader modules, and the 16F output texture are owned here.
+    m_output16FTexture.destroy();
+    m_output16W = 0;
+    m_output16H = 0;
+    if (m_p010Pipeline16F != VK_NULL_HANDLE) {
+        vkDestroyPipeline(dev, m_p010Pipeline16F, nullptr);
+        m_p010Pipeline16F = VK_NULL_HANDLE;
+    }
+    if (m_p010ShaderModule16F != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(dev, m_p010ShaderModule16F, nullptr);
+        m_p010ShaderModule16F = VK_NULL_HANDLE;
+    }
+    if (m_yuva444Pipeline16F != VK_NULL_HANDLE) {
+        vkDestroyPipeline(dev, m_yuva444Pipeline16F, nullptr);
+        m_yuva444Pipeline16F = VK_NULL_HANDLE;
+    }
+    if (m_yuva444ShaderModule16F != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(dev, m_yuva444ShaderModule16F, nullptr);
+        m_yuva444ShaderModule16F = VK_NULL_HANDLE;
+    }
+
     m_initialized = false;
     m_device      = nullptr;
     m_allocator   = nullptr;
@@ -317,6 +340,60 @@ bool Nv12Converter::readbackOutput(std::vector<uint8_t>& outPixels)
     void* mapped = nullptr;
     vmaMapMemory(m_allocator->handle(), stagingAlloc, &mapped);
     std::memcpy(outPixels.data(), mapped, bufSize);
+    vmaUnmapMemory(m_allocator->handle(), stagingAlloc);
+    vmaDestroyBuffer(m_allocator->handle(), stagingBuf, stagingAlloc);
+
+    return true;
+}
+
+// Phase 4.2 — read back the RGBA16F output texture (8 bytes/px, raw IEEE-754
+// halfs).  Mirrors readbackOutput but uses the 16F texture's OWN dimensions
+// (m_output16W/H), never m_config.
+bool Nv12Converter::readbackOutput16F(std::vector<uint8_t>& outHalfRgba)
+{
+    if (!m_cmdPool || !m_allocator) return false;
+    if (m_output16FTexture.image() == VK_NULL_HANDLE) return false;
+
+    const uint32_t w = m_output16W;
+    const uint32_t h = m_output16H;
+    const VkDeviceSize bufSize = static_cast<VkDeviceSize>(w) * h * 8; // RGBA16F
+
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size  = bufSize;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+    VkBuffer stagingBuf{VK_NULL_HANDLE};
+    VmaAllocation stagingAlloc{nullptr};
+    if (vmaCreateBuffer(m_allocator->handle(), &bci, &aci,
+                        &stagingBuf, &stagingAlloc, nullptr) != VK_SUCCESS)
+        return false;
+
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+
+    m_output16FTexture.transitionLayout(
+        cmd, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyImageToBuffer(cmd, m_output16FTexture.image(),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           stagingBuf, 1, &region);
+
+    m_output16FTexture.transitionLayout(
+        cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+
+    m_cmdPool->endSingleTime(cmd, m_queue);
+
+    outHalfRgba.resize(static_cast<size_t>(bufSize));
+    void* mapped = nullptr;
+    vmaMapMemory(m_allocator->handle(), stagingAlloc, &mapped);
+    std::memcpy(outHalfRgba.data(), mapped, bufSize);
     vmaUnmapMemory(m_allocator->handle(), stagingAlloc);
     vmaDestroyBuffer(m_allocator->handle(), stagingBuf, stagingAlloc);
 

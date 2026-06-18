@@ -168,6 +168,7 @@ void MainWindow::updateRecentFilesMenu()      { m_projectController->updateRecen
 void MainWindow::checkCrashRecovery()         { m_projectController->checkCrashRecovery(); }
 void MainWindow::showGpuFatalError()          { m_projectController->showGpuFatalError(); }
 void MainWindow::onAutoSave()                 { m_projectController->onAutoSave(); }
+void MainWindow::resetAutoSaveTimer()         { if (m_autoSaveTimer) m_autoSaveTimer->start(); }
 void MainWindow::onRestoreFromAutoSave()      { m_projectController->onRestoreFromAutoSave(); }
 void MainWindow::onNewProject()               { m_projectController->onNewProject(); }
 void MainWindow::onOpenProject()              { m_projectController->onOpenProject(); }

@@ -612,4 +612,87 @@ bool Nv12Converter::ensureYuva444p12Pipeline()
     return createYuva444p12Pipeline();
 }
 
+//══════════════════════════════════════════════════════════════════════════
+//  Phase 4.2 — RGBA16F output pipelines (export passthrough).
+//  These reuse the matching 8-bit format's descriptor-set layout + pipeline
+//  layout (a storage image's FORMAT is not part of the layout), so only a new
+//  shader module + pipeline is created, bound to the R16G16B16A16_SFLOAT
+//  output texture.
+//══════════════════════════════════════════════════════════════════════════
+
+static VkPipeline createComputePipelineFromSpv(VkDevice dev, const char* spvName,
+                                               VkPipelineLayout layout,
+                                               VkShaderModule& outModule)
+{
+    fs::path spvPath = findShader(spvName);
+    if (spvPath.empty()) {
+        spdlog::warn("Nv12Converter: {} not found — 16F convert unavailable "
+                     "(export passthrough falls back to the 8-bit path)", spvName);
+        return VK_NULL_HANDLE;
+    }
+
+    std::ifstream file(spvPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        spdlog::error("Nv12Converter: failed to open {}", pathToUtf8(spvPath));
+        return VK_NULL_HANDLE;
+    }
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    std::vector<char> spirv(fileSize);
+    file.seekg(0);
+    file.read(spirv.data(), static_cast<std::streamsize>(fileSize));
+
+    VkShaderModuleCreateInfo smCI{};
+    smCI.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smCI.codeSize = spirv.size();
+    smCI.pCode    = reinterpret_cast<const uint32_t*>(spirv.data());
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(dev, &smCI, nullptr, &module) != VK_SUCCESS) {
+        spdlog::error("Nv12Converter: failed to create shader module for {}", spvName);
+        return VK_NULL_HANDLE;
+    }
+
+    VkComputePipelineCreateInfo pci{};
+    pci.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    pci.stage.module = module;
+    pci.stage.pName  = "main";
+    pci.layout       = layout;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pci, nullptr,
+                                  &pipeline) != VK_SUCCESS) {
+        spdlog::error("Nv12Converter: failed to create compute pipeline for {}", spvName);
+        vkDestroyShaderModule(dev, module, nullptr);
+        return VK_NULL_HANDLE;
+    }
+    outModule = module;
+    return pipeline;
+}
+
+bool Nv12Converter::ensureP010Pipeline16F()
+{
+    if (m_p010Pipeline16F != VK_NULL_HANDLE) return true;
+    // ensureP010Pipeline() builds the shared descriptor set + pipeline layout
+    // (and the 8-bit pipeline, whose spv always ships).
+    if (!ensureP010Pipeline()) return false;
+    m_p010Pipeline16F = createComputePipelineFromSpv(
+        m_device->handle(), "p010_to_rgba16f.comp.spv",
+        m_p010PipeLayout, m_p010ShaderModule16F);
+    if (m_p010Pipeline16F != VK_NULL_HANDLE)
+        spdlog::info("Nv12Converter: P010 → RGBA16F compute pipeline created");
+    return m_p010Pipeline16F != VK_NULL_HANDLE;
+}
+
+bool Nv12Converter::ensureYuva444p12Pipeline16F()
+{
+    if (m_yuva444Pipeline16F != VK_NULL_HANDLE) return true;
+    if (!ensureYuva444p12Pipeline()) return false;
+    m_yuva444Pipeline16F = createComputePipelineFromSpv(
+        m_device->handle(), "yuva444p12_to_rgba16f.comp.spv",
+        m_yuva444PipeLayout, m_yuva444ShaderModule16F);
+    if (m_yuva444Pipeline16F != VK_NULL_HANDLE)
+        spdlog::info("Nv12Converter: YUVA444P12 → RGBA16F compute pipeline created");
+    return m_yuva444Pipeline16F != VK_NULL_HANDLE;
+}
+
 } // namespace rt

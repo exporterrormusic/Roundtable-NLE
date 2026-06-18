@@ -641,13 +641,30 @@ void MainWindow::buildPanels()
             -> std::shared_ptr<CachedFrame> {
             if (m_destroying.load(std::memory_order_acquire)) return nullptr;
             if (m_timelineWorkspace) {
+                // Phase 4.2 — export 16F passthrough: if this tick is a single
+                // full-frame opaque >8-bit clip, return a dual-payload frame
+                // (RGBA16F for the 10-bit encoder + dithered 8-bit BGRA for
+                // this preview).  RenderQueue routes depth==16 frames to
+                // encodeFrame16f; on any miss this returns null and we fall
+                // through to the normal 8-bit composite below.
+                if (auto pf = m_timelineWorkspace->compositeFrame16f(tick, w, h))
+                    return pf;   // single-clip passthrough already preserves source alpha
+
+                // Alpha export (Phase 4.2): straight-alpha (transparent) composite
+                // when the user ticked "Export with alpha" on an alpha-capable
+                // target (ProRes 4444 / PNG).  Set only around the composite and
+                // reset after, so nothing else sees the straight-alpha mode.
+                const bool wantAlpha = m_exportPanel && m_exportPanel->exportAlphaRequested();
+
                 // Force Full resolution for export preview (characters too).
                 // This is always reset on the next call, and the Program/Source
                 // Monitors never go through this callback.  (forceFull also lets
                 // compositeFrame's consult REUSE pre-rendered Full-tier segments
                 // during export — §4.6 slice 3 read side.)
                 m_timelineWorkspace->setForceFullResolution(true);
+                m_timelineWorkspace->setExportAlpha(wantAlpha);
                 auto result = m_timelineWorkspace->compositeFrame(tick, w, h, scrub);
+                m_timelineWorkspace->setExportAlpha(false);
                 m_timelineWorkspace->setForceFullResolution(false);
                 return result;
             }

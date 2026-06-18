@@ -18,6 +18,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
 #include <libavutil/opt.h>
@@ -30,6 +31,18 @@ extern "C" {
 #include <fstream>
 
 namespace rt {
+
+const char* audioCodecExtension(AudioCodec codec) noexcept
+{
+    switch (codec) {
+        case AudioCodec::PCM_S16LE:
+        case AudioCodec::PCM_F32LE: return ".wav";
+        case AudioCodec::AAC:       return ".m4a";
+        case AudioCodec::FLAC:      return ".flac";
+        case AudioCodec::MP3:       return ".mp3";
+        default:                    return ".wav";
+    }
+}
 
 AudioMixdown::AudioMixdown() = default;
 AudioMixdown::~AudioMixdown() = default;
@@ -408,6 +421,186 @@ bool AudioMixdown::writeWav(const MixdownResult& result,
 }
 
 // static
+bool AudioMixdown::writeAudioFile(const MixdownResult& result,
+                                  const std::filesystem::path& outputPath,
+                                  AudioCodec codec, int bitrate)
+{
+    if (!result.isValid()) return false;
+
+    // WAV → the existing PCM-16 writer (no encoder/muxer needed).
+    if (codec == AudioCodec::PCM_S16LE)
+        return writeWav(result, outputPath);
+
+    // Map our format → FFmpeg encoder id, container short-name, and the
+    // sample format the encoder expects.  Hard-coding the sample format avoids
+    // the deprecated AVCodec::sample_fmts query and is correct for these codecs.
+    AVCodecID      codecId   = AV_CODEC_ID_AAC;
+    const char*    fmtName   = "ipod";              // .m4a (MP4/AAC)
+    AVSampleFormat sampleFmt = AV_SAMPLE_FMT_FLTP;
+    bool           usesBitrate = true;
+    switch (codec) {
+        case AudioCodec::MP3:  codecId = AV_CODEC_ID_MP3;  fmtName = "mp3";  sampleFmt = AV_SAMPLE_FMT_FLTP; usesBitrate = true;  break;
+        case AudioCodec::AAC:  codecId = AV_CODEC_ID_AAC;  fmtName = "ipod"; sampleFmt = AV_SAMPLE_FMT_FLTP; usesBitrate = true;  break;
+        case AudioCodec::FLAC: codecId = AV_CODEC_ID_FLAC; fmtName = "flac"; sampleFmt = AV_SAMPLE_FMT_S16;  usesBitrate = false; break;
+        case AudioCodec::PCM_F32LE: codecId = AV_CODEC_ID_PCM_F32LE; fmtName = "wav"; sampleFmt = AV_SAMPLE_FMT_FLT; usesBitrate = false; break;
+        default: break;
+    }
+
+    const std::string outUtf8 = pathToUtf8(outputPath);
+
+    const AVCodec* enc = avcodec_find_encoder(codecId);
+    if (!enc) {
+        spdlog::error("AudioMixdown: audio encoder not available in this build "
+                      "(codec id {})", static_cast<int>(codecId));
+        return false;
+    }
+
+    AVFormatContext* fmt = nullptr;
+    avformat_alloc_output_context2(&fmt, nullptr, fmtName, outUtf8.c_str());
+    if (!fmt) {
+        spdlog::error("AudioMixdown: failed to allocate output context for {}", outUtf8);
+        return false;
+    }
+
+    AVStream* st = avformat_new_stream(fmt, nullptr);
+    AVCodecContext* ctx = st ? avcodec_alloc_context3(enc) : nullptr;
+    if (!st || !ctx) {
+        spdlog::error("AudioMixdown: failed to create audio stream/encoder context");
+        if (ctx) avcodec_free_context(&ctx);
+        avformat_free_context(fmt);
+        return false;
+    }
+
+    ctx->sample_fmt  = sampleFmt;
+    ctx->sample_rate = static_cast<int>(result.sampleRate);
+    av_channel_layout_default(&ctx->ch_layout, result.channels);
+    ctx->time_base   = {1, ctx->sample_rate};
+    if (usesBitrate)
+        ctx->bit_rate = bitrate > 0 ? bitrate : 192000;
+    if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+        ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    // Local cleanup helper for the failure paths below.
+    auto teardown = [&](SwrContext** swr, AVFrame** frame, AVPacket** pkt) {
+        if (pkt && *pkt)     av_packet_free(pkt);
+        if (frame && *frame) av_frame_free(frame);
+        if (swr && *swr)     swr_free(swr);
+        avcodec_free_context(&ctx);
+        if (fmt) {
+            if (fmt->pb && !(fmt->oformat->flags & AVFMT_NOFILE))
+                avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+        }
+    };
+
+    if (avcodec_open2(ctx, enc, nullptr) < 0) {
+        spdlog::error("AudioMixdown: failed to open audio encoder");
+        teardown(nullptr, nullptr, nullptr);
+        return false;
+    }
+    avcodec_parameters_from_context(st->codecpar, ctx);
+    st->time_base = ctx->time_base;
+
+    if (!(fmt->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&fmt->pb, outUtf8.c_str(), AVIO_FLAG_WRITE) < 0) {
+            spdlog::error("AudioMixdown: failed to open output file: {}", outUtf8);
+            teardown(nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+    if (avformat_write_header(fmt, nullptr) < 0) {
+        spdlog::error("AudioMixdown: failed to write container header for {}", outUtf8);
+        teardown(nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    // Resample interleaved float (mix buffer) → the encoder's sample format.
+    SwrContext* swr = nullptr;
+    AVChannelLayout srcLayout{};
+    av_channel_layout_default(&srcLayout, result.channels);
+    swr_alloc_set_opts2(&swr,
+                        &ctx->ch_layout, sampleFmt,        ctx->sample_rate,
+                        &srcLayout,      AV_SAMPLE_FMT_FLT, static_cast<int>(result.sampleRate),
+                        0, nullptr);
+    if (!swr || swr_init(swr) < 0) {
+        spdlog::error("AudioMixdown: failed to init resampler");
+        teardown(&swr, nullptr, nullptr);
+        return false;
+    }
+
+    const int frameSize = ctx->frame_size > 0 ? ctx->frame_size : 4096;
+
+    AVFrame* frame = av_frame_alloc();
+    if (!frame) {
+        spdlog::error("AudioMixdown: failed to allocate audio frame");
+        teardown(&swr, &frame, nullptr);
+        return false;
+    }
+    frame->format      = sampleFmt;
+    frame->sample_rate = ctx->sample_rate;
+    av_channel_layout_copy(&frame->ch_layout, &ctx->ch_layout);
+    frame->nb_samples  = frameSize;
+    if (av_frame_get_buffer(frame, 0) < 0) {
+        spdlog::error("AudioMixdown: failed to allocate audio frame buffer");
+        teardown(&swr, &frame, nullptr);
+        return false;
+    }
+
+    AVPacket* pkt = av_packet_alloc();
+    const float* pcm = result.samples.data();
+    const int64_t totalFrames = result.totalFrames;
+    int64_t samplesRead = 0;
+    int64_t pts = 0;
+    bool writeError = false;
+
+    auto drain = [&]() {
+        while (avcodec_receive_packet(ctx, pkt) == 0) {
+            pkt->stream_index = st->index;
+            av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
+            if (av_interleaved_write_frame(fmt, pkt) < 0) writeError = true;
+            av_packet_unref(pkt);
+        }
+    };
+
+    while (samplesRead < totalFrames && !writeError) {
+        const int64_t remaining = totalFrames - samplesRead;
+        const int     chunk     = static_cast<int>(std::min<int64_t>(remaining, frameSize));
+
+        const uint8_t* srcData[] = {
+            reinterpret_cast<const uint8_t*>(pcm + samplesRead * result.channels)
+        };
+        av_frame_make_writable(frame);
+        frame->nb_samples = chunk;
+        swr_convert(swr, frame->data, chunk, srcData, chunk);
+
+        frame->pts = pts;
+        pts += chunk;
+
+        if (avcodec_send_frame(ctx, frame) < 0) { writeError = true; break; }
+        drain();
+        samplesRead += chunk;
+    }
+
+    // Flush the encoder.
+    avcodec_send_frame(ctx, nullptr);
+    drain();
+
+    if (!writeError)
+        av_write_trailer(fmt);
+
+    teardown(&swr, &frame, &pkt);
+
+    if (writeError) {
+        spdlog::error("AudioMixdown: error writing encoded audio to {}", outUtf8);
+        return false;
+    }
+
+    spdlog::info("AudioMixdown: wrote {} ({:.1f}s, codec {})",
+                 outUtf8, result.duration, static_cast<int>(codec));
+    return true;
+}
+
+// static
 std::vector<uint8_t> AudioMixdown::encodeAAC(const MixdownResult& result, int bitrate)
 {
     std::vector<uint8_t> output;
@@ -523,6 +716,7 @@ size_t AudioMixdown::estimateFileSize(const AudioMixdownConfig& config, double d
         case AudioCodec::PCM_F32LE:
             return static_cast<size_t>(durationSec * config.sampleRate * config.channels * 4) + 44;
         case AudioCodec::AAC:
+        case AudioCodec::MP3:
             return static_cast<size_t>(durationSec * config.bitrate / 8);
         case AudioCodec::FLAC:
             // FLAC is ~60% of PCM

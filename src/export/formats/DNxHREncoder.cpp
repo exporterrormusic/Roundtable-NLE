@@ -36,6 +36,9 @@ bool DNxHREncoder::init(const EncoderConfig& config)
 {
     beginInit(config);
 
+    // Honour the UI-selected profile (defaults to HQ).
+    m_profile = config.dnxhrProfile;
+
     // DNxHR uses YUV422P (8-bit), YUV422P10LE (10-bit) or YUV444P10LE (444).
     const bool is10bit = (m_profile == DNxHRProfile::HQX || m_profile == DNxHRProfile::_444);
     const bool is444   = (m_profile == DNxHRProfile::_444);

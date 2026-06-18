@@ -252,6 +252,13 @@ public:
     std::shared_ptr<struct CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                        bool scrubMode = false);
 
+    /// Phase 4.2 — export 16F passthrough (see CompositeService::tryBuild16f-
+    /// Passthrough).  Returns a dual-payload (RGBA16F + 8-bit BGRA) frame when
+    /// the tick is a single opaque 1:1 >8-bit clip, else nullptr (caller falls
+    /// back to compositeFrame).  Used only by the ExportPanel preview callback.
+    std::shared_ptr<struct CachedFrame> compositeFrame16f(int64_t tick,
+                                                          uint32_t outW, uint32_t outH);
+
     /// Re-probe the segment cache and repaint the timeline render bar.  Call
     /// after anything that changes cache state behind the timeline's back —
     /// e.g. returning to the Timeline page after an export populated it.
@@ -273,6 +280,10 @@ public:
 
     /// Force Full resolution for ExportPanel preview/export frames (wraps CompositeService).
     void setForceFullResolution(bool force);
+
+    /// Alpha export (Phase 4.2): straight-alpha transparent composite output for
+    /// ProRes-4444 / PNG export.  Forwards to CompositeService::setExportAlpha.
+    void setExportAlpha(bool keep);
 
     /// Set in/out point at current playhead (called from Timeline menu).
     void setInPoint();

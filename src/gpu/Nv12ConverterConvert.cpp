@@ -253,6 +253,43 @@ bool Nv12Converter::ensureOutputSize(uint32_t w, uint32_t h)
 }
 
 //══════════════════════════════════════════════════════════════════════════
+//  Phase 4.2 — ensureOutputSize16F: the RGBA16F output texture.
+//  Tracks its OWN dimensions (m_output16W/H) and MUST NOT touch m_config —
+//  the 8-bit readbackOutput reads m_config, so stomping it here would corrupt
+//  an interleaved 8-bit readback (the export uses a dedicated converter, but
+//  keeping them independent is the safe invariant).
+//══════════════════════════════════════════════════════════════════════════
+
+bool Nv12Converter::ensureOutputSize16F(uint32_t w, uint32_t h)
+{
+    if (m_output16FTexture.image() != VK_NULL_HANDLE &&
+        m_output16W == w && m_output16H == h)
+        return true;
+
+    GpuContext::get().scheduler().deviceWaitIdle();
+    m_output16FTexture.destroy();
+
+    TextureConfig outCfg;
+    outCfg.width  = w;
+    outCfg.height = h;
+    outCfg.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    outCfg.usage  = VK_IMAGE_USAGE_STORAGE_BIT
+                  | VK_IMAGE_USAGE_SAMPLED_BIT
+                  | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!m_output16FTexture.create(m_allocator->handle(), m_device->handle(), outCfg))
+        return false;
+
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+    m_output16FTexture.transitionLayout(
+        cmd, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    m_cmdPool->endSingleTime(cmd, m_queue);
+
+    m_output16W = w;
+    m_output16H = h;
+    return true;
+}
+
+//══════════════════════════════════════════════════════════════════════════
 //  Scaled NV12→BGRA (upload at srcW×srcH, output at dstW×dstH)
 //══════════════════════════════════════════════════════════════════════════
 

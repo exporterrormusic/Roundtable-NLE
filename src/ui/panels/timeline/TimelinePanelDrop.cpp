@@ -72,7 +72,9 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         size_t lastAudioIdx = SIZE_MAX;
         for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
             auto* tr = m_timeline->track(i);
-            if (!tr || tr->isDivider()) continue;  // skip dividers
+            // skip dividers and the pinned caption track (TrackType::Video but
+            // can't host media — it must not anchor the above-top-video zone)
+            if (!tr || tr->isDivider() || tr->isCaptionTrack()) continue;
             if (tr->type() == TrackType::Video) {
                 if (firstVideoIdx == SIZE_MAX) firstVideoIdx = i;
             } else {
@@ -468,10 +470,20 @@ void TimelinePanel::dropEvent(QDropEvent* event)
             // to CREATE a new track. Subsequent emits must target THAT same
             // new track by index, otherwise each handle would spawn its own
             // fresh track (Premiere drops the whole group onto one new row).
-            // The handler creates video-above at idx 0 and audio at the end.
+            // The handler creates the video-above track as the topmost REAL
+            // video track (just below the pinned caption track, if any) and
+            // audio at the end.
             if (m_timeline) {
                 if (trackIdx == kGhostDropTrackVideoAbove) {
                     trackIdx = 0;
+                    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                        Track* tr = m_timeline->track(ti);
+                        if (tr && tr->type() == TrackType::Video &&
+                            !tr->isDivider() && !tr->isCaptionTrack()) {
+                            trackIdx = ti;
+                            break;
+                        }
+                    }
                 } else if (trackIdx == kGhostDropTrackAudioBelow ||
                            trackIdx == kGhostDropTrackAudioCompanionBelow) {
                     trackIdx = m_timeline->trackCount() - 1;

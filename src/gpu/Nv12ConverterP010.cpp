@@ -70,10 +70,38 @@ bool Nv12Converter::recordConvertP010Scaled(
     uint32_t dstW, uint32_t dstH,
     std::vector<Texture::StagingCleanup>& stagingOut)
 {
+    // 8-bit BGRA output (the original path) — out16f=false reproduces the
+    // exact Vulkan command stream this function always emitted.
+    return recordConvertP010ScaledImpl(cmd, yData, yLinesize, uvData, uvLinesize,
+                                       srcW, srcH, dstW, dstH,
+                                       /*out16f=*/false, stagingOut);
+}
+
+bool Nv12Converter::recordConvertP010ScaledImpl(
+    VkCommandBuffer cmd,
+    const uint8_t* yData,  int yLinesize,
+    const uint8_t* uvData, int uvLinesize,
+    uint32_t srcW, uint32_t srcH,
+    uint32_t dstW, uint32_t dstH,
+    bool out16f,
+    std::vector<Texture::StagingCleanup>& stagingOut)
+{
     if (!m_initialized) return false;
     if (cmd == VK_NULL_HANDLE) return false;
-    if (!ensureP010Pipeline()) return false;
-    if (!ensureOutputSize(dstW, dstH)) return false;
+    // The 8-bit and 16F paths differ ONLY in which pipeline + output texture
+    // they target; the R16 input planes, descriptor set, and pipeline layout
+    // are shared (the layout is format-agnostic).
+    if (out16f) {
+        if (!ensureP010Pipeline16F()) return false;
+        if (!ensureOutputSize16F(dstW, dstH)) return false;
+    } else {
+        if (!ensureP010Pipeline()) return false;
+        if (!ensureOutputSize(dstW, dstH)) return false;
+    }
+    const VkImageView outputView =
+        out16f ? m_output16FTexture.imageView() : m_outputTexture.imageView();
+    const VkPipeline  outputPipe =
+        out16f ? m_p010Pipeline16F : m_p010Pipeline;
 
     // ── Y texture: R16_UNORM at srcW × srcH ───────────────────────────
     {
@@ -159,7 +187,7 @@ bool Nv12Converter::recordConvertP010Scaled(
         VkDescriptorImageInfo yInfo  = m_p010YTexture.descriptorInfo();
         VkDescriptorImageInfo uvInfo = m_p010UvTexture.descriptorInfo();
         VkDescriptorImageInfo outInfo{};
-        outInfo.imageView   = m_outputTexture.imageView();
+        outInfo.imageView   = outputView;
         outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
         VkWriteDescriptorSet writes[3]{};
@@ -188,7 +216,7 @@ bool Nv12Converter::recordConvertP010Scaled(
     }
 
     // ── Dispatch at OUTPUT dimensions ─────────────────────────────────
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_p010Pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, outputPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             m_p010PipeLayout, 0, 1, &m_p010DescSet,
                             0, nullptr);
@@ -419,6 +447,28 @@ bool Nv12Converter::convertAndReadbackP010Scaled(
                                 srcW, srcH, dstW, dstH))
         return false;
     return readbackOutput(outPixels);
+}
+
+bool Nv12Converter::convertAndReadbackP010Scaled16F(
+    const uint8_t* yData, int yLinesize,
+    const uint8_t* uvData, int uvLinesize,
+    uint32_t srcW, uint32_t srcH,
+    uint32_t dstW, uint32_t dstH,
+    std::vector<uint8_t>& outHalfRgba)
+{
+    if (!m_initialized || !m_cmdPool) return false;
+    std::lock_guard<std::mutex> apiLock(m_apiMutex);
+    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
+
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+    std::vector<Texture::StagingCleanup> staging;
+    const bool ok = recordConvertP010ScaledImpl(
+        cmd, yData, yLinesize, uvData, uvLinesize,
+        srcW, srcH, dstW, dstH, /*out16f=*/true, staging);
+    m_cmdPool->endSingleTime(cmd, m_queue);
+    for (auto& s : staging) s.destroy();
+    if (!ok) return false;
+    return readbackOutput16F(outHalfRgba);
 }
 
 } // namespace rt

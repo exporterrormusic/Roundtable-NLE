@@ -61,6 +61,7 @@ struct VkDescriptorImageInfo;
 #include "CompositeServiceLayerBuild.h"
 #include "cache/FrameCache.h"
 #include "playback/MediaSourceService.h"  // ResolutionTier
+#include "decode/VideoDecoder.h"          // 4.2 passthrough decoder (header is libav-free)
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "spine/SpineEngine.h"
 #endif
@@ -179,6 +180,22 @@ public:
     std::shared_ptr<CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                  bool scrubMode,
                                                  bool isNestedRecursion = false);
+
+    /// Phase 4.2 — export 16-bit-float passthrough.  If the composite at
+    /// `tick` is a single full-frame opaque >8-bit BT.709-limited-SDR video
+    /// clip rendered 1:1 to (outW,outH), decode that one source frame, GPU-
+    /// convert it to RGBA16F, and return a CachedFrame carrying BOTH the
+    /// RGBA16F (depth==16, rgba16f — for the 10-bit encoder via encodeFrame16f)
+    /// AND a dithered 8-bit BGRA `pixels` copy (so the export-preview display
+    /// works unchanged).  Returns nullptr when NOT eligible or on ANY failure,
+    /// so the caller falls back to the normal 8-bit compositeFrame — a bug here
+    /// only degrades export to 8-bit, it never corrupts output.
+    ///
+    /// MUST be called on the compositor (main) thread: it uses the shared
+    /// GpuContext Nv12Converter + GpuContext command pool, single-threaded
+    /// alongside compositeFrame.
+    std::shared_ptr<CachedFrame> tryBuild16fPassthrough(int64_t tick,
+                                                        uint32_t outW, uint32_t outH);
 
     /// Enqueue a prewarm request on the background thread.
     /// Returns immediately — the work runs asynchronously on m_prewarmThread.
@@ -330,6 +347,18 @@ public:
     }
     [[nodiscard]] bool forceFullResolution() const noexcept {
         return m_forceFullResolution.load(std::memory_order_relaxed);
+    }
+
+    /// Alpha export (Phase 4.2): when true, the GPU composite keeps a straight-
+    /// alpha (transparent) background instead of flattening over black, so a
+    /// ProRes-4444 / PNG export carries a real alpha channel.  Set by the Export
+    /// Panel preview/render for the duration of an alpha export; defaults false
+    /// so viewport/playback are unaffected.
+    void setExportAlpha(bool keep) noexcept {
+        m_exportAlpha.store(keep, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool exportAlpha() const noexcept {
+        return m_exportAlpha.load(std::memory_order_relaxed);
     }
 
     // ── Media handle management ─────────────────────────────────────────
@@ -573,6 +602,14 @@ private:
                                                      int& transitionCount,
                                                      bool isNestedRecursion = false);
 
+    // Phase 4.2 — dedicated decoder for the export 16F passthrough, reused
+    // across frames of the same source (reopened on path change).  Separate
+    // from the MediaPool decoders (which serve the 8-bit path); only ever
+    // touched on the compositor thread by tryBuild16fPassthrough.
+    std::unique_ptr<VideoDecoder> m_passthroughDecoder;
+    std::string                   m_passthroughDecoderPath;
+    int64_t                       m_passthroughLastFrame{-1};  // sequential-decode cursor
+
     // External dependencies (non-owning)
     Timeline*  m_timeline{nullptr};
     MediaPool* m_mediaPool{nullptr};
@@ -786,6 +823,10 @@ private:
     // regardless of the playback tier dropdown.  Does NOT affect Program/Source
     // Monitor previews (they use the normal playbackTier path).
     std::atomic<bool> m_forceFullResolution{false};
+
+    // Alpha export override — set by ExportPanel for the duration of an alpha
+    // export so the GPU compositor emits straight-alpha (transparent) output.
+    std::atomic<bool> m_exportAlpha{false};
 
     // Rolling per-second playback perf summary (auto-emitted to perf_log.txt)
     struct PlaybackPerfWindow {
