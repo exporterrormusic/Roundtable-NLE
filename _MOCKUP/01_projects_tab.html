@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Projects Tab redesigns</title>
+<style>
+/* ============================================================
+   ROUNDTABLE theme palette (pulled from src/ui/Theme.h)
+   ============================================================ */
+:root{
+  --s0:#0e0e14;   /* surface0  deepest (inputs, lists, viewport) */
+  --s1:#16161e;   /* surface1  panel content area */
+  --s2:#1e1e25;   /* surface2  card / section bg */
+  --s3:#26262e;   /* surface3  raised (headers, controls) */
+  --s4:#2e2e38;   /* slightly raised hover */
+  --txt:#dcdce1;  /* textPrimary */
+  --txt2:#a0a0aa; /* textSecondary */
+  --txt3:#6e6e78; /* textTertiary */
+  --bd:#2a2a34;   /* border */
+  --bdl:#3a3a46;  /* borderLight */
+  --acc:#4a90d9;  /* accent */
+  --accH:#5a9ee9; /* accent hover */
+  --accD:#2a5a9b; /* accent dim */
+  --accS:#1e324b; /* accent subtle bg */
+  --pbtn:#2a64aa; /* primary button */
+  --pbtnH:#3473be;
+  --danger:#d23c3c;
+  --dangerBg:#4a2222;
+  --dangerTxt:#e68c8c;
+  --ok:#4caf6e;
+  --warn:#d9a441;
+  --font: "Segoe UI", -apple-system, system-ui, Roboto, sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:#08080c;color:var(--txt);font-family:var(--font);
+  font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--accD)}
+
+/* ---- scrollbars (Premiere-thin) ---- */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--s1)}
+::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+::-webkit-scrollbar-thumb:hover{background:#44444f}
+
+/* ============================================================
+   Page chrome: design switcher
+   ============================================================ */
+.page-head{
+  position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;gap:18px;
+  padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd);
+}
+.page-head h1{font-size:14px;font-weight:700;letter-spacing:.3px}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:6px;background:var(--s1);
+  padding:4px;border-radius:8px;border:1px solid var(--bd)}
+.switcher button{
+  background:transparent;border:none;color:var(--txt2);
+  font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;
+  padding:7px 14px;border-radius:5px;white-space:nowrap;
+}
+.switcher button:hover{color:var(--txt)}
+.switcher button.active{background:var(--acc);color:#fff}
+
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;
+  color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+
+/* The app frame: a window-like container that mimics the panel area */
+.app{
+  height:760px;border:1px solid var(--bd);border-radius:10px;overflow:hidden;
+  background:var(--s1);display:flex;box-shadow:0 12px 40px rgba(0,0,0,.5);
+}
+.hidden{display:none !important}
+
+/* ============================================================
+   SHARED: icon-rail (refined, Premiere-compact)
+   ============================================================ */
+.rail{
+  width:76px;flex:0 0 76px;background:var(--s2);border-right:1px solid var(--bd);
+  display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:2px;
+}
+.rail .logo{
+  width:40px;height:40px;border-radius:9px;margin-bottom:14px;
+  background:linear-gradient(135deg,var(--acc),var(--accD));
+  display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px;
+}
+.rail-btn{
+  width:60px;height:58px;border:none;background:transparent;color:var(--txt3);
+  border-radius:9px;cursor:pointer;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:4px;font-family:inherit;transition:all .12s;
+}
+.rail-btn .ico{font-size:21px;line-height:1}
+.rail-btn .lbl{font-size:9.5px;font-weight:700;letter-spacing:.4px}
+.rail-btn:hover{background:var(--s3);color:var(--txt)}
+.rail-btn.active{background:var(--accS);color:var(--accH)}
+.rail-btn.active .ico{filter:drop-shadow(0 0 6px rgba(74,144,217,.5))}
+.rail .spacer{flex:1}
+.rail-sep{width:36px;height:1px;background:var(--bd);margin:6px 0}
+
+/* ============================================================
+   SHARED: content header / toolbar
+   ============================================================ */
+.toolbar{
+  display:flex;align-items:center;gap:10px;padding:12px 16px;
+  background:var(--s1);border-bottom:1px solid var(--bd);
+}
+.search{
+  flex:1;max-width:520px;display:flex;align-items:center;gap:8px;
+  background:var(--s0);border:1px solid var(--bd);border-radius:7px;
+  padding:0 12px;height:34px;
+}
+.search:focus-within{border-color:var(--acc)}
+.search input{flex:1;background:transparent;border:none;outline:none;
+  color:var(--txt);font-family:inherit;font-size:13px}
+.search .mag{color:var(--txt3);font-size:13px}
+.select{
+  height:34px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;
+  color:var(--txt);font-family:inherit;font-size:12.5px;padding:0 30px 0 12px;
+  cursor:pointer;appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 14px,calc(100% - 11px) 14px;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat;
+}
+.icon-btn{
+  width:34px;height:34px;flex:0 0 34px;border:1px solid var(--bd);background:var(--s0);
+  color:var(--txt2);border-radius:7px;cursor:pointer;font-size:15px;
+  display:flex;align-items:center;justify-content:center;
+}
+.icon-btn:hover{background:var(--s3);color:var(--txt);border-color:var(--bdl)}
+.seg{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.seg button{width:36px;height:34px;border:none;background:transparent;color:var(--txt3);
+  cursor:pointer;font-size:14px}
+.seg button:hover{color:var(--txt)}
+.seg button.active{background:var(--accS);color:var(--accH)}
+
+.btn{
+  height:34px;border:1px solid var(--bd);background:var(--s3);color:var(--txt);
+  border-radius:7px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;
+  padding:0 14px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;
+}
+.btn:hover{background:var(--s4);border-color:var(--bdl)}
+.btn.primary{background:var(--pbtn);border-color:transparent;color:#fff}
+.btn.primary:hover{background:var(--pbtnH)}
+.btn.danger{color:var(--dangerTxt)}
+.btn.danger:hover{background:var(--dangerBg);border-color:var(--danger)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.ghost{background:transparent}
+.count-pill{font-size:11px;color:var(--txt3);background:var(--s2);
+  border:1px solid var(--bd);border-radius:20px;padding:3px 10px;font-weight:600}
+
+/* ============================================================
+   DESIGN A — "Media Browser" (refined data table)
+   ============================================================ */
+#A .main{flex:1;display:flex;flex-direction:column;min-width:0}
+.tbl-wrap{flex:1;overflow:auto;padding:0 8px}
+table.proj{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+table.proj thead th{
+  position:sticky;top:0;z-index:2;background:var(--s2);
+  text-align:left;color:var(--txt3);font-size:10.5px;font-weight:700;
+  letter-spacing:.8px;text-transform:uppercase;padding:11px 12px;
+  border-bottom:1px solid var(--bd);user-select:none;cursor:pointer;
+}
+table.proj thead th:hover{color:var(--txt2)}
+table.proj thead th.sorted{color:var(--acc)}
+table.proj thead th.num{text-align:right}
+table.proj tbody td{padding:8px 12px;border-bottom:1px solid #1c1c24;vertical-align:middle}
+table.proj tbody td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--txt2)}
+table.proj tbody tr{cursor:pointer}
+table.proj tbody tr:hover{background:var(--s2)}
+table.proj tbody tr.sel{background:var(--accS)}
+table.proj tbody tr.sel td{border-color:#244063}
+.thumb{
+  width:80px;height:46px;border-radius:5px;background:#000;flex:0 0 80px;
+  object-fit:cover;border:1px solid var(--bd);
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--txt3);overflow:hidden;
+}
+.thumb.g1{background:linear-gradient(135deg,#2b3a55,#162033)}
+.thumb.g2{background:linear-gradient(135deg,#3a2b55,#221633)}
+.thumb.g3{background:linear-gradient(135deg,#2b5544,#163326)}
+.thumb.g4{background:linear-gradient(135deg,#553a2b,#332116)}
+.thumb.g5{background:linear-gradient(135deg,#552b3a,#331622)}
+.name-cell{display:flex;align-items:center;gap:12px}
+.name-main{font-weight:600;color:var(--txt)}
+.name-sub{font-size:11px;color:var(--txt3)}
+.badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;
+  background:var(--accS);color:var(--accH);margin-left:8px;vertical-align:middle}
+.badge.cur{background:#1e3a2a;color:var(--ok)}
+.show-tag{font-size:10.5px;color:var(--txt3);border:1px solid var(--bd);
+  border-radius:4px;padding:2px 6px}
+.row-actions{display:flex;gap:4px;opacity:0;transition:opacity .12s}
+tr:hover .row-actions{opacity:1}
+.mini{width:26px;height:26px;border:none;background:var(--s3);color:var(--txt2);
+  border-radius:5px;cursor:pointer;font-size:12px}
+.mini:hover{background:var(--s4);color:var(--txt)}
+.mini.danger:hover{background:var(--dangerBg);color:var(--dangerTxt)}
+.statusbar{
+  display:flex;align-items:center;gap:14px;padding:8px 16px;background:var(--s2);
+  border-top:1px solid var(--bd);font-size:11.5px;color:var(--txt3);
+}
+.statusbar .right{margin-left:auto;display:flex;gap:8px}
+
+/* ============================================================
+   DESIGN B — "Gallery" (card grid)
+   ============================================================ */
+#B .main{flex:1;display:flex;flex-direction:column;min-width:0}
+.grid-wrap{flex:1;overflow:auto;padding:18px}
+.cardgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:16px}
+.pcard{
+  background:var(--s2);border:1px solid var(--bd);border-radius:10px;overflow:hidden;
+  cursor:pointer;transition:all .14s;position:relative;
+}
+.pcard:hover{border-color:var(--bdl);transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.45)}
+.pcard.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.pcard .art{
+  height:132px;background:#000;position:relative;display:flex;align-items:center;
+  justify-content:center;font-size:34px;color:#44444f;overflow:hidden;
+}
+.pcard .art .fps-chip,.pcard .art .res-chip{
+  position:absolute;bottom:8px;font-size:10px;font-weight:700;
+  background:rgba(0,0,0,.66);backdrop-filter:blur(4px);padding:3px 7px;border-radius:5px;color:#fff;
+}
+.pcard .art .res-chip{left:8px}
+.pcard .art .fps-chip{right:8px}
+.pcard .art .cur-flag{position:absolute;top:8px;left:8px;font-size:9.5px;font-weight:800;
+  letter-spacing:.5px;background:var(--ok);color:#06120b;padding:3px 8px;border-radius:5px}
+.pcard .hoverbar{
+  position:absolute;top:8px;right:8px;display:flex;gap:5px;opacity:0;transition:opacity .12s;
+}
+.pcard:hover .hoverbar{opacity:1}
+.pcard .hoverbar .mini{background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+.pcard .meta{padding:11px 13px}
+.pcard .meta .t{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pcard .meta .d{font-size:11px;color:var(--txt3);margin-top:3px;display:flex;justify-content:space-between}
+.newcard{
+  border:1.5px dashed var(--bdl);background:transparent;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:10px;color:var(--txt2);min-height:188px;
+}
+.newcard:hover{border-color:var(--acc);color:var(--acc);background:var(--accS)}
+.newcard .plus{font-size:34px;font-weight:300}
+.newcard .t{font-weight:700;font-size:13px;letter-spacing:.5px}
+
+/* ============================================================
+   DESIGN C — "Hub / Start Screen"
+   ============================================================ */
+#C{flex-direction:column}
+#C .hub-top{
+  display:flex;align-items:center;gap:16px;padding:20px 28px;
+  background:linear-gradient(180deg,var(--s2),var(--s1));border-bottom:1px solid var(--bd);
+}
+#C .hub-top .logo{
+  width:50px;height:50px;border-radius:12px;
+  background:linear-gradient(135deg,var(--acc),var(--accD));
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:#fff;
+}
+#C .hub-top h2{font-size:20px;font-weight:700}
+#C .hub-top p{color:var(--txt3);font-size:12.5px;margin-top:2px}
+#C .hub-actions{margin-left:auto;display:flex;gap:10px}
+#C .big-action{
+  display:flex;align-items:center;gap:12px;padding:14px 20px;border-radius:10px;cursor:pointer;
+  border:1px solid var(--bd);background:var(--s3);min-width:170px;transition:all .12s;
+}
+#C .big-action:hover{border-color:var(--bdl);background:var(--s4)}
+#C .big-action.accent{background:var(--pbtn);border-color:transparent}
+#C .big-action.accent:hover{background:var(--pbtnH)}
+#C .big-action .ico{font-size:24px}
+#C .big-action .ttl{font-weight:700;font-size:13.5px}
+#C .big-action .sub{font-size:11px;color:var(--txt3)}
+#C .big-action.accent .sub{color:#cfe0f5}
+#C .hub-body{flex:1;display:flex;min-height:0}
+#C .hub-left{
+  width:300px;flex:0 0 300px;border-right:1px solid var(--bd);background:var(--s2);
+  display:flex;flex-direction:column;
+}
+#C .hub-section-h{font-size:10.5px;font-weight:800;letter-spacing:1.2px;color:var(--txt3);
+  text-transform:uppercase;padding:16px 18px 8px}
+#C .recent-list{overflow:auto;flex:1;padding:0 8px 12px}
+#C .recent-item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:7px;cursor:pointer}
+#C .recent-item:hover{background:var(--s3)}
+#C .recent-item .rthumb{width:54px;height:32px;border-radius:4px;flex:0 0 54px}
+#C .recent-item .ri-t{font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#C .recent-item .ri-d{font-size:10.5px;color:var(--txt3)}
+#C .hub-right{flex:1;display:flex;flex-direction:column;min-width:0}
+#C .hub-right .toolbar{background:transparent}
+#C .qfilter{display:flex;gap:8px;padding:10px 18px 0}
+#C .chip{font-size:11.5px;font-weight:600;color:var(--txt2);background:var(--s2);
+  border:1px solid var(--bd);border-radius:20px;padding:5px 13px;cursor:pointer}
+#C .chip:hover{border-color:var(--bdl)}
+#C .chip.active{background:var(--accS);border-color:var(--accD);color:var(--accH)}
+
+/* small helpers */
+.kbd{font-size:10px;background:var(--s0);border:1px solid var(--bd);border-bottom-width:2px;
+  border-radius:4px;padding:1px 6px;color:var(--txt3);font-family:inherit}
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2)}
+.notes b{color:var(--txt)}
+.notes ul{margin:8px 0 0 18px}
+.notes li{margin:3px 0}
+.flex{display:flex}.gap{gap:10px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Projects Tab</h1>
+  <span class="sub">3 redesign directions — full current functionality preserved</span>
+  <div class="switcher">
+    <button data-d="A" class="active">A · Media Browser</button>
+    <button data-d="B">B · Gallery Grid</button>
+    <button data-d="C">C · Hub / Start</button>
+  </div>
+</div>
+
+<!-- =====================================================================
+     DESIGN A — MEDIA BROWSER (refined data table)
+     ===================================================================== -->
+<section class="stage" id="stage-A">
+  <div class="design-label">
+    <span class="tag">Design A</span>
+    <span class="name">Media Browser</span>
+    <span class="desc">Keeps the table paradigm but Premiere-grade: compact rail, dense sortable list, inline hover-actions, persistent footer action bar. Lowest-risk evolution of what exists today.</span>
+  </div>
+
+  <div class="app" id="A">
+    <!-- icon rail -->
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">📤</span><span class="lbl">EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+    </nav>
+
+    <div class="main">
+      <!-- toolbar -->
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search projects…"></div>
+        <span class="count-pill">6 projects</span>
+        <div style="flex:1"></div>
+        <select class="select">
+          <option>Newest First</option><option>Oldest First</option>
+          <option>Name A–Z</option><option>Name Z–A</option>
+        </select>
+        <div class="seg">
+          <button class="active" title="List view">≣</button>
+          <button title="Grid view">▦</button>
+        </div>
+        <button class="icon-btn" title="Refresh (F5)">↻</button>
+      </div>
+
+      <!-- table -->
+      <div class="tbl-wrap">
+        <table class="proj">
+          <thead>
+            <tr>
+              <th style="width:96px"></th>
+              <th class="sorted">Name ▾</th>
+              <th style="width:120px">Show</th>
+              <th class="num" style="width:120px">Resolution</th>
+              <th class="num" style="width:64px">FPS</th>
+              <th class="num" style="width:90px">Size</th>
+              <th class="num" style="width:150px">Modified</th>
+              <th style="width:96px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="sel">
+              <td><div class="thumb g1">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Roundtable Feb<span class="badge cur">CURRENT</span></div><div class="name-sub">roundtable_feb.rtp</div></div></div></td>
+              <td><span class="show-tag">Chrono</span></td>
+              <td class="num">1920×1080</td><td class="num">30</td><td class="num">2.1 MB</td><td class="num">Today 14:02</td>
+              <td><div class="row-actions"><button class="mini" title="Duplicate">⧉</button><button class="mini" title="Rename">✎</button><button class="mini danger" title="Delete">🗑</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="thumb g2">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Wells Promo</div><div class="name-sub">wells_promo.rtp</div></div></div></td>
+              <td><span class="show-tag">Wells</span></td>
+              <td class="num">1080×1920</td><td class="num">60</td><td class="num">1.8 MB</td><td class="num">Yesterday 19:31</td>
+              <td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="thumb g3">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Modernia Cut 04</div><div class="name-sub">modernia_04.rtp</div></div></div></td>
+              <td><span class="show-tag" style="color:var(--txt3)">—</span></td>
+              <td class="num">3840×2160</td><td class="num">24</td><td class="num">5.4 MB</td><td class="num">Jun 17 11:08</td>
+              <td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="thumb g4">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Short Form Test</div><div class="name-sub">shortform_test.rtp</div></div></div></td>
+              <td><span class="show-tag">Chrono</span></td>
+              <td class="num">1080×1920</td><td class="num">30</td><td class="num">980 KB</td><td class="num">Jun 15 09:44</td>
+              <td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="thumb g5">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Dress Rehearsal</div><div class="name-sub">dress_rehearsal.rtp</div></div></div></td>
+              <td><span class="show-tag">Wells</span></td>
+              <td class="num">2560×1440</td><td class="num">60</td><td class="num">3.2 MB</td><td class="num">Jun 12 16:20</td>
+              <td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="thumb">🎬</div></td>
+              <td><div class="name-cell"><div><div class="name-main">Untitled Draft</div><div class="name-sub">untitled_draft.rtp</div></div></div></td>
+              <td><span class="show-tag" style="color:var(--txt3)">—</span></td>
+              <td class="num">1920×1080</td><td class="num">30</td><td class="num">412 KB</td><td class="num">Jun 09 08:15</td>
+              <td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- footer action bar (selection-aware) -->
+      <div class="statusbar">
+        <span>Selected: <b style="color:var(--txt)">Roundtable Feb</b></span>
+        <span>·</span><span>1920×1080 · 30 fps · 2.1 MB</span>
+        <div class="right">
+          <button class="btn ghost">⧉ Duplicate</button>
+          <button class="btn ghost">✎ Rename</button>
+          <button class="btn danger ghost">🗑 Delete</button>
+          <button class="btn primary">▶ Open Project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>What changed vs. today &amp; why:</b>
+    <ul>
+      <li><b>Font sizes normalized</b> — search 22px→13px, table data 22px→12.5px, rail icons 42px→21px. The current oversize type forces scrolling and reads as a kiosk; Premiere/Resolve run dense.</li>
+      <li><b>Rail slimmed</b> 150px→76px with icon-over-label and an SVG-style accent state — reclaims ~75px of horizontal space for the list.</li>
+      <li><b>New "Show" column</b> surfaces the existing per-project show assignment (today it's buried in a right-click submenu).</li>
+      <li><b>Hover row-actions</b> (duplicate / rename / delete) + a selection-aware footer replace the always-on bottom button bank — same actions, less chrome.</li>
+      <li><b>List/Grid toggle</b> lets the same panel host Design&nbsp;B without a separate mode.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- =====================================================================
+     DESIGN B — GALLERY GRID
+     ===================================================================== -->
+<section class="stage hidden" id="stage-B">
+  <div class="design-label">
+    <span class="tag">Design B</span>
+    <span class="name">Gallery Grid</span>
+    <span class="desc">Thumbnail-first, like DaVinci Resolve's Project Manager. Best when projects are visually distinct. Cards carry res/fps chips, current-project flag, and hover quick-actions; an inline "New" tile.</span>
+  </div>
+
+  <div class="app" id="B">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">📤</span><span class="lbl">EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+    </nav>
+
+    <div class="main">
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search projects…"></div>
+        <span class="count-pill">6 projects</span>
+        <div style="flex:1"></div>
+        <select class="select"><option>Newest First</option><option>Name A–Z</option></select>
+        <div class="seg"><button title="List">≣</button><button class="active" title="Grid">▦</button></div>
+        <div class="seg" style="margin-left:0">
+          <button title="Smaller">−</button><button title="Larger">＋</button>
+        </div>
+        <button class="icon-btn" title="Refresh">↻</button>
+      </div>
+
+      <div class="grid-wrap">
+        <div class="cardgrid">
+          <!-- new tile -->
+          <div class="pcard newcard">
+            <div class="plus">＋</div><div class="t">NEW PROJECT</div>
+            <div style="font-size:11px;color:var(--txt3)">Ctrl+N</div>
+          </div>
+
+          <div class="pcard sel">
+            <div class="art thumb g1"><span class="cur-flag">● CURRENT</span><span class="res-chip">1920×1080</span><span class="fps-chip">30p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div>
+            </div>
+            <div class="meta"><div class="t">Roundtable Feb</div><div class="d"><span>Chrono</span><span>Today 14:02</span></div></div>
+          </div>
+
+          <div class="pcard">
+            <div class="art thumb g2"><span class="res-chip">1080×1920</span><span class="fps-chip">60p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></div>
+            <div class="meta"><div class="t">Wells Promo</div><div class="d"><span>Wells</span><span>Yesterday</span></div></div>
+          </div>
+
+          <div class="pcard">
+            <div class="art thumb g3"><span class="res-chip">3840×2160</span><span class="fps-chip">24p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></div>
+            <div class="meta"><div class="t">Modernia Cut 04</div><div class="d"><span>—</span><span>Jun 17</span></div></div>
+          </div>
+
+          <div class="pcard">
+            <div class="art thumb g4"><span class="res-chip">1080×1920</span><span class="fps-chip">30p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></div>
+            <div class="meta"><div class="t">Short Form Test</div><div class="d"><span>Chrono</span><span>Jun 15</span></div></div>
+          </div>
+
+          <div class="pcard">
+            <div class="art thumb g5"><span class="res-chip">2560×1440</span><span class="fps-chip">60p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></div>
+            <div class="meta"><div class="t">Dress Rehearsal</div><div class="d"><span>Wells</span><span>Jun 12</span></div></div>
+          </div>
+
+          <div class="pcard">
+            <div class="art thumb"><span class="res-chip">1920×1080</span><span class="fps-chip">30p</span>
+              <div class="hoverbar"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></div>
+            <div class="meta"><div class="t">Untitled Draft</div><div class="d"><span>—</span><span>Jun 09</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <span><b style="color:var(--txt)">Roundtable Feb</b> selected</span>
+        <div class="right">
+          <button class="btn ghost">⧉ Duplicate</button>
+          <button class="btn ghost">✎ Rename</button>
+          <button class="btn primary">▶ Open Project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>Why a grid:</b>
+    <ul>
+      <li><b>Thumbnails are first-class</b> — you already auto-capture a viewport grab on save (<code>setThumbnailFromImage</code>); a grid finally pays that off. A user recognizes a project by its picture faster than by a filename row.</li>
+      <li><b>Resolution / fps / show / current-flag</b> all live on the card — every column from today's table is represented, nothing lost.</li>
+      <li><b>Thumbnail size slider</b> (− ／ ＋) scales cards; same control DaVinci uses. Lazy-load thumbnails (only decode cards in/near viewport) to keep large libraries snappy.</li>
+      <li><b>Inline "New" tile</b> is a faster on-ramp than hunting the rail.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- =====================================================================
+     DESIGN C — HUB / START SCREEN
+     ===================================================================== -->
+<section class="stage hidden" id="stage-C">
+  <div class="design-label">
+    <span class="tag">Design C</span>
+    <span class="name">Hub / Start Screen</span>
+    <span class="desc">Premiere Pro's "Home" model. A welcoming header with the 3 primary actions, a Recent rail on the left for one-click resume, and a filterable library on the right. Best for "I just opened the app, get me working."</span>
+  </div>
+
+  <div class="app" id="C">
+    <!-- hero header -->
+    <div class="hub-top">
+      <div class="logo">R</div>
+      <div>
+        <h2>Welcome back</h2>
+        <p>6 projects · last opened <b style="color:var(--txt2)">Roundtable Feb</b> today</p>
+      </div>
+      <div class="hub-actions">
+        <div class="big-action accent">
+          <span class="ico">＋</span>
+          <div><div class="ttl">New Project</div><div class="sub">Blank · 16:9 · 30 fps</div></div>
+        </div>
+        <div class="big-action">
+          <span class="ico">📂</span>
+          <div><div class="ttl">Open…</div><div class="sub">Browse for a .rtp</div></div>
+        </div>
+        <div class="big-action">
+          <span class="ico">📥</span>
+          <div><div class="ttl">Import</div><div class="sub">Bring in a project</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hub-body">
+      <!-- recent rail -->
+      <aside class="hub-left">
+        <div class="hub-section-h">Recent</div>
+        <div class="recent-list">
+          <div class="recent-item"><div class="rthumb thumb g1"></div><div><div class="ri-t">Roundtable Feb</div><div class="ri-d">Today 14:02 · 1920×1080</div></div></div>
+          <div class="recent-item"><div class="rthumb thumb g2"></div><div><div class="ri-t">Wells Promo</div><div class="ri-d">Yesterday · 1080×1920</div></div></div>
+          <div class="recent-item"><div class="rthumb thumb g3"></div><div><div class="ri-t">Modernia Cut 04</div><div class="ri-d">Jun 17 · 3840×2160</div></div></div>
+          <div class="recent-item"><div class="rthumb thumb g4"></div><div><div class="ri-t">Short Form Test</div><div class="ri-d">Jun 15 · 1080×1920</div></div></div>
+          <div class="recent-item"><div class="rthumb thumb g5"></div><div><div class="ri-t">Dress Rehearsal</div><div class="ri-d">Jun 12 · 2560×1440</div></div></div>
+        </div>
+        <div class="hub-section-h">Location</div>
+        <div style="padding:0 18px 16px">
+          <div style="font-size:11.5px;color:var(--txt2);background:var(--s0);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;word-break:break-all">D:/ROUNDTABLE/projects</div>
+          <button class="btn ghost" style="margin-top:8px;width:100%;justify-content:center">⚙ Change directory…</button>
+        </div>
+      </aside>
+
+      <!-- library -->
+      <div class="hub-right">
+        <div class="toolbar">
+          <div class="search"><span class="mag">🔍</span><input placeholder="Search all projects…"></div>
+          <div style="flex:1"></div>
+          <select class="select"><option>Newest First</option><option>Name A–Z</option></select>
+          <div class="seg"><button title="List">≣</button><button class="active" title="Grid">▦</button></div>
+        </div>
+        <div class="qfilter">
+          <span class="chip active">All shows</span>
+          <span class="chip">Chrono</span>
+          <span class="chip">Wells</span>
+          <span class="chip">Unassigned</span>
+        </div>
+        <div class="grid-wrap" style="padding:14px 18px">
+          <div class="cardgrid" style="grid-template-columns:repeat(auto-fill,minmax(206px,1fr))">
+            <div class="pcard sel">
+              <div class="art thumb g1"><span class="cur-flag">● CURRENT</span><span class="res-chip">1920×1080</span><span class="fps-chip">30p</span></div>
+              <div class="meta"><div class="t">Roundtable Feb</div><div class="d"><span>Chrono</span><span>Today</span></div></div>
+            </div>
+            <div class="pcard">
+              <div class="art thumb g2"><span class="res-chip">1080×1920</span><span class="fps-chip">60p</span></div>
+              <div class="meta"><div class="t">Wells Promo</div><div class="d"><span>Wells</span><span>Yesterday</span></div></div>
+            </div>
+            <div class="pcard">
+              <div class="art thumb g3"><span class="res-chip">3840×2160</span><span class="fps-chip">24p</span></div>
+              <div class="meta"><div class="t">Modernia Cut 04</div><div class="d"><span>—</span><span>Jun 17</span></div></div>
+            </div>
+            <div class="pcard">
+              <div class="art thumb g4"><span class="res-chip">1080×1920</span><span class="fps-chip">30p</span></div>
+              <div class="meta"><div class="t">Short Form Test</div><div class="d"><span>Chrono</span><span>Jun 15</span></div></div>
+            </div>
+            <div class="pcard">
+              <div class="art thumb g5"><span class="res-chip">2560×1440</span><span class="fps-chip">60p</span></div>
+              <div class="meta"><div class="t">Dress Rehearsal</div><div class="d"><span>Wells</span><span>Jun 12</span></div></div>
+            </div>
+            <div class="pcard">
+              <div class="art thumb"><span class="res-chip">1920×1080</span><span class="fps-chip">30p</span></div>
+              <div class="meta"><div class="t">Untitled Draft</div><div class="d"><span>—</span><span>Jun 09</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>Why a hub:</b>
+    <ul>
+      <li><b>Resume in one click</b> — the Recent rail mirrors your existing <code>setRecentProjects()</code> list; most sessions start by reopening the last project, so it's front-and-center.</li>
+      <li><b>The 3 primary actions are explicit buttons</b>, not icon-rail glyphs — discoverable for new users, and the "New Project" button can carry last-used defaults.</li>
+      <li><b>Show chips</b> turn the per-project show metadata into a one-click filter (cascading like COMPOSE's SHOWS column).</li>
+      <li><b>Save / Settings / Import</b> still reachable: Import &amp; New &amp; Open in the header, Settings via the location panel's gear, Save is a no-op here (handled globally / Ctrl+S).</li>
+      <li>Trade-off: the icon rail is gone, so this is the biggest departure from today's structure.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+const btns=document.querySelectorAll('.switcher button');
+btns.forEach(b=>b.addEventListener('click',()=>{
+  btns.forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  const d=b.dataset.d;
+  ['A','B','C'].forEach(k=>{
+    document.getElementById('stage-'+k).classList.toggle('hidden',k!==d);
+  });
+  window.scrollTo({top:0,behavior:'smooth'});
+}));
+</script>
+</body>
+</html>

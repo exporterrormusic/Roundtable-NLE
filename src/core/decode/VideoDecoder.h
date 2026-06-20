@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -88,6 +89,19 @@ struct VideoStreamInfo
     int         audioStreamIndex{-1};
     int         videoStreamIndex{-1};
 
+    // ── Display rotation ────────────────────────────────────────────────
+    // Clockwise rotation (degrees) the source's container display-matrix
+    // asks for at presentation time — 0 / 90 / 180 / 270.  Portrait phone
+    // footage is the common case: stored as landscape pixels + a 90°/270°
+    // rotate flag.  Read at open from the stream's DISPLAYMATRIX side data
+    // (see VideoDecoderInit).  Default 0 = untagged / no rotation, so a file
+    // with no rotation tag behaves exactly as before.
+    // NOTE: detection + the 16F-passthrough reject consume this today; the
+    // compositor does NOT yet rotate the frame for display (Phase 2 — see
+    // MAINTAINABILITY_PLAN.md), so a non-zero value is currently surfaced and
+    // gated, not yet auto-corrected on screen.
+    int           rotation{0};
+
     // ── Colour management (Phase 4.1) ───────────────────────────────────
     // Read from the source's codec/container tags at open.  Drive the
     // per-source YUV→RGB conversion (see resolveColorConversion); untagged
@@ -149,6 +163,22 @@ struct ColorConversion
 /// heuristic (≤576 visible lines → BT.601, otherwise BT.709) at limited
 /// range.  See VideoDecoderInit.cpp for where the tags are read.
 [[nodiscard]] ColorConversion resolveColorConversion(const VideoStreamInfo& info) noexcept;
+
+/// Snap a display-matrix rotation angle to the nearest quarter turn, expressed
+/// as a CLOCKWISE display rotation in {0, 90, 180, 270}.
+///
+/// FFmpeg's av_display_rotation_get() returns the COUNTER-clockwise angle that
+/// would restore the frame to its un-rotated state; the caller negates it to
+/// get the clockwise rotation to apply for correct display, then passes it
+/// here.  Cameras only ever tag exact quarter turns, so we round to the
+/// nearest 90° and fold into [0, 360).  Pure + header-inline so it is
+/// unit-testable without FFmpeg (see tests/core/test_color_conversion.cpp).
+[[nodiscard]] inline int snapDisplayRotation(double clockwiseDeg) noexcept
+{
+    if (!std::isfinite(clockwiseDeg)) return 0;
+    const long quarters = std::lround(clockwiseDeg / 90.0);
+    return static_cast<int>((((quarters % 4) + 4) % 4) * 90);
+}
 
 /// Seek mode
 enum class SeekMode : uint8_t

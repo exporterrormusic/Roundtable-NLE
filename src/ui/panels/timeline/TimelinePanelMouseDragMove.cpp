@@ -351,42 +351,65 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             }
         }
 
+        // Determine the dragged clip's track type up front — it drives both
+        // the cross-track target and the new-track ghost zones below.
+        TrackType dragType = TrackType::Video;
+        if (!m_dragSelectedClips.empty()) {
+            Track* srcTr = m_timeline->track(m_dragSelectedClips[0].ref.trackIndex);
+            if (srcTr) dragType = srcTr->type();
+        }
+
+        // ── New-VIDEO-track-above zone ──────────────────────────────────────
+        // The track column is top-aligned with a bottom stretch (see
+        // TimelinePanelTracks.cpp), and the ruler is a separate widget, so there
+        // is cursor-reachable empty space BELOW the bottom track (the audio-
+        // below ghost zone) but NONE above the top track — a strict "cursor
+        // above the first track" test can never be reached.  So treat a thin
+        // band at the TOP EDGE of the top-most real video track as the
+        // new-track-above zone when dragging a video clip.  (Skip dividers + the
+        // pinned caption track so the band anchors to a real, media-hosting
+        // video track.)
+        double topVideoTop = -1.0;
+        size_t topVideoIdx = SIZE_MAX;
+        int    topVideoH   = 80;
+        for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+            Track* t = m_timeline->track(i);
+            if (!t || t->isDivider() || t->isCaptionTrack()) continue;
+            if (t->type() == TrackType::Video) {
+                topVideoIdx = i;
+                if (i < m_trackWidgets.size()) {
+                    topVideoTop = m_trackWidgets[i]->mapTo(this, QPoint(0, 0)).y();
+                    topVideoH   = m_trackWidgets[i]->height();
+                }
+                break;
+            }
+        }
+        const int  newTrackBand = std::min(14, std::max(6, topVideoH / 3));
+        const bool videoAboveZone =
+            (dragType == TrackType::Video && topVideoTop >= 0.0 &&
+             pos.y() < topVideoTop + newTrackBand);
+
         // Detect cross-track target
         size_t targetTrack = hitTestTrack(pos.y());
-        if (targetTrack < m_timeline->trackCount()) {
+        if (!videoAboveZone && targetTrack < m_timeline->trackCount()) {
             m_dragTargetTrack = targetTrack;
             m_ghostTrackVisible = false;
             if (m_ghostOverlay) m_ghostOverlay->hide();
         } else if (!m_trackWidgets.empty()) {
             // ── Ghost track detection (Premiere Pro-style) ──────────────
-            // Cursor is OUTSIDE any existing track.
-            auto firstTw = m_trackWidgets.front();
+            // Cursor is outside any track, OR inside the new-video-track-above
+            // band at the top edge of the top video track.
             auto lastTw  = m_trackWidgets.back();
-            QPoint firstTop = firstTw->mapTo(this, QPoint(0, 0));
             QPoint lastBot  = lastTw->mapTo(this, QPoint(0, lastTw->height()));
 
-            // Determine dragged clip's track type
-            TrackType dragType = TrackType::Video;
-            if (!m_dragSelectedClips.empty()) {
-                Track* srcTr = m_timeline->track(m_dragSelectedClips[0].ref.trackIndex);
-                if (srcTr) dragType = srcTr->type();
-            }
-
-            // Find first/last track indices of each type. Skip divider rows
-            // — they're TrackType::Video but not real video tracks, so
-            // including them in lastVideoIdx misclassifies the V/A boundary.
-            size_t firstVideoIdx = SIZE_MAX, lastVideoIdx = SIZE_MAX;
-            size_t firstAudioIdx = SIZE_MAX, lastAudioIdx = SIZE_MAX;
+            // Last audio track index (for the audio-below zone). Skip divider
+            // rows — they're TrackType::Video but not real audio tracks.
+            size_t lastAudioIdx = SIZE_MAX;
             for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
                 Track* t = m_timeline->track(i);
                 if (!t || t->isDivider()) continue;
-                if (t->type() == TrackType::Video) {
-                    if (firstVideoIdx == SIZE_MAX) firstVideoIdx = i;
-                    lastVideoIdx = i;
-                } else {
-                    if (firstAudioIdx == SIZE_MAX) firstAudioIdx = i;
+                if (t->type() != TrackType::Video)
                     lastAudioIdx = i;
-                }
             }
 
             // Scroll area X position
@@ -394,12 +417,11 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             int ghostX = scrollOrig.x();
             int ghostW = m_verticalScroll->width();
 
-            if (dragType == TrackType::Video && pos.y() < firstTop.y() &&
-                firstVideoIdx < m_trackWidgets.size()) {
+            if (videoAboveZone && topVideoIdx < m_trackWidgets.size()) {
                 m_ghostTrackVisible = true;
                 m_ghostTrackIsAbove = true;
-                m_ghostTrackHeight = firstTw->height();
-                m_ghostTrackY = firstTop.y() - m_ghostTrackHeight;
+                m_ghostTrackHeight = m_trackWidgets[topVideoIdx]->height();
+                m_ghostTrackY = static_cast<int>(topVideoTop) - m_ghostTrackHeight;
                 if (m_ghostOverlay) {
                     m_ghostOverlay->isAbove = true;
                     m_ghostOverlay->onExistingTrack = false;  // new-track preview

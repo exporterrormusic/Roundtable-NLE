@@ -498,6 +498,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         layer.gpuDescriptor   = gpuHit.descriptor;
                         layer.frameWidth      = gpuHit.width;
                         layer.frameHeight     = gpuHit.height;
+                        layer.srcRotation     = mediaInfo ? mediaInfo->rotation : 0;
                         layer.opacity  = opac;
                         layer.posX     = px;
                         layer.posY     = py;
@@ -954,6 +955,14 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 layer.cropR = vc->cropRight();
                 layer.cropT = vc->cropTop();
                 layer.cropB = vc->cropBottom();
+                // Source display rotation (portrait phone footage etc.).  Same
+                // handle lookup the packed-alpha check above uses.
+                if (m_mediaPool) {
+                    auto* mi = m_mediaPool->getInfo(
+                        m_openMediaHandles.count(vc->mediaPath())
+                            ? m_openMediaHandles[vc->mediaPath()] : 0);
+                    if (mi) layer.srcRotation = mi->rotation;
+                }
             }
 #ifdef ROUNDTABLE_HAS_SPINE
             else if (auto* sc = dynamic_cast<SpineClip*>(clip)) {

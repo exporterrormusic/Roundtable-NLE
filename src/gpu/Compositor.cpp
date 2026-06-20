@@ -564,19 +564,31 @@ glm::mat4 Compositor::buildViewportTransform(uint32_t srcW, uint32_t srcH,
                                               float rotDeg,
                                               bool containFit,
                                               float anchorXPx,
-                                              float anchorYPx)
+                                              float anchorYPx,
+                                              int srcRotationDeg)
 {
+    // Source DISPLAY rotation (clockwise, 0/90/180/270): portrait phone footage
+    // is stored as landscape pixels + a rotate flag.  A 90°/270° turn swaps the
+    // displayed aspect, so the contain/cover fit must use the DISPLAY dims
+    // (srcW/srcH swapped).  The sampled UV is mapped back into the source
+    // texture's native orientation as the FINAL step (see below).  0 = no
+    // rotation → every value below is byte-identical to the legacy path.
+    const int   srcRot      = ((srcRotationDeg % 360) + 360) % 360;
+    const bool  quarterTurn = (srcRot == 90 || srcRot == 270);
+    const float dispW = quarterTurn ? static_cast<float>(srcH) : static_cast<float>(srcW);
+    const float dispH = quarterTurn ? static_cast<float>(srcW) : static_cast<float>(srcH);
+
     // Cover/contain fit: scale source to fill (cover) or fit within (contain)
     // the output rectangle.  Resolution-independent — the composited image
     // looks the same whether the output is 1920×1080 or 960×540.
-    const float scaleToFitW = static_cast<float>(outW) / static_cast<float>(srcW);
-    const float scaleToFitH = static_cast<float>(outH) / static_cast<float>(srcH);
+    const float scaleToFitW = static_cast<float>(outW) / dispW;
+    const float scaleToFitH = static_cast<float>(outH) / dispH;
     const float fitScale = containFit
         ? std::min(scaleToFitW, scaleToFitH)
         : std::max(scaleToFitW, scaleToFitH);
 
-    const float fittedW = srcW * fitScale;
-    const float fittedH = srcH * fitScale;
+    const float fittedW = dispW * fitScale;
+    const float fittedH = dispH * fitScale;
     const float baseOffX = (static_cast<float>(outW) - fittedW) * 0.5f;
     const float baseOffY = (static_cast<float>(outH) - fittedH) * 0.5f;
 
@@ -589,11 +601,26 @@ glm::mat4 Compositor::buildViewportTransform(uint32_t srcW, uint32_t srcH,
 
     // Build the inverse transform:
     //   output_uv → output_pixel → subtract centre+pos → inv-rotate →
-    //   inv-scale → add centre → subtract baseOff → normalise to layer UV.
+    //   inv-scale → add centre → subtract baseOff → normalise to DISPLAY UV →
+    //   [source rotation] re-orient into the source texture's native UV.
     //
     // GLM right-multiplies columns, so operations are in code-order
-    // (the first operation listed acts last on the vector).
+    // (the first operation listed acts last on the vector).  Initialising `m`
+    // with the source-rotation UV matrix (instead of identity) makes that
+    // re-orientation act LAST, after step 7 has produced display UV ∈ [0,1]².
+    // Both spaces are normalised, so this is pure orientation bookkeeping:
+    //   90° CW: (u,v)→(v,1−u)   180°: (u,v)→(1−u,1−v)   270° CW: (u,v)→(1−v,u)
+    // (Columns below are GLM column-major, verified against those mappings.)
     glm::mat4 m(1.0f);
+    if (srcRot == 90)
+        m = glm::mat4( 0.f,-1.f, 0.f, 0.f,   1.f, 0.f, 0.f, 0.f,
+                       0.f, 0.f, 1.f, 0.f,   0.f, 1.f, 0.f, 1.f);
+    else if (srcRot == 180)
+        m = glm::mat4(-1.f, 0.f, 0.f, 0.f,   0.f,-1.f, 0.f, 0.f,
+                       0.f, 0.f, 1.f, 0.f,   1.f, 1.f, 0.f, 1.f);
+    else if (srcRot == 270)
+        m = glm::mat4( 0.f, 1.f, 0.f, 0.f,  -1.f, 0.f, 0.f, 0.f,
+                       0.f, 0.f, 1.f, 0.f,   1.f, 0.f, 0.f, 1.f);
 
     // 7. Normalise to layer UV [0,1]
     m = glm::scale(m, glm::vec3(1.0f / fittedW, 1.0f / fittedH, 1.0f));

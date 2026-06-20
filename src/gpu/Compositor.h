@@ -309,6 +309,11 @@ public:
     /// @param rotDeg          Rotation in degrees
     /// @param containFit      When true, use "contain" fit (min scale, no crop,
     ///                        may letterbox).  Default is "cover" (max scale).
+    /// @param srcRotationDeg  Source DISPLAY rotation (clockwise, 0/90/180/270)
+    ///                        from VideoStreamInfo::rotation — portrait phone
+    ///                        footage etc.  90/270 swap the fit aspect; the
+    ///                        sampled UV is re-oriented into the source texture.
+    ///                        Default 0 = legacy byte-identical path.
     static glm::mat4 buildViewportTransform(uint32_t srcW, uint32_t srcH,
                                              uint32_t outW, uint32_t outH,
                                              float posXPx, float posYPx,
@@ -316,7 +321,8 @@ public:
                                              float rotDeg = 0.0f,
                                              bool containFit = false,
                                              float anchorXPx = 0.0f,
-                                             float anchorYPx = 0.0f);
+                                             float anchorYPx = 0.0f,
+                                             int srcRotationDeg = 0);
 
     /// Identity transform (layer fills entire output).
     static glm::mat4 identityTransform() { return glm::mat4(1.0f); }

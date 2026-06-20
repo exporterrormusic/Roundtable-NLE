@@ -59,6 +59,25 @@ void AudioSync::runAutoSync()
     }
     const bool hasCharFilter = !filterCharQt.isEmpty();
 
+    // ── Word-level forced alignment (preferred) ─────────────────────────────
+    // When transcription word timestamps exist, align each file's words to the
+    // script lines so clip RANGES follow LINE boundaries (see AudioSyncAlign
+    // .cpp) — far more accurate than the fuzzy merge/resegment/match heuristics
+    // below.  Skipped for a scoped (single-character) sync, which stays
+    // surgical and uses the heuristic path.  Returns false → fall through.
+    spdlog::warn("[ALIGN] runAutoSync entered (hasCharFilter={}, clips={})",
+                 hasCharFilter, m_clips.size());
+    if (!hasCharFilter && alignClipsToScript()) {
+        m_syncDone = true;
+        populateClipList();
+        updateWorkflowState();
+        if (m_syncStatus)
+            m_syncStatus->setText(
+                QString("Aligned %1 clips to script lines").arg(m_clips.size()));
+        return;
+    }
+    spdlog::warn("[ALIGN] falling through to HEURISTIC path (alignment not used)");
+
     // Build a list of script character names to match against filenames.
     // We search for each character name as a standalone word in the filename
     // (case-insensitive, delimited by non-alphanumeric chars) rather than
@@ -260,6 +279,23 @@ void AudioSync::runAutoSync()
         std::sort(clipIndices.begin(), clipIndices.end(),
                   [&](size_t a, size_t b) { return m_clips[a].start < m_clips[b].start; });
 
+        // Are this character's clips spread across MULTIPLE source files?  Each
+        // recording starts at 0:00, so a start-time sort of clips from a base
+        // file + a "fixed"/retake file does NOT reflect script order.  The
+        // sequential-order bonus below assumes it does, so on multi-file
+        // characters it actively rewards a retake clip lining up with a line it
+        // doesn't belong to (and starves the correct in-order original).
+        // Disable the order bonus there and rely on text similarity alone.
+        bool multiFile = false;
+        {
+            const std::string* firstFile = nullptr;
+            for (size_t idx : clipIndices) {
+                const std::string& f = m_clips[idx].sourceFile;
+                if (!firstFile) firstFile = &f;
+                else if (f != *firstFile) { multiFile = true; break; }
+            }
+        }
+
         size_t N = clipIndices.size();
         size_t M = lineIndices.size();
 
@@ -314,7 +350,8 @@ void AudioSync::runAutoSync()
                     ? static_cast<float>(li) / static_cast<float>(M - 1)
                     : 0.5f;
                 float orderDist = std::abs(expectedLinePos - actualLinePos);
-                float orderBonus = std::max(0.0f, 0.15f * (1.0f - orderDist * 2.0f));
+                float orderBonus = multiFile ? 0.0f
+                    : std::max(0.0f, 0.15f * (1.0f - orderDist * 2.0f));
 
                 float combined = textScore * 0.40f + phoneticScore * 0.20f
                                + wo * 0.25f + orderBonus;
@@ -356,9 +393,19 @@ void AudioSync::runAutoSync()
         std::unordered_set<size_t> assignedClips;
         std::unordered_set<size_t> assignedLines;
 
+        // Don't FORCE a clip onto a line it only weakly matches — leave it
+        // unmatched instead.  When a character has extra takes (e.g. a base
+        // recording + a "fixed" corrections file), there are more clips than
+        // lines, and the surplus/displaced clips otherwise cascade onto
+        // neighbouring lines they don't belong to.  A genuine match clears this
+        // bar comfortably; anything left over is better placed by hand than put
+        // somewhere wrong.  (Tunable — raise to be stricter, lower to assign more.)
+        constexpr float kMinAssignScore = 0.40f;
+
         for (const auto& entry : allPairs) {
             if (assignedClips.count(entry.clipIdx)) continue;
             if (!allowRetakes && assignedLines.count(entry.lineIdx)) continue;
+            if (entry.score < kMinAssignScore) continue;   // too weak → leave unmatched
 
             size_t clipGlobalIdx = clipIndices[entry.clipIdx];
             size_t lineGlobalIdx = lineIndices[entry.lineIdx];
@@ -383,99 +430,227 @@ void AudioSync::runAutoSync()
 
     }
 
-    updateSyncProgress(60, "Trimming silence from clips...");
+    updateSyncProgress(60, "Trimming clips to speech...");
 
-    updateSyncProgress(60, "Trimming silence from clips...");
+    // --- Step 5: Trim non-confirmed clips to speech (RMS energy, word-bounded) ---
+    // Boundary detection combines two signals so neither's weakness dominates:
+    //   * RMS energy edges land TIGHT on the real onset/offset, but a breath /
+    //     room-tone / trailing noise can fool a scan over a whole loose segment
+    //     (the "few seconds too long" failure).
+    //   * Whisper word timestamps know roughly WHERE the words are, but their
+    //     EDGES are loose — the first word's start runs early and the last
+    //     word's end runs late — so they make a poor boundary on their own.
+    // So we use the words only to BOUND the RMS search window (kills the gross
+    // errors), then let RMS find the precise edge inside it (kills loose edges).
+    // Clips with no word data (a re-sync after reload, before re-transcription)
+    // just scan the full clip range, exactly as the original did.
+    std::unordered_map<std::string, std::vector<const WordSegment*>> fileWords;
+    for (size_t fi = 0; fi < m_allTranscriptionResults.size(); ++fi) {
+        const std::string sf = (fi < m_audioPaths.size()) ? m_audioPaths[fi]
+                                                          : std::string();
+        if (sf.empty()) continue;
+        auto& vec = fileWords[sf];
+        for (const auto& seg : m_allTranscriptionResults[fi].segments)
+            for (const auto& w : seg.words)
+                if (w.end > w.start) vec.push_back(&w);
+        std::sort(vec.begin(), vec.end(),
+                  [](const WordSegment* a, const WordSegment* b) {
+                      return a->start < b->start;
+                  });
+    }
+    // ── Two-threshold (hysteresis) voice-activity trim ──────────────────────
+    // The approach a human takes reading the waveform: find the bursts that are
+    // CLEARLY speech, ignore the quiet breaths / room-tone, then span from the
+    // first real speech to the last — INCLUDING the soft consonant edges
+    // attached to them.  A single low threshold (the previous approach) cannot
+    // do both: it either grabs a breath (huge leading gap) or misses a soft
+    // onset (cuts into the word).
+    //   edgeThresh   — "still part of speech": low, so soft onsets/offsets
+    //                  (s/f/th, breathy releases) stay attached.
+    //   speechThresh — "clearly speech": high enough that a breath / lip-smack /
+    //                  room tone never reaches it, so those never anchor an edge.
+    // A contiguous run of windows above edgeThresh is KEPT only if it peaks
+    // above speechThresh AND overlaps the spoken word span; the clip becomes
+    // [start of first kept run, end of last kept run].
+    constexpr double kEnvWinSec  = 0.020;  // 20 ms analysis window
+    constexpr double kEnvHopSec  = 0.010;  // 10 ms hop
+    constexpr float  kEdgeFrac   = 0.12f;  // edgeThresh   = noise + 12% of range
+    constexpr float  kSpeechFrac = 0.40f;  // speechThresh = noise + 40% of range
+    constexpr double kPrePadSec  = 0.040;  // lead cushion
+    constexpr double kPostPadSec = 0.060;  // trail cushion (releases run a touch long)
+    constexpr double kWordPadSec = 0.20;   // word-span overlap slack
 
-    // --- Step 5: Auto-trim silence from non-confirmed clips ---
     int trimCount = 0;
     for (size_t i = 0; i < m_clips.size(); ++i) {
         auto& clip = m_clips[i];
         if (clip.matchState == 2) continue; // preserve confirmed boundaries
         if (!clipInScope(clip)) continue;   // don't touch other characters
+
         auto it = m_audioSamples.find(clip.sourceFile);
         if (it == m_audioSamples.end()) continue;
-
         const auto& audioData = it->second;
-        const int windowSize = static_cast<int>(0.010 * audioData.sampleRate); // 10ms
-        auto startSample = static_cast<int>(clip.start * audioData.sampleRate);
-        auto endSample   = static_cast<int>(clip.end   * audioData.sampleRate);
-        if (startSample >= static_cast<int>(audioData.samples.size())) continue;
-        if (endSample > static_cast<int>(audioData.samples.size()))
-            endSample = static_cast<int>(audioData.samples.size());
-        if (endSample - startSample < windowSize * 3) continue;
+        const int sr = static_cast<int>(audioData.sampleRate);
+        const int N  = static_cast<int>(audioData.samples.size());
+        if (sr <= 0 || N == 0) continue;
 
-        // Measure all window RMS values to compute energy profile
-        std::vector<float> rmsValues;
-        for (int pos = startSample; pos + windowSize <= endSample; pos += windowSize) {
+        // Analyse the FULL clip range so the noise floor is measured against the
+        // leading/trailing silence whisper left around the utterance.
+        const int s0  = std::max(0, static_cast<int>(clip.start * sr));
+        const int s1  = std::min(N, static_cast<int>(clip.end   * sr));
+        const int win = std::max(1, static_cast<int>(kEnvWinSec * sr));
+        const int hop = std::max(1, static_cast<int>(kEnvHopSec * sr));
+        if (s1 - s0 < win * 3) continue;
+
+        // Energy envelope (RMS per hop) + the sample each window starts at.
+        std::vector<float> env;
+        std::vector<int>   envPos;
+        env.reserve(static_cast<size_t>((s1 - s0) / hop + 1));
+        for (int p = s0; p + win <= s1; p += hop) {
             float sumSq = 0.0f;
-            for (int j = 0; j < windowSize; ++j) {
-                float s = audioData.samples[static_cast<size_t>(pos + j)];
-                sumSq += s * s;
+            for (int j = 0; j < win; ++j) {
+                const float v = audioData.samples[static_cast<size_t>(p + j)];
+                sumSq += v * v;
             }
-            rmsValues.push_back(std::sqrt(sumSq / static_cast<float>(windowSize)));
+            env.push_back(std::sqrt(sumSq / static_cast<float>(win)));
+            envPos.push_back(p);
         }
-        if (rmsValues.size() < 3) continue;
+        if (env.size() < 5) continue;
 
-        // Dynamic-range threshold: 8% of the way from noise floor to speech peak
-        auto sortedRms = rmsValues;
-        std::sort(sortedRms.begin(), sortedRms.end());
-        float noiseFloor  = sortedRms[sortedRms.size() / 10];       // 10th percentile
-        float speechLevel = sortedRms[sortedRms.size() * 9 / 10];   // 90th percentile
-        float dynRange    = speechLevel - noiseFloor;
-        float trimThreshold = (dynRange > 0.001f)
-            ? noiseFloor + dynRange * 0.08f
-            : std::max(0.003f, noiseFloor * 1.5f);
+        // Robust levels: 10th-pct ~ silence floor, 90th-pct ~ speech level.
+        std::vector<float> sorted = env;
+        std::sort(sorted.begin(), sorted.end());
+        const float noiseFloor = sorted[sorted.size() / 10];
+        const float speechPeak = sorted[sorted.size() * 9 / 10];
+        const float range = speechPeak - noiseFloor;
+        const float edgeThresh   = noiseFloor + kEdgeFrac   * range;
+        const float speechThresh = noiseFloor + kSpeechFrac * range;
+        const bool  levelsUsable = (range >= 0.0008f);  // else ~uniform; the VAD can't help
 
-        // Scan forward for speech start � require 2 consecutive above-threshold windows
-        int speechStart = startSample;
-        for (int pos = startSample; pos + windowSize * 2 <= endSample; pos += windowSize) {
-            auto rmsAt = [&](int p) {
-                float sumSq = 0.0f;
-                for (int j = 0; j < windowSize; ++j) {
-                    float s = audioData.samples[static_cast<size_t>(p + j)];
-                    sumSq += s * s;
-                }
-                return std::sqrt(sumSq / static_cast<float>(windowSize));
-            };
-            if (rmsAt(pos) > trimThreshold && rmsAt(pos + windowSize) > trimThreshold) {
-                speechStart = pos; break;
+        // Spoken-word span.  The words reliably bracket WHERE the speech is even
+        // when the audio-level VAD fails (a loud transient — pop, breath, bleed —
+        // can inflate speechThresh above the real, quieter speech, leaving NO
+        // core).  We use the span as a HARD bound on the final boundary and let
+        // the VAD only TIGHTEN within it; without it, a clip whose VAD skips
+        // keeps whisper's over-extended segment end (the "huge gap").
+        bool   hasWords    = false;
+        double wFirstStart = 0.0, wLastEnd = 0.0;
+        int    wordLo = s0, wordHi = s1;
+        if (auto wit = fileWords.find(clip.sourceFile);
+            wit != fileWords.end() && !wit->second.empty()) {
+            const WordSegment* first = nullptr;
+            const WordSegment* last  = nullptr;
+            for (const WordSegment* w : wit->second) {
+                const double mid = 0.5 * (w->start + w->end);
+                if (mid < clip.start || mid > clip.end) continue;
+                if (!first) first = w;
+                last = w;
+            }
+            if (first && last) {
+                hasWords    = true;
+                wFirstStart = first->start;
+                wLastEnd    = last->end;
+                wordLo = static_cast<int>((wFirstStart - kWordPadSec) * sr);
+                wordHi = static_cast<int>((wLastEnd   + kWordPadSec) * sr);
             }
         }
-        // Scan backward for speech end � require 2 consecutive above-threshold windows
-        int speechEnd = endSample;
-        for (int pos = endSample - windowSize * 2; pos >= startSample; pos -= windowSize) {
-            auto rmsAt = [&](int p) {
-                if (p + windowSize > endSample) return 0.0f;
-                float sumSq = 0.0f;
-                for (int j = 0; j < windowSize; ++j) {
-                    float s = audioData.samples[static_cast<size_t>(p + j)];
-                    sumSq += s * s;
+
+        // VAD: find the speech CORE (windows clearing speechThresh within the
+        // word span), then extend outward a BOUNDED amount while above edgeThresh
+        // to catch the soft onset/offset (s/f/th, breathy release) without
+        // swallowing a long trailing breath / room-tone swell.  Produces a
+        // tight boundary WHEN it finds a confident core; otherwise vadOk stays
+        // false and the word-span clamp below does the bounding.
+        double vadStart = 0.0, vadEnd = 0.0;
+        bool   vadOk    = false;
+        if (levelsUsable) {
+            int coreStart = -1, coreEnd = -1;
+            // Collect speech runs (consecutive windows >= speechThresh within the
+            // word span), then drop TRAILING runs separated from the body by a
+            // long silence — a breath / noise / next-line bleed AFTER the
+            // dialogue.  Anchoring the end to the last single speech window
+            // (ignoring the big silence before it) is what left the "huge empty
+            // space at the end".  coreStart stays the first speech window (the
+            // start was already correct).
+            std::vector<std::pair<int,int>> runs;  // [startK, endK] env indices
+            {
+                int rs = -1;
+                for (int k = 0; k < static_cast<int>(env.size()); ++k) {
+                    const int sample = envPos[static_cast<size_t>(k)];
+                    const bool sp = env[static_cast<size_t>(k)] >= speechThresh
+                                    && sample + win > wordLo && sample < wordHi;
+                    if (sp) { if (rs < 0) rs = k; }
+                    else if (rs >= 0) { runs.push_back({rs, k - 1}); rs = -1; }
                 }
-                return std::sqrt(sumSq / static_cast<float>(windowSize));
-            };
-            if (rmsAt(pos) > trimThreshold && rmsAt(pos + windowSize) > trimThreshold) {
-                speechEnd = pos + windowSize * 2; break;
+                if (rs >= 0) runs.push_back({rs, static_cast<int>(env.size()) - 1});
+            }
+            if (!runs.empty()) {
+                constexpr double kMaxBodyGapSec = 0.7;  // silence that ends the utterance body
+                size_t lastBody = runs.size() - 1;
+                while (lastBody > 0) {
+                    const double gap = (envPos[runs[lastBody].first]
+                                        - (envPos[runs[lastBody - 1].second] + win))
+                                       / static_cast<double>(sr);
+                    if (gap > kMaxBodyGapSec) --lastBody;  // detached trailing run → drop
+                    else break;
+                }
+                coreStart = runs.front().first;
+                coreEnd   = runs[lastBody].second;
+            }
+            if (coreStart >= 0) {
+                constexpr double kMaxLeadSec  = 0.15;  // soft-onset extension cap
+                constexpr double kMaxTrailSec = 0.10;  // soft-offset extension cap
+                const int maxLeadWins  = std::max(1, static_cast<int>(kMaxLeadSec  / kEnvHopSec));
+                const int maxTrailWins = std::max(1, static_cast<int>(kMaxTrailSec / kEnvHopSec));
+                int startK = coreStart;
+                for (int n = 0; n < maxLeadWins && startK - 1 >= 0 &&
+                                env[static_cast<size_t>(startK - 1)] >= edgeThresh; ++n)
+                    --startK;
+                int endK = coreEnd;
+                for (int n = 0; n < maxTrailWins && endK + 1 < static_cast<int>(env.size()) &&
+                                env[static_cast<size_t>(endK + 1)] >= edgeThresh; ++n)
+                    ++endK;
+                int ss = std::max(s0, envPos[static_cast<size_t>(startK)]
+                                          - static_cast<int>(kPrePadSec * sr));
+                int se = std::min(s1, envPos[static_cast<size_t>(endK)] + win
+                                          + static_cast<int>(kPostPadSec * sr));
+                vadStart = static_cast<double>(ss) / sr;
+                vadEnd   = static_cast<double>(se) / sr;
+                vadOk    = true;
             }
         }
-        int prepad  = static_cast<int>(0.060 * audioData.sampleRate); // 60ms
-        int postpad = static_cast<int>(0.040 * audioData.sampleRate); // 40ms
-        speechStart = std::max(startSample, speechStart - prepad);
-        speechEnd   = std::min(endSample,   speechEnd + postpad);
-        double newStart = static_cast<double>(speechStart) / audioData.sampleRate;
-        double newEnd   = static_cast<double>(speechEnd)   / audioData.sampleRate;
-        if (std::abs(newStart - clip.start) > 0.01 || std::abs(newEnd - clip.end) > 0.01) {
+
+        // Combine.  Start from the VAD result if it found speech, else the clip's
+        // current bounds; then clamp to the word span so the boundary ALWAYS
+        // brackets the words (never cuts the first/last word) and never runs far
+        // past them (a hugely over-extended segment is bounded to a modest tail).
+        double newStart = vadOk ? vadStart : clip.start;
+        double newEnd   = vadOk ? vadEnd   : clip.end;
+        if (hasWords) {
+            // Trust the (now word-bounded) energy VAD's end — it marks where the
+            // SOUND actually stops — and only CAP it to the last word + a small
+            // pad so a trailing breath / room-swell the VAD kept can't make a
+            // huge gap.  whisper's last-word end runs LOOSE-LATE, so we must NOT
+            // anchor UP to it: doing that left ~1-2 s of empty space past the
+            // real speech on clips where the VAD had correctly found the end
+            // earlier.  (The START stays with the VAD: whisper's first-word start
+            // runs EARLY, so anchoring the in-point to it pulls every start too
+            // early.)
+            constexpr double kWordTrailPad = 0.08;  // small tail past the (loose-late) word end
+            newEnd = std::min(newEnd, wLastEnd + kWordTrailPad);
+        } else if (!vadOk) {
+            continue;   // no words and no audio core — nothing reliable; leave as-is
+        }
+
+        if (newEnd > newStart &&
+            (std::abs(newStart - clip.start) > 0.01 ||
+             std::abs(newEnd   - clip.end)   > 0.01)) {
             clip.start = newStart;
             clip.end   = newEnd;
             ++trimCount;
         }
-    updateSyncProgress(80, "Closing inter-clip gaps...");
-
     }
     if (trimCount > 0)
-        spdlog::info("AudioSync: Auto-trimmed silence from {} clips", trimCount);
-
-    updateSyncProgress(80, "Closing inter-clip gaps...");
+        spdlog::info("AudioSync: VAD-trimmed {} clips", trimCount);
 
     updateSyncProgress(80, "Closing inter-clip gaps...");
 

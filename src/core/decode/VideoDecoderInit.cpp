@@ -11,6 +11,7 @@ extern "C" {
 #include <libavformat/avio.h>
 #include <libavutil/avutil.h>
 #include <libavutil/dict.h>
+#include <libavutil/display.h>   // av_display_rotation_get (portrait footage)
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mem.h>
@@ -407,6 +408,26 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
             static_cast<AVPixelFormat>(codecpar->format));
         depthDesc && depthDesc->nb_components > 0 && depthDesc->comp[0].depth > 0)
         m_info.bitDepth = depthDesc->comp[0].depth;
+
+    // ── Display rotation (portrait phone footage, rotated cameras) ───────
+    // FFmpeg 7.x exposes the container's 3×3 display matrix as packet side
+    // data on codecpar->coded_side_data.  av_display_rotation_get() returns
+    // the COUNTER-clockwise angle that would restore the frame; negate it to
+    // get the clockwise rotation to apply for display, then snap to a quarter
+    // turn.  Untagged sources keep rotation = 0 (decode behaves as before).
+    m_info.rotation = 0;
+    if (const AVPacketSideData* dm = av_packet_side_data_get(
+            codecpar->coded_side_data, codecpar->nb_coded_side_data,
+            AV_PKT_DATA_DISPLAYMATRIX);
+        dm && dm->data && dm->size >= 9 * sizeof(int32_t)) {
+        const double ccw = av_display_rotation_get(
+            reinterpret_cast<const int32_t*>(dm->data));
+        m_info.rotation = snapDisplayRotation(-ccw);
+        if (m_info.rotation != 0)
+            spdlog::info("VideoDecoder: '{}' display rotation {}° (clockwise) — "
+                         "detected; not yet auto-corrected on screen (Phase 2)",
+                         pathToUtf8(path.filename()), m_info.rotation);
+    }
 
     // Alpha channel detection
     bool hasAlpha = false;

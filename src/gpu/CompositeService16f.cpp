@@ -106,6 +106,9 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
     if (info->hasAlpha && info->packedAlpha) return nullptr;       // packed-alpha needs the unpack path
     if (info->packedTiles > 0) return nullptr;                     // stacked-tile proxy unsupported here
     if (info->isVFR) return nullptr;                               // frame mapping assumes CFR
+    if (info->rotation != 0) return nullptr;                       // passthrough packs the source frame
+                                                                   // 1:1 and bypasses the compositor's
+                                                                   // display rotation → would ship sideways
     if (static_cast<uint32_t>(info->width) != outW ||
         static_cast<uint32_t>(info->contentHeight(static_cast<int>(info->height))) != outH)
         return nullptr;                                            // 1:1 only (no scale)

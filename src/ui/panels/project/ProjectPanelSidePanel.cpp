@@ -52,7 +52,10 @@ void ProjectPanel::toggleSidePanel(SidePanelMode mode)
 
 void ProjectPanel::showSidePanel(SidePanelMode mode)
 {
-    static constexpr int PANEL_WIDTH = 400;
+    // 460 (not 400): the NEW / OPEN / SETTINGS forms — e.g. the "1920×1080 FHD"
+    // resolution button row — overflow a 400px panel and get clipped on the
+    // right.  (Re-applied after the ProjectPanel redesign revert dropped it.)
+    static constexpr int PANEL_WIDTH = 460;
 
     m_sidePanelMode = mode;
 

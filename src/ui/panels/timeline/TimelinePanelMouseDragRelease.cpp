@@ -38,17 +38,24 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                     sourceTrackHeight = m_timeline->track(srcTrackIdx)->height();
             }
             if (m_ghostTrackIsAbove) {
+                // Insert ABOVE the top-most REAL video track (but below a pinned
+                // caption track), not blindly at index 0 — matches where the
+                // drag-move ghost preview anchored the band.
+                size_t insertIdx = 0;
+                for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+                    Track* t = m_timeline->track(i);
+                    if (!t || t->isDivider() || t->isCaptionTrack()) continue;
+                    if (t->type() == TrackType::Video) { insertIdx = i; break; }
+                }
                 auto newTrack = std::make_unique<Track>(TrackType::Video, "");
                 newTrack->setHeight(sourceTrackHeight);
-                auto* ptr = newTrack.get();
-                (void)ptr;
-                m_timeline->insertTrack(0, std::move(newTrack));
-                newTrackIndex = 0;
+                m_timeline->insertTrack(insertIdx, std::move(newTrack));
+                newTrackIndex = insertIdx;
                 for (auto& dcs : m_dragSelectedClips) {
-                    dcs.originalTrack += 1;
-                    dcs.ref.trackIndex += 1;
+                    if (dcs.originalTrack  >= insertIdx) dcs.originalTrack  += 1;
+                    if (dcs.ref.trackIndex >= insertIdx) dcs.ref.trackIndex += 1;
                 }
-                m_dragOriginalTrack += 1;
+                if (m_dragOriginalTrack >= insertIdx) m_dragOriginalTrack += 1;
             } else {
                 Track* at = m_timeline->addAudioTrack("");
                 at->setHeight(sourceTrackHeight);

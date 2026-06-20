@@ -222,7 +222,9 @@ private:
     struct NewPanelSizes {
         int cardMarginTB{12}, cardMarginLR{14}, cardSpacing{8};
         int  stepFontSize{12};
-        int  btnFontSize{18}, btnPadV{8}, btnPadH{12};
+        // 15/10 (not 18/12): the wider buttons overflow the panel width and
+        // clip on the right (re-applied after the ProjectPanel redesign revert).
+        int  btnFontSize{15}, btnPadV{8}, btnPadH{10};
         int  inputFontSize{13}, inputPadV{8}, inputPadH{10};
         int  siFontSize{13}, siPadV{6}, siPadH{8}, siMinW{50}, siMaxW{60};
         int  sumPadTB{12}, sumPadLR{14}, sumSpacing{10};

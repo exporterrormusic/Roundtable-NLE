@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Create New Project · wizard redesigns</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;
+  --bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;
+  --pbtn:#2a64aa;--pbtnH:#3473be;
+  --danger:#d23c3c;--dangerBg:#4a2222;--dangerTxt:#e68c8c;
+  --ok:#4caf6e;--warn:#d9a441;--warnBg:#352c14;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::selection{background:var(--accD)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:var(--s1)}
+::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+input[type=number]::-webkit-inner-spin-button{opacity:.5}
+
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.page-head h1{font-size:14px;font-weight:700}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:5px;background:var(--s1);padding:4px;border-radius:8px;border:1px solid var(--bd)}
+.switcher button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:11.5px;font-weight:600;cursor:pointer;padding:7px 13px;border-radius:5px;white-space:nowrap}
+.switcher button:hover{color:var(--txt)}
+.switcher button.active{background:var(--acc);color:#fff}
+
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+.app{height:760px;border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);display:flex;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+
+/* rail */
+.rail{width:76px;flex:0 0 76px;background:var(--s2);border-right:1px solid var(--bd);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:2px}
+.rail .logo{width:40px;height:40px;border-radius:9px;margin-bottom:14px;background:linear-gradient(135deg,var(--acc),var(--accD));display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px}
+.rail-btn{width:60px;height:56px;border:none;background:transparent;color:var(--txt3);border-radius:9px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-family:inherit}
+.rail-btn .ico{font-size:20px}.rail-btn .lbl{font-size:9.5px;font-weight:700}
+.rail-btn.active{background:var(--accS);color:var(--accH)}
+.rail-btn:not(.active):hover{background:var(--s3);color:var(--txt)}
+
+/* sidepanel host */
+.sidepanel{flex:0 0 auto;background:var(--s1);border-right:1px solid var(--bd);display:flex;flex-direction:column}
+.sp-head{height:46px;flex:0 0 46px;display:flex;align-items:center;gap:8px;padding:0 10px 0 18px;border-bottom:1px solid var(--bd)}
+.sp-head .sp-title{font-size:14px;font-weight:700;flex:1}
+.sp-close{width:28px;height:28px;border:none;background:transparent;color:var(--txt3);border-radius:6px;cursor:pointer;font-size:15px}
+.sp-close:hover{background:var(--s3);color:var(--txt)}
+.sp-body{flex:1;overflow:hidden} /* NO SCROLL */
+
+/* faded list peek */
+.peek{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--s1);position:relative}
+.peek .ptool{height:57px;border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 16px;gap:10px}
+.peek .pfield{height:34px;border:1px solid var(--bd);background:var(--s0);border-radius:7px;flex:1;max-width:380px}
+.peek .prow{height:62px;border-bottom:1px solid #1c1c24;display:flex;align-items:center;gap:13px;padding:0 16px;opacity:.5}
+.peek .pthumb{width:80px;height:46px;border-radius:6px;border:1px solid var(--bd)}
+.peek .pbar{height:11px;border-radius:3px;background:var(--s3)}
+.peek-note{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--txt3);background:var(--s2);border:1px solid var(--bd);border-radius:20px;padding:5px 14px}
+
+/* ===== shared wizard atoms ===== */
+.sec-h{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.fld{height:32px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12.5px;padding:0 10px;width:100%}
+.fld:focus{outline:none;border-color:var(--acc)}
+.fld.bad{border-color:var(--danger)}
+select.fld{cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 13px) 14px,calc(100% - 8px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:24px}
+.btn{height:34px;border:1px solid var(--bd);background:var(--s3);color:var(--txt);border-radius:7px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap}
+.btn:hover{background:var(--s4);border-color:var(--bdl)}
+.btn.primary{background:var(--pbtn);border-color:transparent;color:#fff}
+.btn.primary:hover{background:var(--pbtnH)}
+.btn.primary:disabled{background:var(--s3);color:var(--txt3);cursor:not-allowed;border:1px solid var(--bd)}
+.lastchip{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--accH);background:var(--accS);border:1px solid var(--accD);border-radius:20px;padding:3px 11px;cursor:pointer}
+.lastchip:hover{background:#23395a}
+.warn{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--warn);background:var(--warnBg);border:1px solid #4a3d1a;border-radius:6px;padding:6px 9px}
+.warn a{color:var(--accH);text-decoration:underline;cursor:pointer;margin-left:auto}
+.hint{font-size:11px;color:var(--txt3)}
+
+/* presets */
+.preset-grid{display:grid;gap:6px}
+.preset{border:1px solid var(--bd);background:var(--s0);border-radius:8px;cursor:pointer;padding:8px 9px;display:flex;align-items:center;gap:9px;text-align:left}
+.preset:hover{border-color:var(--bdl);background:var(--s3)}
+.preset.on{border-color:var(--acc);background:var(--accS)}
+.preset .pico{flex:0 0 24px;height:24px;display:flex;align-items:center;justify-content:center}
+.preset .pico i{display:block;background:var(--txt3);border-radius:2px}
+.preset.on .pico i{background:var(--accH)}
+.preset .pn{font-size:12px;font-weight:700;color:var(--txt)}
+.preset .pd{font-size:10px;color:var(--txt3)}
+
+/* format control: aspect ratio (left, separated) + always-visible W×H */
+.fmt-row{display:flex;align-items:center;gap:8px}
+.fmt-row .wz-arsel{flex:0 0 86px}
+.fmt-sep{width:1px;align-self:stretch;background:var(--bd);flex:0 0 1px;margin:2px 0}
+.fmt-wh{display:flex;align-items:center;gap:7px;flex:1;min-width:0}
+.fmt-wh input{flex:1;min-width:0;text-align:center}
+.fmt-x{color:var(--txt3);font-weight:700;flex:0 0 auto}
+
+/* live preview canvas */
+.cv-wrap{display:flex;align-items:center;justify-content:center;background:var(--s0);border:1px solid var(--bd);border-radius:8px;position:relative;padding:8px}
+.cv{background:linear-gradient(135deg,#2b3a55,#162033);border:1px solid var(--accD);border-radius:2px;box-shadow:0 4px 16px rgba(0,0,0,.4);transition:width .15s,height .15s}
+
+/* summary — organized detail card */
+.summary{background:var(--s0);border:1px solid var(--bd);border-radius:8px;padding:13px 15px;display:flex;flex-direction:column}
+.summary .dt-name{font-size:16px;font-weight:800;color:var(--txt);display:flex;align-items:center;gap:7px;line-height:1.2}
+.summary .dt-name .ic{font-size:15px;opacity:.8}
+.summary .dt-rows{display:flex;flex-direction:column;margin-top:11px}
+.summary .dt-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:7px 0;border-top:1px solid var(--bd)}
+.summary .dt-row:first-child{border-top:none}
+.summary .dt-k{color:var(--txt3);font-size:10.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;white-space:nowrap}
+.summary .dt-v{color:var(--txt);font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.summary .dt-v.muted{color:var(--txt3);font-weight:600}
+/* full-width compact stat grid (V1): 3 specs on top, Show on its own row */
+.summary .dt-statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px 12px;margin-top:9px}
+.summary .dt-statgrid .dt-k{display:block}
+.summary .dt-statgrid .dt-v{text-align:left;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
+.summary .dt-statgrid .span-all{grid-column:1 / -1;padding-top:9px;border-top:1px solid var(--bd)}
+.summary .dt-statgrid .ctr{margin-left:-14px}
+
+.grp{display:flex;flex-direction:column;gap:6px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+/* save location */
+.loc-row{display:flex;gap:7px}
+.loc-row .wz-loc{flex:1;min-width:0}
+.loc-browse{flex:0 0 auto;width:40px;padding:0;font-size:14px}
+.recent-locs{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.recent-locs .rl-lbl{font-size:10px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase}
+.rchip{font-size:11px;color:var(--txt2);background:var(--s0);border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer;white-space:nowrap}
+.rchip:hover{border-color:var(--bdl);color:var(--txt)}
+
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2)}
+.notes b{color:var(--txt)}.notes ul{margin:8px 0 0 18px}.notes li{margin:3px 0}
+.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Create New Project</h1>
+  <span class="sub">3 no-scroll wizard layouts · linked aspect ↔ resolution</span>
+  <div class="switcher">
+    <button data-v="1" class="active">V1 · Compact Column</button>
+    <button data-v="2">V2 · Split Preview</button>
+    <button data-v="3">V3 · Preset Gallery</button>
+  </div>
+</div>
+
+<section class="stage">
+  <div class="design-label">
+    <span class="tag" id="vtag">V1</span><span class="name" id="vname">Compact Column</span>
+    <span class="desc" id="vdesc"></span>
+  </div>
+
+  <div class="app">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+    </nav>
+
+    <aside class="sidepanel" id="sidepanel">
+      <div class="sp-head"><span class="sp-title">Create New Project</span><button class="sp-close">✕</button></div>
+      <div class="sp-body" id="spBody"></div>
+    </aside>
+
+    <div class="peek">
+      <div class="ptool"><div class="pfield"></div></div>
+      <div class="prow"><div class="pthumb" style="background:linear-gradient(135deg,#2b3a55,#162033)"></div><div style="flex:1"><div class="pbar" style="width:40%"></div><div class="pbar" style="width:24%;margin-top:7px;height:8px"></div></div></div>
+      <div class="prow"><div class="pthumb" style="background:linear-gradient(135deg,#3a2b55,#221633)"></div><div style="flex:1"><div class="pbar" style="width:34%"></div><div class="pbar" style="width:20%;margin-top:7px;height:8px"></div></div></div>
+      <div class="prow"><div class="pthumb" style="background:linear-gradient(135deg,#2b5544,#163326)"></div><div style="flex:1"><div class="pbar" style="width:46%"></div><div class="pbar" style="width:22%;margin-top:7px;height:8px"></div></div></div>
+      <div class="peek-note">Details pane auto-collapsed while Create New Project is open</div>
+    </div>
+  </div>
+
+  <div class="notes" id="vnotes"></div>
+</section>
+
+<!-- ===================== V1 — COMPACT COLUMN ===================== -->
+<template id="tpl-1">
+  <div class="wz" data-w="1920" data-h="1080" data-fps="30" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;height:100%">
+    <div class="grp"><div class="sec-h">Project name</div><input class="fld wz-name" placeholder="e.g. My Tier List"></div>
+    <div class="wz-warn"></div>
+    <div class="grp"><div class="sec-h">Save location</div>
+      <div class="loc-row"><input class="fld wz-loc" value="D:/ROUNDTABLE/projects"><button class="btn loc-browse" title="Browse for a folder…">📁</button></div>
+      <div class="recent-locs"><span class="rl-lbl">Recent</span><span class="rchip" data-loc="D:/ROUNDTABLE/projects">Projects</span><span class="rchip" data-loc="D:/Work/2026">D:/Work/2026</span></div></div>
+    <div class="grp"><div class="sec-h">Start from a preset</div>
+      <div class="preset-grid wz-presets" style="grid-template-columns:1fr 1fr"></div></div>
+    <div class="grp"><div class="sec-h">Aspect ratio &amp; resolution</div>
+      <div class="fmt-row">
+        <select class="fld wz-arsel"></select>
+        <div class="fmt-sep"></div>
+        <div class="fmt-wh"><input class="fld wz-cw" type="number" min="16" max="16384"><span class="fmt-x">×</span><input class="fld wz-ch" type="number" min="16" max="16384"></div>
+      </div></div>
+    <div class="row2">
+      <div class="grp"><div class="sec-h">Frame rate</div><select class="fld wz-fps"></select></div>
+      <div class="grp"><div class="sec-h">Show</div><select class="fld wz-show"><option>— Unassigned —</option><option>Chrono</option><option>Wells</option></select></div>
+    </div>
+    <div style="flex:1"></div>
+    <div class="summary" style="width:100%">
+      <div class="dt-name"><span class="ic">📄</span><span class="wz-sum-name">New Project</span></div>
+      <div class="dt-statgrid">
+        <div><div class="dt-k">Aspect</div><div class="dt-v wz-sum-ar"></div></div>
+        <div class="ctr"><div class="dt-k">Resolution</div><div class="dt-v wz-sum-res"></div></div>
+        <div><div class="dt-k">Frame rate</div><div class="dt-v wz-sum-fps"></div></div>
+        <div class="span-all"><div class="dt-k">Show</div><div class="dt-v wz-sum-show"></div></div>
+      </div>
+    </div>
+    <button class="btn primary wz-create" style="height:42px;font-size:14px">✨ Create Project</button>
+  </div>
+</template>
+
+<!-- ===================== V2 — SPLIT PREVIEW ===================== -->
+<template id="tpl-2">
+  <div class="wz" data-w="1080" data-h="1920" data-fps="30" style="padding:14px 16px;display:flex;gap:14px;height:100%">
+    <div style="flex:1;display:flex;flex-direction:column;gap:11px;min-width:0">
+      <div class="grp"><div class="sec-h">Project name</div><input class="fld wz-name" placeholder="e.g. My Tier List"></div>
+      <div class="wz-warn"></div>
+      <div class="grp"><div class="sec-h">Save location</div>
+        <div class="loc-row"><input class="fld wz-loc" value="D:/ROUNDTABLE/projects"><button class="btn loc-browse" title="Browse for a folder…">📁</button></div>
+        <div class="recent-locs"><span class="rl-lbl">Recent</span><span class="rchip" data-loc="D:/ROUNDTABLE/projects">Projects</span><span class="rchip" data-loc="D:/Work/2026">D:/Work/2026</span></div></div>
+      <div class="grp" style="flex:1;min-height:0"><div class="sec-h">Start from a preset</div>
+        <div class="preset-grid wz-presets" style="grid-template-columns:1fr"></div></div>
+      <div class="grp"><div class="sec-h">Frame rate</div><select class="fld wz-fps"></select></div>
+      <div class="grp"><div class="sec-h">Assign to show</div><select class="fld wz-show"><option>— Unassigned —</option><option>Chrono</option><option>Wells</option></select></div>
+    </div>
+    <div style="flex:0 0 200px;display:flex;flex-direction:column;gap:10px">
+      <div class="cv-wrap wz-cv-wrap" data-fw="172" data-fh="220" style="flex:1"><div class="cv wz-cv"></div></div>
+      <div class="grp"><div class="sec-h">Aspect ratio &amp; resolution</div>
+        <select class="fld wz-arsel"></select>
+        <div class="fmt-wh" style="margin-top:6px"><input class="fld wz-cw" type="number" min="16" max="16384"><span class="fmt-x">×</span><input class="fld wz-ch" type="number" min="16" max="16384"></div></div>
+      <div class="summary">
+        <div class="dt-name"><span class="ic">📄</span><span class="wz-sum-name">New Project</span></div>
+        <div class="dt-rows">
+          <div class="dt-row"><span class="dt-k">Aspect</span><span class="dt-v wz-sum-ar"></span></div>
+          <div class="dt-row"><span class="dt-k">Resolution</span><span class="dt-v wz-sum-res"></span></div>
+          <div class="dt-row"><span class="dt-k">Frame rate</span><span class="dt-v wz-sum-fps"></span></div>
+          <div class="dt-row"><span class="dt-k">Show</span><span class="dt-v wz-sum-show"></span></div>
+        </div>
+      </div>
+      <button class="btn primary wz-create" style="height:42px;font-size:14px">✨ Create Project</button>
+    </div>
+  </div>
+</template>
+
+<!-- ===================== V3 — PRESET GALLERY ===================== -->
+<template id="tpl-3">
+  <div class="wz" data-w="1920" data-h="1080" data-fps="30" style="padding:14px 16px;display:flex;flex-direction:column;gap:11px;height:100%">
+    <div class="grp"><div class="sec-h">Choose a format</div>
+      <div class="preset-grid wz-presets" style="grid-template-columns:1fr 1fr 1fr"></div></div>
+    <div class="grp"><div class="sec-h">Aspect ratio &amp; resolution</div>
+      <div class="fmt-row">
+        <select class="fld wz-arsel"></select>
+        <div class="fmt-sep"></div>
+        <div class="fmt-wh"><input class="fld wz-cw" type="number" min="16" max="16384"><span class="fmt-x">×</span><input class="fld wz-ch" type="number" min="16" max="16384"></div>
+      </div></div>
+    <div class="row2">
+      <div class="grp"><div class="sec-h">Frame rate</div><select class="fld wz-fps"></select></div>
+      <div class="grp"><div class="sec-h">Show</div><select class="fld wz-show"><option>— Unassigned —</option><option>Chrono</option><option>Wells</option></select></div>
+    </div>
+    <div class="row2">
+      <div class="grp"><div class="sec-h">Project name</div><input class="fld wz-name" placeholder="e.g. My Tier List"></div>
+      <div class="grp"><div class="sec-h">Save location</div>
+        <div class="loc-row"><input class="fld wz-loc" value="D:/ROUNDTABLE/projects"><button class="btn loc-browse" title="Browse for a folder…">📁</button></div></div>
+    </div>
+    <div class="recent-locs" style="margin-top:-4px"><span class="rl-lbl">Recent</span><span class="rchip" data-loc="D:/ROUNDTABLE/projects">Projects</span><span class="rchip" data-loc="D:/Work/2026">D:/Work/2026</span></div>
+    <div class="wz-warn"></div>
+    <div style="display:flex;gap:12px;align-items:stretch;min-height:128px;background:var(--s0);border:1px solid var(--bd);border-radius:8px;padding:12px">
+      <div class="cv-wrap wz-cv-wrap" data-fw="120" data-fh="100" style="flex:0 0 140px;border:none;background:transparent;padding:0"><div class="cv wz-cv"></div></div>
+      <div class="summary" style="flex:1;background:transparent;border:none;padding:0;justify-content:center">
+        <div class="dt-name"><span class="ic">📄</span><span class="wz-sum-name">New Project</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 22px;margin-top:12px">
+          <div><div class="dt-k">Aspect</div><div class="dt-v wz-sum-ar"></div></div>
+          <div><div class="dt-k">Resolution</div><div class="dt-v wz-sum-res"></div></div>
+          <div><div class="dt-k">Frame rate</div><div class="dt-v wz-sum-fps"></div></div>
+          <div><div class="dt-k">Show</div><div class="dt-v wz-sum-show"></div></div>
+        </div>
+      </div>
+    </div>
+    <div style="flex:1"></div>
+    <button class="btn primary wz-create" style="height:42px;font-size:14px">✨ Create Project</button>
+  </div>
+</template>
+
+<script>
+const PRESETS=[
+  {n:"YouTube",       d:"1080p · 16:9",     w:1920,h:1080,fps:30},
+  {n:"YouTube 4K",    d:"2160p · 16:9",     w:3840,h:2160,fps:30},
+  {n:"Shorts/Reels/TikTok", d:"1080×1920 · 9:16", w:1080,h:1920,fps:30},
+  {n:"Instagram",     d:"1080² · 1:1",      w:1080,h:1080,fps:30},
+  {n:"Cinematic",     d:"2560×1080 · 21:9", w:2560,h:1080,fps:24},
+  {n:"Custom",        d:"Set your own",     w:1920,h:1080,fps:30,custom:true},
+];
+// aspect ratios — selecting one snaps to a canonical resolution
+const AR_OPTIONS=[
+  {ar:"16:9", w:1920,h:1080},
+  {ar:"9:16", w:1080,h:1920},
+  {ar:"21:9", w:2560,h:1080},
+  {ar:"4:3",  w:1440,h:1080},
+  {ar:"1:1",  w:1080,h:1080},
+  {ar:"custom"},
+];
+const FPS_OPTIONS=["23.976","24","25","29.97","30","50","59.94","60"];
+const EXISTING=new Set(["roundtable feb","wells promo","modernia cut 04","short form test","dress rehearsal","untitled draft"]);
+
+function fit(w,h,cw,ch){const s=Math.min(cw/w,ch/h);return [Math.max(8,Math.round(w*s)),Math.max(8,Math.round(h*s))];}
+function computeAR(w,h){
+  const r=w/h;
+  const commons=[["16:9",16/9],["9:16",9/16],["21:9",21/9],["9:21",9/21],["4:3",4/3],["3:4",3/4],["1:1",1],["3:2",3/2],["2:3",2/3]];
+  for(const[lab,val] of commons) if(Math.abs(r-val)<0.04) return lab;
+  let a=w,b=h;while(b){const t=b;b=a%b;a=t;}const rw=w/a,rh=h/a;
+  if(rw<=64&&rh<=64) return rw+':'+rh;
+  return r.toFixed(2)+':1';
+}
+function presetIcon(w,h){const [iw,ih]=fit(w,h,16,16);return `<i style="width:${iw}px;height:${ih}px"></i>`;}
+function clearPresets(root){root.querySelectorAll('.wz-presets .preset').forEach(x=>x.classList.remove('on'));}
+
+function buildWizard(root){
+  // presets
+  const pg=root.querySelector('.wz-presets');
+  PRESETS.forEach(p=>{
+    const b=document.createElement('div');b.className='preset';
+    b.innerHTML=`<div class="pico">${presetIcon(p.w,p.h)}</div><div><div class="pn">${p.n}</div><div class="pd">${p.d}</div></div>`;
+    b.addEventListener('click',()=>{root.dataset.w=p.w;root.dataset.h=p.h;root.dataset.fps=p.fps;
+      clearPresets(root);b.classList.add('on');render(root);});
+    pg.appendChild(b);
+  });
+  // aspect-ratio select
+  const ar=root.querySelector('.wz-arsel');
+  AR_OPTIONS.forEach(o=>{const op=document.createElement('option');op.value=o.ar;op.textContent=(o.ar==='custom'?'Custom':o.ar);ar.appendChild(op);});
+  ar.addEventListener('change',()=>{const o=AR_OPTIONS.find(x=>x.ar===ar.value);
+    if(o&&o.ar!=='custom'){root.dataset.w=o.w;root.dataset.h=o.h;}
+    clearPresets(root);render(root);});
+  // resolution W × H (always visible, editable)
+  const cw=root.querySelector('.wz-cw'),ch=root.querySelector('.wz-ch');
+  const upd=()=>{const w=Math.max(16,+cw.value||0),h=Math.max(16,+ch.value||0);root.dataset.w=w;root.dataset.h=h;clearPresets(root);render(root);};
+  cw.addEventListener('input',upd);ch.addEventListener('input',upd);
+  // fps
+  const fs=root.querySelector('.wz-fps');
+  if(fs){FPS_OPTIONS.forEach(f=>{const op=document.createElement('option');op.value=f;op.textContent=f+' fps';fs.appendChild(op);});
+    fs.addEventListener('change',()=>{root.dataset.fps=fs.value;clearPresets(root);render(root);});}
+  // name validation
+  root.querySelector('.wz-name').addEventListener('input',()=>render(root));
+  // show → summary
+  const sh=root.querySelector('.wz-show');if(sh)sh.addEventListener('change',()=>render(root));
+  // save-location recent chips
+  const loc=root.querySelector('.wz-loc');
+  root.querySelectorAll('.rchip').forEach(ch=>ch.addEventListener('click',()=>{if(loc)loc.value=ch.dataset.loc;}));
+  render(root);
+}
+
+function render(root){
+  const w=+root.dataset.w,h=+root.dataset.h,fps=root.dataset.fps,ar=computeAR(w,h);
+  // preview canvas
+  const wrap=root.querySelector('.wz-cv-wrap');
+  if(wrap){const fw=+wrap.dataset.fw,fh=+wrap.dataset.fh;const[iw,ih]=fit(w,h,fw,fh);
+    const cv=root.querySelector('.wz-cv');cv.style.width=iw+'px';cv.style.height=ih+'px';}
+  // W × H inputs (don't clobber while typing)
+  const cw=root.querySelector('.wz-cw'),ch=root.querySelector('.wz-ch');
+  if(cw&&document.activeElement!==cw)cw.value=w;
+  if(ch&&document.activeElement!==ch)ch.value=h;
+  // aspect-ratio select reflect
+  const arsel=root.querySelector('.wz-arsel');
+  if(arsel){const has=AR_OPTIONS.some(o=>o.ar===ar);arsel.value=has?ar:'custom';}
+  // fps reflect
+  const fs=root.querySelector('.wz-fps');if(fs)fs.value=String(fps);
+  // summary detail card
+  const nm=root.querySelector('.wz-name');const nameVal=nm.value.trim();
+  const sn=root.querySelector('.wz-sum-name');if(sn)sn.textContent=nameVal||'New Project';
+  const setV=(sel,txt,muted)=>root.querySelectorAll(sel).forEach(e=>{e.textContent=txt;e.classList.toggle('muted',!!muted);});
+  setV('.wz-sum-ar',ar);
+  setV('.wz-sum-res',`${w}×${h}`);
+  setV('.wz-sum-fps',`${fps} fps`);
+  const showSel=root.querySelector('.wz-show');const showVal=showSel?showSel.value:'';
+  setV('.wz-sum-show',(!showVal||showVal.startsWith('—'))?'Unassigned':showVal,(!showVal||showVal.startsWith('—')));
+  // validation
+  const warn=root.querySelector('.wz-warn');const create=root.querySelector('.wz-create');
+  let ok=true;warn.className='wz-warn';warn.innerHTML='';nm.classList.remove('bad');
+  if(!nameVal){ok=false;warn.innerHTML='<span class="hint">Enter a project name to continue.</span>';}
+  else if(EXISTING.has(nameVal.toLowerCase())){
+    ok=false;nm.classList.add('bad');
+    let s=2;while(EXISTING.has((nameVal+' '+s).toLowerCase()))s++;const sug=nameVal+' '+s;
+    warn.className='wz-warn warn';warn.innerHTML=`⚠ “${nameVal}” already exists.<a>Use “${sug}”</a>`;
+    warn.querySelector('a').addEventListener('click',()=>{nm.value=sug;render(root);});
+  }
+  create.disabled=!ok;
+}
+
+const TPL_INFO={
+  1:{tag:'V1',name:'Compact Column',w:372,desc:'Single no-scroll column: presets, a linked aspect↔resolution row, fps + show, and a tall preview beside the summary.'},
+  2:{tag:'V2',name:'Split Preview',w:480,desc:'Controls left; a tall live preview, aspect↔resolution, summary and Create pinned right. Best for judging vertical vs. landscape.'},
+  3:{tag:'V3',name:'Preset Gallery',w:444,desc:'Format-first 3-col gallery, then the linked aspect↔resolution row and a wide preview/summary strip.'},
+};
+function loadVersion(v){
+  const info=TPL_INFO[v];
+  document.getElementById('sidepanel').style.width=info.w+'px';
+  document.getElementById('vtag').textContent=info.tag;
+  document.getElementById('vname').textContent=info.name;
+  document.getElementById('vdesc').textContent=info.desc;
+  document.getElementById('vnotes').innerHTML='<b>'+info.tag+' · '+info.name+'</b><ul>'+
+    '<li><b>Aspect ratio ↔ resolution are linked</b>: pick an AR (left, separated) and it snaps the W×H; edit W×H and the AR updates (or shows “Custom”). Presets set both.</li>'+
+    '<li><b>Resolution numbers are always visible &amp; editable</b> — no hidden “custom” mode.</li>'+
+    '<li><b>Live preview</b> sits in a taller box so vertical (9:16) shapes no longer collide with the caption.</li>'+
+    '<li><b>Validation</b>: Create disabled until the name is non-empty &amp; unique (collision suggests the next free name). <b>Broadcast fps</b> and <b>Assign to Show</b> included.</li></ul>';
+  const body=document.getElementById('spBody');body.innerHTML='';
+  body.appendChild(document.getElementById('tpl-'+v).content.cloneNode(true));
+  buildWizard(body.querySelector('.wz'));
+}
+document.querySelectorAll('.switcher button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.switcher button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  loadVersion(b.dataset.v);window.scrollTo({top:0,behavior:'smooth'});
+}));
+loadVersion(1);
+</script>
+</body>
+</html>

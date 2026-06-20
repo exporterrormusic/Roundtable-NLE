@@ -77,7 +77,16 @@ void AudioSync::mergeSegmentsToMatchScript()
 
         // Sort clips by start time
         std::sort(clipIndices.begin(), clipIndices.end(),
-                  [&](size_t a, size_t b) { return m_clips[a].start < m_clips[b].start; });
+                  [&](size_t a, size_t b) {
+                      // Group by source file FIRST: each recording has its own
+                      // 0-based timeline, so clips from a base file + a "fixed"/
+                      // retake file interleave (even overlap) in time.  Merging
+                      // must stay within one file — a plain start-time sort would
+                      // fuse unrelated audio from two files into a garbage clip.
+                      if (m_clips[a].sourceFile != m_clips[b].sourceFile)
+                          return m_clips[a].sourceFile < m_clips[b].sourceFile;
+                      return m_clips[a].start < m_clips[b].start;
+                  });
 
         // Pre-normalize all script lines for this character
         std::vector<std::string> normLines;
@@ -111,6 +120,12 @@ void AudioSync::mergeSegmentsToMatchScript()
                 // Never merge into a confirmed (manually assigned) clip — doing so
                 // would destroy the user's manual match.
                 if (nextClip.matchState == 2)
+                    break;
+                // Never merge across source files — each recording has its own
+                // 0-based timeline (a base file + a "fixed"/retake file interleave
+                // in time), so merging across them fuses unrelated audio into a
+                // garbage clip that then matches the wrong line.
+                if (nextClip.sourceFile != clip.sourceFile)
                     break;
                 // Merge if clips are close together Ã¢â‚¬â€ 2.5s gap tolerance for monologues
                 if (nextClip.start - m_clips[lastMergedIdx].end > 2.5)

@@ -195,6 +195,13 @@ public:
     /// Run auto-sync (match transcribed segments to script lines).
     void runAutoSync();
 
+    /// Word-level forced alignment of transcript words to the script (see
+    /// AudioSyncAlign.cpp).  Rebuilds m_clips so each clip spans exactly one
+    /// script line's words.  Returns true when it handled the segmentation
+    /// (word timestamps present + at least one file aligned), false to fall
+    /// back to the heuristic merge/resegment/match path in runAutoSync().
+    bool alignClipsToScript();
+
     /// Save/restore state for project persistence.
     void saveProjectState(const QString& projectName);
     void restoreProjectState(const QString& projectName);

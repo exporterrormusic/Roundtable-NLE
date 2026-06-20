@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Projects Tab · Design A refinements</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;
+  --bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;
+  --pbtn:#2a64aa;--pbtnH:#3473be;
+  --danger:#d23c3c;--dangerBg:#4a2222;--dangerTxt:#e68c8c;
+  --ok:#4caf6e;--warn:#d9a441;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::selection{background:var(--accD)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--s1)}
+::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+::-webkit-scrollbar-thumb:hover{background:#44444f}
+
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:18px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700;letter-spacing:.3px}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:6px;background:var(--s1);padding:4px;border-radius:8px;border:1px solid var(--bd)}
+.switcher button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:7px 14px;border-radius:5px;white-space:nowrap}
+.switcher button:hover{color:var(--txt)}
+.switcher button.active{background:var(--acc);color:#fff}
+
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:600px;text-align:right}
+.app{height:760px;border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);display:flex;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.hidden{display:none!important}
+
+/* ---- shared rail (CORRECTED: NEW/OPEN/SAVE/IMPORT/SETTINGS, grouped) ---- */
+.rail{width:76px;flex:0 0 76px;background:var(--s2);border-right:1px solid var(--bd);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:2px}
+.rail .logo{width:40px;height:40px;border-radius:9px;margin-bottom:14px;background:linear-gradient(135deg,var(--acc),var(--accD));display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px}
+.rail-btn{width:60px;height:56px;border:none;background:transparent;color:var(--txt3);border-radius:9px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-family:inherit;transition:all .12s}
+.rail-btn .ico{font-size:20px;line-height:1}
+.rail-btn .lbl{font-size:9.5px;font-weight:700;letter-spacing:.4px}
+.rail-btn:hover{background:var(--s3);color:var(--txt)}
+.rail-btn.active{background:var(--accS);color:var(--accH)}
+.rail-sep{width:36px;height:1px;background:var(--bd);margin:5px 0}
+.rail .spacer{flex:1}
+
+/* ---- shared toolbar ---- */
+.toolbar{display:flex;align-items:center;gap:10px;padding:11px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.search{flex:1;max-width:480px;display:flex;align-items:center;gap:8px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;padding:0 12px;height:32px}
+.search:focus-within{border-color:var(--acc)}
+.search input{flex:1;background:transparent;border:none;outline:none;color:var(--txt);font-family:inherit;font-size:13px}
+.search .mag{color:var(--txt3);font-size:13px}
+.select{height:32px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;color:var(--txt);font-family:inherit;font-size:12.5px;padding:0 30px 0 12px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 16px) 13px,calc(100% - 11px) 13px;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+.icon-btn{width:32px;height:32px;flex:0 0 32px;border:1px solid var(--bd);background:var(--s0);color:var(--txt2);border-radius:7px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center}
+.icon-btn:hover{background:var(--s3);color:var(--txt);border-color:var(--bdl)}
+.seg{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.seg button{width:34px;height:32px;border:none;background:transparent;color:var(--txt3);cursor:pointer;font-size:14px}
+.seg button:hover{color:var(--txt)}
+.seg button.active{background:var(--accS);color:var(--accH)}
+.count-pill{font-size:11px;color:var(--txt3);background:var(--s2);border:1px solid var(--bd);border-radius:20px;padding:3px 10px;font-weight:600}
+
+.btn{height:32px;border:1px solid var(--bd);background:var(--s3);color:var(--txt);border-radius:7px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;padding:0 13px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.btn:hover{background:var(--s4);border-color:var(--bdl)}
+.btn.primary{background:var(--pbtn);border-color:transparent;color:#fff}
+.btn.primary:hover{background:var(--pbtnH)}
+.btn.danger{color:var(--dangerTxt)}
+.btn.danger:hover{background:var(--dangerBg);border-color:var(--danger)}
+.btn.ghost{background:transparent}
+.btn.sm{height:28px;font-size:12px;padding:0 10px}
+
+/* ---- shared thumbs ---- */
+.thumb{background:#000;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;color:var(--txt3);overflow:hidden}
+.g1{background:linear-gradient(135deg,#2b3a55,#162033)}
+.g2{background:linear-gradient(135deg,#3a2b55,#221633)}
+.g3{background:linear-gradient(135deg,#2b5544,#163326)}
+.g4{background:linear-gradient(135deg,#553a2b,#332116)}
+.g5{background:linear-gradient(135deg,#552b3a,#331622)}
+.show-tag{font-size:10px;color:var(--txt3);border:1px solid var(--bd);border-radius:4px;padding:1px 6px}
+.badge{display:inline-block;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;background:#1e3a2a;color:var(--ok);margin-left:8px;vertical-align:middle}
+.mini{width:25px;height:25px;border:none;background:var(--s3);color:var(--txt2);border-radius:5px;cursor:pointer;font-size:12px}
+.mini:hover{background:var(--s4);color:var(--txt)}
+.mini.danger:hover{background:var(--dangerBg);color:var(--dangerTxt)}
+
+/* ============================================================
+   A1 — COMPACT PRO  (maximum density, Premiere project bin)
+   ============================================================ */
+#A1 .main{flex:1;display:flex;flex-direction:column;min-width:0}
+.tbl-wrap{flex:1;overflow:auto}
+table.proj{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}
+table.proj thead th{position:sticky;top:0;z-index:2;background:var(--s2);text-align:left;color:var(--txt3);font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;padding:8px 12px;border-bottom:1px solid var(--bd);user-select:none;cursor:pointer;white-space:nowrap}
+table.proj thead th:hover{color:var(--txt2)}
+table.proj thead th.sorted{color:var(--acc)}
+table.proj thead th.num{text-align:right}
+table.proj tbody td{padding:0 12px;height:32px;border-bottom:1px solid #18181f;white-space:nowrap}
+table.proj tbody td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--txt2)}
+table.proj tbody tr{cursor:pointer}
+table.proj tbody tr:nth-child(even){background:#13131a}
+table.proj tbody tr:hover{background:var(--s2)}
+table.proj tbody tr.sel{background:var(--accS)}
+.tb-sm{width:40px;height:23px;border-radius:3px;flex:0 0 40px}
+.name-cell{display:flex;align-items:center;gap:10px}
+.name-main{font-weight:600;color:var(--txt)}
+.row-actions{display:flex;gap:3px;opacity:0;transition:opacity .1s;justify-content:flex-end}
+tr:hover .row-actions{opacity:1}
+.footbar{display:flex;align-items:center;gap:12px;padding:7px 16px;background:var(--s2);border-top:1px solid var(--bd);font-size:11.5px;color:var(--txt3)}
+.footbar .right{margin-left:auto;display:flex;gap:7px}
+
+/* ============================================================
+   A2 — INSPECTOR SPLIT (table + detail pane)
+   ============================================================ */
+#A2 .main{flex:1;display:flex;flex-direction:column;min-width:0}
+#A2 .split{flex:1;display:flex;min-height:0}
+#A2 .list-col{flex:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--bd)}
+#A2 .insp{width:330px;flex:0 0 330px;background:var(--s2);display:flex;flex-direction:column;overflow:auto}
+#A2 table.proj tbody td{height:38px}
+#A2 .insp .hero{height:186px;position:relative;display:flex;align-items:center;justify-content:center;font-size:38px;color:#3a3a46;border-bottom:1px solid var(--bd)}
+#A2 .insp .hero .cur-flag{position:absolute;top:10px;left:10px;font-size:9.5px;font-weight:800;letter-spacing:.5px;background:var(--ok);color:#06120b;padding:3px 8px;border-radius:5px}
+#A2 .insp .hero .setthumb{position:absolute;bottom:10px;right:10px}
+#A2 .insp-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+#A2 .insp-title{font-size:17px;font-weight:700}
+#A2 .insp-file{font-size:11px;color:var(--txt3);margin-top:2px;word-break:break-all}
+#A2 .spec-grid{display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:12.5px}
+#A2 .spec-grid .k{color:var(--txt3)}
+#A2 .spec-grid .v{color:var(--txt);text-align:right;font-variant-numeric:tabular-nums}
+#A2 .insp-sec-h{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;margin-top:4px}
+#A2 .insp-actions{display:flex;flex-direction:column;gap:7px}
+#A2 .insp-actions .btn{width:100%;justify-content:flex-start;height:34px}
+#A2 .insp-actions .row2{display:flex;gap:7px}
+#A2 .insp-actions .row2 .btn{justify-content:center}
+#A2 .selectbox{height:30px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12px;padding:0 10px;width:100%}
+
+/* ============================================================
+   A3 — GROUPED BINS (collapsible sections)
+   ============================================================ */
+#A3 .main{flex:1;display:flex;flex-direction:column;min-width:0}
+#A3 .grp-h{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:9px;padding:7px 16px;background:var(--s2);border-bottom:1px solid var(--bd);border-top:1px solid var(--bd);cursor:pointer;user-select:none}
+#A3 .grp-h .caret{color:var(--txt3);font-size:11px;width:12px;transition:transform .1s}
+#A3 .grp-h .gname{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--txt2)}
+#A3 .grp-h .gcount{font-size:10.5px;color:var(--txt3);background:var(--s0);border:1px solid var(--bd);border-radius:20px;padding:1px 8px}
+#A3 .grp-h:hover .gname{color:var(--txt)}
+#A3 table.proj{margin-bottom:2px}
+#A3 table.proj tbody td{height:36px}
+#A3 .grp.collapsed table{display:none}
+#A3 .grp.collapsed .caret{transform:rotate(-90deg)}
+
+/* notes */
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2)}
+.notes b{color:var(--txt)}
+.notes ul{margin:8px 0 0 18px}
+.notes li{margin:3px 0}
+.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Projects Tab</h1>
+  <span class="sub">Design A — three refined, varied table layouts · rail corrected (NEW/OPEN/SAVE/IMPORT/SETTINGS)</span>
+  <div class="switcher">
+    <button data-d="A1" class="active">A1 · Compact Pro</button>
+    <button data-d="A2">A2 · Inspector Split</button>
+    <button data-d="A3">A3 · Grouped Bins</button>
+  </div>
+</div>
+
+<!-- ===================== A1 — COMPACT PRO ===================== -->
+<section class="stage" id="stage-A1">
+  <div class="design-label">
+    <span class="tag">A1</span><span class="name">Compact Pro</span>
+    <span class="desc">Maximum density. 32px single-line rows, tiny thumbnails, tabular numerics, zebra striping. The "I have 200 projects and want to scan fast" layout — closest to Premiere's Project bin.</span>
+  </div>
+  <div class="app" id="A1">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+      <div class="spacer"></div>
+    </nav>
+    <div class="main">
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search projects…"></div>
+        <span class="count-pill">6 projects</span>
+        <div style="flex:1"></div>
+        <select class="select"><option>Newest First</option><option>Oldest First</option><option>Name A–Z</option><option>Name Z–A</option></select>
+        <div class="seg"><button class="active">≣</button><button>▦</button></div>
+        <button class="icon-btn" title="Refresh (F5)">↻</button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="proj">
+          <thead><tr>
+            <th style="width:54px"></th><th class="sorted">Name ▾</th><th style="width:90px">Show</th>
+            <th class="num" style="width:110px">Resolution</th><th class="num" style="width:54px">FPS</th>
+            <th class="num" style="width:80px">Size</th><th class="num" style="width:150px">Modified</th><th style="width:90px"></th>
+          </tr></thead>
+          <tbody>
+            <tr class="sel"><td><div class="thumb tb-sm g1"></div></td><td class="name-cell"><span class="name-main">Roundtable Feb</span><span class="badge">CURRENT</span></td><td><span class="show-tag">Chrono</span></td><td class="num">1920×1080</td><td class="num">30</td><td class="num">2.1 MB</td><td class="num">Today 14:02</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g2"></div></td><td class="name-cell"><span class="name-main">Wells Promo</span></td><td><span class="show-tag">Wells</span></td><td class="num">1080×1920</td><td class="num">60</td><td class="num">1.8 MB</td><td class="num">Yesterday 19:31</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g3"></div></td><td class="name-cell"><span class="name-main">Modernia Cut 04</span></td><td><span class="show-tag" style="color:var(--txt3)">—</span></td><td class="num">3840×2160</td><td class="num">24</td><td class="num">5.4 MB</td><td class="num">Jun 17 11:08</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g4"></div></td><td class="name-cell"><span class="name-main">Short Form Test</span></td><td><span class="show-tag">Chrono</span></td><td class="num">1080×1920</td><td class="num">30</td><td class="num">980 KB</td><td class="num">Jun 15 09:44</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g5"></div></td><td class="name-cell"><span class="name-main">Dress Rehearsal</span></td><td><span class="show-tag">Wells</span></td><td class="num">2560×1440</td><td class="num">60</td><td class="num">3.2 MB</td><td class="num">Jun 12 16:20</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm"></div></td><td class="name-cell"><span class="name-main">Untitled Draft</span></td><td><span class="show-tag" style="color:var(--txt3)">—</span></td><td class="num">1920×1080</td><td class="num">30</td><td class="num">412 KB</td><td class="num">Jun 09 08:15</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="footbar"><b style="color:var(--txt)">Roundtable Feb</b><span>1920×1080 · 30 fps · 2.1 MB</span>
+        <div class="right"><button class="btn ghost sm">⧉ Duplicate</button><button class="btn ghost sm">✎ Rename</button><button class="btn danger ghost sm">🗑 Delete</button><button class="btn primary sm">▶ Open</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>A1 rationale:</b>
+    <ul>
+      <li>Row height 32px (vs today's tall thumbnail rows) — ~2× the projects visible per screen.</li>
+      <li>Zebra striping + tabular numerics make resolution/fps/size columns instantly scannable.</li>
+      <li>Thumbnail shrinks to a 40×23 swatch (recognition without dominating). Toggle thumbnails off entirely via the column header context-menu — already supported today.</li>
+      <li>Footer collapses today's 4-button bank into a compact selection bar.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ===================== A2 — INSPECTOR SPLIT ===================== -->
+<section class="stage hidden" id="stage-A2">
+  <div class="design-label">
+    <span class="tag">A2</span><span class="name">Inspector Split</span>
+    <span class="desc">Table on the left, a persistent detail/inspector pane on the right. Surfaces EVERY action that's currently hidden in the right-click menu — assign-to-show, reveal in Explorer, export, set/remove thumbnail — as visible controls.</span>
+  </div>
+  <div class="app" id="A2">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+      <div class="spacer"></div>
+    </nav>
+    <div class="main">
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search projects…"></div>
+        <span class="count-pill">6 projects</span>
+        <div style="flex:1"></div>
+        <select class="select"><option>Newest First</option><option>Name A–Z</option></select>
+        <button class="icon-btn" title="Refresh">↻</button>
+      </div>
+      <div class="split">
+        <div class="list-col">
+          <div class="tbl-wrap">
+            <table class="proj">
+              <thead><tr><th style="width:50px"></th><th class="sorted">Name ▾</th><th class="num" style="width:104px">Resolution</th><th class="num" style="width:130px">Modified</th></tr></thead>
+              <tbody>
+                <tr class="sel"><td><div class="thumb tb-sm g1"></div></td><td class="name-cell"><span class="name-main">Roundtable Feb</span><span class="badge">CUR</span></td><td class="num">1920×1080</td><td class="num">Today 14:02</td></tr>
+                <tr><td><div class="thumb tb-sm g2"></div></td><td class="name-cell"><span class="name-main">Wells Promo</span></td><td class="num">1080×1920</td><td class="num">Yesterday</td></tr>
+                <tr><td><div class="thumb tb-sm g3"></div></td><td class="name-cell"><span class="name-main">Modernia Cut 04</span></td><td class="num">3840×2160</td><td class="num">Jun 17</td></tr>
+                <tr><td><div class="thumb tb-sm g4"></div></td><td class="name-cell"><span class="name-main">Short Form Test</span></td><td class="num">1080×1920</td><td class="num">Jun 15</td></tr>
+                <tr><td><div class="thumb tb-sm g5"></div></td><td class="name-cell"><span class="name-main">Dress Rehearsal</span></td><td class="num">2560×1440</td><td class="num">Jun 12</td></tr>
+                <tr><td><div class="thumb tb-sm"></div></td><td class="name-cell"><span class="name-main">Untitled Draft</span></td><td class="num">1920×1080</td><td class="num">Jun 09</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <!-- inspector -->
+        <aside class="insp">
+          <div class="hero thumb g1">🎬<span class="cur-flag">● CURRENT</span><button class="btn sm setthumb">🖼 Set thumbnail…</button></div>
+          <div class="insp-body">
+            <div>
+              <div class="insp-title">Roundtable Feb</div>
+              <div class="insp-file">D:/ROUNDTABLE/projects/roundtable_feb.rtp</div>
+            </div>
+            <button class="btn primary" style="width:100%;justify-content:center;height:38px">▶ Open Project</button>
+            <div class="spec-grid">
+              <div class="k">Resolution</div><div class="v">1920 × 1080</div>
+              <div class="k">Frame rate</div><div class="v">30 fps</div>
+              <div class="k">File size</div><div class="v">2.1 MB</div>
+              <div class="k">Modified</div><div class="v">Today 14:02</div>
+              <div class="k">Created</div><div class="v">Feb 03 2026</div>
+            </div>
+            <div class="insp-sec-h">Show</div>
+            <select class="selectbox"><option>Chrono</option><option>Wells</option><option>— Unassigned —</option></select>
+            <div class="insp-sec-h">Manage</div>
+            <div class="insp-actions">
+              <div class="row2">
+                <button class="btn">⧉ Duplicate</button>
+                <button class="btn">✎ Rename</button>
+              </div>
+              <button class="btn">📂 Reveal in Explorer</button>
+              <button class="btn">📤 Export project…</button>
+              <button class="btn danger">🗑 Delete project</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>A2 rationale:</b>
+    <ul>
+      <li>The current panel hides <code>revealInExplorer</code>, <code>exportProject</code>, <code>assignProjectToShow</code>, <code>setThumbnailForProject</code>/<code>removeThumbnailForProject</code> behind a right-click menu. The inspector makes them <b>discoverable, persistent controls</b>.</li>
+      <li>Show assignment becomes a live dropdown (fed by <code>setKnownShows</code>) instead of a buried submenu.</li>
+      <li>Inline rename and "Set thumbnail" sit right on the preview — no modal dialogs needed for the common case.</li>
+      <li>Table narrows to essentials (Name / Resolution / Modified) since the inspector carries the rest; columns are still user-resizable/toggleable.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ===================== A3 — GROUPED BINS ===================== -->
+<section class="stage hidden" id="stage-A3">
+  <div class="design-label">
+    <span class="tag">A3</span><span class="name">Grouped Bins</span>
+    <span class="desc">Same dense table, organized into collapsible sections. Group by Date (Today / This Week / Older) or by Show — turning the existing show metadata into structure. Click a section header to fold it.</span>
+  </div>
+  <div class="app" id="A3">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn active"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <button class="rail-btn"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+      <div class="spacer"></div>
+    </nav>
+    <div class="main">
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search projects…"></div>
+        <span class="count-pill">6 projects</span>
+        <div style="flex:1"></div>
+        <span style="font-size:11.5px;color:var(--txt3)">Group by</span>
+        <select class="select" style="width:auto"><option>Date</option><option>Show</option><option>Resolution</option><option>None</option></select>
+        <select class="select"><option>Newest First</option><option>Name A–Z</option></select>
+        <button class="icon-btn" title="Refresh">↻</button>
+      </div>
+      <div class="tbl-wrap">
+        <div class="grp">
+          <div class="grp-h"><span class="caret">▼</span><span class="gname">Today</span><span class="gcount">1</span></div>
+          <table class="proj"><tbody>
+            <tr class="sel"><td style="width:54px"><div class="thumb tb-sm g1"></div></td><td class="name-cell"><span class="name-main">Roundtable Feb</span><span class="badge">CURRENT</span></td><td style="width:90px"><span class="show-tag">Chrono</span></td><td class="num" style="width:110px">1920×1080</td><td class="num" style="width:54px">30</td><td class="num" style="width:80px">2.1 MB</td><td class="num" style="width:150px">14:02</td><td style="width:90px"><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+          </tbody></table>
+        </div>
+        <div class="grp">
+          <div class="grp-h"><span class="caret">▼</span><span class="gname">This Week</span><span class="gcount">3</span></div>
+          <table class="proj"><tbody>
+            <tr><td style="width:54px"><div class="thumb tb-sm g2"></div></td><td class="name-cell"><span class="name-main">Wells Promo</span></td><td style="width:90px"><span class="show-tag">Wells</span></td><td class="num" style="width:110px">1080×1920</td><td class="num" style="width:54px">60</td><td class="num" style="width:80px">1.8 MB</td><td class="num" style="width:150px">Yesterday</td><td style="width:90px"><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g3"></div></td><td class="name-cell"><span class="name-main">Modernia Cut 04</span></td><td><span class="show-tag" style="color:var(--txt3)">—</span></td><td class="num">3840×2160</td><td class="num">24</td><td class="num">5.4 MB</td><td class="num">Jun 17</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+            <tr><td><div class="thumb tb-sm g4"></div></td><td class="name-cell"><span class="name-main">Short Form Test</span></td><td><span class="show-tag">Chrono</span></td><td class="num">1080×1920</td><td class="num">30</td><td class="num">980 KB</td><td class="num">Jun 15</td><td><div class="row-actions"><button class="mini">⧉</button><button class="mini">✎</button><button class="mini danger">🗑</button></div></td></tr>
+          </tbody></table>
+        </div>
+        <div class="grp collapsed">
+          <div class="grp-h"><span class="caret">▼</span><span class="gname">Older</span><span class="gcount">2</span></div>
+          <table class="proj"><tbody>
+            <tr><td style="width:54px"><div class="thumb tb-sm g5"></div></td><td class="name-cell"><span class="name-main">Dress Rehearsal</span></td><td style="width:90px"><span class="show-tag">Wells</span></td><td class="num" style="width:110px">2560×1440</td><td class="num" style="width:54px">60</td><td class="num" style="width:80px">3.2 MB</td><td class="num" style="width:150px">Jun 12</td><td style="width:90px"></td></tr>
+            <tr><td><div class="thumb tb-sm"></div></td><td class="name-cell"><span class="name-main">Untitled Draft</span></td><td><span class="show-tag" style="color:var(--txt3)">—</span></td><td class="num">1920×1080</td><td class="num">30</td><td class="num">412 KB</td><td class="num">Jun 09</td><td></td></tr>
+          </tbody></table>
+        </div>
+      </div>
+      <div class="footbar"><b style="color:var(--txt)">Roundtable Feb</b><span>1920×1080 · 30 fps</span>
+        <div class="right"><button class="btn ghost sm">⧉ Duplicate</button><button class="btn ghost sm">✎ Rename</button><button class="btn primary sm">▶ Open</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>A3 rationale:</b>
+    <ul>
+      <li>Collapsible bins keep a large library navigable — fold "Older" away, keep recent work on top.</li>
+      <li>"Group by" reuses metadata you already store: Date buckets, Show (from <code>ProjectInfo.show</code>), or Resolution. "None" falls back to the flat A1 list.</li>
+      <li>Click a header to collapse; section counts give an at-a-glance inventory.</li>
+      <li>Same row interactions, hover-actions and footer as A1 — this is A1 + structure, not a different model.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+const btns=document.querySelectorAll('.switcher button');
+btns.forEach(b=>b.addEventListener('click',()=>{
+  btns.forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  ['A1','A2','A3'].forEach(k=>document.getElementById('stage-'+k).classList.toggle('hidden',k!==b.dataset.d));
+  window.scrollTo({top:0,behavior:'smooth'});
+}));
+// A3 collapse interaction
+document.querySelectorAll('#A3 .grp-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('collapsed')));
+</script>
+</body>
+</html>

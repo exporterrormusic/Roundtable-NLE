@@ -10,6 +10,7 @@
 #include <QLoggingCategory>
 #include <QStyleFactory>
 #include <QTimer>
+#include <QAbstractNativeEventFilter>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -34,6 +35,32 @@
 extern "C" {
 #include <libavutil/log.h>
 }
+#endif
+
+#ifdef _WIN32
+// Refuse Windows UI-Automation / MSAA object requests (WM_GETOBJECT) so Qt's
+// accessibility bridge is NEVER built or reactivated.  That bridge crashes
+// querying a torn-down widget's windowHandle — a recurring ACCESS_VIOLATION
+// entirely inside Qt6Widgets / UIAutomationCore (crash_log 2026-06-06 and
+// 2026-06-19).  QT_ACCESSIBILITY=0 alone doesn't hold because an external UIA
+// client (an injected overlay like Overwolf / NVIDIA, or a screen reader)
+// reactivates it at runtime.  Declining the request stops it at the source.
+// We don't ship screen-reader support, so this is safe.
+class UiaBlockFilter : public QAbstractNativeEventFilter
+{
+public:
+    bool nativeEventFilter(const QByteArray& type, void* message, qintptr* result) override
+    {
+        if (type == "windows_generic_MSG" && message) {
+            auto* msg = static_cast<MSG*>(message);
+            if (msg->message == WM_GETOBJECT) {
+                if (result) *result = 0;   // "no accessibility object for this window"
+                return true;               // handled — Qt never responds / builds a11y
+            }
+        }
+        return false;
+    }
+};
 #endif
 
 // ── Event loop runner (simple wrapper for consistency)
@@ -166,6 +193,12 @@ int main(int argc, char* argv[])
 
     // Qt Application
     QApplication qtApp(argc, argv);
+#ifdef _WIN32
+    // Block the a11y bridge at the source (see UiaBlockFilter) — the env var
+    // above isn't enough once an external UIA client reactivates it.
+    static UiaBlockFilter s_uiaBlocker;
+    qtApp.installNativeEventFilter(&s_uiaBlocker);
+#endif
     qtApp.setStyle(new NoElideTabStyle(qtApp.style()->objectName()));
     qtApp.setApplicationName("ROUNDTABLE NLE");
     qtApp.setApplicationVersion(ROUNDTABLE_VERSION);

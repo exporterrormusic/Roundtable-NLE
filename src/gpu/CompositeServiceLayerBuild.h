@@ -51,6 +51,11 @@ struct LayerInfo
     float cropB{0.0f};
     uint32_t frameWidth{0};   // source dimensions (used when gpuTextureReady)
     uint32_t frameHeight{0};
+    int srcRotation{0};       // source display rotation, clockwise: 0/90/180/270.
+                              // From VideoStreamInfo::rotation (portrait phone
+                              // footage etc.).  buildViewportTransform swaps the
+                              // fit aspect for 90/270 and re-orients the sampled
+                              // UV.  0 = no rotation (legacy byte-identical path).
     bool containFit{false};   // true = contain-fit (for pre-rendered spine cache)
     bool isPacked{false};     // true = packed-alpha (GPU shader handles unpack)
     bool isPMA{false};        // true = premultiplied-alpha (Spine FBO output)

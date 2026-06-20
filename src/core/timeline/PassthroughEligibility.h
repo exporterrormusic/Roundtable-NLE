@@ -17,9 +17,9 @@
  *
  * SCOPE: this covers only the TIMELINE-level conditions.  The SOURCE-level gates
  * (source bit depth > 8, source dimensions == output dimensions, not alpha /
- * packed-alpha, not VFR, BT.709-limited-SDR colour) need the decoded
- * VideoStreamInfo and are applied by the caller (CompositeService) after
- * resolving the media handle for the returned clip.
+ * packed-alpha, not VFR, not display-rotated, BT.709-limited-SDR colour) need
+ * the decoded VideoStreamInfo and are applied by the caller (CompositeService)
+ * after resolving the media handle for the returned clip.
  */
 
 #pragma once

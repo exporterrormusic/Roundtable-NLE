@@ -548,7 +548,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             cl.transform = Compositor::buildViewportTransform(
                 srcW, srcH, outW, outH,
                 layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                layer.containFit, layer.anchorX, layer.anchorY);
+                layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
         }
 
         gpuLayers.push_back(cl);
@@ -656,7 +656,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         gpuLayers[li].transform = Compositor::buildViewportTransform(
                             srcW, srcH, outW, outH,
                             layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                            layer.containFit, layer.anchorX, layer.anchorY);
+                            layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
                     } else {
                         // ── Packed-alpha double-buffer (#93) ──────────
                         // Swap upload/composite targets so the compositor
@@ -704,7 +704,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             gpuLayers[li].transform = Compositor::buildViewportTransform(
                                 uploadResult.srcW, uploadResult.srcH, outW, outH,
                                 layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                                layer.containFit, layer.anchorX, layer.anchorY);
+                                layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
                         } else {
                             spdlog::warn("[RENDER_GRAPH] layer {} upload failed", li);
                             gpuLayers[li].enabled = false;

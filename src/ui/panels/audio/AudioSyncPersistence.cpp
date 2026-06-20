@@ -328,6 +328,10 @@ void AudioSync::restoreProjectState(const QString& projectName)
                 }
                 session.allTranscriptionResults.resize(session.audioPaths.size());
                 for (size_t fi = 0; fi < session.audioPaths.size(); ++fi) {
+                    // Don't clobber/duplicate a restored word segment (v5/v6) with a
+                    // wordless text-only one — only fill files that have no words.
+                    if (!session.allTranscriptionResults[fi].segments.empty())
+                        continue;
                     auto it = fileToTranscript.find(session.audioPaths[fi]);
                     if (it != fileToTranscript.end() && !it->second.empty()) {
                         TranscriptionSegment seg;
@@ -509,7 +513,7 @@ void AudioSync::restoreAudioPaths(const QString& projectName)
 //  Binary blob serialization (for .rtp project file)
 // ═══════════════════════════════════════════════════════════════════════════
 
-static constexpr uint32_t AUDIO_SYNC_BLOB_VERSION = 4;
+static constexpr uint32_t AUDIO_SYNC_BLOB_VERSION = 6;  // v6: per-file word TEXT + timestamps (v5 saved timestamps only)
 
 /// Write a single session's clip/audio data into the writer.
 /// Used by serializeToBlob for each session (active or stored).
@@ -519,7 +523,8 @@ static void writeSessionData(BinaryWriter& w,
                              const std::string& audioPath,
                              bool scriptLoaded, bool audioImported,
                              bool transcriptionDone, bool syncDone,
-                             const std::unordered_map<int, std::string>& lineAudioFile)
+                             const std::unordered_map<int, std::string>& lineAudioFile,
+                             const std::vector<TranscriptionResult>& transcriptionResults)
 {
     // Audio paths
     w.writeU32(static_cast<uint32_t>(audioPaths.size()));
@@ -564,6 +569,27 @@ static void writeSessionData(BinaryWriter& w,
         w.writeI64(static_cast<int64_t>(lineNum));
         w.writeString(audioFile);
     }
+
+    // Per-file word TEXT + timestamps (v6+; v5 saved timestamps only).  Auto-sync
+    // needs the word start/end (boundary trim) AND the word text (word-level
+    // alignment to the script) — neither is reconstructable from the saved clips
+    // after a reload (only the matched line text is persisted).  Parallel to
+    // audioPaths.
+    w.writeU32(static_cast<uint32_t>(audioPaths.size()));
+    for (size_t fi = 0; fi < audioPaths.size(); ++fi) {
+        uint32_t nWords = 0;
+        if (fi < transcriptionResults.size())
+            for (const auto& seg : transcriptionResults[fi].segments)
+                nWords += static_cast<uint32_t>(seg.words.size());
+        w.writeU32(nWords);
+        if (fi < transcriptionResults.size())
+            for (const auto& seg : transcriptionResults[fi].segments)
+                for (const auto& wd : seg.words) {
+                    w.writeF64(wd.start);
+                    w.writeF64(wd.end);
+                    w.writeString(wd.word);   // v6: word text
+                }
+    }
 }
 
 std::vector<uint8_t> AudioSync::serializeToBlob() const
@@ -595,13 +621,13 @@ std::vector<uint8_t> AudioSync::serializeToBlob() const
             writeSessionData(w, m_clips, m_audioPaths, m_audioPath,
                              m_scriptLoaded, m_audioImported,
                              m_transcriptionDone, m_syncDone,
-                             m_lineAudioFile);
+                             m_lineAudioFile, m_allTranscriptionResults);
         } else {
             // Stored session — data lives in the session object
             writeSessionData(w, session.clips, session.audioPaths, session.audioPath,
                              session.scriptLoaded, session.audioImported,
                              session.transcriptionDone, session.syncDone,
-                             session.lineAudioFile);
+                             session.lineAudioFile, session.allTranscriptionResults);
         }
     }
 
@@ -617,7 +643,9 @@ static void readSessionData(BinaryReader& r,
                             std::string& outAudioPath,
                             bool& outScriptLoaded, bool& outAudioImported,
                             bool& outTranscriptionDone, bool& outSyncDone,
-                            std::unordered_map<int, std::string>& outLineAudioFile)
+                            std::unordered_map<int, std::string>& outLineAudioFile,
+                            std::vector<TranscriptionResult>& outTranscriptionResults,
+                            uint32_t version)
 {
     // Audio paths
     uint32_t pathCount = r.readU32();
@@ -674,6 +702,31 @@ static void readSessionData(BinaryReader& r,
         std::string audioFile = r.readString();
         outLineAudioFile[static_cast<int>(lineNum)] = std::move(audioFile);
     }
+
+    // Per-file word timestamps (v5+).  Restored into one synthetic segment per
+    // file so auto-sync's boundary trim has the word start/end times again
+    // (whisper is not re-run on reload).  Parallel to audioPaths.
+    outTranscriptionResults.clear();
+    if (version >= 5) {
+        uint32_t fileCount = r.readU32();
+        outTranscriptionResults.resize(fileCount);
+        for (uint32_t fi = 0; fi < fileCount; ++fi) {
+            uint32_t nWords = r.readU32();
+            if (nWords == 0) continue;
+            TranscriptionSegment seg;
+            seg.words.reserve(nWords);
+            for (uint32_t wi = 0; wi < nWords; ++wi) {
+                WordSegment wd;
+                wd.start = r.readF64();
+                wd.end   = r.readF64();
+                if (version >= 6) wd.word = r.readString();   // v6: word text
+                seg.words.push_back(std::move(wd));
+            }
+            seg.start = seg.words.front().start;
+            seg.end   = seg.words.back().end;
+            outTranscriptionResults[fi].segments.push_back(std::move(seg));
+        }
+    }
 }
 
 void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
@@ -725,7 +778,8 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
             readSessionData(r, session.clips, session.audioPaths, session.audioPath,
                             session.scriptLoaded, session.audioImported,
                             session.transcriptionDone, session.syncDone,
-                            session.lineAudioFile);
+                            session.lineAudioFile,
+                            session.allTranscriptionResults, version);
 
             // Parse the script from raw content so the Script object is available
             if (!rawContent.empty()) {
@@ -810,6 +864,10 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
                 }
                 session.allTranscriptionResults.resize(session.audioPaths.size());
                 for (size_t fi = 0; fi < session.audioPaths.size(); ++fi) {
+                    // Don't clobber/duplicate a restored word segment (v5/v6) with a
+                    // wordless text-only one — only fill files that have no words.
+                    if (!session.allTranscriptionResults[fi].segments.empty())
+                        continue;
                     auto it = fileToTranscript.find(session.audioPaths[fi]);
                     if (it != fileToTranscript.end() && !it->second.empty()) {
                         TranscriptionSegment seg;

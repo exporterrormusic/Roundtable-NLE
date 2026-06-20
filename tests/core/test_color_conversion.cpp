@@ -14,6 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
+
 #include "decode/VideoDecoder.h"
 
 namespace rt {
@@ -125,6 +128,42 @@ TEST(ColorConversion, PackedAlphaUsesNominalHeight)
     info.packedTiles = 2;
     const auto cc = resolveColorConversion(info);
     EXPECT_EQ(cc.matrix, ColorMatrix::BT709);
+}
+
+// ── snapDisplayRotation: angle → clockwise quarter-turn in {0,90,180,270} ───
+//
+// The caller passes the CLOCKWISE display angle (it negates FFmpeg's CCW
+// av_display_rotation_get result first).  The snap must round to the nearest
+// quarter turn and fold any sign / wrap into [0,360).
+
+TEST(DisplayRotation, ExactQuarterTurns)
+{
+    EXPECT_EQ(snapDisplayRotation(0.0),   0);
+    EXPECT_EQ(snapDisplayRotation(90.0),  90);
+    EXPECT_EQ(snapDisplayRotation(180.0), 180);
+    EXPECT_EQ(snapDisplayRotation(270.0), 270);
+}
+
+TEST(DisplayRotation, NegativeAnglesFoldIntoRange)
+{
+    // -90° clockwise == 270°; FFmpeg commonly reports portrait as ±90.
+    EXPECT_EQ(snapDisplayRotation(-90.0),  270);
+    EXPECT_EQ(snapDisplayRotation(-180.0), 180);
+    EXPECT_EQ(snapDisplayRotation(-270.0), 90);
+}
+
+TEST(DisplayRotation, WrapsAndRounds)
+{
+    EXPECT_EQ(snapDisplayRotation(360.0),  0);
+    EXPECT_EQ(snapDisplayRotation(450.0),  90);    // 360 + 90
+    EXPECT_EQ(snapDisplayRotation(89.4),   90);    // rounds to nearest 90
+    EXPECT_EQ(snapDisplayRotation(269.6),  270);
+}
+
+TEST(DisplayRotation, NonFiniteIsZero)
+{
+    EXPECT_EQ(snapDisplayRotation(std::nan("")), 0);
+    EXPECT_EQ(snapDisplayRotation(std::numeric_limits<double>::infinity()), 0);
 }
 
 } // namespace

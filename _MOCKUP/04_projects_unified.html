@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Projects · Left action panel + Right inspector</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;
+  --bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;
+  --pbtn:#2a64aa;--pbtnH:#3473be;
+  --danger:#d23c3c;--dangerBg:#4a2222;--dangerTxt:#e68c8c;
+  --ok:#4caf6e;--warn:#d9a441;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::selection{background:var(--accD)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--s1)}
+::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+::-webkit-scrollbar-thumb:hover{background:#44444f}
+
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.page-head h1{font-size:14px;font-weight:700;letter-spacing:.3px}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:5px;background:var(--s1);padding:4px;border-radius:8px;border:1px solid var(--bd);flex-wrap:wrap}
+.switcher button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:11.5px;font-weight:600;cursor:pointer;padding:6px 11px;border-radius:5px;white-space:nowrap}
+.switcher button:hover{color:var(--txt)}
+.switcher button.active{background:var(--acc);color:#fff}
+.switcher .lbl{align-self:center;font-size:10.5px;color:var(--txt3);text-transform:uppercase;letter-spacing:.6px;padding-left:4px}
+
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+.app{height:800px;border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);display:flex;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+
+/* rail */
+.rail{width:76px;flex:0 0 76px;background:var(--s2);border-right:1px solid var(--bd);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:2px;z-index:3}
+.rail .logo{width:40px;height:40px;border-radius:9px;margin-bottom:14px;background:linear-gradient(135deg,var(--acc),var(--accD));display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:18px}
+.rail-btn{width:60px;height:56px;border:none;background:transparent;color:var(--txt3);border-radius:9px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-family:inherit;transition:all .12s}
+.rail-btn .ico{font-size:20px;line-height:1}
+.rail-btn .lbl{font-size:9.5px;font-weight:700;letter-spacing:.4px}
+.rail-btn:hover{background:var(--s3);color:var(--txt)}
+.rail-btn.active{background:var(--accS);color:var(--accH)}
+.rail .spacer{flex:1}
+
+/* ===== LEFT action panel (NEW / OPEN / SETTINGS) — slides from left ===== */
+.sidepanel{width:0;flex:0 0 0;overflow:hidden;background:var(--s1);border-right:1px solid var(--bd);transition:width .18s,flex-basis .18s;display:flex;flex-direction:column}
+.sidepanel.open{width:330px;flex:0 0 330px}
+.sp-head{height:46px;flex:0 0 46px;display:flex;align-items:center;gap:8px;padding:0 10px 0 18px;border-bottom:1px solid var(--bd)}
+.sp-head .sp-title{font-size:14px;font-weight:700;flex:1}
+.sp-close{width:28px;height:28px;border:none;background:transparent;color:var(--txt3);border-radius:6px;cursor:pointer;font-size:15px}
+.sp-close:hover{background:var(--s3);color:var(--txt)}
+.sp-scroll{flex:1;overflow:auto}
+.sp-mode{display:none}.sp-mode.show{display:block}
+
+/* main */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.toolbar{display:flex;align-items:center;gap:10px;padding:11px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.search{flex:1;max-width:430px;display:flex;align-items:center;gap:8px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;padding:0 12px;height:34px}
+.search:focus-within{border-color:var(--acc)}
+.search input{flex:1;background:transparent;border:none;outline:none;color:var(--txt);font-family:inherit;font-size:13px}
+.search .mag{color:var(--txt3);font-size:13px}
+.select{height:34px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;color:var(--txt);font-family:inherit;font-size:12.5px;padding:0 30px 0 12px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 16px) 14px,calc(100% - 11px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+.icon-btn{width:34px;height:34px;flex:0 0 34px;border:1px solid var(--bd);background:var(--s0);color:var(--txt2);border-radius:7px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center}
+.icon-btn:hover{background:var(--s3);color:var(--txt);border-color:var(--bdl)}
+.icon-btn.on{background:var(--accS);color:var(--accH);border-color:var(--accD)}
+.count-pill{font-size:11px;color:var(--txt3);background:var(--s2);border:1px solid var(--bd);border-radius:20px;padding:3px 10px;font-weight:600}
+
+.btn{height:34px;border:1px solid var(--bd);background:var(--s3);color:var(--txt);border-radius:7px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;padding:0 13px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.btn:hover{background:var(--s4);border-color:var(--bdl)}
+.btn.primary{background:var(--pbtn);border-color:transparent;color:#fff}
+.btn.primary:hover{background:var(--pbtnH)}
+.btn.danger{color:var(--dangerTxt)}
+.btn.danger:hover{background:var(--dangerBg);border-color:var(--danger)}
+.btn.sm{height:28px;font-size:12px;padding:0 10px}
+
+/* list + right pane */
+.split{flex:1;display:flex;min-height:0}
+.list-col{flex:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--bd)}
+.tbl-wrap{flex:1;overflow:auto}
+
+/* thumbs — orientation-aware */
+.cell{width:92px;height:56px;border-radius:6px;background:#000;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.inner{border-radius:2px}
+.g1{background:linear-gradient(135deg,#2b3a55,#162033)}
+.g2{background:linear-gradient(135deg,#3a2b55,#221633)}
+.g3{background:linear-gradient(135deg,#2b5544,#163326)}
+.g4{background:linear-gradient(135deg,#553a2b,#332116)}
+.g5{background:linear-gradient(135deg,#552b3a,#331622)}
+.g0{background:repeating-linear-gradient(45deg,#1a1a22,#1a1a22 6px,#15151c 6px,#15151c 12px)}
+
+.show-tag{font-size:10.5px;color:var(--txt3);border:1px solid var(--bd);border-radius:4px;padding:2px 7px}
+.badge{display:inline-block;font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:4px;background:#1e3a2a;color:var(--ok);margin-left:8px;vertical-align:middle}
+.mini{width:27px;height:27px;border:none;background:var(--s3);color:var(--txt2);border-radius:5px;cursor:pointer;font-size:12px}
+.mini:hover{background:var(--s4);color:var(--txt)}
+.mini.danger:hover{background:var(--dangerBg);color:var(--dangerTxt)}
+
+table.proj{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+table.proj thead th{position:sticky;top:0;z-index:2;background:var(--s2);text-align:left;color:var(--txt3);font-size:10.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:11px 14px;border-bottom:1px solid var(--bd);user-select:none;cursor:pointer;white-space:nowrap}
+table.proj thead th:hover{color:var(--txt2)}
+table.proj thead th.sorted{color:var(--acc)}
+table.proj thead th.num{text-align:right}
+table.proj tbody td{padding:10px 14px;border-bottom:1px solid #1c1c24;vertical-align:middle}
+table.proj tbody td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--txt2)}
+table.proj tbody tr{cursor:pointer}
+table.proj tbody tr:hover{background:var(--s2)}
+table.proj tbody tr.sel{background:var(--accS)}
+table.proj tbody tr.sel td{border-color:#244063}
+td.c-thumb{position:relative}
+tr.current td.c-thumb{border-left:3px solid var(--acc)}
+.name-cell{display:flex;align-items:center;gap:13px}
+.name-main{font-weight:600;color:var(--txt);font-size:13.5px}
+.name-sub{font-size:11px;color:var(--txt3);margin-top:2px}
+.checkmk{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--bdl);flex:0 0 16px;display:none;align-items:center;justify-content:center;font-size:10px;color:#fff}
+body.multi .checkmk{display:flex}
+tr.sel .checkmk{background:var(--acc);border-color:var(--acc)}
+.row-actions{display:flex;gap:4px;opacity:0;transition:opacity .12s;justify-content:flex-end}
+tr:hover .row-actions{opacity:1}
+body.multi .row-actions{display:none}
+
+.kbhint{display:flex;align-items:center;gap:14px;padding:6px 16px;background:var(--s2);border-top:1px solid var(--bd);font-size:11px;color:var(--txt3)}
+.kbd{font-size:10px;background:var(--s0);border:1px solid var(--bd);border-bottom-width:2px;border-radius:4px;padding:1px 6px;color:var(--txt2);font-family:inherit;margin-right:4px}
+
+/* ===== RIGHT inspector pane (details only) ===== */
+.rpane{width:340px;flex:0 0 340px;background:var(--s2);display:flex;flex-direction:column;transition:flex-basis .16s,width .16s}
+.rpane.collapsed{width:34px;flex:0 0 34px}
+.rp-head{height:42px;flex:0 0 42px;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--bd)}
+.rp-head .rp-title{font-size:10.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--txt3);flex:1}
+.rp-collapse{width:26px;height:26px;border:none;background:transparent;color:var(--txt3);border-radius:5px;cursor:pointer;font-size:14px}
+.rp-collapse:hover{background:var(--s3);color:var(--txt)}
+.rpane.collapsed .rp-head{padding:0;justify-content:center}
+.rpane.collapsed .rp-title,.rpane.collapsed .rp-scroll{display:none}
+.rp-scroll{flex:1;overflow:auto}
+.rp-mode{display:none}.rp-mode.show{display:block}
+
+/* inspector (condensed, no scroll) */
+.hero{height:158px;position:relative;display:flex;align-items:center;justify-content:center;background:#000;border-bottom:1px solid var(--bd)}
+.hero .hero-inner{border-radius:3px}
+.hero .cur-flag{position:absolute;top:10px;left:10px;font-size:9.5px;font-weight:800;letter-spacing:.5px;background:var(--ok);color:#06120b;padding:3px 9px;border-radius:5px}
+.hero .setthumb{position:absolute;bottom:10px;right:10px}
+.insp-body{padding:13px 18px;display:flex;flex-direction:column;gap:11px}
+.insp-title{font-size:17px;font-weight:700}
+.insp-file{font-size:11px;color:var(--txt3);margin-top:2px;word-break:break-all}
+.spec-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;padding:11px 0;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd)}
+.spec-grid .k{color:var(--txt3)}
+.spec-grid .v{color:var(--txt);text-align:right;font-variant-numeric:tabular-nums}
+.sec-h{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.acts{display:flex;flex-direction:column;gap:7px}
+.acts .btn{width:100%;justify-content:flex-start;height:34px}
+.acts .row2{display:flex;gap:8px}.acts .row2 .btn{justify-content:center}
+.fld{height:32px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12.5px;padding:0 10px;width:100%}
+select.fld{cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 15px) 14px,calc(100% - 10px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:28px}
+
+/* empty / multi */
+.rp-empty-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--txt3);padding:40px 30px;text-align:center}
+.rp-empty-wrap .ico{font-size:46px;opacity:.45}
+.rp-empty-wrap .ttl{font-size:14px;font-weight:600;color:var(--txt2)}
+.rp-empty-wrap .qa{display:flex;flex-direction:column;gap:8px;width:100%;margin-top:8px}
+
+/* left-panel content: new wizard */
+.wiz{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+.wiz .grp{display:flex;flex-direction:column;gap:7px}
+.chips{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.chip{height:34px;border:1px solid var(--bd);background:var(--s0);color:var(--txt);border-radius:7px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.chip:hover{background:var(--s3);border-color:var(--bdl)}
+.chip.on{background:var(--accD);border-color:var(--acc);color:var(--accH)}
+.chip.dashed{border-style:dashed}
+.recent-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.rchip{font-size:11px;color:var(--txt2);background:var(--s0);border:1px solid var(--bd);border-radius:5px;padding:3px 9px;cursor:pointer}
+.rchip:hover{border-color:var(--bdl);color:var(--txt)}
+.wiz-summary{background:var(--s0);border:1px solid var(--bd);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.wiz-summary .sname{font-size:12.5px;font-weight:700}
+.wiz-summary .sspec{font-size:11.5px;color:var(--txt2);font-variant-numeric:tabular-nums}
+
+/* left-panel content: open list */
+.open-list{display:flex;flex-direction:column;gap:4px;padding:10px}
+.open-item{display:flex;align-items:center;gap:11px;padding:7px;border-radius:7px;cursor:pointer;border:1px solid transparent}
+.open-item:hover{background:var(--s3)}
+.open-item.sel{background:var(--accS);border-color:var(--accD)}
+.open-item .oi-t{font-weight:600;font-size:12.5px}
+.open-item .oi-d{font-size:10.5px;color:var(--txt3)}
+.sp-foot{padding:0 12px 14px;display:flex;flex-direction:column;gap:8px}
+
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2)}
+.notes b{color:var(--txt)}
+.notes ul{margin:8px 0 0 18px}.notes li{margin:3px 0}
+.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+.notes .impl{margin-top:10px;padding-top:10px;border-top:1px solid var(--bd);color:var(--txt3)}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Projects Tab</h1>
+  <span class="sub">Left action panel + Right inspector</span>
+  <div class="switcher">
+    <span class="lbl">Left:</span>
+    <button data-sp="new">New</button>
+    <button data-sp="open">Open</button>
+    <button data-sp="settings">Settings</button>
+    <span class="lbl">Right:</span>
+    <button data-rp="inspector" class="active">Inspector</button>
+    <button data-rp="empty">Empty</button>
+    <button data-rp="multi">Multi</button>
+    <span class="lbl">·</span>
+    <button id="collapseToggle">Collapse inspector</button>
+  </div>
+</div>
+
+<section class="stage">
+  <div class="design-label">
+    <span class="tag">A · Final structure</span><span class="name">NEW/OPEN/SETTINGS slide from left · Details on the right</span>
+    <span class="desc">Rail actions open a left panel (as today). The project's details/inspector live in the right pane and expand from there. Click rail buttons and rows to drive both sides.</span>
+  </div>
+
+  <div class="app">
+    <nav class="rail">
+      <div class="logo">R</div>
+      <button class="rail-btn" data-rail="new"><span class="ico">＋</span><span class="lbl">NEW</span></button>
+      <button class="rail-btn" data-rail="open"><span class="ico">📂</span><span class="lbl">OPEN</span></button>
+      <button class="rail-btn" data-rail="save"><span class="ico">💾</span><span class="lbl">SAVE</span></button>
+      <button class="rail-btn" data-rail="import"><span class="ico">📥</span><span class="lbl">IMPORT</span></button>
+      <button class="rail-btn" data-rail="settings"><span class="ico">⚙</span><span class="lbl">SETTINGS</span></button>
+      <div class="spacer"></div>
+    </nav>
+
+    <!-- ===== LEFT action panel ===== -->
+    <aside class="sidepanel" id="sidepanel">
+      <div class="sp-head"><span class="sp-title" id="spTitle">Create New Project</span>
+        <button class="sp-close" id="spClose">✕</button></div>
+      <div class="sp-scroll">
+
+        <!-- new -->
+        <div class="sp-mode" id="sp-new">
+          <div class="wiz">
+            <div class="grp"><div class="sec-h">Project name</div><input class="fld" placeholder="e.g. My Tier List"></div>
+            <div class="grp"><div class="sec-h">Save location</div>
+              <input class="fld" value="D:/ROUNDTABLE/projects">
+              <div class="recent-row"><span style="font-size:10.5px;color:var(--txt3)">Recent:</span>
+                <span class="rchip">📁 projects</span><span class="rchip">📁 D:/Work/2026</span><span class="rchip">Browse…</span></div></div>
+            <div class="grp"><div class="sec-h">Aspect ratio</div>
+              <div class="chips"><div class="chip on">16:9</div><div class="chip">9:16</div><div class="chip">21:9</div><div class="chip dashed">Custom</div></div></div>
+            <div class="grp"><div class="sec-h">Resolution</div>
+              <div class="chips"><div class="chip on">1920×1080</div><div class="chip">2560×1440</div><div class="chip">3840×2160</div><div class="chip dashed">Custom</div></div></div>
+            <div class="grp"><div class="sec-h">Frame rate</div>
+              <div class="chips"><div class="chip">24</div><div class="chip on">30</div><div class="chip">60</div><div class="chip dashed">Custom</div></div></div>
+            <div class="wiz-summary"><div class="sname">📄 New Project</div><div class="sspec">📐 1920×1080 · 🎞 30 fps</div></div>
+            <button class="btn primary" style="width:100%;justify-content:center;height:40px;font-size:13.5px">✨ Create Project</button>
+          </div>
+        </div>
+
+        <!-- open -->
+        <div class="sp-mode" id="sp-open">
+          <div class="open-list" id="openList"></div>
+          <div class="sp-foot">
+            <div style="display:flex;gap:8px">
+              <button class="btn" style="flex:1;justify-content:center">📁 Browse…</button>
+              <button class="btn danger" style="flex:1;justify-content:center">🗑 Delete</button>
+            </div>
+            <button class="btn primary" style="width:100%;justify-content:center;height:40px">▶ Open Selected</button>
+          </div>
+        </div>
+
+        <!-- settings -->
+        <div class="sp-mode" id="sp-settings">
+          <div class="insp-body">
+            <div class="sec-h">Projects directory</div>
+            <div style="font-size:12px;color:var(--txt2)">Where project files are stored. Changing this updates the project list.</div>
+            <input class="fld" readonly value="D:/ROUNDTABLE/projects" style="color:var(--txt2)">
+            <button class="btn">📁 Change directory…</button>
+            <button class="btn">📂 Open in Explorer</button>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="toolbar">
+        <div class="search"><span class="mag">🔍</span><input placeholder="Search name, file, or show…"></div>
+        <span class="count-pill" id="countPill">6 projects</span>
+        <div style="flex:1"></div>
+        <select class="select"><option>Newest First</option><option>Oldest First</option><option>Name A–Z</option><option>Name Z–A</option></select>
+        <button class="icon-btn" id="multiBtn" title="Select multiple">☑</button>
+        <button class="icon-btn" title="Refresh (F5)">↻</button>
+      </div>
+
+      <div class="split">
+        <div class="list-col">
+          <div class="tbl-wrap">
+            <table class="proj">
+              <thead><tr>
+                <th style="width:110px"></th><th class="sorted">Name ▾</th><th style="width:92px">Show</th>
+                <th class="num" style="width:108px">Resolution</th><th class="num" style="width:52px">FPS</th>
+                <th class="num" style="width:80px">Size</th><th class="num" style="width:132px">Modified</th><th style="width:96px"></th>
+              </tr></thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="kbhint">
+            <span><span class="kbd">↑↓</span>Select</span>
+            <span><span class="kbd">Enter</span>Open</span>
+            <span><span class="kbd">F2</span>Rename</span>
+            <span><span class="kbd">Del</span>Delete</span>
+            <span><span class="kbd">Ctrl+Click</span>Multi-select</span>
+          </div>
+        </div>
+
+        <!-- ===== RIGHT inspector ===== -->
+        <aside class="rpane" id="rpane">
+          <div class="rp-head"><span class="rp-title" id="rpTitle">Inspector</span>
+            <button class="rp-collapse" id="rpCollapse" title="Collapse panel">⟩</button></div>
+          <div class="rp-scroll">
+
+            <!-- inspector -->
+            <div class="rp-mode show" id="rp-inspector">
+              <div class="hero" id="inspHero">
+                <span class="cur-flag" id="inspCur">● CURRENT</span>
+                <button class="btn sm setthumb">🖼 Set thumbnail…</button>
+              </div>
+              <div class="insp-body">
+                <div><div class="insp-title" id="inspName">Roundtable Feb</div>
+                  <div class="insp-file" id="inspFile">D:/ROUNDTABLE/projects/roundtable_feb.rtp</div></div>
+                <button class="btn primary" style="width:100%;justify-content:center;height:40px;font-size:13.5px">▶ Open Project</button>
+                <div class="spec-grid">
+                  <div class="k">Resolution</div><div class="v" id="inspRes">1920 × 1080</div>
+                  <div class="k">Frame rate</div><div class="v" id="inspFps">30 fps</div>
+                  <div class="k">File size</div><div class="v" id="inspSize">2.1 MB</div>
+                  <div class="k">Modified</div><div class="v" id="inspMod">Today 14:02</div>
+                  <div class="k">Created</div><div class="v" id="inspCreated">Feb 03 2026</div>
+                </div>
+                <div class="sec-h">Show</div>
+                <select class="fld" id="inspShow"><option>Chrono</option><option>Wells</option><option>— Unassigned —</option></select>
+                <div class="sec-h">Manage</div>
+                <div class="acts">
+                  <div class="row2"><button class="btn">⧉ Duplicate</button><button class="btn">✎ Rename</button></div>
+                  <button class="btn">📂 Reveal in Explorer</button>
+                  <button class="btn danger">🗑 Delete project</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- empty -->
+            <div class="rp-mode" id="rp-empty">
+              <div class="rp-empty-wrap">
+                <div class="ico">🎬</div><div class="ttl">No project selected</div>
+                <div style="font-size:12px">Select a project to see its details, or start something new.</div>
+                <div class="qa">
+                  <button class="btn primary" style="justify-content:center" data-railjump="new">＋ New Project</button>
+                  <button class="btn" style="justify-content:center" data-railjump="open">📂 Open from file…</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- multi -->
+            <div class="rp-mode" id="rp-multi">
+              <div class="insp-body">
+                <div class="insp-title" id="multiCount">3 projects selected</div>
+                <div class="sec-h">Batch actions</div>
+                <div class="acts">
+                  <div class="grp" style="gap:7px"><div class="sec-h" style="margin-bottom:2px">Assign all to show</div>
+                    <select class="fld"><option>Chrono</option><option>Wells</option><option>— Unassigned —</option></select></div>
+                  <button class="btn danger">🗑 Delete selected (3)</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes"><b>Corrected structure:</b>
+    <ul>
+      <li><b>Left panel</b> (between rail &amp; table) hosts NEW / OPEN / SETTINGS — slides in from the left like today, with a close ✕. Try the rail buttons or the "Left:" switcher.</li>
+      <li><b>Right pane</b> is details only: Inspector when a project is selected, Empty when none, Batch when multiple. Expands from the right; collapsible via ⟩.</li>
+      <li>Both can be open at once (e.g. New on the left while a project's inspector shows on the right).</li>
+      <li>Orientation-aware thumbnails, current-project row stripe, and the keyboard hint strip carry over.</li>
+    </ul>
+    <div class="impl"><b>Implementation notes for the C++ pass:</b> ↑/↓ select · Enter open · F2 rename · Del delete · Ctrl/Shift+Click multi · search matches name+file+show · debounce search (don't rebuild the whole QTableWidget per keystroke) · lazy-decode thumbnails for visible rows only.</div>
+  </div>
+</section>
+
+<script>
+const DATA = {
+  "Roundtable Feb":   {file:"roundtable_feb.rtp",  show:"Chrono", w:1920,h:1080, fps:30, size:"2.1 MB", mod:"Today 14:02",    created:"Feb 03 2026", g:"g1", current:true},
+  "Wells Promo":      {file:"wells_promo.rtp",      show:"Wells",  w:1080,h:1920, fps:60, size:"1.8 MB", mod:"Yesterday 19:31", created:"Jun 01 2026", g:"g2"},
+  "Modernia Cut 04":  {file:"modernia_04.rtp",      show:"—",      w:3840,h:2160, fps:24, size:"5.4 MB", mod:"Jun 17 11:08",   created:"Jun 16 2026", g:"g3"},
+  "Short Form Test":  {file:"shortform_test.rtp",   show:"Chrono", w:1080,h:1920, fps:30, size:"980 KB", mod:"Jun 15 09:44",   created:"Jun 14 2026", g:"g4"},
+  "Dress Rehearsal":  {file:"dress_rehearsal.rtp",  show:"Wells",  w:2560,h:1440, fps:60, size:"3.2 MB", mod:"Jun 12 16:20",   created:"Jun 10 2026", g:"g5"},
+  "Untitled Draft":   {file:"untitled_draft.rtp",   show:"—",      w:1920,h:1080, fps:30, size:"412 KB", mod:"Jun 09 08:15",   created:"Jun 09 2026", g:"g0"},
+};
+const order = Object.keys(DATA);
+function fit(w,h,cw,ch){const s=Math.min(cw/w,ch/h);return [Math.round(w*s),Math.round(h*s)];}
+
+const tb = document.getElementById('tbody');
+order.forEach(name=>{
+  const p=DATA[name];const [iw,ih]=fit(p.w,p.h,92,56);
+  const tr=document.createElement('tr');tr.dataset.name=name;
+  if(p.current) tr.classList.add('current');
+  tr.innerHTML=`
+    <td class="c-thumb"><div class="cell"><div class="inner ${p.g}" style="width:${iw}px;height:${ih}px"></div></div></td>
+    <td><div class="name-cell"><div class="checkmk">✓</div><div><div class="name-main">${name}${p.current?'<span class="badge">CURRENT</span>':''}</div><div class="name-sub">${p.file}</div></div></div></td>
+    <td>${p.show==='—'?'<span class="show-tag" style="color:var(--txt3)">—</span>':`<span class="show-tag">${p.show}</span>`}</td>
+    <td class="num">${p.w}×${p.h}</td><td class="num">${p.fps}</td><td class="num">${p.size}</td><td class="num">${p.mod}</td>
+    <td><div class="row-actions"><button class="mini" title="Duplicate">⧉</button><button class="mini" title="Rename">✎</button><button class="mini danger" title="Delete">🗑</button></div></td>`;
+  tr.addEventListener('click',(e)=>{
+    if(document.body.classList.contains('multi')||e.ctrlKey||e.metaKey){
+      tr.classList.toggle('sel');
+      const n=document.querySelectorAll('#tbody tr.sel').length;
+      if(n>1){document.body.classList.add('multi');setRP('multi');document.getElementById('multiCount').textContent=n+' projects selected';}
+      else if(n===1){selectOnly(document.querySelector('#tbody tr.sel'));}
+      else{document.querySelectorAll('#tbody tr.sel').forEach(x=>x.classList.remove('sel'));setRP('empty');}
+      return;
+    }
+    selectOnly(tr);
+  });
+  tb.appendChild(tr);
+});
+
+const ol=document.getElementById('openList');
+order.forEach((name,i)=>{
+  const p=DATA[name];const [iw,ih]=fit(p.w,p.h,54,32);
+  const d=document.createElement('div');d.className='open-item'+(i===0?' sel':'');
+  d.innerHTML=`<div class="cell" style="width:54px;height:32px"><div class="inner ${p.g}" style="width:${iw}px;height:${ih}px"></div></div>
+    <div><div class="oi-t">${name}</div><div class="oi-d">${p.mod} · ${p.w}×${p.h}</div></div>`;
+  d.addEventListener('click',()=>{ol.querySelectorAll('.open-item').forEach(x=>x.classList.remove('sel'));d.classList.add('sel');});
+  ol.appendChild(d);
+});
+
+function selectOnly(tr){
+  document.body.classList.remove('multi');
+  document.querySelectorAll('#tbody tr.sel').forEach(x=>x.classList.remove('sel'));
+  tr.classList.add('sel');renderInspector(tr.dataset.name);setRP('inspector');
+}
+function renderInspector(name){
+  const p=DATA[name];const [iw,ih]=fit(p.w,p.h,300,134);
+  const hero=document.getElementById('inspHero');hero.querySelector('.hero-inner')?.remove();
+  const inner=document.createElement('div');inner.className='hero-inner '+p.g;
+  inner.style.width=iw+'px';inner.style.height=ih+'px';hero.insertBefore(inner,hero.firstChild);
+  document.getElementById('inspName').innerHTML=name+(p.current?'<span class="badge">CURRENT</span>':'');
+  document.getElementById('inspFile').textContent='D:/ROUNDTABLE/projects/'+p.file;
+  document.getElementById('inspRes').textContent=p.w+' × '+p.h;
+  document.getElementById('inspFps').textContent=p.fps+' fps';
+  document.getElementById('inspSize').textContent=p.size;
+  document.getElementById('inspMod').textContent=p.mod;
+  document.getElementById('inspCreated').textContent=p.created;
+  document.getElementById('inspCur').style.display=p.current?'block':'none';
+}
+
+/* right pane modes */
+const RP_TITLES={inspector:'Inspector',empty:'Inspector',multi:'Selection'};
+function setRP(m){
+  document.querySelectorAll('.rp-mode').forEach(x=>x.classList.remove('show'));
+  document.getElementById('rp-'+m).classList.add('show');
+  document.getElementById('rpTitle').textContent=RP_TITLES[m];
+  if(document.getElementById('rpane').classList.contains('collapsed')) toggleCollapse();
+}
+/* left panel modes */
+const SP_TITLES={new:'Create New Project',open:'Open Project File',settings:'Project Settings'};
+function openSP(m){
+  document.querySelectorAll('.sp-mode').forEach(x=>x.classList.remove('show'));
+  document.getElementById('sp-'+m).classList.add('show');
+  document.getElementById('spTitle').textContent=SP_TITLES[m];
+  document.getElementById('sidepanel').classList.add('open');
+  document.querySelectorAll('.rail-btn').forEach(b=>b.classList.toggle('active',b.dataset.rail===m));
+  // While CREATE NEW PROJECT is open, auto-collapse the details pane
+  // (user can still manually reopen it with the ⟩ button).
+  if(m==='new') setCollapsed(true);
+}
+function closeSP(){
+  document.getElementById('sidepanel').classList.remove('open');
+  document.querySelectorAll('.rail-btn').forEach(b=>b.classList.remove('active'));
+}
+document.getElementById('spClose').addEventListener('click',closeSP);
+
+/* switcher */
+document.querySelectorAll('.switcher button[data-sp]').forEach(b=>b.addEventListener('click',()=>openSP(b.dataset.sp)));
+document.querySelectorAll('.switcher button[data-rp]').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.switcher button[data-rp]').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  const m=b.dataset.rp;
+  if(m==='empty'){document.querySelectorAll('#tbody tr.sel').forEach(x=>x.classList.remove('sel'));document.body.classList.remove('multi');}
+  if(m==='multi'){document.body.classList.add('multi');['Roundtable Feb','Wells Promo','Modernia Cut 04'].forEach(n=>document.querySelector(`#tbody tr[data-name="${n}"]`).classList.add('sel'));document.getElementById('multiCount').textContent='3 projects selected';}
+  else{document.body.classList.remove('multi');}
+  setRP(m);
+}));
+
+/* rail */
+document.querySelectorAll('.rail-btn[data-rail]').forEach(b=>b.addEventListener('click',()=>{
+  const r=b.dataset.rail;
+  if(r==='save'||r==='import'){closeSP();return;}
+  if(document.getElementById('sidepanel').classList.contains('open')&&b.classList.contains('active')){closeSP();return;}
+  openSP(r);
+}));
+document.querySelectorAll('[data-railjump]').forEach(b=>b.addEventListener('click',()=>openSP(b.dataset.railjump)));
+
+/* multi toolbar */
+document.getElementById('multiBtn').addEventListener('click',function(){
+  this.classList.toggle('on');document.body.classList.toggle('multi',this.classList.contains('on'));
+  if(!this.classList.contains('on')){document.querySelectorAll('#tbody tr.sel').forEach((x,i)=>{if(i>0)x.classList.remove('sel');});}
+});
+
+/* collapse right pane */
+function setCollapsed(on){const p=document.getElementById('rpane');p.classList.toggle('collapsed',on);
+  document.getElementById('rpCollapse').textContent=p.classList.contains('collapsed')?'⟨':'⟩';}
+function toggleCollapse(){const p=document.getElementById('rpane');setCollapsed(!p.classList.contains('collapsed'));}
+document.getElementById('rpCollapse').addEventListener('click',toggleCollapse);
+document.getElementById('collapseToggle').addEventListener('click',toggleCollapse);
+
+/* init */
+renderInspector('Roundtable Feb');
+document.querySelector('#tbody tr[data-name="Roundtable Feb"]').classList.add('sel');
+</script>
+</body>
+</html>

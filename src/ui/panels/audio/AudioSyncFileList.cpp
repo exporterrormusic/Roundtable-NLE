@@ -674,7 +674,17 @@ void AudioSync::refreshTranscribeFileList()
 
     for (size_t i = 0; i < m_audioPaths.size(); ++i) {
         QFileInfo fi(QString::fromStdString(m_audioPaths[i]));
+        // "Transcribed" if this file has segments OR any clip references it.
+        // The per-file results aren't fully serialized, so after a project
+        // reload m_allTranscriptionResults is empty while the clips persist —
+        // a segments-only check wrongly shows "Pending".  Matches the context-
+        // menu + startTranscription skip logic (clips outlive segments).
         bool done = !m_allTranscriptionResults[i].segments.empty();
+        if (!done) {
+            const std::string& p = m_audioPaths[i];
+            for (const auto& c : m_clips)
+                if (c.sourceFile == p) { done = true; break; }
+        }
         QString icon = done ? QStringLiteral("\u2713") : QStringLiteral("\u25CB");
         QString status = done ? "Transcribed" : "Pending";
         QColor fg = done ? tc.success : tc.textTertiary;
