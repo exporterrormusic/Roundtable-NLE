@@ -2,7 +2,9 @@
     "name": "Wells",
     "variantOrder": [
         "Dress/Idle",
-        "Chrono/Idle"
+        "Chrono/Idle",
+        "Original/Idle",
+        "Dress/Panic"
     ],
     "variants": {
         "Chrono/Idle": {
@@ -16,6 +18,18 @@
             "closed_open": "assets/png_characters/Wells/Dress/Idle/closed_open.png",
             "open_closed": "assets/png_characters/Wells/Dress/Idle/open_closed.png",
             "open_open": "assets/png_characters/Wells/Dress/Idle/open_open.png"
+        },
+        "Dress/Panic": {
+            "closed_closed": "assets/png_characters/Wells/Dress/Panic/closed_closed.png",
+            "closed_open": "assets/png_characters/Wells/Dress/Panic/closed_open.png",
+            "open_closed": "assets/png_characters/Wells/Dress/Panic/open_closed.png",
+            "open_open": "assets/png_characters/Wells/Dress/Panic/open_open.png"
+        },
+        "Original/Idle": {
+            "closed_closed": "assets/png_characters/Wells/Original/Idle/closed_closed.png",
+            "closed_open": "assets/png_characters/Wells/Original/Idle/closed_open.png",
+            "open_closed": "assets/png_characters/Wells/Original/Idle/open_closed.png",
+            "open_open": "assets/png_characters/Wells/Original/Idle/open_open.png"
         }
     }
 }

@@ -12,6 +12,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <utility>
 
 // ─── Minimal JSON helpers ───────────────────────────────────────────────────
 // We use a lightweight approach: manual JSON writing + minimal parsing.
@@ -20,6 +21,36 @@
 // our presets need.
 
 namespace {
+
+// Map an "Ark Ranger" character name to the canonical spine name where the
+// colour comes FIRST ("Black Ark Ranger", "Red Ark Ranger", "Blue Ark Ranger").
+// Scripts sometimes write the colour on the other side ("Ark Ranger Black"),
+// which otherwise fails to resolve to any shot. Detection is case-insensitive;
+// any name containing "ark ranger" plus one of the three colours (in any
+// position) is rewritten to the canonical form. Other names pass through
+// unchanged.
+std::string normalizeArkRangerName(const std::string& name)
+{
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+        return s;
+    };
+    const std::string low = lower(name);
+    if (low.find("ark ranger") == std::string::npos)
+        return name;
+
+    static const std::pair<const char*, const char*> kColors[] = {
+        {"black", "Black Ark Ranger"},
+        {"red",   "Red Ark Ranger"},
+        {"blue",  "Blue Ark Ranger"},
+    };
+    for (const auto& [needle, canonical] : kColors) {
+        if (low.find(needle) != std::string::npos)
+            return canonical;
+    }
+    return name;
+}
 
 // Escape a string for JSON output
 std::string jsonEscape(const std::string& s)
@@ -974,6 +1005,11 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     // ── Step 0: Resolve any alias display name → real character name ────
     // realNameFor returns the input unchanged if no alias matches.
     std::string realName = realNameFor(characterName);
+
+    // Normalize "Ark Ranger" colour variants ("Ark Ranger Black" → "Black Ark
+    // Ranger") so the colour can sit on either side of the name in the script
+    // and still resolve to the canonical spine character / shots.
+    realName = normalizeArkRangerName(realName);
 
     // ── Step A: per-show default (checked first when a show is given) ────
     if (!show.empty()) {

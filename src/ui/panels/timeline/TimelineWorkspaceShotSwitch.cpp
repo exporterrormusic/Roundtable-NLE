@@ -9,6 +9,7 @@
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/properties/PropertiesPanel.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
@@ -424,6 +425,51 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                     vc->effects().addEffect(std::move(fx));
                 }
                 newClips->push_back({targetTrack, std::move(vc)});
+            } else if (ch->isPuppet()) {
+                // ── Custom (PNG-puppet) character → PngPuppetClip ───────────
+                // Mirrors the puppet branch in AudioSyncExport / the timeline
+                // drop handler. Without this, custom characters like Wells fell
+                // through to the Spine branch below and rendered nothing (there
+                // is no Spine model behind them), so swapping to a shot that
+                // contained one showed an empty layer.
+                PuppetManifest man;
+                if (!puppetlib::load(QString::fromStdString(ch->puppetFolder), man)) {
+                    spdlog::warn("applyShotSwitch: cannot load puppet manifest '{}'",
+                                 ch->puppetFolder);
+                    ++layerIdx;
+                    continue;
+                }
+                std::string variant = ch->puppetVariant.empty() ? std::string("default")
+                                                                 : ch->puppetVariant;
+                auto vit = man.variants.find(QString::fromStdString(variant));
+                if (vit == man.variants.end() && !man.variantOrder.isEmpty()) {
+                    variant = man.variantOrder.first().toStdString();
+                    vit = man.variants.find(man.variantOrder.first());
+                }
+                if (vit == man.variants.end()) { ++layerIdx; continue; }
+
+                auto pc = std::make_unique<PngPuppetClip>(ch->characterName, variant);
+                for (int f = 0; f < puppetlib::kFaceCount; ++f)
+                    pc->setFacePath(f, vit->faces[static_cast<size_t>(f)].toStdString());
+                pc->setTimelineIn(groupStart);
+                pc->setDuration(groupDuration);
+                pc->setTalking(ch->isTalking);
+                pc->setLabel(ch->characterName);
+                pc->setShotName(newShotName);
+                pc->setGroupId(groupId);
+                pc->setLayerId("char_" + std::to_string(ref.index));
+                // Seed from the puppet folder (not the clip id) so repeated
+                // clips of the same character stay in motion phase across cuts.
+                pc->setSeed(static_cast<uint32_t>(
+                    std::hash<std::string>{}(ch->puppetFolder) & 0xFFFFFFFFu));
+                constexpr float pW = 1920.0f, pH = 1080.0f;
+                pc->positionX().setDefaultValue((ch->posX - 0.5f) * pW);
+                pc->positionY().setDefaultValue((ch->posY - 0.5f) * pH);
+                pc->scaleX().setDefaultValue(ch->flipX ? -ch->scale : ch->scale);
+                pc->scaleY().setDefaultValue(ch->flipY ? -ch->scale : ch->scale);
+                pc->opacity().setDefaultValue(ch->opacity);
+                // (PngPuppetClip has no crop; crop is a video/spine-only feature.)
+                newClips->push_back({targetTrack, std::move(pc)});
             } else {
                 auto sc = std::make_unique<SpineClip>();
                 sc->setCharacterName(ch->characterName);

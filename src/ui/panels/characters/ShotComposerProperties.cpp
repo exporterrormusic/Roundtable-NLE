@@ -633,6 +633,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     charSettingsLayout->addWidget(charHeaderLabel);
 
     auto* charForm = new QFormLayout;
+    m_charForm = charForm;   // kept so showCharacterProperties() can hide whole rows
     charForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     charForm->setVerticalSpacing(8);
     charForm->setLabelAlignment(Qt::AlignRight);

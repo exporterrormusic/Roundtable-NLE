@@ -5,6 +5,7 @@
  */
 
 #include "panels/characters/CharacterBrowser.h"
+#include "panels/characters/PuppetLibrary.h"
 
 #include "Theme.h"
 #include "QtHelpers.h"
@@ -205,6 +206,16 @@ void CharacterBrowser::discoverVideoCharacters()
     // Remove any that already have Spine data on disk
     for (const auto& local : m_localCharNames)
         m_videoCharNames.erase(local);
+
+    // Remove any that now have a custom PNG puppet of the same name — the
+    // puppet supersedes the legacy video character (e.g. Wells migrated from
+    // her green-screen videos to a custom 4-image puppet), so we don't list
+    // the video version alongside it.
+    for (const QString& folder : puppetlib::listPuppetFolders()) {
+        PuppetManifest pm;
+        if (puppetlib::load(folder, pm))
+            m_videoCharNames.erase(pm.displayName.isEmpty() ? folder : pm.displayName);
+    }
 }
 
 void CharacterBrowser::populateCharacterList()

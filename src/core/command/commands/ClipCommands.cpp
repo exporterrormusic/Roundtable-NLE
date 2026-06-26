@@ -47,6 +47,16 @@ RemoveClipCommand::RemoveClipCommand(Track* track, uint64_t clipId)
 
 void RemoveClipCommand::execute()
 {
+    // Capture transitions that reference this clip BEFORE removeClipById drops
+    // them, so undo can restore the dissolve/fade. (Re-captured on every redo,
+    // keyed by clip id, so this stays correct across undo/redo cycles.)
+    m_savedTransitions.clear();
+    if (m_track) {
+        for (const auto& t : m_track->transitions()) {
+            if (t.leftClipId == m_clipId || t.rightClipId == m_clipId)
+                m_savedTransitions.push_back(t);
+        }
+    }
     m_clip = m_track->removeClipById(m_clipId);
 }
 
@@ -56,6 +66,12 @@ void RemoveClipCommand::undo()
     {
         m_track->addClip(std::move(m_clip));
         m_clip = nullptr;
+        // Re-attach the transitions dropped on execute. addTransition() is
+        // add-or-replace keyed on the clip-id edit point, so this won't stack
+        // duplicates if one already exists.
+        for (const auto& t : m_savedTransitions)
+            m_track->addTransition(t);
+        m_savedTransitions.clear();
     }
 }
 

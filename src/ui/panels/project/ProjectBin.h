@@ -113,6 +113,12 @@ public:
     void addFilesToBin(const std::vector<std::filesystem::path>& files,
                        QTreeWidgetItem* targetBin);
 
+    /// Add files into the bin at the given breadcrumb path (root→leaf bin
+    /// names; empty = root). Path-based so the icon view's open folder
+    /// (m_iconBinPath) can be targeted without a tree selection/item pointer.
+    void addFilesToBinPath(const std::vector<std::filesystem::path>& files,
+                           const QStringList& targetBinPath);
+
     /// Add files into a named bin (creates the bin if it doesn't exist).
     /// If parentBinName is non-empty, the new bin is created under that parent.
     void addFilesToNamedBin(const std::vector<std::filesystem::path>& files,

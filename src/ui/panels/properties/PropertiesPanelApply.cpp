@@ -362,7 +362,27 @@ void PropertiesPanel::updateShotSection()
         if (QString::fromStdString(name) == clipShot) {
             if (!preset->shows().empty())
                 defShow = QString::fromStdString(preset->shows().front());
-            if (!preset->characters().empty())
+            // Default the character filter to the shot's NAMESAKE — the part of
+            // the shot name before " (...)", e.g. "Wells (Default)" → "Wells" —
+            // rather than whichever character happens to be first in the layer
+            // stack (characters().front()). The namesake is the character the
+            // shot is "about" and the one the user wants to keep working with,
+            // so changing the shot stays filtered to that character instead of
+            // a co-star (e.g. Chime). Falls back to the first character if the
+            // name doesn't match any character in the preset.
+            std::string showPart, barePart;
+            ShotPresetManager::splitKey(name, showPart, barePart);
+            const QString bare = QString::fromStdString(barePart);
+            const int paren = bare.indexOf(QStringLiteral(" ("));
+            const QString namesake = (paren > 0 ? bare.left(paren) : bare).trimmed();
+            for (const auto& ch : preset->characters()) {
+                if (QString::fromStdString(ch.characterName)
+                        .compare(namesake, Qt::CaseInsensitive) == 0) {
+                    defChar = QString::fromStdString(ch.characterName);
+                    break;
+                }
+            }
+            if (defChar.isEmpty() && !preset->characters().empty())
                 defChar = QString::fromStdString(preset->characters().front().characterName);
         }
     }

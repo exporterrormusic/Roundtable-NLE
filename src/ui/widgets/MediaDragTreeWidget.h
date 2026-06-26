@@ -25,12 +25,23 @@ class MediaDragTreeWidget : public QTreeWidget
 public:
     explicit MediaDragTreeWidget(QWidget* parent = nullptr);
 
+    /// Abort any pending or in-progress inline rename: stops the rename timer,
+    /// drops the candidate item pointer, and closes an open editor (reverting
+    /// its text). MUST be called before the tree is cleared/rebuilt — otherwise
+    /// the deferred editItem() fires on a freed QTreeWidgetItem, or a queued
+    /// editor commit writes into deleted memory (an access violation observed
+    /// while idle after a background bin refresh).
+    void cancelPendingRename();
+
 protected:
     void startDrag(Qt::DropActions supportedActions) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
+    // The model is reset by QTreeWidget::clear(); abort renames and drop all
+    // raw item pointers before the base class frees the items.
+    void reset() override;
 
 private:
     QPoint m_dragStartPos;

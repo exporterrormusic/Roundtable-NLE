@@ -612,9 +612,10 @@ void EffectControlsPanel::buildPropertyTree()
                 .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error)));
             hl->addWidget(deleteBtn);
 
-            // "Save as Default" button -- only for OTS effects (per-side JSON).
+            // "Save as Default" button -- only for OTS effects (per-variant JSON).
             if (fx.effectType() == EffectType::OtsLeft ||
-                fx.effectType() == EffectType::OtsRight)
+                fx.effectType() == EffectType::OtsRight ||
+                fx.effectType() == EffectType::OtsIntro)
             {
                 auto* saveDefaultBtn = new QToolButton(fxHeader);
                 saveDefaultBtn->setText(QStringLiteral("\u2B07"));

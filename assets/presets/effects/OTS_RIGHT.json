@@ -1,0 +1,18 @@
+{
+  "Side": 1,
+  "PosX": 0.05,
+  "PosY": 0.11,
+  "Scale": 0.35,
+  "StrokeWidth": 3,
+  "StrokeR": 1,
+  "StrokeG": 1,
+  "StrokeB": 1,
+  "ShadowOffsetX": 4,
+  "ShadowOffsetY": 4,
+  "ShadowBlur": 12,
+  "ShadowOpacity": 0.6,
+  "CornerRadius": 0,
+  "AspectMode": 0,
+  "CropFocusX": 0.5,
+  "CropFocusY": 0.5
+}

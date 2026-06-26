@@ -758,18 +758,6 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
         }
     }
 
-    // Check if Spine animation is pre-rendered (cached) — used for VID/LIVE badge only,
-    // not for color (all Spine clips keep the same color regardless of cache status).
-    bool isCachedSpine = false;
-#ifdef ROUNDTABLE_HAS_SPINE
-    if (clip->clipType() == ClipType::Spine && m_animVideoCache) {
-        auto* sc = static_cast<const SpineClip*>(clip);
-        if (m_animVideoCache->hasVideo(sc->characterName(), sc->outfit(), sc->animationName())) {
-            isCachedSpine = true;
-        }
-    }
-#endif
-
     // Use per-clip custom label color if set (non-default)
     if (clip->color() != 0xFF888888) {
         QColor customColor = QColor::fromRgba(clip->color());
@@ -797,42 +785,10 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
         painter.drawRect(QRectF(qRect.left() + 1, qRect.top() + 1, qRect.width() - 2, 2));
     }
 
-    // ── Draw "VID" / "LIVE" badge on Spine clips ────────────────────────
-    // Right-edge-anchored badges are skipped when the clip's real right
-    // edge is off-screen (qRect was clamped) — same visibility as before
-    // the clamp, without drawing a floating badge at the viewport edge.
-#ifdef ROUNDTABLE_HAS_SPINE
-    if (clip->clipType() == ClipType::Spine && !rightEdgeOffscreen &&
-        qRect.width() >= 40 && qRect.height() >= 16) {
-        painter.save();
-        static const QFont badgeFont("Segoe UI", 7, QFont::Bold);
-        painter.setFont(badgeFont);
-
-        QString badgeText = isCachedSpine ? QStringLiteral("VID") : QStringLiteral("LIVE");
-        QFontMetrics fm(badgeFont);
-        int textW = fm.horizontalAdvance(badgeText);
-        int badgeW = textW + 6;
-        int badgeH = fm.height() + 2;
-
-        // Position at top-right corner of clip
-        double bx = qRect.right() - badgeW - 3;
-        double by = qRect.top() + 3;
-
-        // Badge background
-        QColor badgeBg = isCachedSpine
-            ? QColor(30, 120, 60, 200)   // dark green for VID
-            : QColor(160, 100, 20, 200); // dark amber for LIVE
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(badgeBg);
-        painter.drawRoundedRect(QRectF(bx, by, badgeW, badgeH), 3, 3);
-
-        // Badge text
-        painter.setPen(QColor(255, 255, 255, 230));
-        painter.drawText(QRectF(bx, by, badgeW, badgeH),
-                         Qt::AlignCenter, badgeText);
-        painter.restore();
-    }
-#endif
+    // (Removed the Spine "VID"/"LIVE" badge: it flagged whether a converted
+    // AnimationVideoCache file existed on disk, but Spine clips always render
+    // live from skeleton+atlas and never use that cache for compositing/export
+    // — so the badge only created confusion that characters were "converted".)
 
     // ── Offline media indicator (red "OFFLINE" badge — Premiere Pro style) ──
     if (clip->isOffline() && qRect.width() >= 40 && qRect.height() >= 16) {

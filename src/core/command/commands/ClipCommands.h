@@ -84,6 +84,11 @@ private:
     Track*                 m_track;
     uint64_t               m_clipId;
     std::unique_ptr<Clip>  m_clip;     // Held when removed (after execute / before undo)
+    // Transitions that referenced the removed clip. Track::removeClip() drops
+    // them (so no dissolve renders through empty space after a cut); we capture
+    // them here so undo can put them back — otherwise a cross-dissolve/fade
+    // silently vanished when a move/delete was undone.
+    std::vector<Transition> m_savedTransitions;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

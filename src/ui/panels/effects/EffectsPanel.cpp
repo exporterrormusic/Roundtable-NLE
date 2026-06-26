@@ -385,6 +385,7 @@ void EffectsPanel::populateBrowser()
                                  EffectType::Vignette, EffectType::LUT,
                                  EffectType::Letterbox, EffectType::ColorGrading,
                                  EffectType::OtsLeft, EffectType::OtsRight,
+                                 EffectType::OtsIntro,
                                  EffectType::FlipHorizontal,
                                  EffectType::FlipVertical } },
         { "Glitch",            { EffectType::Scanlines, EffectType::BlockGlitch,

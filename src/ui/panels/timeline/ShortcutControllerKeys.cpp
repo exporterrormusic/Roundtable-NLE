@@ -363,9 +363,11 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             if (cmd) {
                 m_ws->commandStack()->execute(std::move(cmd));
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                // After a split, the original clip becomes the LEFT half.
-                // Select the RIGHT half(s) instead — the clip starting at
-                // the playhead is what the user wants to work with next.
+                // After a split, the original clip becomes the LEFT half (it
+                // now ENDS at the playhead) and a new clip is the RIGHT half
+                // (it starts at the playhead). Select the LEFT half(s) — the
+                // clip ending at the cut is what the user wants to keep working
+                // with next.
                 if (m_ws->timelinePanel() && m_ws->timeline()) {
                     m_ws->timelinePanel()->selection().clear();
                     for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
@@ -373,7 +375,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         if (!trk || trk->isLocked()) continue;
                         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                             const Clip* c = trk->clip(ci);
-                            if (c && c->timelineIn() == tick) {
+                            if (c && c->timelineOut() == tick) {
                                 m_ws->timelinePanel()->selection().selectClip(
                                     ClipRef{ti, c->id()}, true);
                             }

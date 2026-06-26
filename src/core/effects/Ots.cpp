@@ -28,8 +28,9 @@ namespace {
 std::filesystem::path defaultsPathFor(EffectType type)
 {
     namespace fs = std::filesystem;
-    const char* leaf = (type == EffectType::OtsLeft) ? "OTS_LEFT.json"
-                                                     : "OTS_RIGHT.json";
+    const char* leaf = (type == EffectType::OtsLeft)  ? "OTS_LEFT.json"
+                     : (type == EffectType::OtsIntro) ? "OTS_INTRO.json"
+                                                      : "OTS_RIGHT.json";
     // Walk up from the current working dir until we find "assets/".
     fs::path d = fs::current_path();
     for (int i = 0; i < 6; ++i) {

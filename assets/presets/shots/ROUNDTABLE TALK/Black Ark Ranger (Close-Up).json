@@ -1,15 +1,15 @@
 {
-  "name": "Chime (Default)",
+  "name": "Black Ark Ranger (Close-Up)",
   "show": "ROUNDTABLE TALK",
   "cameraZoom": 1.000000,
   "cameraX": 0.000000,
   "cameraY": 0.000000,
   "backgrounds": [
     {
-      "path": "CONTROL_ROOM_HD.png",
-      "posX": 0.500000,
-      "posY": 0.500000,
-      "scale": 1.000000,
+      "path": "TABLE_OVERLAY.png",
+      "posX": -0.368000,
+      "posY": 0.607000,
+      "scale": 3.183000,
       "opacity": 1.000000,
       "nativeWidth": 0,
       "nativeHeight": 0,
@@ -22,40 +22,36 @@
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
       "blur": 0.000000
-    }
-  ],
-  "characters": [
+    },
     {
-      "characterName": "Chime",
-      "outfit": "default",
-      "stance": "default",
-      "animation": "idle",
-      "isTalking": true,
-      "posX": 0.249000,
-      "posY": 0.794000,
-      "scale": 1.138000,
-      "rotation": 0.000000,
-      "flipX": false,
-      "flipY": false,
+      "path": "TABLE_LARGE_FINAL.png",
+      "posX": -0.368000,
+      "posY": 0.607000,
+      "scale": 3.183000,
       "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
       "cropLeft": 0.000000,
       "cropRight": 0.000000,
       "cropTop": 0.000000,
       "cropBottom": 0.000000,
-      "blur": 0.000000,
-      "visible": true
-    },
+      "blur": 2.000000
+    }
+  ],
+  "characters": [
     {
-      "characterName": "Wells",
-      "outfit": "Chrono",
+      "characterName": "Black Ark Ranger",
+      "outfit": "default",
       "stance": "default",
-      "animation": "Idle",
-      "isTalking": false,
-      "puppetFolder": "Wells",
-      "puppetVariant": "Chrono/Idle",
-      "posX": 0.683000,
-      "posY": 0.738000,
-      "scale": 1.910000,
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.442714,
+      "posY": 0.937605,
+      "scale": 2.153799,
       "rotation": 0.000000,
       "flipX": false,
       "flipY": false,
@@ -69,8 +65,8 @@
     }
   ],
   "layerOrder": [
-    {"type": "ch", "index": 1},
+    {"type": "bg", "index": 0},
     {"type": "ch", "index": 0},
-    {"type": "bg", "index": 0}
+    {"type": "bg", "index": 1}
   ]
 }

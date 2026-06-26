@@ -24,6 +24,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <set>
 #include <unordered_set>
 
 namespace rt {
@@ -92,7 +93,18 @@ void ShotComposer::refreshCharacterLibrary()
         // transforms/fit would be identical if it is ever re-wired.)
         {"Wells", {"assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4"}}
     };
+    // A custom PNG puppet supersedes the legacy video character of the same
+    // name (e.g. Wells migrated to a 4-image puppet) — don't list the video
+    // version too; the puppet appears under the "Custom" library tab.
+    std::set<std::string> puppetNames;
+    for (const QString& folder : puppetlib::listPuppetFolders()) {
+        PuppetManifest pm;
+        if (puppetlib::load(folder, pm))
+            puppetNames.insert((pm.displayName.isEmpty() ? folder : pm.displayName).toStdString());
+    }
     for (const auto& [name, paths] : videoCharacters) {
+        if (puppetNames.count(name))
+            continue;  // superseded by a custom puppet
         if (!searchTerm.isEmpty()) {
             QString qname = QString::fromStdString(name).toLower();
             if (!qname.contains(searchTerm))
@@ -446,8 +458,42 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     bool isVideoChar = ch.isVideoCharacter();
     bool isPuppetChar = ch.isPuppet();
     bool videoHasOutfits = false;
+    bool puppetHasOutfits = false;
+    bool puppetHasActions = false;
     if (isPuppetChar) {
-        // Puppets have no Spine outfit/stance/animation — leave the combo empty.
+        // Custom (PNG-puppet) characters store their costumes/actions as
+        // "<Outfit>/<Action>" variant keys in the puppet manifest. Surface them
+        // through the same Outfit (= outfit) and Anim (= action) combos Spine
+        // characters use, so multi-outfit puppets like Wells can be swapped.
+        PuppetManifest man;
+        if (puppetlib::load(QString::fromStdString(ch.puppetFolder), man)) {
+            QString curOutfit, curAction;
+            puppetlib::splitVariantKey(
+                QString::fromStdString(ch.puppetVariant.empty()
+                                           ? std::string("default")
+                                           : ch.puppetVariant),
+                curOutfit, curAction);
+
+            const QStringList outfits = puppetlib::listOutfits(man);
+            for (const QString& o : outfits)
+                m_outfitCombo->addItem(o);
+            int oi = m_outfitCombo->findText(curOutfit);
+            if (oi < 0 && m_outfitCombo->count() > 0) {
+                oi = 0;
+                curOutfit = m_outfitCombo->itemText(0);
+            }
+            if (oi >= 0) m_outfitCombo->setCurrentIndex(oi);
+            puppetHasOutfits = outfits.size() > 1;
+
+            const QStringList actions = puppetlib::listActions(man, curOutfit);
+            m_animCombo->clear();
+            for (const QString& a : actions)
+                m_animCombo->addItem(a);
+            int ai = m_animCombo->findText(curAction);
+            if (ai < 0 && m_animCombo->count() > 0) ai = 0;
+            if (ai >= 0) m_animCombo->setCurrentIndex(ai);
+            puppetHasActions = actions.size() > 1;
+        }
     } else if (isVideoChar) {
         // Video characters: outfits come from the video-outfit catalog, each
         // swapping the mute/talk video pair (mirrors Spine outfit switching).
@@ -504,20 +550,34 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     if (stanceIdx >= 0 && stanceIdx < m_stanceCombo->count())
         m_stanceCombo->setCurrentIndex(stanceIdx);
 
-    m_animCombo->setCurrentText(QString::fromStdString(ch.animation));
+    // Puppet anim selection was already set from the manifest above; don't let
+    // the Spine ch.animation value clobber it.
+    if (!isPuppetChar)
+        m_animCombo->setCurrentText(QString::fromStdString(ch.animation));
     m_talkingCheck->setChecked(ch.isTalking);
     m_flipXCheck->setChecked(ch.flipX);
     m_flipYCheck->setChecked(ch.flipY);
     m_visibleCheck->setChecked(ch.visible);
 
-    // Hide Spine-specific controls for video characters and puppets, but keep
-    // the Outfit combo when a video character has selectable costumes (Wells).
+    // Spine characters get Outfit/Stance/Anim. Video characters get Outfit only
+    // when they have selectable costumes (Wells). Puppets get Outfit/Anim when
+    // their manifest offers more than one outfit/action; Stance never applies.
     bool isVideo = ch.isVideoCharacter();
     bool isPuppet = ch.isPuppet();
     bool spineLike = !isVideo && !isPuppet;
-    m_outfitCombo->setVisible(spineLike || videoHasOutfits);
-    m_stanceCombo->setVisible(spineLike);
-    m_animCombo->setVisible(spineLike);
+    const bool showOutfit = spineLike || videoHasOutfits || puppetHasOutfits;
+    const bool showStance = spineLike;
+    const bool showAnim   = spineLike || puppetHasActions;
+    if (m_charForm) {
+        // Hide the label too, not just the field, so unused rows leave no gap.
+        m_charForm->setRowVisible(m_outfitCombo, showOutfit);
+        m_charForm->setRowVisible(m_stanceCombo, showStance);
+        m_charForm->setRowVisible(m_animCombo,   showAnim);
+    } else {
+        m_outfitCombo->setVisible(showOutfit);
+        m_stanceCombo->setVisible(showStance);
+        m_animCombo->setVisible(showAnim);
+    }
     // Flip + Talking are available for ALL character types (Spine/video/puppet)
 
     // Hide the "Character" tab entirely for video characters and puppets
@@ -668,6 +728,42 @@ void ShotComposer::onCharacterPropertyChanged()
                 ch->videoTalkPath = o.talkPath;
                 break;
             }
+        }
+    }
+
+    // For custom (PNG-puppet) characters the Outfit/Anim combos pick the
+    // "<Outfit>/<Action>" manifest variant. Changing the outfit re-lists its
+    // actions; store the resolved raw variant key so the preview/export load
+    // the right face set.
+    if (ch->isPuppet()) {
+        PuppetManifest man;
+        if (puppetlib::load(QString::fromStdString(ch->puppetFolder), man)) {
+            const QString outfit = m_outfitCombo->currentText();
+
+            // Outfit just changed → repopulate the action list for it and pick
+            // the first action. Guard with m_updating so the combo edits don't
+            // re-enter this slot.
+            if (sender() == m_outfitCombo) {
+                const QStringList actions = puppetlib::listActions(man, outfit);
+                m_updating = true;
+                m_animCombo->clear();
+                for (const QString& a : actions)
+                    m_animCombo->addItem(a);
+                if (m_animCombo->count() > 0) m_animCombo->setCurrentIndex(0);
+                if (m_charForm)
+                    m_charForm->setRowVisible(m_animCombo, actions.size() > 1);
+                else
+                    m_animCombo->setVisible(actions.size() > 1);
+                m_updating = false;
+            }
+
+            const QString action = m_animCombo->currentText();
+            QString key = puppetlib::resolveVariantKey(man, outfit, action);
+            if (key.isEmpty())
+                key = puppetlib::makeVariantKey(outfit, action);
+            ch->puppetVariant = key.toStdString();
+            ch->outfit    = outfit.toStdString();
+            ch->animation = action.toStdString();
         }
     }
 

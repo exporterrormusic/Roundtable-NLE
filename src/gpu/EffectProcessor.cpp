@@ -1139,6 +1139,7 @@ VkPipeline EffectProcessor::getPipeline(EffectType type) const
     case EffectType::LumetriColor:   return m_colorGradingPipeline;
     case EffectType::OtsLeft:        return m_otsPipeline;
     case EffectType::OtsRight:       return m_otsPipeline;
+    case EffectType::OtsIntro:       return m_otsPipeline;
     case EffectType::FlipHorizontal: return m_flipPipeline;
     case EffectType::FlipVertical:   return m_flipPipeline;
     case EffectType::Scanlines:         return m_scanlinesPipeline;

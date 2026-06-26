@@ -1014,6 +1014,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "E.H. Junkyard Vanguard",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -2397,6 +2405,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_02": {
+                    "display_name": "Moran King of Flowers",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3292,6 +3308,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Trina Natural White",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3417,6 +3441,14 @@
                 },
                 "outfit_02": {
                     "display_name": "Naga Last Girlhood",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_03": {
+                    "display_name": "Naga Ring Ensemble",
                     "variants": [
                         "default",
                         "aim",
@@ -3939,6 +3971,44 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_99": {
+                    "display_name": "Ark Ranger Black",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c571": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Ark Ranger Red",
+            "outfits": {
+                "default": {
+                    "display_name": "Ark Ranger Red",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c572": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Ark Ranger Blue",
+            "outfits": {
+                "default": {
+                    "display_name": "Ark Ranger Blue",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -4037,6 +4107,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_02": {
+                    "display_name": "Mint",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -4054,6 +4132,14 @@
                     ]
                 },
                 "outfit_01": {
+                    "display_name": "Prika",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_02": {
                     "display_name": "Prika",
                     "variants": [
                         "default",
@@ -5354,6 +5440,21 @@
             "outfits": {
                 "default": {
                     "display_name": "Amy",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9028": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Hope",
+            "outfits": {
+                "default": {
+                    "display_name": "Hope",
                     "variants": [
                         "default",
                         "aim",

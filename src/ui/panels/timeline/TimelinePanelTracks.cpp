@@ -1254,6 +1254,22 @@ void TimelinePanel::refreshTrackContents()
 {
     if (!m_timeline) return;
 
+    // Self-heal stale track rows before the lightweight content pass.
+    // refreshTrackContents only repaints EXISTING track widgets — it never
+    // adds rows. Most edits that change the track count route through the
+    // dedicated track add/insert handlers (which rebuildTracks), but a few
+    // create tracks as a side effect and then call us directly. The clearest
+    // case is a cross-sequence paste / paste-insert: when the source used more
+    // video/audio tracks than the destination has, EditOperations::paste spawns
+    // overflow tracks (video above, audio below). Those tracks exist in the
+    // model but have no widget row, so a clip pasted onto one lands on an
+    // "invisible" track and looks like it didn't paste at all. Reconcile here:
+    // a widget/track count mismatch means the UI is stale, so do a full
+    // (widget-reusing, flicker-free) rebuild first. In steady state the counts
+    // match and this is a no-op, so there's no per-edit cost.
+    if (m_trackWidgets.size() != m_timeline->trackCount())
+        rebuildTracks();
+
     // Incrementally update waveform/thumbnail caches for any new clip IDs.
     // With the path-based secondary caches this is essentially free for
     // splits (same source file → instant copy from m_waveformByPath /

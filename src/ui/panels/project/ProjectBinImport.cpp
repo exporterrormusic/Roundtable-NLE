@@ -71,22 +71,35 @@ void ProjectBin::importFiles()
     for (const auto& f : files)
         paths.emplace_back(utf8ToPath(f.toStdString()));
 
-    // If the user has a bin selected, import into that bin instead of root.
-    // Uses selectedItems() (not currentItem()) to avoid the persistent
-    // currentItem from a previous click causing silent nesting.
-    QTreeWidgetItem* targetBin = nullptr;
+    // Decide the destination bin as a breadcrumb PATH (root→leaf bin names).
+    //  1. An explicitly selected bin in the tree wins (most specific intent).
+    //     Uses selectedItems() (not currentItem()) to avoid a stale currentItem
+    //     from a previous click causing silent nesting.
+    //  2. Otherwise, the open sub-bin folder (m_iconBinPath) is the target.
+    //     The user navigates INTO a bin — in icon view, or via a sub-bin tab in
+    //     list view — without that bin being "selected" in the tree. This was
+    //     previously ignored, so importing while browsing a bin dumped files
+    //     into root; the open-folder view then resynced and appeared to "show
+    //     everything". m_iconBinPath is empty only at the root tab, so this is
+    //     a no-op there.
+    QStringList targetBinPath;
     if (m_listWidget) {
         const auto& sel = m_listWidget->selectedItems();
-        if (sel.size() == 1 && sel.first()->data(0, Qt::UserRole + 2).toBool())
-            targetBin = sel.first();
+        if (sel.size() == 1 && sel.first()->data(0, Qt::UserRole + 2).toBool()) {
+            for (auto* node = sel.first(); node; node = node->parent())
+                if (node->data(0, Qt::UserRole + 2).toBool())
+                    targetBinPath.prepend(node->text(0));
+        }
     }
+    if (targetBinPath.isEmpty() && !m_iconBinPath.isEmpty())
+        targetBinPath = m_iconBinPath;
 
     // Snapshot before/after so Ctrl+Z can undo the import, exactly like
     // the drag-and-drop path in handleDropEvent().
     auto before = std::make_shared<BinSnapshot>(captureBinSnapshot());
 
-    if (targetBin)
-        addFilesToBin(paths, targetBin);
+    if (!targetBinPath.isEmpty())
+        addFilesToBinPath(paths, targetBinPath);
     else
         addFiles(paths);
 
@@ -134,16 +147,22 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
 void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
                                QTreeWidgetItem* targetBin)
 {
-    // Save the target bin's FULL PATH (root→leaf bin-name breadcrumbs)
-    // BEFORE syncListView clears the tree. The raw QTreeWidgetItem* pointer
-    // becomes dangling after m_listWidget->clear(), and a simple name
-    // lookup at top level fails for nested sub-bins.
+    // Resolve the target bin to its FULL breadcrumb PATH (root→leaf bin names)
+    // BEFORE delegating: addFilesToBinPath's syncListView clears the tree, so
+    // the raw QTreeWidgetItem* would dangle. Capturing the path here keeps the
+    // bin findable again (and handles nested sub-bins, which a top-level name
+    // lookup would miss).
     QStringList targetBinPath;
     for (auto* node = targetBin; node; node = node->parent()) {
         if (node->data(0, Qt::UserRole + 2).toBool())
             targetBinPath.prepend(node->text(0));
     }
+    addFilesToBinPath(files, targetBinPath);
+}
 
+void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& files,
+                                   const QStringList& targetBinPath)
+{
     // Add to the grid (data model), skipping duplicates
     for (const auto& f : files) {
         if (m_grid->hasItem(f))
@@ -404,6 +423,7 @@ void ProjectBin::clearAll()
     // Also clear the tree/list widget so stale items from a previous
     // project don't linger even if refreshAllViews() isn't called.
     if (m_listWidget) {
+        m_listWidget->cancelPendingRename();  // close inline editor before freeing items
         m_listWidget->blockSignals(true);
         m_listWidget->clear();
         m_dropHighlightItem = nullptr;  // tree items destroyed by clear()

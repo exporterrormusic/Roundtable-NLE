@@ -94,6 +94,7 @@ std::unique_ptr<Effect> createEffect(EffectType type)
     case EffectType::LumetriColor:   return std::make_unique<ColorGrading>();
     case EffectType::OtsLeft:        return std::make_unique<Ots>(EffectType::OtsLeft);
     case EffectType::OtsRight:       return std::make_unique<Ots>(EffectType::OtsRight);
+    case EffectType::OtsIntro:       return std::make_unique<Ots>(EffectType::OtsIntro);
     case EffectType::FlipHorizontal: return std::make_unique<Flip>(EffectType::FlipHorizontal);
     case EffectType::FlipVertical:   return std::make_unique<Flip>(EffectType::FlipVertical);
     case EffectType::FillLeftWithRight:  return std::make_unique<FillLeftWithRight>();

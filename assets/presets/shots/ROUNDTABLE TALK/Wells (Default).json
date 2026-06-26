@@ -26,28 +26,6 @@
   ],
   "characters": [
     {
-      "characterName": "Wells",
-      "outfit": "default",
-      "stance": "default",
-      "animation": "idle",
-      "isTalking": true,
-      "videoMutePath": "assets/videos/WELLS-CHRONO-MUTE.mov",
-      "videoTalkPath": "assets/videos/WELLS-CHRONO-TALK.mov",
-      "posX": 0.687000,
-      "posY": 0.762000,
-      "scale": 2.193000,
-      "rotation": 0.000000,
-      "flipX": false,
-      "flipY": false,
-      "opacity": 1.000000,
-      "cropLeft": 0.000000,
-      "cropRight": 0.000000,
-      "cropTop": 0.000000,
-      "cropBottom": 0.000000,
-      "blur": 0.000000,
-      "visible": true
-    },
-    {
       "characterName": "Chime",
       "outfit": "default",
       "stance": "default",
@@ -66,11 +44,33 @@
       "cropBottom": 0.000000,
       "blur": 0.000000,
       "visible": true
+    },
+    {
+      "characterName": "Wells",
+      "outfit": "Chrono",
+      "stance": "default",
+      "animation": "Idle",
+      "isTalking": true,
+      "puppetFolder": "Wells",
+      "puppetVariant": "Chrono/Idle",
+      "posX": 0.683000,
+      "posY": 0.738000,
+      "scale": 1.910000,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
     }
   ],
   "layerOrder": [
-    {"type": "ch", "index": 0},
     {"type": "ch", "index": 1},
+    {"type": "ch", "index": 0},
     {"type": "bg", "index": 0}
   ]
 }

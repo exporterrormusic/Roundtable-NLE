@@ -63,6 +63,10 @@ enum class EffectType : uint8_t
     BeatShake,
     BeatChroma,
     BeatDrop,
+    // Appended at the END to preserve serialized uint8 numbering. Third OTS
+    // ("over the shoulder") variant — an intro-graphic preset with its own
+    // OTS_INTRO.json defaults; identical shader/params to OtsLeft/OtsRight.
+    OtsIntro,
     Count
 };
 
@@ -92,6 +96,7 @@ inline const char* effectTypeName(EffectType t) noexcept
     case EffectType::LumetriColor: return "Color Grading (legacy)";
     case EffectType::OtsLeft:      return "OTS LEFT";
     case EffectType::OtsRight:     return "OTS RIGHT";
+    case EffectType::OtsIntro:     return "OTS INTRO";
     case EffectType::FlipHorizontal: return "Flip Horizontal";
     case EffectType::FlipVertical:   return "Flip Vertical";
     case EffectType::Scanlines:        return "Scanlines";

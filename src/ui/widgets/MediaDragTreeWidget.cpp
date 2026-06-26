@@ -5,6 +5,7 @@
 #include "widgets/MediaDragTreeWidget.h"
 #include "Theme.h"
 
+#include <QAbstractItemDelegate>
 #include <QDrag>
 #include <QHeaderView>
 #include <QMimeData>
@@ -55,6 +56,33 @@ MediaDragTreeWidget::MediaDragTreeWidget(QWidget* parent)
             editItem(m_renameCandidate, 0);
         m_renameCandidate = nullptr;
     });
+}
+
+void MediaDragTreeWidget::cancelPendingRename()
+{
+    if (m_renameTimer && m_renameTimer->isActive())
+        m_renameTimer->stop();
+    m_renameCandidate = nullptr;
+
+    // If an inline editor is open, close it (reverting the in-progress text)
+    // so its commit can't run against an item the caller is about to delete.
+    if (state() == QAbstractItemView::EditingState) {
+        if (QWidget* editor = QApplication::focusWidget()) {
+            if (isAncestorOf(editor))
+                closeEditor(editor, QAbstractItemDelegate::RevertModelCache);
+        }
+        setState(QAbstractItemView::NoState);
+    }
+}
+
+void MediaDragTreeWidget::reset()
+{
+    // QTreeWidget::clear() resets the model and frees every item. Abort any
+    // rename and drop all raw item pointers first so nothing dangles.
+    cancelPendingRename();
+    m_pressItem = nullptr;
+    m_dragItemsSnapshot.clear();
+    QTreeWidget::reset();
 }
 
 // ── Mouse handling: rubber band on empty space, drag on items ────────────

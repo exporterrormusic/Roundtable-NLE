@@ -31,6 +31,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QSlider>
@@ -499,6 +500,7 @@ private:
     QTabWidget*     m_layerPropsTabs  = nullptr; ///< Tabs: Transform | Character/BG | Video/Crop
     QLabel*         m_emptyPropsLabel = nullptr;
     QGroupBox*      m_charPropsGroup  = nullptr;
+    QFormLayout*    m_charForm        = nullptr;  ///< Outfit/Stance/Anim rows (for setRowVisible)
     ScrubbySpinBox* m_posXSpin        = nullptr;
     ScrubbySpinBox* m_posYSpin        = nullptr;
     ScrubbySpinBox* m_scaleSpin       = nullptr;

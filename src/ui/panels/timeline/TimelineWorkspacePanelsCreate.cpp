@@ -878,9 +878,15 @@ void TimelineWorkspace::createPanelWidgets()
             // Don't close the last open tab
             if (m_openSequenceTabs.size() <= 1) return;
             m_openSequenceTabs.erase(seqIdx);
+            // IMPORTANT: when closing the active sequence, emit
+            // sequenceTabChanged BEFORE refreshSequenceTabs (see the
+            // tabCloseRequested handler above for the full rationale).
+            // refreshSequenceTabs silently flips the backend's active to
+            // newActive; if it runs first, switchSequence() then hits its
+            // "already active" early-return and skips the timeline rebuild,
+            // leaving the panel stuck on the just-closed sequence.
             if (m_project->activeSequenceIndex() == seqIdx) {
                 size_t newActive = *m_openSequenceTabs.begin();
-                refreshSequenceTabs();
                 emit sequenceTabChanged(newActive);
             } else {
                 refreshSequenceTabs();
@@ -892,9 +898,14 @@ void TimelineWorkspace::createPanelWidgets()
             const bool keptWasActive = (m_project->activeSequenceIndex() == seqIdx);
             m_openSequenceTabs.clear();
             m_openSequenceTabs.insert(seqIdx);
-            refreshSequenceTabs();
-            if (!keptWasActive)
+            // Same ordering hazard as Close above: if the kept tab wasn't the
+            // active one, emit BEFORE refreshing so switchSequence() takes the
+            // full refresh path instead of the "already active" early-return.
+            if (!keptWasActive) {
                 emit sequenceTabChanged(seqIdx);
+            } else {
+                refreshSequenceTabs();
+            }
         }
     });
     centerLayout->addWidget(m_sequenceTabBar);

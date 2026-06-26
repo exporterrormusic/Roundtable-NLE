@@ -36,7 +36,10 @@ namespace rt {
 
 void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOverride)
 {
-    // Block itemChanged signals during rebuild to prevent false rename triggers
+    // Abort any in-progress inline rename before we delete every item out
+    // from under it (a deferred editor commit would otherwise write into freed
+    // memory). Then block itemChanged to prevent false rename triggers.
+    m_listWidget->cancelPendingRename();
     m_listWidget->blockSignals(true);
 
     const auto savedFolders = savedFoldersOverride ? *savedFoldersOverride : binFolderState();

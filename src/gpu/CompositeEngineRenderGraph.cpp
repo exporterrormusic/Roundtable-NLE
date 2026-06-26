@@ -865,7 +865,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     // work at full-frame size and override the transform.
                     bool ots = false;
                     for (const auto& s : layer.effects)
-                        if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight) { ots = true; break; }
+                        if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight ||
+                            s.type == EffectType::OtsIntro) { ots = true; break; }
                     if (ots) {
                         gpuLayers[li].transform = Compositor::buildViewportTransform(
                             outW, outH, outW, outH, 0,0,1,1,0,false);

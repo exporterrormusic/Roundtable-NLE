@@ -1,14 +1,16 @@
 /*
  * Ots — "Over the Shoulder" news-broadcast graphic effect.
  *
- * One C++ class drives both `EffectType::OtsLeft` and `EffectType::OtsRight`;
- * the side is encoded in the effect type (and as the first shader param).
+ * One C++ class drives `EffectType::OtsLeft`, `EffectType::OtsRight` and
+ * `EffectType::OtsIntro`; the side is encoded in the effect type (and as the
+ * first shader param — Left/Intro = 0, Right = 1).
  *
  * On construction, defaults are loaded from
- *   assets/presets/effects/OTS_LEFT.json   (or OTS_RIGHT.json)
+ *   assets/presets/effects/OTS_LEFT.json  (or OTS_RIGHT.json / OTS_INTRO.json)
  * if present.  saveAsDefault() writes the current parameter values back to
  * that file so subsequent applications of the effect pick up the same
- * positioning, stroke, shadow, etc.
+ * positioning, stroke, shadow, etc.  OtsIntro shares the same parameters and
+ * shader; it is just an independent preset slot configured by the user.
  */
 
 #pragma once
@@ -20,7 +22,7 @@ namespace rt {
 class Ots : public Effect
 {
 public:
-    /// `type` must be EffectType::OtsLeft or EffectType::OtsRight.
+    /// `type` must be EffectType::OtsLeft, OtsRight, or OtsIntro.
     explicit Ots(EffectType type);
     ~Ots() override = default;
 

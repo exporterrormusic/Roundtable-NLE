@@ -13,8 +13,8 @@
 #include "timeline/EditOperations.h"
 #include "command/CommandStack.h"
 #include "command/CompoundCommand.h"
+#include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
-#include "command/commands/TransitionCmds.h"
 #include "command/commands/TransitionCmds.h"
 
 #include <spdlog/spdlog.h>
@@ -326,10 +326,34 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                         s.dstTrack  = itL->second->dstTrack;
                         s.timeDelta = itL->second->finalIn - itL->second->originalIn;
                         sharedTransitions.push_back(s);
-                        // Yank it out of the source track now so the
-                        // per-clip moveClipToTrack doesn't see it as a
-                        // dangling two-sided transition.
-                        srcTr->removeTransition(ti);
+                        // Yank it out of the source track now so the per-clip
+                        // moveClipToTrack doesn't see it as a dangling two-sided
+                        // transition. Do this through an UNDOABLE command added
+                        // to the compound: a raw srcTr->removeTransition(ti) is
+                        // never reversed on Ctrl+Z, so undoing the move (which
+                        // removes the replanted copy from dst and moves the clips
+                        // back to src) used to leave the dissolve gone for good —
+                        // the reported "cross dissolve vanishes on undo" bug.
+                        // Identify the transition by its clip-id edit point (not
+                        // a vector index) so a redo after undo lifts the right
+                        // one even though re-adding appends it at a new index.
+                        {
+                            const Transition lifted = s.trans;
+                            Track* srcTrPtr = srcTr;
+                            auto liftCmd = std::make_unique<LambdaCommand>(
+                                "Lift shared transition",
+                                [srcTrPtr, lifted]() {
+                                    size_t i = srcTrPtr->findTransition(
+                                        lifted.leftClipId, lifted.rightClipId);
+                                    if (i != Track::kNoTransition)
+                                        srcTrPtr->removeTransition(i);
+                                },
+                                [srcTrPtr, lifted]() {
+                                    srcTrPtr->addTransition(lifted);
+                                });
+                            liftCmd->execute();
+                            masterCompound->addCommand(std::move(liftCmd));
+                        }
                     }
                 }
             }
