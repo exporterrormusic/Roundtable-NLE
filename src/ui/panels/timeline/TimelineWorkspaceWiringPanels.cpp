@@ -198,6 +198,11 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_programMonitor, &ProgramMonitor::frameDisplayed,
                 this, [this](int64_t) {
             if (m_destroying.load(std::memory_order_acquire)) return;
+            // Only the focused-layer case re-measures per displayed frame (it
+            // already did pre-change). The whole-clip text box is sized by
+            // updateTransformOverlay on selection/property/commit — it does NOT
+            // need a per-frame full-res QImage re-measure during playback, which
+            // would be a needless allocation every frame.
             if (m_selection.clip && m_selection.graphicLayerIdx >= 0)
                 updateTransformOverlay();
         });

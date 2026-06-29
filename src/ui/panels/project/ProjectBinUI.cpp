@@ -728,6 +728,11 @@ void ProjectBin::setupUI()
     connect(backBtn, &QToolButton::clicked, this, [this]() {
         if (!m_iconBinPath.isEmpty()) {
             m_iconBinPath.removeLast();
+            // Icon view never flattens the tree (only focusListViewOnBin, in
+            // list mode, does), so the tree is already full here — just re-scope.
+            // (Rebuilding from the stale m_rootFolderState snapshot would relocate
+            // post-snapshot imports to root; rebuilding from the live tree is
+            // unnecessary since it's already full.)
             syncIconView();
         }
     });

@@ -735,25 +735,43 @@ std::unique_ptr<Command> EditOperations::rippleDelete(
         }
     }
 
-    // Sync Lock: shift clips on other sync-locked tracks by the same gap
+    // Sync Lock: shift clips on other sync-locked tracks by the same gap so
+    // they follow the edit. Clamp each track's shift so its first moving clip
+    // never slides past the clip in front of it (no overlap), and skip
+    // (track-)locked tracks entirely — like Premiere, the ripple respects
+    // every non-locked track.
     for (const auto& [editedTrackIdx, rip] : trackRipples)
     {
         for (size_t ti = 0; ti < timeline.trackCount(); ++ti)
         {
             if (ti == editedTrackIdx) continue;
             Track* otherTrack = timeline.track(ti);
+            if (otherTrack->isLocked()) continue;       // padlocked → never moves
             if (!otherTrack->isSyncLocked()) continue;
+
+            int64_t firstMovingIn     = INT64_MAX;
+            int64_t lastStationaryOut = 0;
+            for (size_t ci = 0; ci < otherTrack->clipCount(); ++ci)
+            {
+                const Clip* clip = otherTrack->clip(ci);
+                if (clip->timelineIn() >= rip.earliestEdit)
+                    firstMovingIn = std::min(firstMovingIn, clip->timelineIn());
+                else
+                    lastStationaryOut = std::max(lastStationaryOut, clip->timelineOut());
+            }
+            if (firstMovingIn == INT64_MAX) continue;   // nothing moves here
+
+            int64_t room = firstMovingIn - lastStationaryOut;
+            if (room < 0) room = 0;
+            int64_t shift = std::min(rip.totalGap, room);
+            if (shift <= 0) continue;
 
             for (size_t ci = 0; ci < otherTrack->clipCount(); ++ci)
             {
                 const Clip* clip = otherTrack->clip(ci);
                 if (clip->timelineIn() >= rip.earliestEdit)
-                {
-                    int64_t newPos = clip->timelineIn() - rip.totalGap;
-                    if (newPos < 0) newPos = 0;
                     compound->addCommand(std::make_unique<MoveClipCommand>(
-                        otherTrack, clip->id(), newPos));
-                }
+                        otherTrack, clip->id(), clip->timelineIn() - shift));
             }
         }
     }
@@ -771,32 +789,59 @@ std::unique_ptr<Command> EditOperations::closeGap(
         return nullptr;
 
     int64_t gapDuration = gapEnd - gapStart;
-    auto compound = std::make_unique<CompoundCommand>("Close gap");
-    bool anyMoved = false;
 
-    Track* track = timeline.track(trackIndex);
-    for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-        const Clip* clip = track->clip(ci);
-        if (clip->timelineIn() >= gapEnd) {
-            compound->addCommand(std::make_unique<MoveClipCommand>(
-                track, clip->id(), clip->timelineIn() - gapDuration));
-            anyMoved = true;
+    // Closing the gap shifts every clip whose start is at or after gapEnd
+    // LEFT by the ripple amount; clips starting before gapEnd stay put. The
+    // edited track always ripples; other tracks ripple only if they are
+    // sync-locked. A (track-)locked track never moves — like Premiere, the
+    // ripple must respect every non-locked track.
+    auto participates = [&](size_t ti) -> bool {
+        Track* t = timeline.track(ti);
+        if (t->isLocked()) return false;        // padlocked → read-only, never moves
+        if (ti == trackIndex) return true;      // the edited track always closes its gap
+        return t->isSyncLocked();               // others follow only when sync-locked
+    };
+
+    // Clamp the ripple to the largest amount that is safe on EVERY
+    // participating track, so the whole timeline shifts by one uniform
+    // amount and stays in sync (Premiere-style). On each track the first
+    // moving clip can slide left only until it touches the rightmost clip
+    // that stays put; the smallest such room across all tracks bounds the
+    // shift. If another track blocks it, the gap closes only partially
+    // rather than overlapping that track's clips.
+    int64_t safeShift = gapDuration;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        if (!participates(ti)) continue;
+        Track* t = timeline.track(ti);
+
+        int64_t firstMovingIn   = INT64_MAX;  // smallest start at/after gapEnd
+        int64_t lastStationaryOut = 0;        // largest end among clips before gapEnd
+        for (size_t ci = 0; ci < t->clipCount(); ++ci) {
+            const Clip* clip = t->clip(ci);
+            if (clip->timelineIn() >= gapEnd)
+                firstMovingIn = std::min(firstMovingIn, clip->timelineIn());
+            else
+                lastStationaryOut = std::max(lastStationaryOut, clip->timelineOut());
         }
+        if (firstMovingIn == INT64_MAX) continue;  // nothing moves on this track
+
+        int64_t room = firstMovingIn - lastStationaryOut;
+        if (room < 0) room = 0;                    // defensive: already touching
+        safeShift = std::min(safeShift, room);
     }
 
-    // Also shift clips on sync-locked tracks
-    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
-        if (ti == trackIndex) continue;
-        Track* otherTrack = timeline.track(ti);
-        if (!otherTrack->isSyncLocked()) continue;
+    if (safeShift <= 0) return nullptr;            // can't move without overlap
 
-        for (size_t ci = 0; ci < otherTrack->clipCount(); ++ci) {
-            const Clip* clip = otherTrack->clip(ci);
+    auto compound = std::make_unique<CompoundCommand>("Close gap");
+    bool anyMoved = false;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        if (!participates(ti)) continue;
+        Track* t = timeline.track(ti);
+        for (size_t ci = 0; ci < t->clipCount(); ++ci) {
+            const Clip* clip = t->clip(ci);
             if (clip->timelineIn() >= gapEnd) {
-                int64_t newPos = clip->timelineIn() - gapDuration;
-                if (newPos < 0) newPos = 0;
                 compound->addCommand(std::make_unique<MoveClipCommand>(
-                    otherTrack, clip->id(), newPos));
+                    t, clip->id(), clip->timelineIn() - safeShift));
                 anyMoved = true;
             }
         }

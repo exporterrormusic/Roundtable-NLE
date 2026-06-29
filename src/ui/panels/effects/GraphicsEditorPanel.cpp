@@ -560,11 +560,18 @@ void GraphicsEditorPanel::toggleLayerInSelection(int stackIdx)
 
 void GraphicsEditorPanel::selectLayer(int listRow)
 {
+ // Flush any pending edit on the previously-selected layer into one undo step
+ // before the selection changes (no-op when nothing was edited).
+ commitLayerEdit();
+
  clearEditControls();
 
  if (!m_graphicClip || listRow < 0) {
  m_selectedLayer = nullptr;
  m_selectedLayerIdx = -1;
+ m_editBaseline.reset();
+ m_editBaselineId = 0;
+ m_layerEditDirty = false;
  return;
  }
 
@@ -577,6 +584,7 @@ void GraphicsEditorPanel::selectLayer(int listRow)
 
  buildEditControls();
  populateFromLayer();
+ captureEditBaseline();   // snapshot the new edit target for undo
 
  emit layerSelected(m_selectedLayer, m_selectedLayerIdx);
 }

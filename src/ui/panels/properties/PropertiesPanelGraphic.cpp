@@ -118,6 +118,15 @@ void PropertiesPanel::applyGfxAllCaps()
     emit propertyChanged();
 }
 
+void PropertiesPanel::applyGfxSmallCaps()
+{
+    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
+    if (!tl) return;
+    tl->setSmallCaps(m_gfxSmallCapsCheck->isChecked());
+    emit propertyChanged();
+}
+
 void PropertiesPanel::applyGfxAlign()
 {
     if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
@@ -248,12 +257,15 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxFontSizeSpin = createScrubby(1.0, 1000.0, 1.0, 1, " pt");
     m_gfxFontSizeSpin->setToolTip(tr("Font size for graphic text"));
     connect(m_gfxFontSizeSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontSize(); });
+    // Live preview during the drag, mirroring transform/effect spinboxes.
+    connect(m_gfxFontSizeSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxFontSize(); });
     connect(m_gfxFontSizeSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxFontSize);
     form->addRow("Size:", m_gfxFontSizeSpin);
 
     m_gfxFontWeightSpin = createScrubby(100.0, 900.0, 100.0, 0, "");
     m_gfxFontWeightSpin->setToolTip(tr("Font weight (100 = thin, 400 = normal, 700 = bold, 900 = heavy)"));
     connect(m_gfxFontWeightSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontWeight(); });
+    connect(m_gfxFontWeightSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxFontWeight(); });
     connect(m_gfxFontWeightSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxFontWeight);
     form->addRow("Weight:", m_gfxFontWeightSpin);
 
@@ -266,6 +278,10 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxAllCapsCheck->setToolTip(tr("Convert graphic text to uppercase"));
     connect(m_gfxAllCapsCheck, &QCheckBox::toggled, this, &PropertiesPanel::applyGfxAllCaps);
     styleRow->addWidget(m_gfxAllCapsCheck);
+    m_gfxSmallCapsCheck = new QCheckBox("Small Caps", m_graphicSection);
+    m_gfxSmallCapsCheck->setToolTip(tr("Render lowercase letters as small capitals (overridden by All Caps)"));
+    connect(m_gfxSmallCapsCheck, &QCheckBox::toggled, this, &PropertiesPanel::applyGfxSmallCaps);
+    styleRow->addWidget(m_gfxSmallCapsCheck);
     styleRow->addStretch();
     form->addRow(styleRow);
 
@@ -291,6 +307,7 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxStrokeWidthSpin->setToolTip(tr("Stroke outline width in pixels"));
     m_gfxStrokeWidthSpin->setFixedWidth(70);
     connect(m_gfxStrokeWidthSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxStrokeWidth(); });
+    connect(m_gfxStrokeWidthSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxStrokeWidth(); });
     connect(m_gfxStrokeWidthSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxStrokeWidth);
     strokeRow->addWidget(m_gfxStrokeWidthSpin);
     m_gfxStrokeColorBtn = new QPushButton(m_graphicSection);

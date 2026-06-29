@@ -23,6 +23,17 @@ GraphicLayer::GraphicLayer(GraphicLayerType type)
 
 GraphicLayer::~GraphicLayer() = default;
 
+void GraphicLayer::assignStateFrom(const GraphicLayer& other)
+{
+    // Copies shared (non-identity) state. Subclasses chain to this then copy
+    // their own fields. m_id and m_type are deliberately NOT copied.
+    m_name       = other.m_name;
+    m_visible    = other.m_visible;
+    m_locked     = other.m_locked;
+    m_transform  = other.m_transform;   // LayerTransform is copy-assignable
+    m_appearance = other.m_appearance;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  TextLayer
 // ═════════════════════════════════════════════════════════════════════════════
@@ -71,6 +82,28 @@ std::unique_ptr<GraphicLayer> TextLayer::clone() const
     return copy;
 }
 
+void TextLayer::assignStateFrom(const GraphicLayer& other)
+{
+    GraphicLayer::assignStateFrom(other);
+    const auto* o = dynamic_cast<const TextLayer*>(&other);
+    if (!o) return;
+    m_text            = o->m_text;
+    m_fontFamily      = o->m_fontFamily;
+    m_fontSize        = o->m_fontSize;
+    m_fontWeight      = o->m_fontWeight;
+    m_italic          = o->m_italic;
+    m_allCaps         = o->m_allCaps;
+    m_smallCaps       = o->m_smallCaps;
+    m_align           = o->m_align;
+    m_valign          = o->m_valign;
+    m_tracking        = o->m_tracking;
+    m_leading         = o->m_leading;
+    m_baselineShift   = o->m_baselineShift;
+    m_boxWidth        = o->m_boxWidth;
+    m_boxHeight       = o->m_boxHeight;
+    m_useParagraphBox = o->m_useParagraphBox;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  ShapeLayer
 // ═════════════════════════════════════════════════════════════════════════════
@@ -107,6 +140,18 @@ std::unique_ptr<GraphicLayer> ShapeLayer::clone() const
     copy->m_fillColor    = m_fillColor;
 
     return copy;
+}
+
+void ShapeLayer::assignStateFrom(const GraphicLayer& other)
+{
+    GraphicLayer::assignStateFrom(other);
+    const auto* o = dynamic_cast<const ShapeLayer*>(&other);
+    if (!o) return;
+    m_shape        = o->m_shape;
+    m_width        = o->m_width;
+    m_height       = o->m_height;
+    m_cornerRadius = o->m_cornerRadius;
+    m_fillColor    = o->m_fillColor;
 }
 
 } // namespace rt

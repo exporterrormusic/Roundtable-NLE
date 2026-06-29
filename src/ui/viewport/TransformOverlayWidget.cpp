@@ -776,6 +776,94 @@ bool TransformOverlayWidget::hitTestBody(const QPointF& widgetPos) const
     return allPos || allNeg;
 }
 
+bool TransformOverlayWidget::hitTestBodyMargin(const QPointF& widgetPos,
+                                               double marginPx) const
+{
+    QPointF c[4];
+    computeOverlayCorners(c);
+
+    // Push each corner outward along the box's own edge axes, so the inflated
+    // quad keeps the box's rotation/shear. U = TL→TR (the box's horizontal
+    // axis), V = TL→BL (vertical).
+    const QPointF U = c[1] - c[0];
+    const QPointF V = c[3] - c[0];
+    const double lenU = std::hypot(U.x(), U.y());
+    const double lenV = std::hypot(V.x(), V.y());
+    if (lenU < 1e-6 || lenV < 1e-6) return false;
+
+    // A short axis additionally gets padded out toward a minimum grab
+    // thickness. A thin text box can be only ~40 px tall on screen — and once
+    // rotated it's nearly impossible to click along, because a few px of
+    // vertical aim error drops you off the tilted edge. Guaranteeing a minimum
+    // thickness on the short axis makes thin/rotated text a comfortable target
+    // while leaving already-large boxes with just the base margin.
+    constexpr double kMinGrabThicknessPx = 84.0;
+    const double marU = marginPx + std::max(0.0, (kMinGrabThicknessPx - lenU) * 0.5);
+    const double marV = marginPx + std::max(0.0, (kMinGrabThicknessPx - lenV) * 0.5);
+    const QPointF mu = U / lenU * marU;   // along the box width
+    const QPointF mv = V / lenV * marV;   // along the box height
+
+    QPointF e[4];
+    e[0] = c[0] - mu - mv;   // TL out (left + up)
+    e[1] = c[1] + mu - mv;   // TR out (right + up)
+    e[2] = c[2] + mu + mv;   // BR out (right + down)
+    e[3] = c[3] - mu + mv;   // BL out (left + down)
+
+    auto cross = [](QPointF a, QPointF b, QPointF p) {
+        return (b.x() - a.x()) * (p.y() - a.y()) -
+               (b.y() - a.y()) * (p.x() - a.x());
+    };
+    const double k0 = cross(e[0], e[1], widgetPos);
+    const double k1 = cross(e[1], e[2], widgetPos);
+    const double k2 = cross(e[2], e[3], widgetPos);
+    const double k3 = cross(e[3], e[0], widgetPos);
+    const bool allPos = (k0 >= 0) && (k1 >= 0) && (k2 >= 0) && (k3 >= 0);
+    const bool allNeg = (k0 <= 0) && (k1 <= 0) && (k2 <= 0) && (k3 <= 0);
+    return allPos || allNeg;
+}
+
+bool TransformOverlayWidget::cropHandlePositions(QPointF handles[4]) const
+{
+    if (!m_overlay.cropEnabled) return false;
+    QPointF c[4];
+    computeOverlayCorners(c);   // TL, TR, BR, BL of the uncropped box
+    // The box is an affine parallelogram, so any inner point is
+    // TL + a*(TR-TL) + b*(BL-TL) with a,b in [0,1] — correct even rotated.
+    const QPointF U = c[1] - c[0];   // left→right axis
+    const QPointF V = c[3] - c[0];   // top→bottom axis
+    if (std::abs(U.x()) + std::abs(U.y()) < 1e-3 ||
+        std::abs(V.x()) + std::abs(V.y()) < 1e-3) return false;
+
+    const float fl = m_overlay.cropL / 100.0f;
+    const float fr = m_overlay.cropR / 100.0f;
+    const float ft = m_overlay.cropT / 100.0f;
+    const float fb = m_overlay.cropB / 100.0f;
+    const float midX = (fl + (1.0f - fr)) * 0.5f;
+    const float midY = (ft + (1.0f - fb)) * 0.5f;
+    auto pt = [&](float a, float b) -> QPointF {
+        return QPointF(c[0].x() + a * U.x() + b * V.x(),
+                       c[0].y() + a * U.y() + b * V.y());
+    };
+    handles[0] = pt(fl,        midY);      // Left edge mid
+    handles[1] = pt(1.0f - fr, midY);      // Right edge mid
+    handles[2] = pt(midX,      ft);        // Top edge mid
+    handles[3] = pt(midX,      1.0f - fb); // Bottom edge mid
+    return true;
+}
+
+int TransformOverlayWidget::hitTestCropHandle(const QPointF& widgetPos) const
+{
+    QPointF h[4];
+    if (!cropHandlePositions(h)) return -1;
+    constexpr double R = 14.0;  // generous grab radius
+    for (int i = 0; i < 4; ++i) {
+        const double dx = widgetPos.x() - h[i].x();
+        const double dy = widgetPos.y() - h[i].y();
+        if (dx * dx + dy * dy <= R * R) return i;
+    }
+    return -1;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Paint
 // ═════════════════════════════════════════════════════════════════════════════

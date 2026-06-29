@@ -54,7 +54,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             const Timeline* seq = m_project->sequence(si);
             if (!seq) continue;
 
-            auto* seqItem = new QTreeWidgetItem();
+            auto* seqItem = new NaturalTreeWidgetItem();
             seqItem->setText(0, QString::fromStdString(seq->name()));
             seqItem->setText(1, "Sequence");
             seqItem->setIcon(0, makePremiereBinIcon(kLabelSequence, "sequence"));
@@ -150,7 +150,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
                 continue;
         }
 
-        auto* treeItem = new QTreeWidgetItem();
+        auto* treeItem = new NaturalTreeWidgetItem();
 
         // Name column ï¿½ use displayName if set, otherwise filename
         QString name = item.displayName.isEmpty()
@@ -352,6 +352,9 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
     // Re-enable itemChanged signals after rebuild
     m_listWidget->blockSignals(false);
+
+    // The tree is now full/unflattened; rebuildFullTree() may read it live.
+    m_listViewFocused = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -462,6 +465,10 @@ void ProjectBin::syncIconView()
         std::string key = pathToUtf8(item.filePath);
         item.visible = visiblePaths.count(key) > 0;
     }
+
+    // Natural-sort the grid (folders, then sequences, then media — each
+    // ordered "1, 2, 10") so the icon view matches the details tree.
+    m_grid->sortItems();
 
     m_grid->clearSelection();
     m_grid->loadVisibleThumbnails();

@@ -106,6 +106,10 @@ void OverlayController::wireTransformOverlaySignals()
                 this, &OverlayController::onOverlayMaskDragFinished);
         connect(ov, &TransformOverlayWidget::emptyAreaClicked,
                 this, &OverlayController::onOverlayEmptyAreaClicked);
+        connect(ov, &TransformOverlayWidget::cropChanged,
+                this, &OverlayController::onOverlayCropChanged);
+        connect(ov, &TransformOverlayWidget::cropDragFinished,
+                this, &OverlayController::onOverlayCropDragFinished);
 
         // -- Mask / motion-path live updates: refresh composite during drag --
         connect(ov, &TransformOverlayWidget::maskLiveUpdate,
@@ -360,6 +364,45 @@ void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
             panel->scheduleOverlayRefresh();
             if (panel->m_ws->programMonitor()) panel->m_ws->programMonitor()->requestRefresh();
         }));
+}
+
+void OverlayController::onOverlayCropChanged(float l, float r, float t, float b)
+{
+    if (m_ws->isDestroying()) return;
+    auto* clip = m_ws->selection().clip;
+    if (!clip || !clip->supportsCrop()) return;
+    clip->setCrop(l, r, t, b);   // setCrop is virtual on Clip (Video/Spine override)
+    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->syncValuesFromClip();
+    m_ws->invalidateCompositeCache();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+}
+
+void OverlayController::onOverlayCropDragFinished(
+    float oldL, float oldR, float oldT, float oldB,
+    float newL, float newR, float newT, float newB)
+{
+    if (m_ws->isDestroying()) return;
+    auto* clip = m_ws->selection().clip;
+    if (!clip || !clip->supportsCrop()) return;
+    if (oldL == newL && oldR == newR && oldT == newT && oldB == newB) return;  // no-op
+    if (!m_ws->commandStack()) {
+        clip->setCrop(newL, newR, newT, newB);
+        return;
+    }
+    // The crop was already applied live during the drag (onOverlayCropChanged),
+    // so record the command without re-executing — matches onOverlayDragFinished.
+    Clip* c   = clip;
+    auto* ws  = m_ws;
+    auto applyCrop = [c, ws](float l, float r, float t, float b) {
+        c->setCrop(l, r, t, b);
+        if (ws->effectControlsPanel()) ws->effectControlsPanel()->syncValuesFromClip();
+        ws->invalidateCompositeCache();
+        if (ws->programMonitor()) ws->programMonitor()->requestRefresh();
+    };
+    m_ws->commandStack()->pushWithoutExecute(std::make_unique<LambdaCommand>(
+        "Crop",
+        [applyCrop, newL, newR, newT, newB]() { applyCrop(newL, newR, newT, newB); },
+        [applyCrop, oldL, oldR, oldT, oldB]() { applyCrop(oldL, oldR, oldT, oldB); }));
 }
 
 void OverlayController::onOverlayDragFinished(

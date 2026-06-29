@@ -32,6 +32,11 @@
 
 namespace rt {
 
+// Forgiving grab border (widget px) around a selected layer's body, so thin
+// text boxes — which can be only a few px tall on screen at low zoom — are
+// still easy to grab-and-move just outside their tight outline.
+static constexpr double kBodyGrabMarginPx = 14.0;
+
 void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
 {
     // ── Right button on a motion-path waypoint → Spatial Interpolation menu
@@ -229,6 +234,25 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             }
         }
 
+        // Crop edge handles (always shown for crop-capable clips). Checked
+        // BEFORE the body so grabbing an edge handle crops instead of moving
+        // the layer; corner handles remain SCALE handles.
+        if (m_overlay.cropEnabled) {
+            int cropH = hitTestCropHandle(wPos);
+            if (cropH >= 0) {
+                m_dragMode = DragMode::CropEdge;
+                m_cropHandle = cropH;
+                m_dragStartWidget  = wPos;
+                m_dragStartCrop[0] = m_overlay.cropL;
+                m_dragStartCrop[1] = m_overlay.cropR;
+                m_dragStartCrop[2] = m_overlay.cropT;
+                m_dragStartCrop[3] = m_overlay.cropB;
+                applyCursor(cropH < 2 ? Qt::SizeHorCursor : Qt::SizeVerCursor);
+                event->accept();
+                return;
+            }
+        }
+
         // Body move has priority over corner/anchor handles (Premiere Pro
         // behavior — anything inside the transform box moves the layer).
         //
@@ -248,6 +272,15 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
                     break;
                 }
             }
+        }
+        // Forgiving grab border: a thin text box can be only a few px tall on
+        // screen, so clicks just outside it should still move the layer. The
+        // margin yields to the corner scale/rotate handles so those stay
+        // reachable — only the non-handle border becomes draggable.
+        if (!bodyHit &&
+            hitTestBodyMargin(wPos, kBodyGrabMarginPx) &&
+            hitTestHandle(wPos) < 0 && hitTestRotate(wPos) < 0) {
+            bodyHit = true;
         }
         if (bodyHit) {
             // When masks are active, don't let a body click move the layer;
@@ -685,6 +718,51 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
+    // ── Crop edge drag ──────────────────────────────────────────────────
+    if (m_dragMode == DragMode::CropEdge && (event->buttons() & Qt::LeftButton)) {
+        QPointF corners[4];
+        computeOverlayCorners(corners);   // outer box — crop never changes it
+        const QPointF U = corners[1] - corners[0];   // left→right axis
+        const QPointF V = corners[3] - corners[0];   // top→bottom axis
+        const double dxw = wPos.x() - m_dragStartWidget.x();
+        const double dyw = wPos.y() - m_dragStartWidget.y();
+
+        // Fraction (0..1 of the box edge) the mouse moved along an axis.
+        auto projFrac = [](double ex, double ey, double ax, double ay) -> double {
+            const double len2 = ax * ax + ay * ay;
+            if (len2 < 1e-9) return 0.0;
+            return (ex * ax + ey * ay) / len2;
+        };
+
+        float l = m_dragStartCrop[0], r = m_dragStartCrop[1];
+        float t = m_dragStartCrop[2], b = m_dragStartCrop[3];
+        constexpr float kMaxSum = 95.0f;   // keep L+R<100 and T+B<100 (visible sliver)
+        // The opposite edge can already exceed kMaxSum (the Properties/Effect
+        // spins allow each edge 0..100 independently), so std::max(0,...) the
+        // upper bound — otherwise std::clamp(value, 0, negative) is lo>hi UB and
+        // would yield a negative crop.
+        if (m_cropHandle == 0) {           // Left edge
+            double f = projFrac(dxw, dyw, U.x(), U.y()) * 100.0;
+            l = std::clamp(static_cast<float>(m_dragStartCrop[0] + f), 0.0f, std::max(0.0f, kMaxSum - r));
+        } else if (m_cropHandle == 1) {    // Right edge (grows as handle moves left)
+            double f = projFrac(dxw, dyw, U.x(), U.y()) * 100.0;
+            r = std::clamp(static_cast<float>(m_dragStartCrop[1] - f), 0.0f, std::max(0.0f, kMaxSum - l));
+        } else if (m_cropHandle == 2) {    // Top edge
+            double f = projFrac(dxw, dyw, V.x(), V.y()) * 100.0;
+            t = std::clamp(static_cast<float>(m_dragStartCrop[2] + f), 0.0f, std::max(0.0f, kMaxSum - b));
+        } else {                           // Bottom edge (grows as handle moves up)
+            double f = projFrac(dxw, dyw, V.x(), V.y()) * 100.0;
+            b = std::clamp(static_cast<float>(m_dragStartCrop[3] - f), 0.0f, std::max(0.0f, kMaxSum - t));
+        }
+
+        m_overlay.cropL = l; m_overlay.cropR = r;
+        m_overlay.cropT = t; m_overlay.cropB = b;
+        update();
+        emit cropChanged(l, r, t, b);
+        event->accept();
+        return;
+    }
+
     // ── Motion-path spatial handle drag ─────────────────────────────────
     if (m_dragMode == DragMode::DragMotionHandle && m_motionX && m_motionY &&
         (event->buttons() & Qt::LeftButton))
@@ -1063,11 +1141,17 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
             }
         }
 
-        if (hitTestHandle(wPos) >= 0)
+        // Crop edge handles take cursor priority (matching the press order):
+        // a two-headed resize arrow, not the four-way move cursor.
+        int cropHoverH = m_overlay.cropEnabled ? hitTestCropHandle(wPos) : -1;
+        if (cropHoverH >= 0)
+            applyCursor(cropHoverH < 2 ? Qt::SizeHorCursor : Qt::SizeVerCursor);
+        else if (hitTestHandle(wPos) >= 0)
             applyCursor(Qt::SizeFDiagCursor);
         else if (hitTestRotate(wPos) >= 0)
             applyCursor(rotateCursor());
-        else if (hitTestBody(wPos) || overSiblingBody)
+        else if (hitTestBody(wPos) || overSiblingBody ||
+                 hitTestBodyMargin(wPos, kBodyGrabMarginPx))
             applyCursor(Qt::SizeAllCursor);  // Premiere-style move cursor
         else
             applyCursor(Qt::ArrowCursor);
@@ -1164,6 +1248,19 @@ void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
         m_dragMode = DragMode::None;
         applyCursor(Qt::ArrowCursor);
         emit transformAnchorDragFinished(oldX, oldY, newX, newY);
+        event->accept();
+        return;
+    }
+
+    if (m_dragMode == DragMode::CropEdge) {
+        const float oldL = m_dragStartCrop[0], oldR = m_dragStartCrop[1];
+        const float oldT = m_dragStartCrop[2], oldB = m_dragStartCrop[3];
+        const float newL = m_overlay.cropL, newR = m_overlay.cropR;
+        const float newT = m_overlay.cropT, newB = m_overlay.cropB;
+        m_dragMode   = DragMode::None;
+        m_cropHandle = -1;
+        applyCursor(Qt::ArrowCursor);
+        emit cropDragFinished(oldL, oldR, oldT, oldB, newL, newR, newT, newB);
         event->accept();
         return;
     }

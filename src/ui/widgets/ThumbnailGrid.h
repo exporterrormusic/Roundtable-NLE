@@ -119,6 +119,11 @@ public:
     /// Clear all items.
     void clearItems();
 
+    /// Re-order items with Premiere/Finder-style natural sorting by display
+    /// name, preserving the visual grouping (folders first, then sequences,
+    /// then media). Keeps the icon view consistent with the details tree.
+    void sortItems();
+
     /// Number of items (including filtered-out).
     [[nodiscard]] int itemCount() const noexcept;
 

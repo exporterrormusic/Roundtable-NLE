@@ -315,6 +315,72 @@ void TransformOverlayWidget::drawTransformOverlay(QPainter& painter)
             }
         }
     }
+
+    // Crop edge handles + dimmed cropped-out border (Premiere-style), drawn
+    // last so they sit above the box. No-op unless the clip supports crop.
+    drawCropOverlay(painter);
+}
+
+void TransformOverlayWidget::drawCropOverlay(QPainter& painter)
+{
+    if (!m_overlay.cropEnabled) return;
+
+    QPointF c[4];
+    computeOverlayCorners(c);   // TL, TR, BR, BL of the uncropped box
+    const QPointF U = c[1] - c[0];   // left→right axis
+    const QPointF V = c[3] - c[0];   // top→bottom axis
+    if (std::abs(U.x()) + std::abs(U.y()) < 1e-3 ||
+        std::abs(V.x()) + std::abs(V.y()) < 1e-3) return;
+
+    const float fl = m_overlay.cropL / 100.0f;
+    const float fr = m_overlay.cropR / 100.0f;
+    const float ft = m_overlay.cropT / 100.0f;
+    const float fb = m_overlay.cropB / 100.0f;
+    auto pt = [&](float a, float b) -> QPointF {
+        return QPointF(c[0].x() + a * U.x() + b * V.x(),
+                       c[0].y() + a * U.y() + b * V.y());
+    };
+    auto quad = [&](float a0, float b0, float a1, float b1,
+                    float a2, float b2, float a3, float b3) {
+        QPolygonF p; p << pt(a0, b0) << pt(a1, b1) << pt(a2, b2) << pt(a3, b3);
+        return p;
+    };
+
+    const auto& tc = Theme::colors();
+
+    // Dim the cropped-out strips (tiled so corners don't double-darken).
+    const bool cropped = (fl > 1e-4f || fr > 1e-4f || ft > 1e-4f || fb > 1e-4f);
+    if (cropped) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 110));
+        if (ft > 1e-4f) painter.drawPolygon(quad(0, 0,        1, 0,        1, ft,      0, ft));
+        if (fb > 1e-4f) painter.drawPolygon(quad(0, 1 - fb,   1, 1 - fb,   1, 1,       0, 1));
+        if (fl > 1e-4f) painter.drawPolygon(quad(0, ft,       fl, ft,      fl, 1 - fb, 0, 1 - fb));
+        if (fr > 1e-4f) painter.drawPolygon(quad(1 - fr, ft,  1, ft,       1, 1 - fb,  1 - fr, 1 - fb));
+    }
+
+    // Inner crop rectangle outline — GREEN, matching the SHOT COMPOSE crop box
+    // (distinct from the cyan transform box so crop reads as its own gizmo).
+    const QColor kCropGreen(64, 220, 96);
+    QColor line = kCropGreen; line.setAlpha(230);
+    painter.setPen(QPen(line, 1.5));
+    painter.setBrush(Qt::NoBrush);
+    QPolygonF inner;
+    inner << pt(fl, ft) << pt(1 - fr, ft) << pt(1 - fr, 1 - fb)
+          << pt(fl, 1 - fb) << pt(fl, ft);
+    painter.drawPolyline(inner);
+
+    // Edge-mid handles (filled green squares).
+    QPointF h[4];
+    if (cropHandlePositions(h)) {
+        constexpr double HS = 9.0;
+        QColor border = tc.textBright; border.setAlpha(235);
+        QColor fill   = kCropGreen;    fill.setAlpha(235);
+        painter.setPen(QPen(border, 1));
+        painter.setBrush(fill);
+        for (int i = 0; i < 4; ++i)
+            painter.drawRect(QRectF(h[i].x() - HS / 2, h[i].y() - HS / 2, HS, HS));
+    }
 }
 
 void TransformOverlayWidget::drawSafeAreas(QPainter& painter)

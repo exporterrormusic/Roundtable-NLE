@@ -144,7 +144,7 @@ void GraphicsEditorPanel::buildEditControls()
  .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
  Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
  connect(m_fontCombo, &QComboBox::currentTextChanged,
- this, [this](const QString&) { applyTextProperties(); });
+ this, [this](const QString&) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_fontCombo, 1);
  }
 
@@ -165,26 +165,26 @@ void GraphicsEditorPanel::buildEditControls()
  .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
  Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
  connect(m_weightCombo, &QComboBox::currentIndexChanged,
- this, [this](int) { applyTextProperties(); });
+ this, [this](int) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_weightCombo);
 
  m_boldBtn = makeStyleButton(QStringLiteral("B"), tr("Bold"));
  m_boldBtn->setStyleSheet(m_boldBtn->styleSheet().replace(
  "font-weight: bold", "font-weight: 900"));
- connect(m_boldBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); });
+ connect(m_boldBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_boldBtn);
 
  m_italicBtn = makeStyleButton(QStringLiteral("I"), tr("Italic"));
  m_italicBtn->setFont([]{QFont f; f.setItalic(true); f.setBold(true); return f;}());
- connect(m_italicBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); });
+ connect(m_italicBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_italicBtn);
 
  m_allCapsBtn = makeStyleButton(QStringLiteral("TT"), tr("All Caps"));
- connect(m_allCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); });
+ connect(m_allCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_allCapsBtn);
 
  m_smallCapsBtn = makeStyleButton(QStringLiteral("T\u1D04"), tr("Small Caps"));
- connect(m_smallCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); });
+ connect(m_smallCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
  rl->addWidget(m_smallCapsBtn);
 
  rl->addStretch();
@@ -253,7 +253,7 @@ void GraphicsEditorPanel::buildEditControls()
 
  // Spin commit (end of drag)
  connect(m_fontSizeSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); });
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
 
  // Spin text-edit finished (user typed a value and pressed Enter)
  connect(m_fontSizeSpin, QOverload<>::of(&ScrubbySpinBox::editingFinished),
@@ -263,6 +263,7 @@ void GraphicsEditorPanel::buildEditControls()
  m_fontSizeSlider->setValue(static_cast<int>(m_fontSizeSpin->value()));
  m_fontSizeSlider->blockSignals(false);
  applyTextProperties();
+ commitLayerEdit();
  });
  }
 
@@ -282,6 +283,7 @@ void GraphicsEditorPanel::buildEditControls()
  for (auto* s : {m_alignLeftBtn, m_alignCenterBtn, m_alignRightBtn, m_alignJustifyBtn})
  s->setChecked(s == b);
  applyTextProperties();
+ commitLayerEdit();
  });
  rl->addWidget(b);
  }
@@ -297,6 +299,7 @@ void GraphicsEditorPanel::buildEditControls()
  for (auto* s : {m_valignTopBtn, m_valignMiddleBtn, m_valignBottomBtn})
  s->setChecked(s == b);
  applyTextProperties();
+ commitLayerEdit();
  });
  rl->addWidget(b);
  }
@@ -310,7 +313,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(trkLabel);
  m_trackingSpin = makeScrubby(-500, 500, 1, 0);
  connect(m_trackingSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); });
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_trackingSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyTextProperties(); });
  rl->addWidget(m_trackingSpin);
 
  rl->addSpacing(6);
@@ -318,7 +323,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(leadLabel);
  m_leadingSpin = makeScrubby(0, 500, 0.1, 1);
  connect(m_leadingSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); });
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_leadingSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyTextProperties(); });
  rl->addWidget(m_leadingSpin);
 
  rl->addSpacing(6);
@@ -326,7 +333,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(bsLabel);
  m_baselineShiftSpin = makeScrubby(-200, 200, 1, 0);
  connect(m_baselineShiftSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); });
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_baselineShiftSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyTextProperties(); });
  rl->addWidget(m_baselineShiftSpin);
 
  rl->addStretch();
@@ -347,7 +356,7 @@ void GraphicsEditorPanel::buildEditControls()
  "QCheckBox { background: transparent; spacing: 4px; }"
  "QCheckBox::indicator { width: 14px; height: 14px; }"));
  connect(m_fillCheck, &QCheckBox::toggled,
- this, [this](bool) { applyAppearance(); });
+ this, [this](bool) { applyAppearance(); commitLayerEdit(); });
  rl->addWidget(m_fillCheck);
 
  auto* fillLbl = new QLabel(tr("Fill"), m_editContainer);
@@ -367,6 +376,7 @@ void GraphicsEditorPanel::buildEditControls()
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(chosen.name(), Theme::hex(Theme::colors().border)));
  applyAppearance();
+ commitLayerEdit();
  }
  });
  rl->addWidget(m_fillColorBtn);
@@ -385,6 +395,7 @@ void GraphicsEditorPanel::buildEditControls()
  if (m_strokeWidthSpin) m_strokeWidthSpin->setEnabled(on);
  if (m_strokePosCombo) m_strokePosCombo->setEnabled(on);
  applyAppearance();
+ commitLayerEdit();
  });
  rl->addWidget(m_strokeCheck);
 
@@ -405,6 +416,7 @@ void GraphicsEditorPanel::buildEditControls()
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(chosen.name(), Theme::hex(Theme::colors().border)));
  applyAppearance();
+ commitLayerEdit();
  }
  });
  rl->addWidget(m_strokeColorBtn);
@@ -412,7 +424,9 @@ void GraphicsEditorPanel::buildEditControls()
  m_strokeWidthSpin = makeScrubby(0.5, 50, 0.5, 1, QStringLiteral(" px"));
  m_strokeWidthSpin->setEnabled(false);
  connect(m_strokeWidthSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyAppearance(); });
+ this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
+ connect(m_strokeWidthSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyAppearance(); });
  rl->addWidget(m_strokeWidthSpin);
 
  m_strokePosCombo = new QComboBox(m_editContainer);
@@ -429,7 +443,7 @@ void GraphicsEditorPanel::buildEditControls()
  .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
  Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
  connect(m_strokePosCombo, &QComboBox::currentIndexChanged,
- this, [this](int) { applyAppearance(); });
+ this, [this](int) { applyAppearance(); commitLayerEdit(); });
  rl->addWidget(m_strokePosCombo);
 
  rl->addStretch();
@@ -446,6 +460,7 @@ void GraphicsEditorPanel::buildEditControls()
  this, [this](bool on) {
  if (m_shadowColorBtn) m_shadowColorBtn->setEnabled(on);
  applyAppearance();
+ commitLayerEdit();
  });
  rl->addWidget(m_shadowCheck);
 
@@ -467,6 +482,7 @@ void GraphicsEditorPanel::buildEditControls()
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(chosen.name(), Theme::hex(Theme::colors().border)));
  applyAppearance();
+ commitLayerEdit();
  }
  });
  rl->addWidget(m_shadowColorBtn);
@@ -485,13 +501,17 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(makeLabel(tr("Position")));
  m_posXSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_posXSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_posXSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_posXSpin);
  auto* xLabel = makeSmallLabel(QStringLiteral("X"));
  rl->addWidget(xLabel);
  m_posYSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_posYSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_posYSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_posYSpin);
  auto* yLabel = makeSmallLabel(QStringLiteral("Y"));
  rl->addWidget(yLabel);
@@ -504,13 +524,17 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(makeLabel(tr("Anchor")));
  m_anchorXSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_anchorXSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_anchorXSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_anchorXSpin);
  auto* xLabel = makeSmallLabel(QStringLiteral("X"));
  rl->addWidget(xLabel);
  m_anchorYSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
  connect(m_anchorYSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_anchorYSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_anchorYSpin);
  auto* yLabel = makeSmallLabel(QStringLiteral("Y"));
  rl->addWidget(yLabel);
@@ -523,7 +547,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(makeLabel(tr("Scale")));
  m_scaleXSpin = makeScrubby(0, 1000, 0.1, 1, QStringLiteral(" %"));
  connect(m_scaleXSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_scaleXSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_scaleXSpin);
 
  m_uniformScaleCheck = new QCheckBox(m_editContainer);
@@ -537,11 +563,14 @@ void GraphicsEditorPanel::buildEditControls()
  m_scaleYSpin = makeScrubby(0, 1000, 0.1, 1, QStringLiteral(" %"));
  m_scaleYSpin->setEnabled(false);
  connect(m_scaleYSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_scaleYSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  connect(m_uniformScaleCheck, &QCheckBox::toggled,
  this, [this](bool uniform) {
  m_scaleYSpin->setEnabled(!uniform);
  applyLayerTransform();
+ commitLayerEdit();
  });
  rl->addWidget(m_scaleYSpin);
  rl->addStretch();
@@ -553,7 +582,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(makeLabel(tr("Rotation")));
  m_rotationSpin = makeScrubby(-3600, 3600, 0.1, 1, QStringLiteral("\u00B0"));
  connect(m_rotationSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_rotationSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_rotationSpin);
  rl->addStretch();
  }
@@ -564,7 +595,9 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(makeLabel(tr("Opacity")));
  m_opacitySpin = makeScrubby(0, 100, 0.1, 1, QStringLiteral(" %"));
  connect(m_opacitySpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyLayerTransform(); });
+ this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
+ connect(m_opacitySpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyLayerTransform(); });
  rl->addWidget(m_opacitySpin);
  rl->addStretch();
  }

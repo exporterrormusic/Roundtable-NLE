@@ -322,6 +322,7 @@ private:
     void applyGfxFontWeight();
     void applyGfxItalic();
     void applyGfxAllCaps();
+    void applyGfxSmallCaps();
     void applyGfxAlign();
     void applyGfxFillColor();
     void applyGfxStrokeEnabled();
@@ -471,6 +472,7 @@ private:
     ScrubbySpinBox* m_gfxFontWeightSpin{nullptr};
     QCheckBox*      m_gfxItalicCheck{nullptr};
     QCheckBox*      m_gfxAllCapsCheck{nullptr};
+    QCheckBox*      m_gfxSmallCapsCheck{nullptr};
     QComboBox*      m_gfxAlignCombo{nullptr};
     QPushButton*    m_gfxFillColorBtn{nullptr};
     QCheckBox*      m_gfxStrokeCheck{nullptr};

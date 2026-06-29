@@ -110,6 +110,13 @@ private:
  void applyAppearance();
  void applyLayerTransform();
 
+ // Undo support for live property edits: snapshot the selected layer when it
+ // becomes the edit target, then on edit-commit push a command that restores
+ // the before/after state in place (by stable layer id). captureEditBaseline()
+ // is called on selection; commitLayerEdit() from each control's commit signal.
+ void captureEditBaseline();
+ void commitLayerEdit();
+
  // Helpers
  ScrubbySpinBox* makeScrubby(double min, double max, double step,
  int decimals, const QString& suffix = {});
@@ -125,6 +132,11 @@ private:
  Timeline* m_timeline{nullptr};
  bool m_updating{false};
  std::unique_ptr<GraphicLayer> m_copiedLayer; ///< Clipboard for layer copy/paste
+
+ // Undo edit-gesture state (see captureEditBaseline / commitLayerEdit).
+ std::unique_ptr<GraphicLayer> m_editBaseline;   ///< Layer snapshot at gesture start
+ uint64_t m_editBaselineId{0};                   ///< Stable id of the snapshotted layer
+ bool     m_layerEditDirty{false};               ///< A property changed since the snapshot
 
  // Ã¢â€â‚¬Ã¢â€â‚¬ Top-level layout Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
  QLabel* m_clipNameLabel{nullptr};

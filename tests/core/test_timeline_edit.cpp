@@ -513,6 +513,95 @@ TEST(EditOperations, RippleDelete)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Close Gap — keep tracks in sync, never overlap clips on other tracks
+// ═════════════════════════════════════════════════════════════════════════════
+
+static size_t trackIndexOf(rt::Timeline& tl, rt::Track* t)
+{
+    for (size_t i = 0; i < tl.trackCount(); ++i)
+        if (tl.track(i) == t) return i;
+    return SIZE_MAX;
+}
+
+// Closing a gap on V1 must not shove a clip on another sync-locked track past
+// the clip in front of it. The ripple is clamped to the room available on the
+// tightest track, and every track shifts by that same amount (stays in sync).
+TEST(EditOperations, CloseGapClampsToKeepTracksInSync)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    rt::Track* v2 = timeline.addVideoTrack("V2");
+
+    // V1: clipA [0–2s]  GAP [2–4s]  clipB [4–6s]   (gap is 2s wide)
+    addClip(v1, 0.0, 2.0);
+    uint64_t b = addClip(v1, 4.0, 2.0);
+
+    // V2: clipC [0–3s]  clipD [4–6s]   (only 1s of room before clipD)
+    uint64_t c = addClip(v2, 0.0, 3.0);
+    uint64_t d = addClip(v2, 4.0, 2.0);
+
+    size_t v1Idx = trackIndexOf(timeline, v1);
+    ASSERT_NE(v1Idx, SIZE_MAX);
+
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::closeGap(timeline, v1Idx, 2 * TPS, 4 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    // Gap (2s) is wider than V2's room (1s) → ripple clamped to 1s on BOTH
+    // tracks. clipB and clipD each shift left by exactly 1s.
+    EXPECT_EQ(v1->clip(v1->findClipIndexById(b))->timelineIn(), 3 * TPS);
+    EXPECT_EQ(v2->clip(v2->findClipIndexById(d))->timelineIn(), 3 * TPS);
+
+    // clipD lands flush against clipC's tail (3s) — no overlap.
+    EXPECT_GE(v2->clip(v2->findClipIndexById(d))->timelineIn(),
+              v2->clip(v2->findClipIndexById(c))->timelineOut());
+}
+
+// With nothing else to constrain it, the gap closes fully and clips butt up.
+TEST(EditOperations, CloseGapFullyClosesWhenUnobstructed)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+
+    addClip(v1, 0.0, 2.0);
+    uint64_t b = addClip(v1, 4.0, 2.0);   // gap [2–4s]
+
+    size_t v1Idx = trackIndexOf(timeline, v1);
+    ASSERT_NE(v1Idx, SIZE_MAX);
+
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::closeGap(timeline, v1Idx, 2 * TPS, 4 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    EXPECT_EQ(v1->clip(v1->findClipIndexById(b))->timelineIn(), 2 * TPS); // butts clipA
+}
+
+// A (track-)locked track must never move, even when sync-locked.
+TEST(EditOperations, CloseGapSkipsLockedTracks)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    rt::Track* v2 = timeline.addVideoTrack("V2");
+
+    addClip(v1, 0.0, 2.0);
+    uint64_t b = addClip(v1, 4.0, 2.0);   // gap [2–4s]
+    uint64_t d = addClip(v2, 4.0, 2.0);   // would move if V2 weren't locked
+    v2->setLocked(true);
+
+    size_t v1Idx = trackIndexOf(timeline, v1);
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::closeGap(timeline, v1Idx, 2 * TPS, 4 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    // V1 closes fully (locked V2 doesn't constrain it); V2's clip stays put.
+    EXPECT_EQ(v1->clip(v1->findClipIndexById(b))->timelineIn(), 2 * TPS);
+    EXPECT_EQ(v2->clip(v2->findClipIndexById(d))->timelineIn(), 4 * TPS);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  Slip
 // ═════════════════════════════════════════════════════════════════════════════
 

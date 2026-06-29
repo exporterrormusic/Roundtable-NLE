@@ -163,8 +163,31 @@ void PropertiesPanel::setupTitleSection(QWidget* container)
 
     m_fontSizeSpin = createScrubby(1.0, 500.0, 1.0, 1, " pt");
     m_fontSizeSpin->setToolTip(tr("Font size in points"));
-    connect(m_fontSizeSpin, &ScrubbySpinBox::valueCommitted,
-            this, [this](double, double) { applyTitleFontSize(); });
+    // Live preview while scrubbing: write the model + repaint on every tick,
+    // but DON'T push an undo command per tick (that flooded the stack). A
+    // single command is recorded on release (valueCommitted) using the signal's
+    // pre-drag baseline. Typed entry (editingFinished) still uses the full
+    // applyTitleFontSize() path (its old value is the as-yet-unmodified model).
+    connect(m_fontSizeSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double v) {
+        if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+        static_cast<TitleClip*>(m_clip)->setFontSize(static_cast<float>(v));
+        emit propertyChanged();
+    });
+    connect(m_fontSizeSpin, &ScrubbySpinBox::valueCommitted, this,
+            [this](double oldV, double newV) {
+        if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+        if (static_cast<float>(oldV) == static_cast<float>(newV)) return;
+        auto* tc = static_cast<TitleClip*>(m_clip);
+        tc->setFontSize(static_cast<float>(newV));      // ensure applied
+        if (m_commandStack) {
+            const float o = static_cast<float>(oldV), n = static_cast<float>(newV);
+            m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+                "Change font size",
+                [tc, n, this]() { tc->setFontSize(n); populateFromClip(); emit propertyChanged(); },
+                [tc, o, this]() { tc->setFontSize(o); populateFromClip(); emit propertyChanged(); }));
+        }
+        emit propertyChanged();
+    });
     connect(m_fontSizeSpin, &QDoubleSpinBox::editingFinished,
             this, &PropertiesPanel::applyTitleFontSize);
     form->addRow("Size:", m_fontSizeSpin);

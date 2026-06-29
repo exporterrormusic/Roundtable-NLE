@@ -188,11 +188,15 @@ void ProjectBin::setListView(bool listMode)
     m_listView = listMode;
 
     // Persist the view preference for the current tab so each tab
-    // remembers its own list/icon choice independently.
+    // remembers its own list/icon choice independently, and capture the
+    // tab's bin path so we can re-scope after rebuilding the tree.
+    QStringList tabPath;
     if (m_binTabBar) {
         int idx = m_binTabBar->currentIndex();
         if (idx >= 0 && idx < m_binTabViewModes.size())
             m_binTabViewModes[idx] = listMode;
+        if (idx >= 0 && idx < m_binTabPaths.size())
+            tabPath = m_binTabPaths[idx];
     }
 
     m_btnListView->setChecked(listMode);
@@ -204,21 +208,36 @@ void ProjectBin::setListView(bool listMode)
     // Apply current zoom to whichever view is active
     onZoomChanged(m_zoomSlider->value());
 
+    // Rebuild a FULL (unflattened) tree before per-view scoping. Without this,
+    // focusListViewOnBin() leaves m_listWidget flattened (the bin's children
+    // become top-level and the bin container is destroyed), so a later
+    // syncIconView() walk of m_iconBinPath would fail and silently reset scope
+    // to root — the "icon view shows everything" bug. rebuildFullTree() prefers
+    // LIVE data so edits made in this tab survive the toggle, only un-flattening
+    // from the snapshot when the tree is actually flattened.
+    m_iconBinPath = tabPath;            // empty for the root tab
+    rebuildFullTree();
+
     if (listMode) {
-        syncListView();
+        if (!tabPath.isEmpty())
+            focusListViewOnBin();       // reads m_iconBinPath
     } else {
-        // Respect the current bin tab's path
-        if (m_binTabBar) {
-            int idx = m_binTabBar->currentIndex();
-            if (idx >= 0 && idx < m_binTabPaths.size())
-                m_iconBinPath = m_binTabPaths[idx];
-            else
-                m_iconBinPath.clear();
-        } else {
-            m_iconBinPath.clear();
-        }
         syncIconView();
     }
+}
+
+void ProjectBin::rebuildFullTree()
+{
+    // If the list view is currently focused, m_listWidget is flattened, so the
+    // live binFolderState() would capture that flattened structure — un-flatten
+    // from the snapshot captured at focus time instead. Otherwise the live tree
+    // is full and up to date with any imports/drops/new-bins made in this tab,
+    // so rebuild from it (nullptr → binFolderState of the current tree). This is
+    // the key to not reverting post-snapshot edits.
+    if (m_listViewFocused)
+        syncListView(m_rootFolderState.empty() ? nullptr : &m_rootFolderState);
+    else
+        syncListView();
 }
 
 void ProjectBin::focusListViewOnBin()
@@ -252,6 +271,11 @@ void ProjectBin::focusListViewOnBin()
     if (!container)
         return;
 
+    // Snapshot the FULL tree right before we flatten it (the tree is full here —
+    // the caller rebuilt it). This keeps m_rootFolderState fresh so a later
+    // rebuildFullTree() can un-flatten with the current structure.
+    m_rootFolderState = binFolderState();
+
     // Take ownership of the target bin's children before clear() deletes them.
     QList<QTreeWidgetItem*> savedChildren;
     while (container->childCount() > 0)
@@ -264,6 +288,10 @@ void ProjectBin::focusListViewOnBin()
     // Reparent the bin's children as the new top-level items.
     for (auto* child : savedChildren)
         m_listWidget->addTopLevelItem(child);
+
+    // The tree is now flattened — rebuildFullTree() must un-flatten from the
+    // snapshot rather than read this (partial) live tree.
+    m_listViewFocused = true;
 
     // Update the status label to reflect the focused count.
     int count = m_listWidget->topLevelItemCount();
@@ -314,22 +342,14 @@ void ProjectBin::onBinTabChanged(int index)
     // Always rebuild the full QTreeWidget first (via syncListView) so that
     // both list and icon views read from a correct, untransformed tree.
     QTimer::singleShot(0, this, [this]() {
-        if (m_iconBinPath.isEmpty()) {
-            // Switching to root — rebuild full tree from saved state.
-            syncListView(m_rootFolderState.empty() ? nullptr : &m_rootFolderState);
-            m_rootFolderState.clear();
-            if (!m_listView)
-                syncIconView();
-        } else {
-            // Switching to sub-bin — save full state before any transform,
-            // rebuild the full tree, then focus on the bin's contents.
-            if (m_rootFolderState.empty())
-                m_rootFolderState = binFolderState();
-            syncListView(m_rootFolderState.empty() ? nullptr : &m_rootFolderState);
-            if (m_listView)
+        // Rebuild a full tree (live when possible, snapshot to un-flatten),
+        // then scope for the new tab's view mode + path.
+        rebuildFullTree();
+        if (m_listView) {
+            if (!m_iconBinPath.isEmpty())
                 focusListViewOnBin();
-            else
-                syncIconView();
+        } else {
+            syncIconView();
         }
     });
 }

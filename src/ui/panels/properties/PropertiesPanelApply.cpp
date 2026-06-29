@@ -855,6 +855,7 @@ void PropertiesPanel::populateFromGraphic()
         m_gfxFontWeightSpin->setValue(tl->fontWeight());
         m_gfxItalicCheck->setChecked(tl->isItalic());
         m_gfxAllCapsCheck->setChecked(tl->allCaps());
+        m_gfxSmallCapsCheck->setChecked(tl->smallCaps());
         m_gfxAlignCombo->setCurrentIndex(static_cast<int>(tl->alignment()));
 
         const auto& app = tl->appearance();

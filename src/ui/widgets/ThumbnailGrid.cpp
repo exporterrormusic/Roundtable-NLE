@@ -6,6 +6,7 @@
 #include "widgets/ThumbnailGrid.h"
 #include "PathUtils.h"
 #include "Theme.h"
+#include "widgets/NaturalSort.h"
 #include "playback/MediaPool.h"
 
 #include <spdlog/spdlog.h>
@@ -185,6 +186,37 @@ void ThumbnailGrid::clearItems()
     recalcLayout();
     update();
     emit itemCountChanged(0);
+}
+
+void ThumbnailGrid::sortItems()
+{
+    // Group rank keeps the Explorer-style layout: folders, then sequences,
+    // then media — matching the order syncIconView() composes. Within each
+    // group, order by display name using natural (numeric-aware) compare so
+    // "2" precedes "13". stable_sort keeps equal names deterministic.
+    constexpr uint32_t kSequenceLabel = 0xFF6666CC;
+    auto rank = [](const ThumbnailItem& it) -> int {
+        if (!it.isFolder) return 2;                              // media last
+        return (it.labelColor == kSequenceLabel) ? 1 : 0;        // sequence after plain folders
+    };
+
+    // Preserve selection across the reorder (selectedIndex is positional).
+    const uint64_t selId = (m_selectedIndex >= 0 &&
+                            m_selectedIndex < static_cast<int>(m_items.size()))
+        ? m_items[static_cast<size_t>(m_selectedIndex)].itemId : 0;
+
+    std::stable_sort(m_items.begin(), m_items.end(),
+        [&](const ThumbnailItem& a, const ThumbnailItem& b) {
+            const int ra = rank(a), rb = rank(b);
+            if (ra != rb) return ra < rb;
+            return naturalLess(a.displayName, b.displayName);
+        });
+
+    if (selId)
+        m_selectedIndex = indexOfItemId(selId);
+
+    recalcLayout();
+    update();
 }
 
 int ThumbnailGrid::itemCount() const noexcept

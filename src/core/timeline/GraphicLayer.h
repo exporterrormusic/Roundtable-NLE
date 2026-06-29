@@ -151,6 +151,12 @@ public:
 
     [[nodiscard]] virtual std::unique_ptr<GraphicLayer> clone() const = 0;
 
+    /// Copy all editable state (transform, appearance, type-specific fields)
+    /// from another layer of the same type, WITHOUT changing this layer's id
+    /// or type. Used by undo/redo to restore a snapshot in place so the layer's
+    /// stable id (and the panel's selection) survives the round-trip.
+    virtual void assignStateFrom(const GraphicLayer& other);
+
 protected:
     GraphicLayerType  m_type;
     uint64_t          m_id;
@@ -213,6 +219,7 @@ public:
     void setUseParagraphBox(bool v) noexcept { m_useParagraphBox = v; }
 
     [[nodiscard]] std::unique_ptr<GraphicLayer> clone() const override;
+    void assignStateFrom(const GraphicLayer& other) override;
 
 private:
     std::string    m_text{"Title"};
@@ -258,6 +265,7 @@ public:
     void setFillColor(uint32_t c)  noexcept   { m_fillColor = c; }
 
     [[nodiscard]] std::unique_ptr<GraphicLayer> clone() const override;
+    void assignStateFrom(const GraphicLayer& other) override;
 
 private:
     ShapeType m_shape{ShapeType::Rectangle};

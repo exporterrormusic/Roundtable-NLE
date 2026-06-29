@@ -33,7 +33,9 @@
 namespace rt {
 
 class TimelineWorkspace;
+class TextLayer;
 struct OpacityMask;
+struct TransformOverlayInfo;
 
 class OverlayController : public QObject {
 public:
@@ -58,6 +60,15 @@ public:
     void graphicCanvasRes(uint32_t& w, uint32_t& h) const;
 
 private:
+    /// Measure a text layer's rendered glyph bounds and fill the overlay's
+    /// content-rect fields (useContentRect + contentL/T/R/B + canvas dims) so
+    /// the selection box hugs the actual text. Mirrors renderGraphicClip's
+    /// font/alignment so the box matches the rendered pixels. Used for both a
+    /// focused text layer and the whole-clip case (so the box always tracks
+    /// the text, not the canvas). The caller sets posX/scale/rotation.
+    void measureTextContentRect(TextLayer* tl, int64_t relTick,
+                                TransformOverlayInfo& info) const;
+
     // ── Shared drag/click handlers ──────────────────────────────────────
     // Connected from BOTH wiring sites (GPU overlay + software viewport).
     void onOverlayPositionChanged(float posX, float posY);
@@ -74,6 +85,9 @@ private:
                                    const OpacityMask& newMask);
     void onOverlayEmptyAreaClicked(float frameX, float frameY,
                                    Qt::KeyboardModifiers mods);
+    void onOverlayCropChanged(float l, float r, float t, float b);
+    void onOverlayCropDragFinished(float oldL, float oldR, float oldT, float oldB,
+                                   float newL, float newR, float newT, float newB);
 
     TimelineWorkspace* m_ws{nullptr};
 

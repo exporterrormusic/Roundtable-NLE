@@ -195,6 +195,15 @@ signals:
     /// Emitted when the eyedropper tool picks a color at frame-space coords.
     void colorPicked(float frameX, float frameY);
 
+    /// Emitted during a crop-edge drag (live composite refresh). Values are
+    /// percent cropped per edge (0..100).
+    void cropChanged(float cropL, float cropR, float cropT, float cropB);
+
+    /// Emitted on mouse-release after a crop drag — carries pre- and post-drag
+    /// crop so the workspace can push a single undo command.
+    void cropDragFinished(float oldL, float oldR, float oldT, float oldB,
+                          float newL, float newR, float newT, float newB);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
@@ -233,6 +242,22 @@ private:
 
     /// Hit-test inside the overlay body.
     bool hitTestBody(const QPointF& widgetPos) const;
+
+    /// Hit-test the body inflated outward by `marginPx` widget pixels along
+    /// the box's own edge axes. Used to make a thin text box forgiving to grab
+    /// at any zoom (the tight box can be only a few px tall on screen). The
+    /// caller still yields to corner scale/rotate handles in that margin.
+    bool hitTestBodyMargin(const QPointF& widgetPos, double marginPx) const;
+
+    /// Compute the 4 crop edge-handle widget positions (order: Left, Right,
+    /// Top, Bottom) at the current crop insets. Returns false if no overlay.
+    bool cropHandlePositions(QPointF handles[4]) const;
+
+    /// Hit-test a crop edge handle. Returns 0=Left,1=Right,2=Top,3=Bottom,-1=none.
+    int hitTestCropHandle(const QPointF& widgetPos) const;
+
+    /// Draw the crop overlay (dimmed cropped-out region + edge handles).
+    void drawCropOverlay(class QPainter& painter);
 
     /// Hit-test mask control points. Returns handle index (or -1) via outHandle,
     /// and sets outMaskIndex to the mask that was hit.
@@ -290,9 +315,12 @@ private:
         DragMaskPoint,
         DragMotionHandle,   ///< spatial bezier handle on a Position keyframe
         MoveAnchor,         ///< anchor point (rotation/scale pivot) handle
+        CropEdge,           ///< crop edge handle (Left/Right/Top/Bottom)
     };
     DragMode m_dragMode{DragMode::None};
     int      m_dragHandle{-1};
+    int      m_cropHandle{-1};          ///< 0=L,1=R,2=T,3=B during a CropEdge drag
+    float    m_dragStartCrop[4]{0, 0, 0, 0}; ///< L,R,T,B crop% snapshot at drag start
     QPointF  m_dragStartWidget;
     float    m_dragStartPosX{0.0f};
     float    m_dragStartPosY{0.0f};

@@ -245,6 +245,7 @@ void GraphicsEditorPanel::applyTextProperties()
  if (m_leadingSpin) tl->leading().addKeyframe(0, static_cast<float>(m_leadingSpin->value()));
  if (m_baselineShiftSpin) tl->baselineShift().addKeyframe(0, static_cast<float>(m_baselineShiftSpin->value()));
 
+ m_layerEditDirty = true;
  emit propertyChanged();
 }
 
@@ -320,6 +321,7 @@ void GraphicsEditorPanel::applyAppearance()
  }
  }
 
+ m_layerEditDirty = true;
  emit propertyChanged();
 }
 
@@ -347,7 +349,66 @@ void GraphicsEditorPanel::applyLayerTransform()
  if (m_rotationSpin) xf.rotation.addKeyframe(0, static_cast<float>(m_rotationSpin->value()));
  if (m_opacitySpin) xf.opacity.addKeyframe(0, static_cast<float>(m_opacitySpin->value() / 100.0));
 
+ m_layerEditDirty = true;
  emit propertyChanged();
+}
+
+// ── Undo: snapshot on selection, push a restore-state command on commit ──────
+void GraphicsEditorPanel::captureEditBaseline()
+{
+    if (m_selectedLayer) {
+        m_editBaseline   = m_selectedLayer->clone();
+        m_editBaselineId = m_selectedLayer->layerId();
+    } else {
+        m_editBaseline.reset();
+        m_editBaselineId = 0;
+    }
+    m_layerEditDirty = false;
+}
+
+void GraphicsEditorPanel::commitLayerEdit()
+{
+    if (!m_layerEditDirty) return;
+    m_layerEditDirty = false;
+
+    // If we can't form a real before/after command, just re-baseline.
+    if (!m_editBaseline || !m_graphicClip || !m_selectedLayer || !m_commandStack ||
+        m_selectedLayer->layerId() != m_editBaselineId) {
+        captureEditBaseline();
+        return;
+    }
+
+    const uint64_t id = m_editBaselineId;
+    auto oldState = std::shared_ptr<GraphicLayer>(m_editBaseline->clone().release());
+    auto newState = std::shared_ptr<GraphicLayer>(m_selectedLayer->clone().release());
+
+    auto* gc = m_graphicClip;
+    // Restore a snapshot IN PLACE onto the layer (found by its stable id), so
+    // the layer object + the panel's selection survive undo/redo.
+    auto restore = [gc, id, this](const std::shared_ptr<GraphicLayer>& src) {
+        GraphicLayer* target = nullptr;
+        for (size_t i = 0; i < gc->layerCount(); ++i) {
+            auto* l = gc->layer(i);
+            if (l && l->layerId() == id) { target = l; break; }
+        }
+        if (!target) return;
+        target->assignStateFrom(*src);
+        if (m_selectedLayer && m_selectedLayer->layerId() == id) {
+            m_updating = true;
+            populateFromLayer();
+            m_updating = false;
+        }
+        emit propertyChanged();
+    };
+
+    // The edit was already applied live, so record without re-executing.
+    m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+        "Edit Graphic Layer",
+        [restore, newState]() { restore(newState); },
+        [restore, oldState]() { restore(oldState); }));
+
+    // The next gesture diffs against the now-current state.
+    captureEditBaseline();
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬

@@ -286,7 +286,7 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
     }
 
     if (!targetBin) {
-        targetBin = new QTreeWidgetItem();
+        targetBin = new NaturalTreeWidgetItem();
         targetBin->setText(0, binName);
         targetBin->setData(0, Qt::UserRole + 2, true);
         targetBin->setIcon(0, makePremiereBinIcon(kLabelBin, "bin"));
@@ -467,7 +467,7 @@ void ProjectBin::ensureDefaultBins()
     };
 
     auto makeBinItem = [this](const QString& name) {
-        auto* item = new QTreeWidgetItem();
+        auto* item = new NaturalTreeWidgetItem();
         item->setText(0, name);
         item->setData(0, Qt::UserRole + 2, true);
         item->setIcon(0, makePremiereBinIcon(kLabelBin, "bin"));

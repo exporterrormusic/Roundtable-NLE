@@ -19,6 +19,7 @@
 #include <filesystem>
 
 #include "PathUtils.h"
+#include "widgets/NaturalSort.h"          // naturalLess + NaturalTreeWidgetItem
 
 #include "decode/ThumbnailGenerator.h"   // MediaType
 
@@ -218,7 +219,7 @@ inline QTreeWidgetItem* projectBinFindChildBin(QTreeWidgetItem* parent, const QS
 /// Create a new bin tree item with Premiere Pro styling.
 inline QTreeWidgetItem* projectBinCreateBinItem(const QString& name)
 {
-    auto* binItem = new QTreeWidgetItem();
+    auto* binItem = new NaturalTreeWidgetItem();
     binItem->setText(0, name);
     binItem->setData(0, Qt::UserRole + 2, true);
     binItem->setIcon(0, makePremiereBinIcon(kLabelBin, "bin"));

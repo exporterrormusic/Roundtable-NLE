@@ -52,6 +52,13 @@ struct TransformOverlayInfo
     /// Defaults to (0,0), which makes the pivot the layer center and
     /// preserves the legacy renderer/overlay behavior.
     float anchorX{0.0f}, anchorY{0.0f};
+
+    /// Crop (percent cropped per edge, 0..100) for crop-capable clips.
+    /// When cropEnabled is true the overlay draws draggable edge handles and
+    /// dims the cropped-out border so the user can crop/uncrop directly in the
+    /// Program Monitor (Premiere-style). Corner handles remain scale handles.
+    bool  cropEnabled{false};
+    float cropL{0.0f}, cropR{0.0f}, cropT{0.0f}, cropB{0.0f};
 };
 
 /// Map a point in canvas/frame coordinates to widget-space coordinates.

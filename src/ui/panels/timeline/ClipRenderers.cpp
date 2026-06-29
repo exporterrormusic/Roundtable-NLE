@@ -7,18 +7,22 @@
 #include "timeline/CaptionClip.h"
 #include "timeline/PngPuppetClip.h"
 #include "Constants.h"
+#include "PathUtils.h"   // utf8ToPath — Unicode-safe std::string → std::filesystem::path
 
 #include <QColor>
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPen>
 #include <QRectF>
 #include <QString>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -118,6 +122,152 @@ std::shared_ptr<CachedFrame> renderTitleClip(
 
 
 // =========================================================================
+// Small-caps text layout helpers (Photoshop/Premiere "small caps": every
+// letter is drawn uppercase, but originally-lowercase letters are reduced to
+// a fraction of the cap height). A single QPainter::drawText cannot vary glyph
+// size, so the small-caps path lays out runs manually and shares a baseline.
+// =========================================================================
+
+namespace {
+
+/// Fraction of full cap height used for originally-lowercase letters.
+constexpr qreal kSmallCapScale = 0.75;
+
+/// A maximal run of characters sharing a size class within one line. `text`
+/// is already uppercased; `small` marks runs that were originally lowercase.
+struct SmallCapsRun { QString text; bool small; };
+
+/// Split text into lines (on '\n') of size-classed, uppercased runs.
+std::vector<std::vector<SmallCapsRun>> buildSmallCapsLines(const QString& text)
+{
+    std::vector<std::vector<SmallCapsRun>> lines;
+    const QStringList rawLines = text.split(QChar('\n'));
+    for (const QString& line : rawLines) {
+        std::vector<SmallCapsRun> runs;
+        for (const QChar& ch : line) {
+            const bool small = ch.isLower();          // digits/space/punct/upper => full size
+            const QString up = QString(ch).toUpper();
+            if (!runs.empty() && runs.back().small == small)
+                runs.back().text += up;
+            else
+                runs.push_back({up, small});
+        }
+        lines.push_back(std::move(runs));
+    }
+    return lines;
+}
+
+/// Build a glyph-outline QPainterPath for multi-line (and optionally small-caps)
+/// text, laid out around the layer anchor (cx, cy) with the given alignment.
+/// Both the stroke (QPen on the path) and the fill (fillPath) use this single
+/// path, so they always register exactly. Replaces the old O(width^2) offset-
+/// grid stroke: a QPen outline is independent of stroke width, so scrubbing a
+/// stroke / moving stroked text no longer stalls the compositor.
+///
+/// Positioning mirrors the previous point-text alignment (centered text matches
+/// the old single-drawText path). For non-small-caps callers, pass one full-size
+/// run per line and fmSmall == fmFull.
+QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
+                           const QFont& fullFont, const QFont& smallFont,
+                           const QFontMetricsF& fmFull, const QFontMetricsF& fmSmall,
+                           qreal cx, qreal cy, int hAlign, int vAlign)
+{
+    QPainterPath path;
+    const qreal lineSpacing = fmFull.lineSpacing();
+    const qreal ascent      = fmFull.ascent();
+    const int   n           = static_cast<int>(lines.size());
+    const qreal totalH      = lineSpacing * n;
+
+    qreal blockTop;
+    if (vAlign == Qt::AlignTop)         blockTop = cy;
+    else if (vAlign == Qt::AlignBottom) blockTop = cy - totalH;
+    else                                blockTop = cy - totalH * 0.5;   // VCenter
+
+    for (int i = 0; i < n; ++i) {
+        const auto& runs = lines[static_cast<size_t>(i)];
+        qreal w = 0;
+        for (const auto& r : runs)
+            w += (r.small ? fmSmall : fmFull).horizontalAdvance(r.text);
+
+        qreal startX;
+        if (hAlign == Qt::AlignLeft)        startX = cx;
+        else if (hAlign == Qt::AlignRight)  startX = cx - w;
+        else                                startX = cx - w * 0.5;       // HCenter/Justify
+
+        const qreal baseY = blockTop + ascent + lineSpacing * i;
+        qreal penX = startX;
+        for (const auto& r : runs) {
+            const QFont& f = r.small ? smallFont : fullFont;
+            if (!r.text.isEmpty())
+                path.addText(QPointF(penX, baseY), f, r.text);
+            penX += (r.small ? fmSmall : fmFull).horizontalAdvance(r.text);
+        }
+    }
+    return path;
+}
+
+} // namespace
+
+// Render-state hash for renderGraphicClip's memo cache. Folds in EVERY field
+// that affects the output bitmap — including each layer transform evaluated at
+// localTick (those are baked into the bitmap), so an ANIMATED clip yields a new
+// hash per tick (re-renders) while a STATIC clip yields a constant hash (cache
+// hits across frames). Because every editable field is in the hash, an edit
+// changes the key and forces a fresh render — the cache is self-invalidating
+// and cannot serve a stale frame.
+static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
+                                           uint32_t outW, uint32_t outH,
+                                           uint32_t renderW, uint32_t renderH)
+{
+    uint64_t h = 1469598103934665603ULL;            // FNV-1a 64
+    auto mixBytes = [&](const void* p, size_t n) {
+        const auto* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+    };
+    auto mixU = [&](uint64_t v) { mixBytes(&v, sizeof(v)); };
+    auto mixF = [&](float f)    { mixBytes(&f, sizeof(f)); };
+
+    mixU(clip->id()); mixU(outW); mixU(outH); mixU(renderW); mixU(renderH);
+    mixU(clip->layerCount());
+    for (size_t li = 0; li < clip->layerCount(); ++li) {
+        const auto* layer = clip->layer(li);
+        if (!layer) { mixU(0); continue; }
+        mixU(static_cast<uint64_t>(layer->layerType()));
+        mixU(layer->isVisible() ? 1u : 0u);
+        const auto& t = layer->transform();
+        mixF(t.posX.evaluate(localTick));    mixF(t.posY.evaluate(localTick));
+        mixF(t.scaleX.evaluate(localTick));  mixF(t.scaleY.evaluate(localTick));
+        mixF(t.rotation.evaluate(localTick));
+        mixF(t.anchorX.evaluate(localTick)); mixF(t.anchorY.evaluate(localTick));
+        mixF(t.opacity.evaluate(localTick));
+        const auto& app = layer->appearance();
+        mixU(app.fills.size());
+        for (const auto& f : app.fills)   { mixU(f.color); mixF(f.opacity); mixU(f.enabled ? 1u : 0u); }
+        mixU(app.strokes.size());
+        for (const auto& s : app.strokes) { mixU(s.color); mixF(s.width); mixU(static_cast<uint64_t>(s.position)); mixF(s.opacity); mixU(s.enabled ? 1u : 0u); }
+        mixU(app.shadows.size());
+        for (const auto& sh : app.shadows){ mixU(sh.color); mixF(sh.distance); mixF(sh.angle); mixF(sh.softness); mixF(sh.opacity); mixU(sh.enabled ? 1u : 0u); }
+        if (layer->layerType() == GraphicLayerType::Text) {
+            const auto* tl = static_cast<const TextLayer*>(layer);
+            mixBytes(tl->text().data(), tl->text().size());            mixU(0x5354u);
+            mixBytes(tl->fontFamily().data(), tl->fontFamily().size()); mixU(0x4646u);
+            mixF(tl->fontSize()); mixU(static_cast<uint64_t>(tl->fontWeight()));
+            mixU(tl->isItalic() ? 1u : 0u); mixU(tl->allCaps() ? 1u : 0u); mixU(tl->smallCaps() ? 1u : 0u);
+            mixU(static_cast<uint64_t>(tl->alignment())); mixU(static_cast<uint64_t>(tl->vAlignment()));
+            mixF(tl->tracking().evaluate(localTick));
+            mixF(tl->leading().evaluate(localTick));
+            mixF(tl->baselineShift().evaluate(localTick));
+        } else {
+            const auto* sl = static_cast<const ShapeLayer*>(layer);
+            mixU(static_cast<uint64_t>(sl->shapeType()));
+            mixF(sl->shapeWidth()); mixF(sl->shapeHeight()); mixF(sl->cornerRadius());
+            mixU(sl->fillColor());
+        }
+    }
+    return h;
+}
+
+// =========================================================================
 // GraphicClip CPU rendering - multi-layer text/shape container
 // =========================================================================
 
@@ -138,6 +288,24 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
     const bool needsDownscale = (renderW != outW || renderH != outH);
 
     const int64_t localTick = tick - clip->timelineIn();
+
+    // ── Memoized render ─────────────────────────────────────────────────
+    // A static text/graphic clip composited over MOVING video would otherwise
+    // re-run the full text layout + (O(width^2)) stroke passes every frame.
+    // Return the cached bitmap when nothing that affects the output changed.
+    // The key folds in all output-affecting state (incl. localTick-evaluated
+    // transforms), so it self-invalidates on edit — no stale frame. Function-
+    // local statics are unity-build-safe (scoped to this function).
+    static std::mutex                                                         s_gcMtx;
+    static std::unordered_map<uint64_t, std::pair<uint64_t, std::shared_ptr<CachedFrame>>> s_gcCache;
+    const uint64_t renderKey =
+        hashGraphicClipRenderState(clip, localTick, outW, outH, renderW, renderH);
+    {
+        std::lock_guard<std::mutex> lock(s_gcMtx);
+        auto it = s_gcCache.find(clip->id());
+        if (it != s_gcCache.end() && it->second.first == renderKey && it->second.second)
+            return it->second.second;
+    }
 
     auto toQColor = [](uint32_t c) -> QColor {
         return QColor(
@@ -207,6 +375,9 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             painter.setFont(font);
 
             QString text = QString::fromStdString(tl->text());
+            // ALL CAPS takes precedence over small caps when both are set
+            // (matches Premiere). Small caps only applies when allCaps is off.
+            const bool smallCaps = tl->smallCaps() && !tl->allCaps();
             if (tl->allCaps()) text = text.toUpper();
 
             int hAlign = Qt::AlignHCenter;
@@ -223,47 +394,71 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
                 case GTextVAlign::Bottom: vAlign = Qt::AlignBottom;  break;
             }
 
-            // Use a very large rect so text is never clipped/wrapped by canvas bounds
-            int bigW = static_cast<int>(renderW) * 10;
-            int bigH = static_cast<int>(renderH) * 10;
-            const QRect textRect(-bigW / 2 + static_cast<int>(renderW) / 2,
-                                 -bigH / 2 + static_cast<int>(renderH) / 2,
-                                 bigW, bigH);
-
             const auto& app = layer->appearance();
 
-            // Strokes (render behind fill)
+            // ── Vector text rendering (fast at any stroke width) ──────────
+            // Build the glyph outline ONCE around the layer anchor, then
+            // stroke/shadow/fill that single path. The previous renderer
+            // stamped the whole text once per pixel of stroke width via an
+            // offset grid — O(width^2) drawText calls — so scrubbing a stroke
+            // or dragging stroked text re-ran that storm every composited
+            // frame and stalled live updates. A QPen outline is independent of
+            // stroke width; fill and stroke share the same path so they always
+            // register exactly (no offset outline).
+            const qreal cx = static_cast<qreal>(renderW) * 0.5;
+            const qreal cy = static_cast<qreal>(renderH) * 0.5;
+
+            QFont smallFont = font;
+            std::vector<std::vector<SmallCapsRun>> lines;
+            if (smallCaps) {
+                // Lowercase-origin glyphs drawn smaller, sharing one baseline.
+                lines = buildSmallCapsLines(text);
+                const int sps = std::max(1,
+                    static_cast<int>(std::lround(scaledFontSize * kSmallCapScale)));
+                smallFont.setPointSize(sps);
+            } else {
+                // One full-size run per line (split only on '\n' — matches the
+                // old huge-rect behaviour where word-wrap never triggered).
+                for (const QString& ln : text.split(QChar('\n')))
+                    lines.push_back({ SmallCapsRun{ ln, false } });
+            }
+            const QFontMetricsF fmFull(font), fmSmall(smallFont);
+
+            const QPainterPath glyphPath = buildTextPath(
+                lines, font, smallFont, fmFull, fmSmall, cx, cy, hAlign, vAlign);
+
+            painter.setRenderHint(QPainter::Antialiasing, true);
+
+            // Strokes (render behind fill). QPen width = 2*w so the band extends
+            // w px outside the glyph edge (the inner half is hidden by the
+            // fill), reproducing the old dilation-by-w silhouette.
             for (auto it = app.strokes.rbegin(); it != app.strokes.rend(); ++it) {
                 if (!it->enabled || it->width < 0.1f) continue;
-                painter.setPen(toQColor(it->color));
-                int ow = std::max(1, static_cast<int>(it->width));
-                for (int ox = -ow; ox <= ow; ++ox)
-                    for (int oy = -ow; oy <= ow; ++oy) {
-                        if (ox == 0 && oy == 0) continue;
-                        painter.drawText(textRect.translated(ox, oy),
-                                         hAlign | vAlign | Qt::TextWordWrap, text);
-                    }
+                QPen pen(toQColor(it->color));
+                pen.setWidthF(static_cast<qreal>(it->width) * 2.0);
+                pen.setJoinStyle(Qt::RoundJoin);
+                pen.setCapStyle(Qt::RoundCap);
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPath(glyphPath);
             }
 
-            // Shadows
+            // Shadows: the filled glyph offset in the shadow direction.
             for (auto it = app.shadows.rbegin(); it != app.shadows.rend(); ++it) {
                 if (!it->enabled) continue;
                 float rad = it->angle * 3.14159265f / 180.0f;
-                int sdx = static_cast<int>(std::cos(rad) * it->distance);
-                int sdy = static_cast<int>(std::sin(rad) * it->distance);
+                qreal sdx = std::cos(rad) * static_cast<qreal>(it->distance);
+                qreal sdy = std::sin(rad) * static_cast<qreal>(it->distance);
                 QColor sc = toQColor(it->color);
                 sc.setAlphaF(static_cast<double>(it->opacity));
-                painter.setPen(sc);
-                painter.drawText(textRect.translated(sdx, sdy),
-                                 hAlign | vAlign | Qt::TextWordWrap, text);
+                painter.fillPath(glyphPath.translated(sdx, sdy), sc);
             }
 
-            // Fill text
-            if (!app.fills.empty() && app.fills[0].enabled)
-                painter.setPen(toQColor(app.fills[0].color));
-            else
-                painter.setPen(QColor(255, 255, 255));
-            painter.drawText(textRect, hAlign | vAlign | Qt::TextWordWrap, text);
+            // Fill
+            const QColor fillC = (!app.fills.empty() && app.fills[0].enabled)
+                               ? toQColor(app.fills[0].color)
+                               : QColor(255, 255, 255);
+            painter.fillPath(glyphPath, fillC);
 
         } else if (layer->layerType() == GraphicLayerType::Shape) {
             const auto* sl = static_cast<const ShapeLayer*>(layer);
@@ -325,6 +520,14 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
     frame->stride = static_cast<uint32_t>(canvas.bytesPerLine());
     frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
     std::memcpy(frame->pixels.data(), canvas.constBits(), frame->pixels.size());
+
+    // Store in the memo (one entry per clip). Bound total memory by clearing
+    // when the map grows large — stale entries for deleted clips can't recur.
+    {
+        std::lock_guard<std::mutex> lock(s_gcMtx);
+        if (s_gcCache.size() > 64) s_gcCache.clear();
+        s_gcCache[clip->id()] = { renderKey, frame };
+    }
 
     return frame;
 }
@@ -441,15 +644,30 @@ namespace {
 // handful per puppet, but decoding from disk every frame would be wasteful and
 // would hammer the file system during playback/export.  QImage is implicitly
 // shared, so handing out copies is cheap.
+//
+// Self-heal on disk change: the cache stores each file's last-write-time and
+// re-decodes when it differs, so swapping a puppet PNG in Explorer shows up on
+// the timeline (mirrors MediaPool's mtime re-probe). Without this the timeline
+// served the stale decode forever while the Puppets tab — which loads fresh —
+// already reflected the swap.
 QImage loadPuppetImage(const std::string& path)
 {
+    struct Entry { QImage img; std::filesystem::file_time_type mtime{}; bool haveMtime{false}; };
     static std::mutex s_mtx;
-    static std::unordered_map<std::string, QImage> s_cache;
+    static std::unordered_map<std::string, Entry> s_cache;
+
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(utf8ToPath(path), ec);
+    const bool haveMtime = !ec;
 
     std::lock_guard<std::mutex> lock(s_mtx);
     auto it = s_cache.find(path);
-    if (it != s_cache.end())
-        return it->second;
+    if (it != s_cache.end()) {
+        // Reuse the cached decode unless the file changed on disk. If the mtime
+        // is unreadable (e.g. offline), keep serving the cached copy.
+        if (!haveMtime || (it->second.haveMtime && it->second.mtime == mtime))
+            return it->second.img;
+    }
 
     QImage img;
     // Paths are stored UTF-8; QString::fromStdString uses fromUtf8 so Unicode
@@ -458,7 +676,7 @@ QImage loadPuppetImage(const std::string& path)
     if (!img.isNull() && img.format() != QImage::Format_ARGB32)
         img = img.convertToFormat(QImage::Format_ARGB32);
 
-    s_cache.emplace(path, img);   // cache even a null image to avoid retrying disk
+    s_cache[path] = Entry{img, mtime, haveMtime};   // cache even a null image to avoid retrying disk
     return img;
 }
 

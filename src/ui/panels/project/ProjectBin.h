@@ -365,6 +365,12 @@ private:
     void syncListView(const std::vector<BinFolderState>* savedFoldersOverride = nullptr);
     void syncIconView();
 
+    /// Rebuild a full (unflattened) tree before per-view scoping: from live
+    /// data when the tree is already full, or from m_rootFolderState to
+    /// un-flatten a previously focused list view. Shared by setListView /
+    /// onBinTabChanged so edits made in a tab survive an icon<->list toggle.
+    void rebuildFullTree();
+
     /// After syncListView() builds the full tree, reparent the list widget
     /// so it shows only the children of the bin at m_iconBinPath (used when
     /// a sub-bin tab is active in list-view mode).
@@ -406,6 +412,7 @@ private:
     QVector<QStringList> m_binTabPaths;  // bin path for each tab (empty = root)
     QVector<bool> m_binTabViewModes;     // per-tab list (true) / icon (false) preference
     std::vector<BinFolderState> m_rootFolderState; // full tree snapshot before sub-bin focus
+    bool m_listViewFocused{false}; // true while m_listWidget is flattened by focusListViewOnBin()
     std::atomic<bool> m_destroying{false};
 };
 

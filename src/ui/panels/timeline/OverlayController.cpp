@@ -35,6 +35,7 @@
 #include "playback/PlaybackController.h"
 #include <QFileInfo>
 #include <QImage>
+#include <QFontMetrics>
 #include <algorithm>
 #include <unordered_map>
 #include <functional>
@@ -77,6 +78,82 @@ void OverlayController::scheduleOverlayRefresh()
                 updateTransformOverlay();
         });
     }
+}
+
+void OverlayController::measureTextContentRect(TextLayer* tl, int64_t relTick,
+                                               TransformOverlayInfo& info) const
+{
+    if (!tl) return;
+
+    QFont font(QString::fromStdString(tl->fontFamily()),
+               static_cast<int>(tl->fontSize()));
+    font.setWeight(static_cast<QFont::Weight>(tl->fontWeight()));
+    font.setItalic(tl->isItalic());
+    float tracking = tl->tracking().evaluate(relTick);
+    font.setLetterSpacing(QFont::AbsoluteSpacing, static_cast<qreal>(tracking));
+
+    QString text = QString::fromStdString(tl->text());
+    // Measure the ALL-CAPS extent for both All Caps and Small Caps: small caps
+    // draws originally-lowercase glyphs SMALLER, so the all-caps box is always
+    // >= the small-caps box and fully contains it (a slightly generous, never
+    // too-small draggable region — never smaller than the visible glyphs).
+    if (tl->allCaps() || tl->smallCaps()) text = text.toUpper();
+
+    // Project/sequence resolution — the SAME space renderGraphicClip()
+    // composites in (NOT the monitor preview res), so the box doesn't drift.
+    uint32_t outW = 0, outH = 0;
+    graphicCanvasRes(outW, outH);
+    if (outW == 0 || outH == 0) return;   // leave useContentRect false → fallback box
+
+    // Same alignment as renderGraphicClip().
+    int hAlign = Qt::AlignHCenter;
+    switch (tl->alignment()) {
+        case GTextAlign::Left:    hAlign = Qt::AlignLeft;    break;
+        case GTextAlign::Center:  hAlign = Qt::AlignHCenter; break;
+        case GTextAlign::Right:   hAlign = Qt::AlignRight;   break;
+        case GTextAlign::Justify: hAlign = Qt::AlignJustify; break;
+    }
+    int vAlign = Qt::AlignVCenter;
+    switch (tl->vAlignment()) {
+        case GTextVAlign::Top:    vAlign = Qt::AlignTop;     break;
+        case GTextVAlign::Middle: vAlign = Qt::AlignVCenter; break;
+        case GTextVAlign::Bottom: vAlign = Qt::AlignBottom;  break;
+    }
+
+    // Very large rect, anchored so the active alignment edge sits at the canvas
+    // center — MUST match renderGraphicClip()'s rect so the box tracks the
+    // rendered pixels for non-center alignment too (center is unchanged).
+    const double bigW = static_cast<double>(outW) * 10.0;
+    const double bigH = static_cast<double>(outH) * 10.0;
+    const double cxD = static_cast<double>(outW) * 0.5;
+    const double cyD = static_cast<double>(outH) * 0.5;
+    const double rectX = (hAlign == Qt::AlignLeft)  ? cxD
+                       : (hAlign == Qt::AlignRight) ? cxD - bigW
+                       :                              cxD - bigW * 0.5;
+    const double rectY = (vAlign == Qt::AlignTop)    ? cyD
+                       : (vAlign == Qt::AlignBottom) ? cyD - bigH
+                       :                               cyD - bigH * 0.5;
+    QRectF textRect(rectX, rectY, bigW, bigH);
+
+    // Measure the text bounds with QFontMetricsF (same layout flags as
+    // renderGraphicClip's drawText) instead of allocating a full project-res
+    // QImage + QPainter every call — this runs per displayed frame while a text
+    // layer is selected, so the old ~33 MB (4K) alloc/free per frame was a real
+    // cost. boundingRect() returns the identical rect drawText would occupy.
+    const QFontMetricsF fm(font);
+    const QRectF textBounds =
+        fm.boundingRect(textRect, hAlign | vAlign | Qt::TextWordWrap, text);
+
+    // Premiere-style breathing room so the corner handles don't sit on the ink.
+    const float horizPad = tl->fontSize() * 0.45f;
+    const float vertPad  = tl->fontSize() * 0.40f;
+    info.useContentRect = true;
+    info.contentL = static_cast<float>(textBounds.left())   - horizPad;
+    info.contentT = static_cast<float>(textBounds.top())    - vertPad;
+    info.contentR = static_cast<float>(textBounds.right())  + horizPad;
+    info.contentB = static_cast<float>(textBounds.bottom()) + vertPad;
+    info.contentCanvasW = static_cast<float>(outW);
+    info.contentCanvasH = static_cast<float>(outH);
 }
 
 void OverlayController::updateTransformOverlay()
@@ -135,87 +212,7 @@ void OverlayController::updateTransformOverlay()
             info.useContentRect = true;
 
             if (layer->layerType() == GraphicLayerType::Text) {
-                auto* tl = static_cast<TextLayer*>(layer);
-                QFont font(QString::fromStdString(tl->fontFamily()),
-                           static_cast<int>(tl->fontSize()));
-                font.setWeight(static_cast<QFont::Weight>(tl->fontWeight()));
-                font.setItalic(tl->isItalic());
-                float tracking = tl->tracking().evaluate(relTick);
-                font.setLetterSpacing(QFont::AbsoluteSpacing, static_cast<qreal>(tracking));
-
-                QString text = QString::fromStdString(tl->text());
-                if (tl->allCaps()) text = text.toUpper();
-
-                // Output dimensions — the project/sequence resolution.
-                // renderGraphicClip() renders at full project res then
-                // downscales and adds posX raw in that space, so the
-                // overlay must measure/place in the SAME space. This is
-                // NOT m_ws->programMonitor()->outputWidth() (the preview res,
-                // which can be a 1920 preview of a 4K project — that
-                // mismatch drifted the box from the text proportionally
-                // to distance from center).
-                uint32_t outW = 0, outH = 0;
-                graphicCanvasRes(outW, outH);
-
-                // Use a very large rect so text is never clipped/wrapped by canvas bounds
-                double bigW = static_cast<double>(outW) * 10.0;
-                double bigH = static_cast<double>(outH) * 10.0;
-                QRectF textRect(-bigW * 0.5 + static_cast<double>(outW) * 0.5,
-                                -bigH * 0.5 + static_cast<double>(outH) * 0.5,
-                                bigW, bigH);
-
-                // Same alignment as renderGraphicClip
-                int hAlign = Qt::AlignHCenter;
-                switch (tl->alignment()) {
-                    case GTextAlign::Left:    hAlign = Qt::AlignLeft;    break;
-                    case GTextAlign::Center:  hAlign = Qt::AlignHCenter; break;
-                    case GTextAlign::Right:   hAlign = Qt::AlignRight;   break;
-                    case GTextAlign::Justify: hAlign = Qt::AlignJustify; break;
-                }
-                int vAlign = Qt::AlignVCenter;
-                switch (tl->vAlignment()) {
-                    case GTextVAlign::Top:    vAlign = Qt::AlignTop;     break;
-                    case GTextVAlign::Middle: vAlign = Qt::AlignVCenter; break;
-                    case GTextVAlign::Bottom: vAlign = Qt::AlignBottom;  break;
-                }
-
-                // Measure text bounds using QPainter::drawText — this is the
-                // exact same code path as renderGraphicClip(), guaranteeing
-                // pixel-perfect bounding box matching.
-                QImage metricsCanvas(static_cast<int>(outW), static_cast<int>(outH),
-                                     QImage::Format_ARGB32_Premultiplied);
-                QPainter metricsP(&metricsCanvas);
-                metricsP.setRenderHint(QPainter::Antialiasing, true);
-                metricsP.setRenderHint(QPainter::TextAntialiasing, true);
-                metricsP.setFont(font);
-                QRectF textBounds;
-                metricsP.drawText(textRect, hAlign | vAlign | Qt::TextWordWrap,
-                                  text, &textBounds);
-                metricsP.end();
-
-                // Premiere-style breathing room around the glyphs. Two parts:
-                //   • Horizontal: side-bearing slack so the box doesn't kiss
-                //     the leftmost/rightmost ink (which would put the corner
-                //     scale handles ON the glyphs).
-                //   • Vertical: a fraction of font height — text ascenders/
-                //     descenders vary, but ~25% of one line height matches
-                //     Premiere's clear margin above caps and below descenders.
-                const float horizPad = tl->fontSize() * 0.45f;
-                const float vertPad  = tl->fontSize() * 0.40f;
-                info.contentL = static_cast<float>(textBounds.left())   - horizPad;
-                info.contentT = static_cast<float>(textBounds.top())    - vertPad;
-                info.contentR = static_cast<float>(textBounds.right())  + horizPad;
-                info.contentB = static_cast<float>(textBounds.bottom()) + vertPad;
-
-                spdlog::info("[Overlay] text='{}' outW={} outH={} textBounds=({:.1f},{:.1f},{:.1f},{:.1f}) "
-                             "content=({:.1f},{:.1f},{:.1f},{:.1f}) posX={:.1f} posY={:.1f} scX={:.2f} scY={:.2f}",
-                             tl->text(), outW, outH,
-                             textBounds.left(), textBounds.top(), textBounds.width(), textBounds.height(),
-                             info.contentL, info.contentT, info.contentR, info.contentB,
-                             info.posX, info.posY, info.scaleX, info.scaleY);
-
-                info.contentCanvasW = static_cast<float>(outW);
-                info.contentCanvasH = static_cast<float>(outH);
+                measureTextContentRect(static_cast<TextLayer*>(layer), relTick, info);
             } else {
                 auto* sl = static_cast<ShapeLayer*>(layer);
                 float sw = sl->shapeWidth();
@@ -258,6 +255,42 @@ void OverlayController::updateTransformOverlay()
         info.rotation = m_ws->selection().clip->rotation().evaluate(relTick);
         info.anchorX  = m_ws->selection().clip->anchorX().evaluate(relTick);
         info.anchorY  = m_ws->selection().clip->anchorY().evaluate(relTick);
+
+        // Whole-clip GraphicClip (no layer focused in Essential Graphics):
+        // still size the box around the rendered TEXT so the whole glyph
+        // extent is draggable — not the full canvas. The text layer carries
+        // its own transform on top of the clip transform, so move the clip
+        // transform into the clip-level fields and bake the layer transform
+        // into posX/scale (content-rect space), exactly like the focused-layer
+        // branch above. Falls back to the canvas-sized box when the clip has
+        // no text layer.
+        if (m_ws->selection().clip->clipType() == ClipType::Graphic) {
+            auto* gc = static_cast<GraphicClip*>(m_ws->selection().clip);
+            TextLayer* firstText = nullptr;
+            for (size_t i = 0; i < gc->layerCount(); ++i) {
+                auto* l = gc->layer(i);
+                if (l && l->isVisible() && l->layerType() == GraphicLayerType::Text) {
+                    firstText = static_cast<TextLayer*>(l);
+                    break;
+                }
+            }
+            if (firstText) {
+                const auto& xf = firstText->transform();
+                info.clipPosX    = info.posX;
+                info.clipPosY    = info.posY;
+                info.clipScaleX  = info.scaleX;
+                info.clipScaleY  = info.scaleY;
+                info.clipRotation = info.rotation;
+                info.posX     = xf.posX.evaluate(relTick);
+                info.posY     = xf.posY.evaluate(relTick);
+                info.scaleX   = xf.scaleX.evaluate(relTick);
+                info.scaleY   = xf.scaleY.evaluate(relTick);
+                info.rotation = xf.rotation.evaluate(relTick);
+                info.anchorX  = xf.anchorX.evaluate(relTick);
+                info.anchorY  = xf.anchorY.evaluate(relTick);
+                measureTextContentRect(firstText, relTick, info);
+            }
+        }
     }
 
     // Determine source dimensions for the bounding box.
@@ -456,6 +489,18 @@ void OverlayController::updateTransformOverlay()
         }
         if (isCharacter)
             info.containFit = true;
+    }
+
+    // Crop overlay — draggable edge handles for crop-capable clips (Video /
+    // Spine) so the user can see what's cropped and crop/uncrop directly in
+    // the Program Monitor. Same `info` feeds both the software viewport and
+    // the GPU overlay widget below.
+    if (m_ws->selection().clip->supportsCrop()) {
+        info.cropEnabled = true;
+        info.cropL = m_ws->selection().clip->cropLeft();
+        info.cropR = m_ws->selection().clip->cropRight();
+        info.cropT = m_ws->selection().clip->cropTop();
+        info.cropB = m_ws->selection().clip->cropBottom();
     }
 
     vp->setTransformOverlay(info);
