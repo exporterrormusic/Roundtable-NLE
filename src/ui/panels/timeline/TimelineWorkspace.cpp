@@ -10,7 +10,7 @@
  * Contains: constructor (binder-controller construction), destructor,
  * togglePanelMaximize shim, mousePressEvent.
  *
- * Binder controllers (god-class decomposition, fable_cleanup.txt §3.1):
+ * Binder controllers (god-class decomposition, cleanup audit §3.1):
  *   MediaWatchController     — live media file-swap watching
  *   PanelMaximizeController  — tilde panel maximize/restore
  *

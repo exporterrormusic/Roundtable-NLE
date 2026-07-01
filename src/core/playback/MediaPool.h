@@ -487,7 +487,7 @@ private:
     // These three values now live in rt::PerformanceProfile
     // (perfProfile().prefetchAheadFrames / prefetchThreadCount /
     // nvdecWorkers) so they can be scaled per-machine and by the Boost
-    // toggle — see docs/BOOST_MODE_PLAN.md.  The defaults above remain
+    // toggle — see the retired BOOST_MODE_PLAN doc (git history).  The defaults above remain
     // the behaviour-neutral baseline.  nvdecWorkers is always clamped by
     // the GPU's real NVENC/NVDEC session cap before it is raised.
 

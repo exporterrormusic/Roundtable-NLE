@@ -200,7 +200,7 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             // sinc) when the source rate differs — the old path read raw
             // source-rate samples and nearest-neighbor-mapped them during
             // mixing, which aliased every 44.1 kHz source in a 48 kHz
-            // export (fable_cleanup.txt §5.5).
+            // export (cleanup audit §5.5).
             int64_t mixDomainStart = static_cast<int64_t>(
                 sourceStartSec * config.sampleRate);
             if (mixDomainStart < 0) mixDomainStart = 0;

@@ -428,7 +428,7 @@ private:
     //  project-lifecycle state)
 
     /// Project lifecycle binder — owns the implementation of the project/
-    /// recovery methods shimmed above (fable_cleanup.txt §3.1).
+    /// recovery methods shimmed above (cleanup audit §3.1).
     std::unique_ptr<ProjectController> m_projectController;
 
     // ── Auto-update ─────────────────────────────────────────────────────

@@ -75,7 +75,7 @@ struct GpuClassification
 /// Coarse machine capability class, used to scale the PerformanceProfile
 /// (and the Boost toggle) per machine.  Driven primarily by VRAM — the
 /// binding resource for this GPU-resident NLE — with RAM / core count able
-/// only to pull the tier DOWN, never up.  See docs/BOOST_MODE_PLAN.md §3.
+/// only to pull the tier DOWN, never up.  See the retired BOOST_MODE_PLAN doc (git history), §3.
 enum class MachineTier
 {
     Entry,        ///< iGPU / <4 GB VRAM, or RAM/core starved

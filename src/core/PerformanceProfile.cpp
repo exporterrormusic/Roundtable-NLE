@@ -59,7 +59,7 @@ PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
     //     (prefetchAheadFrames, nvdecWorkers, prefetchThreadCount) stay at
     //     the baseline.  Raising those safely needs the prefetch/compositor
     //     queue-decoupling work (parked in git stash; see
-    //     docs/BOOST_MODE_PLAN.md), which is not landed.
+    //     the retired BOOST_MODE_PLAN doc in git history), which is not landed.
     //   • Entry/Standard tiers stay on the floor (little headroom to spare).
     //   • The byte budget is sized with generous slack so the ENTRY-COUNT
     //     cap is the binding limit, never byte-pressure — that avoids the

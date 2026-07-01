@@ -129,7 +129,6 @@ if(CUDAToolkit_FOUND)
     find_package(CUDAToolkit QUIET)
     target_sources(roundtable_gpu PRIVATE
         cuda/CudaContext.cpp
-        cuda/NvdecDecoder.cpp
         cuda/NvencEncoder.cpp
         cuda/CudaVulkanInterop.cpp
         cuda/WhisperCuda.cpp

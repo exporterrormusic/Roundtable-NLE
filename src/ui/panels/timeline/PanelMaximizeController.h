@@ -3,7 +3,7 @@
  *
  * Pressing ` maximizes the panel under the cursor; pressing it again reverts
  * to EXACTLY the prior layout.  Extracted from TimelineWorkspace as part of
- * the god-class decomposition (fable_cleanup.txt §3.1).
+ * the god-class decomposition (cleanup audit §3.1).
  *
  * Design (deliberately minimal):
  *   - Maximize never reparents any widget.  It simply hides every sibling

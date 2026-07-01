@@ -6,9 +6,9 @@
     launch-validation.bat) route into this script so the variants can't
     drift.
 
-    NOTE: launch.bat is intentionally NOT routed through here - it stays
-    pure batch -> launch.vbs so the everyday launch has zero PowerShell
-    startup latency.  Keep it that way.
+    NOTE: the everyday launcher is launch.vbs (runs the exe hidden, zero
+    PowerShell startup latency) - it is intentionally NOT routed through
+    here.  Keep it that way.
 
 .PARAMETER Debug
     Keep the console visible, prefer the Debug build (CRT heap validation),

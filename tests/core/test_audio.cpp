@@ -508,7 +508,7 @@ TEST(AudioFileTest, OpenWavStereo)
 // A single-stream WAV exercises enumeration + the ordinal-mapping / graceful
 // fallback paths. True multi-stream SELECTION (decoding the 2nd of 2 streams)
 // needs a muxed multi-track fixture and is covered by the runtime smoke
-// (fable_cleanup.txt §4.4 verification) — the test target has no FFmpeg
+// (cleanup audit §4.4 verification) — the test target has no FFmpeg
 // muxing headers to build one here.
 
 TEST(AudioFileTest, EnumerateAudioStreamsSingleStream)

@@ -26,7 +26,7 @@ Else
     hasDebug   = fso.FileExists(debugExe)
 
     If hasRelease And hasDebug Then
-        ' Prefer Release for normal use; Debug is only for launch_debug.bat
+        ' Prefer Release for normal use; Debug is only for the diag launchers
         targetExe = releaseExe
     ElseIf hasRelease Then
         targetExe = releaseExe

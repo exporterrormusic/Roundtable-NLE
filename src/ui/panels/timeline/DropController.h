@@ -10,7 +10,7 @@
  *   - nested-sequence drops + nest/un-nest plumbing (wireNestSignals)
  *
  * Extracted from TimelineWorkspace (god-class decomposition,
- * fable_cleanup.txt §3.1).  TRANSITIONAL DESIGN like OverlayController:
+ * cleanup audit §3.1).  TRANSITIONAL DESIGN like OverlayController:
  * friend + back-pointer (m_X → m_ws->m_X) so the moved code stays
  * byte-comparable; narrowing to injected collaborators is follow-up.
  *

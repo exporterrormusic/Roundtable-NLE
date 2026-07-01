@@ -2,7 +2,7 @@
  * CachePolicy — the ONE cache-policy object for Roundtable's three-tier
  * cache stack (CPU FrameCache, GPU GpuTextureCache, DiskFrameCache).
  *
- * Merged from the former CacheCoordinator + UnifiedCache (fable_cleanup.txt
+ * Merged from the former CacheCoordinator + UnifiedCache (cleanup audit
  * §3.3) — two coordinators with overlapping mandates that each owned half
  * the policy.  This class has TWO documented sub-roles:
  *

@@ -79,20 +79,15 @@ void ProjectController::beginAsyncProjectLoad(
 {
     m_mw->engageLoadingOverlay(busyMessage);
 
-    auto t0 = std::chrono::steady_clock::now();
     std::filesystem::path p = path;  // owned copy for the worker thread
     // shared_ptr keeps the move-only-payload continuation alive across the
     // thread hop while staying copyable for QMetaObject::invokeMethod.
     auto cont = std::make_shared<std::function<void(std::unique_ptr<Project>)>>(
         std::move(continuation));
 
-    std::thread([this, p, cont, t0]() {
+    std::thread([this, p, cont]() {
         ProjectSerializer serializer;
         Project* raw = serializer.load(p).release();
-        double ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - t0).count();
-        spdlog::warn("[OPEN-PERF] [ASYNC-OPEN] serializer.load '{}' off-thread in {:.0f}ms",
-                     pathToUtf8(p), ms);
         QMetaObject::invokeMethod(qApp, [this, raw, cont]() {
             std::unique_ptr<Project> project(raw);
             if (m_mw->isDestroying()) return;

@@ -1,14 +1,13 @@
 # scripts/
 
 Helper and diagnostic scripts. The everyday entry points stay at the repo
-root (`build.bat`, `launch.bat`, `setup.bat`, `publish-gui.bat`,
-`create_setup.bat`, `push.bat`, `update_workspace.bat` — the last two are
-thin forwarders into this directory).
+root (`setup.ps1`, `build.ps1`, `launch.vbs`, `publish-gui.ps1`,
+`create_setup.ps1`).
 
 | Script | Purpose |
 |---|---|
-| `push.ps1` | Commit/push helper (called by root `push.bat`) |
-| `update_workspace.ps1` | Convert the USE_AS_DEFAULT workspace preset to the shipped `assets/default_layout.bin` (called by root `update_workspace.bat`) |
+| `push.ps1` | Commit/push helper |
+| `update_workspace.ps1` | Convert the USE_AS_DEFAULT workspace preset to the shipped `assets/default_layout.bin` |
 | `publish.example.ps1` | Template for publish configuration |
 
 ## diag/

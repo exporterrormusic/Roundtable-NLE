@@ -2,7 +2,7 @@
  * SelectionState.h — the timeline workspace's current clip/layer selection.
  *
  * Extracted from five loose TimelineWorkspace members (god-class
- * decomposition, fable_cleanup.txt §3.1) so binder controllers (overlay,
+ * decomposition, cleanup audit §3.1) so binder controllers (overlay,
  * selection bindings) can take a SelectionState* instead of the whole
  * workspace.  Plain value struct — all mutation policy stays with the
  * code that owns the workspace.

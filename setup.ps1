@@ -405,7 +405,7 @@ Write-Host "  Or manually:" -ForegroundColor White
 Write-Host "    & '$cmakeExe' --build build --config Release --parallel" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  To run:" -ForegroundColor White
-Write-Host "    .\launch.bat" -ForegroundColor Cyan
+Write-Host "    .\launch.vbs" -ForegroundColor Cyan
 Write-Host ""
 
 Pop-Location

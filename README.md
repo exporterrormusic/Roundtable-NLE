@@ -54,9 +54,9 @@ If you want to build the latest development version yourself (requires a dev env
 
 ### One-Time Setup → Build → Run
 ```powershell
-.\setup.bat      # Downloads Qt + shader compiler, configures CMake
-.\build.bat      # Builds Release (takes a few minutes on first run)
-.\launch.bat     # Launches ROUNDTABLE (no console window)
+.\setup.ps1      # Downloads Qt + shader compiler, configures CMake
+.\build.ps1      # Builds Release (takes a few minutes on first run)
+.\launch.vbs     # Launches ROUNDTABLE (no console window)
 ```
 
 ### Manual Build
@@ -64,7 +64,7 @@ If you want to build the latest development version yourself (requires a dev env
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_PREFIX_PATH="third_party/qt/6.8.3/msvc2022_64"
 cmake --build build --config Release --parallel
-.\launch.bat
+.\launch.vbs
 ```
 
 ### Run Tests
@@ -80,7 +80,7 @@ ctest --test-dir build -C Release -L core --output-on-failure
 ### Portable / Move to Another Machine
 1. Copy the entire folder (delete `build/` to save space)
 2. Install VS2022, Git, Python 3
-3. `setup.bat` → `build.bat` → `launch.bat`
+3. `setup.ps1` → `build.ps1` → `launch.vbs`
 
 ---
 
@@ -88,7 +88,10 @@ ctest --test-dir build -C Release -L core --output-on-failure
 
 ### 🎬 Editing
 - Multi-track timeline with drag-and-drop, ripple/insert editing, and snapping
-- Clip types: Video, Audio, Spine Animation, Title, Graphic (multi-layer), Image, Image Sequence, Adjustment Layer, Color Matte
+- Clip types: Video, Audio, Spine Animation, PNG Puppet, Title, Graphic (multi-layer), Image, Image Sequence, Adjustment Layer, Color Matte, Caption, Nested Sequence, Tier List
+- Multiple sequences per project, each with independent settings (resolution/fps/colour/audio)
+- Captions: whisper auto-transcribe, SRT import/export, burn-in subtitle track
+- Render bar + segment render cache ("Render In to Out", reused at export)
 - Full undo/redo via command pattern with compound operations
 - Customizable keyboard shortcuts, JKL shuttle with pitch-preserved audio
 - Program Monitor with transform overlay, safe areas, and zoom controls
@@ -103,7 +106,7 @@ ctest --test-dir build -C Release -L core --output-on-failure
 
 ### 🎨 Effects & Color
 - **Video effects:** Color Correct, Blur, Sharpen, Glow, Chroma Key (Ultra Key — overhauled with improved spill suppression and edge refinement), Transform 2D, Vignette, LUT, Letterbox, Lumetri Color (replaced legacy Color Grading), Color Matte
-- **Audio effects:** Fill Left with Right, Fill Right with Left (applied during playback and export)
+- **Audio effects:** Parametric EQ, Dynamics (gate/compressor/limiter), Fill Left with Right, Fill Right with Left (applied during playback and export)
 - **Transitions:** 35+ types — dissolves, wipes, pushes, slides, zooms, iris patterns, and more
 - Essential Graphics panel for multi-layer graphic clip editing
 - Keyframe editor with bezier curve interpolation
@@ -124,10 +127,10 @@ ctest --test-dir build -C Release -L core --output-on-failure
 - Automatically aligns transcribed dialogue to your script — ideal for talk shows, interviews, and voiceover work
 
 ### 📦 Export
-- H.264, H.265/HEVC, AV1, ProRes, DNxHR, Image Sequence
+- H.264, H.265/HEVC, AV1, ProRes (incl. 4444), DNxHR, Image Sequence
 - NVENC hardware acceleration
-- Smart render / packet passthrough when source matches export settings
-- Audio mixdown with full effects processing
+- 10-bit passthrough for ProRes/DNxHR targets, alpha export, per-clip audio-stream selection
+- Audio-only export (AAC / MP3 / WAV / FLAC) and audio mixdown with full effects processing
 
 ### 💾 Project Management
 - `.rtp` project files with custom binary serialization
@@ -160,7 +163,7 @@ ctest --test-dir build -C Release -L core --output-on-failure
 | Logging | spdlog |
 | Configuration | toml11 |
 | Testing | Google Test |
-| Build System | CMake 3.28+ |
+| Build System | CMake 3.31 (bundled by `setup.ps1` — older PATH cmakes are known to poison the build cache) |
 
 ---
 
@@ -169,27 +172,33 @@ ctest --test-dir build -C Release -L core --output-on-failure
 ```
 src/
 ├── core/                 # Engine (no UI dependency)
-│   ├── timeline/         # Timeline, Track, Clip, Keyframe models
+│   ├── timeline/         # Timeline, Track, Clip types, edit operations, keyframes
 │   ├── command/          # Undo/redo command pattern
-│   ├── project/          # Serialization, asset database
-│   ├── media/            # Decode, frame cache, audio engine, A/V sync
-│   ├── spine/            # Spine runtime, model cache, animation
-│   ├── effects/          # Effect stack, color grading, blur, LUT, channel fill
+│   ├── project/          # Project + clip serialization (.rtp)
+│   ├── decode/           # Video decoding, tick→frame mapping, colour management
+│   ├── cache/            # Frame/disk caches + the one CachePolicy
+│   ├── playback/         # MediaPool, prefetch scheduling, playback services
+│   ├── audio/            # Audio engine, decode, mixing, A/V sync
+│   ├── audiofx/          # RT-safe DSP: parametric EQ + dynamics chain
+│   ├── convert/          # CPU pixel conversion (the ONE convert path)
+│   ├── analysis/         # Scene-cut + beat analysis
+│   ├── effects/          # Effect stack, colour grading, LUT models
+│   ├── spine/            # Spine runtime, model cache, shot presets
 │   └── ai/               # whisper.cpp transcription, script matching
-├── gpu/                  # Vulkan 1.3 + optional CUDA
+├── gpu/                  # Vulkan 1.3 compute + optional CUDA
 │   ├── vulkan/           # Device management, pipelines, buffers, textures
-│   ├── cuda/             # CUDA context, NVDEC/NVENC interop
+│   ├── cuda/             # CUDA context, NVENC, Vulkan interop, whisper CUDA
 │   ├── render_graph/     # Render-graph orchestration
-│   └── (compositor)      # CompositeService/CompositeEngine — frame compositing, staging
+│   └── (root)            # CompositeService/CompositeEngine, effects, transitions, staging
 ├── ui/                   # Qt 6 interface
-│   ├── panels/           # Timeline, monitors, effects, audio mixer, project bin
-│   ├── dialogs/          # Preferences, shortcuts, project settings, relink media
-│   ├── widgets/          # Ruler, transport controls, thumbnail grid, color picker
+│   ├── panels/           # Timeline, monitors, effects, audio sync, captions, project bin, tier list
+│   ├── dialogs/          # Preferences, shortcuts, sequence settings, relink media
+│   ├── widgets/          # Ruler, transport controls, thumbnail grid, clip widgets
 │   └── viewport/         # GPU viewport, transform overlay, safe areas
-├── export/               # Encoder pipeline, muxer, smart render logic
+├── export/               # Render queue, encoders, muxer, audio mixdown
 │   └── formats/          # H.264, H.265, AV1, ProRes, DNxHR encoders
 shaders/                  # GLSL compute shaders compiled to SPIR-V
-tests/                    # Google Test unit tests
+tests/                    # Google Test suites (core / gpu / export / ui labels)
 assets/                   # Characters, backgrounds, fonts, effect presets
 ```
 

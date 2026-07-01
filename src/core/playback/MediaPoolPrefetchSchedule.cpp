@@ -204,7 +204,7 @@ void MediaPool::prefetchWorker(int workerId)
     // eligible workers, the rest are software-decode.  Snapshot once per
     // worker so the partition is stable for this thread's lifetime.
     // (Was the PREFETCH_NVDEC_WORKERS constant; now machine-adaptive via
-    // PerformanceProfile — see docs/BOOST_MODE_PLAN.md.)
+    // PerformanceProfile — see the retired BOOST_MODE_PLAN doc in git history.)
     const int nvdecWorkers = perfProfile().nvdecWorkers;
 
     // UPGRADE_PLAN: per-worker Vulkan state.  MediaPool is constructed

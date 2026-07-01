@@ -1,7 +1,7 @@
 /*
  * PixelOps — in-place BGRA pixel fixups applied after decode/convert.
  *
- * Moved out of FrameCache.h (fable_cleanup.txt §3.3) — these are pixel
+ * Moved out of FrameCache.h (cleanup audit §3.3) — these are pixel
  * processing, not caching.  Callers: ConvertDecodedFrame (CPU convert
  * path), the prefetch decode workers, and ShotComposer's video preview.
  */

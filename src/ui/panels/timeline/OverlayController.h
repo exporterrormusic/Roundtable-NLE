@@ -11,7 +11,7 @@
  *   - the overlay/viewport/tool signal wiring itself
  *
  * Extracted from TimelineWorkspace (god-class decomposition,
- * fable_cleanup.txt §3.1).  TRANSITIONAL DESIGN: the controller keeps a
+ * cleanup audit §3.1).  TRANSITIONAL DESIGN: the controller keeps a
  * back-pointer to the workspace and is a friend, so the moved code could
  * stay byte-identical (m_X → m_ws->m_X).  Narrowing this to injected
  * collaborators (like MediaWatchController::Config) is a follow-up —

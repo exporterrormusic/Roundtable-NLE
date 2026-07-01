@@ -5,7 +5,7 @@
  * Windows Explorer (replacing a .png with a same-named new version) hot-reloads
  * it into the project, Premiere-style.  Extracted from TimelineWorkspace
  * (Integration/Deps .cpp files) as the first binder class of the god-class
- * decomposition (fable_cleanup.txt §3.1).
+ * decomposition (cleanup audit §3.1).
  *
  * Responsibilities:
  *  - arm/diff a QFileSystemWatcher against the timeline + MediaPool +

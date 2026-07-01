@@ -8,7 +8,7 @@
  * machine-adaptive policy (and the future "Boost" toggle) is one object that
  * can be derived from detected hardware and applied in one place.
  *
- * See docs/BOOST_MODE_PLAN.md for the full design.
+ * Full design in the retired BOOST_MODE_PLAN doc (git history).
  *
  * Phase 1 (this revision): the struct's defaults reproduce the previously
  * hardcoded values EXACTLY, so wiring consumers to read from perfProfile()

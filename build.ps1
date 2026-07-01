@@ -204,7 +204,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     if ($exeFound) {
         Write-Host "Build successful! Executable: $exePath" -ForegroundColor Green
-        Write-Host "Run with: .\launch.bat" -ForegroundColor Cyan
+        Write-Host "Run with: .\launch.vbs" -ForegroundColor Cyan
     } else {
         Write-Host "WARNING: Build reported success but roundtable.exe was not found!" -ForegroundColor Red
         Write-Host "The CMake cache may have stale/broken dependencies." -ForegroundColor Yellow

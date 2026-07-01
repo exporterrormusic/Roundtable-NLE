@@ -2,7 +2,7 @@
  * MediaWatchController.cpp — live media file-swap watching.
  * See the header for the responsibility breakdown; the code was lifted
  * verbatim from TimelineWorkspaceIntegration.cpp / TimelineWorkspaceDeps.cpp
- * during the god-class decomposition (fable_cleanup.txt §3.1).
+ * during the god-class decomposition (cleanup audit §3.1).
  */
 
 #include "panels/timeline/MediaWatchController.h"

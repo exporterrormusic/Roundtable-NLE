@@ -14,7 +14,7 @@
  * (the controller marks unhandled fallthrough with event->ignore()).
  *
  * Extracted from TimelineWorkspace (god-class decomposition,
- * fable_cleanup.txt §3.1).  TRANSITIONAL DESIGN like OverlayController /
+ * cleanup audit §3.1).  TRANSITIONAL DESIGN like OverlayController /
  * DropController: friend + back-pointer (m_X → m_ws->m_X).
  *
  * Definitions: ShortcutControllerKeys.cpp (key handlers),

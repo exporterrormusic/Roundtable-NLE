@@ -24,7 +24,7 @@ namespace rt {
 
 // NOTE: clearTransparentPixelRGB() and chromaKeyInPlace() used to live
 // here; they are pixel processing, not caching, and moved to
-// decode/PixelOps.h (fable_cleanup.txt §3.3).
+// decode/PixelOps.h (cleanup audit §3.3).
 
 /// Resolution tier for multi-resolution caching
 enum class ResolutionTier : uint8_t

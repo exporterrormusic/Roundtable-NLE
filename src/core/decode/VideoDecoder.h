@@ -96,10 +96,11 @@ struct VideoStreamInfo
     // rotate flag.  Read at open from the stream's DISPLAYMATRIX side data
     // (see VideoDecoderInit).  Default 0 = untagged / no rotation, so a file
     // with no rotation tag behaves exactly as before.
-    // NOTE: detection + the 16F-passthrough reject consume this today; the
-    // compositor does NOT yet rotate the frame for display (Phase 2 — see
-    // MAINTAINABILITY_PLAN.md), so a non-zero value is currently surfaced and
-    // gated, not yet auto-corrected on screen.
+    // Consumed by (a) the compositor — Compositor::buildViewportTransform
+    // swaps the fit dims and re-orients UVs for 90/180/270 so rotated footage
+    // displays upright in preview AND normal export — and (b) the 16F export
+    // passthrough, which rejects rotated sources (it packs the raw frame and
+    // would ship it sideways; falls back to the compositor path instead).
     int           rotation{0};
 
     // ── Colour management (Phase 4.1) ───────────────────────────────────

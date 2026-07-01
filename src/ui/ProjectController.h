@@ -12,7 +12,7 @@
  *     onRestoreFromAutoSave) and the SRT import/export entry points
  *
  * Extracted from MainWindowProject*.cpp + MainWindowRecovery.cpp
- * (god-class decomposition, fable_cleanup.txt §3.1, second half).
+ * (god-class decomposition, cleanup audit §3.1, second half).
  * NARROWED (no friend): the controller works exclusively through
  * MainWindow's public surface — the panel accessors plus the
  * core-service block (currentProject / adoptCurrentProject /

@@ -734,7 +734,7 @@ TEST(ExportRenderQueue, JobSequentialIds)
 // ═════════════════════════════════════════════════════════════════════════════
 
 // =============================================================================
-// SmartRenderAnalyzer — passthrough planning (fable_cleanup.txt section 5.3)
+// SmartRenderAnalyzer — passthrough planning (cleanup audit section 5.3)
 //
 // NOTE: the passthrough EXECUTION path in RenderQueue is currently disabled
 // (kEnableSmartRenderPassthrough = false; see the SPS/PPS extradata rationale

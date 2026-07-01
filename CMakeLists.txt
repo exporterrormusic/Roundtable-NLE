@@ -120,12 +120,11 @@ add_subdirectory(third_party)
 # contaminate the installed version's settings (RecentFiles, workspaces, etc.).
 option(ROUNDTABLE_DEV_BUILD "Isolate dev build settings from installed version" OFF)
 
-# Native .shotanim runtime — work-in-progress, deferred. Source moved to
-# tools/native_engine/ pending Phase 2 completion (path-constraint support,
-# residual TC bone-position bug). See tools/native_engine/README.md for
-# what's left. spine-cpp remains the production renderer; the user holds
-# a Spine Editor license so distribution is covered by Section 2 of the
-# Spine Editor License Agreement (see docs/THIRD_PARTY_LICENSES.md).
+# Native .shotanim runtime — ABANDONED; spine-cpp is the permanent production
+# renderer (the parked tools/native_engine/ sources were removed 2026-07-01;
+# recover from git history if ever needed). The owner holds a Spine Editor
+# license so distribution is covered by Section 2 of the Spine Editor License
+# Agreement (see docs/THIRD_PARTY_LICENSES.md).
 
 # ─── Global definitions ─────────────────────────────────────────────────────
 add_compile_definitions(
@@ -217,21 +216,6 @@ if(TARGET roundtable)
     install(TARGETS roundtable RUNTIME DESTINATION bin)
 endif()
 
-# ─── Standalone tools ────────────────────────────────────────────────────────
-if(SPINE_CPP_FOUND)
-    add_executable(query_spine_bounds tools/query_spine_bounds.cpp)
-    target_link_libraries(query_spine_bounds PRIVATE roundtable_core)
-    target_include_directories(query_spine_bounds PRIVATE ${CMAKE_SOURCE_DIR}/src)
-
-    # Phase 1 audit tool — directly uses spine-cpp for feature cataloging
-    add_executable(spine_feature_audit tools/spine_feature_audit.cpp)
-    target_link_libraries(spine_feature_audit PRIVATE roundtable_core)
-    target_include_directories(spine_feature_audit PRIVATE ${CMAKE_SOURCE_DIR}/src)
-
-    # Native .shotanim runtime tools (shotanim_parity, migrate_shotanim)
-    # are deferred — sources live under tools/native_engine/ and are not
-    # built. See tools/native_engine/README.md before re-enabling.
-endif()
 install(DIRECTORY ${SPIRV_OUTPUT_DIR}/ DESTINATION shaders)
 
 # Copy FFmpeg DLLs to output directory for runtime

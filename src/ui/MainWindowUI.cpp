@@ -155,7 +155,7 @@ MainWindow::~MainWindow()
 // ═════════════════════════════════════════════════════════════════════════════
 // ProjectController shims — keep the public/slot surface (menu + panel
 // connects, main.cpp, App.cpp) unchanged while the implementations live in
-// ProjectController*.cpp (god-class decomposition, fable_cleanup.txt §3.1).
+// ProjectController*.cpp (god-class decomposition, cleanup audit §3.1).
 // ═════════════════════════════════════════════════════════════════════════════
 
 QString MainWindow::projectsDirectory() const { return m_projectController->projectsDirectory(); }

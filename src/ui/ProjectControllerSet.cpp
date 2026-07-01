@@ -48,12 +48,6 @@ namespace rt {
 
 void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
 {
-    // [OPEN-PERF] Temporary warn-level phase timers (info logs are filtered).
-    using _opclk = std::chrono::steady_clock;
-    auto _opT0 = _opclk::now();
-    auto _opMs = [](_opclk::time_point a) {
-        return std::chrono::duration<double, std::milli>(_opclk::now() - a).count();
-    };
     // ── Pre-move cleanup: stop all background operations BEFORE destroying
     // the old project.  The old project's timeline is about to be destroyed
     // via std::move, but raw pointers (m_mw->timeline(), etc.)  and background
@@ -143,9 +137,7 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
 
             // Update workspace (TimelinePanel + compositeFrame + loadAudioSources)
             if (m_mw->timelineWorkspace()) {
-                auto _t = _opclk::now();
                 m_mw->timelineWorkspace()->setTimeline(projTimeline);
-                spdlog::warn("[OPEN-PERF] setCurrentProject: workspace->setTimeline {:.0f}ms", _opMs(_t));
                 // MUST set project BEFORE the export preview callback fires,
                 // otherwise CompositeService::m_project is null and nested
                 // SequenceClips silently render as blank (no effects, no
@@ -186,7 +178,6 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
             // empty grid, not from the previous project's stale items.
             // Also force a tree/sync refresh in both view modes since
             // setProject() only calls syncListView() when in list view.
-            auto _opBinT = _opclk::now();
             if (auto* bin = m_mw->projectBin()) {
                 bin->clearAll();
                 bin->setCommandStack(m_mw->commandStack());
@@ -230,7 +221,6 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
                              projItems.size(), savedFiles.size(),
                              projFolders.size());
             }
-            spdlog::warn("[OPEN-PERF] setCurrentProject: bin restore {:.0f}ms", _opMs(_opBinT));
 
             // Wire project to TimelineWorkspace for sequence tabs
             if (m_mw->timelineWorkspace())
@@ -321,7 +311,6 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
             bin->setProjectName({});
         m_mw->setWindowTitle(QString("ROUNDTABLE NLE %1").arg(ROUNDTABLE_VERSION));
     }
-    spdlog::warn("[OPEN-PERF] setCurrentProject: TOTAL {:.0f}ms", _opMs(_opT0));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

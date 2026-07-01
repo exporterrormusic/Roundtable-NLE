@@ -1,6 +1,6 @@
 /*
  * RenderComplexity — static analysis of a timeline's visual compositing
- * cost, for the Premiere-style render bar (fable_cleanup.txt §4.6, slice 1).
+ * cost, for the Premiere-style render bar (cleanup audit §4.6, slice 1).
  *
  * This is the READ-OUT half of the render-bar feature: it classifies each
  * stretch of the timeline as cheap (plays live) or heavy (would benefit from
