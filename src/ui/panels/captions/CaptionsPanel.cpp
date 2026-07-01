@@ -291,10 +291,44 @@ void CaptionsPanel::applyTheme()
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Timeline binding
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+CaptionsPanel::~CaptionsPanel()
+{
+ if (m_timeline)
+ m_timeline->removeObserver(this);
+}
+
 void CaptionsPanel::setTimeline(Timeline* timeline)
 {
+ if (m_timeline)
+ m_timeline->removeObserver(this);
  m_timeline = timeline;
+ if (m_timeline)
+ m_timeline->addObserver(this);
  refresh();
+}
+
+void CaptionsPanel::onTimelineDestroyed(Timeline* tl)
+{
+ if (tl != m_timeline) return;
+ // The timeline owns every caption clip — drop all cached pointers together.
+ // Do NOT call removeObserver(): the observer list dies with the timeline.
+ m_timeline = nullptr;
+ refresh();   // clears m_entries and the list widget (null-timeline path)
+}
+
+CaptionClip* CaptionsPanel::findCaptionClipById(uint64_t clipId) const
+{
+ if (!m_timeline) return nullptr;
+ for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+ Track* trk = m_timeline->track(i);
+ if (!trk || !trk->isCaptionTrack()) continue;
+ const size_t idx = trk->findClipIndexById(clipId);
+ if (idx == trk->clipCount()) continue;
+ Clip* c = trk->clip(idx);
+ if (c && c->isCaption())
+ return static_cast<CaptionClip*>(c);
+ }
+ return nullptr;
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -423,12 +457,15 @@ void CaptionsPanel::onTextChanged()
  // Apply directly (don't call refresh â€” it destroys cursor position)
  cc->setText(newText);
 
+ // Capture the clip ID, never the pointer: the clip can be deleted (and its
+ // memory freed) while this command is still in the stack.
  CaptionsPanel* self = this;
+ const uint64_t undoClipId = cc->id();
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Text",
- [cc, newText, self]() { cc->setText(newText); self->refresh(); },
- [cc, oldText, self]() { cc->setText(oldText); self->refresh(); }));
+ [undoClipId, newText, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(newText); self->refresh(); } },
+ [undoClipId, oldText, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(oldText); self->refresh(); } }));
  }
 
  // Update list item text inline.
@@ -468,11 +505,12 @@ void CaptionsPanel::onSpeakerChanged()
  cc->setSpeaker(newSpeaker);
 
  CaptionsPanel* self = this;
+ const uint64_t undoClipId = cc->id();
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Speaker",
- [cc, newSpeaker, self]() { cc->setSpeaker(newSpeaker); self->refresh(); },
- [cc, oldSpeaker, self]() { cc->setSpeaker(oldSpeaker); self->refresh(); }));
+ [undoClipId, newSpeaker, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setSpeaker(newSpeaker); self->refresh(); } },
+ [undoClipId, oldSpeaker, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setSpeaker(oldSpeaker); self->refresh(); } }));
  }
 
  // Update list item text inline.
@@ -505,11 +543,12 @@ void CaptionsPanel::onPositionChanged(int index)
  cc->setPosition(newPos);
 
  CaptionsPanel* self = this;
+ const uint64_t undoClipId = cc->id();
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Position",
- [cc, newPos, self]() { cc->setPosition(newPos); emit self->captionEdited(); },
- [cc, oldPos, self]() { cc->setPosition(oldPos); emit self->captionEdited(); }));
+ [undoClipId, newPos, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setPosition(newPos); emit self->captionEdited(); } },
+ [undoClipId, oldPos, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setPosition(oldPos); emit self->captionEdited(); } }));
  }
 
  emit captionEdited();
@@ -529,11 +568,12 @@ void CaptionsPanel::onFontChanged(const QString& family)
  cc->setFontFamily(newFont);
 
  CaptionsPanel* self = this;
+ const uint64_t undoClipId = cc->id();
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Font",
- [cc, newFont, self]() { cc->setFontFamily(newFont); emit self->captionEdited(); },
- [cc, oldFont, self]() { cc->setFontFamily(oldFont); emit self->captionEdited(); }));
+ [undoClipId, newFont, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setFontFamily(newFont); emit self->captionEdited(); } },
+ [undoClipId, oldFont, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setFontFamily(oldFont); emit self->captionEdited(); } }));
  }
 
  emit captionEdited();
@@ -553,11 +593,12 @@ void CaptionsPanel::onFontSizeChanged(int size)
  cc->setFontSize(newSize);
 
  CaptionsPanel* self = this;
+ const uint64_t undoClipId = cc->id();
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Font Size",
- [cc, newSize, self]() { cc->setFontSize(newSize); emit self->captionEdited(); },
- [cc, oldSize, self]() { cc->setFontSize(oldSize); emit self->captionEdited(); }));
+ [undoClipId, newSize, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setFontSize(newSize); emit self->captionEdited(); } },
+ [undoClipId, oldSize, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setFontSize(oldSize); emit self->captionEdited(); } }));
  }
 
  emit captionEdited();
@@ -589,10 +630,13 @@ void CaptionsPanel::onAddCaption()
 
  // Capture for lambda â€” we need shared ownership of the clip for undo
  auto clipShared = std::make_shared<std::unique_ptr<CaptionClip>>(std::move(clip));
- Timeline* tl = m_timeline;
  CaptionsPanel* self = this;
 
- auto doIt = [tl, clipShared, self]() {
+ // Lambdas resolve the timeline through the panel (nulled by
+ // onTimelineDestroyed) instead of capturing a raw Timeline*.
+ auto doIt = [clipShared, self]() {
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  // Find caption track
  Track* trk = nullptr;
  for (size_t i = 0; i < tl->trackCount(); ++i) {
@@ -609,7 +653,9 @@ void CaptionsPanel::onAddCaption()
  emit self->captionEdited();
  };
 
- auto undoIt = [tl, clipId, clipShared, self]() {
+ auto undoIt = [clipId, clipShared, self]() {
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  for (size_t i = 0; i < tl->trackCount(); ++i) {
  auto* trk = tl->track(i);
  if (!trk->isCaptionTrack()) continue;
@@ -662,8 +708,10 @@ void CaptionsPanel::onDeleteCaption()
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Delete Caption",
- [tl, clipId, clipShared, self]() {
+ [clipId, clipShared, self]() {
  // Redo: remove again
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  for (size_t i = 0; i < tl->trackCount(); ++i) {
  auto* trk = tl->track(i);
  if (!trk->isCaptionTrack()) continue;
@@ -676,8 +724,10 @@ void CaptionsPanel::onDeleteCaption()
  }
  }
  },
- [tl, clipShared, self]() {
+ [clipShared, self]() {
  // Undo: re-add the clip
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  Track* trk = nullptr;
  for (size_t i = 0; i < tl->trackCount(); ++i) {
  if (tl->track(i)->isCaptionTrack()) {
@@ -711,10 +761,11 @@ void CaptionsPanel::onClearAll()
  if (e.clip) saved->push_back(e.clip->clone());
  if (saved->empty()) { emit clearAllRequested(); return; }
 
- Timeline* tl = m_timeline;
  CaptionsPanel* self = this;
 
- auto doIt = [tl, self]() {
+ auto doIt = [self]() {
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  Track* trk = tl->captionTrack();
  if (trk) {
  while (trk->clipCount() > 0)
@@ -723,7 +774,9 @@ void CaptionsPanel::onClearAll()
  self->refresh();
  emit self->captionEdited();
  };
- auto undoIt = [tl, saved, self]() {
+ auto undoIt = [saved, self]() {
+ Timeline* tl = self->m_timeline;
+ if (!tl) return;
  Track* trk = tl->addCaptionTrack();
  for (auto& c : *saved)
  if (c) trk->addClip(c->clone());
@@ -774,8 +827,8 @@ void CaptionsPanel::onFillGaps()
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Fill Caption Gap",
- [cc, newDuration, self]() { cc->setDuration(newDuration); self->refresh(); emit self->captionEdited(); },
- [cc, oldDuration, self]() { cc->setDuration(oldDuration); self->refresh(); emit self->captionEdited(); }));
+ [clipId, newDuration, self]() { if (auto* c = self->findCaptionClipById(clipId)) { c->setDuration(newDuration); self->refresh(); emit self->captionEdited(); } },
+ [clipId, oldDuration, self]() { if (auto* c = self->findCaptionClipById(clipId)) { c->setDuration(oldDuration); self->refresh(); emit self->captionEdited(); } }));
  }
 
  refresh();

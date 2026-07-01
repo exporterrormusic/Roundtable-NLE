@@ -18,6 +18,7 @@ struct CachedFrame;
 
 class CaptionClip;
 class PngPuppetClip;
+class TierListClip;
 
 /// CPU-render a PngPuppetClip's currently-selected face (1 of 4 PNGs, chosen
 /// deterministically from time) to a native-resolution BGRA CachedFrame.  The
@@ -25,6 +26,13 @@ class PngPuppetClip;
 /// is the GLOBAL timeline tick so talk/blink stay continuous across cuts.
 std::shared_ptr<CachedFrame> renderPngPuppetClip(PngPuppetClip* clip, int64_t tick,
                                                  uint32_t outW, uint32_t outH);
+
+/// CPU-render a TierListClip (ranking board) to a full-frame BGRA CachedFrame.
+/// Replays the clip's timed events at `tick` (clip-local) to lay out the grid,
+/// placed entries, and the centred spotlight.  refW/refH unused (fractional layout).
+std::shared_ptr<CachedFrame> renderTierListClip(TierListClip* clip, int64_t tick,
+                                                uint32_t outW, uint32_t outH,
+                                                uint32_t refW = 0, uint32_t refH = 0);
 
 /// CPU-render a CaptionClip as a burned-in (open-caption) subtitle overlay to a
 /// transparent BGRA CachedFrame using QPainter: centered text over a rounded

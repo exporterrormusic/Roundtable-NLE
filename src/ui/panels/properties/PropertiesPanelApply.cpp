@@ -590,6 +590,7 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Graphic:    typeName = "Graphic";    break;
     case ClipType::Caption:    typeName = "Caption";    break;
     case ClipType::PngPuppet:  typeName = "Puppet";     break;
+    case ClipType::TierList:   typeName = "Tier List";  break;
     default:                   break;
     }
     m_headerLabel->setText(QString::fromStdString(m_clip->label()));
@@ -607,6 +608,7 @@ void PropertiesPanel::populateFromClip()
     case ClipType::Adjustment: badgeColor = QColor(180, 180, 180); break;
     case ClipType::Caption:    badgeColor = QColor(70, 200, 170);  break;
     case ClipType::PngPuppet:  badgeColor = QColor(220, 110, 160); break;
+    case ClipType::TierList:   badgeColor = QColor(110, 90, 192);  break;
     default:                   badgeColor = QColor(150, 150, 150); break;
     }
     {
@@ -656,12 +658,13 @@ void PropertiesPanel::populateFromClip()
     m_tfCropBottomSpin->setValue(hasCrop ? static_cast<double>(m_clip->cropBottom()) : 0.0);
 
     // Type-specific sections — per-type populate helpers (exhaustive
-    // dispatch stays a switch, per fable_cleanup.txt §3.5)
+    // dispatch stays a switch, per cleanup audit §3.5)
     switch (m_clip->clipType())
     {
     case ClipType::Spine:     populateFromSpine();   break;
     case ClipType::Video:     populateFromVideo();   break;
     case ClipType::PngPuppet: populateFromPuppet();  break;
+    case ClipType::TierList:  break; // Phase 2: populateFromTierList()
     case ClipType::Audio:     populateFromAudio();   break;
     case ClipType::Caption:
         populateFromCaption();

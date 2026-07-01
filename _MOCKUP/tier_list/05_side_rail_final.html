@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Tier List panel (chosen)</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;--danger:#d23c3c;
+  --tS:#f47373;--tA:#f7a55b;--tB:#f5c45e;--tC:#eef06a;--tD:#bfe773;--tF:#86df8e;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.page-head .note-pill{margin-left:auto;font-size:11px;color:var(--txt3);border:1px solid var(--bd);border-radius:20px;padding:3px 11px}
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+.app{border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:34px}
+.dock .dtab{display:flex;align-items:center;gap:7px;height:34px;padding:0 14px;color:var(--txt3);font-size:12px;font-weight:600;border-bottom:2px solid transparent;cursor:pointer}
+.dock .dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .dtab.ghost{color:#4a4a54;font-style:italic}
+.dock .grow{flex:1}.dock .ibtn{width:26px;height:26px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-size:13px}
+.phead{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.phead .tt{font-size:11px;font-weight:800;letter-spacing:.8px;color:var(--accH);text-transform:uppercase;display:flex;align-items:center;gap:7px}
+.clipname{font-weight:700}.muted{color:var(--txt3);font-size:11.5px}
+.phead-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.select{height:30px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12px;padding:0 26px 0 10px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 14px) 13px,calc(100% - 9px) 13px;background-size:5px 5px;background-repeat:no-repeat}
+.gbtn{height:30px;padding:0 11px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px}
+.gbtn:hover{color:var(--txt);border-color:var(--bdl)}
+
+/* ============ Side Rail + Pool Bin ============ */
+.tl-view{display:flex}
+.left-col{flex:1.55;min-width:0;border-right:1px solid var(--bd);display:flex;flex-direction:column}
+.events-rail{flex:1;min-width:330px;display:flex;flex-direction:column}
+.board-col{padding:13px 14px;display:flex;flex-direction:column;gap:8px;background:#101016;border-bottom:1px solid var(--bd)}
+.hd{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.hd .live{color:#fff;background:var(--danger);border-radius:4px;padding:1px 6px;font-size:9px;letter-spacing:.5px}
+.hd .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none;color:var(--txt3)}
+.board{position:relative;height:250px;aspect-ratio:16/9;margin:0 auto;background:#0a0a0d;border:1px solid var(--bd);border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
+.topbanner{position:relative;flex:0 0 auto;height:12%;background:#000;border-bottom:1px solid #171717;display:flex;align-items:center;justify-content:space-between;padding:0 10px}
+.topbanner .h{font-size:7px;font-weight:800;letter-spacing:.4px;color:#606069;text-transform:uppercase}
+.topbanner .rzv{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:6.5px;font-weight:700;letter-spacing:.5px;color:#40404a;white-space:nowrap}
+.board-main{flex:1;min-height:0;display:flex;position:relative}
+.board .titlebar{width:24px;background:#000;color:#fff;font-weight:800;font-size:7.5px;letter-spacing:1px;display:flex;align-items:center;justify-content:center}
+.board .titlebar span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
+.rows{flex:1;display:flex;flex-direction:column}
+.trow{flex:1;display:flex;border-bottom:1px solid #000;min-height:0}
+.tlabel{width:28px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#1a1a10}
+.tlabel.S{background:var(--tS)}.tlabel.A{background:var(--tA)}.tlabel.B{background:var(--tB)}.tlabel.C{background:var(--tC)}.tlabel.D{background:var(--tD)}.tlabel.F{background:var(--tF)}
+.tcontent{flex:1;background:#1c1c20;display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:3px;padding:2px 4px;padding-right:15%;overflow:hidden}
+.trow.droptarget .tcontent{background:#243047;box-shadow:inset 0 0 0 2px var(--acc)}
+.chip{height:19px;aspect-ratio:16/9;border-radius:2px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:6px;font-weight:700;color:#dfe6f2;text-align:center;padding:1px}
+.commzone{position:absolute;top:0;bottom:0;right:0;width:15%;z-index:6;pointer-events:none;background:repeating-linear-gradient(45deg,rgba(74,144,217,.09),rgba(74,144,217,.09) 5px,transparent 5px,transparent 11px);border-left:1px dashed rgba(74,144,217,.5);display:flex;align-items:center;justify-content:center}
+.commzone span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:7.5px;font-weight:700;letter-spacing:.4px;color:rgba(135,180,230,.95);text-transform:uppercase;white-space:nowrap}
+.spotzone{position:absolute;top:11%;height:78%;left:50%;transform:translateX(-50%);width:46%;z-index:5;pointer-events:none;border:1.5px dashed rgba(255,255,255,.42);border-radius:7px;display:flex;align-items:flex-end;justify-content:center}
+.spotzone span{font-size:7.5px;font-weight:700;color:rgba(255,255,255,.8);background:rgba(0,0,0,.55);padding:2px 7px;border-radius:4px;margin-bottom:7px;white-space:nowrap}
+.board.spot .rows{filter:brightness(.4) saturate(.85)}
+.spotlight{position:absolute;top:7%;right:4%;width:52%;height:86%;background:linear-gradient(180deg,#fbfbfd,#e7e9ef);border-radius:8px;box-shadow:0 0 26px 4px rgba(255,255,255,.5),0 10px 34px rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;z-index:5}
+.spotlight .img{width:68%;height:60%;border-radius:6px;background:linear-gradient(135deg,#4a2b55,#251633);display:flex;align-items:center;justify-content:center;color:#cdd6e6;font-size:9px;font-weight:700}
+.spotlight .ti{color:#15151b;font-weight:800;font-size:11px}.spotlight .sb{color:#55555f;font-size:8px}
+.g1{background:linear-gradient(135deg,#5a2b3a,#2a1622)}.g2{background:linear-gradient(135deg,#3a4a6a,#1a2233)}.g3{background:linear-gradient(135deg,#2b5544,#163326)}.g4{background:linear-gradient(135deg,#553a2b,#332116)}.g5{background:linear-gradient(135deg,#4a2b55,#251633)}.g6{background:linear-gradient(135deg,#2b4a55,#163026)}.g7{background:linear-gradient(135deg,#55502b,#332f16)}.g8{background:linear-gradient(135deg,#2b3a55,#16202f)}
+.drag-hint{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--txt3);background:var(--s2);border:1px dashed var(--bdl);border-radius:7px;padding:6px 10px}
+.drag-hint b{color:var(--txt2)}
+
+/* Pool Bin */
+.tl-bin{flex:1;min-height:0;display:flex;flex-direction:column;background:#0f0f14}
+.bin-toolbar{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--bd)}
+.bin-toolbar .bh{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.search{flex:1;max-width:230px;display:flex;align-items:center;gap:7px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;padding:0 10px;height:30px}
+.search input{flex:1;background:transparent;border:none;outline:none;color:var(--txt);font-family:inherit;font-size:12px}.search .mag{color:var(--txt3);font-size:12px}
+.selmini{height:30px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;color:var(--txt2);font-family:inherit;font-size:11.5px;padding:0 24px 0 9px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 12px) 13px,calc(100% - 8px) 13px;background-size:4px 4px;background-repeat:no-repeat}
+.vtoggle{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.vtoggle button{width:30px;height:30px;border:none;background:transparent;color:var(--txt3);cursor:pointer;font-size:13px}.vtoggle button.active{background:var(--accS);color:var(--accH)}
+.tbtn2{height:30px;padding:0 10px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:7px;cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap}.tbtn2:hover{color:var(--txt);border-color:var(--bdl)}
+.bin-body{flex:1;min-height:0;display:flex}
+.bin-tree{flex:0 0 150px;border-right:1px solid var(--bd);padding:8px;overflow:auto;background:#0d0d12}
+.trow2{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;font-size:12px;color:var(--txt2);cursor:pointer;white-space:nowrap}
+.trow2:hover{background:var(--s2)}.trow2.sel{background:var(--accS);color:var(--accH)}
+.trow2 .fi{font-size:12px}.trow2 .cnt{margin-left:auto;font-size:10px;color:var(--txt3)}.trow2.child{margin-left:14px;font-size:11.5px}
+.bin-tree .addbin{margin-top:6px;color:var(--txt3);font-size:11px;padding:5px 7px;cursor:pointer}.bin-tree .addbin:hover{color:var(--acc)}
+.bin-content{flex:1;min-width:0;overflow:auto;padding:10px}
+.bc-crumbs{font-size:10.5px;color:var(--txt3);margin-bottom:9px}
+.icongrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:8px}
+.be{position:relative;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--s0);cursor:grab}
+.be .grip{position:absolute;top:2px;left:3px;color:rgba(255,255,255,.5);font-size:8px;z-index:2;letter-spacing:-1px}
+.be .bt{height:42px;display:flex;align-items:center;justify-content:center;font-size:7px;font-weight:700;color:#dfe6f2;text-align:center;padding:2px}
+.be .bc{font-size:8.5px;color:var(--txt2);padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--bd)}
+.be.next{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}.be.placed{opacity:.5}
+.be .pb{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:3px;font-size:8px;font-weight:800;color:#16140c;display:flex;align-items:center;justify-content:center;z-index:2}
+.listview{margin-top:12px;border-top:1px dashed var(--bd);padding-top:9px}
+.listview .lvh{font-size:9.5px;font-weight:700;letter-spacing:.5px;color:var(--txt3);text-transform:uppercase;margin-bottom:6px}
+.lrow{display:grid;grid-template-columns:30px 1fr 70px 44px;align-items:center;gap:9px;padding:5px 6px;border-bottom:1px solid #1a1a22;font-size:11.5px;cursor:grab}
+.lrow:hover{background:var(--s2)}.lrow .lt{width:30px;height:18px;border-radius:3px}.lrow .ls{color:var(--txt3);font-size:10.5px}.lrow .lg{text-align:right}
+
+/* events rail */
+.rl-blk{padding:12px 14px;border-bottom:1px solid var(--bd)}
+.sec{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.sec .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none;color:var(--txt3)}
+.transport{display:flex;align-items:center;gap:9px;background:linear-gradient(180deg,#191922,#141419)}
+.ph-read{display:flex;align-items:center;gap:7px;font-weight:700;font-size:14px;color:#eef2f8}
+.ph-read .dot{width:8px;height:8px;border-radius:50%;background:var(--acc);box-shadow:0 0 8px var(--acc)}.ph-read .tcn{font-variant-numeric:tabular-nums}
+.transport .note{margin-left:auto;font-size:10.5px;color:var(--txt3);text-align:right;max-width:150px}
+.events{flex:1;display:flex;flex-direction:column;overflow:auto;padding:2px 8px 12px}
+.ev-hint{font-size:10px;color:var(--txt3);padding:6px 4px}.ev-hint b{color:var(--txt2)}
+.evtrow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid #1c1c24}
+.evsep{width:1px;height:16px;background:#34343e;flex:0 0 auto}
+.evtrow:hover{background:var(--s2)}
+.evtrow.cur{background:rgba(42,90,155,.16)}
+.evtrow.done{opacity:.56}
+.eb{font-size:9px;font-weight:800;letter-spacing:.2px;padding:3px 6px;border-radius:5px;white-space:nowrap;flex:0 0 auto}
+.eb.pop{background:#16161e;border:1.5px solid #eef2f8;color:#eef2f8}
+.eb.drop{background:#2a2a34;border:1px solid var(--bdl);color:var(--txt2)}
+.en{flex:1;min-width:0;font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tset{height:23px;padding:0 6px;border:1px solid var(--bd);background:var(--s3);color:var(--txt);border-radius:5px;font-family:inherit;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer;display:flex;align-items:center;gap:3px;white-space:nowrap;flex:0 0 auto}
+.tset:hover{border-color:var(--acc);color:var(--accH);background:var(--accS)}
+.tset.unset{color:var(--txt3);font-weight:600}
+.tset .ic{font-size:10px;opacity:.85}
+.emenu{color:var(--txt3);cursor:pointer;padding:0 1px;flex:0 0 auto}
+.rankctl{height:23px;min-width:31px;padding:0 5px;border:none;border-radius:5px;font-family:inherit;font-weight:800;font-size:11px;color:#16140c;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:2px;flex:0 0 auto;box-shadow:inset 0 -2px 0 rgba(0,0,0,.16)}
+.rankctl .cv{font-size:8px;font-weight:700;opacity:.65}
+.rankctl:hover{filter:brightness(1.09)}
+.rankctl.S{background:var(--tS)}.rankctl.A{background:var(--tA)}.rankctl.B{background:var(--tB)}.rankctl.C{background:var(--tC)}.rankctl.D{background:var(--tD)}.rankctl.F{background:var(--tF)}
+.rankna{width:31px;text-align:center;color:var(--txt3);flex:0 0 auto;font-size:12px}
+
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:13px 17px;font-size:12px;color:var(--txt2);margin-top:4px}
+.notes b{color:var(--txt)}.notes ul{margin:8px 0 0 18px}.notes li{margin:3px 0}.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>ROUNDTABLE · Tier List panel</h1>
+  <span class="sub">★ Chosen layout — Side Rail + Pool Bin</span>
+  <span class="note-pill">Commentators = separate panel (later)</span>
+</div>
+
+<section class="stage">
+  <div class="design-label"><span class="tag">Chosen · Tier List only</span><span class="name">Side Rail + Pool Bin</span>
+    <span class="desc">Board top-left, events rail right, Project-Bin-style Pool bottom-left. Drag an entry onto a tier row → POPUP + DROP events; time them with Set Start / Set End (snap to playhead). Commentators are now their own separate panel, handled later.</span></div>
+
+  <div class="app">
+    <div class="dock">
+      <div class="dtab">⊞ Timeline</div><div class="dtab active">▦ Tier List</div><div class="dtab ghost">▢ Commentators (soon)</div><div class="dtab">♪ Audio Mixer</div>
+      <div class="grow"></div><button class="ibtn">⧉</button><button class="ibtn">⋯</button>
+    </div>
+    <div class="phead">
+      <span class="tt">▦ Tier List</span>
+      <span class="clipname">Year 3 Events</span>
+      <span class="muted">· TierList clip · list state</span>
+      <div class="phead-right">
+        <button class="gbtn">⚙ Grid — tiers · colours · title</button>
+        <select class="select"><option>Entry: Banner 16:9</option><option>Entry: Square 1:1</option><option>Entry: Vertical 9:16</option><option>Entry: Custom…</option></select>
+      </div>
+    </div>
+
+    <div class="tl-view">
+      <div class="left-col">
+        <div class="board-col">
+          <div class="hd"><span class="live">● LIVE</span> Board <span class="rt">follows playhead · 03:12:04</span></div>
+          <div class="board">
+            <div class="topbanner"><span class="h">twitter.com / ExportMusicYT</span><span class="rzv">▲ reserved — your channel banner</span><span class="h">youtube.com / @ExportErrorMusic</span></div>
+            <div class="board-main">
+            <div class="titlebar"><span>YEAR 3 EVENTS</span></div>
+            <div class="rows">
+              <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+              <div class="trow droptarget"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div><div class="chip g5">Echo</div></div></div>
+              <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">Rest</div></div></div>
+              <div class="trow" style="flex:2"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Comp</div><div class="chip g3">Sea</div><div class="chip g5">Unif</div><div class="chip g8">Flare</div><div class="chip g1">Sisters</div><div class="chip g6">Bloom</div><div class="chip g4">Feast</div></div></div>
+              <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delic</div><div class="chip g6">Garden</div></div></div>
+              <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">Flavor</div></div></div>
+            </div>
+            <div class="commzone"><span>Commentator zone — kept clear</span></div>
+            <div class="spotzone"><span>◎ Spotlight — centered on screen</span></div>
+            </div>
+          </div>
+          <div class="drag-hint">🖐 <b>Drag onto a tier row</b> → POPUP + DROP events. Rows stop before the right <b>commentator zone</b> and <b>wrap to a new line</b> when full (see tier C).</div>
+        </div>
+
+        <div class="tl-bin">
+          <div class="bin-toolbar">
+            <span class="bh">Pool</span>
+            <div class="search"><span class="mag">🔍</span><input placeholder="Search entries…"></div>
+            <select class="selmini"><option>Sort: Custom</option><option>Sort: Name A–Z</option><option>Sort: Date added</option></select>
+            <div class="vtoggle"><button title="List view">≣</button><button class="active" title="Icon view">▦</button></div>
+            <button class="tbtn2">＋ New subbin</button>
+            <button class="tbtn2">⬇ Drop PNGs</button>
+          </div>
+          <div class="bin-body">
+            <div class="bin-tree">
+              <div class="trow2 sel"><span class="fi">▦</span>All Entries<span class="cnt">28</span></div>
+              <div class="trow2 child"><span class="fi">📁</span>Story Events<span class="cnt">9</span></div>
+              <div class="trow2 child"><span class="fi">📁</span>Collab Events<span class="cnt">6</span></div>
+              <div class="trow2 child"><span class="fi">📁</span>Costume Events<span class="cnt">13</span></div>
+              <div class="addbin">＋ New subbin…</div>
+            </div>
+            <div class="bin-content">
+              <div class="bc-crumbs">All Entries · 28 items · 7 placed</div>
+              <div class="icongrid">
+                <div class="be next g5"><span class="grip">⠿</span><div class="bt">Echo of Nostalgia</div><div class="bc">▸ dragging</div></div>
+                <div class="be g1"><span class="grip">⠿</span><div class="bt">Mystery Banner</div><div class="bc">Story</div></div>
+                <div class="be g6"><span class="grip">⠿</span><div class="bt">For Rest</div><div class="bc">Story</div></div>
+                <div class="be g3"><span class="grip">⠿</span><div class="bt">Red Sea (EVA)</div><div class="bc">Collab</div></div>
+                <div class="be g8"><span class="grip">⠿</span><div class="bt">Out of Uniform</div><div class="bc">Costume</div></div>
+                <div class="be g2"><span class="grip">⠿</span><div class="bt">Wisdom Spring</div><div class="bc">Story</div></div>
+                <div class="be placed g1"><span class="pb" style="background:var(--tS)">S</span><div class="bt">Cheers to the Past</div><div class="bc">placed</div></div>
+                <div class="be placed g4"><span class="pb" style="background:var(--tD)">D</span><div class="bt">You Look Delicious</div><div class="bc">placed</div></div>
+                <div class="be placed g7"><span class="pb" style="background:var(--tF)">F</span><div class="bt">True Flavor</div><div class="bc">placed</div></div>
+                <div class="be g6"><span class="grip">⠿</span><div class="bt">Secret Garden</div><div class="bc">Costume</div></div>
+                <div class="be g3"><span class="grip">⠿</span><div class="bt">Pirate Cove</div><div class="bc">Story</div></div>
+                <div class="be g8"><span class="grip">⠿</span><div class="bt">Companions</div><div class="bc">Story</div></div>
+              </div>
+              <div class="listview">
+                <div class="lvh">↕ Same content in List view (toggle ≣ above)</div>
+                <div class="lrow"><span class="lt g5"></span><span>Echo of Nostalgia</span><span class="ls">Story</span><span class="lg ls">—</span></div>
+                <div class="lrow"><span class="lt g1"></span><span>Cheers to the Past</span><span class="ls">Story</span><span class="lg" style="color:var(--tS);font-weight:800">S</span></div>
+                <div class="lrow"><span class="lt g3"></span><span>Red Sea (EVA)</span><span class="ls">Collab</span><span class="lg ls">—</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="events-rail">
+        <div class="rl-blk transport">
+          <div class="ph-read"><span class="dot"></span><span class="tcn">03:12:04</span></div>
+          <div class="note">Set Start / Set End snap to this playhead</div>
+        </div>
+        <div class="rl-blk" style="border-bottom:none;padding-bottom:4px"><div class="sec">Events <span class="rt">drag bin → board to add</span></div></div>
+        <div class="events">
+          <div class="ev-hint">Times are buttons — click to stamp the playhead &nbsp;·&nbsp; ⤓ start · ⤒ end &nbsp;·&nbsp; change a drop's tier with the coloured ▾</div>
+          <div class="evtrow cur"><span class="eb pop">POPUP</span><span class="en">Echo of Nostalgia</span><span class="evsep"></span><button class="tset" title="Set start to playhead"><span class="ic">⤓</span>03:12:04</button><button class="tset unset" title="Set end to playhead"><span class="ic">⤒</span>set</button><span class="evsep"></span><span class="rankna" title="a popup has no rank">—</span><span class="emenu">⋯</span></div>
+          <div class="evtrow cur"><span class="eb drop">DROP</span><span class="en">Echo of Nostalgia</span><span class="evsep"></span><button class="tset unset" title="Set start to playhead"><span class="ic">⤓</span>set</button><button class="tset unset" title="Set end to playhead"><span class="ic">⤒</span>set</button><span class="evsep"></span><button class="rankctl A" title="Change tier">A<span class="cv">▾</span></button><span class="emenu">⋯</span></div>
+          <div class="evtrow done"><span class="eb pop">POPUP</span><span class="en">Cheers to the Past</span><span class="evsep"></span><button class="tset"><span class="ic">⤓</span>00:31:10</button><button class="tset"><span class="ic">⤒</span>00:46:00</button><span class="evsep"></span><span class="rankna">—</span><span class="emenu">⋯</span></div>
+          <div class="evtrow done"><span class="eb drop">DROP</span><span class="en">Cheers to the Past</span><span class="evsep"></span><button class="tset"><span class="ic">⤓</span>00:44:00</button><button class="tset"><span class="ic">⤒</span>00:48:12</button><span class="evsep"></span><button class="rankctl S" title="Change tier">S<span class="cv">▾</span></button><span class="emenu">⋯</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes"><b>Tier List panel — chosen (Side Rail + Pool Bin).</b>
+    <ul>
+      <li><b>Pool</b> = a Project-Bin-style browser: <b>search</b>, <b>subbins</b>, and <b>list ⇄ icon</b> views (reuses the app's bin widgets); built for dozens of entries.</li>
+      <li><b>Events:</b> drag an entry onto a tier row → a <b>POPUP</b> + <b>DROP</b> pair, each a <b>one-line</b> row. Start/end are clickable time buttons (⤓/⤒) that stamp the playhead; the <b>DROP</b> row also has an inline <b>tier ▾</b> to change the rank without re-dragging (POPUP shows “—”, no rank).</li>
+      <li><b>Board layout rules (from the original):</b> a <b>top band is reserved for your channel banner</b> (twitter/youtube handles); the <b>spotlight is centered on screen</b> (dashed guide); entries never cross into the reserved <b>commentator zone</b> on the right (hatched); and a tier <b>wraps to a new line &amp; grows taller</b> when it fills (tier C).</li>
+      <li><b>Grid</b> button opens tier/colour/title config; the Entry-shape selector is the per-list aspect (Banner / Square / Vertical 9:16 / Custom).</li>
+      <li><b>Commentators are out of scope here</b> — they'll be their own separate timeline panel (the greyed “Commentators (soon)” dock tab), designed later.</li>
+    </ul>
+  </div>
+</section>
+</body>
+</html>

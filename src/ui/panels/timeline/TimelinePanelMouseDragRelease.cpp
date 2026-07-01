@@ -115,18 +115,19 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             }
 
             int dst = static_cast<int>(dcs.originalTrack) + trackDelta;
-            if (dst < 0) dst = 0;
-            if (dst >= static_cast<int>(m_timeline->trackCount())) dst = static_cast<int>(m_timeline->trackCount()) - 1;
-            size_t dstTrack = static_cast<size_t>(dst);
 
             Track* origTr = m_timeline->track(dcs.originalTrack);
             if (!origTr) continue;
+            // Clamp onto the nearest track that can host this clip's kind rather
+            // than snapping back to the origin when released over an
+            // incompatible section: a video clip dropped down in the audio
+            // tracks (or on the V/A divider) commits to the lowest video track,
+            // matching the live preview. Excludes dividers + the caption track
+            // and keeps the index in array bounds.
+            size_t dstTrack = clampTrackToHostTrack(dst, origTr);
+            if (dstTrack == SIZE_MAX) dstTrack = dcs.originalTrack;
             Track* dstTr = m_timeline->track(dstTrack);
-            // Dividers are TrackType::Video but reject clips — a plain type
-            // check would land the move on the divider row and Track::addClip
-            // would silently drop the clip. Fall back to the source track.
-            if (!dstTr || dstTr->isDivider() || dstTr->type() != origTr->type())
-                dstTrack = dcs.originalTrack;
+            if (!dstTr) continue;
 
             if (curPos != dcs.originalIn || dstTrack != dcs.originalTrack)
                 finals.push_back({dcs.originalTrack, dcs.ref.clipId, curPos, dcs.originalIn, dstTrack});

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Tier List Builder · Unified</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;
+  --ok:#4caf6e;--danger:#d23c3c;
+  --tS:#f47373;--tA:#f7a55b;--tB:#f5c45e;--tC:#eef06a;--tD:#bfe773;--tF:#86df8e;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:18px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+.app{border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:34px}
+.dock .dtab{display:flex;align-items:center;gap:7px;height:34px;padding:0 14px;color:var(--txt3);font-size:12px;font-weight:600;border-bottom:2px solid transparent;cursor:pointer}
+.dock .dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .grow{flex:1}.dock .ibtn{width:26px;height:26px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-size:13px}
+
+.cols{display:flex;min-height:0}
+.col{padding:14px 16px;display:flex;flex-direction:column;gap:13px}
+.col.l{flex:1.25;border-right:1px solid var(--bd)}
+.col.r{flex:1;min-width:330px;background:#141419}
+.card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.card .ch{display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--s1);border-bottom:1px solid var(--bd);font-size:10px;font-weight:800;letter-spacing:1.1px;color:var(--txt3);text-transform:uppercase;cursor:pointer}
+.card .ch .chev{color:var(--txt3);font-size:10px}
+.card .ch .ct{margin-left:auto;color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700}
+.card .cb{padding:12px}
+
+/* grid config */
+.gf{display:flex;align-items:center;gap:10px;margin-bottom:11px}
+.gf label{font-size:11px;color:var(--txt3);width:62px}
+.input{height:30px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12px;padding:0 10px;flex:1}
+.tier-chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.tchip{display:flex;align-items:center;gap:7px;background:var(--s0);border:1px solid var(--bd);border-radius:7px;padding:4px 5px 4px 4px}
+.sw{width:22px;height:22px;border-radius:5px}
+.sw.S{background:var(--tS)}.sw.A{background:var(--tA)}.sw.B{background:var(--tB)}.sw.C{background:var(--tC)}.sw.D{background:var(--tD)}.sw.F{background:var(--tF)}
+.tchip .tl{font-weight:800;font-size:12px;width:14px;text-align:center}
+.tchip .rm{color:var(--txt3);cursor:pointer;font-size:13px}
+.addtier{width:30px;height:30px;border:1px dashed var(--bdl);background:transparent;color:var(--txt3);border-radius:7px;cursor:pointer;font-size:15px}
+.aspect-seg{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden;margin-top:11px}
+.aspect-seg button{flex:1;border:none;background:transparent;color:var(--txt2);cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:700;padding:7px 0}
+.aspect-seg button.active{background:var(--accS);color:var(--accH)}
+
+/* pool */
+.poolg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.pe{position:relative;border:1px solid var(--bd);border-radius:7px;overflow:hidden;background:var(--s0);cursor:pointer}
+.pe .pt{height:40px;display:flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:700;color:#dfe6f2;text-align:center;padding:2px}
+.pe .pc{font-size:9.5px;color:var(--txt3);padding:3px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--bd)}
+.pe.placed{opacity:.5}.pe.next{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.pe .tb{position:absolute;top:3px;right:3px;width:16px;height:16px;border-radius:4px;font-size:9px;font-weight:800;color:#16140c;display:flex;align-items:center;justify-content:center}
+.dropg{border:2px dashed var(--bdl);border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--txt3);cursor:pointer;min-height:58px}
+.dropg:hover{border-color:var(--acc);color:var(--txt2)}.dropg .p{font-size:17px}.dropg .t{font-size:9px;font-weight:700}
+.g1{background:linear-gradient(135deg,#5a2b3a,#2a1622)}.g2{background:linear-gradient(135deg,#3a4a6a,#1a2233)}.g3{background:linear-gradient(135deg,#2b5544,#163326)}.g4{background:linear-gradient(135deg,#553a2b,#332116)}.g5{background:linear-gradient(135deg,#4a2b55,#251633)}.g6{background:linear-gradient(135deg,#2b4a55,#163026)}.g7{background:linear-gradient(135deg,#55502b,#332f16)}
+
+/* perform */
+.pbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.spot-btn{height:38px;padding:0 13px;border:none;border-radius:8px;background:linear-gradient(180deg,#f4f6fb,#d7deea);color:#10131a;font-family:inherit;font-weight:800;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:7px}
+.spot-btn .key{font-size:9px;font-weight:800;background:#10131a;color:#cdd6e6;border-radius:4px;padding:1px 5px}
+.tbtn{width:38px;height:38px;border:none;border-radius:8px;font-family:inherit;font-weight:800;font-size:15px;color:#16140c;cursor:pointer;box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+.tbtn.S{background:var(--tS)}.tbtn.A{background:var(--tA)}.tbtn.B{background:var(--tB)}.tbtn.C{background:var(--tC)}.tbtn.D{background:var(--tD)}.tbtn.F{background:var(--tF)}
+.tc{margin-left:auto;font-variant-numeric:tabular-nums;font-size:14px;font-weight:700;color:#eef2f8}
+.ruler{position:relative;height:42px;background:linear-gradient(180deg,#121219,#0f0f15);border:1px solid var(--bd);border-radius:7px;margin-top:11px;overflow:hidden}
+.tick{position:absolute;top:0;bottom:0;width:1px;background:#23232c}
+.mk{position:absolute;top:50%;transform:translate(-50%,-50%)}
+.mk .pin{width:11px;height:11px;border-radius:50%}
+.mk.spot .pin{border:2px solid #eef2f8;background:#16161e}
+.ph{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);box-shadow:0 0 8px var(--acc)}
+.hint{color:var(--txt3);font-size:11px;margin-top:9px}.hint b{color:var(--txt2)}
+
+/* commentators */
+.banks{display:flex;gap:11px}
+.bank{flex:1}
+.bank-h{display:flex;align-items:center;font-size:10px;font-weight:800;letter-spacing:.6px;color:var(--txt3);text-transform:uppercase;margin-bottom:8px}
+.bank-h .pill{margin-left:auto;font-size:9px;font-weight:700;text-transform:none;color:var(--txt3)}
+.bank.dim{opacity:.45}
+.grid8{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.cbox{position:relative;aspect-ratio:1/1.06;border-radius:7px;background:#000;border:1px solid var(--bd);overflow:hidden;display:flex;align-items:flex-end;cursor:pointer}
+.cbox .face{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:19px}
+.cbox .nm{position:relative;width:100%;padding:3px 6px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.8));font-size:9.5px;font-weight:700;color:#e7eaf0;z-index:2}
+.cbox.empty{background:rgba(255,255,255,.012);border:2px dashed var(--bdl);align-items:center;justify-content:center;flex-direction:column;gap:2px;color:var(--txt3)}
+.cbox.empty .plus{font-size:16px}.cbox.empty .t{font-size:8.5px;font-weight:700}
+.cbox.dimd .face{filter:brightness(.42) saturate(.8)}
+.cbox.speaking{border:2px solid var(--acc);box-shadow:0 0 0 1px var(--acc),0 4px 14px rgba(74,144,217,.4)}
+.faceA{background:radial-gradient(120% 90% at 50% 18%,#caa6c2,#6a4a66 60%,#241828)}.faceB{background:radial-gradient(120% 90% at 50% 18%,#a6b6ca,#46566a 60%,#181f28)}.faceC{background:radial-gradient(120% 90% at 50% 18%,#a6cab6,#46705a 60%,#16261d)}.faceD{background:radial-gradient(120% 90% at 50% 18%,#cabfa6,#706046 60%,#28220f)}.faceE{background:radial-gradient(120% 90% at 50% 18%,#c9a6a6,#6a4646 60%,#281616)}
+.seg{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.seg button{flex:1;border:none;background:transparent;color:var(--txt2);cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:700;padding:7px 0}
+.seg button.active{background:var(--accS);color:var(--accH)}
+.field{margin-top:10px}.field label{display:block;font-size:11px;color:var(--txt3);margin-bottom:5px}
+.slider{height:5px;background:var(--s0);border-radius:3px;position:relative;border:1px solid var(--bd)}
+.slider .fill{position:absolute;left:0;top:0;bottom:0;background:var(--acc);border-radius:3px}
+.slider .knob{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;background:#e7eaf0;transform:translate(-50%,-50%)}
+
+.clipname{font-weight:700}.clipname .ico{color:var(--acc);margin-right:6px}.muted{color:var(--txt3);font-size:11.5px}
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2);margin-top:4px}
+.notes b{color:var(--txt)}.notes ul{margin:8px 0 0 18px}.notes li{margin:3px 0}.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>ROUNDTABLE · Tier List Builder</h1>
+  <span class="sub">Layout 3 — Unified (everything on one screen)</span>
+</div>
+
+<section class="stage">
+  <div class="design-label">
+    <span class="tag">Layout 3</span><span class="name">Unified Inspector</span>
+    <span class="desc">No sub-tabs — grid config, pool, perform, events and both commentator banks are all visible at once in collapsible cards. Densest option; best when the panel is docked wide. Power-user oriented.</span>
+  </div>
+
+  <div class="app">
+    <div class="dock">
+      <div class="dtab">⊞ Timeline</div>
+      <div class="dtab active">▦ Tier List Builder</div>
+      <div class="dtab">♪ Audio Mixer</div>
+      <div class="grow"></div>
+      <span class="clipname" style="font-size:12px"><span class="ico">▦</span>Year 3 Events</span>
+      <button class="ibtn" style="margin-left:10px">⧉</button><button class="ibtn">⋯</button>
+    </div>
+
+    <div class="cols">
+      <!-- LEFT: grid + pool + perform -->
+      <div class="col l">
+        <div class="card">
+          <div class="ch"><span class="chev">▾</span>Grid</div>
+          <div class="cb">
+            <div class="gf"><label>Title</label><input class="input" value="NIKKE TIER LIST: YEAR 3 EVENTS"></div>
+            <div class="tier-chips">
+              <div class="tchip"><span class="sw S"></span><span class="tl">S</span><span class="rm">×</span></div>
+              <div class="tchip"><span class="sw A"></span><span class="tl">A</span><span class="rm">×</span></div>
+              <div class="tchip"><span class="sw B"></span><span class="tl">B</span><span class="rm">×</span></div>
+              <div class="tchip"><span class="sw C"></span><span class="tl">C</span><span class="rm">×</span></div>
+              <div class="tchip"><span class="sw D"></span><span class="tl">D</span><span class="rm">×</span></div>
+              <div class="tchip"><span class="sw F"></span><span class="tl">F</span><span class="rm">×</span></div>
+              <button class="addtier">＋</button>
+            </div>
+            <div class="aspect-seg"><button class="active">Banner 16:9</button><button>Square 1:1</button><button>Vertical 9:16</button><button>Custom…</button></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ch"><span class="chev">▾</span>Entry Pool<span class="ct">12 · 5 in pool</span></div>
+          <div class="cb">
+            <div class="poolg">
+              <div class="pe next g5"><div class="pt">Echo of Nostalgia</div><div class="pc">▸ NEXT</div></div>
+              <div class="pe g1"><div class="pt">Mystery Banner</div><div class="pc">in pool</div></div>
+              <div class="pe g6"><div class="pt">For Rest</div><div class="pc">in pool</div></div>
+              <div class="pe g3"><div class="pt">Red Sea</div><div class="pc">in pool</div></div>
+              <div class="pe placed g1"><span class="tb" style="background:var(--tS)">S</span><div class="pt">Cheers</div><div class="pc">placed</div></div>
+              <div class="pe placed g2"><span class="tb" style="background:var(--tA)">A</span><div class="pt">Wisdom</div><div class="pc">placed</div></div>
+              <div class="pe placed g4"><span class="tb" style="background:var(--tD)">D</span><div class="pt">Delicious</div><div class="pc">placed</div></div>
+              <div class="dropg"><span class="p">＋</span><span class="t">Drop PNGs</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ch"><span class="chev">▾</span>Perform</div>
+          <div class="cb">
+            <div class="pbar">
+              <button class="spot-btn">◎ Spotlight <span class="key">Q</span></button>
+              <button class="tbtn S">S</button><button class="tbtn A">A</button><button class="tbtn B">B</button>
+              <button class="tbtn C">C</button><button class="tbtn D">D</button><button class="tbtn F">F</button>
+              <div class="tc">03:12:04</div>
+            </div>
+            <div class="ruler">
+              <div class="tick" style="left:20%"></div><div class="tick" style="left:40%"></div><div class="tick" style="left:60%"></div><div class="tick" style="left:80%"></div>
+              <div class="mk spot" style="left:10%"><div class="pin"></div></div>
+              <div class="mk" style="left:17%"><div class="pin" style="background:var(--tS)"></div></div>
+              <div class="mk spot" style="left:32%"><div class="pin"></div></div>
+              <div class="mk" style="left:39%"><div class="pin" style="background:var(--tA)"></div></div>
+              <div class="mk" style="left:52%"><div class="pin" style="background:var(--tB)"></div></div>
+              <div class="mk spot" style="left:66%"><div class="pin"></div></div>
+              <div class="mk" style="left:73%"><div class="pin" style="background:var(--tF)"></div></div>
+              <div class="ph" style="left:60%"></div>
+            </div>
+            <div class="hint">▸ <b>Spotlight (Q)</b> then a <b>tier (1–6)</b> stamps the playhead. Drag markers to retime.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: commentators -->
+      <div class="col r">
+        <div class="card">
+          <div class="ch"><span class="chev">▾</span>Commentators<span class="ct">5 of 16</span></div>
+          <div class="cb">
+            <div class="seg" style="margin-bottom:12px"><button class="active">Auto speaker (audio)</button><button>Manual</button></div>
+            <div class="banks">
+              <div class="bank">
+                <div class="bank-h">Right Bank<span class="pill">with tier list</span></div>
+                <div class="grid8">
+                  <div class="cbox speaking"><div class="face faceA">🙂</div><div class="nm">Chime</div></div>
+                  <div class="cbox dimd"><div class="face faceB">🙂</div><div class="nm">Crown</div></div>
+                  <div class="cbox dimd"><div class="face faceC">🙂</div><div class="nm">Modernia</div></div>
+                  <div class="cbox dimd"><div class="face faceD">🙂</div><div class="nm">Anis</div></div>
+                  <div class="cbox dimd"><div class="face faceE">🙂</div><div class="nm">Scarlet</div></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                </div>
+              </div>
+              <div class="bank dim">
+                <div class="bank-h">Left Bank<span class="pill">no-list only</span></div>
+                <div class="grid8">
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                  <div class="cbox empty"><span class="plus">＋</span><span class="t">.png</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ch"><span class="chev">▾</span>Selected Box · Chime</div>
+          <div class="cb">
+            <div class="gf" style="margin:0"><label>Name</label><input class="input" value="Chime"><span class="muted" style="white-space:nowrap">↔ audio track</span></div>
+            <div class="field"><label>Head zoom</label><div class="slider"><div class="fill" style="width:60%"></div><div class="knob" style="left:60%"></div></div></div>
+            <div class="field"><label>Offset X</label><div class="slider"><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div></div>
+            <div class="field"><label>Offset Y</label><div class="slider"><div class="fill" style="width:36%"></div><div class="knob" style="left:36%"></div></div></div>
+            <div class="hint" style="margin-top:11px">＋ Add talk frame(s) for optional mouth-flap. Highlight = brighter + accent border; others dim to ~45% on black.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes"><b>Layout 3 — Unified.</b>
+    <ul>
+      <li>Everything visible at once: <b>Grid</b> (title + tier chips you can recolor/add/remove + entry shape), <b>Pool</b>, <b>Perform</b>, and both <b>Commentator banks</b> with the selected-box framing controls.</li>
+      <li>Tier chips show the recolorable <code>{label, color}</code> model; <code>＋</code> adds a tier. Entry-shape segmented control is the per-list aspect.</li>
+      <li>No view switching — densest and fastest for power users, but needs a wide dock. Cards collapse to manage height.</li>
+    </ul>
+  </div>
+</section>
+</body>
+</html>

@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "timeline/TimelineObserver.h"
+
 #include <QWidget>
 #include <QListWidget>
 #include <QPushButton>
@@ -54,15 +56,19 @@ struct PreparedCaptionCue {
  std::string speaker;
 };
 
-class CaptionsPanel : public QWidget
+class CaptionsPanel : public QWidget, public TimelineObserver
 {
  Q_OBJECT
 
 public:
  explicit CaptionsPanel(QWidget* parent = nullptr);
- ~CaptionsPanel() override = default;
+ ~CaptionsPanel() override;
 
  void setTimeline(Timeline* timeline);
+
+ /// TimelineObserver: the timeline (and every caption clip it owns) is being
+ /// freed — drop all cached pointers before returning.
+ void onTimelineDestroyed(Timeline* tl) override;
  void setCommandStack(CommandStack* stack) noexcept { m_commandStack = stack; }
 
  /// Rebuild the caption list from the active timeline.
@@ -102,6 +108,10 @@ private:
  void buildUI();
  void applyTheme();
  void updateButtonStates();
+
+ /// Resolve a clip id to the live CaptionClip on the timeline (nullptr if it
+ /// was deleted). Undo/redo lambdas capture ids, never Clip pointers.
+ CaptionClip* findCaptionClipById(uint64_t clipId) const;
 
  /// Collect ALL audio sources on the timeline to transcribe (one per
  /// audio clip / video-clip-with-audio), each with its own offset + speaker.

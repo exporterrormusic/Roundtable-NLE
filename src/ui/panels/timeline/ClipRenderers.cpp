@@ -6,6 +6,7 @@
 #include "timeline/GraphicLayer.h"
 #include "timeline/CaptionClip.h"
 #include "timeline/PngPuppetClip.h"
+#include "timeline/TierListClip.h"
 #include "Constants.h"
 #include "PathUtils.h"   // utf8ToPath — Unicode-safe std::string → std::filesystem::path
 
@@ -117,6 +118,277 @@ std::shared_ptr<CachedFrame> renderTitleClip(
     frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
     std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
 
+    return frame;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TierListClip CPU rendering — the ranking board (grid + entry pool + spotlight).
+// Unique-prefixed statics so the roundtable_ui UNITY build can't collide them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static QColor tierlistDecodeArgb(uint32_t c)
+{
+    return QColor(static_cast<int>((c >> 16) & 0xFF),
+                  static_cast<int>((c >> 8)  & 0xFF),
+                  static_cast<int>( c        & 0xFF),
+                  static_cast<int>((c >> 24) & 0xFF));
+}
+
+// Small path→QImage decode cache so entry PNGs aren't re-read every frame.
+static QImage tierlistLoadImage(const std::string& path)
+{
+    if (path.empty()) return QImage();
+    static std::mutex s_mtx;
+    static std::unordered_map<std::string, QImage> s_cache;
+    std::lock_guard<std::mutex> lk(s_mtx);
+    auto it = s_cache.find(path);
+    if (it != s_cache.end()) return it->second;
+    QImage im;
+    im.load(QString::fromStdWString(utf8ToPath(path).wstring()));
+    s_cache.emplace(path, im);   // cache even null to avoid repeated disk hits
+    return im;
+}
+
+static void tierlistDrawEntry(QPainter& p, const TierEntry* e, const QRectF& cell)
+{
+    QImage im = e ? tierlistLoadImage(e->imagePath) : QImage();
+    if (!im.isNull()) {
+        QImage scaled = im.scaled(static_cast<int>(std::lround(cell.width())),
+                                  static_cast<int>(std::lround(cell.height())),
+                                  Qt::KeepAspectRatioByExpanding,
+                                  Qt::SmoothTransformation);
+        const double sx = (scaled.width()  - cell.width())  * 0.5;
+        const double sy = (scaled.height() - cell.height()) * 0.5;
+        p.drawImage(cell, scaled, QRectF(sx, sy, cell.width(), cell.height()));
+    } else {
+        p.fillRect(cell, QColor(0x33, 0x33, 0x3E));
+        p.setPen(QColor(0xB0, 0xB0, 0xBA));
+        QFont f("Arial", std::max(6, static_cast<int>(std::lround(cell.height() * 0.14))));
+        p.setFont(f);
+        p.drawText(cell.adjusted(3, 3, -3, -3), Qt::AlignCenter | Qt::TextWordWrap,
+                   e ? QString::fromStdString(e->title) : QStringLiteral("?"));
+    }
+    // White sharp-cornered frame around every entry.
+    p.setBrush(Qt::NoBrush);
+    QPen frame(QColor(255, 255, 255));
+    frame.setWidthF(std::clamp(cell.height() * 0.02, 1.5, 4.0));
+    frame.setJoinStyle(Qt::MiterJoin);   // sharp corners, not bevelled/rounded
+    p.setPen(frame);
+    p.drawRect(cell);
+}
+
+std::shared_ptr<CachedFrame> renderTierListClip(
+    TierListClip* clip, int64_t tick, uint32_t outW, uint32_t outH,
+    uint32_t /*refW*/, uint32_t /*refH*/)
+{
+    if (!clip || outW == 0 || outH == 0) return nullptr;
+
+    const int64_t localTick = tick - clip->timelineIn();
+    const int W = static_cast<int>(outW);
+    const int H = static_cast<int>(outH);
+
+    QImage img(W, H, QImage::Format_ARGB32);
+    img.fill(Qt::transparent);   // grid is opaque; top/right gutters stay transparent
+
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // Safe-margin insets — reserve top band (channel banner) + right strip (commentators).
+    const int topInset    = static_cast<int>(std::lround(clip->topSafeMargin()   * H));
+    const int rightInset  = static_cast<int>(std::lround(clip->rightSafeMargin() * W));
+    const int bottomInset = static_cast<int>(std::lround(topInset * 0.44)); // ~half the top band (measured)
+    const QRectF gridArea(0.0, static_cast<double>(topInset),
+                          static_cast<double>(W - rightInset),
+                          static_cast<double>(H - topInset - bottomInset));
+
+    const auto& tiers = clip->tiers();
+    const int nTiers  = static_cast<int>(tiers.size());
+
+    // Left title sidebar (rotated).
+    const double sidebarW = std::max(24.0, W * 0.0568);   // measured
+    const QRectF sidebar(gridArea.left(), gridArea.top(), sidebarW, gridArea.height());
+    p.fillRect(sidebar, QColor(0, 0, 0));
+    if (!clip->title().empty()) {
+        p.save();
+        p.translate(sidebar.center());
+        p.rotate(-90.0);
+        QFont tf("Impact");   // the vertical list name uses Impact (already heavy/condensed — no synthetic bold)
+        tf.setPixelSize(std::max(10, static_cast<int>(std::lround(sidebarW * 0.65))));   // measured glyph ~0.47 of sidebar
+        p.setFont(tf);
+        p.setPen(QColor(255, 255, 255));
+        const QRectF tr(-sidebar.height() * 0.5, -sidebar.width() * 0.5,
+                        sidebar.height(), sidebar.width());
+        p.drawText(tr, Qt::AlignCenter, QString::fromStdString(clip->title()));
+        p.restore();
+    }
+
+    const QRectF rowsArea(sidebar.right(), gridArea.top(),
+                          gridArea.width() - sidebarW, gridArea.height());
+
+    if (nTiers > 0 && rowsArea.width() > 4.0 && rowsArea.height() > 4.0) {
+        // Replay events → per-tier ordered entry ids + the active POPUP. An
+        // entry cuts into its row the moment its DROP starts (no animation);
+        // the POPUP shows it enlarged and centred over its own window.
+        std::vector<std::vector<uint64_t>> rows(static_cast<size_t>(nTiers));
+        uint64_t popupEntry = 0;   bool   hasPopup = false;
+
+        std::vector<TierEvent> evs = clip->events();
+        std::stable_sort(evs.begin(), evs.end(),
+                         [](const TierEvent& a, const TierEvent& b) { return a.start < b.start; });
+
+        auto removeId = [&](uint64_t id) {
+            for (auto& row : rows)
+                row.erase(std::remove(row.begin(), row.end(), id), row.end());
+        };
+
+        for (const auto& e : evs) {
+            if (e.type == TierEventType::Popup) {
+                if (localTick >= e.start && localTick < e.end) { popupEntry = e.entryId; hasPopup = true; }
+            } else if (e.type == TierEventType::Drop) {
+                if (localTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
+                    removeId(e.entryId);
+                    auto& row = rows[static_cast<size_t>(e.tier)];
+                    int idx = e.index;
+                    if (idx < 0 || idx > static_cast<int>(row.size())) idx = static_cast<int>(row.size());
+                    row.insert(row.begin() + idx, e.entryId);
+                    // No animation — the drop is an instant cut into the row.
+                }
+            } else { // Reorder
+                if (localTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
+                    auto& row = rows[static_cast<size_t>(e.tier)];
+                    const int from = e.fromIndex;
+                    if (from >= 0 && from < static_cast<int>(row.size())) {
+                        const uint64_t v = row[static_cast<size_t>(from)];
+                        row.erase(row.begin() + from);
+                        int to = e.toIndex;
+                        if (to < 0) to = 0;
+                        if (to > static_cast<int>(row.size())) to = static_cast<int>(row.size());
+                        row.insert(row.begin() + to, v);
+                    }
+                }
+            }
+        }
+
+        // ── Layout in "natural" units, then a single uniform scale to fit the
+        //    grid height. Entries are a fixed size; a tier that overflows its
+        //    content width WRAPS to more lines and GROWS taller. When the total
+        //    exceeds the grid, everything scales down uniformly so it still fits
+        //    (entry size is preserved relative to the rest, never squashed).
+        const double aspect    = static_cast<double>(clip->entryAspectRatio());
+        const double unit      = rowsArea.height() / nTiers;   // one-line row height
+        const double pad       = unit * 0.10;
+        const double eh0       = unit * 0.80;
+        const double ew0       = eh0 * aspect;
+        const double labelW0   = std::max(20.0, unit * 0.575); // measured: ~0.575 x row height
+        const double contentW0 = rowsArea.width() - labelW0;
+
+        const int perLine = std::max(1, static_cast<int>(
+            std::floor((contentW0 - pad) / std::max(1.0, ew0 + pad))));
+
+        std::vector<int> lines(static_cast<size_t>(nTiers), 1);
+        double totalNaturalH = 0.0;
+        for (int i = 0; i < nTiers; ++i) {
+            const int cnt = static_cast<int>(rows[static_cast<size_t>(i)].size());
+            const int L   = std::max(1, (cnt + perLine - 1) / perLine);
+            lines[static_cast<size_t>(i)] = L;
+            totalNaturalH += (L + 1) * pad + L * eh0;
+        }
+        const double scale = (totalNaturalH > 1.0)
+                           ? std::min(1.0, rowsArea.height() / totalNaturalH) : 1.0;
+
+        const double eh     = eh0 * scale;
+        const double ew     = ew0 * scale;
+        const double sPad   = pad * scale;
+        const double labelW = labelW0 * scale;
+
+        double y = rowsArea.top();
+        std::vector<double> boundaries;
+        for (int i = 0; i < nTiers; ++i) {
+            const int    L     = lines[static_cast<size_t>(i)];
+            const double tierH = ((L + 1) * pad + L * eh0) * scale;
+            const QRectF rrow(rowsArea.left(), y, rowsArea.width(), tierH);
+
+            const QRectF lcell(rrow.left(), rrow.top(), labelW, tierH);
+            p.fillRect(lcell, tierlistDecodeArgb(tiers[static_cast<size_t>(i)].color));
+            {
+                QFont lf("Gotham");   // tier letters use Gotham
+                lf.setBold(true);
+                const int letterPx = std::max(8, static_cast<int>(std::lround(unit * scale * 0.5)));
+                lf.setPixelSize(letterPx);
+                const QString letter = QString::fromStdString(tiers[static_cast<size_t>(i)].label);
+                // White glyph with a thin black outline (reads on the light C/D cells).
+                QFontMetricsF fm(lf);
+                const QRectF tb = fm.tightBoundingRect(letter);
+                QPainterPath gp;
+                gp.addText(lcell.center().x() - tb.center().x(),
+                           lcell.center().y() - tb.center().y(), lf, letter);
+                // 2px stroke at 1080p, scaled with resolution so it stays proportional.
+                QPen pen(QColor(0, 0, 0), std::max(1.0, 2.0 * H / 1080.0));
+                pen.setJoinStyle(Qt::RoundJoin);
+                p.setPen(pen);
+                p.setBrush(QColor(255, 255, 255));
+                p.drawPath(gp);
+                p.setBrush(Qt::NoBrush);
+            }
+
+            const QRectF ccell(lcell.right(), rrow.top(), rrow.width() - labelW, tierH);
+            p.fillRect(ccell, QColor(0x1A, 0x1A, 0x17));   // measured content grey
+
+            if (eh > 1.0 && ew > 1.0) {
+                const auto& ids = rows[static_cast<size_t>(i)];
+                for (size_t k = 0; k < ids.size(); ++k) {
+                    const int col = static_cast<int>(k) % perLine;
+                    const int lin = static_cast<int>(k) / perLine;
+                    const QRectF cell(ccell.left() + sPad + col * (ew + sPad),
+                                      ccell.top()  + sPad + lin * (eh + sPad),
+                                      ew, eh);
+                    tierlistDrawEntry(p, clip->entryById(ids[k]), cell);
+                }
+            }
+
+            y += tierH;
+            if (i < nTiers - 1) boundaries.push_back(y);
+        }
+
+        // Row dividers — drawn AFTER all rows so the next row's content fill can't
+        // paint over the previous divider (that caused missing lines between ranks).
+        for (double dy : boundaries)
+            p.fillRect(QRectF(rowsArea.left(), std::round(dy) - 2.0, rowsArea.width(), 4.0),
+                       QColor(0, 0, 0));   // measured ~4px
+
+        // Spotlight — the discussed entry, centred and enlarged. It cuts in and
+        // out with its POPUP window (no animation), on a white sharp-cornered
+        // frame. The board behind stays fully visible (no dimming).
+        if (hasPopup) {
+            double panelH = H * 0.72;
+            double panelW = panelH * aspect;
+            const double maxW = (W - rightInset) * 0.86;
+            if (panelW > maxW) { panelW = maxW; if (aspect > 0.0) panelH = panelW / aspect; }
+            const QRectF panel((W - panelW) * 0.5, (H - panelH) * 0.5, panelW, panelH);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255));
+            p.drawRect(panel.adjusted(-10, -10, 10, 10));   // white frame, sharp corners
+            tierlistDrawEntry(p, clip->entryById(popupEntry), panel);
+        }
+    }
+
+    // Bottom black border — a design element, ~half the top band's height.
+    if (bottomInset > 0)
+        p.fillRect(QRectF(0.0, static_cast<double>(H - bottomInset),
+                          static_cast<double>(W), static_cast<double>(bottomInset)),
+                   QColor(0, 0, 0));
+
+    p.end();
+
+    auto frame = std::make_shared<CachedFrame>();
+    frame->width  = outW;
+    frame->height = outH;
+    frame->stride = static_cast<uint32_t>(img.bytesPerLine());
+    frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
+    std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
     return frame;
 }
 

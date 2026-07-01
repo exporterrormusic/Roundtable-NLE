@@ -15,6 +15,7 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/EffectsPanel.h"
 #include "panels/captions/CaptionsPanel.h"
+#include "panels/tierlist/TierListPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/project/ProjectBin.h"
@@ -48,14 +49,6 @@
 namespace rt {
 
 void TimelineWorkspace::setTimeline(Timeline* timeline) {
-    // [OPEN-PERF] Temporary warn-level phase timers to locate the slow part of
-    // project open (info logs are filtered to warn+, so they're invisible).
-    using _opclk = std::chrono::steady_clock;
-    auto _opT0 = _opclk::now();
-    auto _opMs = [](_opclk::time_point a) {
-        return std::chrono::duration<double, std::milli>(_opclk::now() - a).count();
-    };
-
     // Reset audio service state for the new timeline
     if (m_audioPlayback) {
         m_audioPlayback->cancelWarm();
@@ -63,7 +56,6 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
         m_audioPlayback->reset();
         m_audioPlayback->setTimeline(timeline);
     }
-    spdlog::warn("[OPEN-PERF] setTimeline: audioPlayback reset {:.0f}ms", _opMs(_opT0));
 
     m_timeline = timeline;
     if (m_compositeService) {
@@ -91,12 +83,8 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // operate on the correct timeline (e.g. after project open).
     // Also forward nullptr to clear the dangling reference when a project
     // is deleted while open, preventing use-after-free crashes.
-    {
-        auto _t = _opclk::now();
-        if (m_timelinePanel)
-            m_timelinePanel->setTimeline(timeline);
-        spdlog::warn("[OPEN-PERF] setTimeline: timelinePanel->setTimeline {:.0f}ms", _opMs(_t));
-    }
+    if (m_timelinePanel)
+        m_timelinePanel->setTimeline(timeline);
 
     // Forward to PropertiesPanel so shot switching can find group clips.
     if (m_propertiesPanel)
@@ -109,6 +97,11 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Forward to CaptionsPanel so the caption list rebuilds for the new sequence.
     if (m_captionsPanel)
         m_captionsPanel->setTimeline(timeline);
+
+    // Forward to TierListPanel so Set Start/End can read the playhead and the
+    // panel edits the clips of the active sequence.
+    if (m_tierListPanel)
+        m_tierListPanel->setTimeline(timeline);
 
     // Forward to ProgramMonitor so its mini-timeline gets the correct
     // duration, in/out points, and playhead range.
@@ -134,12 +127,8 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Pre-warm the spine cache so first compositeFrame doesn't block on
     // disk I/O (skel parse + PNG decode).  ~100-200ms moved from first
     // render to project-open time where it's imperceptible.
-    {
-        auto _t = _opclk::now();
-        if (timeline)
-            preloadSpineAssets();
-        spdlog::warn("[OPEN-PERF] setTimeline: preloadSpineAssets {:.0f}ms", _opMs(_t));
-    }
+    if (timeline)
+        preloadSpineAssets();
 #endif
 
     // Force an initial composite so the Program Monitor shows the frame
@@ -164,8 +153,6 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Arm the live file-swap watcher for the new project's media.
     if (timeline)
         m_mediaWatch->rescan();
-
-    spdlog::warn("[OPEN-PERF] setTimeline: TOTAL {:.0f}ms", _opMs(_opT0));
 }
 
 void TimelineWorkspace::invalidateCompositeCache()

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Tier List Builder · Split Board</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;--pbtn:#2a64aa;--pbtnH:#3473be;
+  --ok:#4caf6e;--danger:#d23c3c;
+  --tS:#f47373;--tA:#f7a55b;--tB:#f5c45e;--tC:#eef06a;--tD:#bfe773;--tF:#86df8e;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:18px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:6px;background:var(--s1);padding:4px;border-radius:8px;border:1px solid var(--bd)}
+.switcher button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:7px 14px;border-radius:5px}
+.switcher button.active{background:var(--acc);color:#fff}
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:560px;text-align:right}
+.app{border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.hidden{display:none!important}
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:34px}
+.dock .dtab{display:flex;align-items:center;gap:7px;height:34px;padding:0 14px;color:var(--txt3);font-size:12px;font-weight:600;border-bottom:2px solid transparent;cursor:pointer}
+.dock .dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .grow{flex:1}.dock .ibtn{width:26px;height:26px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-size:13px}
+.phead{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.subswitch{display:flex;gap:4px;background:var(--s0);padding:3px;border-radius:7px;border:1px solid var(--bd)}
+.subswitch button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:6px 13px;border-radius:5px}
+.subswitch button.active{background:var(--accS);color:var(--accH)}
+.clipname{font-weight:700}.clipname .ico{color:var(--acc);margin-right:6px}.muted{color:var(--txt3);font-size:11.5px}
+.select{height:30px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12px;padding:0 26px 0 10px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 14px) 13px,calc(100% - 9px) 13px;background-size:5px 5px;background-repeat:no-repeat;margin-left:auto}
+
+/* split */
+.split{display:flex;min-height:0}
+.left{flex:1.35;min-width:0;border-right:1px solid var(--bd);padding:16px;display:flex;flex-direction:column;gap:10px;background:#101016}
+.right{flex:1;min-width:340px;display:flex;flex-direction:column}
+
+/* ===== LIVE BOARD (mini render of the actual output) ===== */
+.board-wrap{display:flex;flex-direction:column;gap:8px}
+.board-hd{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.board-hd .live{color:#fff;background:var(--danger);border-radius:4px;padding:1px 6px;font-size:9px;letter-spacing:.5px}
+.board-hd .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none;color:var(--txt3)}
+.board{position:relative;aspect-ratio:16/9;background:#0a0a0d;border:1px solid var(--bd);border-radius:8px;overflow:hidden;display:flex}
+.board .titlebar{width:30px;background:#000;color:#fff;font-weight:800;font-size:9px;letter-spacing:1px;display:flex;align-items:center;justify-content:center}
+.board .titlebar span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
+.rows{flex:1;display:flex;flex-direction:column}
+.trow{flex:1;display:flex;border-bottom:1px solid #000;min-height:0}
+.tlabel{width:34px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#1a1a10}
+.tlabel.S{background:var(--tS)}.tlabel.A{background:var(--tA)}.tlabel.B{background:var(--tB)}.tlabel.C{background:var(--tC)}.tlabel.D{background:var(--tD)}.tlabel.F{background:var(--tF)}
+.tcontent{flex:1;background:#1c1c20;display:flex;align-items:center;gap:3px;padding:0 4px;overflow:hidden}
+.chip{height:78%;aspect-ratio:16/9;border-radius:2px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:7px;font-weight:700;color:#dfe6f2;text-align:center;padding:1px}
+.board.spot .rows{filter:brightness(.4) saturate(.85)}
+.spotlight{position:absolute;top:7%;right:4%;width:54%;height:86%;background:linear-gradient(180deg,#fbfbfd,#e7e9ef);border-radius:8px;box-shadow:0 0 34px 6px rgba(255,255,255,.5),0 10px 40px rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;z-index:5}
+.spotlight .img{width:72%;height:64%;border-radius:6px;background:linear-gradient(135deg,#3a4a6a,#1a2233);display:flex;align-items:center;justify-content:center;color:#cdd6e6;font-size:11px;font-weight:700}
+.spotlight .ti{color:#15151b;font-weight:800;font-size:13px}
+.spotlight .sb{color:#55555f;font-size:9px}
+.board-foot{display:flex;gap:8px}
+.state-pill{font-size:10.5px;color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px}
+.state-pill b{color:var(--acc)}
+
+/* right column */
+.rsec{padding:13px 16px;border-bottom:1px solid var(--bd)}
+.rsec h4{font-size:10px;font-weight:800;letter-spacing:1.1px;color:var(--txt3);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.rsec h4 .ct{color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:1px 8px;font-size:10px}
+.poolv{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:150px;overflow:auto}
+.pe{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--bd);border-radius:7px;padding:5px;cursor:pointer;font-size:11.5px}
+.pe .pt{width:34px;height:20px;border-radius:3px;flex:0 0 34px}
+.pe.next{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.pe.placed{opacity:.5}
+.pe .nmx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dropv{grid-column:span 2;border:2px dashed var(--bdl);border-radius:7px;padding:9px;text-align:center;color:var(--txt3);font-size:11px;font-weight:700;cursor:pointer}
+.dropv:hover{border-color:var(--acc);color:var(--txt2)}
+.g1{background:linear-gradient(135deg,#5a2b3a,#2a1622)}.g2{background:linear-gradient(135deg,#3a4a6a,#1a2233)}.g3{background:linear-gradient(135deg,#2b5544,#163326)}.g4{background:linear-gradient(135deg,#553a2b,#332116)}.g5{background:linear-gradient(135deg,#4a2b55,#251633)}.g6{background:linear-gradient(135deg,#2b4a55,#163026)}.g7{background:linear-gradient(135deg,#55502b,#332f16)}
+
+.pbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.spot-btn{height:40px;padding:0 14px;border:none;border-radius:8px;background:linear-gradient(180deg,#f4f6fb,#d7deea);color:#10131a;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.spot-btn .key{font-size:9px;font-weight:800;background:#10131a;color:#cdd6e6;border-radius:4px;padding:1px 5px}
+.tbtn{width:40px;height:40px;border:none;border-radius:8px;font-family:inherit;font-weight:800;font-size:16px;color:#16140c;cursor:pointer;box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+.tbtn.S{background:var(--tS)}.tbtn.A{background:var(--tA)}.tbtn.B{background:var(--tB)}.tbtn.C{background:var(--tC)}.tbtn.D{background:var(--tD)}.tbtn.F{background:var(--tF)}
+.tc{margin-left:auto;font-variant-numeric:tabular-nums;font-size:15px;font-weight:700;color:#eef2f8}
+
+.elist{display:flex;flex-direction:column;gap:0;max-height:188px;overflow:auto}
+.erow{display:grid;grid-template-columns:62px 1fr 70px 26px;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #1c1c24;font-size:11.5px;cursor:pointer}
+.erow:hover{background:var(--s2)}
+.erow.cur{background:var(--accS)}
+.erow .tm{font-variant-numeric:tabular-nums;color:var(--txt2)}
+.erow .ac{font-weight:700}
+.erow .ac.sp{color:#eef2f8}
+.tg{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;font-weight:800;color:#16140c;font-size:11px}
+.tg.S{background:var(--tS)}.tg.A{background:var(--tA)}.tg.B{background:var(--tB)}.tg.C{background:var(--tC)}.tg.D{background:var(--tD)}.tg.F{background:var(--tF)}
+.erow .x{color:var(--txt3);text-align:center}
+
+/* commentators (reuse compact) */
+.comm{padding:16px;display:flex;gap:18px}
+.bank{flex:1;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:13px}.bank.dim{opacity:.5}
+.bank-h{display:flex;align-items:center;font-size:11px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;margin-bottom:11px}
+.bank-h .pill{margin-left:auto;font-size:9.5px;font-weight:700;text-transform:none;color:var(--txt3);background:var(--s0);border:1px solid var(--bd);border-radius:10px;padding:2px 8px}
+.grid8{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cbox{position:relative;aspect-ratio:1/1.06;border-radius:9px;background:#000;border:1px solid var(--bd);overflow:hidden;display:flex;align-items:flex-end;cursor:pointer}
+.cbox .face{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:26px;color:#cdd3e0}
+.cbox .nm{position:relative;width:100%;padding:5px 8px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.8));font-size:11px;font-weight:700;color:#e7eaf0;z-index:2}
+.cbox.empty{background:rgba(255,255,255,.012);border:2px dashed var(--bdl);align-items:center;justify-content:center;flex-direction:column;gap:4px;color:var(--txt3)}
+.cbox.empty .plus{font-size:22px}.cbox.empty .t{font-size:10px;font-weight:700}
+.cbox.dimd .face{filter:brightness(.42) saturate(.8)}
+.cbox.speaking{border:2px solid var(--acc);box-shadow:0 0 0 1px var(--acc),0 6px 20px rgba(74,144,217,.4)}
+.cbox.speaking::after{content:"● SPEAKING";position:absolute;top:6px;left:6px;z-index:3;font-size:8px;font-weight:800;color:#fff;background:var(--acc);padding:2px 6px;border-radius:4px}
+.faceA{background:radial-gradient(120% 90% at 50% 18%,#caa6c2,#6a4a66 60%,#241828)}.faceB{background:radial-gradient(120% 90% at 50% 18%,#a6b6ca,#46566a 60%,#181f28)}.faceC{background:radial-gradient(120% 90% at 50% 18%,#a6cab6,#46705a 60%,#16261d)}.faceD{background:radial-gradient(120% 90% at 50% 18%,#cabfa6,#706046 60%,#28220f)}.faceE{background:radial-gradient(120% 90% at 50% 18%,#c9a6a6,#6a4646 60%,#281616)}
+.comm-note{flex:0 0 220px;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:13px;font-size:11.5px;color:var(--txt2)}
+.comm-note h4{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;margin-bottom:9px}
+.seg{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden;margin-bottom:10px}
+.seg button{flex:1;border:none;background:transparent;color:var(--txt2);cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:8px 0}
+.seg button.active{background:var(--accS);color:var(--accH)}
+
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:12px;color:var(--txt2);margin-top:4px}
+.notes b{color:var(--txt)}.notes ul{margin:8px 0 0 18px}.notes li{margin:3px 0}.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>ROUNDTABLE · Tier List Builder</h1>
+  <span class="sub">Layout 2 — Split Board (WYSIWYG)</span>
+  <div class="switcher"><button data-v="tl" class="active">Tier List</button><button data-v="cm">Commentators</button></div>
+</div>
+
+<section class="stage">
+  <div class="design-label">
+    <span class="tag">Layout 2</span><span class="name">Split Board</span>
+    <span class="desc">A live mini-render of the actual board fills the left so you always see what you're building — including the spotlight state — while the pool, perform controls, and an editable event list sit on the right.</span>
+  </div>
+
+  <div class="app">
+    <div class="dock">
+      <div class="dtab">⊞ Timeline</div>
+      <div class="dtab active">▦ Tier List Builder</div>
+      <div class="dtab">♪ Audio Mixer</div>
+      <div class="grow"></div>
+      <button class="ibtn">⧉</button><button class="ibtn">⋯</button>
+    </div>
+    <div class="phead">
+      <div class="subswitch"><button class="active" data-v="tl">▦ Tier List</button><button data-v="cm">▢ Commentators</button></div>
+      <span class="clipname"><span class="ico">▦</span>Year 3 Events</span>
+      <span class="muted">· spotlighting “Echo of Nostalgia”</span>
+      <select class="select"><option>Banner 16:9</option><option>Square 1:1</option><option>Vertical 9:16</option></select>
+    </div>
+
+    <!-- ===== TIER LIST VIEW ===== -->
+    <div id="view-tl">
+      <div class="split">
+        <!-- live board -->
+        <div class="left">
+          <div class="board-wrap">
+            <div class="board-hd"><span class="live">● LIVE</span> Board preview <span class="rt">follows playhead · 00:03:12:04</span></div>
+            <div class="board spot">
+              <div class="titlebar"><span>YEAR 3 EVENTS</span></div>
+              <div class="rows">
+                <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+                <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div><div class="chip g5">Echo</div></div></div>
+                <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">For Rest</div></div></div>
+                <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Companions</div><div class="chip g3">Red Sea</div><div class="chip g5">Uniform</div></div></div>
+                <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delicious</div><div class="chip g6">Garden</div></div></div>
+                <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">True Flavor</div></div></div>
+              </div>
+              <div class="spotlight">
+                <div class="img">Echo of Nostalgia</div>
+                <div class="ti">Echo of Nostalgia</div>
+                <div class="sb">discussing… drop into a tier to place it</div>
+              </div>
+            </div>
+            <div class="board-foot">
+              <div class="state-pill">State: <b>Spotlight</b></div>
+              <div class="state-pill">Grid dims behind · entry flies to its row on Drop</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- right column -->
+        <div class="right">
+          <div class="rsec">
+            <h4>Pool <span class="ct">5 left</span></h4>
+            <div class="poolv">
+              <div class="pe next"><div class="pt g5"></div><div class="nmx">Echo ▸ live</div></div>
+              <div class="pe"><div class="pt g1"></div><div class="nmx">Mystery</div></div>
+              <div class="pe"><div class="pt g6"></div><div class="nmx">For Rest</div></div>
+              <div class="pe"><div class="pt g3"></div><div class="nmx">Red Sea</div></div>
+              <div class="pe placed"><div class="pt g1"></div><div class="nmx">✓ Cheers</div></div>
+              <div class="pe placed"><div class="pt g7"></div><div class="nmx">✓ Flavor</div></div>
+              <div class="dropv">＋ Drop PNGs to add entries</div>
+            </div>
+          </div>
+          <div class="rsec">
+            <h4>Perform</h4>
+            <div class="pbar">
+              <button class="spot-btn">◎ Spotlight <span class="key">Q</span></button>
+              <button class="tbtn S">S</button><button class="tbtn A">A</button><button class="tbtn B">B</button>
+              <button class="tbtn C">C</button><button class="tbtn D">D</button><button class="tbtn F">F</button>
+              <div class="tc">03:12:04</div>
+            </div>
+          </div>
+          <div class="rsec" style="flex:1;border-bottom:none">
+            <h4>Events <span class="ct">7</span></h4>
+            <div class="elist">
+              <div class="erow"><span class="tm">00:31</span><span class="ac sp">◎ Spotlight Cheers</span><span></span><span class="x">⋯</span></div>
+              <div class="erow"><span class="tm">00:48</span><span class="ac">Drop</span><span><i class="tg S">S</i></span><span class="x">⋯</span></div>
+              <div class="erow"><span class="tm">01:24</span><span class="ac sp">◎ Spotlight Wisdom</span><span></span><span class="x">⋯</span></div>
+              <div class="erow"><span class="tm">01:39</span><span class="ac">Drop</span><span><i class="tg A">A</i></span><span class="x">⋯</span></div>
+              <div class="erow"><span class="tm">02:35</span><span class="ac">Reorder B</span><span><i class="tg B">B</i></span><span class="x">⋯</span></div>
+              <div class="erow cur"><span class="tm">03:12</span><span class="ac sp">◎ Spotlight Echo ▸</span><span></span><span class="x">⋯</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== COMMENTATORS VIEW ===== -->
+    <div class="hidden" id="view-cm">
+      <div class="comm">
+        <div class="comm-note">
+          <h4>Speaker highlight</h4>
+          <div class="seg"><button class="active">Auto</button><button>Manual</button></div>
+          Auto follows the character-named audio tracks under the playhead. Drop a <code>.png</code> into any slot; set its <b>name</b> to match its audio track. Head framing (zoom/offset/crop) per box, on black.
+        </div>
+        <div class="bank">
+          <div class="bank-h">Right Bank<span class="pill">on screen with the tier list</span></div>
+          <div class="grid8">
+            <div class="cbox dimd"><div class="face faceB">🙂</div><div class="nm">Crown</div></div>
+            <div class="cbox speaking"><div class="face faceA">🙂</div><div class="nm">Chime</div></div>
+            <div class="cbox dimd"><div class="face faceC">🙂</div><div class="nm">Modernia</div></div>
+            <div class="cbox dimd"><div class="face faceD">🙂</div><div class="nm">Anis</div></div>
+            <div class="cbox dimd"><div class="face faceE">🙂</div><div class="nm">Scarlet</div></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+          </div>
+        </div>
+        <div class="bank dim">
+          <div class="bank-h">Left Bank<span class="pill">no-tier-list scenes only</span></div>
+          <div class="grid8">
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+            <div class="cbox empty"><span class="plus">＋</span><span class="t">drop .png</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes"><b>Layout 2 — Split Board.</b>
+    <ul>
+      <li>The left is a <b>live mini-render of the real output</b> — here showing the <b>Spotlight</b> state (grid dimmed, entry in the glowing panel). On Drop it flies into its row.</li>
+      <li>Right column stacks <b>Pool → Perform → Events</b>; the event list is editable (retime, change tier, delete) for anyone who'd rather tweak rows than re-perform.</li>
+      <li>Best if you want constant visual confirmation while building; trades some pool density for the preview.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+const top=document.querySelectorAll('.page-head .switcher button');const sub=document.querySelectorAll('.subswitch button');
+function show(v){document.getElementById('view-tl').classList.toggle('hidden',v!=='tl');document.getElementById('view-cm').classList.toggle('hidden',v!=='cm');top.forEach(b=>b.classList.toggle('active',b.dataset.v===v));sub.forEach(b=>b.classList.toggle('active',b.dataset.v===v));}
+top.forEach(b=>b.addEventListener('click',()=>show(b.dataset.v)));sub.forEach(b=>b.addEventListener('click',()=>show(b.dataset.v)));
+</script>
+</body>
+</html>

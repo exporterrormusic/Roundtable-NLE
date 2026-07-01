@@ -90,6 +90,7 @@ add_library(roundtable_ui STATIC
     panels/effects/ColorGradingPanel.cpp
     panels/effects/EffectsPanel.cpp
     panels/captions/CaptionsPanel.cpp
+    panels/tierlist/TierListPanel.cpp
     panels/characters/ShotComposer.cpp
     panels/characters/ShotComposerVideo.cpp
     panels/characters/ShotComposerUI.cpp

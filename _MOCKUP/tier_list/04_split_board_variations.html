@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Tier List Builder · Split Board Variations</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;--danger:#d23c3c;
+  --tS:#f47373;--tA:#f7a55b;--tB:#f5c45e;--tC:#eef06a;--tD:#bfe773;--tF:#86df8e;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:18px;padding:10px 20px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.switcher{margin-left:auto;display:flex;gap:5px;background:var(--s1);padding:4px;border-radius:8px;border:1px solid var(--bd)}
+.switcher button{background:transparent;border:none;color:var(--txt2);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:7px 12px;border-radius:5px}
+.switcher button:hover{color:var(--txt)}.switcher button.active{background:var(--acc);color:#fff}
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px}
+.design-label{display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:540px;text-align:right}
+.app{border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--s1);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.hidden{display:none!important}
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:32px}
+.dock .dtab{display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;color:var(--txt3);font-size:11.5px;font-weight:600;border-bottom:2px solid transparent}
+.dock .dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .grow{flex:1}.dock .muted{color:var(--txt3);font-size:11px}
+
+/* board component */
+.board{position:relative;aspect-ratio:16/9;background:#0a0a0d;border:1px solid var(--bd);border-radius:8px;overflow:hidden;display:flex}
+.board .titlebar{width:26px;background:#000;color:#fff;font-weight:800;font-size:8px;letter-spacing:1px;display:flex;align-items:center;justify-content:center}
+.board .titlebar span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
+.rows{flex:1;display:flex;flex-direction:column}
+.trow{flex:1;display:flex;border-bottom:1px solid #000;min-height:0}
+.tlabel{width:30px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#1a1a10}
+.tlabel.S{background:var(--tS)}.tlabel.A{background:var(--tA)}.tlabel.B{background:var(--tB)}.tlabel.C{background:var(--tC)}.tlabel.D{background:var(--tD)}.tlabel.F{background:var(--tF)}
+.tcontent{flex:1;background:#1c1c20;display:flex;align-items:center;gap:3px;padding:0 4px;overflow:hidden}
+.chip{height:74%;aspect-ratio:16/9;border-radius:2px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:6.5px;font-weight:700;color:#dfe6f2;text-align:center;padding:1px}
+.board.spot .rows{filter:brightness(.4) saturate(.85)}
+.spotlight{position:absolute;top:7%;right:4%;width:52%;height:86%;background:linear-gradient(180deg,#fbfbfd,#e7e9ef);border-radius:8px;box-shadow:0 0 30px 5px rgba(255,255,255,.5),0 10px 40px rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:5px;z-index:5}
+.spotlight .img{width:70%;height:62%;border-radius:6px;background:linear-gradient(135deg,#4a2b55,#251633);display:flex;align-items:center;justify-content:center;color:#cdd6e6;font-size:10px;font-weight:700}
+.spotlight .ti{color:#15151b;font-weight:800;font-size:12px}.spotlight .sb{color:#55555f;font-size:8.5px}
+.g1{background:linear-gradient(135deg,#5a2b3a,#2a1622)}.g2{background:linear-gradient(135deg,#3a4a6a,#1a2233)}.g3{background:linear-gradient(135deg,#2b5544,#163326)}.g4{background:linear-gradient(135deg,#553a2b,#332116)}.g5{background:linear-gradient(135deg,#4a2b55,#251633)}.g6{background:linear-gradient(135deg,#2b4a55,#163026)}.g7{background:linear-gradient(135deg,#55502b,#332f16)}
+
+.hd{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.hd .live{color:#fff;background:var(--danger);border-radius:4px;padding:1px 6px;font-size:9px;letter-spacing:.5px}
+.hd .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none;color:var(--txt3)}
+.ct{color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700}
+
+/* perform pieces (shared) */
+.spot-btn{height:40px;padding:0 14px;border:none;border-radius:8px;background:linear-gradient(180deg,#f4f6fb,#d7deea);color:#10131a;font-family:inherit;font-weight:800;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.spot-btn.sm{height:34px;font-size:12px;padding:0 11px}
+.spot-btn .key{font-size:9px;font-weight:800;background:#10131a;color:#cdd6e6;border-radius:4px;padding:1px 5px}
+.tiers{display:flex;gap:7px}
+.tbtn{width:40px;height:40px;border:none;border-radius:8px;font-family:inherit;font-weight:800;font-size:16px;color:#16140c;cursor:pointer;box-shadow:inset 0 -3px 0 rgba(0,0,0,.18)}
+.tbtn.sm{width:34px;height:34px;font-size:14px}
+.tbtn.S{background:var(--tS)}.tbtn.A{background:var(--tA)}.tbtn.B{background:var(--tB)}.tbtn.C{background:var(--tC)}.tbtn.D{background:var(--tD)}.tbtn.F{background:var(--tF)}
+.tc{font-variant-numeric:tabular-nums;font-size:15px;font-weight:700;color:#eef2f8}
+
+/* filmstrip pool */
+.film{display:flex;gap:7px;overflow-x:auto;padding:2px}
+.fe{flex:0 0 auto;width:84px;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--s2);cursor:pointer;position:relative}
+.fe .ft{height:34px;display:flex;align-items:center;justify-content:center;font-size:7px;font-weight:700;color:#dfe6f2;text-align:center;padding:1px}
+.fe .fc{font-size:8.5px;color:var(--txt3);padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--bd)}
+.fe.next{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}.fe.placed{opacity:.45}
+.fe .fb{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:3px;font-size:8px;font-weight:800;color:#16140c;display:flex;align-items:center;justify-content:center}
+.fdrop{flex:0 0 auto;width:84px;border:2px dashed var(--bdl);border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--txt3);cursor:pointer}
+.fdrop .p{font-size:15px}.fdrop .t{font-size:8.5px;font-weight:700}
+
+/* poolg (grid) */
+.poolg{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;overflow:auto}
+.pe{position:relative;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--s0);cursor:pointer}
+.pe .pt{height:32px;display:flex;align-items:center;justify-content:center;font-size:7.5px;font-weight:700;color:#dfe6f2;text-align:center;padding:1px}
+.pe .pc{font-size:8.5px;color:var(--txt3);padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--bd)}
+.pe.next{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}.pe.placed{opacity:.45}
+.pe .tb{position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:3px;font-size:8px;font-weight:800;color:#16140c;display:flex;align-items:center;justify-content:center}
+
+/* event ruler / list */
+.ruler{position:relative;height:46px;background:linear-gradient(180deg,#121219,#0f0f15);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.tick{position:absolute;top:0;bottom:0;width:1px;background:#23232c}.tlab{position:absolute;top:3px;font-size:9px;color:var(--txt3);transform:translateX(3px)}
+.mk{position:absolute;top:55%;transform:translate(-50%,-50%)}.mk .pin{width:11px;height:11px;border-radius:50%}.mk.spot .pin{border:2px solid #eef2f8;background:#16161e}
+.mk .ml{position:absolute;top:11px;left:50%;transform:translateX(-50%);font-size:8px;color:var(--txt2);white-space:nowrap}
+.ph{position:absolute;top:0;bottom:0;width:2px;background:var(--acc);box-shadow:0 0 8px var(--acc)}
+.elist{display:flex;flex-direction:column;overflow:auto}
+.erow{display:grid;grid-template-columns:52px 1fr 24px;align-items:center;gap:7px;padding:6px 4px;border-bottom:1px solid #1c1c24;font-size:11px;cursor:pointer}
+.erow:hover{background:var(--s2)}.erow.cur{background:var(--accS)}.erow .tm{font-variant-numeric:tabular-nums;color:var(--txt2)}
+.erow .ac.sp{color:#eef2f8;font-weight:700}.tg{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;font-weight:800;color:#16140c;font-size:10px}
+.tg.S{background:var(--tS)}.tg.A{background:var(--tA)}.tg.B{background:var(--tB)}.tg.F{background:var(--tF)}
+.card{background:var(--s2);border:1px solid var(--bd);border-radius:9px;padding:11px}
+.sec{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;margin-bottom:9px;display:flex;align-items:center;gap:8px}
+
+.notes{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:13px 17px;font-size:12px;color:var(--txt2);margin-top:4px}
+.notes b{color:var(--txt)}.notes code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:0 4px;font-size:11px}
+
+/* ===== Variation A: Board + Side Rail ===== */
+.vA{display:flex}
+.vA .bcol{flex:1.4;min-width:0;border-right:1px solid var(--bd);padding:14px;display:flex;flex-direction:column;gap:9px;background:#101016}
+.vA .rail{flex:1;min-width:300px;display:flex;flex-direction:column}
+.vA .rail .blk{padding:12px 14px;border-bottom:1px solid var(--bd)}
+.vA .pbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+
+/* ===== Variation B: Board Top + Bottom Dock ===== */
+.vB{padding:14px;display:flex;flex-direction:column;gap:11px;background:#101016}
+.vB .boardtop{max-width:none}
+.vB .dockrow{display:flex;gap:12px;align-items:stretch}
+.vB .film-wrap{flex:1.4;min-width:0;background:var(--s2);border:1px solid var(--bd);border-radius:9px;padding:10px}
+.vB .perf{flex:1;min-width:300px;background:linear-gradient(180deg,#191922,#141419);border:1px solid var(--bd);border-radius:9px;padding:12px;display:flex;flex-direction:column;gap:10px;justify-content:center}
+.vB .pbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* ===== Variation C: Theater + Overlay Perform ===== */
+.vC{padding:14px;display:flex;flex-direction:column;gap:10px;background:#0c0c11}
+.vC .theater{position:relative}
+.vC .overlay{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;background:rgba(10,11,15,.74);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);border-radius:11px;padding:9px 12px;z-index:8;box-shadow:0 10px 30px rgba(0,0,0,.6)}
+.vC .filmrow{display:flex;align-items:center;gap:10px}
+.vC .filmrow .film{flex:1}
+
+/* ===== Variation D: Dual-State (list + spotlight stage) ===== */
+.vD{display:flex;gap:0}
+.vD .listcol{flex:0 0 230px;border-right:1px solid var(--bd);padding:13px;display:flex;flex-direction:column;gap:8px;background:#101016}
+.vD .listcol .board{aspect-ratio:auto;flex:1}
+.vD .stage2{flex:1.2;min-width:0;background:radial-gradient(120% 80% at 50% 0%,#15151d,#0b0b0f);display:flex;align-items:center;justify-content:center;padding:18px;border-right:1px solid var(--bd);position:relative}
+.vD .bigspot{width:78%;max-width:420px;aspect-ratio:4/3;background:linear-gradient(180deg,#fbfbfd,#e7e9ef);border-radius:12px;box-shadow:0 0 40px 8px rgba(255,255,255,.4),0 16px 50px rgba(0,0,0,.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px}
+.vD .bigspot .img{width:66%;height:56%;border-radius:8px;background:linear-gradient(135deg,#4a2b55,#251633);display:flex;align-items:center;justify-content:center;color:#cdd6e6;font-size:12px;font-weight:700}
+.vD .bigspot .ti{color:#15151b;font-weight:800;font-size:16px}.vD .bigspot .sb{color:#55555f;font-size:11px}
+.vD .stage2 .badge{position:absolute;top:12px;left:14px;font-size:9px;font-weight:800;letter-spacing:.5px;color:#fff;background:var(--acc);padding:3px 8px;border-radius:5px}
+.vD .rail{flex:0 0 270px;display:flex;flex-direction:column}
+.vD .rail .blk{padding:12px 14px;border-bottom:1px solid var(--bd)}
+.vD .pbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>ROUNDTABLE · Tier List Builder</h1>
+  <span class="sub">Split Board — variations</span>
+  <div class="switcher">
+    <button data-s="A" class="active">A · Side Rail</button>
+    <button data-s="B">B · Bottom Dock</button>
+    <button data-s="C">C · Theater</button>
+    <button data-s="D">D · Dual-State</button>
+  </div>
+</div>
+
+<!-- =================== A · SIDE RAIL =================== -->
+<section class="stage" id="stage-A">
+  <div class="design-label"><span class="tag">Variation A</span><span class="name">Side Rail</span>
+    <span class="desc">The baseline split refined: board fills the left, a tidy right rail stacks pool → perform → event list. Balanced; everything reachable without scrolling.</span></div>
+  <div class="app">
+    <div class="dock"><div class="dtab">⊞ Timeline</div><div class="dtab active">▦ Tier List Builder</div><div class="dtab">♪ Audio Mixer</div><div class="grow"></div><span class="muted">Banner 16:9 · 06:40</span></div>
+    <div class="vA">
+      <div class="bcol">
+        <div class="hd"><span class="live">● LIVE</span> Board <span class="rt">follows playhead · 03:12:04</span></div>
+        <div class="board spot">
+          <div class="titlebar"><span>YEAR 3 EVENTS</span></div>
+          <div class="rows">
+            <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+            <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div></div></div>
+            <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">Rest</div></div></div>
+            <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Comp</div><div class="chip g3">Sea</div></div></div>
+            <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delic</div><div class="chip g6">Garden</div></div></div>
+            <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">Flavor</div></div></div>
+          </div>
+          <div class="spotlight"><div class="img">Echo</div><div class="ti">Echo of Nostalgia</div><div class="sb">discussing… drop to place</div></div>
+        </div>
+      </div>
+      <div class="rail">
+        <div class="blk"><div class="sec">Pool <span class="ct">5 left</span></div>
+          <div class="poolg" style="max-height:120px">
+            <div class="pe next g5"><div class="pt">Echo</div><div class="pc">▸ live</div></div>
+            <div class="pe g1"><div class="pt">Mystery</div><div class="pc">pool</div></div>
+            <div class="pe g6"><div class="pt">For Rest</div><div class="pc">pool</div></div>
+            <div class="pe placed g1"><span class="tb" style="background:var(--tS)">S</span><div class="pt">Cheers</div><div class="pc">placed</div></div>
+          </div>
+        </div>
+        <div class="blk"><div class="sec">Perform</div>
+          <div class="pbar"><button class="spot-btn sm">◎ Spotlight<span class="key">Q</span></button>
+            <button class="tbtn sm S">S</button><button class="tbtn sm A">A</button><button class="tbtn sm B">B</button><button class="tbtn sm C">C</button><button class="tbtn sm D">D</button><button class="tbtn sm F">F</button>
+          </div>
+        </div>
+        <div class="blk" style="flex:1;border-bottom:none"><div class="sec">Events <span class="ct">7</span></div>
+          <div class="elist">
+            <div class="erow"><span class="tm">00:31</span><span class="ac sp">◎ Cheers</span><span>⋯</span></div>
+            <div class="erow"><span class="tm">00:48</span><span class="ac">Drop</span><span><i class="tg S">S</i></span></div>
+            <div class="erow"><span class="tm">01:24</span><span class="ac sp">◎ Wisdom</span><span>⋯</span></div>
+            <div class="erow cur"><span class="tm">03:12</span><span class="ac sp">◎ Echo ▸</span><span>⋯</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>A · Side Rail:</b> closest to the original. Board ~58% on the left, a calm right rail for pool/perform/events. Good all-rounder for a wide dock.</div>
+</section>
+
+<!-- =================== B · BOTTOM DOCK =================== -->
+<section class="stage hidden" id="stage-B">
+  <div class="design-label"><span class="tag">Variation B</span><span class="name">Bottom Dock</span>
+    <span class="desc">Monitor-style: the board goes wide across the top (shown here in plain list state), and a horizontal dock below holds the pool filmstrip + a roomy perform bar, with the event ruler underneath.</span></div>
+  <div class="app">
+    <div class="dock"><div class="dtab">⊞ Timeline</div><div class="dtab active">▦ Tier List Builder</div><div class="grow"></div><span class="muted">list state · no entry spotlighted</span></div>
+    <div class="vB">
+      <div class="hd"><span class="live">● LIVE</span> Board <span class="rt">03:48:00 · list state</span></div>
+      <div class="board boardtop">
+        <div class="titlebar"><span>YEAR 3 EVENTS</span></div>
+        <div class="rows">
+          <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+          <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div><div class="chip g5">Echo</div></div></div>
+          <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">For Rest</div></div></div>
+          <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Companions</div><div class="chip g3">Red Sea</div><div class="chip g5">Uniform</div></div></div>
+          <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delicious</div><div class="chip g6">Garden</div></div></div>
+          <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">True Flavor</div></div></div>
+        </div>
+      </div>
+      <div class="dockrow">
+        <div class="film-wrap"><div class="sec">Pool <span class="ct">5 left</span></div>
+          <div class="film">
+            <div class="fe next g5"><div class="ft">Echo</div><div class="fc">▸ next</div></div>
+            <div class="fe g1"><div class="ft">Mystery</div><div class="fc">pool</div></div>
+            <div class="fe g6"><div class="ft">For Rest</div><div class="fc">pool</div></div>
+            <div class="fe g3"><div class="ft">Red Sea</div><div class="fc">pool</div></div>
+            <div class="fe placed g1"><span class="fb" style="background:var(--tS)">S</span><div class="ft">Cheers</div><div class="fc">placed</div></div>
+            <div class="fdrop"><span class="p">＋</span><span class="t">Drop</span></div>
+          </div>
+        </div>
+        <div class="perf">
+          <div class="pbar"><button class="spot-btn">◎ Spotlight<span class="key">Q</span></button>
+            <div class="tiers"><button class="tbtn S">S</button><button class="tbtn A">A</button><button class="tbtn B">B</button><button class="tbtn C">C</button><button class="tbtn D">D</button><button class="tbtn F">F</button></div>
+            <div class="tc" style="margin-left:auto">03:48:00</div></div>
+          <div style="color:var(--txt3);font-size:11px">▸ Spotlight (Q) then a tier (1–6) — stamps the playhead.</div>
+        </div>
+      </div>
+      <div class="ruler">
+        <div class="tick" style="left:20%"></div><div class="tlab" style="left:20%">01:00</div><div class="tick" style="left:45%"></div><div class="tlab" style="left:45%">02:30</div><div class="tick" style="left:70%"></div><div class="tlab" style="left:70%">04:00</div>
+        <div class="mk spot" style="left:10%"><div class="pin"></div><div class="ml">Cheers</div></div>
+        <div class="mk" style="left:16%"><div class="pin" style="background:var(--tS)"></div></div>
+        <div class="mk spot" style="left:34%"><div class="pin"></div><div class="ml">Wisdom</div></div>
+        <div class="mk" style="left:40%"><div class="pin" style="background:var(--tA)"></div></div>
+        <div class="mk spot" style="left:60%"><div class="pin"></div><div class="ml">Echo</div></div>
+        <div class="ph" style="left:75%"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>B · Bottom Dock:</b> the board reads biggest here (full width), matching a classic monitor-over-controls editor feel. Best when the dock is short and wide. Pool is a horizontal filmstrip.</div>
+</section>
+
+<!-- =================== C · THEATER =================== -->
+<section class="stage hidden" id="stage-C">
+  <div class="design-label"><span class="tag">Variation C</span><span class="name">Theater + Overlay</span>
+    <span class="desc">Maximum board: the perform controls float as a translucent overlay on the board's lower edge, with a thin pool filmstrip and event ruler beneath. Least chrome, most preview.</span></div>
+  <div class="app">
+    <div class="dock"><div class="dtab">⊞ Timeline</div><div class="dtab active">▦ Tier List Builder</div><div class="grow"></div><span class="muted">spotlight state</span></div>
+    <div class="vC">
+      <div class="theater">
+        <div class="board spot">
+          <div class="titlebar"><span>YEAR 3 EVENTS</span></div>
+          <div class="rows">
+            <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+            <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div></div></div>
+            <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">Rest</div></div></div>
+            <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Comp</div><div class="chip g3">Sea</div><div class="chip g5">Unif</div></div></div>
+            <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delic</div><div class="chip g6">Garden</div></div></div>
+            <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">Flavor</div></div></div>
+          </div>
+          <div class="spotlight"><div class="img">Echo</div><div class="ti">Echo of Nostalgia</div><div class="sb">discussing…</div></div>
+        </div>
+        <div class="overlay">
+          <button class="spot-btn sm">◎ Spotlight<span class="key">Q</span></button>
+          <div class="tiers"><button class="tbtn sm S">S</button><button class="tbtn sm A">A</button><button class="tbtn sm B">B</button><button class="tbtn sm C">C</button><button class="tbtn sm D">D</button><button class="tbtn sm F">F</button></div>
+          <div class="tc" style="margin-left:6px">03:12</div>
+        </div>
+      </div>
+      <div class="filmrow">
+        <div class="film">
+          <div class="fe next g5"><div class="ft">Echo</div><div class="fc">▸ live</div></div>
+          <div class="fe g1"><div class="ft">Mystery</div><div class="fc">pool</div></div>
+          <div class="fe g6"><div class="ft">For Rest</div><div class="fc">pool</div></div>
+          <div class="fe g3"><div class="ft">Red Sea</div><div class="fc">pool</div></div>
+          <div class="fe placed g1"><span class="fb" style="background:var(--tS)">S</span><div class="ft">Cheers</div><div class="fc">placed</div></div>
+          <div class="fdrop"><span class="p">＋</span><span class="t">Drop</span></div>
+        </div>
+      </div>
+      <div class="ruler" style="height:38px">
+        <div class="tick" style="left:25%"></div><div class="tick" style="left:50%"></div><div class="tick" style="left:75%"></div>
+        <div class="mk spot" style="left:12%"><div class="pin"></div></div><div class="mk" style="left:18%"><div class="pin" style="background:var(--tS)"></div></div>
+        <div class="mk spot" style="left:38%"><div class="pin"></div></div><div class="mk" style="left:44%"><div class="pin" style="background:var(--tA)"></div></div>
+        <div class="mk spot" style="left:64%"><div class="pin"></div></div><div class="ph" style="left:55%"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>C · Theater:</b> the board dominates; perform controls overlay its lower edge (auto-hide on playback is an option). Great for streaming/recording where you want to watch the board, lighter for fiddly event edits.</div>
+</section>
+
+<!-- =================== D · DUAL-STATE =================== -->
+<section class="stage hidden" id="stage-D">
+  <div class="design-label"><span class="tag">Variation D</span><span class="name">Dual-State</span>
+    <span class="desc">See both states at once: a compact always-list board on the left shows the current ranking, while a big stage in the middle holds the entry being discussed. Controls on the right.</span></div>
+  <div class="app">
+    <div class="dock"><div class="dtab">⊞ Timeline</div><div class="dtab active">▦ Tier List Builder</div><div class="grow"></div><span class="muted">list + spotlight side by side</span></div>
+    <div class="vD">
+      <div class="listcol">
+        <div class="sec">Current ranking</div>
+        <div class="board">
+          <div class="titlebar"><span>YEAR 3</span></div>
+          <div class="rows">
+            <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="chip g1">Cheers</div></div></div>
+            <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="chip g2">Wisdom</div></div></div>
+            <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="chip g1">Pirate</div><div class="chip g6">Rest</div></div></div>
+            <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="chip g2">Comp</div><div class="chip g3">Sea</div></div></div>
+            <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="chip g4">Delic</div></div></div>
+            <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="chip g7">Flavor</div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="stage2">
+        <div class="badge">◎ NOW DISCUSSING</div>
+        <div class="bigspot"><div class="img">Echo of Nostalgia</div><div class="ti">Echo of Nostalgia</div><div class="sb">drop into a tier to place it →</div></div>
+      </div>
+      <div class="rail">
+        <div class="blk"><div class="sec">Pool <span class="ct">5</span></div>
+          <div class="poolg" style="max-height:96px">
+            <div class="pe next g5"><div class="pt">Echo</div><div class="pc">▸ live</div></div>
+            <div class="pe g1"><div class="pt">Mystery</div><div class="pc">pool</div></div>
+            <div class="pe g6"><div class="pt">Rest</div><div class="pc">pool</div></div>
+            <div class="pe g3"><div class="pt">Sea</div><div class="pc">pool</div></div>
+          </div>
+        </div>
+        <div class="blk"><div class="sec">Perform</div>
+          <div class="pbar"><button class="spot-btn sm">◎ Spot<span class="key">Q</span></button>
+            <button class="tbtn sm S">S</button><button class="tbtn sm A">A</button><button class="tbtn sm B">B</button><button class="tbtn sm C">C</button><button class="tbtn sm D">D</button><button class="tbtn sm F">F</button></div>
+        </div>
+        <div class="blk" style="flex:1;border-bottom:none"><div class="sec">Events</div>
+          <div class="elist">
+            <div class="erow"><span class="tm">00:31</span><span class="ac sp">◎ Cheers</span><span>⋯</span></div>
+            <div class="erow"><span class="tm">00:48</span><span class="ac">Drop</span><span><i class="tg S">S</i></span></div>
+            <div class="erow cur"><span class="tm">03:12</span><span class="ac sp">◎ Echo ▸</span><span>⋯</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>D · Dual-State:</b> unique in showing the running list <i>and</i> the spotlight at the same time — handy for comparing the entry under discussion against where everything else already landed. Costs horizontal space (three columns).</div>
+</section>
+
+<script>
+const btns=document.querySelectorAll('.switcher button');
+btns.forEach(b=>b.addEventListener('click',()=>{
+  btns.forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  ['A','B','C','D'].forEach(k=>document.getElementById('stage-'+k).classList.toggle('hidden',k!==b.dataset.s));
+  window.scrollTo({top:0,behavior:'smooth'});
+}));
+</script>
+</body>
+</html>

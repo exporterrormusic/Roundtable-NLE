@@ -21,6 +21,12 @@
 #include "panels/timeline/TimelineWorkspace.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/project/ProjectBin.h"
+#include "panels/timeline/TimelinePanel.h"
+#include "timeline/Timeline.h"
+#include "timeline/Track.h"
+#include "timeline/TierListClip.h"
+#include "command/commands/ClipCommands.h"
+#include "Constants.h"
 
 #include <QApplication>
 #include <QDesktopServices>
@@ -254,6 +260,71 @@ void MainWindow::buildTimelineMenu(QMenuBar* menuBar)
 
     menu->addAction("Add Video Track");
     menu->addAction("Add Audio Track");
+    // Shared placement: drop a (possibly pre-seeded) tier-list clip on the
+    // LOWEST available video track at the playhead — the tier list is a
+    // background/base layer. Search from the bottom-most (base) video track
+    // upward for the first with free space over the clip's span, so we never
+    // overwrite an existing clip; if all are occupied, add a fresh base track.
+    auto placeTierListClip = [this](std::unique_ptr<TierListClip> clip) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (!m_timelineWorkspace || !clip) return;
+        auto* timeline = m_timelineWorkspace->timeline();
+        if (!timeline) return;
+
+        const int64_t start = timeline->playheadPosition();
+        const int64_t dur   = clip->duration() > 0 ? clip->duration() : secondsToTicks(10.0);
+        const int64_t end   = start + dur;
+
+        auto rangeFreeOnTrack = [](Track* t, int64_t s, int64_t e) -> bool {
+            for (size_t c = 0; c < t->clipCount(); ++c) {
+                const Clip* cl = t->clip(c);
+                if (!cl) continue;
+                const int64_t cs = cl->timelineIn();
+                const int64_t ce = cs + cl->duration();
+                if (s < ce && cs < e) return false;   // half-open interval overlap
+            }
+            return true;
+        };
+
+        std::vector<Track*> videoTracks;
+        for (size_t i = 0; i < timeline->trackCount(); ++i) {
+            Track* t = timeline->track(i);
+            if (t && t->type() == TrackType::Video && !t->isDivider() && !t->isCaptionTrack())
+                videoTracks.push_back(t);
+        }
+
+        // videoTracks is in index order (top→bottom); the base layer is last.
+        Track* track = nullptr;
+        for (auto it = videoTracks.rbegin(); it != videoTracks.rend(); ++it) {
+            if (rangeFreeOnTrack(*it, start, end)) { track = *it; break; }
+        }
+        bool createdTrack = false;
+        if (!track) { track = timeline->addVideoTrack(""); createdTrack = true; }
+        if (!track) return;
+
+        clip->setTimelineIn(start);
+        if (clip->duration() <= 0) clip->setDuration(dur);
+
+        if (auto* stack = m_timelineWorkspace->commandStack())
+            stack->execute(std::make_unique<AddClipCommand>(track, std::move(clip)));
+        else
+            track->addClip(std::move(clip));
+
+        if (auto* panel = m_timelineWorkspace->timelinePanel()) {
+            if (createdTrack) panel->rebuildTracks();
+            else              panel->refreshTrackContents();
+        }
+        m_timelineWorkspace->invalidateCompositeCache();
+        if (auto* pm = m_timelineWorkspace->programMonitor()) pm->requestRefresh();
+    };
+
+    menu->addAction("Add Tier List", this, [placeTierListClip]() {
+        auto clip = std::make_unique<TierListClip>();
+        clip->setDuration(secondsToTicks(10.0));
+        clip->setLabel("Tier List");
+        placeTierListClip(std::move(clip));
+    });
+
     menu->addSeparator();
     menu->addAction("Split at Playhead")->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
     menu->addAction("Ripple Delete")->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
@@ -321,9 +392,6 @@ void MainWindow::buildAudioMenu(QMenuBar* menuBar)
         if (m_destroying.load(std::memory_order_acquire)) return;
         setCurrentPage(Page::Audio);
     });
-    menu->addSeparator();
-    menu->addAction("Normalize Audio");
-    menu->addAction("Generate Waveforms");
 }
 
 void MainWindow::buildWindowMenu(QMenuBar* menuBar)

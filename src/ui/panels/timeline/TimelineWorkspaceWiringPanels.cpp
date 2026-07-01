@@ -24,6 +24,7 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
 #include "panels/captions/CaptionsPanel.h"
+#include "panels/tierlist/TierListPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -363,6 +364,17 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             } else if (m_timeline) {
                 m_timeline->setPlayheadPosition(timelineIn);
             }
+            if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+        });
+    }
+
+    // -- Wire TierListPanel edits to refresh timeline + monitor -----------
+    if (m_tierListPanel) {
+        connect(m_tierListPanel, &TierListPanel::tierListEdited,
+                this, [this]() {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            invalidateCompositeCache();
             if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
             if (m_programMonitor) m_programMonitor->requestRefresh();
         });

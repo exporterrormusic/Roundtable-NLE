@@ -23,6 +23,7 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
 #include "panels/captions/CaptionsPanel.h"
+#include "panels/tierlist/TierListPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -132,6 +133,11 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                     auto* dock = dockForPanel(QStringLiteral("Properties"));
                     if (!dock || dock->isVisible())
                         m_propertiesPanel->setClip(clip, track);
+                }
+                if (m_tierListPanel) {
+                    // Always bind (cheap) so the panel populates even when the
+                    // dock is hidden and later raised.
+                    m_tierListPanel->setClip(clip, track);
                 }
                 auto cs1 = std::chrono::steady_clock::now();
                 scheduleOverlayRefresh();

@@ -61,6 +61,7 @@ namespace rt {
 
 // Forward declarations — panels
 class CaptionsPanel;
+class TierListPanel;
 class CharactersPanel;
 class LibraryPanel;
 class CommandStack;
@@ -188,6 +189,7 @@ public:
     [[nodiscard]] GraphicsEditorPanel* graphicsEditorPanel() const noexcept { return m_GraphicsEditorPanel; }
     [[nodiscard]] ColorGradingPanel*   colorGradingPanel()   const noexcept { return m_ColorGradingPanel; }
     [[nodiscard]] CaptionsPanel*       captionsPanel()       const noexcept { return m_captionsPanel; }
+    [[nodiscard]] TierListPanel*       tierListPanel()       const noexcept { return m_tierListPanel; }
     [[nodiscard]] SelectionState&       selection()       noexcept { return m_selection; }
     [[nodiscard]] const SelectionState& selection() const noexcept { return m_selection; }
     /// The 8 edit-tool buttons (Selection..Zoom), for keyboard-shortcut
@@ -374,6 +376,7 @@ private:
     EffectControlsPanel* m_effectControlsPanel{nullptr};
     GraphicsEditorPanel* m_GraphicsEditorPanel{nullptr};
     CaptionsPanel*    m_captionsPanel{nullptr};
+    TierListPanel*    m_tierListPanel{nullptr};
     ColorGradingPanel*     m_ColorGradingPanel{nullptr};
     EffectsPanel*     m_effectsPanel{nullptr};
     KeyframeEditor*   m_keyframeEditor{nullptr};

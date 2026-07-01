@@ -68,6 +68,10 @@ ClipVisualStyle TimelineClipWidget::defaultStyle(ClipType type)
             style.fillColor   = QColor(0xC0, 0x5A, 0x8C); // pink puppet
             style.borderColor = QColor(0xC0, 0x5A, 0x8C).lighter(140);
             break;
+        case ClipType::TierList:
+            style.fillColor   = QColor(0x6E, 0x5A, 0xC0); // indigo tier board
+            style.borderColor = QColor(0x6E, 0x5A, 0xC0).lighter(140);
+            break;
     }
 
     return style;
@@ -87,6 +91,7 @@ QString TimelineClipWidget::typeName(ClipType type)
         case ClipType::Sequence:   return QStringLiteral("Sequence");
         case ClipType::Caption:    return QStringLiteral("Caption");
         case ClipType::PngPuppet:  return QStringLiteral("Puppet");
+        case ClipType::TierList:   return QStringLiteral("Tier List");
     }
     return QStringLiteral("Unknown");
 }
@@ -105,6 +110,7 @@ QChar TimelineClipWidget::typeIcon(ClipType type)
         case ClipType::Sequence:   return QChar(0x229E); // ⊞ nested
         case ClipType::Caption:    return QChar(0x0043); // C (caption)
         case ClipType::PngPuppet:  return QChar(0x263A); // ☺ puppet face
+        case ClipType::TierList:   return QChar(0x25A4); // ▤ tier grid
     }
     return QChar(0x25CF); // ●
 }

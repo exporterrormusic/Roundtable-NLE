@@ -31,6 +31,7 @@ void TimelineWorkspace::arrangeDockLayout()
     auto* dockProperties      = m_dockWidgets.value("Properties");
     auto* dockCharacters      = m_dockWidgets.value("Library");
     auto* dockCaptions        = m_dockWidgets.value("Captions");
+    auto* dockTierList        = m_dockWidgets.value("Tier List");
     auto* dockAudioMeters     = m_dockWidgets.value("Audio Meters");
     auto* dockTools           = m_dockWidgets.value("Tools");
 
@@ -69,6 +70,8 @@ void TimelineWorkspace::arrangeDockLayout()
     // what produced the "merged into the Source Monitor" tab glitch.
     if (dockCaptions)
         m_innerMainWindow->tabifyDockWidget(dockCharacters ? dockCharacters : dockEffectControls, dockCaptions);
+    if (dockTierList)
+        m_innerMainWindow->tabifyDockWidget(dockCaptions ? dockCaptions : dockEffectControls, dockTierList);
 
     dockEffectControls->raise();
 

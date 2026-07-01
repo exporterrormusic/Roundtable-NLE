@@ -31,7 +31,8 @@ enum class ClipType : uint8_t
     Graphic,     // Multi-layer graphic container (text, shapes)
     Sequence,    // Nested sequence (references another Timeline)
     Caption,     // Subtitle / closed-caption cue (lives on the caption track)
-    PngPuppet    // Veadotube-style PNG puppet character (4-image talk/blink loop)
+    PngPuppet,   // Veadotube-style PNG puppet character (4-image talk/blink loop)
+    TierList     // Ranking board: grid + entry pool + timed POPUP/DROP/Reorder events
 };
 
 /// Base clip class. Derived classes add type-specific data.
@@ -50,7 +51,7 @@ public:
     // ── Identity ────────────────────────────────────────────────────────
     [[nodiscard]] ClipType          clipType() const noexcept { return m_type; }
 
-    // ── Capability queries (fable_cleanup.txt §3.5) ─────────────────────
+    // ── Capability queries (cleanup audit §3.5) ─────────────────────
     // Centralized replacements for the boolean-ish ClipType:: comparisons
     // that used to be scattered across ~42 files.  Adding a new clip type
     // means reviewing THIS block (and overriding where the default is

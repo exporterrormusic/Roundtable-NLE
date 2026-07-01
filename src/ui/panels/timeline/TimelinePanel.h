@@ -669,6 +669,11 @@ private:
     void executeCommand(std::unique_ptr<Command> cmd);
     std::optional<ClipRef> hitTestClip(const QPointF& pos) const;
     size_t hitTestTrack(double y) const;
+    /// Clamp a desired track index onto the nearest track that can host a clip
+    /// of the same kind as `like` (skips dividers + the pinned caption track),
+    /// so a video clip dragged into the audio section lands on the lowest video
+    /// track instead of snapping back. SIZE_MAX if no hostable track exists.
+    size_t clampTrackToHostTrack(int desiredIdx, const Track* like) const;
     ClipEdge hitTestClipEdge(const QPointF& pos, const ClipRef& ref) const;
 
     /// Premiere-style adaptive trim-handle grab width, in pixels.

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Tier List Builder · Mockups</title>
+<style>
+:root{--s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;--acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5;min-height:100vh}
+.page-head{display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:15px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.wrap{max-width:980px;margin:0 auto;padding:30px 26px}
+.lead{color:var(--txt2);font-size:13.5px;max-width:760px;margin-bottom:8px}
+.lead b{color:var(--txt)}
+.note{color:var(--txt3);font-size:12px;margin-bottom:26px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.card{display:block;text-decoration:none;color:inherit;background:var(--s1);border:1px solid var(--bd);border-radius:12px;overflow:hidden;transition:all .14s}
+.card:hover{border-color:var(--acc);transform:translateY(-3px);box-shadow:0 14px 38px rgba(0,0,0,.5)}
+.thumb{height:150px;display:flex;align-items:center;justify-content:center;position:relative;border-bottom:1px solid var(--bd);background:linear-gradient(135deg,#1a1a24,#101016)}
+.thumb .n{position:absolute;top:10px;left:12px;font-size:10px;font-weight:800;letter-spacing:1.2px;color:var(--accH);text-transform:uppercase}
+.mini{display:flex;gap:5px;align-items:flex-end}
+.bar{width:13px;border-radius:2px}
+.S{background:#f47373}.A{background:#f7a55b}.B{background:#f5c45e}.C{background:#eef06a}.D{background:#bfe773}.F{background:#86df8e}
+.cbody{padding:14px 16px}
+.cbody h3{font-size:14.5px;font-weight:700;margin-bottom:5px}
+.cbody p{color:var(--txt2);font-size:12px}
+.cbody .open{margin-top:10px;color:var(--acc);font-size:11.5px;font-weight:700}
+.foot{margin-top:28px;color:var(--txt3);font-size:12px;border-top:1px solid var(--bd);padding-top:16px}
+.foot code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px;color:var(--txt2)}
+</style>
+</head>
+<body>
+<div class="page-head"><h1>ROUNDTABLE · Tier List Builder</h1><span class="sub">UI mockups — a panel docked in the timeline</span></div>
+<div class="wrap">
+  <p class="lead">Layout exploration for the <b>Tier List</b> panel. <b>Current scope = the tier list only</b>; the commentators system is now a <b>separate timeline panel</b> (its own new UI), designed later. The goal: build & rank entries by dragging from a Project-Bin-style pool onto the board, then timing each reveal with <b>Set Start / Set End</b> — no timecodes typed. (Mockups 01–04 are earlier explorations that still show the old combined commentators tab.)</p>
+  <p class="note">Design doc: <code>docs/TIER_LIST_PLAN.md</code> · Commentator boxes are custom drop-in PNGs (CPU-rendered).</p>
+
+  <a class="card" href="05_side_rail_final.html" style="display:block;margin-bottom:10px;border-color:var(--acc)">
+    <div class="cbody" style="display:flex;align-items:center;gap:16px">
+      <div class="mini" style="gap:3px;flex:0 0 auto"><div class="bar S" style="width:8px;height:34px"></div><div class="bar A" style="width:8px;height:34px"></div><div style="width:40px;height:50px;border-radius:4px;background:linear-gradient(180deg,#fbfbfd,#dfe2ea);box-shadow:0 0 14px rgba(255,255,255,.35)"></div></div>
+      <div><h3 style="color:var(--accH)">★ CHOSEN — Tier List panel · Side Rail + Pool Bin</h3><p>Board top-left, events rail right, and a <b>Project-Bin-style Pool</b> (subbins / search / list⇄icon) bottom-left. Drag an entry onto a tier row → <b>POPUP</b> + <b>DROP</b> events, timed with <b>Set Start / Set End</b> (snap to the playhead). Commentators are now a <b>separate panel</b>, designed later.</p><div class="open">Open chosen layout →</div></div>
+    </div>
+  </a>
+  <p class="note" style="margin-bottom:22px">Board-position alternatives explored before settling on Side Rail: <a href="04_split_board_variations.html" style="color:var(--acc)">4 Split Board variations</a> (A Side Rail · B Bottom Dock · C Theater · D Dual-State).</p>
+
+  <div class="grid">
+    <a class="card" href="01_tierlist_perform_bar.html">
+      <div class="thumb"><span class="n">Layout 1</span>
+        <div class="mini"><div class="bar S" style="height:54px"></div><div class="bar A" style="height:44px"></div><div class="bar B" style="height:62px"></div><div class="bar C" style="height:38px"></div><div class="bar D" style="height:50px"></div><div class="bar F" style="height:30px"></div></div>
+      </div>
+      <div class="cbody"><h3>Perform Bar</h3><p>Action-first: entry pool on top, a big Spotlight + colored S–F drop bar in the middle, draggable event track below.</p><div class="open">Open mockup →</div></div>
+    </a>
+    <a class="card" href="02_tierlist_split_board.html">
+      <div class="thumb"><span class="n">Layout 2</span>
+        <div class="mini" style="gap:3px"><div class="bar S" style="width:9px;height:40px"></div><div class="bar A" style="width:9px;height:40px"></div><div style="width:46px;height:64px;border-radius:4px;background:linear-gradient(180deg,#fbfbfd,#dfe2ea);box-shadow:0 0 18px rgba(255,255,255,.4)"></div></div>
+      </div>
+      <div class="cbody"><h3>Split Board</h3><p>WYSIWYG: a live mini-render of the actual board (incl. the spotlight state) on the left, pool / perform / event list on the right.</p><div class="open">Open mockup →</div></div>
+    </a>
+    <a class="card" href="03_tierlist_unified.html">
+      <div class="thumb"><span class="n">Layout 3</span>
+        <div class="mini" style="gap:4px"><div style="width:26px;height:70px;border-radius:4px;background:#1e1e25;border:1px solid #2a2a34"></div><div style="width:26px;height:70px;border-radius:4px;background:#1e1e25;border:1px solid #2a2a34"></div><div style="width:26px;height:70px;border-radius:4px;background:#1e1e25;border:1px solid #2a2a34"></div></div>
+      </div>
+      <div class="cbody"><h3>Unified</h3><p>Everything on one screen in collapsible cards — grid config, pool, perform, and both commentator banks. Densest; power-user.</p><div class="open">Open mockup →</div></div>
+    </a>
+  </div>
+
+  <div class="foot">Tip: each mockup's top-right switcher toggles <b>Tier List ↔ Commentators</b>. Tell me which layout to take forward (or mix elements) and I'll fold it into the build plan.</div>
+</div>
+</body>
+</html>

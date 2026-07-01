@@ -17,6 +17,7 @@
 #include "timeline/SequenceClip.h"
 #include "timeline/CaptionClip.h"
 #include "timeline/PngPuppetClip.h"
+#include "timeline/TierListClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
@@ -736,6 +737,118 @@ void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
     }
 }
 
+// ── TierList ─────────────────────────────────────────────────────────────────
+
+void writeTierListFields(BinaryWriter& w, const Clip& clip)
+{
+    auto& tc = static_cast<const TierListClip&>(clip);
+    w.writeString(tc.title());
+    // Grid config
+    w.writeU8(static_cast<uint8_t>(tc.entryAspect()));
+    w.writeF32(tc.customAspectW());
+    w.writeF32(tc.customAspectH());
+    w.writeF32(tc.topSafeMargin());
+    w.writeF32(tc.rightSafeMargin());
+    w.writeU32(tc.backgroundColor());
+    // Tiers
+    w.writeU32(static_cast<uint32_t>(tc.tiers().size()));
+    for (const auto& t : tc.tiers()) {
+        w.writeString(t.label);
+        w.writeU32(t.color);
+    }
+    // Subbins
+    w.writeU32(static_cast<uint32_t>(tc.subbins().size()));
+    for (const auto& s : tc.subbins())
+        w.writeString(s);
+    // Entries
+    w.writeU32(static_cast<uint32_t>(tc.entries().size()));
+    for (const auto& e : tc.entries()) {
+        w.writeU64(e.id);
+        w.writeString(e.imagePath);
+        w.writeString(e.title);
+        w.writeString(e.subbin);
+    }
+    // Events
+    w.writeU32(static_cast<uint32_t>(tc.events().size()));
+    for (const auto& ev : tc.events()) {
+        w.writeU8(static_cast<uint8_t>(ev.type));
+        w.writeU64(ev.entryId);
+        w.writeU32(static_cast<uint32_t>(ev.tier));
+        w.writeU32(static_cast<uint32_t>(ev.index));
+        w.writeU32(static_cast<uint32_t>(ev.fromIndex));
+        w.writeU32(static_cast<uint32_t>(ev.toIndex));
+        w.writeI64(ev.start);
+        w.writeI64(ev.end);
+    }
+}
+
+void readTierListFields(BinaryReader& r, Clip& clip, uint32_t version)
+{
+    // TierList fields first appear in v28; a TierList clip in an older file
+    // means corruption/hand-editing — leave the ctor defaults, read nothing.
+    if (version < 28) return;
+
+    auto* tc = static_cast<TierListClip*>(&clip);
+    tc->setTitle(r.readString());
+    {
+        // Clamp out-of-range enum bytes (corrupt file) to a valid default —
+        // an invalid enum value is UB in every switch downstream.
+        uint8_t aspect = r.readU8();
+        if (aspect > static_cast<uint8_t>(TierEntryAspect::Custom))
+            aspect = static_cast<uint8_t>(TierEntryAspect::Banner);
+        tc->setEntryAspect(static_cast<TierEntryAspect>(aspect));
+    }
+    const float caw = r.readF32();
+    const float cah = r.readF32();
+    tc->setCustomAspect(caw, cah);
+    tc->setTopSafeMargin(r.readF32());
+    tc->setRightSafeMargin(r.readF32());
+    tc->setBackgroundColor(r.readU32());
+    // Tiers
+    tc->tiers().clear();
+    uint32_t tierCount = r.readU32();
+    for (uint32_t i = 0; i < tierCount; ++i) {
+        TierDef t;
+        t.label = r.readString();
+        t.color = r.readU32();
+        tc->tiers().push_back(std::move(t));
+    }
+    // Subbins
+    tc->subbins().clear();
+    uint32_t subCount = r.readU32();
+    for (uint32_t i = 0; i < subCount; ++i)
+        tc->subbins().push_back(r.readString());
+    // Entries
+    tc->entries().clear();
+    uint32_t entryCount = r.readU32();
+    for (uint32_t i = 0; i < entryCount; ++i) {
+        TierEntry e;
+        e.id        = r.readU64();
+        e.imagePath = r.readString();
+        e.title     = r.readString();
+        e.subbin    = r.readString();
+        tc->entries().push_back(std::move(e));
+    }
+    // Events
+    tc->events().clear();
+    uint32_t eventCount = r.readU32();
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        TierEvent ev;
+        uint8_t evType = r.readU8();
+        if (evType > static_cast<uint8_t>(TierEventType::Reorder))
+            evType = static_cast<uint8_t>(TierEventType::Popup);
+        ev.type      = static_cast<TierEventType>(evType);
+        ev.entryId   = r.readU64();
+        ev.tier      = static_cast<int32_t>(r.readU32());
+        ev.index     = static_cast<int32_t>(r.readU32());
+        ev.fromIndex = static_cast<int32_t>(r.readU32());
+        ev.toIndex   = static_cast<int32_t>(r.readU32());
+        ev.start     = r.readI64();
+        ev.end       = r.readI64();
+        tc->events().push_back(ev);
+    }
+}
+
 // ── The registry ───────────────────────────────────────────────────────────
 // ONE entry per ClipType.  New clip types: add the three functions above and
 // one line here.
@@ -753,6 +866,7 @@ constexpr RegistryEntry kClipSerializers[] = {
     { ClipType::Caption,    { makeClip<CaptionClip>,    writeCaptionFields,    readCaptionFields    } },
     { ClipType::PngPuppet,  { makeClip<PngPuppetClip>,  writePngPuppetFields,  readPngPuppetFields  } },
     { ClipType::Graphic,    { makeClip<GraphicClip>,    writeGraphicFields,    readGraphicFields    } },
+    { ClipType::TierList,   { makeClip<TierListClip>,   writeTierListFields,   readTierListFields   } },
 };
 
 const TypeSerializer* serializerFor(ClipType type)

@@ -33,6 +33,7 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
 #include "panels/captions/CaptionsPanel.h"
+#include "panels/tierlist/TierListPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -614,6 +615,12 @@ void TimelineWorkspace::createPanelWidgets()
     if (m_commandStack) m_captionsPanel->setCommandStack(m_commandStack);
     if (m_timeline) m_captionsPanel->setTimeline(m_timeline);
     makeDock("Captions", m_captionsPanel);
+
+    // -- Tier List --------------------------------------------------------
+    m_tierListPanel = new TierListPanel(this);
+    if (m_commandStack) m_tierListPanel->setCommandStack(m_commandStack);
+    if (m_timeline) m_tierListPanel->setTimeline(m_timeline);
+    makeDock("Tier List", m_tierListPanel);
 
     // -- Library ----------------------------------------------------------
     m_libraryPanel = new LibraryPanel(this);

@@ -28,6 +28,28 @@
 
 namespace rt {
 
+// Clamp a desired track index onto the nearest track that can host a clip of
+// the same kind as `like` (skipping dividers + the pinned caption track).
+// Real tracks of one type are contiguous (caption, video…, divider, audio…),
+// so a video clip dragged down past the last video track maps onto the lowest
+// video track rather than being rejected back to its origin. Returns SIZE_MAX
+// only when no hostable track of that kind exists.
+size_t TimelinePanel::clampTrackToHostTrack(int desiredIdx, const Track* like) const
+{
+    if (!m_timeline || !like) return SIZE_MAX;
+    int firstIdx = -1, lastIdx = -1;
+    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+        const Track* t = m_timeline->track(i);
+        if (!t || t->isDivider() || t->isCaptionTrack()) continue;
+        if (t->type() != like->type()) continue;
+        if (firstIdx < 0) firstIdx = static_cast<int>(i);
+        lastIdx = static_cast<int>(i);
+    }
+    if (firstIdx < 0) return SIZE_MAX;
+    const int clamped = std::clamp(desiredIdx, firstIdx, lastIdx);
+    return static_cast<size_t>(clamped);
+}
+
 // Auto-scroll the timeline while a clip drag (move or trim) pegs against
 // the left/right edge of the viewport. Same proximity-ramped curve as the
 // marquee timer; the only twist is that we have to adjust m_dragStart.x()
@@ -496,27 +518,20 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             if (clipNewIn < 0) clipNewIn = 0;
 
             int dst = static_cast<int>(dcs.originalTrack) + trackDeltaLive;
-            // Per-clip bounds: never let a clip go outside the valid track
-            // range.  The group-wide trackDelta clamp only guarantees the
-            // min/max original tracks stay in range — intermediate clips
-            // could still overshoot if the group spans multiple tracks.
-            size_t dstTrack;
-            if (dst < 0 || dst >= static_cast<int>(m_timeline->trackCount()))
-                dstTrack = dcs.ref.trackIndex;
-            else
-                dstTrack = static_cast<size_t>(dst);
 
             Track* srcTr = m_timeline->track(dcs.ref.trackIndex);
             if (!srcTr) continue;
+            // Clamp onto the nearest track that can host this clip's kind. A
+            // video clip dragged down into the audio section (or onto the V/A
+            // divider) lands on the lowest video track instead of being
+            // rejected — and this matches where the release commits it, so the
+            // preview and the committed result agree. clampTrackToHostTrack
+            // already excludes dividers + the caption track and keeps the
+            // index in array bounds.
+            size_t dstTrack = clampTrackToHostTrack(dst, srcTr);
+            if (dstTrack == SIZE_MAX) dstTrack = dcs.ref.trackIndex;
             Track* dstTr = m_timeline->track(dstTrack);
-            // Dividers are TrackType::Video but reject clips. A plain type
-            // check would let the live preview "move" the clip to the divider
-            // row, where Track::addClip silently drops it (returns nullptr
-            // after std::move has already consumed the unique_ptr — the clip
-            // is permanently lost). Reject the divider so the clip stays on
-            // its current track for this drag tick.
-            if (!dstTr || dstTr->isDivider() || dstTr->type() != srcTr->type())
-                dstTrack = dcs.ref.trackIndex;
+            if (!dstTr) continue;
 
             size_t curTrack = dcs.ref.trackIndex;
 
