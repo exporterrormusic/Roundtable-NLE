@@ -120,8 +120,9 @@ QWidget* createProjectThumb(const ProjectInfo& info, QWidget* parent,
     camBtn->setToolTip("Set thumbnail image...");
     camBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: rgba(0,0,0,160); border: none;"
-        "  border-radius: 6px; font-size: 16px; color: white; padding: 0; }"
-        "QPushButton:hover { background: rgba(0,0,0,220); }"));
+        "  border-radius: 6px; font-size: %1px; color: white; padding: 0; }"
+        "QPushButton:hover { background: rgba(0,0,0,220); }")
+        .arg(Theme::typography().sizeBody));
 
     QString projectName = info.name;
     QObject::connect(camBtn, &QPushButton::clicked, panel,

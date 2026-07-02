@@ -43,14 +43,15 @@ SequenceDialog::SequenceDialog(QWidget* parent)
     };
     auto stepHeaderStyle = [&]() -> QString {
         return QStringLiteral(
-            "font-size: 12px; font-weight: 700; color: %1;"
+            "font-size: %2px; font-weight: 700; color: %1;"
             " letter-spacing: 0.6px; text-transform: uppercase;")
-            .arg(Theme::rgb(c.textPrimary));
+            .arg(Theme::rgb(c.textPrimary))
+            .arg(t.sizeXs);
     };
     auto chipBtnStyle = [&]() -> QString {
         return QStringLiteral(
             "QPushButton { background: %1; border: 1px solid %2;"
-            "  color: %3; font-size: 12px; font-weight: 600;"
+            "  color: %3; font-size: %9px; font-weight: 600;"
             "  padding: 8px 8px; min-height: 36px; }"
             "QPushButton:hover { background: %4; border-color: %5; }"
             "QPushButton:checked { background: %6; border-color: %7;"
@@ -62,7 +63,8 @@ SequenceDialog::SequenceDialog(QWidget* parent)
             .arg(Theme::rgb(c.borderLight))
             .arg(Theme::rgb(c.accentDim))
             .arg(Theme::rgb(c.accent))
-            .arg(Theme::rgb(c.accent));
+            .arg(Theme::rgb(c.accent))
+            .arg(t.sizeXs);
     };
     auto inputStyle = [&]() -> QString {
         return QStringLiteral(
@@ -84,7 +86,7 @@ SequenceDialog::SequenceDialog(QWidget* parent)
     auto dashedBtnStyle = [&]() -> QString {
         return QStringLiteral(
             "QPushButton { background: %1; border: 1px dashed %2;"
-            "  color: %3; font-size: 12px; font-weight: 600;"
+            "  color: %3; font-size: %9px; font-weight: 600;"
             "  padding: 8px 8px; min-height: 36px; }"
             "QPushButton:hover { background: %4; border-color: %5; }"
             "QPushButton:checked { background: %6; border-color: %7;"
@@ -96,7 +98,8 @@ SequenceDialog::SequenceDialog(QWidget* parent)
             .arg(Theme::rgb(c.borderLight))
             .arg(Theme::rgb(c.accentDim))
             .arg(Theme::rgb(c.accent))
-            .arg(Theme::rgb(c.accent));
+            .arg(Theme::rgb(c.accent))
+            .arg(t.sizeXs);
     };
 
     auto* rootLayout = new QVBoxLayout(this);
@@ -108,9 +111,10 @@ SequenceDialog::SequenceDialog(QWidget* parent)
     {
         auto* hdr = new QLabel(tr("New Sequence"));
         hdr->setStyleSheet(QStringLiteral(
-            "font-size: 16px; font-weight: %1; color: %2;")
+            "font-size: %3px; font-weight: %1; color: %2;")
             .arg(t.weightBold)
-            .arg(Theme::rgb(c.textPrimary)));
+            .arg(Theme::rgb(c.textPrimary))
+            .arg(t.sizeBody));
         rootLayout->addWidget(hdr);
     }
 
@@ -383,7 +387,7 @@ SequenceDialog::SequenceDialog(QWidget* parent)
 
         QString actionBtnStyle = QStringLiteral(
             "QPushButton { background: %1; border: 1px solid %2;"
-            "  color: %3; font-size: 12px; font-weight: 700;"
+            "  color: %3; font-size: %7px; font-weight: 700;"
             "  padding: 8px 22px; min-width: 80px; }"
             "QPushButton:hover { background: %4; border-color: %5; color: %6; }")
             .arg(Theme::rgb(c.surface1))
@@ -391,7 +395,8 @@ SequenceDialog::SequenceDialog(QWidget* parent)
             .arg(Theme::rgb(c.textPrimary))
             .arg(Theme::rgb(c.surface2))
             .arg(Theme::rgb(c.borderLight))
-            .arg(Theme::rgb(c.textBright));
+            .arg(Theme::rgb(c.textBright))
+            .arg(t.sizeXs);
 
         auto* okBtn = new QPushButton(tr("Create Sequence"));
         m_okBtn = okBtn;
@@ -602,10 +607,11 @@ void SequenceDialog::rebuildResGrid()
     }
 
     const auto& c = Theme::colors();
+    const auto& t = Theme::typography();
     auto chipStyle = [&]() {
         return QStringLiteral(
             "QPushButton { background: %1; border: 1px solid %2;"
-            "  color: %3; font-size: 12px; font-weight: 600;"
+            "  color: %3; font-size: %9px; font-weight: 600;"
             "  padding: 8px 8px; min-height: 36px; }"
             "QPushButton:hover { background: %4; border-color: %5; }"
             "QPushButton:checked { background: %6; border-color: %7; color: %8; }")
@@ -613,12 +619,13 @@ void SequenceDialog::rebuildResGrid()
             .arg(Theme::rgb(c.textPrimary))
             .arg(Theme::rgb(c.surface2)).arg(Theme::rgb(c.borderLight))
             .arg(Theme::rgb(c.accentDim)).arg(Theme::rgb(c.accent))
-            .arg(Theme::rgb(c.accent));
+            .arg(Theme::rgb(c.accent))
+            .arg(t.sizeXs);
     };
     auto dashStyle = [&]() {
         return QStringLiteral(
             "QPushButton { background: %1; border: 1px dashed %2;"
-            "  color: %3; font-size: 12px; font-weight: 600;"
+            "  color: %3; font-size: %9px; font-weight: 600;"
             "  padding: 8px 8px; min-height: 36px; }"
             "QPushButton:hover { background: %4; border-color: %5; }"
             "QPushButton:checked { background: %6; border-color: %7; color: %8; }")
@@ -626,7 +633,8 @@ void SequenceDialog::rebuildResGrid()
             .arg(Theme::rgb(c.textPrimary))
             .arg(Theme::rgb(c.surface2)).arg(Theme::rgb(c.borderLight))
             .arg(Theme::rgb(c.accentDim)).arg(Theme::rgb(c.accent))
-            .arg(Theme::rgb(c.accent));
+            .arg(Theme::rgb(c.accent))
+            .arg(t.sizeXs);
     };
 
     // Create preset buttons + disconnect previous connection

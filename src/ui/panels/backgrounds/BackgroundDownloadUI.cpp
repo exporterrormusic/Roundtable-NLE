@@ -87,10 +87,11 @@ void BackgroundDownloadPanel::setupUI()
     m_instructionsToggle->setCheckable(true);
     m_instructionsToggle->setChecked(false);
     m_instructionsToggle->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 12px; font-weight: 500; padding: 4px 8px; "
+        "QPushButton { font-size: %3px; font-weight: 500; padding: 4px 8px; "
         "text-align: left; border: none; color: %1; }"
         "QPushButton:hover { color: %2; }")
-        .arg(Theme::rgb(c.textSecondary), Theme::rgb(c.textPrimary)));
+        .arg(Theme::rgb(c.textSecondary), Theme::rgb(c.textPrimary),
+             QString::number(Theme::typography().sizeXs)));
     connect(m_instructionsToggle, &QPushButton::clicked,
             this, &BackgroundDownloadPanel::toggleInstructions);
 
@@ -126,7 +127,8 @@ void BackgroundDownloadPanel::setupUI()
     m_openMegaBtn->setObjectName("PrimaryBtn");
     m_openMegaBtn->setMinimumHeight(44);
     m_openMegaBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 14px; font-weight: 600; padding: 8px 16px; }"));
+        "QPushButton { font-size: %1px; font-weight: 600; padding: 8px 16px; }")
+        .arg(Theme::typography().sizeSmall));
     m_openMegaBtn->setToolTip("Open the MEGA folder in your browser to download backgrounds");
     connect(m_openMegaBtn, &QPushButton::clicked,
             this, &BackgroundDownloadPanel::onOpenMegaClicked);

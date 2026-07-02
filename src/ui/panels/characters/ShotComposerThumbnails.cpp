@@ -175,7 +175,7 @@ void ShotComposer::refreshShotList()
             item->setData(Qt::UserRole, QString());
             item->setData(Qt::UserRole + 1, totalShots);
             item->setSizeHint(QSize(0, 34));
-            QFont f = item->font(); f.setPixelSize(15); f.setBold(true); item->setFont(f);
+            QFont f = item->font(); f.setPixelSize(Theme::typography().sizeCaption); f.setBold(true); item->setFont(f);
             item->setForeground(QColor(180, 220, 180));
             m_showFilterList->addItem(item);
             if (prevShow.isEmpty()) restoreRow = row;
@@ -187,7 +187,7 @@ void ShotComposer::refreshShotList()
             item->setData(Qt::UserRole, QStringLiteral("__UNASSIGNED__"));
             item->setData(Qt::UserRole + 1, showUnassignedCount);
             item->setSizeHint(QSize(0, 34));
-            QFont f = item->font(); f.setPixelSize(15); f.setBold(true); item->setFont(f);
+            QFont f = item->font(); f.setPixelSize(Theme::typography().sizeCaption); f.setBold(true); item->setFont(f);
             item->setForeground(QColor(210, 170, 80));
             m_showFilterList->addItem(item);
             if (prevShow == QStringLiteral("__UNASSIGNED__")) restoreRow = row;
@@ -228,7 +228,7 @@ void ShotComposer::refreshShotList()
             }
             item->setData(Qt::UserRole, disp);
             item->setData(Qt::UserRole + 1, count);
-            QFont f = item->font(); f.setPixelSize(14); item->setFont(f);
+            QFont f = item->font(); f.setPixelSize(Theme::typography().sizeSmall); item->setFont(f);
             item->setToolTip(QStringLiteral("%1 — %2 shots").arg(disp).arg(count));
             m_showFilterList->addItem(item);
             if (disp == prevShow) restoreRow = row;
@@ -375,7 +375,7 @@ void ShotComposer::refreshShotList()
             item->setData(Qt::UserRole + 1, count);
             item->setSizeHint(QSize(0, 104));
             QFont chFont = item->font();
-            chFont.setPixelSize(16);
+            chFont.setPixelSize(Theme::typography().sizeBody);
             item->setFont(chFont);
             if (cn == disp)
                 item->setToolTip(QString("%1 - %2 shots").arg(cn).arg(count));
@@ -510,7 +510,7 @@ void ShotComposer::refreshShotList()
                 headerItem->setSizeHint(QSize(0, 24));
                 QFont headerFont;
                 headerFont.setBold(true);
-                headerFont.setPixelSize(11);
+                headerFont.setPixelSize(Theme::typography().sizeXxs);
                 headerItem->setFont(headerFont);
                 headerItem->setForeground(QColor(180, 180, 180));
                 m_shotList->addItem(headerItem);
@@ -600,12 +600,14 @@ void ShotComposer::refreshLayerList()
 
                 auto* folderIcon = new QLabel(QStringLiteral("\xF0\x9F\x93\x81"));
                 folderIcon->setFixedWidth(18);
-                folderIcon->setStyleSheet("QLabel { font-size: 14px; }");
+                folderIcon->setStyleSheet(QStringLiteral("QLabel { font-size: %1px; }")
+                    .arg(Theme::typography().sizeSmall));
                 folderLayout->addWidget(folderIcon);
 
                 auto* folderName = new QLabel(QString::fromStdString(grp.name));
-                folderName->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: 12px; font-weight: 600; }")
-                    .arg(Theme::hex(Theme::colors().textSecondary)));
+                folderName->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: %2px; font-weight: 600; }")
+                    .arg(Theme::hex(Theme::colors().textSecondary))
+                    .arg(Theme::typography().sizeXs));
                 folderLayout->addWidget(folderName, 1);
 
                 m_layerList->setItemWidget(folderItem, folderWidget);
@@ -677,10 +679,11 @@ void ShotComposer::refreshLayerList()
               "color: %1; padding: 0; margin: 0; }"
               "QPushButton:hover { color: %2; background: rgba(255,255,255,0.1); border-radius: 3px; }")
               .arg(Theme::hex(Theme::colors().textSecondary), Theme::hex(Theme::colors().textBright))
-            : QStringLiteral("QPushButton { background: transparent; border: none; font-size: 16px; "
+            : QStringLiteral("QPushButton { background: transparent; border: none; font-size: %3px; "
               "color: %1; padding: 0; margin: 0; }"
               "QPushButton:hover { color: %2; background: rgba(255,255,255,0.05); border-radius: 3px; }")
               .arg(Theme::hex(Theme::colors().border), Theme::hex(Theme::colors().textDisabled))
+              .arg(Theme::typography().sizeBody)
         );
 
         int layerIdx = static_cast<int>(li);
@@ -731,8 +734,9 @@ void ShotComposer::refreshLayerList()
         QString nameColor = isVisible ? Theme::hex(Theme::colors().textPrimary)
                                        : Theme::hex(Theme::colors().textDisabled);
         nameLabel->setStyleSheet(
-            QStringLiteral("QLabel { color: %1; font-size: 14px; font-weight: 500; }")
-            .arg(nameColor));
+            QStringLiteral("QLabel { color: %1; font-size: %2px; font-weight: 500; }")
+            .arg(nameColor)
+            .arg(Theme::typography().sizeSmall));
         rowLayout->addWidget(nameLabel, 1);
 
         // Opacity indicator (if not 100%)

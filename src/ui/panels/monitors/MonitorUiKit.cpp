@@ -27,12 +27,13 @@ QString comboStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QComboBox { background: %1; border: 1px solid %2; "
-        "border-radius: 3px; color: %3; font-size: 12px; "
+        "border-radius: 3px; color: %3; font-size: %4px; "
         "padding: 4px 8px 4px 8px; }"
         "QComboBox::drop-down { border: none; width: 20px; }")
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().controlBorder))
-        .arg(Theme::hex(Theme::colors().textPrimary)));
+        .arg(Theme::hex(Theme::colors().textPrimary))
+        .arg(Theme::typography().sizeXs));
 }
 
 QString checkedButtonStyle()
@@ -51,12 +52,13 @@ QString exportButtonStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QPushButton { background: %1; border: 1px solid %2; "
-        "border-radius: 4px; color: %3; font-size: 14px; padding: 1px; } "
+        "border-radius: 4px; color: %3; font-size: %5px; padding: 1px; } "
         "QPushButton:hover { background: %4; }")
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().controlBorder))
         .arg(Theme::hex(Theme::colors().textBright))
-        .arg(Theme::hex(Theme::colors().controlBgHover)));
+        .arg(Theme::hex(Theme::colors().controlBgHover))
+        .arg(Theme::typography().sizeSmall));
 }
 
 QString loopButtonStyle()
@@ -106,9 +108,10 @@ QLabel* makeTimecodeLabel(QWidget* parent)
 {
     auto* label = new QLabel(QStringLiteral("00:00:00:00"), parent);
     label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-family: 'Consolas', monospace; font-size: 14px; "
+        "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
         "font-weight: bold; color: #00CC88; background: transparent; "
-        "padding: 0px 6px 0px 0px; }")));
+        "padding: 0px 6px 0px 0px; }")
+        .arg(Theme::typography().sizeSmall)));
     rt::UiScale::setScaledFixedWidth(label, 120);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     label->setCursor(Qt::IBeamCursor);
@@ -120,11 +123,12 @@ QLineEdit* makeTimecodeEdit(QWidget* parent)
 {
     auto* edit = new QLineEdit(parent);
     edit->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLineEdit { font-family: 'Consolas', monospace; font-size: 14px; "
+        "QLineEdit { font-family: 'Consolas', monospace; font-size: %2px; "
         "font-weight: bold; color: #00CC88; background: %1; "
         "border: 1px solid #00CC88; border-radius: 3px; "
         "padding: 0px 6px 0px 0px; }")
-        .arg(Theme::hex(Theme::colors().surface2))));
+        .arg(Theme::hex(Theme::colors().surface2))
+        .arg(Theme::typography().sizeSmall)));
     rt::UiScale::setScaledFixedWidth(edit, 120);
     edit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     edit->setValidator(new QRegularExpressionValidator(
@@ -214,9 +218,10 @@ QLabel* makeZoomLabel(QWidget* parent)
 {
     auto* label = new QLabel(QStringLiteral("100%"), parent);
     label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-family: 'Consolas', monospace; font-size: 11px; "
+        "QLabel { font-family: 'Consolas', monospace; font-size: %2px; "
         "color: %1; padding: 0 4px; background: transparent; }")
-        .arg(Theme::hex(Theme::colors().textSecondary))));
+        .arg(Theme::hex(Theme::colors().textSecondary))
+        .arg(Theme::typography().sizeXxs)));
     rt::UiScale::setScaledMinimumWidth(label, 60);
     label->setAlignment(Qt::AlignCenter);
     label->hide();
@@ -227,9 +232,10 @@ QLabel* makeDurationLabel(QWidget* parent)
 {
     auto* label = new QLabel(QStringLiteral("00:00:00:00"), parent);
     label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-family: 'Consolas', monospace; font-size: 14px; "
+        "QLabel { font-family: 'Consolas', monospace; font-size: %2px; "
         "color: %1; background: transparent; padding: 0px 8px 0px 6px; }")
-        .arg(Theme::hex(Theme::colors().textSecondary))));
+        .arg(Theme::hex(Theme::colors().textSecondary))
+        .arg(Theme::typography().sizeSmall)));
     rt::UiScale::setScaledFixedWidth(label, 120);
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     return label;
@@ -315,9 +321,10 @@ TransportBarKit makeTransportBar(QWidget* parent)
     // Shuttle speed display label
     kit.shuttleSpeed = new QLabel(kit.bar);
     kit.shuttleSpeed->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-family: 'Consolas', monospace; font-size: 12px; "
+        "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
         "font-weight: bold; color: #FFD700; background: transparent; "
-        "padding: 0px 8px; }")));
+        "padding: 0px 8px; }")
+        .arg(Theme::typography().sizeXs)));
     rt::UiScale::setScaledMinimumWidth(kit.shuttleSpeed, 50);
     kit.shuttleSpeed->setAlignment(Qt::AlignCenter);
     kit.shuttleSpeed->hide();

@@ -206,10 +206,12 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
         }
         m_clipTypeLabel->setText(typeStr);
         m_clipTypeLabel->setStyleSheet(QStringLiteral(
-            "QLabel { color: %1; font-size: 11px; font-weight: bold; "
-            "background: %2; border-radius: 3px; padding: 1px 6px; }")
+            "QLabel { color: %1; font-size: %3px; font-weight: bold; "
+            "background: %2; border-radius: %4px; padding: 1px 6px; }")
             .arg(Theme::hex(tc.textPrimary),
-                 Theme::hex(badgeColor.darker(200))));
+                 Theme::hex(badgeColor.darker(200)))
+            .arg(Theme::typography().sizeXxs)
+            .arg(Theme::metrics().radiusSm));
 
         buildPropertyTree();
         populateFromClip();

@@ -258,7 +258,7 @@ void CaptionsPanel::applyTheme()
  const auto& tc = Theme::colors();
  setStyleSheet(QString(
  "QFrame#captionEditorFrame { border: 1px solid %1; border-radius: 4px; }"
- "QLabel#captionTimeLabel { color: %2; font-family: 'Consolas', monospace; font-size: 11px; }"
+ "QLabel#captionTimeLabel { color: %2; font-family: 'Consolas', monospace; font-size: %15px; }"
  "QLabel#captionCountLabel { color: %3; font-size: 10px; padding: 1px 2px; }"
  "QListWidget { background: %4; color: %5; border: 1px solid %1; }"
  "QTextEdit { background: %4; color: %5; border: 1px solid %1; }"
@@ -285,7 +285,8 @@ void CaptionsPanel::applyTheme()
  .arg(Theme::hex(tc.primaryBtnHover))// 11
  .arg(Theme::hex(tc.dangerBg)) // 12
  .arg(Theme::hex(tc.dangerText)) // 13
- .arg(Theme::hex(tc.dangerBgHover)));// 14
+ .arg(Theme::hex(tc.dangerBgHover)) // 14
+ .arg(Theme::typography().sizeXxs)); // 15
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

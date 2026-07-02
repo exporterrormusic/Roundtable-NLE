@@ -141,24 +141,27 @@ void EffectControlsPanel::buildPropertyTree()
         arrow->setText(QStringLiteral("\u25BC"));  // â–¼
         arrow->setFixedSize(16, 20);
         arrow->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0; }"
+            "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
             "QToolButton:hover { color: %2; }")
-            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary)));
+            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXxs));
         hl->addWidget(arrow);
 
         if (hasFxToggle) {
             auto* fxLabel = new QLabel("fx", header);
             fxLabel->setFixedWidth(14);
             fxLabel->setStyleSheet(QStringLiteral(
-                "color: %1; font-size: 11px; font-weight: bold; font-style: italic; background: transparent;")
-                .arg(Theme::hex(tc.accent)));
+                "color: %1; font-size: %2px; font-weight: bold; font-style: italic; background: transparent;")
+                .arg(Theme::hex(tc.accent))
+                .arg(Theme::typography().sizeXxs));
             hl->addWidget(fxLabel);
         }
 
         auto* titleLabel = new QLabel(title, header);
         titleLabel->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 12px; font-weight: bold; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+            "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         hl->addWidget(titleLabel);
         hl->addStretch();
 
@@ -168,9 +171,10 @@ void EffectControlsPanel::buildPropertyTree()
         resetBtn->setFixedSize(18, 20);
         resetBtn->setToolTip(QStringLiteral("Reset %1 to defaults").arg(title));
         resetBtn->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; font-size: 12px; background: transparent; border: none; padding: 0; }"
+            "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
             "QToolButton:hover { color: %2; }")
-            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.warning)));
+            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.warning))
+            .arg(Theme::typography().sizeXs));
         hl->addWidget(resetBtn);
 
         // Collect child widgets added after this header until next header
@@ -316,10 +320,11 @@ void EffectControlsPanel::buildPropertyTree()
         auto* videoLabel = new QLabel("Video", m_propContainer);
         videoLabel->setFixedHeight(24);
         videoLabel->setStyleSheet(QStringLiteral(
-            "background: %1; color: %2; font-size: 11px; padding-left: 8px; "
+            "background: %1; color: %2; font-size: %4px; padding-left: 8px; "
             "border-bottom: 1px solid %3;")
             .arg(Theme::hex(tc.surface3), Theme::hex(tc.textSecondary),
-                 Theme::hex(tc.border)));
+                 Theme::hex(tc.border))
+            .arg(Theme::typography().sizeXxs));
         m_propLayout->addWidget(videoLabel);
 
         // â”€â”€ Motion section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -360,9 +365,10 @@ void EffectControlsPanel::buildPropertyTree()
         m_uniformScaleCheck->setChecked(true);
         m_uniformScaleCheck->setFixedHeight(28);
         m_uniformScaleCheck->setStyleSheet(QStringLiteral(
-            "QCheckBox { color: %1; font-size: 12px; padding-left: 36px; background: transparent; }"
+            "QCheckBox { color: %1; font-size: %2px; padding-left: 36px; background: transparent; }"
             "QCheckBox::indicator { width: 14px; height: 14px; }")
-            .arg(Theme::hex(tc.textPrimary)));
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         connect(m_uniformScaleCheck, &QCheckBox::toggled, this, [this](bool uniform) {
             if (m_scaleWRow) m_scaleWRow->setVisible(!uniform);
             if (m_scaleRow) {
@@ -441,10 +447,11 @@ void EffectControlsPanel::buildPropertyTree()
                     btn->setToolTip(tip);
                     btn->setFixedSize(22, 20);
                     btn->setStyleSheet(QStringLiteral(
-                        "QToolButton { color: %1; font-size: 12px; background: transparent; border: 1px solid %2; border-radius: 2px; padding: 0; }"
+                        "QToolButton { color: %1; font-size: %5px; background: transparent; border: 1px solid %2; border-radius: 2px; padding: 0; }"
                         "QToolButton:hover { background: %3; border-color: %4; }")
                         .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.border),
-                             Theme::hex(tc.surface3), Theme::hex(tc.accent)));
+                             Theme::hex(tc.surface3), Theme::hex(tc.accent))
+                        .arg(Theme::typography().sizeXs));
                     connect(btn, &QToolButton::clicked, this, [this, shapeType]() {
                         addMask(shapeType);
                     });
@@ -480,8 +487,9 @@ void EffectControlsPanel::buildPropertyTree()
         blendLayout->setContentsMargins(36, 2, 6, 2);
         blendLayout->setSpacing(6);
         auto* blendLabel = new QLabel("Blend Mode", blendWidget);
-        blendLabel->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+        blendLabel->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         blendLayout->addWidget(blendLabel);
         blendLayout->addWidget(m_blendModeCombo, 1);
         m_propLayout->addWidget(blendWidget);
@@ -512,10 +520,11 @@ void EffectControlsPanel::buildPropertyTree()
         auto* audioLabel = new QLabel("Audio", m_propContainer);
         audioLabel->setFixedHeight(24);
         audioLabel->setStyleSheet(QStringLiteral(
-            "background: %1; color: %2; font-size: 11px; padding-left: 8px; "
+            "background: %1; color: %2; font-size: %4px; padding-left: 8px; "
             "border-bottom: 1px solid %3;")
             .arg(Theme::hex(tc.surface3), Theme::hex(tc.textSecondary),
-                 Theme::hex(tc.border)));
+                 Theme::hex(tc.border))
+            .arg(Theme::typography().sizeXxs));
         m_propLayout->addWidget(audioLabel);
 
         if (audioClip) {
@@ -565,9 +574,10 @@ void EffectControlsPanel::buildPropertyTree()
             arrow->setText(QStringLiteral("\u25BC"));
             arrow->setFixedSize(16, 20);
             arrow->setStyleSheet(QStringLiteral(
-                "QToolButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0; }"
+                "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
                 "QToolButton:hover { color: %2; }")
-                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary)));
+                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXxs));
             hl->addWidget(arrow);
 
             auto* fxLabel = new QToolButton(fxHeader);
@@ -576,16 +586,18 @@ void EffectControlsPanel::buildPropertyTree()
             fxLabel->setChecked(fx.isEnabled());
             fxLabel->setFixedSize(18, 18);
             fxLabel->setStyleSheet(QStringLiteral(
-                "QToolButton { color: %1; font-size: 11px; font-weight: bold; font-style: italic; "
+                "QToolButton { color: %1; font-size: %3px; font-weight: bold; font-style: italic; "
                 "background: transparent; border: none; padding: 0; }"
                 "QToolButton:!checked { color: %2; }")
-                .arg(Theme::hex(tc.accent), Theme::hex(tc.textTertiary)));
+                .arg(Theme::hex(tc.accent), Theme::hex(tc.textTertiary))
+                .arg(Theme::typography().sizeXxs));
             hl->addWidget(fxLabel);
 
             auto* titleLabel = new QLabel(QString::fromUtf8(fx.name()), fxHeader);
             titleLabel->setStyleSheet(QStringLiteral(
-                "color: %1; font-size: 12px; font-weight: bold; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary)));
+                "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
             hl->addWidget(titleLabel);
             hl->addStretch();
 
@@ -597,8 +609,9 @@ void EffectControlsPanel::buildPropertyTree()
                     std::make_unique<SetEffectEnabledCommand>(&m_clip->effects(), fxId, checked));
                 // Dim the title when disabled
                 titleLabel->setStyleSheet(QStringLiteral(
-                    "color: %1; font-size: 12px; font-weight: bold; background: transparent;")
-                    .arg(Theme::hex(checked ? tc.textPrimary : tc.textTertiary)));
+                    "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+                    .arg(Theme::hex(checked ? tc.textPrimary : tc.textTertiary))
+                    .arg(Theme::typography().sizeXs));
                 emit propertyChanged();
             });
 
@@ -607,9 +620,10 @@ void EffectControlsPanel::buildPropertyTree()
             deleteBtn->setText(QStringLiteral("\u2715")); // âœ•
             deleteBtn->setFixedSize(20, 20);
             deleteBtn->setStyleSheet(QStringLiteral(
-                "QToolButton { color: %1; font-size: 12px; background: transparent; border: none; padding: 0; }"
+                "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
                 "QToolButton:hover { color: %2; }")
-                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error)));
+                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error))
+                .arg(Theme::typography().sizeXs));
             hl->addWidget(deleteBtn);
 
             // "Save as Default" button -- only for OTS effects (per-variant JSON).
@@ -624,9 +638,10 @@ void EffectControlsPanel::buildPropertyTree()
                     "Save current %1 settings as the default")
                     .arg(QString::fromUtf8(fx.name())));
                 saveDefaultBtn->setStyleSheet(QStringLiteral(
-                    "QToolButton { color: %1; font-size: 12px; background: transparent; border: none; padding: 0; }"
+                    "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
                     "QToolButton:hover { color: %2; }")
-                    .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.accent)));
+                    .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.accent))
+                    .arg(Theme::typography().sizeXs));
                 // Insert before the delete button so layout reads:
                 //   [arrow] [fx] [title] ...stretch... [save] [delete]
                 hl->insertWidget(hl->count() - 1, saveDefaultBtn);

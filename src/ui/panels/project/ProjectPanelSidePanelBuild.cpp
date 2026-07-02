@@ -85,8 +85,9 @@ void ProjectPanel::buildSidePanel()
     };
     auto stepHeaderStyle = [&]() -> QString {
         return QStringLiteral(
-            "font-size: 12px; font-weight: 700; color: %1;"
+            "font-size: %1px; font-weight: 700; color: %2;"
             " letter-spacing: 0.6px; text-transform: uppercase;")
+            .arg(t.sizeXs)
             .arg(Theme::rgb(c.textPrimary));
     };
     auto chipBtnStyle = [&](bool selected = false) -> QString {
@@ -129,7 +130,8 @@ void ProjectPanel::buildSidePanel()
     auto* headerTitle = new QLabel("Create New Project");
     headerTitle->setObjectName("NewHeaderTitle");
     headerTitle->setStyleSheet(QStringLiteral(
-        "font-size: 16px; font-weight: %1; color: %2;")
+        "font-size: %1px; font-weight: %2; color: %3;")
+        .arg(t.sizeBody)
         .arg(t.weightBold).arg(Theme::rgb(c.textPrimary)));
     headerRow->addWidget(headerTitle, 1);
 
@@ -139,11 +141,12 @@ void ProjectPanel::buildSidePanel()
     newCloseBtn->setCursor(Qt::PointingHandCursor);
     newCloseBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none;"
-        "  font-size: 14px; color: %1; }"
+        "  font-size: %4px; color: %1; }"
         "QPushButton:hover { background: %2; color: %3; }")
         .arg(Theme::rgb(c.textTertiary))
         .arg(Theme::rgb(c.surface2))
-        .arg(Theme::rgb(c.textPrimary)));
+        .arg(Theme::rgb(c.textPrimary))
+        .arg(t.sizeSmall));
     connect(newCloseBtn, &QPushButton::clicked,
             this, &ProjectPanel::hideSidePanel);
     headerRow->addWidget(newCloseBtn);
@@ -224,7 +227,7 @@ void ProjectPanel::buildSidePanel()
         m_locationBrowseBtn->setToolTip("Browse for a save location folder");
         m_locationBrowseBtn->setStyleSheet(QStringLiteral(
             "QPushButton { background: %1; border: 1px solid %2;"
-            "  color: %3; font-size: 11px; font-weight: 600;"
+            "  color: %3; font-size: %7px; font-weight: 600;"
             "  padding: 4px 10px; }"
             "QPushButton:hover { background: %4; border-color: %5; color: %6; }")
             .arg(Theme::rgb(c.surface1))
@@ -232,7 +235,8 @@ void ProjectPanel::buildSidePanel()
             .arg(Theme::rgb(c.textSecondary))
             .arg(Theme::rgb(c.surface2))
             .arg(Theme::rgb(c.borderLight))
-            .arg(Theme::rgb(c.textPrimary)));
+            .arg(Theme::rgb(c.textPrimary))
+            .arg(t.sizeXxs));
         connect(m_locationBrowseBtn, &QPushButton::clicked, this, [this]() {
             QString dir = QFileDialog::getExistingDirectory(
                 this, "Choose Save Location",
@@ -653,7 +657,8 @@ void ProjectPanel::buildSidePanel()
         m_summaryNameLabel = new QLabel(QStringLiteral("\U0001F4C4  New Project"));
         m_summaryNameLabel->setObjectName("NewSummaryName");
         m_summaryNameLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; font-weight: 700; color: %1;")
+            "font-size: %1px; font-weight: 700; color: %2;")
+            .arg(t.sizeXs)
             .arg(Theme::rgb(c.textPrimary)));
         sbLay->addWidget(m_summaryNameLabel);
 
@@ -661,21 +666,25 @@ void ProjectPanel::buildSidePanel()
         auto* specsRow = new QHBoxLayout;
         specsRow->setSpacing(12);
         auto* iconRes = new QLabel(QStringLiteral("\U0001F4D0"));
-        iconRes->setStyleSheet(QStringLiteral("font-size: 11px; color: %1;")
+        iconRes->setStyleSheet(QStringLiteral("font-size: %1px; color: %2;")
+                               .arg(t.sizeXxs)
                                .arg(Theme::rgb(c.textTertiary)));
         specsRow->addWidget(iconRes);
         m_summaryResLabel = new QLabel("1920\u00D71080");
         m_summaryResLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; font-weight: 700; color: %1;")
+            "font-size: %1px; font-weight: 700; color: %2;")
+            .arg(t.sizeXs)
             .arg(Theme::rgb(c.textPrimary)));
         specsRow->addWidget(m_summaryResLabel);
         auto* iconFps = new QLabel(QStringLiteral("\U0001F39E\uFE0F"));
-        iconFps->setStyleSheet(QStringLiteral("font-size: 11px; color: %1;")
+        iconFps->setStyleSheet(QStringLiteral("font-size: %1px; color: %2;")
+                               .arg(t.sizeXxs)
                                .arg(Theme::rgb(c.textTertiary)));
         specsRow->addWidget(iconFps);
         m_summaryFpsLabel = new QLabel("30 fps");
         m_summaryFpsLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; font-weight: 700; color: %1;")
+            "font-size: %1px; font-weight: 700; color: %2;")
+            .arg(t.sizeXs)
             .arg(Theme::rgb(c.textPrimary)));
         specsRow->addWidget(m_summaryFpsLabel);
         specsRow->addStretch();
@@ -816,14 +825,15 @@ void ProjectPanel::buildSidePanel()
     browseBtn->setCursor(Qt::PointingHandCursor);
     browseBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: %4px; font-size: 14px; font-weight: 600;"
+        "  border-radius: %4px; font-size: %6px; font-weight: 600;"
         "  padding: 8px 16px; }"
         "QPushButton:hover { background: %5; }")
         .arg(Theme::rgb(c.surface2))
         .arg(Theme::rgb(c.textPrimary))
         .arg(Theme::rgb(c.border))
         .arg(m.radiusMd)
-        .arg(Theme::rgb(c.surface3)));
+        .arg(Theme::rgb(c.surface3))
+        .arg(t.sizeSmall));
     connect(browseBtn, &QPushButton::clicked, this, [this]() {
         hideSidePanel();
         emit openFromFile();
@@ -836,14 +846,15 @@ void ProjectPanel::buildSidePanel()
     deleteBtn->setCursor(Qt::PointingHandCursor);
     deleteBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: %4px; font-size: 14px; font-weight: 600;"
+        "  border-radius: %4px; font-size: %6px; font-weight: 600;"
         "  padding: 8px 16px; }"
         "QPushButton:hover { background: %5; }")
         .arg(Theme::rgb(c.surface2))
         .arg(Theme::rgb(c.error))
         .arg(Theme::rgb(c.border))
         .arg(m.radiusMd)
-        .arg(Theme::rgb(c.surface3)));
+        .arg(Theme::rgb(c.surface3))
+        .arg(t.sizeSmall));
     connect(deleteBtn, &QPushButton::clicked, this, [this]() {
         auto* item = m_openList->currentItem();
         if (!item) return;
@@ -867,14 +878,15 @@ void ProjectPanel::buildSidePanel()
     m_openSelectedBtn->setStyleSheet(QStringLiteral(
         "QPushButton {"
         "  background: %1; color: white; border: none;"
-        "  border-radius: %2px; font-size: 16px;"
+        "  border-radius: %2px; font-size: %5px;"
         "  font-weight: 700; padding: 12px 24px; }"
         "QPushButton:hover { background: %3; }"
         "QPushButton:pressed { background: %4; }")
         .arg(Theme::rgb(c.primaryBtnBg))
         .arg(m.radiusMd)
         .arg(Theme::rgb(c.primaryBtnHover))
-        .arg(Theme::rgb(c.accent)));
+        .arg(Theme::rgb(c.accent))
+        .arg(t.sizeBody));
     connect(m_openSelectedBtn, &QPushButton::clicked, this, [this]() {
         auto* item = m_openList->currentItem();
         if (!item) return;
@@ -955,14 +967,15 @@ void ProjectPanel::buildSidePanel()
     m_changeDirBtn->setCursor(Qt::PointingHandCursor);
     m_changeDirBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: %4px; font-size: 14px; font-weight: 600;"
+        "  border-radius: %4px; font-size: %6px; font-weight: 600;"
         "  padding: 8px 16px; }"
         "QPushButton:hover { background: %5; }")
         .arg(Theme::rgb(c.surface2))
         .arg(Theme::rgb(c.textPrimary))
         .arg(Theme::rgb(c.border))
         .arg(m.radiusMd)
-        .arg(Theme::rgb(c.surface3)));
+        .arg(Theme::rgb(c.surface3))
+        .arg(t.sizeSmall));
     connect(m_changeDirBtn, &QPushButton::clicked, this, [this]() {
         QString dir = QFileDialog::getExistingDirectory(
             this, "Select Projects Directory", m_projectsDir);
@@ -981,14 +994,15 @@ void ProjectPanel::buildSidePanel()
     revealDirBtn->setCursor(Qt::PointingHandCursor);
     revealDirBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: %4px; font-size: 14px; font-weight: 600;"
+        "  border-radius: %4px; font-size: %6px; font-weight: 600;"
         "  padding: 8px 16px; }"
         "QPushButton:hover { background: %5; }")
         .arg(Theme::rgb(c.surface2))
         .arg(Theme::rgb(c.textPrimary))
         .arg(Theme::rgb(c.border))
         .arg(m.radiusMd)
-        .arg(Theme::rgb(c.surface3)));
+        .arg(Theme::rgb(c.surface3))
+        .arg(t.sizeSmall));
     connect(revealDirBtn, &QPushButton::clicked, this, [this]() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_projectsDir));
     });

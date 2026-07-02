@@ -85,7 +85,7 @@ void RelinkMediaDialog::populateList()
         item->setText(0, QString::fromStdString(entry->name));
         item->setText(1, QString::fromStdString(pathToUtf8(entry->absolutePath)));
         item->setText(2, tr("Offline"));
-        item->setForeground(2, QColor(220, 60, 60));
+        item->setForeground(2, Theme::colors().error);
         item->setData(0, Qt::UserRole, QVariant::fromValue(static_cast<quint64>(id)));
         m_tree->addTopLevelItem(item);
     }
@@ -138,7 +138,7 @@ void RelinkMediaDialog::relinkAll()
                 if (m_assetDb->relinkAsset(id, it->path())) {
                     m_relinked.push_back(id);
                     item->setText(2, tr("Relinked"));
-                    item->setForeground(2, QColor(80, 200, 80));
+                    item->setForeground(2, Theme::colors().success);
                     item->setText(1, QString::fromStdString(pathToUtf8(it->path())));
                     ++found;
                 }
@@ -170,7 +170,7 @@ void RelinkMediaDialog::locateFile(QTreeWidgetItem* item)
         m_relinked.push_back(id);
         item->setText(1, file);
         item->setText(2, tr("Relinked"));
-        item->setForeground(2, QColor(80, 200, 80));
+        item->setForeground(2, Theme::colors().success);
 
         int remaining = 0;
         for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {

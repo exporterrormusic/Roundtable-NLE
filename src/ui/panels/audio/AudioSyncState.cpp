@@ -356,26 +356,26 @@ void AudioSync::updateSmartBar()
 
     if (!m_scriptLoaded) {
         m_smartBarLabel->setText("Load a script to begin");
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().textDisabled)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().textDisabled)).arg(Theme::typography().sizeSmall));
     } else if (!m_audioImported) {
         m_smartBarLabel->setText(QString("Script: %1 lines \u2014 Import audio next").arg(total));
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().accent)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().accent)).arg(Theme::typography().sizeSmall));
     } else if (!m_transcriptionDone) {
         m_smartBarLabel->setText(QString("Script: %1 lines | %2 audio file(s) \u2014 Ready to transcribe")
             .arg(total).arg(m_audioPaths.size()));
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().warning)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeSmall));
     } else if (confirmed + tentative == 0) {
         m_smartBarLabel->setText(QString("%1 clips | %2 lines \u2014 Run Auto-Sync")
             .arg(m_clips.size()).arg(total));
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().warning)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeSmall));
     } else if (confirmed == total) {
         m_smartBarLabel->setText(QString("\u2713 All %1 lines confirmed \u2014 Ready to export")
             .arg(total));
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().success)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().success)).arg(Theme::typography().sizeSmall));
     } else {
         m_smartBarLabel->setText(QString("%1/%2 confirmed, %3 tentative, %4 unmatched")
             .arg(confirmed).arg(total).arg(tentative).arg(total - confirmed - tentative));
-        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(Theme::hex(Theme::colors().warning)));
+        m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeSmall));
     }
 
     // Update smart bar button visibility
@@ -416,8 +416,8 @@ void AudioSync::populateCharacterTabs()
 
         // UNMATCHED item ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â red background, white text (same size as other entries)
         auto* unmatchedItem = new QListWidgetItem("UNMATCHED");
-        unmatchedItem->setForeground(Qt::white);
-        unmatchedItem->setBackground(QColor(0xCC, 0x33, 0x33));
+        unmatchedItem->setForeground(Theme::colors().textBright);
+        unmatchedItem->setBackground(Theme::colors().error);
         unmatchedItem->setData(Qt::UserRole, QStringLiteral("unmatched"));
         m_charFilterList->addItem(unmatchedItem);
 
@@ -502,10 +502,11 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                                        : (matchState == 1) ? Theme::hex(_tc.warning)
                                                            : Theme::hex(_tc.error);
                     lbl->setStyleSheet(
-                        QString("QLabel { color: %2; font-weight: bold; font-size: 12px; "
+                        QString("QLabel { color: %2; font-weight: bold; font-size: %4px; "
                                 "background: %1; border-radius: %3px; border: none; }")
                             .arg(badgeColor, Theme::hex(_tc.textBright),
-                                 QString::number(Theme::metrics().radiusSm)));
+                                 QString::number(Theme::metrics().radiusSm),
+                                 QString::number(Theme::typography().sizeXs)));
                     break;
                 }
             }
@@ -517,15 +518,15 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                     switch (matchState) {
                     case 2:
                         lbl->setText(QStringLiteral("\u2713"));
-                        lbl->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 15px; border: none; }").arg(Theme::hex(_tc.success)));
+                        lbl->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: %2px; border: none; }").arg(Theme::hex(_tc.success)).arg(Theme::typography().sizeCaption));
                         break;
                     case 1:
                         lbl->setText("?");
-                        lbl->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 15px; border: none; }").arg(Theme::hex(_tc.warning)));
+                        lbl->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: %2px; border: none; }").arg(Theme::hex(_tc.warning)).arg(Theme::typography().sizeCaption));
                         break;
                     default:
                         lbl->setText(QStringLiteral("\u25CB"));
-                        lbl->setStyleSheet(QString("QLabel { color: %1; font-size: 15px; border: none; }").arg(Theme::hex(_tc.textDisabled)));
+                        lbl->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(_tc.textDisabled)).arg(Theme::typography().sizeCaption));
                         break;
                     }
                     break;

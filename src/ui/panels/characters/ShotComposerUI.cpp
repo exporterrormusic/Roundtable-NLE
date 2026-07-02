@@ -99,15 +99,17 @@ public:
             if (count <= 0) return;
             QString countStr = QString::number(count);
             QFont bf = option.font;
-            bf.setPixelSize(11);
+            bf.setPixelSize(Theme::typography().sizeXxs);
             bf.setBold(true);
             painter->setFont(bf);
             int bw = painter->fontMetrics().horizontalAdvance(countStr) + 12;
             QRect badge(r.right() - bw - 6, topY, bw, 18);
-            painter->setBrush(QColor(35, 35, 55, 210));
+            QColor badgeBg = Theme::colors().surface3;
+            badgeBg.setAlpha(210);
+            painter->setBrush(badgeBg);
             painter->setPen(Qt::NoPen);
             painter->drawRoundedRect(badge, 9, 9);
-            painter->setPen(QColor(230, 230, 240));
+            painter->setPen(Theme::colors().textPrimary);
             painter->drawText(badge, Qt::AlignCenter, countStr);
         };
 
@@ -132,7 +134,7 @@ public:
             // Name below the thumbnail
             if (!text.isEmpty()) {
                 painter->setFont(option.font);
-                painter->setPen(isSelected ? QColor(255, 255, 255)
+                painter->setPen(isSelected ? Theme::colors().textBright
                                            : option.palette.color(QPalette::Text));
                 QRect textRect(r.left() + 2, box.bottom() + 2, r.width() - 4, textH);
                 QString elided = painter->fontMetrics().elidedText(
@@ -146,7 +148,7 @@ public:
             int badgeWidth = 0;
             if (count > 0) {
                 QFont bf = option.font;
-                bf.setPixelSize(11);
+                bf.setPixelSize(Theme::typography().sizeXxs);
                 bf.setBold(true);
                 painter->setFont(bf);
                 badgeWidth = painter->fontMetrics().horizontalAdvance(
@@ -168,7 +170,7 @@ public:
             }
             if (badgeWidth > 0) {
                 QFont bf = option.font;
-                bf.setPixelSize(11);
+                bf.setPixelSize(Theme::typography().sizeXxs);
                 bf.setBold(true);
                 painter->setFont(bf);
                 QRect badgeRect(r.right() - badgeWidth - 4, r.top() + 6,
@@ -214,10 +216,11 @@ QWidget* ShotComposer::createCharFilterColumn()
     m_filterSearchEdit->setClearButtonEnabled(true);
     m_filterSearchEdit->setStyleSheet(QStringLiteral(
         "QLineEdit { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 4px; padding: 4px 8px; font-size: 12px; }")
+        "  border-radius: 4px; padding: 4px 8px; font-size: %4px; }")
         .arg(Theme::hex(c.surface1))
         .arg(Theme::hex(c.text))
-        .arg(Theme::hex(c.border)));
+        .arg(Theme::hex(c.border))
+        .arg(Theme::typography().sizeXs));
     colLayout->addWidget(m_filterSearchEdit);
 
     // Character filter chip list (ListMode, compact rows)
@@ -364,13 +367,14 @@ QWidget* ShotComposer::createShowFilterColumn()
     addShowBtn->setCursor(Qt::PointingHandCursor);
     addShowBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 4px; font-size: 15px; font-weight: bold; padding: 0; }"
+        "  border-radius: 4px; font-size: %6px; font-weight: bold; padding: 0; }"
         "QPushButton:hover { background: %4; color: %5; }")
         .arg(Theme::hex(c.surface1))
         .arg(Theme::hex(c.textSecondary))
         .arg(Theme::hex(c.border))
         .arg(Theme::hex(c.accent))
-        .arg(Theme::hex(c.textBright)));
+        .arg(Theme::hex(c.textBright))
+        .arg(Theme::typography().sizeCaption));
     headerRow->addWidget(addShowBtn);
     colLayout->addLayout(headerRow);
 
@@ -403,10 +407,11 @@ QWidget* ShotComposer::createShowFilterColumn()
     m_showFilterSearchEdit->setClearButtonEnabled(true);
     m_showFilterSearchEdit->setStyleSheet(QStringLiteral(
         "QLineEdit { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 4px; padding: 4px 8px; font-size: 12px; }")
+        "  border-radius: 4px; padding: 4px 8px; font-size: %4px; }")
         .arg(Theme::hex(c.surface1))
         .arg(Theme::hex(c.text))
-        .arg(Theme::hex(c.border)));
+        .arg(Theme::hex(c.border))
+        .arg(Theme::typography().sizeXs));
     colLayout->addWidget(m_showFilterSearchEdit);
 
     // Show filter chip list (ListMode, compact rows)

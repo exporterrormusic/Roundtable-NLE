@@ -50,7 +50,9 @@ public:
         if (opt.state & QStyle::State_Selected) {
             painter->fillRect(opt.rect, opt.palette.highlight());
         } else if (opt.state & QStyle::State_MouseOver) {
-            painter->fillRect(opt.rect, QColor(255, 255, 255, 15));
+            QColor hover = Theme::colors().textBright;
+            hover.setAlpha(15);
+            painter->fillRect(opt.rect, hover);
         }
 
         QRect r = opt.rect.adjusted(12, 6, -12, -6);
@@ -73,7 +75,7 @@ public:
             QFont urlFont = opt.font;
             urlFont.setPointSize(8);
             painter->setFont(urlFont);
-            painter->setPen(QColor(160, 160, 160));
+            painter->setPen(Theme::colors().textSecondary);
             QRect urlRect(r.x(), r.y() + 20, r.width(), 16);
             QString elidedUrl = painter->fontMetrics().elidedText(
                 url, Qt::ElideRight, urlRect.width());
@@ -128,7 +130,7 @@ public:
             case 3: dotColor = QColor(255, 152, 0);   break; // synced = orange
             case 2: dotColor = QColor(76, 175, 80);    break; // transcribed = green
             case 1: dotColor = QColor(74, 106, 255);   break; // loaded = blue
-            default: dotColor = QColor(68, 68, 68);    break; // empty = gray
+            default: dotColor = Theme::colors().textDisabled; break; // empty = gray
         }
 
         // Draw status dot
@@ -262,7 +264,8 @@ void AudioSync::setupScriptPage()
         "Right-click any saved script below to rename, delete, or sync with GDrive.");
     descText->setWordWrap(true);
     descText->setStyleSheet(QStringLiteral(
-        "font-size: 12px; color: %1; background: transparent; border: none;")
+        "font-size: %1px; color: %2; background: transparent; border: none;")
+        .arg(t.sizeXs)
         .arg(Theme::rgb(c.textSecondary)));
     descLayout->addWidget(descText, 1);
     scriptPageLayout->addWidget(descCard);
@@ -278,13 +281,15 @@ void AudioSync::setupScriptPage()
     m_loadScriptBtn->setCursor(Qt::PointingHandCursor);
     m_loadScriptBtn->setStyleSheet(QStringLiteral(
         "QPushButton {"
-        "  background: %1; color: white; border: none;"
-        "  border-radius: %2px; font-size: 15px;"
+        "  background: %1; color: %2; border: none;"
+        "  border-radius: %3px; font-size: %4px;"
         "  font-weight: 700; padding: 12px 24px; }"
-        "QPushButton:hover { background: %3; }"
-        "QPushButton:pressed { background: %4; }")
+        "QPushButton:hover { background: %5; }"
+        "QPushButton:pressed { background: %6; }")
         .arg(Theme::rgb(c.primaryBtnBg))
+        .arg(Theme::hex(c.textBright))
         .arg(m.radiusMd)
+        .arg(t.sizeCaption)
         .arg(Theme::rgb(c.primaryBtnHover))
         .arg(Theme::rgb(c.accent)));
     connect(m_loadScriptBtn, &QPushButton::clicked, this, &AudioSync::onLoadScriptClicked);
@@ -332,8 +337,9 @@ void AudioSync::setupScriptPage()
     // ── Script sessions section ─────────────────────────────────────────
     auto* sessionsLabel = new QLabel("SCRIPT SESSIONS");
     sessionsLabel->setStyleSheet(QStringLiteral(
-        "font-size: 11px; font-weight: 700; color: %1;"
+        "font-size: %1px; font-weight: 700; color: %2;"
         " letter-spacing: 1.8px;")
+        .arg(t.sizeXxs)
         .arg(Theme::rgb(c.textTertiary)));
     scriptPageLayout->addWidget(sessionsLabel);
 
@@ -342,7 +348,8 @@ void AudioSync::setupScriptPage()
         "Click to switch between scripts. Right-click to rename, delete, or sync with GDrive.");
     sessionsHint->setWordWrap(true);
     sessionsHint->setStyleSheet(QStringLiteral(
-        "font-size: 11px; color: %1; padding: 0 0 %2px 0;")
+        "font-size: %1px; color: %2; padding: 0 0 %3px 0;")
+        .arg(t.sizeXxs)
         .arg(Theme::rgb(c.textDisabled))
         .arg(m.spacingSm));
     scriptPageLayout->addWidget(sessionsHint);
@@ -402,10 +409,11 @@ void AudioSync::setupScriptPage()
     m_scriptFormatToggle->setCursor(Qt::PointingHandCursor);
     m_scriptFormatToggle->setStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: none;"
-        "  color: %1; font-size: 11px; font-weight: 700;"
+        "  color: %1; font-size: %2px; font-weight: 700;"
         "  letter-spacing: 1.8px; text-align: left; padding: 8px 0; }"
-        "QPushButton:hover { color: %2; }")
+        "QPushButton:hover { color: %3; }")
         .arg(Theme::rgb(c.textTertiary))
+        .arg(t.sizeXxs)
         .arg(Theme::rgb(c.textSecondary)));
     connect(m_scriptFormatToggle, &QPushButton::clicked,
             this, [this]() {
@@ -439,8 +447,9 @@ void AudioSync::setupScriptPage()
         "Lines that don't match this pattern are ignored.");
     fmtBodyLabel->setWordWrap(true);
     fmtBodyLabel->setStyleSheet(QStringLiteral(
-        "font-size: 12px; color: %1; background: transparent;"
+        "font-size: %1px; color: %2; background: transparent;"
         " border: none; line-height: 1.6;")
+        .arg(t.sizeXs)
         .arg(Theme::rgb(c.textSecondary)));
     fmtBodyLayout->addWidget(fmtBodyLabel);
 

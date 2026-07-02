@@ -398,7 +398,7 @@ void AudioSync::updateTransportBar()
 
 QColor AudioSync::characterColor(const std::string& character) const
 {
-    if (character.empty()) return QColor(160, 160, 160);
+    if (character.empty()) return Theme::colors().textSecondary;
 
     auto it = m_characterColors.find(character);
     if (it != m_characterColors.end()) return it->second;
@@ -481,9 +481,10 @@ void AudioSync::addAudioFileListItem(const QString& fullPath)
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(8);
 
-    auto* infoLabel = new QLabel(QString("<b>%1</b><br><span style='font-size:11px;color:%5'>%2  â”‚  %3  â”‚  %4</span>")
+    auto* infoLabel = new QLabel(QString("<b>%1</b><br><span style='font-size:%6px;color:%5'>%2  â”‚  %3  â”‚  %4</span>")
         .arg(fileName.toHtmlEscaped(), fileSize, createdDate, durationStr,
-             Theme::rgb(c.textTertiary)));
+             Theme::rgb(c.textTertiary),
+             QString::number(Theme::typography().sizeXxs)));
     infoLabel->setTextFormat(Qt::RichText);
     infoLabel->setStyleSheet("border: none;");
     topRow->addWidget(infoLabel, 1);
@@ -561,10 +562,11 @@ void AudioSync::addAudioFileListItem(const QString& fullPath)
             playBtn->setFixedSize(22, 22);
             playBtn->setStyleSheet(
                 QString("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                        "border-radius: %4px; font-size: 14px; padding: 0; }"
-                        "QPushButton:hover { background: %5; }")
+                        "border-radius: %4px; font-size: %5px; padding: 0; }"
+                        "QPushButton:hover { background: %6; }")
                     .arg(Theme::hex(c.inputBg), Theme::hex(c.text),
-                         Theme::hex(c.controlBorder), _rad, Theme::hex(c.surface3)));
+                         Theme::hex(c.controlBorder), _rad,
+                         QString::number(Theme::typography().sizeSmall), Theme::hex(c.surface3)));
             connect(playBtn, &QPushButton::clicked, this, [this, fileIdx]() {
                 playAudioFile(fileIdx);
             });
@@ -700,8 +702,9 @@ void AudioSync::refreshTranscribeFileList()
         topRow->setContentsMargins(0, 0, 0, 0);
         topRow->setSpacing(8);
 
-        auto* label = new QLabel(QString("<span style='color:%4'>%1</span>  <b>%2</b>  \u2502  <span style='font-size:11px;color:%4'>%3</span>")
-            .arg(icon, fi.fileName().toHtmlEscaped(), status, fg.name()));
+        auto* label = new QLabel(QString("<span style='color:%4'>%1</span>  <b>%2</b>  \u2502  <span style='font-size:%5px;color:%4'>%3</span>")
+            .arg(icon, fi.fileName().toHtmlEscaped(), status, fg.name(),
+                 QString::number(Theme::typography().sizeXxs)));
         label->setTextFormat(Qt::RichText);
         label->setStyleSheet("border: none;");
         topRow->addWidget(label, 1);
@@ -773,10 +776,11 @@ void AudioSync::refreshTranscribeFileList()
             playBtn->setFixedSize(22, 22);
             playBtn->setStyleSheet(
                 QString("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                        "border-radius: %4px; font-size: 14px; padding: 0; }"
-                        "QPushButton:hover { background: %5; }")
+                        "border-radius: %4px; font-size: %5px; padding: 0; }"
+                        "QPushButton:hover { background: %6; }")
                     .arg(Theme::hex(tc.inputBg), Theme::hex(tc.text),
-                         Theme::hex(tc.controlBorder), _rad, Theme::hex(tc.surface3)));
+                         Theme::hex(tc.controlBorder), _rad,
+                         QString::number(Theme::typography().sizeSmall), Theme::hex(tc.surface3)));
             connect(playBtn, &QPushButton::clicked, this, [this, i]() {
                 playAudioFile(i);
             });

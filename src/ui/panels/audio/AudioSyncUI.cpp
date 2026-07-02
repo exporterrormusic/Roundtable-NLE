@@ -39,7 +39,7 @@ public:
     {
         if (index.data(Qt::UserRole).toString() == "unmatched") {
             painter->save();
-            QColor bg(0xCC, 0x33, 0x33);
+            QColor bg = rt::Theme::colors().error;
             if (option.state & QStyle::State_Selected)
                 bg = bg.lighter(120);
             else if (option.state & QStyle::State_MouseOver)
@@ -48,7 +48,7 @@ public:
             QFont f = option.font;
             f.setWeight(QFont::Bold);
             painter->setFont(f);
-            painter->setPen(Qt::white);
+            painter->setPen(rt::Theme::colors().textBright);
             QRect textRect = option.rect.adjusted(14, 0, -14, 0);
             painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
                               index.data(Qt::DisplayRole).toString());
@@ -125,13 +125,14 @@ void AudioSync::setupUi()
         "  border-radius: %1px; color: %2; font-size: 42px;"
         "  padding: 12px 0; }"
         "QPushButton:hover { background: %3; color: %4; }"
-        "QPushButton:pressed { background: %5; color: white; }"
-        "QPushButton:checked { background: %6; color: %7; }")
+        "QPushButton:pressed { background: %5; color: %6; }"
+        "QPushButton:checked { background: %7; color: %8; }")
         .arg(m.radiusXl)
         .arg(Theme::rgb(c.textTertiary))
         .arg(Theme::rgb(c.surface3))
         .arg(Theme::rgb(c.textPrimary))
         .arg(Theme::rgb(c.accentDim))
+        .arg(Theme::hex(c.textBright))
         .arg(Theme::rgb(c.accentDim))
         .arg(Theme::rgb(c.accent));
 
@@ -152,7 +153,8 @@ void AudioSync::setupUi()
         lbl->setAlignment(Qt::AlignCenter);
         lbl->setFixedHeight(20);
         lbl->setStyleSheet(QStringLiteral(
-            "font-size: 15px; color: %1; font-weight: 800;")
+            "font-size: %1px; color: %2; font-weight: 800;")
+            .arg(t.sizeCaption)
             .arg(Theme::rgb(c.textPrimary)));
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);
 
@@ -271,13 +273,15 @@ void AudioSync::setupUi()
     m_importAudioBtn->setCursor(Qt::PointingHandCursor);
     m_importAudioBtn->setStyleSheet(QStringLiteral(
         "QPushButton {"
-        "  background: %1; color: white; border: none;"
-        "  border-radius: %2px; font-size: 16px;"
+        "  background: %1; color: %2; border: none;"
+        "  border-radius: %3px; font-size: %4px;"
         "  font-weight: 700; padding: 12px 24px; }"
-        "QPushButton:hover { background: %3; }"
-        "QPushButton:pressed { background: %4; }")
+        "QPushButton:hover { background: %5; }"
+        "QPushButton:pressed { background: %6; }")
         .arg(Theme::rgb(c.primaryBtnBg))
+        .arg(Theme::hex(c.textBright))
         .arg(m.radiusMd)
+        .arg(t.sizeBody)
         .arg(Theme::rgb(c.primaryBtnHover))
         .arg(Theme::rgb(c.accent)));
     connect(m_importAudioBtn, &QPushButton::clicked, this, &AudioSync::onImportAudioClicked);
@@ -286,7 +290,8 @@ void AudioSync::setupUi()
     // Audio status
     m_audioStatus = new QLabel("No files imported");
     m_audioStatus->setStyleSheet(QStringLiteral(
-        "font-size: 14px; color: %1;")
+        "font-size: %1px; color: %2;")
+        .arg(t.sizeSmall)
         .arg(Theme::rgb(c.textTertiary)));
     importPageLayout->addWidget(m_audioStatus);
 
@@ -304,19 +309,20 @@ void AudioSync::setupUi()
     m_audioSortCombo->setFixedHeight(28);
     m_audioSortCombo->setStyleSheet(QStringLiteral(
         "QComboBox { background: %1; color: %2; border: 1px solid %3;"
-        "  padding: 2px 8px; border-radius: %4px; font-size: 12px; }"
+        "  padding: 2px 8px; border-radius: %4px; font-size: %5px; }"
         "QComboBox::drop-down { width: 20px; border: none; }"
         "QComboBox::down-arrow { image: url(none); width: 0; height: 0;"
         "  border-left: 4px solid transparent; border-right: 4px solid transparent;"
-        "  border-top: 5px solid %5; }"
+        "  border-top: 5px solid %6; }"
         "QComboBox QAbstractItemView {"
-        "  background: %6; color: %7; border: 1px solid %8;"
-        "  selection-background-color: %9; outline: none; }")
+        "  background: %7; color: %8; border: 1px solid %9;"
+        "  selection-background-color: %10; outline: none; }")
         .arg(Theme::rgb(c.surface2), Theme::rgb(c.textSecondary),
              Theme::rgb(c.border), QString::number(m.radiusSm),
+             QString::number(t.sizeXs),
              Theme::rgb(c.textTertiary), Theme::rgb(c.surface2),
-             Theme::rgb(c.textPrimary), Theme::rgb(c.border),
-             Theme::rgb(c.accentDim)));
+             Theme::rgb(c.textPrimary), Theme::rgb(c.border))
+        .arg(Theme::rgb(c.accentDim)));
     connect(m_audioSortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx) { sortAudioFileList(idx); });
     filesHeaderRow->addWidget(m_audioSortCombo);
@@ -328,11 +334,12 @@ void AudioSync::setupUi()
     m_audioFileList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_audioFileList->setStyleSheet(
         QString("QListWidget { background: %1; border: 1px solid %2; "
-        "border-radius: %3px; font-size: 14px; }"
-        "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid %4; }"
+        "border-radius: %3px; font-size: %4px; }"
+        "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid %5; }"
         "QListWidget::item:last { border-bottom: none; }"
-        "QListWidget::item:selected { background: %5; }")
-        .arg(inp, inpB, radM, Theme::rgb(c.borderLight), accS));
+        "QListWidget::item:selected { background: %6; }")
+        .arg(inp, inpB, radM, QString::number(t.sizeSmall),
+             Theme::rgb(c.borderLight), accS));
     m_audioFileList->installEventFilter(this);
     m_audioFileList->setContextMenuPolicy(Qt::DefaultContextMenu);
     importPageLayout->addWidget(m_audioFileList, 1);
@@ -343,13 +350,14 @@ void AudioSync::setupUi()
     m_removeAudioBtn->setCursor(Qt::PointingHandCursor);
     m_removeAudioBtn->setStyleSheet(
         QString("QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: %4px; font-size: 14px; font-weight: 600;"
+        "  border-radius: %4px; font-size: %5px; font-weight: 600;"
         "  padding: 8px 16px; }"
-        "QPushButton:hover { background: %5; }")
+        "QPushButton:hover { background: %6; }")
         .arg(Theme::rgb(c.surface2))
         .arg(Theme::rgb(c.dangerText))
         .arg(Theme::rgb(c.border))
         .arg(m.radiusMd)
+        .arg(t.sizeSmall)
         .arg(Theme::rgb(c.surface3)));
     connect(m_removeAudioBtn, &QPushButton::clicked, this, [this]() {
         if (!m_audioFileList) return;
@@ -453,28 +461,29 @@ void AudioSync::setupUi()
     m_modelCombo->setStyleSheet(QStringLiteral(
         "QComboBox {"
         "  background: %1; color: %2; border: 1px solid %3;"
-        "  padding: 10px 14px; border-radius: %4px; font-size: 14px;"
+        "  padding: 10px 14px; border-radius: %4px; font-size: %5px;"
         "}"
-        "QComboBox:hover { border-color: %5; }"
+        "QComboBox:hover { border-color: %6; }"
         "QComboBox::drop-down {"
         "  subcontrol-origin: padding; subcontrol-position: center right;"
         "  width: 32px; border: none;"
         "}"
         "QComboBox::down-arrow { image: none; border: none; }"
         "QComboBox QAbstractItemView {"
-        "  background: %6; color: %7; border: 1px solid %8;"
-        "  border-radius: %9px; padding: 4px;"
-        "  selection-background-color: %10;"
+        "  background: %7; color: %8; border: 1px solid %9;"
+        "  border-radius: %10px; padding: 4px;"
+        "  selection-background-color: %11;"
         "  outline: none;"
         "}"
         "QComboBox QAbstractItemView::item {"
         "  padding: 8px 12px; min-height: 28px;"
         "}"
-        "QComboBox QAbstractItemView::item:hover { background: %11; }")
+        "QComboBox QAbstractItemView::item:hover { background: %12; }")
         .arg(inp, txt1, inpB, radM,
+             QString::number(t.sizeSmall),
              Theme::rgb(c.accent),
-             Theme::rgb(c.surface2), txt1, Theme::rgb(c.border),
-             radM, Theme::rgb(c.accentDim),
+             Theme::rgb(c.surface2), txt1, Theme::rgb(c.border))
+        .arg(radM, Theme::rgb(c.accentDim),
              Theme::rgb(c.surface3)));
     transcribePageLayout->addWidget(m_modelCombo);
 
@@ -484,13 +493,15 @@ void AudioSync::setupUi()
     m_transcribeBtn->setCursor(Qt::PointingHandCursor);
     m_transcribeBtn->setStyleSheet(QStringLiteral(
         "QPushButton {"
-        "  background: %1; color: white; border: none;"
-        "  border-radius: %2px; font-size: 16px;"
+        "  background: %1; color: %2; border: none;"
+        "  border-radius: %3px; font-size: %4px;"
         "  font-weight: 700; padding: 12px 24px; }"
-        "QPushButton:hover { background: %3; }"
-        "QPushButton:pressed { background: %4; }")
+        "QPushButton:hover { background: %5; }"
+        "QPushButton:pressed { background: %6; }")
         .arg(Theme::rgb(c.primaryBtnBg))
+        .arg(Theme::hex(c.textBright))
         .arg(m.radiusMd)
+        .arg(t.sizeBody)
         .arg(Theme::rgb(c.primaryBtnHover))
         .arg(Theme::rgb(c.accent)));
     connect(m_transcribeBtn, &QPushButton::clicked, this, &AudioSync::onTranscribeClicked);
@@ -503,15 +514,16 @@ void AudioSync::setupUi()
     m_progressBar->setVisible(false);
     m_progressBar->setFixedHeight(12);
     m_progressBar->setStyleSheet(
-        QString("QProgressBar { background: %1; border: none; border-radius: 5px; }"
-        "QProgressBar::chunk { background: %2; border-radius: 5px; }").arg(inp, sucTx));
+        QString("QProgressBar { background: %1; border: none; border-radius: %3px; }"
+        "QProgressBar::chunk { background: %2; border-radius: %3px; }").arg(inp, sucTx, radM));
     transcribePageLayout->addWidget(m_progressBar);
 
     // Transcribe status
     m_transcribeStatus = new QLabel;
     m_transcribeStatus->setWordWrap(true);
     m_transcribeStatus->setStyleSheet(QStringLiteral(
-        "font-size: 14px; color: %1;")
+        "font-size: %1px; color: %2;")
+        .arg(t.sizeSmall)
         .arg(Theme::rgb(c.textTertiary)));
     transcribePageLayout->addWidget(m_transcribeStatus);
 
@@ -590,7 +602,8 @@ void AudioSync::setupUi()
     auto* matchTitleRow = new QHBoxLayout;
     auto* matchTitle = new QLabel("Characters");
     matchTitle->setStyleSheet(QStringLiteral(
-        "font-size: 16px; font-weight: %1; color: %2;")
+        "font-size: %1px; font-weight: %2; color: %3;")
+        .arg(t.sizeBody)
         .arg(t.weightBold)
         .arg(Theme::rgb(c.textPrimary)));
     matchTitleRow->addWidget(matchTitle, 1);
@@ -619,23 +632,24 @@ void AudioSync::setupUi()
     m_charFilterList->setStyleSheet(QStringLiteral(
         "QListWidget {"
         "  background: %1; border: 1px solid %2;"
-        "  border-radius: %3px; font-size: 16px; font-weight: 600; outline: none;"
+        "  border-radius: %3px; font-size: %4px; font-weight: 600; outline: none;"
         "}"
         "QListWidget::item {"
-        "  padding: 10px 14px; border-bottom: 1px solid %4;"
-        "  color: %5;"
+        "  padding: 10px 14px; border-bottom: 1px solid %5;"
+        "  color: %6;"
         "}"
         "QListWidget::item:last { border-bottom: none; }"
         "QListWidget::item:selected {"
-        "  background: %6; color: %7;"
+        "  background: %7; color: %8;"
         "  font-weight: 700;"
         "}"
         "QListWidget::item:hover:!selected {"
-        "  background: %8;"
+        "  background: %9;"
         "}")
         .arg(Theme::rgb(c.inputBg))
         .arg(Theme::rgb(c.inputBorder))
         .arg(m.radiusMd)
+        .arg(t.sizeBody)
         .arg(Theme::rgb(c.borderLight))
         .arg(Theme::rgb(c.textPrimary))
         .arg(Theme::rgb(c.accentDim))
@@ -692,8 +706,9 @@ void AudioSync::setupUi()
 
     m_retakesCheck = new QCheckBox("Allow retakes (multiple audio segments per script line)");
     m_retakesCheck->setStyleSheet(
-        QString("QCheckBox { color: %1; font-size: 14px; spacing: 10px; }"
-        "QCheckBox::indicator { width: 20px; height: 20px; }").arg(txt1));
+        QString("QCheckBox { color: %1; font-size: %2px; spacing: 10px; }"
+        "QCheckBox::indicator { width: 20px; height: 20px; }")
+        .arg(txt1).arg(t.sizeSmall));
     m_retakesCheck->setToolTip("Allow script lines to match multiple audio segments");
     settingsPageLayout->addWidget(m_retakesCheck);
 
@@ -721,7 +736,8 @@ void AudioSync::setupUi()
 
     m_smartBarIcon = new QLabel(QStringLiteral("\u25CF"));
     m_smartBarIcon->setFixedWidth(18);
-    m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 14px; border: none; }").arg(txtD));
+    m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }")
+        .arg(txtD).arg(t.sizeSmall));
     statusLayout->addWidget(m_smartBarIcon);
 
     m_smartBarLabel = new QLabel("Load a script to begin");
@@ -730,7 +746,8 @@ void AudioSync::setupUi()
     statusLayout->addWidget(m_smartBarLabel, 1);
 
     m_syncStatus = new QLabel("0 / 0");
-    m_syncStatus->setStyleSheet(QString("QLabel { color: %1; font-size: 12px; border: none; }").arg(txtD));
+    m_syncStatus->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }")
+        .arg(txtD).arg(t.sizeXs));
     statusLayout->addWidget(m_syncStatus);
 
     contentLayout->addWidget(statusBar);
@@ -794,7 +811,7 @@ void AudioSync::setupUi()
     m_leftOrphanLabel = new QLabel("  Orphan Clips");
     m_leftOrphanLabel->setFixedHeight(28);
     m_leftOrphanLabel->setStyleSheet(
-        "QLabel { color: " + errC + "; font-size: 12px; font-weight: bold; "
+        "QLabel { color: " + errC + "; font-size: " + QString::number(t.sizeXs) + "px; font-weight: bold; "
         "background: " + errBg + "; border: none; border-top: 2px solid " + errC + "; }");
     m_leftOrphanLabel->setVisible(false);
     leftLayout->addWidget(m_leftOrphanLabel);
@@ -802,7 +819,7 @@ void AudioSync::setupUi()
     m_leftOrphanList = new QListWidget;
     m_leftOrphanList->setMaximumHeight(120);
     m_leftOrphanList->setStyleSheet(
-        "QListWidget { background: " + surf0 + "; border: none; font-size: 12px; }"
+        "QListWidget { background: " + surf0 + "; border: none; font-size: " + QString::number(t.sizeXs) + "px; }"
         "QListWidget::item { padding: 4px 8px; }"
         "QListWidget::item:selected { background: " + surf2 + "; }");
     m_leftOrphanList->setVisible(false);
@@ -943,7 +960,8 @@ void AudioSync::setupUi()
 
     m_statusLabel = new QLabel;
     m_statusLabel->setStyleSheet(
-        QString("QLabel { color: %1; font-size: 12px; border: none; }").arg(txtD));
+        QString("QLabel { color: %1; font-size: %2px; border: none; }")
+        .arg(txtD).arg(t.sizeXs));
     actionBarLayout->addWidget(m_statusLabel);
 
     m_exportActionBtn = makeActionBtn(

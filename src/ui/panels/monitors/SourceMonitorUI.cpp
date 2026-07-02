@@ -172,9 +172,10 @@ void SourceMonitor::setupUI()
     m_clipLabel->setTextFormat(Qt::PlainText);
     m_clipLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QLabel { background: %1; color: %2; "
-        "font-size: 12px; padding: 4px 8px; }")
+        "font-size: %3px; padding: 4px 8px; }")
         .arg(Theme::hex(Theme::colors().surface1))
-        .arg(Theme::hex(Theme::colors().textSecondary))));
+        .arg(Theme::hex(Theme::colors().textSecondary))
+        .arg(Theme::typography().sizeXs)));
     mainLayout->addWidget(m_clipLabel);
 
     // ── Viewport / Waveform stacked area ──────────────────────────────

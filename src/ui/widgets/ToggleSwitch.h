@@ -63,7 +63,7 @@ protected:
         const qreal margin = 2.0;
         const qreal kd = h - margin * 2.0;          // knob diameter
         const qreal kx = on ? (w - kd - margin) : margin;
-        QColor knob = en ? QColor(245, 245, 248) : QColor(165, 165, 175);
+        QColor knob = en ? tc.textBright : tc.textSecondary;
         p.setBrush(knob);
         p.drawEllipse(QRectF(kx, margin, kd, kd));
     }

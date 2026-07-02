@@ -168,7 +168,8 @@ void CharacterShotPanel::setupUI()
         lbl->setAlignment(Qt::AlignCenter);
         lbl->setFixedHeight(20);
         lbl->setStyleSheet(QStringLiteral(
-            "font-size: 15px; color: %1; font-weight: 800;")
+            "font-size: %1px; color: %2; font-weight: 800;")
+            .arg(Theme::typography().sizeCaption)
             .arg(Theme::rgb(c.textPrimary)));
         m_railLabels[i] = lbl;
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);

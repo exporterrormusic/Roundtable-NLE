@@ -137,11 +137,12 @@ void AudioSync::populateLeftList()
         numLabel->setFixedWidth(36);
         numLabel->setAlignment(Qt::AlignCenter);
         numLabel->setStyleSheet(
-            QString("QLabel { color: %2; font-size: 14px; font-weight: bold; "
+            QString("QLabel { color: %2; font-size: %4px; font-weight: bold; "
                     "background: %1; border: none; "
                     "border-top-left-radius: %3px; border-bottom-left-radius: %3px; "
                     "padding: 4px 0px; }")
-                .arg(numBg, Theme::hex(_tc.textBright)).arg(Theme::metrics().radiusMd));
+                .arg(numBg, Theme::hex(_tc.textBright)).arg(Theme::metrics().radiusMd)
+                .arg(Theme::typography().sizeSmall));
         rowLayout->addWidget(numLabel);
 
         // Character name tag â€” neutral bg, colored text
@@ -158,9 +159,10 @@ void AudioSync::populateLeftList()
         auto* textLabel = new QLabel(dialogueText);
         textLabel->setWordWrap(true);
         textLabel->setStyleSheet(
-            QString("QLabel { color: %1; font-size: 14px; "
+            QString("QLabel { color: %1; font-size: %2px; "
                     "background: transparent; border: none; "
-                    "padding: 6px 10px; }").arg(Theme::hex(_tc.textPrimary)));
+                    "padding: 6px 10px; }").arg(Theme::hex(_tc.textPrimary))
+                .arg(Theme::typography().sizeSmall));
         textLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         rowLayout->addWidget(textLabel, 1);
 

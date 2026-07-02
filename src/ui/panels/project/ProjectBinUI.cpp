@@ -143,14 +143,15 @@ void ProjectBin::setupUI()
     // Common button style for toolbar/bottom bar
     QString smallBtnStyle = QStringLiteral(
         "QToolButton { background: transparent; border: none; color: %1; "
-        "font-size: 12px; padding: 2px; border-radius: 3px; }"
+        "font-size: %6px; padding: 2px; border-radius: 3px; }"
         "QToolButton:hover { background: %2; color: %3; }"
         "QToolButton:checked { background: %4; color: %5; }")
         .arg(Theme::hex(Theme::colors().textTertiary))
         .arg(Theme::hex(Theme::colors().controlBgHover))
         .arg(Theme::hex(Theme::colors().textPrimary))
         .arg(Theme::hex(Theme::colors().accentSubtle))
-        .arg(Theme::hex(Theme::colors().textBright));
+        .arg(Theme::hex(Theme::colors().textBright))
+        .arg(Theme::typography().sizeXs);
 
     // -- Top toolbar (search + filter icon) -----------------------------
     auto* toolbar = new QWidget(this);
@@ -170,12 +171,13 @@ void ProjectBin::setupUI()
     m_searchField->setFixedHeight(22);
     m_searchField->setStyleSheet(QStringLiteral(
         "QLineEdit { background: %1; border: 1px solid %2; border-radius: 3px; "
-        "color: %3; font-size: 12px; padding: 0 4px; }"
+        "color: %3; font-size: %5px; padding: 0 4px; }"
         "QLineEdit:focus { border: 1px solid %4; }")
         .arg(Theme::hex(Theme::colors().inputBg))
         .arg(Theme::hex(Theme::colors().controlBorder))
         .arg(Theme::hex(Theme::colors().textPrimary))
-        .arg(Theme::hex(Theme::colors().controlBorderFocus)));
+        .arg(Theme::hex(Theme::colors().controlBorderFocus))
+        .arg(Theme::typography().sizeXs));
     m_searchField->setFocusPolicy(Qt::ClickFocus);
     m_searchField->installEventFilter(this);
     connect(m_searchField, &QLineEdit::textChanged,
@@ -195,7 +197,7 @@ void ProjectBin::setupUI()
     m_binTabBar->setStyleSheet(QStringLiteral(
         "QTabBar { background: %1; border-bottom: 1px solid %2; }"
         "QTabBar::tab { background: %1; color: %3; border: none; "
-        "border-right: 1px solid %2; padding: 2px 10px; font-size: 11px; min-width: 60px; }"
+        "border-right: 1px solid %2; padding: 2px 10px; font-size: %8px; min-width: 60px; }"
         "QTabBar::tab:selected { background: %4; color: %5; }"
         "QTabBar::tab:hover { background: %6; }"
         "QTabBar::close-button { image: none; width: 10px; height: 10px; "
@@ -207,7 +209,8 @@ void ProjectBin::setupUI()
         .arg(Theme::hex(Theme::colors().surface0))
         .arg(Theme::hex(Theme::colors().textPrimary))
         .arg(Theme::hex(Theme::colors().surface2))
-        .arg(Theme::hex(Theme::colors().controlBgHover)));
+        .arg(Theme::hex(Theme::colors().controlBgHover))
+        .arg(Theme::typography().sizeXxs));
     // Root "Project" tab — not closeable
     m_binTabBar->addTab("Project");
     m_binTabPaths.append(QStringList{});  // empty path = root
@@ -253,7 +256,7 @@ void ProjectBin::setupUI()
     }
     m_listWidget->setStyleSheet(QStringLiteral(
         "QTreeWidget { background: %1; color: %2; border: none; "
-        "font-size: 12px; alternate-background-color: %3; "
+        "font-size: %10px; alternate-background-color: %3; "
         "show-decoration-selected: 1; }"
         "QTreeWidget::item { padding: 2px 4px; height: 22px; }"
         "QTreeWidget::item:selected { background: %4; }"
@@ -261,9 +264,9 @@ void ProjectBin::setupUI()
         "QTreeWidget::item:selected:hover { background: %4; }"
         "QTreeWidget::item:hover { background: %5; }"
         "QHeaderView::section { background: %6; color: %7; border: none; "
-        "border-right: 1px solid %8; padding: 3px 6px; font-size: 11px; font-weight: bold; }"
+        "border-right: 1px solid %8; padding: 3px 6px; font-size: %11px; font-weight: bold; }"
         "QTreeWidget { selection-background-color: %4; }"
-        "QRubberBand { background: rgba(50, 130, 220, 60); border: 1px solid %4; }")
+        "QRubberBand { background: %9; border: 1px solid %4; }")
         .arg(Theme::hex(Theme::colors().surface0))
         .arg(Theme::hex(Theme::colors().textPrimary))
         .arg(Theme::hex(Theme::colors().alternateBase))
@@ -271,7 +274,10 @@ void ProjectBin::setupUI()
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().surface1))
         .arg(Theme::hex(Theme::colors().textSecondary))
-        .arg(Theme::hex(Theme::colors().border)));
+        .arg(Theme::hex(Theme::colors().border))
+        .arg(Theme::rgba(Theme::colors().accent, 60))
+        .arg(Theme::typography().sizeXs)
+        .arg(Theme::typography().sizeXxs));
     m_listWidget->header()->setSectionResizeMode(QHeaderView::Interactive);
     m_listWidget->header()->setStretchLastSection(true);
     m_listWidget->setColumnWidth(0, 200);  // Name
@@ -700,8 +706,9 @@ void ProjectBin::setupUI()
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setObjectName("EmptyStateLabel");
     m_emptyLabel->setStyleSheet(QStringLiteral(
-        "color: %1; font-size: 12px; background: transparent;")
-        .arg(Theme::hex(Theme::colors().textDisabled)));
+        "color: %1; font-size: %2px; background: transparent;")
+        .arg(Theme::hex(Theme::colors().textDisabled))
+        .arg(Theme::typography().sizeXs));
     m_emptyLabel->setVisible(false);
     mainLayout->addWidget(m_emptyLabel, 1);
 
@@ -740,8 +747,9 @@ void ProjectBin::setupUI()
 
     m_breadcrumbLabel = new QLabel("Project", m_iconNavBar);
     m_breadcrumbLabel->setStyleSheet(QStringLiteral(
-        "QLabel { background: transparent; color: %1; font-size: 12px; border: none; }")
-        .arg(Theme::hex(Theme::colors().textSecondary)));
+        "QLabel { background: transparent; color: %1; font-size: %2px; border: none; }")
+        .arg(Theme::hex(Theme::colors().textSecondary))
+        .arg(Theme::typography().sizeXs));
     navLayout->addWidget(m_breadcrumbLabel, 1);
 
     m_iconNavBar->setVisible(false);
@@ -1011,8 +1019,9 @@ void ProjectBin::setupUI()
     // Status label (item count)
     m_statusLabel = new QLabel("0 items", this);
     m_statusLabel->setStyleSheet(QStringLiteral(
-        "QLabel { background: transparent; color: %1; font-size: 11px; padding: 0 4px; border: none; }")
-        .arg(Theme::hex(Theme::colors().textTertiary)));
+        "QLabel { background: transparent; color: %1; font-size: %2px; padding: 0 4px; border: none; }")
+        .arg(Theme::hex(Theme::colors().textTertiary))
+        .arg(Theme::typography().sizeXxs));
     bottomLayout->addWidget(m_statusLabel);
 
     bottomLayout->addStretch();
@@ -1035,11 +1044,12 @@ void ProjectBin::setupUI()
     m_importBtn->setFixedSize(22, 22);
     m_importBtn->setStyleSheet(QStringLiteral(
         "QToolButton { background: transparent; border: none; color: %1; "
-        "font-size: 16px; font-weight: bold; border-radius: 3px; }"
+        "font-size: %4px; font-weight: bold; border-radius: 3px; }"
         "QToolButton:hover { background: %2; color: %3; }")
         .arg(Theme::hex(Theme::colors().textTertiary))
         .arg(Theme::hex(Theme::colors().controlBgHover))
-        .arg(Theme::hex(Theme::colors().textPrimary)));
+        .arg(Theme::hex(Theme::colors().textPrimary))
+        .arg(Theme::typography().sizeBody));
     connect(m_importBtn, &QToolButton::clicked, this, &ProjectBin::importFiles);
     bottomLayout->addWidget(m_importBtn);
 

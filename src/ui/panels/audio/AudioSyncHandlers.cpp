@@ -185,13 +185,15 @@ void AudioSync::onLoadScriptClicked()
     btnBox->button(QDialogButtonBox::Ok)->setCursor(Qt::PointingHandCursor);
     btnBox->button(QDialogButtonBox::Cancel)->setCursor(Qt::PointingHandCursor);
     btnBox->setStyleSheet(QStringLiteral(
-        "QPushButton { background: %1; color: white; border: none;"
-        "  border-radius: %2px; padding: 8px 24px; font-size: 14px; font-weight: 700; }"
-        "QPushButton:hover { background: %3; }"
-        "QPushButton[text=\"Cancel\"] { background: %4; color: %5; }"
-        "QPushButton[text=\"Cancel\"]:hover { background: %6; }")
+        "QPushButton { background: %1; color: %2; border: none;"
+        "  border-radius: %3px; padding: 8px 24px; font-size: %4px; font-weight: 700; }"
+        "QPushButton:hover { background: %5; }"
+        "QPushButton[text=\"Cancel\"] { background: %6; color: %7; }"
+        "QPushButton[text=\"Cancel\"]:hover { background: %8; }")
         .arg(Theme::hex(Theme::colors().primaryBtnBg))
+        .arg(Theme::hex(Theme::colors().textBright))
         .arg(Theme::metrics().radiusSm)
+        .arg(Theme::typography().sizeSmall)
         .arg(Theme::hex(Theme::colors().primaryBtnHover))
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().textPrimary))
@@ -483,7 +485,7 @@ void AudioSync::onTranscriptionFinished(bool success)
                 "Transcription unavailable ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â whisper.cpp is not compiled in.\n"
                 "To enable: install whisper.cpp, set ROUNDTABLE_HAS_WHISPER=ON in CMake,\n"
                 "and place ggml-base.bin (or another model) in the models/ directory.");
-            m_transcribeStatus->setStyleSheet(QString("color: %1; font-size: 12px;").arg(Theme::hex(Theme::colors().warning)));
+            m_transcribeStatus->setStyleSheet(QString("color: %1; font-size: %2px;").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeXs));
             m_transcribeStatus->setWordWrap(true);
             spdlog::warn("AudioSync: Transcription returned 0 segments "
                          "(whisper may not be compiled in)");

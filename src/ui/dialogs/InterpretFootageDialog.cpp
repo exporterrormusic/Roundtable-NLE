@@ -4,6 +4,8 @@
 
 #include "dialogs/InterpretFootageDialog.h"
 
+#include "Theme.h"
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -44,7 +46,8 @@ InterpretFootageDialog::InterpretFootageDialog(const FootageInterpretation& curr
                "average. Assume a constant rate below to conform timing."),
             this);
         vfrLabel->setWordWrap(true);
-        vfrLabel->setStyleSheet(QStringLiteral("color: #d8a000;"));
+        vfrLabel->setStyleSheet(QStringLiteral("color: %1;")
+            .arg(Theme::hex(Theme::colors().warning)));
         fpsForm->addRow(vfrLabel);
     }
 

@@ -75,12 +75,13 @@ void TransportBar::setupUI()
     m_btnPlayPause->setFixedSize(28, 28);
     m_btnPlayPause->setStyleSheet(
         QString("QPushButton { background: transparent; border: none; "
-                        "color: %1; font-size: 16px; border-radius: 14px; } "
+                        "color: %1; font-size: %4px; border-radius: 14px; } "
                         "QPushButton:hover { background: %2; } "
                         "QPushButton:pressed { background: %3; }")
             .arg(Theme::hex(Theme::colors().textPrimary),
                  Theme::hex(Theme::colors().surface2),
-                 Theme::hex(Theme::colors().surface3)));
+                 Theme::hex(Theme::colors().surface3),
+                 QString::number(Theme::typography().sizeBody)));
 
     m_btnLoop->setCheckable(true);
 
@@ -113,9 +114,10 @@ void TransportBar::setupUI()
     m_durationLabel = new QLabel(QStringLiteral("/ 00:00:00:00"), this);
     m_durationLabel->setStyleSheet(
         QString("QLabel { font-family: 'Consolas', 'Courier New', monospace; "
-                        "font-size: 11px; color: %1; background: transparent; "
+                        "font-size: %2px; color: %1; background: transparent; "
                         "padding: 1px 2px; }")
-            .arg(Theme::hex(Theme::colors().textDisabled)));
+            .arg(Theme::hex(Theme::colors().textDisabled),
+                 QString::number(Theme::typography().sizeXxs)));
     m_durationLabel->setMinimumWidth(90);
     m_durationLabel->setCursor(Qt::PointingHandCursor);
     m_durationLabel->setToolTip(tr("Click to toggle Duration / Remaining"));
@@ -126,8 +128,9 @@ void TransportBar::setupUI()
     layout->addSpacing(4);
     m_speedLabel = new QLabel(this);
     m_speedLabel->setStyleSheet(
-        QString("QLabel { font-size: 11px; color: %1; }")
-            .arg(Theme::hex(Theme::colors().accent)));
+        QString("QLabel { font-size: %2px; color: %1; }")
+            .arg(Theme::hex(Theme::colors().accent),
+                 QString::number(Theme::typography().sizeXxs)));
     m_speedLabel->setMinimumWidth(40);
     layout->addWidget(m_speedLabel);
 
@@ -180,7 +183,7 @@ void TransportBar::styleButton(QPushButton* btn, const QString& text, const QStr
     btn->setFocusPolicy(Qt::NoFocus);
     btn->setStyleSheet(
         QString("QPushButton { background: transparent; border: none; "
-                        "color: %1; font-size: 12px; } "
+                        "color: %1; font-size: %6px; } "
                         "QPushButton:hover { color: %2; background: %3; border-radius: 12px; } "
                         "QPushButton:pressed { background: %4; } "
                         "QPushButton:checked { color: %5; }")
@@ -188,7 +191,8 @@ void TransportBar::styleButton(QPushButton* btn, const QString& text, const QStr
                  Theme::hex(Theme::colors().textBright),
                  Theme::hex(Theme::colors().surface2),
                  Theme::hex(Theme::colors().surface3),
-                 Theme::hex(Theme::colors().accent)));
+                 Theme::hex(Theme::colors().accent),
+                 QString::number(Theme::typography().sizeXs)));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -299,11 +303,11 @@ void TransportBar::updateDisplay()
             // Green: no recent drops    Yellow: occasional drops    Red: dropping badly
             QString color;
             if (drops == 0)
-                color = QStringLiteral("#4CAF50");  // green
+                color = Theme::hex(Theme::colors().success);  // green
             else if (drops <= 5)
-                color = QStringLiteral("#FFC107");  // yellow
+                color = Theme::hex(Theme::colors().warning);  // yellow
             else
-                color = QStringLiteral("#F44336");  // red
+                color = Theme::hex(Theme::colors().error);    // red
             m_dropIndicator->setStyleSheet(
                 QString("QLabel { background: %1; border-radius: 5px; }").arg(color));
             m_dropIndicator->setToolTip(

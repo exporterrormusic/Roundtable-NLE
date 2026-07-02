@@ -70,9 +70,10 @@ ScrubbySpinBox* EffectControlsPanel::createScrubby(double min, double max,
     // Blue values like Premiere Pro
     spin->setStyleSheet(QStringLiteral(
         "QDoubleSpinBox { color: %1; background: transparent; border: none;"
-        "  font-size: 12px; padding: 0 2px; }"
+        "  font-size: %2px; padding: 0 2px; }"
         "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; }")
-        .arg(Theme::hex(tc.accent)));
+        .arg(Theme::hex(tc.accent))
+        .arg(Theme::typography().sizeXs));
     return spin;
 }
 
@@ -96,17 +97,20 @@ void EffectControlsPanel::setupUI()
 
     m_clipNameLabel = new QLabel("No clip selected", headerBar);
     m_clipNameLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; font-size: 12px; font-weight: bold; background: transparent; }")
-        .arg(Theme::hex(tc.textPrimary)));
+        "QLabel { color: %1; font-size: %2px; font-weight: bold; background: transparent; }")
+        .arg(Theme::hex(tc.textPrimary))
+        .arg(Theme::typography().sizeXs));
     headerLayout->addWidget(m_clipNameLabel);
 
     headerLayout->addStretch();
 
     m_clipTypeLabel = new QLabel(headerBar);
     m_clipTypeLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; font-size: 11px; font-weight: bold; "
-        "background: %2; border-radius: 3px; padding: 1px 6px; }")
-        .arg(Theme::hex(tc.textPrimary), Theme::hex(tc.accentDim)));
+        "QLabel { color: %1; font-size: %3px; font-weight: bold; "
+        "background: %2; border-radius: %4px; padding: 1px 6px; }")
+        .arg(Theme::hex(tc.textPrimary), Theme::hex(tc.accentDim))
+        .arg(Theme::typography().sizeXxs)
+        .arg(m.radiusSm));
     headerLayout->addWidget(m_clipTypeLabel);
 
     mainLayout->addWidget(headerBar);
@@ -126,12 +130,13 @@ void EffectControlsPanel::setupUI()
     m_searchField->setFixedHeight(20);
     m_searchField->setStyleSheet(
         QStringLiteral("QLineEdit { background: %1; color: %2; border: 1px solid %3; "
-                       "border-radius: %4px; padding: 1px 4px; font-size: 12px; }"
+                       "border-radius: %4px; padding: 1px 4px; font-size: %6px; }"
                        "QLineEdit:focus { border: 1px solid %5; }")
             .arg(Theme::hex(tc.inputBg), Theme::hex(tc.text),
                  Theme::hex(tc.controlBorder),
                  QString::number(m.radiusSm),
-                 Theme::hex(tc.accent)));
+                 Theme::hex(tc.accent))
+            .arg(Theme::typography().sizeXs));
     searchLayout->addWidget(m_searchField, 1);
 
     connect(m_searchField, &QLineEdit::textChanged, this, [this](const QString& text) {
@@ -248,8 +253,9 @@ void EffectControlsPanel::setupUI()
 
     m_footerTimecodeLabel = new QLabel("00:00:00;00", footer);
     m_footerTimecodeLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; font-size: 11px; font-family: Consolas; background: transparent; }")
-        .arg(Theme::hex(tc.textSecondary)));
+        "QLabel { color: %1; font-size: %2px; font-family: Consolas; background: transparent; }")
+        .arg(Theme::hex(tc.textSecondary))
+        .arg(Theme::typography().sizeXxs));
     footerLayout->addWidget(m_footerTimecodeLabel);
     footerLayout->addStretch();
 
@@ -261,9 +267,10 @@ void EffectControlsPanel::setupUI()
     removeAllKfBtn->setCursor(Qt::PointingHandCursor);
     removeAllKfBtn->setToolTip(tr("Clear every keyframe on this clip and all of its layers"));
     removeAllKfBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0 2px; }"
+        "QPushButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0 2px; }"
         "QPushButton:hover { color: %2; }")
-        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textBright)));
+        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textBright))
+        .arg(Theme::typography().sizeXxs));
     connect(removeAllKfBtn, &QPushButton::clicked,
             this, &EffectControlsPanel::removeAllKeyframes);
     footerLayout->addWidget(removeAllKfBtn);

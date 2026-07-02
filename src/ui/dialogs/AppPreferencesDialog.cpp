@@ -123,10 +123,12 @@ AppPreferencesDialog::AppPreferencesDialog(QWidget* parent,
     m_cudaStatusLabel = new QLabel(this);
     if (cudaOk) {
         m_cudaStatusLabel->setText(tr("✓ NVIDIA CUDA / NVDEC detected"));
-        m_cudaStatusLabel->setStyleSheet("color: #64b96a;");
+        m_cudaStatusLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(Theme::hex(Theme::colors().success)));
     } else {
         m_cudaStatusLabel->setText(tr("✗ NVIDIA CUDA not available — software fallback active"));
-        m_cudaStatusLabel->setStyleSheet("color: #d96060;");
+        m_cudaStatusLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(Theme::hex(Theme::colors().error)));
     }
     hwForm->addRow(tr("GPU Status:"), m_cudaStatusLabel);
 
@@ -160,7 +162,8 @@ AppPreferencesDialog::AppPreferencesDialog(QWidget* parent,
            "keep more recent frames resident for smoother scrub-back.").arg(tierStr),
         this);
     perfNote->setWordWrap(true);
-    perfNote->setStyleSheet("color: #999;");
+    perfNote->setStyleSheet(
+        QStringLiteral("color: %1;").arg(Theme::hex(Theme::colors().textSecondary)));
     perfLayout->addWidget(perfNote);
 
     mainLayout->addWidget(perfGroup);

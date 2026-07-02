@@ -81,12 +81,13 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_searchField->setMinimumWidth(180);
     m_searchField->setMinimumHeight(44);
     m_searchField->setStyleSheet(QStringLiteral(
-        "QLineEdit { font-size: 14px; padding: 10px 14px; border-radius: %1px;"
+        "QLineEdit { font-size: %6px; padding: 10px 14px; border-radius: %1px;"
         "  background: %2; color: %3; border: 1px solid %4; }"
         "QLineEdit:focus { border-color: %5; }")
         .arg(m.radiusMd)
         .arg(Theme::rgb(c.surface1), Theme::rgb(c.textPrimary),
-             Theme::rgb(c.border), Theme::rgb(c.accent)));
+             Theme::rgb(c.border), Theme::rgb(c.accent))
+        .arg(Theme::typography().sizeSmall));
     connect(m_searchField, &QLineEdit::textChanged,
             this, &CharacterBrowser::onSearchChanged);
     layout->addWidget(m_searchField);
@@ -97,7 +98,9 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_categoryLabel = new QLabel("Category:");
     m_categoryLabel->setObjectName("FieldLabel");
     m_categoryLabel->setStyleSheet(QStringLiteral(
-        "font-size: 14px; color: %1;").arg(Theme::rgb(c.textSecondary)));
+        "font-size: %1px; color: %2;")
+        .arg(Theme::typography().sizeSmall)
+        .arg(Theme::rgb(c.textSecondary)));
     filterRow->addWidget(m_categoryLabel);
     m_categoryFilter = new QComboBox;
     m_categoryFilter->setObjectName("FilterCombo");
@@ -105,7 +108,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_categoryFilter->setToolTip("Filter characters by category type");
     m_categoryFilter->setMinimumHeight(36);
     m_categoryFilter->setStyleSheet(QStringLiteral(
-        "QComboBox { font-size: 14px; padding: 6px 12px; }"));
+        "QComboBox { font-size: %1px; padding: 6px 12px; }")
+        .arg(Theme::typography().sizeSmall));
     connect(m_categoryFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &CharacterBrowser::onCategoryChanged);
     filterRow->addWidget(m_categoryFilter);
@@ -115,7 +119,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_downloadedOnly = new QCheckBox(QStringLiteral("\xE2\x9C\x94  Downloaded Only"));
     m_downloadedOnly->setObjectName("FilterCheck");
     m_downloadedOnly->setChecked(false);
-    m_downloadedOnly->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    m_downloadedOnly->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     m_downloadedOnly->setToolTip("Show only characters that are downloaded locally");
     connect(m_downloadedOnly, &QCheckBox::toggled,
             this, &CharacterBrowser::onDownloadedOnlyToggled);
@@ -125,7 +130,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_showHidden = new QCheckBox(QStringLiteral("\xF0\x9F\x91\x81  Show Hidden"));
     m_showHidden->setObjectName("FilterCheck");
     m_showHidden->setChecked(false);
-    m_showHidden->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    m_showHidden->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     m_showHidden->setToolTip("Show permanently hidden characters");
     connect(m_showHidden, &QCheckBox::toggled,
             this, &CharacterBrowser::onShowHiddenToggled);
@@ -139,7 +145,7 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_characterList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_characterList->setStyleSheet(QStringLiteral(
         "QListWidget { background: %1; border: 1px solid %2; border-radius: %3px;"
-        "  font-size: 14px; outline: none; }"
+        "  font-size: %7px; outline: none; }"
         "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid %4;"
         "  min-height: 24px; }"
         "QListWidget::item:last { border-bottom: none; }"
@@ -147,7 +153,8 @@ QWidget* CharacterBrowser::createLeftPanel()
         "QListWidget::item:hover { background: %6; }")
         .arg(Theme::rgb(c.surface0), Theme::rgb(c.border),
              QString::number(m.radiusMd), Theme::rgb(c.borderLight),
-             Theme::rgb(c.accentDim), Theme::rgb(c.surface2)));
+             Theme::rgb(c.accentDim), Theme::rgb(c.surface2))
+        .arg(Theme::typography().sizeSmall));
     connect(m_characterList, &QListWidget::itemSelectionChanged,
             this, &CharacterBrowser::onCharacterSelectionChanged);
     connect(m_characterList, &QWidget::customContextMenuRequested,
@@ -163,7 +170,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_refreshBtn->setObjectName("GhostBtn");
     m_refreshBtn->setMinimumHeight(44);
     m_refreshBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 14px; font-weight: 600; padding: 8px 16px; }"));
+        "QPushButton { font-size: %1px; font-weight: 600; padding: 8px 16px; }")
+        .arg(Theme::typography().sizeSmall));
     m_refreshBtn->setToolTip("Rescan local files and fetch remote character list (F5)");
     connect(m_refreshBtn, &QPushButton::clicked,
             this, &CharacterBrowser::onRefreshClicked);
@@ -174,7 +182,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_downloadBtn->setEnabled(false);
     m_downloadBtn->setMinimumHeight(44);
     m_downloadBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 14px; font-weight: 600; padding: 8px 16px; }"));
+        "QPushButton { font-size: %1px; font-weight: 600; padding: 8px 16px; }")
+        .arg(Theme::typography().sizeSmall));
     m_downloadBtn->setToolTip("Download the selected character(s) from Nikke DB (Ctrl+D)");
     connect(m_downloadBtn, &QPushButton::clicked,
             this, &CharacterBrowser::onDownloadClicked);
@@ -185,7 +194,8 @@ QWidget* CharacterBrowser::createLeftPanel()
     m_deleteBtn->setEnabled(false);
     m_deleteBtn->setMinimumHeight(44);
     m_deleteBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 14px; font-weight: 600; padding: 8px 16px; }"));
+        "QPushButton { font-size: %1px; font-weight: 600; padding: 8px 16px; }")
+        .arg(Theme::typography().sizeSmall));
     m_deleteBtn->setToolTip("Delete local files for the selected character(s) (Del)");
     connect(m_deleteBtn, &QPushButton::clicked,
             this, &CharacterBrowser::onDeleteClicked);
@@ -244,13 +254,15 @@ QWidget* CharacterBrowser::createRightPanel()
 
     auto* outfitLabel = new QLabel("Outfit:");
     outfitLabel->setObjectName("ControlLabel");
-    outfitLabel->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    outfitLabel->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     controlsLayout->addWidget(outfitLabel);
     m_outfitCombo = new UpwardComboBox;
     m_outfitCombo->setObjectName("OutfitCombo");
     m_outfitCombo->setMinimumWidth(140);
     m_outfitCombo->setMinimumHeight(36);
-    m_outfitCombo->setStyleSheet(QStringLiteral("font-size: 14px; padding: 4px 8px;"));
+    m_outfitCombo->setStyleSheet(QStringLiteral("font-size: %1px; padding: 4px 8px;")
+        .arg(Theme::typography().sizeSmall));
     m_outfitCombo->setToolTip("Select character outfit variant");
     m_outfitCombo->addItem("default");
     connect(m_outfitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -261,13 +273,15 @@ QWidget* CharacterBrowser::createRightPanel()
 
     auto* stanceLabel = new QLabel("Stance:");
     stanceLabel->setObjectName("ControlLabel");
-    stanceLabel->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    stanceLabel->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     controlsLayout->addWidget(stanceLabel);
     m_stanceCombo = new UpwardComboBox;
     m_stanceCombo->setObjectName("StanceCombo");
     m_stanceCombo->setMinimumWidth(100);
     m_stanceCombo->setMinimumHeight(36);
-    m_stanceCombo->setStyleSheet(QStringLiteral("font-size: 14px; padding: 4px 8px;"));
+    m_stanceCombo->setStyleSheet(QStringLiteral("font-size: %1px; padding: 4px 8px;")
+        .arg(Theme::typography().sizeSmall));
     m_stanceCombo->setToolTip("Select character stance (Default, Aim, Cover)");
     m_stanceCombo->addItems({"Default", "Aim", "Cover"});
     connect(m_stanceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -278,13 +292,15 @@ QWidget* CharacterBrowser::createRightPanel()
 
     auto* animLabel = new QLabel("Animation:");
     animLabel->setObjectName("ControlLabel");
-    animLabel->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    animLabel->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     controlsLayout->addWidget(animLabel);
     m_animationCombo = new UpwardComboBox;
     m_animationCombo->setObjectName("AnimCombo");
     m_animationCombo->setMinimumWidth(140);
     m_animationCombo->setMinimumHeight(36);
-    m_animationCombo->setStyleSheet(QStringLiteral("font-size: 14px; padding: 4px 8px;"));
+    m_animationCombo->setStyleSheet(QStringLiteral("font-size: %1px; padding: 4px 8px;")
+        .arg(Theme::typography().sizeSmall));
     m_animationCombo->setToolTip("Select body animation to play");
     m_animationCombo->addItem("idle");
     connect(m_animationCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -295,7 +311,8 @@ QWidget* CharacterBrowser::createRightPanel()
 
     m_talkingCheck = new QCheckBox(QStringLiteral("\xF0\x9F\x92\xAC  Talking"));
     m_talkingCheck->setObjectName("TalkingCheck");
-    m_talkingCheck->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    m_talkingCheck->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     m_talkingCheck->setToolTip("Toggle mouth/talking animation");
     connect(m_talkingCheck, &QCheckBox::toggled,
             this, &CharacterBrowser::onTalkingChanged);
@@ -306,7 +323,8 @@ QWidget* CharacterBrowser::createRightPanel()
     // â”€â”€ Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setObjectName("StatusLabel");
-    m_statusLabel->setStyleSheet(QStringLiteral("font-size: 14px;"));
+    m_statusLabel->setStyleSheet(QStringLiteral("font-size: %1px;")
+        .arg(Theme::typography().sizeSmall));
     controlsLayout->addWidget(m_statusLabel);
 
     layout->addWidget(controls);

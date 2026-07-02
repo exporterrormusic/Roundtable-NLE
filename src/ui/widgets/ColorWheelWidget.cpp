@@ -222,7 +222,7 @@ void ColorWheelWidget::paintEvent(QPaintEvent* event)
     if (!m_label.isEmpty()) {
         p.setPen(tc.textSecondary);
         QFont f = font();
-        f.setPixelSize(12);
+        f.setPixelSize(Theme::typography().sizeXs);
         p.setFont(f);
         QRectF labelRect(wr.x(), wr.bottom() + 4, wr.width() + kMasterSliderGap + kMasterSliderWidth, kLabelHeight);
         p.drawText(labelRect, Qt::AlignHCenter | Qt::AlignTop, m_label);

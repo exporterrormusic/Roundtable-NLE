@@ -19,6 +19,7 @@
 #include <filesystem>
 
 #include "PathUtils.h"
+#include "Theme.h"
 #include "widgets/NaturalSort.h"          // naturalLess + NaturalTreeWidgetItem
 
 #include "decode/ThumbnailGenerator.h"   // MediaType
@@ -126,7 +127,7 @@ inline QIcon makePremiereBinIcon(const QColor& color, const QString& shape, int 
     else if (shape == "video") {
         p.setBrush(color);
         p.drawRoundedRect(QRectF(1, 2, sz - 2, sz - 4), 2, 2);
-        p.setBrush(QColor(14, 14, 20));
+        p.setBrush(Theme::colors().surface0);
         for (int i = 0; i < 3; ++i) {
             double y = 3.5 + i * 3.0;
             p.drawRect(QRectF(2.5, y, 1.5, 1.5));
@@ -148,7 +149,7 @@ inline QIcon makePremiereBinIcon(const QColor& color, const QString& shape, int 
     else if (shape == "image") {
         p.setBrush(color);
         p.drawRoundedRect(QRectF(1, 2, sz - 2, sz - 4), 2, 2);
-        p.setBrush(QColor(14, 14, 20));
+        p.setBrush(Theme::colors().surface0);
         QPainterPath mountain;
         mountain.moveTo(2, sz - 3);
         mountain.lineTo(sz / 2.0 - 1, 5);

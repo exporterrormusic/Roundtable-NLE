@@ -307,12 +307,13 @@ QWidget* ShotComposer::createLeftPanel()
     safeAreasBtn->setFixedHeight(22);
     safeAreasBtn->setStyleSheet(
         QStringLiteral("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                       "border-radius: 3px; padding: 0 8px; font-size: 12px; }"
+                       "border-radius: 3px; padding: 0 8px; font-size: %5px; }"
                        "QPushButton:checked { background: %4; color: white; }")
         .arg(Theme::hex(c.surface1),
              Theme::hex(c.textSecondary),
              Theme::hex(c.border),
-             Theme::hex(c.accent)));
+             Theme::hex(c.accent))
+        .arg(Theme::typography().sizeXs));
     tbLayout->addWidget(safeAreasBtn);
 #ifdef ROUNDTABLE_HAS_SPINE
     connect(safeAreasBtn, &QPushButton::toggled, this, [this](bool on) {
@@ -338,8 +339,9 @@ QWidget* ShotComposer::createLeftPanel()
     zoomRow->setSpacing(4);
 
     auto* zoomMinus = new QLabel(QStringLiteral("\u2212"));
-    zoomMinus->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
-        .arg(Theme::hex(c.textTertiary)));
+    zoomMinus->setStyleSheet(QStringLiteral("color: %1; font-size: %2px;")
+        .arg(Theme::hex(c.textTertiary))
+        .arg(Theme::typography().sizeXs));
     zoomRow->addWidget(zoomMinus);
 
     m_iconZoomSlider = new QSlider(Qt::Horizontal);
@@ -357,8 +359,9 @@ QWidget* ShotComposer::createLeftPanel()
     zoomRow->addWidget(m_iconZoomSlider);
 
     auto* zoomPlus = new QLabel(QStringLiteral("+"));
-    zoomPlus->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;")
-        .arg(Theme::hex(c.textTertiary)));
+    zoomPlus->setStyleSheet(QStringLiteral("color: %1; font-size: %2px;")
+        .arg(Theme::hex(c.textTertiary))
+        .arg(Theme::typography().sizeXs));
     zoomRow->addWidget(zoomPlus);
     zoomRow->addStretch();
 

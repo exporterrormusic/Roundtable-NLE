@@ -153,14 +153,16 @@ static QString sectionHeaderSS(const ThemeColors& tc)
 
 static QString labelSS(const ThemeColors& tc)
 {
- return QStringLiteral("color: %1; font-size: 12px; background: transparent;")
- .arg(Theme::hex(tc.textSecondary));
+ return QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+ .arg(Theme::hex(tc.textSecondary))
+ .arg(Theme::typography().sizeXs);
 }
 
 static QString subheaderSS(const ThemeColors& tc)
 {
- return QStringLiteral("color: %1; font-size: 12px; font-weight: 600; background: transparent;")
- .arg(Theme::hex(tc.textSecondary));
+ return QStringLiteral("color: %1; font-size: %2px; font-weight: 600; background: transparent;")
+ .arg(Theme::hex(tc.textSecondary))
+ .arg(Theme::typography().sizeXs);
 }
 
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
@@ -194,8 +196,9 @@ ScrubbySpinBox* ColorGradingPanel::makeSlider(const QString& label, double min,
  // White label on the left ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â fixed width for uniform slider alignment
  auto* lbl = new QLabel(label, row);
  lbl->setStyleSheet(QStringLiteral(
- "color: %1; font-size: 12px; background: transparent;")
- .arg(Theme::hex(tc.textPrimary)));
+ "color: %1; font-size: %2px; background: transparent;")
+ .arg(Theme::hex(tc.textPrimary))
+ .arg(Theme::typography().sizeXs));
  lbl->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
  lbl->setFixedWidth(80);
 
@@ -222,7 +225,7 @@ ScrubbySpinBox* ColorGradingPanel::makeSlider(const QString& label, double min,
  " border: none;"
  " border-bottom: 1px solid transparent;"
  " padding: 0px 2px;"
- " font-size: 12px;"
+ " font-size: %5px;"
  " selection-background-color: %2;"
  " selection-color: %3;"
  "}"
@@ -240,7 +243,8 @@ ScrubbySpinBox* ColorGradingPanel::makeSlider(const QString& label, double min,
  .arg(Theme::hex(tc.accent))
  .arg(Theme::hex(tc.inputSelection))
  .arg(Theme::hex(tc.textBright))
- .arg(Theme::hex(tc.surface0)));
+ .arg(Theme::hex(tc.surface0))
+ .arg(Theme::typography().sizeXs));
 
  hl->addWidget(lbl);
  hl->addWidget(track, 1); // stretch factor 1 to fill space
@@ -364,15 +368,17 @@ QWidget* ColorGradingPanel::makeSectionHeader(const QString& title, bool hasTogg
  arrow->setFixedSize(16, 16);
  arrow->setAutoRaise(true);
  arrow->setStyleSheet(QStringLiteral(
- "QToolButton { color: %1; font-size: 11px; background: transparent; border: none; }")
- .arg(Theme::hex(tc.textPrimary)));
+ "QToolButton { color: %1; font-size: %2px; background: transparent; border: none; }")
+ .arg(Theme::hex(tc.textPrimary))
+ .arg(Theme::typography().sizeXxs));
  hl->addWidget(arrow);
 
  // Title
  auto* lbl = new QLabel(title, hdr);
  lbl->setStyleSheet(QStringLiteral(
- "color: %1; font-size: 12px; font-weight: 600; background: transparent;")
- .arg(Theme::hex(tc.textPrimary)));
+ "color: %1; font-size: %2px; font-weight: 600; background: transparent;")
+ .arg(Theme::hex(tc.textPrimary))
+ .arg(Theme::typography().sizeXs));
  hl->addWidget(lbl);
  hl->addStretch();
 
@@ -487,15 +493,18 @@ void ColorGradingPanel::setupUI()
 
  m_clipLabel = new QLabel(tr("Color Panel"), headerBar);
  m_clipLabel->setStyleSheet(QStringLiteral(
- "color: %1; font-size: 12px; font-weight: 600; background: transparent;")
- .arg(Theme::hex(tc.textPrimary)));
+ "color: %1; font-size: %2px; font-weight: 600; background: transparent;")
+ .arg(Theme::hex(tc.textPrimary))
+ .arg(Theme::typography().sizeXs));
  hl->addWidget(m_clipLabel);
 
  m_typeBadge = new QLabel(headerBar);
  m_typeBadge->setFixedHeight(18);
  m_typeBadge->setVisible(false);
  m_typeBadge->setStyleSheet(QStringLiteral(
- "font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 3px;"));
+ "font-size: %1px; font-weight: 600; padding: 0 6px; border-radius: %2px;")
+ .arg(Theme::typography().sizeXxs)
+ .arg(Theme::metrics().radiusSm));
  hl->addWidget(m_typeBadge);
  hl->addStretch();
 
@@ -506,11 +515,12 @@ void ColorGradingPanel::setupUI()
  fxBtn->setCheckable(true);
  fxBtn->setChecked(true);
  fxBtn->setStyleSheet(QStringLiteral(
- "QToolButton { color: %1; font-size: 11px; font-weight: bold; "
+ "QToolButton { color: %1; font-size: %4px; font-weight: bold; "
  "background: transparent; border: 1px solid %2; border-radius: 2px; }"
  "QToolButton:checked { color: %3; border-color: %3; }")
  .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.border),
- Theme::hex(tc.accent)));
+ Theme::hex(tc.accent))
+ .arg(Theme::typography().sizeXxs));
  connect(fxBtn, &QToolButton::toggled, this, [this](bool on) {
  if (m_effect) {
  m_effect->setEnabled(on);
@@ -560,10 +570,11 @@ void ColorGradingPanel::setupUI()
  lutCombo->setFixedHeight(20);
  lutCombo->setStyleSheet(QStringLiteral(
  "QComboBox { background: %1; color: %2; border: 1px solid %3; "
- "font-size: 12px; padding: 0 4px; }"
+ "font-size: %4px; padding: 0 4px; }"
  "QComboBox::drop-down { width: 16px; }")
  .arg(Theme::hex(tc.surface2), Theme::hex(tc.textPrimary),
- Theme::hex(tc.controlBorder)));
+ Theme::hex(tc.controlBorder))
+ .arg(Theme::typography().sizeXs));
  hl->addWidget(lutCombo, 1);
  m_mainLayout->addWidget(lutRow);
  }
@@ -581,10 +592,11 @@ void ColorGradingPanel::setupUI()
  btn->setFixedSize(48, 20);
  btn->setStyleSheet(QStringLiteral(
  "QToolButton { background: %1; color: %2; border: 1px solid %3; "
- "border-radius: 2px; font-size: 11px; }"
+ "border-radius: 2px; font-size: %5px; }"
  "QToolButton:hover { background: %4; }")
  .arg(Theme::hex(tc.surface2), Theme::hex(tc.textPrimary),
- Theme::hex(tc.border), Theme::hex(tc.controlBgHover)));
+ Theme::hex(tc.border), Theme::hex(tc.controlBgHover))
+ .arg(Theme::typography().sizeXxs));
  hl->addWidget(btn);
  return btn;
  };
@@ -724,10 +736,11 @@ void ColorGradingPanel::setupUI()
  m_curveChannelCombo->setFocusPolicy(Qt::NoFocus);
  m_curveChannelCombo->setStyleSheet(QStringLiteral(
  "QComboBox { background: %1; color: %2; border: 1px solid %3; "
- "font-size: 11px; padding: 0 4px; }"
+ "font-size: %4px; padding: 0 4px; }"
  "QComboBox::drop-down { width: 16px; }")
  .arg(Theme::hex(tc.surface2), Theme::hex(tc.textPrimary),
- Theme::hex(tc.controlBorder)));
+ Theme::hex(tc.controlBorder))
+ .arg(Theme::typography().sizeXxs));
  curveBarLayout->addWidget(m_curveChannelCombo);
  m_curveChannelCombo->setToolTip(tr("Select which color channel curve to edit"));
  curveBarLayout->addStretch();
@@ -737,10 +750,11 @@ void ColorGradingPanel::setupUI()
  resetCurvesBtn->setFixedSize(42, 20);
  resetCurvesBtn->setStyleSheet(QStringLiteral(
  "QToolButton { background: %1; color: %2; border: 1px solid %3; "
- "border-radius: 2px; font-size: 11px; }"
+ "border-radius: 2px; font-size: %5px; }"
  "QToolButton:hover { background: %4; }")
  .arg(Theme::hex(tc.surface2), Theme::hex(tc.textPrimary),
- Theme::hex(tc.border), Theme::hex(tc.controlBgHover)));
+ Theme::hex(tc.border), Theme::hex(tc.controlBgHover))
+ .arg(Theme::typography().sizeXxs));
  curveBarLayout->addWidget(resetCurvesBtn);
  resetCurvesBtn->setToolTip(tr("Reset all curves to linear"));
 
@@ -882,8 +896,9 @@ void ColorGradingPanel::setupUI()
  m_emptyLabel = new QLabel(tr("Select a clip to apply color grading"), this);
  m_emptyLabel->setAlignment(Qt::AlignCenter);
  m_emptyLabel->setStyleSheet(QStringLiteral(
- "color: %1; font-size: 12px; background: transparent;")
- .arg(Theme::hex(tc.textDisabled)));
+ "color: %1; font-size: %2px; background: transparent;")
+ .arg(Theme::hex(tc.textDisabled))
+ .arg(Theme::typography().sizeXs));
  m_emptyLabel->setVisible(true);
  outerLayout->addWidget(m_emptyLabel, 1);
 
@@ -891,10 +906,11 @@ void ColorGradingPanel::setupUI()
  m_statusLabel = new QLabel(tr("No clip"), this);
  m_statusLabel->setFixedHeight(22);
  m_statusLabel->setStyleSheet(QStringLiteral(
- "color: %1; font-size: 11px; padding-left: 8px; background: %2; "
+ "color: %1; font-size: %4px; padding-left: 8px; background: %2; "
  "border-top: 1px solid %3;")
  .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.surface1),
- Theme::hex(tc.panelBorder)));
+ Theme::hex(tc.panelBorder))
+ .arg(Theme::typography().sizeXxs));
  outerLayout->addWidget(m_statusLabel);
 
  // Initially show empty state, hide scroll area
@@ -926,10 +942,12 @@ void ColorGradingPanel::setClip(Clip* clip, Track* track)
  const QColor badgeColor(80, 140, 220); // Video = blue
  m_typeBadge->setText(tr("Video"));
  m_typeBadge->setStyleSheet(QStringLiteral(
- "font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 3px; "
+ "font-size: %3px; font-weight: 600; padding: 0 6px; border-radius: %4px; "
  "color: %1; background: %2;")
  .arg(Theme::hex(badgeColor.lighter(180)),
- Theme::hex(badgeColor.darker(200))));
+ Theme::hex(badgeColor.darker(200)))
+ .arg(Theme::typography().sizeXxs)
+ .arg(Theme::metrics().radiusSm));
  m_typeBadge->setVisible(true);
 
  // Show content, hide empty state

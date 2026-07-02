@@ -186,15 +186,17 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         arrow->setText(QStringLiteral("\u25B6"));  // â–¶ collapsed by default
         arrow->setFixedSize(16, 20);
         arrow->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0; }"
+            "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
             "QToolButton:hover { color: %2; }")
-            .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary)));
+            .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXxs));
         hl->addWidget(arrow);
 
         auto* lbl = new QLabel(title, header);
         lbl->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 12px; font-weight: bold; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+            "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         hl->addWidget(lbl);
         hl->addStretch();
 
@@ -225,8 +227,9 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         auto* lbl = new QLabel("Key Color", keyColorWidget);
         lbl->setMinimumWidth(80);
         lbl->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 12px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+            "color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         kcLayout->addWidget(lbl);
 
         // Color swatch (shows current key color)
@@ -271,11 +274,12 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         eyedropBtn->setToolTip(tr("Pick color from Program Monitor"));
         eyedropBtn->setFixedSize(24, 22);
         eyedropBtn->setStyleSheet(QStringLiteral(
-            "QToolButton { background: %1; color: %2; border: 1px solid %3; border-radius: 2px; font-size: 12px; }"
+            "QToolButton { background: %1; color: %2; border: 1px solid %3; border-radius: 2px; font-size: %6px; }"
             "QToolButton:hover { background: %4; border: 1px solid %5; }")
             .arg(Theme::hex(tc.surface2), Theme::hex(tc.textPrimary),
                  Theme::hex(tc.border), Theme::hex(tc.surface3),
-                 Theme::hex(tc.accent)));
+                 Theme::hex(tc.accent))
+            .arg(Theme::typography().sizeXs));
         connect(eyedropBtn, &QToolButton::clicked, this, [this, effectIdx]() {
             emit eyedropperRequested(effectIdx);
         });
@@ -295,8 +299,9 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
 
         auto* lbl = new QLabel("Output", outputWidget);
         lbl->setMinimumWidth(80);
-        lbl->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+        lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         ol->addWidget(lbl);
 
         auto* combo = new QComboBox(outputWidget);
@@ -328,8 +333,9 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
 
         auto* lbl = new QLabel("Setting", settingWidget);
         lbl->setMinimumWidth(80);
-        lbl->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+        lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         sl->addWidget(lbl);
 
         auto* combo = new QComboBox(settingWidget);
@@ -465,15 +471,17 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
         arrow->setText(QStringLiteral("\u25BC"));
         arrow->setFixedSize(16, 20);
         arrow->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; font-size: 11px; background: transparent; border: none; padding: 0; }"
+            "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
             "QToolButton:hover { color: %2; }")
-            .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary)));
+            .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXxs));
         hl->addWidget(arrow);
 
         auto* titleLabel = new QLabel(QString::fromStdString(mask.name), header);
         titleLabel->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 12px; font-weight: bold; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+            "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         hl->addWidget(titleLabel);
         hl->addStretch();
 
@@ -482,9 +490,10 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
         deleteBtn->setText(QStringLiteral("\u2715"));
         deleteBtn->setFixedSize(20, 20);
         deleteBtn->setStyleSheet(QStringLiteral(
-            "QToolButton { color: %1; font-size: 12px; background: transparent; border: none; padding: 0; }"
+            "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
             "QToolButton:hover { color: %2; }")
-            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error)));
+            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error))
+            .arg(Theme::typography().sizeXs));
         hl->addWidget(deleteBtn);
         connect(deleteBtn, &QToolButton::clicked, this, [this, mi]() {
             if (m_clip) {
@@ -525,8 +534,9 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
             lay->setContentsMargins(36, 2, 6, 2);
             lay->setSpacing(6);
             auto* lbl = new QLabel("Mask Feather", w);
-            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary)));
+            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
             lay->addWidget(lbl);
             auto* spin = createScrubby(0, 500, 0.5, 1, " px");
             spin->setValue(static_cast<double>(mask.feather));
@@ -559,8 +569,9 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
             lay->setContentsMargins(36, 2, 6, 2);
             lay->setSpacing(6);
             auto* lbl = new QLabel("Mask Opacity", w);
-            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary)));
+            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
             lay->addWidget(lbl);
             auto* spin = createScrubby(0, 100, 0.5, 1, " %");
             spin->setValue(static_cast<double>(mask.maskOpacity * 100.0f));
@@ -593,8 +604,9 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
             lay->setContentsMargins(36, 2, 6, 2);
             lay->setSpacing(6);
             auto* lbl = new QLabel("Mask Expansion", w);
-            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary)));
+            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
             lay->addWidget(lbl);
             auto* spin = createScrubby(-500, 500, 0.5, 1, " px");
             spin->setValue(static_cast<double>(mask.expansion));
@@ -625,9 +637,10 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
             chk->setChecked(mask.inverted);
             chk->setFixedHeight(28);
             chk->setStyleSheet(QStringLiteral(
-                "QCheckBox { color: %1; font-size: 12px; padding-left: 36px; background: transparent; }"
+                "QCheckBox { color: %1; font-size: %2px; padding-left: 36px; background: transparent; }"
                 "QCheckBox::indicator { width: 14px; height: 14px; }")
-                .arg(Theme::hex(tc.textPrimary)));
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
             connect(chk, &QCheckBox::toggled, this, [this, mi](bool checked) {
                 if (m_clip && mi < m_clip->maskCount()) {
                     Clip* clip = m_clip;
@@ -688,10 +701,12 @@ void EffectControlsPanel::buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx)
         loadBtn->setFixedHeight(22);
         loadBtn->setStyleSheet(QStringLiteral(
             "QPushButton { background: %1; color: %2; border: 1px solid %3; "
-            "border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+            "border-radius: %5px; padding: 2px 8px; font-size: %6px; }"
             "QPushButton:hover { background: %4; }")
             .arg(Theme::hex(tc.surface3), Theme::hex(tc.textPrimary),
-                 Theme::hex(tc.controlBorder), Theme::hex(tc.controlBgHover)));
+                 Theme::hex(tc.controlBorder), Theme::hex(tc.controlBgHover))
+            .arg(Theme::metrics().radiusSm)
+            .arg(Theme::typography().sizeXxs));
         lutLayout->addWidget(loadBtn);
 
         QString loadedPath;
@@ -703,9 +718,10 @@ void EffectControlsPanel::buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx)
             ? QStringLiteral("No LUT loaded")
             : QFileInfo(loadedPath).fileName(), lutWidget);
         pathLabel->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 11px; background: transparent;")
+            "color: %1; font-size: %2px; background: transparent;")
             .arg(loadedPath.isEmpty() ? Theme::hex(tc.textTertiary)
-                                      : Theme::hex(tc.textSecondary)));
+                                      : Theme::hex(tc.textSecondary))
+            .arg(Theme::typography().sizeXxs));
         pathLabel->setToolTip(loadedPath);
         lutLayout->addWidget(pathLabel, 1);
 
@@ -722,8 +738,9 @@ void EffectControlsPanel::buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx)
                     pathLabel->setText(QFileInfo(filePath).fileName());
                     pathLabel->setToolTip(filePath);
                     pathLabel->setStyleSheet(QStringLiteral(
-                        "color: %1; font-size: 11px; background: transparent;")
-                        .arg(Theme::hex(Theme::colors().textSecondary)));
+                        "color: %1; font-size: %2px; background: transparent;")
+                        .arg(Theme::hex(Theme::colors().textSecondary))
+                        .arg(Theme::typography().sizeXxs));
                     emit propertyChanged();
                 }
             });
@@ -762,16 +779,19 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
     col->setContentsMargins(36, 4, 6, 4);
     col->setSpacing(4);
 
-    const QString lblCss = QStringLiteral("color: %1; font-size: 11px; background: transparent;")
-        .arg(Theme::hex(tc.textSecondary));
+    const QString lblCss = QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+        .arg(Theme::hex(tc.textSecondary))
+        .arg(Theme::typography().sizeXxs);
 
     const QString comboCss = QStringLiteral(
         "QComboBox { background: %1; color: %2; border: 1px solid %3; "
-        "border-radius: 3px; padding: 1px 4px; font-size: 11px; }"
+        "border-radius: %5px; padding: 1px 4px; font-size: %6px; }"
         "QComboBox QAbstractItemView { background: %1; color: %2; "
         "selection-background-color: %4; }")
         .arg(Theme::hex(tc.inputBg), Theme::hex(tc.textPrimary),
-             Theme::hex(tc.controlBorder), Theme::hex(tc.accent));
+             Theme::hex(tc.controlBorder), Theme::hex(tc.accent))
+        .arg(Theme::metrics().radiusSm)
+        .arg(Theme::typography().sizeXxs);
 
     auto* beatFx = static_cast<BeatReactEffect*>(&fx);
 
@@ -947,10 +967,12 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
     detectBtn->setFixedHeight(22);
     detectBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3; "
-        "border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+        "border-radius: %5px; padding: 2px 8px; font-size: %6px; }"
         "QPushButton:hover { background: %4; }")
         .arg(Theme::hex(tc.surface3), Theme::hex(tc.textPrimary),
-             Theme::hex(tc.controlBorder), Theme::hex(tc.controlBgHover)));
+             Theme::hex(tc.controlBorder), Theme::hex(tc.controlBgHover))
+        .arg(Theme::metrics().radiusSm)
+        .arg(Theme::typography().sizeXxs));
     btnLay->addWidget(detectBtn);
 
     auto* status = new QLabel(box);
@@ -1105,8 +1127,9 @@ void EffectControlsPanel::buildLetterboxUI(Effect& fx, size_t effectIdx, int& ro
 
         auto* presetLabel = new QLabel(QStringLiteral("Aspect Ratio"), presetWidget);
         presetLabel->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 12px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary)));
+            "color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
         presetLayout->addWidget(presetLabel);
 
         auto* presetCombo = new QComboBox(presetWidget);
@@ -1115,11 +1138,13 @@ void EffectControlsPanel::buildLetterboxUI(Effect& fx, size_t effectIdx, int& ro
             presetCombo->addItem(QString::fromUtf8(presets[i].label));
         presetCombo->setStyleSheet(QStringLiteral(
             "QComboBox { background: %1; color: %2; border: 1px solid %3; "
-            "border-radius: 3px; padding: 1px 4px; font-size: 11px; }"
+            "border-radius: %5px; padding: 1px 4px; font-size: %6px; }"
             "QComboBox:hover { border-color: %4; }"
             "QComboBox::drop-down { border: none; width: 16px; }")
             .arg(Theme::hex(tc.inputBg), Theme::hex(tc.textPrimary),
-                 Theme::hex(tc.controlBorder), Theme::hex(tc.accent)));
+                 Theme::hex(tc.controlBorder), Theme::hex(tc.accent))
+            .arg(Theme::metrics().radiusSm)
+            .arg(Theme::typography().sizeXxs));
         presetLayout->addWidget(presetCombo, 1);
 
         m_propLayout->addWidget(presetWidget);

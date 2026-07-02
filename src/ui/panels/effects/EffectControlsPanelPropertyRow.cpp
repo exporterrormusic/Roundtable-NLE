@@ -139,9 +139,10 @@ void PropertyRow::buildUI()
     m_expandBtn->setFixedSize(14, 18);
     m_expandBtn->setCheckable(true);
     m_expandBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { background: transparent; color: %1; border: none; font-size: 11px; padding: 0; }"
+        "QToolButton { background: transparent; color: %1; border: none; font-size: %3px; padding: 0; }"
         "QToolButton:checked { color: %2; }")
-        .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary)));
+        .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary))
+        .arg(Theme::typography().sizeXxs));
     layout->addWidget(m_expandBtn);
 
     // Stopwatch / clock icon (keyframe toggle)
@@ -171,8 +172,9 @@ void PropertyRow::buildUI()
     m_nameLabel = new QLabel(m_name, this);
     m_nameLabel->setMinimumWidth(90);
     m_nameLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: %1; font-size: 12px; background: transparent; padding-left: 2px; }")
-        .arg(Theme::hex(tc.textPrimary)));
+        "QLabel { color: %1; font-size: %2px; background: transparent; padding-left: 2px; }")
+        .arg(Theme::hex(tc.textPrimary))
+        .arg(Theme::typography().sizeXs));
     layout->addWidget(m_nameLabel);
 
     // Value area (populated by addValueWidget / addValuePair)
@@ -183,11 +185,12 @@ void PropertyRow::buildUI()
 
     // Keyframe navigation: ◀ ◆ ▶
     auto kfBtnStyle = QStringLiteral(
-        "QToolButton { background: transparent; color: %1; border: none; font-size: 11px; padding: 0; }"
+        "QToolButton { background: transparent; color: %1; border: none; font-size: %4px; padding: 0; }"
         "QToolButton:hover { color: %2; }"
         "QToolButton:disabled { color: %3; }")
         .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary),
-             Theme::hex(tc.textTertiary));
+             Theme::hex(tc.textTertiary))
+        .arg(Theme::typography().sizeXxs);
 
     m_prevKfBtn = new QToolButton(this);
     m_prevKfBtn->setText(QStringLiteral("\u25C0")); // ◀
@@ -221,9 +224,10 @@ void PropertyRow::buildUI()
     m_resetBtn->setFixedSize(16, 22);
     m_resetBtn->setToolTip(tr("Reset %1 to default").arg(m_name));
     m_resetBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { background: transparent; color: %1; border: none; font-size: 12px; padding: 0; }"
+        "QToolButton { background: transparent; color: %1; border: none; font-size: %3px; padding: 0; }"
         "QToolButton:hover { color: %2; }")
-        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.warning)));
+        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.warning))
+        .arg(Theme::typography().sizeXs));
     connect(m_resetBtn, &QToolButton::clicked, this, [this]() {
         emit resetRequested();
     });

@@ -658,7 +658,9 @@ void ThumbnailGrid::paintEvent(QPaintEvent* event)
             offlineFont.setPixelSize(std::max(10, static_cast<int>(11 * m_zoom)));
             offlineFont.setBold(true);
             p.setFont(offlineFont);
-            p.setPen(QColor(255, 255, 255, 230));
+            QColor offlineText = tc.textBright;
+            offlineText.setAlpha(230);
+            p.setPen(offlineText);
             p.drawText(thumbRect, Qt::AlignCenter, "MEDIA\nOFFLINE");
             p.setFont(QFont());  // reset
         }

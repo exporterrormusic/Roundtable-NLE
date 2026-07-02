@@ -321,20 +321,23 @@ void ProjectPanel::populateOpenList()
 
         auto* nameLabel = new QLabel(fi.baseName());
         nameLabel->setStyleSheet(QStringLiteral(
-            "font-size: 15px; font-weight: 600; color: %1; background: transparent;")
+            "font-size: %1px; font-weight: 600; color: %2; background: transparent;")
+            .arg(Theme::typography().sizeCaption)
             .arg(Theme::rgb(c.textPrimary)));
         nameLabel->setWordWrap(true);
         infoLayout->addWidget(nameLabel);
 
         auto* dateLabel = new QLabel(formatDate(fi.lastModified()));
         dateLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; color: %1; background: transparent;")
+            "font-size: %1px; color: %2; background: transparent;")
+            .arg(Theme::typography().sizeXs)
             .arg(Theme::rgb(c.textSecondary)));
         infoLayout->addWidget(dateLabel);
 
         auto* sizeLabel = new QLabel(formatFileSize(fi.size()));
         sizeLabel->setStyleSheet(QStringLiteral(
-            "font-size: 12px; color: %1; background: transparent;")
+            "font-size: %1px; color: %2; background: transparent;")
+            .arg(Theme::typography().sizeXs)
             .arg(Theme::rgb(c.textTertiary)));
         infoLayout->addWidget(sizeLabel);
 

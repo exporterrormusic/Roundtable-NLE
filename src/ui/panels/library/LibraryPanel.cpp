@@ -88,12 +88,13 @@ FolderTabWidgets buildFolderTab(QWidget* parent, const QString& placeholder)
     search->setFixedHeight(22);
     search->setStyleSheet(
         QString("QLineEdit { background: %1; color: %2; border: 1px solid %3; "
-                "border-radius: %4px; padding: 2px 4px; font-size: 12px; }"
+                "border-radius: %4px; padding: 2px 4px; font-size: %6px; }"
                 "QLineEdit:focus { border: 1px solid %5; }")
             .arg(Theme::hex(tc.inputBg), Theme::hex(tc.text),
                  Theme::hex(tc.controlBorder),
                  QString::number(m.radiusSm),
-                 Theme::hex(tc.accent)));
+                 Theme::hex(tc.accent),
+                 QString::number(Theme::typography().sizeXs)));
     tlay->addWidget(search, 1);
 
     // View-mode toggle (Detail list / Icon thumbnails) — Premiere style.

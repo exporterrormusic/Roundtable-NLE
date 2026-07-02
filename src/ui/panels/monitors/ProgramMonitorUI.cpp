@@ -7,6 +7,7 @@
 
 #include "panels/monitors/ProgramMonitor.h"
 #include "playback/PlaybackScheduler.h"
+#include "PerformanceProfile.h"
 
 #include "Theme.h"
 #include "UiScale.h"
@@ -240,15 +241,18 @@ void ProgramMonitor::setupUI()
     m_playbackResCombo = monitorui::makePlaybackResCombo(this, /*withAuto=*/true);
     static constexpr int kAutoIdx = 4;
     // Restore the last-used playback resolution (Premiere-style: the
-    // dropdown reopens with whatever it was closed at). Defaults to 1/2
-    // (index 1, matches Half-tier decode) on first run. Set the divisor
-    // member directly too — setPlaybackTierCallback() fires once with
+    // dropdown reopens with whatever it was closed at). The FIRST-RUN
+    // default comes from the machine profile: Workstation-tier machines
+    // (editProxyScale >= 1.0) start at Full, everyone else at 1/2
+    // (index 1, matches Half-tier decode). Set the divisor member
+    // directly too — setPlaybackTierCallback() fires once with
     // m_playbackResDivisor on startup, so the restored tier must be in
     // place before the combo's currentIndexChanged slot is connected.
     {
+        const int firstRunIdx = (perfProfile().editProxyScale >= 1.0f) ? 0 : 1;
         int savedIdx = QSettings().value(
-            QStringLiteral("playback/resolutionIndex"), 1).toInt();
-        if (savedIdx < 0 || savedIdx > kAutoIdx) savedIdx = 1;
+            QStringLiteral("playback/resolutionIndex"), firstRunIdx).toInt();
+        if (savedIdx < 0 || savedIdx > kAutoIdx) savedIdx = firstRunIdx;
         static constexpr int kDivisors[] = {1, 2, 4, 8};
         // Auto starts at the same effective divisor as 1/2; the producer
         // takes it from there.  Anything else uses the manual table.
@@ -315,7 +319,8 @@ void ProgramMonitor::setupUI()
     // Dropped frame counter (Premiere Pro style yellow indicator)
     m_droppedFrameLabel = new QLabel(this);
     m_droppedFrameLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-size: 10px; font-weight: bold; color: #FFD700; padding: 0 4px; background: transparent; }")));
+        "QLabel { font-size: 10px; font-weight: bold; color: %1; padding: 0 4px; background: transparent; }")
+        .arg(Theme::hex(Theme::colors().warning))));
     m_droppedFrameLabel->setToolTip(tr("Dropped frames during playback"));
     m_droppedFrameLabel->hide(); // Hidden until drops occur
     controlLayout->addWidget(m_droppedFrameLabel, 0, Qt::AlignVCenter);

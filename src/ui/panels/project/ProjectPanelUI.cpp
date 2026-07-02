@@ -171,7 +171,8 @@ void ProjectPanel::buildIconRail()
         lbl->setAlignment(Qt::AlignCenter);
         lbl->setFixedHeight(20);
         lbl->setStyleSheet(QStringLiteral(
-            "font-size: 15px; color: %1; font-weight: 800;")
+            "font-size: %1px; color: %2; font-weight: 800;")
+            .arg(Theme::typography().sizeCaption)
             .arg(Theme::rgb(c.textPrimary)));
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);
 
@@ -445,7 +446,7 @@ void ProjectPanel::buildContentArea()
         btn->setEnabled(false);
         btn->setStyleSheet(QStringLiteral(
             "QPushButton { background: %1; color: %2; border: none;"
-            "  border-radius: %3px; font-size: 16px; font-weight: 700;"
+            "  border-radius: %3px; font-size: %7px; font-weight: 700;"
             "  padding: 10px 24px; }"
             "QPushButton:hover { background: %4; }"
             "QPushButton:disabled { background: %5; color: %6; opacity: 0.5; }")
@@ -454,7 +455,8 @@ void ProjectPanel::buildContentArea()
             .arg(m.radiusMd)
             .arg(Theme::rgb(hoverBg))
             .arg(Theme::rgb(c.surface2))
-            .arg(Theme::rgb(c.textTertiary)));
+            .arg(Theme::rgb(c.textTertiary))
+            .arg(t.sizeBody));
         return btn;
     };
 

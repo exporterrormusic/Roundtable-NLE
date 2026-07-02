@@ -93,7 +93,7 @@ void ScrubbySpinBox::applyPremiereStyle()
         "  border: none;"
         "  border-bottom: 1px solid transparent;"
         "  padding: 0px 4px;"
-        "  font-size: 12px;"
+        "  font-size: %7px;"
         "  font-family: 'Segoe UI', 'Arial', sans-serif;"
         "  selection-background-color: %3;"
         "  selection-color: %4;"
@@ -109,7 +109,8 @@ void ScrubbySpinBox::applyPremiereStyle()
         "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {"
         "  width: 0; height: 0; border: none;"
         "}"
-    ).arg(bg, val, sel, selT, focT, focB));
+    ).arg(bg, val, sel, selT, focT, focB,
+          QString::number(Theme::typography().sizeXs)));
     setAlignment(Qt::AlignVCenter | Qt::AlignRight);
 }
 

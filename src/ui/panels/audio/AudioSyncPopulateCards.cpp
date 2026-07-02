@@ -279,8 +279,9 @@ void AudioSync::populateCards()
         QString badgeColor = (matchState == 2) ? Theme::hex(_tc.successBtnBg)
                            : (matchState == 1) ? Theme::hex(_tc.warning) : Theme::hex(_tc.error);
         numLabel->setStyleSheet(
-            QString("QLabel { color: %2; font-weight: bold; font-size: 12px; "
-                    "background: %1; border-radius: %3px; border: none; }").arg(badgeColor, Theme::hex(_tc.textBright), _rad));
+            QString("QLabel { color: %2; font-weight: bold; font-size: %4px; "
+                    "background: %1; border-radius: %3px; border: none; }").arg(badgeColor, Theme::hex(_tc.textBright), _rad,
+                        QString::number(Theme::typography().sizeXs)));
         headerRow->addWidget(numLabel);
 
         QColor charColor = characterColor(line.character);
@@ -307,15 +308,15 @@ void AudioSync::populateCards()
         switch (matchState) {
         case 2:
             statusIcon->setText(QStringLiteral("\u2713"));
-            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 15px; border: none; }").arg(Theme::hex(_tc.success)));
+            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: %2px; border: none; }").arg(Theme::hex(_tc.success)).arg(Theme::typography().sizeCaption));
             break;
         case 1:
             statusIcon->setText("?");
-            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: 15px; border: none; }").arg(Theme::hex(_tc.warning)));
+            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; font-size: %2px; border: none; }").arg(Theme::hex(_tc.warning)).arg(Theme::typography().sizeCaption));
             break;
         default:
             statusIcon->setText(QStringLiteral("\u25CB"));
-            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-size: 15px; border: none; }").arg(Theme::hex(_tc.textDisabled)));
+            statusIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(_tc.textDisabled)).arg(Theme::typography().sizeCaption));
             break;
         }
         rightLayout->addWidget(statusIcon);
@@ -713,9 +714,10 @@ void AudioSync::populateCards()
                 btn->setCursor(Qt::PointingHandCursor);
                 btn->setStyleSheet(
                     QString("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                            "border-radius: %4px; font-size: 12px; padding: 2px 6px; }"
-                            "QPushButton:hover { border-color: %5; }")
-                        .arg(bg, Theme::hex(_tc.textSecondary), Theme::hex(_tc.controlBorder), _rad, Theme::hex(_tc.accent)));
+                            "border-radius: %4px; font-size: %5px; padding: 2px 6px; }"
+                            "QPushButton:hover { border-color: %6; }")
+                        .arg(bg, Theme::hex(_tc.textSecondary), Theme::hex(_tc.controlBorder), _rad,
+                             QString::number(Theme::typography().sizeXs), Theme::hex(_tc.accent)));
                 return btn;
             };
 
@@ -738,10 +740,11 @@ void AudioSync::populateCards()
             rejectBtn->setCursor(Qt::PointingHandCursor);
             rejectBtn->setStyleSheet(
                 QString("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                "border-radius: %4px; font-size: 12px; padding: 2px 6px; }"
-                "QPushButton:hover { border-color: %5; }").arg(
+                "border-radius: %4px; font-size: %5px; padding: 2px 6px; }"
+                "QPushButton:hover { border-color: %6; }").arg(
                     Theme::hex(_tc.dangerBg), Theme::hex(_tc.textSecondary),
-                    Theme::hex(_tc.controlBorder), _rad, Theme::hex(_tc.error)));
+                    Theme::hex(_tc.controlBorder), _rad,
+                    QString::number(Theme::typography().sizeXs), Theme::hex(_tc.error)));
             connect(rejectBtn, &QPushButton::clicked, this, [this, clipIdx]() {
                 if (clipIdx >= m_clips.size()) return;
                 struct Snap {
@@ -788,9 +791,10 @@ void AudioSync::populateCards()
             lineCombo->setFixedHeight(24);
             lineCombo->setStyleSheet(
                 QString("QComboBox { background: %1; color: %2; border: 1px solid %3; "
-                "padding: 2px 6px; border-radius: %4px; font-size: 12px; }").arg(
+                "padding: 2px 6px; border-radius: %4px; font-size: %5px; }").arg(
                     Theme::hex(_tc.inputBg), Theme::hex(_tc.textPrimary),
-                    Theme::hex(_tc.inputBorder), _rad));
+                    Theme::hex(_tc.inputBorder), _rad,
+                    QString::number(Theme::typography().sizeXs)));
             lineCombo->addItem("Reassign...");
             lineCombo->setCurrentIndex(0);
             QPointer<LazyComboBox> comboGuard(lineCombo);
@@ -897,9 +901,10 @@ void AudioSync::populateCards()
                 audioFileCombo->setFixedHeight(24);
                 audioFileCombo->setStyleSheet(
                     QString("QComboBox { background: %1; color: %2; border: 1px solid %3; "
-                    "padding: 2px 6px; border-radius: %4px; font-size: 12px; }").arg(
+                    "padding: 2px 6px; border-radius: %4px; font-size: %5px; }").arg(
                         Theme::hex(_tc.inputBg), Theme::hex(_tc.textPrimary),
-                        Theme::hex(_tc.inputBorder), _rad));
+                        Theme::hex(_tc.inputBorder), _rad,
+                        QString::number(Theme::typography().sizeXs)));
                 audioFileCombo->addItem("Audio file: auto");
                 // Build sorted list of (filename, full path) pairs
                 std::vector<std::pair<QString, QString>> sortedAudio;
@@ -961,9 +966,10 @@ void AudioSync::populateCards()
             assignCombo->setFixedHeight(24);
             assignCombo->setStyleSheet(
                 QString("QComboBox { background: %1; color: %2; border: 1px solid %3; "
-                "padding: 2px 6px; border-radius: %4px; font-size: 12px; }").arg(
+                "padding: 2px 6px; border-radius: %4px; font-size: %5px; }").arg(
                     Theme::hex(_tc.inputBg), Theme::hex(_tc.textPrimary),
-                    Theme::hex(_tc.inputBorder), _rad));
+                    Theme::hex(_tc.inputBorder), _rad,
+                    QString::number(Theme::typography().sizeXs)));
             assignCombo->addItem("Assign clip...");
             for (size_t i = 0; i < m_clips.size(); ++i) {
                 if (m_clips[i].scriptLineNumber < 0) {

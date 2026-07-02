@@ -90,13 +90,14 @@ QWidget* ShotComposer::createShotsColumn()
     listViewBtn->setChecked(true);
     listViewBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 3px; font-size: 12px; padding: 0; }"
+        "  border-radius: 3px; font-size: %6px; padding: 0; }"
         "QPushButton:checked { background: %4; color: %5; }")
         .arg(Theme::hex(c.surface0))
         .arg(Theme::hex(c.textSecondary))
         .arg(Theme::hex(c.border))
         .arg(Theme::hex(c.accent))
-        .arg(Theme::hex(c.textBright)));
+        .arg(Theme::hex(c.textBright))
+        .arg(Theme::typography().sizeXs));
     headerRow->addWidget(listViewBtn);
 
     auto* gridViewBtn = new QPushButton(QStringLiteral("\xe2\x96\xa4"));
@@ -117,10 +118,11 @@ QWidget* ShotComposer::createShotsColumn()
     m_shotSearchEdit->setClearButtonEnabled(true);
     m_shotSearchEdit->setStyleSheet(QStringLiteral(
         "QLineEdit { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 4px; padding: 4px 8px; font-size: 12px; }")
+        "  border-radius: 4px; padding: 4px 8px; font-size: %4px; }")
         .arg(Theme::hex(c.surface1))
         .arg(Theme::hex(c.text))
-        .arg(Theme::hex(c.border)));
+        .arg(Theme::hex(c.border))
+        .arg(Theme::typography().sizeXs));
     searchSortRow->addWidget(m_shotSearchEdit, 1);
 
     m_shotSortCombo = new QComboBox;
@@ -128,14 +130,15 @@ QWidget* ShotComposer::createShotsColumn()
     m_shotSortCombo->setFixedWidth(90);
     m_shotSortCombo->setStyleSheet(QStringLiteral(
         "QComboBox { background: %1; color: %2; border: 1px solid %3;"
-        "  border-radius: 4px; padding: 3px 6px; font-size: 11px; }"
+        "  border-radius: 4px; padding: 3px 6px; font-size: %5px; }"
         "QComboBox::drop-down { border: none; width: 16px; }"
         "QComboBox QAbstractItemView { background: %1; color: %2;"
         "  selection-background-color: %4; }")
         .arg(Theme::hex(c.surface1))
         .arg(Theme::hex(c.text))
         .arg(Theme::hex(c.border))
-        .arg(Theme::hex(c.accent)));
+        .arg(Theme::hex(c.accent))
+        .arg(Theme::typography().sizeXxs));
     searchSortRow->addWidget(m_shotSortCombo);
 
     colLayout->addLayout(searchSortRow);
@@ -242,7 +245,9 @@ QWidget* ShotComposer::createShotsColumn()
             // Gold left accent for default shots
             if (isDefault) {
                 painter->setPen(Qt::NoPen);
-                painter->setBrush(QColor(220, 180, 50, 120));
+                QColor goldAccent = Theme::colors().warning;
+                goldAccent.setAlpha(120);
+                painter->setBrush(goldAccent);
                 painter->drawRoundedRect(QRectF(contentR.left() + 3, contentR.top() + 6, 4, contentR.height() - 12), 2, 2);
             }
 
@@ -300,7 +305,7 @@ QWidget* ShotComposer::createShotsColumn()
             QString subText = parts.isEmpty() ? QString() : parts.join("  |  ");
             if (!subText.isEmpty()) {
                 QFont subFont = opt.font;
-                subFont.setPixelSize(15);
+                subFont.setPixelSize(Theme::typography().sizeCaption);
                 painter->setFont(subFont);
                 painter->setPen(QColor(140, 140, 140));
 

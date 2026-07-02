@@ -172,6 +172,8 @@ struct ThemeTypography
     int sizeBody{16};      ///< Normal labels, controls
     int sizeCaption{15};   ///< Metadata, secondary info
     int sizeSmall{14};     ///< Fine print, shortcut hints
+    int sizeXs{12};        ///< Compact controls, table cells, chips
+    int sizeXxs{11};       ///< Badges, count bubbles, dense toolbars
     int sizeMono{15};      ///< Timecodes
 
     // Weights (QFont::Weight values)

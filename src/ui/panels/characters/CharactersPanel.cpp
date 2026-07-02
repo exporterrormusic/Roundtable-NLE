@@ -92,12 +92,13 @@ void CharactersPanel::buildUI()
     m_searchEdit->setFixedHeight(22);
     m_searchEdit->setStyleSheet(
         QString("QLineEdit { background: %1; color: %2; border: 1px solid %3; "
-                "border-radius: %4px; padding: 2px 4px; font-size: 12px; }"
+                "border-radius: %4px; padding: 2px 4px; font-size: %6px; }"
                 "QLineEdit:focus { border: 1px solid %5; }")
             .arg(Theme::hex(tc.inputBg), Theme::hex(tc.text),
                  Theme::hex(tc.controlBorder),
                  QString::number(m.radiusSm),
-                 Theme::hex(tc.accent)));
+                 Theme::hex(tc.accent))
+            .arg(Theme::typography().sizeXs));
     toolbarLayout->addWidget(m_searchEdit, 1);
 
     // Debounced search — 200ms after last keystroke
@@ -183,8 +184,9 @@ void CharactersPanel::buildUI()
 
     m_statusLabel = new QLabel(QStringLiteral("0 items"), statusBar);
     m_statusLabel->setStyleSheet(
-        QString("QLabel { color: %1; font-size: 12px; background: transparent; border: none; }")
-            .arg(Theme::hex(tc.textSecondary)));
+        QString("QLabel { color: %1; font-size: %2px; background: transparent; border: none; }")
+            .arg(Theme::hex(tc.textSecondary))
+            .arg(Theme::typography().sizeXs));
     statusLayout->addWidget(m_statusLabel);
     statusLayout->addStretch();
 

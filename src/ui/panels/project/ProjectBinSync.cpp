@@ -198,8 +198,8 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             !item.filePath.empty() &&
             !std::filesystem::exists(item.filePath);
         if (isOffline) {
-            treeItem->setForeground(0, QColor(220, 60, 60));
-            treeItem->setForeground(1, QColor(220, 60, 60));
+            treeItem->setForeground(0, Theme::colors().error);
+            treeItem->setForeground(1, Theme::colors().error);
             QFont offlineFont = treeItem->font(0);
             offlineFont.setItalic(true);
             treeItem->setFont(0, offlineFont);

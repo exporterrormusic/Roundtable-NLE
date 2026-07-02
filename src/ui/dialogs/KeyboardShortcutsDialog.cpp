@@ -5,6 +5,7 @@
 #include "dialogs/KeyboardShortcutsDialog.h"
 #include "ShortcutManager.h"
 #include "Settings.h"
+#include "Theme.h"
 
 #include <QBoxLayout>
 #include <QDialogButtonBox>
@@ -144,7 +145,7 @@ void KeyboardShortcutsDialog::populateTree()
 
             // Highlight customized shortcuts
             if (action->currentKey != action->defaultKey) {
-                item->setForeground(1, QColor(0x4C, 0xAF, 0x50)); // green
+                item->setForeground(1, Theme::colors().success); // green
             }
         }
 
@@ -218,7 +219,7 @@ void KeyboardShortcutsDialog::finishCapture(const QKeySequence& key)
     // Highlight if customized
     const auto* action = m_manager.action(actionId);
     if (action && action->currentKey != action->defaultKey) {
-        m_capturingItem->setForeground(1, QColor(0x4C, 0xAF, 0x50));
+        m_capturingItem->setForeground(1, Theme::colors().success);
     } else {
         m_capturingItem->setForeground(1, QColor());
     }

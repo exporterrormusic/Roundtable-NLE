@@ -11,6 +11,7 @@
 #include "panels/characters/PuppetLibrary.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "timeline/PngPuppetClip.h"
+#include "Theme.h"
 
 #include <QCheckBox>
 #include <QDir>
@@ -143,7 +144,7 @@ protected:
         QPixmap pm = m_faces[static_cast<size_t>(face)];
         if (pm.isNull()) pm = m_faces[0];
         if (pm.isNull()) {
-            p.setPen(QColor(120, 120, 120));
+            p.setPen(Theme::colors().textTertiary);
             p.drawText(rect(), Qt::AlignCenter, QObject::tr("No faces yet"));
             return;
         }
@@ -217,9 +218,9 @@ public:
         const bool hover    = opt.state & QStyle::State_MouseOver;
 
         p->setPen(Qt::NoPen);
-        p->setBrush(selected ? QColor(0x2c, 0x3a, 0x55)
-                             : (hover ? QColor(0x2a, 0x2a, 0x2a)
-                                      : QColor(0x1d, 0x1d, 0x1d)));
+        p->setBrush(selected ? Theme::colors().accentSubtle
+                             : (hover ? Theme::colors().surface3
+                                      : Theme::colors().surface2));
         p->drawRoundedRect(box, 6, 6);
 
         p->setBrush(Qt::NoBrush);
@@ -249,7 +250,7 @@ public:
         if (!text.isEmpty()) {
             const QRect textRect(ir.left() + kMargin, thumbRect.bottom() + kGap,
                                  ir.width() - 2 * kMargin, kTextH);
-            p->setPen(selected ? QColor(0xff, 0xff, 0xff) : QColor(0xdc, 0xdc, 0xdc));
+            p->setPen(selected ? Theme::colors().textBright : Theme::colors().textPrimary);
             p->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap,
                         text);
         }
@@ -408,10 +409,13 @@ void PuppetLibraryPanel::buildEditableUI()
     root->setSpacing(8);
 
     const QString frameQss = QStringLiteral(
-        "QFrame#PuppetCol { background: #232323; border: 1px solid #3a3a3a;"
-        " border-radius: 6px; }");
+        "QFrame#PuppetCol { background: %1; border: 1px solid %2;"
+        " border-radius: 6px; }")
+        .arg(Theme::hex(Theme::colors().surface2),
+             Theme::hex(Theme::colors().borderLight));
     const QString titleQss = QStringLiteral(
-        "font-weight: bold; color: #dcdcdc; border: none; background: transparent;");
+        "font-weight: bold; color: %1; border: none; background: transparent;")
+        .arg(Theme::hex(Theme::colors().textPrimary));
 
     // Build one framed column (header + body layout). Returns the body layout so
     // the caller can fill it; the frame is already added to `root`.
@@ -480,7 +484,8 @@ void PuppetLibraryPanel::buildEditableUI()
             v->addWidget(cap);
 
             auto* addBtn = new QPushButton(tr("Add / Replace"));
-            addBtn->setStyleSheet(QStringLiteral("font-size: 11px; padding: 2px;"));
+            addBtn->setStyleSheet(QStringLiteral("font-size: %1px; padding: 2px;")
+                .arg(Theme::typography().sizeXxs));
             connect(addBtn, &QPushButton::clicked, this, [this, i]() {
                 const QString f = QFileDialog::getOpenFileName(
                     this, tr("Choose face PNG"), QString(),

@@ -205,7 +205,7 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
             p.setFont(QFont("Segoe UI"));
             {
                 auto fn = p.font();
-                fn.setPixelSize(11);
+                fn.setPixelSize(Theme::typography().sizeXxs);
                 fn.setWeight(QFont::Bold);
                 p.setFont(fn);
             }
@@ -221,7 +221,7 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
             p.setFont(QFont("Segoe UI"));
             {
                 auto fn = p.font();
-                fn.setPixelSize(11);
+                fn.setPixelSize(Theme::typography().sizeXxs);
                 fn.setWeight(QFont::Bold);
                 p.setFont(fn);
             }
@@ -234,7 +234,7 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
     p.setPen(tc.textDisabled);
     {
         QFont rulerFont("Segoe UI");
-        rulerFont.setPixelSize(11);
+        rulerFont.setPixelSize(Theme::typography().sizeXxs);
         p.setFont(rulerFont);
     }
 

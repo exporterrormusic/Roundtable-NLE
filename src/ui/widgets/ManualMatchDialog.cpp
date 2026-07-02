@@ -96,6 +96,11 @@ ManualMatchDialog::ManualMatchDialog(
     const auto dtx = Theme::hex(tc.dangerText);
     const int  rad = tm.radiusMd;
     const int  rl  = tm.radiusLg;
+    const auto& tt = Theme::typography();
+    const auto fsXs      = QString::number(tt.sizeXs);
+    const auto fsSmall   = QString::number(tt.sizeSmall);
+    const auto fsCaption = QString::number(tt.sizeCaption);
+    const auto fsBody    = QString::number(tt.sizeBody);
 
     setStyleSheet(
         "QDialog { background: " + s0 + "; border: 2px solid " + adm + "; border-radius: " + QString::number(rl) + "px; }"
@@ -119,18 +124,18 @@ ManualMatchDialog::ManualMatchDialog(
     titleLayout->setSpacing(8);
 
     auto* titleLabel = new QLabel("Manual Match");
-    titleLabel->setStyleSheet("color: " + acc + "; font-size: 14px; font-weight: bold; border: none;");
+    titleLabel->setStyleSheet("color: " + acc + "; font-size: " + fsSmall + "px; font-weight: bold; border: none;");
     titleLayout->addWidget(titleLabel);
 
     auto* shortcutHint = new QLabel("Space: Play/Pause    I: Set In    O: Set Out    Scroll: Zoom    Right-drag: Pan");
-    shortcutHint->setStyleSheet("color: " + td + "; font-size: 12px; border: none;");
+    shortcutHint->setStyleSheet("color: " + td + "; font-size: " + fsXs + "px; border: none;");
     titleLayout->addWidget(shortcutHint, 1);
 
     auto* closeTitleBtn = new QPushButton(QStringLiteral("\u2715"));
     closeTitleBtn->setFixedSize(28, 28);
     closeTitleBtn->setCursor(Qt::PointingHandCursor);
     closeTitleBtn->setStyleSheet(
-        "QPushButton { background: transparent; color: " + t3 + "; font-size: 16px; border: none; border-radius: 4px; }"
+        "QPushButton { background: transparent; color: " + t3 + "; font-size: " + fsBody + "px; border: none; border-radius: 4px; }"
         "QPushButton:hover { background: " + dbg + "; color: " + err + "; }");
     connect(closeTitleBtn, &QPushButton::clicked, this, [this]() {
         stopPreviewPlayback();
@@ -148,19 +153,19 @@ ManualMatchDialog::ManualMatchDialog(
 
     auto* lineNumLabel = new QLabel(QString("#%1").arg(lineNumber));
     lineNumLabel->setStyleSheet(
-        "QLabel { color: " + tb + "; font-weight: bold; font-size: 14px; "
+        "QLabel { color: " + tb + "; font-weight: bold; font-size: " + fsSmall + "px; "
         "background: " + s3 + "; border-radius: 4px; padding: 4px 10px; }");
     headerLayout->addWidget(lineNumLabel);
 
     auto* charLabel = new QLabel(QString::fromStdString(character));
     charLabel->setStyleSheet(
-        "QLabel { color: " + acc + "; font-weight: bold; font-size: 15px; }");
+        "QLabel { color: " + acc + "; font-weight: bold; font-size: " + fsCaption + "px; }");
     headerLayout->addWidget(charLabel);
 
     m_scriptLabel = new QLabel(QString::fromStdString(dialogue));
     m_scriptLabel->setWordWrap(true);
     m_scriptLabel->setStyleSheet(
-        "QLabel { color: " + t1 + "; font-size: 14px; padding-left: 8px; }");
+        "QLabel { color: " + t1 + "; font-size: " + fsSmall + "px; padding-left: 8px; }");
     headerLayout->addWidget(m_scriptLabel, 1);
     mainLayout->addWidget(headerFrame);
 
@@ -236,7 +241,7 @@ ManualMatchDialog::ManualMatchDialog(
     selRow->addWidget(m_selectionLabel, 1);
 
     auto smallBtnStyle = QString(
-        "QPushButton { background: " + adm + "; color: " + acc + "; font-size: 12px; font-weight: bold; "
+        "QPushButton { background: " + adm + "; color: " + acc + "; font-size: " + fsXs + "px; font-weight: bold; "
         "border: 1px solid " + adm + "; border-radius: " + QString::number(rad) + "px; }"
         "QPushButton:hover { background: " + Theme::hex(tc.accentHover) + "; }");
 
@@ -296,7 +301,7 @@ ManualMatchDialog::ManualMatchDialog(
     m_cancelBtn->setFixedHeight(40);
     m_cancelBtn->setFixedWidth(120);
     m_cancelBtn->setStyleSheet(
-        "QPushButton { background: " + s2 + "; color: " + t3 + "; font-size: 14px; "
+        "QPushButton { background: " + s2 + "; color: " + t3 + "; font-size: " + fsSmall + "px; "
         "border: 1px solid " + brl + "; border-radius: " + QString::number(rl) + "px; }"
         "QPushButton:hover { background: " + s3 + "; }");
     connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -309,7 +314,7 @@ ManualMatchDialog::ManualMatchDialog(
     m_confirmBtn->setFixedWidth(200);
     m_confirmBtn->setEnabled(false);
     m_confirmBtn->setStyleSheet(
-        "QPushButton { background: " + sbg + "; color: " + tb + "; font-size: 15px; font-weight: bold; "
+        "QPushButton { background: " + sbg + "; color: " + tb + "; font-size: " + fsCaption + "px; font-weight: bold; "
         "border: 2px solid " + sbh + "; border-radius: " + QString::number(rl) + "px; }"
         "QPushButton:hover { background: " + sbh + "; }"
         "QPushButton:disabled { background: " + s1 + "; color: " + td + "; border-color: " + brl + "; }");

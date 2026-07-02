@@ -647,12 +647,14 @@ void ProgramMonitor::onPollTimer()
         const int vramPct = m_vramQuery();
         if (vramPct > 90) {
             m_resOverlayLabel->setStyleSheet(
-                QStringLiteral("color: #FF4444; font-weight: bold; background: transparent;"));
+                QStringLiteral("color: %1; font-weight: bold; background: transparent;")
+                    .arg(Theme::hex(Theme::colors().error)));
             m_resOverlayLabel->setText(QStringLiteral("VRAM %1%").arg(vramPct));
             m_resOverlayLabel->setVisible(true);
         } else if (vramPct > 75) {
             m_resOverlayLabel->setStyleSheet(
-                QStringLiteral("color: #FFD700; background: transparent;"));
+                QStringLiteral("color: %1; background: transparent;")
+                    .arg(Theme::hex(Theme::colors().warning)));
             m_resOverlayLabel->setText(QStringLiteral("VRAM %1%").arg(vramPct));
             m_resOverlayLabel->setVisible(true);
         } else {
@@ -800,8 +802,8 @@ void ProgramMonitor::updateDisplay()
         if (drops <= 0) {
             m_dropIndicator->hide();
         } else {
-            QString color = (drops <= 5) ? QStringLiteral("#FFC107")
-                                         : QStringLiteral("#F44336");
+            QString color = (drops <= 5) ? Theme::hex(Theme::colors().warning)
+                                         : Theme::hex(Theme::colors().error);
             m_dropIndicator->setStyleSheet(
                 QString("QLabel { background: %1; border-radius: 5px; }").arg(color));
             m_dropIndicator->setToolTip(

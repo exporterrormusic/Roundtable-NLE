@@ -82,6 +82,7 @@ void ConversionPanel::setupUI()
 {
     const auto& c = Theme::colors();
     const auto& m = Theme::metrics();
+    const auto& t = Theme::typography();
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(m.spacingXl * 2, m.spacingXl, m.spacingXl * 2, m.spacingXl);
@@ -101,7 +102,8 @@ void ConversionPanel::setupUI()
         "playback. Characters with cached videos skip real-time Spine rendering.");
     desc->setWordWrap(true);
     desc->setStyleSheet(QStringLiteral(
-        "font-size: 15px; color: %1; padding: 4px 0 10px 0;")
+        "font-size: %1px; color: %2; padding: 4px 0 10px 0;")
+        .arg(t.sizeCaption)
         .arg(Theme::rgb(c.textSecondary)));
     layout->addWidget(desc);
 
@@ -117,7 +119,8 @@ void ConversionPanel::setupUI()
 
     m_overallLabel = new QLabel("Overall Progress: 0 / 0 animations cached");
     m_overallLabel->setStyleSheet(QStringLiteral(
-        "font-size: 16px; font-weight: 600; color: %1; border: none; background: transparent;")
+        "font-size: %1px; font-weight: 600; color: %2; border: none; background: transparent;")
+        .arg(t.sizeBody)
         .arg(Theme::rgb(c.textPrimary)));
     progressLayout->addWidget(m_overallLabel);
 
@@ -126,22 +129,26 @@ void ConversionPanel::setupUI()
     m_overallProgress->setValue(0);
     m_overallProgress->setMinimumHeight(28);
     m_overallProgress->setStyleSheet(QStringLiteral(
-        "QProgressBar { border: 1px solid %1; border-radius: 8px;"
-        "  background: %2; text-align: center; font-size: 14px;"
+        "QProgressBar { border: 1px solid %1; border-radius: %6px;"
+        "  background: %2; text-align: center; font-size: %7px;"
         "  font-weight: 600; color: %3; }"
         "QProgressBar::chunk { background: qlineargradient("
         "  x1:0, y1:0, x2:1, y2:0,"
         "  stop:0 %4, stop:1 %5);"
-        "  border-radius: 5px; }")
+        "  border-radius: %8px; }")
         .arg(Theme::rgb(c.border), Theme::rgb(c.surface0),
              Theme::rgb(c.textPrimary),
              Theme::rgb(c.accent),
-             Theme::rgb(c.accentDim)));
+             Theme::rgb(c.accentDim))
+        .arg(m.radiusLg)
+        .arg(t.sizeSmall)
+        .arg(m.radiusMd));
     progressLayout->addWidget(m_overallProgress);
 
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setStyleSheet(QStringLiteral(
-        "font-size: 14px; color: %1; border: none; background: transparent;")
+        "font-size: %1px; color: %2; border: none; background: transparent;")
+        .arg(t.sizeSmall)
         .arg(Theme::rgb(c.textTertiary)));
     progressLayout->addWidget(m_statusLabel);
 
@@ -153,7 +160,8 @@ void ConversionPanel::setupUI()
 
     auto* encoderLabel = new QLabel("Encoder Format:");
     encoderLabel->setStyleSheet(QStringLiteral(
-        "font-size: 15px; font-weight: 600; color: %1;")
+        "font-size: %1px; font-weight: 600; color: %2;")
+        .arg(t.sizeCaption)
         .arg(Theme::rgb(c.textPrimary)));
     encoderRow->addWidget(encoderLabel);
 
@@ -165,7 +173,7 @@ void ConversionPanel::setupUI()
     m_encoderCombo->setMinimumWidth(320);
     m_encoderCombo->setMinimumHeight(36);
     m_encoderCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { font-size: 14px; padding: 6px 12px;"
+        "QComboBox { font-size: %8px; padding: 6px 12px;"
         "  background: %1; color: %2; border: 1px solid %3;"
         "  border-radius: %4px; }"
         "QComboBox::drop-down { border: none; }"
@@ -174,7 +182,8 @@ void ConversionPanel::setupUI()
         .arg(Theme::rgb(c.surface1), Theme::rgb(c.textPrimary),
              Theme::rgb(c.border), QString::number(m.radiusMd),
              Theme::rgb(c.surface0), Theme::rgb(c.textPrimary),
-             Theme::rgb(c.accentDim)));
+             Theme::rgb(c.accentDim))
+        .arg(t.sizeSmall));
     m_encoderCombo->setToolTip(
         "Green Screen: Character rendered on solid #00FF00 background. Key it out in your editing software.\n"
         "Blue Screen: Character rendered on solid #0000FF background.\n"
@@ -243,8 +252,10 @@ void ConversionPanel::setupUI()
     // ── Hide-converted toggle ───────────────────────────────────────────
     m_hideConvertedCheck = new QCheckBox("Hide fully converted");
     m_hideConvertedCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { font-size: 14px; color: %1; spacing: 8px; }")
-        .arg(Theme::rgb(c.textSecondary)));
+        "QCheckBox { font-size: %1px; color: %2; spacing: %3px; }")
+        .arg(t.sizeSmall)
+        .arg(Theme::rgb(c.textSecondary))
+        .arg(m.spacingMd));
     m_hideConvertedCheck->setToolTip(
         "Hide characters where all animations are already cached");
     connect(m_hideConvertedCheck, &QCheckBox::toggled,
@@ -274,19 +285,21 @@ void ConversionPanel::setupUI()
 
     m_table->setStyleSheet(QStringLiteral(
         "QTreeWidget { background: %1; border: 1px solid %2; border-radius: %3px;"
-        "  font-size: 15px; outline: none; }"
+        "  font-size: %10px; outline: none; }"
         "QTreeWidget::item { padding: 8px 12px; min-height: 36px; }"
         "QTreeWidget::item:selected { background: %4; }"
         "QTreeWidget::item:hover { background: %5; }"
         "QHeaderView::section { background: %6; color: %7;"
-        "  font-size: 14px; font-weight: 600; padding: 10px 14px;"
+        "  font-size: %11px; font-weight: 600; padding: 10px 14px;"
         "  border: none; border-bottom: 2px solid %8;"
         "  border-right: 1px solid %9; }")
         .arg(Theme::rgb(c.surface0), Theme::rgb(c.border),
              QString::number(m.radiusMd),
              Theme::rgb(c.accentDim), Theme::rgb(c.surface2),
              Theme::rgb(c.surface1), Theme::rgb(c.textPrimary),
-             Theme::rgb(c.accent), Theme::rgb(c.border)));
+             Theme::rgb(c.accent), Theme::rgb(c.border))
+        .arg(t.sizeCaption)
+        .arg(t.sizeSmall));
 
     // Enable context menu on the table
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -306,7 +319,7 @@ void ConversionPanel::setupUI()
     m_convertAllBtn->setMinimumWidth(220);
     m_convertAllBtn->setCursor(Qt::PointingHandCursor);
     m_convertAllBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 16px; font-weight: 700; padding: 12px 28px;"
+        "QPushButton { font-size: %7px; font-weight: 700; padding: 12px 28px;"
         "  background: %1; color: white; border-radius: %2px; border: none; }"
         "QPushButton:hover { background: %3; }"
         "QPushButton:pressed { background: %4; }"
@@ -316,7 +329,8 @@ void ConversionPanel::setupUI()
         .arg(Theme::rgb(c.accentHover))
         .arg(Theme::rgb(c.accentDim))
         .arg(Theme::rgb(c.surface2))
-        .arg(Theme::rgb(c.textTertiary)));
+        .arg(Theme::rgb(c.textTertiary))
+        .arg(t.sizeBody));
     m_convertAllBtn->setToolTip(
         "Queue all downloaded characters for video cache conversion");
     connect(m_convertAllBtn, &QPushButton::clicked,
@@ -330,7 +344,7 @@ void ConversionPanel::setupUI()
     convertSelectedBtn->setMinimumWidth(220);
     convertSelectedBtn->setCursor(Qt::PointingHandCursor);
     convertSelectedBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 16px; font-weight: 600; padding: 12px 28px;"
+        "QPushButton { font-size: %6px; font-weight: 600; padding: 12px 28px;"
         "  background: transparent; color: %1; border: 2px solid %2;"
         "  border-radius: %3px; }"
         "QPushButton:hover { background: %4; }"
@@ -339,7 +353,8 @@ void ConversionPanel::setupUI()
         .arg(Theme::rgb(c.accent))
         .arg(m.radiusLg)
         .arg(Theme::rgb(c.surface2))
-        .arg(Theme::rgb(c.accentDim)));
+        .arg(Theme::rgb(c.accentDim))
+        .arg(t.sizeBody));
     convertSelectedBtn->setToolTip(
         "Convert only the selected characters in the table");
     connect(convertSelectedBtn, &QPushButton::clicked, this, [this]() {
@@ -374,12 +389,16 @@ void ConversionPanel::setupUI()
     m_cancelBtn->setCursor(Qt::PointingHandCursor);
     m_cancelBtn->setVisible(false);
     m_cancelBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 16px; font-weight: 600; padding: 12px 28px;"
-        "  background: transparent; color: #d65555; border: 2px solid #d65555;"
+        "QPushButton { font-size: %2px; font-weight: 600; padding: 12px 28px;"
+        "  background: transparent; color: %3; border: 2px solid %3;"
         "  border-radius: %1px; }"
-        "QPushButton:hover { background: rgba(214, 85, 85, 0.18); }"
-        "QPushButton:pressed { background: rgba(214, 85, 85, 0.32); }")
-        .arg(m.radiusLg));
+        "QPushButton:hover { background: %4; }"
+        "QPushButton:pressed { background: %5; }")
+        .arg(m.radiusLg)
+        .arg(t.sizeBody)
+        .arg(Theme::hex(c.error))
+        .arg(Theme::rgba(c.error, 46))
+        .arg(Theme::rgba(c.error, 82)));
     m_cancelBtn->setToolTip("Cancel all ongoing and queued conversions");
     connect(m_cancelBtn, &QPushButton::clicked,
             this, &ConversionPanel::onCancelClicked);
@@ -396,12 +415,16 @@ void ConversionPanel::setupUI()
     deleteSelectedBtn->setMinimumWidth(220);
     deleteSelectedBtn->setCursor(Qt::PointingHandCursor);
     deleteSelectedBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 16px; font-weight: 600; padding: 12px 28px;"
-        "  background: transparent; color: #d65555; border: 2px solid #d65555;"
+        "QPushButton { font-size: %2px; font-weight: 600; padding: 12px 28px;"
+        "  background: transparent; color: %3; border: 2px solid %3;"
         "  border-radius: %1px; }"
-        "QPushButton:hover { background: rgba(214, 85, 85, 0.18); }"
-        "QPushButton:pressed { background: rgba(214, 85, 85, 0.32); }")
-        .arg(m.radiusLg));
+        "QPushButton:hover { background: %4; }"
+        "QPushButton:pressed { background: %5; }")
+        .arg(m.radiusLg)
+        .arg(t.sizeBody)
+        .arg(Theme::hex(c.error))
+        .arg(Theme::rgba(c.error, 46))
+        .arg(Theme::rgba(c.error, 82)));
     deleteSelectedBtn->setToolTip(
         "Delete the converted video cache for the selected character outfits.\n"
         "Source Spine / Live2D assets are NOT touched.");
@@ -459,7 +482,8 @@ void ConversionPanel::setupUI()
     m_refreshBtn->setMinimumHeight(52);
     m_refreshBtn->setCursor(Qt::PointingHandCursor);
     m_refreshBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { font-size: 15px; font-weight: 600; padding: 12px 24px; }"));
+        "QPushButton { font-size: %1px; font-weight: 600; padding: 12px 24px; }")
+        .arg(t.sizeCaption));
     m_refreshBtn->setToolTip("Refresh conversion status");
     connect(m_refreshBtn, &QPushButton::clicked,
             this, &ConversionPanel::onRefreshClicked);
@@ -580,7 +604,7 @@ void ConversionPanel::refreshTable()
             // Status text + coloring
             if (animCount == 0) {
                 item->setText(5, "N/A");
-                item->setForeground(5, QColor(Theme::rgb(c.textTertiary)));
+                item->setForeground(5, c.textTertiary);
             } else if (static_cast<int>(cachedCount) >= animCount) {
                 item->setText(5, QStringLiteral("\xE2\x9C\x85  Complete"));
                 item->setForeground(5, QColor(100, 220, 100));

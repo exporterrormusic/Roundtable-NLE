@@ -85,12 +85,23 @@ static const char* kTierReorderMime = "application/x-roundtable-tierreorder";
 static constexpr int kTlSubbinRole = Qt::UserRole + 2;
 
 // Shared style for the Set Start / Set End buttons — clear hover so it's obvious
-// which one the cursor is over.
-static const char* kTlBtnStyle =
-    "QPushButton{ background:#33343E; color:#DCDCE4; border:1px solid #45464F;"
-    "             border-radius:3px; padding:2px 10px; }"
-    "QPushButton:hover{ background:#4A6CD4; border-color:#6A8CF4; color:#FFFFFF; }"
-    "QPushButton:pressed{ background:#3858B8; }";
+// which one the cursor is over. Built lazily so Theme is initialized first.
+static QString tlBtnStyle()
+{
+    static const QString s = QStringLiteral(
+        "QPushButton{ background:%1; color:%2; border:1px solid %3;"
+        "             border-radius:3px; padding:2px 10px; }"
+        "QPushButton:hover{ background:%4; border-color:%5; color:%6; }"
+        "QPushButton:pressed{ background:%7; }")
+        .arg(Theme::hex(Theme::colors().controlBg))
+        .arg(Theme::hex(Theme::colors().textPrimary))
+        .arg(Theme::hex(Theme::colors().borderLight))
+        .arg(Theme::hex(Theme::colors().accent))
+        .arg(Theme::hex(Theme::colors().accentHover))
+        .arg(Theme::hex(Theme::colors().textBright))
+        .arg(Theme::hex(Theme::colors().accentDim));
+    return s;
+}
 
 // ── file-local helpers ──────────────────────────────────────────────────────
 
@@ -178,7 +189,7 @@ static QFrame* tlSep()
     auto* f = new QFrame();
     f->setFrameShape(QFrame::VLine);
     f->setFrameShadow(QFrame::Plain);
-    f->setStyleSheet("color:#3A3A44;");
+    f->setStyleSheet(QStringLiteral("color:%1;").arg(Theme::hex(Theme::colors().borderLight)));
     f->setFixedWidth(6);
     return f;
 }
@@ -564,7 +575,7 @@ void TierListPanel::buildUI()
         m_titleEdit = new QLineEdit();
         m_titleEdit->setPlaceholderText(QStringLiteral("Vertical side label (e.g. TIER LIST)"));
         auto* gridBtn = new QPushButton(QStringLiteral("Grid…"));
-        gridBtn->setStyleSheet(kTlBtnStyle);
+        gridBtn->setStyleSheet(tlBtnStyle());
         gridBtn->setToolTip(QStringLiteral("Tiers, entry shape, background and safe margins"));
         gridBtn->setCursor(Qt::PointingHandCursor);
         titleRow->addWidget(tlbl);
@@ -642,14 +653,15 @@ void TierListPanel::buildUI()
     {
         const QString smallBtnStyle = QStringLiteral(
             "QToolButton { background: transparent; border: none; color: %1; "
-            "font-size: 12px; padding: 2px; border-radius: 3px; }"
+            "font-size: %6px; padding: 2px; border-radius: 3px; }"
             "QToolButton:hover { background: %2; color: %3; }"
             "QToolButton:checked { background: %4; color: %5; }")
             .arg(Theme::hex(Theme::colors().textTertiary))
             .arg(Theme::hex(Theme::colors().controlBgHover))
             .arg(Theme::hex(Theme::colors().textPrimary))
             .arg(Theme::hex(Theme::colors().accentSubtle))
-            .arg(Theme::hex(Theme::colors().textBright));
+            .arg(Theme::hex(Theme::colors().textBright))
+            .arg(Theme::typography().sizeXs);
 
         auto* bottomBar = new QWidget(poolWrap);
         bottomBar->setFixedHeight(26);
@@ -1027,7 +1039,7 @@ void TierListPanel::rebuildPool()
             row->setForeground(1, QColor(0x11, 0x11, 0x11));
         } else {
             row->setText(1, QStringLiteral("—"));
-            row->setForeground(1, QColor(0x77, 0x77, 0x80));
+            row->setForeground(1, Theme::colors().textTertiary);
         }
         row->setTextAlignment(1, Qt::AlignCenter);
 
@@ -1035,7 +1047,7 @@ void TierListPanel::rebuildPool()
         const bool isUsed = used.count(e.id) > 0;
         row->setText(2, isUsed ? QStringLiteral("✓") : QString());
         row->setTextAlignment(2, Qt::AlignCenter);
-        if (isUsed) row->setForeground(2, QColor(0x4C, 0xC2, 0x6A));
+        if (isUsed) row->setForeground(2, Theme::colors().success);
         row->setToolTip(2, isUsed ? QStringLiteral("Used in the events")
                                   : QStringLiteral("Not used yet"));
     }
@@ -1073,7 +1085,8 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     auto* row = new QWidget();
     row->setObjectName(QStringLiteral("tlEventRow"));
     row->setAttribute(Qt::WA_StyledBackground, true);
-    row->setStyleSheet(QStringLiteral("#tlEventRow{ background:#202028; border-radius:4px; }"));
+    row->setStyleSheet(QStringLiteral("#tlEventRow{ background:%1; border-radius:4px; }")
+        .arg(Theme::hex(Theme::colors().surface2)));
     row->setMinimumHeight(40);
     auto* h = new QHBoxLayout(row);
     h->setContentsMargins(8, 7, 8, 7);
@@ -1152,7 +1165,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     auto* endTime   = new QLabel(tlTc(ev.end));
     for (QPushButton* b : { setStart, setEnd }) {
         b->setMinimumHeight(26);
-        b->setStyleSheet(kTlBtnStyle);
+        b->setStyleSheet(tlBtnStyle());
         b->setCursor(Qt::PointingHandCursor);
     }
     for (QLabel* t : { startTime, endTime }) {
@@ -1199,11 +1212,16 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     del->setFixedSize(26, 26);
     del->setCursor(Qt::PointingHandCursor);
     del->setToolTip(QStringLiteral("Delete event"));
-    del->setStyleSheet(
-        "QPushButton{ background:#33343E; color:#CCC; border:1px solid #45464F; border-radius:3px;"
+    del->setStyleSheet(QStringLiteral(
+        "QPushButton{ background:%1; color:%2; border:1px solid %3; border-radius:3px;"
         "             font-weight:bold; padding:0px; text-align:center; }"
-        "QPushButton:hover{ background:#C0453C; border-color:#D9564C; color:white; }"
-        "QPushButton:pressed{ background:#A03A32; }");
+        "QPushButton:hover{ background:%4; border-color:#D9564C; color:%5; }"
+        "QPushButton:pressed{ background:#A03A32; }")
+        .arg(Theme::hex(Theme::colors().controlBg))
+        .arg(Theme::hex(Theme::colors().textPrimary))
+        .arg(Theme::hex(Theme::colors().borderLight))
+        .arg(Theme::hex(Theme::colors().error))
+        .arg(Theme::hex(Theme::colors().textBright)));
     h->addWidget(del, 0, Qt::AlignVCenter);
     connect(del, &QPushButton::clicked, this, [this, eventIndex]() {
         if (!m_clip || eventIndex >= m_clip->events().size()) return;
@@ -1240,7 +1258,8 @@ void TierListPanel::rebuildEvents()
         auto* hint = new QLabel(QStringLiteral(
             "Drag an entry from the pool onto a tier row to create a Popup + Drop."));
         hint->setWordWrap(true);
-        hint->setStyleSheet("color:#777; padding:6px;");
+        hint->setStyleSheet(QStringLiteral("color:%1; padding:6px;")
+            .arg(Theme::hex(Theme::colors().textTertiary)));
         m_eventsLayout->addWidget(hint);
     } else {
         for (size_t oi : order)
