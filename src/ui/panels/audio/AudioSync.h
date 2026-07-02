@@ -262,6 +262,9 @@ signals:
     void transcriptionFailed(const QString& error);
     void syncCompleted(int matchCount, int totalCount);
     void exportRequested();
+    /// One-click re-export: repeat the last export (same show, same
+    /// sequence) with no prompts; MainWindow owns the settings lookup.
+    void reExportRequested();
 
 private slots:
     void onLoadScriptClicked();
@@ -269,6 +272,7 @@ private slots:
     void onTranscribeClicked();
     void onAutoSyncClicked();
     void onExportClicked();
+    void onReExportClicked();
     void onTranscriptionProgress(float percent, const QString& status);
     void onTranscriptionFinished(bool success);
     void onTranscriptionError(const QString& error);
@@ -474,6 +478,7 @@ private:
     QPushButton*  m_unconfirmAllActionBtn{nullptr};
     QPushButton*  m_clearActionBtn{nullptr};
     QPushButton*  m_exportActionBtn{nullptr};
+    QPushButton*  m_reExportActionBtn{nullptr};
     QLabel*       m_statusLabel{nullptr};
 
     // Smart Bar (top) — kept for updateSmartBar compat

@@ -921,6 +921,11 @@ void writeClip(BinaryWriter& w, const Clip& clip)
     // Maintain pitch flag (v7+)
     w.writeU8(clip.maintainPitch() ? 1 : 0);
 
+    // AudioSync export back-link (v29+). No writeI32 exists, so the int
+    // round-trips through writeU32 (-1 <-> 0xFFFFFFFF), same as v27's
+    // audioStreamIndex.
+    w.writeU32(static_cast<uint32_t>(clip.syncLine()));
+
     // Type-specific fields — dispatched through the per-type registry
     if (const TypeSerializer* ts = serializerFor(clip.clipType()))
         ts->writeFields(w, clip);
@@ -1079,6 +1084,12 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
     // Maintain pitch flag (v7+)
     if (version >= 7)
         clip->setMaintainPitch(r.readU8() != 0);
+
+    // AudioSync export back-link (v29+). Pre-v29 clips keep the -1 default
+    // (= not export-owned), so the first re-export on a legacy timeline
+    // falls back to the full/clean path.
+    if (version >= 29)
+        clip->setSyncLine(static_cast<int32_t>(r.readU32()));
 
     // Type-specific fields — dispatched through the per-type registry
     ts->readFields(r, *clip, version);

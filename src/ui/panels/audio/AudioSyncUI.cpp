@@ -964,6 +964,15 @@ void AudioSync::setupUi()
         .arg(txtD).arg(t.sizeXs));
     actionBarLayout->addWidget(m_statusLabel);
 
+    m_reExportActionBtn = makeActionBtn(
+        "\u21bb  Re-export", c.surface3, c.surface2, c.textPrimary);
+    m_reExportActionBtn->setToolTip(
+        tr("Repeat the last export with no prompts \u2014 same show and sequence.\n"
+           "Updates changed clips in place and preserves your timeline edits\n"
+           "(shot swaps, effects, captions, music tracks)."));
+    connect(m_reExportActionBtn, &QPushButton::clicked, this, &AudioSync::onReExportClicked);
+    actionBarLayout->addWidget(m_reExportActionBtn);
+
     m_exportActionBtn = makeActionBtn(
         "\U0001F4E4  Export \u2192", c.successBtnBg, c.successBtnHover, c.textPrimary);
     connect(m_exportActionBtn, &QPushButton::clicked, this, &AudioSync::onExportClicked);

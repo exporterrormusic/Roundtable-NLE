@@ -73,7 +73,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 28;  // v28 = TierListClip (ranking board: grid + entry pool + timed POPUP/DROP/Reorder events)
+    static constexpr uint32_t FORMAT_VERSION = 29;  // v29 = per-clip AudioSync export back-link (syncLine) for non-destructive incremental re-export
+                                                    // v28 = TierListClip (ranking board: grid + entry pool + timed POPUP/DROP/Reorder events)
                                                     // v27 = per-clip audio stream index (multi-stream media: multicam / scratch+lav / OBS multi-track)
                                                     // v26 = PngPuppetClip (Veadotube-style 4-image PNG puppet character) type-specific fields
                                                     // v25 = per-sequence Settings (resolution/fps/colour/audio independent per sequence)

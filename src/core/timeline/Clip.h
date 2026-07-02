@@ -157,6 +157,14 @@ public:
     [[nodiscard]] const std::string& layerId() const noexcept { return m_layerId; }
     void setLayerId(const std::string& id) { m_layerId = id; }
 
+    /// AudioSync export back-link: the script line this clip was exported
+    /// for (audio clips: their own line; visual shot-group clips: the
+    /// group's FIRST line).  -1 = not created by the AudioSync export.
+    /// Drives the non-destructive incremental re-export — clips carrying
+    /// a line are updated in place, everything else is left untouched.
+    [[nodiscard]] int32_t syncLine() const noexcept { return m_syncLine; }
+    void setSyncLine(int32_t line) noexcept { m_syncLine = line; }
+
     [[nodiscard]] uint32_t color() const noexcept { return m_color; }
     void setColor(uint32_t rgba) noexcept { m_color = rgba; }
 
@@ -258,6 +266,7 @@ protected:
     std::string m_layerId;    ///< Layer within shot group
     uint64_t m_groupId{0};    ///< Non-zero = part of a shot group
     uint64_t m_linkId{0};     ///< Non-zero = linked A/V pair (move/select together)
+    int32_t  m_syncLine{-1};  ///< AudioSync export back-link (script line), -1 = none
     uint32_t m_color{0xFF888888};
     bool     m_enabled{true};
     bool     m_offline{false};

@@ -85,6 +85,7 @@
 #include <QButtonGroup>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSettings>
 #include <QTimer>
 
 #include "Settings.h"
@@ -171,8 +172,108 @@ void MainWindow::buildPanels()
         }
     });
 
+    // Stable per-project key for the re-export QSettings entries (path of
+    // a saved project; falls back to the project name for unsaved ones).
+    auto audioSyncProjectKey = [this]() -> QString {
+        if (!m_currentProject) return {};
+        const auto& p = m_currentProject->filePath();
+        if (!p.empty()) return QString::fromStdString(pathToUtf8(p));
+        return QString::fromStdString(m_currentProject->name());
+    };
+
+    // Shared post-export steps for both "Export →" and "Re-export":
+    // refresh the timeline UI, warm the Spine cache, force audio decode,
+    // register the VO bin entries and land on the Timeline page.
+    auto finishAudioSyncExport = [this](Timeline* targetTimeline, int count,
+                                        bool quiet) {
+        // Refresh the timeline UI. Use refreshTrackContents for lightweight
+        // update — audio export may have added new tracks, but rebuildTracks
+        // resets all track heights which the user has manually adjusted.
+        if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel()) {
+            auto* panel = m_timelineWorkspace->timelinePanel();
+            panel->rebuildTracks();
+            panel->notifyZoomChanged();
+        }
+
+        // ── Warm the Spine animation cache ─────────────────────────────
+        // Proactively queue pre-renders for unique character/outfit pairs
+        // on the timeline, so the timeline turns green (cached) immediately
+        // instead of staying orange (uncached).  Cap at 10 pairs to avoid
+        // flooding the cache worker with hundreds of jobs in large projects.
+        static constexpr int kMaxWarmChars = 10;
+        if (auto* cache = m_timelineWorkspace
+                ? m_timelineWorkspace->animVideoCacheMutable() : nullptr) {
+            std::set<std::pair<std::string, std::string>> queuedChars;
+            bool capped = false;
+            for (size_t ti = 0; ti < targetTimeline->trackCount() && !capped; ++ti) {
+                auto* track = targetTimeline->track(ti);
+                if (!track || track->type() != TrackType::Video) continue;
+                for (size_t ci = 0; ci < track->clipCount() && !capped; ++ci) {
+                    auto* clip = track->clip(ci);
+                    if (!clip || clip->clipType() != ClipType::Spine) continue;
+                    auto* sc = static_cast<SpineClip*>(clip);
+                    auto key = std::make_pair(sc->characterName(),
+                                               sc->outfit());
+                    if (queuedChars.insert(key).second) {
+                        if (queuedChars.size() > static_cast<size_t>(kMaxWarmChars)) {
+                            spdlog::debug("Spine cache warm: capped at {}, "
+                                          "remaining chars warmed on first use",
+                                          kMaxWarmChars);
+                            capped = true;
+                            break;
+                        }
+                        cache->queueAllAnimations(sc->characterName(),
+                                                   sc->outfit());
+                    }
+                }
+            }
+        }
+
+        // Force a full blocking audio reload so every clip is decoded
+        // and cached before the user presses Play.  Without this, the
+        // first playback after export would hit cache misses for most
+        // clips and they'd be silent.  Do NOT invalidate first — that
+        // clears cached audio sources and triggers recomposite cascades.
+        if (m_timelineWorkspace) {
+            m_timelineWorkspace->ensureAudioSourcesLoaded();
+        }
+
+        // Add synced audio clips to the bin in a single "VO" folder
+        if (auto* bin = projectBin()) {
+            // Collect all confirmed audio file paths (deduplicated)
+            std::set<std::string> seen;
+            std::vector<std::filesystem::path> allAudioPaths;
+            for (int i = 0; i < m_audioSync->clipCount(); ++i) {
+                const auto& sc = m_audioSync->clip(i);
+                if (sc.matchState != 2 || sc.sourceFile.empty()) continue;
+                std::filesystem::path p(sc.sourceFile);
+                if (seen.insert(pathToUtf8(p)).second)
+                    allAudioPaths.push_back(p);
+            }
+            // Drop everything into a single root-level "VO" folder. Don't
+            // call ensureDefaultBins() here — the user wants just one
+            // folder created on export, not a full Premiere-style scaffold.
+            bin->addFilesToNamedBin(allAudioPaths,
+                QStringLiteral("VO"), QString());
+            bin->refreshSequences();
+        }
+
+        // Switch to the Timeline page
+        setCurrentPage(Page::Timeline);
+
+        if (quiet) {
+            statusBar()->showMessage(
+                tr("Re-exported %1 audio clip(s) — timeline updated in place.")
+                    .arg(count), 6000);
+        } else {
+            QMessageBox::information(this, "Export Complete",
+                QString("Exported %1 audio clip(s) to the timeline.").arg(count));
+        }
+    };
+
     // ── Export to Timeline: wire AudioSync → Timeline population ────────
-    connect(m_audioSync, &AudioSync::exportRequested, this, [this]() {
+    connect(m_audioSync, &AudioSync::exportRequested, this,
+            [this, audioSyncProjectKey, finishAudioSyncExport]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (!m_audioSync || !m_currentProject) return;
 
@@ -293,83 +394,88 @@ void MainWindow::buildPanels()
             return;
         }
 
-        // Refresh the timeline UI. Use refreshTrackContents for lightweight
-        // update — audio export may have added new tracks, but rebuildTracks
-        // resets all track heights which the user has manually adjusted.
-        if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel()) {
-            auto* panel = m_timelineWorkspace->timelinePanel();
-            panel->rebuildTracks();
-            panel->notifyZoomChanged();
+        // Remember this export so the one-click "Re-export" button can
+        // repeat it (same show, same sequence) with zero prompts.
+        {
+            QString seqName;
+            for (size_t i = 0; i < m_currentProject->sequenceCount(); ++i) {
+                auto* seq = m_currentProject->sequence(i);
+                if (seq == targetTimeline) {
+                    seqName = QString::fromStdString(seq->name());
+                    break;
+                }
+            }
+            QSettings settings;
+            settings.setValue("AudioSyncReExport/project", audioSyncProjectKey());
+            settings.setValue("AudioSyncReExport/show",
+                              QString::fromStdString(m_audioSync->currentShow()));
+            settings.setValue("AudioSyncReExport/sequence", seqName);
         }
 
-        // ── Warm the Spine animation cache ─────────────────────────────
-        // Proactively queue pre-renders for unique character/outfit pairs
-        // on the timeline, so the timeline turns green (cached) immediately
-        // instead of staying orange (uncached).  Cap at 10 pairs to avoid
-        // flooding the cache worker with hundreds of jobs in large projects.
-        static constexpr int kMaxWarmChars = 10;
-        if (auto* cache = m_timelineWorkspace
-                ? m_timelineWorkspace->animVideoCacheMutable() : nullptr) {
-            std::set<std::pair<std::string, std::string>> queuedChars;
-            bool capped = false;
-            for (size_t ti = 0; ti < targetTimeline->trackCount() && !capped; ++ti) {
-                auto* track = targetTimeline->track(ti);
-                if (!track || track->type() != TrackType::Video) continue;
-                for (size_t ci = 0; ci < track->clipCount() && !capped; ++ci) {
-                    auto* clip = track->clip(ci);
-                    if (!clip || clip->clipType() != ClipType::Spine) continue;
-                    auto* sc = static_cast<SpineClip*>(clip);
-                    auto key = std::make_pair(sc->characterName(),
-                                               sc->outfit());
-                    if (queuedChars.insert(key).second) {
-                        if (queuedChars.size() > static_cast<size_t>(kMaxWarmChars)) {
-                            spdlog::debug("Spine cache warm: capped at {}, "
-                                          "remaining chars warmed on first use",
-                                          kMaxWarmChars);
-                            capped = true;
-                            break;
-                        }
-                        cache->queueAllAnimations(sc->characterName(),
-                                                   sc->outfit());
-                    }
+        finishAudioSyncExport(targetTimeline, count, /*quiet=*/false);
+    });
+
+    // ── Re-export: repeat the last export with zero prompts ─────────────
+    // Uses the show + sequence remembered by the last "Export →" for this
+    // project.  exportToTimeline() runs incrementally when the sequence
+    // already holds back-linked clips, so user timeline edits survive.
+    connect(m_audioSync, &AudioSync::reExportRequested, this,
+            [this, audioSyncProjectKey, finishAudioSyncExport]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (!m_audioSync || !m_currentProject) return;
+
+        QSettings settings;
+        const QString storedProj =
+            settings.value("AudioSyncReExport/project").toString();
+        const QString storedShow =
+            settings.value("AudioSyncReExport/show").toString();
+        const QString storedSeq =
+            settings.value("AudioSyncReExport/sequence").toString();
+
+        Timeline* targetTimeline = nullptr;
+        size_t targetIdx = 0;
+        if (!storedSeq.isEmpty() && !storedProj.isEmpty()
+            && storedProj == audioSyncProjectKey()) {
+            for (size_t i = 0; i < m_currentProject->sequenceCount(); ++i) {
+                auto* seq = m_currentProject->sequence(i);
+                if (seq && QString::fromStdString(seq->name()) == storedSeq) {
+                    targetTimeline = seq;
+                    targetIdx = i;
+                    break;
                 }
             }
         }
-
-        // Force a full blocking audio reload so every clip is decoded
-        // and cached before the user presses Play.  Without this, the
-        // first playback after export would hit cache misses for most
-        // clips and they'd be silent.  Do NOT invalidate first — that
-        // clears cached audio sources and triggers recomposite cascades.
-        if (m_timelineWorkspace) {
-            m_timelineWorkspace->ensureAudioSourcesLoaded();
+        if (!targetTimeline) {
+            QMessageBox::information(this, tr("Re-export"),
+                tr("No previous export recorded for this project.\n"
+                   "Use \"Export →\" once — after that, Re-export repeats "
+                   "it into the same sequence with no prompts."));
+            return;
         }
 
-        // Add synced audio clips to the bin in a single "VO" folder
-        if (auto* bin = projectBin()) {
-            // Collect all confirmed audio file paths (deduplicated)
-            std::set<std::string> seen;
-            std::vector<std::filesystem::path> allAudioPaths;
-            for (int i = 0; i < m_audioSync->clipCount(); ++i) {
-                const auto& sc = m_audioSync->clip(i);
-                if (sc.matchState != 2 || sc.sourceFile.empty()) continue;
-                std::filesystem::path p(sc.sourceFile);
-                if (seen.insert(pathToUtf8(p)).second)
-                    allAudioPaths.push_back(p);
-            }
-            // Drop everything into a single root-level "VO" folder. Don't
-            // call ensureDefaultBins() here — the user wants just one
-            // folder created on export, not a full Premiere-style scaffold.
-            bin->addFilesToNamedBin(allAudioPaths,
-                QStringLiteral("VO"), QString());
-            bin->refreshSequences();
+        if (!storedShow.isEmpty())
+            m_audioSync->setCurrentShow(storedShow.toStdString());
+
+        // No modal gauntlet: missing default shots only log here.
+        {
+            const QStringList missing = m_audioSync->missingDefaultShots();
+            if (!missing.isEmpty())
+                spdlog::warn("Re-export: {} character(s) have no default shot "
+                             "set: {}", missing.size(),
+                             missing.join(QStringLiteral(", ")).toStdString());
         }
 
-        // Switch to the Timeline page
-        setCurrentPage(Page::Timeline);
+        if (targetIdx != m_currentProject->activeSequenceIndex())
+            switchSequence(targetIdx);
 
-        QMessageBox::information(this, "Export Complete",
-            QString("Exported %1 audio clip(s) to the timeline.").arg(count));
+        const int count = m_audioSync->exportToTimeline(targetTimeline);
+        if (count == 0) {
+            QMessageBox::warning(this, "No Confirmed Clips",
+                "No confirmed clips to export.\n"
+                "Use the \xe2\x9c\x93 button to confirm clips before exporting.");
+            return;
+        }
+        finishAudioSyncExport(targetTimeline, count, /*quiet=*/true);
     });
 
     // ── Page 3: TIMELINE (splitter-based layout) ────────────────────────

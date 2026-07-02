@@ -130,6 +130,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     // shot switch resurrects the old clips with brand-new ids and any
     // earlier undo command on the stack that referenced them by id (a
     // prior MoveClipCommand, trim, etc.) silently fails to apply.
+    // AudioSync export back-link of the group being replaced — the new
+    // clips must inherit it, or the incremental re-export would no longer
+    // recognise the (shot-swapped) group and would rebuild it from the
+    // default shot, losing the user's swap.
+    int32_t oldSyncLine = -1;
     for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
         Track* trk = m_timeline->track(ti);
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
@@ -137,6 +142,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             if (c && c->groupId() == groupId && c->isVisual()) {
                 if (oldShotName->empty() && !c->shotName().empty())
                     *oldShotName = c->shotName();
+                if (oldSyncLine < 0) oldSyncLine = c->syncLine();
                 auto snapClone = c->clone();
                 snapClone->setId(c->id()); // preserve original id for undo correctness
                 oldClips->push_back({ti, std::move(snapClone)});
@@ -510,6 +516,10 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         }
         ++layerIdx;
     }
+
+    // Propagate the AudioSync back-link onto every replacement clip.
+    for (auto& snap : *newClips)
+        if (snap.clip) snap.clip->setSyncLine(oldSyncLine);
 
     // ---- Helpers ------------------------------------------------------
     // Clear panel pointers that may reference clips we're about to free.

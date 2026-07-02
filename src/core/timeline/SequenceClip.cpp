@@ -36,6 +36,7 @@ std::unique_ptr<Clip> SequenceClip::clone() const
     copy->m_anchorX    = m_anchorX;
     copy->m_anchorY    = m_anchorY;
     copy->m_groupId    = m_groupId;
+    copy->m_syncLine   = m_syncLine;
     copy->m_linkId     = m_linkId;
     copy->m_shotName   = m_shotName;
     copy->m_layerId    = m_layerId;

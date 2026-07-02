@@ -39,6 +39,7 @@ std::unique_ptr<Clip> TitleClip::clone() const
 
     // Shot group / layer metadata
     copy->m_groupId    = m_groupId;
+    copy->m_syncLine   = m_syncLine;
     copy->m_linkId     = m_linkId;
     copy->m_shotName   = m_shotName;
     copy->m_layerId    = m_layerId;
