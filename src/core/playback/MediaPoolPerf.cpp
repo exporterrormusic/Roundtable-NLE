@@ -184,8 +184,8 @@ void MediaPool::logPerfReport()
     // diskQ = DiskFrameCache write-behind queue depth.  Each entry
     // pins a shared_ptr<CachedFrame> whose lazyReadback captures the
     // source GPU texture — so this is effectively "GPU textures
-    // pinned by the disk writer".  Capped at DiskFrameCache::
-    // kMaxWriteQueue; the cap drops oldest on overflow to bound VRAM.
+    // pinned by the disk writer".  Capped at the profile's
+    // diskWriteQueueDepth; the cap drops oldest on overflow to bound VRAM.
     const size_t diskQ = m_diskCache ? m_diskCache->writeQueueSize() : 0;
 
     // VMA snapshot — total device-local allocation usage tracked by the

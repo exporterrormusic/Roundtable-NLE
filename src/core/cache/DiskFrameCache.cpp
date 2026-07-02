@@ -4,6 +4,7 @@
 
 #include "DiskFrameCache.h"
 #include "PathUtils.h"
+#include "PerformanceProfile.h"
 
 #include <algorithm>
 #include <fstream>
@@ -195,7 +196,9 @@ void DiskFrameCache::putAsync(std::shared_ptr<CachedFrame> frame)
         // captured texture back to PrefetchTexturePool.  Worst case the
         // disk cache misses on that frame later and we re-decode — a
         // cheap operation compared to OS-budget VRAM exhaustion.
-        while (m_writeQueue.size() >= kMaxWriteQueue) {
+        const size_t queueCap =
+            std::max(kMinWriteQueue, perfProfile().diskWriteQueueDepth);
+        while (m_writeQueue.size() >= queueCap) {
             m_writeQueue.pop_front();
         }
         m_writeQueue.push_back(std::move(frame));

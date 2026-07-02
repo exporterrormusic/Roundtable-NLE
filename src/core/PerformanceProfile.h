@@ -50,10 +50,13 @@ struct PerformanceProfile
 
     // ── Background work ───────────────────────────────────────────────────
     size_t thumbnailThreads    = 2;   ///< ThumbnailGenerator default thread count
-    size_t diskWriteQueueDepth = 30;  ///< DiskFrameCache kMaxWriteQueue
+    size_t diskWriteQueueDepth = 30;  ///< DiskFrameCache write-queue cap (each entry pins a GPU texture ~8 MB)
 
     // ── Quality / editing ─────────────────────────────────────────────────
-    float editProxyScale = 0.5f;      ///< full-res ProRes forced to 1/2 today
+    /// FIRST-RUN default for the Program Monitor playback-resolution dropdown
+    /// (>= 1.0 → Full, else 1/2).  The dropdown persists the user's choice in
+    /// QSettings after that, so this only seeds a fresh install.
+    float editProxyScale = 0.5f;
 
     /// Build a profile adapted to the given machine.  Scales the cache
     /// working set modestly by detected tier (capable machines keep more

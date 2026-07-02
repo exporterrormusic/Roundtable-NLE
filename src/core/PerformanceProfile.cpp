@@ -108,6 +108,22 @@ PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
     if (logicalCores >= 16)      p.thumbnailThreads = 4;
     else if (logicalCores >= 8)  p.thumbnailThreads = 3;
 
+    // Disk write-behind queue: each queued frame pins its source GPU texture
+    // (~8 MB) until written, so the cap scales with the same VRAM headroom
+    // as the texture-cache budgets above.  Consumed by DiskFrameCache.
+    switch (tier) {
+    case MachineTier::Entry:
+    case MachineTier::Standard:    break;                          // baseline 30
+    case MachineTier::Performance: p.diskWriteQueueDepth = 40; break;
+    case MachineTier::Workstation: p.diskWriteQueueDepth = 50; break;
+    }
+
+    // First-run playback-resolution default (the Program Monitor dropdown
+    // persists the user's choice in QSettings thereafter): workstations can
+    // afford Full-res preview decode; every other tier keeps the 1/2 default.
+    if (tier == MachineTier::Workstation)
+        p.editProxyScale = 1.0f;
+
     return p;
 }
 

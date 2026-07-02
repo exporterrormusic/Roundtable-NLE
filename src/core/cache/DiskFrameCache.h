@@ -94,8 +94,9 @@ public:
     /// Pending entries in the write-behind queue.  Each pending entry
     /// pins a shared_ptr<CachedFrame> whose lazyReadback captures the
     /// source GPU texture — so this counter is also "GPU textures
-    /// pinned by the disk writer".  Plateaus at kMaxWriteQueue under
-    /// sustained pressure (queue starts dropping oldest from there).
+    /// pinned by the disk writer".  Plateaus at the profile's
+    /// diskWriteQueueDepth under sustained pressure (queue starts
+    /// dropping oldest from there).
     [[nodiscard]] size_t writeQueueSize() const
     {
         std::lock_guard lock(m_writerMutex);
@@ -183,11 +184,14 @@ private:
     // perf log (each prefetched frame's source texture leaked into
     // VRAM via the writer queue's shared_ptr ref chain).
     //
-    // When the queue exceeds this cap, the OLDEST entry is dropped.
+    // When the queue exceeds the cap, the OLDEST entry is dropped.
     // Premiere's media cache works the same way — old frames that
     // didn't make it to disk are simply re-decoded on demand if the
     // user scrubs back, which is cheap compared to VRAM exhaustion.
-    static constexpr size_t kMaxWriteQueue = 30;
+    // The live cap comes from perfProfile().diskWriteQueueDepth
+    // (baseline 30; higher-VRAM tiers get modest headroom); this
+    // constant is only the floor guard.
+    static constexpr size_t kMinWriteQueue = 8;
 
     // Statistics
     std::atomic<size_t> m_diskUsed{0};
