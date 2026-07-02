@@ -49,6 +49,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
@@ -60,6 +61,7 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QIcon>
 #include <QPixmap>
 #include <QImage>
@@ -68,12 +70,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace rt {
+
+// UI scale factor for the tier list panel (1.5 = 50% larger than base).
+// Applied to all non-board controls: labels, buttons, event rows, pool chrome.
+static constexpr double kTlUiScale = 1.5;
 
 // MIME payload for a pool-entry drag: the uint64 entry id as ASCII.
 static const char* kTierEntryMime = "application/x-roundtable-tierentry";
@@ -125,19 +132,22 @@ static QIcon tlEntryIcon(const QString& title, const std::string& imagePath)
     if (!imagePath.empty())
         im.load(QString::fromStdWString(utf8ToPath(imagePath).wstring()));
 
-    // 128px base so the pool can zoom up without going soft.
-    QPixmap pm(128, 128);
+    // Base size scaled so pool icons stay crisp at larger sizes.
+    const int base = static_cast<int>(128 * kTlUiScale);
+    QPixmap pm(base, base);
     if (!im.isNull()) {
-        QImage sc = im.scaled(128, 128, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        pm = QPixmap::fromImage(sc.copy((sc.width() - 128) / 2, (sc.height() - 128) / 2, 128, 128));
+        QImage sc = im.scaled(base, base, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        pm = QPixmap::fromImage(sc.copy((sc.width() - base) / 2, (sc.height() - base) / 2, base, base));
     } else {
         pm.fill(QColor(0x33, 0x33, 0x3E));
         QPainter p(&pm);
         p.setPen(QColor(0xC0, 0xC0, 0xC8));
         QFont f("Arial");
-        f.setPixelSize(22);
+        f.setPixelSize(static_cast<int>(22 * kTlUiScale));
         p.setFont(f);
-        p.drawText(QRect(6, 6, 116, 116), Qt::AlignCenter | Qt::TextWordWrap, title.left(14));
+        const int m = static_cast<int>(6 * kTlUiScale);
+        p.drawText(QRect(m, m, base - 2 * m, base - 2 * m),
+                   Qt::AlignCenter | Qt::TextWordWrap, title.left(14));
         p.end();
     }
     return QIcon(pm);
@@ -201,6 +211,7 @@ static QFrame* tlSep()
 TierListBoardWidget::TierListBoardWidget(QWidget* parent) : QWidget(parent)
 {
     setAcceptDrops(true);
+    setFocusPolicy(Qt::StrongFocus);
     setMinimumHeight(140);
 }
 
@@ -329,7 +340,17 @@ void TierListBoardWidget::paintEvent(QPaintEvent*)
             const QRectF& tgt = rects[k];
             if (!tgt.isValid()) continue;
             p.drawPixmap(tgt, pms[k], QRectF(0, 0, pms[k].width(), pms[k].height()));
-            p.setPen(QColor(255, 255, 255));   // white frame, matching the render
+
+            // Selection highlight — accent border on the clicked entry.
+            const bool sel = (k < m_ids[static_cast<size_t>(i)].size() &&
+                              m_ids[static_cast<size_t>(i)][k] == m_selectedId &&
+                              m_selectedId != 0);
+            if (sel) {
+                QPen selPen(QColor(0x5B, 0x9B, 0xF2), 2.5);
+                p.setPen(selPen);
+            } else {
+                p.setPen(QColor(255, 255, 255));   // white frame, matching the render
+            }
             p.setBrush(Qt::NoBrush);
             p.drawRect(tgt);
             lastRight = tgt.right() + pad;
@@ -352,27 +373,87 @@ void TierListBoardWidget::paintEvent(QPaintEvent*)
 
 void TierListBoardWidget::mousePressEvent(QMouseEvent* e)
 {
-    // Press on a row thumbnail starts an intra-row reorder drag.
     if (e->button() != Qt::LeftButton) { QWidget::mousePressEvent(e); return; }
+    m_dragArmed = false;
+
     const int t = tierAt(static_cast<int>(e->position().y()));
-    if (t < 0 || t >= static_cast<int>(m_ids.size())) { QWidget::mousePressEvent(e); return; }
+    if (t < 0 || t >= static_cast<int>(m_ids.size())) {
+        m_selectedId = 0;
+        update();
+        QWidget::mousePressEvent(e);
+        return;
+    }
 
     const auto rects = entryRects(t);
     for (size_t k = 0; k < rects.size() && k < m_ids[static_cast<size_t>(t)].size(); ++k) {
         if (!rects[k].isValid() || !rects[k].contains(e->position())) continue;
-        auto* mime = new QMimeData();
-        mime->setData(kTierReorderMime,
-                      QByteArray::number(t) + ',' +
-                      QByteArray::number(static_cast<qulonglong>(k)));
-        auto* drag = new QDrag(this);
-        drag->setMimeData(mime);
-        const QPixmap& pm = m_rows[static_cast<size_t>(t)][k];
-        if (!pm.isNull())
-            drag->setPixmap(pm.scaledToHeight(48, Qt::SmoothTransformation));
-        drag->exec(Qt::MoveAction);
+        const uint64_t entryId = m_ids[static_cast<size_t>(t)][k];
+
+        // Select on press — drag starts only on mouse-move past threshold.
+        m_selectedId = entryId;
+        update();
+
+        m_dragArmed    = true;
+        m_dragStartPos = e->position();
+        m_dragTier     = t;
+        m_dragIdx      = k;
+        m_dragEntryId  = entryId;
+        e->accept();
         return;
     }
+
+    // Clicked on empty space within a tier row — deselect.
+    m_selectedId = 0;
+    update();
     QWidget::mousePressEvent(e);
+}
+
+void TierListBoardWidget::mouseMoveEvent(QMouseEvent* e)
+{
+    if (!m_dragArmed) { QWidget::mouseMoveEvent(e); return; }
+    if ((e->position() - m_dragStartPos).manhattanLength() <
+        QApplication::startDragDistance()) {
+        QWidget::mouseMoveEvent(e);
+        return;
+    }
+
+    m_dragArmed = false;   // only fire once per press
+
+    auto* mime = new QMimeData();
+    mime->setData(kTierReorderMime,
+                  QByteArray::number(m_dragTier) + ',' +
+                  QByteArray::number(static_cast<qulonglong>(m_dragIdx)) + ',' +
+                  QByteArray::number(static_cast<qulonglong>(m_dragEntryId)));
+    auto* drag = new QDrag(this);
+    drag->setMimeData(mime);
+    if (m_dragIdx < m_rows[static_cast<size_t>(m_dragTier)].size()) {
+        const QPixmap& pm = m_rows[static_cast<size_t>(m_dragTier)][m_dragIdx];
+        if (!pm.isNull())
+            drag->setPixmap(pm.scaledToHeight(48, Qt::SmoothTransformation));
+    }
+    drag->exec(Qt::MoveAction);
+    // After drag completes (nested event loop), selection may be stale.
+    // Keep the selected entry highlighted if it's still on the board.
+    update();
+}
+
+void TierListBoardWidget::mouseReleaseEvent(QMouseEvent* e)
+{
+    m_dragArmed = false;
+    QWidget::mouseReleaseEvent(e);
+}
+
+void TierListBoardWidget::keyPressEvent(QKeyEvent* e)
+{
+    if (e->key() == Qt::Key_Delete && m_selectedId != 0) {
+        if (onDeleteBoardEntry)
+            onDeleteBoardEntry(m_selectedId);
+        m_selectedId = 0;
+        update();
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
 }
 
 void TierListBoardWidget::dragEnterEvent(QDragEnterEvent* e)
@@ -387,11 +468,7 @@ void TierListBoardWidget::dragMoveEvent(QDragMoveEvent* e)
     const bool reorder = e->mimeData()->hasFormat(kTierReorderMime);
     if (!reorder && !e->mimeData()->hasFormat(kTierEntryMime)) return;
     int t = tierAt(static_cast<int>(e->position().y()));
-    if (reorder) {
-        // Placement is final — a reorder can only land in its own row.
-        const QList<QByteArray> parts = e->mimeData()->data(kTierReorderMime).split(',');
-        if (parts.size() == 2 && t != parts[0].toInt()) t = -1;
-    }
+    // Allow both intra-row reorder and cross-tier move drags to land on any tier.
     if (t != m_hoverTier) { m_hoverTier = t; update(); }
     e->acceptProposedAction();
 }
@@ -406,22 +483,30 @@ void TierListBoardWidget::dropEvent(QDropEvent* e)
     m_hoverTier = -1;
     update();
 
-    // Intra-row reorder drop.
+    // Reorder / cross-tier move drops (initiated by mousePressEvent on a thumbnail).
     if (e->mimeData()->hasFormat(kTierReorderMime)) {
         const QList<QByteArray> parts = e->mimeData()->data(kTierReorderMime).split(',');
-        if (parts.size() == 2) {
-            const int fromTier = parts[0].toInt();
-            const int fromIdx  = parts[1].toInt();
+        if (parts.size() == 3) {
+            const int      fromTier = parts[0].toInt();
+            const int      fromIdx  = parts[1].toInt();
+            const uint64_t entryId  = parts[2].toULongLong();
             const int t = tierAt(static_cast<int>(e->position().y()));
-            if (t == fromTier && onReorderEntry) {
-                // Insertion slot = count of visible thumbnails whose centre
-                // is left of the drop point.
-                const auto rects = entryRects(t);
-                int to = 0;
-                for (const QRectF& r : rects)
-                    if (r.isValid() && e->position().x() > r.center().x()) ++to;
-                if (to > fromIdx) --to;   // removal shifts the row left first
-                if (to != fromIdx) onReorderEntry(t, fromIdx, to);
+
+            // Calculate insertion index in the target tier.
+            const auto rects = entryRects(t);
+            int toIdx = 0;
+            for (const QRectF& r : rects)
+                if (r.isValid() && e->position().x() > r.center().x()) ++toIdx;
+
+            if (t == fromTier) {
+                // Same-tier reorder.
+                if (toIdx > fromIdx) --toIdx;   // removal shifts the row left first
+                if (toIdx != fromIdx && onReorderEntry)
+                    onReorderEntry(entryId, t, fromIdx, toIdx);
+            } else if (t >= 0) {
+                // Cross-tier move.
+                if (onMoveEntry)
+                    onMoveEntry(entryId, fromTier, t, toIdx);
             }
         }
         e->acceptProposedAction();
@@ -441,6 +526,29 @@ void TierListBoardWidget::dropEvent(QDropEvent* e)
 // ════════════════════════════════════════════════════════════════════════════
 
 TierListPoolListWidget::TierListPoolListWidget(QWidget* parent) : QListWidget(parent) {}
+
+// Manual drag initiation — QAbstractItemView's built-in initiation never
+// fires in this app (see ThumbnailGrid / ProjectBin, which do the same).
+void TierListPoolListWidget::mousePressEvent(QMouseEvent* e)
+{
+    if (e->button() == Qt::LeftButton)
+        m_dragStartPos = e->position().toPoint();
+    QListWidget::mousePressEvent(e);
+}
+
+void TierListPoolListWidget::mouseMoveEvent(QMouseEvent* e)
+{
+    if ((e->buttons() & Qt::LeftButton) &&
+        (e->position().toPoint() - m_dragStartPos).manhattanLength() >=
+            QApplication::startDragDistance()) {
+        if (auto* it = itemAt(m_dragStartPos)) {
+            setCurrentItem(it);
+            startDrag(Qt::CopyAction);
+            return;
+        }
+    }
+    QListWidget::mouseMoveEvent(e);
+}
 
 void TierListPoolListWidget::startDrag(Qt::DropActions /*supportedActions*/)
 {
@@ -467,6 +575,28 @@ public:
     explicit TierListPoolTreeWidget(QWidget* parent = nullptr) : QTreeWidget(parent) {}
 
 protected:
+    // Manual drag initiation — same reason as TierListPoolListWidget.
+    void mousePressEvent(QMouseEvent* e) override
+    {
+        if (e->button() == Qt::LeftButton)
+            m_dragStartPos = e->position().toPoint();
+        QTreeWidget::mousePressEvent(e);
+    }
+
+    void mouseMoveEvent(QMouseEvent* e) override
+    {
+        if ((e->buttons() & Qt::LeftButton) &&
+            (e->position().toPoint() - m_dragStartPos).manhattanLength() >=
+                QApplication::startDragDistance()) {
+            if (auto* it = itemAt(m_dragStartPos)) {
+                setCurrentItem(it);
+                startDrag(Qt::CopyAction);
+                return;
+            }
+        }
+        QTreeWidget::mouseMoveEvent(e);
+    }
+
     void startDrag(Qt::DropActions /*supportedActions*/) override
     {
         auto* it = currentItem();
@@ -479,6 +609,9 @@ protected:
         if (!it->icon(0).isNull()) drag->setPixmap(it->icon(0).pixmap(QSize(48, 48)));
         drag->exec(Qt::CopyAction);
     }
+
+private:
+    QPoint m_dragStartPos;
 };
 
 // Reveal a file in Explorer (highlighted), or open its folder if it's gone.
@@ -558,6 +691,9 @@ void TierListPanel::buildUI()
 
     // Content.
     m_content = new QWidget(this);
+    // Scale all non-board UI by 50% (board is custom-painted, unaffected).
+    m_content->setStyleSheet(QStringLiteral("* { font-size: %1px; }")
+        .arg(static_cast<int>(Theme::typography().sizeBody * kTlUiScale)));
     auto* cl = new QHBoxLayout(m_content);
     cl->setContentsMargins(4, 4, 4, 4);
     auto* split = new QSplitter(Qt::Horizontal, m_content);
@@ -598,7 +734,13 @@ void TierListPanel::buildUI()
 
     m_board = new TierListBoardWidget(left);
     m_board->onDropEntry = [this](uint64_t id, int tier) { onEntryDroppedOnTier(id, tier); };
-    m_board->onReorderEntry = [this](int tier, int from, int to) { onReorderInRow(tier, from, to); };
+    m_board->onReorderEntry = [this](uint64_t id, int tier, int from, int to) {
+        onReorderInRow(id, tier, from, to);
+    };
+    m_board->onMoveEntry = [this](uint64_t id, int fromTier, int toTier, int toIdx) {
+        onMoveEntry(id, fromTier, toTier, toIdx);
+    };
+    m_board->onDeleteBoardEntry = [this](uint64_t id) { onDeleteBoardEntry(id); };
     leftSplit->addWidget(m_board);
 
     auto* poolWrap = new QWidget();
@@ -624,8 +766,7 @@ void TierListPanel::buildUI()
     }
 
     m_pool = new TierListPoolListWidget(poolWrap);
-    m_pool->setDragEnabled(true);
-    m_pool->setDragDropMode(QAbstractItemView::DragOnly);
+    m_pool->setDragEnabled(false);   // drag starts manually in mouse events
     m_pool->setSelectionMode(QAbstractItemView::SingleSelection);
     m_pool->setContextMenuPolicy(Qt::CustomContextMenu);
     pv->addWidget(m_pool, 1);
@@ -638,8 +779,7 @@ void TierListPanel::buildUI()
                                   QStringLiteral("Used") });
     m_poolTree->setRootIsDecorated(false);
     m_poolTree->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_poolTree->setDragEnabled(true);
-    m_poolTree->setDragDropMode(QAbstractItemView::DragOnly);
+    m_poolTree->setDragEnabled(false);   // drag starts manually in mouse events
     m_poolTree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_poolTree->header()->setStretchLastSection(false);
     m_poolTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -651,6 +791,7 @@ void TierListPanel::buildUI()
     // Bottom bar — matches the Project Bin: zoom slider + list/icon toggle,
     // right-aligned at the bottom of the image bin.
     {
+        const int scaledXs = static_cast<int>(Theme::typography().sizeXs * kTlUiScale);
         const QString smallBtnStyle = QStringLiteral(
             "QToolButton { background: transparent; border: none; color: %1; "
             "font-size: %6px; padding: 2px; border-radius: 3px; }"
@@ -661,10 +802,10 @@ void TierListPanel::buildUI()
             .arg(Theme::hex(Theme::colors().textPrimary))
             .arg(Theme::hex(Theme::colors().accentSubtle))
             .arg(Theme::hex(Theme::colors().textBright))
-            .arg(Theme::typography().sizeXs);
+            .arg(scaledXs);
 
         auto* bottomBar = new QWidget(poolWrap);
-        bottomBar->setFixedHeight(26);
+        bottomBar->setFixedHeight(static_cast<int>(26 * kTlUiScale));
         bottomBar->setStyleSheet(QStringLiteral(
             "QWidget { background: %1; border-top: 1px solid %2; }")
             .arg(Theme::hex(Theme::colors().surface1))
@@ -677,8 +818,8 @@ void TierListPanel::buildUI()
         m_zoomSlider = new QSlider(Qt::Horizontal, bottomBar);
         m_zoomSlider->setRange(30, 300);
         m_zoomSlider->setValue(m_poolZoom);
-        m_zoomSlider->setFixedWidth(120);
-        m_zoomSlider->setFixedHeight(20);
+        m_zoomSlider->setFixedWidth(static_cast<int>(120 * kTlUiScale));
+        m_zoomSlider->setFixedHeight(static_cast<int>(20 * kTlUiScale));
         m_zoomSlider->setToolTip(QStringLiteral("Zoom"));
         m_zoomSlider->setStyleSheet(QStringLiteral(
             "QSlider::groove:horizontal { background: %1; height: 4px; border-radius: 2px; }"
@@ -689,10 +830,12 @@ void TierListPanel::buildUI()
             .arg(Theme::hex(Theme::colors().textSecondary)));
         bl->addWidget(m_zoomSlider);
 
+        const int btnSz = static_cast<int>(22 * kTlUiScale);
+
         m_listViewBtn = new QToolButton(bottomBar);
         m_listViewBtn->setText(QStringLiteral("☰"));   // ☰ list
         m_listViewBtn->setToolTip(QStringLiteral("List View"));
-        m_listViewBtn->setFixedSize(22, 22);
+        m_listViewBtn->setFixedSize(btnSz, btnSz);
         m_listViewBtn->setCheckable(true);
         m_listViewBtn->setStyleSheet(smallBtnStyle);
         bl->addWidget(m_listViewBtn);
@@ -700,7 +843,7 @@ void TierListPanel::buildUI()
         m_iconViewBtn = new QToolButton(bottomBar);
         m_iconViewBtn->setText(QStringLiteral("▦"));   // ▦ icon
         m_iconViewBtn->setToolTip(QStringLiteral("Icon View"));
-        m_iconViewBtn->setFixedSize(22, 22);
+        m_iconViewBtn->setFixedSize(btnSz, btnSz);
         m_iconViewBtn->setCheckable(true);
         m_iconViewBtn->setStyleSheet(smallBtnStyle);
         bl->addWidget(m_iconViewBtn);
@@ -725,10 +868,19 @@ void TierListPanel::buildUI()
     rv->addWidget(evTitle);
     auto* scroll = new QScrollArea(right);
     scroll->setWidgetResizable(true);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea{ border:none; }"));
+    // Style the viewport directly — QScrollArea stylesheet background often
+    // doesn't propagate to the internal viewport widget.
+    scroll->viewport()->setStyleSheet(QStringLiteral(
+        "background:%1;").arg(Theme::hex(Theme::colors().surface0)));
     m_eventsHost = new QWidget();
+    // Drops on the rail add entries: pool entries and image files both land
+    // here (rows/buttons don't accept drops, so Qt walks up to this host).
+    m_eventsHost->setAcceptDrops(true);
+    m_eventsHost->installEventFilter(this);
     m_eventsLayout = new QVBoxLayout(m_eventsHost);
-    m_eventsLayout->setContentsMargins(2, 2, 2, 2);
-    m_eventsLayout->setSpacing(3);
+    m_eventsLayout->setContentsMargins(6, 4, 6, 4);
+    m_eventsLayout->setSpacing(static_cast<int>(6 * kTlUiScale));
     m_eventsLayout->addStretch(1);
     scroll->setWidget(m_eventsHost);
     rv->addWidget(scroll, 1);
@@ -914,23 +1066,24 @@ void TierListPanel::applyPoolMetrics()
 {
     const double z = std::clamp(m_poolZoom, 30, 300) / 100.0;
     if (m_poolTree) {
-        const int ti = std::max(16, static_cast<int>(28 * z));
+        const int ti = std::max(16, static_cast<int>(28 * z * kTlUiScale));
         m_poolTree->setIconSize(QSize(ti, ti));
     }
     if (!m_pool) return;
     m_pool->setMovement(QListView::Static);
     m_pool->setResizeMode(QListView::Adjust);
     if (m_poolIconMode) {
-        const int icon = std::max(24, static_cast<int>(64 * z));
+        const int icon = std::max(24, static_cast<int>(64 * z * kTlUiScale));
         m_pool->setViewMode(QListView::IconMode);
         m_pool->setIconSize(QSize(icon, icon));
         m_pool->setWordWrap(true);
-        m_pool->setSpacing(6);
-        const QSize hint(icon + 20, icon + 30);   // icon + label + padding
+        m_pool->setSpacing(static_cast<int>(6 * kTlUiScale));
+        const QSize hint(icon + static_cast<int>(20 * kTlUiScale),
+                         icon + static_cast<int>(30 * kTlUiScale));
         for (int i = 0; i < m_pool->count(); ++i)
             m_pool->item(i)->setSizeHint(hint);
     } else {
-        const int icon = std::max(16, static_cast<int>(28 * z));
+        const int icon = std::max(16, static_cast<int>(28 * z * kTlUiScale));
         m_pool->setViewMode(QListView::ListMode);
         m_pool->setIconSize(QSize(icon, icon));
         m_pool->setWordWrap(false);
@@ -1085,11 +1238,13 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     auto* row = new QWidget();
     row->setObjectName(QStringLiteral("tlEventRow"));
     row->setAttribute(Qt::WA_StyledBackground, true);
-    row->setStyleSheet(QStringLiteral("#tlEventRow{ background:%1; border-radius:4px; }")
-        .arg(Theme::hex(Theme::colors().surface2)));
-    row->setMinimumHeight(40);
+    row->setStyleSheet(QStringLiteral(
+        "#tlEventRow{ background:%1; border:1px solid %2; border-radius:6px; }")
+        .arg(Theme::hex(Theme::colors().surface2))
+        .arg(Theme::hex(Theme::colors().borderLight)));
+    row->setMinimumHeight(static_cast<int>(40 * kTlUiScale));
     auto* h = new QHBoxLayout(row);
-    h->setContentsMargins(8, 7, 8, 7);
+    h->setContentsMargins(10, 8, 10, 8);
     h->setSpacing(6);
 
     auto* type = new QLabel(isDrop ? QStringLiteral("DROP")
@@ -1101,6 +1256,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
                     : isReorder ? QStringLiteral("#A8742F")
                                 : QStringLiteral("#4A5AA8")));
     h->addWidget(type);
+    h->addWidget(tlSep());   // divider: badge | name
 
     QString nameText;
     if (isReorder) {
@@ -1116,21 +1272,35 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
                      : QStringLiteral("#%1").arg(static_cast<qulonglong>(ev.entryId));
     }
     auto* name = new QLabel(nameText);
-    name->setMinimumWidth(60);
+    name->setMinimumWidth(static_cast<int>(60 * kTlUiScale));
     h->addWidget(name, 1);
+    h->addWidget(tlSep());   // divider: name | ranking / buttons
 
     // Ranking (drops only) — placed LEFT of Set Start so the Set Start/End
     // buttons and their times line up vertically across every row. The combo is
     // colour-coded to the tier's colour to match the tier list.
     if (isDrop) {
         auto* combo = new QComboBox();
-        for (const auto& t : m_clip->tiers())
+        for (size_t ti = 0; ti < m_clip->tiers().size(); ++ti) {
+            const auto& t = m_clip->tiers()[ti];
             combo->addItem(QString::fromStdString(t.label));
+            // Colour each dropdown item to match its tier row.
+            const QColor itemBg = tlDecodeArgb(t.color);
+            combo->setItemData(static_cast<int>(ti), itemBg, Qt::BackgroundRole);
+            combo->setItemData(static_cast<int>(ti), QColor(0x11, 0x11, 0x11), Qt::ForegroundRole);
+        }
         combo->setCurrentIndex(std::clamp(ev.tier, 0, static_cast<int>(m_clip->tiers().size()) - 1));
-        combo->setMinimumHeight(26);
-        combo->setMinimumWidth(46);
+        combo->setMinimumHeight(static_cast<int>(26 * kTlUiScale));
+        combo->setMinimumWidth(static_cast<int>(46 * kTlUiScale));
         combo->setToolTip(QStringLiteral("Tier"));
         h->addWidget(combo);
+
+        // Style the dropdown popup so per-item backgrounds are visible.
+        combo->view()->setStyleSheet(QStringLiteral(
+            "QAbstractItemView{ background:%1; border:1px solid %2; }"
+            "QAbstractItemView::item{ padding:3px 8px; }")
+            .arg(Theme::hex(Theme::colors().surface2))
+            .arg(Theme::hex(Theme::colors().borderLight)));
 
         auto applyComboColor = [this, combo]() {
             const int t = combo->currentIndex();
@@ -1139,7 +1309,8 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
             combo->setStyleSheet(QStringLiteral(
                 "QComboBox{ background:%1; color:#111111; font-weight:bold;"
                 "           border:1px solid #00000055; border-radius:3px; padding:1px 6px; }"
-                "QComboBox::drop-down{ border:none; width:14px; }").arg(c.name()));
+                "QComboBox::drop-down{ border:none; width:14px; }")
+                .arg(c.name()));
         };
         applyComboColor();
 
@@ -1154,9 +1325,8 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
             rebuildBoard();
             emit tierListEdited();
         });
+        h->addWidget(tlSep());   // divider: combo | Set Start
     }
-
-    h->addWidget(tlSep());
 
     // Set Start · start time · divider · Set End · end time.
     auto* setStart  = new QPushButton(QStringLiteral("Set Start"));
@@ -1164,18 +1334,21 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     auto* setEnd    = new QPushButton(QStringLiteral("Set End"));
     auto* endTime   = new QLabel(tlTc(ev.end));
     for (QPushButton* b : { setStart, setEnd }) {
-        b->setMinimumHeight(26);
+        b->setMinimumHeight(static_cast<int>(26 * kTlUiScale));
         b->setStyleSheet(tlBtnStyle());
         b->setCursor(Qt::PointingHandCursor);
     }
     for (QLabel* t : { startTime, endTime }) {
         t->setStyleSheet("color:#AAB0C0;");
-        t->setMinimumWidth(42);
+        t->setMinimumWidth(static_cast<int>(70 * kTlUiScale));
+        t->setAlignment(Qt::AlignCenter);
     }
     h->addWidget(setStart);
+    h->addWidget(tlSep());   // divider: Set Start | time
     h->addWidget(startTime);
     h->addWidget(tlSep());
     h->addWidget(setEnd);
+    h->addWidget(tlSep());   // divider: Set End | time
     h->addWidget(endTime);
 
     connect(setStart, &QPushButton::clicked, this, [this, eventIndex, startTime, endTime]() {
@@ -1209,7 +1382,8 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     // Delete — a centred "X" at the far right.
     h->addWidget(tlSep());
     auto* del = new QPushButton(QStringLiteral("X"));
-    del->setFixedSize(26, 26);
+    del->setFixedSize(static_cast<int>(26 * kTlUiScale),
+                      static_cast<int>(26 * kTlUiScale));
     del->setCursor(Qt::PointingHandCursor);
     del->setToolTip(QStringLiteral("Delete event"));
     del->setStyleSheet(QStringLiteral(
@@ -1393,24 +1567,181 @@ void TierListPanel::moveEntryToSubbin(uint64_t entryId, const QString& subbin)
     }
 }
 
-void TierListPanel::onReorderInRow(int tier, int fromIndex, int toIndex)
+void TierListPanel::onReorderInRow(uint64_t entryId, int tier, int fromIndex, int toIndex)
 {
     if (!m_clip) return;
     if (tier < 0 || fromIndex < 0 || toIndex < 0 || fromIndex == toIndex) return;
 
     auto before = snapshot();
-    TierEvent ev;
-    ev.type      = TierEventType::Reorder;
-    ev.tier      = tier;
-    ev.fromIndex = fromIndex;
-    ev.toIndex   = toIndex;
-    ev.start     = playheadLocalTick();   // instant by default; Set End for an
-    ev.end       = ev.start;              // animated slide
-    m_clip->events().push_back(ev);
+
+    // Try to update the most recent DROP event for this entry instead of
+    // creating a duplicate Reorder event.
+    TierEvent* drop = findDropEventForEntry(entryId);
+    if (drop && drop->tier == tier) {
+        drop->index = toIndex;
+        drop->start = playheadLocalTick();
+        drop->end   = drop->start;
+    } else {
+        // No existing DROP event for this entry — create a Reorder event as
+        // a fallback (should be rare; entries are normally placed by DROP).
+        TierEvent ev;
+        ev.type      = TierEventType::Reorder;
+        ev.tier      = tier;
+        ev.fromIndex = fromIndex;
+        ev.toIndex   = toIndex;
+        ev.start     = playheadLocalTick();
+        ev.end       = ev.start;
+        m_clip->events().push_back(ev);
+    }
+
     pushUndo(QStringLiteral("Reorder entries"), before);
     rebuildEvents();
     rebuildBoard();
     emit tierListEdited();
+}
+
+void TierListPanel::onMoveEntry(uint64_t entryId, int fromTier, int toTier, int toIndex)
+{
+    if (!m_clip) return;
+    if (fromTier < 0 || toTier < 0 || fromTier == toTier) return;
+
+    auto before = snapshot();
+
+    // Update the most recent DROP event for this entry instead of creating
+    // a duplicate.  The DROP replay in computeFinalRows() uses removeId()
+    // which already handles cross-tier movement correctly.
+    TierEvent* drop = findDropEventForEntry(entryId);
+    if (drop) {
+        drop->tier  = toTier;
+        drop->index = toIndex;
+        drop->start = playheadLocalTick();
+        drop->end   = drop->start;
+    } else {
+        // No existing DROP — create one (first-time placement from pool).
+        TierEvent ev;
+        ev.type    = TierEventType::Drop;
+        ev.entryId = entryId;
+        ev.tier    = toTier;
+        ev.index   = toIndex;
+        ev.start   = playheadLocalTick();
+        ev.end     = ev.start;
+        m_clip->events().push_back(ev);
+    }
+
+    pushUndo(QStringLiteral("Move entry to tier"), before);
+    rebuildEvents();
+    rebuildBoard();
+    emit tierListEdited();
+}
+
+TierEvent* TierListPanel::findDropEventForEntry(uint64_t entryId)
+{
+    if (!m_clip) return nullptr;
+    auto& evs = m_clip->events();
+    TierEvent* best = nullptr;
+    int64_t bestStart = std::numeric_limits<int64_t>::min();
+    for (auto& ev : evs) {
+        if (ev.type == TierEventType::Drop && ev.entryId == entryId) {
+            if (ev.start >= bestStart) {
+                best = &ev;
+                bestStart = ev.start;
+            }
+        }
+    }
+    return best;
+}
+
+void TierListPanel::onDeleteBoardEntry(uint64_t entryId)
+{
+    if (!m_clip) return;
+    auto before = snapshot();
+
+    // Remove every Popup and Drop event that references this entry.
+    auto& evs = m_clip->events();
+    evs.erase(std::remove_if(evs.begin(), evs.end(),
+        [entryId](const TierEvent& ev) {
+            return ev.entryId == entryId &&
+                   (ev.type == TierEventType::Popup ||
+                    ev.type == TierEventType::Drop);
+        }), evs.end());
+
+    pushUndo(QStringLiteral("Delete entry from board"), before);
+    rebuildEvents();
+    rebuildBoard();
+    emit tierListEdited();
+}
+
+bool TierListPanel::eventFilter(QObject* obj, QEvent* event)
+{
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        auto* de = static_cast<QDragMoveEvent*>(event);
+        if (de->mimeData()->hasFormat(kTierEntryMime) ||
+            de->mimeData()->hasFormat(QStringLiteral("application/x-roundtable-media")) ||
+            !de->mimeData()->urls().isEmpty()) {
+            de->acceptProposedAction();
+            return true;
+        }
+    } else if (event->type() == QEvent::Drop) {
+        auto* de = static_cast<QDropEvent*>(event);
+        // Pool-entry drag → Popup+Drop pair at the playhead (tier defaults to
+        // the first row; the event row's tier combo adjusts it afterwards).
+        if (de->mimeData()->hasFormat(kTierEntryMime)) {
+            bool ok = false;
+            const qulonglong id = de->mimeData()->data(kTierEntryMime).toULongLong(&ok);
+            if (ok) onEntryDroppedOnTier(static_cast<uint64_t>(id), 0);
+            de->acceptProposedAction();
+            return true;
+        }
+        const QList<QUrl> urls = de->mimeData()->urls();
+        for (const QUrl& url : urls) {
+            if (url.isLocalFile()) {
+                onMediaDroppedOnEvents(url.toLocalFile());
+                break;
+            }
+        }
+        de->acceptProposedAction();
+        return true;
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+void TierListPanel::onMediaDroppedOnEvents(const QString& filePath)
+{
+    if (!m_clip || filePath.isEmpty()) return;
+
+    // Only accept common image formats.
+    const QString lower = filePath.toLower();
+    if (!lower.endsWith(QStringLiteral(".png")) &&
+        !lower.endsWith(QStringLiteral(".jpg")) &&
+        !lower.endsWith(QStringLiteral(".jpeg")) &&
+        !lower.endsWith(QStringLiteral(".bmp")) &&
+        !lower.endsWith(QStringLiteral(".webp")) &&
+        !lower.endsWith(QStringLiteral(".gif")))
+        return;
+
+    // Check if an entry with this image path already exists.
+    uint64_t entryId = 0;
+    for (const auto& en : m_clip->entries()) {
+        if (en.imagePath == filePath.toStdString()) {
+            entryId = en.id;
+            break;
+        }
+    }
+    if (entryId == 0) {
+        // Create a new entry for this image.
+        auto before = snapshot();
+        TierEntry ne;
+        ne.id        = nextEntryId();
+        ne.imagePath = filePath.toStdString();
+        ne.title     = QFileInfo(filePath).completeBaseName().toStdString();
+        m_clip->entries().push_back(ne);
+        pushUndo(QStringLiteral("Add entry from library"), before);
+        entryId = ne.id;
+        rebuildPool();
+    }
+
+    // Create linked Popup + Drop event pair at the playhead.
+    onEntryDroppedOnTier(entryId, 0);   // default to first tier
 }
 
 void TierListPanel::openGridDialog()
@@ -1658,6 +1989,9 @@ void TierListPanel::renameEntry(uint64_t entryId)
 void TierListPanel::onEntryDroppedOnTier(uint64_t entryId, int tier)
 {
     if (!m_clip) return;
+    // A drop outside any row (or with no tiers) reports -1 — land it in the
+    // first tier instead of writing an invalid event.
+    tier = std::clamp(tier, 0, std::max(0, static_cast<int>(m_clip->tiers().size()) - 1));
     auto before = snapshot();
     const int64_t s        = playheadLocalTick();
     const int64_t popupLen = secondsToTicks(2.0);

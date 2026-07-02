@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators · Simple + Scenes</title>
+<style>
+:root{--s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;--acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5}
+.page-head{display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:15px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.wrap{max-width:1240px;margin:0 auto;padding:26px}
+.lead{color:var(--txt2);font-size:13.5px;max-width:900px;margin-bottom:20px}
+.lead b{color:var(--txt)}
+.note{color:var(--txt3);font-size:12px;margin-top:14px;max-width:900px}
+.note b{color:var(--txt2)}
+
+/* ── docked panel frame ─────────────────────────────── */
+.app{background:var(--s1);border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+.tabs{display:flex;align-items:center;background:#101017;border-bottom:1px solid var(--bd);padding:0 10px}
+.tab{padding:8px 16px;font-size:12px;color:var(--txt3);border-right:1px solid var(--bd)}
+.tab.on{color:var(--txt);background:var(--s1);border-top:2px solid var(--acc);font-weight:600}
+.tabs .clipname{margin-left:auto;color:var(--txt3);font-size:11.5px;padding-right:8px}
+.tabs .clipname b{color:var(--txt2);font-weight:600}
+.tabs .eye{color:var(--txt2);font-size:14px;padding:0 8px;cursor:default}
+
+.body{display:grid;grid-template-columns:640px 1fr;gap:0}
+.zone{padding:14px;border-right:1px solid var(--bd)}
+.zone:last-child{border-right:none}
+.zhead{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.zhead h2{font-size:11px;font-weight:800;letter-spacing:1.4px;color:var(--txt2);text-transform:uppercase}
+.zhead .hint{color:var(--txt3);font-size:11px}
+.zhead .btn{margin-left:auto;background:var(--accD);color:#cfe4fb;border:1px solid var(--acc);border-radius:5px;font-size:11px;font-weight:700;padding:3px 12px;cursor:default}
+
+/* ── preview ────────────────────────────────────────── */
+.canvas{position:relative;width:592px;height:333px;background:#000;border:1px solid var(--bd);border-radius:4px;overflow:hidden}
+.banner{position:absolute;top:0;left:0;right:0;height:19px;background:#050508;border-bottom:1px dashed #22222c;z-index:5}
+.banner span{position:absolute;right:6px;top:2px;font-size:8px;color:#3a3a46;letter-spacing:1px}
+.bgtxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#1d1d26;font-size:20px;font-weight:800;letter-spacing:3px}
+.cell{position:absolute;width:76px;height:76px;background:#000;overflow:hidden;transition:left .6s ease,top .6s ease}
+.bust{position:absolute;inset:0;filter:brightness(.55);transition:filter .25s}
+.cell.speak .bust{filter:brightness(1)}
+.bust .bg{position:absolute;inset:0}
+.bust .hd{position:absolute;left:50%;top:16%;width:38%;height:38%;transform:translateX(-50%);border-radius:50%}
+.bust .sh{position:absolute;left:50%;bottom:-12%;width:78%;height:44%;transform:translateX(-50%);border-radius:50% 50% 0 0}
+.bust .ini{position:absolute;right:5px;bottom:1px;font-size:15px;font-weight:900;color:rgba(255,255,255,.16)}
+.under{display:flex;justify-content:space-between;align-items:center;margin-top:8px;width:592px}
+.under .auto{font-size:11px;color:var(--txt3)}
+.under .auto b{color:var(--accH);font-weight:700}
+.under .slide{font-size:11px;color:var(--txt3)}
+.under .slide input{width:44px;background:var(--s2);border:1px solid var(--bd);border-radius:4px;color:var(--txt2);font-size:11px;padding:1px 4px;text-align:right}
+
+/* ── sides (under preview) ──────────────────────────── */
+.sides{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:592px;margin-top:14px}
+.side{background:var(--s0);border:1px solid var(--bd);border-radius:6px;display:flex;flex-direction:column;overflow:hidden;min-height:150px}
+.side h3{font-size:10px;font-weight:800;letter-spacing:1.2px;color:var(--txt3);padding:8px 10px 6px;text-transform:uppercase;display:flex;justify-content:space-between}
+.side h3 .cnt{color:var(--txt3);font-weight:600}
+.chips{display:flex;flex-direction:column;gap:4px;padding:0 8px}
+.chip{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--bd);border-radius:5px;padding:4px 6px}
+.chip:hover{border-color:var(--bdl)}
+.chip .pt{width:26px;height:26px;border-radius:3px;position:relative;overflow:hidden;background:#000;flex:0 0 auto}
+.chip .nm{font-size:12px;font-weight:600;flex:1}
+.chip .x{color:var(--txt3);font-size:12px;padding:0 3px;cursor:default}
+.chip .grip{color:#3a3a46;font-size:11px;letter-spacing:-1px;cursor:default}
+.drop{margin:6px 8px 8px;border:1px dashed var(--bdl);border-radius:5px;color:var(--txt3);font-size:11px;text-align:center;padding:8px 6px;flex:1;display:flex;align-items:center;justify-content:center;min-height:34px}
+.sfoot{color:var(--txt3);font-size:10.5px;padding:10px 2px 0;width:592px}
+.scenebadge{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--accH);background:#14202f;border:1px solid var(--accD);border-radius:4px;padding:1px 8px}
+
+/* ── speakers ───────────────────────────────────────── */
+.speak-list{display:flex;flex-direction:column;gap:3px}
+.srow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;border:1px solid transparent;color:var(--txt3)}
+.srow .tc{font-size:10.5px;font-variant-numeric:tabular-nums;width:74px;flex:0 0 auto}
+.srow .who{font-size:12px;font-weight:600;flex:1;color:var(--txt2)}
+.srow .ov{font-size:10.5px;color:var(--txt3);background:var(--s2);border:1px solid var(--bd);border-radius:4px;padding:1px 7px}
+.srow.cur{background:var(--s2);border-color:var(--acc);color:var(--txt2)}
+.srow.cur .who{color:var(--txt)}
+.srow.cur .tc::before{content:"▶ ";color:var(--accH);font-size:8px}
+.srow.ovr .who{color:var(--accH)}
+.srow.ovr .ov{color:var(--accH);border-color:var(--accD)}
+.sdiv{display:flex;align-items:center;gap:8px;padding:8px 4px 3px;color:var(--accH);font-size:10px;font-weight:800;letter-spacing:1.4px}
+.sdiv::before,.sdiv::after{content:"";flex:1;height:1px;background:var(--accD)}
+.sdiv .x{color:var(--txt3);font-weight:400;letter-spacing:0;cursor:default}
+.sdiv .cast{color:var(--txt3);font-weight:600;letter-spacing:.3px;text-transform:none}
+</style>
+</head>
+<body>
+<div class="page-head"><h1>ROUNDTABLE · Commentators — Simple + Scenes</h1><span class="sub">revised 2026-07-02 · highlight = brightness only (Variant A, no accent bar)</span></div>
+<div class="wrap">
+  <p class="lead"><b>Drag PNGs onto a side; cut the video into SCENES to change who's on screen.</b> The SIDES editor always edits the scene under the playhead. <b>+ Scene</b> drops a divider into the speaker list at the playhead — the new scene starts as a copy of the previous cast, then you add (drag in) or remove (✕) characters. When playback crosses a divider, portraits <b>slide in from their side, slide out, or glide to their new centered spots</b> — watch the preview below, it cycles through three scenes.</p>
+
+  <div class="app">
+    <div class="tabs">
+      <div class="tab">Captions</div><div class="tab">Tier List</div><div class="tab on">Commentators</div>
+      <span class="clipname">Clip: <b>Commentators 01 — V3</b></span><span class="eye">👁</span>
+    </div>
+    <div class="body">
+
+      <!-- LEFT · PREVIEW + SIDES -->
+      <div class="zone">
+        <div class="zhead"><h2>Preview</h2><span class="hint">left bank auto-hides while a Tier List clip is active</span></div>
+        <div class="canvas" id="canvas">
+          <div class="banner"><span>BANNER BAND</span></div>
+          <div class="bgtxt">PROGRAM VIDEO</div>
+        </div>
+        <div class="under">
+          <span class="auto">AUTO · speaking: <b id="curname">—</b></span>
+          <span class="slide">Slide&nbsp;<input value="0.4s"></span>
+        </div>
+
+        <div class="zhead" style="margin-top:16px"><h2>Sides</h2><span class="hint">follows playhead — editing</span><span class="scenebadge" id="editscene">SCENE 1</span></div>
+        <div class="sides">
+          <div class="side"><h3>Left <span class="cnt" id="Lcnt"></span></h3><div class="chips" id="Lchips"></div><div class="drop">Drop PNG here</div></div>
+          <div class="side"><h3>Right <span class="cnt" id="Rcnt"></span></h3><div class="chips" id="Rchips"></div><div class="drop">Drop PNG here</div></div>
+        </div>
+        <div class="sfoot">Name comes from the filename (<b>Yoyo.png → YOYO</b>) and is the link to that character's audio track. A new scene copies the previous cast — drag in to add, ✕ to remove; the change animates at the divider.</div>
+      </div>
+
+      <!-- RIGHT · SPEAKERS + SCENES -->
+      <div class="zone">
+        <div class="zhead"><h2>Speakers</h2><span class="hint">auto from audio tracks · follows playhead</span><span class="btn">+ Scene</span></div>
+        <div class="speak-list" id="slist"></div>
+        <p class="note" style="margin-top:10px;font-size:11px">Fills itself from your character audio tracks. <b>+ Scene</b> inserts a divider at the playhead. Deleting a divider (✕) merges it into the previous scene. Click a row's <b>Auto ▾</b> to force a different speaker — or nobody — for that segment.</p>
+      </div>
+
+    </div>
+  </div>
+
+  <p class="note"><b>Speaker highlight:</b> Variant A with <b>no accent bar</b> — the speaker is simply full brightness, everyone else dimmed. <b>Scene transitions:</b> characters kept across a divider glide to their new centered position; joiners slide in from their side's edge (sliding <i>behind</i> anyone already on screen); leavers slide out the same way. Design doc: <code style="background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px">docs/COMMENTATORS_PLAN.md</code></p>
+</div>
+
+<script>
+const CHARS={YOYO:"#e8b04a",WELLS:"#5bc8af",MODERNIA:"#c05ae0",RAPI:"#e05a6a",ANIS:"#e0a05a",NEON:"#5ae0d0",DORO:"#e05ac0",EXIA:"#7a5ae0"};
+function bustHTML(n){const c=CHARS[n];return `<div class="bust"><div class="bg" style="background:radial-gradient(circle at 50% 30%, ${c}33, #000 75%)"></div><div class="hd" style="background:${c}55"></div><div class="sh" style="background:${c}44"></div><div class="ini">${n[0]}</div></div>`}
+
+// ── demo data: scenes + speaker segments ─────────────
+const SCENES=[
+  {t:"00:00",left:["YOYO","WELLS","MODERNIA"],right:["RAPI","ANIS"]},
+  {t:"00:24",left:["YOYO","WELLS","MODERNIA","NEON"],right:["RAPI","ANIS"]},   // NEON joins → 3-layout glides to 4-layout
+  {t:"00:40",left:["WELLS","NEON"],right:["RAPI","ANIS","DORO"]}               // YOYO+MODERNIA leave · DORO joins right
+];
+const ROWS=[
+  {div:0},{tc:"00:02 – 00:07",who:"YOYO"},{tc:"00:07 – 00:11",who:"WELLS"},
+  {tc:"00:11 – 00:15",who:"MODERNIA",ovr:"RAPI"},{tc:"00:15 – 00:21",who:"ANIS"},{tc:"00:21 – 00:24",who:"YOYO"},
+  {div:1},{tc:"00:24 – 00:31",who:"NEON"},{tc:"00:31 – 00:36",who:"WELLS"},{tc:"00:36 – 00:40",who:"ANIS"},
+  {div:2},{tc:"00:40 – 00:46",who:"DORO"},{tc:"00:46 – 00:52",who:"RAPI"},{tc:"00:52 – 00:58",who:"NEON"}
+];
+
+// ── layout: fixed 76px cells, vertically centered, 5+ wraps inward ──
+const W=592,TOP=19,STRIP=314,CELL=76,GAP=2;
+function colTops(n){const total=n*CELL+(n-1)*GAP,y0=TOP+(STRIP-total)/2;return Array.from({length:n},(_,i)=>y0+i*(CELL+GAP))}
+function layout(side,roster){
+  const out=roster.slice(0,4),inn=roster.slice(4),pos={};
+  const ot=colTops(out.length),it=colTops(inn.length);
+  out.forEach((n,i)=>pos[n]={x:side==='L'?0:W-CELL,y:ot[i]});
+  inn.forEach((n,i)=>pos[n]={x:side==='L'?CELL+GAP:W-2*CELL-GAP,y:it[i]});
+  return pos;
+}
+const offX=side=>side==='L'?-CELL-6:W+6;
+
+// ── preview: animated scene changes ──────────────────
+const canvas=document.getElementById('canvas');
+const live={};   // label → {el, side}
+function applyScene(idx){
+  const sc=SCENES[idx];
+  ['L','R'].forEach(side=>{
+    const roster=side==='L'?sc.left:sc.right, pos=layout(side,roster);
+    // leavers: slide out toward their side's edge, behind the others
+    Object.keys(live).filter(n=>live[n].side===side&&!roster.includes(n)).forEach(n=>{
+      const c=live[n];c.el.style.zIndex=1;c.el.style.left=offX(side)+'px';
+      setTimeout(()=>c.el.remove(),700);delete live[n];
+    });
+    roster.forEach(n=>{
+      let c=live[n];
+      if(c&&c.side===side){                       // kept: glide to the new spot
+        c.el.style.left=pos[n].x+'px';c.el.style.top=pos[n].y+'px';
+      }else{
+        if(c){c.el.style.zIndex=1;c.el.style.left=offX(c.side)+'px';setTimeout(el=>el.remove(),700,c.el)} // side swap = out + in
+        const el=document.createElement('div');el.className='cell';el.dataset.n=n;el.innerHTML=bustHTML(n);
+        el.style.left=offX(side)+'px';el.style.top=pos[n].y+'px';el.style.zIndex=1;   // joiners slide in from the edge, behind
+        canvas.appendChild(el);void el.offsetWidth;
+        el.style.left=pos[n].x+'px';setTimeout(()=>el.style.zIndex=2,650);
+        live[n]={el,side};
+      }
+    });
+  });
+  // sides editor mirrors the scene under the playhead
+  document.getElementById('editscene').textContent='SCENE '+(idx+1);
+  chips('Lchips','Lcnt',sc.left);chips('Rchips','Rcnt',sc.right);
+}
+function chips(id,cid,arr){
+  document.getElementById(id).innerHTML=arr.map(n=>`<div class="chip"><span class="grip">⋮⋮</span><div class="pt">${bustHTML(n)}</div><span class="nm">${n}</span><span class="x">✕</span></div>`).join('');
+  document.getElementById(cid).textContent=arr.length+" / 8";
+}
+
+// ── speakers list: dividers + playhead-following ─────
+const segIdx=ROWS.map((r,i)=>r.div===undefined?i:null).filter(i=>i!==null);
+let cur=0,scene=-1;
+function render(){
+  const curRow=segIdx[cur];
+  let sc=0;ROWS.forEach((r,i)=>{if(r.div!==undefined&&i<=curRow)sc=r.div});
+  document.getElementById('slist').innerHTML=ROWS.map((r,i)=>{
+    if(r.div!==undefined){const s=SCENES[r.div];return `<div class="sdiv">SCENE ${r.div+1} · ${s.t}&nbsp;<span class="cast">L:${s.left.length} R:${s.right.length}</span>&nbsp;<span class="x">✕</span></div>`}
+    return `<div class="srow${i===curRow?' cur':''}${r.ovr?' ovr':''}"><span class="tc">${r.tc}</span><span class="who">${r.ovr?r.who+" → "+r.ovr:r.who}</span><span class="ov">${r.ovr?"Override ▾":"Auto ▾"}</span></div>`;
+  }).join('');
+  if(sc!==scene){scene=sc;applyScene(sc)}
+  const row=ROWS[curRow],active=row.ovr||row.who;
+  document.getElementById('curname').textContent=active;
+  document.querySelectorAll('.cell').forEach(el=>el.classList.toggle('speak',el.dataset.n===active));
+}
+render();
+setInterval(()=>{cur=(cur+1)%segIdx.length;render()},1700);
+</script>
+</body>
+</html>

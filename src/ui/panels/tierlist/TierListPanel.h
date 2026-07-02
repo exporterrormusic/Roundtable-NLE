@@ -43,6 +43,7 @@ class QVBoxLayout;
 class QLabel;
 class QComboBox;
 class QMouseEvent;
+class QKeyEvent;
 
 namespace rt {
 
@@ -73,12 +74,23 @@ public:
     std::function<void(uint64_t, int)> onDropEntry;
 
     /// Called when an entry thumbnail is dragged to a new slot WITHIN its
-    /// row: (tierIndex, fromIndex, toIndex). Set by the panel.
-    std::function<void(int, int, int)> onReorderEntry;
+    /// row: (entryId, tierIndex, fromIndex, toIndex). Set by the panel.
+    std::function<void(uint64_t, int, int, int)> onReorderEntry;
+
+    /// Called when an entry is dragged to a DIFFERENT tier row:
+    /// (entryId, fromTier, toTier, toIndex).  Set by the panel.
+    std::function<void(uint64_t, int, int, int)> onMoveEntry;
+
+    /// Called when the user presses Delete with a board entry selected.
+    /// (entryId).  Set by the panel.
+    std::function<void(uint64_t)> onDeleteBoardEntry;
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void keyPressEvent(QKeyEvent*) override;
     void dragEnterEvent(QDragEnterEvent*) override;
     void dragMoveEvent(QDragMoveEvent*) override;
     void dragLeaveEvent(QDragLeaveEvent*) override;
@@ -97,9 +109,20 @@ private:
     std::vector<std::vector<QPixmap>>  m_rows;
     std::vector<std::vector<uint64_t>> m_ids;
     int                                m_hoverTier{-1};
+    uint64_t                           m_selectedId{0};  ///< clicked entry, 0 = none
+
+    // Drag-initiation state — selection happens on press, drag on move.
+    bool     m_dragArmed{false};
+    QPointF  m_dragStartPos;
+    int      m_dragTier{0};
+    size_t   m_dragIdx{0};
+    uint64_t m_dragEntryId{0};
 };
 
 // ── Pool list: a QListWidget whose drag carries the entry id ────────────────
+// Drag initiation is MANUAL (press + move past threshold), matching every
+// working drag source in the app (ThumbnailGrid, MediaDragTreeWidget) — the
+// built-in item-view drag machinery never fires here.
 class TierListPoolListWidget : public QListWidget
 {
 public:
@@ -110,6 +133,11 @@ public:
 
 protected:
     void startDrag(Qt::DropActions supportedActions) override;
+    void mousePressEvent(QMouseEvent* e) override;
+    void mouseMoveEvent(QMouseEvent* e) override;
+
+private:
+    QPoint m_dragStartPos;
 };
 
 // Detail list view for the pool (QTreeWidget: Name / Rank / Used); defined in
@@ -184,7 +212,17 @@ private:
     void onAddImages();
     void onSearch(const QString& text);   ///< applies search + subbin filter
     void onEntryDroppedOnTier(uint64_t entryId, int tier);
-    void onReorderInRow(int tier, int fromIndex, int toIndex);
+    void onReorderInRow(uint64_t entryId, int tier, int fromIndex, int toIndex);
+    void onMoveEntry(uint64_t entryId, int fromTier, int toTier, int toIndex);
+    /// Delete all Popup + Drop events for an entry (board selection + Delete key).
+    void onDeleteBoardEntry(uint64_t entryId);
+    /// Handle a media file dropped onto the events rail — auto-creates a
+    /// TierEntry + linked Popup + Drop event pair.
+    void onMediaDroppedOnEvents(const QString& filePath);
+    /// Find the most recent (latest start time) DROP event for an entry, or nullptr.
+    TierEvent* findDropEventForEntry(uint64_t entryId);
+    /// Intercept drops on the events rail panel.
+    bool eventFilter(QObject* obj, QEvent* event) override;
     /// The "Grid…" dialog: tiers (add/remove/rename/recolor), entry aspect,
     /// background colour and safe margins.
     void openGridDialog();

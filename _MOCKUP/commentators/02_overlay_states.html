@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators · Full-canvas states</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;
+  --bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;
+  --tS:#f47373;--tA:#f7a55b;--tB:#f5c45e;--tC:#eef06a;--tD:#bfe773;--tF:#86df8e;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.page-head .pill{margin-left:auto;font-size:11px;color:var(--txt3);border:1px solid var(--bd);border-radius:20px;padding:3px 11px}
+
+.wrap{max-width:1040px;margin:0 auto;padding:26px 26px 60px;display:flex;flex-direction:column;gap:34px}
+.lead{color:var(--txt2);font-size:13px;max-width:880px}
+.note{color:var(--txt3);font-size:11.5px;max-width:880px}
+
+.state h2{font-size:14.5px;font-weight:700;margin-bottom:2px}
+.state .stag{font-size:10px;font-weight:800;letter-spacing:1.6px;color:var(--acc);text-transform:uppercase}
+.state .desc{color:var(--txt2);font-size:12px;margin:4px 0 12px;max-width:880px}
+.state .note{margin-top:10px}
+
+/* ---------- 16:9 canvas @ 0.5 scale (1920x1080 -> 960x540) ---------- */
+.canvas{position:relative;width:960px;height:540px;background:#000;border:1px solid var(--bd);border-radius:4px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.5)}
+/* top banner band: 5.65% of 1080 = 61px real -> 31px here */
+.banner{position:absolute;top:0;left:0;right:0;height:31px;background:#050507;border-bottom:1px solid #17171d;display:flex;align-items:center;justify-content:center;z-index:8}
+.banner .blabel{font-size:9px;font-weight:700;letter-spacing:.8px;color:#4c4c58;text-transform:uppercase}
+.banner.outlined{outline:1px dashed rgba(74,144,217,.55);outline-offset:-3px}
+.banner.outlined .blabel{color:rgba(135,180,230,.9)}
+
+/* ---------- commentator banks: 13% of 1920 = 250px real -> 125px here ---------- */
+.bank{position:absolute;top:31px;bottom:0;width:125px;background:#000;display:flex;flex-direction:column;gap:2px;z-index:6}
+.bank.left{left:0}
+.bank.right{right:0}
+.cell{position:relative;flex:1;min-height:0;background:#000;overflow:hidden}
+.cell:not(.speaking){filter:brightness(.55)}
+/* edge accent (Variant A, recommended default): bar on the inner-facing edge */
+.bank.left  .cell.speaking::before{content:"";position:absolute;right:0;top:0;bottom:0;width:3px;background:var(--acc);z-index:3}
+.bank.right .cell.speaking::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--acc);z-index:3}
+
+/* dense 2x4 bank (5-8 boxes/side): cells halve in width, portraits crop tighter */
+.bank.dense{display:grid;grid-auto-flow:column;grid-template-rows:repeat(4,1fr);grid-template-columns:1fr 1fr;gap:2px}
+.bank.dense .cell{flex:none}
+.bank.dense .head{width:66%;top:15%}
+.bank.dense .torso{width:130%;height:36%;bottom:-5%}
+.bank.dense .init{font-size:30px;top:3%}
+
+/* fake CSS bust portraits */
+.bust{position:absolute;inset:0;background:radial-gradient(130% 95% at 50% 32%,var(--pc-bg),#000 78%)}
+.init{position:absolute;top:5%;left:50%;transform:translateX(-50%);font-size:56px;font-weight:800;color:var(--pc-sil);opacity:.15;line-height:1}
+.head{position:absolute;left:50%;top:21%;width:38%;aspect-ratio:1/1;transform:translateX(-50%);border-radius:50%;background:linear-gradient(180deg,var(--pc-sil),var(--pc-sil2))}
+.torso{position:absolute;left:50%;bottom:-8%;width:84%;height:42%;transform:translateX(-50%);border-radius:46% 46% 0 0;background:linear-gradient(180deg,var(--pc-sil),var(--pc-sil2))}
+.c-yoyo{--pc-bg:#3a1a2c;--pc-sil:#8a4a68;--pc-sil2:#5c3046}
+.c-wells{--pc-bg:#12332c;--pc-sil:#3e7a68;--pc-sil2:#295244}
+.c-modernia{--pc-bg:#2a1a3e;--pc-sil:#6a4a96;--pc-sil2:#463063}
+.c-rapi{--pc-bg:#3a1616;--pc-sil:#8a4444;--pc-sil2:#5c2c2c}
+.c-anis{--pc-bg:#3a2a12;--pc-sil:#8a6c3a;--pc-sil2:#5c4826}
+.c-neon{--pc-bg:#12283a;--pc-sil:#3e6c96;--pc-sil2:#294763}
+.c-doro{--pc-bg:#16321a;--pc-sil:#4a8a54;--pc-sil2:#305c38}
+.c-exia{--pc-bg:#1a1e3e;--pc-sil:#4a5496;--pc-sil2:#303863}
+
+/* ---------- state 1: generic program content ---------- */
+.bgvid{position:absolute;inset:0;background:
+  radial-gradient(90% 80% at 50% 42%,rgba(40,44,60,.55),rgba(0,0,0,.92) 82%),
+  repeating-linear-gradient(0deg,transparent,transparent 39px,rgba(255,255,255,.028) 39px,rgba(255,255,255,.028) 40px),
+  repeating-linear-gradient(90deg,transparent,transparent 39px,rgba(255,255,255,.028) 39px,rgba(255,255,255,.028) 40px),
+  linear-gradient(180deg,#101018,#0a0a10)}
+.bgvid .bgl{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:12px;font-weight:600;letter-spacing:1.2px;color:#3e3e4a;text-transform:uppercase;border:1px dashed #2a2a36;border-radius:6px;padding:8px 16px;white-space:nowrap}
+
+/* ---------- state 2: NIKKE-style tier grid on the left 87% ---------- */
+.tierarea{position:absolute;left:0;right:125px;top:31px;bottom:0;background:#000;display:flex;z-index:5}
+.titlebar{width:30px;background:#000;border-right:1px solid #101014;display:flex;align-items:center;justify-content:center}
+.titlebar span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:10px;font-weight:800;letter-spacing:2px;color:#e8e8ee;white-space:nowrap}
+.trows{flex:1;display:flex;flex-direction:column}
+.trow{flex:1;display:flex;border-bottom:1px solid #000;min-height:0}
+.trow:last-child{border-bottom:none}
+.tlabel{width:58px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:#191910}
+.tlabel.S{background:var(--tS)}.tlabel.A{background:var(--tA)}.tlabel.B{background:var(--tB)}
+.tlabel.C{background:var(--tC)}.tlabel.D{background:var(--tD)}.tlabel.F{background:var(--tF)}
+.tcontent{flex:1;background:#17171b;display:flex;align-items:center;gap:5px;padding:0 8px;overflow:hidden}
+.thumb{width:56px;height:56px;border-radius:3px;background:linear-gradient(160deg,#3c3c46,#26262e);border:1px solid #101014;flex:0 0 auto}
+.thumb.t2{background:linear-gradient(160deg,#44444e,#2a2a32)}
+.thumb.t3{background:linear-gradient(160deg,#36363e,#222228)}
+
+.footer{border-top:1px solid var(--bd);padding-top:12px;color:var(--txt3);font-size:11.5px}
+.footer code{color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Commentators — Full-canvas states</h1>
+  <span class="sub">How the banks compose against real program content — 1920×1080 shown at 0.5×</span>
+  <span class="pill">mockup 02 / 02</span>
+</div>
+
+<div class="wrap">
+  <p class="lead">Three static states of the Commentators overlay on a full 16:9 canvas. All geometry is measured from
+  the reference frame: top banner band reserves 5.65% of height (61px), each bank occupies the outer 13% of width
+  (250px) from y=61 to the bottom, cells are near-square (≈247×255) with ~4px gaps, on pure black. Highlight shown is
+  the recommended default (Variant A edge accent from mockup 01). Speakers are picked statically per state.</p>
+
+  <!-- ============ STATE 1 ============ -->
+  <div class="state">
+    <div class="stag">State 1</div>
+    <h2>Standalone — both banks</h2>
+    <p class="desc">A Commentators clip over any ordinary program video: left bank + right bank, 4 portraits each,
+    single column. WELLS (left bank) is speaking — full brightness with the inner-edge accent bar; everyone else at ~55%.</p>
+    <div class="canvas">
+      <div class="bgvid"><span class="bgl">any background video</span></div>
+      <div class="banner outlined"><span class="blabel">top banner band (5.65% · 61px @1080) — reserved, banks start below</span></div>
+      <div class="bank left">
+        <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-wells speaking"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div></div>
+      </div>
+      <div class="bank right">
+        <div class="cell c-anis"><div class="bust"><div class="init">A</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-neon"><div class="bust"><div class="init">N</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-doro"><div class="bust"><div class="init">D</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-exia"><div class="bust"><div class="init">E</div><div class="head"></div><div class="torso"></div></div></div>
+      </div>
+    </div>
+    <p class="note">Speaker = the box whose label matches a character-named audio track with a clip under the playhead
+    (here: track "WELLS"). Portraits are still PNGs — the only per-frame change is the brightness/accent state.</p>
+  </div>
+
+  <!-- ============ STATE 2 ============ -->
+  <div class="state">
+    <div class="stag">State 2</div>
+    <h2>Tier List active — left bank auto-hidden</h2>
+    <p class="desc">When a TierList clip is active at the playhead, the board owns the left 87% of the canvas, so the
+    LEFT bank is suppressed automatically; only the right bank renders in its 13% strip. MODERNIA is speaking.</p>
+    <div class="canvas">
+      <div class="banner"><span class="blabel">channel banner</span></div>
+      <div class="tierarea">
+        <div class="titlebar"><span>NIKKE&nbsp;TIER&nbsp;LIST&nbsp;·&nbsp;JULY&nbsp;2026</span></div>
+        <div class="trows">
+          <div class="trow"><div class="tlabel S">S</div><div class="tcontent"><div class="thumb"></div><div class="thumb t2"></div><div class="thumb t3"></div><div class="thumb"></div></div></div>
+          <div class="trow"><div class="tlabel A">A</div><div class="tcontent"><div class="thumb t2"></div><div class="thumb"></div><div class="thumb t3"></div><div class="thumb t2"></div><div class="thumb"></div><div class="thumb t3"></div></div></div>
+          <div class="trow"><div class="tlabel B">B</div><div class="tcontent"><div class="thumb t3"></div><div class="thumb"></div><div class="thumb t2"></div></div></div>
+          <div class="trow"><div class="tlabel C">C</div><div class="tcontent"><div class="thumb"></div><div class="thumb t3"></div><div class="thumb t2"></div><div class="thumb"></div><div class="thumb t2"></div></div></div>
+          <div class="trow"><div class="tlabel D">D</div><div class="tcontent"><div class="thumb t2"></div><div class="thumb t3"></div></div></div>
+          <div class="trow"><div class="tlabel F">F</div><div class="tcontent"><div class="thumb"></div></div></div>
+        </div>
+      </div>
+      <div class="bank right">
+        <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-modernia speaking"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div></div>
+      </div>
+    </div>
+    <p class="note">The suppression is automatic: while any TierList clip is active at the playhead the left bank does
+    not render (no user action). The right strip is the same 13% region the tier board already reserves for
+    commentators, so board content never sits underneath a portrait.</p>
+  </div>
+
+  <!-- ============ STATE 3 ============ -->
+  <div class="state">
+    <div class="stag">State 3</div>
+    <h2>Dense — 8 per side (2×4)</h2>
+    <p class="desc">With 5–8 boxes on a side, the bank switches to two columns of four inside the same 13% strip:
+    cells halve in width (≈123×255 real) and portraits crop tighter on the face. NEON (right bank) is speaking.</p>
+    <div class="canvas">
+      <div class="bgvid"><span class="bgl">any background video</span></div>
+      <div class="banner"><span class="blabel">channel banner</span></div>
+      <div class="bank left dense">
+        <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-anis"><div class="bust"><div class="init">A</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-neon"><div class="bust"><div class="init">N</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-doro"><div class="bust"><div class="init">D</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-exia"><div class="bust"><div class="init">E</div><div class="head"></div><div class="torso"></div></div></div>
+      </div>
+      <div class="bank right dense">
+        <div class="cell c-doro"><div class="bust"><div class="init">D</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-exia"><div class="bust"><div class="init">E</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-anis"><div class="bust"><div class="init">A</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-neon speaking"><div class="bust"><div class="init">N</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div></div>
+        <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div></div>
+      </div>
+    </div>
+    <p class="note">8 per side / 16 total is the cap. Columns fill top-to-bottom, inner column last, so the first four
+    names keep the same on-screen positions they had in the single-column layout.</p>
+  </div>
+
+  <div class="footer">
+    All three states are CPU-rendered by <code>renderCommentatorClip</code> — preview and export share the same code
+    path, so the Program Monitor is pixel-identical to the encoded file. Spec: <code>docs/COMMENTATORS_PLAN.md</code>.
+  </div>
+</div>
+
+</body>
+</html>

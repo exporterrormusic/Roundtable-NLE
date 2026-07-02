@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators · Mockups</title>
+<style>
+:root{--s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;--acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5;min-height:100vh}
+.page-head{display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:15px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.wrap{max-width:980px;margin:0 auto;padding:30px 26px}
+.lead{color:var(--txt2);font-size:13.5px;max-width:800px;margin-bottom:8px}
+.lead b{color:var(--txt)}
+.note{color:var(--txt3);font-size:12px;margin-bottom:26px}
+.note code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px;color:var(--txt2)}
+.sect{font-size:11px;font-weight:800;letter-spacing:1.4px;color:var(--txt3);text-transform:uppercase;margin:26px 0 12px;display:flex;align-items:center;gap:10px}
+.sect::after{content:"";flex:1;height:1px;background:var(--bd)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.grid.two{grid-template-columns:repeat(2,1fr)}
+.card{display:block;text-decoration:none;color:inherit;background:var(--s1);border:1px solid var(--bd);border-radius:12px;overflow:hidden;transition:all .14s}
+.card:hover{border-color:var(--acc);transform:translateY(-3px);box-shadow:0 14px 38px rgba(0,0,0,.5)}
+.thumb{height:150px;display:flex;align-items:center;justify-content:center;gap:14px;position:relative;border-bottom:1px solid var(--bd);background:linear-gradient(135deg,#1a1a24,#101016)}
+.thumb .n{position:absolute;top:10px;left:12px;font-size:10px;font-weight:800;letter-spacing:1.2px;color:var(--accH);text-transform:uppercase}
+.cbody{padding:14px 16px}
+.cbody h3{font-size:14.5px;font-weight:700;margin-bottom:5px}
+.cbody p{color:var(--txt2);font-size:12px}
+.cbody .open{margin-top:10px;color:var(--acc);font-size:11.5px;font-weight:700}
+.foot{margin-top:32px;color:var(--txt3);font-size:12px;border-top:1px solid var(--bd);padding-top:16px}
+.foot code{background:var(--s0);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px;color:var(--txt2)}
+
+/* thumb vignettes — overlay cards: mini bank column, one highlighted */
+.bankcol{display:flex;flex-direction:column;gap:5px}
+.sq{width:34px;height:26px;border-radius:3px;border:1px solid #26262e;filter:brightness(.45)}
+.sq.hot{filter:none;border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 12px rgba(74,144,217,.6);transform:scale(1.1)}
+.c1{background:radial-gradient(circle at 50% 40%,rgba(89,201,106,.5),#000 75%)}
+.c2{background:radial-gradient(circle at 50% 40%,rgba(74,217,192,.5),#000 75%)}
+.c3{background:radial-gradient(circle at 50% 40%,rgba(224,90,122,.5),#000 75%)}
+.c4{background:radial-gradient(circle at 50% 40%,rgba(224,178,74,.5),#000 75%)}
+.c5{background:radial-gradient(circle at 50% 40%,rgba(74,166,224,.5),#000 75%)}
+.c6{background:radial-gradient(circle at 50% 40%,rgba(138,106,224,.5),#000 75%)}
+.canvasmini{width:120px;height:68px;background:#000;border:1px solid #26262e;border-radius:4px;position:relative;overflow:hidden}
+.canvasmini .col{position:absolute;top:6%;bottom:6%;width:16%;display:flex;flex-direction:column;gap:2px}
+.canvasmini .col.l{left:3%}.canvasmini .col.r{right:3%}
+.canvasmini .col i{flex:1;border-radius:2px;filter:brightness(.5)}
+.canvasmini .col i.hot{filter:none;box-shadow:0 0 0 1px var(--acc)}
+.canvasmini .ghost{position:absolute;left:3%;top:6%;bottom:6%;width:16%;border:1px dashed #33333e;border-radius:2px}
+
+/* panel cards: mini wireframe blocks */
+.wire{display:flex;gap:5px;align-items:stretch;height:78px}
+.wblk{background:var(--s2);border:1px solid var(--bdl);border-radius:4px}
+.wblk.acc{border-color:var(--accD);background:#18202c}
+.wcol{display:flex;flex-direction:column;gap:5px}
+</style>
+</head>
+<body>
+<div class="page-head"><h1>ROUNDTABLE · Commentators</h1><span class="sub">UI mockups — overlay + authoring panel</span></div>
+<div class="wrap">
+  <p class="lead"><b>Locked design decisions (2026-07-02):</b> portraits are <b>still images</b> — no mouth flap, the current speaker is shown by <b>highlight vs ~45% dim</b> only. The speaker signal is <b>clip presence on character-named audio tracks</b> (a box's label is the join key). The <b>left bank auto-hides while a Tier List clip is active</b>. Up to <b>8/side (16 max)</b>. Pure-CPU render, so <b>preview == export</b>.</p>
+  <p class="note">Design doc: <code>docs/COMMENTATORS_PLAN.md</code> · The panel docks next to <b>Captions</b> and <b>Tier List</b> in the timeline workspace and edits a Commentator clip on the timeline.</p>
+
+  <a class="card" href="06_simple.html" style="display:block;margin-bottom:10px;border-color:var(--acc)">
+    <div class="cbody" style="display:flex;align-items:center;gap:16px">
+      <div class="bankcol" style="flex:0 0 auto"><div class="sq c2 hot"></div><div class="sq c4"></div><div class="sq c3"></div></div>
+      <div><h3 style="color:var(--accH)">★ CURRENT DIRECTION — Simple + Scenes (06)</h3><p><b>Drag PNGs onto LEFT / RIGHT</b> — no framing controls, boxes always the same fixed size, stacks center vertically by count (5+ wraps to a second full-size column inward). <b>SCENE dividers</b> in the speaker list change the cast: a new scene copies the previous cast, you add/remove, and at the divider characters <b>slide in / slide out / glide to their new spots</b> (the preview animates it). SIDES edits the scene under the playhead; the SPEAKERS list auto-populates from the audio tracks and follows the playhead; override = a per-row Auto ▾ combo. Highlight = <b>brightness only</b> (Variant A, accent bar removed). Supersedes layouts A/B/C below.</p><div class="open">Open the simple panel →</div></div>
+    </div>
+  </a>
+
+  <div class="sect">Overlay (the on-video render)</div>
+  <div class="grid two">
+    <a class="card" href="01_overlay_styles.html">
+      <div class="thumb"><span class="n">Overlay 01</span>
+        <div class="bankcol"><div class="sq c1"></div><div class="sq c2 hot"></div><div class="sq c3"></div><div class="sq c4"></div></div>
+        <div class="bankcol"><div class="sq c5"></div><div class="sq c6"></div><div class="sq c1"></div><div class="sq c3"></div></div>
+      </div>
+      <div class="cbody"><h3>Highlight style variants</h3><p><b>DECIDED:</b> Variant A <b>without the accent bar</b> — the speaker is simply full brightness, everyone else dimmed. (B and C rejected; kept for reference.)</p><div class="open">Open mockup →</div></div>
+    </a>
+    <a class="card" href="02_overlay_states.html">
+      <div class="thumb"><span class="n">Overlay 02</span>
+        <div class="canvasmini">
+          <div class="col l"><i class="c1"></i><i class="c2 hot"></i><i class="c3"></i><i class="c4"></i></div>
+          <div class="col r"><i class="c5"></i><i class="c6"></i><i class="c1"></i><i class="c3"></i></div>
+        </div>
+        <div class="canvasmini">
+          <div class="ghost"></div>
+          <div class="col r"><i class="c5 hot"></i><i class="c6"></i><i class="c1"></i><i class="c3"></i></div>
+        </div>
+      </div>
+      <div class="cbody"><h3>Full-canvas states</h3><p>Standalone · tier-list active (left bank auto-hidden) · 8-per-side dense. <b>Note:</b> the dense state here predates the revision — boxes now NEVER shrink; a 5th+ portrait starts a second full-size column growing inward (see 06's count strip).</p><div class="open">Open mockup →</div></div>
+    </a>
+  </div>
+
+  <div class="sect">Authoring panel — SUPERSEDED by 06 (kept for reference)</div>
+  <div class="grid">
+    <a class="card" href="03_panel_bank_editor.html">
+      <div class="thumb"><span class="n">Layout A</span>
+        <div class="wire" style="width:150px">
+          <div class="wcol" style="flex:1"><div class="wblk" style="flex:1"></div><div class="wblk" style="flex:1"></div></div>
+          <div class="wblk acc" style="flex:2.2"></div>
+          <div class="wcol" style="flex:1"><div class="wblk" style="flex:1"></div><div class="wblk" style="flex:1"></div></div>
+        </div>
+      </div>
+      <div class="cbody"><h3>Bank Editor</h3><p>Preview-centered: a big live preview in the middle with the LEFT and RIGHT banks flanking it, matching the on-screen geometry.</p><div class="open">Open mockup →</div></div>
+    </a>
+    <a class="card" href="04_panel_side_rail.html">
+      <div class="thumb"><span class="n">Layout B</span>
+        <div class="wire" style="width:150px">
+          <div class="wcol" style="flex:2"><div class="wblk acc" style="flex:1.4"></div><div class="wblk" style="flex:1"></div></div>
+          <div class="wblk" style="flex:1"></div>
+        </div>
+      </div>
+      <div class="cbody"><h3>Side Rail</h3><p>Mirrors the chosen Tier List panel: work area left, an events/override rail down the right. Familiar muscle memory between the two tabs.</p><div class="open">Open mockup →</div></div>
+    </a>
+    <a class="card" href="05_panel_unified.html">
+      <div class="thumb"><span class="n">Layout C</span>
+        <div class="wire" style="width:170px">
+          <div class="wblk acc" style="flex:1.1"></div>
+          <div class="wblk" style="flex:1.3"></div>
+          <div class="wblk" style="flex:1"></div>
+          <div class="wblk" style="flex:.8"></div>
+        </div>
+      </div>
+      <div class="cbody"><h3>Unified low-profile strip</h3><p>One short horizontal band — preview · banks · inspector · override lane — built for height-constrained timeline docks. Densest.</p><div class="open">Open mockup →</div></div>
+    </a>
+  </div>
+
+  <div class="foot">Pick one per section (or mix elements) and the choices get folded into <code>docs/COMMENTATORS_PLAN.md</code> before any C++.</div>
+</div>
+</body>
+</html>

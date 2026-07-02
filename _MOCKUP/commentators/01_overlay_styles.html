@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators · Overlay styles</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;
+  --bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}
+.page-head .sub{color:var(--txt3);font-size:12px}
+.page-head .pill{margin-left:auto;font-size:11px;color:var(--txt3);border:1px solid var(--bd);border-radius:20px;padding:3px 11px}
+
+.wrap{max-width:1160px;margin:0 auto;padding:26px 26px 60px}
+.lead{color:var(--txt2);font-size:13px;max-width:860px;margin-bottom:8px}
+.note{color:var(--txt3);font-size:11.5px}
+
+.controls{display:flex;align-items:center;gap:18px;margin:18px 0 20px;padding:10px 14px;background:var(--s1);border:1px solid var(--bd);border-radius:8px}
+.chk{display:flex;align-items:center;gap:8px;color:var(--txt2);font-size:12px;cursor:pointer;user-select:none}
+.chk input{accent-color:var(--acc);width:14px;height:14px;cursor:pointer}
+.controls .hint{color:var(--txt3);font-size:11.5px;margin-left:auto}
+
+/* ---------- variant cards ---------- */
+.variants{display:flex;gap:18px;align-items:stretch}
+.card{flex:1;min-width:0;background:var(--s1);border:1px solid var(--bd);border-radius:10px;padding:16px 16px 14px;display:flex;flex-direction:column;gap:10px}
+.card .vtag{font-size:10px;font-weight:800;letter-spacing:1.6px;color:var(--acc);text-transform:uppercase}
+.card h2{font-size:14.5px;font-weight:700}
+.card .desc{color:var(--txt2);font-size:12px;min-height:52px}
+.card .procon{margin-top:auto;border-top:1px solid var(--bd);padding-top:9px;font-size:11.5px;color:var(--txt3)}
+.card .procon b{color:var(--txt2);font-weight:700}
+
+/* ---------- commentator bank (right-side, 4-up, ~0.55 scale of 250x1020) ---------- */
+/* real cell 247x255 with ~4px gaps -> scaled 136x140, 2px gaps */
+.bankwrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0 2px}
+.bank{width:136px;display:flex;flex-direction:column;gap:2px;background:#000;padding:0;cursor:default}
+.cell{position:relative;width:136px;height:140px;background:#000;overflow:hidden;transition:filter .28s ease,transform .28s ease,box-shadow .28s ease}
+.bust{position:absolute;inset:0;background:radial-gradient(130% 95% at 50% 32%,var(--pc-bg),#000 78%)}
+.init{position:absolute;top:5%;left:50%;transform:translateX(-50%);font-size:62px;font-weight:800;color:var(--pc-sil);opacity:.15;line-height:1}
+.head{position:absolute;left:50%;top:21%;width:37%;aspect-ratio:1/1;transform:translateX(-50%);border-radius:50%;background:linear-gradient(180deg,var(--pc-sil),var(--pc-sil2))}
+.torso{position:absolute;left:50%;bottom:-8%;width:84%;height:42%;transform:translateX(-50%);border-radius:46% 46% 0 0;background:linear-gradient(180deg,var(--pc-sil),var(--pc-sil2))}
+/* character tints */
+.c-yoyo{--pc-bg:#3a1a2c;--pc-sil:#8a4a68;--pc-sil2:#5c3046}
+.c-wells{--pc-bg:#12332c;--pc-sil:#3e7a68;--pc-sil2:#295244}
+.c-modernia{--pc-bg:#2a1a3e;--pc-sil:#6a4a96;--pc-sil2:#463063}
+.c-rapi{--pc-bg:#3a1616;--pc-sil:#8a4444;--pc-sil2:#5c2c2c}
+
+/* name tag (always on for B; toggle for A/C) */
+.tag{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.66);color:var(--txt2);font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;text-align:center;padding:3px 0 4px;transition:color .28s ease}
+.vA .tag,.vC .tag{display:none}
+body.labels .vA .tag,body.labels .vC .tag{display:block}
+
+/* --- Variant A: edge accent --- */
+.vA .cell:not(.speaking){filter:brightness(.55)}
+.vA .cell.speaking::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--acc);z-index:3}
+
+/* --- Variant B: framed + name tag --- */
+.vB .cell{border:1px solid var(--bd)}
+.vB .cell:not(.speaking){filter:brightness(.55)}
+.vB .cell.speaking{border-color:var(--acc)}
+.vB .cell.speaking .tag{color:var(--accH)}
+
+/* --- Variant C: glow + lift --- */
+.vC .bank{padding:4px;width:144px}   /* room for the scale/glow */
+.vC .cell:not(.speaking){filter:brightness(.45) saturate(.7)}
+.vC .cell.speaking{box-shadow:0 0 16px rgba(74,144,217,.55),0 0 0 1px var(--acc);transform:scale(1.04);z-index:2}
+
+.status{font-size:11px;color:var(--txt3);letter-spacing:.3px}
+.status b{color:var(--accH);font-weight:700;letter-spacing:.8px}
+
+.reco{margin-top:26px;background:var(--s1);border:1px solid var(--bd);border-left:3px solid var(--acc);border-radius:8px;padding:13px 16px;color:var(--txt2);font-size:12.5px;max-width:880px}
+.reco b{color:var(--txt)}
+.footer{margin-top:34px;border-top:1px solid var(--bd);padding-top:12px;color:var(--txt3);font-size:11.5px}
+.footer code{color:var(--txt2);background:var(--s2);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Commentators — Overlay styles</h1>
+  <span class="sub">Speaker-highlight treatment for the stacked portrait banks — 3 variants</span>
+  <span class="pill">mockup 01 / 02</span>
+</div>
+
+<div class="wrap">
+  <p class="lead">A Commentators clip renders up to 8 still PNG portraits per side in a 13%-wide strip on pure black,
+  below the top banner band. The box whose label matches the character-named audio track that has a clip under the
+  playhead is the <b>speaker</b>: full brightness plus an accent treatment; everyone else is dimmed to ~55%.
+  The three variants below differ only in what the accent treatment looks like.</p>
+  <p class="note">Each bank below is the right-side 4-up column (real cells ≈ 247×255 @1080p) shown at ~0.55 scale.
+  The speaker cycles automatically so the transition can be compared across all three at once.</p>
+
+  <div class="controls">
+    <label class="chk"><input type="checkbox" id="lbls"> Show name labels (applies to A and C — B always shows them)</label>
+    <span class="hint">Hover a bank to pause the cycle</span>
+  </div>
+
+  <div class="variants">
+
+    <!-- Variant A -->
+    <div class="card">
+      <div class="vtag">Variant A</div>
+      <h2>Edge accent (reference-faithful)</h2>
+      <div class="desc">No frames, no labels. The speaker is full brightness with a 4px accent bar hugging the cell's
+      inner edge (the edge facing the program video); everyone else dims. This is the closest match to the treatment
+      in the existing videos.</div>
+      <div class="bankwrap">
+        <div class="bank vA">
+          <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div><div class="tag">Yoyo</div></div>
+          <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div><div class="tag">Wells</div></div>
+          <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div><div class="tag">Modernia</div></div>
+          <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div><div class="tag">Rapi</div></div>
+        </div>
+        <div class="status">AUTO · from track: <b class="spk">YOYO</b></div>
+      </div>
+      <div class="procon"><b>Pros:</b> matches existing videos; zero visual noise; portraits stay full-bleed.
+      <b>Cons:</b> viewers new to the channel get no name cue.</div>
+    </div>
+
+    <!-- Variant B -->
+    <div class="card">
+      <div class="vtag">Variant B</div>
+      <h2>Framed + name tag</h2>
+      <div class="desc">Every cell gets a hairline border and a small uppercase name tag on a translucent black strip
+      at the bottom edge. The speaker's border and tag turn accent-colored.</div>
+      <div class="bankwrap">
+        <div class="bank vB">
+          <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div><div class="tag">Yoyo</div></div>
+          <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div><div class="tag">Wells</div></div>
+          <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div><div class="tag">Modernia</div></div>
+          <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div><div class="tag">Rapi</div></div>
+        </div>
+        <div class="status">AUTO · from track: <b class="spk">YOYO</b></div>
+      </div>
+      <div class="procon"><b>Pros:</b> self-explanatory for new viewers; tag doubles as the track-name binding cue in the UI.
+      <b>Cons:</b> busier; tag covers the bottom ~14px of every portrait.</div>
+    </div>
+
+    <!-- Variant C -->
+    <div class="card">
+      <div class="vtag">Variant C</div>
+      <h2>Glow + lift</h2>
+      <div class="desc">The speaker gets a soft accent outer glow and scales up ~4%; non-speakers drop darker (~45%)
+      and slightly desaturate, so the active head visibly "pops" off the strip.</div>
+      <div class="bankwrap">
+        <div class="bank vC">
+          <div class="cell c-yoyo"><div class="bust"><div class="init">Y</div><div class="head"></div><div class="torso"></div></div><div class="tag">Yoyo</div></div>
+          <div class="cell c-wells"><div class="bust"><div class="init">W</div><div class="head"></div><div class="torso"></div></div><div class="tag">Wells</div></div>
+          <div class="cell c-modernia"><div class="bust"><div class="init">M</div><div class="head"></div><div class="torso"></div></div><div class="tag">Modernia</div></div>
+          <div class="cell c-rapi"><div class="bust"><div class="init">R</div><div class="head"></div><div class="torso"></div></div><div class="tag">Rapi</div></div>
+        </div>
+        <div class="status">AUTO · from track: <b class="spk">YOYO</b></div>
+      </div>
+      <div class="procon"><b>Pros:</b> most legible at a glance, even on small screens.
+      <b>Cons:</b> the scale step reads as motion — the strip no longer looks like a static frame; glow bleeds onto the program area.</div>
+    </div>
+
+  </div>
+
+  <div class="reco">
+    <b>Recommendation:</b> ship <b>Variant A (edge accent)</b> as the default — it is what the existing uploads
+    already look like, keeps portraits full-bleed, and is the cheapest to render. Offer <b>Variant B's name labels</b>
+    as a per-clip toggle (label strip + accent tag) for videos with guest commentators; skip C's scale animation for v1
+    since portraits are intentionally still images.
+  </div>
+
+  <div class="footer">
+    These overlays are CPU-rendered by <code>renderCommentatorClip</code> — the same code path draws preview and export,
+    so what the Program Monitor shows is exactly what encodes. Spec: <code>docs/COMMENTATORS_PLAN.md</code>.
+  </div>
+</div>
+
+<script>
+(function(){
+  var chars=["YOYO","WELLS","MODERNIA","RAPI"];
+  var idx=0, paused=false;
+  function apply(){
+    document.querySelectorAll(".bank").forEach(function(b){
+      var cells=b.querySelectorAll(".cell");
+      cells.forEach(function(c,i){c.classList.toggle("speaking",i===idx);});
+    });
+    document.querySelectorAll(".spk").forEach(function(s){s.textContent=chars[idx];});
+  }
+  setInterval(function(){ if(!paused){ idx=(idx+1)%chars.length; apply(); } },1400);
+  document.querySelectorAll(".bank").forEach(function(b){
+    b.addEventListener("mouseenter",function(){paused=true;});
+    b.addEventListener("mouseleave",function(){paused=false;});
+  });
+  document.getElementById("lbls").addEventListener("change",function(e){
+    document.body.classList.toggle("labels",e.target.checked);
+  });
+  apply();
+})();
+</script>
+</body>
+</html>

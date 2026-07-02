@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators panel · Layout C (Unified low-profile strip)</title>
+<style>
+:root{--s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;--acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;--danger:#d95a5a;--font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+.page-head{position:sticky;top:0;z-index:50;display:flex;align-items:baseline;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:15px;font-weight:700}.page-head .sub{color:var(--txt3);font-size:12px}
+.page-head .note-pill{margin-left:auto;font-size:11px;color:var(--txt3);border:1px solid var(--bd);border-radius:20px;padding:3px 11px}
+.stage{padding:22px;display:flex;flex-direction:column;gap:10px;align-items:center}
+.design-label{width:min(1500px,100%);display:flex;align-items:baseline;gap:12px}
+.design-label .tag{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--acc);text-transform:uppercase}
+.design-label .name{font-size:16px;font-weight:700}
+.design-label .desc{color:var(--txt3);font-size:12px;margin-left:auto;max-width:640px;text-align:right}
+
+/* ---- character tints ---- */
+.t-yoyo{--tint:#59c96a}.t-wells{--tint:#4ad9c0}.t-modernia{--tint:#e05a7a}.t-rapi{--tint:#d94a4a}
+.t-anis{--tint:#e0b24a}.t-neon{--tint:#4aa6e0}.t-doro{--tint:#e08a4a}.t-exia{--tint:#8a6ae0}
+
+/* ---- fake portrait bust (CSS only) ---- */
+.bust{position:relative;background:#000;overflow:hidden;width:100%;height:100%}
+.bust::before{content:"";position:absolute;inset:-15%;background:radial-gradient(circle at 50% 42%,var(--tint) 0%,transparent 68%);opacity:.32}
+.bust b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:2.6em;color:rgba(255,255,255,.07);font-style:normal;letter-spacing:-1px}
+.bust .hd,.bust .sh{position:absolute;left:50%;background:color-mix(in srgb,var(--tint) 26%,#101015)}
+.bust .hd{width:38%;aspect-ratio:1;border-radius:50%;top:16%;transform:translateX(-50%)}
+.bust .sh{width:78%;height:46%;bottom:-14%;transform:translateX(-50%);border-radius:46% 46% 0 0}
+
+/* ---- panel frame ---- */
+.app{width:min(1500px,100%);border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--s1);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:34px}
+.dock .dtab{display:flex;align-items:center;height:34px;padding:0 14px;color:var(--txt3);font-size:12px;font-weight:600;border-bottom:2px solid transparent;cursor:pointer}
+.dock .dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .grow{flex:1}
+.phead{display:flex;align-items:center;gap:12px;padding:9px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.phead .tt{font-size:11px;font-weight:800;letter-spacing:.8px;color:var(--accH);text-transform:uppercase}
+.clipname{font-weight:700}.muted{color:var(--txt3);font-size:11.5px}
+.phead .right{margin-left:auto;color:var(--txt3);font-size:11px}
+
+/* ---- unified strip: 4 zones ---- */
+.band{display:flex;align-items:stretch;min-height:0}
+.zone{padding:12px 14px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.zone + .zone{border-left:1px solid var(--bd)}
+.zh{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.zh .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none}
+
+/* zone 1 — mini preview */
+.z-preview{flex:0 0 336px;background:#101016}
+.canvas{position:relative;aspect-ratio:16/9;background:#000;border:1px solid var(--bd);border-radius:6px;overflow:hidden}
+.canvas .vid{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#3a3a44;font-size:10px;font-weight:700;letter-spacing:1px;background:linear-gradient(135deg,#101018 0%,#0a0a10 60%,#0d0d14 100%)}
+.bank{position:absolute;top:4%;bottom:4%;width:15%;display:flex;flex-direction:column;justify-content:center;gap:3px}
+.bank.l{left:1.6%}.bank.r{right:1.6%}
+.pbox{flex:0 0 auto;height:21%;border:1px solid #26262e;border-radius:3px;overflow:hidden;position:relative;filter:brightness(.45) saturate(.8);transition:filter .15s}
+.pbox .nm{position:absolute;left:0;right:0;bottom:0;font-size:5.5px;font-weight:800;letter-spacing:.4px;text-align:center;color:#cfd4de;background:rgba(0,0,0,.62);padding:1px 0;text-transform:uppercase}
+.pbox.live{filter:none;border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 10px rgba(74,144,217,.55);z-index:2;transform:scale(1.06)}
+.pv-cap{font-size:10.5px;color:var(--txt3);line-height:1.45}
+.pv-cap b{color:var(--txt2)}
+
+/* zone 2 — banks */
+.z-banks{flex:0 0 400px}
+.banks-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.btn{height:28px;padding:0 11px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{color:var(--txt);border-color:var(--bdl)}
+.btn.primary{background:var(--accD);border-color:var(--accD);color:#eaf2fc}
+.btn.primary:hover{background:var(--acc);border-color:var(--acc)}
+.recents{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.recents .rl{font-size:10px;color:var(--txt3);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border:1px solid var(--bd);background:var(--s0);border-radius:20px;font-size:10px;font-weight:700;color:var(--txt2);cursor:pointer;letter-spacing:.3px}
+.chip:hover{border-color:var(--acc);color:var(--txt)}
+.chip i{width:7px;height:7px;border-radius:50%;background:var(--tint);font-style:normal}
+.bankgroups{display:flex;gap:12px;flex:1;min-height:0}
+.bgroup{flex:1;display:flex;flex-direction:column;gap:5px}
+.bgroup .gl{font-size:9.5px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.bgroup .gl .cnt{margin-left:auto;font-weight:600;letter-spacing:0;font-size:9.5px}
+.cells{display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:56px;gap:5px}
+.cell{position:relative;border:1px solid var(--bd);border-radius:5px;overflow:hidden;background:var(--s0);cursor:pointer;display:flex;flex-direction:column}
+.cell:hover{border-color:var(--bdl)}
+.cell .pic{flex:1;min-height:0;position:relative}
+.cell .lbl{flex:0 0 15px;display:flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:800;letter-spacing:.5px;color:var(--txt2);background:#0b0b10;border-top:1px solid var(--bd);text-transform:uppercase}
+.cell.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.cell.sel .lbl{color:var(--accH)}
+.cell.empty{border-style:dashed;align-items:center;justify-content:center;color:var(--txt3);font-size:9px;font-weight:600;letter-spacing:.3px;background:transparent}
+.cell.empty:hover{color:var(--txt2);border-color:var(--acc)}
+
+/* zone 3 — inspector */
+.z-insp{flex:1 1 300px}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld label{font-size:10px;font-weight:700;letter-spacing:.6px;color:var(--txt3);text-transform:uppercase}
+.fld .help{font-size:10px;color:var(--txt3)}
+.fld .help b{color:var(--accH);font-weight:600}
+.inp{height:28px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-family:inherit;font-size:12px;padding:0 9px;outline:none;min-width:0}
+.inp:focus{border-color:var(--acc)}
+.inrow{display:flex;gap:6px;align-items:center}
+.inrow .inp{flex:1}
+.framing{display:flex;gap:12px;align-items:flex-start}
+.fcols{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
+.frow{display:flex;align-items:center;gap:8px}
+.frow .fl{flex:0 0 52px;font-size:10.5px;color:var(--txt2)}
+.frow input[type=range]{flex:1;accent-color:var(--acc);height:14px}
+.frow .val{flex:0 0 38px;text-align:right;font-size:10.5px;color:var(--txt3);font-variant-numeric:tabular-nums}
+.numin{width:52px;height:24px;background:var(--s0);border:1px solid var(--bd);border-radius:5px;color:var(--txt);font-family:inherit;font-size:11px;padding:0 6px;text-align:right;outline:none}
+.numin:focus{border-color:var(--acc)}
+.fprev{flex:0 0 92px;width:92px;height:92px;border:1px solid var(--bdl);border-radius:6px;overflow:hidden;position:relative;background:#000}
+.fprev .frame{position:absolute;inset:9px;border:1px dashed rgba(74,144,217,.75);border-radius:3px;pointer-events:none}
+.fprev .fz{position:absolute;left:-8%;top:-6%;width:116%;height:116%}
+.insp-foot{margin-top:auto;display:flex;justify-content:flex-end}
+.btn.danger{color:#e89a9a;border-color:#4a2a2e}
+.btn.danger:hover{color:#fff;background:#5a2a2e;border-color:#7a3a40}
+
+/* zone 4 — override lane */
+.z-ovr{flex:0 0 292px;background:#101016}
+.ovr-note{font-size:10px;color:var(--txt3);line-height:1.45}
+.ovr-list{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px}
+.ovr{border:1px solid var(--bd);border-radius:6px;background:var(--s0);padding:6px 8px;display:flex;flex-direction:column;gap:5px}
+.ovr .l1{display:flex;align-items:center;gap:7px}
+.ovr .l1 .dot{width:8px;height:8px;border-radius:50%;background:var(--tint);flex:0 0 auto}
+.selc{flex:1;height:24px;background:var(--s1);border:1px solid var(--bd);border-radius:5px;color:var(--txt);font-family:inherit;font-size:11px;padding:0 20px 0 7px;cursor:pointer;appearance:none;min-width:0;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 11px) 10px,calc(100% - 7px) 10px;background-size:4px 4px;background-repeat:no-repeat}
+.xbtn{width:20px;height:20px;border:none;background:transparent;color:var(--txt3);cursor:pointer;font-size:12px;border-radius:4px;flex:0 0 auto}
+.xbtn:hover{color:#e89a9a;background:var(--s2)}
+.ovr .l2{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--txt3)}
+.tc{font-variant-numeric:tabular-nums;font-size:10px;color:var(--txt2);background:var(--s1);border:1px solid var(--bd);border-radius:4px;padding:2px 5px;white-space:nowrap}
+.mini-btn{height:20px;padding:0 7px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:4px;cursor:pointer;font-family:inherit;font-size:9.5px;font-weight:700;white-space:nowrap}
+.mini-btn:hover{color:var(--accH);border-color:var(--acc)}
+.ovr.cur{border-color:var(--accD);background:rgba(30,50,75,.35)}
+
+/* pros/cons */
+.verdict{width:min(1500px,100%);color:var(--txt3);font-size:12px;background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:12px 16px;line-height:1.55}
+.verdict b{color:var(--txt2)}
+.verdict .plus{color:#8fd39a}.verdict .minus{color:#e0a0a0}
+.verdict a{color:var(--acc);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>ROUNDTABLE · Commentators panel</h1>
+  <span class="sub">Layout C — Unified low-profile strip (optimized for a short docked panel)</span>
+  <span class="note-pill">mockup — no real render</span>
+</div>
+
+<div class="stage">
+  <div class="design-label">
+    <span class="tag">Layout C</span>
+    <span class="name">Unified low-profile strip</span>
+    <span class="desc">Everything in one horizontal band: preview · banks · inspector · override lane. Built for the height-constrained timeline dock — nothing collapses, nothing scrolls vertically except the override list.</span>
+  </div>
+
+  <div class="app">
+    <div class="dock">
+      <div class="dtab">Captions</div>
+      <div class="dtab">Tier List</div>
+      <div class="dtab active">Commentators</div>
+      <div class="grow"></div>
+    </div>
+    <div class="phead">
+      <span class="tt">Commentators</span>
+      <span class="clipname">Commentators 01 — V3</span>
+      <span class="muted">editing the selected Commentator clip on the timeline</span>
+      <span class="right">portraits are still PNGs — highlight vs dim only, no mouth flap</span>
+    </div>
+
+    <div class="band">
+
+      <!-- ZONE 1 · mini preview -->
+      <div class="zone z-preview">
+        <div class="zh">Preview <span class="rt">CPU render == export</span></div>
+        <div class="canvas">
+          <div class="vid">PROGRAM VIDEO</div>
+          <div class="bank l">
+            <div class="pbox t-yoyo"><div class="bust"><b>Y</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Yoyo</span></div>
+            <div class="pbox t-wells live"><div class="bust"><b>W</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Wells</span></div>
+            <div class="pbox t-modernia"><div class="bust"><b>M</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Modernia</span></div>
+            <div class="pbox t-rapi"><div class="bust"><b>R</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Rapi</span></div>
+          </div>
+          <div class="bank r">
+            <div class="pbox t-anis"><div class="bust"><b>A</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Anis</span></div>
+            <div class="pbox t-neon"><div class="bust"><b>N</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Neon</span></div>
+            <div class="pbox t-doro"><div class="bust"><b>D</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Doro</span></div>
+            <div class="pbox t-exia"><div class="bust"><b>E</b><i class="hd"></i><i class="sh"></i></div><span class="nm">Exia</span></div>
+          </div>
+        </div>
+        <div class="pv-cap"><b>WELLS speaking</b> — audio clip under the playhead on track "WELLS". The <b>left bank auto-hides while a Tier List clip is active.</b></div>
+      </div>
+
+      <!-- ZONE 2 · banks -->
+      <div class="zone z-banks">
+        <div class="zh">Banks <span class="rt">up to 8 per side</span></div>
+        <div class="banks-toolbar">
+          <button class="btn primary">⇊ Populate from tracks</button>
+          <button class="btn">+ Add Box</button>
+        </div>
+        <div class="recents">
+          <span class="rl">RECENTS — reuse a character:</span>
+          <span class="chip t-rapi"><i></i>RAPI</span>
+          <span class="chip t-neon"><i></i>NEON</span>
+          <span class="chip t-anis"><i></i>ANIS</span>
+          <span class="chip t-exia"><i></i>EXIA</span>
+        </div>
+        <div class="bankgroups">
+          <div class="bgroup">
+            <div class="gl">Left <span class="cnt">4 / 8</span></div>
+            <div class="cells">
+              <div class="cell t-yoyo" data-name="YOYO"><div class="pic"><div class="bust"><b>Y</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Yoyo</div></div>
+              <div class="cell t-wells sel" data-name="WELLS"><div class="pic"><div class="bust"><b>W</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Wells</div></div>
+              <div class="cell t-modernia" data-name="MODERNIA"><div class="pic"><div class="bust"><b>M</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Modernia</div></div>
+              <div class="cell t-rapi" data-name="RAPI"><div class="pic"><div class="bust"><b>R</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Rapi</div></div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+            </div>
+          </div>
+          <div class="bgroup">
+            <div class="gl">Right <span class="cnt">4 / 8</span></div>
+            <div class="cells">
+              <div class="cell t-anis" data-name="ANIS"><div class="pic"><div class="bust"><b>A</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Anis</div></div>
+              <div class="cell t-neon" data-name="NEON"><div class="pic"><div class="bust"><b>N</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Neon</div></div>
+              <div class="cell t-doro" data-name="DORO"><div class="pic"><div class="bust"><b>D</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Doro</div></div>
+              <div class="cell t-exia" data-name="EXIA"><div class="pic"><div class="bust"><b>E</b><i class="hd"></i><i class="sh"></i></div></div><div class="lbl">Exia</div></div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+              <div class="cell empty">Drop PNG</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ZONE 3 · inspector -->
+      <div class="zone z-insp">
+        <div class="zh">Box inspector <span class="rt" id="insp-sel">WELLS · left bank</span></div>
+        <div class="fld">
+          <label>Label</label>
+          <input class="inp" id="insp-label" value="WELLS">
+          <span class="help">join key = <b>audio track name</b> — a clip under the playhead on track "WELLS" makes this box the speaker</span>
+        </div>
+        <div class="fld">
+          <label>Portrait</label>
+          <div class="inrow">
+            <input class="inp" id="insp-path" value="assets/commentators/wells.png">
+            <button class="btn">Browse…</button>
+          </div>
+        </div>
+        <div class="fld">
+          <label>Framing</label>
+          <div class="framing">
+            <div class="fcols">
+              <div class="frow"><span class="fl">Zoom</span><input type="range" min="100" max="300" value="135" id="fz"><span class="val" id="fzv">135%</span></div>
+              <div class="frow"><span class="fl">Offset X</span><input class="numin" value="-12"><span class="fl" style="flex:0 0 auto">Y</span><input class="numin" value="8"></div>
+              <div class="frow"><span class="fl">Crop</span><input class="numin" value="0"><span class="val" style="flex:1;text-align:left">% each edge</span></div>
+            </div>
+            <div class="fprev t-wells" title="framing preview">
+              <div class="fz"><div class="bust"><b>W</b><i class="hd"></i><i class="sh"></i></div></div>
+              <div class="frame"></div>
+            </div>
+          </div>
+        </div>
+        <div class="insp-foot"><button class="btn danger">Remove Box</button></div>
+      </div>
+
+      <!-- ZONE 4 · override lane -->
+      <div class="zone z-ovr">
+        <div class="zh">Override <button class="mini-btn" style="margin-left:auto">+ Add Override</button></div>
+        <div class="ovr-note">Overrides force a speaker regardless of audio tracks. IN/OUT snap to the playhead via Set Start / Set End.</div>
+        <div class="ovr-list">
+          <div class="ovr t-modernia cur">
+            <div class="l1"><span class="dot"></span>
+              <select class="selc"><option>MODERNIA (left 3)</option><option>YOYO (left 1)</option><option>WELLS (left 2)</option><option>RAPI (left 4)</option><option>ANIS (right 1)</option><option>NEON (right 2)</option><option>DORO (right 3)</option><option>EXIA (right 4)</option></select>
+              <button class="xbtn" title="delete">✕</button>
+            </div>
+            <div class="l2">IN <span class="tc">00:00:41:12</span> OUT <span class="tc">00:00:47:03</span><button class="mini-btn">Set Start</button><button class="mini-btn">Set End</button></div>
+          </div>
+          <div class="ovr t-doro">
+            <div class="l1"><span class="dot"></span>
+              <select class="selc"><option>DORO (right 3)</option><option>YOYO (left 1)</option><option>WELLS (left 2)</option><option>MODERNIA (left 3)</option><option>RAPI (left 4)</option><option>ANIS (right 1)</option><option>NEON (right 2)</option><option>EXIA (right 4)</option></select>
+              <button class="xbtn" title="delete">✕</button>
+            </div>
+            <div class="l2">IN <span class="tc">00:01:12:00</span> OUT <span class="tc">00:01:15:20</span><button class="mini-btn">Set Start</button><button class="mini-btn">Set End</button></div>
+          </div>
+          <div class="ovr t-exia">
+            <div class="l1"><span class="dot"></span>
+              <select class="selc"><option>EXIA (right 4)</option><option>YOYO (left 1)</option><option>WELLS (left 2)</option><option>MODERNIA (left 3)</option><option>RAPI (left 4)</option><option>ANIS (right 1)</option><option>NEON (right 2)</option><option>DORO (right 3)</option></select>
+              <button class="xbtn" title="delete">✕</button>
+            </div>
+            <div class="l2">IN <span class="tc">00:02:03:08</span> OUT <span class="tc">00:02:06:14</span><button class="mini-btn">Set Start</button><button class="mini-btn">Set End</button></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="verdict">
+    <b>Layout C vs A / B</b> —
+    <span class="plus">Pros:</span> the most compact of the three; the whole feature (preview, both banks, inspector, overrides) is visible at once with zero collapsing or tab-switching, so it survives the short heights timeline panels usually get.
+    <span class="minus">Cons:</span> small targets — bank cells and override rows are dense, and the inspector gets cramped on narrow docks.
+    Compare: <a href="03_panel_bank_editor.html">Layout A — Bank Editor</a> (preview-centered, banks flanking, roomier) · <a href="04_panel_side_rail.html">Layout B — Side Rail</a> (mirrors the Tier List panel, taller).
+  </div>
+</div>
+
+<script>
+// minimal demo wiring: bank cell selection updates the inspector
+(function(){
+  var cells=document.querySelectorAll('.cell[data-name]');
+  var lbl=document.getElementById('insp-label');
+  var path=document.getElementById('insp-path');
+  var sel=document.getElementById('insp-sel');
+  cells.forEach(function(c){
+    c.addEventListener('click',function(){
+      cells.forEach(function(o){o.classList.remove('sel')});
+      c.classList.add('sel');
+      var n=c.getAttribute('data-name');
+      var side=c.closest('.bgroup').querySelector('.gl').textContent.indexOf('Left')>=0?'left':'right';
+      lbl.value=n;
+      path.value='assets/commentators/'+n.toLowerCase()+'.png';
+      sel.textContent=n+' · '+side+' bank';
+    });
+  });
+  var fz=document.getElementById('fz'),fzv=document.getElementById('fzv');
+  if(fz)fz.addEventListener('input',function(){fzv.textContent=fz.value+'%'});
+})();
+</script>
+</body>
+</html>

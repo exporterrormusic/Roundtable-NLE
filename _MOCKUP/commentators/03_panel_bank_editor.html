@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUNDTABLE — Commentators panel · Layout A "Bank Editor"</title>
+<style>
+:root{
+  --s0:#0e0e14;--s1:#16161e;--s2:#1e1e25;--s3:#26262e;--s4:#2e2e38;
+  --txt:#dcdce1;--txt2:#a0a0aa;--txt3:#6e6e78;--bd:#2a2a34;--bdl:#3a3a46;
+  --acc:#4a90d9;--accH:#5a9ee9;--accD:#2a5a9b;--accS:#1e324b;--danger:#d23c3c;
+  --font:"Segoe UI",-apple-system,system-ui,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080c;color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.4;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-track{background:var(--s1)}::-webkit-scrollbar-thumb{background:#33333e;border-radius:5px;border:2px solid var(--s1)}
+button{font-family:inherit}
+input,select{font-family:inherit}
+
+.page-head{display:flex;align-items:center;gap:14px;padding:14px 26px;background:#0b0b10;border-bottom:1px solid var(--bd)}
+.page-head h1{font-size:14px;font-weight:700}
+.page-head .sub{color:var(--txt3);font-size:12px}
+
+.stage{max-width:1500px;margin:0 auto;padding:22px 20px;display:flex;flex-direction:column;gap:12px}
+.panel{background:var(--s1);border:1px solid var(--bd);border-radius:8px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+
+/* docked tab strip */
+.dock{display:flex;align-items:center;gap:2px;background:#0b0b10;border-bottom:1px solid var(--bd);padding:0 8px;height:34px}
+.dtab{display:flex;align-items:center;gap:7px;height:34px;padding:0 14px;color:var(--txt3);font-size:12px;font-weight:600;border-bottom:2px solid transparent;cursor:pointer;background:none;border-top:none;border-left:none;border-right:none}
+.dtab.active{color:var(--txt);border-bottom-color:var(--acc);background:var(--s1)}
+.dock .grow{flex:1}
+.dock .ibtn{width:26px;height:26px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-size:13px}
+
+/* panel header */
+.phead{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--s1);border-bottom:1px solid var(--bd)}
+.phead .tt{font-size:11px;font-weight:800;letter-spacing:.8px;color:var(--accH);text-transform:uppercase}
+.clipname{font-weight:700}
+.muted{color:var(--txt3);font-size:11.5px}
+.phead-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.eyebtn{height:28px;padding:0 12px;border-radius:6px;border:1px solid var(--accD);background:var(--accS);color:var(--accH);font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:7px}
+.eyebtn.off{border-color:var(--bd);background:var(--s2);color:var(--txt3)}
+
+/* toolbar */
+.tbar{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--bd);background:#121218}
+.btn{height:30px;padding:0 12px;border:1px solid var(--bd);background:var(--s2);color:var(--txt2);border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px}
+.btn:hover{color:var(--txt);border-color:var(--bdl)}
+.btn.primary{background:var(--accD);border-color:var(--accD);color:#eaf2fc;font-weight:700}
+.btn.primary:hover{background:#33689f}
+.pop-wrap{position:relative}
+.tooltip{position:absolute;top:36px;left:0;z-index:20;background:#0b0b10;border:1px solid var(--bdl);border-radius:6px;padding:7px 10px;font-size:11px;color:var(--txt2);width:280px;box-shadow:0 8px 22px rgba(0,0,0,.55)}
+.tooltip::before{content:"";position:absolute;top:-5px;left:22px;width:8px;height:8px;background:#0b0b10;border-left:1px solid var(--bdl);border-top:1px solid var(--bdl);transform:rotate(45deg)}
+.tooltip b{color:var(--txt)}
+.vsep{width:1px;height:20px;background:var(--bd)}
+.recents{display:flex;align-items:center;gap:6px;min-width:0}
+.recents .rh{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;margin-right:2px}
+.rchip{height:26px;padding:0 10px 0 4px;border:1px solid var(--bd);background:var(--s2);border-radius:14px;color:var(--txt2);font-size:11.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px}
+.rchip:hover{border-color:var(--acc);color:var(--txt)}
+.rchip .dot{width:18px;height:18px;border-radius:50%;position:relative;overflow:hidden;background:#000;flex:0 0 auto}
+.tbar .grow{flex:1}
+.tbar .hint{font-size:11px;color:var(--txt3);white-space:nowrap}
+
+/* body: 4 columns */
+.body{display:flex;align-items:stretch}
+.bankcol{flex:0 0 208px;padding:12px;border-right:1px solid var(--bd);display:flex;flex-direction:column;gap:9px;background:#111117}
+.bankcol.right{border-right:none;border-left:1px solid var(--bd)}
+.centercol{flex:1;min-width:0;display:flex;flex-direction:column}
+.inspcol{flex:0 0 288px;border-left:1px solid var(--bd);background:#13131a;display:flex;flex-direction:column}
+
+.sech{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase;display:flex;align-items:center;gap:7px}
+.sech .rt{margin-left:auto;font-weight:600;letter-spacing:0;text-transform:none}
+
+/* bank grids */
+.bankgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cell{border:1px solid var(--bd);border-radius:7px;background:var(--s0);cursor:pointer;overflow:hidden;position:relative}
+.cell:hover{border-color:var(--bdl)}
+.cell.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.cell .port{aspect-ratio:3/4;position:relative;background:#000}
+.cell .clabel{padding:4px 5px;font-size:10px;font-weight:700;text-align:center;border-top:1px solid var(--bd);color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell.sel .clabel{color:var(--accH)}
+.cell .slot{position:absolute;top:3px;left:4px;z-index:3;font-size:8px;font-weight:800;letter-spacing:.5px;color:rgba(255,255,255,.5);background:rgba(0,0,0,.55);border-radius:3px;padding:1px 4px}
+.cell .spk{position:absolute;top:3px;right:4px;z-index:3;font-size:8px;font-weight:800;color:#0d1826;background:var(--accH);border-radius:3px;padding:1px 4px}
+.cell.empty .port{display:flex;align-items:center;justify-content:center;padding:8px}
+.cell.empty .drop{border:1px dashed var(--bdl);border-radius:5px;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--txt3);font-size:9.5px;text-align:center;line-height:1.3}
+.cell.empty .drop .pl{font-size:15px;color:#4a4a56}
+.cell.empty .clabel{color:var(--txt3);font-weight:600;font-style:italic}
+
+/* fake portrait bust */
+.bust{position:absolute;inset:0;background:#000;overflow:hidden}
+.bust::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 30%,var(--cA) 0%,transparent 70%)}
+.bust i{position:absolute;font-style:normal}
+.bust .h{left:50%;top:16%;width:44%;aspect-ratio:1;border-radius:50%;transform:translateX(-50%);background:radial-gradient(circle at 38% 32%,var(--cB),var(--cC) 78%)}
+.bust .s{left:50%;top:54%;width:88%;height:58%;border-radius:48% 48% 0 0/78% 78% 0 0;transform:translateX(-50%);background:linear-gradient(180deg,var(--cB),var(--cC) 85%)}
+.bust b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:900;color:rgba(255,255,255,.07)}
+.ch-yoyo{--cA:rgba(154,107,217,.30);--cB:#8a63c9;--cC:#2e2148}
+.ch-wells{--cA:rgba(78,203,165,.30);--cB:#3fbf9a;--cC:#123328}
+.ch-modernia{--cA:rgba(230,104,168,.30);--cB:#d968a8;--cC:#431f33}
+.ch-rapi{--cA:rgba(217,85,80,.30);--cB:#c9524f;--cC:#3b1716}
+.ch-anis{--cA:rgba(230,196,85,.30);--cB:#cfae4a;--cC:#3b3113}
+.ch-neon{--cA:rgba(85,196,230,.30);--cB:#4ab6d6;--cC:#133038}
+.ch-doro{--cA:rgba(230,145,91,.30);--cB:#d98a52;--cC:#3d2413}
+.ch-exia{--cA:rgba(91,126,230,.30);--cB:#5b7ee6;--cC:#171f3d}
+
+/* center: preview */
+.pvwrap{padding:13px 16px 10px;display:flex;flex-direction:column;gap:8px;background:#101016;border-bottom:1px solid var(--bd)}
+.pv{aspect-ratio:16/9;background:#000;position:relative;border:1px solid var(--bd);border-radius:8px;overflow:hidden;max-width:760px;width:100%;margin:0 auto}
+.pv .prog{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 60%,#15151d 0%,#08080b 75%);display:flex;align-items:center;justify-content:center}
+.pv .prog span{font-size:11px;font-weight:800;letter-spacing:3px;color:#26262f}
+.pv .tlghost{position:absolute;left:16%;top:10%;right:17%;bottom:12%;border:1px dashed #2c2c38;border-radius:6px;display:none;align-items:center;justify-content:center;font-size:9px;font-weight:700;letter-spacing:1px;color:#3c3c49}
+.pv.tl .tlghost{display:flex}
+.stack{position:absolute;top:50%;transform:translateY(-50%);display:grid;grid-template-columns:repeat(2,47px);gap:5px;z-index:5}
+.stack.left{left:9px}
+.stack.right{right:9px}
+.pv.tl .stack.left{display:none}
+.pbox{width:47px;height:61px;border-radius:4px;overflow:hidden;position:relative;border:1px solid #262630;background:#050508}
+.pbox .bust b{font-size:16px}
+.pbox .nm{position:absolute;bottom:0;left:0;right:0;z-index:2;font-size:6px;font-weight:700;text-align:center;background:rgba(0,0,0,.65);padding:1px 0;color:#cfd3dc;letter-spacing:.3px}
+.pbox.dim{opacity:.42;filter:saturate(.45) brightness(.75)}
+.pbox.speak{border-color:var(--accH);box-shadow:0 0 12px rgba(90,158,233,.75)}
+.pbox.speak .nm{background:rgba(42,90,155,.85);color:#fff}
+.pvfoot{display:flex;align-items:center;gap:10px;max-width:760px;width:100%;margin:0 auto}
+.statetgl{display:flex;background:var(--s0);border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.statetgl button{height:26px;padding:0 12px;border:none;background:transparent;color:var(--txt3);cursor:pointer;font-size:11px;font-weight:600}
+.statetgl button.active{background:var(--accS);color:var(--accH)}
+.pvnote{font-size:10.5px;color:var(--txt3)}
+.pvnote b{color:var(--txt2)}
+
+/* overrides */
+.ovr{flex:1;min-height:0;display:flex;flex-direction:column;background:#0f0f14}
+.ovr-head{display:flex;align-items:center;gap:10px;padding:10px 16px 6px}
+.ovr-note{font-size:10.5px;color:var(--txt3);padding:0 16px 7px}
+.ovr-list{flex:1;overflow:auto;padding:0 10px 10px}
+.evrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #1c1c24;border-radius:5px}
+.evrow:hover{background:var(--s2)}
+.evchip{width:14px;height:14px;border-radius:4px;flex:0 0 auto;position:relative;overflow:hidden;background:#000}
+.evsel{height:24px;background:var(--s0);border:1px solid var(--bd);border-radius:5px;color:var(--txt);font-size:11px;font-weight:600;padding:0 20px 0 8px;cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--txt3) 50%),linear-gradient(135deg,var(--txt3) 50%,transparent 50%);background-position:calc(100% - 11px) 10px,calc(100% - 7px) 10px;background-size:4px 4px;background-repeat:no-repeat;min-width:108px}
+.tc{height:24px;min-width:88px;padding:0 8px;border:1px solid var(--bd);background:var(--s0);color:var(--txt);border-radius:5px;font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;display:flex;align-items:center;justify-content:center}
+.tc.unset{color:var(--txt3);font-weight:600}
+.tarrow{color:var(--txt3);font-size:10px}
+.tset{height:24px;padding:0 8px;border:1px solid var(--bd);background:var(--s3);color:var(--txt2);border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;flex:0 0 auto}
+.tset:hover{border-color:var(--acc);color:var(--accH);background:var(--accS)}
+.evx{width:22px;height:22px;border:none;background:transparent;color:var(--txt3);cursor:pointer;font-size:12px;border-radius:5px;flex:0 0 auto;margin-left:auto}
+.evx:hover{background:var(--s3);color:var(--danger)}
+.addov{margin:8px 8px 0;height:28px;border:1px dashed var(--bdl);background:transparent;color:var(--txt2);border-radius:6px;cursor:pointer;font-size:11.5px;font-weight:600}
+.addov:hover{border-color:var(--acc);color:var(--accH)}
+
+/* inspector flyout */
+.insp-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--bd)}
+.insp-head .bh{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--txt3);text-transform:uppercase}
+.insp-head .who{font-weight:700;color:var(--accH)}
+.insp-head .close{margin-left:auto;width:22px;height:22px;border:1px solid var(--bd);background:var(--s2);color:var(--txt3);border-radius:5px;cursor:pointer;font-size:11px}
+.insp-body{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:13px}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld label{font-size:10px;font-weight:800;letter-spacing:.8px;color:var(--txt3);text-transform:uppercase}
+.fld input[type=text]{height:28px;background:var(--s0);border:1px solid var(--bd);border-radius:6px;color:var(--txt);font-size:12px;padding:0 9px;outline:none}
+.fld input[type=text]:focus{border-color:var(--acc)}
+.fld .help{font-size:10.5px;color:var(--txt3)}
+.fld .help b{color:var(--acc);font-weight:700}
+.pathrow{display:flex;gap:6px}
+.pathrow input{flex:1;min-width:0;color:var(--txt2) !important;font-size:11px !important}
+.pathrow .btn{height:28px;flex:0 0 auto}
+.frame-sec{border:1px solid var(--bd);border-radius:7px;background:#101017;padding:10px;display:flex;flex-direction:column;gap:9px}
+.frame-sec .sech{margin-bottom:1px}
+.frow{display:flex;align-items:center;gap:8px}
+.frow label{flex:0 0 56px;font-size:11px;color:var(--txt2)}
+.frow input[type=range]{flex:1;accent-color:var(--acc);height:4px}
+.frow .val{flex:0 0 44px;text-align:right;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--txt)}
+.frow input[type=number]{width:58px;height:24px;background:var(--s0);border:1px solid var(--bd);border-radius:5px;color:var(--txt);font-size:11px;padding:0 6px;outline:none}
+.fpv-wrap{display:flex;gap:10px;align-items:flex-start}
+.fpv{width:112px;height:112px;flex:0 0 auto;position:relative;background:#000;border:1px solid var(--bdl);border-radius:5px;overflow:hidden}
+.fpv .zoomed{position:absolute;inset:0;transform:scale(1.28) translate(4%,6%)}
+.fpv .guide{position:absolute;inset:9px;border:1px dashed rgba(90,158,233,.45);border-radius:3px;z-index:4;pointer-events:none}
+.fpv-cap{font-size:10px;color:var(--txt3);line-height:1.45;padding-top:3px}
+.rmv{height:28px;border:1px solid #4b2226;background:#241417;color:#e07a7a;border-radius:6px;cursor:pointer;font-size:11.5px;font-weight:700}
+.rmv:hover{background:#2f181c;border-color:var(--danger)}
+
+.note{max-width:1500px;margin:0 auto;color:var(--txt3);font-size:12px;padding:0 20px 8px;line-height:1.55}
+.note b{color:var(--txt2)}
+.panel.disabled .body,.panel.disabled .tbar{opacity:.45;pointer-events:none}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>ROUNDTABLE · Commentators — Panel layout A</h1>
+  <span class="sub">"Bank Editor" — banks flank a large live preview; inspector flies out on the right</span>
+</div>
+
+<section class="stage">
+<div class="panel" id="panel">
+
+  <!-- docked tab strip -->
+  <div class="dock">
+    <button class="dtab">≡ Captions</button>
+    <button class="dtab">▦ Tier List</button>
+    <button class="dtab active">▣ Commentators</button>
+    <div class="grow"></div><button class="ibtn">⧉</button><button class="ibtn">⋯</button>
+  </div>
+
+  <!-- panel header -->
+  <div class="phead">
+    <span class="tt">▣ Commentators</span>
+    <span class="clipname">Commentators 01 — V3</span>
+    <span class="muted">· Commentator clip · 16 boxes max (8 left / 8 right)</span>
+    <div class="phead-right">
+      <span class="muted">Speaker: audio-track auto-detect</span>
+      <button class="eyebtn" id="eye" onclick="toggleEye()">👁 Enabled</button>
+    </div>
+  </div>
+
+  <!-- toolbar -->
+  <div class="tbar">
+    <div class="pop-wrap">
+      <button class="btn primary">⇊ Populate from tracks</button>
+      <div class="tooltip"><b>One click:</b> creates &amp; fills boxes from the character-named audio tracks in this sequence (YOYO, WELLS, …). This is the only AudioSync coupling — <b>export never touches this clip</b>.</div>
+    </div>
+    <button class="btn">＋ Add Box ▾ <span class="muted">Left / Right</span></button>
+    <div class="vsep"></div>
+    <div class="recents">
+      <span class="rh">Recents</span>
+      <button class="rchip"><span class="dot"><span class="bust ch-exia"><i class="h"></i><i class="s"></i></span></span>EXIA</button>
+      <button class="rchip"><span class="dot"><span class="bust ch-doro"><i class="h"></i><i class="s"></i></span></span>DORO</button>
+      <button class="rchip"><span class="dot"><span class="bust ch-neon"><i class="h"></i><i class="s"></i></span></span>NEON</button>
+      <button class="rchip"><span class="dot"><span class="bust ch-rapi"><i class="h"></i><i class="s"></i></span></span>RAPI</button>
+    </div>
+    <div class="grow"></div>
+    <span class="hint">Click a Recents chip to assign that character to the selected empty cell</span>
+  </div>
+
+  <!-- body: LEFT BANK | preview+overrides | RIGHT BANK | inspector -->
+  <div class="body">
+
+    <!-- LEFT BANK -->
+    <div class="bankcol">
+      <div class="sech">Left Bank <span class="rt">4 / 8</span></div>
+      <div class="bankgrid">
+        <div class="cell" onclick="selCell(this)" data-label="YOYO" data-slot="L-A1">
+          <div class="port"><span class="slot">L-A1</span><span class="bust ch-yoyo"><i class="h"></i><i class="s"></i><b>Y</b></span></div>
+          <div class="clabel">YOYO</div>
+        </div>
+        <div class="cell sel" onclick="selCell(this)" data-label="WELLS" data-slot="L-A2">
+          <div class="port"><span class="slot">L-A2</span><span class="bust ch-wells"><i class="h"></i><i class="s"></i><b>W</b></span></div>
+          <div class="clabel">WELLS</div>
+        </div>
+        <div class="cell" onclick="selCell(this)" data-label="MODERNIA" data-slot="L-B1">
+          <div class="port"><span class="slot">L-B1</span><span class="bust ch-modernia"><i class="h"></i><i class="s"></i><b>M</b></span></div>
+          <div class="clabel">MODERNIA</div>
+        </div>
+        <div class="cell" onclick="selCell(this)" data-label="RAPI" data-slot="L-B2">
+          <div class="port"><span class="slot">L-B2</span><span class="spk">SPK</span><span class="bust ch-rapi"><i class="h"></i><i class="s"></i><b>R</b></span></div>
+          <div class="clabel">RAPI</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="L-C1">
+          <div class="port"><span class="slot">L-C1</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="L-C2">
+          <div class="port"><span class="slot">L-C2</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="L-D1">
+          <div class="port"><span class="slot">L-D1</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="L-D2">
+          <div class="port"><span class="slot">L-D2</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER: preview + overrides -->
+    <div class="centercol">
+      <div class="pvwrap">
+        <div class="sech" style="max-width:760px;width:100%;margin:0 auto">Live Preview <span class="rt">follows playhead · 00:04:14:03</span></div>
+        <div class="pv" id="pv">
+          <div class="prog"><span>PROGRAM</span></div>
+          <div class="tlghost">TIER LIST CLIP OCCUPIES CENTER + LEFT</div>
+          <div class="stack left">
+            <div class="pbox dim"><span class="bust ch-yoyo"><i class="h"></i><i class="s"></i><b>Y</b></span><span class="nm">YOYO</span></div>
+            <div class="pbox dim"><span class="bust ch-wells"><i class="h"></i><i class="s"></i><b>W</b></span><span class="nm">WELLS</span></div>
+            <div class="pbox dim"><span class="bust ch-modernia"><i class="h"></i><i class="s"></i><b>M</b></span><span class="nm">MODERNIA</span></div>
+            <div class="pbox speak"><span class="bust ch-rapi"><i class="h"></i><i class="s"></i><b>R</b></span><span class="nm">RAPI</span></div>
+          </div>
+          <div class="stack right">
+            <div class="pbox dim"><span class="bust ch-anis"><i class="h"></i><i class="s"></i><b>A</b></span><span class="nm">ANIS</span></div>
+            <div class="pbox dim"><span class="bust ch-neon"><i class="h"></i><i class="s"></i><b>N</b></span><span class="nm">NEON</span></div>
+            <div class="pbox dim"><span class="bust ch-doro"><i class="h"></i><i class="s"></i><b>D</b></span><span class="nm">DORO</span></div>
+            <div class="pbox dim"><span class="bust ch-exia"><i class="h"></i><i class="s"></i><b>E</b></span><span class="nm">EXIA</span></div>
+          </div>
+        </div>
+        <div class="pvfoot">
+          <div class="statetgl">
+            <button class="active" id="stA" onclick="setState(false)">Standalone</button>
+            <button id="stB" onclick="setState(true)">Tier List active</button>
+          </div>
+          <span class="pvnote"><b>Auto:</b> the LEFT bank hides itself while a Tier List clip is active (board needs the space). Not editable — shown here for preview only.</span>
+        </div>
+      </div>
+
+      <!-- OVERRIDE lane -->
+      <div class="ovr">
+        <div class="ovr-head">
+          <div class="sech">Overrides <span class="rt">3 events</span></div>
+        </div>
+        <div class="ovr-note">Overrides force a speaker on/off regardless of audio tracks.</div>
+        <div class="ovr-list">
+          <div class="evrow">
+            <span class="evchip"><span class="bust ch-rapi"><i class="h"></i><i class="s"></i></span></span>
+            <select class="evsel"><option>RAPI · L-B2</option><option>YOYO · L-A1</option><option>WELLS · L-A2</option><option>MODERNIA · L-B1</option><option>ANIS · R-A1</option><option>NEON · R-A2</option><option>DORO · R-B1</option><option>EXIA · R-B2</option></select>
+            <span class="tc">00:04:12:10</span><span class="tarrow">→</span><span class="tc">00:04:18:02</span>
+            <button class="tset">⇤ Set Start</button><button class="tset">⇥ Set End</button>
+            <button class="evx">✕</button>
+          </div>
+          <div class="evrow">
+            <span class="evchip"><span class="bust ch-wells"><i class="h"></i><i class="s"></i></span></span>
+            <select class="evsel"><option>WELLS · L-A2</option><option>YOYO · L-A1</option><option>RAPI · L-B2</option><option>MODERNIA · L-B1</option><option>ANIS · R-A1</option><option>NEON · R-A2</option><option>DORO · R-B1</option><option>EXIA · R-B2</option></select>
+            <span class="tc">00:06:03:00</span><span class="tarrow">→</span><span class="tc">00:06:11:14</span>
+            <button class="tset">⇤ Set Start</button><button class="tset">⇥ Set End</button>
+            <button class="evx">✕</button>
+          </div>
+          <div class="evrow">
+            <span class="evchip"><span class="bust ch-modernia"><i class="h"></i><i class="s"></i></span></span>
+            <select class="evsel"><option>MODERNIA · L-B1</option><option>YOYO · L-A1</option><option>WELLS · L-A2</option><option>RAPI · L-B2</option><option>ANIS · R-A1</option><option>NEON · R-A2</option><option>DORO · R-B1</option><option>EXIA · R-B2</option></select>
+            <span class="tc">00:09:40:22</span><span class="tarrow">→</span><span class="tc unset">— not set —</span>
+            <button class="tset">⇤ Set Start</button><button class="tset">⇥ Set End</button>
+            <button class="evx">✕</button>
+          </div>
+          <button class="addov">＋ Add Override</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT BANK -->
+    <div class="bankcol right">
+      <div class="sech">Right Bank <span class="rt">4 / 8</span></div>
+      <div class="bankgrid">
+        <div class="cell" onclick="selCell(this)" data-label="ANIS" data-slot="R-A1">
+          <div class="port"><span class="slot">R-A1</span><span class="bust ch-anis"><i class="h"></i><i class="s"></i><b>A</b></span></div>
+          <div class="clabel">ANIS</div>
+        </div>
+        <div class="cell" onclick="selCell(this)" data-label="NEON" data-slot="R-A2">
+          <div class="port"><span class="slot">R-A2</span><span class="bust ch-neon"><i class="h"></i><i class="s"></i><b>N</b></span></div>
+          <div class="clabel">NEON</div>
+        </div>
+        <div class="cell" onclick="selCell(this)" data-label="DORO" data-slot="R-B1">
+          <div class="port"><span class="slot">R-B1</span><span class="bust ch-doro"><i class="h"></i><i class="s"></i><b>D</b></span></div>
+          <div class="clabel">DORO</div>
+        </div>
+        <div class="cell" onclick="selCell(this)" data-label="EXIA" data-slot="R-B2">
+          <div class="port"><span class="slot">R-B2</span><span class="bust ch-exia"><i class="h"></i><i class="s"></i><b>E</b></span></div>
+          <div class="clabel">EXIA</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="R-C1">
+          <div class="port"><span class="slot">R-C1</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="R-C2">
+          <div class="port"><span class="slot">R-C2</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="R-D1">
+          <div class="port"><span class="slot">R-D1</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+        <div class="cell empty" onclick="selCell(this)" data-label="" data-slot="R-D2">
+          <div class="port"><span class="slot">R-D2</span><div class="drop"><span class="pl">⤓</span>Drop PNG /<br>Click to browse</div></div>
+          <div class="clabel">empty</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INSPECTOR flyout (4th column, visible because L-A2 · WELLS is selected) -->
+    <div class="inspcol">
+      <div class="insp-head"><span class="bh">Box</span><span class="who" id="inspWho">L-A2 · WELLS</span><button class="close">✕</button></div>
+      <div class="insp-body">
+        <div class="fld">
+          <label>Label</label>
+          <input type="text" id="inspLabel" value="WELLS">
+          <span class="help"><b>join key:</b> matches the audio track name — an audio clip on track “WELLS” under the playhead ⇒ this box is speaking.</span>
+        </div>
+        <div class="fld">
+          <label>Portrait</label>
+          <div class="pathrow">
+            <input type="text" value="D:/RT/portraits/wells_chrono_smile.png" readonly>
+            <button class="btn">Browse…</button>
+          </div>
+        </div>
+        <div class="frame-sec">
+          <div class="sech">Framing</div>
+          <div class="fpv-wrap">
+            <div class="fpv">
+              <span class="zoomed"><span class="bust ch-wells"><i class="h"></i><i class="s"></i><b>W</b></span></span>
+              <span class="guide"></span>
+            </div>
+            <span class="fpv-cap">Live head-framing preview on black — exactly what the box renders. Dashed guide = safe head area.</span>
+          </div>
+          <div class="frow"><label>Zoom</label><input type="range" min="100" max="300" value="128"><span class="val">128%</span></div>
+          <div class="frow"><label>Offset X</label><input type="number" value="4"><span class="muted">%</span><label style="flex:0 0 auto;margin-left:8px">Offset Y</label><input type="number" value="-6"><span class="muted">%</span></div>
+          <div class="frow"><label>Crop</label><input type="range" min="0" max="40" value="8"><span class="val">8%</span></div>
+        </div>
+        <button class="rmv">🗑 Remove Box</button>
+      </div>
+    </div>
+
+  </div><!-- /body -->
+</div><!-- /panel -->
+
+<p class="note"><b>Layout A — “Bank Editor.”</b> The two banks physically flank the preview so the panel is a 1:1 spatial map of the final overlay: what you see on the left of the panel is what renders on the left of the program. Selecting any cell opens the inspector as a fourth flyout column (shown pre-selected on WELLS). The override lane docks under the preview so Set Start / Set End sit next to the picture they affect.</p>
+<p class="note"><b>Pros vs 04 (Side Rail):</b> spatial WYSIWYG bank placement; big preview stays centered and visible while editing either bank; overrides live directly under the playhead context. <b>Cons vs 04:</b> four columns get tight below ~1400 px dock width; the inspector flyout pushes content when it opens (or must overlay); it does not visually rhyme with the chosen Tier List panel, so users learn a second arrangement. See <b>04_panel_side_rail.html</b> for the alternative.</p>
+</section>
+
+<script>
+function selCell(el){
+  document.querySelectorAll('.cell').forEach(c=>c.classList.remove('sel'));
+  el.classList.add('sel');
+  var lbl=el.getAttribute('data-label'), slot=el.getAttribute('data-slot');
+  document.getElementById('inspWho').textContent = slot + (lbl ? ' · '+lbl : ' · (empty)');
+  document.getElementById('inspLabel').value = lbl;
+}
+function setState(tl){
+  document.getElementById('pv').classList.toggle('tl', tl);
+  document.getElementById('stA').classList.toggle('active', !tl);
+  document.getElementById('stB').classList.toggle('active', tl);
+}
+function toggleEye(){
+  var p=document.getElementById('panel'), b=document.getElementById('eye');
+  var off=p.classList.toggle('disabled');
+  b.classList.toggle('off', off);
+  b.textContent = off ? '👁 Disabled' : '👁 Enabled';
+}
+</script>
+</body>
+</html>
