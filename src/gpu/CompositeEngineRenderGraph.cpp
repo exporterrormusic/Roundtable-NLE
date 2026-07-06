@@ -138,6 +138,12 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     m_gpuLayerTexKeys.resize(m_gpuLayerTextures.size());
     while (m_gpuMaskTextures.size() < layers.size())
         m_gpuMaskTextures.push_back(std::make_unique<Texture>());
+    if (m_maskCache.size() < m_gpuMaskTextures.size())
+        m_maskCache.resize(m_gpuMaskTextures.size());
+    if (m_effectMaskTextures.size() < layers.size())
+        m_effectMaskTextures.resize(layers.size());
+    if (m_effectMaskCache.size() < layers.size())
+        m_effectMaskCache.resize(layers.size());
     while (m_layerEffectOutputs.size() < layers.size())
         m_layerEffectOutputs.push_back(std::make_unique<Texture>());
     while (m_gpuLayerTexturesAlt.size() < layers.size())
@@ -353,7 +359,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
 
         // ── Declare mask texture if needed ─────────────────────────
-        if (layer.clipPtr && layer.clipPtr->maskCount() > 0) {
+        if (!layer.masks.empty()) {
             ResourceId maskTexId = graph.declareResource({
                 .type = ResourceType::Texture,
                 .name = "layer" + std::to_string(li) + "_mask",
@@ -555,11 +561,25 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     }
 
     // ── Upload mask textures (same logic as old monolithic path) ──
+    // The evaluated mask state travels in layer.masks (snapshotted at
+    // layer-build time). A per-slot hash cache skips the CPU rasterize +
+    // upload when the mask state, clip, and dimensions are unchanged.
     for (size_t li = 0; li < layers.size() && li < gpuLayers.size(); ++li) {
         const auto& layer = layers[li];
-        if (!layer.clipPtr || layer.clipPtr->maskCount() == 0)
+        if (layer.masks.empty())
             continue;
-        auto maskPixels = rasterizeMasks(layer.clipPtr->masks(), outW, outH);
+        const uint64_t maskHash = hashMaskStates(layer.masks, outW, outH);
+        auto& cache = m_maskCache[li];
+        if (cache.valid && cache.clipId == layer.clipId &&
+            cache.stateHash == maskHash &&
+            m_gpuMaskTextures[li] &&
+            m_gpuMaskTextures[li]->image() != VK_NULL_HANDLE)
+        {
+            gpuLayers[li].hasMask = true;
+            gpuLayers[li].maskTextureInfo = cache.desc;
+            continue;
+        }
+        auto maskPixels = rasterizeMasks(layer.masks, outW, outH);
         VkDescriptorImageInfo maskDesc{};
         if (m_uploadManager->uploadMask(
                 maskPixels, *m_gpuMaskTextures[li], outW, outH, maskDesc))
@@ -567,6 +587,90 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             gpuLayers[li].hasMask = true;
             gpuLayers[li].maskTextureInfo = maskDesc;
             uploadsSeen = true;
+            cache.clipId    = layer.clipId;
+            cache.stateHash = maskHash;
+            cache.desc      = maskDesc;
+            cache.valid     = true;
+        } else {
+            cache.valid = false;
+        }
+    }
+
+    // ── Upload effect-mask textures (Premiere Pro: a mask on an effect
+    // limits where that effect applies).  Each masked effect's frame-space
+    // mask is rasterized into the clip's source-pixel grid by mapping
+    // through the same viewport transform the composite shader uses
+    // (output UV → layer UV).  Uploaded here — before the pass walk — so
+    // the global transfer→compute barrier covers these transfers exactly
+    // like the clip-mask uploads above.  The Effect pass hands the
+    // descriptors to EffectProcessor::process(), which mixes
+    // original/effected per pixel after each masked effect.
+    std::vector<std::vector<VkDescriptorImageInfo>> layerEffectMaskInfos(
+        layers.size());
+    for (size_t li = 0; li < layers.size() && li < gpuLayers.size(); ++li) {
+        const auto& layer = layers[li];
+        if (layer.effects.empty()) continue;
+        bool anyEffectMask = false;
+        for (const auto& fxSnap : layer.effects)
+            if (!fxSnap.masks.empty()) { anyEffectMask = true; break; }
+        if (!anyEffectMask || li >= m_effectMaskTextures.size()) continue;
+
+        // Same source-dimension logic as the Effect pass handler below.
+        uint32_t srcW = layer.frameWidth;
+        uint32_t srcH = layer.frameHeight;
+        if (srcW == 0 || srcH == 0) { srcW = outW; srcH = outH; }
+        if (layer.isPacked && srcH > 1) srcH /= 2;
+
+        // frame-norm → clip-px affine.  The upload handler may not have
+        // set gpuLayers[li].transform yet (CPU-upload layers get it during
+        // the pass walk), so build it here from the same inputs.
+        const glm::mat4 t = Compositor::buildViewportTransform(
+            srcW, srcH, outW, outH,
+            layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
+            layer.containFit, layer.anchorX, layer.anchorY,
+            layer.srcRotation);
+        MaskRasterTransform xf{};
+        const float fw = static_cast<float>(srcW);
+        const float fh = static_cast<float>(srcH);
+        xf.m[0] = t[0][0] * fw; xf.m[1] = t[1][0] * fw; xf.m[2] = t[3][0] * fw;
+        xf.m[3] = t[0][1] * fh; xf.m[4] = t[1][1] * fh; xf.m[5] = t[3][1] * fh;
+
+        auto& texPool   = m_effectMaskTextures[li];
+        auto& cachePool = m_effectMaskCache[li];
+        while (texPool.size() < layer.effects.size())
+            texPool.push_back(std::make_unique<Texture>());
+        if (cachePool.size() < layer.effects.size())
+            cachePool.resize(layer.effects.size());
+
+        auto& maskInfos = layerEffectMaskInfos[li];
+        maskInfos.assign(layer.effects.size(), VkDescriptorImageInfo{});
+        for (size_t fi = 0; fi < layer.effects.size(); ++fi) {
+            const auto& fxSnap = layer.effects[fi];
+            if (fxSnap.masks.empty()) continue;
+            const uint64_t fxHash =
+                hashMaskStates(fxSnap.masks, srcW, srcH, &xf) ^ fxSnap.effectId;
+            auto& fxCache = cachePool[fi];
+            if (fxCache.valid && fxCache.clipId == layer.clipId &&
+                fxCache.stateHash == fxHash &&
+                texPool[fi] && texPool[fi]->image() != VK_NULL_HANDLE)
+            {
+                maskInfos[fi] = fxCache.desc;
+                continue;
+            }
+            auto fxMaskPixels = rasterizeMasks(fxSnap.masks, srcW, srcH, &xf);
+            VkDescriptorImageInfo fxMaskDesc{};
+            if (m_uploadManager->uploadMask(
+                    fxMaskPixels, *texPool[fi], srcW, srcH, fxMaskDesc))
+            {
+                maskInfos[fi] = fxMaskDesc;
+                uploadsSeen = true;
+                fxCache.clipId    = layer.clipId;
+                fxCache.stateHash = fxHash;
+                fxCache.desc      = fxMaskDesc;
+                fxCache.valid     = true;
+            } else {
+                fxCache.valid = false;
+            }
         }
     }
 
@@ -757,7 +861,12 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 effectProcessor->resize(srcW, srcH);
 
                 VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
-                if (effectProcessor->process(cmd, srcInfo, layer.effects)) {
+                const std::vector<VkDescriptorImageInfo>* fxMasks =
+                    (li < layerEffectMaskInfos.size() &&
+                     !layerEffectMaskInfos[li].empty())
+                        ? &layerEffectMaskInfos[li] : nullptr;
+                if (effectProcessor->process(cmd, srcInfo, layer.effects,
+                                             fxMasks)) {
                     gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
                     gpuLayers[li].needsSwapRB = false;
                     gpuLayers[li].isPacked = false;

@@ -1160,12 +1160,15 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
 
     OpacityMask ellipse;
     ellipse.shape = MaskShape::Ellipse;
-    ellipse.centerX = 0.3f;  ellipse.centerY = 0.6f;
-    ellipse.width = 0.4f;    ellipse.height = 0.2f;
-    ellipse.rotation = 30.0f;
-    ellipse.feather = 16.0f;
-    ellipse.expansion = -4.0f;
-    ellipse.maskOpacity = 0.8f;
+    ellipse.base.centerX = 0.3f;  ellipse.base.centerY = 0.6f;
+    ellipse.base.width = 0.4f;    ellipse.base.height = 0.2f;
+    ellipse.base.rotation = 30.0f;
+    ellipse.feather.setDefaultValue(16.0f);
+    ellipse.expansion.setDefaultValue(-4.0f);
+    ellipse.maskOpacity.setDefaultValue(0.8f);
+    // Keyframed feather (v30): 16 → 32 px
+    ellipse.feather.addKeyframe(0, 16.0f);
+    ellipse.feather.addKeyframe(24000, 32.0f);
     ellipse.inverted = true;
     ellipse.name = "Vignette";
     video->addMask(std::move(ellipse));
@@ -1176,8 +1179,28 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     MaskVertex v1; v1.x = 0.1f; v1.y = 0.1f; v1.outTanX = 0.05f; v1.outTanY = 0.02f;
     MaskVertex v2; v2.x = 0.9f; v2.y = 0.1f; v2.inTanX = -0.05f;
     MaskVertex v3; v3.x = 0.5f; v3.y = 0.9f; v3.inTanY = -0.03f; v3.outTanY = 0.03f;
-    bezier.vertices = {v1, v2, v3};
+    bezier.base.vertices = {v1, v2, v3};
+    // Mask Path keyframes (v30): the path animates — second key shifted right
+    bezier.pathAnimated = true;
+    bezier.addPathKey(0, bezier.base);
+    MaskGeometry shifted = bezier.base;
+    for (auto& v : shifted.vertices) v.x += 0.1f;
+    bezier.addPathKey(48000, shifted);
     video->addMask(std::move(bezier));
+
+    // Effect mask (v30): a blur limited by a rectangle mask
+    {
+        auto fx = createEffect(EffectType::Blur);
+        ASSERT_NE(fx, nullptr);
+        OpacityMask fxMask;
+        fxMask.shape = MaskShape::Rectangle;
+        fxMask.name = "Blur Region";
+        fxMask.base.centerX = 0.25f;
+        fxMask.base.width = 0.3f;
+        fxMask.feather.setDefaultValue(8.0f);
+        fx->addMask(std::move(fxMask));
+        video->effects().addEffect(std::move(fx));
+    }
 
     p->timeline()->track(0)->addClip(std::move(video));
 
@@ -1191,22 +1214,41 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     ASSERT_EQ(masks.size(), 2u);
 
     EXPECT_EQ(masks[0].shape, MaskShape::Ellipse);
-    EXPECT_FLOAT_EQ(masks[0].centerX, 0.3f);
-    EXPECT_FLOAT_EQ(masks[0].centerY, 0.6f);
-    EXPECT_FLOAT_EQ(masks[0].width, 0.4f);
-    EXPECT_FLOAT_EQ(masks[0].height, 0.2f);
-    EXPECT_FLOAT_EQ(masks[0].rotation, 30.0f);
-    EXPECT_FLOAT_EQ(masks[0].feather, 16.0f);
-    EXPECT_FLOAT_EQ(masks[0].expansion, -4.0f);
-    EXPECT_FLOAT_EQ(masks[0].maskOpacity, 0.8f);
+    EXPECT_FLOAT_EQ(masks[0].base.centerX, 0.3f);
+    EXPECT_FLOAT_EQ(masks[0].base.centerY, 0.6f);
+    EXPECT_FLOAT_EQ(masks[0].base.width, 0.4f);
+    EXPECT_FLOAT_EQ(masks[0].base.height, 0.2f);
+    EXPECT_FLOAT_EQ(masks[0].base.rotation, 30.0f);
+    ASSERT_EQ(masks[0].feather.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(masks[0].feather.evaluate(0), 16.0f);
+    EXPECT_FLOAT_EQ(masks[0].feather.evaluate(24000), 32.0f);
+    EXPECT_FLOAT_EQ(masks[0].expansion.evaluate(0), -4.0f);
+    EXPECT_FLOAT_EQ(masks[0].maskOpacity.evaluate(0), 0.8f);
     EXPECT_TRUE(masks[0].inverted);
     EXPECT_EQ(masks[0].name, "Vignette");
 
     EXPECT_EQ(masks[1].shape, MaskShape::FreeDrawBezier);
-    ASSERT_EQ(masks[1].vertices.size(), 3u);
-    EXPECT_FLOAT_EQ(masks[1].vertices[0].x, 0.1f);
-    EXPECT_FLOAT_EQ(masks[1].vertices[0].outTanX, 0.05f);
-    EXPECT_FLOAT_EQ(masks[1].vertices[1].inTanX, -0.05f);
-    EXPECT_FLOAT_EQ(masks[1].vertices[2].y, 0.9f);
-    EXPECT_FLOAT_EQ(masks[1].vertices[2].outTanY, 0.03f);
+    ASSERT_EQ(masks[1].base.vertices.size(), 3u);
+    EXPECT_FLOAT_EQ(masks[1].base.vertices[0].x, 0.1f);
+    EXPECT_FLOAT_EQ(masks[1].base.vertices[0].outTanX, 0.05f);
+    EXPECT_FLOAT_EQ(masks[1].base.vertices[1].inTanX, -0.05f);
+    EXPECT_FLOAT_EQ(masks[1].base.vertices[2].y, 0.9f);
+    EXPECT_FLOAT_EQ(masks[1].base.vertices[2].outTanY, 0.03f);
+
+    // Mask Path keyframes round-trip + interpolation halfway
+    EXPECT_TRUE(masks[1].pathAnimated);
+    ASSERT_EQ(masks[1].pathKeys.size(), 2u);
+    MaskGeometry mid = masks[1].geometryAt(24000);
+    ASSERT_EQ(mid.vertices.size(), 3u);
+    EXPECT_NEAR(mid.vertices[0].x, 0.15f, 1e-4f);
+
+    // Effect mask round-trip
+    ASSERT_EQ(clip->effects().effectCount(), 1u);
+    const auto& fx = clip->effects().effect(0);
+    ASSERT_EQ(fx.maskCount(), 1u);
+    EXPECT_EQ(fx.masks()[0].shape, MaskShape::Rectangle);
+    EXPECT_EQ(fx.masks()[0].name, "Blur Region");
+    EXPECT_FLOAT_EQ(fx.masks()[0].base.centerX, 0.25f);
+    EXPECT_FLOAT_EQ(fx.masks()[0].base.width, 0.3f);
+    EXPECT_FLOAT_EQ(fx.masks()[0].feather.evaluate(0), 8.0f);
 }

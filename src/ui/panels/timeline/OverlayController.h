@@ -59,6 +59,13 @@ public:
     /// conversion, and layer hit-testing must all agree on this space.
     void graphicCanvasRes(uint32_t& w, uint32_t& h) const;
 
+    /// Select which mask list the Program Monitor edits: 0 = the clip's
+    /// opacity masks; otherwise the id of an effect on the selected clip
+    /// whose effect masks should be shown/edited (Premiere: clicking a
+    /// mask under an effect activates it in the monitor).
+    void setActiveMaskContext(uint64_t effectId);
+    [[nodiscard]] uint64_t activeMaskEffectId() const noexcept { return m_activeMaskEffectId; }
+
 private:
     /// Measure a text layer's rendered glyph bounds and fill the overlay's
     /// content-rect fields (useContentRect + contentL/T/R/B + canvas dims) so
@@ -115,6 +122,11 @@ private:
     bool        m_inlineTextEditActive{false};
 
     uint32_t m_overlayRefreshGen{0};   ///< Generation counter for deferred overlay updates
+
+    /// Which mask list the monitor edits: 0 = clip opacity masks, else the
+    /// id of an effect on the selected clip (effect masks). Reset to 0 when
+    /// the effect no longer exists.
+    uint64_t m_activeMaskEffectId{0};
 
     /// Re-entrancy guard for the Text tool empty-area click handler.
     /// Prevents duplicate clip creation when the overlay click signal

@@ -697,15 +697,27 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
     }
     Clip* clip = m_ws->selection().clip;
     int mi = maskIndex;
+    // The monitor may be editing the clip's opacity masks OR an effect's
+    // masks (active mask context). Resolve the list by effect id at
+    // execute time so undo survives effect-list changes.
+    const uint64_t fxId = m_activeMaskEffectId;
+    auto listOf = [](Clip* c, uint64_t effectId) -> std::vector<OpacityMask>* {
+        if (!c) return nullptr;
+        if (effectId == 0) return &c->masks();
+        if (Effect* fx = c->effects().effectById(effectId)) return &fx->masks();
+        return nullptr;
+    };
     auto cmd = std::make_unique<LambdaCommand>(
         "Move Mask",
-        [clip, mi, newMask]() {
-            if (mi >= 0 && static_cast<size_t>(mi) < clip->masks().size())
-                clip->masks()[static_cast<size_t>(mi)] = newMask;
+        [clip, mi, fxId, newMask, listOf]() {
+            auto* masks = listOf(clip, fxId);
+            if (masks && mi >= 0 && static_cast<size_t>(mi) < masks->size())
+                (*masks)[static_cast<size_t>(mi)] = newMask;
         },
-        [clip, mi, oldMask]() {
-            if (mi >= 0 && static_cast<size_t>(mi) < clip->masks().size())
-                clip->masks()[static_cast<size_t>(mi)] = oldMask;
+        [clip, mi, fxId, oldMask, listOf]() {
+            auto* masks = listOf(clip, fxId);
+            if (masks && mi >= 0 && static_cast<size_t>(mi) < masks->size())
+                (*masks)[static_cast<size_t>(mi)] = oldMask;
         });
     m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
 }

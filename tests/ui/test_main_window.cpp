@@ -198,7 +198,9 @@ TEST_F(MainWindowTest, AppMainWindowBeforeInit)
 TEST_F(MainWindowTest, ConstructDefault)
 {
     MainWindow mw;
-    EXPECT_EQ(mw.windowTitle(), "ROUNDTABLE NLE v2.0");
+    // Version-agnostic: the title embeds ROUNDTABLE_VERSION, which bumps
+    // per release (a hardcoded "v2.0" rotted when the version moved on).
+    EXPECT_TRUE(mw.windowTitle().startsWith("ROUNDTABLE NLE"));
     EXPECT_GE(mw.minimumWidth(), 1280);
     EXPECT_GE(mw.minimumHeight(), 720);
 }
@@ -242,8 +244,9 @@ TEST_F(MainWindowTest, DockCount)
 {
     MainWindow mw;
     mw.buildPanels();
-    // 9 dock widgets in dockable layout
-    EXPECT_EQ(mw.dockCount(), 9);
+    // 15 dock widgets in the dockable layout. Update this count when a
+    // dock panel is added/removed — it catches accidentally dropped docks.
+    EXPECT_EQ(mw.dockCount(), 15);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -435,7 +438,7 @@ TEST_F(MainWindowTest, AppFullIntegration)
 
     auto* mw = app.mainWindow();
     ASSERT_NE(mw, nullptr);
-    EXPECT_EQ(mw->dockCount(), 9);
+    EXPECT_EQ(mw->dockCount(), 15);
     EXPECT_NE(mw->timelinePanel(), nullptr);
     EXPECT_NE(mw->exportPanel(), nullptr);
     EXPECT_NE(mw->projectPanel(), nullptr);

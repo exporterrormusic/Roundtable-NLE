@@ -219,6 +219,13 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
         } else {
             result.push_back({e->effectType(), e->evalAllParams(time)});
         }
+
+        // Attach identity + evaluated effect masks (Premiere: masks limit
+        // where this effect applies). Snapshot here so the render thread
+        // never reads the live OpacityMask objects.
+        result.back().effectId = e->id();
+        if (e->maskCount() > 0)
+            result.back().masks = evaluateMaskStates(e->masks(), time);
     }
     return result;
 }
@@ -227,7 +234,7 @@ std::unique_ptr<EffectStack> EffectStack::clone() const
 {
     auto copy = std::make_unique<EffectStack>();
     for (auto& e : m_effects)
-        copy->addEffect(e->clone());
+        copy->addEffect(e->cloneWithMasks());
     return copy;
 }
 

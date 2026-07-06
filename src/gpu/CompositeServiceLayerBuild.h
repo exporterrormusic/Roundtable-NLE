@@ -60,6 +60,9 @@ struct LayerInfo
     bool isPacked{false};     // true = packed-alpha (GPU shader handles unpack)
     bool isPMA{false};        // true = premultiplied-alpha (Spine FBO output)
     std::vector<EffectStack::EffectSnapshot> effects; // evaluated clip effects
+    /// Evaluated clip opacity masks (snapshotted at layer-build time so the
+    /// render thread never reads live OpacityMask objects).
+    std::vector<MaskRenderState> masks;
     int32_t blendMode{0}; // compositor blend mode from clip
 
     // Wipe transition info (for GPU spatial blending)

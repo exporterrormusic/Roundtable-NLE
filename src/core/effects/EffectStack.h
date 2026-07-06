@@ -56,10 +56,14 @@ public:
 
     /// Evaluate all enabled effects' parameters at a given time.
     /// Returns a vector of { effectType, paramValues[] } pairs for GPU dispatch.
+    /// Each snapshot also carries the source effect's id and its evaluated
+    /// effect masks (empty = effect applies to the whole clip).
     struct EffectSnapshot
     {
         EffectType         type;
         std::vector<float> params;
+        uint64_t           effectId{0};
+        std::vector<MaskRenderState> masks;
     };
     [[nodiscard]] std::vector<EffectSnapshot> evaluate(int64_t time) const;
 

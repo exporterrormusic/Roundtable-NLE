@@ -551,6 +551,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (clip->effects().hasActiveEffects()) {
                             layer.effects = clip->effects().evaluate(localTick);
                         }
+                        // Opacity masks — snapshot at the same local time
+                        if (clip->maskCount() > 0)
+                            layer.masks = evaluateMaskStates(clip->masks(), localTick);
                         // Append adjustment-layer effects from tracks above.
                         if (!pendingAdjustmentEffects.empty()) {
                             layer.effects.insert(layer.effects.end(),
@@ -1039,6 +1042,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 const int64_t effectLocalTick = tick - clip->timelineIn();
                 layer.effects = clip->effects().evaluate(effectLocalTick);
             }
+            // Opacity masks — snapshot at the same local time
+            if (clip->maskCount() > 0)
+                layer.masks = evaluateMaskStates(clip->masks(),
+                                                 tick - clip->timelineIn());
             // Append adjustment-layer effects from tracks above this one
             // so they post-process this layer (Premiere/AE behaviour).
             if (!pendingAdjustmentEffects.empty()) {

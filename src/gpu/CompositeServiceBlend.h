@@ -26,10 +26,38 @@ void blitLayerWithTransform(
     float cropT = 0.0f, float cropB = 0.0f,
     bool containFit = false);       // true = contain fit, false = cover fit
 
-/// CPU mask rasterizer — generates an RGBA texture where white = opaque,
-/// black = transparent. Each mask shape is rasterized, then combined
-/// with multiply (intersection of all masks on a clip).
-std::vector<uint8_t> rasterizeMasks(const std::vector<OpacityMask>& masks,
-                                     uint32_t w, uint32_t h);
+/// Optional affine mapping from normalized frame space (0–1) into the
+/// rasterization target's pixel grid:
+///   px = m[0]*u + m[1]*v + m[2]
+///   py = m[3]*u + m[4]*v + m[5]
+/// Used to rasterize effect masks in the clip's source-pixel grid: the
+/// mask is authored in frame space, so the mapping is the composite
+/// transform (output UV → layer UV) scaled to source pixels. When null,
+/// the identity frame→target scaling (u*w, v*h) is used.
+struct MaskRasterTransform
+{
+    float m[6];
+};
+
+/// CPU mask rasterizer — generates an RGBA buffer (all channels equal)
+/// where white = opaque, black = transparent.
+///
+/// Premiere Pro semantics:
+///   - Masks combine ADDITIVELY (union): each mask reveals its region.
+///   - Feather is a smooth two-sided falloff centered on the (expanded)
+///     edge, in target pixels.
+///   - Expansion offsets the edge outward (+) or inward (−).
+///   - Bezier paths rasterize as true curves (flattened adaptively).
+/// Implemented via scanline polygon fill + exact Euclidean distance
+/// transform, so feather/expansion behave identically for every shape.
+std::vector<uint8_t> rasterizeMasks(const std::vector<MaskRenderState>& masks,
+                                    uint32_t w, uint32_t h,
+                                    const MaskRasterTransform* frameToTarget = nullptr);
+
+/// FNV-1a hash of the evaluated mask state + target dims — used by the
+/// engine to skip re-rasterizing/uploading when nothing changed.
+uint64_t hashMaskStates(const std::vector<MaskRenderState>& masks,
+                        uint32_t w, uint32_t h,
+                        const MaskRasterTransform* frameToTarget = nullptr);
 
 } // namespace rt

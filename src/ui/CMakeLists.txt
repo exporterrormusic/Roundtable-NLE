@@ -84,6 +84,7 @@ add_library(roundtable_ui STATIC
     panels/effects/EffectControlsPanelKeyframeTimeline.cpp
     panels/effects/EffectControlsPanelTree.cpp
     panels/effects/EffectControlsPanelEffects.cpp
+    panels/effects/MaskTracker.cpp
     panels/effects/GraphicsEditorPanel.cpp
     panels/effects/GraphicsEditorControls.cpp
     panels/effects/GraphicsEditorProperties.cpp

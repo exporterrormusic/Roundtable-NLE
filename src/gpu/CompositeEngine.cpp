@@ -204,6 +204,9 @@ void CompositeEngine::shutdown()
     clearGpuTexCache();
     m_gpuLayerTextures.clear();
     m_gpuMaskTextures.clear();
+    m_maskCache.clear();
+    m_effectMaskTextures.clear();
+    m_effectMaskCache.clear();
     m_layerEffectOutputs.clear();
     m_compositeLru.clear();
     m_stagingRing.reset();

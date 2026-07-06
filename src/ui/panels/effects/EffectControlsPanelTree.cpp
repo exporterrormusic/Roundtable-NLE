@@ -507,7 +507,7 @@ void EffectControlsPanel::buildPropertyTree()
         });
 
         // â”€â”€ Mask sub-sections (below blend mode, still in Opacity section) â”€â”€
-        buildMaskUI(rowIdx);
+        buildMaskUI(m_clip->masks(), 0, rowIdx);
     }
 
     // â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -615,6 +615,36 @@ void EffectControlsPanel::buildPropertyTree()
                 emit propertyChanged();
             });
 
+            // Mask create buttons (Premiere: every effect can be masked —
+            // ○ ellipse, □ rectangle, ✎ free-draw bezier).  Audio effects
+            // have no image to mask.
+            if (!isAudioEffect(fx.effectType())) {
+                auto makeFxMaskBtn = [&](const QString& text, const QString& tip,
+                                         uint8_t shapeType) -> QToolButton* {
+                    auto* btn = new QToolButton(fxHeader);
+                    btn->setText(text);
+                    btn->setToolTip(tip);
+                    btn->setFixedSize(22, 20);
+                    btn->setStyleSheet(QStringLiteral(
+                        "QToolButton { color: %1; font-size: %5px; background: transparent; border: 1px solid %2; border-radius: 2px; padding: 0; }"
+                        "QToolButton:hover { background: %3; border-color: %4; }")
+                        .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.border),
+                             Theme::hex(tc.surface3), Theme::hex(tc.accent))
+                        .arg(Theme::typography().sizeXs));
+                    connect(btn, &QToolButton::clicked, this,
+                            [this, shapeType, fxId]() {
+                        addMask(shapeType, fxId);
+                    });
+                    return btn;
+                };
+                hl->addWidget(makeFxMaskBtn(QStringLiteral("○"),
+                                            tr("Create Ellipse Mask"), 0));
+                hl->addWidget(makeFxMaskBtn(QStringLiteral("□"),
+                                            tr("Create Rectangle Mask"), 1));
+                hl->addWidget(makeFxMaskBtn(QStringLiteral("✎"),
+                                            tr("Create Free Draw Bezier Mask"), 2));
+            }
+
             // Delete button
             auto* deleteBtn = new QToolButton(fxHeader);
             deleteBtn->setText(QStringLiteral("\u2715")); // âœ•
@@ -698,6 +728,12 @@ void EffectControlsPanel::buildPropertyTree()
                 // Generic effect: flat parameter rows
                 buildGenericEffectUI(fx, effectIdx, rowIdx);
             }
+
+            // Effect masks — parameter sub-sections under this effect
+            // (Premiere: Mask Path / Feather / Opacity / Expansion rows
+            // nested below the effect's own parameters).
+            if (fx.maskCount() > 0)
+                buildMaskUI(fx.masks(), fx.id(), rowIdx);
         }
     }
 

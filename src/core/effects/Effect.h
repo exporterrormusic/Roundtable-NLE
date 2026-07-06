@@ -20,6 +20,7 @@
 
 #include "timeline/Keyframe.h"
 #include "timeline/KeyframeTrack.h"
+#include "timeline/OpacityMask.h"
 
 namespace rt {
 
@@ -212,8 +213,33 @@ public:
     /// Returns a vector of values in parameter order — used by GPU dispatch.
     [[nodiscard]] std::vector<float> evalAllParams(int64_t time) const;
 
+    // ── Effect masks (Premiere Pro: masks limit where the effect applies) ─
+    [[nodiscard]] const std::vector<OpacityMask>& masks() const noexcept { return m_masks; }
+    [[nodiscard]] std::vector<OpacityMask>&       masks() noexcept { return m_masks; }
+    [[nodiscard]] size_t maskCount() const noexcept { return m_masks.size(); }
+    void addMask(OpacityMask mask) { m_masks.push_back(std::move(mask)); }
+    void removeMask(size_t index)
+    {
+        if (index < m_masks.size())
+            m_masks.erase(m_masks.begin() + static_cast<ptrdiff_t>(index));
+    }
+
     // ── Clone ───────────────────────────────────────────────────────────
+    /// NOTE: derived clone() implementations copy type/params only. Callers
+    /// that need a full copy (EffectStack::clone, effect copy/paste) must
+    /// also copy masks — use cloneWithMasks() unless masks are unwanted.
     [[nodiscard]] virtual std::unique_ptr<Effect> clone() const = 0;
+
+    /// Full copy: clone() + enabled flag + effect masks.
+    [[nodiscard]] std::unique_ptr<Effect> cloneWithMasks() const
+    {
+        auto copy = clone();
+        if (copy) {
+            copy->setEnabled(m_enabled);
+            copy->m_masks = m_masks;
+        }
+        return copy;
+    }
 
 protected:
     /// Derived classes call this in their constructor to register parameters
@@ -225,6 +251,7 @@ protected:
     bool       m_enabled{true};
 
     std::vector<EffectParam> m_params;
+    std::vector<OpacityMask> m_masks;   ///< Effect masks (limit effect region)
 
     static uint64_t s_nextId;
 };

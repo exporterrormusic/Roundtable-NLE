@@ -110,6 +110,17 @@ public:
     /// Set which mask is actively selected for editing (-1 = all drawn, none focused).
     void setActiveMaskIndex(int idx) noexcept { m_activeMaskIndex = idx; update(); }
 
+    /// Set the CLIP-LOCAL time (ticks, same basis the renderer evaluates
+    /// masks at: playhead − clip timelineIn) used to evaluate mask geometry
+    /// and keyframed scalars for drawing/hit-testing, and to write Mask Path
+    /// keyframes during drags when the path stopwatch is on.
+    void setMaskTime(int64_t clipLocalTime) noexcept {
+        if (m_maskTime == clipLocalTime) return;
+        m_maskTime = clipLocalTime;
+        update();
+    }
+    [[nodiscard]] int64_t maskTime() const noexcept { return m_maskTime; }
+
     /// Get the currently active mask index (-1 = none).
     [[nodiscard]] int activeMaskIndex() const noexcept { return m_activeMaskIndex; }
 
@@ -374,8 +385,12 @@ private:
     /// detects no-change and restores the layer without an undo entry).
     std::string          m_preEditOriginalText{};
 
-    // Mask overlay data (non-owning pointer to clip's masks vector)
+    // Mask overlay data (non-owning pointer to the clip's or an effect's
+    // masks vector — both use the same OpacityMask type)
     std::vector<OpacityMask>* m_masks{nullptr};
+
+    // Clip-local time for mask evaluation (geometry + keyframed scalars)
+    int64_t m_maskTime{0};
 
     // Mask drag state
     int m_dragMaskIndex{-1};

@@ -1,0 +1,36 @@
+#version 450
+
+// Effect-mask mix (Premiere Pro: a mask on an effect limits where the
+// effect applies).  Runs right after a masked effect's dispatch:
+//   result = mix(original, effected, maskAlpha)
+// The effected image is bound as a read/write storage image (each
+// invocation reads and writes only its own texel, which is well-defined),
+// the effect's INPUT image and the rasterized mask are sampled.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform image2D fxImage;      // effected (in/out)
+layout(binding = 1)        uniform sampler2D origImage;  // effect input
+layout(binding = 2)        uniform sampler2D maskImage;  // rasterized mask
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[28];
+} pc;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pc.width || pixel.y >= pc.height) return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
+
+    vec4  fx   = imageLoad(fxImage, pixel);
+    vec4  orig = texture(origImage, uv);
+    float m    = texture(maskImage, uv).r;
+
+    imageStore(fxImage, pixel, mix(orig, fx, m));
+}

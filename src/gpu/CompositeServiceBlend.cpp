@@ -208,108 +208,318 @@ void blitLayerWithTransform(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CPU mask rasterizer — generates an RGBA texture where white = opaque,
-//  black = transparent. Each mask shape is rasterized, then combined
-//  with multiply (intersection of all masks on a clip).
+//  CPU mask rasterizer — Premiere Pro semantics.
+//
+//  Every shape is flattened to a closed polygon in target pixel space,
+//  scanline-filled, and converted to a signed distance field via an exact
+//  Euclidean distance transform (Felzenszwalb & Huttenlocher). Feather and
+//  expansion are then uniform distance-based operations for all shapes:
+//    alpha = smoothstep over [-feather/2, +feather/2] around (edge + expansion)
+//  Masks combine additively (union), matching Premiere: each mask reveals
+//  its region; a single inverted mask cuts a hole.
 // ═══════════════════════════════════════════════════════════════════════════
-std::vector<uint8_t> rasterizeMasks(const std::vector<OpacityMask>& masks,
-                                            uint32_t w, uint32_t h)
+
+namespace {
+
+/// Map a normalized frame-space point (0–1) into target pixel space.
+inline void mapPoint(float u, float v, uint32_t w, uint32_t h,
+                     const MaskRasterTransform* xf, float& px, float& py)
 {
-    // Start with all-white (fully opaque)
-    std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 4, 255);
+    if (xf) {
+        px = xf->m[0] * u + xf->m[1] * v + xf->m[2];
+        py = xf->m[3] * u + xf->m[4] * v + xf->m[5];
+    } else {
+        px = u * static_cast<float>(w);
+        py = v * static_cast<float>(h);
+    }
+}
 
-    for (const auto& mask : masks) {
-        // Per-mask alpha buffer (white = inside mask)
-        std::vector<float> maskAlpha(static_cast<size_t>(w) * h, 0.0f);
+/// Flatten one mask's geometry to a closed polygon in target pixel space.
+/// Returns false when the shape is degenerate (nothing to fill).
+bool buildMaskPolygon(const MaskRenderState& mask, uint32_t w, uint32_t h,
+                      const MaskRasterTransform* xf, std::vector<float>& poly)
+{
+    poly.clear();
+    const auto& g = mask.geometry;
 
-        const float cx = mask.centerX * static_cast<float>(w);
-        const float cy = mask.centerY * static_cast<float>(h);
-        const float hw = mask.width   * static_cast<float>(w) * 0.5f;
-        const float hh = mask.height  * static_cast<float>(h) * 0.5f;
-        const float rotRad = mask.rotation * 3.14159265f / 180.0f;
-        const float cosR = std::cos(-rotRad);
-        const float sinR = std::sin(-rotRad);
-        const float expW = mask.expansion;
-        const float expH = mask.expansion;
+    auto push = [&](float u, float v) {
+        float px, py;
+        mapPoint(u, v, w, h, xf, px, py);
+        poly.push_back(px);
+        poly.push_back(py);
+    };
 
-        for (uint32_t y = 0; y < h; ++y) {
-            for (uint32_t x = 0; x < w; ++x) {
-                float px = static_cast<float>(x) + 0.5f - cx;
-                float py = static_cast<float>(y) + 0.5f - cy;
-                // Rotate into mask-local space
-                float lx = px * cosR - py * sinR;
-                float ly = px * sinR + py * cosR;
+    if (mask.shape == MaskShape::Ellipse || mask.shape == MaskShape::Rectangle) {
+        const float rotRad = g.rotation * 3.14159265f / 180.0f;
+        const float cosR = std::cos(rotRad), sinR = std::sin(rotRad);
+        // Rotation is defined in frame-pixel space (matches the overlay's
+        // math, which rotates widget-space offsets) — build the local
+        // offsets in normalized space but rotate the aspect-corrected
+        // vector. Use a nominal frame aspect from the identity mapping.
+        auto pushLocal = [&](float dx, float dy) {
+            // dx/dy are normalized half-extents; rotate in aspect space
+            float ax = dx * static_cast<float>(w);
+            float ay = dy * static_cast<float>(h);
+            float rx = ax * cosR - ay * sinR;
+            float ry = ax * sinR + ay * cosR;
+            push(g.centerX + rx / static_cast<float>(w),
+                 g.centerY + ry / static_cast<float>(h));
+        };
 
-                float alpha = 0.0f;
-                if (mask.shape == rt::MaskShape::Ellipse) {
-                    float eHW = hw + expW;
-                    float eHH = hh + expH;
-                    if (eHW > 0.0f && eHH > 0.0f) {
-                        float d = (lx * lx) / (eHW * eHW) + (ly * ly) / (eHH * eHH);
-                        if (d <= 1.0f)
-                            alpha = 1.0f;
-                        else if (mask.feather > 0.0f) {
-                            float dist = (std::sqrt(d) - 1.0f) * std::min(eHW, eHH);
-                            alpha = std::max(0.0f, 1.0f - dist / mask.feather);
-                        }
-                    }
-                } else if (mask.shape == rt::MaskShape::Rectangle) {
-                    float rHW = hw + expW;
-                    float rHH = hh + expH;
-                    if (rHW > 0.0f && rHH > 0.0f) {
-                        float dx = std::abs(lx) - rHW;
-                        float dy = std::abs(ly) - rHH;
-                        if (dx <= 0.0f && dy <= 0.0f)
-                            alpha = 1.0f;
-                        else if (mask.feather > 0.0f) {
-                            float dist = std::max(dx, dy);
-                            if (dist < mask.feather)
-                                alpha = std::max(0.0f, 1.0f - dist / mask.feather);
-                        }
-                    }
-                } else if (mask.shape == rt::MaskShape::FreeDrawBezier && mask.vertices.size() >= 3) {
-                    // Point-in-polygon using ray casting on bezier approximation
-                    float nx = (static_cast<float>(x) + 0.5f) / static_cast<float>(w);
-                    float ny = (static_cast<float>(y) + 0.5f) / static_cast<float>(h);
-                    int crossings = 0;
-                    size_t n = mask.vertices.size();
-                    for (size_t i = 0; i < n; ++i) {
-                        size_t j = (i + 1) % n;
-                        float y0 = mask.vertices[i].y;
-                        float y1 = mask.vertices[j].y;
-                        float x0 = mask.vertices[i].x;
-                        float x1 = mask.vertices[j].x;
-                        if ((y0 <= ny && y1 > ny) || (y1 <= ny && y0 > ny)) {
-                            float t = (ny - y0) / (y1 - y0);
-                            if (nx < x0 + t * (x1 - x0))
-                                crossings++;
-                        }
-                    }
-                    alpha = (crossings % 2 == 1) ? 1.0f : 0.0f;
-                }
+        const float hwN = g.width * 0.5f;
+        const float hhN = g.height * 0.5f;
+        if (hwN <= 0.0f || hhN <= 0.0f) return false;
 
-                if (mask.inverted)
-                    alpha = 1.0f - alpha;
-                alpha *= mask.maskOpacity;
-                maskAlpha[static_cast<size_t>(y) * w + x] = alpha;
+        if (mask.shape == MaskShape::Ellipse) {
+            constexpr int kSegments = 96;
+            for (int i = 0; i < kSegments; ++i) {
+                float a = 2.0f * 3.14159265f * static_cast<float>(i) / kSegments;
+                pushLocal(hwN * std::cos(a), hhN * std::sin(a));
+            }
+        } else {
+            pushLocal(-hwN, -hhN);
+            pushLocal( hwN, -hhN);
+            pushLocal( hwN,  hhN);
+            pushLocal(-hwN,  hhN);
+        }
+        return true;
+    }
+
+    // FreeDrawBezier — flatten each cubic segment. Tangents are stored as
+    // normalized-frame offsets from the vertex (same convention as the
+    // monitor overlay).
+    const auto& verts = g.vertices;
+    if (verts.size() < 3) return false;
+
+    constexpr int kSubdiv = 24;
+    for (size_t vi = 0; vi < verts.size(); ++vi) {
+        size_t ni = (vi + 1) % verts.size();
+        const float p0x = verts[vi].x,                    p0y = verts[vi].y;
+        const float c1x = p0x + verts[vi].outTanX,        c1y = p0y + verts[vi].outTanY;
+        const float p1x = verts[ni].x,                    p1y = verts[ni].y;
+        const float c2x = p1x + verts[ni].inTanX,         c2y = p1y + verts[ni].inTanY;
+
+        const bool straight =
+            verts[vi].outTanX == 0.0f && verts[vi].outTanY == 0.0f &&
+            verts[ni].inTanX  == 0.0f && verts[ni].inTanY  == 0.0f;
+        const int steps = straight ? 1 : kSubdiv;
+
+        for (int s = 0; s < steps; ++s) {
+            float t  = static_cast<float>(s) / steps;
+            float mt = 1.0f - t;
+            float bx = mt*mt*mt*p0x + 3*mt*mt*t*c1x + 3*mt*t*t*c2x + t*t*t*p1x;
+            float by = mt*mt*mt*p0y + 3*mt*mt*t*c1y + 3*mt*t*t*c2y + t*t*t*p1y;
+            push(bx, by);
+        }
+    }
+    return poly.size() >= 6;
+}
+
+/// Even-odd scanline fill of a closed polygon (xy pairs, target px).
+void fillPolygon(const std::vector<float>& poly, uint32_t w, uint32_t h,
+                 std::vector<uint8_t>& inside)
+{
+    const size_t n = poly.size() / 2;
+    std::vector<float> xs;
+    xs.reserve(16);
+    for (uint32_t y = 0; y < h; ++y) {
+        const float sy = static_cast<float>(y) + 0.5f;
+        xs.clear();
+        for (size_t i = 0; i < n; ++i) {
+            size_t j = (i + 1) % n;
+            float y0 = poly[i * 2 + 1], y1 = poly[j * 2 + 1];
+            if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
+                float t = (sy - y0) / (y1 - y0);
+                xs.push_back(poly[i * 2] + t * (poly[j * 2] - poly[i * 2]));
             }
         }
+        std::sort(xs.begin(), xs.end());
+        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+            int x0 = std::max(0, static_cast<int>(std::ceil(xs[k] - 0.5f)));
+            int x1 = std::min(static_cast<int>(w) - 1,
+                              static_cast<int>(std::floor(xs[k + 1] - 0.5f)));
+            for (int x = x0; x <= x1; ++x)
+                inside[static_cast<size_t>(y) * w + x] = 1;
+        }
+    }
+}
 
-        // Multiply into the accumulated pixel buffer (all channels)
-        for (uint32_t y = 0; y < h; ++y) {
-            for (uint32_t x = 0; x < w; ++x) {
-                size_t idx = (static_cast<size_t>(y) * w + x) * 4;
-                float a = maskAlpha[static_cast<size_t>(y) * w + x];
-                uint8_t ai = static_cast<uint8_t>(a * 255.0f);
-                pixels[idx + 0] = static_cast<uint8_t>(pixels[idx + 0] * a);
-                pixels[idx + 1] = static_cast<uint8_t>(pixels[idx + 1] * a);
-                pixels[idx + 2] = static_cast<uint8_t>(pixels[idx + 2] * a);
-                pixels[idx + 3] = static_cast<uint8_t>(std::min(255, static_cast<int>(pixels[idx + 3]) * ai / 255));
+/// 1D squared Euclidean distance transform (Felzenszwalb & Huttenlocher).
+/// f = input (INF where empty), d = output, n = length. v/z are scratch.
+void edt1d(const float* f, float* d, int n, int* v, float* z)
+{
+    int k = 0;
+    v[0] = 0;
+    z[0] = -1e20f;
+    z[1] = 1e20f;
+    for (int q = 1; q < n; ++q) {
+        float s;
+        while (true) {
+            s = ((f[q] + q * static_cast<float>(q)) -
+                 (f[v[k]] + v[k] * static_cast<float>(v[k]))) /
+                (2.0f * (q - v[k]));
+            if (s <= z[k]) { --k; } else break;
+        }
+        ++k;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = 1e20f;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[k + 1] < static_cast<float>(q)) ++k;
+        float dq = static_cast<float>(q - v[k]);
+        d[q] = dq * dq + f[v[k]];
+    }
+}
+
+/// 2D squared EDT: dist² to the nearest seed (seed = pixels where
+/// seedMask[i] != seedValue... seeds are pixels with mask[i]==seed).
+void edt2d(const std::vector<uint8_t>& grid, uint8_t seed,
+           uint32_t w, uint32_t h, std::vector<float>& out)
+{
+    constexpr float INF = 1e18f;
+    out.assign(static_cast<size_t>(w) * h, 0.0f);
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = (grid[i] == seed) ? 0.0f : INF;
+
+    const int maxDim = static_cast<int>(std::max(w, h));
+    std::vector<float> f(maxDim), d(maxDim), z(maxDim + 1);
+    std::vector<int>   v(maxDim);
+
+    // Columns
+    for (uint32_t x = 0; x < w; ++x) {
+        for (uint32_t y = 0; y < h; ++y) f[y] = out[static_cast<size_t>(y) * w + x];
+        edt1d(f.data(), d.data(), static_cast<int>(h), v.data(), z.data());
+        for (uint32_t y = 0; y < h; ++y) out[static_cast<size_t>(y) * w + x] = d[y];
+    }
+    // Rows
+    for (uint32_t y = 0; y < h; ++y) {
+        float* row = out.data() + static_cast<size_t>(y) * w;
+        std::copy(row, row + w, f.data());
+        edt1d(f.data(), d.data(), static_cast<int>(w), v.data(), z.data());
+        std::copy(d.data(), d.data() + w, row);
+    }
+}
+
+} // namespace
+
+std::vector<uint8_t> rasterizeMasks(const std::vector<MaskRenderState>& masks,
+                                    uint32_t w, uint32_t h,
+                                    const MaskRasterTransform* frameToTarget)
+{
+    const size_t npx = static_cast<size_t>(w) * h;
+    std::vector<uint8_t> pixels(npx * 4, 0);
+    if (w == 0 || h == 0) return pixels;
+
+    // Feather/expansion are authored in output-frame pixels. When
+    // rasterizing into a different grid (effect masks in clip space),
+    // scale them by the mapping's average scale factor.
+    float distScale = 1.0f;
+    if (frameToTarget) {
+        const float* m = frameToTarget->m;
+        // Frame-norm unit steps (1/w, 1/h in identity mapping) map to:
+        float sx = std::hypot(m[0], m[3]) / static_cast<float>(w);
+        float sy = std::hypot(m[1], m[4]) / static_cast<float>(h);
+        distScale = 0.5f * (sx + sy);
+        if (!(distScale > 0.0f) || !std::isfinite(distScale)) distScale = 1.0f;
+    }
+
+    std::vector<float> accum(npx, 0.0f);
+    std::vector<float> poly;
+    std::vector<uint8_t> inside;
+    std::vector<float> distIn, distOut;
+
+    for (const auto& mask : masks) {
+        float alphaConst = -1.0f; // >= 0 → uniform alpha, skip fill
+
+        if (!buildMaskPolygon(mask, w, h, frameToTarget, poly)) {
+            // Degenerate shape contributes nothing (or everything when
+            // inverted).
+            alphaConst = mask.inverted ? mask.maskOpacity : 0.0f;
+        }
+
+        if (alphaConst >= 0.0f) {
+            if (alphaConst > 0.0f)
+                for (size_t i = 0; i < npx; ++i)
+                    accum[i] = std::min(1.0f, accum[i] + alphaConst);
+            continue;
+        }
+
+        inside.assign(npx, 0);
+        fillPolygon(poly, w, h, inside);
+
+        edt2d(inside, 0, w, h, distIn);   // dist² to nearest OUTSIDE pixel... see below
+        edt2d(inside, 1, w, h, distOut);  // dist² to nearest INSIDE pixel
+
+        const float feather   = std::max(0.0f, mask.feather) * distScale;
+        const float expansion = mask.expansion * distScale;
+        const float opac      = std::clamp(mask.maskOpacity, 0.0f, 1.0f);
+
+        for (size_t i = 0; i < npx; ++i) {
+            // Signed distance: negative inside, positive outside. distIn
+            // holds dist²-to-outside (0 at outside pixels), distOut holds
+            // dist²-to-inside (0 at inside pixels).
+            float d = inside[i]
+                ? -(std::sqrt(distIn[i]) - 0.5f)
+                :  (std::sqrt(distOut[i]) - 0.5f);
+            d -= expansion;
+
+            float a;
+            if (feather > 0.5f) {
+                float t = std::clamp(0.5f - d / feather, 0.0f, 1.0f);
+                a = t * t * (3.0f - 2.0f * t);   // smoothstep — Premiere-soft
+            } else {
+                a = std::clamp(0.5f - d, 0.0f, 1.0f);  // ~1px anti-aliased edge
             }
+
+            if (mask.inverted) a = 1.0f - a;
+            a *= opac;
+            accum[i] = std::min(1.0f, accum[i] + a);  // additive combine (union)
         }
     }
 
+    for (size_t i = 0; i < npx; ++i) {
+        uint8_t v8 = static_cast<uint8_t>(accum[i] * 255.0f + 0.5f);
+        pixels[i * 4 + 0] = v8;
+        pixels[i * 4 + 1] = v8;
+        pixels[i * 4 + 2] = v8;
+        pixels[i * 4 + 3] = v8;
+    }
     return pixels;
+}
+
+uint64_t hashMaskStates(const std::vector<MaskRenderState>& masks,
+                        uint32_t w, uint32_t h,
+                        const MaskRasterTransform* frameToTarget)
+{
+    uint64_t hash = 1469598103934665603ULL; // FNV offset basis
+    auto mix = [&hash](const void* data, size_t len) {
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < len; ++i) {
+            hash ^= p[i];
+            hash *= 1099511628211ULL;
+        }
+    };
+    mix(&w, sizeof(w));
+    mix(&h, sizeof(h));
+    if (frameToTarget) mix(frameToTarget->m, sizeof(frameToTarget->m));
+    for (const auto& m : masks) {
+        mix(&m.shape, sizeof(m.shape));
+        mix(&m.inverted, sizeof(m.inverted));
+        mix(&m.feather, sizeof(m.feather));
+        mix(&m.expansion, sizeof(m.expansion));
+        mix(&m.maskOpacity, sizeof(m.maskOpacity));
+        const auto& g = m.geometry;
+        mix(&g.centerX, sizeof(g.centerX));
+        mix(&g.centerY, sizeof(g.centerY));
+        mix(&g.width, sizeof(g.width));
+        mix(&g.height, sizeof(g.height));
+        mix(&g.rotation, sizeof(g.rotation));
+        if (!g.vertices.empty())
+            mix(g.vertices.data(), g.vertices.size() * sizeof(MaskVertex));
+    }
+    return hash;
 }
 
 } // namespace rt

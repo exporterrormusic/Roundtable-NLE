@@ -33,6 +33,7 @@
 #include "widgets/VUMeter.h"
 #include "viewport/Viewport.h"
 #include "viewport/TransformOverlayWidget.h"
+#include "panels/timeline/OverlayController.h"
 
 #include "command/CommandStack.h"
 #include "command/CompoundCommand.h"
@@ -156,8 +157,13 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             scheduleOverlayRefresh();
         });
         connect(m_effectControlsPanel, &EffectControlsPanel::maskSelected,
-                this, [this](int maskIndex) {
+                this, [this](int maskIndex, quint64 effectId) {
             if (m_destroying.load(std::memory_order_acquire)) return;
+            // Route the Program Monitor at the selected mask list first
+            // (clip opacity masks when effectId==0, else that effect's
+            // masks), then focus the clicked mask within it.
+            if (m_overlay)
+                m_overlay->setActiveMaskContext(effectId);
             if (m_programMonitor) {
                 auto* ov = m_programMonitor->transformOverlay();
                 if (ov) ov->setActiveMaskIndex(maskIndex);

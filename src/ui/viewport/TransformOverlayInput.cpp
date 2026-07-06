@@ -816,63 +816,71 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         float dxNorm = static_cast<float>((wPos.x() - m_dragStartWidget.x()) / fr.width());
         float dyNorm = static_cast<float>((wPos.y() - m_dragStartWidget.y()) / fr.height());
 
+        // Work on the geometry evaluated at the current time; write back
+        // through writeGeometry (Premiere stopwatch model: updates the
+        // static path, or records a Mask Path keyframe when animated).
+        const MaskGeometry startGeo = m_dragStartMask.geometryAt(m_maskTime);
+        MaskGeometry geo = mask.geometryAt(m_maskTime);
+
         if (mask.shape == MaskShape::Ellipse) {
             if (m_dragMaskHandle == 4 || m_dragMaskHandle == INT_MAX) {
                 // Move center
-                mask.centerX = m_dragStartMask.centerX + dxNorm;
-                mask.centerY = m_dragStartMask.centerY + dyNorm;
+                geo.centerX = startGeo.centerX + dxNorm;
+                geo.centerY = startGeo.centerY + dyNorm;
             } else if (m_dragMaskHandle == 0 || m_dragMaskHandle == 1) {
                 // Right/left cardinal → scale width
                 float d = (m_dragMaskHandle == 0) ? dxNorm : -dxNorm;
-                mask.width = std::max(0.01f, m_dragStartMask.width + d * 2.0f);
+                geo.width = std::max(0.01f, startGeo.width + d * 2.0f);
             } else {
                 // Bottom/top cardinal → scale height
                 float d = (m_dragMaskHandle == 2) ? dyNorm : -dyNorm;
-                mask.height = std::max(0.01f, m_dragStartMask.height + d * 2.0f);
+                geo.height = std::max(0.01f, startGeo.height + d * 2.0f);
             }
         }
         else if (mask.shape == MaskShape::Rectangle) {
             if (m_dragMaskHandle == 4 || m_dragMaskHandle == INT_MAX) {
-                mask.centerX = m_dragStartMask.centerX + dxNorm;
-                mask.centerY = m_dragStartMask.centerY + dyNorm;
+                geo.centerX = startGeo.centerX + dxNorm;
+                geo.centerY = startGeo.centerY + dyNorm;
             } else if (m_dragMaskHandle >= 5 && m_dragMaskHandle <= 8) {
                 // Mid-edge handles: resize one dimension only
                 // 5=top, 6=right, 7=bottom, 8=left
                 if (m_dragMaskHandle == 5) {
                     // Top edge: shrink height from top
-                    mask.height  = std::max(0.01f, m_dragStartMask.height - dyNorm * 2.0f);
+                    geo.height  = std::max(0.01f, startGeo.height - dyNorm * 2.0f);
                 } else if (m_dragMaskHandle == 7) {
                     // Bottom edge: grow height from bottom
-                    mask.height  = std::max(0.01f, m_dragStartMask.height + dyNorm * 2.0f);
+                    geo.height  = std::max(0.01f, startGeo.height + dyNorm * 2.0f);
                 } else if (m_dragMaskHandle == 6) {
                     // Right edge: grow width from right
-                    mask.width   = std::max(0.01f, m_dragStartMask.width + dxNorm * 2.0f);
+                    geo.width   = std::max(0.01f, startGeo.width + dxNorm * 2.0f);
                 } else { // 8 = left
                     // Left edge: shrink width from left
-                    mask.width   = std::max(0.01f, m_dragStartMask.width - dxNorm * 2.0f);
+                    geo.width   = std::max(0.01f, startGeo.width - dxNorm * 2.0f);
                 }
             } else {
                 // Corner drag → scale width/height symmetrically
                 float signX = (m_dragMaskHandle == 1 || m_dragMaskHandle == 2) ? 1.0f : -1.0f;
                 float signY = (m_dragMaskHandle == 2 || m_dragMaskHandle == 3) ? 1.0f : -1.0f;
-                mask.width  = std::max(0.01f, m_dragStartMask.width  + signX * dxNorm * 2.0f);
-                mask.height = std::max(0.01f, m_dragStartMask.height + signY * dyNorm * 2.0f);
+                geo.width  = std::max(0.01f, startGeo.width  + signX * dxNorm * 2.0f);
+                geo.height = std::max(0.01f, startGeo.height + signY * dyNorm * 2.0f);
             }
         }
         else if (mask.shape == MaskShape::FreeDrawBezier) {
             auto vi = static_cast<size_t>(m_dragMaskHandle);
-            if (vi < mask.vertices.size()) {
+            if (vi < geo.vertices.size() && vi < startGeo.vertices.size()) {
                 // Drag single vertex
-                mask.vertices[vi].x = m_dragStartMask.vertices[vi].x + dxNorm;
-                mask.vertices[vi].y = m_dragStartMask.vertices[vi].y + dyNorm;
-            } else {
+                geo.vertices[vi].x = startGeo.vertices[vi].x + dxNorm;
+                geo.vertices[vi].y = startGeo.vertices[vi].y + dyNorm;
+            } else if (geo.vertices.size() == startGeo.vertices.size()) {
                 // Body drag — translate all vertices
-                for (size_t i = 0; i < mask.vertices.size(); ++i) {
-                    mask.vertices[i].x = m_dragStartMask.vertices[i].x + dxNorm;
-                    mask.vertices[i].y = m_dragStartMask.vertices[i].y + dyNorm;
+                for (size_t i = 0; i < geo.vertices.size(); ++i) {
+                    geo.vertices[i].x = startGeo.vertices[i].x + dxNorm;
+                    geo.vertices[i].y = startGeo.vertices[i].y + dyNorm;
                 }
             }
         }
+
+        mask.writeGeometry(m_maskTime, geo);
 
         emit maskLiveUpdate();
         update();

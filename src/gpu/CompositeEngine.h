@@ -191,6 +191,22 @@ private:
     std::vector<PoolTexKey> m_gpuLayerTexKeys;
     std::vector<std::unique_ptr<rt::Texture>> m_gpuMaskTextures;
 
+    // Per-slot mask rasterization cache: when the evaluated mask state
+    // (hash) and clip match the previous frame, the CPU rasterize + GPU
+    // upload are skipped and the existing texture content is reused.
+    struct MaskCacheEntry {
+        uint64_t clipId{0};
+        uint64_t stateHash{0};
+        VkDescriptorImageInfo desc{};
+        bool     valid{false};
+    };
+    std::vector<MaskCacheEntry> m_maskCache;
+
+    // Per-layer effect-mask textures (one per masked effect in the layer's
+    // chain, rasterized in the clip's source-pixel grid) + their caches.
+    std::vector<std::vector<std::unique_ptr<rt::Texture>>> m_effectMaskTextures;
+    std::vector<std::vector<MaskCacheEntry>> m_effectMaskCache;
+
     // Per-layer effect-output snapshot textures.  The EffectProcessor uses
     // only two ping-pong storage images shared across all layers, so when
     // layer B's effect chain runs after A's it overwrites the textures that

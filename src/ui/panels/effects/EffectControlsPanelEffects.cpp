@@ -4,11 +4,14 @@
  */
 
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/MaskTracker.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "Theme.h"
+#include "PathUtils.h"
 
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/VideoClip.h"
 #include "timeline/KeyframeTrack.h"
 #include "timeline/OpacityMask.h"
 #include "timeline/Timeline.h"
@@ -398,23 +401,33 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
 //  addMask â€” create a new mask and rebuild UI
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-void EffectControlsPanel::addMask(uint8_t shapeType)
+std::vector<OpacityMask>* EffectControlsPanel::maskListFor(quint64 effectId) const
 {
-    if (!m_clip) return;
+    if (!m_clip) return nullptr;
+    if (effectId == 0) return &m_clip->masks();
+    if (Effect* fx = m_clip->effects().effectById(effectId))
+        return &fx->masks();
+    return nullptr;
+}
+
+void EffectControlsPanel::addMask(uint8_t shapeType, quint64 effectId)
+{
+    auto* maskList = maskListFor(effectId);
+    if (!maskList) return;
 
     OpacityMask mask;
     mask.shape = static_cast<MaskShape>(shapeType);
-    mask.name = "Mask " + std::to_string(m_clip->maskCount() + 1);
+    mask.name = "Mask " + std::to_string(maskList->size() + 1);
 
     // Default size: ellipse/rect centered at 50% with 50% coverage
-    mask.centerX = 0.5f;
-    mask.centerY = 0.5f;
-    mask.width   = 0.5f;
-    mask.height  = 0.5f;
+    mask.base.centerX = 0.5f;
+    mask.base.centerY = 0.5f;
+    mask.base.width   = 0.5f;
+    mask.base.height  = 0.5f;
 
     if (shapeType == 2) {
         // FreeDrawBezier: start with 4 corner vertices forming a rectangle
-        mask.vertices = {
+        mask.base.vertices = {
             {0.25f, 0.25f, 0, 0, 0, 0},
             {0.75f, 0.25f, 0, 0, 0, 0},
             {0.75f, 0.75f, 0, 0, 0, 0},
@@ -424,37 +437,240 @@ void EffectControlsPanel::addMask(uint8_t shapeType)
 
     Clip* clip = m_clip;
     OpacityMask savedMask = mask;
-    size_t insertIdx = m_clip->maskCount();
+    size_t insertIdx = maskList->size();
 
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Add Mask",
-            [clip, savedMask]() {
-                clip->addMask(OpacityMask(savedMask));
+            [clip, effectId, savedMask]() {
+                Clip* c = clip;
+                std::vector<OpacityMask>* list = nullptr;
+                if (effectId == 0) list = &c->masks();
+                else if (Effect* fx = c->effects().effectById(effectId))
+                    list = &fx->masks();
+                if (list) list->push_back(OpacityMask(savedMask));
             },
-            [clip, insertIdx]() {
-                clip->removeMask(insertIdx);
+            [clip, effectId, insertIdx]() {
+                Clip* c = clip;
+                std::vector<OpacityMask>* list = nullptr;
+                if (effectId == 0) list = &c->masks();
+                else if (Effect* fx = c->effects().effectById(effectId))
+                    list = &fx->masks();
+                if (list && insertIdx < list->size())
+                    list->erase(list->begin() + static_cast<ptrdiff_t>(insertIdx));
             }));
     } else {
-        m_clip->addMask(std::move(mask));
+        maskList->push_back(std::move(mask));
     }
+    refresh();
+    // Select the new mask in the Program Monitor immediately (Premiere
+    // creates the mask "armed" for direct manipulation).
+    emit maskSelected(static_cast<int>(insertIdx), effectId);
+    emit maskChanged();
+    emit propertyChanged();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  wireMaskParam — live preview + stopwatch-aware undo for a mask scalar
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+KeyframeTrack<float>* maskScalarTrack(OpacityMask& m,
+                                      EffectControlsPanel::MaskParam which)
+{
+    switch (which) {
+    case EffectControlsPanel::MaskParam::Feather:   return &m.feather;
+    case EffectControlsPanel::MaskParam::Opacity:   return &m.maskOpacity;
+    case EffectControlsPanel::MaskParam::Expansion: return &m.expansion;
+    }
+    return nullptr;
+}
+} // namespace
+
+void EffectControlsPanel::wireMaskParam(ScrubbySpinBox* spin, quint64 effectId,
+                                        size_t maskIdx, MaskParam which,
+                                        float scale)
+{
+    // Live preview during scrub
+    connect(spin, &ScrubbySpinBox::valueScrubbed,
+            this, [this, effectId, maskIdx, which, scale](double val) {
+        if (m_updating) return;
+        auto* list = maskListFor(effectId);
+        if (!list || maskIdx >= list->size()) return;
+        auto* trk = maskScalarTrack((*list)[maskIdx], which);
+        if (!trk) return;
+        trk->writeValue(clipRelativeTick(), static_cast<float>(val) * scale);
+        emit maskChanged();
+        emit propertyChanged();
+    });
+
+    // Commit with undo support (same stopwatch semantics as effect params)
+    connect(spin, &ScrubbySpinBox::valueCommitted,
+            this, [this, effectId, maskIdx, which, scale](double oldVal, double newVal) {
+        if (m_updating) return;
+        auto* list = maskListFor(effectId);
+        if (!list || maskIdx >= list->size()) return;
+        auto* trk = maskScalarTrack((*list)[maskIdx], which);
+        if (!trk) return;
+        int64_t t = clipRelativeTick();
+        auto fOld = static_cast<float>(oldVal) * scale;
+        auto fNew = static_cast<float>(newVal) * scale;
+
+        bool createdKF = false;
+        if (!trk->isStatic() && trk->keyframeCount() >= 2 && trk->hasKeyframeAt(t)) {
+            KeyframeTrack<float> tmp(trk->defaultValue());
+            for (const auto& kf : trk->keyframes())
+                if (kf.time != t) tmp.restoreKeyframe(kf);
+            createdKF = (std::abs(tmp.evaluate(t) - fOld) < 0.01f);
+        }
+
+        emit maskChanged();
+        emit propertyChanged();
+        if (!m_commandStack) return;
+        Clip* clip = m_clip;
+        auto resolve = [clip, effectId, maskIdx, which]() -> KeyframeTrack<float>* {
+            std::vector<OpacityMask>* list = nullptr;
+            if (effectId == 0) list = &clip->masks();
+            else if (Effect* fx = clip->effects().effectById(effectId))
+                list = &fx->masks();
+            if (!list || maskIdx >= list->size()) return nullptr;
+            return maskScalarTrack((*list)[maskIdx], which);
+        };
+        m_commandStack->pushWithoutExecute(
+            std::make_unique<LambdaCommand>(
+                "Set Mask Parameter",
+                [resolve, fNew, t]() {
+                    if (auto* trk2 = resolve()) trk2->writeValue(t, fNew);
+                },
+                [resolve, fOld, t, createdKF]() {
+                    if (auto* trk2 = resolve()) {
+                        if (createdKF) trk2->removeKeyframeAtTime(t);
+                        else trk2->writeValue(t, fOld);
+                    }
+                }));
+    });
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  trackMask — Premiere "track mask forward/backward"
+// ═════════════════════════════════════════════════════════════════════════════
+
+void EffectControlsPanel::trackMask(quint64 effectId, size_t maskIdx,
+                                    bool forward)
+{
+    auto* list = maskListFor(effectId);
+    if (!list || maskIdx >= list->size() || !m_clip) return;
+
+    auto* vc = dynamic_cast<VideoClip*>(m_clip);
+    if (!vc || vc->mediaPath().empty()) {
+        spdlog::info("[MASK-TRACK] tracking requires a video clip with media");
+        return;
+    }
+
+    MaskTrackParams p;
+    p.mediaPath         = utf8ToPath(vc->mediaPath());
+    p.sourceInTicks     = m_clip->sourceIn();
+    p.speed             = m_clip->speed();
+    p.clipDurationTicks = m_clip->duration();
+    p.startLocalTick    = clipRelativeTick();
+    p.forward           = forward;
+
+    // Sequence resolution + the clip's transform at the start time — same
+    // unit conversions the layer builder applies (REF-1920 position/anchor
+    // scaled to output pixels).
+    uint32_t outW = 1920, outH = 1080;
+    if (m_timeline) {
+        const auto& res = m_timeline->settings().resolution();
+        if (res.width > 0 && res.height > 0) {
+            outW = res.width;
+            outH = res.height;
+        }
+    }
+    const float scaleToOutX = static_cast<float>(outW) / 1920.0f;
+    const float scaleToOutY = static_cast<float>(outH) / 1080.0f;
+    const int64_t t0 = p.startLocalTick;
+    p.outW     = outW;
+    p.outH     = outH;
+    p.posX     = m_clip->positionX().evaluate(t0) * scaleToOutX;
+    p.posY     = m_clip->positionY().evaluate(t0) * scaleToOutY;
+    p.scaleX   = m_clip->scaleX().evaluate(t0);
+    p.scaleY   = m_clip->scaleY().evaluate(t0);
+    p.rotation = m_clip->rotation().evaluate(t0);
+    p.anchorX  = m_clip->anchorX().evaluate(t0) * scaleToOutX;
+    p.anchorY  = m_clip->anchorY().evaluate(t0) * scaleToOutY;
+
+    OpacityMask before = (*list)[maskIdx];
+    OpacityMask working = before;
+
+    const int keys = MaskTracker::track(p, working, this);
+    if (keys <= 1) {
+        spdlog::info("[MASK-TRACK] no keyframes written (keys={})", keys);
+        return;
+    }
+
+    (*list)[maskIdx] = working;
+    OpacityMask after = working;
+
+    if (m_commandStack) {
+        Clip* clip = m_clip;
+        auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+            if (effectId == 0) return &clip->masks();
+            if (Effect* fx = clip->effects().effectById(effectId))
+                return &fx->masks();
+            return nullptr;
+        };
+        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+            forward ? "Track Mask Forward" : "Track Mask Backward",
+            [resolveList, maskIdx, after]() {
+                auto* masks = resolveList();
+                if (masks && maskIdx < masks->size()) (*masks)[maskIdx] = after;
+            },
+            [resolveList, maskIdx, before]() {
+                auto* masks = resolveList();
+                if (masks && maskIdx < masks->size()) (*masks)[maskIdx] = before;
+            }));
+    }
+
     refresh();
     emit maskChanged();
     emit propertyChanged();
+    spdlog::info("[MASK-TRACK] wrote {} Mask Path keyframes ({})",
+                 keys, forward ? "forward" : "backward");
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  buildMaskUI â€” build parameter rows for each mask on the current clip
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
+void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
+                                      quint64 effectId, int& rowIdx)
 {
-    if (!m_clip || m_clip->maskCount() == 0) return;
+    if (!m_clip || maskList.empty()) return;
 
     const auto& tc = Theme::colors();
+    const int64_t curT = clipRelativeTick();
 
-    for (size_t mi = 0; mi < m_clip->maskCount(); ++mi) {
-        auto& mask = m_clip->masks()[mi];
+    // Row builder for keyframeable mask scalars (same wiring as effect
+    // param rows: stopwatch + prev/add/next nav through the shared
+    // keyframe handlers).
+    auto makeRow = [&](const QString& name,
+                       KeyframeTrack<float>* track) -> PropertyRow* {
+        auto* row = new PropertyRow(name, track, m_propContainer);
+        row->setRowIndex(rowIdx++);
+        m_propertyRows.push_back(row);
+        connect(row, &PropertyRow::addKeyframeRequested,
+                this, &EffectControlsPanel::onAddKeyframe);
+        connect(row, &PropertyRow::deleteKeyframeRequested,
+                this, &EffectControlsPanel::onDeleteKeyframe);
+        connect(row, &PropertyRow::goToPrevKeyframe,
+                this, &EffectControlsPanel::onGoToPrevKeyframe);
+        connect(row, &PropertyRow::goToNextKeyframe,
+                this, &EffectControlsPanel::onGoToNextKeyframe);
+        return row;
+    };
+
+    for (size_t mi = 0; mi < maskList.size(); ++mi) {
+        auto& mask = maskList[mi];
 
         // â”€â”€ Mask sub-section header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         auto* header = new QWidget(m_propContainer);
@@ -495,28 +711,36 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
             .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error))
             .arg(Theme::typography().sizeXs));
         hl->addWidget(deleteBtn);
-        connect(deleteBtn, &QToolButton::clicked, this, [this, mi]() {
-            if (m_clip) {
-                Clip* clip = m_clip;
-                OpacityMask savedMask = clip->masks()[mi];
-                if (m_commandStack) {
-                    m_commandStack->execute(std::make_unique<LambdaCommand>(
-                        "Delete Mask",
-                        [clip, mi]() {
-                            clip->removeMask(mi);
-                        },
-                        [clip, mi, savedMask]() {
-                            auto& masks = clip->masks();
-                            if (mi <= masks.size())
-                                masks.insert(masks.begin() + static_cast<ptrdiff_t>(mi), savedMask);
-                        }));
-                } else {
-                    m_clip->removeMask(mi);
-                }
-                refresh();
-                emit maskChanged();
-                emit propertyChanged();
+        connect(deleteBtn, &QToolButton::clicked, this, [this, mi, effectId]() {
+            auto* list = maskListFor(effectId);
+            if (!list || mi >= list->size()) return;
+            Clip* clip = m_clip;
+            OpacityMask savedMask = (*list)[mi];
+            auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+                if (effectId == 0) return &clip->masks();
+                if (Effect* fx = clip->effects().effectById(effectId))
+                    return &fx->masks();
+                return nullptr;
+            };
+            if (m_commandStack) {
+                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    "Delete Mask",
+                    [resolveList, mi]() {
+                        auto* masks = resolveList();
+                        if (masks && mi < masks->size())
+                            masks->erase(masks->begin() + static_cast<ptrdiff_t>(mi));
+                    },
+                    [resolveList, mi, savedMask]() {
+                        auto* masks = resolveList();
+                        if (masks && mi <= masks->size())
+                            masks->insert(masks->begin() + static_cast<ptrdiff_t>(mi), savedMask);
+                    }));
+            } else {
+                list->erase(list->begin() + static_cast<ptrdiff_t>(mi));
             }
+            refresh();
+            emit maskChanged();
+            emit propertyChanged();
         });
 
         m_sectionArrows.push_back({header, arrow, {}, QString::fromStdString(mask.name)});
@@ -525,113 +749,198 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
         // Click on mask header â†’ select this mask for editing in Program Monitor
         header->installEventFilter(this);
         header->setProperty("maskIndex", static_cast<int>(mi));
+        header->setProperty("maskEffectId", QVariant::fromValue<qulonglong>(effectId));
 
-        // â”€â”€ Mask Feather â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Mask Path (stopwatch + keyframe nav, Premiere-style) ─────────
         {
             auto* w = new QWidget(m_propContainer);
             w->setFixedHeight(28);
             auto* lay = new QHBoxLayout(w);
             lay->setContentsMargins(36, 2, 6, 2);
             lay->setSpacing(6);
-            auto* lbl = new QLabel("Mask Feather", w);
+
+            // Stopwatch: toggles Mask Path animation
+            auto* stopwatch = new QToolButton(w);
+            stopwatch->setText(QStringLiteral("⏱"));
+            stopwatch->setCheckable(true);
+            stopwatch->setChecked(mask.pathAnimated);
+            stopwatch->setToolTip(tr("Toggle animation of Mask Path"));
+            stopwatch->setFixedSize(18, 20);
+            stopwatch->setStyleSheet(QStringLiteral(
+                "QToolButton { color: %1; background: transparent; border: none; padding: 0; font-size: %3px; }"
+                "QToolButton:checked { color: %2; }")
+                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.accent))
+                .arg(Theme::typography().sizeXs));
+            lay->addWidget(stopwatch);
+
+            auto* lbl = new QLabel(tr("Mask Path"), w);
             lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
                 .arg(Theme::hex(tc.textPrimary))
                 .arg(Theme::typography().sizeXs));
             lay->addWidget(lbl);
+            lay->addStretch();
+
+            auto makeNavBtn = [&](const QString& text, const QString& tip) {
+                auto* b = new QToolButton(w);
+                b->setText(text);
+                b->setToolTip(tip);
+                b->setFixedSize(18, 20);
+                b->setStyleSheet(QStringLiteral(
+                    "QToolButton { color: %1; background: transparent; border: none; padding: 0; font-size: %3px; }"
+                    "QToolButton:hover { color: %2; }")
+                    .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary))
+                    .arg(Theme::typography().sizeXs));
+                lay->addWidget(b);
+                return b;
+            };
+            // Tracking buttons (Premiere: track mask backward / forward)
+            auto* trackBackBtn = makeNavBtn(QStringLiteral("«"),
+                                            tr("Track selected mask backward"));
+            auto* trackFwdBtn  = makeNavBtn(QStringLiteral("»"),
+                                            tr("Track selected mask forward"));
+            connect(trackBackBtn, &QToolButton::clicked, this,
+                    [this, mi, effectId]() { trackMask(effectId, mi, false); });
+            connect(trackFwdBtn, &QToolButton::clicked, this,
+                    [this, mi, effectId]() { trackMask(effectId, mi, true); });
+
+            auto* prevBtn = makeNavBtn(QStringLiteral("◀"), tr("Go to previous Mask Path keyframe"));
+            auto* diaBtn  = makeNavBtn(QStringLiteral("◆"), tr("Add/remove Mask Path keyframe at playhead"));
+            auto* nextBtn = makeNavBtn(QStringLiteral("▶"), tr("Go to next Mask Path keyframe"));
+
+            connect(stopwatch, &QToolButton::toggled, this,
+                    [this, mi, effectId](bool on) {
+                if (m_updating) return;
+                auto* list = maskListFor(effectId);
+                if (!list || mi >= list->size()) return;
+                auto& m = (*list)[mi];
+                if (on == m.pathAnimated) return;
+                Clip* clip = m_clip;
+                OpacityMask before = m;
+                OpacityMask after  = m;
+                const int64_t t = clipRelativeTick();
+                if (on) {
+                    // Premiere: enabling the stopwatch seeds the first
+                    // keyframe at the playhead with the current path.
+                    after.pathAnimated = true;
+                    after.pathKeys.clear();
+                    after.addPathKey(t, m.geometryAt(t));
+                } else {
+                    // Disabling removes all keyframes; the path freezes at
+                    // its value at the playhead.
+                    after.base = m.geometryAt(t);
+                    after.pathKeys.clear();
+                    after.pathAnimated = false;
+                }
+                auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+                    if (effectId == 0) return &clip->masks();
+                    if (Effect* fx = clip->effects().effectById(effectId))
+                        return &fx->masks();
+                    return nullptr;
+                };
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        on ? "Animate Mask Path" : "Stop Animating Mask Path",
+                        [resolveList, mi, after]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi] = after;
+                        },
+                        [resolveList, mi, before]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi] = before;
+                        }));
+                } else {
+                    m = after;
+                }
+                emit maskChanged();
+                emit propertyChanged();
+            });
+
+            connect(diaBtn, &QToolButton::clicked, this, [this, mi, effectId]() {
+                auto* list = maskListFor(effectId);
+                if (!list || mi >= list->size()) return;
+                auto& m = (*list)[mi];
+                if (!m.pathAnimated) return;
+                Clip* clip = m_clip;
+                OpacityMask before = m;
+                OpacityMask after  = m;
+                const int64_t t = clipRelativeTick();
+                if (m.hasPathKeyAt(t))
+                    after.removePathKeyAtTime(t);
+                else
+                    after.addPathKey(t, m.geometryAt(t));
+                auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+                    if (effectId == 0) return &clip->masks();
+                    if (Effect* fx = clip->effects().effectById(effectId))
+                        return &fx->masks();
+                    return nullptr;
+                };
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        "Toggle Mask Path Keyframe",
+                        [resolveList, mi, after]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi] = after;
+                        },
+                        [resolveList, mi, before]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi] = before;
+                        }));
+                } else {
+                    m = after;
+                }
+                emit maskChanged();
+                emit propertyChanged();
+            });
+
+            auto seekToKey = [this, mi, effectId](bool forward) {
+                auto* list = maskListFor(effectId);
+                if (!list || mi >= list->size() || !m_clip) return;
+                auto& m = (*list)[mi];
+                const int64_t t = clipRelativeTick();
+                const int64_t target = forward ? m.nextPathKeyTime(t)
+                                               : m.prevPathKeyTime(t);
+                if (target == t) return;
+                emit seekRequested(m_clip->timelineIn() + target);
+            };
+            connect(prevBtn, &QToolButton::clicked, this,
+                    [seekToKey]() { seekToKey(false); });
+            connect(nextBtn, &QToolButton::clicked, this,
+                    [seekToKey]() { seekToKey(true); });
+
+            m_propLayout->addWidget(w);
+        }
+
+        // ── Mask Feather (keyframeable, px) ──────────────────────────────
+        {
+            auto* row = makeRow(tr("Mask Feather"), &mask.feather);
             auto* spin = createScrubby(0, 500, 0.5, 1, " px");
-            spin->setValue(static_cast<double>(mask.feather));
-            lay->addWidget(spin, 1);
-            connect(spin, &ScrubbySpinBox::valueScrubbed, this, [this, mi](double val) {
-                if (m_clip && mi < m_clip->maskCount()) {
-                    m_clip->masks()[mi].feather = static_cast<float>(val);
-                    emit maskChanged();
-                    emit propertyChanged();
-                }
-            });
-            connect(spin, &ScrubbySpinBox::valueCommitted, this, [this, mi](double oldVal, double newVal) {
-                if (!m_clip || !m_commandStack || mi >= m_clip->maskCount()) return;
-                Clip* clip = m_clip;
-                auto fOld = static_cast<float>(oldVal);
-                auto fNew = static_cast<float>(newVal);
-                m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-                    "Mask Feather",
-                    [clip, mi, fNew]() { if (mi < clip->maskCount()) clip->masks()[mi].feather = fNew; },
-                    [clip, mi, fOld]() { if (mi < clip->maskCount()) clip->masks()[mi].feather = fOld; }));
-            });
-            m_propLayout->addWidget(w);
+            spin->setValue(static_cast<double>(mask.feather.evaluate(curT)));
+            row->addValueWidget(spin);
+            m_propLayout->addWidget(row);
+            wireMaskParam(spin, effectId, mi, MaskParam::Feather, 1.0f);
         }
 
-        // â”€â”€ Mask Opacity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Mask Opacity (keyframeable, %) ───────────────────────────────
         {
-            auto* w = new QWidget(m_propContainer);
-            w->setFixedHeight(28);
-            auto* lay = new QHBoxLayout(w);
-            lay->setContentsMargins(36, 2, 6, 2);
-            lay->setSpacing(6);
-            auto* lbl = new QLabel("Mask Opacity", w);
-            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary))
-                .arg(Theme::typography().sizeXs));
-            lay->addWidget(lbl);
+            auto* row = makeRow(tr("Mask Opacity"), &mask.maskOpacity);
             auto* spin = createScrubby(0, 100, 0.5, 1, " %");
-            spin->setValue(static_cast<double>(mask.maskOpacity * 100.0f));
-            lay->addWidget(spin, 1);
-            connect(spin, &ScrubbySpinBox::valueScrubbed, this, [this, mi](double val) {
-                if (m_clip && mi < m_clip->maskCount()) {
-                    m_clip->masks()[mi].maskOpacity = static_cast<float>(val / 100.0);
-                    emit maskChanged();
-                    emit propertyChanged();
-                }
-            });
-            connect(spin, &ScrubbySpinBox::valueCommitted, this, [this, mi](double oldVal, double newVal) {
-                if (!m_clip || !m_commandStack || mi >= m_clip->maskCount()) return;
-                Clip* clip = m_clip;
-                auto fOld = static_cast<float>(oldVal / 100.0);
-                auto fNew = static_cast<float>(newVal / 100.0);
-                m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-                    "Mask Opacity",
-                    [clip, mi, fNew]() { if (mi < clip->maskCount()) clip->masks()[mi].maskOpacity = fNew; },
-                    [clip, mi, fOld]() { if (mi < clip->maskCount()) clip->masks()[mi].maskOpacity = fOld; }));
-            });
-            m_propLayout->addWidget(w);
+            spin->setValue(static_cast<double>(mask.maskOpacity.evaluate(curT) * 100.0f));
+            row->addValueWidget(spin);
+            m_propLayout->addWidget(row);
+            wireMaskParam(spin, effectId, mi, MaskParam::Opacity, 0.01f);
         }
 
-        // â”€â”€ Mask Expansion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Mask Expansion (keyframeable, px) ────────────────────────────
         {
-            auto* w = new QWidget(m_propContainer);
-            w->setFixedHeight(28);
-            auto* lay = new QHBoxLayout(w);
-            lay->setContentsMargins(36, 2, 6, 2);
-            lay->setSpacing(6);
-            auto* lbl = new QLabel("Mask Expansion", w);
-            lbl->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
-                .arg(Theme::hex(tc.textPrimary))
-                .arg(Theme::typography().sizeXs));
-            lay->addWidget(lbl);
+            auto* row = makeRow(tr("Mask Expansion"), &mask.expansion);
             auto* spin = createScrubby(-500, 500, 0.5, 1, " px");
-            spin->setValue(static_cast<double>(mask.expansion));
-            lay->addWidget(spin, 1);
-            connect(spin, &ScrubbySpinBox::valueScrubbed, this, [this, mi](double val) {
-                if (m_clip && mi < m_clip->maskCount()) {
-                    m_clip->masks()[mi].expansion = static_cast<float>(val);
-                    emit maskChanged();
-                    emit propertyChanged();
-                }
-            });
-            connect(spin, &ScrubbySpinBox::valueCommitted, this, [this, mi](double oldVal, double newVal) {
-                if (!m_clip || !m_commandStack || mi >= m_clip->maskCount()) return;
-                Clip* clip = m_clip;
-                auto fOld = static_cast<float>(oldVal);
-                auto fNew = static_cast<float>(newVal);
-                m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-                    "Mask Expansion",
-                    [clip, mi, fNew]() { if (mi < clip->maskCount()) clip->masks()[mi].expansion = fNew; },
-                    [clip, mi, fOld]() { if (mi < clip->maskCount()) clip->masks()[mi].expansion = fOld; }));
-            });
-            m_propLayout->addWidget(w);
+            spin->setValue(static_cast<double>(mask.expansion.evaluate(curT)));
+            row->addValueWidget(spin);
+            m_propLayout->addWidget(row);
+            wireMaskParam(spin, effectId, mi, MaskParam::Expansion, 1.0f);
         }
 
-        // â”€â”€ Inverted checkbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Inverted checkbox ────────────────────────────────────────────
         {
             auto* chk = new QCheckBox("Inverted", m_propContainer);
             chk->setChecked(mask.inverted);
@@ -641,22 +950,34 @@ void EffectControlsPanel::buildMaskUI(int& /*rowIdx*/)
                 "QCheckBox::indicator { width: 14px; height: 14px; }")
                 .arg(Theme::hex(tc.textPrimary))
                 .arg(Theme::typography().sizeXs));
-            connect(chk, &QCheckBox::toggled, this, [this, mi](bool checked) {
-                if (m_clip && mi < m_clip->maskCount()) {
-                    Clip* clip = m_clip;
-                    bool oldVal = !checked;
-                    bool newVal = checked;
-                    if (m_commandStack) {
-                        m_commandStack->execute(std::make_unique<LambdaCommand>(
-                            "Mask Inverted",
-                            [clip, mi, newVal]() { if (mi < clip->maskCount()) clip->masks()[mi].inverted = newVal; },
-                            [clip, mi, oldVal]() { if (mi < clip->maskCount()) clip->masks()[mi].inverted = oldVal; }));
-                    } else {
-                        m_clip->masks()[mi].inverted = checked;
-                    }
-                    emit maskChanged();
-                    emit propertyChanged();
+            connect(chk, &QCheckBox::toggled, this, [this, mi, effectId](bool checked) {
+                auto* list = maskListFor(effectId);
+                if (!list || mi >= list->size()) return;
+                Clip* clip = m_clip;
+                bool oldVal = !checked;
+                bool newVal = checked;
+                auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+                    if (effectId == 0) return &clip->masks();
+                    if (Effect* fx = clip->effects().effectById(effectId))
+                        return &fx->masks();
+                    return nullptr;
+                };
+                if (m_commandStack) {
+                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        "Mask Inverted",
+                        [resolveList, mi, newVal]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi].inverted = newVal;
+                        },
+                        [resolveList, mi, oldVal]() {
+                            auto* masks = resolveList();
+                            if (masks && mi < masks->size()) (*masks)[mi].inverted = oldVal;
+                        }));
+                } else {
+                    (*list)[mi].inverted = checked;
                 }
+                emit maskChanged();
+                emit propertyChanged();
             });
             m_propLayout->addWidget(chk);
         }

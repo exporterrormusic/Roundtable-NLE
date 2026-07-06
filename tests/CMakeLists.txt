@@ -117,6 +117,8 @@ add_roundtable_test(test_animation_cache LIBS roundtable_core)
 # creates a device at run time, so they stay headless-safe ("core" group).
 add_roundtable_test(test_media_source_service LIBS roundtable_gpu roundtable_core)
 add_roundtable_test(test_playback_scheduler   LIBS roundtable_gpu roundtable_core)
+# CPU-only mask rasterizer (lives in roundtable_gpu but needs no Vulkan)
+add_roundtable_test(test_mask_raster          LIBS roundtable_gpu roundtable_core)
 
 # GPU tests — need a real Vulkan device, so NOT in the headless CI "core" run.
 add_roundtable_test(test_decoder       LIBS roundtable_gpu roundtable_core GROUP gpu)

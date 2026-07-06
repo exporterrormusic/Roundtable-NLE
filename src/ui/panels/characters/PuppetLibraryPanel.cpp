@@ -3,8 +3,8 @@
  *
  * readOnly  : drag-only tree for the timeline Library dock.
  * editable  : SHOTS-style cascading editor — Character → Outfit → Action
- *             thumbnail columns, a Faces column (4 PNG drop slots), and a
- *             smooth live preview. No pop-up dialogs.
+ *             thumbnail columns, a Faces 2×2 matrix (mouth × eyes PNG drop
+ *             slots), and a smooth live preview. No pop-up dialogs.
  */
 
 #include "panels/characters/PuppetLibraryPanel.h"
@@ -19,6 +19,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QFont>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHash>
@@ -40,6 +41,7 @@
 #include <QPen>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSplitter>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -110,6 +112,35 @@ protected:
 private:
     int     m_index;
     QPixmap m_pix;
+};
+
+// ─── VAxisLabel — a slim vertical (rotated) caption for the faces matrix ──────
+// Used for the MOUTH CLOSED / MOUTH OPEN row axis so the 2×2 grid stays narrow.
+class VAxisLabel : public QWidget {
+public:
+    explicit VAxisLabel(const QString& text, QWidget* parent = nullptr)
+        : QWidget(parent), m_text(text)
+    {
+        setFixedWidth(16);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        QFont f = font();
+        f.setBold(true);
+        f.setPointSizeF(f.pointSizeF() * 0.82);
+        p.setFont(f);
+        p.setPen(Theme::colors().textTertiary);
+        p.translate(width() / 2.0, height() / 2.0);
+        p.rotate(-90);
+        p.drawText(QRect(-height() / 2, -width() / 2, height(), width()),
+                   Qt::AlignCenter, m_text);
+    }
+
+private:
+    QString m_text;
 };
 
 // ─── PuppetPreview — smooth animated preview (painter transforms) ────────────
@@ -406,7 +437,20 @@ void PuppetLibraryPanel::buildEditableUI()
 {
     auto* root = new QHBoxLayout(this);
     root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(8);
+    root->setSpacing(0);
+
+    // Columns live in a splitter so their widths are user-adjustable: drag the
+    // handle between any two columns to resize them. The preview pane absorbs
+    // the leftover space.
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    splitter->setObjectName(QStringLiteral("PuppetSplitter"));
+    splitter->setChildrenCollapsible(false);
+    splitter->setHandleWidth(8);
+    splitter->setStyleSheet(QStringLiteral(
+        "QSplitter#PuppetSplitter::handle:horizontal { background: transparent; }"
+        "QSplitter#PuppetSplitter::handle:horizontal:hover { background: %1; }")
+        .arg(Theme::hex(Theme::colors().borderLight)));
+    root->addWidget(splitter);
 
     const QString frameQss = QStringLiteral(
         "QFrame#PuppetCol { background: %1; border: 1px solid %2;"
@@ -418,19 +462,23 @@ void PuppetLibraryPanel::buildEditableUI()
         .arg(Theme::hex(Theme::colors().textPrimary));
 
     // Build one framed column (header + body layout). Returns the body layout so
-    // the caller can fill it; the frame is already added to `root`.
-    auto makeFrame = [&](const QString& title, int fixedW) -> QVBoxLayout* {
+    // the caller can fill it; the frame is already added to the splitter. The
+    // width passed in is only the *initial* hint — the user can drag the
+    // splitter handles to resize afterwards.
+    QList<int> colWidths;
+    auto makeFrame = [&](const QString& title, int initialW) -> QVBoxLayout* {
         auto* f = new QFrame;
         f->setObjectName(QStringLiteral("PuppetCol"));
         f->setStyleSheet(frameQss);
-        if (fixedW > 0) f->setFixedWidth(fixedW);
+        f->setMinimumWidth(96);   // floor so a column can't be dragged to nothing
         auto* v = new QVBoxLayout(f);
         v->setContentsMargins(6, 6, 6, 6);
         v->setSpacing(4);
         auto* lbl = new QLabel(title);
         lbl->setStyleSheet(titleQss);
         v->addWidget(lbl);
-        root->addWidget(f);
+        splitter->addWidget(f);
+        colWidths << (initialW > 0 ? initialW : 220);
         return v;
     };
 
@@ -468,32 +516,50 @@ void PuppetLibraryPanel::buildEditableUI()
         [this]() { const QString n = m_newActionEdit->text().trimmed();
                    if (!n.isEmpty()) { createAction(n); m_newActionEdit->clear(); } });
 
-    // Faces column — its own framed column, slots stacked vertically.
+    // Faces column — a labeled 2×2 matrix (mouth × eyes) so the four states
+    // explain themselves.  Columns = eyes open / closed, rows = mouth closed /
+    // open.  FaceSlot indices map straight onto the grid (PngPuppetClip::Face
+    // order): 0 = closed/open, 1 = closed/closed, 2 = open/open, 3 = open/closed
+    // → slot i sits at (row 1 + i/2, col 1 + i%2).
     {
-        auto* v = makeFrame(tr("Faces"), 170);
+        auto* v = makeFrame(tr("Faces"), 224);
+
+        const QString axisQss = QStringLiteral(
+            "font-size: 10px; font-weight: bold; letter-spacing: 1px;"
+            " color: %1; border: none; background: transparent;")
+            .arg(Theme::hex(Theme::colors().textTertiary));
+
+        auto* grid = new QGridLayout;
+        grid->setContentsMargins(0, 4, 0, 0);
+        grid->setHorizontalSpacing(6);
+        grid->setVerticalSpacing(6);
+
+        auto colHead = [&](const QString& t) {
+            auto* l = new QLabel(t);
+            l->setAlignment(Qt::AlignCenter);
+            l->setStyleSheet(axisQss);
+            return l;
+        };
+        grid->addWidget(colHead(tr("EYES OPEN")),   0, 1);
+        grid->addWidget(colHead(tr("EYES CLOSED")), 0, 2);
+        grid->addWidget(new VAxisLabel(tr("MOUTH CLOSED")), 1, 0);
+        grid->addWidget(new VAxisLabel(tr("MOUTH OPEN")),   2, 0);
+
         for (int i = 0; i < 4; ++i) {
             auto* slot = new FaceSlot(i);
             slot->onPick = [this](int idx, const QString& path) { setFaceImage(idx, path); };
+            slot->setToolTip(puppetlib::faceLabels()[static_cast<size_t>(i)]);
             m_faceSlots[static_cast<size_t>(i)] = slot;
-            v->addWidget(slot, 1);
-
-            auto* cap = new QLabel(puppetlib::faceLabels()[static_cast<size_t>(i)]);
-            cap->setWordWrap(true);
-            cap->setStyleSheet(QStringLiteral(
-                "font-size: 10px; color: #999; border: none; background: transparent;"));
-            v->addWidget(cap);
-
-            auto* addBtn = new QPushButton(tr("Add / Replace"));
-            addBtn->setStyleSheet(QStringLiteral("font-size: %1px; padding: 2px;")
-                .arg(Theme::typography().sizeXxs));
-            connect(addBtn, &QPushButton::clicked, this, [this, i]() {
-                const QString f = QFileDialog::getOpenFileName(
-                    this, tr("Choose face PNG"), QString(),
-                    tr("Images (*.png *.webp *.jpg *.jpeg)"));
-                if (!f.isEmpty()) setFaceImage(i, f);
-            });
-            v->addWidget(addBtn);
+            grid->addWidget(slot, 1 + i / 2, 1 + i % 2);
         }
+
+        grid->setColumnStretch(1, 1);
+        grid->setColumnStretch(2, 1);
+        grid->setRowStretch(1, 1);
+        grid->setRowStretch(2, 1);
+
+        v->addLayout(grid);
+        v->addStretch(0);
     }
 
     // Preview — its own framed pane (stretches), Talking toggle pinned top-right.
@@ -520,8 +586,15 @@ void PuppetLibraryPanel::buildEditableUI()
         g->addWidget(m_talkCheck, 1, 0, Qt::AlignTop | Qt::AlignRight);
 
         g->setRowStretch(1, 1);
-        root->addWidget(f, 1);
+        f->setMinimumWidth(160);
+        splitter->addWidget(f);
+        colWidths << 520;   // preview gets the lion's share initially
     }
+
+    // Preview pane absorbs any extra width when the whole panel resizes; the
+    // narrow columns keep their dragged sizes.
+    splitter->setStretchFactor(splitter->count() - 1, 1);
+    splitter->setSizes(colWidths);
 
     // ── Wiring ───────────────────────────────────────────────────────────────
     connect(m_charList, &QListWidget::currentRowChanged, this,

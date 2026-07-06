@@ -65,6 +65,8 @@
 #include <string>
 #include <vector>
 
+#include "timeline/OpacityMask.h"
+
 namespace rt {
 
 // Forward declarations
@@ -418,7 +420,10 @@ signals:
     void seekRequested(int64_t tick);
     void eyedropperRequested(size_t effectIdx);  // request eyedropper for Ultra Key color sampling
     void maskChanged();  // emitted when a mask is added, removed, or modified
-    void maskSelected(int maskIndex);  // emitted when user clicks a mask header to select it
+    /// Emitted when user clicks a mask header to select it for editing in
+    /// the Program Monitor. effectId==0 → clip opacity mask; otherwise the
+    /// id of the effect whose mask list contains the mask.
+    void maskSelected(int maskIndex, quint64 effectId);
     /// Emitted when an audio clip's volume/pan is scrubbed in the panel.
     /// Values are in engine units (linear gain, pan -1..+1). Listeners push
     /// these directly to AudioEngine so playback reflects the change live.
@@ -448,10 +453,29 @@ private:
     void buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Wire a single effect parameter spin box to live preview + undo commit
     void wireEffectParam(ScrubbySpinBox* spin, size_t effectIdx, size_t paramIdx);
-    /// Build mask parameter sub-sections for all masks on the current clip
-    void buildMaskUI(int& rowIdx);
-    /// Add a new mask to the current clip
-    void addMask(uint8_t shapeType);
+    /// Build mask parameter sub-sections for one mask list (the clip's
+    /// opacity masks when effectId==0, or an effect's masks).
+    void buildMaskUI(std::vector<OpacityMask>& maskList, quint64 effectId,
+                     int& rowIdx);
+    /// Add a new mask to the clip (effectId==0) or to an effect's mask list.
+    void addMask(uint8_t shapeType, quint64 effectId = 0);
+    /// Resolve a mask list by owner id: nullptr when the owner is gone.
+    [[nodiscard]] std::vector<OpacityMask>* maskListFor(quint64 effectId) const;
+
+public:
+    /// Which keyframeable mask scalar a spin box edits. Public so file-scope
+    /// helpers in the implementation can name it.
+    enum class MaskParam : uint8_t { Feather, Opacity, Expansion };
+
+private:
+    /// Wire a mask scalar spin box (live preview + stopwatch-aware undo).
+    /// `scale` converts spin units → stored units (e.g. 0.01 for percent).
+    void wireMaskParam(ScrubbySpinBox* spin, quint64 effectId, size_t maskIdx,
+                       MaskParam which, float scale);
+    /// Premiere "track mask forward/backward": follows the mask's content
+    /// through the clip's source video, writing one Mask Path keyframe per
+    /// frame (single undo command). Video clips only.
+    void trackMask(quint64 effectId, size_t maskIdx, bool forward);
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;

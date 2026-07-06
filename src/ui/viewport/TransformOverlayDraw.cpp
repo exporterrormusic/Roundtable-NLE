@@ -466,6 +466,11 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
 
     for (size_t maskLoopIdx = 0; maskLoopIdx < m_masks->size(); ++maskLoopIdx) {
         const auto& mask = (*m_masks)[maskLoopIdx];
+        // Evaluate geometry + keyframeable scalars at the current time so
+        // animated masks draw where the renderer puts them.
+        const MaskGeometry geo = mask.geometryAt(m_maskTime);
+        const float maskFeather   = mask.feather.evaluate(m_maskTime);
+        const float maskExpansion = mask.expansion.evaluate(m_maskTime);
         int mi = static_cast<int>(maskLoopIdx);
         bool isActive = (m_activeMaskIndex < 0 || m_activeMaskIndex == mi);
         bool isMaskHovered = (mi == m_hoverMaskIndex);
@@ -484,29 +489,29 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
         };
 
         // Expansion offset in widget pixels (averaged for non-square pixels)
-        double expW = static_cast<double>(mask.expansion) * pxToWX;
-        double expH = static_cast<double>(mask.expansion) * pxToWY;
+        double expW = static_cast<double>(maskExpansion) * pxToWX;
+        double expH = static_cast<double>(maskExpansion) * pxToWY;
         // Feather offset (additional, outside the expanded boundary)
-        double feathW = static_cast<double>(mask.feather) * pxToWX;
-        double feathH = static_cast<double>(mask.feather) * pxToWY;
+        double feathW = static_cast<double>(maskFeather) * pxToWX;
+        double feathH = static_cast<double>(maskFeather) * pxToWY;
 
         if (mask.shape == MaskShape::Ellipse) {
-            QPointF center = toWidget(mask.centerX, mask.centerY);
-            double rw = static_cast<double>(mask.width)  * fr.width()  * 0.5 + expW;
-            double rh = static_cast<double>(mask.height) * fr.height() * 0.5 + expH;
+            QPointF center = toWidget(geo.centerX, geo.centerY);
+            double rw = static_cast<double>(geo.width)  * fr.width()  * 0.5 + expW;
+            double rh = static_cast<double>(geo.height) * fr.height() * 0.5 + expH;
             rw = std::max(rw, 0.0);
             rh = std::max(rh, 0.0);
 
             painter.save();
             painter.translate(center);
-            painter.rotate(static_cast<double>(mask.rotation));
+            painter.rotate(static_cast<double>(geo.rotation));
 
             // Main expanded boundary
             painter.setPen(maskPen);
             painter.drawEllipse(QPointF(0, 0), rw, rh);
 
             // Feather boundary (dotted, outside the main boundary)
-            if (mask.feather > 0.01f) {
+            if (maskFeather > 0.01f) {
                 double frw = rw + feathW;
                 double frh = rh + feathH;
                 painter.setPen(featherPen);
@@ -532,15 +537,15 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
             painter.restore();
         }
         else if (mask.shape == MaskShape::Rectangle) {
-            QPointF center = toWidget(mask.centerX, mask.centerY);
-            double hw = static_cast<double>(mask.width)  * fr.width()  * 0.5 + expW;
-            double hh = static_cast<double>(mask.height) * fr.height() * 0.5 + expH;
+            QPointF center = toWidget(geo.centerX, geo.centerY);
+            double hw = static_cast<double>(geo.width)  * fr.width()  * 0.5 + expW;
+            double hh = static_cast<double>(geo.height) * fr.height() * 0.5 + expH;
             hw = std::max(hw, 0.0);
             hh = std::max(hh, 0.0);
 
             painter.save();
             painter.translate(center);
-            painter.rotate(static_cast<double>(mask.rotation));
+            painter.rotate(static_cast<double>(geo.rotation));
 
             // Main expanded boundary
             painter.setPen(maskPen);
@@ -548,7 +553,7 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
             painter.drawRect(rect);
 
             // Feather boundary (dotted)
-            if (mask.feather > 0.01f) {
+            if (maskFeather > 0.01f) {
                 double fhw = hw + feathW;
                 double fhh = hh + feathH;
                 painter.setPen(featherPen);
@@ -590,10 +595,10 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
             }
             painter.restore();
         }
-        else if (mask.shape == MaskShape::FreeDrawBezier && mask.vertices.size() >= 2) {
+        else if (mask.shape == MaskShape::FreeDrawBezier && geo.vertices.size() >= 2) {
             // Draw bezier path
             QPainterPath path;
-            const auto& verts = mask.vertices;
+            const auto& verts = geo.vertices;
             QPointF first = toWidget(verts[0].x, verts[0].y);
             path.moveTo(first);
             for (size_t vi = 0; vi < verts.size(); ++vi) {
@@ -609,7 +614,7 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
             painter.drawPath(path);
 
             // Feather outline for bezier (stroked expansion of path)
-            if (mask.feather > 0.01f) {
+            if (maskFeather > 0.01f) {
                 QPainterPathStroker stroker;
                 double avgFeath = (feathW + feathH) * 0.5;
                 stroker.setWidth(avgFeath * 2.0);

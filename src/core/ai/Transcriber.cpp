@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -198,7 +199,30 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
     cparams.use_gpu = false;
 #endif
 
+    // DTW (cross-attention) token-level timestamps: far more accurate than the
+    // heuristic t0/t1 — the heuristic's token ENDS run long before silence,
+    // which pushed AudioSync clip out-points late.  The alignment-heads preset
+    // must match the model, so map it from the requested size; if init fails
+    // with DTW (e.g. a custom/quantized model the preset doesn't fit), retry
+    // without so transcription still works on the heuristic timestamps.
+    cparams.dtw_token_timestamps = true;
+    switch (size) {
+    case WhisperModelSize::Tiny:    cparams.dtw_aheads_preset = WHISPER_AHEADS_TINY;     break;
+    case WhisperModelSize::Base:    cparams.dtw_aheads_preset = WHISPER_AHEADS_BASE;     break;
+    case WhisperModelSize::Small:   cparams.dtw_aheads_preset = WHISPER_AHEADS_SMALL;    break;
+    case WhisperModelSize::Medium:  cparams.dtw_aheads_preset = WHISPER_AHEADS_MEDIUM;   break;
+    case WhisperModelSize::LargeV2: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V2; break;
+    case WhisperModelSize::LargeV3: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3; break;
+    }
+
     m_impl->ctx = whisper_init_from_file_with_params(modelFile.c_str(), cparams);
+    if (!m_impl->ctx) {
+        spdlog::warn("Transcriber: init with DTW timestamps failed for '{}' — retrying without",
+                     modelFile);
+        cparams.dtw_token_timestamps = false;
+        cparams.dtw_aheads_preset    = WHISPER_AHEADS_NONE;
+        m_impl->ctx = whisper_init_from_file_with_params(modelFile.c_str(), cparams);
+    }
     if (!m_impl->ctx) {
         m_impl->lastError = "Failed to load whisper model: " + modelFile;
         spdlog::error("Transcriber: {}", m_impl->lastError);
@@ -344,6 +368,9 @@ TranscriptionResult Transcriber::transcribe(
     wparams.no_timestamps    = false;
     wparams.token_timestamps = true;
     wparams.max_len          = 0; // No max segment length
+    wparams.suppress_nst     = true; // no "(sighs)"-style non-speech tokens —
+                                     // they became junk words that skewed the
+                                     // script alignment's clip boundaries
 
     // Wire whisper's built-in progress callback so the bar advances smoothly.
     // Whisper reports 0-100 int; we map that to 10-95 float range
@@ -378,6 +405,7 @@ TranscriptionResult Transcriber::transcribe(
     }
 
     int nSegments = whisper_full_n_segments(m_impl->ctx);
+    int64_t prevDtw = -1;   // emit time of the previous token (global to the file)
     for (int i = 0; i < nSegments; ++i) {
         TranscriptionSegment seg;
         seg.id    = i;
@@ -385,19 +413,55 @@ TranscriptionResult Transcriber::transcribe(
         seg.start = whisper_full_get_segment_t0(m_impl->ctx, i) / 100.0;
         seg.end   = whisper_full_get_segment_t1(m_impl->ctx, i) / 100.0;
 
+        // Merge whisper's sub-word TOKENS into whole words (a token whose text
+        // starts with a space begins a new word; punctuation/continuations
+        // attach to the current one).  Raw tokens made poor "words": a script
+        // word like "consider" arrived as "cons"+"ider", which could never
+        // text-match during alignment and depressed clip confidence.
+        //
+        // Timestamps prefer DTW when computed (t_dtw = the moment the token was
+        // emitted, ≈ its end — accurate) over the heuristic t0/t1, whose ends
+        // run long before silence.  A token's start is its heuristic t0 bounded
+        // to [previous token's emit, own end] so gaps between words survive but
+        // gross early/late starts cannot.
+        WordSegment cur;
+        bool haveCur = false;
+        auto flushWord = [&]() {
+            if (haveCur && !cur.word.empty()) {
+                if (cur.end <= cur.start) cur.end = cur.start + 0.01;
+                seg.words.push_back(std::move(cur));
+            }
+            cur = WordSegment{};
+            haveCur = false;
+        };
         int nTokens = whisper_full_n_tokens(m_impl->ctx, i);
         for (int j = 0; j < nTokens; ++j) {
             auto td = whisper_full_get_token_data(m_impl->ctx, i, j);
             const char* tokenText = whisper_full_get_token_text(m_impl->ctx, i, j);
-            if (tokenText && tokenText[0] != '[') { // Skip special tokens
-                WordSegment w;
-                w.word        = tokenText;
-                w.start       = td.t0 / 100.0;
-                w.end         = td.t1 / 100.0;
-                w.probability = td.p;
-                seg.words.push_back(std::move(w));
+            if (!tokenText || tokenText[0] == '\0' || tokenText[0] == '[')
+                continue; // special tokens
+            double t0 = td.t0 / 100.0;
+            double t1 = td.t1 / 100.0;
+            if (td.t_dtw >= 0) {
+                t1 = td.t_dtw / 100.0;
+                const double lo = (prevDtw >= 0) ? prevDtw / 100.0 : seg.start;
+                t0 = std::min(std::max(t0, lo), t1);
+                prevDtw = td.t_dtw;
+            }
+            if (!haveCur || tokenText[0] == ' ') {
+                flushWord();
+                cur.word        = tokenText;
+                cur.start       = t0;
+                cur.end         = t1;
+                cur.probability = td.p;
+                haveCur = true;
+            } else {
+                cur.word += tokenText;
+                cur.end   = std::max(cur.end, t1);
+                cur.probability = std::min(cur.probability, td.p);
             }
         }
+        flushWord();
 
         // Semantic split into smaller pieces
         semanticSplit(seg, result.segments);

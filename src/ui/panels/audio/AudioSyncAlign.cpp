@@ -80,12 +80,22 @@ static void refineSpeechBounds(const std::vector<float>& samples, int sr,
 
     // Merge runs separated by a SHORT gap (natural intra-line pauses); a longer
     // gap marks a real break (breath / next-speaker bleed / silence) and splits
-    // the body.  ~0.40 s in 10 ms hops.
+    // the body.  ~0.40 s in 10 ms hops.  Never bridge across a word-span edge,
+    // though: a separated run lying wholly after the last word (or a body lying
+    // wholly before the first) is a breath/lip-smack, and merging it used to
+    // glue it onto the speech so the overlap filter below could no longer drop
+    // it — the main "out point too late" mechanism.  ±0.10 s tolerance since
+    // even DTW word edges are only good to a few hops.
     const int mergeGap = 40;
     std::vector<std::pair<int,int>> body;
     body.push_back(runs.front());
     for (size_t r = 1; r < runs.size(); ++r) {
-        if (runs[r].first - body.back().second <= mergeGap) body.back().second = runs[r].second;
+        const double backE = static_cast<double>(pos[static_cast<size_t>(body.back().second)] + win) / sr;
+        const double runS  = static_cast<double>(pos[static_cast<size_t>(runs[r].first)]) / sr;
+        const bool acrossEdge = backE < wordStart - 0.10   // body so far = pre-word junk
+                             || runS  > wordEnd   + 0.10;  // incoming run = post-word junk
+        if (!acrossEdge && runs[r].first - body.back().second <= mergeGap)
+            body.back().second = runs[r].second;
         else body.push_back(runs[r]);
     }
 
@@ -288,65 +298,96 @@ bool AudioSync::alignClipsToScript()
         }
         if (wordLine[0] < 0) continue;   // nothing aligned for this file
 
-        // Group consecutive words by line → one clip per (line, file).
-        bool madeClip = false;
-        std::vector<int> fileLines;   // diag: lines this file produced clips on
+        // Group consecutive words by line.  Collect ALL groups first (including
+        // confirmed / low-confidence ones) so each clip can be clamped against
+        // its NEIGHBOURS — the previous/next line's words in the same file.
+        // Without the clamp, the loose word edges plus the generous refine
+        // window let a clip's tail run into the next line whenever the pause
+        // between lines was shorter than the window (out point too late), and
+        // let its head swallow the previous line's tail (in point too early).
+        struct Group { int ln, i, j, fa, la, hits; };
+        std::vector<Group> groups;
         for (int i = 0; i < n; ) {
             const int ln = wordLine[i];
             if (ln < 0) { ++i; continue; }
             int j = i;
             while (j < n && wordLine[j] == ln) ++j;
-            if (!confirmedLines.count(ln)) {
-                // Confidence = COVERAGE of the script line: how many of the
-                // line's words this clip actually matched, over the line's word
-                // count.  (NOT matched/clip-words — that wrongly rated a 1-word
-                // fragment 1.00 and let it beat the real full-line take in dedup.)
-                // fa/la = first/last word that truly ALIGNED to this line; the
-                // clip boundary uses these, NOT the trailing/leading FILLER words
-                // (breaths/junk) that merely inherited the line — those stretched
-                // the clip end out into the dead space before the next line.
-                int hits = 0, fa = -1, la = -1;
-                for (int k = i; k < j; ++k) {
-                    hits += wordHit[k];
-                    if (wordAligned[k]) { if (fa < 0) fa = k; la = k; }
-                }
-                const int   lwc  = lineWordCount.count(ln) ? std::max(1, lineWordCount[ln]) : (j - i);
-                const float conf = std::min(1.0f, static_cast<float>(hits) / static_cast<float>(std::max(1, lwc)));
-                if (fa >= 0 && conf >= 0.15f) {   // need a real anchor + cover enough of the line
-                    fileLines.push_back(ln);
-                    const ScriptLine* sl = lineByNum.count(ln) ? lineByNum[ln] : nullptr;
-                    SyncClip clip;
-                    clip.sourceFile       = file;
-                    clip.character        = charName;
-                    // Bound to the aligned-word extent, but give the connected-body
-                    // refine a GENEROUS window each side so it can recover an onset
-                    // whisper timed late and find the true speech end.  The refine
-                    // locks onto the line's connected segment, so this extra room
-                    // doesn't add dead space (disconnected breath/bleed is dropped).
-                    clip.start            = std::max(0.0, W[fa].start - 0.25);
-                    clip.end              = W[la].end + 0.20;
-                    const double wSpanS = W[fa].start, wSpanE = W[la].end;  // diag
-                    // Snap the (loose) word-edge boundaries to the actual speech.
-                    if (auto as = m_audioSamples.find(file); as != m_audioSamples.end())
-                        refineSpeechBounds(as->second.samples,
-                                           static_cast<int>(as->second.sampleRate),
-                                           clip.start, clip.end, wSpanS, wSpanE);
-                    clip.transcript       = sl ? sl->dialogue : std::string();
-                    clip.editedText       = clip.transcript;
-                    clip.scriptLineNumber = ln;
-                    clip.scriptSegment    = sl ? (sl->character + ": " + sl->dialogue) : std::string();
-                    clip.matchState       = 1;      // tentative — user reviews/confirms
-                    clip.confidence       = conf;
-                    if (charName == "Trony" || charName == "Kilo")
-                        spdlog::warn("[ALIGN-CLIP] {} line={} nw={} aligned=[{},{}] span=[{:.2f},{:.2f}] "
-                                     "final=[{:.2f},{:.2f}] conf={:.2f} '{}'..'{}'",
-                                     charName, ln, j - i, la - fa + 1, hits, wSpanS, wSpanE,
-                                     clip.start, clip.end, conf, W[fa].w, W[la].w);
-                    result.push_back(std::move(clip));
-                    madeClip = true;
-                }
+            // fa/la = first/last word that truly ALIGNED to this line; the clip
+            // boundary uses these, NOT the trailing/leading FILLER words
+            // (breaths/junk) that merely inherited the line — those stretched
+            // the clip end out into the dead space before the next line.
+            int hits = 0, fa = -1, la = -1;
+            for (int k = i; k < j; ++k) {
+                hits += wordHit[k];
+                if (wordAligned[k]) { if (fa < 0) fa = k; la = k; }
             }
+            if (fa >= 0) groups.push_back({ ln, i, j, fa, la, hits });
             i = j;
+        }
+
+        // One clip per (line, file), bounded by the adjacent groups.
+        bool madeClip = false;
+        std::vector<int> fileLines;   // diag: lines this file produced clips on
+        for (size_t gi = 0; gi < groups.size(); ++gi) {
+            const Group& g = groups[gi];
+            if (confirmedLines.count(g.ln)) continue;
+            // Confidence = COVERAGE of the script line: how many of the
+            // line's words this clip actually matched, over the line's word
+            // count.  (NOT matched/clip-words — that wrongly rated a 1-word
+            // fragment 1.00 and let it beat the real full-line take in dedup.)
+            const int   lwc  = lineWordCount.count(g.ln) ? std::max(1, lineWordCount[g.ln]) : (g.j - g.i);
+            const float conf = std::min(1.0f, static_cast<float>(g.hits) / static_cast<float>(std::max(1, lwc)));
+            if (conf < 0.15f) continue;   // need to cover enough of the line
+
+            fileLines.push_back(g.ln);
+            const ScriptLine* sl = lineByNum.count(g.ln) ? lineByNum[g.ln] : nullptr;
+            SyncClip clip;
+            clip.sourceFile       = file;
+            clip.character        = charName;
+            // Bound to the aligned-word extent, but give the connected-body
+            // refine a GENEROUS window each side so it can recover an onset
+            // whisper timed late and find the true speech end.  The refine
+            // locks onto the line's connected segment, so this extra room
+            // doesn't add dead space (disconnected breath/bleed is dropped).
+            clip.start            = std::max(0.0, W[g.fa].start - 0.25);
+            clip.end              = W[g.la].end + 0.20;
+            // Neighbour clamp: the window may not cross into the adjacent
+            // line's words.  Midpoint of the gap when the lines sit closer
+            // than the margin allows; and the head clamp never moves past
+            // this line's own first word.
+            if (gi > 0) {
+                const double prevEnd = W[groups[gi - 1].la].end;
+                double lim = std::min(prevEnd + 0.02, 0.5 * (prevEnd + W[g.fa].start));
+                lim = std::min(lim, W[g.fa].start);
+                clip.start = std::max(clip.start, lim);
+            }
+            if (gi + 1 < groups.size()) {
+                const double nextStart = W[groups[gi + 1].fa].start;
+                const double lim = std::max(nextStart - 0.02, 0.5 * (W[g.la].end + nextStart));
+                clip.end = std::min(clip.end, lim);
+            }
+            if (clip.end < clip.start + 0.05) clip.end = clip.start + 0.05;
+            // Word span for the refine's overlap test, kept inside the window.
+            const double wSpanS = std::max(W[g.fa].start, clip.start);
+            const double wSpanE = std::max(wSpanS, std::min(W[g.la].end, clip.end));
+            // Snap the (loose) word-edge boundaries to the actual speech.
+            if (auto as = m_audioSamples.find(file); as != m_audioSamples.end())
+                refineSpeechBounds(as->second.samples,
+                                   static_cast<int>(as->second.sampleRate),
+                                   clip.start, clip.end, wSpanS, wSpanE);
+            clip.transcript       = sl ? sl->dialogue : std::string();
+            clip.editedText       = clip.transcript;
+            clip.scriptLineNumber = g.ln;
+            clip.scriptSegment    = sl ? (sl->character + ": " + sl->dialogue) : std::string();
+            clip.matchState       = 1;      // tentative — user reviews/confirms
+            clip.confidence       = conf;
+            if (charName == "Trony" || charName == "Kilo")
+                spdlog::warn("[ALIGN-CLIP] {} line={} nw={} aligned=[{},{}] span=[{:.2f},{:.2f}] "
+                             "final=[{:.2f},{:.2f}] conf={:.2f} '{}'..'{}'",
+                             charName, g.ln, g.j - g.i, g.la - g.fa + 1, g.hits, wSpanS, wSpanE,
+                             clip.start, clip.end, conf, W[g.fa].w, W[g.la].w);
+            result.push_back(std::move(clip));
+            madeClip = true;
         }
         if (madeClip) {
             alignedFiles.insert(file);

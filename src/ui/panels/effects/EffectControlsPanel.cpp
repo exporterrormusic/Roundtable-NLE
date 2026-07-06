@@ -1183,7 +1183,7 @@ void EffectControlsPanel::copySelectedEffect()
     if (m_selectedEffectIndex < 0 || !m_clip) return;
     size_t idx = static_cast<size_t>(m_selectedEffectIndex);
     if (idx >= m_clip->effects().effectCount()) return;
-    m_copiedEffect = m_clip->effects().effect(idx).clone();
+    m_copiedEffect = m_clip->effects().effect(idx).cloneWithMasks();
     spdlog::info("EffectControlsPanel: copied effect '{}'",
                  m_copiedEffect->name());
 }
@@ -1205,7 +1205,7 @@ void EffectControlsPanel::pasteEffect()
         return;
     }
 
-    auto cloned = m_copiedEffect->clone();
+    auto cloned = m_copiedEffect->cloneWithMasks();
     m_commandStack->execute(
         std::make_unique<AddEffectCommand>(
             &m_clip->effects(), std::move(cloned),
@@ -1259,12 +1259,17 @@ bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
             QVariant maskIdxVar = w->property("maskIndex");
             if (maskIdxVar.isValid()) {
                 int clickedMask = maskIdxVar.toInt();
-                emit maskSelected(clickedMask);
+                quint64 clickedFxId =
+                    w->property("maskEffectId").toULongLong();
+                emit maskSelected(clickedMask, clickedFxId);
                 // Highlight selected mask header, dim others
                 for (auto& sec : m_sectionArrows) {
                     QVariant v = sec.header->property("maskIndex");
                     if (v.isValid()) {
-                        bool selected = (v.toInt() == clickedMask);
+                        bool selected =
+                            (v.toInt() == clickedMask &&
+                             sec.header->property("maskEffectId").toULongLong()
+                                 == clickedFxId);
                         sec.header->setStyleSheet(QStringLiteral(
                             "background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2;")
                             .arg(Theme::hex(selected ? tc.accentDim : tc.surface2),

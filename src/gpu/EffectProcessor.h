@@ -90,9 +90,15 @@ public:
 
     /// Apply effects from a snapshot (evaluated EffectStack) to a source image.
     /// Records commands into the provided command buffer.
+    ///
+    /// `effectMasks` (optional) is parallel to `effects`: when entry i has a
+    /// non-null imageView, effect i is masked — after its dispatch a mix pass
+    /// blends original/effected by the mask's alpha (Premiere Pro behaviour:
+    /// masks on an effect limit where the effect applies).
     bool process(VkCommandBuffer cmd,
                  const VkDescriptorImageInfo& sourceImage,
-                 const std::vector<EffectStack::EffectSnapshot>& effects);
+                 const std::vector<EffectStack::EffectSnapshot>& effects,
+                 const std::vector<VkDescriptorImageInfo>* effectMasks = nullptr);
 
     /// Synchronous version â€” creates its own command buffer.
     bool processSync(const VkDescriptorImageInfo& sourceImage,
@@ -157,6 +163,14 @@ private:
     /// Copy source storage image into target — used to bypass effects.
     void copyImage(VkCommandBuffer cmd, int sourceIdx, int targetIdx);
 
+    /// Blend original/effected by an effect mask (Premiere effect masks).
+    /// Reads+writes storage[targetIdx] in place; samples `origInfo` and
+    /// `maskInfo`. Claims one slot of the mask-mix descriptor ring.
+    void dispatchMaskMix(VkCommandBuffer cmd,
+                         const VkDescriptorImageInfo& origInfo,
+                         const VkDescriptorImageInfo& maskInfo,
+                         int targetIdx);
+
     VkPipeline getPipeline(EffectType type) const;
 
     // â”€â”€ Vulkan handles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -206,6 +220,9 @@ private:
     VkPipeline       m_beatShakePipeline{VK_NULL_HANDLE};
     VkPipeline       m_beatChromaPipeline{VK_NULL_HANDLE};
     VkPipeline       m_beatDropPipeline{VK_NULL_HANDLE};
+    // Effect-mask mix (original/effected blend by rasterized mask alpha)
+    VkPipeline       m_maskMixPipeline{VK_NULL_HANDLE};
+    VkPipelineLayout m_maskMixPipelineLayout{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
 
     // Descriptors
@@ -239,6 +256,14 @@ private:
     uint32_t        m_descriptorRingCursor{0};
     VkDescriptorSet m_curSourceSet{VK_NULL_HANDLE};       // slot chosen by current process()
     VkDescriptorSet m_curLutSet{VK_NULL_HANDLE};
+
+    // Mask-mix descriptor ring (LUT layout: storage + 2 samplers). Claimed
+    // PER MASKED-EFFECT DISPATCH (not per process() call) — a chain can
+    // contain several masked effects and each dispatch needs its own
+    // immutable bindings while recorded/in-flight, same reasoning as the
+    // source ring above.
+    std::vector<VkDescriptorSet> m_maskMixDescriptorSets;
+    uint32_t        m_maskMixRingCursor{0};
 
     // Placeholder texture + LUT 3D texture
     Texture m_placeholderTexture;

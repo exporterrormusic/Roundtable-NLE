@@ -149,7 +149,9 @@ void EffectProcessor::shutdown()
         m_descriptorSets[1]   = VK_NULL_HANDLE;
         m_sourceDescriptorSets.clear();
         m_lutDescriptorSets.clear();
+        m_maskMixDescriptorSets.clear();
         m_descriptorRingCursor = 0;
+        m_maskMixRingCursor   = 0;
         m_curSourceSet        = VK_NULL_HANDLE;
         m_curLutSet           = VK_NULL_HANDLE;
     }
@@ -181,6 +183,8 @@ void EffectProcessor::shutdown()
     m_colorGradingPipeline   = VK_NULL_HANDLE;
     m_otsPipeline            = VK_NULL_HANDLE;
     m_flipPipeline           = VK_NULL_HANDLE;
+    m_maskMixPipeline        = VK_NULL_HANDLE;
+    m_maskMixPipelineLayout  = VK_NULL_HANDLE;
     m_pipelineLayout       = VK_NULL_HANDLE;
 
     // Storage textures + placeholder
@@ -202,7 +206,8 @@ void EffectProcessor::shutdown()
 
 bool EffectProcessor::process(VkCommandBuffer cmd,
                               const VkDescriptorImageInfo& sourceImage,
-                              const std::vector<EffectStack::EffectSnapshot>& effects)
+                              const std::vector<EffectStack::EffectSnapshot>& effects,
+                              const std::vector<VkDescriptorImageInfo>* effectMasks)
 {
     if (!m_initialized) return false;
     if (effects.empty()) return true;
@@ -260,8 +265,35 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
     int sourceIdx = -1;  // -1 = use external source via the current ring slot
     int targetIdx = 0;
 
+    // The external source info, normalized for shader read — needed as the
+    // "original" input when the FIRST effect in the chain is masked.
+    VkDescriptorImageInfo externalSrc = sourceImage;
+    if (externalSrc.imageLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+        externalSrc.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     for (size_t i = 0; i < effects.size(); ++i) {
         const auto& snap = effects[i];
+
+        // Premiere effect masks: capture this effect's input so the mix
+        // pass can blend original/effected after the dispatch.
+        const VkDescriptorImageInfo* maskInfo = nullptr;
+        if (effectMasks && i < effectMasks->size() &&
+            (*effectMasks)[i].imageView != VK_NULL_HANDLE &&
+            m_maskMixPipeline != VK_NULL_HANDLE)
+        {
+            maskInfo = &(*effectMasks)[i];
+        }
+        VkDescriptorImageInfo origInfo{};
+        if (maskInfo) {
+            if (sourceIdx < 0) {
+                origInfo = externalSrc;
+            } else {
+                origInfo.sampler     = m_storageTextures[sourceIdx].sampler();
+                origInfo.imageView   = m_storageTextures[sourceIdx].imageView();
+                origInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            }
+        }
+        int resultIdx = -1;  // storage index holding this effect's output
 
         // Ultra Key — prefer light (no cleanup), then combined, fall back to 3-pass
         if (snap.type == EffectType::ChromaKey &&
@@ -277,8 +309,10 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
                 copyImage(cmd, sourceIdx, targetIdx);
                 sourceIdx = targetIdx;
                 targetIdx = 1 - targetIdx;
+                maskInfo = nullptr;  // passthrough — mix would be a no-op
             } else {
                 int finalTarget = dispatchUltraKey(cmd, snap.params, sourceIdx, targetIdx);
+                resultIdx = finalTarget;
                 sourceIdx = finalTarget;
                 targetIdx = 1 - finalTarget;
             }
@@ -286,11 +320,16 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
         else if (!dispatchEffect(cmd, snap.type, snap.params, sourceIdx, targetIdx)) {
             spdlog::warn("EffectProcessor: failed to dispatch effect type {}",
                          static_cast<int>(snap.type));
+            maskInfo = nullptr;  // nothing was applied — nothing to mask
         } else {
+            resultIdx = targetIdx;
             // Ping-pong
             sourceIdx = targetIdx;
             targetIdx = 1 - targetIdx;
         }
+
+        if (maskInfo && resultIdx >= 0)
+            dispatchMaskMix(cmd, origInfo, *maskInfo, resultIdx);
     }
 
     // Timestamp end
@@ -753,15 +792,16 @@ bool EffectProcessor::createDescriptorResources()
     //   LUT ring    (kDescriptorRing LUT-layout sets)
     //   main set = 1 storage + 1 sampler ; LUT set = 1 storage + 2 samplers.
     // See EffectProcessor.h (m_sourceDescriptorSets) for why the rings exist.
-    const uint32_t kMainSets = 2u + kDescriptorRing;   // ping-pong + source ring
-    const uint32_t kLutSets  = kDescriptorRing;
-    const uint32_t kTotalSets = kMainSets + kLutSets;
+    const uint32_t kMainSets    = 2u + kDescriptorRing;   // ping-pong + source ring
+    const uint32_t kLutSets     = kDescriptorRing;
+    const uint32_t kMaskMixSets = kDescriptorRing;         // effect-mask mix ring
+    const uint32_t kTotalSets   = kMainSets + kLutSets + kMaskMixSets;
 
     VkDescriptorPoolSize poolSizes[2]{};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = kMainSets + kLutSets;          // 1 storage per set
+    poolSizes[0].descriptorCount = kMainSets + kLutSets + kMaskMixSets;   // 1 storage per set
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = kMainSets + 2u * kLutSets;     // main:1, LUT:2
+    poolSizes[1].descriptorCount = kMainSets + 2u * (kLutSets + kMaskMixSets); // main:1, LUT/mix:2
 
     VkDescriptorPoolCreateInfo poolCI{};
     poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -815,6 +855,23 @@ bool EffectProcessor::createDescriptorResources()
         return false;
     }
     m_descriptorRingCursor = 0;
+
+    // Allocate the mask-mix ring (LUT layout: storage + 2 samplers).
+    std::vector<VkDescriptorSetLayout> mixLayouts(kMaskMixSets, m_lutDescriptorSetLayout);
+    m_maskMixDescriptorSets.assign(kMaskMixSets, VK_NULL_HANDLE);
+    VkDescriptorSetAllocateInfo mixAllocInfo{};
+    mixAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    mixAllocInfo.descriptorPool     = m_descriptorPool;
+    mixAllocInfo.descriptorSetCount = kMaskMixSets;
+    mixAllocInfo.pSetLayouts        = mixLayouts.data();
+
+    if (vkAllocateDescriptorSets(dev, &mixAllocInfo,
+                                 m_maskMixDescriptorSets.data()) != VK_SUCCESS) {
+        spdlog::error("EffectProcessor: Failed to allocate {} mask-mix descriptor sets "
+                      "(pool maxSets={})", kMaskMixSets, poolCI.maxSets);
+        return false;
+    }
+    m_maskMixRingCursor = 0;
 
     // â”€â”€ Initialize descriptor sets for the ping-pong pair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Each set has:
@@ -897,9 +954,17 @@ void EffectProcessor::initDescriptorRingBindings()
         vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     }
 
-    // LUT ring: binding 0 = output, binding 1 = placeholder, binding 2 =
-    // placeholder.  dispatchEffect rewrites all three per LUT dispatch.
-    for (VkDescriptorSet set : m_lutDescriptorSets) {
+    // LUT + mask-mix rings: binding 0 = output, binding 1 = placeholder,
+    // binding 2 = placeholder.  dispatchEffect / dispatchMaskMix rewrite
+    // all three per dispatch.
+    std::vector<VkDescriptorSet> threeBindingSets;
+    threeBindingSets.reserve(m_lutDescriptorSets.size() +
+                             m_maskMixDescriptorSets.size());
+    threeBindingSets.insert(threeBindingSets.end(),
+                            m_lutDescriptorSets.begin(), m_lutDescriptorSets.end());
+    threeBindingSets.insert(threeBindingSets.end(),
+                            m_maskMixDescriptorSets.begin(), m_maskMixDescriptorSets.end());
+    for (VkDescriptorSet set : threeBindingSets) {
         VkWriteDescriptorSet writes[3]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet          = set;
@@ -1001,6 +1066,26 @@ bool EffectProcessor::createPipelines()
     m_beatShakePipeline         = loadPipeline("beat_shake.comp.spv");
     m_beatChromaPipeline        = loadPipeline("beat_chroma.comp.spv");
     m_beatDropPipeline          = loadPipeline("beat_drop.comp.spv");
+
+    // Effect-mask mix — uses the 3-binding LUT descriptor layout (storage +
+    // 2 samplers), so it needs its own pipeline layout for valid binding.
+    m_maskMixPipelineLayout = m_pipelineManager.createLayout(
+        {pushRange}, {m_lutDescriptorSetLayout});
+    if (m_maskMixPipelineLayout != VK_NULL_HANDLE) {
+        fs::path mixPath = findShader("mask_mix.comp.spv");
+        if (!mixPath.empty()) {
+            VkShaderModule mod = m_pipelineManager.loadShader(mixPath);
+            if (mod != VK_NULL_HANDLE) {
+                ComputePipelineConfig pcCfg;
+                pcCfg.compShader = mod;
+                pcCfg.layout     = m_maskMixPipelineLayout;
+                m_maskMixPipeline = m_pipelineManager.createComputePipeline(pcCfg);
+            }
+        }
+        if (m_maskMixPipeline == VK_NULL_HANDLE)
+            spdlog::warn("EffectProcessor: mask_mix pipeline unavailable — "
+                         "effect masks will be ignored");
+    }
 
     spdlog::info("EffectProcessor: pipelines created (colorCorrect={}, blur={}, lumetri={})",
                  m_colorCorrectPipeline != VK_NULL_HANDLE,
@@ -1283,6 +1368,91 @@ void EffectProcessor::copyImage(VkCommandBuffer cmd, int sourceIdx, int targetId
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 2, restore);
     }
+}
+
+// =============================================================================
+//  Internal — effect-mask mix (Premiere: masks limit where an effect applies)
+// =============================================================================
+
+void EffectProcessor::dispatchMaskMix(VkCommandBuffer cmd,
+                                      const VkDescriptorImageInfo& origInfo,
+                                      const VkDescriptorImageInfo& maskInfo,
+                                      int targetIdx)
+{
+    if (m_maskMixPipeline == VK_NULL_HANDLE ||
+        m_maskMixPipelineLayout == VK_NULL_HANDLE ||
+        m_maskMixDescriptorSets.empty() ||
+        targetIdx < 0 || targetIdx > 1)
+        return;
+
+    // Claim a ring slot — one per dispatch, so concurrently-recorded and
+    // in-flight mixes never share a mutable binding (same reasoning as the
+    // source ring in process()).
+    VkDescriptorSet ds = m_maskMixDescriptorSets[m_maskMixRingCursor];
+    m_maskMixRingCursor =
+        (m_maskMixRingCursor + 1) %
+        static_cast<uint32_t>(m_maskMixDescriptorSets.size());
+
+    VkDescriptorImageInfo fxInfo{};
+    fxInfo.imageView   = m_storageTextures[targetIdx].imageView();
+    fxInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkDescriptorImageInfo orig = origInfo;
+    if (orig.imageLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+        orig.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo mask = maskInfo;
+    if (mask.imageLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+        mask.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[3]{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = ds;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].pImageInfo      = &fxInfo;
+
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = ds;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo      = &orig;
+
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = ds;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo      = &mask;
+
+    vkUpdateDescriptorSets(m_device->handle(), 3, writes, 0, nullptr);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_maskMixPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            m_maskMixPipelineLayout, 0, 1, &ds, 0, nullptr);
+
+    EffectPushConstants pc{};
+    pc.width      = static_cast<int32_t>(m_config.width);
+    pc.height     = static_cast<int32_t>(m_config.height);
+    pc.paramCount = 0;
+    vkCmdPushConstants(cmd, m_maskMixPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(pc), &pc);
+
+    uint32_t gx = (m_config.width  + 15) / 16;
+    uint32_t gy = (m_config.height + 15) / 16;
+    vkCmdDispatch(cmd, gx, gy, 1);
+
+    // Barrier: mix write → downstream read (next effect / composite)
+    VkMemoryBarrier barrier{};
+    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
 int EffectProcessor::dispatchUltraKey(VkCommandBuffer cmd,

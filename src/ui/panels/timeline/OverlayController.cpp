@@ -616,11 +616,34 @@ void OverlayController::updateTransformOverlay()
         overlay->setTransformOverlay(info);
         overlay->setSecondaryOverlays(secondaries);
 
-        // Pass mask data for overlay drawing
-        if (m_ws->selection().clip && m_ws->selection().clip->maskCount() > 0)
-            overlay->setMasks(&m_ws->selection().clip->masks());
-        else
-            overlay->setMasks(nullptr);
+        // Pass mask data for overlay drawing.  The active mask context
+        // decides WHICH list the monitor edits: the clip's opacity masks
+        // (default) or a specific effect's masks (activated by clicking a
+        // mask header under that effect in Effect Controls).
+        {
+            Clip* selClip = m_ws->selection().clip;
+            std::vector<OpacityMask>* maskList = nullptr;
+            if (selClip) {
+                if (m_activeMaskEffectId != 0) {
+                    if (Effect* fx = selClip->effects().effectById(m_activeMaskEffectId)) {
+                        if (fx->maskCount() > 0)
+                            maskList = &fx->masks();
+                    }
+                    if (!maskList)
+                        m_activeMaskEffectId = 0;  // effect gone — fall back
+                }
+                if (!maskList && selClip->maskCount() > 0)
+                    maskList = &selClip->masks();
+
+                // Clip-local time, same basis the renderer evaluates masks
+                // at (playhead − clip start) — used for Mask Path keyframe
+                // evaluation and stopwatch-aware writes during drags.
+                overlay->setMaskTime(std::max<int64_t>(
+                    0, m_ws->playbackController()->currentTick()
+                           - selClip->timelineIn()));
+            }
+            overlay->setMasks(maskList);
+        }
 
         // Pass Position tracks so the overlay can draw the motion path and
         // expose the right-click "Spatial Interpolation" menu on waypoints.
@@ -650,6 +673,13 @@ void OverlayController::updateTransformOverlay()
     }
 }
 
+
+void OverlayController::setActiveMaskContext(uint64_t effectId)
+{
+    if (m_activeMaskEffectId == effectId) return;
+    m_activeMaskEffectId = effectId;
+    updateTransformOverlay();
+}
 
 void OverlayController::graphicCanvasRes(uint32_t& w, uint32_t& h) const
 {

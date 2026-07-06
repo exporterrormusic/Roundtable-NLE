@@ -193,6 +193,123 @@ void readKeyframeTrack(BinaryReader& r, KeyframeTrack<float>& track, uint32_t ve
     }
 }
 
+// ── Mask serialization ──────────────────────────────────────────────────────
+// v30 record: shape/inverted/name + base geometry + Mask Path keyframes +
+// keyframeable feather/opacity/expansion tracks.  Legacy v11–29 records
+// (plain scalars) are converted on read in readMask().
+
+static void writeMaskGeometry(BinaryWriter& w, const MaskGeometry& g)
+{
+    w.writeF32(g.centerX);
+    w.writeF32(g.centerY);
+    w.writeF32(g.width);
+    w.writeF32(g.height);
+    w.writeF32(g.rotation);
+    w.writeU32(static_cast<uint32_t>(g.vertices.size()));
+    for (const auto& v : g.vertices) {
+        w.writeF32(v.x);
+        w.writeF32(v.y);
+        w.writeF32(v.inTanX);
+        w.writeF32(v.inTanY);
+        w.writeF32(v.outTanX);
+        w.writeF32(v.outTanY);
+    }
+}
+
+static void readMaskGeometry(BinaryReader& r, MaskGeometry& g)
+{
+    g.centerX  = r.readF32();
+    g.centerY  = r.readF32();
+    g.width    = r.readF32();
+    g.height   = r.readF32();
+    g.rotation = r.readF32();
+    uint32_t vertCount = r.readU32();
+    if (vertCount > 100000) {
+        spdlog::warn("ProjectSerializer: mask vertex count {} exceeds limit, clamping",
+                     vertCount);
+        vertCount = 100000;
+    }
+    g.vertices.resize(vertCount);
+    for (uint32_t vi = 0; vi < vertCount; ++vi) {
+        g.vertices[vi].x       = r.readF32();
+        g.vertices[vi].y       = r.readF32();
+        g.vertices[vi].inTanX  = r.readF32();
+        g.vertices[vi].inTanY  = r.readF32();
+        g.vertices[vi].outTanX = r.readF32();
+        g.vertices[vi].outTanY = r.readF32();
+    }
+}
+
+static void writeMask(BinaryWriter& w, const OpacityMask& m)
+{
+    w.writeU8(static_cast<uint8_t>(m.shape));
+    w.writeU8(m.inverted ? 1 : 0);
+    w.writeString(m.name);
+    writeMaskGeometry(w, m.base);
+    w.writeU8(m.pathAnimated ? 1 : 0);
+    w.writeU32(static_cast<uint32_t>(m.pathKeys.size()));
+    for (const auto& k : m.pathKeys) {
+        w.writeI64(k.time);
+        writeMaskGeometry(w, k.geometry);
+    }
+    writeKeyframeTrack(w, m.feather);
+    writeKeyframeTrack(w, m.maskOpacity);
+    writeKeyframeTrack(w, m.expansion);
+}
+
+static OpacityMask readMask(BinaryReader& r, uint32_t version)
+{
+    OpacityMask m;
+    if (version >= 30) {
+        m.shape    = static_cast<MaskShape>(r.readU8());
+        m.inverted = r.readU8() != 0;
+        m.name     = r.readString();
+        readMaskGeometry(r, m.base);
+        m.pathAnimated = r.readU8() != 0;
+        uint32_t keyCount = r.readU32();
+        if (keyCount > 100000) {
+            spdlog::warn("ProjectSerializer: mask path key count {} exceeds limit, clamping",
+                         keyCount);
+            keyCount = 100000;
+        }
+        m.pathKeys.resize(keyCount);
+        for (uint32_t ki = 0; ki < keyCount; ++ki) {
+            m.pathKeys[ki].time = r.readI64();
+            readMaskGeometry(r, m.pathKeys[ki].geometry);
+        }
+        readKeyframeTrack(r, m.feather, version);
+        readKeyframeTrack(r, m.maskOpacity, version);
+        readKeyframeTrack(r, m.expansion, version);
+        return m;
+    }
+
+    // Legacy record (v11–29): plain scalars → static geometry + track defaults.
+    m.shape         = static_cast<MaskShape>(r.readU8());
+    m.base.centerX  = r.readF32();
+    m.base.centerY  = r.readF32();
+    m.base.width    = r.readF32();
+    m.base.height   = r.readF32();
+    m.base.rotation = r.readF32();
+    m.feather.setDefaultValue(r.readF32());
+    m.expansion.setDefaultValue(r.readF32());
+    m.maskOpacity.setDefaultValue(r.readF32());
+    m.inverted      = r.readU8() != 0;
+    m.name          = r.readString();
+    uint32_t vertCount = r.readU32();
+    if (vertCount > 100000)
+        vertCount = 100000;
+    m.base.vertices.resize(vertCount);
+    for (uint32_t vi = 0; vi < vertCount; ++vi) {
+        m.base.vertices[vi].x       = r.readF32();
+        m.base.vertices[vi].y       = r.readF32();
+        m.base.vertices[vi].inTanX  = r.readF32();
+        m.base.vertices[vi].inTanY  = r.readF32();
+        m.base.vertices[vi].outTanX = r.readF32();
+        m.base.vertices[vi].outTanY = r.readF32();
+    }
+    return m;
+}
+
 // ── Audio FX chain (v22+) ───────────────────────────────────────────────────
 // Each processor is length-prefixed so unknown/older kinds re-sync cleanly.
 
@@ -955,35 +1072,19 @@ void writeClip(BinaryWriter& w, const Clip& clip)
                 w.writeU32(static_cast<uint32_t>(bt.size()));
                 for (float t : bt) w.writeF32(t);
             }
+            // Effect masks (v30+): masks limiting where this effect applies.
+            w.writeU32(static_cast<uint32_t>(fx.maskCount()));
+            for (const auto& m : fx.masks())
+                writeMask(w, m);
         }
     }
 
-    // ── Opacity masks (v11+) ───────────────────────────────────────────
+    // ── Opacity masks (v11+; v30 record) ───────────────────────────────
     {
         const auto& masks = clip.masks();
         w.writeU32(static_cast<uint32_t>(masks.size()));
-        for (const auto& m : masks) {
-            w.writeU8(static_cast<uint8_t>(m.shape));
-            w.writeF32(m.centerX);
-            w.writeF32(m.centerY);
-            w.writeF32(m.width);
-            w.writeF32(m.height);
-            w.writeF32(m.rotation);
-            w.writeF32(m.feather);
-            w.writeF32(m.expansion);
-            w.writeF32(m.maskOpacity);
-            w.writeU8(m.inverted ? 1 : 0);
-            w.writeString(m.name);
-            w.writeU32(static_cast<uint32_t>(m.vertices.size()));
-            for (const auto& v : m.vertices) {
-                w.writeF32(v.x);
-                w.writeF32(v.y);
-                w.writeF32(v.inTanX);
-                w.writeF32(v.inTanY);
-                w.writeF32(v.outTanX);
-                w.writeF32(v.outTanY);
-            }
-        }
+        for (const auto& m : masks)
+            writeMask(w, m);
     }
 
     // ── Audio FX chain (v22+) — audio clips only ───────────────────────
@@ -1126,6 +1227,12 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                     for (uint32_t i = 0; i < n; ++i) times[i] = r.readF32();
                     be->setBeatTimes(std::move(times));
                 }
+                // Effect masks (v30+)
+                if (version >= 30) {
+                    uint32_t fxMaskCount = r.readU32();
+                    for (uint32_t mi = 0; mi < fxMaskCount; ++mi)
+                        fx->addMask(readMask(r, version));
+                }
                 clip->effects().addEffect(std::move(fx));
             } else {
                 // Unknown effect type — skip its data
@@ -1140,38 +1247,20 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                     uint32_t n = r.readU32();
                     for (uint32_t i = 0; i < n; ++i) r.readF32();
                 }
+                if (version >= 30) {
+                    uint32_t fxMaskCount = r.readU32();
+                    for (uint32_t mi = 0; mi < fxMaskCount; ++mi)
+                        (void)readMask(r, version);  // discard
+                }
             }
         }
     }
 
-    // ── Opacity masks (v11+) ───────────────────────────────────────────
+    // ── Opacity masks (v11+; v30 record) ───────────────────────────────
     if (version >= 11 && clip) {
         uint32_t maskCount = r.readU32();
-        for (uint32_t mi = 0; mi < maskCount; ++mi) {
-            OpacityMask m;
-            m.shape       = static_cast<MaskShape>(r.readU8());
-            m.centerX     = r.readF32();
-            m.centerY     = r.readF32();
-            m.width       = r.readF32();
-            m.height      = r.readF32();
-            m.rotation    = r.readF32();
-            m.feather     = r.readF32();
-            m.expansion   = r.readF32();
-            m.maskOpacity = r.readF32();
-            m.inverted    = r.readU8() != 0;
-            m.name        = r.readString();
-            uint32_t vertCount = r.readU32();
-            m.vertices.resize(vertCount);
-            for (uint32_t vi = 0; vi < vertCount; ++vi) {
-                m.vertices[vi].x       = r.readF32();
-                m.vertices[vi].y       = r.readF32();
-                m.vertices[vi].inTanX  = r.readF32();
-                m.vertices[vi].inTanY  = r.readF32();
-                m.vertices[vi].outTanX = r.readF32();
-                m.vertices[vi].outTanY = r.readF32();
-            }
-            clip->addMask(std::move(m));
-        }
+        for (uint32_t mi = 0; mi < maskCount; ++mi)
+            clip->addMask(readMask(r, version));
     }
 
     // ── Audio FX chain (v22+) — audio clips only ───────────────────────
