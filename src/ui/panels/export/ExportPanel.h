@@ -188,6 +188,8 @@ private slots:
     void onCrfChanged(int value);
     void onBrowseOutput();
     void onStartExport();
+    /// Start rendering the jobs already sitting in the queue (no new job).
+    void onStartQueue();
     void onCancelExport();
     void onPollProgress();
     void onRangeChanged(int index);
@@ -265,6 +267,26 @@ private:
     QString customPresetsDir() const;
     void syncMatchSequenceSettings();
 
+    // ── Queue run helpers ────────────────────────────────────────────────
+    /// Wire the render-queue callbacks, reset the composite pipeline, start
+    /// the worker, and flip the UI into its running state. Shared by
+    /// onStartExport (after addJob) and onStartQueue.
+    void armQueueAndRun();
+    /// Toggle the run row / cancel button / action buttons / render pip
+    /// between running and idle.
+    void setRunningUiState(bool running);
+    /// "Start Queue" is enabled only when queued jobs exist and no run is
+    /// active.
+    void updateStartQueueEnabled();
+
+    /// Visual state of one queue row (status pill).
+    enum class JobRowState { Queued, Running, Done, Cancelled, Failed, Cancelling };
+    /// Find-or-create the row widget for `jobId` and render its status pill,
+    /// elided name, Reveal button (Done only) and detail text. `pct` is only
+    /// used for Running. Centralizes what used to be scattered setText calls.
+    void setJobRowState(uint32_t jobId, JobRowState st, int pct = -1,
+                        const QString& detail = QString());
+
     // ── Widgets ─────────────────────────────────────────────────────────
 
     // Header (Premiere-style): File Name, Location, Preset, Format.
@@ -296,9 +318,12 @@ private:
     QLabel*       m_audioBitrateLabel{nullptr};   // shown for lossy formats (MP3/AAC)
     QComboBox*    m_audioBitrateCombo{nullptr};
 
-    // Range
-    CollapsibleSection* m_rangeSection{nullptr};
+    // Range — the hidden combo stays the authoritative state (workspace
+    // persistence and every consumer read it); the transport checkbox is a
+    // synced view onto it (mockup 04: the RANGE section didn't earn a
+    // collapsible).
     QComboBox*    m_rangeCombo{nullptr};
+    QCheckBox*    m_rangeCheck{nullptr};
 
     // Preview
     QLabel*       m_previewImageLabel{nullptr};
@@ -331,13 +356,17 @@ private:
     QPushButton*  m_startButton{nullptr};
     QPushButton*  m_cancelButton{nullptr};
     QPushButton*  m_addQueueButton{nullptr};
+    QPushButton*  m_startQueueButton{nullptr};  // renders already-queued jobs
 
     // Estimate
     QLabel*       m_estimateLabel{nullptr};
 
-    // Progress
+    // Progress — bar/status/cancel live in the run row, shown only while a
+    // run is active (mockup 04's dedicated run row).
+    QWidget*      m_runRow{nullptr};
     QProgressBar* m_progressBar{nullptr};
     QLabel*       m_statusLabel{nullptr};
+    QLabel*       m_renderPip{nullptr};  // "RENDERING FRAME n / m" over the preview
     QListWidget*  m_jobList{nullptr};
 
     // Poll timer for progress

@@ -294,26 +294,44 @@ void ExportPanel::setupUI()
     m_audioBitrateLabel = new QLabel(tr("Bitrate"));
     audioForm->addRow(m_audioBitrateLabel, m_audioBitrateCombo);
 
+    // Sample rate / channels are deliberately un-exposed (mockup 04 flag):
+    // one line documents the fixed pipeline instead of dead controls.
+    {
+        auto* audioNote = new QLabel(
+            tr("48 kHz stereo. Video exports mux AAC; the format unlocks "
+               "for audio-only exports."));
+        audioNote->setObjectName(QStringLiteral("EstimateLbl"));
+        audioNote->setWordWrap(true);
+        audioForm->addRow(QString(), audioNote);
+    }
+
     m_audioSection->addContentLayout(audioForm);
     settingsLayout->addWidget(m_audioSection);
     connect(m_audioSection->toggle(), &QAbstractButton::toggled,
             this, &ExportPanel::onAudioEnabledChanged);
 
-    // ── RANGE section (collapsible, no enable switch) ───────────────────
-    m_rangeSection = new CollapsibleSection(tr("RANGE"), /*withToggle=*/false, settingsWidget);
-    m_rangeCombo = new QComboBox();
-    m_rangeCombo->setToolTip(tr("Export the entire sequence or only the In-to-Out range"));
+    // ── Range state (hidden combo — mockup 04 dropped the RANGE section) ─
+    // The combo stays the authoritative value: workspace save/restore
+    // persists its index and every consumer (buildJobConfig, estimate,
+    // in/out auto-switch) reads it. The visible control is the "Export
+    // in → out only" checkbox in the transport row, synced two-way below.
+    m_rangeCombo = new QComboBox(settingsWidget);
     m_rangeCombo->addItem(tr("Entire Sequence"), 0);
     m_rangeCombo->addItem(tr("In to Out"), 1);
+    m_rangeCombo->setVisible(false);
     connect(m_rangeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &ExportPanel::onRangeChanged);
-    m_rangeSection->addContentWidget(m_rangeCombo);
-    settingsLayout->addWidget(m_rangeSection);
+    connect(m_rangeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx) {
+        if (m_rangeCheck && m_rangeCheck->isChecked() != (idx == 1)) {
+            const QSignalBlocker block(m_rangeCheck);
+            m_rangeCheck->setChecked(idx == 1);
+        }
+    });
 
-    // Default: VIDEO expanded, AUDIO + RANGE collapsed.
+    // Default: VIDEO expanded, AUDIO collapsed.
     m_videoSection->setExpanded(true);
     m_audioSection->setExpanded(false);
-    m_rangeSection->setExpanded(false);
 
     // Apply initial audio-section state, then default Match Sequence on (this
     // fires the handler now that all video widgets exist).
@@ -345,6 +363,30 @@ void ExportPanel::setupUI()
     m_previewImageLabel->setText(tr("Export Preview"));
     m_previewImageLabel->setScaledContents(false);
     previewLayout->addWidget(m_previewImageLabel, 1);
+
+    // "RENDERING FRAME n / m" pip — floats top-right over the preview while
+    // a run is active (the preview already live-updates with rendered
+    // frames; this labels it). A QLabel can host a layout, so the pip is a
+    // child pinned by stretches — no manual positioning on resize.
+    {
+        auto* overlay = new QHBoxLayout(m_previewImageLabel);
+        overlay->setContentsMargins(10, 8, 10, 8);
+        m_renderPip = new QLabel(m_previewImageLabel);
+        m_renderPip->setObjectName(QStringLiteral("RenderPip"));
+        const QColor warn = Theme::colors().warning;
+        m_renderPip->setStyleSheet(QStringLiteral(
+            "QLabel#RenderPip { color: %1; background: rgba(13,16,20,160);"
+            " border: 1px solid rgba(%2,%3,%4,90); border-radius: 9px;"
+            " padding: 2px 9px; font-size: 10px; font-weight: 600; }")
+            .arg(warn.name())
+            .arg(warn.red()).arg(warn.green()).arg(warn.blue()));
+        m_renderPip->setVisible(false);
+        auto* pipCol = new QVBoxLayout();
+        pipCol->addWidget(m_renderPip);
+        pipCol->addStretch();
+        overlay->addStretch();
+        overlay->addLayout(pipCol);
+    }
 
     // Mini timeline scrub bar (Premiere-style)
     m_miniTimeline = new ExportMiniTimeline(previewWidget);
@@ -452,6 +494,18 @@ void ExportPanel::setupUI()
         transportBar->addWidget(m_outPointBtn);
         transportBar->addWidget(m_clearInOutBtn);
 
+        // Range lives here, next to where in/out points are actually set
+        // (replaces the old one-control RANGE collapsible).
+        transportBar->addSpacing(10);
+        m_rangeCheck = new QCheckBox(tr("Export in → out only"), previewWidget);
+        m_rangeCheck->setToolTip(
+            tr("Export only the In-to-Out range. Unchecked = entire sequence."));
+        connect(m_rangeCheck, &QCheckBox::toggled, this, [this](bool on) {
+            if (m_rangeCombo && m_rangeCombo->currentIndex() != (on ? 1 : 0))
+                m_rangeCombo->setCurrentIndex(on ? 1 : 0);
+        });
+        transportBar->addWidget(m_rangeCheck);
+
         transportBar->addStretch();
 
         previewLayout->addLayout(transportBar);
@@ -480,33 +534,38 @@ void ExportPanel::setupUI()
     mainLayout->addWidget(splitter, 1);
 
     // ════════════════════════════════════════════════════════════════════
-    // BOTTOM: Progress + actions
+    // BOTTOM: run row (bar · stats · Cancel, shown while running) + queue
     // ════════════════════════════════════════════════════════════════════
 
-    // Progress bar
-    m_progressBar = new QProgressBar(this);
-    m_progressBar->setRange(0, 100);
-    m_progressBar->setValue(0);
-    m_progressBar->setTextVisible(true);
-    m_progressBar->setFormat(QStringLiteral("%p%"));
-    mainLayout->addWidget(m_progressBar);
+    m_runRow = new QWidget(this);
+    {
+        auto* runLay = new QHBoxLayout(m_runRow);
+        runLay->setContentsMargins(0, 0, 0, 0);
+        runLay->setSpacing(12);
 
-    // Status + render stats
-    m_statusLabel = new QLabel(tr("Ready"), this);
-    mainLayout->addWidget(m_statusLabel);
+        m_progressBar = new QProgressBar(m_runRow);
+        m_progressBar->setRange(0, 100);
+        m_progressBar->setValue(0);
+        m_progressBar->setTextVisible(true);
+        m_progressBar->setFormat(QStringLiteral("%p%"));
+        runLay->addWidget(m_progressBar, 1);
+
+        m_statusLabel = new QLabel(tr("Ready"), m_runRow);
+        runLay->addWidget(m_statusLabel);
+
+        m_cancelButton = new QPushButton(tr("Cancel"), m_runRow);
+        m_cancelButton->setToolTip(tr("Cancel the in-progress export"));
+        m_cancelButton->setObjectName(QStringLiteral("CancelBtn"));
+        m_cancelButton->setEnabled(false);
+        connect(m_cancelButton, &QPushButton::clicked, this, &ExportPanel::onCancelExport);
+        runLay->addWidget(m_cancelButton);
+    }
+    m_runRow->setVisible(false);
+    mainLayout->addWidget(m_runRow);
 
     // Action buttons row
     auto* actionLayout = new QHBoxLayout();
     actionLayout->setSpacing(10);
-
-    m_cancelButton = new QPushButton(tr("Cancel"), this);
-    m_cancelButton->setToolTip(tr("Cancel the in-progress export"));
-    m_cancelButton->setObjectName(QStringLiteral("CancelBtn"));
-    m_cancelButton->setEnabled(false);
-    m_cancelButton->setVisible(false);
-    connect(m_cancelButton, &QPushButton::clicked, this, &ExportPanel::onCancelExport);
-    actionLayout->addWidget(m_cancelButton);
-
     actionLayout->addStretch();
 
     m_addQueueButton = new QPushButton(tr("Add to Queue"), this);
@@ -514,6 +573,14 @@ void ExportPanel::setupUI()
     m_addQueueButton->setObjectName(QStringLiteral("AddQueueBtn"));
     connect(m_addQueueButton, &QPushButton::clicked, this, &ExportPanel::onAddToQueue);
     actionLayout->addWidget(m_addQueueButton);
+
+    m_startQueueButton = new QPushButton(tr("Start Queue"), this);
+    m_startQueueButton->setToolTip(
+        tr("Render the queued jobs in order (Export renders only the current settings)"));
+    m_startQueueButton->setObjectName(QStringLiteral("StartQueueBtn"));
+    m_startQueueButton->setEnabled(false);
+    connect(m_startQueueButton, &QPushButton::clicked, this, &ExportPanel::onStartQueue);
+    actionLayout->addWidget(m_startQueueButton);
 
     m_startButton = new QPushButton(tr("Export"), this);
     m_startButton->setToolTip(tr("Start exporting"));
@@ -561,9 +628,10 @@ void ExportPanel::setupUI()
                 delete m_jobList->takeItem(row);
                 if (m_jobList->count() == 0)
                     m_jobList->setVisible(false);
-            } else {
-                item->setText(item->text() + tr(" (cancelling…)"));
+            } else if (ok) {
+                setJobRowState(jobId, JobRowState::Cancelling);
             }
+            updateStartQueueEnabled();
         } else if (revealAction && chosen == revealAction) {
             const auto job = m_renderQueue->job(jobId);
             if (job) {
@@ -587,5 +655,135 @@ void ExportPanel::setupUI()
     connect(m_crfSlider, &QSlider::valueChanged, this, updateEstimate);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Queue rows — one status-pill row widget per job (mockup 04)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void ExportPanel::updateStartQueueEnabled()
+{
+    if (!m_startQueueButton) return;
+    const bool canStart = m_renderQueue && !m_renderQueue->isRunning()
+                       && m_renderQueue->pendingCount() > 0;
+    m_startQueueButton->setEnabled(canStart);
+}
+
+void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
+                                 const QString& detail)
+{
+    if (!m_jobList) return;
+
+    // Find (or create) the row for this job.
+    QListWidgetItem* item = nullptr;
+    for (int i = 0; i < m_jobList->count(); ++i) {
+        auto* it = m_jobList->item(i);
+        if (it && it->data(Qt::UserRole).toULongLong()
+                      == static_cast<qulonglong>(jobId)) { item = it; break; }
+    }
+    if (!item) {
+        item = new QListWidgetItem();
+        item->setData(Qt::UserRole, static_cast<qulonglong>(jobId));
+        m_jobList->addItem(item);
+        m_jobList->setVisible(true);
+    }
+
+    // Pill text + palette per state.
+    const auto& tc = Theme::colors();
+    QString pillText;
+    QColor  pillColor;
+    switch (st) {
+        case JobRowState::Queued:     pillText = tr("○ Queued");     pillColor = tc.textSecondary; break;
+        case JobRowState::Running:    pillText = pct >= 0
+                                          ? tr("↻ Running %1%").arg(pct)
+                                          : tr("↻ Running");         pillColor = tc.accent;  break;
+        case JobRowState::Done:       pillText = tr("✓ Done");       pillColor = tc.success; break;
+        case JobRowState::Cancelled:  pillText = tr("⊘ Cancelled");  pillColor = tc.textSecondary; break;
+        case JobRowState::Failed:     pillText = tr("✗ Failed");     pillColor = tc.error;   break;
+        case JobRowState::Cancelling: pillText = tr("⊘ Cancelling…"); pillColor = tc.textSecondary; break;
+    }
+
+    // Fast path: the row widget exists — update pill / detail in place
+    // (the poll timer calls this every tick while running).
+    if (auto* w = m_jobList->itemWidget(item)) {
+        if (auto* pill = w->findChild<QLabel*>(QStringLiteral("JobPill"))) {
+            pill->setText(pillText);
+            pill->setStyleSheet(QStringLiteral(
+                "QLabel#JobPill { color: %1; background: rgba(%2,%3,%4,36);"
+                " border-radius: 8px; padding: 1px 8px;"
+                " font-size: 10px; font-weight: 600; }")
+                .arg(pillColor.name())
+                .arg(pillColor.red()).arg(pillColor.green()).arg(pillColor.blue()));
+        }
+        if (auto* extra = w->findChild<QLabel*>(QStringLiteral("JobExtra")))
+            if (!detail.isEmpty()) extra->setText(detail);
+        if (auto* reveal = w->findChild<QPushButton*>(QStringLiteral("JobReveal")))
+            reveal->setVisible(st == JobRowState::Done);
+        return;
+    }
+
+    // Build the row widget: [pill] [name………] [Reveal] [detail]
+    QString name = tr("Job %1").arg(jobId);
+    QString fullPath;
+    if (m_renderQueue) {
+        if (const auto job = m_renderQueue->job(jobId)) {
+            fullPath = QString::fromStdString(pathToUtf8(job->config.outputPath));
+            name = tr("Job %1 — %2").arg(jobId).arg(fullPath);
+        }
+    }
+
+    auto* w = new QWidget(m_jobList);
+    auto* lay = new QHBoxLayout(w);
+    lay->setContentsMargins(8, 3, 8, 3);
+    lay->setSpacing(10);
+
+    auto* pill = new QLabel(pillText, w);
+    pill->setObjectName(QStringLiteral("JobPill"));
+    pill->setStyleSheet(QStringLiteral(
+        "QLabel#JobPill { color: %1; background: rgba(%2,%3,%4,36);"
+        " border-radius: 8px; padding: 1px 8px;"
+        " font-size: 10px; font-weight: 600; }")
+        .arg(pillColor.name())
+        .arg(pillColor.red()).arg(pillColor.green()).arg(pillColor.blue()));
+    lay->addWidget(pill);
+
+    auto* nameLbl = new QLabel(name, w);
+    nameLbl->setObjectName(QStringLiteral("JobName"));
+    nameLbl->setToolTip(name);
+    // Let the label shrink below its text width; paint elides via stylesheet-
+    // free default (Qt elides nothing on QLabel, so cap with size policy and
+    // rely on the tooltip for the full path).
+    nameLbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    lay->addWidget(nameLbl, 1);
+
+    auto* reveal = new QPushButton(tr("Reveal"), w);
+    reveal->setObjectName(QStringLiteral("JobReveal"));
+    reveal->setFlat(true);
+    reveal->setCursor(Qt::PointingHandCursor);
+    reveal->setToolTip(tr("Reveal the exported file in Explorer"));
+    reveal->setStyleSheet(QStringLiteral(
+        "QPushButton#JobReveal { color: %1; border: none; padding: 1px 6px;"
+        " font-size: 11px; }"
+        "QPushButton#JobReveal:hover { text-decoration: underline; }")
+        .arg(Theme::colors().accent.name()));
+    reveal->setVisible(st == JobRowState::Done);
+    connect(reveal, &QPushButton::clicked, this, [this, jobId]() {
+        if (!m_renderQueue) return;
+        const auto job = m_renderQueue->job(jobId);
+        if (!job) return;
+        QFileInfo fi(QString::fromStdString(pathToUtf8(job->config.outputPath)));
+        if (fi.exists())
+            QProcess::startDetached("explorer.exe",
+                {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+    });
+    lay->addWidget(reveal);
+
+    auto* extra = new QLabel(detail, w);
+    extra->setObjectName(QStringLiteral("JobExtra"));
+    extra->setStyleSheet(QStringLiteral("color: %1; font-size: 10.5px;")
+        .arg(Theme::colors().textSecondary.name()));
+    lay->addWidget(extra);
+
+    item->setSizeHint(QSize(0, w->sizeHint().height()));
+    m_jobList->setItemWidget(item, w);
+}
 
 } // namespace rt

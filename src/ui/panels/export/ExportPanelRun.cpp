@@ -386,14 +386,52 @@ void ExportPanel::onStartExport()
     uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
     m_activeJobId = jobId;
 
-    // Update job list
-    auto* item = new QListWidgetItem(
-        QStringLiteral("\u25CB Job %1 \u2014 %2 \u2014 Queued")
-            .arg(jobId)
-            .arg(m_outputPath->text()));
-    item->setData(Qt::UserRole, static_cast<qulonglong>(jobId));
-    m_jobList->addItem(item);
+    setJobRowState(jobId, JobRowState::Queued);
 
+    armQueueAndRun();
+    emit exportStarted(jobId);
+}
+
+void ExportPanel::onStartQueue()
+{
+    if (!m_renderQueue || m_renderQueue->isRunning()) return;
+    if (m_renderQueue->pendingCount() == 0) return;
+    if (!m_timeline) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("No timeline loaded \u2014 nothing to export."));
+        return;
+    }
+
+    // Video jobs need the renderer + the offline-media check; audio-only
+    // jobs need neither. (Per-job encode settings were captured at Add time.)
+    bool anyVideo = false;
+    for (const auto& j : m_renderQueue->jobs())
+        if (j && j->status.load() == JobStatus::Queued && !j->config.audioOnly)
+            anyVideo = true;
+    if (anyVideo) {
+        if (!m_previewCallback) {
+            QMessageBox::warning(this, tr("Export"),
+                                 tr("No renderer available \u2014 cannot export."));
+            return;
+        }
+        if (!checkOfflineMedia())
+            return;
+    }
+
+    // Follow the first job the worker will pick up.
+    for (const auto& j : m_renderQueue->jobs()) {
+        if (j && j->status.load() == JobStatus::Queued) {
+            m_activeJobId = j->id;
+            break;
+        }
+    }
+
+    armQueueAndRun();
+    emit exportStarted(m_activeJobId);
+}
+
+void ExportPanel::armQueueAndRun()
+{
     // Set up callbacks
     m_renderQueue->setProgressCallback(
         [this](uint32_t id, const JobProgress& /*prog*/) {
@@ -419,37 +457,49 @@ void ExportPanel::onStartExport()
             QMetaObject::invokeMethod(this,
                 [this, id, success, msg, fellBack, fellBackReason, cancelled]() {
                 if (m_destroying.load(std::memory_order_acquire)) return;
-                m_pollTimer->stop();
-                m_startButton->setEnabled(true);
-                m_addQueueButton->setEnabled(true);
-                m_cancelButton->setEnabled(false);
-                m_cancelButton->setVisible(false);
                 m_statusLabel->setText(success ? tr("Export complete!")
                     : cancelled ? tr("Cancelled")
                     : tr("Failed: %1").arg(QString::fromStdString(msg)));
                 m_progressBar->setValue(success ? 100 : 0);
-                // Update the job list item to reflect completion status
-                const qulonglong targetId = static_cast<qulonglong>(id);
-                for (int i = 0; i < m_jobList->count(); ++i) {
-                    auto* listItem = m_jobList->item(i);
-                    if (listItem && listItem->data(Qt::UserRole).toULongLong() == targetId) {
-                        const QString line2 = listItem->text().section(QStringLiteral(" \u2014 "), 1, 1);
-                        if (success) {
-                            listItem->setText(QStringLiteral("\u2713 Job %1 \u2014 %2 \u2014 Complete")
-                                .arg(id).arg(line2));
-                            listItem->setForeground(Qt::darkGreen);
-                        } else if (cancelled) {
-                            // Distinct, neutral "Cancelled" state - a cancel
-                            // is not a failure and shouldn't render red.
-                            listItem->setText(QStringLiteral("\u2298 Job %1 \u2014 %2 \u2014 Cancelled")
-                                .arg(id).arg(line2));
-                            listItem->setForeground(Qt::darkGray);
-                        } else {
-                            listItem->setText(QStringLiteral("\u2717 Job %1 \u2014 %2 \u2014 Failed")
-                                .arg(id).arg(line2));
-                            listItem->setForeground(Qt::red);
+                // Queue row pill; Done rows also get the output file size.
+                if (success) {
+                    QString size;
+                    if (const auto j2 = m_renderQueue->job(id)) {
+                        QFileInfo fi(QString::fromStdString(
+                            pathToUtf8(j2->config.outputPath)));
+                        if (fi.exists()) {
+                            const double mb = fi.size() / (1024.0 * 1024.0);
+                            size = mb >= 1024.0
+                                ? tr("%1 GB").arg(QString::number(mb / 1024.0, 'f', 1))
+                                : tr("%1 MB").arg(QString::number(mb, 'f', 0));
                         }
-                        break;
+                    }
+                    setJobRowState(id, JobRowState::Done, -1, size);
+                } else if (cancelled) {
+                    // Distinct, neutral state \u2014 a cancel is not a failure.
+                    setJobRowState(id, JobRowState::Cancelled);
+                } else {
+                    setJobRowState(id, JobRowState::Failed, -1,
+                                   QString::fromStdString(msg));
+                }
+                // A Start Queue run renders several jobs in one worker pass \u2014
+                // only drop out of the running state when nothing is left.
+                // (The poll timer is the fallback finalizer for the race
+                // where the worker clears its running flag after this fires.)
+                const bool moreWork = m_renderQueue->pendingCount() > 0
+                                   || m_renderQueue->isRunning();
+                if (!moreWork) {
+                    m_pollTimer->stop();
+                    setRunningUiState(false);
+                } else {
+                    // Follow the next job the worker picks up.
+                    for (const auto& j2 : m_renderQueue->jobs()) {
+                        if (!j2) continue;
+                        const auto st = j2->status.load();
+                        if (st == JobStatus::Running || st == JobStatus::Queued) {
+                            m_activeJobId = j2->id;
+                            break;
+                        }
                     }
                 }
                 if (success)
@@ -514,49 +564,60 @@ void ExportPanel::onStartExport()
     // Start rendering
     m_renderQueue->start(m_timeline, m_compositor);
 
-    m_startButton->setEnabled(false);
-    m_addQueueButton->setEnabled(false);
-    m_cancelButton->setEnabled(true);
-    m_cancelButton->setVisible(true);
+    setRunningUiState(true);
     m_jobList->setVisible(true);
     m_pollTimer->start();
+}
 
-    emit exportStarted(jobId);
+void ExportPanel::setRunningUiState(bool running)
+{
+    if (m_startButton)    m_startButton->setEnabled(!running);
+    if (m_addQueueButton) m_addQueueButton->setEnabled(!running);
+    if (m_cancelButton)   m_cancelButton->setEnabled(running);
+    if (m_runRow)         m_runRow->setVisible(running);
+    if (m_renderPip && !running) m_renderPip->setVisible(false);
+    updateStartQueueEnabled();
 }
 
 void ExportPanel::onCancelExport()
 {
+    // Cancel everything; the per-job Cancelled callbacks (and the poll
+    // timer's queue-idle check) take the UI out of the running state once
+    // the worker actually stops — an instant reset here would lie while
+    // the current frame batch drains.
     m_renderQueue->cancelAll();
-    m_pollTimer->stop();
-    m_startButton->setEnabled(true);
-    m_addQueueButton->setEnabled(true);
+    m_statusLabel->setText(tr("Cancelling…"));
     m_cancelButton->setEnabled(false);
-    m_cancelButton->setVisible(false);
-    m_statusLabel->setText(tr("Cancelled"));
 }
 
 void ExportPanel::onPollProgress()
 {
     if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_renderQueue->isRunning()) return;
+    if (!m_renderQueue->isRunning()) {
+        // Queue went idle \u2014 the last job's completion callback may have
+        // raced the worker's running-flag clear; finalize from here.
+        m_pollTimer->stop();
+        setRunningUiState(false);
+        return;
+    }
 
-    const auto j = m_renderQueue->job(m_activeJobId);
+    auto j = m_renderQueue->job(m_activeJobId);
+    // A queue run advances to the next job inside one worker pass \u2014 follow
+    // whichever job is actually Running.
+    if (!j || j->status.load() != JobStatus::Running) {
+        for (const auto& cand : m_renderQueue->jobs()) {
+            if (cand && cand->status.load() == JobStatus::Running) {
+                m_activeJobId = cand->id;
+                j = cand;
+                break;
+            }
+        }
+    }
     if (!j) return;
 
     int pct = static_cast<int>(j->progress.percent.load());
     m_progressBar->setValue(pct);
-    // Update the active job's list item to show "Running"
-    const qulonglong activeId = static_cast<qulonglong>(m_activeJobId);
-    for (int i = 0; i < m_jobList->count(); ++i) {
-        auto* listItem = m_jobList->item(i);
-        if (listItem && listItem->data(Qt::UserRole).toULongLong() == activeId) {
-            const QString line2 = listItem->text().section(QStringLiteral(" \u2014 "), 1, 1);
-            listItem->setText(QStringLiteral("\u21BB Job %1 \u2014 %2 \u2014 Running %3%")
-                .arg(m_activeJobId).arg(line2).arg(pct));
-            listItem->setForeground(QColor(0, 120, 212)); // blue
-            break;
-        }
-    }
+    setJobRowState(m_activeJobId, JobRowState::Running, pct);
     // Build a rich status string: "Rendering â€” 245/800 frames Â· 14.2 fps Â· ETA 0:39"
     int64_t curFrame   = j->progress.currentFrame.load();
     int64_t totalFrame = j->progress.totalFrames.load();
@@ -584,6 +645,17 @@ void ExportPanel::onPollProgress()
         status = QString::fromStdString(m_renderQueue->jobStatusText(m_activeJobId));
     }
     m_statusLabel->setText(status);
+
+    // "RENDERING FRAME n / m" pip over the preview (video jobs only).
+    if (m_renderPip) {
+        if (!j->config.audioOnly && pct < 100) {
+            m_renderPip->setText(tr("RENDERING FRAME %1 / %2")
+                                     .arg(curFrame).arg(totalFrame));
+            m_renderPip->setVisible(true);
+        } else {
+            m_renderPip->setVisible(false);
+        }
+    }
 
     // Update preview with the current frame being rendered (video only —
     // an audio-only export has no frames to composite).

@@ -464,14 +464,9 @@ void ExportPanel::onAddToQueue()
     // never reads the live timeline while the user keeps editing.
     uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
 
-    // Show job in list
-    m_jobList->setVisible(true);
-    auto* item = new QListWidgetItem(
-        QStringLiteral("\u25CB Job %1 \u2014 %2 \u2014 Queued")
-            .arg(jobId)
-            .arg(QString::fromStdString(pathToUtf8(config.outputPath))));
-    item->setData(Qt::UserRole, static_cast<qulonglong>(jobId));
-    m_jobList->addItem(item);
+    // Show job in list; "Start Queue" arms now that a job is pending.
+    setJobRowState(jobId, JobRowState::Queued);
+    updateStartQueueEnabled();
 
     m_statusLabel->setText(tr("Job %1 added to queue").arg(jobId));
     spdlog::info("ExportPanel: added job {} to queue: {}", jobId, pathToUtf8(config.outputPath));
