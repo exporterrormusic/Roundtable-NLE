@@ -569,29 +569,49 @@ TEST_F(SerializerTest, VideoClipRoundTrip)
     EXPECT_EQ(vc->duration(), 48000);
 }
 
-TEST_F(SerializerTest, TitleClipRoundTrip)
+TEST_F(SerializerTest, TitleClipMigratesToGraphicOnLoad)
 {
+    // TitleClip is creation-orphaned; loading a legacy Title record MIGRATES
+    // it to a GraphicClip with a TextLayer (plus a background rect layer when
+    // the legacy bgColor was non-transparent). Base-clip identity — id (which
+    // transitions reference), timing, label — must survive unchanged.
     auto original = makeTestProject();
+    const uint64_t titleId = original->timeline()->track(0)->clip(2)->id();
+
     auto data = serializer.serialize(*original);
     auto loaded = serializer.deserialize(data);
     ASSERT_NE(loaded, nullptr);
 
     ASSERT_GE(loaded->timeline()->track(0)->clipCount(), 3u);
     auto* clip = loaded->timeline()->track(0)->clip(2);
-    ASSERT_EQ(clip->clipType(), ClipType::Title);
+    ASSERT_EQ(clip->clipType(), ClipType::Graphic);
+    EXPECT_EQ(clip->id(), titleId);
+    EXPECT_EQ(clip->timelineIn(), 144000);
+    EXPECT_EQ(clip->duration(), 72000);
+    EXPECT_EQ(clip->label(), "Title Card");
 
-    auto* tc = static_cast<TitleClip*>(clip);
-    EXPECT_EQ(tc->text(), "ROUNDTABLE");
-    EXPECT_EQ(tc->fontFamily(), "Montserrat");
-    EXPECT_FLOAT_EQ(tc->fontSize(), 96.0f);
-    EXPECT_TRUE(tc->isBold());
-    EXPECT_FALSE(tc->isItalic());
-    EXPECT_EQ(tc->alignment(), TextAlign::Center);
-    EXPECT_EQ(tc->verticalAlignment(), TextVAlign::Bottom);
-    EXPECT_EQ(tc->textColor(), 0xFFFFFFFFu);
-    EXPECT_EQ(tc->bgColor(), 0x80000000u);
-    EXPECT_EQ(tc->outlineColor(), 0xFF000000u);
-    EXPECT_FLOAT_EQ(tc->outlineWidth(), 2.5f);
+    auto* gc = static_cast<GraphicClip*>(clip);
+    // bgColor 0x80000000 (alpha > 0) → background rect stacked behind text.
+    ASSERT_EQ(gc->layerCount(), 2u);
+    ASSERT_EQ(gc->layer(0)->layerType(), GraphicLayerType::Shape);
+    EXPECT_EQ(static_cast<ShapeLayer*>(gc->layer(0))->fillColor(), 0x80000000u);
+
+    ASSERT_EQ(gc->layer(1)->layerType(), GraphicLayerType::Text);
+    auto* tl = static_cast<TextLayer*>(gc->layer(1));
+    EXPECT_EQ(tl->text(), "ROUNDTABLE");
+    EXPECT_EQ(tl->fontFamily(), "Montserrat");
+    EXPECT_FLOAT_EQ(tl->fontSize(), 96.0f);
+    EXPECT_GE(tl->fontWeight(), 700);   // legacy bold
+    EXPECT_FALSE(tl->isItalic());
+    EXPECT_EQ(tl->alignment(), GTextAlign::Center);
+    EXPECT_EQ(tl->vAlignment(), GTextVAlign::Bottom);
+    ASSERT_FALSE(tl->appearance().fills.empty());
+    EXPECT_EQ(tl->appearance().fills[0].color, 0xFFFFFFFFu);
+    // outlineWidth 2.5 > 0 → outer stroke
+    ASSERT_FALSE(tl->appearance().strokes.empty());
+    EXPECT_EQ(tl->appearance().strokes[0].color, 0xFF000000u);
+    EXPECT_FLOAT_EQ(tl->appearance().strokes[0].width, 2.5f);
+    EXPECT_EQ(tl->appearance().strokes[0].position, StrokePosition::Outer);
 }
 
 TEST_F(SerializerTest, AudioClipRoundTrip)
@@ -907,6 +927,12 @@ TEST_F(SerializerTest, CaptionClipRoundTrip)
     cap->setPosition(CaptionPosition::Top);
     cap->setTimelineIn(4800);
     cap->setDuration(9600);
+    // v31 burn-in style fields (non-default values so the round-trip proves
+    // they're actually serialized, not just defaulted).
+    cap->setBold(false);
+    cap->setOutlineColor(0xFF112233);
+    cap->setOutlineWidth(3.0f);
+    cap->setShowSpeaker(true);
     ct->addClip(std::move(cap));
 
     auto data = serializer.serialize(*p);
@@ -929,6 +955,11 @@ TEST_F(SerializerTest, CaptionClipRoundTrip)
     EXPECT_EQ(cc->position(), CaptionPosition::Top);
     EXPECT_EQ(cc->timelineIn(), 4800);
     EXPECT_EQ(cc->duration(), 9600);
+    // v31 burn-in style fields
+    EXPECT_FALSE(cc->isBold());
+    EXPECT_EQ(cc->outlineColor(), 0xFF112233u);
+    EXPECT_FLOAT_EQ(cc->outlineWidth(), 3.0f);
+    EXPECT_TRUE(cc->showSpeaker());
 }
 
 TEST_F(SerializerTest, PngPuppetClipRoundTrip)

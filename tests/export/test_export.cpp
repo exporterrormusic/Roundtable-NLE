@@ -729,6 +729,47 @@ TEST(ExportRenderQueue, JobSequentialIds)
     }
 }
 
+TEST(ExportRenderQueue, CancelMarksJobAndRemoveAfterFinalize)
+{
+    // "Remove from Queue" UI flow: cancelJob() then removeJob(). A job that
+    // is not Running must be removable, and cancel must set the per-job flag
+    // (the old m_cancelFlags map raced; the flag now lives on the job).
+    RenderQueue queue;
+    ExportJobConfig cfg;
+    cfg.outputPath = "cancel_test.mp4";
+    uint32_t id = queue.addJob(cfg);
+
+    queue.cancelJob(id);
+    auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_TRUE(job->cancelRequested.load());
+
+    EXPECT_TRUE(queue.removeJob(id));
+    EXPECT_EQ(queue.job(id), nullptr);
+    EXPECT_EQ(queue.pendingCount(), 0u);
+}
+
+TEST(ExportRenderQueue, HeldJobReferenceSurvivesRemoval)
+{
+    // The worker thread keeps its own shared_ptr to the job it is running.
+    // Erasing the job from the queue while a reference is held must not
+    // invalidate that reference (this was the dangling-ExportJob* crash
+    // class when m_jobs stored jobs by value).
+    RenderQueue queue;
+    ExportJobConfig cfg;
+    cfg.outputPath = "held.mp4";
+    uint32_t id = queue.addJob(cfg);
+
+    auto held = queue.job(id);
+    ASSERT_NE(held, nullptr);
+    EXPECT_TRUE(queue.removeJob(id));
+    EXPECT_EQ(queue.job(id), nullptr);
+
+    // Still safely readable after removal from the queue.
+    EXPECT_EQ(held->id, id);
+    EXPECT_EQ(held->status.load(), JobStatus::Queued);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Total: ~50 tests
 // ═════════════════════════════════════════════════════════════════════════════
