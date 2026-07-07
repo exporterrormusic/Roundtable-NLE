@@ -40,6 +40,7 @@ void GraphicsEditorPanel::clearEditControls()
  m_alignRightBtn = nullptr; m_alignJustifyBtn = nullptr;
  m_valignTopBtn = nullptr; m_valignMiddleBtn = nullptr; m_valignBottomBtn = nullptr;
  m_trackingSpin = nullptr; m_leadingSpin = nullptr; m_baselineShiftSpin = nullptr;
+ m_wrapCheck = nullptr; m_wrapWidthSpin = nullptr;
  m_appearanceSection = nullptr;
  m_fillCheck = nullptr; m_fillColorBtn = nullptr;
  m_strokeCheck = nullptr; m_strokeColorBtn = nullptr;
@@ -337,6 +338,32 @@ void GraphicsEditorPanel::buildEditControls()
  connect(m_baselineShiftSpin, &ScrubbySpinBox::valueScrubbed,
  this, [this](double) { applyTextProperties(); });
  rl->addWidget(m_baselineShiftSpin);
+
+ rl->addStretch();
+ }
+
+ // Paragraph box: wrap the text to a fixed pixel width (point text when off)
+ {
+ auto* rl = makeRow(10);
+ m_wrapCheck = new QCheckBox(tr("Wrap"), m_editContainer);
+ m_wrapCheck->setStyleSheet(QStringLiteral(
+ "QCheckBox { background: transparent; spacing: 4px; }"
+ "QCheckBox::indicator { width: 14px; height: 14px; }"));
+ m_wrapCheck->setToolTip(tr("Word-wrap the text inside a fixed-width paragraph box"));
+ connect(m_wrapCheck, &QCheckBox::toggled, this, [this](bool on) {
+ if (m_wrapWidthSpin) m_wrapWidthSpin->setEnabled(on);
+ applyTextProperties();
+ commitLayerEdit();
+ });
+ rl->addWidget(m_wrapCheck);
+
+ m_wrapWidthSpin = makeScrubby(50, 8192, 10, 0, QStringLiteral(" px"));
+ m_wrapWidthSpin->setEnabled(false);
+ connect(m_wrapWidthSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_wrapWidthSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyTextProperties(); });
+ rl->addWidget(m_wrapWidthSpin);
 
  rl->addStretch();
  }

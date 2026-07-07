@@ -409,6 +409,36 @@ constexpr qreal kSmallCapScale = 0.75;
 /// is already uppercased; `small` marks runs that were originally lowercase.
 struct SmallCapsRun { QString text; bool small; };
 
+/// Greedy word-wrap: re-line `text` (splitting only on existing '\n') so no
+/// line's advance exceeds maxW. When `measureUpper` is set, candidates are
+/// measured uppercased — small-caps rendering draws every glyph uppercase at
+/// <= full size, so full-size uppercase advance is a safe upper bound (wraps
+/// a hair early, never overflows). Words wider than maxW get their own line.
+QString wrapToWidth(const QString& text, const QFontMetricsF& fm, qreal maxW,
+                    bool measureUpper)
+{
+    QStringList out;
+    for (const QString& para : text.split(QChar('\n'))) {
+        const QStringList words = para.split(QChar(' '), Qt::SkipEmptyParts);
+        if (words.isEmpty()) { out << QString(); continue; }
+        QString line;
+        for (const QString& word : words) {
+            const QString cand = line.isEmpty() ? word
+                                                : line + QChar(' ') + word;
+            const qreal w = fm.horizontalAdvance(measureUpper ? cand.toUpper()
+                                                              : cand);
+            if (!line.isEmpty() && w > maxW) {
+                out << line;
+                line = word;
+            } else {
+                line = cand;
+            }
+        }
+        out << line;
+    }
+    return out.join(QChar('\n'));
+}
+
 /// Split text into lines (on '\n') of size-classed, uppercased runs.
 std::vector<std::vector<SmallCapsRun>> buildSmallCapsLines(const QString& text)
 {
@@ -442,10 +472,14 @@ std::vector<std::vector<SmallCapsRun>> buildSmallCapsLines(const QString& text)
 QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
                            const QFont& fullFont, const QFont& smallFont,
                            const QFontMetricsF& fmFull, const QFontMetricsF& fmSmall,
-                           qreal cx, qreal cy, int hAlign, int vAlign)
+                           qreal cx, qreal cy, int hAlign, int vAlign,
+                           qreal extraLeading = 0.0, qreal baselineShift = 0.0)
 {
     QPainterPath path;
-    const qreal lineSpacing = fmFull.lineSpacing();
+    // `extraLeading` is ADDITIVE px on top of the font's natural line spacing
+    // (0 = exactly the pre-leading layout). `baselineShift` follows the
+    // typographic convention: positive shifts glyphs UP off the baseline.
+    const qreal lineSpacing = fmFull.lineSpacing() + extraLeading;
     const qreal ascent      = fmFull.ascent();
     const int   n           = static_cast<int>(lines.size());
     const qreal totalH      = lineSpacing * n;
@@ -466,7 +500,7 @@ QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
         else if (hAlign == Qt::AlignRight)  startX = cx - w;
         else                                startX = cx - w * 0.5;       // HCenter/Justify
 
-        const qreal baseY = blockTop + ascent + lineSpacing * i;
+        const qreal baseY = blockTop + ascent + lineSpacing * i - baselineShift;
         qreal penX = startX;
         for (const auto& r : runs) {
             const QFont& f = r.small ? smallFont : fullFont;
@@ -529,6 +563,8 @@ static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
             mixF(tl->tracking().evaluate(localTick));
             mixF(tl->leading().evaluate(localTick));
             mixF(tl->baselineShift().evaluate(localTick));
+            mixU(tl->useParagraphBox() ? 1u : 0u);
+            mixF(tl->boxWidth());
         } else {
             const auto* sl = static_cast<const ShapeLayer*>(layer);
             mixU(static_cast<uint64_t>(sl->shapeType()));
@@ -652,6 +688,15 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             const bool smallCaps = tl->smallCaps() && !tl->allCaps();
             if (tl->allCaps()) text = text.toUpper();
 
+            // Paragraph box: word-wrap to the box width. Off (the default)
+            // keeps point-text behaviour — lines break only on '\n'.
+            if (tl->useParagraphBox() && tl->boxWidth() > 1.0f) {
+                const QFontMetricsF fmWrap(font);
+                text = wrapToWidth(text, fmWrap,
+                                   static_cast<qreal>(tl->boxWidth()),
+                                   smallCaps);
+            }
+
             int hAlign = Qt::AlignHCenter;
             switch (tl->alignment()) {
                 case GTextAlign::Left:    hAlign = Qt::AlignLeft;    break;
@@ -697,15 +742,20 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             const QFontMetricsF fmFull(font), fmSmall(smallFont);
 
             const QPainterPath glyphPath = buildTextPath(
-                lines, font, smallFont, fmFull, fmSmall, cx, cy, hAlign, vAlign);
+                lines, font, smallFont, fmFull, fmSmall, cx, cy, hAlign, vAlign,
+                static_cast<qreal>(tl->leading().evaluate(localTick)),
+                static_cast<qreal>(tl->baselineShift().evaluate(localTick)));
 
             painter.setRenderHint(QPainter::Antialiasing, true);
 
-            // Strokes (render behind fill). QPen width = 2*w so the band extends
-            // w px outside the glyph edge (the inner half is hidden by the
-            // fill), reproducing the old dilation-by-w silhouette.
+            // Strokes honour their position relative to the glyph edge:
+            //   Outer  — pen 2*w BEHIND the fill (fill hides the inner half,
+            //            leaving a w px band outside — the legacy look)
+            //   Center — pen w ON TOP of the fill (band straddles the edge)
+            //   Inner  — pen 2*w on top, clipped to the glyphs (band inside)
             for (auto it = app.strokes.rbegin(); it != app.strokes.rend(); ++it) {
                 if (!it->enabled || it->width < 0.1f) continue;
+                if (it->position != StrokePosition::Outer) continue;
                 QPen pen(toQColor(it->color));
                 pen.setWidthF(static_cast<qreal>(it->width) * 2.0);
                 pen.setJoinStyle(Qt::RoundJoin);
@@ -731,6 +781,28 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
                                ? toQColor(app.fills[0].color)
                                : QColor(255, 255, 255);
             painter.fillPath(glyphPath, fillC);
+
+            // Center/Inner strokes render over the fill (see comment above).
+            for (auto it = app.strokes.rbegin(); it != app.strokes.rend(); ++it) {
+                if (!it->enabled || it->width < 0.1f) continue;
+                if (it->position == StrokePosition::Outer) continue;
+                QPen pen(toQColor(it->color));
+                pen.setJoinStyle(Qt::RoundJoin);
+                pen.setCapStyle(Qt::RoundCap);
+                painter.setBrush(Qt::NoBrush);
+                if (it->position == StrokePosition::Center) {
+                    pen.setWidthF(static_cast<qreal>(it->width));
+                    painter.setPen(pen);
+                    painter.drawPath(glyphPath);
+                } else { // Inner
+                    pen.setWidthF(static_cast<qreal>(it->width) * 2.0);
+                    painter.setPen(pen);
+                    painter.save();
+                    painter.setClipPath(glyphPath);
+                    painter.drawPath(glyphPath);
+                    painter.restore();
+                }
+            }
 
         } else if (layer->layerType() == GraphicLayerType::Shape) {
             const auto* sl = static_cast<const ShapeLayer*>(layer);
@@ -809,20 +881,68 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
 // CaptionClip CPU rendering — burned-in (open) subtitle overlay
 // =========================================================================
 
+// Render-state hash for renderCaptionClip's memo cache. Captions are static
+// per clip (no per-tick animation), so the key covers every editable field
+// plus the output dimensions — an edit changes the key, so the cache is
+// self-invalidating and cannot serve a stale frame.
+static uint64_t hashCaptionClipRenderState(CaptionClip* clip,
+                                           uint32_t outW, uint32_t outH,
+                                           uint32_t renderW, uint32_t renderH)
+{
+    uint64_t h = 1469598103934665603ULL;            // FNV-1a 64
+    auto mixBytes = [&](const void* p, size_t n) {
+        const auto* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+    };
+    auto mixU = [&](uint64_t v) { mixBytes(&v, sizeof(v)); };
+    auto mixF = [&](float f)    { mixBytes(&f, sizeof(f)); };
+
+    mixU(clip->id()); mixU(outW); mixU(outH); mixU(renderW); mixU(renderH);
+    mixBytes(clip->text().data(), clip->text().size());             mixU(0x5354u);
+    mixBytes(clip->speaker().data(), clip->speaker().size());       mixU(0x5350u);
+    mixBytes(clip->fontFamily().data(), clip->fontFamily().size()); mixU(0x4646u);
+    mixF(clip->fontSize());
+    mixU(clip->textColor()); mixU(clip->bgColor());
+    mixU(static_cast<uint64_t>(clip->position()));
+    mixU(clip->isBold() ? 1u : 0u);
+    mixU(clip->outlineColor()); mixF(clip->outlineWidth());
+    mixU(clip->showSpeaker() ? 1u : 0u);
+    return h;
+}
+
 std::shared_ptr<CachedFrame> renderCaptionClip(
     CaptionClip* clip, int64_t tick, uint32_t outW, uint32_t outH,
     uint32_t refW, uint32_t refH)
 {
     (void)tick;
     if (!clip) return nullptr;
-    const QString text = QString::fromStdString(clip->text());
+    QString text = QString::fromStdString(clip->text());
     if (text.trimmed().isEmpty()) return nullptr;
+    // Burn the speaker label into the cue when enabled ("SPEAKER: text").
+    if (clip->showSpeaker() && !clip->speaker().empty())
+        text = QString::fromStdString(clip->speaker()).toUpper()
+             + QStringLiteral(": ") + text;
 
     // Render at full project resolution (like renderGraphicClip) so font
     // metrics and pixel sizes match the authored values, then downscale.
     const uint32_t renderW = (refW > 0 && refW > outW) ? refW : outW;
     const uint32_t renderH = (refH > 0 && refH > outH) ? refH : outH;
     const bool needsDownscale = (renderW != outW || renderH != outH);
+
+    // ── Memoized render ─────────────────────────────────────────────────
+    // A caption is visible for seconds at a time; without this, every frame
+    // it covers re-allocates a full project-res ARGB canvas and re-runs the
+    // text layout. Same pattern as renderGraphicClip's memo above.
+    static std::mutex                                                         s_ccMtx;
+    static std::unordered_map<uint64_t, std::pair<uint64_t, std::shared_ptr<CachedFrame>>> s_ccCache;
+    const uint64_t renderKey =
+        hashCaptionClipRenderState(clip, outW, outH, renderW, renderH);
+    {
+        std::lock_guard<std::mutex> lock(s_ccMtx);
+        auto it = s_ccCache.find(clip->id());
+        if (it != s_ccCache.end() && it->second.first == renderKey && it->second.second)
+            return it->second.second;
+    }
 
     auto toQColor = [](uint32_t c) -> QColor {
         return QColor(
@@ -842,7 +962,7 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
 
     int fontPx = std::max(1, static_cast<int>(std::lround(clip->fontSize())));
     QFont font(QString::fromStdString(clip->fontFamily()), fontPx);
-    font.setBold(true);  // captions read best bold; Premiere defaults bold-ish
+    font.setBold(clip->isBold());   // default on — captions read best bold
     painter.setFont(font);
 
     // Lay the text out within ~80% of frame width, word-wrapped & centered.
@@ -888,6 +1008,20 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
         painter.drawRoundedRect(boxRect, radius, radius);
     }
 
+    // Outline: offset-grid stamp in the outline color behind the fill text.
+    // O(width²) drawText calls, but the memo cache above means a caption
+    // renders once per edit, not once per frame — so this stays cheap.
+    if (clip->outlineWidth() > 0.01f) {
+        painter.setPen(toQColor(clip->outlineColor()));
+        const int ow = std::max(1, static_cast<int>(std::lround(clip->outlineWidth())));
+        for (int ox = -ow; ox <= ow; ++ox)
+            for (int oy = -ow; oy <= ow; ++oy) {
+                if (ox == 0 && oy == 0) continue;
+                painter.drawText(boxRect.translated(ox, oy),
+                                 Qt::AlignCenter | Qt::TextWordWrap, text);
+            }
+    }
+
     painter.setPen(toQColor(clip->textColor()));
     painter.drawText(boxRect, Qt::AlignCenter | Qt::TextWordWrap, text);
     painter.end();
@@ -902,6 +1036,13 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
     frame->stride = static_cast<uint32_t>(canvas.bytesPerLine());
     frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
     std::memcpy(frame->pixels.data(), canvas.constBits(), frame->pixels.size());
+
+    // Store in the memo (one entry per clip), bounded like the graphic cache.
+    {
+        std::lock_guard<std::mutex> lock(s_ccMtx);
+        if (s_ccCache.size() > 64) s_ccCache.clear();
+        s_ccCache[clip->id()] = { renderKey, frame };
+    }
 
     return frame;
 }

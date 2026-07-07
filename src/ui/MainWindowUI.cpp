@@ -176,6 +176,7 @@ void MainWindow::onSaveProject()              { m_projectController->onSaveProje
 void MainWindow::onSaveProjectAs()            { m_projectController->onSaveProjectAs(); }
 void MainWindow::onImportSrt()                { m_projectController->onImportSrt(); }
 void MainWindow::onExportSrt()                { m_projectController->onExportSrt(); }
+void MainWindow::onExportChapters()           { m_projectController->onExportChapters(); }
 
 void MainWindow::setCurrentProject(std::unique_ptr<Project> project)
 {

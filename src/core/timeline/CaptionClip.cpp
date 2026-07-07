@@ -57,6 +57,10 @@ std::unique_ptr<Clip> CaptionClip::clone() const
  copy->m_textColor = m_textColor;
  copy->m_bgColor = m_bgColor;
  copy->m_position = m_position;
+ copy->m_bold = m_bold;
+ copy->m_outlineColor = m_outlineColor;
+ copy->m_outlineWidth = m_outlineWidth;
+ copy->m_showSpeaker = m_showSpeaker;
 
  return copy;
 }

@@ -159,6 +159,26 @@ void CaptionsPanel::buildUI()
  m_countLabel->setObjectName("captionCountLabel");
  mainLayout->addWidget(m_countLabel);
 
+ // â”€â”€ Filter box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ m_filterEdit = new QLineEdit(this);
+ m_filterEdit->setPlaceholderText("Filter captions (text or speaker)...");
+ m_filterEdit->setClearButtonEnabled(true);
+ mainLayout->addWidget(m_filterEdit);
+ connect(m_filterEdit, &QLineEdit::textChanged,
+ this, [this](const QString&) { applyCaptionFilter(); });
+
+ // Replace row â€” replaces the filter text inside every caption's text.
+ auto* replaceRow = new QHBoxLayout();
+ m_replaceEdit = new QLineEdit(this);
+ m_replaceEdit->setPlaceholderText("Replace with...");
+ m_replaceEdit->setClearButtonEnabled(true);
+ replaceRow->addWidget(m_replaceEdit, 1);
+ m_replaceAllBtn = new QPushButton("Replace All", this);
+ m_replaceAllBtn->setToolTip("Replace every occurrence of the filter text in all caption texts (one undo step)");
+ connect(m_replaceAllBtn, &QPushButton::clicked, this, &CaptionsPanel::onReplaceAll);
+ replaceRow->addWidget(m_replaceAllBtn);
+ mainLayout->addLayout(replaceRow);
+
  // â”€â”€ Caption list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  m_captionList = new QListWidget(this);
  m_captionList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -215,6 +235,12 @@ void CaptionsPanel::buildUI()
  m_fontSizeSpin->setFixedWidth(70);
  fontRow->addWidget(m_fontSizeSpin);
  editorLayout->addLayout(fontRow);
+
+ // Apply current style (font / size / position) to every caption at once.
+ m_applyAllBtn = new QPushButton("Apply Style to All Captions", editorFrame);
+ m_applyAllBtn->setToolTip("Apply this caption's font, size and position to ALL captions (one undo step)");
+ connect(m_applyAllBtn, &QPushButton::clicked, this, &CaptionsPanel::onApplyStyleToAll);
+ editorLayout->addWidget(m_applyAllBtn);
 
  // Text edit
  m_textEdit = new QTextEdit(editorFrame);
@@ -332,6 +358,12 @@ CaptionClip* CaptionsPanel::findCaptionClipById(uint64_t clipId) const
  return nullptr;
 }
 
+CaptionClip* CaptionsPanel::entryClip(int row) const
+{
+ if (row < 0 || row >= static_cast<int>(m_entries.size())) return nullptr;
+ return findCaptionClipById(m_entries[row].clipId);
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Refresh â€” rebuild caption list from timeline
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -341,7 +373,10 @@ void CaptionsPanel::refresh()
  m_entries.clear();
  m_captionList->clear();
 
+ double totalSec = 0.0;
  if (m_timeline) {
+ // Live pointers only within this scope (for sort/labels); entries cache ids.
+ std::vector<std::pair<CaptionEntry, CaptionClip*>> collected;
  for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
  Track* track = m_timeline->track(ti);
  if (!track->isCaptionTrack()) continue;
@@ -354,23 +389,25 @@ void CaptionsPanel::refresh()
  CaptionEntry entry;
  entry.trackIndex = ti;
  entry.clipIndex = ci;
- entry.clip = cc;
- m_entries.push_back(entry);
+ entry.clipId = cc->id();
+ collected.emplace_back(entry, cc);
  }
  }
 
  // Sort by timeline position
- std::sort(m_entries.begin(), m_entries.end(),
- [](const CaptionEntry& a, const CaptionEntry& b) {
- return a.clip->timelineIn() < b.clip->timelineIn();
+ std::sort(collected.begin(), collected.end(),
+ [](const auto& a, const auto& b) {
+ return a.second->timelineIn() < b.second->timelineIn();
  });
 
  // Populate list
- for (const auto& entry : m_entries) {
+ for (const auto& [entry, cc] : collected) {
+ m_entries.push_back(entry);
  m_captionList->addItem(buildCaptionLabel(
- entry.clip->timelineIn(),
- QString::fromStdString(entry.clip->speaker()),
- QString::fromStdString(entry.clip->text())));
+ cc->timelineIn(),
+ QString::fromStdString(cc->speaker()),
+ QString::fromStdString(cc->text())));
+ totalSec += static_cast<double>(cc->duration()) / kTicksPerSecond;
  }
  }
 
@@ -380,9 +417,6 @@ void CaptionsPanel::refresh()
  if (m_entries.empty()) {
  m_countLabel->setText("No captions");
  } else {
- double totalSec = 0.0;
- for (const auto& e : m_entries)
- totalSec += static_cast<double>(e.clip->duration()) / kTicksPerSecond;
  m_countLabel->setText(QString("%1 caption%2 \xC2\xB7 %3 total")
  .arg(m_entries.size())
  .arg(m_entries.size() == 1 ? "" : "s")
@@ -396,7 +430,19 @@ void CaptionsPanel::refresh()
  m_timeLabel->setText("--:--:--:-- \xE2\x86\x92 --:--:--:--");
  }
 
+ applyCaptionFilter();
  updateButtonStates();
+}
+
+void CaptionsPanel::applyCaptionFilter()
+{
+ if (!m_filterEdit || !m_captionList) return;
+ const QString needle = m_filterEdit->text().trimmed();
+ for (int i = 0; i < m_captionList->count(); ++i) {
+ auto* item = m_captionList->item(i);
+ item->setHidden(!needle.isEmpty() &&
+ !item->text().contains(needle, Qt::CaseInsensitive));
+ }
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -423,10 +469,9 @@ void CaptionsPanel::onListSelectionChanged()
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  m_updatingUI = true;
-
- const auto& entry = m_entries[row];
- CaptionClip* cc = entry.clip;
 
  m_textEdit->setPlainText(QString::fromStdString(cc->text()));
  m_speakerEdit->setText(QString::fromStdString(cc->speaker()));
@@ -450,7 +495,8 @@ void CaptionsPanel::onTextChanged()
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
- CaptionClip* cc = m_entries[row].clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  std::string newText = m_textEdit->toPlainText().toStdString();
  std::string oldText = cc->text();
  if (newText == oldText) return;
@@ -497,7 +543,8 @@ void CaptionsPanel::onSpeakerChanged()
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
- CaptionClip* cc = m_entries[row].clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  std::string newSpeaker = m_speakerEdit->text().toStdString();
  std::string oldSpeaker = cc->speaker();
  if (newSpeaker == oldSpeaker) return;
@@ -536,7 +583,8 @@ void CaptionsPanel::onPositionChanged(int index)
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
  if (index < 0) return;
 
- CaptionClip* cc = m_entries[row].clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  auto newPos = static_cast<CaptionPosition>(index);
  auto oldPos = cc->position();
  if (newPos == oldPos) return;
@@ -561,7 +609,8 @@ void CaptionsPanel::onFontChanged(const QString& family)
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
- CaptionClip* cc = m_entries[row].clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  std::string newFont = family.toStdString();
  std::string oldFont = cc->fontFamily();
  if (newFont == oldFont) return;
@@ -586,7 +635,8 @@ void CaptionsPanel::onFontSizeChanged(int size)
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
- CaptionClip* cc = m_entries[row].clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  float newSize = static_cast<float>(size);
  float oldSize = cc->fontSize();
  if (newSize == oldSize) return;
@@ -692,7 +742,7 @@ void CaptionsPanel::onDeleteCaption()
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
  const auto& entry = m_entries[row];
- uint64_t clipId = entry.clip->id();
+ uint64_t clipId = entry.clipId;
  Timeline* tl = m_timeline;
  CaptionsPanel* self = this;
 
@@ -747,6 +797,104 @@ void CaptionsPanel::onDeleteCaption()
  emit captionEdited();
 }
 
+void CaptionsPanel::onApplyStyleToAll()
+{
+ if (!m_timeline || m_entries.empty()) return;
+
+ const std::string font = m_fontCombo->currentText().toStdString();
+ const float size = static_cast<float>(m_fontSizeSpin->value());
+ const auto pos = static_cast<CaptionPosition>(std::max(0, m_positionCombo->currentIndex()));
+
+ // Snapshot per-clip old styles so undo restores each caption exactly.
+ struct OldStyle { uint64_t id; std::string font; float size; CaptionPosition pos; };
+ auto old = std::make_shared<std::vector<OldStyle>>();
+ for (const auto& e : m_entries)
+ if (auto* c = findCaptionClipById(e.clipId))
+ old->push_back({e.clipId, c->fontFamily(), c->fontSize(), c->position()});
+ if (old->empty()) return;
+
+ CaptionsPanel* self = this;
+ auto doIt = [self, font, size, pos, old]() {
+ for (const auto& o : *old)
+ if (auto* c = self->findCaptionClipById(o.id)) {
+ c->setFontFamily(font);
+ c->setFontSize(size);
+ c->setPosition(pos);
+ }
+ self->refresh();
+ emit self->captionEdited();
+ };
+ auto undoIt = [self, old]() {
+ for (const auto& o : *old)
+ if (auto* c = self->findCaptionClipById(o.id)) {
+ c->setFontFamily(o.font);
+ c->setFontSize(o.size);
+ c->setPosition(o.pos);
+ }
+ self->refresh();
+ emit self->captionEdited();
+ };
+
+ if (m_commandStack) {
+ m_commandStack->execute(std::make_unique<LambdaCommand>(
+ "Apply Caption Style to All", doIt, undoIt));
+ } else {
+ doIt();
+ }
+}
+
+void CaptionsPanel::onReplaceAll()
+{
+ if (!m_timeline || m_entries.empty()) return;
+ const QString needle = m_filterEdit ? m_filterEdit->text() : QString();
+ if (needle.trimmed().isEmpty()) {
+ QMessageBox::information(this, "Replace All",
+ "Type the text to find into the filter box first.");
+ return;
+ }
+ const QString replacement = m_replaceEdit ? m_replaceEdit->text() : QString();
+
+ // Precompute per-clip old/new text; only clips whose text actually changes
+ // participate (filter also matches speaker â€” don't rewrite those).
+ struct Change { uint64_t id; std::string oldText; std::string newText; };
+ auto changes = std::make_shared<std::vector<Change>>();
+ for (const auto& e : m_entries) {
+ auto* c = findCaptionClipById(e.clipId);
+ if (!c) continue;
+ QString txt = QString::fromStdString(c->text());
+ QString replaced = txt;
+ replaced.replace(needle, replacement, Qt::CaseInsensitive);
+ if (replaced != txt)
+ changes->push_back({e.clipId, c->text(), replaced.toStdString()});
+ }
+ if (changes->empty()) {
+ QMessageBox::information(this, "Replace All",
+ QString("No caption text contains \"%1\".").arg(needle));
+ return;
+ }
+
+ CaptionsPanel* self = this;
+ auto doIt = [self, changes]() {
+ for (const auto& ch : *changes)
+ if (auto* c = self->findCaptionClipById(ch.id)) c->setText(ch.newText);
+ self->refresh();
+ emit self->captionEdited();
+ };
+ auto undoIt = [self, changes]() {
+ for (const auto& ch : *changes)
+ if (auto* c = self->findCaptionClipById(ch.id)) c->setText(ch.oldText);
+ self->refresh();
+ emit self->captionEdited();
+ };
+
+ if (m_commandStack) {
+ m_commandStack->execute(std::make_unique<LambdaCommand>(
+ "Replace in Captions", doIt, undoIt));
+ } else {
+ doIt();
+ }
+}
+
 void CaptionsPanel::onClearAll()
 {
  if (!m_timeline || m_entries.empty()) return;
@@ -759,7 +907,7 @@ void CaptionsPanel::onClearAll()
  // Snapshot the current caption clips (clones) so undo can restore them.
  auto saved = std::make_shared<std::vector<std::unique_ptr<Clip>>>();
  for (const auto& e : m_entries)
- if (e.clip) saved->push_back(e.clip->clone());
+ if (auto* c = findCaptionClipById(e.clipId)) saved->push_back(c->clone());
  if (saved->empty()) { emit clearAllRequested(); return; }
 
  CaptionsPanel* self = this;
@@ -803,7 +951,8 @@ void CaptionsPanel::onFillGaps()
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
  const auto& entry = m_entries[row];
- CaptionClip* cc = entry.clip;
+ CaptionClip* cc = entryClip(row);
+ if (!cc) return;
  Track* track = m_timeline->track(entry.trackIndex);
  if (!track) return;
 
@@ -836,7 +985,7 @@ void CaptionsPanel::onFillGaps()
 
  // Re-select the same caption
  for (int i = 0; i < static_cast<int>(m_entries.size()); ++i) {
- if (m_entries[i].clip->id() == clipId) {
+ if (m_entries[i].clipId == clipId) {
  m_captionList->setCurrentRow(i);
  break;
  }

@@ -294,6 +294,7 @@ private slots:
     void onExportProject(const QString& name, const QString& dstPath);
     void onImportSrt();
     void onExportSrt();
+    void onExportChapters();
     void onProjectsDirChanged(const QString& newDir);
     void onUndo();
     void onRedo();

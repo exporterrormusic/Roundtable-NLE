@@ -99,6 +99,8 @@ private slots:
  void onFontSizeChanged(int size);
  void onAddCaption();
  void onDeleteCaption();
+ void onApplyStyleToAll();
+ void onReplaceAll();
  void onClearAll();
  void onFillGaps();
  void onTranscribe();
@@ -109,9 +111,16 @@ private:
  void applyTheme();
  void updateButtonStates();
 
+ /// Hide list rows that don't match the filter box (text or speaker).
+ void applyCaptionFilter();
+
  /// Resolve a clip id to the live CaptionClip on the timeline (nullptr if it
  /// was deleted). Undo/redo lambdas capture ids, never Clip pointers.
  CaptionClip* findCaptionClipById(uint64_t clipId) const;
+
+ /// Resolve the caption entry at a list row to its live clip (nullptr if the
+ /// clip was deleted by a timeline edit since the last refresh()).
+ CaptionClip* entryClip(int row) const;
 
  /// Collect ALL audio sources on the timeline to transcribe (one per
  /// audio clip / video-clip-with-audio), each with its own offset + speaker.
@@ -125,13 +134,17 @@ private:
  struct CaptionEntry {
  size_t trackIndex{0};
  size_t clipIndex{0};
- CaptionClip* clip{nullptr};
+ uint64_t clipId{0}; // never cache CaptionClip* — timeline edits delete clips
  };
 
  Timeline* m_timeline{nullptr};
  CommandStack* m_commandStack{nullptr};
 
  // UI widgets
+ QLineEdit* m_filterEdit{nullptr};
+ QLineEdit* m_replaceEdit{nullptr};
+ QPushButton* m_replaceAllBtn{nullptr};
+ QPushButton* m_applyAllBtn{nullptr};
  QListWidget* m_captionList{nullptr};
  QTextEdit* m_textEdit{nullptr};
  QLineEdit* m_speakerEdit{nullptr};

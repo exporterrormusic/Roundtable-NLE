@@ -67,9 +67,10 @@ public:
     void onExportProject(const QString& name, const QString& dstPath);
     void onProjectsDirChanged(const QString& newDir);
 
-    // ── SRT subtitles ───────────────────────────────────────────────────
+    // ── SRT subtitles / chapters ────────────────────────────────────────
     void onImportSrt();
     void onExportSrt();
+    void onExportChapters();
 
     // ── Core lifecycle ──────────────────────────────────────────────────
     [[nodiscard]] QString projectsDirectory() const;

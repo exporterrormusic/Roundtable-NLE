@@ -10,6 +10,7 @@
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
+#include "timeline/CaptionClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
 
@@ -133,26 +134,16 @@ int importSrt(Timeline& timeline, const std::vector<SrtEntry>& entries)
 {
     if (entries.empty()) return 0;
 
-    // Create a new video track for subtitles
-    Track* track = timeline.addVideoTrack("Subtitles");
+    Track* track = timeline.captionTrack();
+    if (!track) track = timeline.addCaptionTrack();
     if (!track) return 0;
 
     int count = 0;
     for (const auto& entry : entries) {
-        auto clip = std::make_unique<GraphicClip>();
-        clip->setLabel("Subtitle");
+        auto clip = std::make_unique<CaptionClip>();
+        clip->setText(entry.text);
         clip->setTimelineIn(entry.startTick);
         clip->setDuration(entry.endTick - entry.startTick);
-
-        // Add a TextLayer with the subtitle text
-        auto* textLayer = clip->addTextLayer(entry.text);
-        if (textLayer) {
-            textLayer->setFontSize(32.0f);
-            textLayer->setAlignment(GTextAlign::Center);
-            textLayer->setVAlignment(GTextVAlign::Bottom);
-            // White text with default appearance (typically includes a shadow)
-        }
-
         track->addClip(std::move(clip));
         ++count;
     }
@@ -174,7 +165,19 @@ int exportSrt(const Timeline& timeline, const std::filesystem::path& path)
     };
     std::vector<SubEntry> subs;
 
-    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+    // Caption track first — this is where transcribed/imported captions live.
+    if (const Track* ct = const_cast<Timeline&>(timeline).captionTrack()) {
+        for (size_t ci = 0; ci < ct->clipCount(); ++ci) {
+            const auto* cc = dynamic_cast<const CaptionClip*>(ct->clip(ci));
+            if (!cc || cc->text().empty()) continue;
+            std::string text = cc->speaker().empty()
+                ? cc->text() : cc->speaker() + ": " + cc->text();
+            subs.push_back({cc->timelineIn(), cc->timelineOut(), std::move(text)});
+        }
+    }
+
+    // Fallback for legacy projects whose subtitles are Graphic text clips.
+    for (size_t ti = 0; subs.empty() && ti < timeline.trackCount(); ++ti) {
         const Track* track = timeline.track(ti);
         if (!track || track->type() != TrackType::Video) continue;
 
@@ -222,6 +225,53 @@ int exportSrt(const Timeline& timeline, const std::filesystem::path& path)
     }
 
     return static_cast<int>(subs.size());
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Export YouTube chapters from timeline markers
+// ═════════════════════════════════════════════════════════════════════════════
+
+// "M:SS Title" / "H:MM:SS Title" — the format YouTube parses out of a video
+// description. Hours are omitted below one hour (YouTube accepts both).
+static std::string ticksToChapterTimestamp(int64_t ticks)
+{
+    if (ticks < 0) ticks = 0;
+    const int64_t totalSec = static_cast<int64_t>(
+        static_cast<double>(ticks) / kTicksPerSecond + 0.5);
+    const int h = static_cast<int>(totalSec / 3600);
+    const int m = static_cast<int>((totalSec / 60) % 60);
+    const int s = static_cast<int>(totalSec % 60);
+    char buf[32];
+    if (h > 0) std::snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
+    else       std::snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
+    return buf;
+}
+
+int exportYouTubeChapters(const Timeline& timeline,
+                          const std::filesystem::path& path)
+{
+    std::vector<Marker> markers = timeline.markers();
+    if (markers.empty()) return 0;
+
+    std::sort(markers.begin(), markers.end(),
+              [](const Marker& a, const Marker& b) { return a.time < b.time; });
+
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) return 0;
+
+    int count = 0;
+    // YouTube requires the chapter list to start at 00:00 — synthesize an
+    // intro line when the first marker sits later on the timeline.
+    if (static_cast<double>(markers.front().time) / kTicksPerSecond >= 1.0) {
+        ofs << "00:00 Intro\n";
+        ++count;
+    }
+    for (const Marker& mk : markers) {
+        ofs << ticksToChapterTimestamp(mk.time) << ' '
+            << (mk.label.empty() ? std::string("Chapter") : mk.label) << '\n';
+        ++count;
+    }
+    return count;
 }
 
 } // namespace rt

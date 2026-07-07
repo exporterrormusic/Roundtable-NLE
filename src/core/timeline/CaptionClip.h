@@ -40,12 +40,20 @@ public:
  [[nodiscard]] uint32_t textColor() const noexcept { return m_textColor; }
  [[nodiscard]] uint32_t bgColor() const noexcept { return m_bgColor; }
  [[nodiscard]] CaptionPosition position() const noexcept { return m_position; }
+ [[nodiscard]] bool isBold() const noexcept { return m_bold; }
+ [[nodiscard]] uint32_t outlineColor() const noexcept { return m_outlineColor; }
+ [[nodiscard]] float outlineWidth() const noexcept { return m_outlineWidth; }
+ [[nodiscard]] bool showSpeaker() const noexcept { return m_showSpeaker; }
 
  void setFontFamily(const std::string& f) { m_fontFamily = f; }
  void setFontSize(float s) noexcept { m_fontSize = s; }
  void setTextColor(uint32_t c) noexcept { m_textColor = c; }
  void setBgColor(uint32_t c) noexcept { m_bgColor = c; }
  void setPosition(CaptionPosition p) noexcept { m_position = p; }
+ void setBold(bool b) noexcept { m_bold = b; }
+ void setOutlineColor(uint32_t c) noexcept { m_outlineColor = c; }
+ void setOutlineWidth(float w) noexcept { m_outlineWidth = w; }
+ void setShowSpeaker(bool v) noexcept { m_showSpeaker = v; }
 
  // â”€â”€ Clone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  [[nodiscard]] std::unique_ptr<Clip> clone() const override;
@@ -58,6 +66,12 @@ private:
  uint32_t m_textColor{0xFFFFFFFF}; // White
  uint32_t m_bgColor{0xCC000000}; // Semi-transparent black
  CaptionPosition m_position{CaptionPosition::Bottom};
+ // v31 style fields. Defaults preserve the pre-v31 rendered look exactly
+ // (bold was hard-coded on, no outline, speaker never burned in).
+ bool m_bold{true};
+ uint32_t m_outlineColor{0xFF000000}; // Black
+ float m_outlineWidth{0.0f}; // 0 = no outline
+ bool m_showSpeaker{false};
 };
 
 } // namespace rt

@@ -22,6 +22,7 @@
 
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFontComboBox>
 #include <QLineEdit>
@@ -35,6 +36,7 @@
 #include <QJsonObject>
 #include <QFile>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -212,6 +214,84 @@ void PropertiesPanel::applyCaptionBgColor()
     setSwatch(m_capBgColorBtn, packed);
 }
 
+void PropertiesPanel::applyCaptionBold()
+{
+    if (m_updating) return;
+    auto targets = captionTargets();
+    if (targets.empty()) return;
+    bool newVal = m_capBoldCheck && m_capBoldCheck->isChecked();
+    std::vector<std::pair<CaptionClip*, bool>> olds;
+    bool changed = false;
+    for (auto* cc : targets) { olds.emplace_back(cc, cc->isBold()); if (cc->isBold() != newVal) changed = true; }
+    if (!changed) return;
+    auto* self = this;
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Change caption bold",
+            [olds, newVal, self]() { for (auto& p : olds) p.first->setBold(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
+            [olds, self]()         { for (auto& p : olds) p.first->setBold(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
+    } else { for (auto& p : olds) p.first->setBold(newVal); emit propertyChanged(); }
+}
+
+void PropertiesPanel::applyCaptionOutlineWidth()
+{
+    if (m_updating) return;
+    auto targets = captionTargets();
+    if (targets.empty()) return;
+    float newVal = m_capOutlineWidthSpin
+                 ? static_cast<float>(m_capOutlineWidthSpin->value()) : 0.0f;
+    std::vector<std::pair<CaptionClip*, float>> olds;
+    bool changed = false;
+    for (auto* cc : targets) { olds.emplace_back(cc, cc->outlineWidth()); if (cc->outlineWidth() != newVal) changed = true; }
+    if (!changed) return;
+    auto* self = this;
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Change caption outline",
+            [olds, newVal, self]() { for (auto& p : olds) p.first->setOutlineWidth(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
+            [olds, self]()         { for (auto& p : olds) p.first->setOutlineWidth(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
+    } else { for (auto& p : olds) p.first->setOutlineWidth(newVal); emit propertyChanged(); }
+}
+
+void PropertiesPanel::applyCaptionOutlineColor()
+{
+    auto targets = captionTargets();
+    if (targets.empty()) return;
+    QColor cur = argbToQColor(targets.front()->outlineColor());
+    QColor chosen = QColorDialog::getColor(cur, this, "Caption Outline Color");
+    if (!chosen.isValid()) return;
+    uint32_t packed = qcolorToArgb(chosen);
+    std::vector<std::pair<CaptionClip*, uint32_t>> olds;
+    for (auto* cc : targets) olds.emplace_back(cc, cc->outlineColor());
+    auto* self = this;
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Change caption outline color",
+            [olds, packed, self]() { for (auto& p : olds) p.first->setOutlineColor(packed); self->populateFromCaption(); emit self->propertyChanged(); },
+            [olds, self]()         { for (auto& p : olds) p.first->setOutlineColor(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
+    } else { for (auto& p : olds) p.first->setOutlineColor(packed); emit propertyChanged(); }
+    setSwatch(m_capOutlineColorBtn, packed);
+}
+
+void PropertiesPanel::applyCaptionShowSpeaker()
+{
+    if (m_updating) return;
+    auto targets = captionTargets();
+    if (targets.empty()) return;
+    bool newVal = m_capShowSpeakerCheck && m_capShowSpeakerCheck->isChecked();
+    std::vector<std::pair<CaptionClip*, bool>> olds;
+    bool changed = false;
+    for (auto* cc : targets) { olds.emplace_back(cc, cc->showSpeaker()); if (cc->showSpeaker() != newVal) changed = true; }
+    if (!changed) return;
+    auto* self = this;
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Change caption speaker burn-in",
+            [olds, newVal, self]() { for (auto& p : olds) p.first->setShowSpeaker(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
+            [olds, self]()         { for (auto& p : olds) p.first->setShowSpeaker(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
+    } else { for (auto& p : olds) p.first->setShowSpeaker(newVal); emit propertyChanged(); }
+}
+
 // ── Populate fields from the representative caption ──────────────────────────
 
 void PropertiesPanel::populateFromCaption()
@@ -228,6 +308,10 @@ void PropertiesPanel::populateFromCaption()
     if (m_capPositionCombo) m_capPositionCombo->setCurrentIndex(static_cast<int>(cc->position()));
     setSwatch(m_capTextColorBtn, cc->textColor());
     setSwatch(m_capBgColorBtn,   cc->bgColor());
+    if (m_capBoldCheck)        m_capBoldCheck->setChecked(cc->isBold());
+    if (m_capOutlineWidthSpin) m_capOutlineWidthSpin->setValue(cc->outlineWidth());
+    setSwatch(m_capOutlineColorBtn, cc->outlineColor());
+    if (m_capShowSpeakerCheck) m_capShowSpeakerCheck->setChecked(cc->showSpeaker());
     // Text/speaker only make sense for a single caption — disable when many.
     const bool single = (targets.size() == 1);
     if (m_capTextEdit)    m_capTextEdit->setEnabled(single);
@@ -299,6 +383,36 @@ void PropertiesPanel::setupCaptionSection(QWidget* container)
             this, &PropertiesPanel::applyCaptionBgColor);
     form->addRow("Background:", m_capBgColorBtn);
 
+    m_capBoldCheck = new QCheckBox(m_captionSection);
+    m_capBoldCheck->setToolTip(tr("Bold text (applies to all selected captions)"));
+    connect(m_capBoldCheck, &QCheckBox::toggled,
+            this, [this](bool) { applyCaptionBold(); });
+    form->addRow("Bold:", m_capBoldCheck);
+
+    // Outline: width 0 disables; color picks the outline color.
+    auto* outlineRow = new QHBoxLayout();
+    m_capOutlineWidthSpin = createScrubby(0.0, 20.0, 0.5, 1, " px");
+    m_capOutlineWidthSpin->setToolTip(tr("Outline width — 0 = no outline (applies to all selected captions)"));
+    connect(m_capOutlineWidthSpin, &ScrubbySpinBox::valueCommitted,
+            this, [this](double, double) { applyCaptionOutlineWidth(); });
+    connect(m_capOutlineWidthSpin, &QDoubleSpinBox::editingFinished,
+            this, &PropertiesPanel::applyCaptionOutlineWidth);
+    outlineRow->addWidget(m_capOutlineWidthSpin);
+    m_capOutlineColorBtn = new QPushButton(m_captionSection);
+    m_capOutlineColorBtn->setFixedSize(50, 22);
+    m_capOutlineColorBtn->setToolTip(tr("Outline color (applies to all selected captions)"));
+    connect(m_capOutlineColorBtn, &QPushButton::clicked,
+            this, &PropertiesPanel::applyCaptionOutlineColor);
+    outlineRow->addWidget(m_capOutlineColorBtn);
+    outlineRow->addStretch();
+    form->addRow("Outline:", outlineRow);
+
+    m_capShowSpeakerCheck = new QCheckBox(m_captionSection);
+    m_capShowSpeakerCheck->setToolTip(tr("Burn the speaker label into the caption (\"SPEAKER: text\")"));
+    connect(m_capShowSpeakerCheck, &QCheckBox::toggled,
+            this, [this](bool) { applyCaptionShowSpeaker(); });
+    form->addRow("Burn Speaker:", m_capShowSpeakerCheck);
+
     // ── Appearance presets (Premiere-style, shared with title/graphic) ────
     m_capPresetCombo = new QComboBox(m_captionSection);
     m_capPresetCombo->setToolTip(tr("Apply a saved text appearance preset to all selected captions"));
@@ -351,6 +465,18 @@ void PropertiesPanel::loadTextPresets()
         p.bold       = o.value("bold").toBool(false);
         p.italic     = o.value("italic").toBool(false);
         p.alignment  = o.value("align").toInt(1);
+        p.strokeEnabled = o.value("strokeEnabled").toBool(false);
+        if (o.contains("strokeColor"))
+            p.strokeColor = static_cast<uint32_t>(o.value("strokeColor").toVariant().toULongLong());
+        p.strokeWidth   = static_cast<float>(o.value("strokeWidth").toDouble(2.0));
+        p.strokePosition = o.value("strokePos").toInt(2);
+        p.shadowEnabled = o.value("shadowEnabled").toBool(false);
+        if (o.contains("shadowColor"))
+            p.shadowColor = static_cast<uint32_t>(o.value("shadowColor").toVariant().toULongLong());
+        p.shadowDistance = static_cast<float>(o.value("shadowDistance").toDouble(4.0));
+        p.shadowAngle    = static_cast<float>(o.value("shadowAngle").toDouble(135.0));
+        p.shadowSoftness = static_cast<float>(o.value("shadowSoftness").toDouble(4.0));
+        p.shadowOpacity  = static_cast<float>(o.value("shadowOpacity").toDouble(0.6));
         if (!p.name.empty()) m_textPresets.push_back(std::move(p));
     }
 }
@@ -369,6 +495,16 @@ void PropertiesPanel::saveTextPresetsToDisk() const
         o["bold"]      = p.bold;
         o["italic"]    = p.italic;
         o["align"]     = p.alignment;
+        o["strokeEnabled"]  = p.strokeEnabled;
+        o["strokeColor"]    = static_cast<qint64>(p.strokeColor);
+        o["strokeWidth"]    = static_cast<double>(p.strokeWidth);
+        o["strokePos"]      = p.strokePosition;
+        o["shadowEnabled"]  = p.shadowEnabled;
+        o["shadowColor"]    = static_cast<qint64>(p.shadowColor);
+        o["shadowDistance"] = static_cast<double>(p.shadowDistance);
+        o["shadowAngle"]    = static_cast<double>(p.shadowAngle);
+        o["shadowSoftness"] = static_cast<double>(p.shadowSoftness);
+        o["shadowOpacity"]  = static_cast<double>(p.shadowOpacity);
         arr.append(o);
     }
     const QString path = rt::userDataDir() + QStringLiteral("/text_presets.json");
@@ -453,9 +589,11 @@ void PropertiesPanel::applyTextPreset(int index)
         if (!tl) return;
         const uint32_t oldFill = tl->appearance().fills.empty() ? 0xFFFFFFFFu
                                                                 : tl->appearance().fills[0].color;
-        struct Old { std::string font; float size; int weight; bool ital; int align; uint32_t fill; };
+        struct Old { std::string font; float size; int weight; bool ital; int align; uint32_t fill;
+                     std::vector<StrokeEntry> strokes; std::vector<ShadowEntry> shadows; };
         auto old = std::make_shared<Old>(Old{tl->fontFamily(), tl->fontSize(), tl->fontWeight(),
-                                             tl->isItalic(), static_cast<int>(tl->alignment()), oldFill});
+                                             tl->isItalic(), static_cast<int>(tl->alignment()), oldFill,
+                                             tl->appearance().strokes, tl->appearance().shadows});
         auto setFill = [](TextLayer* t, uint32_t c) {
             if (t->appearance().fills.empty()) t->appearance().fills.push_back({c, true});
             else { t->appearance().fills[0].color = c; t->appearance().fills[0].enabled = true; }
@@ -465,6 +603,30 @@ void PropertiesPanel::applyTextPreset(int index)
             tl->setFontWeight(preset.bold ? 700 : 400); tl->setItalic(preset.italic);
             tl->setAlignment(static_cast<GTextAlign>(preset.alignment));
             setFill(tl, preset.textColor);
+            // The preset defines the whole appearance: slot 0 of stroke/shadow
+            // follows it, including "off" for presets saved without one.
+            auto& ap = tl->appearance();
+            if (preset.strokeEnabled) {
+                if (ap.strokes.empty()) ap.strokes.push_back({});
+                ap.strokes[0].color    = preset.strokeColor;
+                ap.strokes[0].width    = preset.strokeWidth;
+                ap.strokes[0].position = static_cast<StrokePosition>(
+                    std::clamp(preset.strokePosition, 0, 2));
+                ap.strokes[0].enabled  = true;
+            } else if (!ap.strokes.empty()) {
+                ap.strokes[0].enabled = false;
+            }
+            if (preset.shadowEnabled) {
+                if (ap.shadows.empty()) ap.shadows.push_back({});
+                ap.shadows[0].color    = preset.shadowColor;
+                ap.shadows[0].distance = preset.shadowDistance;
+                ap.shadows[0].angle    = preset.shadowAngle;
+                ap.shadows[0].softness = preset.shadowSoftness;
+                ap.shadows[0].opacity  = preset.shadowOpacity;
+                ap.shadows[0].enabled  = true;
+            } else if (!ap.shadows.empty()) {
+                ap.shadows[0].enabled = false;
+            }
             self->populateFromClip(); emit self->propertyChanged();
         };
         auto undoIt = [tl, old, setFill, self]() {
@@ -472,6 +634,8 @@ void PropertiesPanel::applyTextPreset(int index)
             tl->setFontWeight(old->weight); tl->setItalic(old->ital);
             tl->setAlignment(static_cast<GTextAlign>(old->align));
             setFill(tl, old->fill);
+            tl->appearance().strokes = old->strokes;
+            tl->appearance().shadows = old->shadows;
             self->populateFromClip(); emit self->propertyChanged();
         };
         if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
@@ -507,6 +671,22 @@ void PropertiesPanel::saveTextPresetAs()
                                                      : tl->appearance().fills[0].color;
         p.bold = tl->fontWeight() >= 600; p.italic = tl->isItalic();
         p.alignment = static_cast<int>(tl->alignment());
+        if (!tl->appearance().strokes.empty()) {
+            const StrokeEntry& s = tl->appearance().strokes[0];
+            p.strokeEnabled  = s.enabled;
+            p.strokeColor    = s.color;
+            p.strokeWidth    = s.width;
+            p.strokePosition = static_cast<int>(s.position);
+        }
+        if (!tl->appearance().shadows.empty()) {
+            const ShadowEntry& sh = tl->appearance().shadows[0];
+            p.shadowEnabled  = sh.enabled;
+            p.shadowColor    = sh.color;
+            p.shadowDistance = sh.distance;
+            p.shadowAngle    = sh.angle;
+            p.shadowSoftness = sh.softness;
+            p.shadowOpacity  = sh.opacity;
+        }
     } else {
         return; // not a text clip
     }

@@ -582,22 +582,62 @@ void writeTitleFields(BinaryWriter& w, const Clip& clip)
     writeKeyframeTrack(w, const_cast<TitleClip&>(tc).lineHeight());
 }
 
+// TitleClip is creation-orphaned — the only source of one is a legacy project
+// file. Loading MIGRATES each Title record into a GraphicClip with a single
+// TextLayer (the registry maps ClipType::Title to a GraphicClip factory), so
+// the legacy render/UI surface is never exercised after load and the clip
+// re-saves as a modern Graphic. Base-clip state (id — which transitions
+// reference —, transform, effects, masks) reads through the common path
+// directly into the GraphicClip, so nothing is hand-copied.
+// Fidelity notes: alignment maps 1:1 (center/middle titles — the default —
+// render identically); a non-transparent legacy background becomes a
+// full-frame rect layer behind the text; legacy frame-width word-wrap is not
+// carried over (explicit '\n' line breaks are preserved).
 void readTitleFields(BinaryReader& r, Clip& clip, uint32_t version)
 {
-    auto* tc = static_cast<TitleClip*>(&clip);
-    tc->setText(r.readString());
-    tc->setFontFamily(r.readString());
-    tc->setFontSize(r.readF32());
-    tc->setBold(r.readU8() != 0);
-    tc->setItalic(r.readU8() != 0);
-    tc->setAlignment(static_cast<TextAlign>(r.readU8()));
-    tc->setVerticalAlignment(static_cast<TextVAlign>(r.readU8()));
-    tc->setTextColor(r.readU32());
-    tc->setBgColor(r.readU32());
-    tc->setOutlineColor(r.readU32());
-    tc->setOutlineWidth(r.readF32());
-    readKeyframeTrack(r, tc->tracking(), version);
-    readKeyframeTrack(r, tc->lineHeight(), version);
+    auto* gc = static_cast<GraphicClip*>(&clip);
+
+    const std::string text       = r.readString();
+    const std::string fontFamily = r.readString();
+    const float       fontSize   = r.readF32();
+    const bool        bold       = r.readU8() != 0;
+    const bool        italic     = r.readU8() != 0;
+    const auto        align      = r.readU8();   // TextAlign: L/C/R
+    const auto        valign     = r.readU8();   // TextVAlign: T/M/B
+    const uint32_t    textColor  = r.readU32();
+    const uint32_t    bgColor    = r.readU32();
+    const uint32_t    outlineCol = r.readU32();
+    const float       outlineW   = r.readF32();
+
+    // Background first so it stacks behind the text layer.
+    if ((bgColor >> 24) != 0) {
+        ShapeLayer* bg = gc->addShapeLayer(ShapeType::Rectangle);
+        bg->setName("Background");
+        bg->setShapeWidth(8192.0f);   // covers any frame; legacy fill was full-frame
+        bg->setShapeHeight(8192.0f);
+        bg->setFillColor(bgColor);
+    }
+
+    TextLayer* tl = gc->addTextLayer(text);
+    tl->setFontFamily(fontFamily);
+    tl->setFontSize(fontSize);
+    tl->setFontWeight(bold ? 700 : 400);
+    tl->setItalic(italic);
+    // TextAlign L/C/R and TextVAlign T/M/B share GTextAlign/GTextVAlign order.
+    tl->setAlignment(static_cast<GTextAlign>(std::min<uint8_t>(align, 2)));
+    tl->setVAlignment(static_cast<GTextVAlign>(std::min<uint8_t>(valign, 2)));
+    tl->appearance().fills.push_back({textColor, 1.0f, true});
+    if (outlineW > 0.01f)
+        tl->appearance().strokes.push_back(
+            {outlineCol, outlineW, StrokePosition::Outer, 1.0f, true});
+
+    readKeyframeTrack(r, tl->tracking(), version);
+    // Legacy lineHeight was a MULTIPLIER (default 1.2); leading is additive px.
+    KeyframeTrack<float> lineHeight{1.2f};
+    readKeyframeTrack(r, lineHeight, version);
+    const float mult = lineHeight.evaluate(0);
+    if (mult > 1.21f || mult < 1.19f)
+        tl->leading().addKeyframe(0, (mult - 1.2f) * fontSize);
 }
 
 // ── Adjustment ─────────────────────────────────────────────────────────────
@@ -670,9 +710,14 @@ void writeCaptionFields(BinaryWriter& w, const Clip& clip)
     w.writeU32(cc.textColor());
     w.writeU32(cc.bgColor());
     w.writeU8(static_cast<uint8_t>(cc.position()));
+    // v31: burned-in style — bold toggle, outline, speaker label
+    w.writeU8(cc.isBold() ? 1 : 0);
+    w.writeU32(cc.outlineColor());
+    w.writeF32(cc.outlineWidth());
+    w.writeU8(cc.showSpeaker() ? 1 : 0);
 }
 
-void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t)
+void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
 {
     auto* cc = static_cast<CaptionClip*>(&clip);
     cc->setText(r.readString());
@@ -682,6 +727,12 @@ void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t)
     cc->setTextColor(r.readU32());
     cc->setBgColor(r.readU32());
     cc->setPosition(static_cast<CaptionPosition>(r.readU8()));
+    if (version >= 31) {
+        cc->setBold(r.readU8() != 0);
+        cc->setOutlineColor(r.readU32());
+        cc->setOutlineWidth(r.readF32());
+        cc->setShowSpeaker(r.readU8() != 0);
+    } // pre-v31 defaults (bold, no outline, no speaker) match the old look
 }
 
 // ── PngPuppet ──────────────────────────────────────────────────────────────
@@ -976,7 +1027,9 @@ constexpr RegistryEntry kClipSerializers[] = {
     { ClipType::Spine,      { makeClip<SpineClip>,      writeSpineFields,      readSpineFields      } },
     { ClipType::Video,      { makeClip<VideoClip>,      writeVideoFields,      readVideoFields      } },
     { ClipType::Audio,      { makeClip<AudioClip>,      writeAudioFields,      readAudioFields      } },
-    { ClipType::Title,      { makeClip<TitleClip>,      writeTitleFields,      readTitleFields      } },
+    // Title records MIGRATE to GraphicClip on load (see readTitleFields);
+    // writeTitleFields is unreachable but kept while TitleClip still exists.
+    { ClipType::Title,      { makeClip<GraphicClip>,    writeTitleFields,      readTitleFields      } },
     { ClipType::Adjustment, { makeClip<AdjustmentClip>, writeAdjustmentFields, readAdjustmentFields } },
     { ClipType::Image,      { makeClip<ImageClip>,      writeImageFields,      readImageFields      } },
     { ClipType::Sequence,   { makeClip<SequenceClip>,   writeSequenceFields,   readSequenceFields   } },

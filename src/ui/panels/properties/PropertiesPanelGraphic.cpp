@@ -228,7 +228,7 @@ void PropertiesPanel::applyGfxShadowEnabled()
     bool enabled = m_gfxShadowCheck->isChecked();
     if (tl->appearance().shadows.empty()) {
         if (enabled)
-            tl->appearance().shadows.push_back({0x80000000, 135.0f, 4.0f, 0.0f, 0.6f, true});
+            tl->appearance().shadows.push_back({0x80000000, 4.0f, 135.0f, 4.0f, 0.6f, true});
     } else {
         tl->appearance().shadows[0].enabled = enabled;
     }

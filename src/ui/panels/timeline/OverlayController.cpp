@@ -878,10 +878,26 @@ void OverlayController::wireOverlayToolSignals()
                 };
                 if (newVal == oldVal) { cc->setText(oldVal); capRefresh(); return; }
                 if (m_ws->commandStack()) {
+                    // Capture the clip ID, never the pointer — the caption can
+                    // be deleted while this command is still on the stack.
+                    const uint64_t capId = cc->id();
+                    auto resolve = [this, capId]() -> CaptionClip* {
+                        Timeline* tline = m_ws->timeline();
+                        if (!tline) return nullptr;
+                        for (size_t i = 0; i < tline->trackCount(); ++i) {
+                            Track* trk = tline->track(i);
+                            if (!trk || !trk->isCaptionTrack()) continue;
+                            const size_t idx = trk->findClipIndexById(capId);
+                            if (idx == trk->clipCount()) continue;
+                            Clip* c = trk->clip(idx);
+                            if (c && c->isCaption()) return static_cast<CaptionClip*>(c);
+                        }
+                        return nullptr;
+                    };
                     m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                         "Edit Caption Text",
-                        [cc, newVal, capRefresh]() { cc->setText(newVal); capRefresh(); },
-                        [cc, oldVal, capRefresh]() { cc->setText(oldVal); capRefresh(); }));
+                        [resolve, newVal, capRefresh]() { if (auto* c = resolve()) { c->setText(newVal); capRefresh(); } },
+                        [resolve, oldVal, capRefresh]() { if (auto* c = resolve()) { c->setText(oldVal); capRefresh(); } }));
                 } else { cc->setText(newVal); capRefresh(); }
                 return;
             }
@@ -918,16 +934,34 @@ void OverlayController::wireOverlayToolSignals()
             // pre-edit text. The layer is currently "" (cleared on begin),
             // so execute() sets it to newVal and undo restores oldVal.
             if (m_ws->commandStack()) {
-                TextLayer* target = tl;
+                // Capture clip + layer IDs, never the TextLayer pointer — the
+                // graphic clip can be deleted while the command is stacked.
+                const uint64_t gcId = m_ws->selection().clip ? m_ws->selection().clip->id() : 0;
+                const uint64_t layerId = tl->layerId();
+                auto resolve = [this, gcId, layerId]() -> TextLayer* {
+                    Timeline* tline = m_ws->timeline();
+                    if (!tline || !gcId) return nullptr;
+                    for (size_t i = 0; i < tline->trackCount(); ++i) {
+                        Track* trk = tline->track(i);
+                        if (!trk) continue;
+                        const size_t idx = trk->findClipIndexById(gcId);
+                        if (idx == trk->clipCount()) continue;
+                        Clip* c = trk->clip(idx);
+                        if (!c || c->clipType() != ClipType::Graphic) return nullptr;
+                        auto* layer = static_cast<GraphicClip*>(c)->findLayerById(layerId);
+                        if (layer && layer->layerType() == GraphicLayerType::Text)
+                            return static_cast<TextLayer*>(layer);
+                        return nullptr;
+                    }
+                    return nullptr;
+                };
                 m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                     "Edit Text",
-                    [target, newVal, refresh]() {
-                        target->setText(newVal);
-                        refresh();
+                    [resolve, newVal, refresh]() {
+                        if (auto* t = resolve()) { t->setText(newVal); refresh(); }
                     },
-                    [target, oldVal, refresh]() {
-                        target->setText(oldVal);
-                        refresh();
+                    [resolve, oldVal, refresh]() {
+                        if (auto* t = resolve()) { t->setText(oldVal); refresh(); }
                     }));
             } else {
                 tl->setText(newVal);

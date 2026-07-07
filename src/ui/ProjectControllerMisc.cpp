@@ -81,6 +81,24 @@ void ProjectController::onExportSrt()
             "No text/graphic clips found to export.");
 }
 
+void ProjectController::onExportChapters()
+{
+    QString path = QFileDialog::getSaveFileName(
+        m_mw, "Export YouTube Chapters", QString(),
+        "Text Files (*.txt)");
+    if (path.isEmpty()) return;
+
+    int count = exportYouTubeChapters(*m_mw->timeline(),
+                                      std::filesystem::path(path.toStdWString()));
+    if (count > 0)
+        m_mw->statusBar()->showMessage(
+            QString("Exported %1 chapter(s)").arg(count), 3000);
+    else
+        QMessageBox::information(m_mw, "Export Chapters",
+            "No timeline markers to export.\n"
+            "Press M on the timeline to add chapter markers.");
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Auto-capture project thumbnail from current playhead frame
 // ═════════════════════════════════════════════════════════════════════════════

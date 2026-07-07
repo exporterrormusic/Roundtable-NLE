@@ -92,6 +92,7 @@ void MainWindow::buildFileMenu(QMenuBar* menuBar)
 
     menu->addAction("Import SRT Subtitles...", this, &MainWindow::onImportSrt);
     menu->addAction("Export SRT Subtitles...", this, &MainWindow::onExportSrt);
+    menu->addAction("Export YouTube Chapters...", this, &MainWindow::onExportChapters);
 
     menu->addSeparator();
 

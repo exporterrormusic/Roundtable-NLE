@@ -338,6 +338,10 @@ private:
     void applyCaptionPosition();
     void applyCaptionTextColor();
     void applyCaptionBgColor();
+    void applyCaptionBold();
+    void applyCaptionOutlineWidth();
+    void applyCaptionOutlineColor();
+    void applyCaptionShowSpeaker();
     void populateFromCaption();
     // Universal text appearance presets — shared by Caption, Title, and
     // Graphic text sections. Apply/save dispatch on the current clip type.
@@ -491,6 +495,10 @@ private:
     QComboBox*      m_capPositionCombo{nullptr};
     QPushButton*    m_capTextColorBtn{nullptr};
     QPushButton*    m_capBgColorBtn{nullptr};
+    QCheckBox*      m_capBoldCheck{nullptr};
+    ScrubbySpinBox* m_capOutlineWidthSpin{nullptr};
+    QPushButton*    m_capOutlineColorBtn{nullptr};
+    QCheckBox*      m_capShowSpeakerCheck{nullptr};
     QComboBox*      m_capPresetCombo{nullptr};
     QPushButton*    m_capSavePresetBtn{nullptr};
 
@@ -506,6 +514,17 @@ private:
         bool        bold{false};
         bool        italic{false};
         int         alignment{1};  // 0=left 1=center 2=right
+        // Stroke + shadow (graphic text only; absent in pre-existing presets)
+        bool        strokeEnabled{false};
+        uint32_t    strokeColor{0xFF000000u};
+        float       strokeWidth{2.0f};
+        int         strokePosition{2}; // StrokePosition: 0=center 1=inner 2=outer
+        bool        shadowEnabled{false};
+        uint32_t    shadowColor{0x80000000u};
+        float       shadowDistance{4.0f};
+        float       shadowAngle{135.0f};
+        float       shadowSoftness{4.0f};
+        float       shadowOpacity{0.6f};
     };
     std::vector<TextStylePreset> m_textPresets;
 

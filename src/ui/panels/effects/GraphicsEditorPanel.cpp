@@ -182,6 +182,59 @@ void GraphicsEditorPanel::setupUI()
  connect(m_layerList, &QWidget::customContextMenuRequested,
  this, [this](const QPoint& pos) {
  QMenu menu(this);
+
+ // New layer creation — ShapeLayer has full model/render/serialization
+ // support; this menu is its only creation surface.
+ auto* newMenu = menu.addMenu(tr("New Layer"));
+ newMenu->setEnabled(m_graphicClip != nullptr);
+ auto addNewLayer = [this](int shape) {
+ if (!m_graphicClip) return;
+ auto* gc = m_graphicClip;
+ GraphicLayer* added = (shape < 0)
+ ? static_cast<GraphicLayer*>(gc->addTextLayer("Title"))
+ : static_cast<GraphicLayer*>(gc->addShapeLayer(static_cast<ShapeType>(shape)));
+ if (!added) return;
+ const size_t idx = gc->layerCount() - 1;
+
+ if (m_commandStack) {
+ auto shared = std::shared_ptr<GraphicLayer>(added->clone().release());
+ auto cmd = std::make_unique<LambdaCommand>(
+ "New Layer",
+ /*execute (re-do)*/ [gc, idx, shared, this]() {
+ gc->insertLayer(idx, shared->clone());
+ rebuildLayerList();
+ m_layerList->setCurrentRow(
+ static_cast<int>(gc->layerCount()) - 1 - static_cast<int>(idx));
+ emit propertyChanged();
+ },
+ /*undo*/ [gc, idx, this]() {
+ gc->removeLayer(idx);
+ m_selectedLayer = nullptr;
+ m_selectedLayerIdx = -1;
+ rebuildLayerList();
+ if (gc->layerCount() > 0)
+ m_layerList->setCurrentRow(0);
+ emit propertyChanged();
+ });
+ m_commandStack->pushWithoutExecute(std::move(cmd));
+ }
+
+ rebuildLayerList();
+ m_layerList->setCurrentRow(
+ static_cast<int>(gc->layerCount()) - 1 - static_cast<int>(idx));
+ emit propertyChanged();
+ };
+ connect(newMenu->addAction(tr("Text")), &QAction::triggered,
+ this, [addNewLayer]() { addNewLayer(-1); });
+ connect(newMenu->addAction(tr("Rectangle")), &QAction::triggered,
+ this, [addNewLayer]() { addNewLayer(static_cast<int>(ShapeType::Rectangle)); });
+ connect(newMenu->addAction(tr("Ellipse")), &QAction::triggered,
+ this, [addNewLayer]() { addNewLayer(static_cast<int>(ShapeType::Ellipse)); });
+ connect(newMenu->addAction(tr("Rounded Rectangle")), &QAction::triggered,
+ this, [addNewLayer]() { addNewLayer(static_cast<int>(ShapeType::RoundedRect)); });
+
+ menu.addSeparator();
+
  auto* copyAct = menu.addAction(tr("Copy Layer"));
  copyAct->setShortcut(QKeySequence::Copy);
  copyAct->setEnabled(m_selectedLayer != nullptr);
