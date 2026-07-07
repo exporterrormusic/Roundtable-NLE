@@ -107,15 +107,19 @@ enum class JobStatus : uint8_t
 };
 
 /// Progress information for a running job.
+/// Numeric fields are atomics: the worker thread writes them per frame while
+/// the UI thread polls them through RenderQueue::job().  statusText is guarded
+/// by RenderQueue's mutex — cross-thread readers must use
+/// RenderQueue::jobStatusText() instead of touching it directly.
 struct JobProgress
 {
-    int64_t    currentFrame{0};
-    int64_t    totalFrames{0};
-    float      percent{0.0f};       // 0-100
-    double     elapsedSeconds{0.0};
-    double     estimatedRemaining{0.0};
-    double     fps{0.0};            // Render speed (frames/sec)
-    std::string statusText;
+    std::atomic<int64_t> currentFrame{0};
+    std::atomic<int64_t> totalFrames{0};
+    std::atomic<float>   percent{0.0f};       // 0-100
+    std::atomic<double>  elapsedSeconds{0.0};
+    std::atomic<double>  estimatedRemaining{0.0};
+    std::atomic<double>  fps{0.0};            // Render speed (frames/sec)
+    std::string statusText;                   // guarded by RenderQueue::m_mutex
 };
 
 /// A single export job.
@@ -123,9 +127,20 @@ struct ExportJob
 {
     uint32_t        id{0};
     ExportJobConfig config;
-    JobStatus       status{JobStatus::Queued};
+    std::atomic<JobStatus> status{JobStatus::Queued};
     JobProgress     progress;
-    std::string     error;
+    std::string     error;   // written by the worker; snapshot is handed to JobCompleteFn
+
+    /// Per-job cancellation flag.  Set (under RenderQueue's mutex lookup) by
+    /// cancelJob/cancelAll, polled lock-free by the worker's frame loop.
+    std::atomic<bool> cancelRequested{false};
+
+    /// Deep clone of the timeline taken on the MAIN thread when the job is
+    /// enqueued (addJob), so the worker's AudioMixdown never reads the live
+    /// timeline while the user edits it.  Owned by the job — it outlives
+    /// processJob, so an SEH unwind there cannot leak it.  Null = fall back
+    /// to the live timeline (tests / callers that pass no timeline).
+    std::shared_ptr<const Timeline> timelineSnapshot;
 
     /// Set when the encoder requested for `config.encoderConfig.hwAccel`
     /// failed to initialise and processJob silently fell back to CPU
@@ -141,6 +156,11 @@ struct ExportJob
 using JobProgressFn  = std::function<void(uint32_t jobId, const JobProgress& progress)>;
 using JobCompleteFn  = std::function<void(uint32_t jobId, bool success, const std::string& error)>;
 
+/// Per-job run resources (encoder, demuxers) owned OUTSIDE processJob's
+/// __try frame — see RenderQueue.cpp (SEH unwinding skips local destructors
+/// because this TU is not compiled /EHa).
+struct JobRunContext;
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 class RenderQueue
@@ -155,7 +175,11 @@ public:
     // ── Job management ──────────────────────────────────────────────────
 
     /// Add a new export job. Returns job ID.
-    uint32_t addJob(const ExportJobConfig& config);
+    /// `timelineForAudio` (optional) is deep-cloned HERE — call addJob on the
+    /// main thread — and stored on the job as the snapshot the audio mixdown
+    /// reads, so live edits during the export can't race it.
+    uint32_t addJob(const ExportJobConfig& config,
+                    const Timeline* timelineForAudio = nullptr);
 
     /// Remove a job (must be Queued or Completed/Failed/Cancelled).
     bool removeJob(uint32_t jobId);
@@ -177,11 +201,16 @@ public:
 
     // ── Queries ─────────────────────────────────────────────────────────
 
-    /// Get all jobs.
-    [[nodiscard]] std::vector<ExportJob> jobs() const;
+    /// Get all jobs (shared ownership — safe to hold across removeJob).
+    [[nodiscard]] std::vector<std::shared_ptr<const ExportJob>> jobs() const;
 
-    /// Get a specific job.
-    [[nodiscard]] const ExportJob* job(uint32_t jobId) const;
+    /// Get a specific job.  Returns shared ownership so the pointer stays
+    /// valid even if the job is removed from the queue afterwards.
+    [[nodiscard]] std::shared_ptr<const ExportJob> job(uint32_t jobId) const;
+
+    /// Locked read of a job's progress.statusText (worker writes it under the
+    /// same mutex).  Returns "" if the job doesn't exist.
+    [[nodiscard]] std::string jobStatusText(uint32_t jobId) const;
 
     /// Number of queued/running jobs.
     [[nodiscard]] size_t pendingCount() const;
@@ -205,7 +234,11 @@ public:
 
     // processJob is public so the SEH-safe wrapper (safeProcessJob in
     // RenderQueue.cpp) can call it.  It is NOT part of the public API.
-    void processJob(ExportJob& job, Timeline* timeline, Compositor* compositor);
+    // `ctx` owns the encoder/demuxers and lives in workerThread's frame so
+    // an SEH unwind (which skips processJob's local destructors — this TU
+    // is not /EHa) still releases the NVENC session.
+    void processJob(ExportJob& job, JobRunContext& ctx,
+                    Timeline* timeline, Compositor* compositor);
 
 private:
     void workerThread();
@@ -215,8 +248,12 @@ private:
     /// job.config.audioOnly is set.
     void processAudioOnlyJob(ExportJob& job, Timeline* timeline);
 
+    // Jobs are held by shared_ptr: the worker keeps its own reference to the
+    // job it is processing, so removeJob erasing a vector element can never
+    // dangle the worker's pointer (the old std::vector<ExportJob> storage
+    // shifted elements on erase while the worker held a raw pointer).
     mutable std::mutex          m_mutex;
-    std::vector<ExportJob>      m_jobs;
+    std::vector<std::shared_ptr<ExportJob>> m_jobs;
     uint32_t                    m_nextJobId{1};
     std::atomic<bool>           m_running{false};
     std::atomic<bool>           m_cancelAll{false};
@@ -229,9 +266,6 @@ private:
     JobCompleteFn               m_completeCb;
     FrameRenderFn               m_frameRenderCb;
     FrameStoreFn                m_frameStoreCb;
-
-    // Per-job cancellation
-    std::unordered_map<uint32_t, std::atomic<bool>> m_cancelFlags;
 };
 
 } // namespace rt

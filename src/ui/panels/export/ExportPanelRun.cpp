@@ -47,6 +47,7 @@
 
 #include <QApplication>
 #include <QMetaObject>
+#include <cmath>
 
 
 namespace rt {
@@ -199,8 +200,16 @@ ExportJobConfig ExportPanel::buildJobConfig() const
         int crf = 35 - (q * 21) / 100;  // 35..14
         cfg.encoderConfig.crf = crf;
     }
-    cfg.encoderConfig.fpsNum = m_fpsCombo->currentData().toUInt();
-    cfg.encoderConfig.fpsDen = 1;
+    {
+        const double fps = m_fpsCombo->currentData().toDouble();
+        if (std::abs(fps - std::round(fps)) < 0.005) {
+            cfg.encoderConfig.fpsNum = static_cast<uint32_t>(std::lround(fps));
+            cfg.encoderConfig.fpsDen = 1;
+        } else { // NTSC fractional rate: 23.976 → 24000/1001, 29.97 → 30000/1001, …
+            cfg.encoderConfig.fpsNum = static_cast<uint32_t>(std::lround(fps * 1.001) * 1000);
+            cfg.encoderConfig.fpsDen = 1001;
+        }
+    }
 
     cfg.containerFormat = static_cast<uint8_t>(m_containerCombo->currentData().toInt());
     cfg.preset = static_cast<ExportPreset>(m_presetCombo->currentData().toInt());
@@ -371,7 +380,10 @@ void ExportPanel::onStartExport()
     }
 
     rememberExportDir(pathToUtf8(config.outputPath));
-    uint32_t jobId = m_renderQueue->addJob(config);
+    // Pass the timeline so addJob (main thread) deep-clones it for the
+    // audio mixdown — the worker then never reads the live timeline for
+    // audio while the user keeps editing.
+    uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
     m_activeJobId = jobId;
 
     // Update job list
@@ -393,24 +405,28 @@ void ExportPanel::onStartExport()
     m_renderQueue->setCompleteCallback(
         [this](uint32_t id, bool success, const std::string& msg) {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            // Snapshot the fallback state on the worker thread BEFORE
-            // queueing back to the UI — the job record may be reset by
-            // the time the lambda runs.
+            // Snapshot the fallback + cancelled state on the worker thread
+            // BEFORE queueing back to the UI — the job record may be reset
+            // by the time the lambda runs.
             bool fellBack = false;
             std::string fellBackReason;
-            if (const auto* j = m_renderQueue->job(id)) {
+            bool cancelled = false;
+            if (const auto j = m_renderQueue->job(id)) {
                 fellBack = j->fellBackToCpuEncoder;
                 fellBackReason = j->fellBackReason;
+                cancelled = (j->status.load() == JobStatus::Cancelled);
             }
             QMetaObject::invokeMethod(this,
-                [this, id, success, msg, fellBack, fellBackReason]() {
+                [this, id, success, msg, fellBack, fellBackReason, cancelled]() {
                 if (m_destroying.load(std::memory_order_acquire)) return;
                 m_pollTimer->stop();
                 m_startButton->setEnabled(true);
                 m_addQueueButton->setEnabled(true);
                 m_cancelButton->setEnabled(false);
                 m_cancelButton->setVisible(false);
-                m_statusLabel->setText(success ? tr("Export complete!") : tr("Failed: %1").arg(QString::fromStdString(msg)));
+                m_statusLabel->setText(success ? tr("Export complete!")
+                    : cancelled ? tr("Cancelled")
+                    : tr("Failed: %1").arg(QString::fromStdString(msg)));
                 m_progressBar->setValue(success ? 100 : 0);
                 // Update the job list item to reflect completion status
                 const qulonglong targetId = static_cast<qulonglong>(id);
@@ -422,6 +438,12 @@ void ExportPanel::onStartExport()
                             listItem->setText(QStringLiteral("\u2713 Job %1 \u2014 %2 \u2014 Complete")
                                 .arg(id).arg(line2));
                             listItem->setForeground(Qt::darkGreen);
+                        } else if (cancelled) {
+                            // Distinct, neutral "Cancelled" state - a cancel
+                            // is not a failure and shouldn't render red.
+                            listItem->setText(QStringLiteral("\u2298 Job %1 \u2014 %2 \u2014 Cancelled")
+                                .arg(id).arg(line2));
+                            listItem->setForeground(Qt::darkGray);
                         } else {
                             listItem->setText(QStringLiteral("\u2717 Job %1 \u2014 %2 \u2014 Failed")
                                 .arg(id).arg(line2));
@@ -477,6 +499,18 @@ void ExportPanel::onStartExport()
     if (m_frameStoreCallback)
         m_renderQueue->setFrameStoreCallback(m_frameStoreCallback);
 
+    // Reset the composite pipeline between exports: the slots still hold the
+    // previous export's last tick + shared_future, which broke first-call
+    // detection on the second export (frame 0 reused the previous export's
+    // last composited frame).  Only touch the slots when no worker is
+    // running — while a worker drains the queue they belong to its thread
+    // (pipelineComposite's tick-match check covers that case).
+    if (!m_renderQueue->isRunning()) {
+        m_pipelineSlots[0] = CompositeSlot{};
+        m_pipelineSlots[1] = CompositeSlot{};
+        m_pipelineCurrentSlot = 0;
+    }
+
     // Start rendering
     m_renderQueue->start(m_timeline, m_compositor);
 
@@ -506,10 +540,10 @@ void ExportPanel::onPollProgress()
     if (m_destroying.load(std::memory_order_acquire)) return;
     if (!m_renderQueue->isRunning()) return;
 
-    const auto* j = m_renderQueue->job(m_activeJobId);
+    const auto j = m_renderQueue->job(m_activeJobId);
     if (!j) return;
 
-    int pct = static_cast<int>(j->progress.percent);
+    int pct = static_cast<int>(j->progress.percent.load());
     m_progressBar->setValue(pct);
     // Update the active job's list item to show "Running"
     const qulonglong activeId = static_cast<qulonglong>(m_activeJobId);
@@ -524,9 +558,9 @@ void ExportPanel::onPollProgress()
         }
     }
     // Build a rich status string: "Rendering â€” 245/800 frames Â· 14.2 fps Â· ETA 0:39"
-    int64_t curFrame   = j->progress.currentFrame;
-    int64_t totalFrame = j->progress.totalFrames;
-    double  elapsed    = j->progress.elapsedSeconds;
+    int64_t curFrame   = j->progress.currentFrame.load();
+    int64_t totalFrame = j->progress.totalFrames.load();
+    double  elapsed    = j->progress.elapsedSeconds.load();
     double  fps        = (elapsed > 0.5) ? (curFrame / elapsed) : 0.0;
 
     QString status;
@@ -546,7 +580,8 @@ void ExportPanel::onPollProgress()
                 status += QStringLiteral("  \u00B7  ETA %1s").arg(etaS);
         }
     } else {
-        status = QString::fromStdString(j->progress.statusText);
+        // statusText is guarded by the queue's mutex — use the locked accessor.
+        status = QString::fromStdString(m_renderQueue->jobStatusText(m_activeJobId));
     }
     m_statusLabel->setText(status);
 
@@ -576,6 +611,6 @@ void ExportPanel::onPollProgress()
             m_miniTimeline->setPlayhead(tick);
     }
 
-    emit exportProgress(m_activeJobId, j->progress.percent);
+    emit exportProgress(m_activeJobId, j->progress.percent.load());
 }
 } // namespace rt

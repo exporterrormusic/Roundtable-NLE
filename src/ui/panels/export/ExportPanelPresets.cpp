@@ -49,6 +49,7 @@
 
 #include <QApplication>
 #include <QMetaObject>
+#include <cmath>
 
 
 namespace rt {
@@ -60,7 +61,6 @@ void ExportPanel::populatePresets()
     m_presetCombo->addItem(tr("YouTube 1080p 60fps"), static_cast<int>(ExportPreset::YouTube1080p60));
     m_presetCombo->addItem(tr("YouTube 4K 30fps"), static_cast<int>(ExportPreset::YouTube4K30));
     m_presetCombo->addItem(tr("YouTube 4K 60fps"), static_cast<int>(ExportPreset::YouTube4K60));
-    m_presetCombo->addItem(tr("Broadcast 1080i"), static_cast<int>(ExportPreset::Broadcast1080i));
     m_presetCombo->addItem(tr("Archive ProRes HQ"), static_cast<int>(ExportPreset::ArchiveProRes));
     m_presetCombo->addItem(tr("Web Optimized"), static_cast<int>(ExportPreset::WebOptimized));
     loadCustomPresets();
@@ -380,10 +380,12 @@ void ExportPanel::updateUIFromPreset(ExportPreset preset)
         }
     }
 
-    // Set FPS combo
-    int fpsVal = static_cast<int>(cfg.encoderConfig.fpsNum / std::max(cfg.encoderConfig.fpsDen, 1));
+    // Set FPS combo — match on the exact rational rate so 24000/1001 selects
+    // "23.976" and 24/1 selects "24" (item data is a double).
+    const double cfgFps = static_cast<double>(cfg.encoderConfig.fpsNum) /
+                          std::max(cfg.encoderConfig.fpsDen, 1);
     for (int i = 0; i < m_fpsCombo->count(); ++i) {
-        if (m_fpsCombo->itemData(i).toInt() == fpsVal) {
+        if (std::abs(m_fpsCombo->itemData(i).toDouble() - cfgFps) < 0.01) {
             m_fpsCombo->setCurrentIndex(i);
             break;
         }

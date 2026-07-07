@@ -203,14 +203,15 @@ void ExportPanel::setupUI()
     // Frame rate
     m_fpsCombo = new QComboBox();
     m_fpsCombo->setToolTip(tr("Output frame rate"));
-    m_fpsCombo->addItem(QStringLiteral("23.976"), 24);
-    m_fpsCombo->addItem(QStringLiteral("24"), 24);
-    m_fpsCombo->addItem(QStringLiteral("25"), 25);
-    m_fpsCombo->addItem(QStringLiteral("29.97"), 30);
-    m_fpsCombo->addItem(QStringLiteral("30"), 30);
-    m_fpsCombo->addItem(QStringLiteral("50"), 50);
-    m_fpsCombo->addItem(QStringLiteral("59.94"), 60);
-    m_fpsCombo->addItem(QStringLiteral("60"), 60);
+    // Data = exact rate as double; NTSC rates become 24000/1001 etc. at encode.
+    m_fpsCombo->addItem(QStringLiteral("23.976"), 23.976);
+    m_fpsCombo->addItem(QStringLiteral("24"), 24.0);
+    m_fpsCombo->addItem(QStringLiteral("25"), 25.0);
+    m_fpsCombo->addItem(QStringLiteral("29.97"), 29.97);
+    m_fpsCombo->addItem(QStringLiteral("30"), 30.0);
+    m_fpsCombo->addItem(QStringLiteral("50"), 50.0);
+    m_fpsCombo->addItem(QStringLiteral("59.94"), 59.94);
+    m_fpsCombo->addItem(QStringLiteral("60"), 60.0);
     m_fpsCombo->setCurrentIndex(4); // 30 fps
     videoForm->addRow(tr("Frame Rate"), m_fpsCombo);
 
@@ -540,7 +541,7 @@ void ExportPanel::setupUI()
         bool ok = false;
         uint32_t jobId = static_cast<uint32_t>(item->data(Qt::UserRole).toULongLong(&ok));
         if (ok && m_renderQueue) {
-            const auto* job = m_renderQueue->job(jobId);
+            const auto job = m_renderQueue->job(jobId);
             if (job && QFileInfo(QString::fromStdString(pathToUtf8(job->config.outputPath))).exists()) {
                 revealAction = menu.addAction(tr("Reveal in Explorer"));
             }
@@ -548,12 +549,23 @@ void ExportPanel::setupUI()
 
         auto* chosen = menu.exec(m_jobList->mapToGlobal(pos));
         if (chosen == removeAction) {
-            int row = m_jobList->row(item);
-            delete m_jobList->takeItem(row);
-            if (m_jobList->count() == 0)
-                m_jobList->setVisible(false);
+            // Remove the job itself, not just the list row. Running jobs can't
+            // be erased — cancel them and let the status update mark the row.
+            bool erased = true;
+            if (ok && m_renderQueue) {
+                m_renderQueue->cancelJob(jobId);
+                erased = m_renderQueue->removeJob(jobId);
+            }
+            if (erased) {
+                int row = m_jobList->row(item);
+                delete m_jobList->takeItem(row);
+                if (m_jobList->count() == 0)
+                    m_jobList->setVisible(false);
+            } else {
+                item->setText(item->text() + tr(" (cancelling…)"));
+            }
         } else if (revealAction && chosen == revealAction) {
-            const auto* job = m_renderQueue->job(jobId);
+            const auto job = m_renderQueue->job(jobId);
             if (job) {
                 QString path = QString::fromStdString(pathToUtf8(job->config.outputPath));
                 QFileInfo fi(path);

@@ -337,11 +337,11 @@ TEST(ExportJob, StatusEnum)
 TEST(ExportJob, ProgressDefaults)
 {
     JobProgress prog;
-    EXPECT_EQ(prog.currentFrame, 0);
-    EXPECT_EQ(prog.totalFrames, 0);
-    EXPECT_FLOAT_EQ(prog.percent, 0.0f);
-    EXPECT_DOUBLE_EQ(prog.elapsedSeconds, 0.0);
-    EXPECT_DOUBLE_EQ(prog.fps, 0.0);
+    EXPECT_EQ(prog.currentFrame.load(), 0);
+    EXPECT_EQ(prog.totalFrames.load(), 0);
+    EXPECT_FLOAT_EQ(prog.percent.load(), 0.0f);
+    EXPECT_DOUBLE_EQ(prog.elapsedSeconds.load(), 0.0);
+    EXPECT_DOUBLE_EQ(prog.fps.load(), 0.0);
     EXPECT_TRUE(prog.statusText.empty());
 }
 
@@ -349,7 +349,7 @@ TEST(ExportJob, Defaults)
 {
     ExportJob job;
     EXPECT_EQ(job.id, 0u);
-    EXPECT_EQ(job.status, JobStatus::Queued);
+    EXPECT_EQ(job.status.load(), JobStatus::Queued);
     EXPECT_TRUE(job.error.empty());
 }
 
@@ -631,9 +631,9 @@ TEST(ExportRenderQueue, AddJob)
     EXPECT_EQ(id, 1u);
 
     auto jobs = queue.jobs();
-    EXPECT_EQ(jobs.size(), 1u);
-    EXPECT_EQ(jobs[0].id, 1u);
-    EXPECT_EQ(jobs[0].status, JobStatus::Queued);
+    ASSERT_EQ(jobs.size(), 1u);
+    EXPECT_EQ(jobs[0]->id, 1u);
+    EXPECT_EQ(jobs[0]->status.load(), JobStatus::Queued);
 }
 
 TEST(ExportRenderQueue, AddMultipleJobs)
@@ -691,8 +691,8 @@ TEST(ExportRenderQueue, JobLookup)
     cfg.outputPath = "lookup_test.mp4";
     uint32_t id = queue.addJob(cfg);
 
-    const auto* job = queue.job(id);
-    EXPECT_NE(job, nullptr);
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
     EXPECT_EQ(job->id, id);
 
     EXPECT_EQ(queue.job(999), nullptr);

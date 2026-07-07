@@ -319,9 +319,17 @@ std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
     };
 
     // ── Phase A: Wait for previously stored result ───────────────────────
+    // Invariant while a job streams frames: the PREV slot holds the future
+    // that was pre-submitted for exactly THIS tick (last call's nextTick).
+    // If the stored tick doesn't match — first frame ever (tick -1), a new
+    // export after onStartExport's reset, or the next job in a multi-job
+    // queue run — treat this as a first call and composite synchronously.
+    // The old `tick < 0` test alone let the second export's frame 0 reuse
+    // the previous export's last composited frame via the stale future.
     int cur = m_pipelineCurrentSlot;
     int prev = (cur + 1) % 2;
-    bool firstCall = (m_pipelineSlots[prev].tick < 0);
+    bool firstCall = (m_pipelineSlots[prev].tick != tick)
+                     || !m_pipelineSlots[prev].future.valid();
     std::shared_ptr<CachedFrame> result;
 
     if (!firstCall && m_pipelineSlots[prev].future.valid()) {

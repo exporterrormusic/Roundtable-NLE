@@ -119,24 +119,35 @@ RenderQueue::~RenderQueue()
     if (m_worker.joinable()) m_worker.join();
 }
 
-uint32_t RenderQueue::addJob(const ExportJobConfig& config)
+uint32_t RenderQueue::addJob(const ExportJobConfig& config,
+                             const Timeline* timelineForAudio)
 {
+    // Snapshot the timeline for the audio mixdown BEFORE taking the queue
+    // mutex (clone is non-trivial).  addJob is called on the MAIN thread,
+    // so cloning here cannot race user edits; the worker later mixes audio
+    // from this snapshot instead of the live timeline.
+    std::shared_ptr<const Timeline> snapshot;
+    if (timelineForAudio && (config.includeAudio || config.audioOnly))
+        snapshot = timelineForAudio->clone();
+
     std::lock_guard<std::mutex> lock(m_mutex);
-    ExportJob job;
-    job.id     = m_nextJobId++;
-    job.config = config;
-    job.status = JobStatus::Queued;
-    m_jobs.push_back(std::move(job));
-    spdlog::info("RenderQueue: Added job {} → {}", job.id, pathToUtf8(config.outputPath));
-    return m_jobs.back().id;
+    auto job = std::make_shared<ExportJob>();
+    job->id     = m_nextJobId++;
+    job->config = config;
+    job->timelineSnapshot = std::move(snapshot);
+    m_jobs.push_back(job);
+    spdlog::info("RenderQueue: Added job {} → {}", job->id, pathToUtf8(config.outputPath));
+    return job->id;
 }
 
 bool RenderQueue::removeJob(uint32_t jobId)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto it = m_jobs.begin(); it != m_jobs.end(); ++it) {
-        if (it->id == jobId) {
-            if (it->status == JobStatus::Running) return false;
+        if ((*it)->id == jobId) {
+            if ((*it)->status.load() == JobStatus::Running) return false;
+            // Erasing is safe even if the worker still holds this job's
+            // shared_ptr (it keeps its own reference).
             m_jobs.erase(it);
             return true;
         }
@@ -162,18 +173,24 @@ void RenderQueue::start(Timeline* timeline, Compositor* compositor)
 
 void RenderQueue::cancelJob(uint32_t jobId)
 {
-    auto it = m_cancelFlags.find(jobId);
-    if (it != m_cancelFlags.end()) {
-        it->second.store(true);
+    // Find the job under the mutex; the flag itself is atomic so the worker
+    // polls it lock-free.  (The old m_cancelFlags map was read without the
+    // lock while the worker inserted into it — a crash-class race.)
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& j : m_jobs) {
+        if (j->id == jobId) {
+            j->cancelRequested.store(true);
+            return;
+        }
     }
 }
 
 void RenderQueue::cancelAll()
 {
     m_cancelAll.store(true);
-    for (auto& [id, flag] : m_cancelFlags) {
-        flag.store(true);
-    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& j : m_jobs)
+        j->cancelRequested.store(true);
 }
 
 void RenderQueue::waitForAll()
@@ -181,19 +198,28 @@ void RenderQueue::waitForAll()
     if (m_worker.joinable()) m_worker.join();
 }
 
-std::vector<ExportJob> RenderQueue::jobs() const
+std::vector<std::shared_ptr<const ExportJob>> RenderQueue::jobs() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_jobs;
+    return {m_jobs.begin(), m_jobs.end()};
 }
 
-const ExportJob* RenderQueue::job(uint32_t jobId) const
+std::shared_ptr<const ExportJob> RenderQueue::job(uint32_t jobId) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (const auto& j : m_jobs) {
-        if (j.id == jobId) return &j;
+        if (j->id == jobId) return j;
     }
     return nullptr;
+}
+
+std::string RenderQueue::jobStatusText(uint32_t jobId) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& j : m_jobs) {
+        if (j->id == jobId) return j->progress.statusText;
+    }
+    return {};
 }
 
 size_t RenderQueue::pendingCount() const
@@ -201,24 +227,40 @@ size_t RenderQueue::pendingCount() const
     std::lock_guard<std::mutex> lock(m_mutex);
     size_t count = 0;
     for (const auto& j : m_jobs) {
-        if (j.status == JobStatus::Queued || j.status == JobStatus::Running)
+        const JobStatus st = j->status.load();
+        if (st == JobStatus::Queued || st == JobStatus::Running)
             ++count;
     }
     return count;
 }
+
+/// Per-job resources that must survive an SEH unwind.  RenderQueue.cpp is
+/// NOT compiled with /EHa (see src/export/CMakeLists.txt — only
+/// core/FrameProducer.cpp and ui/ExportPanel.cpp are), so when
+/// safeProcessJob's __except catches an access violation, the destructors of
+/// processJob's LOCALS are skipped.  Anything owning hardware / OS resources
+/// (the NVENC encoder session, demuxer file handles) therefore lives here,
+/// in workerThread's frame, which unwinds normally after __except returns.
+struct JobRunContext
+{
+    std::unique_ptr<Encoder> encoder;
+    std::unordered_map<std::string, std::unique_ptr<PacketDemuxer>> demuxers;
+};
 
 namespace {
 
 /// Safe wrapper around processJob that catches both C++ and SEH exceptions.
 /// SEH (ACCESS_VIOLATION) is NOT a C++ exception — it requires __try/__except
 /// on MSVC, which cannot coexist with C++ destructors in the same function.
-/// Hence this is a standalone free function with NO C++ object destructors.
+/// Hence this is a standalone free function with NO C++ object destructors
+/// (references only — ctx is owned by the caller).
 void safeProcessJob(rt::RenderQueue* queue, rt::ExportJob& job,
+                    rt::JobRunContext& ctx,
                     rt::Timeline* timeline, rt::Compositor* compositor)
 {
 #if defined(_MSC_VER)
     __try {
-        queue->processJob(job, timeline, compositor);
+        queue->processJob(job, ctx, timeline, compositor);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         unsigned int code = GetExceptionCode();
         spdlog::error("RenderQueue: SEH exception 0x{:08X} in job {}", code, job.id);
@@ -226,10 +268,11 @@ void safeProcessJob(rt::RenderQueue* queue, rt::ExportJob& job,
         job.error  = "Fatal: Hardware exception (ACCESS_VIOLATION)";
         // Cannot call m_completeCb here — it's a member of RenderQueue.
         // Caller handles notification after safeProcessJob returns.
+        // ctx (encoder/demuxers) is released by the caller's normal unwind.
     }
 #else
     try {
-        queue->processJob(job, timeline, compositor);
+        queue->processJob(job, ctx, timeline, compositor);
     } catch (const std::exception& e) {
         spdlog::error("RenderQueue: Unhandled exception in job {}: {}", job.id, e.what());
         job.status = rt::JobStatus::Failed;
@@ -249,15 +292,17 @@ void RenderQueue::workerThread()
     spdlog::info("RenderQueue: Worker started");
 
     while (!m_cancelAll.load()) {
-        ExportJob* nextJob = nullptr;
+        // Own reference: keeps the job alive even if removeJob erases it
+        // from m_jobs while we're processing (fix for the dangling raw
+        // pointer into the vector).
+        std::shared_ptr<ExportJob> nextJob;
 
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             for (auto& j : m_jobs) {
-                if (j.status == JobStatus::Queued) {
-                    nextJob = &j;
-                    nextJob->status = JobStatus::Running;
-                    m_cancelFlags[j.id].store(false);
+                if (j->status.load() == JobStatus::Queued) {
+                    nextJob = j;
+                    j->status.store(JobStatus::Running);
                     break;
                 }
             }
@@ -265,13 +310,24 @@ void RenderQueue::workerThread()
 
         if (!nextJob) break; // No more queued jobs
 
-        // Run job through the safe wrapper that catches ALL exceptions.
-        safeProcessJob(this, *nextJob, m_timeline, m_compositor);
+        // ctx owns the encoder + demuxers OUTSIDE the __try frame so an SEH
+        // unwind (which skips processJob's local destructors) still releases
+        // the NVENC session when ctx is destroyed at the end of this iteration.
+        JobRunContext ctx;
 
-        // If safeProcessJob caught a SEH exception or C++ exception,
-        // the job was marked Failed above.  Notify the completion callback.
-        if (nextJob->status == JobStatus::Failed) {
-            if (m_completeCb)
+        // Run job through the safe wrapper that catches ALL exceptions.
+        safeProcessJob(this, *nextJob, ctx, m_timeline, m_compositor);
+
+        // SINGLE completion-callback call site: processJob (and the SEH
+        // handler) only set status/error — nothing else calls m_completeCb,
+        // so a job can never notify twice.
+        const JobStatus st = nextJob->status.load();
+        if (m_completeCb) {
+            if (st == JobStatus::Completed)
+                m_completeCb(nextJob->id, true, "");
+            else if (st == JobStatus::Cancelled)
+                m_completeCb(nextJob->id, false, "Cancelled");
+            else
                 m_completeCb(nextJob->id, false, nextJob->error);
         }
     }
@@ -280,7 +336,8 @@ void RenderQueue::workerThread()
     spdlog::info("RenderQueue: Worker finished");
 }
 
-void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* compositor)
+void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
+                             Timeline* timeline, Compositor* compositor)
 {
     spdlog::info("RenderQueue: Processing job {} → {}", job.id, pathToUtf8(job.config.outputPath));
 
@@ -307,16 +364,19 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     if (!m_frameRenderCb) {
         job.status = JobStatus::Failed;
         job.error = "RenderQueue: no frame-render callback set";
-        if (m_completeCb) m_completeCb(job.id, false, job.error);
         return;
     }
 
     // ── Step 2: Encoder creation ────────────────────────────────────
+    // The encoder is owned by ctx (workerThread's frame), NOT a local:
+    // this TU is not /EHa, so an SEH unwind out of this function skips
+    // local destructors and would leak the NVENC session.
     spdlog::info("RndQ[{}]: Step 2 — create encoder (codec={}, hw={})",
                  job.id, static_cast<int>(job.config.encoderConfig.codec),
                  static_cast<int>(job.config.encoderConfig.hwAccel));
-    auto encoder = Encoder::create(job.config.encoderConfig.codec,
-                                    job.config.encoderConfig.hwAccel);
+    std::unique_ptr<Encoder>& encoder = ctx.encoder;
+    encoder = Encoder::create(job.config.encoderConfig.codec,
+                              job.config.encoderConfig.hwAccel);
     if (!encoder) {
         spdlog::error("RndQ[{}]: Encoder::create returned null", job.id);
     }
@@ -346,7 +406,6 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         if (!encoder || !encoder->init(job.config.encoderConfig)) {
             job.status = JobStatus::Failed;
             job.error = "Failed to initialize encoder";
-            if (m_completeCb) m_completeCb(job.id, false, job.error);
             return;
         }
     }
@@ -396,7 +455,8 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
 
     // Open PacketDemuxers for source files used in passthrough.
     // Key = media path, value = shared demuxer instance.
-    std::unordered_map<std::string, std::unique_ptr<PacketDemuxer>> demuxers;
+    // Owned by ctx for the same SEH-unwind reason as the encoder.
+    auto& demuxers = ctx.demuxers;
     if (smartPlan.passthroughCount > 0) {
         for (const auto& [frameIdx, pf] : smartPlan.passthroughFrames) {
             if (demuxers.count(pf.mediaPath) == 0) {
@@ -430,20 +490,26 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         return op;
     };
 
-    // Helper: update render progress
+    // Helper: update render progress.  Numeric fields are atomics (polled by
+    // the UI thread); statusText is written under the mutex (readers use
+    // RenderQueue::jobStatusText).
     auto updateProgress = [&](int64_t currentFrame) {
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - startTime).count();
         int64_t framesCompleted = currentFrame - startFrame + 1;
+        const double fps = elapsed > 0 ? framesCompleted / elapsed : 0.0;
 
         job.progress.currentFrame = framesCompleted;
         job.progress.percent = 100.0f * static_cast<float>(framesCompleted) / totalFrames;
         job.progress.elapsedSeconds = elapsed;
-        job.progress.fps = elapsed > 0 ? framesCompleted / elapsed : 0;
-        job.progress.estimatedRemaining = job.progress.fps > 0
-            ? (totalFrames - framesCompleted) / job.progress.fps : 0;
-        job.progress.statusText = "Rendering frame " + std::to_string(framesCompleted) +
-                                  "/" + std::to_string(totalFrames);
+        job.progress.fps = fps;
+        job.progress.estimatedRemaining = fps > 0
+            ? (totalFrames - framesCompleted) / fps : 0.0;
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            job.progress.statusText = "Rendering frame " + std::to_string(framesCompleted) +
+                                      "/" + std::to_string(totalFrames);
+        }
 
         if (m_progressCb) m_progressCb(job.id, job.progress);
     };
@@ -470,9 +536,8 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     int64_t     ptExpectedSrc = -1;
 
     for (int64_t f = startFrame; f < endFrame; ++f) {
-        // Check cancellation
-        auto it = m_cancelFlags.find(job.id);
-        if (m_cancelAll.load() || (it != m_cancelFlags.end() && it->second.load())) {
+        // Check cancellation (per-job atomic on the job itself — no map race)
+        if (m_cancelAll.load() || job.cancelRequested.load()) {
             cancelled = true;
             break;
         }
@@ -606,7 +671,6 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     if (cancelled) {
         job.status = JobStatus::Cancelled;
         encoder->shutdown();
-        if (m_completeCb) m_completeCb(job.id, false, "Cancelled");
         return;
     }
 
@@ -616,11 +680,18 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         allPackets.push_back(makeOwnedPacket(ep));
     }
 
-    // Audio mixdown
+    // Audio mixdown — mixes from the job's timeline SNAPSHOT (cloned on the
+    // main thread in addJob) so concurrent user edits to the live timeline
+    // can't race the worker.  Falls back to the live timeline only when no
+    // snapshot was provided (tests / legacy callers).
     MixdownResult audioResult;
-    if (job.config.includeAudio && timeline) {
-        AudioMixdown mixdown;
-        audioResult = mixdown.mix(*timeline, job.config.audioConfig);
+    {
+        const Timeline* audioTimeline =
+            job.timelineSnapshot ? job.timelineSnapshot.get() : timeline;
+        if (job.config.includeAudio && audioTimeline) {
+            AudioMixdown mixdown;
+            audioResult = mixdown.mix(*audioTimeline, job.config.audioConfig);
+        }
     }
 
     // Mux video+audio into container file.
@@ -647,7 +718,10 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
     spdlog::info("RndQ[{}]: mux config fps={}/{} codecId={}", job.id,
                  mCfg.videoFpsNum, mCfg.videoFpsDen, mCfg.videoCodecId);
 
-    job.progress.statusText = "Muxing...";
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        job.progress.statusText = "Muxing...";
+    }
     if (m_progressCb) m_progressCb(job.id, job.progress);
 
     const MixdownResult* audioPtr = audioResult.isValid() ? &audioResult : nullptr;
@@ -675,47 +749,54 @@ void RenderQueue::processJob(ExportJob& job, Timeline* timeline, Compositor* com
         spdlog::error("RenderQueue: Muxing failed for job {}", job.id);
         job.status = JobStatus::Failed;
         job.error  = "Muxing failed — output file not written";
-        if (m_completeCb) m_completeCb(job.id, false, job.error);
         return;
     }
 
-    job.status = JobStatus::Completed;
     job.progress.percent = 100.0f;
-    job.progress.statusText = "Complete";
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        job.progress.statusText = "Complete";
+    }
+    job.status = JobStatus::Completed;
 
     auto endTime = std::chrono::steady_clock::now();
     double totalElapsed = std::chrono::duration<double>(endTime - startTime).count();
     spdlog::info("RenderQueue: Job {} complete ({:.1f}s, {:.0f} fps)",
                  job.id, totalElapsed, totalFrames / totalElapsed);
-
-    if (m_completeCb) m_completeCb(job.id, true, "");
+    // Completion callback fires ONCE, in workerThread, after this returns.
 }
 
 void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
 {
     spdlog::info("RndQ[{}]: audio-only export → {}", job.id, pathToUtf8(job.config.outputPath));
 
-    if (!timeline) {
+    // Prefer the job's timeline snapshot (cloned on the main thread at
+    // addJob) so the mixdown never races live edits.
+    const Timeline* audioTimeline =
+        job.timelineSnapshot ? job.timelineSnapshot.get() : timeline;
+    if (!audioTimeline) {
         job.status = JobStatus::Failed;
         job.error  = "No timeline loaded — nothing to export";
-        if (m_completeCb) m_completeCb(job.id, false, job.error);
         return;
     }
 
     auto startTime = std::chrono::steady_clock::now();
 
     auto isCancelled = [&]() {
-        auto it = m_cancelFlags.find(job.id);
-        return m_cancelAll.load() || (it != m_cancelFlags.end() && it->second.load());
+        return m_cancelAll.load() || job.cancelRequested.load();
+    };
+
+    auto setStatusText = [&](const std::string& s) {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        job.progress.statusText = s;
     };
 
     job.progress.totalFrames = 1;
-    job.progress.statusText  = "Mixing audio...";
+    setStatusText("Mixing audio...");
     if (m_progressCb) m_progressCb(job.id, job.progress);
 
     if (isCancelled()) {
         job.status = JobStatus::Cancelled;
-        if (m_completeCb) m_completeCb(job.id, false, "Cancelled");
         return;
     }
 
@@ -723,16 +804,15 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
     // to 0–90%; the file write takes the last slice.
     AudioMixdown mixdown;
     MixdownResult result = mixdown.mix(
-        *timeline, job.config.audioConfig,
+        *audioTimeline, job.config.audioConfig,
         [&](float p, const std::string& s) {
-            job.progress.percent    = p * 90.0f;
-            job.progress.statusText = s;
+            job.progress.percent = p * 90.0f;
+            setStatusText(s);
             if (m_progressCb) m_progressCb(job.id, job.progress);
         });
 
     if (isCancelled()) {
         job.status = JobStatus::Cancelled;
-        if (m_completeCb) m_completeCb(job.id, false, "Cancelled");
         return;
     }
 
@@ -741,12 +821,11 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
         job.error  = mixdown.lastError().empty()
             ? "No audio to export (the timeline has no audio in this range)"
             : mixdown.lastError();
-        if (m_completeCb) m_completeCb(job.id, false, job.error);
         return;
     }
 
-    job.progress.percent    = 92.0f;
-    job.progress.statusText = "Writing audio file...";
+    job.progress.percent = 92.0f;
+    setStatusText("Writing audio file...");
     if (m_progressCb) m_progressCb(job.id, job.progress);
 
     const bool ok = AudioMixdown::writeAudioFile(
@@ -757,21 +836,19 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
         job.status = JobStatus::Failed;
         job.error  = "Failed to write the audio file (the encoder or output path "
                      "may be unavailable — see the log for details)";
-        if (m_completeCb) m_completeCb(job.id, false, job.error);
         return;
     }
 
-    job.status              = JobStatus::Completed;
     job.progress.currentFrame = 1;
     job.progress.percent    = 100.0f;
-    job.progress.statusText = "Complete";
+    setStatusText("Complete");
+    job.status = JobStatus::Completed;
 
     double elapsed = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - startTime).count();
     spdlog::info("RndQ[{}]: audio-only export complete ({:.1f}s, {:.1f}s of audio)",
                  job.id, elapsed, result.duration);
-
-    if (m_completeCb) m_completeCb(job.id, true, "");
+    // Completion callback fires ONCE, in workerThread, after this returns.
 }
 
 } // namespace rt

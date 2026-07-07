@@ -460,7 +460,9 @@ void ExportPanel::onAddToQueue()
 
     auto config = buildJobConfig();
     rememberExportDir(pathToUtf8(config.outputPath));
-    uint32_t jobId = m_renderQueue->addJob(config);
+    // Snapshot the timeline (main thread) so the worker's audio mixdown
+    // never reads the live timeline while the user keeps editing.
+    uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
 
     // Show job in list
     m_jobList->setVisible(true);
