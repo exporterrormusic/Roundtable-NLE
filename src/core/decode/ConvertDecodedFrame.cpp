@@ -129,7 +129,15 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
         cached.width  = static_cast<uint32_t>(dstW);
         cached.height = static_cast<uint32_t>(dstH);
         cached.stride = static_cast<uint32_t>(dstW) * 4;
-        acquirePixels(cached, pool, static_cast<size_t>(dstW) * dstH * 4);
+        // swscale writes the FINAL destination row in chunks of up to 64
+        // bytes (SIMD store width), so a row narrower than that overruns an
+        // exact-fit allocation (measured: dstW < 16 → up to 44 B past the
+        // end). Unreachable at current resolution tiers, but one tier-clamp
+        // change away — pad so the tail chunk always lands in-bounds.
+        const size_t rowBytes = static_cast<size_t>(dstW) * 4;
+        acquirePixels(cached, pool,
+                      static_cast<size_t>(dstW) * dstH * 4
+                          + (rowBytes < 64 ? 64 - rowBytes : 0));
 
         uint8_t* dstData[1] = { cached.pixels.data() };
         int dstLinesize[1]  = { static_cast<int>(cached.stride) };
