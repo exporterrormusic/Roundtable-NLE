@@ -53,6 +53,11 @@ public:
         uint32_t              height{0};
         bool                  isPacked{false}; ///< True if texture is packed-alpha (2× height)
         bool                  isPMA{false};    ///< True if texture is premultiplied-alpha
+        bool                  contentBoundsValid{false};
+        float                 contentLeft{0.0f};
+        float                 contentTop{0.0f};
+        float                 contentRight{1.0f};
+        float                 contentBottom{1.0f};
     };
 
     [[nodiscard]] LookupResult get(uint64_t mediaId, int64_t frameNumber, uint8_t tier);
@@ -62,7 +67,10 @@ public:
     void put(uint64_t mediaId, int64_t frameNumber, uint8_t tier,
              std::unique_ptr<Texture> tex, size_t textureBytes,
              bool isPacked = false, bool isPMA = false,
-             bool isLoopFrame = false);
+             bool isLoopFrame = false,
+             bool contentBoundsValid = false,
+             float contentLeft = 0.0f, float contentTop = 0.0f,
+             float contentRight = 1.0f, float contentBottom = 1.0f);
 
     /// Insert a texture with shared ownership — used for CUDA zero-copy
     /// frames where the CachedFrame (FrameCache) and GpuTexCache co-own
@@ -74,7 +82,10 @@ public:
                    uint32_t width, uint32_t height,
                    size_t textureBytes,
                    bool isPacked = false, bool isPMA = false,
-                   bool isLoopFrame = false);
+                   bool isLoopFrame = false,
+                   bool contentBoundsValid = false,
+                   float contentLeft = 0.0f, float contentTop = 0.0f,
+                   float contentRight = 1.0f, float contentBottom = 1.0f);
 
     // ── Pinning ─────────────────────────────────────────────────────────
 
@@ -193,6 +204,11 @@ private:
         bool                     isPacked{false}; // Packed-alpha (2× height, UV split)
         bool                     isPMA{false};    // Premultiplied-alpha (native alpha video)
         bool                     isLoopFrame{false}; // Belongs to a short looping clip
+        bool                     contentBoundsValid{false};
+        float                    contentLeft{0.0f};
+        float                    contentTop{0.0f};
+        float                    contentRight{1.0f};
+        float                    contentBottom{1.0f};
         int                      pinCount{0};    // >0 prevents eviction
         LruIter                  lruIt;
     };

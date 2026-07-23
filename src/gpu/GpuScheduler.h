@@ -138,6 +138,12 @@ public:
     /// call.
     VkResult present(VkQueue queue, const VkPresentInfoKHR* info);
 
+    /// Wait for one queue to become idle while honoring the same external
+    /// synchronization used by submit() and present(). Swapchain teardown
+    /// needs this stronger guarantee: a submit fence does not prove that the
+    /// presentation engine has finished consuming its wait semaphore.
+    VkResult queueWaitIdle(VkQueue queue);
+
     /// THE ONLY supported way to call vkDeviceWaitIdle during operation.
     /// Per Vulkan spec vkDeviceWaitIdle is "queue use" on EVERY queue
     /// in the device — so calling it while another thread submits to any

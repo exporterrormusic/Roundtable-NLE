@@ -14,6 +14,7 @@
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "widgets/KeyboardFocusUtils.h"
 
 #include "command/CommandStack.h"
 #include "command/CompoundCommand.h"
@@ -51,6 +52,13 @@ namespace rt {
 
 void ShortcutController::handleKeyPress(QKeyEvent* event)
 {
+    // This handler can receive events forwarded by the application-level
+    // router. Never interpret typing or combo-box search/navigation as NLE
+    // commands.
+    if (keyboardFocusConsumesTextKeys()) {
+        event->ignore();
+        return;
+    }
 
     // Tilde (`) key toggles maximize/restore
     if (event->key() == Qt::Key_QuoteLeft || event->key() == Qt::Key_AsciiTilde) {
@@ -205,6 +213,10 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Text);
         event->accept(); return;
     }
+    if (noMod && key == Qt::Key_P) {
+        if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::PenMask);
+        event->accept(); return;
+    }
     if (noMod && key == Qt::Key_Z) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Zoom);
         event->accept(); return;
@@ -212,6 +224,14 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Delete = Lift ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if (noMod && (key == Qt::Key_Delete || key == Qt::Key_Backspace)) {
+        // Mask selection is an explicit edit target, not a focus accident.
+        // Native Program Monitor input can leave keyboard focus on the
+        // workspace, so route this before any clip/layer fallback.
+        if (m_ws->effectControlsPanel()
+            && m_ws->effectControlsPanel()->hasSelectedMask()) {
+            m_ws->effectControlsPanel()->deleteSelectedMask();
+            event->accept(); return;
+        }
         // If Essential Graphics panel has focus, delete the selected layer (not the clip)
         if (m_ws->graphicsEditorPanel() && m_ws->graphicsEditorPanel()->isAncestorOf(
                 QApplication::focusWidget())) {

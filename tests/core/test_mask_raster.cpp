@@ -18,6 +18,7 @@
 #include "timeline/OpacityMask.h"
 
 #include <cmath>
+#include <utility>
 
 using namespace rt;
 
@@ -59,6 +60,22 @@ TEST(MaskRaster, EllipseInsideOutside)
     EXPECT_EQ(alphaAt(px, 88, 64), 255);   // inside (r=32px, offset 24)
     EXPECT_EQ(alphaAt(px, 4, 4), 0);       // far corner
     EXPECT_EQ(alphaAt(px, 110, 64), 0);    // outside on axis (offset 46)
+}
+
+TEST(MaskRaster, GeometryUsesClipLocalRasterDimensions)
+{
+    constexpr uint32_t clipW = 80;
+    constexpr uint32_t clipH = 40;
+    auto px = rasterizeMasks({makeRect(0.5f, 0.5f, 0.5f, 0.5f)},
+                             clipW, clipH);
+    const auto localAlphaAt = [&px](uint32_t x, uint32_t y) {
+        return px[(static_cast<size_t>(y) * clipW + x) * 4];
+    };
+
+    ASSERT_EQ(px.size(), static_cast<size_t>(clipW) * clipH * 4);
+    EXPECT_EQ(localAlphaAt(40, 20), 255);  // clip-local center
+    EXPECT_EQ(localAlphaAt(10, 20), 0);    // left of the local rectangle
+    EXPECT_EQ(localAlphaAt(40, 4), 0);     // above the local rectangle
 }
 
 TEST(MaskRaster, UnionCombine_PremiereSemantics)
@@ -262,4 +279,124 @@ TEST(OpacityMaskModel, EvalRenderStateUsesTracks)
     EXPECT_NEAR(s.feather, 10.0f, 1e-3f);
     EXPECT_FLOAT_EQ(s.maskOpacity, 0.75f);
     EXPECT_EQ(s.shape, MaskShape::Rectangle);
+}
+
+TEST(OpacityMaskModel, LegacyMigrationPreservesAnimatedPathThenFollowsClip)
+{
+    OpacityMask mask;
+    mask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    mask.shape = MaskShape::Rectangle;
+    mask.base.centerX = 0.5f;
+    mask.base.centerY = 0.5f;
+    mask.base.width = 0.2f;
+    mask.base.height = 0.4f;
+    mask.pathAnimated = true;
+    mask.addPathKey(0, mask.base);
+    mask.addPathKey(100, mask.base);
+
+    LegacyMaskMigrationTransform base;
+    base.sequenceWidth = 100;
+    base.sequenceHeight = 100;
+    base.sourceWidth = 100;
+    base.sourceHeight = 100;
+    base.positionX = 192.0f; // +10 sequence pixels at the base frame
+
+    const auto atTime = [base](int64_t time) {
+        auto value = base;
+        if (time == 100)
+            value.positionX = 384.0f; // +20 sequence pixels at key 100
+        return value;
+    };
+    ASSERT_TRUE(migrateLegacyMaskToSourceLocal(mask, base, atTime));
+    EXPECT_EQ(mask.coordinateSpace, MaskCoordinateSpace::SourceLocal);
+    EXPECT_EQ(mask.shape, MaskShape::FreeDrawBezier);
+    ASSERT_EQ(mask.base.vertices.size(), 4u);
+    ASSERT_EQ(mask.pathKeys.size(), 2u);
+
+    const auto xBounds = [](const MaskGeometry& geometry) {
+        float lo = geometry.vertices.front().x;
+        float hi = lo;
+        for (const auto& vertex : geometry.vertices) {
+            lo = std::min(lo, vertex.x);
+            hi = std::max(hi, vertex.x);
+        }
+        return std::pair{lo, hi};
+    };
+    const auto baseBounds = xBounds(mask.base);
+    const auto key0Bounds = xBounds(mask.pathKeys[0].geometry);
+    const auto key100Bounds = xBounds(mask.pathKeys[1].geometry);
+    EXPECT_NEAR(baseBounds.first, 0.3f, 1.0e-5f);
+    EXPECT_NEAR(baseBounds.second, 0.5f, 1.0e-5f);
+    EXPECT_NEAR(key0Bounds.first + 0.1f, 0.4f, 1.0e-5f);
+    EXPECT_NEAR(key100Bounds.first + 0.2f, 0.4f, 1.0e-5f);
+
+    // Once local, a later +30px clip position carries the same path with it.
+    EXPECT_NEAR(baseBounds.first + 0.3f, 0.6f, 1.0e-5f);
+    EXPECT_NEAR(baseBounds.second + 0.3f, 0.8f, 1.0e-5f);
+}
+
+TEST(OpacityMaskModel, LegacyMigrationMapsSourceRotationAndBezierTangents)
+{
+    OpacityMask mask;
+    mask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    mask.shape = MaskShape::FreeDrawBezier;
+    mask.base.vertices = {
+        {0.2f, 0.3f, -0.05f, 0.0f, 0.1f, 0.0f},
+        {0.4f, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f},
+        {0.3f, 0.6f, 0.0f, 0.0f, 0.0f, 0.0f}
+    };
+
+    LegacyMaskMigrationTransform transform;
+    transform.sequenceWidth = 100;
+    transform.sequenceHeight = 100;
+    transform.sourceWidth = 100;
+    transform.sourceHeight = 100;
+    transform.sourceRotation = 90;
+    ASSERT_TRUE(migrateLegacyMaskToSourceLocal(mask, transform));
+
+    ASSERT_EQ(mask.base.vertices.size(), 3u);
+    const auto& vertex = mask.base.vertices.front();
+    EXPECT_NEAR(vertex.x, 0.3f, 1.0e-5f);
+    EXPECT_NEAR(vertex.y, 0.8f, 1.0e-5f);
+    EXPECT_NEAR(vertex.inTanX, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(vertex.inTanY, 0.05f, 1.0e-5f);
+    EXPECT_NEAR(vertex.outTanX, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(vertex.outTanY, -0.1f, 1.0e-5f);
+}
+
+TEST(OpacityMaskModel, LegacyMigrationScalesDistanceKeysAtTheirOwnTimes)
+{
+    OpacityMask mask;
+    mask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    mask.shape = MaskShape::Rectangle;
+    mask.base.centerX = 0.5f;
+    mask.base.centerY = 0.5f;
+    mask.base.width = 0.2f;
+    mask.base.height = 0.2f;
+    mask.feather.setDefaultValue(20.0f);
+    mask.feather.addKeyframe(0, 20.0f);
+    mask.feather.addKeyframe(100, 20.0f);
+    mask.expansion.setDefaultValue(-10.0f);
+    mask.expansion.addKeyframe(0, -10.0f);
+    mask.expansion.addKeyframe(100, -10.0f);
+
+    LegacyMaskMigrationTransform base;
+    base.sequenceWidth = 100;
+    base.sequenceHeight = 100;
+    base.sourceWidth = 100;
+    base.sourceHeight = 100;
+    const auto atTime = [base](int64_t time) {
+        auto transform = base;
+        if (time == 100) {
+            transform.scaleX = 2.0f;
+            transform.scaleY = 2.0f;
+        }
+        return transform;
+    };
+
+    ASSERT_TRUE(migrateLegacyMaskToSourceLocal(mask, base, atTime));
+    EXPECT_NEAR(mask.feather.keyframe(0).value, 20.0f, 1.0e-4f);
+    EXPECT_NEAR(mask.feather.keyframe(1).value, 10.0f, 1.0e-4f);
+    EXPECT_NEAR(mask.expansion.keyframe(0).value, -10.0f, 1.0e-4f);
+    EXPECT_NEAR(mask.expansion.keyframe(1).value, -5.0f, 1.0e-4f);
 }

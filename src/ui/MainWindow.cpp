@@ -8,6 +8,7 @@
 #include "ShortcutManager.h"
 #include "Theme.h"
 #include "widgets/DockTitleBar.h"
+#include "widgets/KeyboardFocusUtils.h"
 #include "dialogs/ProjectSettingsDialog.h"
 #include "dialogs/KeyboardShortcutsDialog.h"
 #include "dialogs/AppPreferencesDialog.h"
@@ -389,13 +390,10 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
     if ((isKeyPress || isKeyRelease) && m_playbackController) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->modifiers() == Qt::NoModifier) {
-            // Don't intercept if focus is on a text input widget
+            // Don't intercept if focus is on a text input, editable combo, or
+            // an active completer/dropdown popup.
             QWidget* focused = qApp->focusWidget();
-            if (focused && (focused->inherits("QLineEdit") ||
-                            focused->inherits("QTextEdit") ||
-                            focused->inherits("QPlainTextEdit") ||
-                            focused->inherits("QSpinBox") ||
-                            focused->inherits("QDoubleSpinBox"))) {
+            if (keyboardFocusConsumesTextKeys()) {
                 return QMainWindow::eventFilter(watched, event);
             }
 
@@ -473,6 +471,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
             case Qt::Key_R: if (setTool(EditTool::Rolling))   return true; break;
             case Qt::Key_S: if (setTool(EditTool::Slip))      return true; break;
             case Qt::Key_T: if (setTool(EditTool::Text))      return true; break;
+            case Qt::Key_P: if (setTool(EditTool::PenMask))   return true; break;
             case Qt::Key_Z: if (setTool(EditTool::Zoom))      return true; break;
             default:
                 break;

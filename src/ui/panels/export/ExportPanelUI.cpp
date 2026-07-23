@@ -69,7 +69,9 @@ void ExportPanel::setupUI()
 
     auto* settingsWidget = new QWidget;
     auto* settingsLayout = new QVBoxLayout(settingsWidget);
-    settingsLayout->setContentsMargins(0, 0, 10, 0);
+    // Left/top padding so the header block (File Name label + input box) isn't
+    // jammed flush against the pane's left/top border.
+    settingsLayout->setContentsMargins(8, 6, 10, 0);
     settingsLayout->setSpacing(m.spacingMd);
 
     // ── Header: File Name / Location / Preset / Format ──────────────────

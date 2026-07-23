@@ -9,6 +9,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "cache/FrameContentBounds.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -79,23 +80,11 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
         const int w = static_cast<int>(decoded.width);
         const int h = static_cast<int>(decoded.height);
 
-        int maxDim = 1920;
-        switch (task.tier) {
-            case ResolutionTier::Half:    maxDim =  960; break;
-            case ResolutionTier::Quarter: maxDim =  480; break;
-            default:                      maxDim = 1920; break;
-        }
-        const int contentH = task.info.contentHeight(h);
-        int dstW = w, dstH = h;
-        // exportFullRes (export decode) skips the tier cap → native resolution.
-        if (!task.exportFullRes && (w > maxDim || contentH > maxDim)) {
-            const float scale = std::min(
-                static_cast<float>(maxDim) / w,
-                static_cast<float>(maxDim) / contentH);
-            dstW = std::max(2, static_cast<int>(w * scale) & ~1);
-            dstH = std::max(2, static_cast<int>(h * scale) & ~1);
-        }
-
+        const ResolutionTier decodeTier = task.exportFullRes
+            ? ResolutionTier::Full : task.tier;
+        const auto tierSize = resolutionTierDimensions(w, h, decodeTier);
+        const int dstW = tierSize.width;
+        const int dstH = tierSize.height;
         // NOTE: ProRes 4444 (yuva444p12le) GPU convert is intentionally NOT
         // wired here — the prefetch path runs on MULTIPLE worker threads, and
         // the shared Nv12Converter's command pool (GpuContext::m_cmdPool) is
@@ -116,6 +105,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
 #endif
     }
 
+    if (cached->pinned && !cached->pixels.empty())
+        computeBgraContentBounds(*cached);
     m_perf.cpuConvertDecoded.fetch_add(1, std::memory_order_relaxed);
     return cached;
 }

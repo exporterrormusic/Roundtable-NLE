@@ -63,10 +63,12 @@ bool TransitionRenderer::init(Device& device,
     vkGetPhysicalDeviceProperties(device.physicalDevice(), &props);
     m_timestampPeriod = props.limits.timestampPeriod;
 
-    // Create resources
-    if (!createOutputTexture())        { shutdown(); return false; }
+    // Create resources. Each concurrently-recorded transition owns an
+    // independent output image, descriptor set, and transform buffer. The
+    // default (0,0) target preserves the single-transition public API.
     if (!createDescriptorResources())  { shutdown(); return false; }
     if (!createPipelines())            { shutdown(); return false; }
+    if (!ensureRenderTarget(0, 0))      { shutdown(); return false; }
 
     // Create placeholder textures
     {
@@ -125,16 +127,6 @@ bool TransitionRenderer::init(Device& device,
         }
     }
 
-    // Create SSBO for per-source transform parameters
-    if (!m_sourceParamsBuffer.create(m_allocator->handle(),
-                                     sizeof(TransitionSourceParams),
-                                     BufferUsage::Uniform))
-    {
-        spdlog::error("TransitionRenderer: Failed to create source params SSBO");
-        shutdown();
-        return false;
-    }
-
     m_initialized = true;
     spdlog::info("TransitionRenderer initialized ({}x{}, 3 transition shaders)",
                  config.outputWidth, config.outputHeight);
@@ -161,7 +153,6 @@ void TransitionRenderer::shutdown()
     {
         vkDestroyDescriptorPool(dev, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
-        m_descriptorSet  = VK_NULL_HANDLE;
     }
 
     if (m_descriptorSetLayout != VK_NULL_HANDLE)
@@ -199,40 +190,13 @@ void TransitionRenderer::shutdown()
     m_placeholderTexture.destroy();
     m_whitePlaceholderTexture.destroy();
     m_transparentPlaceholderTexture.destroy();
-    m_sourceParamsBuffer.destroy();
-    m_outputTexture.destroy();
+    m_renderTargets.clear();
 
     m_initialized = false;
     m_device      = nullptr;
     m_allocator   = nullptr;
     m_cmdPool     = nullptr;
     m_queue       = VK_NULL_HANDLE;
-}
-
-// ── createOutputTexture ─────────────────────────────────────────────────────
-
-bool TransitionRenderer::createOutputTexture()
-{
-    TextureConfig cfg;
-    cfg.width  = m_config.outputWidth;
-    cfg.height = m_config.outputHeight;
-    cfg.format = m_config.outputFormat;
-    cfg.usage  = VK_IMAGE_USAGE_STORAGE_BIT
-               | VK_IMAGE_USAGE_SAMPLED_BIT
-               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-               | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-
-    if (!m_outputTexture.create(m_allocator->handle(), m_device->handle(), cfg))
-    {
-        spdlog::error("TransitionRenderer: Failed to create output texture");
-        return false;
-    }
-
-    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
-    m_outputTexture.transitionLayout(cmd, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-    m_cmdPool->endSingleTime(cmd, m_queue);
-
-    return true;
 }
 
 // ── createDescriptorResources ───────────────────────────────────────────────
@@ -283,35 +247,22 @@ bool TransitionRenderer::createDescriptorResources()
     // Pool
     VkDescriptorPoolSize poolSizes[3] = {};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = 1;
+    poolSizes[0].descriptorCount = kMaxRenderTargets;
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 2;
+    poolSizes[1].descriptorCount = 2 * kMaxRenderTargets;
     poolSizes[2].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[2].descriptorCount = 1;
+    poolSizes[2].descriptorCount = kMaxRenderTargets;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets       = 1;
+    poolInfo.maxSets       = kMaxRenderTargets;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes    = poolSizes;
 
     if (vkCreateDescriptorPool(dev, &poolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS)
     {
         spdlog::error("TransitionRenderer: Failed to create descriptor pool");
-        return false;
-    }
-
-    // Allocate set
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool     = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts        = &m_descriptorSetLayout;
-
-    if (vkAllocateDescriptorSets(dev, &allocInfo, &m_descriptorSet) != VK_SUCCESS)
-    {
-        spdlog::error("TransitionRenderer: Failed to allocate descriptor set");
         return false;
     }
 
@@ -412,27 +363,102 @@ bool TransitionRenderer::createPipelines()
     return true;
 }
 
+// ── Per-dispatch render targets ─────────────────────────────────────────────
+
+uint64_t TransitionRenderer::renderTargetKey(uint32_t submissionSlot,
+                                             uint32_t transitionSlot) noexcept
+{
+    return (static_cast<uint64_t>(submissionSlot) << 32) | transitionSlot;
+}
+
+const TransitionRenderer::RenderTarget* TransitionRenderer::findRenderTarget(
+    uint32_t submissionSlot, uint32_t transitionSlot) const noexcept
+{
+    const auto it = m_renderTargets.find(
+        renderTargetKey(submissionSlot, transitionSlot));
+    return it == m_renderTargets.end() ? nullptr : it->second.get();
+}
+
+TransitionRenderer::RenderTarget* TransitionRenderer::ensureRenderTarget(
+    uint32_t submissionSlot, uint32_t transitionSlot)
+{
+    const uint64_t key = renderTargetKey(submissionSlot, transitionSlot);
+    if (const auto it = m_renderTargets.find(key); it != m_renderTargets.end())
+        return it->second.get();
+
+    if (m_renderTargets.size() >= kMaxRenderTargets) {
+        spdlog::error("TransitionRenderer: render-target limit ({}) exceeded",
+                      kMaxRenderTargets);
+        return nullptr;
+    }
+
+    auto target = std::make_unique<RenderTarget>();
+
+    TextureConfig cfg;
+    cfg.width  = m_config.outputWidth;
+    cfg.height = m_config.outputHeight;
+    cfg.format = m_config.outputFormat;
+    cfg.usage  = VK_IMAGE_USAGE_STORAGE_BIT
+               | VK_IMAGE_USAGE_SAMPLED_BIT
+               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+               | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (!target->outputTexture.create(
+            m_allocator->handle(), m_device->handle(), cfg)) {
+        spdlog::error("TransitionRenderer: Failed to create output texture");
+        return nullptr;
+    }
+
+    if (!target->sourceParamsBuffer.create(
+            m_allocator->handle(), sizeof(TransitionSourceParams),
+            BufferUsage::Uniform)) {
+        spdlog::error("TransitionRenderer: Failed to create source params SSBO");
+        return nullptr;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_descriptorSetLayout;
+    if (vkAllocateDescriptorSets(m_device->handle(), &allocInfo,
+                                 &target->descriptorSet) != VK_SUCCESS) {
+        spdlog::error("TransitionRenderer: Failed to allocate descriptor set");
+        return nullptr;
+    }
+
+    VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
+    target->outputTexture.transitionLayout(
+        cmd, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    m_cmdPool->endSingleTime(cmd, m_queue);
+
+    RenderTarget* result = target.get();
+    m_renderTargets.emplace(key, std::move(target));
+    return result;
+}
+
 // ── updateSourceDescriptors ─────────────────────────────────────────────────
 
-void TransitionRenderer::updateSourceDescriptors(const VkDescriptorImageInfo& sourceA,
-                                                  const VkDescriptorImageInfo& sourceB)
+void TransitionRenderer::updateSourceDescriptors(
+    RenderTarget& target,
+    const VkDescriptorImageInfo& sourceA,
+    const VkDescriptorImageInfo& sourceB)
 {
     VkDevice dev = m_device->handle();
 
     // Binding 0: output storage image
     VkDescriptorImageInfo outputInfo{};
-    outputInfo.imageView   = m_outputTexture.imageView();
+    outputInfo.imageView   = target.outputTexture.imageView();
     outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = m_sourceParamsBuffer.handle();
+    bufferInfo.buffer = target.sourceParamsBuffer.handle();
     bufferInfo.offset = 0;
     bufferInfo.range  = sizeof(TransitionSourceParams);
 
     VkWriteDescriptorSet writes[4] = {};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = m_descriptorSet;
+    writes[0].dstSet          = target.descriptorSet;
     writes[0].dstBinding      = 0;
     writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[0].descriptorCount = 1;
@@ -440,7 +466,7 @@ void TransitionRenderer::updateSourceDescriptors(const VkDescriptorImageInfo& so
 
     // Binding 1: source A
     writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = m_descriptorSet;
+    writes[1].dstSet          = target.descriptorSet;
     writes[1].dstBinding      = 1;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
@@ -448,7 +474,7 @@ void TransitionRenderer::updateSourceDescriptors(const VkDescriptorImageInfo& so
 
     // Binding 2: source B
     writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet          = m_descriptorSet;
+    writes[2].dstSet          = target.descriptorSet;
     writes[2].dstBinding      = 2;
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].descriptorCount = 1;
@@ -456,7 +482,7 @@ void TransitionRenderer::updateSourceDescriptors(const VkDescriptorImageInfo& so
 
     // Binding 3: source params SSBO
     writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet          = m_descriptorSet;
+    writes[3].dstSet          = target.descriptorSet;
     writes[3].dstBinding      = 3;
     writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[3].descriptorCount = 1;
@@ -513,9 +539,14 @@ bool TransitionRenderer::render(VkCommandBuffer cmd,
                                  float progress,
                                  int32_t directionOverride,
                                  float extraParam,
-                                 float softnessOverride)
+                                 float softnessOverride,
+                                 uint32_t submissionSlot,
+                                 uint32_t transitionSlot)
 {
     if (!m_initialized) return false;
+
+    RenderTarget* target = ensureRenderTarget(submissionSlot, transitionSlot);
+    if (!target) return false;
 
     progress = std::clamp(progress, 0.0f, 1.0f);
 
@@ -527,13 +558,14 @@ bool TransitionRenderer::render(VkCommandBuffer cmd,
     sp.cropB      = sourceB.crop;
     sp.isPackedA  = sourceA.isPacked ? 1 : 0;
     sp.isPackedB  = sourceB.isPacked ? 1 : 0;
-    m_sourceParamsBuffer.upload(&sp, sizeof(sp));
+    target->sourceParamsBuffer.upload(&sp, sizeof(sp));
 
     // Update descriptors
-    updateSourceDescriptors(sourceA.textureInfo, sourceB.textureInfo);
+    updateSourceDescriptors(*target, sourceA.textureInfo, sourceB.textureInfo);
 
     // Timestamp begin
-    if (m_queryPool != VK_NULL_HANDLE)
+    const bool recordTiming = submissionSlot == 0 && transitionSlot == 0;
+    if (recordTiming && m_queryPool != VK_NULL_HANDLE)
     {
         vkCmdResetQueryPool(cmd, m_queryPool, 0, 2);
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_queryPool, 0);
@@ -545,7 +577,7 @@ bool TransitionRenderer::render(VkCommandBuffer cmd,
 
     // Bind descriptors
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            m_pipelineLayout, 0, 1, &m_descriptorSet,
+                            m_pipelineLayout, 0, 1, &target->descriptorSet,
                             0, nullptr);
 
     // Push constants
@@ -608,7 +640,7 @@ bool TransitionRenderer::render(VkCommandBuffer cmd,
     vkCmdDispatch(cmd, groupsX, groupsY, 1);
 
     // Timestamp end
-    if (m_queryPool != VK_NULL_HANDLE)
+    if (recordTiming && m_queryPool != VK_NULL_HANDLE)
     {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_queryPool, 1);
     }
@@ -667,15 +699,35 @@ bool TransitionRenderer::resize(uint32_t width, uint32_t height)
     m_config.outputWidth  = width;
     m_config.outputHeight = height;
 
-    m_outputTexture.destroy();
-    return createOutputTexture();
+    // Descriptor sets are owned by the pool and can be reused only with the
+    // images they reference. Rebuild targets lazily at the new resolution;
+    // create the default one now to preserve outputImage() guarantees.
+    m_renderTargets.clear();
+    if (m_descriptorPool != VK_NULL_HANDLE)
+        vkResetDescriptorPool(m_device->handle(), m_descriptorPool, 0);
+    return ensureRenderTarget(0, 0) != nullptr;
 }
 
 // ── outputDescriptorInfo ────────────────────────────────────────────────────
 
-VkDescriptorImageInfo TransitionRenderer::outputDescriptorInfo() const
+VkImage TransitionRenderer::outputImage() const noexcept
 {
-    VkDescriptorImageInfo info = m_outputTexture.descriptorInfo();
+    const auto* target = findRenderTarget(0, 0);
+    return target ? target->outputTexture.image() : VK_NULL_HANDLE;
+}
+
+VkImageView TransitionRenderer::outputImageView() const noexcept
+{
+    const auto* target = findRenderTarget(0, 0);
+    return target ? target->outputTexture.imageView() : VK_NULL_HANDLE;
+}
+
+VkDescriptorImageInfo TransitionRenderer::outputDescriptorInfo(
+    uint32_t submissionSlot, uint32_t transitionSlot) const
+{
+    const auto* target = findRenderTarget(submissionSlot, transitionSlot);
+    if (!target) return {};
+    VkDescriptorImageInfo info = target->outputTexture.descriptorInfo();
     // Output texture lives in GENERAL layout (storage image).
     // Override the layout so the compositor samples it correctly.
     info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -701,9 +753,15 @@ VkDescriptorImageInfo TransitionRenderer::transparentDescriptorInfo() const
 
 // ── readbackOutput ──────────────────────────────────────────────────────────
 
-bool TransitionRenderer::readbackOutput(std::vector<uint8_t>& outPixels)
+bool TransitionRenderer::readbackOutput(std::vector<uint8_t>& outPixels,
+                                        uint32_t submissionSlot,
+                                        uint32_t transitionSlot)
 {
     if (!m_initialized) return false;
+    auto it = m_renderTargets.find(
+        renderTargetKey(submissionSlot, transitionSlot));
+    if (it == m_renderTargets.end()) return false;
+    auto& outputTexture = it->second->outputTexture;
 
     const uint32_t w = m_config.outputWidth;
     const uint32_t h = m_config.outputHeight;
@@ -715,7 +773,7 @@ bool TransitionRenderer::readbackOutput(std::vector<uint8_t>& outPixels)
 
     VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
 
-    m_outputTexture.transitionLayout(cmd,
+    outputTexture.transitionLayout(cmd,
         VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
@@ -724,11 +782,11 @@ bool TransitionRenderer::readbackOutput(std::vector<uint8_t>& outPixels)
     region.imageSubresource.layerCount     = 1;
     region.imageExtent = {w, h, 1};
 
-    vkCmdCopyImageToBuffer(cmd, m_outputTexture.image(),
+    vkCmdCopyImageToBuffer(cmd, outputTexture.image(),
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            staging.handle(), 1, &region);
 
-    m_outputTexture.transitionLayout(cmd,
+    outputTexture.transitionLayout(cmd,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_IMAGE_LAYOUT_GENERAL);
 

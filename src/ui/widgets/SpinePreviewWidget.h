@@ -145,7 +145,7 @@ signals:
     /// posX, posY are normalized 0–1; scale is a multiplier.
     void layerTransformChanged(int layerIndex, float posX, float posY, float scale);
 
-    /// Emitted when the user ALT+drags an edge to crop.
+    /// Emitted when the user Ctrl+drags an edge to crop.
     void layerCropChanged(int layerIndex, float cropLeft, float cropRight, float cropTop, float cropBottom);
 
     /// Emitted when a drag/scale operation begins (for undo snapshots).
@@ -219,7 +219,7 @@ private:
     bool    m_dragging{false};
     bool    m_scaling{false};
     bool    m_panning{false};
-    bool    m_cropping{false};           ///< ALT+drag crop from edge
+    bool    m_cropping{false};           ///< Ctrl+drag crop from edge
     QString m_scaleHandle;               ///< "tl","tr","bl","br"
     QString m_cropEdge;                  ///< "left","right","top","bottom"
     int     m_dragLayerIdx{-1};          ///< index into m_layers

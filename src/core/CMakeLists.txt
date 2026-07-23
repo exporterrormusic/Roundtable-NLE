@@ -106,7 +106,6 @@ add_library(roundtable_core STATIC
     spine/SpineAnimation.cpp
     spine/ModelManager.cpp
     spine/ShotPreset.cpp
-    spine/AnimationCache.cpp
     spine/SpinePrerenderer.cpp
     spine/AnimationVideoCache.cpp
 

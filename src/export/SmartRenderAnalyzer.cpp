@@ -33,6 +33,11 @@ static bool isIdentityClip(Clip& clip, const VideoClip& vc,
                            const EncoderConfig& enc,
                            uint32_t outW, uint32_t outH)
 {
+    // Blending and optical flow synthesize pixels even at 1.0x, so they can
+    // never use packet passthrough / smart render.
+    if (clip.timeInterpolation() != TimeInterpolation::FrameSampling)
+        return false;
+
     // Speed must be exactly 1.0
     if (clip.speed() != 1.0)
         return false;
@@ -55,6 +60,9 @@ static bool isIdentityClip(Clip& clip, const VideoClip& vc,
     if (!clip.scaleY().isStatic() || clip.scaleY().defaultValue() != 1.0f)
         return false;
     if (!clip.rotation().isStatic() || clip.rotation().defaultValue() != 0.0f)
+        return false;
+    if (!clip.shutterAngle().isStatic() ||
+        clip.shutterAngle().defaultValue() != 0.0f)
         return false;
 
     // No effects

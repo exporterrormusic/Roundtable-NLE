@@ -181,6 +181,7 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
 
 void SourceMonitor::loadSequence(size_t sequenceIndex, const QString& name,
                                  int64_t durationTicks, double fps,
+                                 uint32_t sequenceWidth, uint32_t sequenceHeight,
                                  SequenceFrameProvider frameProvider,
                                  SequenceTimelineGetter timelineGetter)
 {
@@ -188,6 +189,8 @@ void SourceMonitor::loadSequence(size_t sequenceIndex, const QString& name,
 
     m_isSequence      = true;
     m_sequenceIndex   = sequenceIndex;
+    m_sequenceWidth   = sequenceWidth > 0 ? sequenceWidth : 1920;
+    m_sequenceHeight  = sequenceHeight > 0 ? sequenceHeight : 1080;
     m_seqFrameProvider = std::move(frameProvider);
     m_seqTimelineGetter = std::move(timelineGetter);
     m_hasClip         = true;
@@ -314,6 +317,9 @@ void SourceMonitor::clearClip()
     m_audioOnly    = false;
     m_isSequence   = false;
     m_sequenceIndex = 0;
+    m_sequenceWidth = 1920;
+    m_sequenceHeight = 1080;
+    m_scrubQualityActive = false;
     m_seqHasAudio  = false;
     m_seqFrameProvider = nullptr;
     m_seqTimelineGetter = nullptr;
@@ -481,6 +487,12 @@ void SourceMonitor::onScrub(int64_t tick)
 {
     if (!m_hasClip) return;
 
+    // Clicking or dragging this timeline is a manual transport action. Pause
+    // source playback first so it cannot keep advancing (or keep ownership of
+    // the shared AudioEngine) underneath the scrub.
+    if (m_controller && m_controller->isPlaying())
+        m_controller->pause();
+
     // Emit on the first scrub event of a sequence so the timeline can
     // halt its own playback for mutual exclusion.
     if (!m_scrubPending)
@@ -494,6 +506,7 @@ void SourceMonitor::onScrub(int64_t tick)
     // huge backlog and feels frozen.
     m_pendingScrubTick = tick;
     m_scrubPending     = true;
+    m_scrubQualityActive = true;
 
     // Start settle polling so late prefetch deliveries update the display
     // after the user stops scrubbing (poll timer is normally off when paused).
@@ -509,11 +522,20 @@ void SourceMonitor::onPollTimer()
     // Drain any pending scrub: a single seek+decode for the latest
     // mouse-move target, regardless of how many scrub events arrived
     // since the last poll.
+    const bool hadPendingScrub = m_scrubPending;
     if (m_scrubPending) {
         m_scrubPending = false;
         m_controller->seekTo(m_pendingScrubTick);
         scrubAudioAt(m_pendingScrubTick);
         emit playheadChanged(m_pendingScrubTick);
+    }
+
+    // The last settle cycle deliberately switches back to the selected
+    // quality.  Scrub frames may be reduced, but a parked playhead must get a
+    // true Full-tier still when Full is selected.
+    if (!m_controller->isPlaying() && m_scrubQualityActive &&
+        !hadPendingScrub && m_scrubSettleCounter <= 1) {
+        m_scrubQualityActive = false;
     }
 
     (void)m_controller->pollPosition();
@@ -556,6 +578,28 @@ void SourceMonitor::updateFrameDisplay()
     int64_t tick = m_controller->currentTick();
     m_miniTimeline->setPlayhead(tick);
 
+    const bool playing = m_controller->isPlaying();
+    const bool scrubPreview = !playing && m_scrubQualityActive;
+    int resolutionIndex = m_playbackResCombo
+        ? m_playbackResCombo->currentIndex()
+        : QSettings().value(QStringLiteral("playback/resolutionIndex"), 1).toInt();
+    resolutionIndex = std::clamp(resolutionIndex, 0, 3);
+    int resolutionDivisor = 1 << resolutionIndex;
+    ResolutionTier selectedTier = ResolutionTier::Full;
+    if (resolutionIndex == 1)
+        selectedTier = ResolutionTier::Half;
+    else if (resolutionIndex >= 2)
+        selectedTier = ResolutionTier::Quarter;
+
+    ResolutionTier requestTier = selectedTier;
+    if (scrubPreview) {
+        resolutionDivisor = std::min(resolutionDivisor * 2, 8);
+        if (requestTier == ResolutionTier::Full)
+            requestTier = ResolutionTier::Half;
+        else
+            requestTier = ResolutionTier::Quarter;
+    }
+
     if (m_audioOnly) {
         // Update waveform playhead position
         if (m_clipDuration > 0)
@@ -565,11 +609,13 @@ void SourceMonitor::updateFrameDisplay()
     }
     else if (m_isSequence && m_seqFrameProvider)
     {
+        const uint32_t outW = std::max(
+            64u, m_sequenceWidth / static_cast<uint32_t>(resolutionDivisor));
+        const uint32_t outH = std::max(
+            36u, m_sequenceHeight / static_cast<uint32_t>(resolutionDivisor));
         auto frame = m_seqFrameProvider(
-            tick,
-            static_cast<uint32_t>(m_viewport->width()),
-            static_cast<uint32_t>(m_viewport->height()),
-            false);
+            tick, outW, outH, scrubPreview, requestTier,
+            /*still=*/!playing && !scrubPreview);
         if (frame)
             m_viewport->displayFrame(frame);
     }
@@ -585,42 +631,24 @@ void SourceMonitor::updateFrameDisplay()
                 (static_cast<double>(tick) / 48000.0) * m_fps);
         frameNum = std::clamp(frameNum, int64_t(0), std::max(int64_t(0), m_frameCount - 1));
 
-        const bool playing = m_controller->isPlaying();
-        // Honor the user's playback-resolution setting (the dropdown in the
-        // program monitor, persisted in QSettings) instead of always
-        // forcing Half tier. Without this, character/source preview was
-        // stuck at Half even when the user picked Full, which made
-        // characters look blurry in the source monitor.
-        ResolutionTier tier = ResolutionTier::Half;
-        {
-            // Honor THIS monitor's own resolution dropdown.  Fall back to the
-            // shared QSettings value only if the combo isn't built yet.
-            int idx = m_playbackResCombo
-                ? m_playbackResCombo->currentIndex()
-                : QSettings().value(
-                      QStringLiteral("playback/resolutionIndex"), 1).toInt();
-            switch (idx) {
-                case 0: tier = ResolutionTier::Full;    break;
-                case 1: tier = ResolutionTier::Half;    break;
-                case 2: tier = ResolutionTier::Quarter; break;
-                case 3: tier = ResolutionTier::Quarter; break;  // 1/8 falls back to 1/4 (no Eighth tier)
-                default: tier = ResolutionTier::Half;   break;
-            }
-        }
         std::shared_ptr<CachedFrame> frame;
         if (m_mediaSources) {
             auto result = m_mediaSources->requestFrame({
                 m_mediaHandle, frameNum,
                 RenderRequestType::SourceMonitor,
                 RenderQuality::Auto,
-                playing ? RenderExactness::BestEffortAllowed : RenderExactness::ExactRequired,
-                tier
+                (playing || scrubPreview)
+                    ? RenderExactness::BestEffortAllowed
+                    : RenderExactness::ExactRequired,
+                requestTier
             });
             frame = result.frame;
         } else if (m_pool) {
             frame = playing
-                ? m_pool->tryGetFrame(m_mediaHandle, frameNum, tier)
-                : m_pool->getFrame(m_mediaHandle, frameNum, tier, /*scrubMode=*/true);
+                ? m_pool->tryGetFrame(m_mediaHandle, frameNum, requestTier)
+                : m_pool->getFrame(m_mediaHandle, frameNum, requestTier,
+                                   /*scrubMode=*/true,
+                                   /*forceExact=*/!scrubPreview);
         }
         if (frame) {
             frame->ensurePixels();

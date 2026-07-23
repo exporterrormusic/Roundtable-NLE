@@ -4,6 +4,7 @@
  */
 
 #include "MediaPool.h"
+#include "playback/FrameFallbackPolicy.h"
 
 #include <cstring>
 #include <algorithm>
@@ -108,16 +109,18 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
     if (frameNumber < 0) frameNumber = 0;
 
-    // ── Backward-seek detection ──────────────────────────────────────────
-    // When the requested frame is behind the last-good frame, clear the
-    // stale state so the anti-rewind guard in tryGetFrame doesn't lock
-    // the display to a future position after a backward seek/scrub.
+    // ── Seek-discontinuity detection ─────────────────────────────────────
+    // Keep last-good only for a short sequential-playback miss.  A distant
+    // forward seek is just as discontinuous as a backward seek: returning a
+    // frame from the old position lets the compositor cache old pixels under
+    // the new timeline tick.
     {
         std::lock_guard lg(m_lastGoodMtx);
         auto it = m_lastGoodFrame.find(handle);
         if (it != m_lastGoodFrame.end() && it->second) {
             int64_t delta = frameNumber - it->second->frameNumber;
-            if (delta < -1) {
+            if (delta < -1 ||
+                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber)) {
                 m_lastGoodFrame.erase(it);
             }
         }
@@ -346,9 +349,11 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     scrubTask.fps = info.fps > 0 ? info.fps : 30.0;
     scrubTask.info = info;
     scrubTask.packedAlpha = packedAlpha;
-    // Export (forceExact) decodes at native resolution — no 1920px tier cap.
-    // Scrub (scrubMode, not forceExact) keeps the cap for responsiveness.
-    scrubTask.exportFullRes = forceExact;
+    // Exact means "decode this requested frame now", not "ignore the
+    // monitor's resolution selector". Full already maps to native source
+    // dimensions; forcing a paused Half request to native mislabeled the
+    // resulting texture as Half and collided with the real Half cache entry.
+    scrubTask.exportFullRes = forceExact && tier == ResolutionTier::Full;
 
     // Scrub / on-demand / export(forceExact) decode.  Uses CPU convert
     // (convertDecodedToCache) — the scrub bottleneck is the decode + per-frame
@@ -389,6 +394,41 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
 
 // ─── tryGetFrame (non-blocking playback path) ───────────────────────────────
 
+std::shared_ptr<CachedFrame> MediaPool::tryGetExactFrame(
+    MediaHandle handle, int64_t frameNumber, ResolutionTier tier)
+{
+    m_perf.totalRequests.fetch_add(1, std::memory_order_relaxed);
+    extendInteractivePlaybackWindow(m_interactivePlaybackUntilMs);
+
+    // Match the public frame-access clamp without consulting or mutating the
+    // last-good map. Temporal interpolation deliberately requests a lower
+    // endpoint again after the upper endpoint was used on the prior display
+    // tick; the normal anti-rewind path must not replace that lower frame.
+    {
+        std::lock_guard lock(m_mutex);
+        auto* entry = findEntry(handle);
+        if (entry && entry->info.frameCount > 1 &&
+            frameNumber >= entry->info.frameCount) {
+            frameNumber = entry->info.frameCount - 1;
+        }
+    }
+    if (frameNumber < 0) frameNumber = 0;
+
+    m_cache->setPlayhead(handle, frameNumber);
+    auto cached = m_cache->get(handle, frameNumber, tier);
+    if (cached) {
+        m_perf.cacheHits.fetch_add(1, std::memory_order_relaxed);
+        return cached;
+    }
+
+    // Keep this path non-blocking. Exact endpoint queueing bypasses the normal
+    // stride and rebuild cooldown, so a subsequent request for adjacent N+1
+    // is merged independently rather than being suppressed.
+    m_perf.totalMisses.fetch_add(1, std::memory_order_relaxed);
+    scheduleExactPrefetch(handle, frameNumber, tier);
+    return nullptr;
+}
+
 std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier)
 {
@@ -418,17 +458,17 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     }
     if (frameNumber < 0) frameNumber = 0;
 
-    // ── Backward-seek detection ──────────────────────────────────────────
-    // Clear stale anti-rewind state when playback position moves backward
-    // (e.g. after scrubbing forward then pressing play at an earlier point).
-    // Without this, the anti-rewind guard locks the display to the highest
-    // frame ever seen, causing permanent stuck frames.
+    // ── Seek-discontinuity detection ─────────────────────────────────────
+    // Clear stale anti-rewind state after backward OR distant forward seeks.
+    // Without the forward bound, a cache miss at a new position can return
+    // an arbitrarily old frame from this same MP4 handle.
     {
         std::lock_guard lg(m_lastGoodMtx);
         auto it = m_lastGoodFrame.find(handle);
         if (it != m_lastGoodFrame.end() && it->second) {
             int64_t delta = frameNumber - it->second->frameNumber;
-            if (delta < -1) {
+            if (delta < -1 ||
+                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber)) {
                 m_lastGoodFrame.erase(it);
             }
         }

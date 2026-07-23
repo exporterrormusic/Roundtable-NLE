@@ -204,6 +204,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
 
     // Determine media properties from the MediaPool
     uint32_t mediaW = 0, mediaH = 0;
+    int mediaRotation = 0;
     double mediaFps = 30.0;
     double mediaDurationSec = 0.0;
     bool mediaHasAudio = false;
@@ -215,6 +216,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
             if (info) {
                 mediaW = info->width;
                 mediaH = info->height;
+                mediaRotation = info->rotation;
                 if (info->fps > 0.0) mediaFps = info->fps;
                 mediaDurationSec = info->duration;
                 mediaHasAudio = info->hasAudio;
@@ -276,6 +278,7 @@ void ProjectBin::createSequenceFromMedia(const std::filesystem::path& filePath)
         vClip->setDuration(clipDuration);
         vClip->setSourceIn(0);
         vClip->setSourceResolution(mediaW, mediaH);
+        vClip->setSourceRotation(mediaRotation);
         vClip->setSourceFps(mediaFps);
         vClip->setSourceDuration(clipDuration);
         vClip->setLabel(QFileInfo(QString::fromStdString(fileStr))

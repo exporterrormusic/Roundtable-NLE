@@ -21,10 +21,12 @@
 #include "effects/FillChannel.h"
 #include "effects/GlitchEffects.h"
 #include "effects/BeatEffects.h"
+#include "effects/Tint.h"
 
 #include "Constants.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace rt {
 
@@ -111,6 +113,7 @@ std::unique_ptr<Effect> createEffect(EffectType type)
     case EffectType::BeatShake:          return std::make_unique<BeatShake>();
     case EffectType::BeatChroma:         return std::make_unique<BeatChroma>();
     case EffectType::BeatDrop:           return std::make_unique<BeatDrop>();
+    case EffectType::Tint:               return std::make_unique<Tint>();
     default: return nullptr;
     }
 }
@@ -188,11 +191,40 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
     std::vector<EffectSnapshot> result;
     for (auto& e : m_effects) {
         if (!e->isEnabled()) continue;
-        // ColorGrading has 20 params but GPU needs 16 â€” use special packing
-        // ColorGrading has 31 params + section flags â€” use special packing too
         if (e->effectType() == EffectType::ColorGrading) {
-            auto* lumetri = static_cast<const ColorGrading*>(e.get());
-            result.push_back({e->effectType(), lumetri->evalGpuParams(time)});
+            auto* grading = static_cast<const ColorGrading*>(e.get());
+            const auto masks = e->maskCount() > 0
+                ? evaluateMaskStates(e->masks(), time)
+                : std::vector<MaskRenderState>{};
+
+            auto appendPass = [&](EffectType type, std::vector<float> params) {
+                result.push_back({type, std::move(params), e->id(), masks});
+            };
+
+            // The unified color effect is evaluated as a small sequence of
+            // GPU passes.  This keeps every control functional while staying
+            // inside Vulkan's guaranteed 128-byte push-constant limit.
+            appendPass(EffectType::ColorGrading, grading->evalGpuParams(time));
+            if (grading->curvesEnabled() && !grading->curvesIdentity())
+                appendPass(EffectType::ColorGrading, grading->evalCurveGpuParams());
+
+            const auto& hsl = grading->hslParams();
+            if (grading->hslEnabled()
+                && (std::abs(hsl.hueShift) > 0.001f
+                    || std::abs(hsl.satAdjust) > 0.001f
+                    || std::abs(hsl.lumAdjust) > 0.001f)) {
+                appendPass(EffectType::ColorGrading, grading->evalHslGpuParams());
+            }
+
+            // Sharpen needs neighbouring pixels, so it uses the existing
+            // unsharp-mask shader as a final Creative-section pass.
+            if (grading->creativeEnabled()) {
+                const float sharpen = grading->param(ColorGrading::Sharpen).track.evaluate(time);
+                if (sharpen > 0.001f)
+                    appendPass(EffectType::Sharpen,
+                               {sharpen / 20.0f, 1.5f, 0.015f});
+            }
+            continue;
 
         } else if (isProceduralTimeEffect(e->effectType())) {
             // Glitch family: forward a continuous clock so the shader can

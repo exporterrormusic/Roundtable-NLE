@@ -59,6 +59,8 @@ class QToolButton;
 
 namespace rt {
 
+enum class ResolutionTier : uint8_t;
+
 // Forward declarations — panels
 class CaptionsPanel;
 class TierListPanel;
@@ -164,7 +166,10 @@ public:
     // opening a clip in the Source Monitor keeps it the transport target even
     // as the cursor hovers other panels.  See activeController() in
     // TimelineWorkspaceKeys.cpp.
-    void setSourceTransportActive(bool active) noexcept { m_sourceTransportActive = active; }
+    /// Select which monitor owns transport. Switching contexts pauses the
+    /// other controller and restores the selected context's audio sources so
+    /// the shared AudioEngine can never be driven by both at once.
+    void setSourceTransportActive(bool active);
     [[nodiscard]] bool sourceTransportActive() const noexcept { return m_sourceTransportActive; }
     [[nodiscard]] ProjectBin*       projectBin()       const noexcept { return m_projectBin; }
     [[nodiscard]] Project*          project()          const noexcept { return m_project; }
@@ -192,9 +197,9 @@ public:
     [[nodiscard]] TierListPanel*       tierListPanel()       const noexcept { return m_tierListPanel; }
     [[nodiscard]] SelectionState&       selection()       noexcept { return m_selection; }
     [[nodiscard]] const SelectionState& selection() const noexcept { return m_selection; }
-    /// The 8 edit-tool buttons (Selection..Zoom), for keyboard-shortcut
+    /// The 9 edit-tool buttons (Selection..Pen Mask), for keyboard-shortcut
     /// focus-policy / active-tool sync.  Returns a reference to the array.
-    [[nodiscard]] QToolButton* (&toolButtons() noexcept)[8] { return m_toolButtons; }
+    [[nodiscard]] QToolButton* (&toolButtons() noexcept)[9] { return m_toolButtons; }
     /// True once destruction has begun (lambdas/callbacks must bail).
     [[nodiscard]] bool isDestroying() const noexcept { return m_destroying.load(std::memory_order_acquire); }
 
@@ -252,7 +257,17 @@ public:
 
     /// Composite a single frame at the given tick (used by ProgramMonitor and ExportPanel preview).
     std::shared_ptr<struct CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
-                                                       bool scrubMode = false);
+                                                       bool scrubMode = false,
+                                                       bool stillMode = false);
+
+    /// Prompt for a destination and export the Program Monitor's current
+    /// playhead frame at the active sequence's full resolution.
+    void exportCurrentFrame();
+
+    /// Composite using an explicit monitor-specific decode tier.
+    std::shared_ptr<struct CachedFrame> compositeFrameAtTier(
+        int64_t tick, uint32_t outW, uint32_t outH, bool scrubMode,
+        bool stillMode, ResolutionTier tier);
 
     /// Phase 4.2 — export 16F passthrough (see CompositeService::tryBuild16f-
     /// Passthrough).  Returns a dual-payload (RGBA16F + 8-bit BGRA) frame when
@@ -403,7 +418,7 @@ private:
     std::vector<size_t> m_tabToSeq;
 
     // Tool buttons (for sync with keyboard shortcuts)
-    QToolButton*      m_toolButtons[8]{};  // Selection, Ripple, Rolling, Razor, Slip, Slide, Text, Zoom
+    QToolButton*      m_toolButtons[9]{};  // Selection, Ripple, Rolling, Razor, Slip, Slide, Text, Zoom, Pen Mask
 
     // Nested QMainWindow for dock widget support
     QMainWindow*      m_innerMainWindow{nullptr};
@@ -440,6 +455,7 @@ private:
     void loadAudioSources(bool allowBlockingMisses = true);
     void scheduleAudioPlaybackWindowRefresh();
     void logTimelineAudioPerfSnapshot(const char* reason);
+    void relinkMedia(const QString& oldPath, const QString& newPath);
     // warmAudioCacheAsync() moved to the public binder-accessor block above.
     bool m_audioWindowRefreshScheduled{false};
 
@@ -453,6 +469,10 @@ private:
 
     /// Pre-open all video/image media handles so first compositeFrame is fast.
     void preOpenVideoMedia();
+
+    /// Upgrade legacy media masks after MediaPool supplies authoritative
+    /// dimensions/rotation. Offline sources remain safely in legacy space.
+    int migrateDeferredLegacyMediaMasks();
 
     /// Warm active playback media/GPU resources before the first visible frame.
     void prewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH);

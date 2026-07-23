@@ -313,6 +313,8 @@ void TimelineWorkspace::createPanelWidgets()
         setProject(project);
         emit autoProjectCreated(project);
     });
+    connect(m_projectBin, &ProjectBin::mediaRelinkRequested,
+            this, &TimelineWorkspace::relinkMedia);
     makeDock("Project Bin", m_projectBin);
 
     // -- Source Monitor ---------------------------------------------------
@@ -398,10 +400,17 @@ void TimelineWorkspace::createPanelWidgets()
         // length so the user can scrub a black preview (Premiere does this
         // — an empty sequence still has its nominal length).
         if (dur <= 0) dur = kTicksPerSecond * 60;
-        double  fps  = 24.0;
+        double fps = seq->settings().frameRate();
+        if (!(fps > 0.0)) fps = 24.0;
+        const auto seqResolution = seq->settings().resolution();
+        const uint32_t seqWidth = seqResolution.width > 0
+            ? static_cast<uint32_t>(seqResolution.width) : 1920u;
+        const uint32_t seqHeight = seqResolution.height > 0
+            ? static_cast<uint32_t>(seqResolution.height) : 1080u;
 
         SourceMonitor::SequenceFrameProvider provider =
-            [this, seqIdx](int64_t tick, uint32_t w, uint32_t h, bool scrub)
+            [this, seqIdx](int64_t tick, uint32_t w, uint32_t h, bool scrub,
+                           ResolutionTier tier, bool still)
                 -> std::shared_ptr<CachedFrame>
         {
             if (m_destroying.load(std::memory_order_acquire)) return nullptr;
@@ -417,17 +426,8 @@ void TimelineWorkspace::createPanelWidgets()
             // whole frame was just small. The source viewport downscales
             // the full-res frame for display, preserving detail. Capped at
             // 1920×1080 so the preview composite stays cheap.
-            (void)w; (void)h;
-            uint32_t outW = 1920, outH = 1080;
-            if (m_project) {
-                auto res = m_project->settings().resolution();
-                if (res.width  > 0) outW = static_cast<uint32_t>(res.width);
-                if (res.height > 0) outH = static_cast<uint32_t>(res.height);
-                if (outW > 1920) { outH = outH * 1920 / outW; outW = 1920; }
-                if (outH > 1080) { outW = outW * 1080 / outH; outH = 1080; }
-            }
-            if (outW == 0) outW = 640;
-            if (outH == 0) outH = 360;
+            const uint32_t outW = std::max(w, 64u);
+            const uint32_t outH = std::max(h, 36u);
 
             // Bind the composite service to the inner sequence for this
             // frame, composite, then restore. Force CPU display mode so
@@ -443,7 +443,8 @@ void TimelineWorkspace::createPanelWidgets()
             const bool wasGpuMode = m_compositeService->gpuDisplayMode();
             m_compositeService->setGpuDisplayMode(false);
             m_compositeService->setTimeline(innerTimeline);
-            auto frame = compositeFrame(tick, outW, outH, scrub);
+            auto frame = compositeFrameAtTier(tick, outW, outH, scrub,
+                                              still, tier);
             m_compositeService->setTimeline(m_timeline);
             m_compositeService->setGpuDisplayMode(wasGpuMode);
             if (frame) frame->ensurePixels();  // belt + suspenders
@@ -461,6 +462,7 @@ void TimelineWorkspace::createPanelWidgets()
         };
 
         m_sourceMonitor->loadSequence(seqIdx, name, dur, fps,
+                                       seqWidth, seqHeight,
                                        std::move(provider),
                                        std::move(timelineGetter));
     });
@@ -468,11 +470,7 @@ void TimelineWorkspace::createPanelWidgets()
     connect(m_sourceMonitor, &SourceMonitor::playbackStarted,
             this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        if (m_playbackController &&
-            m_playbackController->state() != PlayState::Stopped &&
-            m_playbackController->state() != PlayState::Paused) {
-            m_playbackController->pause();
-        }
+        setSourceTransportActive(true);
         invalidateAudioSources();
     });
 
@@ -481,12 +479,7 @@ void TimelineWorkspace::createPanelWidgets()
     connect(m_sourceMonitor, &SourceMonitor::scrubbed,
             this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        if (m_playbackController &&
-            m_playbackController->state() != PlayState::Stopped &&
-            m_playbackController->state() != PlayState::Paused) {
-            m_playbackController->pause();
-            invalidateAudioSources();
-        }
+        setSourceTransportActive(true);
     });
 
     makeDock("Source Monitor", m_sourceMonitor);
@@ -496,6 +489,8 @@ void TimelineWorkspace::createPanelWidgets()
     m_programMonitor->setMinimumWidth(200);
     if (m_timeline) m_programMonitor->setTimeline(m_timeline);
     if (m_playbackController) m_programMonitor->setController(m_playbackController);
+    connect(m_programMonitor, &ProgramMonitor::exportFrameRequested,
+            this, &TimelineWorkspace::exportCurrentFrame);
     makeDock("Program Monitor", m_programMonitor);
 
     // -- Properties -------------------------------------------------------
@@ -641,21 +636,7 @@ void TimelineWorkspace::createPanelWidgets()
     m_charactersPanel->setMediaPool(m_mediaPool);
     m_libraryPanel->refreshCurrentTab();
     connect(m_libraryPanel, &LibraryPanel::mediaRelinkRequested,
-            this, [this](const QString& oldPath, const QString& newPath) {
-        if (m_destroying.load(std::memory_order_acquire)) return;
-        const std::string oldStd = oldPath.toStdString();
-        const std::string newStd = newPath.toStdString();
-        int n = 0;
-        if (m_timeline)
-            n += MediaRelinker::relinkPath(m_timeline, oldStd, newStd);
-        if (m_shotPresetManager)
-            n += MediaRelinker::relinkPresetBackground(m_shotPresetManager, oldStd, newStd);
-        if (n > 0) {
-            invalidateCompositeCache();
-            if (m_programMonitor) m_programMonitor->requestRefresh();
-            if (m_timelinePanel) m_timelinePanel->update();
-        }
-    });
+            this, &TimelineWorkspace::relinkMedia);
     connect(m_libraryPanel, &LibraryPanel::loadInSourceMonitor,
             this, [this](const QString& filePath) {
         if (m_destroying.load(std::memory_order_acquire)) return;
@@ -749,6 +730,11 @@ void TimelineWorkspace::createPanelWidgets()
     btnZoom->setFixedSize(40, 34);
     btnZoom->setToolTip(QStringLiteral("Zoom Tool (Z) — Click: Zoom In, Alt+Click: Zoom Out"));
 
+    auto* btnPenMask = new ToolButton(ToolButton::PenMask);
+    btnPenMask->setObjectName(QStringLiteral("penMaskToolButton"));
+    btnPenMask->setFixedSize(40, 34);
+    btnPenMask->setToolTip(QStringLiteral("Pen Mask Tool (P)"));
+
     auto addToolSep = [&]() {
         auto* sep = new QFrame;
         sep->setFrameShape(QFrame::HLine);
@@ -777,6 +763,8 @@ void TimelineWorkspace::createPanelWidgets()
     toolColumnLayout->addWidget(btnText);
     addToolSep();
     toolColumnLayout->addWidget(btnZoom);
+    addToolSep();
+    toolColumnLayout->addWidget(btnPenMask);
     toolColumnLayout->addStretch();
 
     // Store tool buttons for sync with shortcuts
@@ -788,6 +776,7 @@ void TimelineWorkspace::createPanelWidgets()
     m_toolButtons[5] = btnSlide;
     m_toolButtons[6] = btnText;
     m_toolButtons[7] = btnZoom;
+    m_toolButtons[8] = btnPenMask;
 
     // -- Center: Toolbar + Timeline Panel ---------------------------------
     auto* centerContainer = new QWidget;
@@ -1034,6 +1023,8 @@ void TimelineWorkspace::createPanelWidgets()
     if (m_commandStack) m_timelinePanel->setCommandStack(m_commandStack);
     if (m_shortcutManager) m_timelinePanel->setShortcutManager(m_shortcutManager);
     if (m_mediaPool) m_timelinePanel->setMediaPool(m_mediaPool);
+    connect(m_timelinePanel, &TimelinePanel::mediaRelinkRequested,
+            this, &TimelineWorkspace::relinkMedia);
 #ifdef ROUNDTABLE_HAS_SPINE
     if (m_compositeService && m_compositeService->animVideoCache())
         m_timelinePanel->setAnimVideoCache(m_compositeService->animVideoCache());

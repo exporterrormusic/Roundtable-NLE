@@ -15,6 +15,7 @@
 #include "command/LambdaCommand.h"
 #include "ai/Transcriber.h"
 #include "QtHelpers.h"
+#include "viewport/TransformOverlayWidget.h"
 
 #include <spdlog/spdlog.h>
 
@@ -29,6 +30,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <thread>
 #include <unordered_map>
@@ -236,9 +238,11 @@ void CaptionsPanel::buildUI()
  fontRow->addWidget(m_fontSizeSpin);
  editorLayout->addLayout(fontRow);
 
- // Apply current style (font / size / position) to every caption at once.
+ // Apply the complete current track style to every caption at once.
  m_applyAllBtn = new QPushButton("Apply Style to All Captions", editorFrame);
- m_applyAllBtn->setToolTip("Apply this caption's font, size and position to ALL captions (one undo step)");
+ m_applyAllBtn->setToolTip(
+     "Apply this caption's complete typography, colors, outline and position "
+     "to ALL captions (one undo step)");
  connect(m_applyAllBtn, &QPushButton::clicked, this, &CaptionsPanel::onApplyStyleToAll);
  editorLayout->addWidget(m_applyAllBtn);
 
@@ -500,9 +504,11 @@ void CaptionsPanel::onTextChanged()
  std::string newText = m_textEdit->toPlainText().toStdString();
  std::string oldText = cc->text();
  if (newText == oldText) return;
+ const auto oldStyles = cc->styleRuns();
 
  // Apply directly (don't call refresh â€” it destroys cursor position)
- cc->setText(newText);
+ cc->replaceTextPreservingStyles(newText);
+ const auto newStyles = cc->styleRuns();
 
  // Capture the clip ID, never the pointer: the clip can be deleted (and its
  // memory freed) while this command is still in the stack.
@@ -511,8 +517,8 @@ void CaptionsPanel::onTextChanged()
  if (m_commandStack) {
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
  "Edit Caption Text",
- [undoClipId, newText, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(newText); self->refresh(); } },
- [undoClipId, oldText, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(oldText); self->refresh(); } }));
+ [undoClipId, newText, newStyles, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(newText); c->setStyleRuns(newStyles); self->refresh(); } },
+ [undoClipId, oldText, oldStyles, self]() { if (auto* c = self->findCaptionClipById(undoClipId)) { c->setText(oldText); c->setStyleRuns(oldStyles); self->refresh(); } }));
  }
 
  // Update list item text inline.
@@ -606,6 +612,10 @@ void CaptionsPanel::onPositionChanged(int index)
 void CaptionsPanel::onFontChanged(const QString& family)
 {
  if (m_updatingUI) return;
+ if (m_monitorTextEditing) {
+ emit inlineFontFamilyRequested(family);
+ return;
+ }
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
@@ -632,6 +642,10 @@ void CaptionsPanel::onFontChanged(const QString& family)
 void CaptionsPanel::onFontSizeChanged(int size)
 {
  if (m_updatingUI) return;
+ if (m_monitorTextEditing) {
+ emit inlineFontSizeRequested(static_cast<float>(size));
+ return;
+ }
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
 
@@ -653,6 +667,24 @@ void CaptionsPanel::onFontSizeChanged(int size)
  }
 
  emit captionEdited();
+}
+
+void CaptionsPanel::setInlineTextSelectionFormat(
+ const QString& family, float pointSize, int, bool, bool, bool,
+ float, float, float, uint32_t mixedFlags)
+{
+ if (!m_monitorTextEditing) return;
+ m_updatingUI = true;
+ if (m_fontCombo) {
+     if (mixedFlags & InlineMixedFamily) m_fontCombo->setCurrentIndex(-1);
+     else m_fontCombo->setCurrentText(family);
+ }
+ if (m_fontSizeSpin) {
+ m_fontSizeSpin->setValue(static_cast<int>(std::lround(pointSize)));
+     m_fontSizeSpin->setToolTip(mixedFlags & InlineMixedSize
+         ? tr("Mixed font sizes in selection") : QString());
+ }
+ m_updatingUI = false;
 }
 
 void CaptionsPanel::onAddCaption()
@@ -801,36 +833,38 @@ void CaptionsPanel::onApplyStyleToAll()
 {
  if (!m_timeline || m_entries.empty()) return;
 
- const std::string font = m_fontCombo->currentText().toStdString();
- const float size = static_cast<float>(m_fontSizeSpin->value());
- const auto pos = static_cast<CaptionPosition>(std::max(0, m_positionCombo->currentIndex()));
+ CaptionClip* source = entryClip(m_captionList->currentRow());
+ if (!source) source = findCaptionClipById(m_entries.front().clipId);
+ if (!source) return;
+ CaptionStyle style = source->captionStyle();
+ // Keep the visible quick controls authoritative even if their edit signal
+ // has not yet completed, and give the shared style a persistent track name.
+ style.fontFamily = m_fontCombo->currentText().toStdString();
+ style.fontSize = static_cast<float>(m_fontSizeSpin->value());
+ style.position = static_cast<CaptionPosition>(
+     std::max(0, m_positionCombo->currentIndex()));
+ if (style.name.empty()) style.name = "Caption Track Style";
 
  // Snapshot per-clip old styles so undo restores each caption exactly.
- struct OldStyle { uint64_t id; std::string font; float size; CaptionPosition pos; };
+ struct OldStyle { uint64_t id; CaptionStyle style; };
  auto old = std::make_shared<std::vector<OldStyle>>();
  for (const auto& e : m_entries)
  if (auto* c = findCaptionClipById(e.clipId))
- old->push_back({e.clipId, c->fontFamily(), c->fontSize(), c->position()});
+ old->push_back({e.clipId, c->captionStyle()});
  if (old->empty()) return;
 
  CaptionsPanel* self = this;
- auto doIt = [self, font, size, pos, old]() {
+ auto doIt = [self, style, old]() {
  for (const auto& o : *old)
- if (auto* c = self->findCaptionClipById(o.id)) {
- c->setFontFamily(font);
- c->setFontSize(size);
- c->setPosition(pos);
- }
+ if (auto* c = self->findCaptionClipById(o.id))
+ c->setCaptionStyle(style);
  self->refresh();
  emit self->captionEdited();
  };
  auto undoIt = [self, old]() {
  for (const auto& o : *old)
- if (auto* c = self->findCaptionClipById(o.id)) {
- c->setFontFamily(o.font);
- c->setFontSize(o.size);
- c->setPosition(o.pos);
- }
+ if (auto* c = self->findCaptionClipById(o.id))
+ c->setCaptionStyle(o.style);
  self->refresh();
  emit self->captionEdited();
  };
@@ -856,7 +890,13 @@ void CaptionsPanel::onReplaceAll()
 
  // Precompute per-clip old/new text; only clips whose text actually changes
  // participate (filter also matches speaker â€” don't rewrite those).
- struct Change { uint64_t id; std::string oldText; std::string newText; };
+ struct Change {
+ uint64_t id;
+ std::string oldText;
+ std::string newText;
+ std::vector<TextStyleRun> oldStyles;
+ std::vector<TextStyleRun> newStyles;
+ };
  auto changes = std::make_shared<std::vector<Change>>();
  for (const auto& e : m_entries) {
  auto* c = findCaptionClipById(e.clipId);
@@ -865,7 +905,11 @@ void CaptionsPanel::onReplaceAll()
  QString replaced = txt;
  replaced.replace(needle, replacement, Qt::CaseInsensitive);
  if (replaced != txt)
- changes->push_back({e.clipId, c->text(), replaced.toStdString()});
+ {
+ const std::string newText = replaced.toStdString();
+ changes->push_back({e.clipId, c->text(), newText, c->styleRuns(),
+ remapTextStyleRuns(c->text(), newText, c->styleRuns())});
+ }
  }
  if (changes->empty()) {
  QMessageBox::information(this, "Replace All",
@@ -876,13 +920,19 @@ void CaptionsPanel::onReplaceAll()
  CaptionsPanel* self = this;
  auto doIt = [self, changes]() {
  for (const auto& ch : *changes)
- if (auto* c = self->findCaptionClipById(ch.id)) c->setText(ch.newText);
+ if (auto* c = self->findCaptionClipById(ch.id)) {
+ c->setText(ch.newText);
+ c->setStyleRuns(ch.newStyles);
+ }
  self->refresh();
  emit self->captionEdited();
  };
  auto undoIt = [self, changes]() {
  for (const auto& ch : *changes)
- if (auto* c = self->findCaptionClipById(ch.id)) c->setText(ch.oldText);
+ if (auto* c = self->findCaptionClipById(ch.id)) {
+ c->setText(ch.oldText);
+ c->setStyleRuns(ch.oldStyles);
+ }
  self->refresh();
  emit self->captionEdited();
  };

@@ -22,6 +22,7 @@ namespace rt {
 std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     SequenceClip* seqClip, int64_t localTick,
     uint32_t outW, uint32_t outH, bool scrubMode,
+    ResolutionTier requestTier, bool stillMode,
     std::unique_lock<std::recursive_mutex>& lock)
 {
     std::shared_ptr<CachedFrame> frame;
@@ -86,7 +87,8 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     // producing the "nested sequence glitches to its
     // own first frame every other display tick" bug.
     auto innerFrame = compositeFrame(innerTick, innerW, innerH, scrubMode,
-                                      /*isNestedRecursion=*/true);
+                                      /*isNestedRecursion=*/true,
+                                      stillMode, requestTier);
 
     // Snapshot into a clean CPU-only BGRA frame. The
     // inner composite returns its shared m_lastGoodComposite,

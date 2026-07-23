@@ -73,7 +73,17 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 31;  // v31 = caption burn-in style (bold toggle / outline / speaker label)
+    static constexpr uint32_t FORMAT_VERSION = 41;  // v41 = complete Color Grading section/HSL/curve state
+                                                    // v40 = complete rich-text appearance, typography, and paragraph runs
+                                                    // v39 = leading overrides in rich-text runs
+                                                    // v38 = caps/tracking/baseline overrides in rich-text runs
+                                                    // v37 = character-level rich-text style runs for captions
+                                                    // v36 = character-level rich-text style runs for graphic text
+                                                    // v35 = keyframeable transform motion-blur shutter angle
+                                                    // v34 = authoritative video dimensions/rotation for safe legacy-mask migration
+                                                    // v33 = mask coordinate space + stable mask IDs
+                                                    // v32 = per-clip time interpolation (sampling / blending / optical flow)
+                                                    // v31 = caption burn-in style (bold toggle / outline / speaker label)
                                                     // v30 = Premiere-parity masks: keyframeable mask scalars (feather/opacity/expansion), Mask Path keyframes, per-EFFECT masks
                                                     // v29 = per-clip AudioSync export back-link (syncLine) for non-destructive incremental re-export
                                                     // v28 = TierListClip (ranking board: grid + entry pool + timed POPUP/DROP/Reorder events)

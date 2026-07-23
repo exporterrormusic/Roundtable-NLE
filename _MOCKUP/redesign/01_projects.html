@@ -1,0 +1,782 @@
+<title>Roundtable Redesign — 01 Projects</title>
+<style>
+  :root{
+    --bg-app:#131518; --bg-page:#1b1e21; --bg-panel:#22262a; --bg-hover:#282d32;
+    --bg-active:#2f353b; --bg-inset:#17191c;
+    --line:#2e343a; --line-strong:#3a4148;
+    --t1:#e9ecef; --t2:#a2abb4; --t3:#6b7580;
+    --accent:#3e90e8; --accent-h:#5aa2f0; --accent-dim:rgba(62,144,232,.14);
+    --danger:#e0564e; --danger-dim:rgba(224,86,78,.12);
+    --ok:#4cae6e; --warn:#d9a03c;
+    --chip-violet:#8f7be8; --chip-teal:#3fae9c; --chip-amber:#d9a03c;
+    --r:4px; --rl:6px;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono:"Cascadia Mono",Consolas,monospace;
+  }
+  html,body{background:#101214;color:var(--t1);font-family:var(--font);}
+  body{margin:0;padding:28px 24px 64px;}
+  *{box-sizing:border-box;}
+  button{font-family:var(--font);}
+  ::selection{background:var(--accent-dim);}
+
+  .page-eyebrow{max-width:1480px;margin:0 auto 10px;display:flex;align-items:baseline;gap:12px;}
+  .page-eyebrow h1{font-size:15px;font-weight:600;margin:0;color:var(--t1);}
+  .page-eyebrow span{font-size:12px;color:var(--t3);}
+
+  /* ============ APP FRAME ============ */
+  .frame{max-width:1480px;margin:0 auto;height:min(840px,80vh);min-height:620px;
+    background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;
+    display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);}
+
+  /* --- title / menu bar --- */
+  .titlebar{height:40px;flex:none;background:var(--bg-app);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 6px 0 14px;gap:2px;user-select:none;}
+  .app-mark{display:flex;align-items:center;gap:8px;margin-right:14px;}
+  .app-mark .logo{width:18px;height:18px;border-radius:4px;background:linear-gradient(135deg,#3e90e8,#2b5f9e);
+    display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;letter-spacing:0;}
+  .app-mark .name{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--t2);}
+  .menu-item{background:none;border:0;color:var(--t2);font-size:12px;padding:5px 9px;border-radius:var(--r);cursor:default;}
+  .menu-item:hover{background:var(--bg-hover);color:var(--t1);}
+  .titlebar .spacer{flex:1;}
+  .doc-title{font-size:12px;color:var(--t3);margin-right:14px;}
+  .doc-title b{color:var(--t2);font-weight:600;}
+  .win-btns{display:flex;}
+  .win-btns button{width:38px;height:30px;background:none;border:0;color:var(--t3);font-size:11px;cursor:default;border-radius:var(--r);}
+  .win-btns button:hover{background:var(--bg-hover);color:var(--t1);}
+  .win-btns button.close:hover{background:var(--danger);color:#fff;}
+
+  .frame-body{flex:1;display:flex;min-height:0;}
+
+  /* --- nav rail --- */
+  .rail{width:84px;flex:none;background:var(--bg-app);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;align-items:stretch;padding:10px 8px;gap:2px;user-select:none;}
+  .rail-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 2px 9px;
+    background:none;border:0;border-radius:var(--rl);color:var(--t3);cursor:pointer;position:relative;}
+  .rail-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+  .rail-btn span{font-size:9.5px;font-weight:600;letter-spacing:.08em;}
+  .rail-btn:hover{color:var(--t2);background:var(--bg-hover);}
+  .rail-btn.active{color:var(--accent-h);background:var(--accent-dim);}
+  .rail-btn.active::before{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:2px;background:var(--accent);border-radius:1px;}
+  .rail .spacer{flex:1;}
+  .rail-collapse{border:0;background:none;color:var(--t3);padding:8px;border-radius:var(--r);cursor:pointer;align-self:center;}
+  .rail-collapse:hover{background:var(--bg-hover);color:var(--t2);}
+  .rail-collapse svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;}
+
+  /* --- content --- */
+  .content{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .content-scroll{flex:1;overflow-y:auto;padding:26px 32px 20px;}
+
+  .page-head{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;}
+  .page-head h2{font-size:21px;font-weight:600;margin:0;letter-spacing:-.01em;}
+  .page-head .count{font-size:12px;color:var(--t3);margin-left:2px;position:relative;top:2px;}
+  .page-head .grow{flex:1;}
+
+  .btn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:var(--r);
+    font-size:12.5px;font-weight:600;border:1px solid transparent;cursor:pointer;white-space:nowrap;}
+  .btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{background:var(--accent-h);}
+  .btn-ghost{background:var(--bg-panel);color:var(--t1);border-color:var(--line-strong);}
+  .btn-ghost:hover{background:var(--bg-hover);}
+  .btn-icon{width:32px;padding:0;justify-content:center;background:var(--bg-panel);color:var(--t2);border:1px solid var(--line-strong);}
+  .btn-icon:hover{background:var(--bg-hover);color:var(--t1);}
+  .btn-danger{background:var(--danger);color:#fff;}
+  .btn-danger:hover{filter:brightness(1.1);}
+  .btn:disabled{opacity:.45;cursor:default;}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+
+  /* toolbar */
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+  .search{position:relative;flex:0 1 320px;min-width:200px;}
+  .search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;
+    stroke:var(--t3);fill:none;stroke-width:1.8;stroke-linecap:round;pointer-events:none;}
+  .search input{width:100%;height:32px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:12.5px;padding:0 28px 0 32px;font-family:var(--font);}
+  .search input::placeholder{color:var(--t3);}
+  .search .clear{position:absolute;right:4px;top:4px;width:24px;height:24px;border:0;background:none;color:var(--t3);
+    border-radius:var(--r);cursor:pointer;display:none;font-size:13px;line-height:1;}
+  .search .clear:hover{background:var(--bg-hover);color:var(--t1);}
+  .search.has-text .clear{display:block;}
+  select.ctl{height:32px;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);
+    color:var(--t1);font-size:12.5px;padding:0 8px;font-family:var(--font);cursor:pointer;}
+  .toolbar .grow{flex:1;}
+  .seg{display:flex;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;}
+  .seg button{width:34px;height:30px;border:0;background:none;color:var(--t3);cursor:pointer;display:grid;place-items:center;}
+  .seg button svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;}
+  .seg button.on{background:var(--bg-active);color:var(--t1);}
+  .seg button:hover:not(.on){color:var(--t2);}
+
+  /* ============ LIST VIEW ============ */
+  .list-wrap{border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;background:var(--bg-panel);}
+  .lrow{display:grid;grid-template-columns:118px minmax(220px,1fr) 130px 105px 56px 84px 150px 40px;
+    align-items:center;gap:0 14px;padding:0 10px 0 8px;}
+  .lhead{height:34px;background:var(--bg-inset);border-bottom:1px solid var(--line);
+    font-size:10.5px;font-weight:600;letter-spacing:.09em;color:var(--t3);user-select:none;}
+  .lhead div{padding:0 2px;}
+  .lbody .lrow{height:66px;border-bottom:1px solid var(--line);cursor:default;position:relative;}
+  .lbody .lrow:last-child{border-bottom:0;}
+  .lbody .lrow:hover{background:var(--bg-hover);}
+  .lbody .lrow.sel{background:var(--accent-dim);box-shadow:inset 2px 0 0 var(--accent);}
+  .num{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--t2);}
+  .thumb{width:104px;height:52px;border-radius:var(--r);position:relative;overflow:hidden;flex:none;
+    border:1px solid rgba(255,255,255,.06);}
+  .thumb::after{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 20% 0%,rgba(255,255,255,.10),transparent 55%);}
+  .thumb .tag{position:absolute;right:4px;bottom:4px;z-index:1;font-size:9px;font-weight:700;letter-spacing:.05em;
+    background:rgba(0,0,0,.55);color:#dfe3e8;padding:1px 5px;border-radius:3px;}
+  .thumb .cam{position:absolute;left:4px;top:4px;z-index:1;width:22px;height:22px;border:0;border-radius:3px;
+    background:rgba(0,0,0,.55);color:#dfe3e8;display:none;place-items:center;cursor:pointer;}
+  .thumb .cam svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+  .lrow:hover .cam,.card:hover .cam{display:grid;}
+  .g0{background:linear-gradient(135deg,#2b3f55,#1d2733);} .g1{background:linear-gradient(135deg,#4a3554,#2a2033);}
+  .g2{background:linear-gradient(135deg,#54452e,#332a1d);} .g3{background:linear-gradient(135deg,#2e5443,#1d332a);}
+  .g4{background:linear-gradient(135deg,#553038,#331d22);} .g5{background:linear-gradient(135deg,#33415c,#232b3d);}
+  .name-cell{min-width:0;display:flex;flex-direction:column;gap:3px;}
+  .name-line{display:flex;align-items:center;gap:8px;min-width:0;}
+  .pname{font-size:13.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .badge-current{flex:none;font-size:9px;font-weight:700;letter-spacing:.08em;color:var(--accent-h);
+    border:1px solid rgba(62,144,232,.45);background:var(--accent-dim);padding:2px 6px;border-radius:3px;}
+  .fpath{font-size:10.5px;color:var(--t3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--t2);
+    padding:3px 9px;border-radius:99px;background:var(--bg-inset);border:1px solid var(--line);white-space:nowrap;}
+  .chip i{width:7px;height:7px;border-radius:50%;flex:none;}
+  .chip.none{color:var(--t3);font-weight:400;border-style:dashed;}
+  .more{width:28px;height:28px;border:0;border-radius:var(--r);background:none;color:var(--t3);cursor:pointer;
+    display:grid;place-items:center;visibility:hidden;}
+  .lrow:hover .more,.lrow.sel .more,.card:hover .more{visibility:visible;}
+  .more:hover{background:var(--bg-active);color:var(--t1);}
+  .more svg{width:16px;height:16px;fill:currentColor;stroke:none;}
+
+  /* ============ GRID VIEW ============ */
+  .grid-wrap{display:grid;grid-template-columns:repeat(auto-fill,minmax(216px,1fr));gap:14px;}
+  .card{background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;cursor:default;position:relative;}
+  .card:hover{background:var(--bg-hover);border-color:var(--line-strong);}
+  .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .card .cthumb{aspect-ratio:16/9;position:relative;}
+  .card .cthumb::after{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 20% 0%,rgba(255,255,255,.10),transparent 55%);}
+  .card .tag{position:absolute;right:6px;bottom:6px;z-index:1;font-size:9.5px;font-weight:700;letter-spacing:.05em;
+    background:rgba(0,0,0,.55);color:#dfe3e8;padding:2px 6px;border-radius:3px;}
+  .card .cam{position:absolute;left:6px;top:6px;z-index:1;width:24px;height:24px;border:0;border-radius:3px;
+    background:rgba(0,0,0,.55);color:#dfe3e8;display:none;place-items:center;cursor:pointer;}
+  .card .cam svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+  .card .cbody{padding:10px 12px 11px;display:flex;flex-direction:column;gap:6px;}
+  .card .cname{display:flex;align-items:center;gap:8px;min-width:0;}
+  .card .pname{font-size:12.5px;}
+  .card .cmeta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--t3);font-variant-numeric:tabular-nums;}
+  .card .cmeta .dot{width:2px;height:2px;border-radius:50%;background:var(--t3);}
+  .card .cfoot{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .card .more{position:absolute;right:6px;top:6px;z-index:1;background:rgba(0,0,0,.55);color:#dfe3e8;}
+
+  /* empty state */
+  .empty{display:none;flex-direction:column;align-items:center;gap:10px;padding:90px 20px;text-align:center;}
+  .empty svg{width:44px;height:44px;stroke:var(--t3);fill:none;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;}
+  .empty .et{font-size:14px;font-weight:600;color:var(--t2);}
+  .empty .es{font-size:12px;color:var(--t3);}
+
+  /* status bar */
+  .statusbar{height:27px;flex:none;background:var(--bg-app);border-top:1px solid var(--line);
+    display:flex;align-items:center;gap:18px;padding:0 14px;font-size:11px;color:var(--t3);user-select:none;}
+  .statusbar .grow{flex:1;}
+  .statusbar .savedot{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:6px;}
+  .statusbar code{font-family:var(--mono);font-size:10.5px;color:var(--t3);}
+
+  /* ============ CONTEXT MENU ============ */
+  .ctx{position:fixed;z-index:60;min-width:216px;background:#25292e;border:1px solid var(--line-strong);
+    border-radius:var(--rl);padding:5px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none;font-size:12.5px;}
+  .ctx.open{display:block;}
+  .ctx .mi{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--r);color:var(--t1);cursor:pointer;position:relative;}
+  .ctx .mi:hover{background:var(--accent);color:#fff;}
+  .ctx .mi.danger{color:var(--danger);}
+  .ctx .mi.danger:hover{background:var(--danger);color:#fff;}
+  .ctx .mi svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+  .ctx .mi .kbd{margin-left:auto;font-size:10.5px;opacity:.55;font-family:var(--mono);}
+  .ctx .sep{height:1px;background:var(--line);margin:5px 6px;}
+  .ctx .mi .sub-arrow{margin-left:auto;width:12px;height:12px;}
+  .ctx-sub{position:absolute;left:calc(100% - 4px);top:-6px;min-width:180px;background:#25292e;border:1px solid var(--line-strong);
+    border-radius:var(--rl);padding:5px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none;}
+  .mi.has-sub:hover .ctx-sub{display:block;}
+  .ctx-sub .mi .chk{width:14px;flex:none;text-align:center;font-size:11px;}
+
+  /* ============ DIALOGS ============ */
+  .scrim{position:fixed;inset:0;z-index:70;background:rgba(8,10,12,.62);display:none;align-items:center;justify-content:center;padding:24px;}
+  .scrim.open{display:flex;}
+  .dlg{background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 30px 80px rgba(0,0,0,.6);
+    width:100%;display:flex;flex-direction:column;max-height:min(92vh,760px);}
+  .dlg-head{display:flex;align-items:center;padding:16px 20px 14px;border-bottom:1px solid var(--line);flex:none;}
+  .dlg-head h3{margin:0;font-size:15px;font-weight:600;}
+  .dlg-head .x{margin-left:auto;width:28px;height:28px;border:0;background:none;color:var(--t3);border-radius:var(--r);cursor:pointer;font-size:14px;}
+  .dlg-head .x:hover{background:var(--bg-hover);color:var(--t1);}
+  .dlg-body{padding:18px 20px;overflow-y:auto;}
+  .dlg-foot{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--line);flex:none;}
+  .dlg-foot .summary{font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:8px;}
+  .dlg-foot .summary .dot{width:3px;height:3px;border-radius:50%;background:var(--t3);}
+  .dlg-foot .grow{flex:1;}
+
+  #dlgNew .dlg{max-width:660px;}
+  .fgroup{margin-bottom:18px;}
+  .flabel{display:block;font-size:10.5px;font-weight:600;letter-spacing:.09em;color:var(--t3);margin-bottom:8px;}
+  .tin{width:100%;height:34px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:13px;padding:0 10px;font-family:var(--font);}
+  .tin::placeholder{color:var(--t3);}
+  .tin.mono{font-family:var(--mono);font-size:12px;}
+  .tin.err{border-color:var(--danger);}
+  .fhint{font-size:11px;color:var(--danger);margin-top:6px;display:none;}
+  .fhint.show{display:block;}
+  .loc-row{display:flex;gap:8px;}
+  .loc-row .tin{flex:1;}
+  .recents{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;}
+  .recents .rl-label{font-size:11px;color:var(--t3);margin-right:2px;}
+  .rchip{height:24px;padding:0 10px;font-size:11px;border-radius:99px;border:1px solid var(--line-strong);
+    background:var(--bg-panel);color:var(--t2);cursor:pointer;font-family:var(--mono);}
+  .rchip:hover{background:var(--bg-hover);color:var(--t1);}
+  .fmt-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 20px;}
+  .pillseg{display:flex;gap:6px;flex-wrap:wrap;}
+  .pill{height:30px;padding:0 13px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--bg-panel);
+    color:var(--t2);font-size:12px;font-weight:600;cursor:pointer;font-variant-numeric:tabular-nums;}
+  .pill:hover{background:var(--bg-hover);color:var(--t1);}
+  .pill.on{background:var(--accent-dim);border-color:var(--accent);color:var(--accent-h);}
+  .pill.custom{border-style:dashed;}
+  .pill small{font-weight:400;opacity:.65;margin-left:5px;}
+  .custom-res{display:none;gap:8px;align-items:center;margin-top:10px;}
+  .custom-res.show{display:flex;}
+  .custom-res input{width:86px;height:30px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:12.5px;padding:0 8px;font-variant-numeric:tabular-nums;font-family:var(--font);}
+  .custom-res .x{color:var(--t3);font-size:12px;}
+
+  #dlgRename .dlg,#dlgConfirm .dlg{max-width:420px;}
+  #dlgConfirm .dlg-body p{margin:0;font-size:13px;color:var(--t2);line-height:1.5;}
+  #dlgConfirm .dlg-body b{color:var(--t1);}
+
+  /* settings popover */
+  .pop{position:fixed;z-index:60;width:360px;background:#25292e;border:1px solid var(--line-strong);border-radius:var(--rl);
+    padding:16px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none;}
+  .pop.open{display:block;}
+  .pop .flabel{margin-bottom:6px;}
+  .pop .pdesc{font-size:11.5px;color:var(--t3);margin:0 0 10px;line-height:1.5;}
+  .pop .actions{display:flex;gap:8px;margin-top:10px;}
+  .btn.sm{height:28px;padding:0 11px;font-size:11.5px;}
+
+  /* toast */
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(8px);z-index:90;
+    background:#2a2f35;border:1px solid var(--line-strong);color:var(--t1);font-size:12.5px;
+    padding:9px 16px;border-radius:var(--rl);box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;
+    transition:opacity .18s ease,transform .18s ease;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* ============ SPEC SHEET ============ */
+  .spec{max-width:1480px;margin:34px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;}
+  .spec-card{background:var(--bg-page);border:1px solid var(--line);border-radius:8px;padding:18px 20px;}
+  .spec-card h3{margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--t3);}
+  .spec-card p,.spec-card li{font-size:12.5px;color:var(--t2);line-height:1.6;}
+  .spec-card p{margin:0 0 8px;}
+  .spec-card ul{margin:0;padding-left:18px;}
+  .spec-card li{margin-bottom:6px;}
+  .spec-card li b{color:var(--t1);font-weight:600;}
+  .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;}
+  .sw{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;}
+  .sw .c{height:34px;}
+  .sw .l{padding:5px 7px;font-size:10px;color:var(--t3);font-family:var(--mono);line-height:1.4;}
+  .sw .l b{display:block;color:var(--t2);font-weight:600;font-family:var(--font);font-size:10.5px;}
+  .kbd-map{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px;color:var(--t2);}
+  .kbd-map kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-inset);border:1px solid var(--line-strong);
+    border-bottom-width:2px;border-radius:3px;padding:1px 6px;color:var(--t2);white-space:nowrap;justify-self:start;}
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important;animation:none!important;}
+  }
+  @media (max-width:1100px){
+    .lrow{grid-template-columns:118px minmax(180px,1fr) 120px 100px 52px 40px;}
+    .col-size,.col-mod{display:none;}
+  }
+</style>
+
+<div class="page-eyebrow">
+  <h1>Roundtable UI redesign — 01 · Projects</h1>
+  <span>interactive mockup · double-click a row, right-click for the menu, try New Project</span>
+</div>
+
+<div class="frame">
+  <!-- title / menu bar -->
+  <div class="titlebar">
+    <div class="app-mark"><div class="logo">R</div><div class="name">ROUNDTABLE</div></div>
+    <button class="menu-item">File</button><button class="menu-item">Edit</button>
+    <button class="menu-item">View</button><button class="menu-item">Timeline</button>
+    <button class="menu-item">Audio</button><button class="menu-item">Window</button>
+    <button class="menu-item">Help</button>
+    <div class="spacer"></div>
+    <div class="doc-title"><b>S24E03 Anime Openings</b> — saved</div>
+    <div class="win-btns"><button>—</button><button>▢</button><button class="close">✕</button></div>
+  </div>
+
+  <div class="frame-body">
+    <!-- nav rail -->
+    <nav class="rail">
+      <button class="rail-btn active"><svg viewBox="0 0 24 24"><path d="M3.5 8.5h17v10a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M3.7 8.4 5 4.6A1.5 1.5 0 0 1 6.4 3.6l13 1.6a1.5 1.5 0 0 1 1.2 1.8l-.3 1.5"/><path d="m7.5 4 1.6 4M12.5 4.6l1.6 4M17.4 5.2l1.6 3.9"/></svg><span>PROJECTS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span>CHARACTERS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg><span>AUDIO</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M3.5 12h17M8.5 5v7M15.5 12v7"/></svg><span>TIMELINE</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M12 14.5V4M12 4 8.2 7.8M12 4l3.8 3.8"/><path d="M4.5 14.5v3.5A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3.5"/></svg><span>EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-collapse" title="Collapse rail"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
+    </nav>
+
+    <!-- content -->
+    <div class="content">
+      <div class="content-scroll" id="contentScroll">
+        <div class="page-head">
+          <h2>Projects</h2><span class="count" id="projCount"></span>
+          <div class="grow"></div>
+          <button class="btn btn-primary" id="btnNew"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New Project</button>
+          <button class="btn btn-ghost" id="btnOpen"><svg viewBox="0 0 24 24"><path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4l2 2.5h7.5A1.5 1.5 0 0 1 20 9v1.5"/><path d="M3.5 6.5V18a1 1 0 0 0 1 1H18a1.5 1.5 0 0 0 1.4-1l2-6a1 1 0 0 0-1-1.4H7.2a1.5 1.5 0 0 0-1.4 1L3.5 18"/></svg>Open…</button>
+          <button class="btn btn-ghost" id="btnImport"><svg viewBox="0 0 24 24"><path d="M12 4v10.5M12 14.5l-3.8-3.7M12 14.5l3.8-3.7"/><path d="M4.5 15v3.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>Import…</button>
+          <button class="btn btn-icon" id="btnSettings" title="Projects folder settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.6v2.2M12 18.2v2.2M3.6 12h2.2M18.2 12h2.2M6.1 6.1l1.5 1.5M16.4 16.4l1.5 1.5M17.9 6.1l-1.5 1.5M7.6 16.4l-1.5 1.5"/></svg></button>
+        </div>
+
+        <div class="toolbar">
+          <div class="search" id="searchBox">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+            <input type="text" id="searchInput" placeholder="Search projects" aria-label="Search projects">
+            <button class="clear" id="searchClear" title="Clear search">✕</button>
+          </div>
+          <select class="ctl" id="showFilter" aria-label="Filter by show">
+            <option value="all">All shows</option>
+          </select>
+          <select class="ctl" id="sortSel" aria-label="Sort projects">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="az">Name A–Z</option>
+            <option value="za">Name Z–A</option>
+          </select>
+          <div class="grow"></div>
+          <div class="seg" role="group" aria-label="View">
+            <button id="viewList" class="on" title="List view"><svg viewBox="0 0 24 24"><path d="M4 6.5h2M9 6.5h11M4 12h2M9 12h11M4 17.5h2M9 17.5h11"/></svg></button>
+            <button id="viewGrid" title="Grid view"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>
+          </div>
+          <button class="btn btn-icon" id="btnRefresh" title="Refresh (F5)"><svg viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.7 3.8v3.4h-3.4"/></svg></button>
+        </div>
+
+        <div class="list-wrap" id="listWrap">
+          <div class="lrow lhead">
+            <div></div><div>NAME</div><div>SHOW</div><div>RESOLUTION</div><div>FPS</div><div class="col-size">SIZE</div><div class="col-mod">MODIFIED</div><div></div>
+          </div>
+          <div class="lbody" id="listBody"></div>
+        </div>
+
+        <div class="grid-wrap" id="gridWrap" style="display:none"></div>
+
+        <div class="empty" id="emptyState">
+          <svg viewBox="0 0 24 24"><path d="M3.5 8.5h17v10a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M3.7 8.4 5 4.6A1.5 1.5 0 0 1 6.4 3.6l13 1.6a1.5 1.5 0 0 1 1.2 1.8l-.3 1.5"/><path d="m7.5 4 1.6 4M12.5 4.6l1.6 4M17.4 5.2l1.6 3.9"/></svg>
+          <div class="et" id="emptyTitle">No projects match your search</div>
+          <div class="es" id="emptySub">Try a different name, or clear the search.</div>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <span id="statusCount"></span>
+        <code>D:\Roundtable\projects</code>
+        <div class="grow"></div>
+        <span><span class="savedot"></span>Auto-saved 2 min ago</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- context menu -->
+<div class="ctx" id="ctx" role="menu">
+  <div class="mi" data-act="open"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6.5 18.5 12 13 17.5"/></svg>Open<span class="kbd">Enter</span></div>
+  <div class="sep"></div>
+  <div class="mi has-sub"><svg viewBox="0 0 24 24"><path d="M4.5 7.5h15M4.5 12h15M4.5 16.5h9"/></svg>Assign to Show
+    <svg class="sub-arrow" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></svg>
+    <div class="ctx-sub" id="ctxShows"></div>
+  </div>
+  <div class="sep"></div>
+  <div class="mi" data-act="rename"><svg viewBox="0 0 24 24"><path d="M14.5 5.5 18.5 9.5 8.5 19.5H4.5v-4z"/><path d="m12.5 7.5 4 4"/></svg>Rename…<span class="kbd">F2</span></div>
+  <div class="mi" data-act="duplicate"><svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M5.5 15.5h-1V5.5a1 1 0 0 1 1-1h10v1"/></svg>Duplicate</div>
+  <div class="sep"></div>
+  <div class="mi" data-act="explorer"><svg viewBox="0 0 24 24"><path d="M13.5 5.5h5v5"/><path d="M18.5 5.5 10 14"/><path d="M18.5 13v5a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V7A1.5 1.5 0 0 1 6 5.5h5"/></svg>Show in Explorer</div>
+  <div class="mi" data-act="setthumb"><svg viewBox="0 0 24 24"><rect x="3.5" y="7" width="17" height="12.5" rx="1.5"/><path d="M8.5 7 10 4.5h4L15.5 7"/><circle cx="12" cy="13" r="3.2"/></svg>Set Thumbnail…</div>
+  <div class="mi" data-act="rmthumb"><svg viewBox="0 0 24 24"><rect x="3.5" y="7" width="17" height="12.5" rx="1.5"/><path d="M8.5 7 10 4.5h4L15.5 7"/><path d="m9.5 10.5 5 5M14.5 10.5l-5 5"/></svg>Remove Thumbnail</div>
+  <div class="mi" data-act="export"><svg viewBox="0 0 24 24"><path d="M12 15V4.5M12 4.5 8.2 8.2M12 4.5l3.8 3.7"/><path d="M4.5 15v3A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3"/></svg>Export a Copy…</div>
+  <div class="sep"></div>
+  <div class="mi danger" data-act="delete"><svg viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M7 7l1 12a1.5 1.5 0 0 0 1.5 1.4h5A1.5 1.5 0 0 0 16 19L17 7"/></svg>Delete<span class="kbd">Del</span></div>
+</div>
+
+<!-- settings popover -->
+<div class="pop" id="settingsPop">
+  <span class="flabel">PROJECTS DIRECTORY</span>
+  <p class="pdesc">New projects are created here, each in its own folder alongside its auto-saves and thumbnail.</p>
+  <input class="tin mono" readonly value="D:\Roundtable\projects">
+  <div class="actions">
+    <button class="btn btn-ghost sm" data-toast="Choose a new projects directory… (folder dialog)">Change Directory…</button>
+    <button class="btn btn-ghost sm" data-toast="Opening directory in Explorer">Open in Explorer</button>
+  </div>
+</div>
+
+<!-- new project dialog -->
+<div class="scrim" id="dlgNew">
+  <div class="dlg" role="dialog" aria-labelledby="dlgNewTitle">
+    <div class="dlg-head"><h3 id="dlgNewTitle">New Project</h3><button class="x" data-close="dlgNew" title="Close (Esc)">✕</button></div>
+    <div class="dlg-body">
+      <div class="fgroup">
+        <label class="flabel" for="npName">PROJECT NAME</label>
+        <input class="tin" id="npName" placeholder="e.g. S24E04 Rival Duos" autocomplete="off">
+        <div class="fhint" id="npNameHint">Name can’t contain / \ : * ? " &lt; &gt; |</div>
+      </div>
+      <div class="fgroup">
+        <span class="flabel">SAVE LOCATION</span>
+        <div class="loc-row">
+          <input class="tin mono" id="npLoc" value="D:\Roundtable\projects">
+          <button class="btn btn-ghost" data-toast="Choose a folder… (folder dialog)">Browse…</button>
+        </div>
+        <div class="recents">
+          <span class="rl-label">Recent:</span>
+          <button class="rchip" data-loc="D:\Roundtable\projects">projects</button>
+          <button class="rchip" data-loc="D:\Shows\TierTalk">D:\Shows\TierTalk</button>
+          <button class="rchip" data-loc="E:\Archive\2026">E:\Archive\2026</button>
+        </div>
+      </div>
+      <div class="fmt-grid">
+        <div class="fgroup">
+          <span class="flabel">ASPECT RATIO</span>
+          <div class="pillseg" id="npAspect">
+            <button class="pill on" data-a="16:9">16:9</button>
+            <button class="pill" data-a="9:16">9:16</button>
+            <button class="pill" data-a="21:9">21:9</button>
+            <button class="pill custom" data-a="custom">Custom</button>
+          </div>
+        </div>
+        <div class="fgroup">
+          <span class="flabel">FRAME RATE</span>
+          <div class="pillseg" id="npFps">
+            <button class="pill" data-f="24">24</button>
+            <button class="pill on" data-f="30">30</button>
+            <button class="pill" data-f="60">60</button>
+            <button class="pill custom" data-f="custom">Custom</button>
+          </div>
+          <div class="custom-res" id="npFpsCustom">
+            <input type="number" id="npFpsVal" value="59.94" min="1" max="240" step="0.01"><span class="x">fps</span>
+          </div>
+        </div>
+      </div>
+      <div class="fgroup">
+        <span class="flabel">RESOLUTION</span>
+        <div class="pillseg" id="npRes"></div>
+        <div class="custom-res" id="npResCustom">
+          <input type="number" id="npResW" value="1920" min="1" max="99999"><span class="x">×</span>
+          <input type="number" id="npResH" value="1080" min="1" max="99999"><span class="x">px</span>
+        </div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <div class="summary" id="npSummary"></div>
+      <div class="grow"></div>
+      <button class="btn btn-ghost" data-close="dlgNew">Cancel</button>
+      <button class="btn btn-primary" id="npCreate" disabled>Create Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- rename dialog -->
+<div class="scrim" id="dlgRename">
+  <div class="dlg" role="dialog" aria-labelledby="dlgRenTitle">
+    <div class="dlg-head"><h3 id="dlgRenTitle">Rename Project</h3><button class="x" data-close="dlgRename">✕</button></div>
+    <div class="dlg-body">
+      <label class="flabel" for="renName">NEW NAME</label>
+      <input class="tin" id="renName" autocomplete="off">
+    </div>
+    <div class="dlg-foot">
+      <div class="grow"></div>
+      <button class="btn btn-ghost" data-close="dlgRename">Cancel</button>
+      <button class="btn btn-primary" id="renOk">Rename</button>
+    </div>
+  </div>
+</div>
+
+<!-- delete confirm -->
+<div class="scrim" id="dlgConfirm">
+  <div class="dlg" role="dialog" aria-labelledby="dlgConTitle">
+    <div class="dlg-head"><h3 id="dlgConTitle">Delete Project</h3><button class="x" data-close="dlgConfirm">✕</button></div>
+    <div class="dlg-body">
+      <p>Delete <b id="conName"></b> and its folder? Auto-saves and the thumbnail are removed with it. This can’t be undone.</p>
+    </div>
+    <div class="dlg-foot">
+      <div class="grow"></div>
+      <button class="btn btn-ghost" data-close="dlgConfirm">Cancel</button>
+      <button class="btn btn-danger" id="conOk">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ SPEC SHEET ============ -->
+<div class="spec">
+  <div class="spec-card">
+    <h3>WHAT MOVED WHERE</h3>
+    <ul>
+      <li><b>Icon rail (NEW / OPEN / SAVE / IMPORT / SETTINGS)</b> → header actions. Save stays global (Ctrl+S, File menu, title-bar saved state); Settings is the gear popover.</li>
+      <li><b>OPEN side panel</b> → gone. The table <i>is</i> the project list; “Open…” browses for an external .rtp; recents live in File ▸ Recent Projects.</li>
+      <li><b>NEW side panel (5 step-cards)</b> → one modal dialog, same fields: name, location + recent chips, aspect, resolution presets, fps, live summary.</li>
+      <li><b>Bottom action bar</b> → double-click to open, right-click / “⋯” for everything else. No permanently-dimmed buttons on screen.</li>
+      <li><b>Emoji icons</b> → 1.6px stroke line icons throughout.</li>
+      <li><b>New:</b> grid view toggle, SHOW column + show filter, status-bar autosave indicator.</li>
+    </ul>
+  </div>
+  <div class="spec-card">
+    <h3>DESIGN TOKENS</h3>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:#131518"></div><div class="l"><b>bg-app</b>#131518</div></div>
+      <div class="sw"><div class="c" style="background:#1b1e21"></div><div class="l"><b>bg-page</b>#1B1E21</div></div>
+      <div class="sw"><div class="c" style="background:#22262a"></div><div class="l"><b>bg-panel</b>#22262A</div></div>
+      <div class="sw"><div class="c" style="background:#2e343a"></div><div class="l"><b>line</b>#2E343A</div></div>
+      <div class="sw"><div class="c" style="background:#3e90e8"></div><div class="l"><b>accent</b>#3E90E8</div></div>
+      <div class="sw"><div class="c" style="background:#e0564e"></div><div class="l"><b>danger</b>#E0564E</div></div>
+      <div class="sw"><div class="c" style="background:#e9ecef"></div><div class="l"><b>text-1</b>#E9ECEF</div></div>
+      <div class="sw"><div class="c" style="background:#a2abb4"></div><div class="l"><b>text-2</b>#A2ABB4</div></div>
+      <div class="sw"><div class="c" style="background:#6b7580"></div><div class="l"><b>text-3</b>#6B7580</div></div>
+    </div>
+    <p style="margin-top:12px">Type: Segoe UI. 21px/600 page title · 13.5px/600 row names · 12.5px controls · 10.5px tracked uppercase labels · tabular numerals in data columns. Radii: 4px controls, 6px cards, 8px windows. One accent; the old per-section rail colors are retired — active section reads via the blue pip + tint.</p>
+  </div>
+  <div class="spec-card">
+    <h3>KEYBOARD (UNCHANGED)</h3>
+    <div class="kbd-map">
+      <kbd>Enter</kbd><span>Open selected project</span>
+      <kbd>Del</kbd><span>Delete selected (confirm dialog)</span>
+      <kbd>F2</kbd><span>Rename selected</span>
+      <kbd>F5</kbd><span>Refresh list</span>
+      <kbd>Ctrl+N</kbd><span>New Project dialog</span>
+      <kbd>Ctrl+O</kbd><span>Open file browser</span>
+      <kbd>Esc</kbd><span>Close dialog / menu</span>
+    </div>
+    <p style="margin-top:12px">First-run empty state reuses the table area: clapper icon, “No projects yet”, and a single <b>Create your first project</b> button that opens the New Project dialog. (Type a nonsense search above to see the no-results variant.)</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $=id=>document.getElementById(id);
+
+  /* ---------- data ---------- */
+  const SHOW_COLORS={"Tier Talk":"var(--chip-violet)","Roundtable Live":"var(--chip-teal)","Shorts":"var(--chip-amber)"};
+  let projects=[
+    {id:1,name:"S24E03 Anime Openings",show:"Tier Talk",w:1920,h:1080,fps:30,size:"48.2 MB",mod:"Today 3:42 PM",ts:1000,current:true,g:0},
+    {id:2,name:"Villain Redemption Arcs",show:"Tier Talk",w:1920,h:1080,fps:30,size:"31.7 MB",mod:"Today 11:08 AM",ts:990,current:false,g:1},
+    {id:3,name:"Yoyo Birthday Special",show:"Roundtable Live",w:3840,h:2160,fps:60,size:"112.4 MB",mod:"Yesterday 9:51 PM",ts:900,current:false,g:2},
+    {id:4,name:"Fast Food Mascots",show:"Tier Talk",w:1920,h:1080,fps:30,size:"27.9 MB",mod:"Yesterday 2:16 PM",ts:890,current:false,g:3},
+    {id:5,name:"Clip Dump 06-28",show:"Shorts",w:1080,h:1920,fps:60,size:"9.3 MB",mod:"Monday 7:24 PM",ts:800,current:false,g:4},
+    {id:6,name:"Guest Night — Kalla",show:"Roundtable Live",w:1920,h:1080,fps:30,size:"64.0 MB",mod:"Jun 27, 2026",ts:700,current:false,g:5},
+    {id:7,name:"Cursed Crossovers",show:"Tier Talk",w:1920,h:1080,fps:30,size:"22.5 MB",mod:"Jun 24, 2026",ts:600,current:false,g:1},
+    {id:8,name:"Intro Rework Test",show:"",w:2560,h:1440,fps:24,size:"4.1 MB",mod:"Jun 19, 2026",ts:500,current:false,g:5}
+  ];
+  let nextId=9;
+  const state={sort:"newest",query:"",show:"all",view:"list",sel:null};
+
+  /* ---------- helpers ---------- */
+  function toast(msg){const t=$("toast");t.textContent=msg;t.classList.add("show");
+    clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2200);}
+  function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+  function resTag(p){if(p.h>=2160||p.w>=3840)return"4K";if(p.h>=1440&&p.w>1440)return"QHD";if(p.h>=1080||p.w>=1080)return"HD";return"SD";}
+  function chipHTML(p){
+    if(!p.show)return'<span class="chip none">No show</span>';
+    const c=SHOW_COLORS[p.show]||"var(--t3)";
+    return'<span class="chip"><i style="background:'+c+'"></i>'+esc(p.show)+'</span>';
+  }
+  function knownShows(){return Object.keys(SHOW_COLORS);}
+  function byId(id){return projects.find(p=>p.id===id);}
+
+  /* ---------- render ---------- */
+  function filtered(){
+    let list=projects.filter(p=>p.name.toLowerCase().includes(state.query)&&(state.show==="all"||p.show===state.show));
+    const cmp={newest:(a,b)=>b.ts-a.ts,oldest:(a,b)=>a.ts-b.ts,
+      az:(a,b)=>a.name.localeCompare(b.name),za:(a,b)=>b.name.localeCompare(a.name)}[state.sort];
+    return list.slice().sort(cmp);
+  }
+  function render(){
+    const list=filtered();
+    $("listBody").innerHTML=list.map(p=>
+      '<div class="lrow'+(state.sel===p.id?" sel":"")+'" data-id="'+p.id+'" tabindex="0">'+
+        '<div><div class="thumb g'+p.g+'"><button class="cam" title="Set thumbnail image…" data-cam="1">'+
+          '<svg viewBox="0 0 24 24"><rect x="3.5" y="7" width="17" height="12.5" rx="1.5"/><path d="M8.5 7 10 4.5h4L15.5 7"/><circle cx="12" cy="13" r="3.2"/></svg>'+
+        '</button><span class="tag">'+resTag(p)+'</span></div></div>'+
+        '<div class="name-cell"><div class="name-line"><span class="pname">'+esc(p.name)+'</span>'+
+          (p.current?'<span class="badge-current">CURRENT</span>':"")+'</div>'+
+          '<span class="fpath">'+esc(p.name)+'\\'+esc(p.name)+'.rtp</span></div>'+
+        '<div>'+chipHTML(p)+'</div>'+
+        '<div class="num">'+p.w+' × '+p.h+'</div>'+
+        '<div class="num">'+p.fps+'</div>'+
+        '<div class="num col-size">'+p.size+'</div>'+
+        '<div class="num col-mod">'+p.mod+'</div>'+
+        '<div><button class="more" title="More actions" data-more="1"><svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg></button></div>'+
+      '</div>').join("");
+    $("gridWrap").innerHTML=list.map(p=>
+      '<div class="card'+(state.sel===p.id?" sel":"")+'" data-id="'+p.id+'" tabindex="0">'+
+        '<div class="cthumb g'+p.g+'"><button class="cam" title="Set thumbnail image…" data-cam="1">'+
+          '<svg viewBox="0 0 24 24"><rect x="3.5" y="7" width="17" height="12.5" rx="1.5"/><path d="M8.5 7 10 4.5h4L15.5 7"/><circle cx="12" cy="13" r="3.2"/></svg>'+
+        '</button><button class="more" title="More actions" data-more="1"><svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg></button>'+
+        '<span class="tag">'+resTag(p)+'</span></div>'+
+        '<div class="cbody"><div class="cname"><span class="pname">'+esc(p.name)+'</span>'+
+          (p.current?'<span class="badge-current">CURRENT</span>':"")+'</div>'+
+        '<div class="cmeta"><span>'+p.w+' × '+p.h+'</span><span class="dot"></span><span>'+p.fps+' fps</span><span class="dot"></span><span>'+p.size+'</span></div>'+
+        '<div class="cfoot">'+chipHTML(p)+'<span class="cmeta">'+p.mod+'</span></div></div>'+
+      '</div>').join("");
+    const empty=list.length===0;
+    $("listWrap").style.display=(state.view==="list"&&!empty)?"":"none";
+    $("gridWrap").style.display=(state.view==="grid"&&!empty)?"":"none";
+    $("emptyState").style.display=empty?"flex":"none";
+    $("projCount").textContent=projects.length+" projects";
+    $("statusCount").textContent=list.length===projects.length?projects.length+" projects":list.length+" of "+projects.length+" projects";
+  }
+
+  /* ---------- toolbar ---------- */
+  const shows=knownShows();const sf=$("showFilter");
+  shows.forEach(s=>{const o=document.createElement("option");o.value=s;o.textContent=s;sf.appendChild(o);});
+  const on=document.createElement("option");on.value="__none";on.textContent="No show";sf.appendChild(on);
+  sf.addEventListener("change",()=>{state.show=sf.value==="__none"?"":sf.value;if(sf.value==="all")state.show="all";render();});
+  $("sortSel").addEventListener("change",e=>{state.sort=e.target.value;render();});
+  const si=$("searchInput");
+  si.addEventListener("input",()=>{state.query=si.value.trim().toLowerCase();
+    $("searchBox").classList.toggle("has-text",si.value.length>0);render();});
+  $("searchClear").addEventListener("click",()=>{si.value="";si.dispatchEvent(new Event("input"));si.focus();});
+  $("viewList").addEventListener("click",()=>{state.view="list";$("viewList").classList.add("on");$("viewGrid").classList.remove("on");render();});
+  $("viewGrid").addEventListener("click",()=>{state.view="grid";$("viewGrid").classList.add("on");$("viewList").classList.remove("on");render();});
+  $("btnRefresh").addEventListener("click",()=>{toast("Project list refreshed");render();});
+  $("btnOpen").addEventListener("click",()=>toast("Open project… (.rtp file dialog)"));
+  $("btnImport").addEventListener("click",()=>toast("Import project… (.rtp file dialog)"));
+
+  /* ---------- selection / open ---------- */
+  function rowTarget(e){const r=e.target.closest("[data-id]");return r?parseInt(r.dataset.id,10):null;}
+  function handleBodyClick(e){
+    if(e.target.closest("[data-cam]")){toast("Set thumbnail image… (file dialog)");e.stopPropagation();return;}
+    if(e.target.closest("[data-more]")){const id=rowTarget(e);state.sel=id;render();
+      const b=e.target.closest("[data-more]").getBoundingClientRect();openCtx(b.left,b.bottom+4,id);e.stopPropagation();return;}
+    const id=rowTarget(e);state.sel=id;render();
+  }
+  function handleDbl(e){const id=rowTarget(e);if(id!=null){const p=byId(id);toast("Opening “"+p.name+"” — loading into Timeline");}}
+  function handleCtxEvt(e){const id=rowTarget(e);if(id==null)return;e.preventDefault();state.sel=id;render();openCtx(e.clientX,e.clientY,id);}
+  ["listBody","gridWrap"].forEach(cid=>{const el=$(cid);
+    el.addEventListener("click",handleBodyClick);
+    el.addEventListener("dblclick",handleDbl);
+    el.addEventListener("contextmenu",handleCtxEvt);});
+  $("contentScroll").addEventListener("click",e=>{
+    if(!e.target.closest("[data-id]")&&!e.target.closest(".toolbar")&&!e.target.closest(".page-head")){state.sel=null;render();}});
+
+  /* ---------- context menu ---------- */
+  const ctx=$("ctx");let ctxId=null;
+  function openCtx(x,y,id){
+    ctxId=id;const p=byId(id);
+    $("ctxShows").innerHTML='<div class="mi" data-show=""><span class="chk">'+(!p.show?"✓":"")+'</span>(None)</div>'+
+      knownShows().map(s=>'<div class="mi" data-show="'+esc(s)+'"><span class="chk">'+(p.show===s?"✓":"")+'</span>'+esc(s)+"</div>").join("");
+    ctx.classList.add("open");
+    const r=ctx.getBoundingClientRect();
+    ctx.style.left=Math.min(x,window.innerWidth-r.width-8)+"px";
+    ctx.style.top=Math.min(y,window.innerHeight-r.height-8)+"px";
+  }
+  function closeCtx(){ctx.classList.remove("open");ctxId=null;}
+  document.addEventListener("click",e=>{if(!e.target.closest("#ctx"))closeCtx();});
+  window.addEventListener("blur",closeCtx);
+  ctx.addEventListener("click",e=>{
+    const showEl=e.target.closest("[data-show]");
+    if(showEl&&ctxId!=null){const p=byId(ctxId);p.show=showEl.dataset.show;
+      toast(p.show?("Assigned to "+p.show):"Removed show assignment");closeCtx();render();return;}
+    const mi=e.target.closest("[data-act]");if(!mi||ctxId==null)return;
+    const p=byId(ctxId);const act=mi.dataset.act;closeCtx();
+    if(act==="open")toast("Opening “"+p.name+"” — loading into Timeline");
+    else if(act==="rename")openRename(p.id);
+    else if(act==="duplicate"){const c={...p,id:nextId++,name:p.name+" Copy",current:false,ts:1001,mod:"Today"};projects.unshift(c);state.sel=c.id;toast("Duplicated as “"+c.name+"”");render();}
+    else if(act==="explorer")toast("Showing project folder in Explorer");
+    else if(act==="setthumb")toast("Set thumbnail image… (file dialog)");
+    else if(act==="rmthumb")toast("Thumbnail removed — placeholder restored");
+    else if(act==="export")toast("Export a copy… (save dialog)");
+    else if(act==="delete")openConfirm(p.id);
+  });
+
+  /* ---------- dialogs ---------- */
+  function openDlg(id){$(id).classList.add("open");const f=$(id).querySelector("input:not([readonly])");if(f){f.focus();f.select&&f.select();}}
+  function closeDlg(id){$(id).classList.remove("open");}
+  document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",()=>closeDlg(b.dataset.close)));
+  document.querySelectorAll(".scrim").forEach(s=>s.addEventListener("mousedown",e=>{if(e.target===s)closeDlg(s.id);}));
+  document.querySelectorAll("[data-toast]").forEach(b=>b.addEventListener("click",()=>toast(b.dataset.toast)));
+
+  /* rename */
+  let renId=null;
+  function openRename(id){renId=id;$("renName").value=byId(id).name;openDlg("dlgRename");}
+  $("renOk").addEventListener("click",()=>{const v=$("renName").value.trim();
+    if(!v)return;const p=byId(renId);toast("Renamed “"+p.name+"” to “"+v+"”");p.name=v;closeDlg("dlgRename");render();});
+  $("renName").addEventListener("keydown",e=>{if(e.key==="Enter")$("renOk").click();});
+
+  /* delete */
+  let conId=null;
+  function openConfirm(id){conId=id;$("conName").textContent=byId(id).name;openDlg("dlgConfirm");}
+  $("conOk").addEventListener("click",()=>{const p=byId(conId);projects=projects.filter(q=>q.id!==conId);
+    state.sel=null;toast("Deleted “"+p.name+"”");closeDlg("dlgConfirm");render();});
+
+  /* new project */
+  const RES={"16:9":[[1280,720,"HD"],[1920,1080,"Full HD"],[3840,2160,"4K UHD"]],
+             "9:16":[[720,1280,"HD"],[1080,1920,"Full HD"],[2160,3840,"4K"]],
+             "21:9":[[3440,1440,"UW-QHD"],[3840,1600,"UW+"],[5120,2160,"5K2K"]]};
+  const np={aspect:"16:9",w:1920,h:1080,fps:30};
+  $("btnNew").addEventListener("click",()=>openDlg("dlgNew"));
+  function buildRes(){
+    const wrap=$("npRes");
+    if(np.aspect==="custom"){wrap.innerHTML="";$("npResCustom").classList.add("show");syncCustom();return;}
+    $("npResCustom").classList.remove("show");
+    wrap.innerHTML=RES[np.aspect].map(r=>'<button class="pill'+((r[0]===np.w&&r[1]===np.h)?" on":"")+'" data-w="'+r[0]+'" data-h="'+r[1]+'">'+r[0]+' × '+r[1]+'<small>'+r[2]+"</small></button>").join("")+
+      '<button class="pill custom" data-w="0">Custom…</button>';
+  }
+  function syncCustom(){np.w=parseInt($("npResW").value,10)||1920;np.h=parseInt($("npResH").value,10)||1080;summary();}
+  $("npRes").addEventListener("click",e=>{const b=e.target.closest(".pill");if(!b)return;
+    if(b.dataset.w==="0"){$("npResCustom").classList.add("show");$("npRes").querySelectorAll(".pill").forEach(x=>x.classList.remove("on"));b.classList.add("on");syncCustom();return;}
+    $("npResCustom").classList.remove("show");
+    np.w=parseInt(b.dataset.w,10);np.h=parseInt(b.dataset.h,10);
+    $("npRes").querySelectorAll(".pill").forEach(x=>x.classList.toggle("on",x===b));summary();});
+  $("npAspect").addEventListener("click",e=>{const b=e.target.closest(".pill");if(!b)return;
+    np.aspect=b.dataset.a;$("npAspect").querySelectorAll(".pill").forEach(x=>x.classList.toggle("on",x===b));
+    if(np.aspect!=="custom"){const d=RES[np.aspect][1];np.w=d[0];np.h=d[1];}
+    buildRes();summary();});
+  $("npFps").addEventListener("click",e=>{const b=e.target.closest(".pill");if(!b)return;
+    $("npFps").querySelectorAll(".pill").forEach(x=>x.classList.toggle("on",x===b));
+    if(b.dataset.f==="custom"){$("npFpsCustom").classList.add("show");np.fps=parseFloat($("npFpsVal").value)||30;}
+    else{$("npFpsCustom").classList.remove("show");np.fps=parseInt(b.dataset.f,10);}summary();});
+  $("npFpsVal").addEventListener("input",()=>{np.fps=parseFloat($("npFpsVal").value)||30;summary();});
+  $("npResW").addEventListener("input",syncCustom);$("npResH").addEventListener("input",syncCustom);
+  document.querySelectorAll("#dlgNew .rchip").forEach(c=>c.addEventListener("click",()=>{$("npLoc").value=c.dataset.loc;}));
+  const BAD=/[\/\\:*?"<>|]/;
+  function validName(){const v=$("npName").value;return v.trim().length>0&&!BAD.test(v);}
+  function summary(){
+    $("npSummary").innerHTML="<span>"+np.w+" × "+np.h+"</span><span class='dot'></span><span>"+np.fps+" fps</span><span class='dot'></span><span style='font-family:var(--mono);font-size:11px'>"+esc($("npLoc").value)+"</span>";
+    $("npCreate").disabled=!validName();
+    const bad=BAD.test($("npName").value);
+    $("npName").classList.toggle("err",bad);$("npNameHint").classList.toggle("show",bad);
+  }
+  $("npName").addEventListener("input",summary);
+  $("npName").addEventListener("keydown",e=>{if(e.key==="Enter"&&validName())$("npCreate").click();});
+  $("npCreate").addEventListener("click",()=>{
+    const name=$("npName").value.trim();
+    projects.unshift({id:nextId++,name:name,show:"",w:np.w,h:np.h,fps:np.fps,size:"12 KB",mod:"Today",ts:1002,current:false,g:(nextId%6)});
+    closeDlg("dlgNew");$("npName").value="";summary();
+    toast("Created “"+name+"” — opening in Timeline");render();});
+
+  /* settings popover */
+  const pop=$("settingsPop");
+  $("btnSettings").addEventListener("click",e=>{e.stopPropagation();
+    const b=$("btnSettings").getBoundingClientRect();
+    pop.classList.toggle("open");
+    pop.style.top=(b.bottom+6)+"px";
+    pop.style.left=Math.min(b.left,window.innerWidth-372)+"px";});
+  document.addEventListener("click",e=>{if(!e.target.closest("#settingsPop")&&!e.target.closest("#btnSettings"))pop.classList.remove("open");});
+
+  /* keyboard */
+  document.addEventListener("keydown",e=>{
+    const dlgOpen=document.querySelector(".scrim.open");
+    if(e.key==="Escape"){if(dlgOpen)closeDlg(dlgOpen.id);else if(ctx.classList.contains("open"))closeCtx();else if(pop.classList.contains("open"))pop.classList.remove("open");return;}
+    if(dlgOpen||e.target.tagName==="INPUT"||e.target.tagName==="SELECT")return;
+    if(e.key==="F5"){e.preventDefault();$("btnRefresh").click();}
+    else if(e.key==="F2"&&state.sel!=null){e.preventDefault();openRename(state.sel);}
+    else if((e.key==="Delete"||e.key==="Backspace")&&state.sel!=null){e.preventDefault();openConfirm(state.sel);}
+    else if(e.key==="Enter"&&state.sel!=null){const p=byId(state.sel);toast("Opening “"+p.name+"” — loading into Timeline");}
+  });
+
+  summary();buildRes();render();
+})();
+</script>

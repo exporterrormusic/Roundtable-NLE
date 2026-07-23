@@ -8,13 +8,12 @@ include(GoogleTest)
 # Qt6::Test for signal spy support in UI tests
 find_package(Qt6 QUIET COMPONENTS Test)
 
-# Build Qt/FFmpeg DLL path list for test discovery (gtest_discover_tests runs exes at build time)
+# Test exes and their Qt/FFmpeg DLLs are colocated in
+# ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG> (windeployqt + copy_ffmpeg_dlls
+# below), so tests need no PATH setup.  PRE_TEST discovery defers running the
+# exes from build time to ctest time, after those deploy steps have run.
 set(_QT_BIN_DIR "${CMAKE_SOURCE_DIR}/third_party/qt/6.8.3/msvc2022_64/bin")
-set(_FFMPEG_BIN_DIR "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/bin")
 set(_WINDEPLOYQT "${_QT_BIN_DIR}/windeployqt.exe")
-cmake_path(NATIVE_PATH _QT_BIN_DIR _QT_BIN_DIR_NATIVE)
-cmake_path(NATIVE_PATH _FFMPEG_BIN_DIR _FFMPEG_BIN_DIR_NATIVE)
-set(_TEST_DLL_PATH "${_QT_BIN_DIR_NATIVE}\;${_FFMPEG_BIN_DIR_NATIVE}\;$ENV{PATH}")
 set(_TEST_DISCOVERY_PROPS DISCOVERY_MODE PRE_TEST)
 
 function(configure_roundtable_test target)
@@ -99,6 +98,7 @@ add_roundtable_test(test_convert_decoded_frame LIBS roundtable_core)
 add_roundtable_test(test_render_complexity LIBS roundtable_core)
 add_roundtable_test(test_passthrough_eligibility LIBS roundtable_core)
 add_roundtable_test(test_render_state_hash LIBS roundtable_core)
+add_roundtable_test(test_frame_time LIBS roundtable_core)
 add_roundtable_test(test_segment_render_cache LIBS roundtable_core)
 add_roundtable_test(test_command       LIBS roundtable_core)
 add_roundtable_test(test_project       LIBS roundtable_core)
@@ -112,7 +112,9 @@ add_roundtable_test(test_audiofx       LIBS roundtable_core)
 add_roundtable_test(test_audio_sync    LIBS roundtable_core)
 add_roundtable_test(test_autosave      LIBS roundtable_core)
 add_roundtable_test(test_integration   LIBS roundtable_core)
-add_roundtable_test(test_animation_cache LIBS roundtable_core)
+# Pulls in AnimationVideoCache → SpinePrerenderer, whose GPU render path
+# references roundtable_gpu symbols; the tests themselves need no Vulkan.
+add_roundtable_test(test_animation_video_cache LIBS roundtable_gpu roundtable_core)
 # Both pull in roundtable_core TUs that reference roundtable_gpu symbols
 # (MediaPool prefetch -> Nv12Converter/GpuScheduler; FrameProducer ->
 # GpuContext::get()), so they need roundtable_gpu at link time. Neither
@@ -143,3 +145,4 @@ add_roundtable_test(test_waveform        LIBS roundtable_ui roundtable_gpu round
 add_roundtable_test(test_keyframe_editor LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_main_window     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_history_panel   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

@@ -47,11 +47,7 @@ void TimelineWorkspace::wirePlaybackSignals()
         if (m_playbackController->isPlaying()) {
             m_playbackController->pause();
         }
-        if (m_sourceMonitor && m_sourceMonitor->controller()
-            && m_sourceMonitor->controller()->state() != PlayState::Stopped
-            && m_sourceMonitor->controller()->state() != PlayState::Paused) {
-            m_sourceMonitor->controller()->pause();
-        }
+        setSourceTransportActive(false);
         m_playbackController->seekTo(tick);
         ensureAudioSourcesLoaded();
         if (m_audioEngine && !m_playbackController->isPlaying()) {
@@ -75,6 +71,9 @@ void TimelineWorkspace::wirePlaybackSignals()
     // Scrubbing from ProgramMonitor mini-timeline
     connect(m_programMonitor, &ProgramMonitor::scrubbed,
             this, [this](int64_t tick) {
+        // ProgramMonitor::onScrub pauses the sequence itself. This handoff
+        // also pauses Source Monitor playback and restores sequence audio.
+        setSourceTransportActive(false);
         m_playbackController->seekTo(tick);
         ensureAudioSourcesLoaded();
         if (m_audioEngine && !m_playbackController->isPlaying()) {
@@ -165,11 +164,10 @@ void TimelineWorkspace::wirePlaybackSignals()
         if (state == PlayState::Playing || state == PlayState::Shuttling) {
             if (m_meterTimer && !m_meterTimer->isActive())
                 m_meterTimer->start();
-            if (m_sourceMonitor && m_sourceMonitor->controller()
-                && m_sourceMonitor->controller()->state() != PlayState::Stopped
-                && m_sourceMonitor->controller()->state() != PlayState::Paused) {
-                m_sourceMonitor->controller()->pause();
-            }
+            // Main playback can also be started programmatically or by a
+            // shortcut, so enforce the same source->sequence handoff used by
+            // mouse activation before AudioEngine::play() runs.
+            setSourceTransportActive(false);
             if (m_audioPlayback && m_audioPlayback->needsPlaybackWindowRefresh()) {
                 scheduleAudioPlaybackWindowRefresh();
             } else {
@@ -205,8 +203,9 @@ void TimelineWorkspace::wirePlaybackSignals()
 
     // Set composite callback
     m_programMonitor->setCompositeCallback(
-        [this](int64_t tick, uint32_t w, uint32_t h, bool scrubMode) -> std::shared_ptr<CachedFrame> {
-            return compositeFrame(tick, w, h, scrubMode);
+        [this](int64_t tick, uint32_t w, uint32_t h,
+               bool scrubMode, bool stillMode) -> std::shared_ptr<CachedFrame> {
+            return compositeFrame(tick, w, h, scrubMode, stillMode);
         });
 
     // Wire playback-resolution dropdown

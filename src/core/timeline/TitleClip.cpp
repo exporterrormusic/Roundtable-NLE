@@ -26,6 +26,7 @@ std::unique_ptr<Clip> TitleClip::clone() const
     copy->m_duration   = m_duration;
     copy->m_sourceIn   = m_sourceIn;
     copy->m_speed      = m_speed;
+    copy->m_timeInterpolation = m_timeInterpolation;
     copy->m_speedRamp  = m_speedRamp;
     copy->m_blendMode  = m_blendMode;
     copy->m_opacity    = m_opacity;
@@ -34,6 +35,7 @@ std::unique_ptr<Clip> TitleClip::clone() const
     copy->m_scaleX     = m_scaleX;
     copy->m_scaleY     = m_scaleY;
     copy->m_rotation   = m_rotation;
+    copy->m_shutterAngle = m_shutterAngle;
     copy->m_anchorX    = m_anchorX;
     copy->m_anchorY    = m_anchorY;
 

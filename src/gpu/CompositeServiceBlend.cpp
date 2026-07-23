@@ -221,7 +221,7 @@ void blitLayerWithTransform(
 
 namespace {
 
-/// Map a normalized frame-space point (0–1) into target pixel space.
+/// Map a normalized mask-space point (0–1) into target pixel space.
 inline void mapPoint(float u, float v, uint32_t w, uint32_t h,
                      const MaskRasterTransform* xf, float& px, float& py)
 {
@@ -412,9 +412,8 @@ std::vector<uint8_t> rasterizeMasks(const std::vector<MaskRenderState>& masks,
     std::vector<uint8_t> pixels(npx * 4, 0);
     if (w == 0 || h == 0) return pixels;
 
-    // Feather/expansion are authored in output-frame pixels. When
-    // rasterizing into a different grid (effect masks in clip space),
-    // scale them by the mapping's average scale factor.
+    // Feather/expansion are measured in the mask raster's pixels. For the
+    // optional non-identity mapping, scale them by its average scale factor.
     float distScale = 1.0f;
     if (frameToTarget) {
         const float* m = frameToTarget->m;
@@ -506,6 +505,7 @@ uint64_t hashMaskStates(const std::vector<MaskRenderState>& masks,
     if (frameToTarget) mix(frameToTarget->m, sizeof(frameToTarget->m));
     for (const auto& m : masks) {
         mix(&m.shape, sizeof(m.shape));
+        mix(&m.coordinateSpace, sizeof(m.coordinateSpace));
         mix(&m.inverted, sizeof(m.inverted));
         mix(&m.feather, sizeof(m.feather));
         mix(&m.expansion, sizeof(m.expansion));

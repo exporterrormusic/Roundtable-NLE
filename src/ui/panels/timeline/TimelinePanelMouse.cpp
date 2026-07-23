@@ -67,7 +67,9 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     // edit-point bracket and transition highlight must survive it too,
     // otherwise zooming silently wipes the "Ctrl+T will add a transition
     // here" indicator even though the edit point is still selected.
-    const bool viewOnlyPress = (m_activeTool == EditTool::Zoom);
+    const bool viewOnlyPress = (m_activeTool == EditTool::Zoom
+                                || m_activeTool == EditTool::PenMask
+                                || m_activeTool == EditTool::Eyedropper);
 
     if (!viewOnlyPress) {
         // Wipe any prior "between clips" edit-point selection at the start
@@ -104,6 +106,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
 
     switch (m_activeTool)
     {
+    case EditTool::PenMask:
+    case EditTool::Eyedropper:
+        // These tools act in the Program Monitor, never on timeline clips.
+        event->ignore();
+        return;
     case EditTool::Razor:
     {
         // Split at click position
@@ -592,7 +599,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             int64_t clickTick = m_layoutEngine.pixelXToTime(px);
             bool gapFound = false;
 
-            if (ti < m_timeline->trackCount() && clickTick >= 0) {
+            if (ti < m_timeline->trackCount() && clickTick >= 0 &&
+                !m_timeline->track(ti)->isLocked()) {
                 Track* track = m_timeline->track(ti);
 
                 // Collect and sort clips by position
@@ -750,6 +758,20 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             // this on a pixel radius; whatever edit point is closest wins).
             // Without this the tool felt like it had "reverted to selection
             // mode" — actually nothing happened, but the user couldn't tell.
+            // Rolling is only meaningful at the cut itself. A body/empty-space
+            // click returns to Selection and is immediately handled as the
+            // normal click the user intended; it must never grab a distant cut
+            // simply because that happened to be the nearest one on the row.
+            constexpr double kRollCutGrabPx = 8.0;
+            const bool nearCut = bestLeft != 0
+                && std::abs(px - m_layoutEngine.timeToPixelX(bestEditPt))
+                    <= kRollCutGrabPx;
+            if (!nearCut) {
+                setActiveTool(EditTool::Selection);
+                mousePressEvent(event);
+                return;
+            }
+
             if (bestLeft != 0) {
                 m_dragMode = DragMode::RollingEdit;
                 m_rollLeftClipId = bestLeft;
@@ -893,11 +915,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             int64_t tick = m_layoutEngine.pixelXToTime(px);
             if (tick < 0) tick = 0;
 
-            // Builds a 5-second text GraphicClip at `tick`.
-            auto makeTextClip = [tick]() {
+            constexpr int64_t kDefaultGraphicDuration = kTicksPerSecond * 5;
+            auto makeTextClip = [tick](int64_t duration) {
                 auto gc = std::make_unique<GraphicClip>();
                 gc->setTimelineIn(tick);
-                gc->setDuration(kTicksPerSecond * 5);
+                gc->setDuration(duration);
                 gc->setSourceIn(0);
                 gc->setLabel("Text");
                 gc->addTextLayer("Text Layer 1");
@@ -907,23 +929,23 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             size_t ti = hitTestTrack(pos.y());
             if (ti < m_timeline->trackCount())
             {
-                // Clicked on an existing track row — add to it if free.
+                // Clicked on an existing media row. Clamp the default duration
+                // to the available gap so the new graphic cannot extend over
+                // the next clip on this same track.
                 Track* track = m_timeline->track(ti);
-                bool occupied = false;
-                for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                    const Clip* c = track->clip(ci);
-                    if (tick >= c->timelineIn() && tick < c->timelineOut()) {
-                        occupied = true;
-                        break;
-                    }
-                }
+                const bool canHostGraphic = track && track->type() == TrackType::Video
+                    && !track->isDivider() && !track->isCaptionTrack();
+                const int64_t duration = canHostGraphic
+                    ? EditOperations::nonOverlappingInsertDuration(
+                          *track, tick, kDefaultGraphicDuration)
+                    : 0;
 
-                if (!occupied) {
+                if (duration > 0) {
                     if (m_commandStack) {
                         m_commandStack->execute(
-                            std::make_unique<AddClipCommand>(track, makeTextClip()));
+                            std::make_unique<AddClipCommand>(track, makeTextClip(duration)));
                     } else {
-                        track->addClip(makeTextClip());
+                        track->addClip(makeTextClip(duration));
                     }
                     refreshTrackContents();
                     emit clipCreated();
@@ -946,14 +968,14 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
 
                     if (newTrack) {
                         auto clipCmd = std::make_unique<AddClipCommand>(
-                            newTrack, makeTextClip());
+                            newTrack, makeTextClip(kDefaultGraphicDuration));
                         clipCmd->execute();
                         compound->addExecuted(std::move(clipCmd));
                     }
                     m_commandStack->pushWithoutExecute(std::move(compound));
                 } else {
                     Track* newTrack = m_timeline->addVideoTrack();
-                    if (newTrack) newTrack->addClip(makeTextClip());
+                    if (newTrack) newTrack->addClip(makeTextClip(kDefaultGraphicDuration));
                 }
                 refreshTrackContents();
                 emit clipCreated();

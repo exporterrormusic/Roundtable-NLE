@@ -565,7 +565,7 @@ void ProjectBin::setupUI()
                         m_listWidget->editItem(selected, 0);
                     });
                     menu.addSeparator();
-                    menu.addAction("Replace Media...", this, [this, selected]() {
+                    menu.addAction("Re-link Media...", this, [this, selected]() {
                         replaceMedia(selected);
                     });
                     menu.addSeparator();
@@ -885,6 +885,15 @@ void ProjectBin::setupUI()
                 }
             });
         } else if (!m_grid->items()[index].isFolder) {
+            const auto relinkPath = m_grid->items()[index].filePath;
+            const QString relinkName = m_grid->items()[index].displayName.isEmpty()
+                ? QString::fromStdString(pathToUtf8(relinkPath.filename()))
+                : m_grid->items()[index].displayName;
+            menu.addAction("Re-link Media...", this,
+                           [this, relinkPath, relinkName]() {
+                promptRelinkMedia(relinkPath, relinkName);
+            });
+            menu.addSeparator();
             menu.addAction("Remove", this, [this, index]() {
                 const auto& item = m_grid->items()[index];
                 removeFile(item.filePath);

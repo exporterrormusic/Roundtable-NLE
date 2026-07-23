@@ -128,10 +128,14 @@ public:
     /// Remove a specific media file from the bin.
     bool removeFile(const std::filesystem::path& filePath);
 
-    /// Replace the media file backing a selected bin item with a new file.
-    /// Preserves label color and display name. The selected tree item
-    /// is updated in-place; both list and icon views are refreshed.
+    /// Prompt for a replacement file for a selected bin item. The actual
+    /// project-wide change is routed through mediaRelinkRequested.
     void replaceMedia(QTreeWidgetItem* selected);
+
+    /// Rewrite every bin item backed by oldPath and refresh both views.
+    /// Returns the number of bin references changed. Used for apply/undo/redo.
+    int replacePathReferences(const std::filesystem::path& oldPath,
+                              const std::filesystem::path& newPath);
 
     /// Clear all items from the bin.
     void clearAll();
@@ -285,6 +289,10 @@ signals:
     /// any cached decode/texture for this path and refresh.
     void mediaContentChanged(const std::filesystem::path& path);
 
+    /// Emitted after the user chooses a replacement for a bin media item.
+    /// TimelineWorkspace performs the project-wide, undoable relink.
+    void mediaRelinkRequested(const QString& oldPath, const QString& newPath);
+
     /// Emitted when clips have been removed from (or restored to) the
     /// timeline as a side-effect of deleting/undeleting bin media.
     /// Listeners should rebuild timeline track views and flush caches.
@@ -308,6 +316,9 @@ private slots:
     void onBinTabCloseRequested(int index);
 
 private:
+    void promptRelinkMedia(const std::filesystem::path& oldPath,
+                           const QString& displayName);
+
     // ── Drag-and-drop (extracted to ProjectBinDragDrop.cpp) ─────────────
 
     struct BinSnapshot {

@@ -44,6 +44,14 @@ void FramePresenter::stop()
     spdlog::info("[FramePresenter] Stopped");
 }
 
+void FramePresenter::reset() noexcept
+{
+    if (m_running.load(std::memory_order_acquire))
+        return;
+    std::lock_guard lock(m_displayMtx);
+    m_lastDisplayed.reset();
+}
+
 void FramePresenter::wake()
 {
     if (m_producer) m_producer->notifyPresenter();

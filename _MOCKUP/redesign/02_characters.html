@@ -1,0 +1,822 @@
+<title>Roundtable Redesign — 02 Characters</title>
+<style>
+  :root{
+    --bg-app:#131518; --bg-page:#1b1e21; --bg-panel:#22262a; --bg-hover:#282d32;
+    --bg-active:#2f353b; --bg-inset:#17191c;
+    --line:#2e343a; --line-strong:#3a4148;
+    --t1:#e9ecef; --t2:#a2abb4; --t3:#6b7580;
+    --accent:#3e90e8; --accent-h:#5aa2f0; --accent-dim:rgba(62,144,232,.14);
+    --danger:#e0564e; --danger-dim:rgba(224,86,78,.12);
+    --ok:#4cae6e; --ok-dim:rgba(76,174,110,.14); --warn:#d9a03c; --warn-dim:rgba(217,160,60,.14);
+    --star:#d9a03c;
+    --r:4px; --rl:6px;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono:"Cascadia Mono",Consolas,monospace;
+  }
+  html,body{background:#101214;color:var(--t1);font-family:var(--font);}
+  body{margin:0;padding:28px 24px 64px;}
+  *{box-sizing:border-box;}
+  button{font-family:var(--font);}
+  ::selection{background:var(--accent-dim);}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+
+  .page-eyebrow{max-width:1480px;margin:0 auto 10px;display:flex;align-items:baseline;gap:12px;}
+  .page-eyebrow h1{font-size:15px;font-weight:600;margin:0;}
+  .page-eyebrow span{font-size:12px;color:var(--t3);}
+
+  /* ============ APP FRAME (shared with 01) ============ */
+  .frame{max-width:1480px;margin:0 auto;height:min(860px,82vh);min-height:660px;
+    background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5);}
+  .titlebar{height:40px;flex:none;background:var(--bg-app);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 6px 0 14px;gap:2px;user-select:none;}
+  .app-mark{display:flex;align-items:center;gap:8px;margin-right:14px;}
+  .app-mark .logo{width:18px;height:18px;border-radius:4px;background:linear-gradient(135deg,#3e90e8,#2b5f9e);
+    display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;}
+  .app-mark .name{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--t2);}
+  .menu-item{background:none;border:0;color:var(--t2);font-size:12px;padding:5px 9px;border-radius:var(--r);cursor:default;}
+  .menu-item:hover{background:var(--bg-hover);color:var(--t1);}
+  .titlebar .spacer{flex:1;}
+  .doc-title{font-size:12px;color:var(--t3);margin-right:14px;}
+  .doc-title b{color:var(--t2);font-weight:600;}
+  .win-btns{display:flex;}
+  .win-btns button{width:38px;height:30px;background:none;border:0;color:var(--t3);font-size:11px;cursor:default;border-radius:var(--r);}
+  .win-btns button:hover{background:var(--bg-hover);color:var(--t1);}
+  .win-btns button.close:hover{background:var(--danger);color:#fff;}
+  .frame-body{flex:1;display:flex;min-height:0;}
+  .rail{width:84px;flex:none;background:var(--bg-app);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:10px 8px;gap:2px;user-select:none;}
+  .rail-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 2px 9px;
+    background:none;border:0;border-radius:var(--rl);color:var(--t3);cursor:pointer;position:relative;}
+  .rail-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+  .rail-btn span{font-size:9.5px;font-weight:600;letter-spacing:.08em;}
+  .rail-btn:hover{color:var(--t2);background:var(--bg-hover);}
+  .rail-btn.active{color:var(--accent-h);background:var(--accent-dim);}
+  .rail-btn.active::before{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:2px;background:var(--accent);border-radius:1px;}
+  .rail .spacer{flex:1;}
+  .rail-collapse{border:0;background:none;color:var(--t3);padding:8px;border-radius:var(--r);cursor:pointer;align-self:center;}
+  .rail-collapse:hover{background:var(--bg-hover);color:var(--t2);}
+  .rail-collapse svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;}
+
+  /* ============ shared controls ============ */
+  .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:var(--r);
+    font-size:12px;font-weight:600;border:1px solid transparent;cursor:pointer;white-space:nowrap;}
+  .btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{background:var(--accent-h);}
+  .btn-ghost{background:var(--bg-panel);color:var(--t1);border-color:var(--line-strong);}
+  .btn-ghost:hover{background:var(--bg-hover);}
+  .btn-ghost.danger{color:var(--danger);}
+  .btn-ghost.danger:hover{background:var(--danger-dim);}
+  .btn-icon{width:30px;padding:0;justify-content:center;background:var(--bg-panel);color:var(--t2);border:1px solid var(--line-strong);}
+  .btn-icon:hover{background:var(--bg-hover);color:var(--t1);}
+  .btn:disabled{opacity:.45;cursor:default;}
+  .tin{height:30px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 9px;font-family:var(--font);width:100%;}
+  .tin::placeholder{color:var(--t3);}
+  select.ctl{height:30px;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 7px;font-family:var(--font);cursor:pointer;max-width:100%;}
+  .flabel{display:block;font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--t3);}
+  .check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--t2);cursor:pointer;user-select:none;}
+  .check input{accent-color:var(--accent);margin:0;}
+  .switch{position:relative;width:30px;height:16px;border-radius:99px;background:var(--bg-active);border:1px solid var(--line-strong);
+    cursor:pointer;flex:none;transition:background .15s;}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--t2);transition:left .15s,background .15s;}
+  .switch.on{background:var(--accent);border-color:var(--accent);}
+  .switch.on::after{left:16px;background:#fff;}
+  .sw-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t2);user-select:none;}
+
+  /* ============ sub-tabs ============ */
+  .subtabs{height:42px;flex:none;display:flex;align-items:stretch;gap:2px;padding:0 18px;
+    border-bottom:1px solid var(--line);background:var(--bg-page);}
+  .subtab{background:none;border:0;color:var(--t3);font-size:11px;font-weight:600;letter-spacing:.09em;
+    padding:0 14px;cursor:pointer;position:relative;}
+  .subtab:hover{color:var(--t2);}
+  .subtab.on{color:var(--t1);}
+  .subtab.on::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--accent);border-radius:1px;}
+  .subtabs .grow{flex:1;}
+  .subtabs .gear{align-self:center;}
+
+  .content{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .pages{flex:1;min-height:0;position:relative;}
+  .page{position:absolute;inset:0;display:none;}
+  .page.on{display:flex;}
+
+  /* panel primitives */
+  .col{display:flex;flex-direction:column;min-height:0;}
+  .panel-h{flex:none;display:flex;align-items:center;gap:8px;padding:10px 12px 8px;}
+  .panel-h .flabel{flex:1;}
+  .vsep{width:1px;background:var(--line);flex:none;}
+  .list{flex:1;overflow-y:auto;min-height:0;}
+
+  /* generic list rows */
+  .lirow{display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:default;font-size:12.5px;color:var(--t2);}
+  .lirow:hover{background:var(--bg-hover);}
+  .lirow.sel{background:var(--accent-dim);box-shadow:inset 2px 0 0 var(--accent);color:var(--t1);}
+  .lirow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lirow .cnt{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums;background:var(--bg-inset);
+    border:1px solid var(--line);border-radius:99px;padding:1px 7px;}
+  .avatar{width:30px;height:30px;border-radius:var(--r);flex:none;display:grid;place-items:center;
+    font-size:11px;font-weight:700;color:rgba(255,255,255,.85);border:1px solid rgba(255,255,255,.07);}
+  .a0{background:linear-gradient(135deg,#3d5a7a,#28394e);} .a1{background:linear-gradient(135deg,#6a4d7e,#43304f);}
+  .a2{background:linear-gradient(135deg,#7a6238,#4e3f24);} .a3{background:linear-gradient(135deg,#3f7a5c,#28503b);}
+  .a4{background:linear-gradient(135deg,#7a4550,#4e2c33);} .a5{background:linear-gradient(135deg,#46608a,#2d3e59);}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;}
+  .dot.dl{background:var(--ok);} .dot.cloud{background:none;border:1.5px solid var(--t3);}
+  .typechip{font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--t3);border:1px solid var(--line-strong);
+    border-radius:3px;padding:1px 5px;flex:none;}
+
+  /* preview stage */
+  .stage{position:relative;background:
+    radial-gradient(90% 70% at 50% 20%,rgba(84,110,150,.25),transparent 60%),
+    linear-gradient(180deg,#232c38,#171c24 70%,#12161d);
+    border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;}
+  .stage .floor{position:absolute;left:0;right:0;bottom:0;height:26%;background:linear-gradient(180deg,transparent,rgba(0,0,0,.35));}
+  .fig{position:absolute;bottom:0;transform:translateX(-50%);}
+  .fig svg{display:block;width:100%;height:100%;}
+  .fig .body{fill:#38455a;} .fig.warm .body{fill:#5a4650;} .fig.green .body{fill:#3d5648;}
+  @keyframes breathe{0%,100%{transform:translateX(-50%) scaleY(1);}50%{transform:translateX(-50%) scaleY(1.008);}}
+  .fig.live{animation:breathe 3.2s ease-in-out infinite;transform-origin:bottom;}
+  @media (prefers-reduced-motion:reduce){.fig.live{animation:none;}}
+  .fig.sel::after{content:"";position:absolute;inset:-2px;border:1.5px solid var(--accent);border-radius:3px;}
+  .fig.sel .hdl{position:absolute;width:7px;height:7px;background:var(--accent);border:1px solid #0d1116;border-radius:1px;}
+  .safe{position:absolute;inset:5% 5%;border:1px dashed rgba(233,236,239,.18);border-radius:2px;pointer-events:none;}
+  .stage .badge{position:absolute;left:10px;top:8px;font-size:10px;font-weight:600;letter-spacing:.07em;color:var(--t3);}
+
+  /* ============ PAGE: LIBRARY ============ */
+  #pgLibrary .lib-left{width:296px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);min-height:0;}
+  .lib-tools{flex:none;display:flex;flex-direction:column;gap:8px;padding:14px 14px 10px;}
+  .lib-tools .row{display:flex;gap:8px;align-items:center;}
+  .lib-listwrap{flex:1;display:flex;min-height:0;}
+  .azbar{width:22px;flex:none;display:flex;flex-direction:column;align-items:center;overflow:hidden;
+    border-left:1px solid var(--line);padding:4px 0;}
+  .azbar button{flex:1;min-height:0;border:0;background:none;color:var(--t3);font-size:8.5px;font-weight:600;
+    cursor:pointer;padding:0;width:100%;}
+  .azbar button:hover{color:var(--t1);}
+  .azbar button.on{color:var(--accent-h);}
+  .lib-foot{flex:none;border-top:1px solid var(--line);padding:10px 14px;display:flex;flex-direction:column;gap:8px;}
+  .lib-foot .row{display:flex;gap:8px;}
+  .pbar{height:4px;border-radius:2px;background:var(--bg-inset);overflow:hidden;}
+  .pbar i{display:block;height:100%;background:var(--accent);border-radius:2px;}
+  #pgLibrary .lib-right{flex:1;display:flex;flex-direction:column;min-width:0;padding:16px;gap:12px;}
+  #pgLibrary .stage{flex:1;}
+  .lib-ctrls{flex:none;display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;}
+  .lib-ctrls .fg{display:flex;flex-direction:column;gap:6px;min-width:130px;}
+  .lib-ctrls .grow{flex:1;}
+  .statusline{font-size:11.5px;color:var(--t3);}
+
+  /* ============ PAGE: CUSTOM ============ */
+  #pgCustom{gap:0;}
+  .cas-col{width:198px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);min-height:0;}
+  .cas-col .list{padding:2px 0;}
+  .cas-new{flex:none;border-top:1px solid var(--line);padding:10px;display:flex;flex-direction:column;gap:7px;}
+  .faces-col{width:308px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);padding-bottom:10px;}
+  .face-matrix{display:grid;grid-template-columns:52px 1fr 1fr;grid-auto-rows:auto;gap:8px;padding:4px 14px;align-items:center;}
+  .face-axis{font-size:9px;font-weight:700;letter-spacing:.08em;color:var(--t3);text-align:center;}
+  .face-axis.v{writing-mode:vertical-rl;transform:rotate(180deg);justify-self:center;}
+  .face-slot{aspect-ratio:1;border:1px dashed var(--line-strong);border-radius:var(--rl);background:var(--bg-inset);
+    position:relative;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;}
+  .face-slot:hover{border-color:var(--accent);border-style:solid;}
+  .face-slot svg{width:46%;height:46%;stroke:var(--t3);fill:none;stroke-width:1.5;stroke-linecap:round;}
+  .face-slot .fn{position:absolute;left:0;right:0;bottom:0;font-size:8.5px;color:var(--t3);text-align:center;
+    padding:3px 4px;background:rgba(0,0,0,.35);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .face-slot.filled{border-style:solid;border-color:var(--line-strong);background:linear-gradient(135deg,#2a3240,#1d232d);}
+  .face-slot.filled svg{stroke:var(--t2);}
+  .faces-hint{font-size:10.5px;color:var(--t3);padding:8px 16px 0;line-height:1.5;}
+  #pgCustom .cust-right{flex:1;display:flex;flex-direction:column;min-width:0;padding:16px;gap:10px;}
+  #pgCustom .stage{flex:1;}
+  .stage .talk-pin{position:absolute;right:10px;top:8px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--t2);
+    background:rgba(13,16,20,.55);padding:5px 9px;border-radius:var(--r);border:1px solid var(--line);}
+
+  /* ============ PAGE: CONVERT ============ */
+  #pgConvert{flex-direction:column;padding:18px 22px;gap:14px;overflow-y:auto;}
+  .cv-top{display:flex;gap:14px;flex-wrap:wrap;}
+  .cardp{background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--rl);padding:14px 16px;}
+  .cv-progress{flex:2;min-width:320px;display:flex;flex-direction:column;gap:9px;}
+  .cv-progress .big{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;}
+  .cv-progress .big small{font-size:11.5px;font-weight:400;color:var(--t3);margin-left:8px;}
+  .pbar.tall{height:6px;border-radius:3px;}
+  .cv-settings{flex:1.4;min-width:300px;display:flex;flex-direction:column;gap:10px;}
+  .cv-settings .row{display:flex;align-items:center;gap:9px;}
+  .swatch{width:26px;height:26px;border-radius:var(--r);border:1px solid var(--line-strong);background:#00ff00;cursor:pointer;flex:none;}
+  .cv-table{flex:1;background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;
+    display:flex;flex-direction:column;min-height:220px;}
+  .cvrow{display:grid;grid-template-columns:minmax(140px,1.4fr) minmax(100px,1fr) 130px 76px 76px 150px;
+    align-items:center;gap:0 14px;padding:0 14px;font-size:12.5px;}
+  .cvhead{height:32px;background:var(--bg-inset);border-bottom:1px solid var(--line);
+    font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--t3);}
+  .cv-body{flex:1;overflow-y:auto;}
+  .cv-body .cvrow{height:40px;border-bottom:1px solid var(--line);color:var(--t2);}
+  .cv-body .cvrow:hover{background:var(--bg-hover);}
+  .cv-body .cvrow.sel{background:var(--accent-dim);box-shadow:inset 2px 0 0 var(--accent);}
+  .cv-body .cvrow .c1{color:var(--t1);font-weight:600;display:flex;align-items:center;gap:9px;}
+  .cv-body .num{font-variant-numeric:tabular-nums;}
+  .pill-status{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;border-radius:99px;padding:3px 9px;}
+  .st-done{color:var(--ok);background:var(--ok-dim);}
+  .st-part{color:var(--warn);background:var(--warn-dim);}
+  .st-queue{color:var(--accent-h);background:var(--accent-dim);}
+  .st-none{color:var(--t3);background:var(--bg-inset);border:1px solid var(--line);}
+  .minibar{width:38px;height:3px;border-radius:2px;background:rgba(0,0,0,.3);overflow:hidden;}
+  .minibar i{display:block;height:100%;background:var(--warn);}
+  .cv-actions{flex:none;display:flex;gap:9px;align-items:center;}
+  .cv-actions .grow{flex:1;}
+  .cv-note{font-size:11px;color:var(--t3);}
+
+  /* ============ PAGE: COMPOSE ============ */
+  .cmp-browse{width:212px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);min-height:0;}
+  .cmp-browse .sec-shows{flex:none;max-height:38%;display:flex;flex-direction:column;border-bottom:1px solid var(--line);padding-bottom:4px;}
+  .cmp-browse .sec-chars{flex:1;display:flex;flex-direction:column;min-height:0;}
+  .panel-h .mini{width:20px;height:20px;padding:0;display:grid;place-items:center;border:1px solid var(--line-strong);
+    background:var(--bg-panel);color:var(--t2);border-radius:var(--r);cursor:pointer;font-size:13px;line-height:1;}
+  .panel-h .mini:hover{background:var(--bg-hover);color:var(--t1);}
+  .cmp-shots{width:236px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);min-height:0;}
+  .shot-tools{flex:none;display:flex;flex-direction:column;gap:7px;padding:0 10px 9px;}
+  .shot-tools .row{display:flex;gap:7px;}
+  .shotcard{margin:0 10px 9px;border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;background:var(--bg-panel);cursor:default;}
+  .shotcard:hover{border-color:var(--line-strong);background:var(--bg-hover);}
+  .shotcard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .shotcard .sthumb{aspect-ratio:16/9;position:relative;background:linear-gradient(160deg,#2c3a4d,#1b2330);}
+  .shotcard .sthumb .sfig{position:absolute;bottom:0;width:26%;height:72%;}
+  .shotcard .star{position:absolute;right:5px;top:5px;color:var(--star);font-size:11px;}
+  .shotcard .sbody{padding:7px 9px 8px;display:flex;flex-direction:column;gap:3px;}
+  .shotcard .snm{font-size:12px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .shotcard .stag{font-size:10.5px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .shotcard.default .sbody{box-shadow:inset 2px 0 0 var(--star);}
+
+  .cmp-center{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;}
+  .cmp-stagewrap{flex:none;padding:14px 16px 10px;display:flex;flex-direction:column;gap:8px;}
+  .cmp-stage{aspect-ratio:16/9;max-height:46vh;margin:0 auto;width:100%;}
+  .stage-tools{display:flex;align-items:center;gap:8px;}
+  .stage-tools .grow{flex:1;}
+  .cmp-lib{flex:1;display:flex;flex-direction:column;min-height:0;border-top:1px solid var(--line);}
+  .libtabs{flex:none;display:flex;align-items:center;gap:2px;padding:6px 12px 0;}
+  .libtab{background:none;border:0;color:var(--t3);font-size:10.5px;font-weight:600;letter-spacing:.07em;
+    padding:6px 10px;cursor:pointer;border-radius:var(--r) var(--r) 0 0;position:relative;}
+  .libtab:hover{color:var(--t2);}
+  .libtab.on{color:var(--t1);}
+  .libtab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;background:var(--accent);}
+  .libtabs .grow{flex:1;}
+  .zoomer{display:flex;align-items:center;gap:7px;color:var(--t3);}
+  .zoomer svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7;}
+  .zoomer input{width:90px;accent-color:var(--accent);}
+  .libgridbar{flex:none;display:flex;gap:8px;align-items:center;padding:8px 14px 0;}
+  .libgridbar .tin{max-width:220px;}
+  .libgrid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--cell,86px),1fr));
+    gap:9px;padding:10px 14px 14px;align-content:start;}
+  .asset{border:1px solid var(--line);border-radius:var(--rl);background:var(--bg-panel);overflow:hidden;cursor:grab;}
+  .asset:hover{border-color:var(--accent);}
+  .asset .ath{aspect-ratio:1;position:relative;display:grid;place-items:center;}
+  .asset.wide .ath{aspect-ratio:16/9;}
+  .asset .ath svg{width:52%;height:66%;}
+  .asset .anm{font-size:10px;color:var(--t2);padding:4px 6px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .asset .dur{position:absolute;right:4px;bottom:4px;font-size:8.5px;font-weight:700;background:rgba(0,0,0,.55);
+    color:#dfe3e8;padding:1px 4px;border-radius:3px;font-variant-numeric:tabular-nums;}
+
+  .cmp-props{width:292px;flex:none;display:flex;flex-direction:column;border-left:1px solid var(--line);min-height:0;overflow-y:auto;}
+  .prop-sec{border-bottom:1px solid var(--line);padding:11px 14px 13px;}
+  .prop-sec .flabel{margin-bottom:9px;}
+  .prop-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+  .prop-row:last-child{margin-bottom:0;}
+  .prop-row .pl{width:74px;flex:none;font-size:11.5px;color:var(--t3);}
+  .scrub{color:var(--accent-h);font-size:12px;font-variant-numeric:tabular-nums;cursor:ew-resize;
+    border-bottom:1px dotted transparent;user-select:none;}
+  .scrub:hover{border-bottom-color:var(--accent-h);}
+  .scrub small{color:var(--t3);font-size:10px;margin-left:1px;}
+  .prop-grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;}
+  .prop-grid2 .cell{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .prop-grid2 .cell .pl{width:auto;flex:none;font-size:11.5px;color:var(--t3);}
+  .chkrow{display:flex;gap:14px;margin-top:9px;flex-wrap:wrap;}
+  .collapser{display:flex;align-items:center;gap:6px;background:none;border:0;color:var(--t3);font-size:10px;
+    font-weight:600;letter-spacing:.09em;cursor:pointer;padding:0;margin-top:10px;}
+  .collapser:hover{color:var(--t2);}
+  .layer-list{display:flex;flex-direction:column;}
+  .layrow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:var(--r);font-size:12px;color:var(--t2);cursor:default;}
+  .layrow:hover{background:var(--bg-hover);}
+  .layrow.sel{background:var(--accent-dim);color:var(--t1);box-shadow:inset 2px 0 0 var(--accent);}
+  .layrow svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none;opacity:.8;}
+  .layrow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .layrow .eye{border:0;background:none;color:var(--t3);cursor:pointer;padding:2px;border-radius:3px;display:grid;place-items:center;}
+  .layrow .eye:hover{color:var(--t1);background:var(--bg-active);}
+  .layrow.hidden-l .nm,.layrow.hidden-l svg:first-of-type{opacity:.4;}
+  .layer-toolbar{display:flex;gap:5px;margin-top:9px;}
+  .layer-toolbar .grow{flex:1;}
+  .tbtn{width:26px;height:26px;border:1px solid var(--line-strong);background:var(--bg-panel);color:var(--t2);
+    border-radius:var(--r);cursor:pointer;display:grid;place-items:center;}
+  .tbtn:hover{background:var(--bg-hover);color:var(--t1);}
+  .tbtn svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .props-empty{padding:26px 14px;font-size:11.5px;color:var(--t3);text-align:center;}
+
+  /* toast + spec */
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(8px);z-index:90;
+    background:#2a2f35;border:1px solid var(--line-strong);color:var(--t1);font-size:12.5px;
+    padding:9px 16px;border-radius:var(--rl);box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;
+    transition:opacity .18s ease,transform .18s ease;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .spec{max-width:1480px;margin:34px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;}
+  .spec-card{background:var(--bg-page);border:1px solid var(--line);border-radius:8px;padding:18px 20px;}
+  .spec-card h3{margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--t3);}
+  .spec-card p,.spec-card li{font-size:12.5px;color:var(--t2);line-height:1.6;}
+  .spec-card p{margin:0 0 8px;}
+  .spec-card ul{margin:0;padding-left:18px;}
+  .spec-card li{margin-bottom:6px;}
+  .spec-card li b{color:var(--t1);font-weight:600;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="page-eyebrow">
+  <h1>Roundtable UI redesign — 02 · Characters</h1>
+  <span>same tokens as 01 Projects · click the LIBRARY / CUSTOM / CONVERT / COMPOSE tabs</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <div class="app-mark"><div class="logo">R</div><div class="name">ROUNDTABLE</div></div>
+    <button class="menu-item">File</button><button class="menu-item">Edit</button>
+    <button class="menu-item">View</button><button class="menu-item">Timeline</button>
+    <button class="menu-item">Audio</button><button class="menu-item">Window</button>
+    <button class="menu-item">Help</button>
+    <div class="spacer"></div>
+    <div class="doc-title"><b>S24E03 Anime Openings</b> — saved</div>
+    <div class="win-btns"><button>—</button><button>▢</button><button class="close">✕</button></div>
+  </div>
+
+  <div class="frame-body">
+    <nav class="rail">
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M3.5 8.5h17v10a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M3.7 8.4 5 4.6A1.5 1.5 0 0 1 6.4 3.6l13 1.6a1.5 1.5 0 0 1 1.2 1.8l-.3 1.5"/><path d="m7.5 4 1.6 4M12.5 4.6l1.6 4M17.4 5.2l1.6 3.9"/></svg><span>PROJECTS</span></button>
+      <button class="rail-btn active"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span>CHARACTERS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg><span>AUDIO</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M3.5 12h17M8.5 5v7M15.5 12v7"/></svg><span>TIMELINE</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M12 14.5V4M12 4 8.2 7.8M12 4l3.8 3.8"/><path d="M4.5 14.5v3.5A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3.5"/></svg><span>EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-collapse" title="Collapse rail"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
+    </nav>
+
+    <div class="content">
+      <div class="subtabs">
+        <button class="subtab" data-page="pgLibrary">LIBRARY</button>
+        <button class="subtab" data-page="pgCustom">CUSTOM</button>
+        <button class="subtab" data-page="pgConvert">CONVERT</button>
+        <button class="subtab on" data-page="pgCompose">COMPOSE</button>
+        <div class="grow"></div>
+        <button class="btn btn-icon gear" data-toast="Character settings — asset folders, default animations (popover)" title="Character settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.6v2.2M12 18.2v2.2M3.6 12h2.2M18.2 12h2.2M6.1 6.1l1.5 1.5M16.4 16.4l1.5 1.5M17.9 6.1l-1.5 1.5M7.6 16.4l-1.5 1.5"/></svg>
+        </button>
+      </div>
+
+      <div class="pages">
+
+        <!-- ============ LIBRARY ============ -->
+        <div class="page" id="pgLibrary">
+          <div class="lib-left">
+            <div class="lib-tools">
+              <input class="tin" id="libSearch" placeholder="Search characters" aria-label="Search characters">
+              <div class="row">
+                <select class="ctl" style="flex:1"><option>All categories</option><option>Nikke</option><option>Video</option><option>Custom</option></select>
+              </div>
+              <div class="row">
+                <label class="check"><input type="checkbox" checked> Downloaded only</label>
+                <label class="check"><input type="checkbox"> Show hidden</label>
+              </div>
+            </div>
+            <div class="lib-listwrap">
+              <div class="list" id="libList"></div>
+              <div class="azbar" id="azBar"></div>
+            </div>
+            <div class="lib-foot">
+              <div class="pbar"><i style="width:64%"></i></div>
+              <div style="font-size:10.5px;color:var(--t3)">Downloading Crown — outfit_02 · 64%</div>
+              <div class="row">
+                <button class="btn btn-ghost" style="flex:1" data-toast="Refreshing character list from Nikke DB…">Refresh</button>
+                <button class="btn btn-primary" style="flex:1" data-toast="Downloading model for selected character…">Download</button>
+                <button class="btn btn-ghost danger" data-toast="Delete character files? (confirm dialog)">Delete</button>
+              </div>
+            </div>
+          </div>
+          <div class="lib-right">
+            <div class="stage" id="libStage">
+              <div class="floor"></div>
+              <span class="badge" id="libPrevName">MODERNIA</span>
+              <div class="fig live" style="left:50%;width:24%;height:88%;">
+                <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path class="body" d="M50 8c11 0 19 9 19 20 0 8-4 14-9 18 14 5 22 16 24 32l5 68c1 8-5 12-10 12-3 22-4 48-2 74l4 56c0 6-5 9-10 9-4 0-8-2-9-7l-9-52h-6l-9 52c-1 5-5 7-9 7-5 0-10-3-10-9l4-56c2-26 1-52-2-74-5 0-11-4-10-12l5-68c2-16 10-27 24-32-5-4-9-10-9-18 0-11 8-20 19-20z"/></svg>
+              </div>
+            </div>
+            <div class="lib-ctrls">
+              <div class="fg"><span class="flabel">OUTFIT</span><select class="ctl"><option>default</option><option>outfit_01</option><option>outfit_02</option></select></div>
+              <div class="fg"><span class="flabel">STANCE</span><select class="ctl"><option>Default</option><option>Aim</option><option>Cover</option></select></div>
+              <div class="fg"><span class="flabel">ANIMATION</span><select class="ctl"><option>idle</option><option>talk</option><option>action</option></select></div>
+              <div class="sw-row" style="padding-bottom:6px"><span class="switch" data-sw></span>Talking</div>
+              <div class="grow"></div>
+              <span class="statusline" id="libStatus">42 characters · 18 downloaded</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ CUSTOM ============ -->
+        <div class="page" id="pgCustom">
+          <div class="cas-col">
+            <div class="panel-h"><span class="flabel">CHARACTER</span></div>
+            <div class="list" data-cas>
+              <div class="lirow sel"><div class="avatar a4">W</div><span class="nm">Wells</span></div>
+              <div class="lirow"><div class="avatar a1">MY</div><span class="nm">Mini Yoyo</span></div>
+              <div class="lirow"><div class="avatar a3">GK</div><span class="nm">Guest Kalla</span></div>
+            </div>
+            <div class="cas-new"><input class="tin" placeholder="Name…"><button class="btn btn-ghost" data-toast="Created character — Default/Idle variant added">New Character</button></div>
+          </div>
+          <div class="cas-col">
+            <div class="panel-h"><span class="flabel">OUTFIT</span></div>
+            <div class="list" data-cas>
+              <div class="lirow sel"><span class="nm">Default</span></div>
+              <div class="lirow"><span class="nm">Dress</span></div>
+              <div class="lirow"><span class="nm">Chrono</span></div>
+            </div>
+            <div class="cas-new"><input class="tin" placeholder="Name…"><button class="btn btn-ghost" data-toast="New outfit added">New Outfit</button></div>
+          </div>
+          <div class="cas-col">
+            <div class="panel-h"><span class="flabel">ACTION</span></div>
+            <div class="list" data-cas>
+              <div class="lirow sel"><span class="nm">Idle</span></div>
+              <div class="lirow"><span class="nm">Point</span></div>
+              <div class="lirow"><span class="nm">Laugh</span></div>
+            </div>
+            <div class="cas-new"><input class="tin" placeholder="Name…"><button class="btn btn-ghost" data-toast="New action added">New Action</button></div>
+          </div>
+          <div class="faces-col">
+            <div class="panel-h"><span class="flabel">FACES — WELLS · DEFAULT / IDLE</span></div>
+            <div class="face-matrix">
+              <span></span><span class="face-axis">EYES OPEN</span><span class="face-axis">EYES CLOSED</span>
+              <span class="face-axis v">MOUTH CLOSED</span>
+              <div class="face-slot filled" data-toast="Replace face image… (PNG file dialog, or drop a file)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="10.5" r=".6"/><circle cx="15" cy="10.5" r=".6"/><path d="M9.5 15.5h5"/></svg><span class="fn">closed_open.png</span></div>
+              <div class="face-slot filled" data-toast="Replace face image… (PNG file dialog, or drop a file)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 10.8h2M14 10.8h2M9.5 15.5h5"/></svg><span class="fn">closed_closed.png</span></div>
+              <span class="face-axis v">MOUTH OPEN</span>
+              <div class="face-slot filled" data-toast="Replace face image… (PNG file dialog, or drop a file)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="10.5" r=".6"/><circle cx="15" cy="10.5" r=".6"/><ellipse cx="12" cy="15.3" rx="2.4" ry="1.7"/></svg><span class="fn">open_open.png</span></div>
+              <div class="face-slot" data-toast="Add face image… (PNG file dialog, or drop a file)"><svg viewBox="0 0 24 24"><path d="M12 7v10M7 12h10"/></svg><span class="fn">drop PNG</span></div>
+            </div>
+            <p class="faces-hint">Four stills drive the puppet: the mouth follows speech, the eyes blink on their own. Drop PNGs or click a well to browse.</p>
+          </div>
+          <div class="cust-right">
+            <div class="stage">
+              <div class="floor"></div>
+              <span class="badge">PREVIEW — TALK / BLINK / BREATHE</span>
+              <div class="talk-pin sw-row"><span class="switch on" data-sw></span>Talking</div>
+              <div class="fig warm live" style="left:50%;width:26%;height:84%;">
+                <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path class="body" d="M50 6c13 0 22 10 22 22 0 9-4 16-11 20 16 6 26 19 27 38l3 60c0 8-6 12-11 11-2 24-2 50 0 76l3 50c0 7-6 10-11 10-5 0-9-3-10-8l-7-48h-10l-7 48c-1 5-5 8-10 8-5 0-11-3-11-10l3-50c2-26 2-52 0-76-5 1-11-3-11-11l3-60c1-19 11-32 27-38-7-4-11-11-11-20 0-12 9-22 22-22z"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ CONVERT ============ -->
+        <div class="page" id="pgConvert">
+          <div class="cv-top">
+            <div class="cardp cv-progress">
+              <span class="flabel">CONVERSION CACHE</span>
+              <div class="big">128 / 154 animations cached<small>3 jobs rendering</small></div>
+              <div class="pbar tall"><i style="width:83%"></i></div>
+              <div style="font-size:11px;color:var(--t3)">Rendering Crown · outfit_02 · action_talk — 640 / 1 480 frames</div>
+            </div>
+            <div class="cardp cv-settings">
+              <span class="flabel">ENCODER</span>
+              <div class="row">
+                <select class="ctl" style="flex:1" id="cvFmt">
+                  <option>Green Screen (.mp4)</option><option>Blue Screen (.mp4)</option>
+                  <option>Custom Color (.mp4)</option><option>ProRes 4444 (.mov) — native alpha</option>
+                </select>
+                <button class="swatch" id="cvSwatch" style="display:none" data-toast="Pick chroma key color… (color dialog)" title="Chroma key color"></button>
+              </div>
+              <div class="sw-row"><span class="switch on" data-sw></span>Hide fully converted</div>
+            </div>
+          </div>
+          <div class="cv-table">
+            <div class="cvrow cvhead"><div>CHARACTER</div><div>OUTFIT</div><div>CODEC</div><div>CACHED</div><div>TOTAL</div><div>STATUS</div></div>
+            <div class="cv-body" id="cvBody">
+              <div class="cvrow"><div class="c1"><div class="avatar a0" style="width:24px;height:24px;font-size:10px">M</div>Modernia</div><div>outfit_02</div><div>H264 · Green</div><div class="num">22</div><div class="num">22</div><div><span class="pill-status st-done">Complete</span></div></div>
+              <div class="cvrow sel"><div class="c1"><div class="avatar a5" style="width:24px;height:24px;font-size:10px">C</div>Crown</div><div>outfit_02</div><div>H264 · Green</div><div class="num">14</div><div class="num">22</div><div><span class="pill-status st-part"><span class="minibar"><i style="width:63%"></i></span>63%</span></div></div>
+              <div class="cvrow"><div class="c1"><div class="avatar a4" style="width:24px;height:24px;font-size:10px">W</div>Wells</div><div>CHRONO</div><div>ProRes 4444</div><div class="num">0</div><div class="num">18</div><div><span class="pill-status st-queue">Queued</span></div></div>
+              <div class="cvrow"><div class="c1"><div class="avatar a3" style="width:24px;height:24px;font-size:10px">K</div>Kalla</div><div>default</div><div>—</div><div class="num">0</div><div class="num">16</div><div><span class="pill-status st-none">Not cached</span></div></div>
+              <div class="cvrow"><div class="c1"><div class="avatar a1" style="width:24px;height:24px;font-size:10px">D</div>Dorothy</div><div>default</div><div>H264 · Green</div><div class="num">20</div><div class="num">20</div><div><span class="pill-status st-done">Complete</span></div></div>
+              <div class="cvrow"><div class="c1"><div class="avatar a2" style="width:24px;height:24px;font-size:10px">R</div>Rapi</div><div>outfit_01</div><div>—</div><div class="num">0</div><div class="num">14</div><div><span class="pill-status st-none">Not cached</span></div></div>
+            </div>
+          </div>
+          <div class="cv-actions">
+            <button class="btn btn-primary" data-toast="Queued all uncached animations">Convert All</button>
+            <button class="btn btn-ghost" data-toast="Queued selected rows">Convert Selected</button>
+            <button class="btn btn-ghost danger" data-toast="Cancel rendering? (visible while a job runs)">Cancel</button>
+            <div class="grow"></div>
+            <span class="cv-note">Deleting removes only the cache — Spine sources stay.</span>
+            <button class="btn btn-ghost danger" data-toast="Delete converted cache for selected? (confirm)">Delete Converted</button>
+            <button class="btn btn-icon" data-toast="Table refreshed" title="Refresh"><svg viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.7 3.8v3.4h-3.4"/></svg></button>
+          </div>
+        </div>
+
+        <!-- ============ COMPOSE ============ -->
+        <div class="page on" id="pgCompose">
+          <div class="cmp-browse">
+            <div class="sec-shows">
+              <div class="panel-h"><span class="flabel">SHOWS</span><button class="mini" data-toast="Add a new show… (name dialog)" title="Add show">＋</button></div>
+              <div class="list" data-single>
+                <div class="lirow sel"><span class="nm">All</span><span class="cnt">24</span></div>
+                <div class="lirow"><span class="nm" style="color:var(--t3)">No show</span><span class="cnt">3</span></div>
+                <div class="lirow"><span class="nm">Tier Talk</span><span class="cnt">9</span></div>
+                <div class="lirow"><span class="nm">Roundtable Live</span><span class="cnt">8</span></div>
+                <div class="lirow"><span class="nm">Shorts</span><span class="cnt">4</span></div>
+              </div>
+            </div>
+            <div class="sec-chars">
+              <div class="panel-h"><span class="flabel">CHARACTERS</span></div>
+              <div style="padding:0 10px 8px"><input class="tin" placeholder="Filter characters"></div>
+              <div class="list" data-single>
+                <div class="lirow"><span class="nm">All</span><span class="cnt">24</span></div>
+                <div class="lirow sel"><div class="avatar a4">W</div><span class="nm">Wells</span><span class="cnt">6</span></div>
+                <div class="lirow"><div class="avatar a5">C</div><span class="nm">Crown</span><span class="cnt">4</span></div>
+                <div class="lirow"><div class="avatar a0">M</div><span class="nm">Modernia</span><span class="cnt">5</span></div>
+                <div class="lirow"><div class="avatar a3">K</div><span class="nm">Kalla</span><span class="cnt">3</span></div>
+                <div class="lirow"><div class="avatar a1">Y</div><span class="nm">Yoyo</span><span class="cnt">2</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cmp-shots">
+            <div class="panel-h"><span class="flabel">SHOTS</span><span class="cnt" style="font-size:10.5px;color:var(--t3)">6</span></div>
+            <div class="shot-tools">
+              <div class="row"><input class="tin" placeholder="Search shots"><select class="ctl"><option>A–Z</option><option>Favorites</option><option>Character</option><option>Recent</option></select></div>
+              <div class="row">
+                <button class="btn btn-primary" style="flex:1" data-toast="New shot created — name it and add layers">＋ New Shot</button>
+                <button class="btn btn-ghost" data-toast="Shot saved" title="Save (Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M5 5h11l3 3v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M8 5v4h7V5M8 20v-6h8v6"/></svg></button>
+              </div>
+            </div>
+            <div class="list" id="shotList">
+              <div class="shotcard default"><div class="sthumb"><span class="star">★</span><div class="sfig" style="left:37%"><svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#42536b" d="M50 10c10 0 17 8 17 18 0 7-3 12-8 16 13 5 20 15 22 29l4 62c1 7-4 11-9 11-3 20-3 44-1 68l3 51c0 5-4 8-9 8-4 0-7-2-8-6l-8-47h-6l-8 47c-1 4-4 6-8 6-5 0-9-3-9-8l3-51c2-24 2-48-1-68-5 0-10-4-9-11l4-62c2-14 9-24 22-29-5-4-8-9-8-16 0-10 7-18 17-18z"/></svg></div></div>
+                <div class="sbody"><span class="snm">WELLS (Default)</span><span class="stag">Wells · default shot</span></div></div>
+              <div class="shotcard sel"><div class="sthumb" style="background:linear-gradient(160deg,#3a2f42,#221b2b)"><div class="sfig" style="left:30%;width:34%;height:84%"><svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#5b4752" d="M50 10c10 0 17 8 17 18 0 7-3 12-8 16 13 5 20 15 22 29l4 62c1 7-4 11-9 11-3 20-3 44-1 68l3 51c0 5-4 8-9 8-4 0-7-2-8-6l-8-47h-6l-8 47c-1 4-4 6-8 6-5 0-9-3-9-8l3-51c2-24 2-48-1-68-5 0-10-4-9-11l4-62c2-14 9-24 22-29-5-4-8-9-8-16 0-10 7-18 17-18z"/></svg></div><div class="sfig" style="left:66%;width:22%;height:64%"><svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#3f5166" d="M50 10c10 0 17 8 17 18 0 7-3 12-8 16 13 5 20 15 22 29l4 62c1 7-4 11-9 11-3 20-3 44-1 68l3 51c0 5-4 8-9 8-4 0-7-2-8-6l-8-47h-6l-8 47c-1 4-4 6-8 6-5 0-9-3-9-8l3-51c2-24 2-48-1-68-5 0-10-4-9-11l4-62c2-14 9-24 22-29-5-4-8-9-8-16 0-10 7-18 17-18z"/></svg></div></div>
+                <div class="sbody"><span class="snm">WELLS (Close-Up)</span><span class="stag">Wells · Yoyo</span></div></div>
+              <div class="shotcard"><div class="sthumb" style="background:linear-gradient(160deg,#2c4238,#1a2822)"><div class="sfig" style="left:50%;width:24%;height:70%"><svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#40584a" d="M50 10c10 0 17 8 17 18 0 7-3 12-8 16 13 5 20 15 22 29l4 62c1 7-4 11-9 11-3 20-3 44-1 68l3 51c0 5-4 8-9 8-4 0-7-2-8-6l-8-47h-6l-8 47c-1 4-4 6-8 6-5 0-9-3-9-8l3-51c2-24 2-48-1-68-5 0-10-4-9-11l4-62c2-14 9-24 22-29-5-4-8-9-8-16 0-10 7-18 17-18z"/></svg></div></div>
+                <div class="sbody"><span class="snm">WELLS (Reaction)</span><span class="stag">Wells</span></div></div>
+              <div class="shotcard"><div class="sthumb" style="background:linear-gradient(160deg,#42342c,#281f1a)"></div>
+                <div class="sbody"><span class="snm">WELLS (Wide Desk)</span><span class="stag">Wells · Kalla · Crown</span></div></div>
+            </div>
+          </div>
+
+          <div class="cmp-center">
+            <div class="cmp-stagewrap">
+              <div class="stage cmp-stage" id="cmpStage">
+                <div class="floor"></div>
+                <div class="safe" id="safeM"></div>
+                <div class="fig warm live sel" style="left:38%;width:17%;height:78%;">
+                  <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path class="body" d="M50 6c13 0 22 10 22 22 0 9-4 16-11 20 16 6 26 19 27 38l3 60c0 8-6 12-11 11-2 24-2 50 0 76l3 50c0 7-6 10-11 10-5 0-9-3-10-8l-7-48h-10l-7 48c-1 5-5 8-10 8-5 0-11-3-11-10l3-50c2-26 2-52 0-76-5 1-11-3-11-11l3-60c1-19 11-32 27-38-7-4-11-11-11-20 0-12 9-22 22-22z"/></svg>
+                  <span class="hdl" style="left:-4px;top:-4px"></span><span class="hdl" style="right:-4px;top:-4px"></span>
+                  <span class="hdl" style="left:-4px;bottom:-4px"></span><span class="hdl" style="right:-4px;bottom:-4px"></span>
+                </div>
+                <div class="fig live" style="left:68%;width:13%;height:62%;">
+                  <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path class="body" d="M50 8c11 0 19 9 19 20 0 8-4 14-9 18 14 5 22 16 24 32l5 68c1 8-5 12-10 12-3 22-4 48-2 74l4 56c0 6-5 9-10 9-4 0-8-2-9-7l-9-52h-6l-9 52c-1 5-5 7-9 7-5 0-10-3-10-9l4-56c2-26 1-52-2-74-5 0-11-4-10-12l5-68c2-16 10-27 24-32-5-4-9-10-9-18 0-11 8-20 19-20z"/></svg>
+                </div>
+                <span class="badge">WELLS (CLOSE-UP) · 1920 × 1080</span>
+              </div>
+              <div class="stage-tools">
+                <button class="btn btn-ghost" data-toast="View reset — zoom, pan and camera back to home"><svg viewBox="0 0 24 24"><path d="M4.5 11 12 4.5 19.5 11"/><path d="M6.5 10v8.5h11V10"/></svg>Reset View</button>
+                <div class="sw-row"><span class="switch on" id="swSafe"></span>Safe margins</div>
+                <div class="grow"></div>
+                <span style="font-size:11px;color:var(--t3)">Drag a character in the monitor to move it · corner handles scale</span>
+              </div>
+            </div>
+            <div class="cmp-lib">
+              <div class="libtabs">
+                <button class="libtab on" data-lib="chars">CHARACTERS</button>
+                <button class="libtab" data-lib="custom">CUSTOM</button>
+                <button class="libtab" data-lib="bg">BACKGROUNDS</button>
+                <button class="libtab" data-lib="nikke">NIKKE BKG</button>
+                <button class="libtab" data-lib="vid">VIDEOS</button>
+                <div class="grow"></div>
+                <div class="zoomer"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg><input type="range" min="70" max="150" value="86" id="zoomSlider" aria-label="Thumbnail size"></div>
+              </div>
+              <div class="libgridbar">
+                <input class="tin" placeholder="Search" id="libGridSearch">
+                <label class="check" id="namedOnlyWrap"><input type="checkbox" checked> Named only</label>
+                <div style="flex:1"></div>
+                <button class="btn btn-ghost" id="libAddBtn" data-toast="Added to shot as a new layer">Add to Shot →</button>
+              </div>
+              <div class="libgrid" id="libGrid"></div>
+            </div>
+          </div>
+
+          <div class="cmp-props">
+            <div class="prop-sec">
+              <span class="flabel">SHOT</span>
+              <div class="prop-row"><input class="tin" value="WELLS (Close-Up)"><button class="btn btn-primary" data-toast="Shot saved">Save</button></div>
+              <div class="prop-row"><span class="pl">Show</span>
+                <select class="ctl" style="flex:1" data-toast-change="Shot moved to show"><option>Tier Talk</option><option>Roundtable Live</option><option>Shorts</option><option>No show</option><option>New show…</option></select></div>
+              <div class="prop-row"><span class="pl">Default for</span>
+                <select class="ctl" style="flex:1"><option>Wells</option><option>Yoyo</option></select>
+                <button class="btn btn-ghost" data-toast="Set as Wells’ default shot for Tier Talk" title="Set default">★</button></div>
+            </div>
+
+            <div class="prop-sec" id="propsChar">
+              <span class="flabel">LAYER — WELLS (CHARACTER)</span>
+              <div class="prop-grid2">
+                <div class="cell"><span class="pl">Position X</span><span class="scrub">−12.0<small>%</small></span></div>
+                <div class="cell"><span class="pl">Y</span><span class="scrub">25.0<small>%</small></span></div>
+                <div class="cell"><span class="pl">Scale</span><span class="scrub">146<small>%</small></span></div>
+                <div class="cell"><span class="pl">Rotation</span><span class="scrub">0.0<small>°</small></span></div>
+                <div class="cell"><span class="pl">Opacity</span><span class="scrub">100<small>%</small></span></div>
+                <div class="cell"><span class="pl">Blur</span><span class="scrub">0<small>px</small></span></div>
+              </div>
+              <div class="chkrow">
+                <label class="check"><input type="checkbox"> Flip H</label>
+                <label class="check"><input type="checkbox"> Flip V</label>
+                <label class="check"><input type="checkbox" checked> Visible</label>
+              </div>
+              <button class="collapser" data-toast="Crop group expands: Left / Right / Top / Bottom % + Reset Crop"><svg width="10" height="10" viewBox="0 0 24 24" style="stroke:currentColor;fill:none;stroke-width:2"><path d="m9 6 6 6-6 6"/></svg>CROP</button>
+              <div style="height:12px"></div>
+              <span class="flabel">CHARACTER</span>
+              <div class="prop-row" style="margin-top:9px"><span class="pl">Outfit</span><select class="ctl" style="flex:1"><option>CHRONO</option><option>DRESS</option></select></div>
+              <div class="prop-row"><span class="pl">Stance</span><select class="ctl" style="flex:1"><option>Default</option><option>Aim</option><option>Cover</option></select></div>
+              <div class="prop-row"><span class="pl">Animation</span><select class="ctl" style="flex:1"><option>idle</option><option>talk</option><option>action</option></select></div>
+              <div class="prop-row"><span class="pl">Talking</span><span class="switch" data-sw></span></div>
+            </div>
+
+            <div class="prop-sec" id="propsBg" style="display:none">
+              <span class="flabel">LAYER — STUDIO_NIGHT.PNG (BACKGROUND)</span>
+              <div class="prop-grid2">
+                <div class="cell"><span class="pl">Position X</span><span class="scrub">0.0<small>%</small></span></div>
+                <div class="cell"><span class="pl">Y</span><span class="scrub">0.0<small>%</small></span></div>
+                <div class="cell"><span class="pl">Scale</span><span class="scrub">104<small>%</small></span></div>
+                <div class="cell"><span class="pl">Opacity</span><span class="scrub">100<small>%</small></span></div>
+                <div class="cell"><span class="pl">Blur</span><span class="scrub">2<small>px</small></span></div>
+              </div>
+              <button class="collapser" data-toast="Video In/Out: in 0.0s, out End, Reset Timing (video backgrounds only)"><svg width="10" height="10" viewBox="0 0 24 24" style="stroke:currentColor;fill:none;stroke-width:2"><path d="m9 6 6 6-6 6"/></svg>VIDEO IN / OUT</button>
+            </div>
+
+            <div class="prop-sec" style="border-bottom:0;display:flex;flex-direction:column;flex:1;min-height:150px">
+              <span class="flabel">LAYERS</span>
+              <div class="layer-list" id="layerList" style="margin-top:8px">
+                <div class="layrow" data-props="propsBg"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="m3.5 15 5-5 4 4 3-3 5 5"/><circle cx="9" cy="9" r="1.3"/></svg><span class="nm">studio_night.png</span><button class="eye" data-toast="Layer hidden"><svg width="13" height="13" viewBox="0 0 24 24" style="stroke:currentColor;fill:none;stroke-width:1.6"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button></div>
+                <div class="layrow sel" data-props="propsChar"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span class="nm">Wells — CHRONO · idle</span><button class="eye" data-toast="Layer hidden"><svg width="13" height="13" viewBox="0 0 24 24" style="stroke:currentColor;fill:none;stroke-width:1.6"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button></div>
+                <div class="layrow" data-props="propsChar"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span class="nm">Yoyo — puppet · Idle</span><button class="eye" data-toast="Layer hidden"><svg width="13" height="13" viewBox="0 0 24 24" style="stroke:currentColor;fill:none;stroke-width:1.6"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button></div>
+              </div>
+              <div style="flex:1"></div>
+              <div class="layer-toolbar">
+                <button class="tbtn" data-toast="Add character layer" title="Add character"><svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.2"/><path d="M4 19c.8-3.2 3.2-4.8 6-4.8M16 15v6M13 18h6"/></svg></button>
+                <button class="tbtn" data-toast="Add background layer" title="Add background"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="m3.5 15 5-5 4 4 3-3 5 5"/></svg></button>
+                <button class="tbtn" data-toast="Group selected layers (Ctrl+G)" title="Group"><svg viewBox="0 0 24 24"><path d="M4.5 7.5A1.5 1.5 0 0 1 6 6h4l2 2.5h6A1.5 1.5 0 0 1 19.5 10v7A1.5 1.5 0 0 1 18 18.5H6A1.5 1.5 0 0 1 4.5 17z"/></svg></button>
+                <div class="grow"></div>
+                <button class="tbtn" data-toast="Layer moved up" title="Move up"><svg viewBox="0 0 24 24"><path d="M12 19V6M12 6 6.5 11.5M12 6l5.5 5.5"/></svg></button>
+                <button class="tbtn" data-toast="Layer moved down" title="Move down"><svg viewBox="0 0 24 24"><path d="M12 5v13M12 18l-5.5-5.5M12 18l5.5-5.5"/></svg></button>
+                <button class="tbtn" data-toast="Layer removed" title="Remove"><svg viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2M7 7l1 12a1.5 1.5 0 0 0 1.5 1.4h5A1.5 1.5 0 0 0 16 19L17 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ SPEC SHEET ============ -->
+<div class="spec">
+  <div class="spec-card">
+    <h3>WHAT MOVED WHERE</h3>
+    <ul>
+      <li><b>150px emoji sub-rail</b> → top tab strip (LIBRARY · CUSTOM · CONVERT · COMPOSE). Frees ~130px of width for COMPOSE, and sub-navigation reads as tabs everywhere in the app.</li>
+      <li><b>SETTINGS stub page</b> → gear button in the tab strip (popover). It was placeholder text; no page needed until it has content.</li>
+      <li><b>A–Z pop-out panel</b> → slim always-visible letter index on the library list. No animation, one less moving part.</li>
+      <li><b>COMPOSE: SHOWS (180px) + CHARACTERS (220px) columns</b> → one 212px browse column with SHOWS stacked above CHARACTERS. Same cascade filter, same counts, same context menus — half the width.</li>
+      <li><b>Faces row (4 stacked slots)</b> → labeled 2×2 matrix (mouth × eyes) so the four states explain themselves.</li>
+      <li>CONVERT keeps its layout — summary card, encoder card, table, actions — restyled; status becomes pills with inline mini-progress. Cancel appears only while rendering.</li>
+      <li>All context menus unchanged: shot Duplicate/Rename/Move-to-Show/Delete; show Rename/Thumbnail; character alias Rename/Reset; asset Re-link/Reveal/Delete.</li>
+    </ul>
+  </div>
+  <div class="spec-card">
+    <h3>COMPOSE LAYOUT LOGIC</h3>
+    <p>Left-to-right narrows from browsing to editing: <b>browse</b> (shows → characters) → <b>shots</b> (presets for that pick) → <b>monitor + asset library</b> (the work) → <b>properties + layers</b> (the detail). The monitor is the hero; direct-manipulation stays (drag to move, corner handles to scale, safe-margin toggle).</p>
+    <p>Properties panel keeps every field: transform (X/Y/scale/rotation/opacity/blur), flips, visibility, collapsible Crop; character rows adapt by type exactly as today — Spine gets Outfit/Stance/Anim, video characters get Outfit only when they have costumes, puppets get Outfit/Action. Background layers get transform + collapsible Video In/Out.</p>
+    <p>Premiere-style <b>scrubbable blue values</b> replace spin boxes — drag to scrub, click to type. Same ScrubbySpinBox behavior, quieter chrome.</p>
+  </div>
+  <div class="spec-card">
+    <h3>OPEN QUESTIONS FOR YOU</h3>
+    <ul>
+      <li><b>“CUSTOM” vs “PUPPETS”</b> — kept the rail’s existing “CUSTOM” label. Happy to switch if you prefer puppet language.</li>
+      <li><b>Shots grid toggle</b> — the current grid button is a dead placeholder. I dropped it; the card strip already shows thumbnails. Say the word if you want a real grid mode instead.</li>
+      <li><b>NIKKE BKG tab</b> — kept as its own library tab. Could fold into BACKGROUNDS as a “Download” source section later.</li>
+      <li>Library page keeps Downloaded-only / Show-hidden / category filters and the download progress footer; Delete is demoted to a ghost-danger button next to Download.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $=id=>document.getElementById(id);
+  function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");
+    clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2200);}
+
+  /* toasts on any [data-toast] */
+  document.addEventListener("click",e=>{
+    const b=e.target.closest("[data-toast]");if(b){toast(b.dataset.toast);}});
+  document.addEventListener("change",e=>{
+    const s=e.target.closest("[data-toast-change]");if(s)toast(s.dataset.toastChange+" “"+s.value+"”");});
+
+  /* switches */
+  document.addEventListener("click",e=>{
+    const sw=e.target.closest(".switch");if(sw)sw.classList.toggle("on");});
+
+  /* sub-tabs */
+  document.querySelectorAll(".subtab").forEach(t=>t.addEventListener("click",()=>{
+    document.querySelectorAll(".subtab").forEach(x=>x.classList.toggle("on",x===t));
+    document.querySelectorAll(".page").forEach(p=>p.classList.toggle("on",p.id===t.dataset.page));
+  }));
+
+  /* generic single-select lists */
+  document.querySelectorAll("[data-single],[data-cas]").forEach(list=>{
+    list.addEventListener("click",e=>{
+      const r=e.target.closest(".lirow");if(!r)return;
+      list.querySelectorAll(".lirow").forEach(x=>x.classList.toggle("sel",x===r));
+    });
+  });
+
+  /* ---------- LIBRARY ---------- */
+  const chars=[
+    {n:"Anis",c:"Nikke",dl:true,g:2},{n:"Crown",c:"Nikke",dl:true,g:5},{n:"Dorothy",c:"Nikke",dl:true,g:1},
+    {n:"Ein",c:"Nikke",dl:false,g:0},{n:"Guest Kalla",c:"Custom",dl:true,g:3},{n:"Modernia",c:"Nikke",dl:true,g:0},
+    {n:"Neon",c:"Nikke",dl:false,g:4},{n:"Rapi",c:"Nikke",dl:false,g:2},{n:"Red Hood",c:"Nikke",dl:true,g:4},
+    {n:"Wells",c:"Video",dl:true,g:5},{n:"Yoyo",c:"Video",dl:true,g:1}
+  ];
+  let libSel="Modernia",libLetter="";
+  function renderLib(){
+    const q=$("libSearch").value.trim().toLowerCase();
+    $("libList").innerHTML=chars
+      .filter(c=>c.n.toLowerCase().includes(q)&&(!libLetter||c.n[0].toUpperCase()===libLetter))
+      .map(c=>'<div class="lirow'+(c.n===libSel?" sel":"")+'" data-n="'+c.n+'">'+
+        '<div class="avatar a'+c.g+'">'+c.n[0]+'</div><span class="nm">'+c.n+'</span>'+
+        '<span class="typechip">'+c.c.toUpperCase()+'</span>'+
+        '<span class="dot '+(c.dl?"dl":"cloud")+'" title="'+(c.dl?"Downloaded":"Not downloaded")+'"></span></div>').join("");
+  }
+  $("libList").addEventListener("click",e=>{const r=e.target.closest("[data-n]");if(!r)return;
+    libSel=r.dataset.n;$("libPrevName").textContent=libSel.toUpperCase();renderLib();});
+  $("libSearch").addEventListener("input",renderLib);
+  const az=["#"].concat("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""));
+  $("azBar").innerHTML=az.map(l=>'<button data-l="'+l+'">'+l+"</button>").join("");
+  $("azBar").addEventListener("click",e=>{const b=e.target.closest("[data-l]");if(!b)return;
+    libLetter=(libLetter===b.dataset.l)?"":b.dataset.l;
+    $("azBar").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x.dataset.l===libLetter));
+    renderLib();});
+  renderLib();
+
+  /* ---------- CONVERT ---------- */
+  $("cvFmt").addEventListener("change",()=>{
+    $("cvSwatch").style.display=$("cvFmt").value.startsWith("Custom")?"":"none";});
+  $("cvBody").addEventListener("click",e=>{const r=e.target.closest(".cvrow");if(!r)return;
+    r.classList.toggle("sel");});
+
+  /* ---------- COMPOSE ---------- */
+  /* safe margins toggle */
+  $("swSafe").addEventListener("click",()=>{$("safeM").style.display=$("swSafe").classList.contains("on")?"":"none";});
+
+  /* asset library tabs */
+  const LIBS={
+    chars:{items:["Anis","Crown","Dorothy","Kalla","Modernia","Neon","Rapi","Red Hood","Wells","Yoyo"],kind:"fig",add:"Add to Shot →",named:true},
+    custom:{items:["Wells","Mini Yoyo","Guest Kalla"],kind:"fig",add:"Add to Shot →",named:false},
+    bg:{items:["studio_night","desk_wide","void_gradient","stage_neon","brick_loft","window_dusk"],kind:"img",add:"Add Background",named:false},
+    nikke:{items:["outpost_cafe","command_deck","ark_plaza","simulation_room","elysion_bay","missilis_lab"],kind:"img",add:"Add Background",named:false},
+    vid:{items:["intro_loop","confetti_burst","static_glitch","lower_third"],kind:"vid",add:"Add Video",named:false}
+  };
+  const figSvg='<svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#45566e" d="M50 10c10 0 17 8 17 18 0 7-3 12-8 16 13 5 20 15 22 29l4 62c1 7-4 11-9 11-3 20-3 44-1 68l3 51c0 5-4 8-9 8-4 0-7-2-8-6l-8-47h-6l-8 47c-1 4-4 6-8 6-5 0-9-3-9-8l3-51c2-24 2-48-1-68-5 0-10-4-9-11l4-62c2-14 9-24 22-29-5-4-8-9-8-16 0-10 7-18 17-18z"/></svg>';
+  const GR=["linear-gradient(135deg,#2b3f55,#1d2733)","linear-gradient(135deg,#4a3554,#2a2033)","linear-gradient(135deg,#54452e,#332a1d)","linear-gradient(135deg,#2e5443,#1d332a)","linear-gradient(135deg,#553038,#331d22)","linear-gradient(135deg,#33415c,#232b3d)"];
+  let curLib="chars";
+  function renderGrid(){
+    const cfg=LIBS[curLib];const q=$("libGridSearch").value.trim().toLowerCase();
+    $("namedOnlyWrap").style.display=cfg.named?"":"none";
+    $("libAddBtn").textContent=cfg.add;
+    $("libGrid").innerHTML=cfg.items.filter(n=>n.toLowerCase().includes(q)).map((n,i)=>
+      '<div class="asset'+(cfg.kind!=="fig"?" wide":"")+'" title="Drag into the monitor, or double-click">'+
+      '<div class="ath" style="background:'+GR[i%6]+'">'+(cfg.kind==="fig"?figSvg:"")+
+      (cfg.kind==="vid"?'<span class="dur">0:0'+(3+i)+'</span>':"")+'</div>'+
+      '<div class="anm">'+n+'</div></div>').join("");
+  }
+  document.querySelectorAll(".libtab").forEach(t=>t.addEventListener("click",()=>{
+    document.querySelectorAll(".libtab").forEach(x=>x.classList.toggle("on",x===t));
+    curLib=t.dataset.lib;renderGrid();}));
+  $("libGridSearch").addEventListener("input",renderGrid);
+  $("zoomSlider").addEventListener("input",()=>{$("libGrid").style.setProperty("--cell",$("zoomSlider").value+"px");});
+  $("libGrid").addEventListener("dblclick",e=>{const a=e.target.closest(".asset");
+    if(a)toast("Added “"+a.querySelector(".anm").textContent+"” to the shot");});
+  renderGrid();
+
+  /* shot cards select */
+  $("shotList").addEventListener("click",e=>{const c=e.target.closest(".shotcard");if(!c)return;
+    $("shotList").querySelectorAll(".shotcard").forEach(x=>x.classList.toggle("sel",x===c));});
+  $("shotList").addEventListener("dblclick",e=>{const c=e.target.closest(".shotcard");
+    if(c)toast("Loaded “"+c.querySelector(".snm").textContent+"” into the composer");});
+
+  /* layer select swaps the props panel */
+  $("layerList").addEventListener("click",e=>{
+    if(e.target.closest(".eye"))return;
+    const r=e.target.closest(".layrow");if(!r)return;
+    $("layerList").querySelectorAll(".layrow").forEach(x=>x.classList.toggle("sel",x===r));
+    $("propsChar").style.display=r.dataset.props==="propsChar"?"":"none";
+    $("propsBg").style.display=r.dataset.props==="propsBg"?"":"none";});
+  document.querySelectorAll(".eye").forEach(b=>b.addEventListener("click",e=>{
+    e.stopPropagation();b.closest(".layrow").classList.toggle("hidden-l");toast("Layer visibility toggled");}));
+})();
+</script>

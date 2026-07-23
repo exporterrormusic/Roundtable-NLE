@@ -1,0 +1,398 @@
+#version 450
+// Source-space temporal interpolation for retimed video clips.
+//
+// Optical Flow uses a sparse, confidence-weighted block flow field.  A 16x16
+// workgroup estimates a shared 5x5 grid of motion anchors, then bilinearly
+// reconstructs motion for its 256 output pixels.  This is both cheaper and
+// spatially more stable than running an independent matcher for every pixel.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1) uniform sampler2D sourceA;
+layout(binding = 2) uniform sampler2D sourceB;
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+    float phase;
+    int mode;       // 1 = frame blend, 2 = optical flow
+    int packedA;
+    int packedB;
+    int pad0;
+    int pad1;
+} pc;
+
+const int FLOW_GRID_STRIDE = 4;
+const int FLOW_GRID_SIDE = 5;
+const int FLOW_GRID_COUNT = FLOW_GRID_SIDE * FLOW_GRID_SIDE;
+
+// xy = displacement in normalized source coordinates
+// z  = flow confidence after opposite-direction verification
+// w  = probability that the endpoints form a scene cut
+shared vec4 forwardFlowGrid[FLOW_GRID_COUNT];
+shared vec4 backwardFlowGrid[FLOW_GRID_COUNT];
+
+struct MatchResult {
+    vec2 displacement;
+    float cost;
+    float confidence;
+};
+
+vec4 sampleFrame(sampler2D tex, vec2 uv, int packed)
+{
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    if (packed != 0) {
+        vec3 rgb = texture(tex, vec2(uv.x, uv.y * 0.5)).rgb;
+        float a = texture(tex, vec2(uv.x, uv.y * 0.5 + 0.5)).r;
+        return vec4(rgb, a);
+    }
+    return texture(tex, uv);
+}
+
+float luma(vec3 c)
+{
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float featureValue(vec4 c)
+{
+    // Including alpha makes transparent graphics track their silhouette.
+    return luma(c.rgb * c.a);
+}
+
+float colorDifference(vec4 a, vec4 b)
+{
+    vec3 premulA = a.rgb * a.a;
+    vec3 premulB = b.rgb * b.a;
+    return dot(abs(premulA - premulB), vec3(1.0 / 3.0)) +
+           abs(a.a - b.a) * 0.25;
+}
+
+float outsidePenalty(vec2 uv)
+{
+    vec2 outside = max(-uv, vec2(0.0)) + max(uv - vec2(1.0), vec2(0.0));
+    return (outside.x + outside.y) * 4.0;
+}
+
+float matchCost(vec2 origin, vec2 displacement, vec2 texel,
+                bool reverse, bool detailed)
+{
+    // The cross patch rejects the single-pixel aliases that made the old
+    // matcher latch onto unrelated same-luma pixels.  Coarse levels use three
+    // taps, while final/reverse verification uses all five.
+    const ivec2 offsets[5] = ivec2[5](
+        ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0),
+        ivec2(0, -2), ivec2(0, 2));
+    int tapCount = detailed ? 5 : 3;
+    float error = 0.0;
+    for (int i = 0; i < tapCount; ++i) {
+        vec2 offset = vec2(offsets[i]) * texel;
+        vec2 p = origin + offset;
+        vec2 q = p + displacement;
+        vec4 a = reverse
+            ? sampleFrame(sourceB, p, pc.packedB)
+            : sampleFrame(sourceA, p, pc.packedA);
+        vec4 b = reverse
+            ? sampleFrame(sourceA, q, pc.packedA)
+            : sampleFrame(sourceB, q, pc.packedB);
+        float signalError = abs(featureValue(a) - featureValue(b));
+        error += signalError * 0.75 + colorDifference(a, b) * 0.25 +
+                 outsidePenalty(q);
+    }
+    return error / float(tapCount);
+}
+
+float localDetail(vec2 origin, vec2 texel, bool reverse)
+{
+    vec4 center = reverse
+        ? sampleFrame(sourceB, origin, pc.packedB)
+        : sampleFrame(sourceA, origin, pc.packedA);
+    float c = featureValue(center);
+    float spread = 0.0;
+    spread = max(spread, abs(c - featureValue(reverse
+        ? sampleFrame(sourceB, origin + vec2(2.0, 0.0) * texel, pc.packedB)
+        : sampleFrame(sourceA, origin + vec2(2.0, 0.0) * texel, pc.packedA))));
+    spread = max(spread, abs(c - featureValue(reverse
+        ? sampleFrame(sourceB, origin + vec2(0.0, 2.0) * texel, pc.packedB)
+        : sampleFrame(sourceA, origin + vec2(0.0, 2.0) * texel, pc.packedA))));
+    return smoothstep(0.006, 0.055, spread);
+}
+
+int initialSearchStep()
+{
+    // At HD/UHD this covers a +/-127-pixel displacement after refinement;
+    // smaller sources scale the search down to avoid searching mostly beyond
+    // their edges.
+    int minDimension = min(pc.width, pc.height);
+    if (minDimension >= 512) return 64;
+    if (minDimension >= 256) return 32;
+    if (minDimension >= 128) return 16;
+    if (minDimension >= 64) return 8;
+    return 4;
+}
+
+MatchResult estimateMotion(vec2 origin, vec2 texel, bool reverse)
+{
+    vec2 best = vec2(0.0);
+    float bestCost = matchCost(origin, best, texel, reverse, false);
+
+    // Hierarchical 3x3 search.  Unlike the previous {-8,0,+8} search, each
+    // level refines the preceding winner down to single-pixel precision.
+    for (int step = initialSearchStep(); step >= 1; step /= 2) {
+        bool detailedLevel = step <= 16;
+        vec2 levelBest = best;
+        float levelCost = matchCost(origin, best, texel,
+                                    reverse, detailedLevel);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec2 candidate = best + vec2(x, y) * texel * float(step);
+                float cost = matchCost(origin, candidate, texel,
+                                       reverse, detailedLevel);
+                if (cost < levelCost) {
+                    levelCost = cost;
+                    levelBest = candidate;
+                }
+            }
+        }
+        best = levelBest;
+        bestCost = levelCost;
+    }
+
+    // A detailed final neighborhood supplies both sub-search refinement and
+    // a uniqueness margin.  Repeated/flat textures intentionally receive low
+    // confidence rather than inventing motion.
+    vec2 refined = best;
+    float refinedCost = 1e20;
+    float secondCost = 1e20;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 candidate = best + vec2(x, y) * texel;
+            float cost = matchCost(origin, candidate, texel, reverse, true);
+            if (cost < refinedCost) {
+                secondCost = refinedCost;
+                refinedCost = cost;
+                refined = candidate;
+            } else if (cost < secondCost) {
+                secondCost = cost;
+            }
+        }
+    }
+
+    float uniqueness = clamp((secondCost - refinedCost) /
+                             max(secondCost, 0.015), 0.0, 1.0);
+    float fit = 1.0 - smoothstep(0.07, 0.28, refinedCost);
+    float detail = localDetail(origin, texel, reverse);
+    MatchResult result;
+    result.displacement = refined;
+    result.cost = refinedCost;
+    result.confidence = fit * detail * (0.55 + 0.45 * uniqueness);
+    return result;
+}
+
+MatchResult verifyOppositeMotion(vec2 destination, vec2 expected,
+                                 vec2 texel, bool reverse)
+{
+    vec2 best = expected;
+    float bestCost = 1e20;
+    float secondCost = 1e20;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 candidate = expected + vec2(x, y) * texel;
+            float cost = matchCost(destination, candidate, texel,
+                                   reverse, true);
+            if (cost < bestCost) {
+                secondCost = bestCost;
+                bestCost = cost;
+                best = candidate;
+            } else if (cost < secondCost) {
+                secondCost = cost;
+            }
+        }
+    }
+    float uniqueness = clamp((secondCost - bestCost) /
+                             max(secondCost, 0.015), 0.0, 1.0);
+    float fit = 1.0 - smoothstep(0.07, 0.28, bestCost);
+    MatchResult result;
+    result.displacement = best;
+    result.cost = bestCost;
+    result.confidence = fit * localDetail(destination, texel, reverse) *
+                        (0.55 + 0.45 * uniqueness);
+    return result;
+}
+
+float sceneDifference(vec2 origin, vec2 texel)
+{
+    // Widely-spaced samples prevent a single moving edge from being mistaken
+    // for a cut.  A real cut produces a high residual across the whole patch.
+    const ivec2 offsets[5] = ivec2[5](
+        ivec2(0, 0), ivec2(-8, -8), ivec2(8, -8),
+        ivec2(-8, 8), ivec2(8, 8));
+    float difference = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        vec2 p = origin + vec2(offsets[i]) * texel;
+        difference += colorDifference(
+            sampleFrame(sourceA, p, pc.packedA),
+            sampleFrame(sourceB, p, pc.packedB));
+    }
+    return difference / 5.0;
+}
+
+vec4 estimateFlowAnchor(vec2 origin, vec2 texel, bool reverse)
+{
+    MatchResult primary = estimateMotion(origin, texel, reverse);
+    vec2 destination = origin + primary.displacement;
+    MatchResult opposite = verifyOppositeMotion(
+        destination, -primary.displacement, texel, !reverse);
+
+    vec2 roundTrip = primary.displacement + opposite.displacement;
+    float roundTripPixels = length(roundTrip / texel);
+    float consistency = 1.0 - smoothstep(1.25, 4.0, roundTripPixels);
+    float confidence = min(primary.confidence, opposite.confidence) *
+                       consistency;
+
+    // High endpoint disagreement plus a failed best match indicates a cut.
+    // On cuts Optical Flow falls back to a nearest-frame sample, avoiding the
+    // melted intermediate image produced by attempting to track unrelated
+    // content.
+    float sceneCut = 0.0;
+    if (!reverse) {
+        float rawDifference = sceneDifference(origin, texel);
+        float failedMatch = smoothstep(0.09, 0.28,
+                                       max(primary.cost, opposite.cost));
+        sceneCut = smoothstep(0.20, 0.48, rawDifference) * failedMatch;
+    }
+
+    // Average the mutually verified directions to suppress one-pixel jitter.
+    vec2 symmetricFlow = 0.5 *
+        (primary.displacement - opposite.displacement);
+    return vec4(symmetricFlow, confidence, sceneCut);
+}
+
+vec4 interpolateFlow(ivec2 localPixel, bool reverse)
+{
+    ivec2 cell = clamp(localPixel / FLOW_GRID_STRIDE,
+                       ivec2(0), ivec2(FLOW_GRID_SIDE - 2));
+    vec2 fraction = vec2(localPixel - cell * FLOW_GRID_STRIDE) /
+                    float(FLOW_GRID_STRIDE);
+    int i00 = cell.y * FLOW_GRID_SIDE + cell.x;
+    int i10 = i00 + 1;
+    int i01 = i00 + FLOW_GRID_SIDE;
+    int i11 = i01 + 1;
+    vec4 v00 = reverse ? backwardFlowGrid[i00] : forwardFlowGrid[i00];
+    vec4 v10 = reverse ? backwardFlowGrid[i10] : forwardFlowGrid[i10];
+    vec4 v01 = reverse ? backwardFlowGrid[i01] : forwardFlowGrid[i01];
+    vec4 v11 = reverse ? backwardFlowGrid[i11] : forwardFlowGrid[i11];
+    vec4 weights = vec4((1.0 - fraction.x) * (1.0 - fraction.y),
+                        fraction.x * (1.0 - fraction.y),
+                        (1.0 - fraction.x) * fraction.y,
+                        fraction.x * fraction.y);
+    vec4 confidences = vec4(v00.z, v10.z, v01.z, v11.z);
+    vec4 reliableWeights = weights * confidences;
+    float reliableSum = dot(reliableWeights, vec4(1.0));
+    vec2 displacement = vec2(0.0);
+    if (reliableSum > 0.0001) {
+        displacement = (v00.xy * reliableWeights.x +
+                        v10.xy * reliableWeights.y +
+                        v01.xy * reliableWeights.z +
+                        v11.xy * reliableWeights.w) / reliableSum;
+    }
+    float confidence = dot(weights, confidences);
+    float sceneCut = dot(weights, vec4(v00.w, v10.w, v01.w, v11.w));
+    return vec4(displacement, confidence, sceneCut);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dimensions = ivec2(pc.width, pc.height);
+    bool inBounds = all(lessThan(pixel, dimensions));
+    float t = clamp(pc.phase, 0.0, 1.0);
+
+    // Preserve Frame Blending as a direct, deterministic endpoint mix.  It
+    // does not pay any of Optical Flow's analysis cost.
+    if (pc.mode != 2) {
+        if (!inBounds) return;
+        vec2 uv = (vec2(pixel) + 0.5) / vec2(dimensions);
+        imageStore(outputImage, pixel,
+                   mix(sampleFrame(sourceA, uv, pc.packedA),
+                       sampleFrame(sourceB, uv, pc.packedB), t));
+        return;
+    }
+
+    // All invocations must reach the barrier, including padding invocations
+    // in a partial edge workgroup.
+    uint localIndex = gl_LocalInvocationIndex;
+    if (localIndex < uint(FLOW_GRID_COUNT * 2)) {
+        bool reverse = localIndex >= uint(FLOW_GRID_COUNT);
+        uint gridIndex = localIndex % uint(FLOW_GRID_COUNT);
+        int gridX = int(gridIndex) % FLOW_GRID_SIDE;
+        int gridY = int(gridIndex) / FLOW_GRID_SIDE;
+        ivec2 anchorPixel = ivec2(gl_WorkGroupID.xy) * 16 +
+                            ivec2(gridX, gridY) * FLOW_GRID_STRIDE;
+        anchorPixel = clamp(anchorPixel, ivec2(0), dimensions - ivec2(1));
+        vec2 texel = 1.0 / vec2(dimensions);
+        vec2 anchorUv = (vec2(anchorPixel) + 0.5) * texel;
+        vec4 flow = estimateFlowAnchor(anchorUv, texel, reverse);
+        if (reverse)
+            backwardFlowGrid[gridIndex] = flow;
+        else
+            forwardFlowGrid[gridIndex] = flow;
+    }
+    barrier();
+
+    if (!inBounds) return;
+
+    vec2 dims = vec2(dimensions);
+    vec2 texel = 1.0 / dims;
+    vec2 uv = (vec2(pixel) + 0.5) * texel;
+    ivec2 localPixel = ivec2(gl_LocalInvocationID.xy);
+    vec4 forwardData = interpolateFlow(localPixel, false);
+    vec4 backwardData = interpolateFlow(localPixel, true);
+    vec2 forwardMotion = forwardData.xy;
+    vec2 backwardMotion = backwardData.xy;
+    float forwardConfidence = clamp(forwardData.z, 0.0, 1.0);
+    float backwardConfidence = clamp(backwardData.z, 0.0, 1.0);
+    // The anchor score has already passed uniqueness, texture, fit and
+    // round-trip gates.  Remap the surviving sparse score so a trustworthy
+    // one-sided flow can fully reconstruct a disoccluded edge instead of
+    // remaining a faint cross-dissolve.
+    float confidence = smoothstep(0.04, 0.45,
+                                  forwardConfidence + backwardConfidence);
+    float sceneCut = clamp(forwardData.w, 0.0, 1.0);
+
+    vec4 unwarpedA = sampleFrame(sourceA, uv, pc.packedA);
+    vec4 unwarpedB = sampleFrame(sourceB, uv, pc.packedB);
+    vec4 frameBlend = mix(unwarpedA, unwarpedB, t);
+
+    vec4 warpedA = sampleFrame(sourceA, uv - forwardMotion * t,
+                               pc.packedA);
+    vec4 warpedB = sampleFrame(sourceB,
+                               uv - backwardMotion * (1.0 - t),
+                               pc.packedB);
+    float weightA = (1.0 - t) * forwardConfidence;
+    float weightB = t * backwardConfidence;
+    float weightSum = weightA + weightB;
+    vec4 motionBlend = weightSum > 0.0001
+        ? (warpedA * weightA + warpedB * weightB) / weightSum
+        : frameBlend;
+
+    // A large post-warp residual is normally an occlusion/disocclusion.  Favor
+    // the temporally nearer visible endpoint there instead of double-exposing
+    // both sides of an edge.
+    float warpedResidual = colorDifference(warpedA, warpedB);
+    float occlusion = smoothstep(0.10, 0.34, warpedResidual);
+    vec4 nearestWarped;
+    if (forwardConfidence > backwardConfidence + 0.05)
+        nearestWarped = warpedA;
+    else if (backwardConfidence > forwardConfidence + 0.05)
+        nearestWarped = warpedB;
+    else
+        nearestWarped = t < 0.5 ? warpedA : warpedB;
+    vec4 safeMotion = mix(motionBlend, nearestWarped, occlusion);
+
+    vec4 result = mix(frameBlend, safeMotion, confidence);
+    vec4 nearestFrame = t < 0.5 ? unwarpedA : unwarpedB;
+    result = mix(result, nearestFrame, sceneCut);
+    imageStore(outputImage, pixel, result);
+}

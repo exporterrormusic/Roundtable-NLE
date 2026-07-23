@@ -35,9 +35,9 @@ struct MaskTrackParams
     bool    forward{true};
 
     // Sequence resolution + the clip's transform at the start time (output
-    // px / degrees, same units the compositor uses). The tracker builds the
-    // frame-norm → source-px affine with Compositor::buildViewportTransform
-    // once it knows the source dimensions.
+    // px / degrees, same units the compositor uses). These are only needed
+    // for projects whose masks use the legacy sequence-frame coordinate
+    // space. Source-local masks track directly in decoded source pixels.
     uint32_t outW{1920};
     uint32_t outH{1080};
     float posX{0.0f}, posY{0.0f};
@@ -47,6 +47,41 @@ struct MaskTrackParams
 };
 
 namespace MaskTracker {
+
+namespace detail {
+
+/// Affine mapping between mask coordinates and native decoded source pixels.
+/// Kept public in the detail namespace so the coordinate-space contract can
+/// be covered without opening or decoding media in a unit test.
+struct CoordinateMapping
+{
+    float sourceXFromU{0.0f};
+    float sourceXFromV{0.0f};
+    float sourceXOffset{0.0f};
+    float sourceYFromU{0.0f};
+    float sourceYFromV{0.0f};
+    float sourceYOffset{0.0f};
+    float determinant{0.0f};
+
+    [[nodiscard]] bool isValid() const noexcept;
+    void toSourcePixels(float u, float v, float& x, float& y) const noexcept;
+    void sourceDeltaToMask(float dx, float dy,
+                           float& du, float& dv) const noexcept;
+    [[nodiscard]] float pixelsPerMaskU() const noexcept;
+    [[nodiscard]] float pixelsPerMaskV() const noexcept;
+};
+
+/// SourceLocal ignores clip transform and display rotation because its UVs
+/// already address the decoder's native pixel orientation. Legacy masks are
+/// converted from sequence-frame UV through the compositor transform.
+[[nodiscard]] CoordinateMapping buildCoordinateMapping(
+    const MaskTrackParams& params,
+    MaskCoordinateSpace coordinateSpace,
+    uint32_t sourceWidth,
+    uint32_t sourceHeight,
+    int sourceRotationDegrees);
+
+} // namespace detail
 
 /// Track the mask through the source video, adding Mask Path keyframes to
 /// `mask` (turns the Mask Path stopwatch on). Returns the number of

@@ -93,13 +93,18 @@ PropertyRow::PropertyRow(const QString& name, KeyframeTrack<float>* track,
         .arg(Theme::hex(tc.controlBgHover)));
 }
 
-void PropertyRow::setTrack(KeyframeTrack<float>* track) { m_track = track; }
+void PropertyRow::setTrack(KeyframeTrack<float>* track)
+{
+    m_track = track;
+    syncStopwatchState();
+}
 
 void PropertyRow::addExtraTrack(KeyframeTrack<float>* track)
 {
     if (!track) return;
     for (auto* t : m_extraTracks) if (t == track) return;
     m_extraTracks.push_back(track);
+    syncStopwatchState();
 }
 
 void PropertyRow::removeExtraTrack(KeyframeTrack<float>* track)
@@ -108,11 +113,13 @@ void PropertyRow::removeExtraTrack(KeyframeTrack<float>* track)
     m_extraTracks.erase(
         std::remove(m_extraTracks.begin(), m_extraTracks.end(), track),
         m_extraTracks.end());
+    syncStopwatchState();
 }
 
 void PropertyRow::clearExtraTracks()
 {
     m_extraTracks.clear();
+    syncStopwatchState();
 }
 
 std::vector<KeyframeTrack<float>*> PropertyRow::allTracks() const
@@ -124,6 +131,38 @@ std::vector<KeyframeTrack<float>*> PropertyRow::allTracks() const
 }
 
 QString PropertyRow::propertyName() const { return m_name; }
+
+void PropertyRow::syncStopwatchState()
+{
+    if (!m_stopwatch) return;
+    const auto tracks = allTracks();
+    const bool animated = std::any_of(
+        tracks.begin(), tracks.end(), [](const auto* track) {
+            return track && track->keyframeCount() > 0;
+        });
+    m_stopwatch->blockSignals(true);
+    m_stopwatch->setEnabled(!tracks.empty());
+    m_stopwatch->setChecked(animated);
+    m_stopwatch->blockSignals(false);
+}
+
+void PropertyRow::configureStopwatchButton(QToolButton* button)
+{
+    if (!button) return;
+    const auto& tc = Theme::colors();
+    button->setText({});
+    button->setFixedSize(18, 18);
+    button->setCheckable(true);
+    QIcon icon;
+    icon.addPixmap(createStopwatchPixmap(tc.textTertiary),
+                   QIcon::Normal, QIcon::Off);
+    icon.addPixmap(createStopwatchPixmap(tc.accent),
+                   QIcon::Normal, QIcon::On);
+    button->setIcon(icon);
+    button->setIconSize(QSize(14, 14));
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton { background: transparent; border: none; padding: 0; }"));
+}
 
 void PropertyRow::buildUI()
 {
@@ -147,18 +186,8 @@ void PropertyRow::buildUI()
 
     // Stopwatch / clock icon (keyframe toggle)
     m_stopwatch = new QToolButton(this);
-    m_stopwatch->setFixedSize(18, 18);
-    m_stopwatch->setCheckable(true);
+    configureStopwatchButton(m_stopwatch);
     m_stopwatch->setToolTip(tr("Toggle animation (keyframing)"));
-    {
-        QIcon icon;
-        icon.addPixmap(createStopwatchPixmap(tc.textTertiary), QIcon::Normal, QIcon::Off);
-        icon.addPixmap(createStopwatchPixmap(tc.accent), QIcon::Normal, QIcon::On);
-        m_stopwatch->setIcon(icon);
-        m_stopwatch->setIconSize(QSize(14, 14));
-    }
-    m_stopwatch->setStyleSheet(QStringLiteral(
-        "QToolButton { background: transparent; border: none; padding: 0; }"));
     if (m_track) {
         // If track has any keyframes, keyframing is "on"
         m_stopwatch->setChecked(m_track->keyframeCount() > 0);
@@ -170,6 +199,7 @@ void PropertyRow::buildUI()
 
     // Property name
     m_nameLabel = new QLabel(m_name, this);
+    m_nameLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_nameLabel->setMinimumWidth(90);
     m_nameLabel->setStyleSheet(QStringLiteral(
         "QLabel { color: %1; font-size: %2px; background: transparent; padding-left: 2px; }")
@@ -206,6 +236,30 @@ void PropertyRow::buildUI()
     m_addKfBtn->setFixedSize(16, 22);
     m_addKfBtn->setToolTip(tr("Add / remove keyframe"));
     m_addKfBtn->setStyleSheet(kfBtnStyle);
+    connect(m_addKfBtn, &QToolButton::clicked, this, [this]() {
+        // Do not capture the time (or the bound tracks) during the last UI
+        // refresh. Playback updates are intentionally throttled, and graphic
+        // layer selection can retarget a row between paints. Resolve both at
+        // click time so the diamond always operates on what the user sees now.
+        const int64_t time = m_timeProvider ? m_timeProvider()
+                                             : m_displayedTime;
+        const auto tracks = allTracks();
+        bool atKeyframe = false;
+        for (auto* tr : tracks) {
+            if (tr && tr->hasKeyframeAt(time)) {
+                atKeyframe = true;
+                break;
+            }
+        }
+        // One visible diamond click must become one history entry. The panel
+        // expands the primary track into any compound siblings and records
+        // the whole edit atomically.
+        if (!m_track) return;
+        if (atKeyframe)
+            emit deleteKeyframeRequested(m_track, time);
+        else
+            emit addKeyframeRequested(m_track, time);
+    });
 
     m_nextKfBtn = new QToolButton(this);
     m_nextKfBtn->setText(QStringLiteral("\u25B6")); // ▶
@@ -267,6 +321,9 @@ void PropertyRow::updateForTime(int64_t time)
 {
     if (!m_track) return;
 
+    m_displayedTime = time;
+    syncStopwatchState();
+
     const auto tracks = allTracks();
 
     // "At a keyframe" if ANY bound track has a keyframe at this time.
@@ -285,23 +342,11 @@ void PropertyRow::updateForTime(int64_t time)
             "QToolButton { background: transparent; color: %1; border: none; font-size: 9px; padding: 0; }"
             "QToolButton:hover { color: %2; }")
             .arg(Theme::hex(tc.accent), Theme::hex(tc.accentHover)));
-        // Click = delete keyframe on every bound track at this time
-        m_addKfBtn->disconnect();
-        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time, tracks]() {
-            for (auto* tr : tracks)
-                emit deleteKeyframeRequested(tr, time);
-        });
     } else {
         m_addKfBtn->setStyleSheet(QStringLiteral(
             "QToolButton { background: transparent; color: %1; border: none; font-size: 9px; padding: 0; }"
             "QToolButton:hover { color: %2; }")
             .arg(Theme::hex(tc.textSecondary), Theme::hex(tc.textPrimary)));
-        // Click = add keyframe on every bound track at this time
-        m_addKfBtn->disconnect();
-        connect(m_addKfBtn, &QToolButton::clicked, this, [this, time, tracks]() {
-            for (auto* tr : tracks)
-                emit addKeyframeRequested(tr, time);
-        });
     }
 
     // Enable/disable prev/next based on whether keyframes exist in that

@@ -104,6 +104,8 @@ void OverlayController::wireTransformOverlaySignals()
                 this, &OverlayController::onOverlayDragFinished);
         connect(ov, &TransformOverlayWidget::maskDragFinished,
                 this, &OverlayController::onOverlayMaskDragFinished);
+        connect(ov, &TransformOverlayWidget::maskCreated,
+                this, &OverlayController::onOverlayMaskCreated);
         connect(ov, &TransformOverlayWidget::emptyAreaClicked,
                 this, &OverlayController::onOverlayEmptyAreaClicked);
         connect(ov, &TransformOverlayWidget::cropChanged,
@@ -696,7 +698,7 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
         m_ws->effectControlsPanel()->setClip(m_ws->selection().clip, track);
     }
     Clip* clip = m_ws->selection().clip;
-    int mi = maskIndex;
+    const uint64_t stableMaskId = newMask.maskId;
     // The monitor may be editing the clip's opacity masks OR an effect's
     // masks (active mask context). Resolve the list by effect id at
     // execute time so undo survives effect-list changes.
@@ -709,17 +711,84 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
     };
     auto cmd = std::make_unique<LambdaCommand>(
         "Move Mask",
-        [clip, mi, fxId, newMask, listOf]() {
+        [clip, fxId, stableMaskId, newMask, listOf]() {
             auto* masks = listOf(clip, fxId);
-            if (masks && mi >= 0 && static_cast<size_t>(mi) < masks->size())
-                (*masks)[static_cast<size_t>(mi)] = newMask;
+            if (!masks) return;
+            auto it = std::find_if(masks->begin(), masks->end(),
+                [stableMaskId](const OpacityMask& mask) {
+                    return mask.maskId == stableMaskId;
+                });
+            if (it != masks->end())
+                *it = newMask;
         },
-        [clip, mi, fxId, oldMask, listOf]() {
+        [clip, fxId, stableMaskId, oldMask, listOf]() {
             auto* masks = listOf(clip, fxId);
-            if (masks && mi >= 0 && static_cast<size_t>(mi) < masks->size())
-                (*masks)[static_cast<size_t>(mi)] = oldMask;
+            if (!masks) return;
+            auto it = std::find_if(masks->begin(), masks->end(),
+                [stableMaskId](const OpacityMask& mask) {
+                    return mask.maskId == stableMaskId;
+                });
+            if (it != masks->end())
+                *it = oldMask;
         });
     m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
+}
+
+void OverlayController::onOverlayMaskCreated(int maskIndex,
+                                             const OpacityMask& mask)
+{
+    if (m_ws->isDestroying() || !m_ws->selection().clip
+        || !m_ws->commandStack())
+        return;
+
+    Clip* clip = m_ws->selection().clip;
+    const int index = maskIndex;
+    const uint64_t stableMaskId = mask.maskId;
+    const uint64_t fxId = m_activeMaskEffectId;
+    auto listOf = [](Clip* c, uint64_t effectId) -> std::vector<OpacityMask>* {
+        if (!c) return nullptr;
+        if (effectId == 0) return &c->masks();
+        if (Effect* fx = c->effects().effectById(effectId)) return &fx->masks();
+        return nullptr;
+    };
+
+    auto command = std::make_unique<LambdaCommand>(
+        "Create Pen Mask",
+        [clip, index, fxId, stableMaskId, mask, listOf]() {
+            if (auto* masks = listOf(clip, fxId)) {
+                const auto existing = std::find_if(
+                    masks->begin(), masks->end(),
+                    [stableMaskId](const OpacityMask& value) {
+                        return value.maskId == stableMaskId;
+                    });
+                if (existing != masks->end()) return;
+                const auto pos = masks->begin() + std::min<size_t>(
+                    static_cast<size_t>(std::max(index, 0)), masks->size());
+                masks->insert(pos, mask);
+            }
+        },
+        [clip, index, fxId, stableMaskId, listOf]() {
+            if (auto* masks = listOf(clip, fxId)) {
+                const auto it = std::find_if(
+                    masks->begin(), masks->end(),
+                    [stableMaskId](const OpacityMask& value) {
+                        return value.maskId == stableMaskId;
+                    });
+                if (it != masks->end()) masks->erase(it);
+            }
+        });
+    m_ws->commandStack()->pushWithoutExecute(std::move(command));
+
+    m_ws->invalidateCompositeCache();
+    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+    if (m_ws->effectControlsPanel()) {
+        // setClip() intentionally no-ops when the clip pointer is unchanged,
+        // but interactive creation mutates that same clip in place. Rebuild
+        // the tree now so the new Mask row appears immediately, then restore
+        // it as the active Program Monitor edit target by stable id.
+        m_ws->effectControlsPanel()->refresh();
+        m_ws->effectControlsPanel()->selectMaskById(fxId, stableMaskId);
+    }
 }
 
 // Click on empty area: layer selection (Selection tool) or text creation
@@ -729,6 +798,11 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
 {
     if (m_ws->isDestroying()) return;
     if (!m_ws->timelinePanel() || !m_ws->timeline()) return;
+    // A mouse press that began in the transparent part of the live text box
+    // can also reach the native monitor window on Windows.  That press is a
+    // caret/selection gesture (or the click that commits the edit), never a
+    // request to create a second text layer underneath it.
+    if (m_inlineTextEditActive) return;
     const bool addToSelection =
         (mods & (Qt::ShiftModifier | Qt::ControlModifier)) != 0;
 
@@ -921,7 +995,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     size_t targetTrackIdx = 0;
     for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
         auto* trk = m_ws->timeline()->track(ti);
-        if (trk && trk->type() == TrackType::Video) {
+        if (trk && trk->type() == TrackType::Video && !trk->isDivider()
+                && !trk->isCaptionTrack()) {
             targetTrack = trk;
             targetTrackIdx = ti;
             break;
@@ -990,15 +1065,9 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     // by default, but capped so the clip never spills into the next
     // clip on the same track (both clips occupying the same time
     // range causes compositing errors).
-    int64_t duration = kTicksPerSecond * 5;
-    for (size_t ci = 0; ci < targetTrack->clipCount(); ++ci) {
-        const Clip* c = targetTrack->clip(ci);
-        if (c->timelineIn() > tick) {
-            int64_t gap = c->timelineIn() - tick;
-            if (gap < duration) duration = gap;
-            break; // clips are ordered, first after tick is the nearest
-        }
-    }
+    const int64_t duration = EditOperations::nonOverlappingInsertDuration(
+        *targetTrack, tick, kTicksPerSecond * 5);
+    if (duration <= 0) return;
     auto gc = std::make_unique<GraphicClip>();
     gc->setTimelineIn(tick);
     gc->setDuration(duration);

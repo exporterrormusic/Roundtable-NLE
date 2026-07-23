@@ -3,6 +3,7 @@
  */
 
 #include "decode/ThumbnailGenerator.h"
+#include "decode/SharedFileIO.h"
 #include "playback/MediaPool.h"
 #include "PathUtils.h"
 
@@ -473,22 +474,14 @@ std::shared_ptr<Thumbnail> ThumbnailGenerator::generateImageThumbnail(
         }
     }
 
-    // Read file into memory first (std::ifstream handles Windows wide paths)
-    std::ifstream file(resolvedPath, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
+    // Snapshot through the same fully-shared Win32 I/O used by VideoDecoder.
+    // A background thumbnail read must never deny Explorer's overwrite/delete.
+    std::vector<std::uint8_t> fileData;
+    if (!readSharedFileBytes(resolvedPath, fileData, "ThumbnailGenerator")) {
         spdlog::warn("ThumbnailGenerator: cannot open image '{}' (resolved: '{}')",
                      pathToUtf8(path), pathToUtf8(resolvedPath));
         return generatePlaceholder(MediaType::Image, maxWidth);
     }
-    auto fileSize = file.tellg();
-    if (fileSize <= 0) {
-        spdlog::warn("ThumbnailGenerator: empty image file '{}'", pathToUtf8(path));
-        return generatePlaceholder(MediaType::Image, maxWidth);
-    }
-    file.seekg(0);
-    std::vector<uint8_t> fileData(static_cast<size_t>(fileSize));
-    file.read(reinterpret_cast<char*>(fileData.data()), fileSize);
-    file.close();
 
     int w = 0, h = 0, channels = 0;
     unsigned char* data = stbi_load_from_memory(
@@ -595,4 +588,3 @@ std::string ThumbnailGenerator::resolveCanonicalPath(
 }
 
 } // namespace rt
-

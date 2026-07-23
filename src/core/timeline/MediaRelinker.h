@@ -11,6 +11,7 @@
 namespace rt {
 
 class Timeline;
+class Project;
 class ShotPresetManager;
 
 namespace MediaRelinker {
@@ -21,6 +22,14 @@ namespace MediaRelinker {
 /// Windows is intentionally NOT applied — paths come from QFileDialog and
 /// match what the clip stored).
 int relinkPath(Timeline* timeline,
+               const std::string& oldPath,
+               const std::string& newPath);
+
+/// Replace matching media paths across every sequence in @p project.
+/// Returns the total number of Video, Audio, and Image clip references
+/// updated. This is the project-bin relink behavior: inactive sequences are
+/// kept in sync with the active one.
+int relinkPath(Project* project,
                const std::string& oldPath,
                const std::string& newPath);
 

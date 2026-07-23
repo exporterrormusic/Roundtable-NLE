@@ -29,6 +29,7 @@
 #include "timeline/Position2D.h"
 #include "timeline/GraphicLayer.h"
 #include "timeline/CaptionClip.h"
+#include "ClipRenderers.h"
 #include "panels/captions/CaptionsPanel.h"
 #include "project/Project.h"
 #include "playback/MediaPool.h"
@@ -92,7 +93,8 @@ void OverlayController::measureTextContentRect(TextLayer* tl, int64_t relTick,
     float tracking = tl->tracking().evaluate(relTick);
     font.setLetterSpacing(QFont::AbsoluteSpacing, static_cast<qreal>(tracking));
 
-    QString text = QString::fromStdString(tl->text());
+    const QString sourceText = QString::fromStdString(tl->text());
+    QString text = sourceText;
     // Measure the ALL-CAPS extent for both All Caps and Small Caps: small caps
     // draws originally-lowercase glyphs SMALLER, so the all-caps box is always
     // >= the small-caps box and fully contains it (a slightly generous, never
@@ -141,12 +143,43 @@ void OverlayController::measureTextContentRect(TextLayer* tl, int64_t relTick,
     // layer is selected, so the old ~33 MB (4K) alloc/free per frame was a real
     // cost. boundingRect() returns the identical rect drawText would occupy.
     const QFontMetricsF fm(font);
-    const QRectF textBounds =
-        fm.boundingRect(textRect, hAlign | vAlign | Qt::TextWordWrap, text);
+    QRectF textBounds;
+    const bool needsStyledLayout = !tl->styleRuns().empty()
+        || !tl->paragraphStyles().empty() || !tl->fontStyle().empty()
+        || tl->kerning() != 0.0f || tl->tsume() != 0.0f
+        || tl->tabWidth() != 48.0f || sourceText.contains(QChar('\t'))
+        || tl->fauxBold() || tl->fauxItalic() || tl->underline()
+        || tl->superscript() || tl->subscript() || tl->rightToLeft();
+    if (needsStyledLayout) {
+        const auto styled = measureGraphicTextLayout(
+            tl, relTick, cxD, cyD, hAlign, vAlign);
+        if (styled.valid) {
+            textBounds = QRectF(QPointF(styled.left, styled.top),
+                                QPointF(styled.right, styled.bottom));
+        }
+    }
+    if (textBounds.isEmpty()) {
+        textBounds = fm.boundingRect(
+            textRect, hAlign | vAlign | Qt::TextWordWrap, text);
+    }
+    if (!needsStyledLayout && !tl->useParagraphBox()) {
+        // Point text keeps its first line anchored and grows downward. Qt's
+        // AlignVCenter bounds center the entire multiline block, so translate
+        // the measured bounds by half of the additional line height to match
+        // the renderer and the live monitor editor.
+        const int extraLines = std::max(
+            0, static_cast<int>(text.count(QChar('\n'))));
+        const qreal lineSpacing = fm.lineSpacing()
+            + static_cast<qreal>(tl->leading().evaluate(relTick));
+        textBounds.translate(0.0, lineSpacing * extraLines * 0.5);
+    }
 
     // Premiere-style breathing room so the corner handles don't sit on the ink.
-    const float horizPad = tl->fontSize() * 0.45f;
-    const float vertPad  = tl->fontSize() * 0.40f;
+    float largestFontSize = tl->fontSize();
+    for (const auto& run : tl->styleRuns())
+        largestFontSize = std::max(largestFontSize, run.fontSize);
+    const float horizPad = largestFontSize * 0.45f;
+    const float vertPad  = largestFontSize * 0.40f;
     info.useContentRect = true;
     info.contentL = static_cast<float>(textBounds.left())   - horizPad;
     info.contentT = static_cast<float>(textBounds.top())    - vertPad;
@@ -183,11 +216,34 @@ void OverlayController::updateTransformOverlay()
 
     TransformOverlayInfo info;
     info.visible  = true;
+    info.editOuterClipTransform =
+        !(m_ws->selection().clip->clipType() == ClipType::Graphic
+          && m_ws->selection().graphicLayerIdx >= 0);
 
     // Evaluate at the current playhead position relative to clip start
     const int64_t relTick = m_ws->playbackController()
         ? std::max(int64_t{0}, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
         : int64_t{0};
+
+    const auto sequenceResolution = m_ws->timeline()->settings().resolution();
+    auto migrateSelectedMasks = [&](uint32_t sourceW, uint32_t sourceH,
+                                    int sourceRotation = 0) {
+        if (sourceW == 0 || sourceH == 0 ||
+            sequenceResolution.width == 0 || sequenceResolution.height == 0)
+            return;
+        const int migrated =
+            m_ws->selection().clip->migrateLegacyMasksToSourceLocal(
+                sequenceResolution.width, sequenceResolution.height,
+                sourceW, sourceH, sourceRotation);
+        if (migrated > 0) m_ws->invalidateCompositeCache();
+    };
+    if (auto* video = dynamic_cast<VideoClip*>(m_ws->selection().clip)) {
+        if (video->sourceMetadataAuthoritative())
+            migrateSelectedMasks(video->sourceWidth(), video->sourceHeight(),
+                                 video->sourceRotation());
+    } else if (auto* image = dynamic_cast<ImageClip*>(m_ws->selection().clip)) {
+        migrateSelectedMasks(image->sourceWidth(), image->sourceHeight());
+    }
 
     // Per-layer transform for GraphicClip: when a specific layer is selected
     // in Essential Graphics, show the overlay sized around that layer only.
@@ -242,6 +298,8 @@ void OverlayController::updateTransformOverlay()
             info.clipScaleX   = m_ws->selection().clip->scaleX().evaluate(relTick);
             info.clipScaleY   = m_ws->selection().clip->scaleY().evaluate(relTick);
             info.clipRotation = m_ws->selection().clip->rotation().evaluate(relTick);
+            info.clipAnchorX  = m_ws->selection().clip->anchorX().evaluate(relTick);
+            info.clipAnchorY  = m_ws->selection().clip->anchorY().evaluate(relTick);
         }
     } else {
         {
@@ -281,6 +339,8 @@ void OverlayController::updateTransformOverlay()
                 info.clipScaleX  = info.scaleX;
                 info.clipScaleY  = info.scaleY;
                 info.clipRotation = info.rotation;
+                info.clipAnchorX = info.anchorX;
+                info.clipAnchorY = info.anchorY;
                 info.posX     = xf.posX.evaluate(relTick);
                 info.posY     = xf.posY.evaluate(relTick);
                 info.scaleX   = xf.scaleX.evaluate(relTick);
@@ -320,6 +380,9 @@ void OverlayController::updateTransformOverlay()
                 if (mi) {
                     info.srcW = mi->width;
                     info.srcH = mi->height;
+                    info.srcRotation = mi->rotation;
+                    imageClip->setSourceResolution(mi->width, mi->height);
+                    migrateSelectedMasks(mi->width, mi->height);
                 }
             }
         }
@@ -327,6 +390,7 @@ void OverlayController::updateTransformOverlay()
 
     if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<VideoClip*>(m_ws->selection().clip)) {
         auto* videoClip = dynamic_cast<VideoClip*>(m_ws->selection().clip);
+        info.srcRotation = videoClip->sourceRotation();
         if (m_ws->mediaPool()) {
             // Try cached handle first
             uint64_t handle = m_ws->compositeService()->findMediaHandle(videoClip->mediaPath());
@@ -363,6 +427,11 @@ void OverlayController::updateTransformOverlay()
                 if (mi) {
                     info.srcW = mi->width;
                     info.srcH = mi->height;
+                    info.srcRotation = mi->rotation;
+                    videoClip->setSourceMetadata(
+                        mi->width, mi->height, mi->rotation);
+                    migrateSelectedMasks(
+                        mi->width, mi->height, mi->rotation);
                 }
             }
         }
@@ -543,6 +612,8 @@ void OverlayController::updateTransformOverlay()
             si.clipScaleX   = info.clipScaleX;
             si.clipScaleY   = info.clipScaleY;
             si.clipRotation = info.clipRotation;
+            si.clipAnchorX  = info.clipAnchorX;
+            si.clipAnchorY  = info.clipAnchorY;
 
             uint32_t outW = 0, outH = 0;
             graphicCanvasRes(outW, outH);
@@ -616,6 +687,35 @@ void OverlayController::updateTransformOverlay()
         overlay->setTransformOverlay(info);
         overlay->setSecondaryOverlays(secondaries);
 
+        // Masks belong to the clip/effect texture, not to a focused inner
+        // Graphic layer. Give the overlay an explicit owner transform so the
+        // same local UV path used by the compositor is used for draw/hit-test.
+        TransformOverlayInfo maskOwnerInfo = info;
+        if (info.useContentRect) {
+            uint32_t canvasW = 0, canvasH = 0;
+            graphicCanvasRes(canvasW, canvasH);
+            maskOwnerInfo = TransformOverlayInfo{};
+            maskOwnerInfo.visible = true;
+            maskOwnerInfo.srcW = canvasW;
+            maskOwnerInfo.srcH = canvasH;
+            const auto ownerPos = evaluatePosition2D(
+                m_ws->selection().clip->positionX(),
+                m_ws->selection().clip->positionY(), relTick);
+            maskOwnerInfo.posX = ownerPos.first;
+            maskOwnerInfo.posY = ownerPos.second;
+            maskOwnerInfo.scaleX =
+                m_ws->selection().clip->scaleX().evaluate(relTick);
+            maskOwnerInfo.scaleY =
+                m_ws->selection().clip->scaleY().evaluate(relTick);
+            maskOwnerInfo.rotation =
+                m_ws->selection().clip->rotation().evaluate(relTick);
+            maskOwnerInfo.anchorX =
+                m_ws->selection().clip->anchorX().evaluate(relTick);
+            maskOwnerInfo.anchorY =
+                m_ws->selection().clip->anchorY().evaluate(relTick);
+        }
+        overlay->setMaskOwnerOverlay(maskOwnerInfo, !info.useContentRect);
+
         // Pass mask data for overlay drawing.  The active mask context
         // decides WHICH list the monitor edits: the clip's opacity masks
         // (default) or a specific effect's masks (activated by clicking a
@@ -626,13 +726,12 @@ void OverlayController::updateTransformOverlay()
             if (selClip) {
                 if (m_activeMaskEffectId != 0) {
                     if (Effect* fx = selClip->effects().effectById(m_activeMaskEffectId)) {
-                        if (fx->maskCount() > 0)
-                            maskList = &fx->masks();
+                        maskList = &fx->masks();
                     }
                     if (!maskList)
                         m_activeMaskEffectId = 0;  // effect gone — fall back
                 }
-                if (!maskList && selClip->maskCount() > 0)
+                if (!maskList)
                     maskList = &selClip->masks();
 
                 // Clip-local time, same basis the renderer evaluates masks
@@ -676,7 +775,10 @@ void OverlayController::updateTransformOverlay()
 
 void OverlayController::setActiveMaskContext(uint64_t effectId)
 {
-    if (m_activeMaskEffectId == effectId) return;
+    // Even an unchanged owner id must rebind the overlay's mask vector. Clip
+    // opacity masks use id 0, which is also the default; returning early here
+    // meant their first Effect Controls click could select against a null or
+    // stale Program Monitor list and silently leave no draggable mask active.
     m_activeMaskEffectId = effectId;
     updateTransformOverlay();
 }
@@ -725,6 +827,80 @@ void OverlayController::wireOverlayToolSignals()
     // -- Forward tool changes to TransformOverlayWidget -------------------
     if (m_ws->timelinePanel() && m_ws->programMonitor() && m_ws->programMonitor()->transformOverlay()) {
         auto* ov2 = m_ws->programMonitor()->transformOverlay();
+        if (m_ws->graphicsEditorPanel()) {
+            auto* graphics = m_ws->graphicsEditorPanel();
+            ov2->setInlineTextFormattingWidget(
+                graphics->textFormattingWidget());
+            connect(graphics, &GraphicsEditorPanel::inlineFontFamilyRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontFamily);
+            connect(graphics, &GraphicsEditorPanel::inlineFontSizeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontSize);
+            connect(graphics, &GraphicsEditorPanel::inlineFontWeightRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontWeight);
+            connect(graphics, &GraphicsEditorPanel::inlineItalicRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextItalic);
+            connect(graphics,
+                    &GraphicsEditorPanel::inlineCapitalizationRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextCapitalization);
+            connect(graphics, &GraphicsEditorPanel::inlineTrackingRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextTracking);
+            connect(graphics,
+                    &GraphicsEditorPanel::inlineBaselineShiftRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextBaselineShift);
+            connect(graphics, &GraphicsEditorPanel::inlineLeadingRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextLeading);
+            connect(graphics, &GraphicsEditorPanel::inlineFontStyleRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontStyle);
+            connect(graphics, &GraphicsEditorPanel::inlineKerningRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextKerning);
+            connect(graphics, &GraphicsEditorPanel::inlineTabWidthRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextTabWidth);
+            connect(graphics, &GraphicsEditorPanel::inlineTsumeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextTsume);
+            connect(graphics, &GraphicsEditorPanel::inlineFauxStylesRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFauxStyles);
+            connect(graphics, &GraphicsEditorPanel::inlineUnderlineRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextUnderline);
+            connect(graphics, &GraphicsEditorPanel::inlineScriptRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextScript);
+            connect(graphics, &GraphicsEditorPanel::inlineFillRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFill);
+            connect(graphics, &GraphicsEditorPanel::inlineStrokeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextStroke);
+            connect(graphics, &GraphicsEditorPanel::inlineShadowRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextShadow);
+            connect(graphics, &GraphicsEditorPanel::inlineBackgroundRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextBackground);
+            connect(graphics,
+                    &GraphicsEditorPanel::inlineParagraphAlignmentRequested,
+                    ov2, &TransformOverlayWidget::applyInlineParagraphAlignment);
+            connect(graphics,
+                    &GraphicsEditorPanel::inlineParagraphDirectionRequested,
+                    ov2, &TransformOverlayWidget::applyInlineParagraphDirection);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextSelectionFormatChanged,
+                    graphics, &GraphicsEditorPanel::setInlineTextSelectionFormat);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextAdvancedFormatChanged,
+                    graphics, &GraphicsEditorPanel::setInlineTextAdvancedFormat);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextSelectionAppearanceChanged,
+                    graphics,
+                    &GraphicsEditorPanel::setInlineTextSelectionAppearance);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineParagraphFormatChanged,
+                    graphics, &GraphicsEditorPanel::setInlineParagraphFormat);
+        }
+        if (m_ws->captionsPanel()) {
+            auto* captions = m_ws->captionsPanel();
+            connect(captions, &CaptionsPanel::inlineFontFamilyRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontFamily);
+            connect(captions, &CaptionsPanel::inlineFontSizeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontSize);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextSelectionFormatChanged,
+                    captions, &CaptionsPanel::setInlineTextSelectionFormat);
+        }
         connect(m_ws->timelinePanel(), &TimelinePanel::toolChanged,
                 this, [ov2](EditTool tool) {
             ov2->setEditTool(static_cast<uint8_t>(tool));
@@ -751,27 +927,61 @@ void OverlayController::wireOverlayToolSignals()
             // just like a graphic text layer.
             if (m_ws->selection().clip && m_ws->selection().clip->isCaption()) {
                 auto* cc = static_cast<CaptionClip*>(m_ws->selection().clip);
+                if (m_ws->captionsPanel()) {
+                    m_ws->captionsPanel()->setMonitorTextEditing(true);
+                    ov2->setInlineTextFormattingWidget(
+                        m_ws->captionsPanel()->textFormattingWidget());
+                }
                 m_preEditOriginalText = cc->text();
+                m_preEditOriginalStyles = cc->styleRuns();
+                m_preEditOriginalParagraphStyles = cc->paragraphStyles();
+                m_preEditClipId = cc->id();
+                m_preEditLayerId = 0;
+                m_preEditWasCaption = true;
                 m_inlineTextEditActive = true;
                 updateTransformOverlay();
                 cc->setText(std::string{});           // hide while editing
                 m_ws->invalidateCompositeCache();
                 if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 QColor textColor = QColor::fromRgba(cc->textColor());
+                TextRunAppearance captionAppearance;
+                captionAppearance.fillEnabled = true;
+                captionAppearance.fillColor = cc->textColor();
+                captionAppearance.strokeEnabled = cc->outlineWidth() > 0.0f;
+                captionAppearance.strokeColor = cc->outlineColor();
+                captionAppearance.strokeWidth = cc->outlineWidth();
+                Qt::Alignment captionAlignment = Qt::AlignHCenter;
+                if (cc->alignment() == GTextAlign::Left)
+                    captionAlignment = Qt::AlignLeft;
+                else if (cc->alignment() == GTextAlign::Right)
+                    captionAlignment = Qt::AlignRight;
+                else if (cc->alignment() == GTextAlign::Justify)
+                    captionAlignment = Qt::AlignJustify;
                 ov2->beginInlineTextEdit(
                     QString::fromStdString(m_preEditOriginalText),
                     QString::fromStdString(cc->fontFamily()),
                     cc->fontSize(),
-                    static_cast<int>(QFont::Bold),  // captions render bold
+                    cc->isBold() ? 700 : 400,
                     /*italic*/false,
                     textColor,
                     /*hStretch*/1.0f,
-                    Qt::AlignHCenter);
+                    captionAlignment,
+                    m_preEditOriginalStyles,
+                    1.0f, cc->allCaps(), cc->smallCaps(), cc->tracking(),
+                    0.0f, cc->leading(), captionAppearance,
+                    m_preEditOriginalParagraphStyles,
+                    QString::fromStdString(cc->fontStyle()),
+                    0.0f, 48.0f, 0.0f, cc->fauxBold(), cc->fauxItalic(),
+                    cc->underline(), cc->superscript(), cc->subscript(), false);
                 return;
             }
 
             TextLayer* tl = currentTextLayer();
             if (!tl) return;
+            if (m_ws->graphicsEditorPanel()) {
+                ov2->setInlineTextFormattingWidget(
+                    m_ws->graphicsEditorPanel()->textFormattingWidget());
+            }
 
             // Pick the first fill colour for the editor text colour.
             QColor textColor(Qt::white);
@@ -785,7 +995,15 @@ void OverlayController::wireOverlayToolSignals()
             // may have stale/zero bounds, causing beginInlineTextEdit to
             // fall back to a huge default box).
             m_preEditOriginalText = tl->text();
+            m_preEditOriginalStyles = tl->styleRuns();
+            m_preEditOriginalParagraphStyles = tl->paragraphStyles();
+            m_preEditClipId = m_ws->selection().clip
+                ? m_ws->selection().clip->id() : 0;
+            m_preEditLayerId = tl->layerId();
+            m_preEditWasCaption = false;
             m_inlineTextEditActive = true;
+            if (m_ws->graphicsEditorPanel())
+                m_ws->graphicsEditorPanel()->setMonitorTextEditing(true);
 
             // Sync m_ws->selection().graphicLayerIdx to the layer we're about to
             // edit. updateTransformOverlay()'s per-layer branch is gated
@@ -824,8 +1042,9 @@ void OverlayController::wireOverlayToolSignals()
             // larger.
             float scaleX = 1.0f;
             float scaleY = 1.0f;
+            int64_t localTick = 0;
             if (m_ws->selection().clip && m_ws->playbackController()) {
-                const int64_t localTick = std::max<int64_t>(
+                localTick = std::max<int64_t>(
                     0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn());
                 scaleX = tl->transform().scaleX.evaluate(localTick);
                 scaleY = tl->transform().scaleY.evaluate(localTick);
@@ -847,28 +1066,114 @@ void OverlayController::wireOverlayToolSignals()
 
             // fontSize × scaleY → vertical match. horizontalStretch =
             // scaleX/scaleY → horizontal match for anisotropic scaling.
+            TextRunAppearance baseAppearance;
+            baseAppearance.fillEnabled = !tl->appearance().fills.empty()
+                && tl->appearance().fills.front().enabled;
+            if (!tl->appearance().fills.empty())
+                baseAppearance.fillColor = tl->appearance().fills.front().color;
+            baseAppearance.strokeEnabled = !tl->appearance().strokes.empty()
+                && tl->appearance().strokes.front().enabled;
+            if (!tl->appearance().strokes.empty()) {
+                const auto& stroke = tl->appearance().strokes.front();
+                baseAppearance.strokeColor = stroke.color;
+                baseAppearance.strokeWidth = stroke.width;
+                baseAppearance.strokePosition = stroke.position;
+            }
+            baseAppearance.shadowEnabled = !tl->appearance().shadows.empty()
+                && tl->appearance().shadows.front().enabled;
+            if (!tl->appearance().shadows.empty()) {
+                const auto& shadow = tl->appearance().shadows.front();
+                baseAppearance.shadowColor = shadow.color;
+                baseAppearance.shadowDistance = shadow.distance;
+                baseAppearance.shadowAngle = shadow.angle;
+                baseAppearance.shadowSoftness = shadow.softness;
+                baseAppearance.shadowOpacity = shadow.opacity;
+            }
+            baseAppearance.backgroundEnabled = tl->backgroundEnabled();
+            baseAppearance.backgroundColor = tl->backgroundColor();
+            baseAppearance.backgroundPadding = tl->backgroundPadding();
             ov2->beginInlineTextEdit(
                 QString::fromStdString(m_preEditOriginalText),
                 QString::fromStdString(tl->fontFamily()),
-                tl->fontSize() * scaleY,
+                tl->fontSize(),
                 tl->fontWeight(),
                 tl->isItalic(),
                 textColor,
                 scaleX / scaleY,
-                hAlignFlag);
+                hAlignFlag,
+                m_preEditOriginalStyles,
+                scaleY,
+                tl->allCaps(),
+                tl->smallCaps(),
+                tl->tracking().evaluate(localTick),
+                tl->baselineShift().evaluate(localTick),
+                tl->leading().evaluate(localTick), baseAppearance,
+                m_preEditOriginalParagraphStyles,
+                QString::fromStdString(tl->fontStyle()), tl->kerning(),
+                tl->tabWidth(), tl->tsume(), tl->fauxBold(),
+                tl->fauxItalic(), tl->underline(), tl->superscript(),
+                tl->subscript(), tl->rightToLeft());
         });
 
         connect(ov2, &TransformOverlayWidget::inlineTextCommitted,
-                this, [this, currentTextLayer](const QString& newText) {
+                this, [this, ov2](const QString& newText) {
             if (m_ws->isDestroying()) return;
+            if (m_ws->graphicsEditorPanel())
+                m_ws->graphicsEditorPanel()->setMonitorTextEditing(false);
+            if (m_ws->captionsPanel())
+                m_ws->captionsPanel()->setMonitorTextEditing(false);
+
+            // The click that ends editing is also allowed to change the
+            // timeline/panel selection. Resolve the edit target from the IDs
+            // captured when editing began, never from the current selection.
+            // The old selection-based lookup could leave the original layer
+            // permanently empty because its text is hidden while the monitor
+            // editor is visible.
+            const uint64_t editClipId = m_preEditClipId;
+            const uint64_t editLayerId = m_preEditLayerId;
+            const bool editWasCaption = m_preEditWasCaption;
+            auto resolveEditedClip = [this, editClipId]() -> Clip* {
+                Timeline* timeline = m_ws->timeline();
+                if (!timeline || !editClipId) return nullptr;
+                for (size_t i = 0; i < timeline->trackCount(); ++i) {
+                    Track* track = timeline->track(i);
+                    if (!track) continue;
+                    const size_t index = track->findClipIndexById(editClipId);
+                    if (index != track->clipCount()) return track->clip(index);
+                }
+                return nullptr;
+            };
+            Clip* editedClip = resolveEditedClip();
+            auto clearEditIdentity = [this]() {
+                m_preEditClipId = 0;
+                m_preEditLayerId = 0;
+                m_preEditWasCaption = false;
+            };
 
             // Caption clip: commit the edited text back to the caption.
-            if (m_ws->selection().clip && m_ws->selection().clip->isCaption()) {
-                auto* cc = static_cast<CaptionClip*>(m_ws->selection().clip);
+            if (editWasCaption) {
+                auto* cc = editedClip && editedClip->isCaption()
+                    ? static_cast<CaptionClip*>(editedClip) : nullptr;
+                if (!cc) {
+                    m_inlineTextEditActive = false;
+                    clearEditIdentity();
+                    return;
+                }
                 const std::string newVal = newText.toStdString();
                 const std::string oldVal = m_preEditOriginalText;
+                const std::vector<TextStyleRun> newStyles =
+                    ov2->committedInlineTextStyles();
+                const std::vector<TextStyleRun> oldStyles =
+                    m_preEditOriginalStyles;
+                const std::vector<TextParagraphStyle> newParagraphStyles =
+                    ov2->committedInlineParagraphStyles();
+                const std::vector<TextParagraphStyle> oldParagraphStyles =
+                    m_preEditOriginalParagraphStyles;
                 m_inlineTextEditActive = false;
+                clearEditIdentity();
                 m_preEditOriginalText.clear();
+                m_preEditOriginalStyles.clear();
+                m_preEditOriginalParagraphStyles.clear();
                 auto capRefresh = [this]() {
                     m_ws->invalidateCompositeCache();
                     if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
@@ -876,7 +1181,14 @@ void OverlayController::wireOverlayToolSignals()
                     if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                     if (m_ws->captionsPanel()) m_ws->captionsPanel()->refresh();
                 };
-                if (newVal == oldVal) { cc->setText(oldVal); capRefresh(); return; }
+                if (newVal == oldVal && newStyles == oldStyles
+                    && newParagraphStyles == oldParagraphStyles) {
+                    cc->setText(oldVal);
+                    cc->setStyleRuns(oldStyles);
+                    cc->setParagraphStyles(oldParagraphStyles);
+                    capRefresh();
+                    return;
+                }
                 if (m_ws->commandStack()) {
                     // Capture the clip ID, never the pointer — the caption can
                     // be deleted while this command is still on the stack.
@@ -896,22 +1208,61 @@ void OverlayController::wireOverlayToolSignals()
                     };
                     m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                         "Edit Caption Text",
-                        [resolve, newVal, capRefresh]() { if (auto* c = resolve()) { c->setText(newVal); capRefresh(); } },
-                        [resolve, oldVal, capRefresh]() { if (auto* c = resolve()) { c->setText(oldVal); capRefresh(); } }));
-                } else { cc->setText(newVal); capRefresh(); }
+                        [resolve, newVal, newStyles, newParagraphStyles,
+                         capRefresh]() {
+                            if (auto* c = resolve()) {
+                                c->setText(newVal);
+                                c->setStyleRuns(newStyles);
+                                c->setParagraphStyles(newParagraphStyles);
+                                capRefresh();
+                            }
+                        },
+                        [resolve, oldVal, oldStyles, oldParagraphStyles,
+                         capRefresh]() {
+                            if (auto* c = resolve()) {
+                                c->setText(oldVal);
+                                c->setStyleRuns(oldStyles);
+                                c->setParagraphStyles(oldParagraphStyles);
+                                capRefresh();
+                            }
+                        }));
+                } else {
+                    cc->setText(newVal);
+                    cc->setStyleRuns(newStyles);
+                    cc->setParagraphStyles(newParagraphStyles);
+                    capRefresh();
+                }
                 return;
             }
 
-            TextLayer* tl = currentTextLayer();
+            TextLayer* tl = nullptr;
+            if (editedClip && editedClip->clipType() == ClipType::Graphic) {
+                auto* layer = static_cast<GraphicClip*>(editedClip)
+                    ->findLayerById(editLayerId);
+                if (layer && layer->layerType() == GraphicLayerType::Text)
+                    tl = static_cast<TextLayer*>(layer);
+            }
             if (!tl) {
                 m_inlineTextEditActive = false;
+                clearEditIdentity();
                 return;
             }
             const std::string newVal = newText.toStdString();
             const std::string oldVal = m_preEditOriginalText;
+            const std::vector<TextStyleRun> newStyles =
+                ov2->committedInlineTextStyles();
+            const std::vector<TextStyleRun> oldStyles =
+                m_preEditOriginalStyles;
+            const std::vector<TextParagraphStyle> newParagraphStyles =
+                ov2->committedInlineParagraphStyles();
+            const std::vector<TextParagraphStyle> oldParagraphStyles =
+                m_preEditOriginalParagraphStyles;
             const bool wasActive = m_inlineTextEditActive;
             m_inlineTextEditActive = false;
+            clearEditIdentity();
             m_preEditOriginalText.clear();
+            m_preEditOriginalStyles.clear();
+            m_preEditOriginalParagraphStyles.clear();
 
             auto refresh = [this]() {
                 if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
@@ -922,9 +1273,12 @@ void OverlayController::wireOverlayToolSignals()
 
             // If nothing changed (e.g. cancel/commit unchanged), restore
             // the original text without making an undo entry.
-            if (newVal == oldVal) {
+            if (newVal == oldVal && newStyles == oldStyles
+                && newParagraphStyles == oldParagraphStyles) {
                 if (wasActive) {
                     tl->setText(oldVal);
+                    tl->setStyleRuns(oldStyles);
+                    tl->setParagraphStyles(oldParagraphStyles);
                     refresh();
                 }
                 return;
@@ -936,8 +1290,8 @@ void OverlayController::wireOverlayToolSignals()
             if (m_ws->commandStack()) {
                 // Capture clip + layer IDs, never the TextLayer pointer — the
                 // graphic clip can be deleted while the command is stacked.
-                const uint64_t gcId = m_ws->selection().clip ? m_ws->selection().clip->id() : 0;
-                const uint64_t layerId = tl->layerId();
+                const uint64_t gcId = editClipId;
+                const uint64_t layerId = editLayerId;
                 auto resolve = [this, gcId, layerId]() -> TextLayer* {
                     Timeline* tline = m_ws->timeline();
                     if (!tline || !gcId) return nullptr;
@@ -957,14 +1311,26 @@ void OverlayController::wireOverlayToolSignals()
                 };
                 m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                     "Edit Text",
-                    [resolve, newVal, refresh]() {
-                        if (auto* t = resolve()) { t->setText(newVal); refresh(); }
+                    [resolve, newVal, newStyles, newParagraphStyles, refresh]() {
+                        if (auto* t = resolve()) {
+                            t->setText(newVal);
+                            t->setStyleRuns(newStyles);
+                            t->setParagraphStyles(newParagraphStyles);
+                            refresh();
+                        }
                     },
-                    [resolve, oldVal, refresh]() {
-                        if (auto* t = resolve()) { t->setText(oldVal); refresh(); }
+                    [resolve, oldVal, oldStyles, oldParagraphStyles, refresh]() {
+                        if (auto* t = resolve()) {
+                            t->setText(oldVal);
+                            t->setStyleRuns(oldStyles);
+                            t->setParagraphStyles(oldParagraphStyles);
+                            refresh();
+                        }
                     }));
             } else {
                 tl->setText(newVal);
+                tl->setStyleRuns(newStyles);
+                tl->setParagraphStyles(newParagraphStyles);
                 refresh();
             }
         });

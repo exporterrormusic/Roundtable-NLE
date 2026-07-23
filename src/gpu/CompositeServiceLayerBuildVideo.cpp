@@ -41,7 +41,7 @@ namespace rt {
 // ─────────────────────────────────────────────────────────────────────────────
 std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
-    bool scrubMode) const
+    bool scrubMode, bool exactCacheOnly, bool stillMode) const
 {
     if (!m_mediaPool)
         return nullptr;
@@ -71,7 +71,7 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // won't thrash-evict.  Also reject alternate-tier fallback frames
     // (e.g. Half when Full was requested) — export always wants full quality.
     if (m_forceFullResolution.load()) {
-        auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);
+        auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
         // Reject loop-pre-decoded cache entries during export.  The loop
         // pre-decoder (MediaPoolPrefetchLoop) seeks with SeekMode::Precise
         // and labels frames sequentially, which the rest of the engine
@@ -106,6 +106,35 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         }
         return frame;
     }
+
+    // A paused, non-scrubbing monitor frame is a quality request, not a
+    // latency request.  Require the exact frame at the selected tier and do
+    // the blocking decode on FrameProducer's worker thread.  In particular,
+    // never accept MediaPool's alternate-tier/last-good fallback here: that
+    // was how a Half decode remained stretched over a Full 1080p composite
+    // after the playhead stopped.
+    if (stillMode && !scrubMode) {
+        auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
+        if (frame && frame->frameNumber == frameNumber && frame->tier == tier) {
+            return frame;
+        }
+        frame = m_mediaPool->getFrame(handle, frameNumber, tier,
+                                      /*scrubMode=*/true,
+                                      /*forceExact=*/true);
+        if (frame && frame->frameNumber == frameNumber && frame->tier == tier) {
+            return frame;
+        }
+        return nullptr;
+    }
+
+    // Optical-flow/frame-blend endpoint acquisition must be exact but must
+    // never block playback. In particular, do not pass these requests through
+    // tryGetFrame's nearby/last-good substitution: a slow retime legitimately
+    // asks for the same lower endpoint after the prior call fetched the upper
+    // endpoint, which the anti-rewind guard would otherwise replace.
+    if (exactCacheOnly)
+        return m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
+
     // Try non-blocking first (fast path for cached frames during playback).
     auto frame = m_mediaPool->tryGetFrame(handle, frameNumber, tier);
     if (frame) {
@@ -193,15 +222,14 @@ uint64_t CompositeService::resolveVideoClipHandle(
     if (mediaPath.empty()) { skipClip = true; return 0; }
 
     // Lazy-open media handle (cached by path)
-    uint64_t handle = 0;
-    auto it = m_openMediaHandles.find(mediaPath);
-    if (it != m_openMediaHandles.end() && it->second != 0) {
-        handle = it->second;
+    uint64_t handle = findMediaHandle(mediaPath);
+    if (handle != 0) {
     } else if (playbackNonBlocking && !m_forceFullResolution.load()) {
         // Check if MediaPool finished opening this path in the background.
         if (m_mediaPool->isPathOpen(mediaPath)) {
             handle = m_mediaPool->open(mediaPath);
-            m_openMediaHandles[mediaPath] = handle;
+            if (handle != 0)
+                registerMediaHandle(mediaPath, handle);
         } else {
             // Not open yet — start or continue async open.
             m_mediaPool->openAsync(mediaPath);
@@ -284,7 +312,7 @@ uint64_t CompositeService::resolveVideoClipHandle(
             skipClip = true;
             return 0;
         }
-        m_openMediaHandles[mediaPath] = handle;
+        registerMediaHandle(mediaPath, handle);
     }
     return handle;
 }

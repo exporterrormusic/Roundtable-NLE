@@ -291,6 +291,11 @@ public:
     }
 
 private:
+    /// Test seam: lets the deletion-race regression test inject in-flight
+    /// pending keys / queued jobs and inspect the guard set without
+    /// spinning up real render workers.
+    friend struct AnimationVideoCacheTestPeer;
+
     /// Build cache key: "charName|outfit|animName"
     static std::string makeKey(const std::string& charName,
                                 const std::string& outfit,

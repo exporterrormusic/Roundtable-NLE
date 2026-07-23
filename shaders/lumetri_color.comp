@@ -154,6 +154,62 @@ void main()
     vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.width, pc.height);
     vec4 color = texture(inputImage, uv);
 
+    // HSL Secondary pass.  Nine parameters uniquely identify this pass:
+    // qualifier H/S/L ranges followed by hue/saturation/luminance correction.
+    if (pc.paramCount == 9) {
+        vec3 hsl = rgbToHsl(clamp(color.rgb, 0.0, 1.0));
+        float hueCenter = pc.params[0] / 360.0;
+        float halfHueWidth = pc.params[1] / 720.0;
+        float hueDistance = abs(fract(hsl.x - hueCenter + 0.5) - 0.5);
+        float hueMask = 1.0 - smoothstep(halfHueWidth,
+                                         halfHueWidth + 0.015, hueDistance);
+
+        float satMin = min(pc.params[2], pc.params[3]) / 100.0;
+        float satMax = max(pc.params[2], pc.params[3]) / 100.0;
+        float lumMin = min(pc.params[4], pc.params[5]) / 100.0;
+        float lumMax = max(pc.params[4], pc.params[5]) / 100.0;
+        float satLow = satMin <= 0.0 ? 1.0
+            : smoothstep(satMin - 0.02, satMin + 0.02, hsl.y);
+        float satHigh = satMax >= 1.0 ? 1.0
+            : 1.0 - smoothstep(satMax - 0.02, satMax + 0.02, hsl.y);
+        float lumLow = lumMin <= 0.0 ? 1.0
+            : smoothstep(lumMin - 0.02, lumMin + 0.02, hsl.z);
+        float lumHigh = lumMax >= 1.0 ? 1.0
+            : 1.0 - smoothstep(lumMax - 0.02, lumMax + 0.02, hsl.z);
+        float qualifier = clamp(hueMask * satLow * satHigh * lumLow * lumHigh,
+                                0.0, 1.0);
+
+        vec3 corrected = hsl;
+        corrected.x = fract(corrected.x + pc.params[6] / 360.0 + 1.0);
+        corrected.y = clamp(corrected.y + pc.params[7] / 100.0, 0.0, 1.0);
+        corrected.z = clamp(corrected.z + pc.params[8] / 100.0, 0.0, 1.0);
+        vec3 result = mix(color.rgb, hslToRgb(corrected), qualifier);
+        imageStore(outputImage, pixel, vec4(clamp(result, 0.0, 1.0), color.a));
+        return;
+    }
+
+    // Curves pass: six samples for each of Master, Red, Green, and Blue.
+    // Six nodes preserve the useful curve shape while fitting in one push.
+    if (pc.paramCount == 24) {
+        vec3 c = clamp(color.rgb, 0.0, 1.0);
+        vec3 scaled = c * 5.0;
+        ivec3 segment = ivec3(min(floor(scaled), vec3(4.0)));
+        vec3 fracPart = scaled - vec3(segment);
+
+        c.r = mix(pc.params[segment.r], pc.params[segment.r + 1], fracPart.r);
+        c.g = mix(pc.params[segment.g], pc.params[segment.g + 1], fracPart.g);
+        c.b = mix(pc.params[segment.b], pc.params[segment.b + 1], fracPart.b);
+
+        scaled = clamp(c, 0.0, 1.0) * 5.0;
+        segment = ivec3(min(floor(scaled), vec3(4.0)));
+        fracPart = scaled - vec3(segment);
+        c.r = mix(pc.params[6 + segment.r], pc.params[6 + segment.r + 1], fracPart.r);
+        c.g = mix(pc.params[12 + segment.g], pc.params[12 + segment.g + 1], fracPart.g);
+        c.b = mix(pc.params[18 + segment.b], pc.params[18 + segment.b + 1], fracPart.b);
+        imageStore(outputImage, pixel, vec4(clamp(c, 0.0, 1.0), color.a));
+        return;
+    }
+
     // Unpack parameters
     float temperature    = pc.params[0];    // -100..100
     float tint           = pc.params[1];    // -100..100

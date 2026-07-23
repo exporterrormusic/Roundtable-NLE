@@ -60,6 +60,7 @@ class WaveformDisplayWidget;
 class SpineClip;
 class CompositeService;
 struct CachedFrame;
+enum class ResolutionTier : uint8_t;
 
 /// Source monitor panel — loads and previews a single media clip.
 class SourceMonitor : public QWidget
@@ -77,7 +78,9 @@ public:
 
     /// Callback type for rendering a nested sequence frame.
     using SequenceFrameProvider = std::function<
-        std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h, bool scrub)>;
+        std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h,
+                                     bool scrub, ResolutionTier tier,
+                                     bool still)>;
 
     /// Resolves the inner sequence's Timeline lazily so the source monitor
     /// never holds a stale pointer when the project changes.
@@ -89,8 +92,16 @@ public:
     /// null, sequence preview plays without audio (legacy behaviour).
     void loadSequence(size_t sequenceIndex, const QString& name,
                       int64_t durationTicks, double fps,
+                      uint32_t sequenceWidth, uint32_t sequenceHeight,
                       SequenceFrameProvider frameProvider,
                       SequenceTimelineGetter timelineGetter = nullptr);
+
+    /// Set playback resolution by index (0=Full, 1=1/2, 2=1/4, 3=1/8).
+    void setPlaybackResolutionIndex(int index)
+    {
+        if (m_playbackResCombo && index >= 0 && index < 4)
+            m_playbackResCombo->setCurrentIndex(index);
+    }
 
     /// Load a SpineClip for live preview (renders with SpineRenderer).
     /// @param spineClip  The SpineClip to preview (non-owning).
@@ -241,6 +252,7 @@ private:
     void setupUI();
     void updateFrameDisplay();
     void updateTimecodeDisplay();
+    void exportViewportFrame();
     void loadWaveformAsync();
     bool ensureSourceAudioLoaded();
     void requestSourceAudioLoadAsync();
@@ -330,6 +342,7 @@ private:
     uint32_t          m_scrubAudioChannels{0};
     int64_t           m_scrubAudioStartFrame{0};
     int               m_scrubSettleCounter{0}; ///< Post-scrub poll countdown
+    bool              m_scrubQualityActive{false}; ///< Use reduced quality while drag-scrubbing
 
     // Audio engine state management
     AVSyncClock*      m_savedSyncClock{nullptr};
@@ -341,6 +354,8 @@ private:
     // Sequence preview state
     bool              m_isSequence{false};
     size_t            m_sequenceIndex{0};
+    uint32_t          m_sequenceWidth{1920};
+    uint32_t          m_sequenceHeight{1080};
     bool              m_seqHasAudio{false};
     SequenceFrameProvider m_seqFrameProvider;
     SequenceTimelineGetter m_seqTimelineGetter;

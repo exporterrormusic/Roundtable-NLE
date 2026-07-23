@@ -26,6 +26,12 @@
 #include <functional>
 #include <thread>
 
+#ifdef ROUNDTABLE_HAS_FFMPEG
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
+#endif
+
 using namespace rt;
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -91,8 +97,8 @@ TEST(ExportEncoder, ProResProfileEnum)
 TEST(ExportEncoder, ImageFormatEnum)
 {
     EXPECT_EQ(static_cast<int>(ImageFormat::PNG), 0);
-    EXPECT_EQ(static_cast<int>(ImageFormat::JPEG), 4);
-    EXPECT_EQ(static_cast<int>(ImageFormat::Count), 5);
+    EXPECT_EQ(static_cast<int>(ImageFormat::JPEG), 2);
+    EXPECT_EQ(static_cast<int>(ImageFormat::Count), 3);
 }
 
 TEST(ExportEncoder, EncodedPacketDefaults)
@@ -172,6 +178,26 @@ TEST(ExportEncoder, ProRes4444EncodesViaKs)
 {
     // 4444 / 4444 XQ need prores_ks (alpha / 4:4:4).
     EXPECT_TRUE(encodeSolidProRes(ProResProfile::_4444, 4));
+}
+
+TEST(ExportEncoder, FractionalFpsAutoGopIsTwoSecondsInFrames)
+{
+    EncoderConfig cfg;
+    cfg.width   = 128;
+    cfg.height  = 128;
+    cfg.fps     = 60000.0 / 1001.0;
+    cfg.fpsNum  = 60000;
+    cfg.fpsDen  = 1001;
+    cfg.codec   = EncoderCodec::H264;
+    cfg.hwAccel = HardwareAccel::None;
+    cfg.gopSize = 0;
+
+    auto enc = Encoder::create(EncoderCodec::H264, HardwareAccel::None);
+    ASSERT_NE(enc, nullptr);
+    ASSERT_TRUE(enc->init(cfg)) << enc->lastError();
+    ASSERT_NE(enc->avCodecContext(), nullptr);
+    EXPECT_EQ(enc->avCodecContext()->gop_size, 120);
+    enc->shutdown();
 }
 #endif // ROUNDTABLE_HAS_FFMPEG
 
@@ -878,10 +904,13 @@ TEST(SmartRenderAnalyzer, DisqualifiersForceReEncode)
         { "position",   [](VideoClip& c){ c.positionX().setDefaultValue(50.0f); } },
         { "scale",      [](VideoClip& c){ c.scaleX().setDefaultValue(1.5f); } },
         { "rotation",   [](VideoClip& c){ c.rotation().setDefaultValue(15.0f); } },
+        { "shutter",    [](VideoClip& c){ c.shutterAngle().setDefaultValue(180.0f); } },
         { "opacity",    [](VideoClip& c){ c.opacity().setDefaultValue(0.5f); } },
         { "opacityKf",  [](VideoClip& c){ c.opacity().addKeyframe(0, 1.0f); } },
         { "speed",      [](VideoClip& c){ c.setSpeed(0.5); } },
         { "speedRamp",  [](VideoClip& c){ c.speedRamp().setDefaultValue(2.0f); } },
+        { "frameBlend",  [](VideoClip& c){ c.setTimeInterpolation(TimeInterpolation::FrameBlending); } },
+        { "opticalFlow", [](VideoClip& c){ c.setTimeInterpolation(TimeInterpolation::OpticalFlow); } },
         { "crop",       [](VideoClip& c){ c.setCrop(5.0f, 0.0f, 0.0f, 0.0f); } },
         { "blendMode",  [](VideoClip& c){ c.setBlendMode(3); } },
         { "mask",       [](VideoClip& c){ c.addMask(OpacityMask{}); } },

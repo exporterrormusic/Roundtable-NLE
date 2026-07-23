@@ -6,6 +6,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/ImageClip.h"
+#include "project/Project.h"
 #include "spine/ShotPreset.h"
 
 #include <spdlog/spdlog.h>
@@ -38,6 +39,22 @@ int relinkPath(Timeline* timeline,
         }
     }
     spdlog::info("MediaRelinker: replaced {} reference(s): '{}' -> '{}'",
+                 updated, oldPath, newPath);
+    return updated;
+}
+
+int relinkPath(Project* project,
+               const std::string& oldPath,
+               const std::string& newPath)
+{
+    if (!project || oldPath.empty() || newPath.empty() || oldPath == newPath)
+        return 0;
+
+    int updated = 0;
+    for (size_t i = 0; i < project->sequenceCount(); ++i)
+        updated += relinkPath(project->sequence(i), oldPath, newPath);
+
+    spdlog::info("MediaRelinker: replaced {} project reference(s): '{}' -> '{}'",
                  updated, oldPath, newPath);
     return updated;
 }

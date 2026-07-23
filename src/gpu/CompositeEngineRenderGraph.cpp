@@ -31,8 +31,10 @@
 #include "timeline/Clip.h"
 
 #include <spdlog/spdlog.h>
+#include <glm/glm.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -106,6 +108,250 @@ static int32_t transitionDirectionOverride(TransitionType tt) noexcept
     }
 }
 
+struct LogicalLayerSize
+{
+    uint32_t width;
+    uint32_t height;
+};
+
+// Dimensions of the layer image as seen by compositor layerUV. Packed-alpha
+// sources store the matte below the RGB image, so their logical image height
+// is half the backing texture height.
+static LogicalLayerSize logicalLayerSize(const LayerInfo& layer,
+                                         uint32_t fallbackW,
+                                         uint32_t fallbackH) noexcept
+{
+    uint32_t width = layer.frameWidth;
+    uint32_t height = layer.frameHeight;
+    if (layer.frame) {
+        if (width == 0) width = layer.frame->width;
+        if (height == 0) height = layer.frame->height;
+    }
+    if (width == 0) width = fallbackW;
+    if (height == 0) height = fallbackH;
+    if (layer.isPacked && height > 1) height /= 2;
+    return {width, height};
+}
+
+static glm::mat4 viewportTransformForSample(
+    const LayerTransformSample& sample, const LayerInfo& layer,
+    uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH)
+{
+    return Compositor::buildViewportTransform(
+        srcW, srcH, outW, outH,
+        sample.posX, sample.posY, sample.scX, sample.scY, sample.rot,
+        layer.containFit, sample.anchorX, sample.anchorY, layer.srcRotation);
+}
+
+static void setLayerTransforms(CompositorLayer& compositorLayer,
+                               const LayerInfo& layer,
+                               uint32_t srcW, uint32_t srcH,
+                               uint32_t outW, uint32_t outH)
+{
+    compositorLayer.transform = Compositor::buildViewportTransform(
+        srcW, srcH, outW, outH,
+        layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
+        layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
+    compositorLayer.motionSampleCount =
+        std::clamp(layer.motionSampleCount, 1, 8);
+    if (compositorLayer.motionSampleCount > 1) {
+        compositorLayer.motionTransformStart = viewportTransformForSample(
+            layer.motionStart, layer, srcW, srcH, outW, outH);
+        compositorLayer.motionTransformEnd = viewportTransformForSample(
+            layer.motionEnd, layer, srcW, srcH, outW, outH);
+    } else {
+        compositorLayer.motionTransformStart = compositorLayer.transform;
+        compositorLayer.motionTransformEnd = compositorLayer.transform;
+    }
+}
+
+static void setStaticTransform(CompositorLayer& compositorLayer,
+                               const glm::mat4& transform)
+{
+    compositorLayer.transform = transform;
+    compositorLayer.motionTransformStart = transform;
+    compositorLayer.motionTransformEnd = transform;
+    compositorLayer.motionSampleCount = 1;
+}
+
+static CompositorLayer fullFrameLayer(
+    const VkDescriptorImageInfo& textureInfo)
+{
+    CompositorLayer layer;
+    layer.enabled = true;
+    layer.textureInfo = textureInfo;
+    layer.opacity = 1.0f;
+    layer.blendMode = BlendMode::Normal;
+    layer.isPacked = false;
+    layer.isPMA = false;
+    layer.needsSwapRB = false;
+    setStaticTransform(layer, Compositor::identityTransform());
+    return layer;
+}
+
+static void makeComputeOutputSampleable(VkCommandBuffer cmd, VkImage image)
+{
+    if (image == VK_NULL_HANDLE) return;
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+// EffectProcessor owns only two mutable ping-pong images. Copy an adjustment
+// result to a submission-slot texture before another stack can overwrite it.
+static bool snapshotEffectOutput(VkCommandBuffer cmd,
+                                 EffectProcessor& processor,
+                                 Texture& snapshot,
+                                 GpuContext& ctx,
+                                 uint32_t width, uint32_t height)
+{
+    if (snapshot.image() == VK_NULL_HANDLE ||
+        snapshot.width() != width || snapshot.height() != height) {
+        snapshot.destroy();
+        TextureConfig cfg{};
+        cfg.width = width;
+        cfg.height = height;
+        cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+        cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (!snapshot.create(ctx.allocator().handle(), ctx.vkDevice(), cfg))
+            return false;
+    }
+
+    const VkImage effectImage = processor.outputImage();
+    if (effectImage == VK_NULL_HANDLE || snapshot.image() == VK_NULL_HANDLE)
+        return false;
+
+    VkImageMemoryBarrier toSource{};
+    toSource.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSource.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toSource.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toSource.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSource.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toSource.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSource.image = effectImage;
+    toSource.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &toSource);
+
+    snapshot.transitionLayout(cmd, snapshot.layout(),
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {width, height, 1};
+    vkCmdCopyImage(cmd, effectImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   snapshot.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region);
+
+    VkImageMemoryBarrier restoreSource{};
+    restoreSource.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    restoreSource.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    restoreSource.dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    restoreSource.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    restoreSource.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    restoreSource.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    restoreSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    restoreSource.image = effectImage;
+    restoreSource.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &restoreSource);
+
+    snapshot.transitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return true;
+}
+
+static MaskRasterTransform legacyMaskTransform(const LayerInfo& layer,
+                                               uint32_t srcW, uint32_t srcH,
+                                               uint32_t outW, uint32_t outH)
+{
+    const glm::mat4 outputToSource = Compositor::buildViewportTransform(
+        srcW, srcH, outW, outH,
+        layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
+        layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
+    auto map = [&](float u, float v) {
+        glm::vec4 p = outputToSource * glm::vec4(u, v, 0.0f, 1.0f);
+        if (std::abs(p.w) > 1.0e-8f) p /= p.w;
+        return glm::vec2(p.x * static_cast<float>(srcW),
+                         p.y * static_cast<float>(srcH));
+    };
+    const glm::vec2 p0 = map(0.0f, 0.0f);
+    const glm::vec2 px = map(1.0f, 0.0f);
+    const glm::vec2 py = map(0.0f, 1.0f);
+    return {{px.x - p0.x, py.x - p0.x, p0.x,
+             px.y - p0.y, py.y - p0.y, p0.y}};
+}
+
+static bool containsLegacyMasks(const std::vector<MaskRenderState>& masks)
+{
+    return std::any_of(masks.begin(), masks.end(), [](const auto& mask) {
+        return mask.coordinateSpace == MaskCoordinateSpace::LegacySequenceFrame;
+    });
+}
+
+static uint64_t layerMaskHash(const std::vector<MaskRenderState>& masks,
+                              const LayerInfo& layer,
+                              uint32_t srcW, uint32_t srcH,
+                              uint32_t outW, uint32_t outH)
+{
+    uint64_t hash = hashMaskStates(masks, srcW, srcH);
+    if (!containsLegacyMasks(masks)) return hash;
+    const auto xf = legacyMaskTransform(layer, srcW, srcH, outW, outH);
+    const auto* bytes = reinterpret_cast<const uint8_t*>(xf.m);
+    for (size_t i = 0; i < sizeof(xf.m); ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static std::vector<uint8_t> rasterizeLayerMasks(
+    const std::vector<MaskRenderState>& masks, const LayerInfo& layer,
+    uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH)
+{
+    std::vector<MaskRenderState> sourceMasks;
+    std::vector<MaskRenderState> legacyMasks;
+    sourceMasks.reserve(masks.size());
+    legacyMasks.reserve(masks.size());
+    for (const auto& mask : masks) {
+        if (mask.coordinateSpace == MaskCoordinateSpace::LegacySequenceFrame)
+            legacyMasks.push_back(mask);
+        else
+            sourceMasks.push_back(mask);
+    }
+
+    if (legacyMasks.empty())
+        return rasterizeMasks(sourceMasks, srcW, srcH);
+
+    const auto xf = legacyMaskTransform(layer, srcW, srcH, outW, outH);
+    if (sourceMasks.empty())
+        return rasterizeMasks(legacyMasks, srcW, srcH, &xf);
+
+    auto pixels = rasterizeMasks(sourceMasks, srcW, srcH);
+    const auto legacyPixels = rasterizeMasks(legacyMasks, srcW, srcH, &xf);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        pixels[i] = static_cast<uint8_t>(std::min(
+            255, static_cast<int>(pixels[i]) +
+                 static_cast<int>(legacyPixels[i])));
+    }
+    return pixels;
+}
+
 // ============================================================================
 // Render graph path (formerly the "alternative path"; now the only path)
 // ============================================================================
@@ -133,21 +379,31 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     auto& ctx = GpuContext::get();
 
     // ── Ensure texture pool is large enough ──────────────────────────
-    while (m_gpuLayerTextures.size() < layers.size())
-        m_gpuLayerTextures.push_back(std::make_unique<Texture>());
-    m_gpuLayerTexKeys.resize(m_gpuLayerTextures.size());
-    while (m_gpuMaskTextures.size() < layers.size())
-        m_gpuMaskTextures.push_back(std::make_unique<Texture>());
-    if (m_maskCache.size() < m_gpuMaskTextures.size())
-        m_maskCache.resize(m_gpuMaskTextures.size());
-    if (m_effectMaskTextures.size() < layers.size())
-        m_effectMaskTextures.resize(layers.size());
-    if (m_effectMaskCache.size() < layers.size())
-        m_effectMaskCache.resize(layers.size());
-    while (m_layerEffectOutputs.size() < layers.size())
-        m_layerEffectOutputs.push_back(std::make_unique<Texture>());
-    while (m_gpuLayerTexturesAlt.size() < layers.size())
-        m_gpuLayerTexturesAlt.push_back(std::make_unique<Texture>());
+    for (uint32_t si = 0; si < kTemporalSubmissionSlots; ++si) {
+        while (m_gpuLayerTextures[si].size() < layers.size())
+            m_gpuLayerTextures[si].push_back(std::make_unique<Texture>());
+        m_gpuLayerTexKeys[si].resize(m_gpuLayerTextures[si].size());
+        while (m_layerEffectOutputs[si].size() < layers.size())
+            m_layerEffectOutputs[si].push_back(std::make_unique<Texture>());
+        while (m_gpuLayerTexturesAlt[si].size() < layers.size())
+            m_gpuLayerTexturesAlt[si].push_back(std::make_unique<Texture>());
+        while (m_gpuMaskTextures[si].size() < layers.size())
+            m_gpuMaskTextures[si].push_back(std::make_unique<Texture>());
+        if (m_maskCache[si].size() < m_gpuMaskTextures[si].size())
+            m_maskCache[si].resize(m_gpuMaskTextures[si].size());
+        if (m_effectMaskTextures[si].size() < layers.size())
+            m_effectMaskTextures[si].resize(layers.size());
+        if (m_effectMaskCache[si].size() < layers.size())
+            m_effectMaskCache[si].resize(layers.size());
+        while (m_gpuTemporalSourceTextures[si].size() < layers.size())
+            m_gpuTemporalSourceTextures[si].push_back(
+                std::make_unique<Texture>());
+        m_gpuTemporalSourceTexKeys[si].resize(
+            m_gpuTemporalSourceTextures[si].size());
+        while (m_layerTemporalOutputs[si].size() < layers.size())
+            m_layerTemporalOutputs[si].push_back(
+                std::make_unique<Texture>());
+    }
 
     // ── Set up command buffer (reuse existing triple-buffer slot) ────
     if (!m_gpuSubmission) {
@@ -179,6 +435,20 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     }
     VkCommandBuffer cmd = slot.cmdBuffer();
     const int timingSlot = slot.currentSlot();
+    auto& gpuLayerTextures =
+        m_gpuLayerTextures[static_cast<size_t>(timingSlot)];
+    auto& gpuLayerTexKeys =
+        m_gpuLayerTexKeys[static_cast<size_t>(timingSlot)];
+    auto& gpuLayerTexturesAlt =
+        m_gpuLayerTexturesAlt[static_cast<size_t>(timingSlot)];
+    auto& layerEffectOutputs =
+        m_layerEffectOutputs[static_cast<size_t>(timingSlot)];
+    auto& gpuMaskTextures = m_gpuMaskTextures[static_cast<size_t>(timingSlot)];
+    auto& maskCache = m_maskCache[static_cast<size_t>(timingSlot)];
+    auto& effectMaskTextures =
+        m_effectMaskTextures[static_cast<size_t>(timingSlot)];
+    auto& effectMaskCache =
+        m_effectMaskCache[static_cast<size_t>(timingSlot)];
 
     // Resolve last frame's timestamps from this ring slot.  beginRecording()
     // above waited for the fence so the queries are guaranteed ready.
@@ -193,9 +463,6 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 
     m_uploadManager->beginFrame(cmd, slot.currentSlot());
     m_uploadManager->setTextureCache(m_gpuTexCache.get());
-
-    if (m_stagingRing && !m_stagingRing->isInitialized())
-        m_stagingRing->init(ctx.allocator().handle(), 64u * 1024u * 1024u);
 
     // ── Initialize GPU texture cache if needed (same logic as old path) ─
     if (!m_gpuTexCache) {
@@ -293,6 +560,14 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 
     GpuRenderGraph graph;
 
+    // Masks are clip-local assets. Keep one authoritative logical size for
+    // every layer so clip masks, effect masks, and the layer transform all use
+    // the same normalized coordinate system.
+    std::vector<LogicalLayerSize> logicalLayerSizes;
+    logicalLayerSizes.reserve(layers.size());
+    for (const auto& layer : layers)
+        logicalLayerSizes.push_back(logicalLayerSize(layer, outW, outH));
+
     // ── Declare the final composite output resource ────────────────
     ResourceId outputTexId = graph.declareResource({
         .type = ResourceType::StorageImage,
@@ -310,31 +585,45 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     // ── Declare per-layer textures and build pass lists ────────────
     struct LayerPassInfo {
         ResourceId layerTexId{kInvalidResource};
+        ResourceId temporalTexId{kInvalidResource};
         ResourceId maskTexId{kInvalidResource};
         uint32_t   uploadPassIdx{UINT32_MAX};
+        uint32_t   temporalUploadPassIdx{UINT32_MAX};
         uint32_t   effectPassIdx{UINT32_MAX};
         uint32_t   transitionPassIdx{UINT32_MAX};
+        uint32_t   transitionTargetSlot{UINT32_MAX};
     };
     std::vector<LayerPassInfo> layerInfo(layers.size());
 
     for (size_t li = 0; li < layers.size(); ++li) {
         const auto& layer = layers[li];
 
+        // Adjustment markers have no source image or standalone graph pass.
+        // They are evaluated at their stack boundary in the Composite pass.
+        if (layer.isAdjustmentLayer)
+            continue;
+
         // ── Declare this layer's texture resource ──────────────────
         ResourceId layerTexId = graph.declareResource({
             .type = ResourceType::Texture,
             .name = "layer" + std::to_string(li) + "_tex",
-            .image = m_gpuLayerTextures[li] ? m_gpuLayerTextures[li]->image() : VK_NULL_HANDLE,
+            .image = layer.gpuTextureReady
+                ? VK_NULL_HANDLE
+                : (gpuLayerTextures[li]
+                    ? gpuLayerTextures[li]->image() : VK_NULL_HANDLE),
             .width = outW,
             .height = outH,
             .format = VK_FORMAT_R8G8B8A8_UNORM,
             .usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
                         | VK_IMAGE_USAGE_STORAGE_BIT
                         | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .currentLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .currentAccess = ResourceAccess::Undefined,
+            .currentLayout = layer.gpuTextureReady
+                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                : VK_IMAGE_LAYOUT_UNDEFINED,
+            .currentAccess = layer.gpuTextureReady
+                ? ResourceAccess::ShaderRead : ResourceAccess::Undefined,
             .transient = true,
-            .external = true,    // owned by m_gpuLayerTextures[li]
+            .external = true,    // owned by this submission slot
         });
         layerInfo[li].layerTexId = layerTexId;
 
@@ -358,15 +647,58 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 0, regions, true);
         }
 
+        const bool hasTemporal =
+            layer.temporalMode != 0 && layer.temporalPhase > 0.000001f &&
+            (layer.temporalGpuTextureReady || layer.temporalFrame);
+        if (hasTemporal) {
+            ResourceId temporalTexId = graph.declareResource({
+                .type = ResourceType::Texture,
+                .name = "layer" + std::to_string(li) + "_temporalSource",
+                .image = layer.temporalGpuTextureReady
+                    ? VK_NULL_HANDLE
+                    : (m_gpuTemporalSourceTextures[timingSlot][li]
+                        ? m_gpuTemporalSourceTextures[timingSlot][li]->image()
+                        : VK_NULL_HANDLE),
+                .width = layer.frameWidth ? layer.frameWidth : outW,
+                .height = layer.frameHeight ? layer.frameHeight : outH,
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                .currentLayout = layer.temporalGpuTextureReady
+                    ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    : VK_IMAGE_LAYOUT_UNDEFINED,
+                .currentAccess = layer.temporalGpuTextureReady
+                    ? ResourceAccess::ShaderRead : ResourceAccess::Undefined,
+                .transient = true,
+                .external = true,
+            });
+            layerInfo[li].temporalTexId = temporalTexId;
+
+            if (!layer.temporalGpuTextureReady) {
+                std::vector<VkBufferImageCopy> temporalRegions(1);
+                temporalRegions[0].imageSubresource.aspectMask =
+                    VK_IMAGE_ASPECT_COLOR_BIT;
+                temporalRegions[0].imageSubresource.layerCount = 1;
+                temporalRegions[0].imageExtent = {
+                    layer.frameWidth ? layer.frameWidth : outW,
+                    layer.frameHeight ? layer.frameHeight : outH, 1};
+                layerInfo[li].temporalUploadPassIdx = graph.addUploadPass(
+                    "uploadTemporalSource" + std::to_string(li),
+                    temporalTexId, VK_NULL_HANDLE, 0, temporalRegions, true);
+            }
+        }
+
         // ── Declare mask texture if needed ─────────────────────────
         if (!layer.masks.empty()) {
+            const auto maskSize = logicalLayerSizes[li];
             ResourceId maskTexId = graph.declareResource({
                 .type = ResourceType::Texture,
                 .name = "layer" + std::to_string(li) + "_mask",
-                .image = m_gpuMaskTextures[li] ? m_gpuMaskTextures[li]->image() : VK_NULL_HANDLE,
-                .width = outW,
-                .height = outH,
-                .format = VK_FORMAT_R8_UNORM,
+                .image = gpuMaskTextures[li]
+                    ? gpuMaskTextures[li]->image() : VK_NULL_HANDLE,
+                .width = maskSize.width,
+                .height = maskSize.height,
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
                 .usageFlags = VK_IMAGE_USAGE_SAMPLED_BIT
                             | VK_IMAGE_USAGE_STORAGE_BIT
                             | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -386,7 +718,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             maskRegions[0].imageSubresource.baseArrayLayer = 0;
             maskRegions[0].imageSubresource.layerCount = 1;
             maskRegions[0].imageOffset = {0, 0, 0};
-            maskRegions[0].imageExtent = {outW, outH, 1};
+            maskRegions[0].imageExtent = {maskSize.width, maskSize.height, 1};
 
             (void)graph.addUploadPass(
                 "uploadMask" + std::to_string(li),
@@ -396,7 +728,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // ── Add ONE Effect pass per layer ──────────────────────────
         // process() runs ALL effects in one call — one pass per layer
         // prevents O(N²) dispatches and topo-sort interleaving (#40).
-        if (!layer.effects.empty()) {
+        if (!layer.effects.empty() || hasTemporal) {
             ResourceId effectOutput = graph.declareResource({
                 .type = ResourceType::StorageImage,
                 .name = "layer" + std::to_string(li) + "_effectOut",
@@ -405,14 +737,18 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 .usageFlags = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 .transient = true, .external = true,
             });
+            std::vector<ResourceId> effectInputs{layerTexId};
+            if (hasTemporal)
+                effectInputs.push_back(layerInfo[li].temporalTexId);
             layerInfo[li].effectPassIdx = graph.addComputePass(
                 "effect_layer" + std::to_string(li), PassType::Effect,
-                {layerTexId}, {effectOutput},
+                std::move(effectInputs), {effectOutput},
                 VK_NULL_HANDLE, VK_NULL_HANDLE, {}, {}, 1, 1, 1, true, false);
         }
     }
 
     // ── Add Transition passes ──────────────────────────────────────
+    uint32_t transitionTargetCount = 0;
     for (size_t wi = 0; wi < layers.size(); ++wi) {
         if (layers[wi].wipeProgress < 0.0f)
             continue;
@@ -438,7 +774,15 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             // identity-matrix transform, and renders the peer at scale 100%
             // / center for the first few frames of a cross dissolve until
             // the upload finally lands and rebuilds the cached transform.
-            std::vector<ResourceId> transitionInputs{layerInfo[wi].layerTexId};
+            // Depend on the post-effect resource when present. Temporal
+            // interpolation is recorded in that same pass before effects, so
+            // this guarantees both operations finish before a transition
+            // reads the mutable gpuLayers descriptor.
+            const ResourceId wipeInput =
+                layerInfo[wi].effectPassIdx != UINT32_MAX
+                    ? graph.pass(layerInfo[wi].effectPassIdx).outputs[0]
+                    : layerInfo[wi].layerTexId;
+            std::vector<ResourceId> transitionInputs{wipeInput};
             if (layers[wi].wipePeerClipId != 0) {
                 for (size_t wj = 0; wj < layers.size(); ++wj) {
                     if (wj == wi) continue;
@@ -446,7 +790,11 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     if (wj < layerInfo.size() &&
                         layerInfo[wj].layerTexId != kInvalidResource)
                     {
-                        transitionInputs.push_back(layerInfo[wj].layerTexId);
+                        const ResourceId peerInput =
+                            layerInfo[wj].effectPassIdx != UINT32_MAX
+                                ? graph.pass(layerInfo[wj].effectPassIdx).outputs[0]
+                                : layerInfo[wj].layerTexId;
+                        transitionInputs.push_back(peerInput);
                     }
                     break;
                 }
@@ -459,6 +807,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 VK_NULL_HANDLE, VK_NULL_HANDLE, {}, {}, 1, 1, 1,
                 true, false);
             layerInfo[wi].transitionPassIdx = tpIdx;
+            // Dense per-frame numbering avoids retaining a full-resolution
+            // output image for every layer index that has ever transitioned.
+            layerInfo[wi].transitionTargetSlot = transitionTargetCount++;
         }
     }
 
@@ -523,6 +874,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     // Local state needed during execution
     std::vector<CompositorLayer> gpuLayers;
     gpuLayers.reserve(layers.size());
+    std::vector<VkDescriptorImageInfo> temporalPrimarySourceInfos(layers.size());
+    std::vector<VkDescriptorImageInfo> temporalSourceInfos(layers.size());
     bool uploadOk = true;
     bool compOk = false;
     bool readbackOk = false;
@@ -534,6 +887,26 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     // Upload pass in the graph.
     for (size_t li = 0; li < layers.size(); ++li) {
         const auto& layer = layers[li];
+
+        if (layer.isAdjustmentLayer) {
+            CompositorLayer markerSlot;
+            markerSlot.enabled = false;
+            gpuLayers.push_back(markerSlot);
+            continue;
+        }
+
+        if (layer.gpuCacheBacked) {
+            m_uploadManager->pinCachedTexture(
+                layer.gpuCacheMediaId, layer.gpuCacheFrameNumber,
+                layer.gpuCacheTier);
+        }
+        if (layer.temporalGpuCacheBacked) {
+            m_uploadManager->pinCachedTexture(
+                layer.temporalGpuCacheMediaId,
+                layer.temporalGpuCacheFrameNumber,
+                layer.temporalGpuCacheTier);
+        }
+
         CompositorLayer cl;
         cl.enabled = true;
         cl.opacity = layer.opacity;
@@ -545,17 +918,21 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         cl.cropRight = layer.cropR / 100.0f;
         cl.cropTop   = layer.cropT / 100.0f;
         cl.cropBottom= layer.cropB / 100.0f;
+        if (layer.contentBoundsValid) {
+            cl.contentLeft = layer.contentLeft;
+            cl.contentTop = layer.contentTop;
+            cl.contentRight = layer.contentRight;
+            cl.contentBottom = layer.contentBottom;
+        }
 
         if (layer.gpuTextureReady) {
-            uint32_t srcW = layer.frameWidth  ? layer.frameWidth  : outW;
-            uint32_t srcH = layer.frameHeight ? layer.frameHeight : outH;
-            if (layer.isPacked && srcH > 1) srcH /= 2;
+            const auto [srcW, srcH] = logicalLayerSizes[li];
             cl.textureInfo = layer.gpuDescriptor;
-            cl.transform = Compositor::buildViewportTransform(
-                srcW, srcH, outW, outH,
-                layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
+            setLayerTransforms(cl, layer, srcW, srcH, outW, outH);
+            temporalPrimarySourceInfos[li] = layer.gpuDescriptor;
         }
+        if (layer.temporalGpuTextureReady)
+            temporalSourceInfos[li] = layer.temporalGpuDescriptor;
 
         gpuLayers.push_back(cl);
     }
@@ -563,26 +940,31 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     // ── Upload mask textures (same logic as old monolithic path) ──
     // The evaluated mask state travels in layer.masks (snapshotted at
     // layer-build time). A per-slot hash cache skips the CPU rasterize +
-    // upload when the mask state, clip, and dimensions are unchanged.
+    // upload when the mask state, clip, and dimensions are unchanged. The
+    // raster lives in native clip space and the composite shader samples it
+    // with the same layerUV used for the clip image.
     for (size_t li = 0; li < layers.size() && li < gpuLayers.size(); ++li) {
         const auto& layer = layers[li];
         if (layer.masks.empty())
             continue;
-        const uint64_t maskHash = hashMaskStates(layer.masks, outW, outH);
-        auto& cache = m_maskCache[li];
+        const auto [srcW, srcH] = logicalLayerSizes[li];
+        const uint64_t maskHash = layerMaskHash(
+            layer.masks, layer, srcW, srcH, outW, outH);
+        auto& cache = maskCache[li];
         if (cache.valid && cache.clipId == layer.clipId &&
             cache.stateHash == maskHash &&
-            m_gpuMaskTextures[li] &&
-            m_gpuMaskTextures[li]->image() != VK_NULL_HANDLE)
+            gpuMaskTextures[li] &&
+            gpuMaskTextures[li]->image() != VK_NULL_HANDLE)
         {
             gpuLayers[li].hasMask = true;
             gpuLayers[li].maskTextureInfo = cache.desc;
             continue;
         }
-        auto maskPixels = rasterizeMasks(layer.masks, outW, outH);
+        auto maskPixels = rasterizeLayerMasks(
+            layer.masks, layer, srcW, srcH, outW, outH);
         VkDescriptorImageInfo maskDesc{};
         if (m_uploadManager->uploadMask(
-                maskPixels, *m_gpuMaskTextures[li], outW, outH, maskDesc))
+                maskPixels, *gpuMaskTextures[li], srcW, srcH, maskDesc))
         {
             gpuLayers[li].hasMask = true;
             gpuLayers[li].maskTextureInfo = maskDesc;
@@ -597,10 +979,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     }
 
     // ── Upload effect-mask textures (Premiere Pro: a mask on an effect
-    // limits where that effect applies).  Each masked effect's frame-space
-    // mask is rasterized into the clip's source-pixel grid by mapping
-    // through the same viewport transform the composite shader uses
-    // (output UV → layer UV).  Uploaded here — before the pass walk — so
+    // limits where that effect applies). Effect masks are rasterized directly
+    // in the clip's source-pixel grid. Uploaded here — before the pass walk — so
     // the global transfer→compute barrier covers these transfers exactly
     // like the clip-mask uploads above.  The Effect pass hands the
     // descriptors to EffectProcessor::process(), which mixes
@@ -613,30 +993,13 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         bool anyEffectMask = false;
         for (const auto& fxSnap : layer.effects)
             if (!fxSnap.masks.empty()) { anyEffectMask = true; break; }
-        if (!anyEffectMask || li >= m_effectMaskTextures.size()) continue;
+        if (!anyEffectMask || li >= effectMaskTextures.size()) continue;
 
-        // Same source-dimension logic as the Effect pass handler below.
-        uint32_t srcW = layer.frameWidth;
-        uint32_t srcH = layer.frameHeight;
-        if (srcW == 0 || srcH == 0) { srcW = outW; srcH = outH; }
-        if (layer.isPacked && srcH > 1) srcH /= 2;
+        // Effect inputs and their masks share the same native clip grid.
+        const auto [srcW, srcH] = logicalLayerSizes[li];
 
-        // frame-norm → clip-px affine.  The upload handler may not have
-        // set gpuLayers[li].transform yet (CPU-upload layers get it during
-        // the pass walk), so build it here from the same inputs.
-        const glm::mat4 t = Compositor::buildViewportTransform(
-            srcW, srcH, outW, outH,
-            layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-            layer.containFit, layer.anchorX, layer.anchorY,
-            layer.srcRotation);
-        MaskRasterTransform xf{};
-        const float fw = static_cast<float>(srcW);
-        const float fh = static_cast<float>(srcH);
-        xf.m[0] = t[0][0] * fw; xf.m[1] = t[1][0] * fw; xf.m[2] = t[3][0] * fw;
-        xf.m[3] = t[0][1] * fh; xf.m[4] = t[1][1] * fh; xf.m[5] = t[3][1] * fh;
-
-        auto& texPool   = m_effectMaskTextures[li];
-        auto& cachePool = m_effectMaskCache[li];
+        auto& texPool   = effectMaskTextures[li];
+        auto& cachePool = effectMaskCache[li];
         while (texPool.size() < layer.effects.size())
             texPool.push_back(std::make_unique<Texture>());
         if (cachePool.size() < layer.effects.size())
@@ -647,8 +1010,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         for (size_t fi = 0; fi < layer.effects.size(); ++fi) {
             const auto& fxSnap = layer.effects[fi];
             if (fxSnap.masks.empty()) continue;
-            const uint64_t fxHash =
-                hashMaskStates(fxSnap.masks, srcW, srcH, &xf) ^ fxSnap.effectId;
+            const uint64_t fxHash = layerMaskHash(
+                fxSnap.masks, layer, srcW, srcH, outW, outH) ^ fxSnap.effectId;
             auto& fxCache = cachePool[fi];
             if (fxCache.valid && fxCache.clipId == layer.clipId &&
                 fxCache.stateHash == fxHash &&
@@ -657,7 +1020,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 maskInfos[fi] = fxCache.desc;
                 continue;
             }
-            auto fxMaskPixels = rasterizeMasks(fxSnap.masks, srcW, srcH, &xf);
+            auto fxMaskPixels = rasterizeLayerMasks(
+                fxSnap.masks, layer, srcW, srcH, outW, outH);
             VkDescriptorImageInfo fxMaskDesc{};
             if (m_uploadManager->uploadMask(
                     fxMaskPixels, *texPool[fi], srcW, srcH, fxMaskDesc))
@@ -757,30 +1121,35 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         uint32_t srcH = layer.frameHeight ? layer.frameHeight : outH;
                         if (layer.isPacked && srcH > 1) srcH /= 2;
                         gpuLayers[li].textureInfo = layer.gpuDescriptor;
-                        gpuLayers[li].transform = Compositor::buildViewportTransform(
-                            srcW, srcH, outW, outH,
-                            layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                            layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
+                        setLayerTransforms(gpuLayers[li], layer,
+                                           srcW, srcH, outW, outH);
                     } else {
                         // ── Packed-alpha double-buffer (#93) ──────────
                         // Swap upload/composite targets so the compositor
                         // always reads a texture the upload isn't writing
                         // to.  Zero-copy: just exchange unique_ptrs.
                         if (layer.isPacked &&
-                            m_gpuLayerTexturesAlt[li] &&
-                            m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
-                            m_gpuLayerTextures[li].swap(m_gpuLayerTexturesAlt[li]);
+                            gpuLayerTexturesAlt[li] &&
+                            gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
+                            gpuLayerTextures[li].swap(gpuLayerTexturesAlt[li]);
                         }
 
                         // Upload via existing GpuUploadManager
                         auto uploadResult = m_uploadManager->uploadLayer(
-                            layer, *m_gpuLayerTextures[li],
-                            m_gpuLayerTexKeys[li].mediaId,
-                            m_gpuLayerTexKeys[li].frameNumber,
-                            m_gpuLayerTexKeys[li].framePtr,
+                            layer, *gpuLayerTextures[li],
+                            gpuLayerTexKeys[li].mediaId,
+                            gpuLayerTexKeys[li].frameNumber,
+                            gpuLayerTexKeys[li].framePtr,
                             scrubMode);
 
                         if (uploadResult.success) {
+                            // Keep the exact freshly-resolved endpoint for
+                            // temporal synthesis. Packed-alpha's normal
+                            // composite path may intentionally display its
+                            // stable alternate buffer, which can be one frame
+                            // older and must not be used for interpolation.
+                            temporalPrimarySourceInfos[li] =
+                                uploadResult.descriptor;
                             // Point the compositor at the stable (non-uploaded)
                             // double-buffer texture — but ONLY when it matches the
                             // just-uploaded texture's dimensions. The preceding
@@ -795,24 +1164,48 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             // steady state the dimensions match every frame, so the
                             // #93 write-race protection is preserved unchanged.
                             if (layer.isPacked &&
-                                m_gpuLayerTexturesAlt[li] &&
-                                m_gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE &&
-                                m_gpuLayerTextures[li] &&
-                                m_gpuLayerTexturesAlt[li]->width()  == m_gpuLayerTextures[li]->width() &&
-                                m_gpuLayerTexturesAlt[li]->height() == m_gpuLayerTextures[li]->height()) {
+                                gpuLayerTexturesAlt[li] &&
+                                gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE &&
+                                gpuLayerTextures[li] &&
+                                gpuLayerTexturesAlt[li]->width()  == gpuLayerTextures[li]->width() &&
+                                gpuLayerTexturesAlt[li]->height() == gpuLayerTextures[li]->height()) {
                                 gpuLayers[li].textureInfo =
-                                    m_gpuLayerTexturesAlt[li]->descriptorInfo();
+                                    gpuLayerTexturesAlt[li]->descriptorInfo();
                             } else {
                                 gpuLayers[li].textureInfo = uploadResult.descriptor;
                             }
-                            gpuLayers[li].transform = Compositor::buildViewportTransform(
-                                uploadResult.srcW, uploadResult.srcH, outW, outH,
-                                layer.posX, layer.posY, layer.scX, layer.scY, layer.rot,
-                                layer.containFit, layer.anchorX, layer.anchorY, layer.srcRotation);
+                            setLayerTransforms(gpuLayers[li], layer,
+                                               uploadResult.srcW, uploadResult.srcH,
+                                               outW, outH);
                         } else {
                             spdlog::warn("[RENDER_GRAPH] layer {} upload failed", li);
                             gpuLayers[li].enabled = false;
                             uploadOk = false;
+                        }
+                    }
+                    break;
+                }
+                if (layerInfo[li].temporalUploadPassIdx == passIdx) {
+                    const auto& layer = layers[li];
+                    if (layer.temporalGpuTextureReady) {
+                        temporalSourceInfos[li] =
+                            layer.temporalGpuDescriptor;
+                    } else if (layer.temporalFrame) {
+                        LayerInfo temporalLayer = layer;
+                        temporalLayer.frame = layer.temporalFrame;
+                        temporalLayer.gpuTextureReady = false;
+                        temporalLayer.temporalFrame.reset();
+                        auto& key = m_gpuTemporalSourceTexKeys[timingSlot][li];
+                        auto result = m_uploadManager->uploadLayer(
+                            temporalLayer,
+                            *m_gpuTemporalSourceTextures[timingSlot][li],
+                            key.mediaId, key.frameNumber, key.framePtr,
+                            scrubMode);
+                        if (result.success) {
+                            temporalSourceInfos[li] = result.descriptor;
+                        } else {
+                            spdlog::debug("[RENDER_GRAPH] temporal source "
+                                          "upload failed for layer {}", li);
                         }
                     }
                     break;
@@ -825,8 +1218,94 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             for (size_t li = 0; li < layers.size(); ++li) {
                 if (layerInfo[li].effectPassIdx != passIdx) continue;
                 const auto& layer = layers[li];
-                if (!effectProcessor || !effectProcessor->isInitialized()) break;
                 if (!gpuLayers[li].enabled) break;
+
+                const bool temporalRequested =
+                    layer.temporalMode != 0 &&
+                    layer.temporalPhase > 0.000001f &&
+                    temporalSourceInfos[li].imageView != VK_NULL_HANDLE;
+                if (temporalRequested && m_temporalInterpolator &&
+                    m_temporalInterpolator->isInitialized()) {
+                    uint32_t temporalW = layer.frameWidth
+                        ? layer.frameWidth : outW;
+                    uint32_t temporalH = layer.frameHeight
+                        ? layer.frameHeight : outH;
+                    if (layer.isPacked && temporalH > 1)
+                        temporalH /= 2;
+
+                    auto& temporalOut =
+                        *m_layerTemporalOutputs[timingSlot][li];
+                    if (temporalOut.image() == VK_NULL_HANDLE ||
+                        temporalOut.width() != temporalW ||
+                        temporalOut.height() != temporalH) {
+                        temporalOut.destroy();
+                        TextureConfig cfg{};
+                        cfg.width = temporalW;
+                        cfg.height = temporalH;
+                        cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+                        cfg.usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                                    VK_IMAGE_USAGE_SAMPLED_BIT;
+                        if (temporalOut.create(ctx.allocator().handle(),
+                                               ctx.vkDevice(), cfg)) {
+                            temporalOut.transitionLayout(
+                                cmd, VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_GENERAL);
+                        }
+                    }
+
+                    const bool wasPacked = gpuLayers[li].isPacked;
+                    const bool wasPma = gpuLayers[li].isPMA;
+                    if (temporalOut.image() != VK_NULL_HANDLE &&
+                        m_temporalInterpolator->render(
+                            cmd, temporalOut.imageView(),
+                            temporalPrimarySourceInfos[li].imageView !=
+                                    VK_NULL_HANDLE
+                                ? temporalPrimarySourceInfos[li]
+                                : gpuLayers[li].textureInfo,
+                            temporalSourceInfos[li],
+                            temporalW, temporalH,
+                            layer.temporalPhase, layer.temporalMode,
+                            wasPacked, wasPacked,
+                            static_cast<uint32_t>(timingSlot),
+                            static_cast<uint32_t>(li))) {
+                        VkImageMemoryBarrier temporalBarrier{};
+                        temporalBarrier.sType =
+                            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                        temporalBarrier.srcAccessMask =
+                            VK_ACCESS_SHADER_WRITE_BIT;
+                        temporalBarrier.dstAccessMask =
+                            VK_ACCESS_SHADER_READ_BIT;
+                        temporalBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+                        temporalBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                        temporalBarrier.srcQueueFamilyIndex =
+                            VK_QUEUE_FAMILY_IGNORED;
+                        temporalBarrier.dstQueueFamilyIndex =
+                            VK_QUEUE_FAMILY_IGNORED;
+                        temporalBarrier.image = temporalOut.image();
+                        temporalBarrier.subresourceRange = {
+                            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        vkCmdPipelineBarrier(
+                            cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            0, 0, nullptr, 0, nullptr,
+                            1, &temporalBarrier);
+
+                        gpuLayers[li].textureInfo =
+                            temporalOut.descriptorInfo();
+                        gpuLayers[li].textureInfo.imageLayout =
+                            VK_IMAGE_LAYOUT_GENERAL;
+                        gpuLayers[li].isPacked = false;
+                        // Packed-alpha inputs are unpacked to straight RGBA.
+                        // Native PMA video remains PMA after linear/warped mix.
+                        gpuLayers[li].isPMA = wasPacked ? false : wasPma;
+                        gpuLayers[li].needsSwapRB = false;
+                    }
+                }
+
+                // Temporal synthesis is deliberately before the effect chain.
+                // A layer with no effects can proceed directly to composite.
+                if (layer.effects.empty()) break;
+                if (!effectProcessor || !effectProcessor->isInitialized()) break;
 
                 ++effectLayerCount;
                 effectPassCount += (int)layer.effects.size();
@@ -897,8 +1376,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     // samples it.  Copying each result out immediately after
                     // its own dispatch — in command order — makes every
                     // layer's textureInfo independent of the shared storage.
-                    if (li < m_layerEffectOutputs.size()) {
-                        auto& snap = *m_layerEffectOutputs[li];
+                    if (li < layerEffectOutputs.size()) {
+                        auto& snap = *layerEffectOutputs[li];
                         if (snap.image() == VK_NULL_HANDLE || snap.width() != srcW || snap.height() != srcH) {
                             snap.destroy();
                             TextureConfig cfg;
@@ -955,8 +1434,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                                          layer.effects.size(),
                                          (uint64_t)srcInfo.imageView,
                                          (uint64_t)gpuLayers[li].textureInfo.imageView,
-                                         (li < m_layerEffectOutputs.size() && m_layerEffectOutputs[li])
-                                             ? (uint64_t)m_layerEffectOutputs[li]->image() : 0ull);
+                                         (li < layerEffectOutputs.size() && layerEffectOutputs[li])
+                                             ? (uint64_t)layerEffectOutputs[li]->image() : 0ull);
                         }
                     }
 
@@ -977,8 +1456,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight ||
                             s.type == EffectType::OtsIntro) { ots = true; break; }
                     if (ots) {
-                        gpuLayers[li].transform = Compositor::buildViewportTransform(
-                            outW, outH, outW, outH, 0,0,1,1,0,false);
+                        setStaticTransform(gpuLayers[li],
+                            Compositor::buildViewportTransform(
+                                outW, outH, outW, outH, 0,0,1,1,0,false));
                     }
                     // Non-OTS: keep the transform from the upload pass
                     // (already set via buildViewportTransform with correct
@@ -1071,12 +1551,19 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 
                 GpuTransitionType gt = toGpuTransitionType(layer.wipeType);
                 int32_t dirOvr = transitionDirectionOverride(layer.wipeType);
+                const uint32_t transitionTargetSlot =
+                    layerInfo[wi].transitionTargetSlot;
 
                 if (transitionRenderer->render(cmd, srcA, srcB,
-                    gt, layer.wipeProgress, dirOvr, 0.0f, layer.wipeSoftness))
+                    gt, layer.wipeProgress, dirOvr, 0.0f, layer.wipeSoftness,
+                    static_cast<uint32_t>(timingSlot),
+                    transitionTargetSlot))
                 {
                     ++transitionCount;
-                    gpuLayers[wi].textureInfo = transitionRenderer->outputDescriptorInfo();
+                    gpuLayers[wi].textureInfo =
+                        transitionRenderer->outputDescriptorInfo(
+                            static_cast<uint32_t>(timingSlot),
+                            transitionTargetSlot);
                     gpuLayers[wi].opacity    = 1.0f;
                     gpuLayers[wi].isPacked   = false;
                     gpuLayers[wi].isPMA      = false;
@@ -1085,9 +1572,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     gpuLayers[wi].cropTop    = 0.0f;
                     gpuLayers[wi].cropBottom = 0.0f;
                     gpuLayers[wi].blendMode  = BlendMode::Normal;
-                    gpuLayers[wi].transform  = Compositor::buildViewportTransform(
-                        outW, outH, outW, outH,
-                        0.0f, 0.0f, 1.0f, 1.0f, 0.0f, false);
+                    setStaticTransform(gpuLayers[wi],
+                        Compositor::buildViewportTransform(
+                            outW, outH, outW, outH,
+                            0.0f, 0.0f, 1.0f, 1.0f, 0.0f, false));
                     if (pi != SIZE_MAX)
                         gpuLayers[pi].enabled = false;
                 } else if (pass.optional) {
@@ -1106,29 +1594,132 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
 
         case PassType::Composite: {
-            // Build A/B pairs from gpuLayers and dispatch
-            std::vector<ABPair> abPairs;
-            abPairs.reserve((gpuLayers.size() + 1) / 2);
-            for (size_t pi = 0; pi < gpuLayers.size(); pi += 2) {
-                ABPair pair;
-                pair.background = gpuLayers[pi];
-                pair.background.pairIndex = static_cast<uint32_t>(pi / 2);
-                pair.background.isBackground = true;
-                if (pi + 1 < gpuLayers.size()) {
-                    pair.foreground = gpuLayers[pi + 1];
-                    pair.foreground.pairIndex = static_cast<uint32_t>(pi / 2);
-                    pair.foreground.isBackground = false;
-                } else {
-                    pair.foreground.enabled = false;
-                    pair.foreground.opacity = 0.0f;
-                    pair.foreground.pairIndex = static_cast<uint32_t>(pi / 2);
-                    pair.foreground.isBackground = false;
-                }
-                pair.transition.type = -1;
-                abPairs.push_back(pair);
+            // Transition outputs are storage-image writes that this pass
+            // immediately samples. The graph's transition resources are
+            // logical (the actual per-layer images live in
+            // TransitionRenderer), so issue the matching global dependency
+            // here instead of relying on an image barrier for a null graph
+            // handle. This covers any number of simultaneous transitions.
+            if (transitionCount > 0) {
+                VkMemoryBarrier transitionBarrier{};
+                transitionBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                transitionBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                transitionBarrier.dstAccessMask =
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(
+                    cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 1, &transitionBarrier, 0, nullptr, 0, nullptr);
             }
 
-            compositor->setPairs(abPairs);
+            // Fold the bottom-to-top render stream at every adjustment
+            // marker. Ordinary clip effects have already run above. At a
+            // marker we flatten only the layers below it, apply that stack
+            // ONCE to the full frame, then continue with layers above.
+            std::vector<CompositorLayer> workingLayers;
+            workingLayers.reserve(gpuLayers.size());
+            bool workingIsSingleFlattenedFrame = false;
+
+            const bool finalPreserveAlpha = compositor->preserveAlpha();
+            const bool finalOutputSwizzle = compositor->outputSwizzleRB();
+            bool adjustmentReady = m_adjustmentEffectProcessor &&
+                m_adjustmentEffectProcessor->isInitialized();
+            const bool hasAdjustmentEffects = std::any_of(
+                layers.begin(), layers.end(), [](const LayerInfo& layer) {
+                    return layer.isAdjustmentLayer && !layer.effects.empty();
+                });
+            if (adjustmentReady && hasAdjustmentEffects)
+                adjustmentReady = m_adjustmentEffectProcessor->resize(outW, outH);
+
+            for (size_t li = 0; li < layers.size(); ++li) {
+                const auto& layer = layers[li];
+                if (!layer.isAdjustmentLayer) {
+                    if (gpuLayers[li].enabled) {
+                        workingLayers.push_back(gpuLayers[li]);
+                        workingIsSingleFlattenedFrame = false;
+                    }
+                    continue;
+                }
+
+                if (layer.effects.empty() || workingLayers.empty())
+                    continue;
+                if (!adjustmentReady) {
+                    static std::atomic<bool> s_warned{false};
+                    if (!s_warned.exchange(true))
+                        spdlog::warn("Adjustment-layer effects unavailable; using passthrough");
+                    continue;
+                }
+
+                VkDescriptorImageInfo adjustmentSource{};
+                if (workingIsSingleFlattenedFrame &&
+                    workingLayers.size() == 1) {
+                    // Consecutive adjustment layers can consume the previous
+                    // full-frame snapshot directly without another flatten.
+                    adjustmentSource = workingLayers.front().textureInfo;
+                } else {
+                    compositor->setPreserveAlpha(true);
+                    compositor->setOutputSwizzleRB(false);
+                    compositor->setLayers(workingLayers);
+                    if (!compositor->composite(cmd)) {
+                        adjustmentReady = false;
+                        break;
+                    }
+                    makeComputeOutputSampleable(cmd, compositor->outputImage());
+                    adjustmentSource = compositor->outputDescriptorInfo();
+                }
+
+                // LUT data is stored on the live effect object, just as it is
+                // for ordinary clip effects; snapshots carry only parameters.
+                for (const auto& effect : layer.effects) {
+                    if (effect.type == EffectType::LUT && layer.clipPtr) {
+                        for (size_t fxIndex = 0;
+                             fxIndex < layer.clipPtr->effects().effectCount();
+                             ++fxIndex) {
+                            auto& clipEffect =
+                                layer.clipPtr->effects().effect(fxIndex);
+                            if (clipEffect.effectType() == EffectType::LUT &&
+                                clipEffect.isEnabled()) {
+                                auto* lut = static_cast<LUT*>(&clipEffect);
+                                if (lut->hasLUT())
+                                    m_adjustmentEffectProcessor->uploadLUT3D(
+                                        lut->lutData(), lut->lutSize());
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                ++effectLayerCount;
+                effectPassCount += static_cast<int>(layer.effects.size());
+                const std::vector<VkDescriptorImageInfo>* effectMasks =
+                    (li < layerEffectMaskInfos.size() &&
+                     !layerEffectMaskInfos[li].empty())
+                        ? &layerEffectMaskInfos[li] : nullptr;
+                if (!m_adjustmentEffectProcessor->process(
+                        cmd, adjustmentSource, layer.effects, effectMasks)) {
+                    spdlog::warn("Adjustment-layer effect stack failed for clip {}",
+                                 layer.clipId);
+                    continue;
+                }
+
+                auto& snapshot = *layerEffectOutputs[li];
+                if (!snapshotEffectOutput(
+                        cmd, *m_adjustmentEffectProcessor, snapshot,
+                        ctx, outW, outH)) {
+                    spdlog::warn("Adjustment-layer output snapshot failed for clip {}",
+                                 layer.clipId);
+                    continue;
+                }
+
+                workingLayers.clear();
+                workingLayers.push_back(fullFrameLayer(snapshot.descriptorInfo()));
+                workingIsSingleFlattenedFrame = true;
+            }
+
+            compositor->setPreserveAlpha(finalPreserveAlpha);
+            compositor->setOutputSwizzleRB(finalOutputSwizzle);
+            compositor->setLayers(workingLayers);
             compOk = compositor->composite(cmd);
             break;
         }
@@ -1176,8 +1767,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                      "surviving layers (fault-isolated)");
     }
 
-    // Acquire a dedicated inter-queue semaphore for this frame
-    VkSemaphore frameSem = acquireFrameSemaphore();
+    // Composite and viewport presentation both submit to the graphics queue.
+    // Queue order is sufficient; a one-shot binary semaphore was unsafe for
+    // held frames and leaked whenever a produced frame was dropped.
+    VkSemaphore frameSem = VK_NULL_HANDLE;
     const bool endOk = slot.endRecording();
     bool gpuSubmitOk = false;
     if (endOk) {
@@ -1244,8 +1837,6 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     if (!gpuSubmitOk) {
         // P2: no retry/backoff.  Submit failure means the device is lost
         // or wedged; signalling it propagates to the fatal-failure modal.
-        if (frameSem != VK_NULL_HANDLE)
-            releaseFrameSemaphore(frameSem);
         spdlog::error("[RENDER_GRAPH] GPU submit failed — signalling device lost");
         GpuContext::get().signalDeviceLost();
         compOk = false;
@@ -1319,10 +1910,11 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         if (readbackOk && gpuDisplayMode && !forceSyncReadback) {
             auto compPtr = compositor;
             uint32_t rW = outW, rH = outH;
-            result->lazyReadback = [compPtr, rW, rH](std::vector<uint8_t>& px) -> bool {
+            const uint32_t readbackSlot = compPtr->outputSlot();
+            result->lazyReadback = [compPtr, rW, rH, readbackSlot](std::vector<uint8_t>& px) -> bool {
                 const size_t imgBytes = static_cast<size_t>(rW) * rH * 4;
                 px.resize(imgBytes);
-                return compPtr->mapAndCopyReadback(px);
+                return compPtr->mapAndCopyReadbackSlot(readbackSlot, px);
             };
         } else if (readbackOk) {
             const size_t imgBytes = static_cast<size_t>(outW) * outH * 4;
@@ -1356,12 +1948,21 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             compositor->mapAndCopyReadback(result->pixels);
         }
 
+        // A nearest-sampled temporal fallback is intentionally provisional:
+        // the next request must rebuild once both exact endpoints arrive.
+        // Caching that output by tick would make the clip remain sampled for
+        // the lifetime of the LRU entry even though optical flow is selected.
+        const bool hasPendingSourceFallback = std::any_of(
+            layers.begin(), layers.end(), [](const LayerInfo& layer) {
+                return layer.sourceFallbackPending;
+            });
+
         // allowLruInsert is false for nested-sequence inner composites:
         // their CPU result is the inner timeline WITHOUT the SequenceClip
         // transform and would collide with the outer program tick in the
         // shared (tick,w,h)-keyed LRU, flickering the nested clip every
         // other frame.
-        if (allowLruInsert && !result->gpuReady) {
+        if (allowLruInsert && !hasPendingSourceFallback && !result->gpuReady) {
             insertLru(tick, outW, outH, result);
         }
 

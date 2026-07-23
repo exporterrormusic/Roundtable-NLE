@@ -14,8 +14,10 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "timeline/ImageClip.h"
 #include "timeline/Marker.h"
 #include "timeline/Transition.h"
+#include "timeline/VideoClip.h"
 #include "PathUtils.h"
 
 #include <fstream>
@@ -69,6 +71,61 @@ void relinkTransitionsByGeometry(Track& track)
         if (wantLeft  && leftHits  == 1) t.leftClipId  = leftId;
         if (wantRight && rightHits == 1) t.rightClipId = rightId;
     }
+}
+
+// v32 and older saved every mask in normalized sequence-frame coordinates;
+// v33 can explicitly carry the same legacy enum. Upgrade only when the source
+// geometry is authoritative. In particular, pre-v34 VideoClip records have no
+// display rotation, so guessing 0 here would permanently corrupt masks from
+// portrait phone footage. Those video masks remain legacy (and therefore keep
+// their saved appearance) until MediaPool supplies dimensions + rotation.
+int migrateLegacyMasks(Project& project)
+{
+    int migrated = 0;
+    for (size_t si = 0; si < project.sequenceCount(); ++si) {
+        Timeline* timeline = project.sequence(si);
+        if (!timeline) continue;
+        const auto resolution = timeline->settings().resolution();
+        if (resolution.width == 0 || resolution.height == 0) continue;
+
+        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+            Track* track = timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                Clip* clip = track->clip(ci);
+                if (!clip) continue;
+
+                uint32_t sourceWidth = 0;
+                uint32_t sourceHeight = 0;
+                int sourceRotation = 0;
+                if (const auto* video = dynamic_cast<const VideoClip*>(clip)) {
+                    if (!video->sourceMetadataAuthoritative() ||
+                        video->sourceWidth() == 0 || video->sourceHeight() == 0)
+                        continue;
+                    sourceWidth = video->sourceWidth();
+                    sourceHeight = video->sourceHeight();
+                    sourceRotation = video->sourceRotation();
+                } else if (const auto* image = dynamic_cast<const ImageClip*>(clip)) {
+                    if (image->sourceWidth() == 0 || image->sourceHeight() == 0)
+                        continue;
+                    sourceWidth = image->sourceWidth();
+                    sourceHeight = image->sourceHeight();
+                } else if (clip->clipType() == ClipType::Graphic) {
+                    // GraphicClip renders into the sequence-sized canvas.
+                    sourceWidth = resolution.width;
+                    sourceHeight = resolution.height;
+                } else {
+                    // Other procedural clip types do not yet expose a stable
+                    // native-source contract. Preserve their legacy masks.
+                    continue;
+                }
+                migrated += clip->migrateLegacyMasksToSourceLocal(
+                    resolution.width, resolution.height,
+                    sourceWidth, sourceHeight, sourceRotation);
+            }
+        }
+    }
+    return migrated;
 }
 
 // Remove duplicate transitions left on a track.  Track::addTransition does a
@@ -908,6 +965,13 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         for (size_t si = 0; si < project->sequenceCount(); ++si)
             if (Timeline* tl = project->sequence(si))
                 tl->setSettings(project->defaultSettings());
+    }
+
+    const int migratedMaskCount = migrateLegacyMasks(*project);
+    if (migratedMaskCount > 0) {
+        spdlog::info(
+            "ProjectSerializer: migrated {} legacy mask(s) to clip-local coordinates",
+            migratedMaskCount);
     }
 
     // ── Frame-align migration ───────────────────────────────────────────

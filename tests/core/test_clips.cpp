@@ -12,8 +12,144 @@
 #include "timeline/TitleClip.h"
 #include "timeline/AdjustmentClip.h"
 #include "timeline/PngPuppetClip.h"
+#include "timeline/TierListClip.h"
+#include "timeline/GraphicLayer.h"
+#include "timeline/CaptionClip.h"
 
 using namespace rt;
+
+TEST(CaptionClipTest, ReusableStyleAppliesAllTrackLevelFormatting)
+{
+    CaptionClip caption;
+    CaptionStyle style;
+    style.fontFamily = "Noto Sans";
+    style.fontStyle = "Condensed";
+    style.fontSize = 47.0f;
+    style.textColor = 0xFF12AB34u;
+    style.bgColor = 0xAA010203u;
+    style.position = CaptionPosition::Top;
+    style.bold = false;
+    style.outlineColor = 0xFFABCDEFu;
+    style.outlineWidth = 3.5f;
+    style.showSpeaker = true;
+    style.italic = true;
+    style.smallCaps = true;
+    style.underline = true;
+    style.superscript = true;
+    style.fauxBold = true;
+    style.tracking = 2.5f;
+    style.leading = 11.0f;
+    style.alignment = GTextAlign::Right;
+    style.name = "Interview Track";
+
+    caption.setCaptionStyle(style);
+    EXPECT_EQ(caption.captionStyle(), style);
+}
+
+TEST(TextLayerTest, PlainTextEditsPreserveAndRemapRichStyles)
+{
+    TextLayer text;
+    text.setText("A\xF0\x9F\x98\x80" "BC"); // A + emoji + BC (5 UTF-16 units)
+
+    TextStyleRun bold;
+    bold.start = 1;
+    bold.length = 3; // emoji + B
+    bold.fontWeight = 700;
+    text.setStyleRuns({bold});
+    TextParagraphStyle paragraph;
+    paragraph.start = 0;
+    paragraph.length = 5;
+    paragraph.alignment = GTextAlign::Right;
+    paragraph.rightToLeft = true;
+    text.setParagraphStyles({paragraph});
+
+    text.replaceTextPreservingStyles("ZA\xF0\x9F\x98\x80" "BC");
+    ASSERT_EQ(text.styleRuns().size(), 1u);
+    EXPECT_EQ(text.styleRuns()[0].start, 2u);
+    EXPECT_EQ(text.styleRuns()[0].length, 3u);
+    ASSERT_EQ(text.paragraphStyles().size(), 1u);
+    EXPECT_EQ(text.paragraphStyles()[0].start, 0u);
+    EXPECT_EQ(text.paragraphStyles()[0].length, 6u);
+
+    // Inserting at a styled caret inherits that format, then deleting the
+    // surrogate-pair emoji shifts the range by two UTF-16 code units.
+    text.replaceTextPreservingStyles("ZA\xF0\x9F\x98\x80" "XBC");
+    ASSERT_EQ(text.styleRuns().size(), 1u);
+    EXPECT_EQ(text.styleRuns()[0].start, 2u);
+    EXPECT_EQ(text.styleRuns()[0].length, 4u);
+    text.replaceTextPreservingStyles("ZAXBC");
+    ASSERT_EQ(text.styleRuns().size(), 1u);
+    EXPECT_EQ(text.styleRuns()[0].start, 2u);
+    EXPECT_EQ(text.styleRuns()[0].length, 2u);
+    EXPECT_EQ(text.styleRuns()[0].fontWeight, 700);
+    ASSERT_EQ(text.paragraphStyles().size(), 1u);
+    EXPECT_EQ(text.paragraphStyles()[0].length, 5u);
+    EXPECT_EQ(text.paragraphStyles()[0].alignment, GTextAlign::Right);
+    EXPECT_TRUE(text.paragraphStyles()[0].rightToLeft);
+}
+
+TEST(TextLayerTest, MissingInlineAppearanceMetadataInheritsLayerAppearance)
+{
+    TextLayer text;
+    text.setText("SOMEHOW, I GOT TO EDEN");
+
+    TextStyleRun malformed;
+    malformed.length = 22;
+    malformed.overrideMask = TextOverrideFill | TextOverrideStroke
+        | TextOverrideShadow | TextOverrideBackground;
+    malformed.appearance.fillEnabled = false;
+    malformed.appearance.fillColor = 0;
+    malformed.appearance.strokeEnabled = false;
+    malformed.appearance.strokeColor = 0;
+    malformed.appearance.strokeWidth = 0.0f;
+    malformed.appearance.strokePosition = StrokePosition::Center;
+    malformed.appearance.shadowEnabled = false;
+    malformed.appearance.shadowColor = 0;
+    malformed.appearance.shadowDistance = 0.0f;
+    malformed.appearance.shadowAngle = 0.0f;
+    malformed.appearance.shadowSoftness = 0.0f;
+    malformed.appearance.shadowOpacity = 0.0f;
+    malformed.appearance.backgroundEnabled = false;
+    malformed.appearance.backgroundColor = 0;
+    malformed.appearance.backgroundPadding = 0.0f;
+
+    text.setStyleRuns({malformed});
+
+    ASSERT_EQ(text.styleRuns().size(), 1u);
+    const uint32_t appearanceOverrides = TextOverrideFill
+        | TextOverrideStroke | TextOverrideShadow | TextOverrideBackground;
+    EXPECT_EQ(text.styleRuns()[0].overrideMask & appearanceOverrides, 0u);
+}
+
+TEST(TierListClipTest, EventClockContinuesFromSourceIn)
+{
+    TierListClip clip;
+    clip.setTimelineIn(10 * 48000);
+    clip.setSourceIn(3 * 48000);
+    clip.setSpeed(1.0);
+
+    EXPECT_EQ(clip.eventTickAt(10 * 48000), 3 * 48000);
+    EXPECT_EQ(clip.eventTickAt(12 * 48000), 5 * 48000);
+    EXPECT_EQ(clip.eventTickAt(8 * 48000), 1 * 48000);
+}
+
+TEST(TierListClipTest, PixelEditsAdvanceRenderRevision)
+{
+    TierListClip clip;
+    const uint64_t initial = clip.renderRevision();
+    clip.setTitle("Updated");
+    EXPECT_GT(clip.renderRevision(), initial);
+
+    const uint64_t beforeEntryEdit = clip.renderRevision();
+    clip.entries().push_back({1, "entry.png", "Entry", ""});
+    EXPECT_GT(clip.renderRevision(), beforeEntryEdit);
+
+    const TierListClip& readOnly = clip;
+    const uint64_t beforeRead = clip.renderRevision();
+    (void)readOnly.entries();
+    (void)readOnly.events();
+    EXPECT_EQ(clip.renderRevision(), beforeRead);
+}
 
 // ── SpineClip ───────────────────────────────────────────────────────────────
 
@@ -187,7 +323,11 @@ TEST(VideoClipTest, DefaultConstruction)
     EXPECT_TRUE(clip.mediaPath().empty());
     EXPECT_EQ(clip.sourceWidth(), 0u);
     EXPECT_EQ(clip.sourceHeight(), 0u);
+    EXPECT_EQ(clip.sourceRotation(), 0);
+    EXPECT_FALSE(clip.sourceMetadataAuthoritative());
     EXPECT_FLOAT_EQ(clip.volume(), 1.0f);
+    EXPECT_EQ(clip.timeInterpolation(), TimeInterpolation::FrameSampling);
+    EXPECT_FLOAT_EQ(clip.shutterAngle().evaluate(0), 0.0f);
 }
 
 TEST(VideoClipTest, SetProperties)
@@ -195,6 +335,7 @@ TEST(VideoClipTest, SetProperties)
     VideoClip clip;
     clip.setMediaPath("/videos/intro.mp4");
     clip.setSourceResolution(1920, 1080);
+    clip.setSourceRotation(-90);
     clip.setSourceFps(30.0);
     clip.setHasAudio(true);
     clip.setVolume(0.8f);
@@ -202,6 +343,8 @@ TEST(VideoClipTest, SetProperties)
     EXPECT_EQ(clip.mediaPath(), "/videos/intro.mp4");
     EXPECT_EQ(clip.sourceWidth(), 1920u);
     EXPECT_EQ(clip.sourceHeight(), 1080u);
+    EXPECT_EQ(clip.sourceRotation(), 270);
+    EXPECT_TRUE(clip.sourceMetadataAuthoritative());
     EXPECT_DOUBLE_EQ(clip.sourceFps(), 30.0);
     EXPECT_TRUE(clip.hasAudio());
     EXPECT_FLOAT_EQ(clip.volume(), 0.8f);
@@ -212,7 +355,11 @@ TEST(VideoClipTest, Clone)
     VideoClip clip;
     clip.setMediaPath("/test.mp4");
     clip.setSourceResolution(3840, 2160);
+    clip.setSourceRotation(90);
     clip.setDuration(48000);
+    clip.setTimeInterpolation(TimeInterpolation::OpticalFlow);
+    clip.shutterAngle().addKeyframe(0, 90.0f);
+    clip.shutterAngle().addKeyframe(48000, 270.0f);
 
     auto cloned = clip.clone();
     auto* vc = dynamic_cast<VideoClip*>(cloned.get());
@@ -220,7 +367,38 @@ TEST(VideoClipTest, Clone)
     EXPECT_EQ(vc->mediaPath(), "/test.mp4");
     EXPECT_EQ(vc->sourceWidth(), 3840u);
     EXPECT_EQ(vc->sourceHeight(), 2160u);
+    EXPECT_EQ(vc->sourceRotation(), 90);
+    EXPECT_TRUE(vc->sourceMetadataAuthoritative());
     EXPECT_EQ(vc->duration(), 48000);
+    EXPECT_EQ(vc->timeInterpolation(), TimeInterpolation::OpticalFlow);
+    ASSERT_EQ(vc->shutterAngle().keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(vc->shutterAngle().keyframe(1).value, 270.0f);
+}
+
+TEST(VideoClipTest, LegacyMaskMigrationUsesFirstNonSingularScaleKey)
+{
+    VideoClip clip;
+    clip.setDuration(100);
+    clip.scaleX().addKeyframe(0, 0.0f);
+    clip.scaleX().addKeyframe(100, 1.0f);
+
+    OpacityMask mask;
+    mask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    mask.shape = MaskShape::Rectangle;
+    mask.base.centerX = 0.5f;
+    mask.base.centerY = 0.5f;
+    mask.base.width = 0.2f;
+    mask.base.height = 0.2f;
+    clip.addMask(mask);
+
+    EXPECT_EQ(clip.migrateLegacyMasksToSourceLocal(
+                  100, 100, 100, 100),
+              1);
+    ASSERT_EQ(clip.masks().size(), 1u);
+    EXPECT_EQ(clip.masks()[0].coordinateSpace,
+              MaskCoordinateSpace::SourceLocal);
+    ASSERT_EQ(clip.masks()[0].base.vertices.size(), 4u);
+    EXPECT_NEAR(clip.masks()[0].base.vertices[0].x, 0.4f, 1.0e-5f);
 }
 
 // ── AudioClip ───────────────────────────────────────────────────────────────

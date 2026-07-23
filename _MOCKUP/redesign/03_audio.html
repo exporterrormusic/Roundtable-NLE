@@ -1,0 +1,549 @@
+<title>Roundtable Redesign — 03 Audio</title>
+<style>
+  :root{
+    --bg-app:#131518; --bg-page:#1b1e21; --bg-panel:#22262a; --bg-hover:#282d32;
+    --bg-active:#2f353b; --bg-inset:#17191c;
+    --line:#2e343a; --line-strong:#3a4148;
+    --t1:#e9ecef; --t2:#a2abb4; --t3:#6b7580;
+    --accent:#3e90e8; --accent-h:#5aa2f0; --accent-dim:rgba(62,144,232,.14);
+    --danger:#e0564e; --danger-dim:rgba(224,86,78,.12);
+    --ok:#4cae6e; --ok-dim:rgba(76,174,110,.13); --warn:#d9a03c; --warn-dim:rgba(217,160,60,.13);
+    --r:4px; --rl:6px;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono:"Cascadia Mono",Consolas,monospace;
+  }
+  html,body{background:#101214;color:var(--t1);font-family:var(--font);}
+  body{margin:0;padding:28px 24px 64px;}
+  *{box-sizing:border-box;}
+  button{font-family:var(--font);}
+  ::selection{background:var(--accent-dim);}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+
+  .page-eyebrow{max-width:1480px;margin:0 auto 10px;display:flex;align-items:baseline;gap:12px;}
+  .page-eyebrow h1{font-size:15px;font-weight:600;margin:0;}
+  .page-eyebrow span{font-size:12px;color:var(--t3);}
+
+  /* ============ APP FRAME (shared) ============ */
+  .frame{max-width:1480px;margin:0 auto;height:min(860px,82vh);min-height:660px;
+    background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5);}
+  .titlebar{height:40px;flex:none;background:var(--bg-app);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 6px 0 14px;gap:2px;user-select:none;}
+  .app-mark{display:flex;align-items:center;gap:8px;margin-right:14px;}
+  .app-mark .logo{width:18px;height:18px;border-radius:4px;background:linear-gradient(135deg,#3e90e8,#2b5f9e);
+    display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;}
+  .app-mark .name{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--t2);}
+  .menu-item{background:none;border:0;color:var(--t2);font-size:12px;padding:5px 9px;border-radius:var(--r);cursor:default;}
+  .menu-item:hover{background:var(--bg-hover);color:var(--t1);}
+  .titlebar .spacer{flex:1;}
+  .doc-title{font-size:12px;color:var(--t3);margin-right:14px;}
+  .doc-title b{color:var(--t2);font-weight:600;}
+  .win-btns{display:flex;}
+  .win-btns button{width:38px;height:30px;background:none;border:0;color:var(--t3);font-size:11px;cursor:default;border-radius:var(--r);}
+  .win-btns button:hover{background:var(--bg-hover);color:var(--t1);}
+  .win-btns button.close:hover{background:var(--danger);color:#fff;}
+  .frame-body{flex:1;display:flex;min-height:0;}
+  .rail{width:84px;flex:none;background:var(--bg-app);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:10px 8px;gap:2px;user-select:none;}
+  .rail-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 2px 9px;
+    background:none;border:0;border-radius:var(--rl);color:var(--t3);cursor:pointer;position:relative;}
+  .rail-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+  .rail-btn span{font-size:9.5px;font-weight:600;letter-spacing:.08em;}
+  .rail-btn:hover{color:var(--t2);background:var(--bg-hover);}
+  .rail-btn.active{color:var(--accent-h);background:var(--accent-dim);}
+  .rail-btn.active::before{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:2px;background:var(--accent);border-radius:1px;}
+  .rail .spacer{flex:1;}
+  .rail-collapse{border:0;background:none;color:var(--t3);padding:8px;border-radius:var(--r);cursor:pointer;align-self:center;}
+  .rail-collapse:hover{background:var(--bg-hover);color:var(--t2);}
+  .rail-collapse svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;}
+
+  /* shared controls */
+  .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:var(--r);
+    font-size:12px;font-weight:600;border:1px solid transparent;cursor:pointer;white-space:nowrap;}
+  .btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{background:var(--accent-h);}
+  .btn-ghost{background:var(--bg-panel);color:var(--t1);border-color:var(--line-strong);}
+  .btn-ghost:hover{background:var(--bg-hover);}
+  .btn-ghost.danger{color:var(--danger);}
+  .btn-ghost.danger:hover{background:var(--danger-dim);}
+  .btn-icon{width:30px;padding:0;justify-content:center;background:var(--bg-panel);color:var(--t2);border:1px solid var(--line-strong);}
+  .btn-icon:hover{background:var(--bg-hover);color:var(--t1);}
+  .btn:disabled{opacity:.45;cursor:default;}
+  .btn.sm{height:26px;padding:0 10px;font-size:11.5px;}
+  .tin{height:30px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 9px;font-family:var(--font);width:100%;}
+  .tin::placeholder{color:var(--t3);}
+  select.ctl{height:28px;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);
+    color:var(--t1);font-size:11.5px;padding:0 7px;font-family:var(--font);cursor:pointer;max-width:100%;}
+  .flabel{display:block;font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--t3);}
+  .switch{position:relative;width:30px;height:16px;border-radius:99px;background:var(--bg-active);border:1px solid var(--line-strong);cursor:pointer;flex:none;transition:background .15s;}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--t2);transition:left .15s,background .15s;}
+  .switch.on{background:var(--accent);border-color:var(--accent);}
+  .switch.on::after{left:16px;background:#fff;}
+  .sw-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t2);user-select:none;}
+  .pbar{height:4px;border-radius:2px;background:var(--bg-inset);overflow:hidden;}
+  .pbar i{display:block;height:100%;background:var(--accent);border-radius:2px;}
+
+  /* ============ AUDIO layout ============ */
+  .content{flex:1;display:flex;min-width:0;}
+  .setup{width:272px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);overflow-y:auto;min-height:0;}
+  .setup-sec{border-bottom:1px solid var(--line);padding:12px 14px 14px;display:flex;flex-direction:column;gap:9px;}
+  .setup-sec:last-child{border-bottom:0;}
+  .setup-sec .hd{display:flex;align-items:center;gap:8px;}
+  .setup-sec .hd .flabel{flex:1;}
+  .stepnum{width:16px;height:16px;border-radius:50%;background:var(--bg-active);color:var(--t2);font-size:9.5px;
+    font-weight:700;display:grid;place-items:center;flex:none;}
+  .setup-sec.done .stepnum{background:var(--ok-dim);color:var(--ok);}
+
+  /* script sessions */
+  .sess{display:flex;align-items:center;gap:9px;padding:7px 9px;border:1px solid var(--line);border-radius:var(--rl);
+    background:var(--bg-panel);cursor:default;}
+  .sess:hover{background:var(--bg-hover);}
+  .sess.on{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent);}
+  .sess .sdot{width:8px;height:8px;border-radius:50%;flex:none;}
+  .sd-empty{background:var(--t3);} .sd-loaded{background:var(--accent);} .sd-tx{background:#8f7be8;} .sd-sync{background:var(--ok);}
+  .sess .sn{flex:1;min-width:0;}
+  .sess .snm{font-size:12px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .sess .smeta{font-size:10px;color:var(--t3);}
+
+  /* audio files */
+  .afile{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r);font-size:12px;color:var(--t2);}
+  .afile:hover{background:var(--bg-hover);}
+  .afile .ic{flex:none;width:14px;height:14px;}
+  .afile .ic svg{width:14px;height:14px;stroke:var(--t3);fill:none;stroke-width:1.6;stroke-linecap:round;}
+  .afile .fn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t1);}
+  .afile .fm{font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums;flex:none;}
+  .txb{flex:none;font-size:9px;font-weight:700;border-radius:3px;padding:1px 5px;letter-spacing:.05em;}
+  .txb.y{color:var(--ok);background:var(--ok-dim);}
+  .txb.n{color:var(--t3);background:var(--bg-inset);border:1px solid var(--line);}
+  .charline{width:3px;height:22px;border-radius:2px;flex:none;}
+
+  /* main column */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .smartbar{height:38px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);}
+  .smartbar .dotb{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none;}
+  .smartbar .msg{font-size:12px;color:var(--t2);}
+  .smartbar .msg b{color:var(--t1);font-weight:600;}
+  .smartbar .grow{flex:1;}
+  .smartbar .cnt{font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums;}
+
+  .chips{flex:none;display:flex;gap:6px;padding:9px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center;}
+  .chip{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 11px;border-radius:99px;
+    border:1px solid var(--line-strong);background:var(--bg-panel);color:var(--t2);font-size:11px;font-weight:600;cursor:pointer;}
+  .chip:hover{background:var(--bg-hover);color:var(--t1);}
+  .chip.on{border-color:var(--accent);background:var(--accent-dim);color:var(--accent-h);}
+  .chip i{width:7px;height:7px;border-radius:50%;flex:none;}
+  .chip .n{font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums;}
+  .chip.unm{color:var(--danger);}
+  .chip.unm.on{border-color:var(--danger);background:var(--danger-dim);color:var(--danger);}
+  .chips .grow{flex:1;}
+  .chips .hint{font-size:10.5px;color:var(--t3);}
+
+  .work{flex:1;display:flex;min-height:0;}
+  /* script index */
+  .sindex{width:296px;flex:none;border-right:1px solid var(--line);overflow-y:auto;padding:8px;}
+  .sline{display:flex;gap:8px;padding:7px 8px;border-radius:var(--r);cursor:default;border-left:3px solid transparent;margin-bottom:2px;}
+  .sline:hover{background:var(--bg-hover);}
+  .sline.sel{background:var(--accent-dim);}
+  .sline.st2{border-left-color:var(--ok);} .sline.st1{border-left-color:var(--warn);} .sline.st0{border-left-color:var(--danger);}
+  .sline .ln{font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums;width:18px;flex:none;padding-top:2px;}
+  .sline .body{flex:1;min-width:0;}
+  .sline .ch{font-size:10px;font-weight:700;letter-spacing:.05em;}
+  .sline .tx{font-size:11.5px;color:var(--t2);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+
+  /* match cards */
+  .cards{flex:1;overflow-y:auto;padding:10px 14px 16px;display:flex;flex-direction:column;gap:10px;}
+  .mcard{border:1px solid var(--line);border-left-width:3px;border-radius:var(--rl);background:var(--bg-panel);
+    display:flex;gap:12px;padding:10px 12px;}
+  .mcard.sel{box-shadow:0 0 0 1px var(--accent);border-color:var(--accent);}
+  .mcard.st2{border-left-color:var(--ok);} .mcard.st1{border-left-color:var(--warn);} .mcard.st0{border-left-color:var(--danger);}
+  .mcard .lft{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px;}
+  .mhead{display:flex;align-items:baseline;gap:9px;min-width:0;}
+  .mhead .ln{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums;flex:none;}
+  .mhead .ch{font-size:11px;font-weight:700;letter-spacing:.05em;flex:none;}
+  .mhead .tx{font-size:12.5px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .wavewrap{position:relative;height:46px;border-radius:var(--r);background:var(--bg-inset);border:1px solid var(--line);overflow:hidden;}
+  .wavewrap svg{display:block;width:100%;height:100%;}
+  .trimh{position:absolute;top:0;bottom:0;width:6px;cursor:ew-resize;}
+  .trimh::before{content:"";position:absolute;top:0;bottom:0;left:2px;width:2px;background:var(--accent);}
+  .trimh::after{content:"";position:absolute;top:0;width:6px;height:10px;background:var(--accent);border-radius:1px;}
+  .trimh.in::after{top:0;} .trimh.out::after{bottom:0;top:auto;}
+  .dim{position:absolute;top:0;bottom:0;background:rgba(10,12,15,.55);}
+  .delregion{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgba(224,86,78,.22) 0 4px,transparent 4px 8px);
+    border-left:1px solid var(--danger);border-right:1px solid var(--danger);}
+  .mfoot{display:flex;align-items:center;gap:10px;}
+  .confbar{flex:1;max-width:180px;height:3px;border-radius:2px;background:var(--bg-inset);overflow:hidden;}
+  .confbar i{display:block;height:100%;border-radius:2px;}
+  .mfoot .clipref{font-size:10.5px;color:var(--t3);font-family:var(--mono);}
+  .mfoot .confpct{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums;}
+  .mcard .rgt{width:168px;flex:none;display:flex;flex-direction:column;gap:6px;justify-content:center;}
+  .btn-confirm{background:var(--ok-dim);color:var(--ok);border:1px solid rgba(76,174,110,.4);}
+  .btn-confirm:hover{background:rgba(76,174,110,.22);}
+  .btn-confirm.is{background:var(--ok);color:#fff;border-color:var(--ok);}
+  .rgt .mini-row{display:flex;gap:6px;}
+  .rgt .mini-row .btn{flex:1;}
+  .noaudio{font-size:11.5px;color:var(--t3);font-style:italic;text-align:center;padding:2px 0;}
+
+  .actionbar{height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;border-top:1px solid var(--line);background:var(--bg-app);}
+  .actionbar .grow{flex:1;}
+  .actionbar .stat{font-size:11.5px;color:var(--t3);font-variant-numeric:tabular-nums;}
+
+  /* dialogs, popover, toast */
+  .scrim{position:fixed;inset:0;z-index:70;background:rgba(8,10,12,.62);display:none;align-items:center;justify-content:center;padding:24px;}
+  .scrim.open{display:flex;}
+  .dlg{background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 30px 80px rgba(0,0,0,.6);
+    width:100%;max-width:480px;display:flex;flex-direction:column;}
+  .dlg-head{display:flex;align-items:center;padding:15px 20px 13px;border-bottom:1px solid var(--line);}
+  .dlg-head h3{margin:0;font-size:15px;font-weight:600;}
+  .dlg-head .x{margin-left:auto;width:28px;height:28px;border:0;background:none;color:var(--t3);border-radius:var(--r);cursor:pointer;font-size:14px;}
+  .dlg-head .x:hover{background:var(--bg-hover);color:var(--t1);}
+  .dlg-body{padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
+  .dlg-foot{display:flex;align-items:center;gap:10px;padding:13px 20px;border-top:1px solid var(--line);}
+  .dlg-foot .grow{flex:1;}
+  .fgroup{display:flex;flex-direction:column;gap:7px;}
+  .loc-row{display:flex;gap:8px;}
+  .loc-row .tin{flex:1;}
+  .warnbox{display:flex;gap:10px;padding:10px 12px;border:1px solid rgba(217,160,60,.4);background:var(--warn-dim);
+    border-radius:var(--rl);font-size:12px;color:var(--t2);line-height:1.5;}
+  .warnbox b{color:var(--warn);}
+  .warnbox svg{width:15px;height:15px;stroke:var(--warn);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;margin-top:1px;}
+  select.ctl.big{height:32px;font-size:12.5px;}
+  .pop{position:fixed;z-index:60;width:300px;background:#25292e;border:1px solid var(--line-strong);border-radius:var(--rl);
+    padding:14px 16px;box-shadow:0 12px 34px rgba(0,0,0,.55);display:none;flex-direction:column;gap:12px;}
+  .pop.open{display:flex;}
+  .pop .pdesc{font-size:11px;color:var(--t3);margin:0;line-height:1.5;}
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(8px);z-index:90;
+    background:#2a2f35;border:1px solid var(--line-strong);color:var(--t1);font-size:12.5px;
+    padding:9px 16px;border-radius:var(--rl);box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;
+    transition:opacity .18s ease,transform .18s ease;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* spec */
+  .spec{max-width:1480px;margin:34px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;}
+  .spec-card{background:var(--bg-page);border:1px solid var(--line);border-radius:8px;padding:18px 20px;}
+  .spec-card h3{margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--t3);}
+  .spec-card p,.spec-card li{font-size:12.5px;color:var(--t2);line-height:1.6;}
+  .spec-card p{margin:0 0 8px;}
+  .spec-card ul{margin:0;padding-left:18px;}
+  .spec-card li{margin-bottom:6px;}
+  .spec-card li b{color:var(--t1);font-weight:600;}
+  .kbd-map{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px;color:var(--t2);}
+  .kbd-map kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-inset);border:1px solid var(--line-strong);
+    border-bottom-width:2px;border-radius:3px;padding:1px 6px;color:var(--t2);white-space:nowrap;justify-self:start;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="page-eyebrow">
+  <h1>Roundtable UI redesign — 03 · Audio</h1>
+  <span>Script → Import → Transcribe → Sync → Export, one screen · filter chips, confirm cards, try Export →</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <div class="app-mark"><div class="logo">R</div><div class="name">ROUNDTABLE</div></div>
+    <button class="menu-item">File</button><button class="menu-item">Edit</button>
+    <button class="menu-item">View</button><button class="menu-item">Timeline</button>
+    <button class="menu-item">Audio</button><button class="menu-item">Window</button>
+    <button class="menu-item">Help</button>
+    <div class="spacer"></div>
+    <div class="doc-title"><b>S24E03 Anime Openings</b> — saved</div>
+    <div class="win-btns"><button>—</button><button>▢</button><button class="close">✕</button></div>
+  </div>
+
+  <div class="frame-body">
+    <nav class="rail">
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M3.5 8.5h17v10a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M3.7 8.4 5 4.6A1.5 1.5 0 0 1 6.4 3.6l13 1.6a1.5 1.5 0 0 1 1.2 1.8l-.3 1.5"/><path d="m7.5 4 1.6 4M12.5 4.6l1.6 4M17.4 5.2l1.6 3.9"/></svg><span>PROJECTS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span>CHARACTERS</span></button>
+      <button class="rail-btn active"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg><span>AUDIO</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M3.5 12h17M8.5 5v7M15.5 12v7"/></svg><span>TIMELINE</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M12 14.5V4M12 4 8.2 7.8M12 4l3.8 3.8"/><path d="M4.5 14.5v3.5A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3.5"/></svg><span>EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-collapse" title="Collapse rail"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
+    </nav>
+
+    <div class="content">
+      <!-- setup sidebar -->
+      <aside class="setup">
+        <div class="setup-sec done">
+          <div class="hd"><span class="stepnum">1</span><span class="flabel">SCRIPT</span>
+            <button class="btn sm btn-primary" id="btnLoadScript">Load Script…</button></div>
+          <div class="sess on"><span class="sdot sd-sync"></span><div class="sn"><div class="snm">S24E03 Anime Openings</div><div class="smeta">7 lines · 6 clips · synced</div></div></div>
+          <div class="sess"><span class="sdot sd-tx"></span><div class="sn"><div class="snm">S24E02 Rival Duos</div><div class="smeta">42 lines · transcribed</div></div></div>
+          <div class="sess"><span class="sdot sd-loaded"></span><div class="sn"><div class="snm">Pilot Rewrite</div><div class="smeta">18 lines · no audio</div></div></div>
+          <div style="font-size:10.5px;color:var(--t3);line-height:1.5">Right-click a session to rename, delete, or re-sync with Google Drive. Format: <span style="font-family:var(--mono)">NAME: dialogue</span></div>
+        </div>
+
+        <div class="setup-sec done">
+          <div class="hd"><span class="stepnum">2</span><span class="flabel">AUDIO FILES</span>
+            <button class="btn sm btn-ghost" data-toast="Import audio… (wav / mp3 / flac / ogg / m4a)">Import…</button></div>
+          <div>
+            <div class="afile"><span class="charline" style="background:#8f7be8"></span><span class="fn">Wells.wav</span><span class="fm">24:12</span><span class="txb y">TX</span></div>
+            <div class="afile"><span class="charline" style="background:#8f7be8"></span><span class="fn">Wells fixed.wav</span><span class="fm">3:41</span><span class="txb y">TX</span></div>
+            <div class="afile"><span class="charline" style="background:#3fae9c"></span><span class="fn">Yoyo.wav</span><span class="fm">22:05</span><span class="txb y">TX</span></div>
+            <div class="afile"><span class="charline" style="background:#d9a03c"></span><span class="fn">Kalla.wav</span><span class="fm">25:48</span><span class="txb y">TX</span></div>
+            <div class="afile"><span class="charline" style="background:#e0789c"></span><span class="fn">Crown.wav</span><span class="fm">19:33</span><span class="txb n">—</span></div>
+          </div>
+          <div style="font-size:10.5px;color:var(--t3)">Colored by detected character. Right-click: Transcribe · Re-link · Reveal · Remove.</div>
+        </div>
+
+        <div class="setup-sec">
+          <div class="hd"><span class="stepnum">3</span><span class="flabel">TRANSCRIBE</span></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="ctl" style="flex:1"><option>tiny</option><option>base</option><option selected>small</option><option>medium</option><option>large-v3</option></select>
+            <button class="btn sm btn-primary" data-toast="Transcribing remaining files with Whisper (small)…">Transcribe All</button>
+          </div>
+          <div class="pbar"><i style="width:46%"></i></div>
+          <div style="font-size:10.5px;color:var(--t3)">File 5 / 5: Crown.wav — 09:02 / 19:33</div>
+        </div>
+      </aside>
+
+      <!-- main -->
+      <div class="main">
+        <div class="smartbar">
+          <span class="dotb" id="sbDot"></span>
+          <span class="msg" id="sbMsg"></span>
+          <div class="grow"></div>
+          <span class="cnt" id="sbCnt"></span>
+        </div>
+
+        <div class="chips" id="chipRow"></div>
+
+        <div class="work">
+          <div class="sindex" id="sIndex"></div>
+          <div class="cards" id="cards"></div>
+        </div>
+
+        <div class="actionbar">
+          <button class="btn btn-ghost" data-toast="Auto-Sync: merging → aligning words to script → trimming to speech → confirming high-confidence matches"><svg viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.7 3.8v3.4h-3.4"/></svg>Auto-Sync</button>
+          <button class="btn btn-ghost" id="btnConfirmAll">Confirm All</button>
+          <button class="btn btn-ghost" id="btnUnconfirmAll">Unconfirm All</button>
+          <button class="btn btn-ghost danger" data-toast="Clear all matches? (confirm — undoable)">Clear Matches</button>
+          <button class="btn btn-ghost" data-toast="Closed inter-clip gaps on all confirmed clips">Close Gaps</button>
+          <div class="grow"></div>
+          <span class="stat" id="abStat"></span>
+          <button class="btn btn-icon" id="btnAudioSettings" title="Sync settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.6v2.2M12 18.2v2.2M3.6 12h2.2M18.2 12h2.2M6.1 6.1l1.5 1.5M16.4 16.4l1.5 1.5M17.9 6.1l-1.5 1.5M7.6 16.4l-1.5 1.5"/></svg></button>
+          <button class="btn btn-ghost" data-toast="Re-exported 6 clips — timeline updated in place (shot swaps, captions and music preserved)"><svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 1 2.2 5.3"/><path d="M4.3 20.2v-3.4h3.4"/></svg>Re-export</button>
+          <button class="btn btn-primary" id="btnExport">Export →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- settings popover -->
+<div class="pop" id="audioPop">
+  <span class="flabel">MATCHING OPTIONS</span>
+  <div class="sw-row"><span class="switch" data-sw></span>Allow retakes (multiple clips per line)</div>
+  <p class="pdesc">When on, one script line can hold several audio segments — useful when a base recording and a “fixed” retake file both cover the same lines.</p>
+</div>
+
+<!-- load script dialog -->
+<div class="scrim" id="dlgScript">
+  <div class="dlg" role="dialog" aria-labelledby="dlgScriptT">
+    <div class="dlg-head"><h3 id="dlgScriptT">Load Script</h3><button class="x" data-close="dlgScript">✕</button></div>
+    <div class="dlg-body">
+      <div class="fgroup"><span class="flabel">SCRIPT URL OR FILE</span>
+        <div class="loc-row"><input class="tin" placeholder="Google Docs URL or local file path"><button class="btn btn-ghost" data-toast="Browse… (txt / json / html)">Browse…</button></div></div>
+      <div class="fgroup"><span class="flabel">SESSION NAME</span>
+        <input class="tin" placeholder="e.g. S24E04 Rival Duos" value=""></div>
+      <div style="font-size:11px;color:var(--t3);line-height:1.5">Lines must read <span style="font-family:var(--mono)">CHARACTER NAME: dialogue</span> with the name in ALL CAPS. Google Docs sessions can re-sync later.</div>
+    </div>
+    <div class="dlg-foot"><div class="grow"></div>
+      <button class="btn btn-ghost" data-close="dlgScript">Cancel</button>
+      <button class="btn btn-primary" data-close="dlgScript" data-toast="Script loaded — 7 lines, 4 characters">Load</button></div>
+  </div>
+</div>
+
+<!-- export dialog (replaces the 4-modal gauntlet) -->
+<div class="scrim" id="dlgExport">
+  <div class="dlg" role="dialog" aria-labelledby="dlgExportT">
+    <div class="dlg-head"><h3 id="dlgExportT">Export to Timeline</h3><button class="x" data-close="dlgExport">✕</button></div>
+    <div class="dlg-body">
+      <div class="fgroup"><span class="flabel">DEFAULT SHOTS FROM SHOW</span>
+        <select class="ctl big"><option>Tier Talk</option><option>Roundtable Live</option><option>Shorts</option></select></div>
+      <div class="fgroup"><span class="flabel">TARGET SEQUENCE</span>
+        <select class="ctl big"><option>Main Sequence</option><option>VO Scratch</option><option>+ Create new sequence…</option></select></div>
+      <div class="warnbox"><svg viewBox="0 0 24 24"><path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5M12 17.2v.3"/></svg>
+        <div><b>Crown</b> has no default shot in Tier Talk — audio exports fine, but Crown’s visual layers will be skipped. Set one in Compose, or continue.</div></div>
+      <div style="font-size:11.5px;color:var(--t3);line-height:1.55">6 confirmed clips → per-speaker audio tracks + each character’s default shot expanded onto video tracks, in script order. Audio lands in the <b style="color:var(--t2)">VO</b> bin.</div>
+    </div>
+    <div class="dlg-foot">
+      <div style="font-size:11.5px;color:var(--t3)">Next time, <b style="color:var(--t2)">Re-export</b> reuses these choices.</div>
+      <div class="grow"></div>
+      <button class="btn btn-ghost" data-close="dlgExport">Cancel</button>
+      <button class="btn btn-primary" data-close="dlgExport" data-toast="Exported 6 audio clips to Main Sequence — opening Timeline">Export</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ SPEC SHEET ============ -->
+<div class="spec">
+  <div class="spec-card">
+    <h3>WHAT MOVED WHERE</h3>
+    <ul>
+      <li><b>Icon rail + 5 sliding drawers</b> → one persistent setup sidebar with the three pipeline steps (Script / Audio Files / Transcribe) always visible, numbered and check-marked as they complete. No panel animation, no hidden state.</li>
+      <li><b>MATCH drawer (character filter list)</b> → filter chips above the cards, colored per character, with counts and the red UNMATCHED chip. Selecting a character still scopes Auto-Sync to it.</li>
+      <li><b>SETTINGS drawer</b> (one checkbox) → gear popover on the action bar.</li>
+      <li><b>4-modal export gauntlet</b> → one Export dialog: show picker + sequence picker + missing-default-shot warning inline. Re-export stays one-click and prompt-free.</li>
+      <li><b>Dead UI dropped:</b> the never-built transport bar and the permanently hidden orphan-clips list. Playback lives on the cards (Space / J-K-L), as it already does.</li>
+      <li>Everything on a card is unchanged: confidence bar, waveform with trim handles and non-destructive delete regions, Confirm / Play / Auto-trim / Reject, Reassign combo; unmatched lines keep Manual match, Assign-clip, and the audio-file pin.</li>
+    </ul>
+  </div>
+  <div class="spec-card">
+    <h3>LAYOUT LOGIC</h3>
+    <p>The screen reads left-to-right as the pipeline: <b>setup</b> (script, files, transcription) → <b>refine</b> (script index + match cards) → <b>ship</b> (action bar with Export). The smart status line stays on top; the state language is the same everywhere — green confirmed, amber tentative, red unmatched — as a 3px stripe on both the index rows and the cards, so you can scan sync health at either zoom level.</p>
+    <p>The script index and cards stay scroll-synced: click a line on either side and the other follows. Session switching keeps per-script audio/clips/matches exactly as today.</p>
+  </div>
+  <div class="spec-card">
+    <h3>KEYBOARD (UNCHANGED)</h3>
+    <div class="kbd-map">
+      <kbd>Space</kbd><span>Play / pause selected clip</span>
+      <kbd>J K L</kbd><span>Shuttle (variable speed)</span>
+      <kbd>I / O</kbd><span>Set clip in / out point</span>
+      <kbd>Ctrl+Z / Y</kbd><span>Undo / redo (trims, confirms, rejects)</span>
+    </div>
+    <p style="margin-top:12px">Open question: the amber transcription progress currently lives only in the sidebar — happy to also pulse it in the smart bar while a run is active if you want it louder.</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $=id=>document.getElementById(id);
+  function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");
+    clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2400);}
+  document.addEventListener("click",e=>{const b=e.target.closest("[data-toast]");if(b)toast(b.dataset.toast);});
+  document.addEventListener("click",e=>{const sw=e.target.closest(".switch");if(sw)sw.classList.toggle("on");});
+
+  /* dialogs */
+  function openDlg(id){$(id).classList.add("open");}
+  function closeDlg(id){$(id).classList.remove("open");}
+  document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",()=>closeDlg(b.dataset.close)));
+  document.querySelectorAll(".scrim").forEach(s=>s.addEventListener("mousedown",e=>{if(e.target===s)closeDlg(s.id);}));
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"){const o=document.querySelector(".scrim.open");if(o)closeDlg(o.id);
+    $("audioPop").classList.remove("open");}});
+  $("btnLoadScript").addEventListener("click",()=>openDlg("dlgScript"));
+  $("btnExport").addEventListener("click",()=>openDlg("dlgExport"));
+
+  /* settings popover */
+  const pop=$("audioPop");
+  $("btnAudioSettings").addEventListener("click",e=>{e.stopPropagation();
+    const b=$("btnAudioSettings").getBoundingClientRect();
+    pop.classList.toggle("open");
+    pop.style.left=Math.min(b.left,window.innerWidth-312)+"px";
+    pop.style.top=(b.top-pop.offsetHeight-8)+"px";});
+  document.addEventListener("click",e=>{if(!e.target.closest("#audioPop")&&!e.target.closest("#btnAudioSettings"))pop.classList.remove("open");});
+
+  /* ---------- data ---------- */
+  const CH={WELLS:"#8f7be8",YOYO:"#3fae9c",KALLA:"#d9a03c",CROWN:"#e0789c"};
+  const lines=[
+    {n:1,ch:"WELLS",tx:"Welcome back to the round table — today we are ranking anime openings, and nobody is safe.",st:2,conf:.92,clip:"Wells.wav · 0:03.2 – 0:11.8",seed:11},
+    {n:2,ch:"YOYO",tx:"I already know Gurren Lagann is going straight to S tier and I will not be taking questions.",st:2,conf:.88,clip:"Yoyo.wav · 0:00.4 – 0:05.1",seed:23},
+    {n:3,ch:"KALLA",tx:"Bold of you to assume we agree on anything today.",st:1,conf:.64,clip:"Kalla.wav · 0:02.0 – 0:06.6",seed:35},
+    {n:4,ch:"WELLS",tx:"Rules are simple: one pick each, no vetoes, and the chat votes on ties.",st:2,conf:.95,clip:"Wells.wav · 0:12.4 – 0:19.0",seed:47,del:[.58,.66]},
+    {n:5,ch:"CROWN",tx:"Wait, we are letting chat decide? That went badly last time.",st:1,conf:.51,clip:"Crown.wav · 0:01.1 – 0:04.9",seed:59},
+    {n:6,ch:"YOYO",tx:"That is because you rigged the poll, Crown.",st:0},
+    {n:7,ch:"KALLA",tx:"Let us just get to the first opening before this completely derails.",st:2,conf:.83,clip:"Kalla fixed.wav · 0:07.3 – 0:12.0",seed:71}
+  ];
+  let filter="all",sel=1;
+
+  /* deterministic waveform svg */
+  function waveSvg(seed){
+    let s=seed;const rnd=()=>{s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};
+    const n=90;let bars="";
+    for(let i=0;i<n;i++){
+      const env=Math.sin((i/n)*Math.PI);
+      const h=4+Math.round(rnd()*34*(0.35+0.65*env));
+      const x=(i/n*100).toFixed(2);
+      bars+='<rect x="'+x+'%" y="'+(23-h/2)+'" width="0.72%" height="'+h+'" rx="0.5" fill="#56718f"/>';
+    }
+    return '<svg viewBox="0 0 100 46" preserveAspectRatio="none">'+bars+'</svg>';
+  }
+
+  const STC={0:"var(--danger)",1:"var(--warn)",2:"var(--ok)"};
+  function confColor(c){return c>=.8?"var(--ok)":c>=.5?"var(--warn)":"var(--danger)";}
+  function counts(){const c={all:lines.length,unm:0};Object.keys(CH).forEach(k=>c[k]=0);
+    lines.forEach(l=>{c[l.ch]++;if(l.st===0)c.unm++;});return c;}
+  function visible(){return lines.filter(l=>filter==="all"?true:filter==="unm"?l.st===0:l.ch===filter);}
+
+  function render(){
+    const c=counts();
+    /* chips */
+    let h='<button class="chip'+(filter==="all"?" on":"")+'" data-f="all">All <span class="n">'+c.all+'</span></button>';
+    Object.keys(CH).forEach(k=>{h+='<button class="chip'+(filter===k?" on":"")+'" data-f="'+k+'"><i style="background:'+CH[k]+'"></i>'+k[0]+k.slice(1).toLowerCase()+' <span class="n">'+c[k]+'</span></button>';});
+    h+='<button class="chip unm'+(filter==="unm"?" on":"")+'" data-f="unm">Unmatched <span class="n">'+c.unm+'</span></button>';
+    h+='<div class="grow"></div><span class="hint">Selecting a character also scopes Auto-Sync to them</span>';
+    $("chipRow").innerHTML=h;
+
+    /* index */
+    $("sIndex").innerHTML=visible().map(l=>
+      '<div class="sline st'+l.st+(sel===l.n?" sel":"")+'" data-n="'+l.n+'">'+
+      '<span class="ln">'+l.n+'</span><div class="body">'+
+      '<span class="ch" style="color:'+CH[l.ch]+'">'+l.ch+'</span>'+
+      '<div class="tx">'+l.tx+'</div></div></div>').join("");
+
+    /* cards */
+    $("cards").innerHTML=visible().map(l=>{
+      let left='<div class="mhead"><span class="ln">#'+l.n+'</span>'+
+        '<span class="ch" style="color:'+CH[l.ch]+'">'+l.ch+'</span>'+
+        '<span class="tx">'+l.tx+'</span></div>';
+      let right="";
+      if(l.st>0){
+        const del=l.del?'<div class="delregion" style="left:'+(l.del[0]*100)+'%;width:'+((l.del[1]-l.del[0])*100)+'%"></div>':"";
+        left+='<div class="wavewrap">'+waveSvg(l.seed)+
+          '<div class="dim" style="left:0;width:9%"></div><div class="dim" style="right:0;width:7%"></div>'+del+
+          '<div class="trimh in" style="left:9%" title="Drag to trim in-point"></div>'+
+          '<div class="trimh out" style="right:7%" title="Drag to trim out-point"></div></div>'+
+          '<div class="mfoot"><span class="confbar"><i style="width:'+(l.conf*100)+'%;background:'+confColor(l.conf)+'"></i></span>'+
+          '<span class="confpct">'+Math.round(l.conf*100)+'%</span>'+
+          '<span class="clipref">'+l.clip+'</span></div>';
+        right='<button class="btn sm btn-confirm'+(l.st===2?" is":"")+'" data-act="confirm" data-n="'+l.n+'">'+(l.st===2?"✓ Confirmed":"Confirm")+'</button>'+
+          '<div class="mini-row"><button class="btn sm btn-ghost" data-toast="Playing clip (Space · J-K-L shuttle)">▶ Play</button>'+
+          '<button class="btn sm btn-ghost" data-toast="Auto-trimmed to speech (word-anchored VAD)">Trim</button></div>'+
+          '<div class="mini-row"><button class="btn sm btn-ghost danger" data-act="reject" data-n="'+l.n+'">✕ Reject</button></div>'+
+          '<select class="ctl" data-toast-change="Clip reassigned to"><option>Reassign…</option><option>1. WELLS: Welcome back…</option><option>5. CROWN: Wait, we are…</option><option>6. YOYO: That is because…</option></select>';
+      }else{
+        left+='<div class="wavewrap" style="display:flex;align-items:center;justify-content:center"><span class="noaudio">No audio assigned</span></div>';
+        right='<button class="btn sm btn-primary" data-toast="Manual match: pick a region in the source waveform (dialog)">Manual Match…</button>'+
+          '<select class="ctl" data-toast-change="Assigned orphan clip"><option>Assign clip…</option><option>Clip #12 (YOYO) 2.1s</option><option>Clip #14 (YOYO) 3.8s</option></select>'+
+          '<select class="ctl" data-toast-change="Line pinned to file"><option>Audio file: auto</option><option>Yoyo.wav</option><option>Wells fixed.wav</option></select>';
+      }
+      return '<div class="mcard st'+l.st+(sel===l.n?" sel":"")+'" data-n="'+l.n+'">'+
+        '<div class="lft">'+left+'</div><div class="rgt">'+right+'</div></div>';
+    }).join("");
+
+    /* status */
+    const conf=lines.filter(l=>l.st===2).length;
+    $("sbCnt").textContent=conf+" / "+lines.length+" confirmed";
+    $("abStat").textContent=conf+" / "+lines.length+" confirmed · 1 unmatched";
+    const allDone=conf===lines.length;
+    $("sbDot").style.background=allDone?"var(--ok)":c.unm>0?"var(--danger)":"var(--warn)";
+    $("sbMsg").innerHTML=allDone?"<b>All lines confirmed</b> — ready to export"
+      :"<b>"+(lines.length-conf)+" line"+(lines.length-conf>1?"s":"")+" left</b> — confirm tentative matches, resolve the unmatched line, then Export";
+  }
+
+  $("chipRow").addEventListener("click",e=>{const ch=e.target.closest("[data-f]");if(!ch)return;
+    filter=ch.dataset.f;render();});
+  $("sIndex").addEventListener("click",e=>{const r=e.target.closest("[data-n]");if(!r)return;
+    sel=+r.dataset.n;render();
+    const card=$("cards").querySelector('.mcard[data-n="'+sel+'"]');
+    if(card)card.scrollIntoView({block:"nearest",behavior:"smooth"});});
+  $("cards").addEventListener("click",e=>{
+    const act=e.target.closest("[data-act]");
+    if(act){const l=lines.find(x=>x.n===+act.dataset.n);
+      if(act.dataset.act==="confirm"){l.st=l.st===2?1:2;toast(l.st===2?"Confirmed (undoable)":"Back to tentative");}
+      else if(act.dataset.act==="reject"){l.st=0;l.conf=0;toast("Match rejected — line is unmatched (undoable)");}
+      render();return;}
+    const card=e.target.closest(".mcard");if(!card)return;
+    sel=+card.dataset.n;render();});
+  $("cards").addEventListener("change",e=>{const s=e.target.closest("[data-toast-change]");
+    if(s&&s.selectedIndex>0){toast(s.dataset.toastChange+" “"+s.value+"”");s.selectedIndex=0;}});
+  $("btnConfirmAll").addEventListener("click",()=>{lines.forEach(l=>{if(l.st===1)l.st=2;});toast("All tentative matches confirmed");render();});
+  $("btnUnconfirmAll").addEventListener("click",()=>{lines.forEach(l=>{if(l.st===2)l.st=1;});toast("All confirmations reverted to tentative");render();});
+
+  render();
+})();
+</script>

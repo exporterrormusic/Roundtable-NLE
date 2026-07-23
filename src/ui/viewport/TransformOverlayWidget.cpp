@@ -80,23 +80,49 @@ TransformOverlayWidget::~TransformOverlayWidget()
 
 void TransformOverlayWidget::setEditTool(uint8_t tool) noexcept
 {
+    if (m_editTool == 9 && tool != 9)
+        cancelPenMask();
+    // Selection is also Premiere's mask-manipulation tool. Do not clear the
+    // selected mask here: Effect Controls selects the path, then activates
+    // Selection so its vertices/body move without moving the owning clip.
     m_editTool = tool;
     // Immediately apply the correct cursor when switching tools.
-    if (tool == 8)  // zoom tool
+    if (tool == 7)  // zoom tool
         applyCursor(zoomCursor());
+    else if (tool == 9)  // Pen Mask tool
+        applyCursor(penCursor());
     else if (tool == 6)  // text/type tool — I-beam like Premiere Pro
         applyCursor(Qt::IBeamCursor);
+    else if (tool == 8)  // eyedropper
+        applyCursor(Qt::CrossCursor);
     else
         applyCursor(Qt::ArrowCursor);
+}
+
+void TransformOverlayWidget::setMasks(std::vector<OpacityMask>* masks) noexcept
+{
+    if (m_masks != masks) {
+        cancelPenMask();
+        m_activeMaskIndex = -1;
+    }
+    m_masks = masks;
+    if (!m_masks || m_masks->empty()
+        || m_activeMaskIndex >= static_cast<int>(m_masks->size()))
+        m_activeMaskIndex = -1;
+    update();
 }
 
 void TransformOverlayWidget::enterEvent(QEnterEvent* /*event*/)
 {
     // Re-apply tool cursor when mouse enters overlay area.
-    if (m_editTool == 8)
+    if (m_editTool == 7)
         applyCursor(zoomCursor());
+    else if (m_editTool == 9)
+        applyCursor(penCursor());
     else if (m_editTool == 6)
         applyCursor(Qt::IBeamCursor);
+    else if (m_editTool == 8)
+        applyCursor(Qt::CrossCursor);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -136,7 +162,12 @@ void TransformOverlayWidget::setSecondaryOverlays(
 
 void TransformOverlayWidget::clearTransformOverlay()
 {
+    cancelPenMask();
     m_overlay.visible = false;
+    m_masks = nullptr;
+    m_activeMaskIndex = -1;
+    m_hasMaskOwnerOverlay = false;
+    m_maskOwnerFollowsPrimary = false;
     m_secondaryOverlays.clear();
     m_dragMode = DragMode::None;
     applyCursor(Qt::ArrowCursor);
@@ -356,40 +387,9 @@ QCursor TransformOverlayWidget::rotateCursor()
 
 QCursor TransformOverlayWidget::penCursor()
 {
-    // Small pen/nib icon — 32×32, hot-spot at the tip (bottom-left).
-    constexpr int SZ = 32;
-    QPixmap pix(SZ, SZ);
-    pix.fill(Qt::transparent);
-
-    QPainter p(&pix);
-    p.setRenderHint(QPainter::Antialiasing, true);
-
-    // Pen body: a rotated narrow rectangle from upper-right to lower-left
-    // Tip at (6, 26), top at (26, 6)
-    QPolygonF body;
-    body << QPointF(24, 4) << QPointF(28, 8)
-         << QPointF(10, 26) << QPointF(6, 22);
-
-    // Nib triangle at the tip
-    QPolygonF nib;
-    nib << QPointF(6, 22) << QPointF(10, 26) << QPointF(4, 28);
-
-    // Black outline
-    p.setPen(QPen(Qt::black, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(Qt::NoBrush);
-    p.drawPolygon(body);
-    p.drawPolygon(nib);
-
-    // White fill
-    p.setPen(QPen(Qt::white, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(QBrush(Qt::white));
-    p.drawPolygon(body);
-    p.setBrush(QBrush(QColor(60, 160, 255)));
-    p.drawPolygon(nib);
-
-    p.end();
-    // Hot-spot at the pen tip (lower-left)
-    return QCursor(pix, 4, 28);
+    // A plain crosshair makes the exact point placement unambiguous. The old
+    // diagonal nib obscured its hot spot during tight Bezier work.
+    return QCursor(Qt::CrossCursor);
 }
 
 QCursor TransformOverlayWidget::zoomCursor()
@@ -505,6 +505,13 @@ QRectF TransformOverlayWidget::computeFrameRect() const
     // Fallback (before first present): surface-based aspect fit.
     double srcW = static_cast<double>(m_vulkanVp->srcWidth());
     double srcH = static_cast<double>(m_vulkanVp->srcHeight());
+    if (srcW <= 0.0 || srcH <= 0.0) {
+        // OverlayController supplies the sequence dimensions independently
+        // of frame presentation. This keeps mask geometry interactive during
+        // the first/late frame instead of collapsing all hit targets to zero.
+        srcW = static_cast<double>(m_seqW);
+        srcH = static_cast<double>(m_seqH);
+    }
     if (srcW <= 0 || srcH <= 0) return {};
 
     double imgAspect = srcW / srcH;
@@ -532,6 +539,10 @@ QPointF TransformOverlayWidget::frameToWidget(const QPointF& fp) const
 
     float srcW = static_cast<float>(m_vulkanVp->srcWidth());
     float srcH = static_cast<float>(m_vulkanVp->srcHeight());
+    if (srcW <= 0.0f || srcH <= 0.0f) {
+        srcW = static_cast<float>(m_seqW);
+        srcH = static_cast<float>(m_seqH);
+    }
     if (srcW <= 0.0f || srcH <= 0.0f) return QPointF(-1, -1);
 
     double wx = fr.x() + (fp.x() / srcW) * fr.width();
@@ -577,6 +588,8 @@ void TransformOverlayWidget::computeOverlayCornersFor(
             // Clip-level position is in REF-1920 px; scale into canvas space.
             float clipPxX = ov.clipPosX * (canvasW / 1920.0f);
             float clipPxY = ov.clipPosY * (canvasH / 1080.0f);
+            float clipAnchorPxX = ov.clipAnchorX * (canvasW / 1920.0f);
+            float clipAnchorPxY = ov.clipAnchorY * (canvasH / 1080.0f);
 
             auto fwd = [&](float x, float y) -> QPointF {
                 // Layer transform (inner): same as renderGraphicClip QPainter.
@@ -591,10 +604,12 @@ void TransformOverlayWidget::computeOverlayCornersFor(
                 float oy = dx * sinR + dy * cosR + cy + lay + ov.posY;
 
                 // Clip-level transform (outer): compositor blitLayerWithTransform
-                float rx = (ox - cx) * ov.clipScaleX;
-                float ry = (oy - cy) * ov.clipScaleY;
-                float fx = rx * clipCosR - ry * clipSinR + cx + clipPxX;
-                float fy = rx * clipSinR + ry * clipCosR + cy + clipPxY;
+                float rx = (ox - cx - clipAnchorPxX) * ov.clipScaleX;
+                float ry = (oy - cy - clipAnchorPxY) * ov.clipScaleY;
+                float fx = rx * clipCosR - ry * clipSinR
+                         + cx + clipPxX + clipAnchorPxX;
+                float fy = rx * clipSinR + ry * clipCosR
+                         + cy + clipPxY + clipAnchorPxY;
 
                 // Map using canvas dimensions (not srcWidth) so coordinates
                 // in 1920x1080 space map correctly even if displayed at 960x540.
@@ -624,6 +639,10 @@ void TransformOverlayWidget::computeOverlayCornersFor(
 
     float outW = static_cast<float>(m_vulkanVp->srcWidth());
     float outH = static_cast<float>(m_vulkanVp->srcHeight());
+    if (outW <= 0.0f || outH <= 0.0f) {
+        outW = static_cast<float>(m_seqW);
+        outH = static_cast<float>(m_seqH);
+    }
     if (outW <= 0.0f || outH <= 0.0f) {
         for (int i = 0; i < 4; ++i) corners[i] = QPointF(0, 0);
         return;

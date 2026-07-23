@@ -120,7 +120,8 @@ class TrimClipCommand : public Command
 public:
     /// trimLeft: adjusts timelineIn + sourceIn. trimRight: adjusts duration only.
     TrimClipCommand(Track* track, uint64_t clipId,
-                    int64_t newTimelineIn, int64_t newDuration, int64_t newSourceIn);
+                    int64_t newTimelineIn, int64_t newDuration, int64_t newSourceIn,
+                    bool preserveKeyframeTimes = true);
 
     void execute() override;
     void undo() override;
@@ -134,6 +135,7 @@ private:
     int64_t  m_oldTimelineIn, m_newTimelineIn;
     int64_t  m_oldDuration,   m_newDuration;
     int64_t  m_oldSourceIn,   m_newSourceIn;
+    bool     m_preserveKeyframeTimes;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

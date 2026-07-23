@@ -111,6 +111,79 @@ TEST(VideoFrameMapping, SpeedAndOffsetsCompose)
                   24 + 2 * k);
 }
 
+// ── Continuous endpoint mapping for temporal interpolation ─────────────────
+
+TEST(VideoFrameMapping, FractionalPositionExposesEndpointPairAndPhase)
+{
+    const auto clip = makeClip(0, 0, 1.0, 24.0);
+
+    // 500 ticks is one quarter of a 24 fps source frame.
+    const auto quarter = mapTickToSourceFrame(*clip, 500, nullptr);
+    EXPECT_EQ(quarter.frame, 0);  // Existing nearest-frame API is unchanged.
+    EXPECT_EQ(quarter.lowerFrame, 0);
+    EXPECT_EQ(quarter.upperFrame, 1);
+    EXPECT_NEAR(quarter.blendPhase, 0.25, 1e-12);
+
+    // llround still selects the later frame at the exact half-frame point.
+    const auto half = mapTickToSourceFrame(*clip, 1000, nullptr);
+    EXPECT_EQ(half.frame, 1);
+    EXPECT_EQ(half.lowerFrame, 0);
+    EXPECT_EQ(half.upperFrame, 1);
+    EXPECT_NEAR(half.blendPhase, 0.5, 1e-12);
+}
+
+TEST(VideoFrameMapping, SlowRetimeRepeatsLowerEndpointWhilePhaseAdvances)
+{
+    const auto clip = makeClip(0, 0, 0.25, 24.0);
+
+    // On a 24 fps timeline at 25% speed, three consecutive output frames
+    // synthesize different phases from the same source pair. Endpoint fetch
+    // must therefore allow frame 0 again after frame 1 was fetched.
+    const auto quarter = mapTickToSourceFrame(*clip, 2000, nullptr);
+    const auto half = mapTickToSourceFrame(*clip, 4000, nullptr);
+    const auto threeQuarter = mapTickToSourceFrame(*clip, 6000, nullptr);
+
+    for (const auto* mapped : {&quarter, &half, &threeQuarter}) {
+        EXPECT_EQ(mapped->lowerFrame, 0);
+        EXPECT_EQ(mapped->upperFrame, 1);
+    }
+    EXPECT_NEAR(quarter.blendPhase, 0.25, 1e-12);
+    EXPECT_NEAR(half.blendPhase, 0.50, 1e-12);
+    EXPECT_NEAR(threeQuarter.blendPhase, 0.75, 1e-12);
+    EXPECT_EQ(quarter.frame, 0);
+    EXPECT_EQ(half.frame, 1);
+    EXPECT_EQ(threeQuarter.frame, 1);
+}
+
+TEST(VideoFrameMapping, IntegralPositionCollapsesEndpointPair)
+{
+    const auto clip = makeClip(0, 0, 1.0, 30.0);
+    const auto mapped = mapTickToSourceFrame(*clip, 17 * 1600, nullptr);
+
+    EXPECT_EQ(mapped.frame, 17);
+    EXPECT_EQ(mapped.lowerFrame, 17);
+    EXPECT_EQ(mapped.upperFrame, 17);
+    EXPECT_DOUBLE_EQ(mapped.blendPhase, 0.0);
+}
+
+TEST(VideoFrameMapping, EndpointPairUsesSameClampAndWrapPolicy)
+{
+    const auto info = makeInfo(10, 24.0);
+
+    const auto regular = makeClip(0, 0, 1.0, 24.0);
+    const auto clamped = mapTickToSourceFrame(*regular, 9 * 2000 + 1000, &info);
+    EXPECT_EQ(clamped.lowerFrame, 9);
+    EXPECT_EQ(clamped.upperFrame, 9);
+    EXPECT_DOUBLE_EQ(clamped.blendPhase, 0.0);
+
+    auto character = makeClip(0, 0, 1.0, 24.0);
+    character->setCharacterName("Wells");
+    const auto wrapped = mapTickToSourceFrame(*character, 9 * 2000 + 1000, &info);
+    EXPECT_EQ(wrapped.lowerFrame, 9);
+    EXPECT_EQ(wrapped.upperFrame, 0);
+    EXPECT_NEAR(wrapped.blendPhase, 0.5, 1e-12);
+}
+
 // ── Transition overlap: negative srcTick clamps to 0 ────────────────────────
 
 TEST(VideoFrameMapping, NegativeSrcTickClampsToFrame0)

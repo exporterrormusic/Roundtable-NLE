@@ -159,6 +159,13 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_effectControlsPanel, &EffectControlsPanel::maskSelected,
                 this, [this](int maskIndex, quint64 effectId) {
             if (m_destroying.load(std::memory_order_acquire)) return;
+            // A selected mask is manipulated with Premiere's normal
+            // Selection tool. Force out of Razor/Text/etc. before focusing
+            // the path so the next monitor press is routed to mask input.
+            if (m_timelinePanel
+                && m_timelinePanel->activeTool() != EditTool::Selection) {
+                m_timelinePanel->setActiveTool(EditTool::Selection);
+            }
             // Route the Program Monitor at the selected mask list first
             // (clip opacity masks when effectId==0, else that effect's
             // masks), then focus the clicked mask within it.
@@ -168,6 +175,14 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
                 auto* ov = m_programMonitor->transformOverlay();
                 if (ov) ov->setActiveMaskIndex(maskIndex);
             }
+        });
+        connect(m_effectControlsPanel, &EffectControlsPanel::penMaskToolRequested,
+                this, [this](quint64 effectId) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_overlay) m_overlay->setActiveMaskContext(effectId);
+            if (m_timelinePanel)
+                m_timelinePanel->setActiveTool(EditTool::PenMask);
+            scheduleOverlayRefresh();
         });
     }
 
@@ -380,6 +395,7 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
         connect(m_tierListPanel, &TierListPanel::tierListEdited,
                 this, [this]() {
             if (m_destroying.load(std::memory_order_acquire)) return;
+            invalidateTierListRenderCache();
             invalidateCompositeCache();
             if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
             if (m_programMonitor) m_programMonitor->requestRefresh();

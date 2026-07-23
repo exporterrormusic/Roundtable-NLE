@@ -104,6 +104,32 @@ void TimelinePanel::executeCommand(std::unique_ptr<Command> cmd)
     }
 }
 
+bool TimelinePanel::copySelectedTransitionToClipboard()
+{
+    if (!m_timeline || m_selectedTransitionTrack == SIZE_MAX
+        || m_selectedTransitionIndex == SIZE_MAX)
+        return false;
+
+    EditOperations::copyTransition(*m_timeline, m_selectedTransitionTrack,
+                                   m_selectedTransitionIndex, m_clipboard);
+    return m_clipboard.hasStandaloneTransition();
+}
+
+std::unique_ptr<Command> TimelinePanel::makePasteCommand(int64_t playhead)
+{
+    if (!m_timeline) return nullptr;
+    if (m_clipboard.hasStandaloneTransition()) {
+        if (!m_lastClickedEdge.valid) return nullptr;
+        auto command = EditOperations::pasteTransitionAtEdge(
+            *m_timeline, m_clipboard, m_lastClickedEdge.clipRef.trackIndex,
+            m_lastClickedEdge.clipRef.clipId, m_lastClickedEdge.edge);
+        if (command)
+            clearEditPointSelection();
+        return command;
+    }
+    return EditOperations::paste(*m_timeline, m_clipboard, playhead);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Cursor and shortcut wiring
 // ═════════════════════════════════════════════════════════════════════════════
@@ -131,6 +157,12 @@ void TimelinePanel::updateCursorForTool()
         break;
     case EditTool::Text:
         setCursor(Qt::IBeamCursor);
+        break;
+    case EditTool::PenMask:
+        setCursor(Qt::CrossCursor);
+        break;
+    case EditTool::Eyedropper:
+        setCursor(Qt::CrossCursor);
         break;
     case EditTool::Zoom:
     {
@@ -164,8 +196,10 @@ void TimelinePanel::wireShortcuts()
     // ── Copy: copy selected clips to clipboard + copy attributes ──────
     m_shortcuts->setActionCallback(ShortcutManager::kCopy, [this]() {
         if (!m_timeline) return;
-        EditOperations::copySelection(*m_timeline, m_selection, m_clipboard);
-        copyAttributesFromSelection();
+        if (!copySelectedTransitionToClipboard()) {
+            EditOperations::copySelection(*m_timeline, m_selection, m_clipboard);
+            copyAttributesFromSelection();
+        }
     });
 
     // ── Cut: copy + delete selection ──────────────────────────────────
@@ -185,7 +219,7 @@ void TimelinePanel::wireShortcuts()
     // ── Paste: overwrite at playhead ──────────────────────────────────
     m_shortcuts->setActionCallback(ShortcutManager::kPaste, [this]() {
         if (!m_timeline || !m_commandStack || m_clipboard.empty()) return;
-        auto cmd = EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick);
+        auto cmd = makePasteCommand(m_playheadTick);
         if (cmd) {
             m_commandStack->execute(std::move(cmd));
             refreshTrackContents();

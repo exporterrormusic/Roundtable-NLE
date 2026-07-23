@@ -951,11 +951,10 @@ uint64_t TierListPanel::nextEntryId() const
     return mx + 1;
 }
 
-int64_t TierListPanel::playheadLocalTick() const
+int64_t TierListPanel::playheadEventTick() const
 {
     if (!m_timeline || !m_clip) return 0;
-    const int64_t t = m_timeline->playheadPosition() - m_clip->timelineIn();
-    return t < 0 ? 0 : t;
+    return m_clip->eventTickAt(m_timeline->playheadPosition());
 }
 
 void TierListPanel::normalizeEvents()
@@ -1354,7 +1353,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     connect(setStart, &QPushButton::clicked, this, [this, eventIndex, startTime, endTime]() {
         if (!m_clip || eventIndex >= m_clip->events().size()) return;
         auto before = snapshot();
-        m_clip->events()[eventIndex].start = playheadLocalTick();
+        m_clip->events()[eventIndex].start = playheadEventTick();
         normalizeEvents();   // clamp start up to the previous event's end
         pushUndo(QStringLiteral("Set event start"), before);
         const auto& ev2 = m_clip->events()[eventIndex];
@@ -1368,7 +1367,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
         if (!m_clip || eventIndex >= m_clip->events().size()) return;
         auto before = snapshot();
         auto& ev2 = m_clip->events()[eventIndex];
-        ev2.end = playheadLocalTick();
+        ev2.end = playheadEventTick();
         if (ev2.end < ev2.start) ev2.end = ev2.start;
         normalizeEvents();   // following events keep start ≥ this new end
         pushUndo(QStringLiteral("Set event end"), before);
@@ -1579,7 +1578,7 @@ void TierListPanel::onReorderInRow(uint64_t entryId, int tier, int fromIndex, in
     TierEvent* drop = findDropEventForEntry(entryId);
     if (drop && drop->tier == tier) {
         drop->index = toIndex;
-        drop->start = playheadLocalTick();
+        drop->start = playheadEventTick();
         drop->end   = drop->start;
     } else {
         // No existing DROP event for this entry — create a Reorder event as
@@ -1589,7 +1588,7 @@ void TierListPanel::onReorderInRow(uint64_t entryId, int tier, int fromIndex, in
         ev.tier      = tier;
         ev.fromIndex = fromIndex;
         ev.toIndex   = toIndex;
-        ev.start     = playheadLocalTick();
+        ev.start     = playheadEventTick();
         ev.end       = ev.start;
         m_clip->events().push_back(ev);
     }
@@ -1614,7 +1613,7 @@ void TierListPanel::onMoveEntry(uint64_t entryId, int fromTier, int toTier, int 
     if (drop) {
         drop->tier  = toTier;
         drop->index = toIndex;
-        drop->start = playheadLocalTick();
+        drop->start = playheadEventTick();
         drop->end   = drop->start;
     } else {
         // No existing DROP — create one (first-time placement from pool).
@@ -1623,7 +1622,7 @@ void TierListPanel::onMoveEntry(uint64_t entryId, int fromTier, int toTier, int 
         ev.entryId = entryId;
         ev.tier    = toTier;
         ev.index   = toIndex;
-        ev.start   = playheadLocalTick();
+        ev.start   = playheadEventTick();
         ev.end     = ev.start;
         m_clip->events().push_back(ev);
     }
@@ -1993,7 +1992,7 @@ void TierListPanel::onEntryDroppedOnTier(uint64_t entryId, int tier)
     // first tier instead of writing an invalid event.
     tier = std::clamp(tier, 0, std::max(0, static_cast<int>(m_clip->tiers().size()) - 1));
     auto before = snapshot();
-    const int64_t s        = playheadLocalTick();
+    const int64_t s        = playheadEventTick();
     const int64_t popupLen = secondsToTicks(2.0);
 
     TierEvent popup;

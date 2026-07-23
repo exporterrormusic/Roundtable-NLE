@@ -84,8 +84,65 @@ public:
  void setCommandStack(CommandStack* stack) noexcept { m_commandStack = stack; }
  void setTimeline(Timeline* tl) noexcept { m_timeline = tl; }
 
+ /// The Program Monitor owns the live QTextDocument while inline editing is
+ /// active. Character controls route to that document instead of overwriting
+ /// the entire TextLayer, matching Premiere's selected-range behavior.
+ void setMonitorTextEditing(bool active) noexcept {
+     m_monitorTextEditing = active;
+ }
+ [[nodiscard]] bool monitorTextEditing() const noexcept {
+     return m_monitorTextEditing;
+ }
+ [[nodiscard]] QWidget* textFormattingWidget() const noexcept {
+     return m_editContainer;
+ }
+ void setInlineTextSelectionFormat(const QString& family, float pointSize,
+                                   int weight, bool italic,
+                                   bool allCaps, bool smallCaps,
+                                   float tracking, float baselineShift,
+                                   float leading,
+                                   uint32_t mixedFlags);
+ void setInlineTextAdvancedFormat(const QString& fontStyle, float kerning,
+                                  float tabWidth, float tsume,
+                                  bool fauxBold, bool fauxItalic,
+                                  bool underline, bool superscript,
+                                  bool subscript, uint32_t mixedFlags);
+ void setInlineTextSelectionAppearance(
+     bool fillEnabled, uint32_t fillColor,
+     bool strokeEnabled, uint32_t strokeColor, float strokeWidth,
+     int strokePosition, bool shadowEnabled, uint32_t shadowColor,
+     float shadowDistance, float shadowAngle, float shadowSoftness,
+     float shadowOpacity, bool backgroundEnabled,
+     uint32_t backgroundColor, float backgroundPadding,
+     uint32_t mixedFlags);
+ void setInlineParagraphFormat(int alignment, bool rightToLeft,
+                               uint32_t mixedFlags);
+
 signals:
  void propertyChanged();
+ void inlineFontFamilyRequested(const QString& family);
+ void inlineFontSizeRequested(float pointSize);
+ void inlineFontWeightRequested(int weight);
+ void inlineItalicRequested(bool italic);
+ void inlineCapitalizationRequested(bool allCaps, bool smallCaps);
+ void inlineTrackingRequested(float tracking);
+ void inlineBaselineShiftRequested(float baselineShift);
+ void inlineLeadingRequested(float leading);
+ void inlineFontStyleRequested(const QString& styleName);
+ void inlineKerningRequested(float kerning);
+ void inlineTabWidthRequested(float tabWidth);
+ void inlineTsumeRequested(float tsume);
+ void inlineFauxStylesRequested(bool fauxBold, bool fauxItalic);
+ void inlineUnderlineRequested(bool underline);
+ void inlineScriptRequested(bool superscript, bool subscript);
+ void inlineFillRequested(bool enabled, uint32_t color);
+ void inlineStrokeRequested(bool enabled, uint32_t color, float width,
+                            int position);
+ void inlineShadowRequested(bool enabled, uint32_t color, float distance,
+                            float angle, float softness, float opacity);
+ void inlineBackgroundRequested(bool enabled, uint32_t color, float padding);
+ void inlineParagraphAlignmentRequested(int alignment);
+ void inlineParagraphDirectionRequested(bool rightToLeft);
  /// Emitted when the user selects a different layer in the layer list.
  void layerSelected(GraphicLayer* layer, int layerIndex);
 
@@ -137,6 +194,7 @@ private:
  std::unique_ptr<GraphicLayer> m_editBaseline;   ///< Layer snapshot at gesture start
  uint64_t m_editBaselineId{0};                   ///< Stable id of the snapshotted layer
  bool     m_layerEditDirty{false};               ///< A property changed since the snapshot
+ bool     m_monitorTextEditing{false};            ///< Route character controls to monitor selection
 
  // Ã¢â€â‚¬Ã¢â€â‚¬ Top-level layout Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
  QLabel* m_clipNameLabel{nullptr};
@@ -153,11 +211,17 @@ private:
  QWidget* m_textSection{nullptr};
  QPlainTextEdit* m_textContentEdit{nullptr};  // editable text-string box
  QComboBox* m_fontCombo{nullptr};
- QComboBox* m_weightCombo{nullptr};
+ QComboBox* m_fontStyleCombo{nullptr};
  QToolButton* m_boldBtn{nullptr};
  QToolButton* m_italicBtn{nullptr};
  QToolButton* m_allCapsBtn{nullptr};
  QToolButton* m_smallCapsBtn{nullptr};
+ QToolButton* m_fauxBoldBtn{nullptr};
+ QToolButton* m_fauxItalicBtn{nullptr};
+ QToolButton* m_underlineBtn{nullptr};
+ QToolButton* m_superscriptBtn{nullptr};
+ QToolButton* m_subscriptBtn{nullptr};
+ QToolButton* m_rtlBtn{nullptr};
  QSlider* m_fontSizeSlider{nullptr};
  ScrubbySpinBox* m_fontSizeSpin{nullptr};
 
@@ -174,10 +238,14 @@ private:
  ScrubbySpinBox* m_trackingSpin{nullptr};
  ScrubbySpinBox* m_leadingSpin{nullptr};
  ScrubbySpinBox* m_baselineShiftSpin{nullptr};
+ ScrubbySpinBox* m_kerningSpin{nullptr};
+ ScrubbySpinBox* m_tabWidthSpin{nullptr};
+ ScrubbySpinBox* m_tsumeSpin{nullptr};
 
  // Paragraph box (word-wrap to a fixed width)
  QCheckBox* m_wrapCheck{nullptr};
  ScrubbySpinBox* m_wrapWidthSpin{nullptr};
+ ScrubbySpinBox* m_wrapHeightSpin{nullptr};
 
  // Ã¢â€â‚¬Ã¢â€â‚¬ Appearance section Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
  QWidget* m_appearanceSection{nullptr};
@@ -189,6 +257,14 @@ private:
  QComboBox* m_strokePosCombo{nullptr};
  QCheckBox* m_shadowCheck{nullptr};
  QPushButton* m_shadowColorBtn{nullptr};
+ ScrubbySpinBox* m_shadowDistanceSpin{nullptr};
+ ScrubbySpinBox* m_shadowAngleSpin{nullptr};
+ ScrubbySpinBox* m_shadowSoftnessSpin{nullptr};
+ ScrubbySpinBox* m_shadowOpacitySpin{nullptr};
+ QCheckBox* m_backgroundCheck{nullptr};
+ QPushButton* m_backgroundColorBtn{nullptr};
+ ScrubbySpinBox* m_backgroundPaddingSpin{nullptr};
+ QCheckBox* m_maskWithTextCheck{nullptr};
 
  // Ã¢â€â‚¬Ã¢â€â‚¬ Align and Transform section Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
  QWidget* m_transformSection{nullptr};

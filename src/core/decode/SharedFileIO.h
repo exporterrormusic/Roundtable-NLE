@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <vector>
 
 namespace rt {
 
@@ -39,6 +40,15 @@ using SharedFileHandle = std::FILE*;
 
 /// Close a handle from openSharedReadHandle. Null-safe.
 void closeSharedHandle(SharedFileHandle h);
+
+/// Snapshot a file into memory without denying another process read, write,
+/// or delete access while the read is in progress.  This is the preferred
+/// path for still images: once the snapshot is complete the source has no OS
+/// handle at all, so editors that save through an exclusive replace can work
+/// while the decoded image remains cached in the app.
+[[nodiscard]] bool readSharedFileBytes(
+    const std::filesystem::path& p, std::vector<std::uint8_t>& out,
+    const char* logTag);
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 /// AVIO buffer size (FFmpeg-recommended).

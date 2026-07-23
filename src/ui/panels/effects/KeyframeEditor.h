@@ -29,6 +29,8 @@
 #include <string>
 #include <vector>
 
+#include "timeline/Keyframe.h"
+
 namespace rt {
 
 // Forward declarations
@@ -198,13 +200,11 @@ private:
     std::vector<CurveEntry>     m_curves;
     std::set<SelectedKey>       m_selection;
 
-    // Clipboard: stores (curveIndex, relative-time, value, interp)
+    // Clipboard stores complete keyframes so paste/redo preserve all handles.
     struct ClipboardEntry
     {
-        int        curveIndex;
-        int64_t    relativeTime;
-        float      value;
-        int        interp;
+        int             curveIndex;
+        Keyframe<float> keyframe;  // time is relative to earliest copied key
     };
     std::vector<ClipboardEntry> m_clipboard;
 
@@ -222,6 +222,9 @@ private:
     bool     m_velocityDrag{false};  // tangent drag originated in velocity pane
     int      m_dragCurveIdx{-1};
     int      m_dragKeyIdx{-1};
+    KeyframeTrack<float>* m_tangentTrack{nullptr};
+    Keyframe<float> m_tangentBefore;
+    bool     m_hasTangentBefore{false};
     QPointF  m_dragStartPos;
     QPointF  m_boxStart;       // box-select start (pixel)
     QPointF  m_boxCurrent;     // box-select current (pixel)

@@ -181,10 +181,12 @@ void EffectProcessor::shutdown()
     m_lutPipeline            = VK_NULL_HANDLE;
     m_letterboxPipeline      = VK_NULL_HANDLE;
     m_colorGradingPipeline   = VK_NULL_HANDLE;
+    m_tintPipeline           = VK_NULL_HANDLE;
     m_otsPipeline            = VK_NULL_HANDLE;
     m_flipPipeline           = VK_NULL_HANDLE;
     m_maskMixPipeline        = VK_NULL_HANDLE;
     m_maskMixPipelineLayout  = VK_NULL_HANDLE;
+    m_lutPipelineLayout      = VK_NULL_HANDLE;
     m_pipelineLayout       = VK_NULL_HANDLE;
 
     // Storage textures + placeholder
@@ -513,21 +515,10 @@ bool EffectProcessor::resize(uint32_t width, uint32_t height)
         m_storageTextures[1].destroy();
         if (!createStorageTextures()) return false;
 
-        // Re-point descriptor sets at new storage textures
-        for (int i = 0; i < 2; ++i) {
-            VkDescriptorImageInfo outInfo{};
-            outInfo.imageView   = m_storageTextures[i].imageView();
-            outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-            VkWriteDescriptorSet w{};
-            w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet          = m_descriptorSets[i];
-            w.dstBinding      = 0; // output storage image
-            w.descriptorCount = 1;
-            w.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            w.pImageInfo      = &outInfo;
-            vkUpdateDescriptorSets(m_device->handle(), 1, &w, 0, nullptr);
-        }
+        // Re-point BOTH sides of the pair. Effect #1 uses the external-source
+        // ring, but effect #2 samples binding 1 here. Leaving that binding on
+        // the destroyed pre-resize image produces tiled/sliced corruption.
+        updatePingPongDescriptorBindings();
         // Re-point the source/LUT ring sets at the new storage[0].
         initDescriptorRingBindings();
     }
@@ -699,20 +690,23 @@ bool EffectProcessor::createStorageTextures()
         m_cmdPool->endSingleTime(cmd, m_queue);
     }
 
-    // Also create a 1Ã—1 placeholder (for unused sampler slots)
-    TextureConfig phCfg;
-    phCfg.width  = 1;
-    phCfg.height = 1;
-    phCfg.format = m_config.format;
-    phCfg.usage  = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // The placeholder is dimension-independent. Keep it across resize;
+    // recreating it would leak the old image and invalidate descriptors.
+    if (m_placeholderTexture.image() == VK_NULL_HANDLE) {
+        TextureConfig phCfg;
+        phCfg.width  = 1;
+        phCfg.height = 1;
+        phCfg.format = m_config.format;
+        phCfg.usage  = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-    uint32_t transparent = 0;
-    if (!m_placeholderTexture.createFromData(
-            m_allocator->handle(), m_device->handle(), phCfg,
-            &transparent, 4, *m_cmdPool, m_queue))
-    {
-        spdlog::error("EffectProcessor: Failed to create placeholder texture");
-        return false;
+        uint32_t transparent = 0;
+        if (!m_placeholderTexture.createFromData(
+                m_allocator->handle(), m_device->handle(), phCfg,
+                &transparent, 4, *m_cmdPool, m_queue))
+        {
+            spdlog::error("EffectProcessor: Failed to create placeholder texture");
+            return false;
+        }
     }
 
     return true;
@@ -882,6 +876,22 @@ bool EffectProcessor::createDescriptorResources()
     //   binding 0 â†’ storageTexture[0] (output for first effect)
     //   binding 1 â†’ external source (will be updated per-call)
 
+    updatePingPongDescriptorBindings();
+
+    // Source + LUT rings: binding 0 â†’ storageTexture[0], binding 1 (input) â†’
+    // placeholder, LUT binding 2 â†’ placeholder.  Per-call bindings (the
+    // external source, and the live 3D LUT) are written in process() /
+    // dispatchEffect on the slot that call claims.
+    initDescriptorRingBindings();
+
+    return true;
+}
+
+void EffectProcessor::updatePingPongDescriptorBindings()
+{
+    if (!m_device) return;
+    const VkDevice dev = m_device->handle();
+
     for (int i = 0; i < 2; ++i) {
         VkDescriptorImageInfo outInfo{};
         outInfo.imageView   = m_storageTextures[i].imageView();
@@ -909,14 +919,6 @@ bool EffectProcessor::createDescriptorResources()
 
         vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     }
-
-    // Source + LUT rings: binding 0 â†’ storageTexture[0], binding 1 (input) â†’
-    // placeholder, LUT binding 2 â†’ placeholder.  Per-call bindings (the
-    // external source, and the live 3D LUT) are written in process() /
-    // dispatchEffect on the slot that call claims.
-    initDescriptorRingBindings();
-
-    return true;
 }
 
 // =============================================================================
@@ -1049,9 +1051,25 @@ bool EffectProcessor::createPipelines()
     m_ultraKeyLightPipeline     = loadPipeline("ultra_key_light.comp.spv");
     m_transform2dPipeline  = loadPipeline("transform2d.comp.spv");
     m_vignettePipeline    = loadPipeline("vignette.comp.spv");
-    m_lutPipeline         = loadPipeline("lut.comp.spv");
+    // LUT uses binding 2 for the 3D texture and therefore cannot use the
+    // two-binding layout shared by ordinary effects.
+    m_lutPipelineLayout = m_pipelineManager.createLayout(
+        {pushRange}, {m_lutDescriptorSetLayout});
+    if (m_lutPipelineLayout != VK_NULL_HANDLE) {
+        fs::path lutPath = findShader("lut.comp.spv");
+        if (!lutPath.empty()) {
+            VkShaderModule mod = m_pipelineManager.loadShader(lutPath);
+            if (mod != VK_NULL_HANDLE) {
+                ComputePipelineConfig lutConfig;
+                lutConfig.compShader = mod;
+                lutConfig.layout = m_lutPipelineLayout;
+                m_lutPipeline = m_pipelineManager.createComputePipeline(lutConfig);
+            }
+        }
+    }
     m_letterboxPipeline   = loadPipeline("letterbox.comp.spv");
     m_colorGradingPipeline = loadPipeline("lumetri_color.comp.spv");
+    m_tintPipeline         = loadPipeline("tint.comp.spv");
     m_otsPipeline         = loadPipeline("ots.comp.spv");
     m_flipPipeline        = loadPipeline("flip.comp.spv");
     m_scanlinesPipeline         = loadPipeline("scanlines.comp.spv");
@@ -1175,9 +1193,12 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
         ds = m_descriptorSets[targetIdx];
     }
 
+    const VkPipelineLayout dispatchLayout =
+        type == EffectType::LUT ? m_lutPipelineLayout : m_pipelineLayout;
+    if (dispatchLayout == VK_NULL_HANDLE) return false;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            m_pipelineLayout, 0, 1, &ds, 0, nullptr);
+                            dispatchLayout, 0, 1, &ds, 0, nullptr);
 
     // Push constants
     EffectPushConstants pc{};
@@ -1187,7 +1208,7 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
     for (int i = 0; i < pc.paramCount; ++i)
         pc.params[i] = params[static_cast<size_t>(i)];
 
-    vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+    vkCmdPushConstants(cmd, dispatchLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
 
     // Dispatch: 16Ã—16 workgroups
@@ -1222,6 +1243,7 @@ VkPipeline EffectProcessor::getPipeline(EffectType type) const
     case EffectType::Letterbox:      return m_letterboxPipeline;
     case EffectType::ColorGrading:   return m_colorGradingPipeline;
     case EffectType::LumetriColor:   return m_colorGradingPipeline;
+    case EffectType::Tint:           return m_tintPipeline;
     case EffectType::OtsLeft:        return m_otsPipeline;
     case EffectType::OtsRight:       return m_otsPipeline;
     case EffectType::OtsIntro:       return m_otsPipeline;

@@ -427,6 +427,12 @@ void AudioSync::openManualMatch(int lineNumber)
 {
     if (!m_script || m_audioPaths.empty()) return;
 
+    // QDialog::exec() runs a nested event loop.  Stop both AudioSync preview
+    // modes before entering it so their timers cannot observe the dialog's
+    // transport state and clear its shared AudioEngine sources.
+    stopPlayback();
+    stopFilePlayback();
+
     // Find the script line
     std::string character, dialogue;
     for (const auto& sl : m_script->lines) {

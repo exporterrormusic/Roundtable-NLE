@@ -36,6 +36,11 @@ public:
     /// Get the 256-entry LUT for a channel (output values 0–1).
     [[nodiscard]] std::array<float, 256> lut(Channel ch) const;
 
+    /// Load an existing effect LUT without emitting an edit signal. The exact
+    /// LUT remains authoritative until that channel is edited; a compact set
+    /// of points is used only for its on-screen representation.
+    void setLut(Channel ch, const std::array<float, 256>& lut);
+
     /// Reset a single channel to linear identity.
     void resetChannel(Channel ch);
 
@@ -77,6 +82,8 @@ private:
 
     // Per-channel control points (always sorted by x).
     std::array<std::vector<ControlPoint>, ChannelCount> m_points;
+    std::array<std::array<float, 256>, ChannelCount> m_loadedLuts{};
+    std::array<bool, ChannelCount> m_hasLoadedLut{};
 
     Channel m_activeChannel{Master};
 

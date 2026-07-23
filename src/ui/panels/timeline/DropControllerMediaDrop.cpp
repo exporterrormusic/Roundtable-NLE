@@ -476,6 +476,7 @@ void DropController::wireMediaDropSignals()
             double sourceFps = 0.0;
             bool mediaHasAudio = false;
             uint32_t srcW = 0, srcH = 0;
+            int srcRotation = 0;
             // Spine animation drops use a virtual "spine:" URI scheme.
             // Never feed that to MediaPool::open — it tries to decode it as
             // a video file, fails, logs an error, and caches the URI as a
@@ -492,6 +493,7 @@ void DropController::wireMediaDropSignals()
                         sourceFps = info->fps;
                         srcW = info->width;
                         srcH = info->height;
+                        srcRotation = info->rotation;
                     }
                     // Keep the 5-second default for character animation clips so
                     // the animation loops for a full 5 seconds (Premiere Pro behavior).
@@ -668,7 +670,7 @@ void DropController::wireMediaDropSignals()
                     "Add Media to Timeline",
                     /* execute / redo */
                     [this, isAudio, isSpineAnimDrop, mediaHasAudio, path, label, atTick, dur, sourceFps,
-                     srcW, srcH,
+                     srcW, srcH, srcRotation,
                      needsNewTrack, needsNewAudioTrack, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd,
                      audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
@@ -756,6 +758,7 @@ void DropController::wireMediaDropSignals()
                             // can show Premiere-style native-pixel Scale %.
                             if (srcW > 0 && srcH > 0)
                                 vc->setSourceResolution(srcW, srcH);
+                            vc->setSourceRotation(srcRotation);
                             vc->setLabel(label);
                             if (!vcCharName.empty()) {
                                 vc->setCharacterName(vcCharName);
@@ -991,6 +994,7 @@ void DropController::wireMediaDropSignals()
                     vc->setSourceFps(sourceFps);
                     if (srcW > 0 && srcH > 0)
                         vc->setSourceResolution(srcW, srcH);
+                    vc->setSourceRotation(srcRotation);
                     vc->setLabel(label);
                     if (!vcCharName.empty()) {
                         vc->setCharacterName(vcCharName);
@@ -1105,6 +1109,9 @@ void DropController::wireMediaDropSignals()
             // Query full media duration for sourceDuration (extent limit)
             int64_t sourceDur = dur;  // fallback: region length
             double sourceFps = 0.0;
+            uint32_t sourceWidth = 0;
+            uint32_t sourceHeight = 0;
+            int sourceRotation = 0;
             bool mediaHasAudio = false;
             if (m_ws->mediaPool()) {
                 auto handle = m_ws->mediaPool()->open(path);
@@ -1115,6 +1122,9 @@ void DropController::wireMediaDropSignals()
                                      "frameCount={}, fps={:.2f}, hasAudio={}",
                                      path, info->duration, info->frameCount, info->fps, info->hasAudio);
                         sourceFps = info->fps;
+                        sourceWidth = info->width;
+                        sourceHeight = info->height;
+                        sourceRotation = info->rotation;
                     }
                     if (info && info->duration > 0)
                         sourceDur = secondsToTicks(info->duration);
@@ -1318,6 +1328,7 @@ void DropController::wireMediaDropSignals()
                     "Add Source Region to Timeline",
                     /* execute / redo */
                     [this, isAudio, mediaHasAudio, path, label, atTick, dur, sourceDur, sourceIn, sourceFps,
+                     sourceWidth, sourceHeight, sourceRotation,
                      needsNewTrack, needsNewAudioTrack2, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd2,
                      audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
@@ -1380,6 +1391,9 @@ void DropController::wireMediaDropSignals()
                             vc->setSourceDuration(isStillImagePath(path) ? 0 : sourceDur);
                             vc->setSourceIn(sourceIn);
                             vc->setSourceFps(sourceFps);
+                            if (sourceWidth > 0 && sourceHeight > 0)
+                                vc->setSourceMetadata(
+                                    sourceWidth, sourceHeight, sourceRotation);
                             vc->setLabel(label);
                             if (!vcCharName2.empty()) {
                                 vc->setCharacterName(vcCharName2);

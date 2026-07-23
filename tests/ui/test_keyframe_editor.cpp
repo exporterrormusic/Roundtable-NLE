@@ -114,19 +114,20 @@ TEST_F(KeyframeEditorTest, SetCommandStack)
 TEST_F(KeyframeEditorTest, BindClipPopulatesCurves)
 {
     m_editor->setClip(m_clip.get());
-    EXPECT_EQ(m_editor->curveCount(), 6);
+    EXPECT_EQ(m_editor->curveCount(), 7);
     EXPECT_EQ(m_editor->curve(0).name, "Opacity");
     EXPECT_EQ(m_editor->curve(1).name, "Position X");
     EXPECT_EQ(m_editor->curve(2).name, "Position Y");
     EXPECT_EQ(m_editor->curve(3).name, "Scale X");
     EXPECT_EQ(m_editor->curve(4).name, "Scale Y");
     EXPECT_EQ(m_editor->curve(5).name, "Rotation");
+    EXPECT_EQ(m_editor->curve(6).name, "Shutter Angle");
 }
 
 TEST_F(KeyframeEditorTest, BindNullClipClearsCurves)
 {
     m_editor->setClip(m_clip.get());
-    EXPECT_EQ(m_editor->curveCount(), 6);
+    EXPECT_EQ(m_editor->curveCount(), 7);
     m_editor->setClip(nullptr);
     EXPECT_EQ(m_editor->curveCount(), 0);
 }
@@ -486,8 +487,8 @@ TEST_F(KeyframeEditorTest, AddKeyframeWithoutStack)
     editor.setClip(clip.get());
     // No command stack set
     editor.addKeyframe(1, TPS, 99.0f);
-    EXPECT_EQ(clip->positionX().keyframeCount(), 2u);
-    EXPECT_FLOAT_EQ(clip->positionX().keyframe(1).value, 99.0f);
+    ASSERT_EQ(clip->positionX().keyframeCount(), 1u);
+    EXPECT_FLOAT_EQ(clip->positionX().keyframe(0).value, 99.0f);
 }
 
 TEST_F(KeyframeEditorTest, DeleteWithoutStack)
@@ -497,9 +498,9 @@ TEST_F(KeyframeEditorTest, DeleteWithoutStack)
     clip->positionX().addKeyframe(TPS, 50.0f);
     editor.setClip(clip.get());
 
-    editor.selectKey(1, 1);
+    editor.selectKey(1, 0);
     editor.deleteSelectedKeyframes();
-    EXPECT_EQ(clip->positionX().keyframeCount(), 1u);
+    EXPECT_EQ(clip->positionX().keyframeCount(), 0u);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

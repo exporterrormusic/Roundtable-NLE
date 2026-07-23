@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <limits>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -57,7 +58,18 @@ void FfmpegEncoderBase::applyCommonParams(AVCodecContext* ctx,
     ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     if (setRateControl) {
-        ctx->gop_size = config.gopSize > 0 ? config.gopSize : config.fpsNum * 2;
+        // gop_size is measured in FRAMES, not time-base ticks.  For fractional
+        // rates fpsNum is commonly 30000 or 60000 with fpsDen=1001; using the
+        // numerator alone produced 60,000/120,000-frame GOPs (roughly 33
+        // minutes at 59.94 fps), leaving normal MP4 seeks with no nearby IDR.
+        const int64_t fpsNum = std::max<int64_t>(1, config.fpsNum);
+        const int64_t fpsDen = std::max<int64_t>(1, config.fpsDen);
+        const int64_t autoGop = std::max<int64_t>(
+            1, (fpsNum * 2 + fpsDen / 2) / fpsDen); // nearest 2 seconds
+        ctx->gop_size = config.gopSize > 0
+            ? config.gopSize
+            : static_cast<int>(std::min<int64_t>(
+                  autoGop, std::numeric_limits<int>::max()));
         if (config.bitrateMbps > 0)
             ctx->bit_rate = static_cast<int64_t>(config.bitrateMbps) * 1000000;
     }

@@ -31,6 +31,7 @@
 #include "effects/EffectStack.h"
 #include "effects/ColorCorrect.h"
 #include "effects/Blur.h"
+#include "effects/ColorGrading.h"
 #include "timeline/Marker.h"
 #include "timeline/Transition.h"
 #include "timeline/KeyframeTrack.h"
@@ -272,10 +273,12 @@ protected:
         video->setMediaPath("videos/intro.mp4");
         video->setMediaId(42);
         video->setSourceResolution(1920, 1080);
+        video->setSourceRotation(90);
         video->setSourceFps(30.0);
         video->setSourceDuration(240000);
         video->setHasAudio(true);
         video->setVolume(0.8f);
+        video->setTimeInterpolation(TimeInterpolation::OpticalFlow);
         video->setTimelineIn(96000);
         video->setDuration(48000);
         video->setLabel("Intro Video");
@@ -561,10 +564,13 @@ TEST_F(SerializerTest, VideoClipRoundTrip)
     EXPECT_EQ(vc->mediaId(), 42u);
     EXPECT_EQ(vc->sourceWidth(), 1920u);
     EXPECT_EQ(vc->sourceHeight(), 1080u);
+    EXPECT_EQ(vc->sourceRotation(), 90);
+    EXPECT_TRUE(vc->sourceMetadataAuthoritative());
     EXPECT_DOUBLE_EQ(vc->sourceFps(), 30.0);
     EXPECT_EQ(vc->sourceDuration(), 240000);
     EXPECT_TRUE(vc->hasAudio());
     EXPECT_FLOAT_EQ(vc->volume(), 0.8f);
+    EXPECT_EQ(vc->timeInterpolation(), TimeInterpolation::OpticalFlow);
     EXPECT_EQ(vc->timelineIn(), 96000);
     EXPECT_EQ(vc->duration(), 48000);
 }
@@ -822,6 +828,8 @@ TEST_F(SerializerTest, KeyframeTrackRoundTrip)
     spine->opacity().addKeyframe(0, 0.0f, InterpMode::Linear);
     spine->opacity().addKeyframe(24000, 1.0f, InterpMode::Bezier);
     spine->opacity().addKeyframe(48000, 0.5f, InterpMode::Hold);
+    spine->shutterAngle().addKeyframe(0, 90.0f, InterpMode::Linear);
+    spine->shutterAngle().addKeyframe(48000, 270.0f, InterpMode::Bezier);
     p->timeline()->track(0)->addClip(std::move(spine));
 
     auto data = serializer.serialize(*p);
@@ -839,6 +847,12 @@ TEST_F(SerializerTest, KeyframeTrackRoundTrip)
     EXPECT_EQ(opTrack.keyframe(1).interp, InterpMode::Bezier);
     EXPECT_FLOAT_EQ(opTrack.keyframe(2).value, 0.5f);
     EXPECT_EQ(opTrack.keyframe(2).interp, InterpMode::Hold);
+
+    auto& shutterTrack = clip->shutterAngle();
+    ASSERT_EQ(shutterTrack.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(shutterTrack.keyframe(0).value, 90.0f);
+    EXPECT_FLOAT_EQ(shutterTrack.keyframe(1).value, 270.0f);
+    EXPECT_EQ(shutterTrack.keyframe(1).interp, InterpMode::Bezier);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -933,6 +947,53 @@ TEST_F(SerializerTest, CaptionClipRoundTrip)
     cap->setOutlineColor(0xFF112233);
     cap->setOutlineWidth(3.0f);
     cap->setShowSpeaker(true);
+    cap->setFontStyle("Oblique");
+    cap->setItalic(true);
+    cap->setSmallCaps(true);
+    cap->setUnderline(true);
+    cap->setFauxStyles(true, false);
+    cap->setTracking(2.5f);
+    cap->setLeading(10.0f);
+    cap->setAlignment(GTextAlign::Left);
+    cap->setTrackStyleName("Interview captions");
+    TextStyleRun captionRun;
+    captionRun.start = 6;
+    captionRun.length = 5;
+    captionRun.fontFamily = "Georgia";
+    captionRun.fontSize = 52.0f;
+    captionRun.fontWeight = 900;
+    captionRun.italic = true;
+    captionRun.allCaps = true;
+    captionRun.tracking = 5.5f;
+    captionRun.baselineShift = 3.0f;
+    captionRun.leading = 12.0f;
+    captionRun.fontStyle = "Bold Italic";
+    captionRun.kerning = 3.0f;
+    captionRun.tabWidth = 84.0f;
+    captionRun.tsume = 12.0f;
+    captionRun.fauxBold = true;
+    captionRun.underline = true;
+    captionRun.superscript = true;
+    captionRun.appearance.fillEnabled = true;
+    captionRun.appearance.fillColor = 0xFF55AAFFu;
+    captionRun.appearance.strokeEnabled = true;
+    captionRun.appearance.strokeColor = 0xFF010203u;
+    captionRun.appearance.strokeWidth = 4.0f;
+    captionRun.appearance.backgroundEnabled = true;
+    captionRun.appearance.backgroundColor = 0x66000000u;
+    captionRun.overrideMask = TextOverrideCapitalization
+        | TextOverrideTracking | TextOverrideBaseline | TextOverrideLeading
+        | TextOverrideFontStyle | TextOverrideKerning | TextOverrideTabWidth
+        | TextOverrideTsume | TextOverrideFauxStyle | TextOverrideDecoration
+        | TextOverrideScript | TextOverrideFill | TextOverrideStroke
+        | TextOverrideBackground;
+    cap->setStyleRuns({captionRun});
+    TextParagraphStyle captionParagraph;
+    captionParagraph.start = 0;
+    captionParagraph.length = 12;
+    captionParagraph.alignment = GTextAlign::Right;
+    captionParagraph.rightToLeft = true;
+    cap->setParagraphStyles({captionParagraph});
     ct->addClip(std::move(cap));
 
     auto data = serializer.serialize(*p);
@@ -960,6 +1021,19 @@ TEST_F(SerializerTest, CaptionClipRoundTrip)
     EXPECT_EQ(cc->outlineColor(), 0xFF112233u);
     EXPECT_FLOAT_EQ(cc->outlineWidth(), 3.0f);
     EXPECT_TRUE(cc->showSpeaker());
+    EXPECT_EQ(cc->fontStyle(), "Oblique");
+    EXPECT_TRUE(cc->isItalic());
+    EXPECT_TRUE(cc->smallCaps());
+    EXPECT_TRUE(cc->underline());
+    EXPECT_TRUE(cc->fauxBold());
+    EXPECT_FLOAT_EQ(cc->tracking(), 2.5f);
+    EXPECT_FLOAT_EQ(cc->leading(), 10.0f);
+    EXPECT_EQ(cc->alignment(), GTextAlign::Left);
+    EXPECT_EQ(cc->trackStyleName(), "Interview captions");
+    ASSERT_EQ(cc->styleRuns().size(), 1u);
+    EXPECT_EQ(cc->styleRuns()[0], captionRun);
+    ASSERT_EQ(cc->paragraphStyles().size(), 1u);
+    EXPECT_EQ(cc->paragraphStyles()[0], captionParagraph);
 }
 
 TEST_F(SerializerTest, PngPuppetClipRoundTrip)
@@ -1035,6 +1109,67 @@ TEST_F(SerializerTest, GraphicClipRoundTrip)
     text->setBoxWidth(800.0f);
     text->setBoxHeight(200.0f);
     text->setUseParagraphBox(true);
+    text->setFontStyleForAll("Condensed Bold");
+    text->setKerningForAll(2.0f);
+    text->setTabWidthForAll(72.0f);
+    text->setTsumeForAll(8.0f);
+    text->setFauxStylesForAll(true, false);
+    text->setUnderlineForAll(true);
+    text->setScriptForAll(false, true);
+    text->setRightToLeft(true);
+    text->setBackgroundForAll(true, 0x77224466u, 9.0f);
+    text->setMaskWithText(true);
+    text->setLinkedStyleName("Breaking News Style");
+    TextStyleRun regularRun;
+    regularRun.start = 0;
+    regularRun.length = 9;
+    regularRun.fontFamily = "Futura";
+    regularRun.fontSize = 88.0f;
+    regularRun.fontWeight = 700;
+    regularRun.italic = true;
+    TextStyleRun accentRun = regularRun;
+    accentRun.start = 9;
+    accentRun.length = 4;
+    accentRun.fontFamily = "Arial";
+    accentRun.fontSize = 104.0f;
+    accentRun.fontWeight = 900;
+    accentRun.italic = false;
+    accentRun.smallCaps = true;
+    accentRun.tracking = 7.5f;
+    accentRun.baselineShift = -4.0f;
+    accentRun.leading = 18.0f;
+    accentRun.fontStyle = "Black";
+    accentRun.kerning = 4.0f;
+    accentRun.tabWidth = 96.0f;
+    accentRun.tsume = 20.0f;
+    accentRun.fauxBold = false;
+    accentRun.fauxItalic = true;
+    accentRun.underline = false;
+    accentRun.superscript = true;
+    accentRun.subscript = false;
+    accentRun.appearance.fillEnabled = true;
+    accentRun.appearance.fillColor = 0xFF00FF88u;
+    accentRun.appearance.strokeEnabled = true;
+    accentRun.appearance.strokeColor = 0xFF330000u;
+    accentRun.appearance.strokeWidth = 6.0f;
+    accentRun.appearance.shadowEnabled = true;
+    accentRun.appearance.shadowColor = 0x99000000u;
+    accentRun.appearance.backgroundEnabled = true;
+    accentRun.appearance.backgroundColor = 0x660000FFu;
+    accentRun.appearance.backgroundPadding = 7.0f;
+    accentRun.overrideMask = TextOverrideCapitalization
+        | TextOverrideTracking | TextOverrideBaseline | TextOverrideLeading
+        | TextOverrideFontStyle | TextOverrideKerning | TextOverrideTabWidth
+        | TextOverrideTsume | TextOverrideFauxStyle | TextOverrideDecoration
+        | TextOverrideScript | TextOverrideFill | TextOverrideStroke
+        | TextOverrideShadow | TextOverrideBackground;
+    text->setStyleRuns({regularRun, accentRun});
+    TextParagraphStyle textParagraph;
+    textParagraph.start = 0;
+    textParagraph.length = 13;
+    textParagraph.alignment = GTextAlign::Justify;
+    textParagraph.rightToLeft = true;
+    text->setParagraphStyles({textParagraph});
     text->tracking().addKeyframe(0, 1.5f, InterpMode::Linear);
     text->tracking().addKeyframe(24000, 3.0f, InterpMode::Linear);
     text->transform().posX.addKeyframe(0, -100.0f, InterpMode::Linear);
@@ -1098,6 +1233,24 @@ TEST_F(SerializerTest, GraphicClipRoundTrip)
     EXPECT_FLOAT_EQ(tl->boxWidth(), 800.0f);
     EXPECT_FLOAT_EQ(tl->boxHeight(), 200.0f);
     EXPECT_TRUE(tl->useParagraphBox());
+    EXPECT_EQ(tl->fontStyle(), "Condensed Bold");
+    EXPECT_FLOAT_EQ(tl->kerning(), 2.0f);
+    EXPECT_FLOAT_EQ(tl->tabWidth(), 72.0f);
+    EXPECT_FLOAT_EQ(tl->tsume(), 8.0f);
+    EXPECT_TRUE(tl->fauxBold());
+    EXPECT_TRUE(tl->underline());
+    EXPECT_TRUE(tl->subscript());
+    EXPECT_TRUE(tl->rightToLeft());
+    EXPECT_TRUE(tl->backgroundEnabled());
+    EXPECT_EQ(tl->backgroundColor(), 0x77224466u);
+    EXPECT_FLOAT_EQ(tl->backgroundPadding(), 9.0f);
+    EXPECT_TRUE(tl->maskWithText());
+    EXPECT_EQ(tl->linkedStyleName(), "Breaking News Style");
+    ASSERT_EQ(tl->styleRuns().size(), 2u);
+    EXPECT_EQ(tl->styleRuns()[0], regularRun);
+    EXPECT_EQ(tl->styleRuns()[1], accentRun);
+    ASSERT_EQ(tl->paragraphStyles().size(), 1u);
+    EXPECT_EQ(tl->paragraphStyles()[0], textParagraph);
 
     ASSERT_EQ(tl->tracking().keyframeCount(), 2u);
     EXPECT_FLOAT_EQ(tl->tracking().keyframe(1).value, 3.0f);
@@ -1202,6 +1355,7 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     ellipse.feather.addKeyframe(24000, 32.0f);
     ellipse.inverted = true;
     ellipse.name = "Vignette";
+    const uint64_t ellipseId = ellipse.maskId;
     video->addMask(std::move(ellipse));
 
     OpacityMask bezier;
@@ -1217,6 +1371,7 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     MaskGeometry shifted = bezier.base;
     for (auto& v : shifted.vertices) v.x += 0.1f;
     bezier.addPathKey(48000, shifted);
+    const uint64_t bezierId = bezier.maskId;
     video->addMask(std::move(bezier));
 
     // Effect mask (v30): a blur limited by a rectangle mask
@@ -1229,6 +1384,8 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
         fxMask.base.centerX = 0.25f;
         fxMask.base.width = 0.3f;
         fxMask.feather.setDefaultValue(8.0f);
+        EXPECT_NE(fxMask.maskId, ellipseId);
+        EXPECT_NE(fxMask.maskId, bezierId);
         fx->addMask(std::move(fxMask));
         video->effects().addEffect(std::move(fx));
     }
@@ -1257,6 +1414,8 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     EXPECT_FLOAT_EQ(masks[0].maskOpacity.evaluate(0), 0.8f);
     EXPECT_TRUE(masks[0].inverted);
     EXPECT_EQ(masks[0].name, "Vignette");
+    EXPECT_EQ(masks[0].coordinateSpace, MaskCoordinateSpace::SourceLocal);
+    EXPECT_EQ(masks[0].maskId, ellipseId);
 
     EXPECT_EQ(masks[1].shape, MaskShape::FreeDrawBezier);
     ASSERT_EQ(masks[1].base.vertices.size(), 3u);
@@ -1265,6 +1424,8 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     EXPECT_FLOAT_EQ(masks[1].base.vertices[1].inTanX, -0.05f);
     EXPECT_FLOAT_EQ(masks[1].base.vertices[2].y, 0.9f);
     EXPECT_FLOAT_EQ(masks[1].base.vertices[2].outTanY, 0.03f);
+    EXPECT_EQ(masks[1].coordinateSpace, MaskCoordinateSpace::SourceLocal);
+    EXPECT_EQ(masks[1].maskId, bezierId);
 
     // Mask Path keyframes round-trip + interpolation halfway
     EXPECT_TRUE(masks[1].pathAnimated);
@@ -1282,4 +1443,154 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     EXPECT_FLOAT_EQ(fx.masks()[0].base.centerX, 0.25f);
     EXPECT_FLOAT_EQ(fx.masks()[0].base.width, 0.3f);
     EXPECT_FLOAT_EQ(fx.masks()[0].feather.evaluate(0), 8.0f);
+}
+
+TEST_F(SerializerTest, ColorGradingExtendedStateRoundTrip)
+{
+    auto p = Project::createNew("Color Grading State Test");
+    auto video = std::make_unique<VideoClip>();
+    video->setMediaPath("videos/clip.mp4");
+    video->setTimelineIn(0);
+    video->setDuration(48000);
+
+    auto grading = std::make_unique<ColorGrading>();
+    grading->setBasicEnabled(false);
+    grading->setCreativeEnabled(false);
+    grading->setWheelsEnabled(false);
+    grading->setCurvesEnabled(true);
+    grading->setHslEnabled(true);
+    grading->setVignetteEnabled(false);
+    ColorGrading::HslParams hsl;
+    hsl.hueCenter = 210.0f;
+    hsl.hueWidth = 35.0f;
+    hsl.satMin = 15.0f;
+    hsl.lumMax = 80.0f;
+    hsl.hueShift = -30.0f;
+    hsl.satAdjust = 22.0f;
+    grading->setHslParams(hsl);
+    auto blue = grading->curveLUT(ColorGrading::CurveBlue);
+    blue[102] = 0.72f;
+    grading->setCurveLUT(ColorGrading::CurveBlue, blue);
+    video->effects().addEffect(std::move(grading));
+    p->timeline()->track(0)->addClip(std::move(video));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*p));
+    ASSERT_NE(loaded, nullptr);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_NE(clip, nullptr);
+    ASSERT_EQ(clip->effects().effectCount(), 1u);
+    auto& restored = static_cast<ColorGrading&>(clip->effects().effect(0));
+    EXPECT_FALSE(restored.basicEnabled());
+    EXPECT_FALSE(restored.creativeEnabled());
+    EXPECT_FALSE(restored.wheelsEnabled());
+    EXPECT_TRUE(restored.curvesEnabled());
+    EXPECT_TRUE(restored.hslEnabled());
+    EXPECT_FALSE(restored.vignetteEnabled());
+    EXPECT_FLOAT_EQ(restored.hslParams().hueCenter, 210.0f);
+    EXPECT_FLOAT_EQ(restored.hslParams().hueShift, -30.0f);
+    EXPECT_FLOAT_EQ(restored.hslParams().satAdjust, 22.0f);
+    EXPECT_FLOAT_EQ(restored.curveLUT(ColorGrading::CurveBlue)[102], 0.72f);
+}
+
+TEST_F(SerializerTest, LegacyMasksMigrateForClipAndEffectsOnLoad)
+{
+    auto project = Project::createNew("Legacy Mask Migration");
+    auto video = std::make_unique<VideoClip>();
+    video->setSourceResolution(1920, 1080);
+    video->setSourceRotation(0); // explicitly probed, including known zero
+    video->setDuration(48000);
+    video->positionX().addKeyframe(0, 192.0f);
+    video->positionX().addKeyframe(100, 384.0f);
+    video->positionY().addKeyframe(0, 0.0f);
+    video->positionY().addKeyframe(100, 0.0f);
+
+    OpacityMask clipMask;
+    clipMask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    clipMask.shape = MaskShape::Rectangle;
+    clipMask.base.centerX = 0.5f;
+    clipMask.base.centerY = 0.5f;
+    clipMask.base.width = 0.2f;
+    clipMask.base.height = 0.4f;
+    clipMask.pathAnimated = true;
+    clipMask.addPathKey(0, clipMask.base);
+    clipMask.addPathKey(100, clipMask.base);
+    video->addMask(std::move(clipMask));
+
+    auto blur = createEffect(EffectType::Blur);
+    ASSERT_NE(blur, nullptr);
+    OpacityMask effectMask;
+    effectMask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    effectMask.shape = MaskShape::FreeDrawBezier;
+    effectMask.base.vertices = {
+        {0.4f, 0.4f, 0, 0, 0, 0},
+        {0.6f, 0.4f, 0, 0, 0, 0},
+        {0.5f, 0.6f, 0, 0, 0, 0}
+    };
+    blur->addMask(std::move(effectMask));
+    video->effects().addEffect(std::move(blur));
+    project->timeline()->track(0)->addClip(std::move(video));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*project));
+    ASSERT_NE(loaded, nullptr);
+    auto* clip = loaded->timeline()->track(0)->clip(0);
+    ASSERT_NE(clip, nullptr);
+    ASSERT_EQ(clip->masks().size(), 1u);
+    const auto& migrated = clip->masks().front();
+    EXPECT_EQ(migrated.coordinateSpace, MaskCoordinateSpace::SourceLocal);
+    EXPECT_EQ(migrated.shape, MaskShape::FreeDrawBezier);
+    ASSERT_EQ(migrated.pathKeys.size(), 2u);
+    ASSERT_EQ(migrated.pathKeys[0].geometry.vertices.size(), 4u);
+    EXPECT_NEAR(migrated.pathKeys[0].geometry.vertices[0].x, 0.3f, 1e-5f);
+    EXPECT_NEAR(migrated.pathKeys[1].geometry.vertices[0].x, 0.2f, 1e-5f);
+
+    ASSERT_EQ(clip->effects().effectCount(), 1u);
+    ASSERT_EQ(clip->effects().effect(0).maskCount(), 1u);
+    EXPECT_EQ(clip->effects().effect(0).masks()[0].coordinateSpace,
+              MaskCoordinateSpace::SourceLocal);
+    EXPECT_NEAR(clip->effects().effect(0).masks()[0].base.vertices[0].x,
+                0.3f, 1e-5f);
+}
+
+TEST_F(SerializerTest, LegacyRotatedVideoMaskDefersUntilMetadataIsKnown)
+{
+    auto project = Project::createNew("Deferred Legacy Video Mask");
+    project->timeline()->settings().setResolution(100, 100);
+
+    auto video = std::make_unique<VideoClip>();
+    // v33 had dimensions but no persisted display rotation. Reproduce that
+    // state by deliberately leaving source metadata non-authoritative.
+    video->setSourceResolution(100, 100);
+    video->setDuration(48000);
+    OpacityMask mask;
+    mask.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    mask.shape = MaskShape::FreeDrawBezier;
+    mask.base.vertices = {
+        {0.2f, 0.3f, -0.05f, 0.0f, 0.1f, 0.0f},
+        {0.4f, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f},
+        {0.3f, 0.6f, 0.0f, 0.0f, 0.0f, 0.0f}
+    };
+    video->addMask(mask);
+    project->timeline()->track(0)->addClip(std::move(video));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*project));
+    ASSERT_NE(loaded, nullptr);
+    auto* loadedVideo = dynamic_cast<VideoClip*>(
+        loaded->timeline()->track(0)->clip(0));
+    ASSERT_NE(loadedVideo, nullptr);
+    EXPECT_FALSE(loadedVideo->sourceMetadataAuthoritative());
+    ASSERT_EQ(loadedVideo->masks().size(), 1u);
+    EXPECT_EQ(loadedVideo->masks()[0].coordinateSpace,
+              MaskCoordinateSpace::LegacySequenceFrame);
+    EXPECT_NEAR(loadedVideo->masks()[0].base.vertices[0].x, 0.2f, 1.0e-5f);
+
+    // MediaPool later reports the real 90-degree display rotation. Only now
+    // is the inverse mapping safe and irreversible migration allowed.
+    loadedVideo->setSourceMetadata(100, 100, 90);
+    EXPECT_EQ(loadedVideo->migrateLegacyMasksToSourceLocal(
+                  100, 100, 100, 100, 90),
+              1);
+    EXPECT_EQ(loadedVideo->masks()[0].coordinateSpace,
+              MaskCoordinateSpace::SourceLocal);
+    EXPECT_NEAR(loadedVideo->masks()[0].base.vertices[0].x, 0.3f, 1.0e-5f);
+    EXPECT_NEAR(loadedVideo->masks()[0].base.vertices[0].y, 0.8f, 1.0e-5f);
 }

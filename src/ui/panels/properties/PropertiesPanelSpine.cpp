@@ -399,7 +399,12 @@ void PropertiesPanel::populateCharacterDropdown()
     if (!m_characterCombo) return;
 
     m_characterCombo->blockSignals(true);
-    QString current = m_characterCombo->currentText();
+    // The clip is authoritative. On first selection the combo is empty, and
+    // after switching clips its text may still belong to the previous clip.
+    // Preserve an unlisted/offline character instead of showing a blank row.
+    QString current = m_spineClip
+        ? QString::fromStdString(m_spineClip->characterName())
+        : m_characterCombo->currentText();
     m_characterCombo->clear();
 
     if (m_modelManager) {

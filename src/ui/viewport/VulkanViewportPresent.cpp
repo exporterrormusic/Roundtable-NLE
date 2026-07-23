@@ -222,6 +222,13 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
         handleResize();
         return;
     }
+    if (imageIndex >= m_renderFinishedByImage.size()) {
+        spdlog::error("VulkanViewport: acquired image {} without a present semaphore",
+                      imageIndex);
+        m_swapchainDirty = true;
+        return;
+    }
+    VkSemaphore renderFinished = m_renderFinishedByImage[imageIndex];
 
     vkResetFences(device, 1, &m_inFlightFence);
 
@@ -414,7 +421,7 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
     submitInfo.commandBufferCount   = 1;
     submitInfo.pCommandBuffers      = &m_commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores    = &m_renderFinished;
+    submitInfo.pSignalSemaphores    = &renderFinished;
 
     {
         // P1.2: route through GpuScheduler.  The SEH guard that used
@@ -429,28 +436,30 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
         sub.waitSemaphores       = submitInfo.pWaitSemaphores;
         sub.waitStages           = submitInfo.pWaitDstStageMask;
         sub.signalSemaphoreCount = 1;
-        sub.signalSemaphores     = &m_renderFinished;
+        sub.signalSemaphores     = &renderFinished;
         sub.completionFence      = m_inFlightFence;
         sub.tag                  = "VulkanViewport::presentFrame";
 
         VkResult submitRes = rt::GpuContext::get().scheduler().submit(sub);
-#ifdef _WIN32
-        if (submitRes == VK_ERROR_UNKNOWN) {
-            spdlog::error("[VIEWPORT] Access violation in vkQueueSubmit "
-                          "— marking GPU Failed.");
+        if (submitRes != VK_SUCCESS) {
+            spdlog::error("[VIEWPORT] present submit failed ({}) — marking GPU Failed.",
+                          static_cast<int>(submitRes));
             GpuContext::get().signalDeviceLost();
             GpuContext::get().tryRecover();
             return;
         }
-#else
-        (void)submitRes;
-#endif
 
         // Present runs on the present queue (not the scheduler's set yet
         // — the swapchain owns it directly).  Future P1.x revision can
         // pull this into the scheduler too once we model present as a
         // submission kind.
-        m_swapchain->present(gpu.device().presentQueue(), imageIndex, m_renderFinished);
+        VkResult presentRes = m_swapchain->present(
+            gpu.device().presentQueue(), imageIndex, renderFinished);
+        if (presentRes == VK_ERROR_DEVICE_LOST || presentRes == VK_ERROR_UNKNOWN) {
+            GpuContext::get().signalDeviceLost();
+            GpuContext::get().tryRecover();
+            return;
+        }
     }
 
     // Recycle the just-used inter-queue semaphore by storing it so it
@@ -747,6 +756,13 @@ void VulkanViewport::presentClearFrame()
         handleResize();
         return;
     }
+    if (imageIndex >= m_renderFinishedByImage.size()) {
+        spdlog::error("VulkanViewport: acquired image {} without a present semaphore",
+                      imageIndex);
+        m_swapchainDirty = true;
+        return;
+    }
+    VkSemaphore renderFinished = m_renderFinishedByImage[imageIndex];
 
     vkResetFences(device, 1, &m_inFlightFence);
 
@@ -856,12 +872,25 @@ void VulkanViewport::presentClearFrame()
     sub.waitSemaphores       = &m_imageAvailable;
     sub.waitStages           = &waitStage;
     sub.signalSemaphoreCount = 1;
-    sub.signalSemaphores     = &m_renderFinished;
+    sub.signalSemaphores     = &renderFinished;
     sub.completionFence      = m_inFlightFence;
     sub.tag                  = "VulkanViewport::clearPresent";
-    rt::GpuContext::get().scheduler().submit(sub);
+    VkResult submitRes = rt::GpuContext::get().scheduler().submit(sub);
+    if (submitRes != VK_SUCCESS) {
+        spdlog::error("[VIEWPORT] clear submit failed ({}) — marking GPU Failed.",
+                      static_cast<int>(submitRes));
+        GpuContext::get().signalDeviceLost();
+        GpuContext::get().tryRecover();
+        return;
+    }
 
-    m_swapchain->present(gpu.device().presentQueue(), imageIndex, m_renderFinished);
+    VkResult presentRes = m_swapchain->present(
+        gpu.device().presentQueue(), imageIndex, renderFinished);
+    if (presentRes == VK_ERROR_DEVICE_LOST || presentRes == VK_ERROR_UNKNOWN) {
+        GpuContext::get().signalDeviceLost();
+        GpuContext::get().tryRecover();
+        return;
+    }
 
     emit frameDisplayed();
 }

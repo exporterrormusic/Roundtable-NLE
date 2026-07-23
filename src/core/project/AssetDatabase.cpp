@@ -307,4 +307,3 @@ bool AssetDatabase::relinkAsset(uint64_t id, const std::filesystem::path& newPat
 }
 
 } // namespace rt
-

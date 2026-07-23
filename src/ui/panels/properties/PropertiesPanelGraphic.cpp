@@ -63,7 +63,7 @@ void PropertiesPanel::applyGfxText()
     if (!tl) return;
     std::string val = m_gfxTextEdit->text().toStdString();
     if (val == tl->text()) return;
-    tl->setText(val);
+    tl->replaceTextPreservingStyles(val);
     emit propertyChanged();
 }
 

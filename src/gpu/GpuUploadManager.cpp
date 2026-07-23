@@ -16,6 +16,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -52,7 +53,7 @@ void GpuUploadManager::resetFirstUploadStats() noexcept
 
 GpuUploadManager::GpuUploadManager(GpuContext& ctx, StagingRing& ring)
     : m_ctx(ctx)
-    , m_ring(ring)
+    , m_primaryRing(ring)
 {
 }
 
@@ -66,8 +67,7 @@ GpuUploadManager::~GpuUploadManager()
 void GpuUploadManager::beginFrame(VkCommandBuffer cmd, int submissionSlot)
 {
     m_cmd = cmd;
-    m_stagingCleanups.clear();
-    m_currentSubmissionSlot = submissionSlot;
+    m_currentSubmissionSlot = std::clamp(submissionSlot, 0, kRingSize - 1);
 
     // Unpin only the textures that were pinned during this slot's previous
     // submission.  Since beginFrame() is called after the slot's fence wait
@@ -76,20 +76,35 @@ void GpuUploadManager::beginFrame(VkCommandBuffer cmd, int submissionSlot)
     //
     // Critically, this does NOT unpin textures pinned by OTHER in-flight
     // slots — those textures remain protected until their own slot recycles.
-    releaseSlotPins(submissionSlot);
+    releaseSlotPins(m_currentSubmissionSlot);
+    releaseSlotStaging(m_currentSubmissionSlot);
 
-    // Reset the staging ring for this frame's allocations.
-    m_ring.reset();
+    // A staging ring may only be reset after every command that reads it has
+    // completed.  Use one ring per triple-buffered submission slot so other
+    // frames can remain in flight while this slot is recycled.
+    if (m_currentSubmissionSlot == 0) {
+        m_activeRing = &m_primaryRing;
+    } else {
+        auto& ownedRing = m_additionalRings[
+            static_cast<size_t>(m_currentSubmissionSlot - 1)];
+        if (!ownedRing)
+            ownedRing = std::make_unique<StagingRing>();
+        m_activeRing = ownedRing.get();
+    }
+
+    if (!m_activeRing->isInitialized())
+        m_activeRing->init(m_ctx.allocator().handle(), kStagingRingCapacity);
+    if (m_activeRing->isInitialized())
+        m_activeRing->reset();
 }
 
 void GpuUploadManager::endFrame()
 {
-    // Destroy any staging buffers allocated via the batched fallback path.
-    // Ring-buffer allocations are automatically reclaimed on next reset().
-    for (auto& sc : m_stagingCleanups)
-        sc.destroy();
-    m_stagingCleanups.clear();
+    // Do not release staging here: vkQueueSubmit only enqueues the copy and
+    // the GPU can still be reading these buffers.  beginFrame() reclaims the
+    // resources after this same submission slot's fence has signalled.
     m_cmd = VK_NULL_HANDLE;
+    m_activeRing = nullptr;
 }
 
 // ── Layer texture upload ─────────────────────────────────────────────────
@@ -107,6 +122,7 @@ GpuUploadResult GpuUploadManager::uploadLayer(
     // ── GPU-cache hit path ──────────────────────────────────────────────
     // If this exact frame was uploaded before, skip the PCIe transfer and
     // reuse the cached GPU texture.
+    bool cacheDimensionConflict = false;
     if (m_texCache && layer.frame && layer.frame->mediaId != 0) {
         auto hit = m_texCache->get(
             layer.frame->mediaId, layer.frame->frameNumber,
@@ -132,6 +148,16 @@ GpuUploadResult GpuUploadManager::uploadLayer(
                                     ? hit.height / 2 : hit.height;
             return result;
         }
+        cacheDimensionConflict = hit.found;
+        if (cacheDimensionConflict) {
+            spdlog::warn("[UPLOAD] cache dimension conflict for mediaId={} "
+                         "frame={} tier={}: cached={}x{}, requested={}x{}; "
+                         "using submission-slot texture",
+                         layer.frame->mediaId, layer.frame->frameNumber,
+                         static_cast<int>(layer.frame->tier),
+                         hit.width, hit.height,
+                         layer.frame->width, layer.frame->height);
+        }
     }
 
     // ── GPU-resident CachedFrame path (UPGRADE_PLAN Phase 5) ────────────
@@ -149,6 +175,7 @@ GpuUploadResult GpuUploadManager::uploadLayer(
     // the cacheable-miss upload counter (Phase 0 D.1) toward zero.
     if (m_texCache
         && layer.frame
+        && !cacheDimensionConflict
         && layer.frame->gpuReady
         && layer.frame->gpuImageView != 0
         && layer.frame->gpuSampler   != 0
@@ -178,7 +205,10 @@ GpuUploadResult GpuUploadManager::uploadLayer(
             /*isPacked=*/ false,                  // Phase 4 eligibility
                                                   // forbids packed-alpha
             /*isPMA=*/    layer.frame->premultipliedAlpha,
-            /*isLoopFrame=*/ layer.frame->isLoopFrame);
+            /*isLoopFrame=*/ layer.frame->isLoopFrame,
+            layer.frame->contentBoundsValid,
+            layer.frame->contentLeft, layer.frame->contentTop,
+            layer.frame->contentRight, layer.frame->contentBottom);
 
         recordPin(layer.frame->mediaId,
                   layer.frame->frameNumber,
@@ -209,8 +239,10 @@ GpuUploadResult GpuUploadManager::uploadLayer(
         layer.frame->pixels.size());
 
     // Determine if this frame can be GPU-cached for later reuse.
-    const bool cacheable = (layer.frame->mediaId != 0) &&
-                           (layer.isLoopContent ||
+    const bool cacheable = !cacheDimensionConflict &&
+                           (layer.frame->mediaId != 0) &&
+                           (layer.frame->pinned ||
+                            layer.isLoopContent ||
                             layer.frame->isLoopFrame ||
                             scrubMode);
 
@@ -289,7 +321,10 @@ GpuUploadResult GpuUploadManager::uploadLayer(
                         static_cast<uint8_t>(layer.frame->tier),
                         std::move(cacheTex), static_cast<size_t>(dataSize),
                         layer.isPacked, layer.isPMA,
-                        layer.frame->isLoopFrame);
+                        layer.frame->isLoopFrame,
+                        layer.frame->contentBoundsValid,
+                        layer.frame->contentLeft, layer.frame->contentTop,
+                        layer.frame->contentRight, layer.frame->contentBottom);
 
         // Pin the newly cached texture.  This prevents it from being
         // evicted during subsequent put() calls in the same frame (e.g.
@@ -395,7 +430,7 @@ GpuUploadResult GpuUploadManager::uploadLayer(
 bool GpuUploadManager::uploadMask(
     const std::vector<uint8_t>& maskPixels,
     Texture& maskTex,
-    uint32_t outW, uint32_t outH,
+    uint32_t maskW, uint32_t maskH,
     VkDescriptorImageInfo& outMaskDesc)
 {
     if (maskPixels.empty()) {
@@ -405,14 +440,14 @@ bool GpuUploadManager::uploadMask(
     const VkDeviceSize maskDataSize = static_cast<VkDeviceSize>(maskPixels.size());
     bool maskUsedRing = false;
 
-    if (maskTex.width() != outW || maskTex.height() != outH ||
+    if (maskTex.width() != maskW || maskTex.height() != maskH ||
         maskTex.image() == VK_NULL_HANDLE)
     {
         maskTex.destroy();
 
         TextureConfig maskCfg;
-        maskCfg.width  = outW;
-        maskCfg.height = outH;
+        maskCfg.width  = maskW;
+        maskCfg.height = maskH;
         maskCfg.format = VK_FORMAT_R8G8B8A8_UNORM;
         maskCfg.usage  = VK_IMAGE_USAGE_SAMPLED_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -421,7 +456,7 @@ bool GpuUploadManager::uploadMask(
                 maskPixels.data(), maskDataSize,
                 maskCfg.width, maskCfg.height, maskCfg.format, maskCfg.usage, true))
         {
-            spdlog::warn("[UPLOAD] mask texture create failed for {}x{}", outW, outH);
+            spdlog::warn("[UPLOAD] mask texture create failed for {}x{}", maskW, maskH);
             return false;
         }
         maskUsedRing = true;
@@ -429,7 +464,7 @@ bool GpuUploadManager::uploadMask(
         if (!updateViaRingOrBatched(maskTex,
                 maskPixels.data(), maskDataSize))
         {
-            spdlog::warn("[UPLOAD] mask texture update failed for {}x{}", outW, outH);
+            spdlog::warn("[UPLOAD] mask texture update failed for {}x{}", maskW, maskH);
             return false;
         }
         maskUsedRing = true;
@@ -445,21 +480,19 @@ void GpuUploadManager::recordPin(uint64_t mediaId, int64_t frameNumber, uint8_t 
 {
     if (!m_texCache) return;
 
-    // A9: bound the per-slot pin count.  A 50-layer composite would pin
-    // 50 textures × 3 ring slots = 150 simultaneously-pinned textures
-    // which can prevent the LRU from evicting anything and push the cache
-    // into oversubscription.  When the slot reaches kMaxPinsPerSlot,
-    // unpin the OLDEST pin in this slot (FIFO) before adding the new one.
-    // The old texture's CachedFrame still keeps a shared_ptr while it's
-    // referenced, so unpinning here only allows LRU eviction once the
-    // last reference drops — not immediate destruction mid-flight.
+    // Every descriptor recorded into this slot must stay alive until its
+    // fence signals.  De-duplicate shared source frames, but never release
+    // an older in-flight pin merely to satisfy a fixed count.
     if (m_currentSubmissionSlot >= 0 && m_currentSubmissionSlot < kRingSize) {
         auto& pins = m_slotPins[m_currentSubmissionSlot];
-        if (pins.size() >= kMaxPinsPerSlot) {
-            auto& oldest = pins.front();
-            m_texCache->unpin(oldest.mediaId, oldest.frameNumber, oldest.tier);
-            pins.erase(pins.begin());
-        }
+        const auto alreadyPinned = std::find_if(
+            pins.begin(), pins.end(),
+            [=](const PinKey& key) {
+                return key.mediaId == mediaId &&
+                       key.frameNumber == frameNumber && key.tier == tier;
+            });
+        if (alreadyPinned != pins.end())
+            return;
         m_texCache->pin(mediaId, frameNumber, tier);
         pins.push_back({mediaId, frameNumber, tier});
     } else {
@@ -467,6 +500,12 @@ void GpuUploadManager::recordPin(uint64_t mediaId, int64_t frameNumber, uint8_t 
         // exercised only by tests / non-composite uploads.
         m_texCache->pin(mediaId, frameNumber, tier);
     }
+}
+
+void GpuUploadManager::pinCachedTexture(
+    uint64_t mediaId, int64_t frameNumber, uint8_t tier)
+{
+    recordPin(mediaId, frameNumber, tier);
 }
 
 void GpuUploadManager::releaseSlotPins(int slotIndex)
@@ -480,6 +519,14 @@ void GpuUploadManager::releaseSlotPins(int slotIndex)
         m_texCache->unpin(pk.mediaId, pk.frameNumber, pk.tier);
     }
     m_slotPins[slotIndex].clear();
+}
+
+void GpuUploadManager::releaseSlotStaging(int slotIndex)
+{
+    if (slotIndex < 0 || slotIndex >= kRingSize) return;
+    for (auto& staging : m_slotStagingCleanups[slotIndex])
+        staging.destroy();
+    m_slotStagingCleanups[slotIndex].clear();
 }
 
 // ── Cache management ─────────────────────────────────────────────────────
@@ -498,6 +545,12 @@ void GpuUploadManager::setTextureCache(GpuTextureCache* cache)
 void GpuUploadManager::shutdown()
 {
     endFrame();
+    for (int slotIndex = 0; slotIndex < kRingSize; ++slotIndex) {
+        releaseSlotStaging(slotIndex);
+        releaseSlotPins(slotIndex);
+    }
+    for (auto& ring : m_additionalRings)
+        ring.reset();
     if (m_texCache) {
         // Drop the recycle hook before m_texCache is cleared — it
         // captures `this` and we don't want eviction during the cache's
@@ -555,11 +608,11 @@ bool GpuUploadManager::uploadViaRingOrBatched(
     cfg.usage  = usage;
 
     // Try ring-buffer path first (zero VMA alloc per frame).
-    if (m_ring.isInitialized() &&
+    if (m_activeRing && m_activeRing->isInitialized() &&
         tex.createFromDataRing(
             m_ctx.allocator().handle(), m_ctx.vkDevice(), cfg,
             data, dataSize,
-            m_cmd, m_ring))
+            m_cmd, *m_activeRing))
     {
         return true;
     }
@@ -575,7 +628,7 @@ bool GpuUploadManager::uploadViaRingOrBatched(
     }
 
     if (staging.buffer != VK_NULL_HANDLE)
-        m_stagingCleanups.push_back(staging);
+        m_slotStagingCleanups[m_currentSubmissionSlot].push_back(staging);
     return true;
 }
 
@@ -584,8 +637,8 @@ bool GpuUploadManager::updateViaRingOrBatched(
     const void* data, VkDeviceSize dataSize)
 {
     // Try ring-buffer path first.
-    if (m_ring.isInitialized() &&
-        tex.updateDataRing(data, dataSize, m_cmd, m_ring))
+    if (m_activeRing && m_activeRing->isInitialized() &&
+        tex.updateDataRing(data, dataSize, m_cmd, *m_activeRing))
     {
         return true;
     }
@@ -596,7 +649,7 @@ bool GpuUploadManager::updateViaRingOrBatched(
         return false;
 
     if (staging.buffer != VK_NULL_HANDLE)
-        m_stagingCleanups.push_back(staging);
+        m_slotStagingCleanups[m_currentSubmissionSlot].push_back(staging);
     return true;
 }
 

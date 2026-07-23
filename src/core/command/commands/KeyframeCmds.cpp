@@ -20,6 +20,17 @@ AddKeyframeCommand::AddKeyframeCommand(KeyframeTrack<float>* track, int64_t time
 {
 }
 
+AddKeyframeCommand::AddKeyframeCommand(
+    KeyframeTrack<float>* track, const Keyframe<float>& keyframe)
+    : m_track(track)
+    , m_time(keyframe.time)
+    , m_value(keyframe.value)
+    , m_interp(keyframe.interp)
+    , m_restoreFull(true)
+    , m_newKeyframe(keyframe)
+{
+}
+
 void AddKeyframeCommand::execute()
 {
     // Check if there's an existing keyframe at this time (for undo)
@@ -37,7 +48,10 @@ void AddKeyframeCommand::execute()
         m_hadExisting = false;
     }
 
-    m_track->addKeyframe(m_time, m_value, m_interp);
+    if (m_restoreFull)
+        m_track->restoreKeyframe(m_newKeyframe);
+    else
+        m_track->addKeyframe(m_time, m_value, m_interp);
 }
 
 void AddKeyframeCommand::undo()
@@ -273,9 +287,14 @@ void MoveKeyframeCommand::execute()
     if (it != kfs.end())
         m_savedKeyframe = *it;
 
-    // Remove at old time, add at new time
+    // Remove at old time, restore the moved full keyframe at the destination.
+    // addKeyframe() would recreate only time/value/interp and silently drop
+    // temporal and spatial handles on redo.
+    Keyframe<float> moved = m_savedKeyframe;
+    moved.time = m_newTime;
+    moved.value = m_newValue;
     m_track->removeKeyframeAtTime(m_oldTime);
-    m_track->addKeyframe(m_newTime, m_newValue, m_savedKeyframe.interp);
+    m_track->restoreKeyframe(moved);
 }
 
 void MoveKeyframeCommand::undo()

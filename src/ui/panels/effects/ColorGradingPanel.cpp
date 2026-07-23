@@ -27,6 +27,9 @@
 #include <QGridLayout>
 #include <QLinearGradient>
 
+#include <algorithm>
+#include <cmath>
+
 // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
 // SliderTrack ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â slider with track line, optional
 // gradient, and a draggable hollow circle thumb. Directly interactive:
@@ -290,21 +293,14 @@ void ColorGradingPanel::pushUndoCommand(ScrubbySpinBox* changedSpin, double oldV
 {
  if (!m_commandStack || !m_clip || !m_effect) return;
 
- // Snapshot current (new) state
- std::vector<float> afterParams;
- afterParams.reserve(ColorGrading::ParamCount);
- for (size_t i = 0; i < ColorGrading::ParamCount; ++i)
- afterParams.push_back(m_effect->param(i).track.evaluate(0));
- bool afterBasic = m_effect->basicEnabled();
- bool afterCreative = m_effect->creativeEnabled();
- bool afterVignette = m_effect->vignetteEnabled();
-
- // Reconstruct before state
- std::vector<float> beforeParams = afterParams;
+ // The live preview has already applied the new value. Reconstruct the one
+ // field's prior value inside a complete snapshot, including HSL/curves and
+ // every section flag, then record the already-applied gesture.
+ auto before = m_effect->captureState();
  if (changedSpin) {
  auto patchParam = [&](ScrubbySpinBox* s, size_t idx) {
- if (changedSpin == s)
- beforeParams[idx] = static_cast<float>(oldVal);
+ if (changedSpin == s && idx < before.paramTracks.size())
+ before.paramTracks[idx] = KeyframeTrack<float>(static_cast<float>(oldVal));
  };
  patchParam(m_temperatureSpin, ColorGrading::Temperature);
  patchParam(m_tintSpin, ColorGrading::Tint);
@@ -323,30 +319,40 @@ void ColorGradingPanel::pushUndoCommand(ScrubbySpinBox* changedSpin, double oldV
  patchParam(m_vigMidpointSpin, ColorGrading::VignetteMidpoint);
  patchParam(m_vigRoundnessSpin,ColorGrading::VignetteRoundness);
  patchParam(m_vigFeatherSpin, ColorGrading::VignetteFeather);
+
+ auto& hsl = before.hslParams;
+ if (changedSpin == m_hslHueCenterSpin) hsl.hueCenter = static_cast<float>(oldVal);
+ if (changedSpin == m_hslHueWidthSpin) hsl.hueWidth = static_cast<float>(oldVal);
+ if (changedSpin == m_hslSatMinSpin) hsl.satMin = static_cast<float>(oldVal);
+ if (changedSpin == m_hslSatMaxSpin) hsl.satMax = static_cast<float>(oldVal);
+ if (changedSpin == m_hslLumMinSpin) hsl.lumMin = static_cast<float>(oldVal);
+ if (changedSpin == m_hslLumMaxSpin) hsl.lumMax = static_cast<float>(oldVal);
+ if (changedSpin == m_hslHueShiftSpin) hsl.hueShift = static_cast<float>(oldVal);
+ if (changedSpin == m_hslSatAdjustSpin) hsl.satAdjust = static_cast<float>(oldVal);
+ if (changedSpin == m_hslLumAdjustSpin) hsl.lumAdjust = static_cast<float>(oldVal);
  }
 
+ pushUndoState(std::move(before), "Adjust Color Correction");
+}
+
+void ColorGradingPanel::pushUndoState(ColorGrading::State before,
+                                      const char* description)
+{
+ if (!m_commandStack || !m_effect) return;
+
+ auto after = m_effect->captureState();
  auto* panel = this;
  auto* effect = m_effect;
+ auto restore = [effect, panel](const ColorGrading::State& state) {
+ effect->restoreState(state);
+ if (panel->m_effect == effect)
+ panel->populateFromEffect();
+ emit panel->propertyChanged();
+ };
  m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
- "Color Panel",
- [effect, afterParams, afterBasic, afterCreative, afterVignette, panel]() {
- for (size_t i = 0; i < afterParams.size() && i < ColorGrading::ParamCount; ++i)
- effect->param(i).track = KeyframeTrack<float>(afterParams[i]);
- effect->setBasicEnabled(afterBasic);
- effect->setCreativeEnabled(afterCreative);
- effect->setVignetteEnabled(afterVignette);
- panel->populateFromEffect();
- emit panel->propertyChanged();
- },
- [effect, beforeParams, afterBasic, afterCreative, afterVignette, panel]() {
- for (size_t i = 0; i < beforeParams.size() && i < ColorGrading::ParamCount; ++i)
- effect->param(i).track = KeyframeTrack<float>(beforeParams[i]);
- effect->setBasicEnabled(afterBasic);
- effect->setCreativeEnabled(afterCreative);
- effect->setVignetteEnabled(afterVignette);
- panel->populateFromEffect();
- emit panel->propertyChanged();
- }
+ description,
+ [restore, after]() { restore(after); },
+ [restore, before]() { restore(before); }
  ));
 }
 
@@ -463,9 +469,22 @@ void ColorGradingPanel::wireSectionCollapse()
  // Wire enable toggle
  if (sec.enableBtn) {
  connect(sec.enableBtn, &QToolButton::toggled,
- this, [this, &sec](bool on) {
+ this, [this, &sec, si](bool on) {
+ if (m_updating || !m_clip) return;
  sec.enabled = on;
  applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ switch (si) {
+ case 0: before.basicEnabled = !on; break;
+ case 1: before.creativeEnabled = !on; break;
+ case 2: before.curvesEnabled = !on; break;
+ case 3: before.wheelsEnabled = !on; break;
+ case 4: before.hslEnabled = !on; break;
+ case 5: before.vignetteEnabled = !on; break;
+ default: return;
+ }
+ pushUndoState(std::move(before), "Toggle Color Section");
  });
  }
  }
@@ -509,25 +528,29 @@ void ColorGradingPanel::setupUI()
  hl->addStretch();
 
  // fx button
- auto* fxBtn = new QToolButton(headerBar);
- fxBtn->setText(QStringLiteral("fx"));
- fxBtn->setFixedSize(24, 20);
- fxBtn->setCheckable(true);
- fxBtn->setChecked(true);
- fxBtn->setStyleSheet(QStringLiteral(
+ m_fxButton = new QToolButton(headerBar);
+ m_fxButton->setText(QStringLiteral("fx"));
+ m_fxButton->setFixedSize(24, 20);
+ m_fxButton->setCheckable(true);
+ m_fxButton->setChecked(true);
+ m_fxButton->setStyleSheet(QStringLiteral(
  "QToolButton { color: %1; font-size: %4px; font-weight: bold; "
  "background: transparent; border: 1px solid %2; border-radius: 2px; }"
  "QToolButton:checked { color: %3; border-color: %3; }")
  .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.border),
  Theme::hex(tc.accent))
  .arg(Theme::typography().sizeXxs));
- connect(fxBtn, &QToolButton::toggled, this, [this](bool on) {
+ connect(m_fxButton, &QToolButton::toggled, this, [this](bool on) {
+ if (m_updating) return;
  if (m_effect) {
+ auto before = m_effect->captureState();
  m_effect->setEnabled(on);
  emit propertyChanged();
+ before.enabled = !on;
+ pushUndoState(std::move(before), "Toggle Color Correction");
  }
  });
- hl->addWidget(fxBtn);
+ hl->addWidget(m_fxButton);
 
  outerLayout->addWidget(headerBar);
  }
@@ -604,6 +627,7 @@ void ColorGradingPanel::setupUI()
  auto* resetBtn = makeSmallBtn(tr("Reset"));
  connect(resetBtn, &QToolButton::clicked, this, [this]() {
  if (!m_effect) return;
+ auto before = m_effect->captureState();
  for (size_t i = ColorGrading::Temperature;
  i <= ColorGrading::Saturation; ++i) {
  auto& track = m_effect->param(i).track;
@@ -612,6 +636,7 @@ void ColorGradingPanel::setupUI()
  }
  populateFromEffect();
  emit propertyChanged();
+ pushUndoState(std::move(before), "Reset Basic Correction");
  });
  m_mainLayout->addWidget(arRow);
  }
@@ -771,9 +796,24 @@ void ColorGradingPanel::setupUI()
  });
  connect(resetCurvesBtn, &QToolButton::clicked, this, [this]() {
  m_curveEditor->resetAll();
+ emit m_curveEditor->curveCommitted();
  });
  connect(m_curveEditor, &CurveEditor::curveChanged,
- this, [this]() { emit propertyChanged(); });
+ this, [this]() {
+ if (m_updating || !m_clip) return;
+ ensureColorGradingEffect();
+ if (!m_effect) return;
+ if (!m_curveUndoBefore)
+ m_curveUndoBefore = m_effect->captureState();
+ applyCurvesToEffect();
+ });
+ connect(m_curveEditor, &CurveEditor::curveCommitted,
+ this, [this]() {
+ if (!m_curveUndoBefore || !m_effect) return;
+ applyCurvesToEffect();
+ pushUndoState(std::move(*m_curveUndoBefore), "Adjust Color Curves");
+ m_curveUndoBefore.reset();
+ });
  }
 
  // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
@@ -808,11 +848,23 @@ void ColorGradingPanel::setupUI()
  connect(m_shadowWheel, &ColorWheelWidget::masterChanged,
  this, [this](float) { applyToEffect(); });
  connect(m_shadowWheel, &ColorWheelWidget::offsetCommitted,
- this, [this](float, float, float, float, float, float) {
+ this, [this](float oldR, float oldG, float oldB, float, float, float) {
  applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::ShadowR] = KeyframeTrack<float>(oldR);
+ before.paramTracks[ColorGrading::ShadowG] = KeyframeTrack<float>(oldG);
+ before.paramTracks[ColorGrading::ShadowB] = KeyframeTrack<float>(oldB);
+ pushUndoState(std::move(before), "Adjust Shadow Wheel");
  });
  connect(m_shadowWheel, &ColorWheelWidget::masterCommitted,
- this, [this](float, float) { applyToEffect(); });
+ this, [this](float oldVal, float) {
+ applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::ShadowMaster] = KeyframeTrack<float>(oldVal);
+ pushUndoState(std::move(before), "Adjust Shadow Luminance");
+ });
 
  // Wire midtone wheel
  connect(m_midtoneWheel, &ColorWheelWidget::offsetChanged,
@@ -820,11 +872,23 @@ void ColorGradingPanel::setupUI()
  connect(m_midtoneWheel, &ColorWheelWidget::masterChanged,
  this, [this](float) { applyToEffect(); });
  connect(m_midtoneWheel, &ColorWheelWidget::offsetCommitted,
- this, [this](float, float, float, float, float, float) {
+ this, [this](float oldR, float oldG, float oldB, float, float, float) {
  applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::MidtoneR] = KeyframeTrack<float>(oldR);
+ before.paramTracks[ColorGrading::MidtoneG] = KeyframeTrack<float>(oldG);
+ before.paramTracks[ColorGrading::MidtoneB] = KeyframeTrack<float>(oldB);
+ pushUndoState(std::move(before), "Adjust Midtone Wheel");
  });
  connect(m_midtoneWheel, &ColorWheelWidget::masterCommitted,
- this, [this](float, float) { applyToEffect(); });
+ this, [this](float oldVal, float) {
+ applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::MidtoneMaster] = KeyframeTrack<float>(oldVal);
+ pushUndoState(std::move(before), "Adjust Midtone Luminance");
+ });
 
  // Wire highlight wheel
  connect(m_highlightWheel, &ColorWheelWidget::offsetChanged,
@@ -832,11 +896,23 @@ void ColorGradingPanel::setupUI()
  connect(m_highlightWheel, &ColorWheelWidget::masterChanged,
  this, [this](float) { applyToEffect(); });
  connect(m_highlightWheel, &ColorWheelWidget::offsetCommitted,
- this, [this](float, float, float, float, float, float) {
+ this, [this](float oldR, float oldG, float oldB, float, float, float) {
  applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::HighlightR] = KeyframeTrack<float>(oldR);
+ before.paramTracks[ColorGrading::HighlightG] = KeyframeTrack<float>(oldG);
+ before.paramTracks[ColorGrading::HighlightB] = KeyframeTrack<float>(oldB);
+ pushUndoState(std::move(before), "Adjust Highlight Wheel");
  });
  connect(m_highlightWheel, &ColorWheelWidget::masterCommitted,
- this, [this](float, float) { applyToEffect(); });
+ this, [this](float oldVal, float) {
+ applyToEffect();
+ if (!m_effect) return;
+ auto before = m_effect->captureState();
+ before.paramTracks[ColorGrading::HighlightMaster] = KeyframeTrack<float>(oldVal);
+ pushUndoState(std::move(before), "Adjust Highlight Luminance");
+ });
  }
 
  // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
@@ -930,6 +1006,7 @@ void ColorGradingPanel::setClip(Clip* clip, Track* track)
  m_clip = clip;
  m_track = track;
  m_effect = nullptr;
+ m_curveUndoBefore.reset();
 
  if (!clip) {
  clearClip();
@@ -977,6 +1054,7 @@ void ColorGradingPanel::clearClip()
  m_clip = nullptr;
  m_track = nullptr;
  m_effect = nullptr;
+ m_curveUndoBefore.reset();
  m_clipLabel->setText(tr("Color Panel"));
  m_typeBadge->setVisible(false);
  m_scrollArea->setVisible(false);
@@ -1032,6 +1110,8 @@ void ColorGradingPanel::populateFromEffect()
  m_vibranceSpin->setValue(val(ColorGrading::Vibrance));
  m_creativeSatSpin->setValue(val(ColorGrading::CreativeSat));
 
+ if (m_fxButton) m_fxButton->setChecked(m_effect->isEnabled());
+
  m_vigAmountSpin->setValue(val(ColorGrading::VignetteAmount));
  m_vigMidpointSpin->setValue(val(ColorGrading::VignetteMidpoint));
  m_vigRoundnessSpin->setValue(val(ColorGrading::VignetteRoundness));
@@ -1060,11 +1140,31 @@ void ColorGradingPanel::populateFromEffect()
  m_highlightWheel->setMaster(static_cast<float>(val(ColorGrading::HighlightMaster)));
  }
 
+ if (m_curveEditor) {
+ for (int ch = 0; ch < ColorGrading::CurveCount; ++ch) {
+ m_curveEditor->setLut(static_cast<CurveEditor::Channel>(ch),
+ m_effect->curveLUT(static_cast<ColorGrading::CurveChannel>(ch)));
+ }
+ }
+
+ const auto& hsl = m_effect->hslParams();
+ if (m_hslHueCenterSpin) m_hslHueCenterSpin->setValue(hsl.hueCenter);
+ if (m_hslHueWidthSpin) m_hslHueWidthSpin->setValue(hsl.hueWidth);
+ if (m_hslSatMinSpin) m_hslSatMinSpin->setValue(hsl.satMin);
+ if (m_hslSatMaxSpin) m_hslSatMaxSpin->setValue(hsl.satMax);
+ if (m_hslLumMinSpin) m_hslLumMinSpin->setValue(hsl.lumMin);
+ if (m_hslLumMaxSpin) m_hslLumMaxSpin->setValue(hsl.lumMax);
+ if (m_hslHueShiftSpin) m_hslHueShiftSpin->setValue(hsl.hueShift);
+ if (m_hslSatAdjustSpin) m_hslSatAdjustSpin->setValue(hsl.satAdjust);
+ if (m_hslLumAdjustSpin) m_hslLumAdjustSpin->setValue(hsl.lumAdjust);
+
  // Section enable toggles
  if (m_sections.size() >= 6) {
  if (m_sections[0].enableBtn) m_sections[0].enableBtn->setChecked(m_effect->basicEnabled());
  if (m_sections[1].enableBtn) m_sections[1].enableBtn->setChecked(m_effect->creativeEnabled());
- // sections 2,3,4 are placeholders
+ if (m_sections[2].enableBtn) m_sections[2].enableBtn->setChecked(m_effect->curvesEnabled());
+ if (m_sections[3].enableBtn) m_sections[3].enableBtn->setChecked(m_effect->wheelsEnabled());
+ if (m_sections[4].enableBtn) m_sections[4].enableBtn->setChecked(m_effect->hslEnabled());
  if (m_sections[5].enableBtn) m_sections[5].enableBtn->setChecked(m_effect->vignetteEnabled());
  }
  } else {
@@ -1083,6 +1183,17 @@ void ColorGradingPanel::populateFromEffect()
  if (m_sharpenSpin) m_sharpenSpin->setValue(0.0);
  if (m_vibranceSpin) m_vibranceSpin->setValue(0.0);
  if (m_creativeSatSpin) m_creativeSatSpin->setValue(100.0);
+ if (m_fxButton) m_fxButton->setChecked(true);
+ if (m_curveEditor) m_curveEditor->resetAll();
+ if (m_hslHueCenterSpin) m_hslHueCenterSpin->setValue(0.0);
+ if (m_hslHueWidthSpin) m_hslHueWidthSpin->setValue(60.0);
+ if (m_hslSatMinSpin) m_hslSatMinSpin->setValue(0.0);
+ if (m_hslSatMaxSpin) m_hslSatMaxSpin->setValue(100.0);
+ if (m_hslLumMinSpin) m_hslLumMinSpin->setValue(0.0);
+ if (m_hslLumMaxSpin) m_hslLumMaxSpin->setValue(100.0);
+ if (m_hslHueShiftSpin) m_hslHueShiftSpin->setValue(0.0);
+ if (m_hslSatAdjustSpin) m_hslSatAdjustSpin->setValue(0.0);
+ if (m_hslLumAdjustSpin) m_hslLumAdjustSpin->setValue(0.0);
  if (m_vigAmountSpin) m_vigAmountSpin->setValue(0.0);
  if (m_vigMidpointSpin) m_vigMidpointSpin->setValue(50.0);
  if (m_vigRoundnessSpin)m_vigRoundnessSpin->setValue(50.0);
@@ -1116,7 +1227,10 @@ void ColorGradingPanel::applyToEffect()
  if (!m_effect) return;
 
  auto setVal = [this](size_t i, double v) {
- m_effect->param(i).track = KeyframeTrack<float>(static_cast<float>(v));
+ const float value = static_cast<float>(v);
+ auto& track = m_effect->param(i).track;
+ if (std::abs(track.evaluate(0) - value) > 1.0e-5f)
+ track = KeyframeTrack<float>(value);
  };
 
  // Basic Correction
@@ -1167,20 +1281,9 @@ void ColorGradingPanel::applyToEffect()
  if (m_sections[0].enableBtn) m_effect->setBasicEnabled(m_sections[0].enableBtn->isChecked());
  if (m_sections[1].enableBtn) m_effect->setCreativeEnabled(m_sections[1].enableBtn->isChecked());
  if (m_sections[2].enableBtn) m_effect->setCurvesEnabled(m_sections[2].enableBtn->isChecked());
+ if (m_sections[3].enableBtn) m_effect->setWheelsEnabled(m_sections[3].enableBtn->isChecked());
  if (m_sections[4].enableBtn) m_effect->setHslEnabled(m_sections[4].enableBtn->isChecked());
  if (m_sections[5].enableBtn) m_effect->setVignetteEnabled(m_sections[5].enableBtn->isChecked());
- }
-
- // Curves LUTs
- if (m_curveEditor) {
- for (int ch = 0; ch < 4; ++ch) {
- auto channel = static_cast<CurveEditor::Channel>(ch);
- auto lut = m_curveEditor->lut(channel);
- ColorGrading::CurveLUT effectLut;
- for (size_t i = 0; i < 256; ++i)
- effectLut[i] = lut[i];
- m_effect->setCurveLUT(static_cast<ColorGrading::CurveChannel>(ch), effectLut);
- }
  }
 
  // HSL Secondary
@@ -1198,6 +1301,21 @@ void ColorGradingPanel::applyToEffect()
  m_effect->setHslParams(hsl);
  }
 
+ emit propertyChanged();
+}
+
+void ColorGradingPanel::applyCurvesToEffect()
+{
+ if (m_updating || !m_clip || !m_curveEditor) return;
+ ensureColorGradingEffect();
+ if (!m_effect) return;
+
+ for (int ch = 0; ch < ColorGrading::CurveCount; ++ch) {
+ const auto editorLut = m_curveEditor->lut(static_cast<CurveEditor::Channel>(ch));
+ ColorGrading::CurveLUT effectLut{};
+ std::copy(editorLut.begin(), editorLut.end(), effectLut.begin());
+ m_effect->setCurveLUT(static_cast<ColorGrading::CurveChannel>(ch), effectLut);
+ }
  emit propertyChanged();
 }
 

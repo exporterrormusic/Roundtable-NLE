@@ -1,8 +1,7 @@
 /*
- * ImageSequence.cpp — Writes individual frames as PNG/BMP/JPEG/TIFF/EXR.
+ * ImageSequence.cpp — Writes individual frames as PNG/BMP/JPEG.
  *
  * Uses stb_image_write for PNG/BMP/JPEG (no FFmpeg dependency needed).
- * EXR/TIFF use FFmpeg if available.
  */
 
 #include "formats/ImageSequence.h"
@@ -89,8 +88,6 @@ bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
         case ImageFormat::PNG:  ext = ".png"; break;
         case ImageFormat::BMP:  ext = ".bmp"; break;
         case ImageFormat::JPEG: ext = ".jpg"; break;
-        case ImageFormat::TIFF: ext = ".tiff"; break;
-        case ImageFormat::EXR:  ext = ".exr"; break;
         default: break;
     }
 
@@ -116,11 +113,12 @@ bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
                                         m_config.jpegQuality);
             break;
         default:
-            // TIFF/EXR would need FFmpeg or dedicated library
-            spdlog::warn("ImageSequence: {} format not implemented, using PNG",
-                         static_cast<int>(m_config.imageFormat));
-            ok = stbi_write_png_to_func(appendToBuffer, &encoded, w, h, 4, rgbaPixels, w * 4);
-            break;
+            // No silent fallback: writing one format's bytes under another
+            // format's extension produces files no reader can open.
+            m_lastError = "ImageSequence: unsupported image format "
+                        + std::to_string(static_cast<int>(m_config.imageFormat));
+            spdlog::error("{}", m_lastError);
+            return false;
     }
 
     if (ok) {

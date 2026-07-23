@@ -24,30 +24,18 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <limits>
-#include <limits>
 
 namespace rt {
 
 // Clamp a desired track index onto the nearest track that can host a clip of
 // the same kind as `like` (skipping dividers + the pinned caption track).
-// Real tracks of one type are contiguous (caption, video…, divider, audio…),
-// so a video clip dragged down past the last video track maps onto the lowest
-// video track rather than being rejected back to its origin. Returns SIZE_MAX
-// only when no hostable track of that kind exists.
+// User dividers may appear between two tracks of the same kind, so numeric
+// range clamping is not sufficient: the resulting index itself must be a real
+// media track. Returns SIZE_MAX only when no compatible host track exists.
 size_t TimelinePanel::clampTrackToHostTrack(int desiredIdx, const Track* like) const
 {
     if (!m_timeline || !like) return SIZE_MAX;
-    int firstIdx = -1, lastIdx = -1;
-    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
-        const Track* t = m_timeline->track(i);
-        if (!t || t->isDivider() || t->isCaptionTrack()) continue;
-        if (t->type() != like->type()) continue;
-        if (firstIdx < 0) firstIdx = static_cast<int>(i);
-        lastIdx = static_cast<int>(i);
-    }
-    if (firstIdx < 0) return SIZE_MAX;
-    const int clamped = std::clamp(desiredIdx, firstIdx, lastIdx);
-    return static_cast<size_t>(clamped);
+    return m_timeline->nearestClipHostTrack(desiredIdx, like->type());
 }
 
 // Auto-scroll the timeline while a clip drag (move or trim) pegs against
@@ -531,7 +519,14 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             size_t dstTrack = clampTrackToHostTrack(dst, srcTr);
             if (dstTrack == SIZE_MAX) dstTrack = dcs.ref.trackIndex;
             Track* dstTr = m_timeline->track(dstTrack);
-            if (!dstTr) continue;
+            // Never relinquish the source clip unless the destination can
+            // actually own it. Track::addClip takes unique ownership even when
+            // it rejects a divider, which previously destroyed the clip while
+            // the pointer crossed an organizational divider row.
+            if (!dstTr || dstTr->isDivider() || dstTr->isCaptionTrack()
+                    || dstTr->type() != srcTr->type()) {
+                continue;
+            }
 
             size_t curTrack = dcs.ref.trackIndex;
 
@@ -540,6 +535,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                 size_t idx = curTr->findClipIndexById(dcs.ref.clipId);
                 if (idx >= curTr->clipCount()) continue;
                 auto clipPtr = curTr->removeClip(idx);
+                if (!clipPtr) continue;
                 clipPtr->setTimelineIn(clipNewIn);
                 dstTr->addClip(std::move(clipPtr));
                 dcs.ref.trackIndex = dstTrack;

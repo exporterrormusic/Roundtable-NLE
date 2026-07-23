@@ -626,6 +626,13 @@ void GpuRenderGraph::insertImageBarrier(VkCommandBuffer cmd, const ImageBarrier&
 
     const auto& res = m_resources[barrier.resourceId];
 
+    // Descriptor-only external resources are synchronized by their owning
+    // subsystem and intentionally have no VkImage registered with the graph.
+    // Emitting a barrier for VK_NULL_HANDLE is invalid Vulkan and can trigger
+    // validation errors or a driver fault.
+    if (res.image == VK_NULL_HANDLE)
+        return;
+
     VkImageMemoryBarrier imgBarrier{};
     imgBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     imgBarrier.oldLayout = barrier.oldLayout;

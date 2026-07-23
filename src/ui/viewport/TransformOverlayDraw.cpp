@@ -12,8 +12,10 @@
 
 #include <QPainter>
 #include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QPen>
 #include <QPolygonF>
+#include <QGuiApplication>
 
 #include <cmath>
 
@@ -26,7 +28,7 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
     // Skip painting entirely when there's nothing to draw.
     // On a WA_TranslucentBackground window, even a no-op QPainter triggers
     // DWM per-pixel alpha composition, so avoid it when possible.
-    bool hasMasks = (m_masks && !m_masks->empty());
+    bool hasMasks = (m_masks && !m_masks->empty()) || m_penDrawing;
     const bool inlineEditing = m_inlineTextEdit && m_inlineTextEdit->isVisible();
     if (!m_overlay.visible && !m_showSafeAreas && !m_showGrid && !hasMasks
         && !inlineEditing)
@@ -316,14 +318,21 @@ void TransformOverlayWidget::drawTransformOverlay(QPainter& painter)
         }
     }
 
-    // Crop edge handles + dimmed cropped-out border (Premiere-style), drawn
-    // last so they sit above the box. No-op unless the clip supports crop.
+    // Crop visualization, drawn last so it sits above the box. Existing crop
+    // remains visible; interactive handles are Ctrl-only.
     drawCropOverlay(painter);
 }
 
 void TransformOverlayWidget::drawCropOverlay(QPainter& painter)
 {
     if (!m_overlay.cropEnabled) return;
+
+    // Existing crop remains visible as a dimmed region, but the green crop
+    // controls themselves only appear while Ctrl is held (or for the duration
+    // of an already-started crop drag). This keeps ordinary transform handles
+    // visually and interactively unambiguous.
+    const bool showCropControls = (m_dragMode == DragMode::CropEdge)
+        || cropGestureRequested(QGuiApplication::keyboardModifiers());
 
     QPointF c[4];
     computeOverlayCorners(c);   // TL, TR, BR, BL of the uncropped box
@@ -358,6 +367,8 @@ void TransformOverlayWidget::drawCropOverlay(QPainter& painter)
         if (fl > 1e-4f) painter.drawPolygon(quad(0, ft,       fl, ft,      fl, 1 - fb, 0, 1 - fb));
         if (fr > 1e-4f) painter.drawPolygon(quad(1 - fr, ft,  1, ft,       1, 1 - fb,  1 - fr, 1 - fb));
     }
+
+    if (!showCropControls) return;
 
     // Inner crop rectangle outline — GREEN, matching the SHOT COMPOSE crop box
     // (distinct from the cyan transform box so crop reads as its own gizmo).
@@ -441,204 +452,223 @@ void TransformOverlayWidget::drawGrid(QPainter& painter)
 
 void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
 {
-    if (!m_masks || !m_vulkanVp) return;
+    if ((!m_masks || m_masks->empty()) && !m_penDrawing) return;
 
-    QRectF fr = computeFrameRect();
-    if (fr.isEmpty()) return;
+    const QSizeF sourceSize = maskSourceSize();
 
-    float srcW = static_cast<float>(m_vulkanVp->srcWidth());
-    float srcH = static_cast<float>(m_vulkanVp->srcHeight());
-    if (srcW <= 0.0f || srcH <= 0.0f) return;
-
-    // Source-pixel to widget-pixel conversion factors
-    double pxToWX = fr.width()  / static_cast<double>(srcW);
-    double pxToWY = fr.height() / static_cast<double>(srcH);
-
-    // Mask outline: Premiere-style blue
-    QColor activeMaskColor(0, 120, 255, 200);
-    QColor dimMaskColor(0, 120, 255, 80);
-    QColor featherColor(0, 120, 255, 120);
-    QColor dimFeatherColor(0, 120, 255, 50);
-    QColor handleColor(255, 255, 255, 220);
-    QColor glowColor(100, 180, 255, 90);
+    const QColor activeMaskColor(0, 120, 255, 220);
+    const QColor dimMaskColor(0, 120, 255, 85);
+    const QColor featherColor(0, 120, 255, 125);
+    const QColor handleColor(255, 255, 255, 230);
+    const QColor glowColor(100, 180, 255, 90);
     constexpr double CTRL_SIZE = 12.0;
-    constexpr double GLOW_EXTRA = 4.0; // extra radius for hover glow
+    constexpr double GLOW_EXTRA = 4.0;
+    constexpr int kTangentHandleBase = 10000;
 
-    for (size_t maskLoopIdx = 0; maskLoopIdx < m_masks->size(); ++maskLoopIdx) {
-        const auto& mask = (*m_masks)[maskLoopIdx];
-        // Evaluate geometry + keyframeable scalars at the current time so
-        // animated masks draw where the renderer puts them.
-        const MaskGeometry geo = mask.geometryAt(m_maskTime);
-        const float maskFeather   = mask.feather.evaluate(m_maskTime);
-        const float maskExpansion = mask.expansion.evaluate(m_maskTime);
-        int mi = static_cast<int>(maskLoopIdx);
-        bool isActive = (m_activeMaskIndex < 0 || m_activeMaskIndex == mi);
-        bool isMaskHovered = (mi == m_hoverMaskIndex);
+    auto cosmeticPen = [](const QColor& color, double width,
+                          Qt::PenStyle style = Qt::SolidLine) {
+        QPen pen(color, width, style);
+        pen.setCosmetic(true);
+        return pen;
+    };
 
-        QColor maskColor = isActive ? activeMaskColor : dimMaskColor;
-        QPen maskPen(maskColor, isActive ? 1.5 : 1.0, Qt::SolidLine);
-        QPen featherPen(isActive ? featherColor : dimFeatherColor, 1.0, Qt::DashLine);
+    auto rotatePoint = [&](const MaskGeometry& geo, float dxNorm,
+                           float dyNorm, const QSizeF& coordinateSize,
+                           MaskCoordinateSpace coordinateSpace) {
+        const double radians = static_cast<double>(geo.rotation)
+            * 3.14159265358979323846 / 180.0;
+        const double c = std::cos(radians);
+        const double s = std::sin(radians);
+        const double px = static_cast<double>(dxNorm) * coordinateSize.width();
+        const double py = static_cast<double>(dyNorm) * coordinateSize.height();
+        return maskLocalToWidget(
+            geo.centerX + static_cast<float>((px * c - py * s)
+                                             / coordinateSize.width()),
+            geo.centerY + static_cast<float>((px * s + py * c)
+                                             / coordinateSize.height()),
+            coordinateSpace);
+    };
 
-        painter.setPen(maskPen);
-        painter.setBrush(Qt::NoBrush);
-
-        // Map normalized mask coords to widget space
-        auto toWidget = [&](float nx, float ny) -> QPointF {
-            return QPointF(fr.x() + static_cast<double>(nx) * fr.width(),
-                           fr.y() + static_cast<double>(ny) * fr.height());
-        };
-
-        // Expansion offset in widget pixels (averaged for non-square pixels)
-        double expW = static_cast<double>(maskExpansion) * pxToWX;
-        double expH = static_cast<double>(maskExpansion) * pxToWY;
-        // Feather offset (additional, outside the expanded boundary)
-        double feathW = static_cast<double>(maskFeather) * pxToWX;
-        double feathH = static_cast<double>(maskFeather) * pxToWY;
-
-        if (mask.shape == MaskShape::Ellipse) {
-            QPointF center = toWidget(geo.centerX, geo.centerY);
-            double rw = static_cast<double>(geo.width)  * fr.width()  * 0.5 + expW;
-            double rh = static_cast<double>(geo.height) * fr.height() * 0.5 + expH;
-            rw = std::max(rw, 0.0);
-            rh = std::max(rh, 0.0);
-
-            painter.save();
-            painter.translate(center);
-            painter.rotate(static_cast<double>(geo.rotation));
-
-            // Main expanded boundary
-            painter.setPen(maskPen);
-            painter.drawEllipse(QPointF(0, 0), rw, rh);
-
-            // Feather boundary (dotted, outside the main boundary)
-            if (maskFeather > 0.01f) {
-                double frw = rw + feathW;
-                double frh = rh + feathH;
-                painter.setPen(featherPen);
-                painter.drawEllipse(QPointF(0, 0), std::max(frw, 0.0), std::max(frh, 0.0));
-            }
-
-            // Control handles at expanded cardinal positions + center
-            if (isActive) {
-                int hIdx = 0;
-                for (auto [dx, dy] : {std::pair{rw, 0.0}, {-rw, 0.0}, {0.0, rh}, {0.0, -rh}, {0.0, 0.0}}) {
-                    bool hovered = isMaskHovered && (m_hoverMaskHandle == hIdx);
-                    if (hovered) {
-                        painter.setPen(Qt::NoPen);
-                        painter.setBrush(glowColor);
-                        painter.drawEllipse(QPointF(dx, dy), CTRL_SIZE / 2 + GLOW_EXTRA, CTRL_SIZE / 2 + GLOW_EXTRA);
-                    }
-                    painter.setPen(QPen(handleColor, hovered ? 2 : 1));
-                    painter.setBrush(maskColor);
-                    painter.drawEllipse(QPointF(dx, dy), CTRL_SIZE / 2, CTRL_SIZE / 2);
-                    ++hIdx;
-                }
-            }
-            painter.restore();
+    auto drawControl = [&](const QPointF& pt, const QColor& maskColor,
+                           bool maskHovered, int handleIndex, bool square,
+                           double size = 12.0) {
+        const bool hovered = maskHovered && m_hoverMaskHandle == handleIndex;
+        if (hovered) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(glowColor);
+            const double glowSize = size + GLOW_EXTRA * 2.0;
+            if (square)
+                painter.drawRect(QRectF(pt.x() - glowSize * 0.5,
+                                        pt.y() - glowSize * 0.5,
+                                        glowSize, glowSize));
+            else
+                painter.drawEllipse(pt, glowSize * 0.5, glowSize * 0.5);
         }
-        else if (mask.shape == MaskShape::Rectangle) {
-            QPointF center = toWidget(geo.centerX, geo.centerY);
-            double hw = static_cast<double>(geo.width)  * fr.width()  * 0.5 + expW;
-            double hh = static_cast<double>(geo.height) * fr.height() * 0.5 + expH;
-            hw = std::max(hw, 0.0);
-            hh = std::max(hh, 0.0);
+        painter.setPen(cosmeticPen(handleColor, hovered ? 2.0 : 1.0));
+        painter.setBrush(maskColor);
+        if (square)
+            painter.drawRect(QRectF(pt.x() - size * 0.5, pt.y() - size * 0.5,
+                                    size, size));
+        else
+            painter.drawEllipse(pt, size * 0.5, size * 0.5);
+    };
 
-            painter.save();
-            painter.translate(center);
-            painter.rotate(static_cast<double>(geo.rotation));
+    if (m_masks) {
+        for (size_t maskLoopIdx = 0; maskLoopIdx < m_masks->size();
+             ++maskLoopIdx) {
+            const auto& mask = (*m_masks)[maskLoopIdx];
+            const MaskGeometry geo = mask.geometryAt(m_maskTime);
+            const float feather = mask.feather.evaluate(m_maskTime);
+            const float expansion = mask.expansion.evaluate(m_maskTime);
+            const QSizeF coordinateSize =
+                mask.coordinateSpace == MaskCoordinateSpace::LegacySequenceFrame
+                ? QSizeF(std::max<uint32_t>(
+                             1u, m_vulkanVp ? m_vulkanVp->srcWidth() : 1u),
+                         std::max<uint32_t>(
+                             1u, m_vulkanVp ? m_vulkanVp->srcHeight() : 1u))
+                : sourceSize;
+            const QPointF pxX = maskVectorToWidget(
+                1.0f / static_cast<float>(coordinateSize.width()), 0.0f,
+                mask.coordinateSpace);
+            const QPointF pxY = maskVectorToWidget(
+                0.0f, 1.0f / static_cast<float>(coordinateSize.height()),
+                mask.coordinateSpace);
+            const double pixelScale = 0.5 * (
+                std::hypot(pxX.x(), pxX.y()) +
+                std::hypot(pxY.x(), pxY.y()));
+            const int mi = static_cast<int>(maskLoopIdx);
+            const bool active = (m_activeMaskIndex == mi);
+            const bool maskHovered = (m_hoverMaskIndex == mi);
+            const QColor maskColor = active ? activeMaskColor : dimMaskColor;
 
-            // Main expanded boundary
-            painter.setPen(maskPen);
-            QRectF rect(-hw, -hh, hw * 2, hh * 2);
-            painter.drawRect(rect);
-
-            // Feather boundary (dotted)
-            if (maskFeather > 0.01f) {
-                double fhw = hw + feathW;
-                double fhh = hh + feathH;
-                painter.setPen(featherPen);
-                QRectF feathRect(-fhw, -fhh, fhw * 2, fhh * 2);
-                painter.drawRect(feathRect);
-            }
-
-            // Corner handles + center + mid-edge handles (at expanded dims)
-            if (isActive) {
-                int hIdx = 0;
-                // Corners (square handles) + center
-                for (auto [cx2, cy2] : {std::pair{-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}, {0.0, 0.0}}) {
-                    bool hovered = isMaskHovered && (m_hoverMaskHandle == hIdx);
-                    if (hovered) {
-                        painter.setPen(Qt::NoPen);
-                        painter.setBrush(glowColor);
-                        painter.drawRect(QRectF(cx2 - CTRL_SIZE / 2 - GLOW_EXTRA, cy2 - CTRL_SIZE / 2 - GLOW_EXTRA,
-                                                CTRL_SIZE + GLOW_EXTRA * 2, CTRL_SIZE + GLOW_EXTRA * 2));
-                    }
-                    painter.setPen(QPen(handleColor, hovered ? 2 : 1));
-                    painter.setBrush(maskColor);
-                    painter.drawRect(QRectF(cx2 - CTRL_SIZE / 2, cy2 - CTRL_SIZE / 2,
-                                            CTRL_SIZE, CTRL_SIZE));
-                    ++hIdx;
-                }
-                // Mid-edge handles (round handles for distinction) indices 5-8
-                for (auto [ex, ey] : {std::pair{0.0, -hh}, {hw, 0.0}, {0.0, hh}, {-hw, 0.0}}) {
-                    bool hovered = isMaskHovered && (m_hoverMaskHandle == hIdx);
-                    if (hovered) {
-                        painter.setPen(Qt::NoPen);
-                        painter.setBrush(glowColor);
-                        painter.drawEllipse(QPointF(ex, ey), CTRL_SIZE / 2 + GLOW_EXTRA, CTRL_SIZE / 2 + GLOW_EXTRA);
-                    }
-                    painter.setPen(QPen(handleColor, hovered ? 2 : 1));
-                    painter.setBrush(maskColor);
-                    painter.drawEllipse(QPointF(ex, ey), CTRL_SIZE / 2, CTRL_SIZE / 2);
-                    ++hIdx;
-                }
-            }
-            painter.restore();
-        }
-        else if (mask.shape == MaskShape::FreeDrawBezier && geo.vertices.size() >= 2) {
-            // Draw bezier path
-            QPainterPath path;
-            const auto& verts = geo.vertices;
-            QPointF first = toWidget(verts[0].x, verts[0].y);
-            path.moveTo(first);
-            for (size_t vi = 0; vi < verts.size(); ++vi) {
-                size_t ni = (vi + 1) % verts.size();
-                QPointF p0 = toWidget(verts[vi].x, verts[vi].y);
-                QPointF cp1(p0.x() + static_cast<double>(verts[vi].outTanX) * fr.width(),
-                            p0.y() + static_cast<double>(verts[vi].outTanY) * fr.height());
-                QPointF p1 = toWidget(verts[ni].x, verts[ni].y);
-                QPointF cp2(p1.x() + static_cast<double>(verts[ni].inTanX) * fr.width(),
-                            p1.y() + static_cast<double>(verts[ni].inTanY) * fr.height());
-                path.cubicTo(cp1, cp2, p1);
-            }
+            const QPainterPath path =
+                buildMaskWidgetPath(mask, geo, expansion, true);
+            painter.setPen(cosmeticPen(maskColor, active ? 1.5 : 1.0));
+            painter.setBrush(Qt::NoBrush);
             painter.drawPath(path);
 
-            // Feather outline for bezier (stroked expansion of path)
-            if (maskFeather > 0.01f) {
-                QPainterPathStroker stroker;
-                double avgFeath = (feathW + feathH) * 0.5;
-                stroker.setWidth(avgFeath * 2.0);
-                QPainterPath feathOutline = stroker.createStroke(path);
-                painter.setPen(featherPen);
-                painter.drawPath(feathOutline);
+            if (feather > 0.01f) {
+                painter.setPen(cosmeticPen(active ? featherColor
+                                                  : QColor(0, 120, 255, 50),
+                                             1.0, Qt::DashLine));
+                if (mask.shape == MaskShape::FreeDrawBezier) {
+                    QPainterPathStroker stroker;
+                    stroker.setWidth(std::max(
+                        1.0, static_cast<double>(feather) * pixelScale * 2.0));
+                    painter.drawPath(stroker.createStroke(path));
+                } else {
+                    painter.drawPath(buildMaskWidgetPath(
+                        mask, geo, expansion + feather, true));
+                }
             }
 
-            // Vertex control points
-            if (isActive) {
-                int hIdx = 0;
-                for (const auto& v : verts) {
-                    QPointF pt = toWidget(v.x, v.y);
-                    bool hovered = isMaskHovered && (m_hoverMaskHandle == hIdx);
-                    if (hovered) {
-                        painter.setPen(Qt::NoPen);
-                        painter.setBrush(glowColor);
-                        painter.drawEllipse(pt, CTRL_SIZE / 2 + GLOW_EXTRA, CTRL_SIZE / 2 + GLOW_EXTRA);
+            if (!active) continue;
+
+            const float expX = expansion
+                / static_cast<float>(coordinateSize.width());
+            const float expY = expansion
+                / static_cast<float>(coordinateSize.height());
+
+            if (mask.shape == MaskShape::Ellipse) {
+                const float rw = std::max(0.0f, geo.width * 0.5f + expX);
+                const float rh = std::max(0.0f, geo.height * 0.5f + expY);
+                const QPointF handles[5] = {
+                    rotatePoint(geo, rw, 0.0f, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, -rw, 0.0f, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, 0.0f, rh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, 0.0f, -rh, coordinateSize, mask.coordinateSpace),
+                    maskLocalToWidget(geo.centerX, geo.centerY,
+                                      mask.coordinateSpace)
+                };
+                for (int i = 0; i < 5; ++i)
+                    drawControl(handles[i], maskColor, maskHovered, i, false);
+            } else if (mask.shape == MaskShape::Rectangle) {
+                const float hw = std::max(0.0f, geo.width * 0.5f + expX);
+                const float hh = std::max(0.0f, geo.height * 0.5f + expY);
+                const QPointF handles[9] = {
+                    rotatePoint(geo, -hw, -hh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo,  hw, -hh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo,  hw,  hh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, -hw,  hh, coordinateSize, mask.coordinateSpace),
+                    maskLocalToWidget(geo.centerX, geo.centerY,
+                                      mask.coordinateSpace),
+                    rotatePoint(geo, 0.0f, -hh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, hw, 0.0f, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, 0.0f, hh, coordinateSize, mask.coordinateSpace),
+                    rotatePoint(geo, -hw, 0.0f, coordinateSize, mask.coordinateSpace)
+                };
+                for (int i = 0; i < 9; ++i)
+                    drawControl(handles[i], maskColor, maskHovered, i, i < 5);
+            } else {
+                QPen tangentPen(maskColor, 1.0, Qt::DashLine);
+                tangentPen.setCosmetic(true);
+                for (size_t vi = 0; vi < geo.vertices.size(); ++vi) {
+                    const auto& v = geo.vertices[vi];
+                    const QPointF anchor = maskLocalToWidget(
+                        v.x, v.y, mask.coordinateSpace);
+                    const float tangent[2][2] = {
+                        {v.inTanX, v.inTanY},
+                        {v.outTanX, v.outTanY}
+                    };
+                    for (int which = 0; which < 2; ++which) {
+                        if (std::hypot(tangent[which][0], tangent[which][1])
+                            < 1.0e-6f)
+                            continue;
+                        const QPointF hp = maskLocalToWidget(
+                            v.x + tangent[which][0],
+                            v.y + tangent[which][1], mask.coordinateSpace);
+                        painter.setPen(tangentPen);
+                        painter.setBrush(Qt::NoBrush);
+                        painter.drawLine(anchor, hp);
+                        drawControl(
+                            hp, maskColor, maskHovered,
+                            kTangentHandleBase + static_cast<int>(vi) * 2
+                                + which,
+                            true, 8.0);
                     }
-                    painter.setPen(QPen(handleColor, hovered ? 2 : 1));
-                    painter.setBrush(maskColor);
-                    painter.drawEllipse(pt, CTRL_SIZE / 2, CTRL_SIZE / 2);
-                    ++hIdx;
+                    drawControl(anchor, maskColor, maskHovered,
+                                static_cast<int>(vi), false);
                 }
+            }
+        }
+    }
+
+    // A Pen Mask is preview-only until closed. Incomplete paths therefore
+    // never blank the clip, and creation becomes one undo step.
+    if (m_penDrawing && !m_penDraft.base.vertices.empty()) {
+        const QPainterPath draftPath =
+            buildMaskWidgetPath(m_penDraft, m_penDraft.base, 0.0f, false);
+        painter.setPen(cosmeticPen(activeMaskColor, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(draftPath);
+
+        const auto& verts = m_penDraft.base.vertices;
+        const QPointF last = maskLocalToWidget(verts.back().x, verts.back().y);
+        if (m_dragMode != DragMode::DrawMaskPoint)
+            painter.drawLine(last, m_penHoverWidget);
+
+        for (size_t i = 0; i < verts.size(); ++i) {
+            const QPointF pt = maskLocalToWidget(verts[i].x, verts[i].y);
+            painter.setPen(cosmeticPen(handleColor, i == 0 ? 2.0 : 1.0));
+            painter.setBrush(i == 0 ? QColor(0, 190, 255, 230)
+                                    : activeMaskColor);
+            painter.drawEllipse(pt, CTRL_SIZE * 0.5, CTRL_SIZE * 0.5);
+
+            const auto& v = verts[i];
+            if (std::hypot(v.inTanX, v.inTanY) > 1.0e-6f
+                || std::hypot(v.outTanX, v.outTanY) > 1.0e-6f) {
+                const QPointF inPt =
+                    maskLocalToWidget(v.x + v.inTanX, v.y + v.inTanY);
+                const QPointF outPt =
+                    maskLocalToWidget(v.x + v.outTanX, v.y + v.outTanY);
+                painter.setPen(cosmeticPen(activeMaskColor, 1.0,
+                                           Qt::DashLine));
+                painter.drawLine(inPt, outPt);
+                painter.setBrush(handleColor);
+                painter.drawRect(QRectF(inPt.x() - 3.0, inPt.y() - 3.0,
+                                        6.0, 6.0));
+                painter.drawRect(QRectF(outPt.x() - 3.0, outPt.y() - 3.0,
+                                        6.0, 6.0));
             }
         }
     }

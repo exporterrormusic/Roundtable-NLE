@@ -22,6 +22,7 @@
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/GraphicClip.h"
 
 using namespace rt;
 
@@ -376,6 +377,67 @@ TEST(ClipCommands, TrimClip)
     EXPECT_EQ(c->sourceIn(), 0);
 }
 
+TEST(ClipCommands, HeadTrimPreservesGraphicKeyframeTimelineTimes)
+{
+    Track track(TrackType::Video, "V1");
+
+    auto clip = std::make_unique<GraphicClip>();
+    clip->setTimelineIn(10000);
+    clip->setDuration(60000);
+    clip->positionX().addKeyframe(12000, 100.0f);
+    TextLayer* text = clip->addTextLayer("Trim me");
+    ASSERT_NE(text, nullptr);
+    text->transform().opacity.addKeyframe(18000, 0.5f);
+    text->tracking().addKeyframe(24000, 20.0f);
+
+    const uint64_t clipId = clip->id();
+    track.addClip(std::move(clip));
+
+    auto expectTimelineTimes = [&track, clipId](int64_t expectedIn,
+                                                 int64_t expectedPosition,
+                                                 int64_t expectedOpacity,
+                                                 int64_t expectedTracking) {
+        const size_t idx = track.findClipIndexById(clipId);
+        ASSERT_NE(idx, track.clipCount());
+        auto* graphic = dynamic_cast<GraphicClip*>(track.clip(idx));
+        ASSERT_NE(graphic, nullptr);
+        auto* layer = dynamic_cast<TextLayer*>(graphic->layer(0));
+        ASSERT_NE(layer, nullptr);
+        EXPECT_EQ(graphic->timelineIn(), expectedIn);
+        ASSERT_EQ(graphic->positionX().keyframeCount(), 1u);
+        ASSERT_EQ(layer->transform().opacity.keyframeCount(), 1u);
+        ASSERT_EQ(layer->tracking().keyframeCount(), 1u);
+        EXPECT_EQ(graphic->timelineIn() + graphic->positionX().keyframe(0).time,
+                  expectedPosition);
+        EXPECT_EQ(graphic->timelineIn() + layer->transform().opacity.keyframe(0).time,
+                  expectedOpacity);
+        EXPECT_EQ(graphic->timelineIn() + layer->tracking().keyframe(0).time,
+                  expectedTracking);
+    };
+
+    constexpr int64_t positionTime = 22000;
+    constexpr int64_t opacityTime = 28000;
+    constexpr int64_t trackingTime = 34000;
+    expectTimelineTimes(10000, positionTime, opacityTime, trackingTime);
+
+    CommandStack stack;
+    // Multiple drag updates merge into one command. Each update must preserve
+    // absolute keyframe times, and the merged undo/redo must remain symmetric.
+    stack.execute(std::make_unique<TrimClipCommand>(
+        &track, clipId, 15000, 55000, 5000));
+    stack.execute(std::make_unique<TrimClipCommand>(
+        &track, clipId, 20000, 50000, 10000));
+
+    EXPECT_EQ(stack.undoCount(), 1u);
+    expectTimelineTimes(20000, positionTime, opacityTime, trackingTime);
+
+    ASSERT_TRUE(stack.undo());
+    expectTimelineTimes(10000, positionTime, opacityTime, trackingTime);
+
+    ASSERT_TRUE(stack.redo());
+    expectTimelineTimes(20000, positionTime, opacityTime, trackingTime);
+}
+
 TEST(ClipCommands, SetClipProperty)
 {
     Track track(TrackType::Video, "V1");
@@ -677,6 +739,53 @@ TEST(KeyframeCmds, MoveKeyframe)
     stack.undo();
     EXPECT_FLOAT_EQ(track.evaluate(48000), 0.5f);
     EXPECT_EQ(track.keyframeCount(), 1u);
+}
+
+TEST(KeyframeCmds, MoveKeyframeUndoRedoPreservesAllHandles)
+{
+    KeyframeTrack<float> track(1.0f);
+    Keyframe<float> original;
+    original.time = 48000;
+    original.value = 0.5f;
+    original.interp = InterpMode::ContinuousBezier;
+    original.bezierOutX = 0.18f;
+    original.bezierOutY = 0.27f;
+    original.bezierInX = 0.72f;
+    original.bezierInY = 0.83f;
+    original.spatialInterp = InterpMode::Bezier;
+    original.spatialOutX = 120.0f;
+    original.spatialOutY = -45.0f;
+    original.spatialInX = -80.0f;
+    original.spatialInY = 30.0f;
+    track.restoreKeyframe(original);
+
+    auto expectHandles = [&track](int64_t time, float value) {
+        ASSERT_EQ(track.keyframeCount(), 1u);
+        const auto& key = track.keyframe(0);
+        EXPECT_EQ(key.time, time);
+        EXPECT_FLOAT_EQ(key.value, value);
+        EXPECT_EQ(key.interp, InterpMode::ContinuousBezier);
+        EXPECT_FLOAT_EQ(key.bezierOutX, 0.18f);
+        EXPECT_FLOAT_EQ(key.bezierOutY, 0.27f);
+        EXPECT_FLOAT_EQ(key.bezierInX, 0.72f);
+        EXPECT_FLOAT_EQ(key.bezierInY, 0.83f);
+        EXPECT_EQ(key.spatialInterp, InterpMode::Bezier);
+        EXPECT_FLOAT_EQ(key.spatialOutX, 120.0f);
+        EXPECT_FLOAT_EQ(key.spatialOutY, -45.0f);
+        EXPECT_FLOAT_EQ(key.spatialInX, -80.0f);
+        EXPECT_FLOAT_EQ(key.spatialInY, 30.0f);
+    };
+
+    CommandStack stack;
+    stack.execute(std::make_unique<MoveKeyframeCommand>(
+        &track, 48000, 96000, 0.7f));
+    expectHandles(96000, 0.7f);
+
+    stack.undo();
+    expectHandles(48000, 0.5f);
+
+    stack.redo();
+    expectHandles(96000, 0.7f);
 }
 
 TEST(KeyframeCmds, MoveKeyframeMerge)

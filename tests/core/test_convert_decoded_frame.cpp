@@ -38,6 +38,7 @@
 
 #include "cache/FrameCache.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "cache/FrameContentBounds.h"
 #include "decode/VideoDecoder.h"
 #include "playback/MediaPool.h"
 
@@ -579,6 +580,25 @@ TEST(ConvertDecodedFrame, NonGreenFileNeverKeyed)
     ASSERT_TRUE(convert(f, makeInfo(4, 4), "shot.mp4", 4, 4, sws, out));
     EXPECT_EQ(pixelAt(out, 0, 0), green);           // untouched
     EXPECT_EQ(pixelAt(out, 3, 3), green);
+}
+
+TEST(FrameContentBounds, FindsTightAlphaRectangle)
+{
+    CachedFrame frame;
+    frame.width = 4;
+    frame.height = 3;
+    frame.stride = 16;
+    frame.pixels.assign(48, 0);
+    frame.pixels[1 * frame.stride + 1 * 4 + 3] = 255;
+    frame.pixels[2 * frame.stride + 2 * 4 + 3] = 128;
+
+    computeBgraContentBounds(frame);
+    ASSERT_TRUE(frame.contentBoundsValid);
+    EXPECT_FALSE(frame.contentFullyOpaque);
+    EXPECT_FLOAT_EQ(frame.contentLeft, 0.25f);
+    EXPECT_FLOAT_EQ(frame.contentTop, 1.0f / 3.0f);
+    EXPECT_FLOAT_EQ(frame.contentRight, 0.75f);
+    EXPECT_FLOAT_EQ(frame.contentBottom, 1.0f);
 }
 
 } // namespace

@@ -4,6 +4,8 @@
  */
 #include "panels/timeline/TimelineWorkspace.h"
 #include "CompositeService.h"
+#include "Constants.h"
+#include "Settings.h"
 #include "cache/FrameCache.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -11,17 +13,146 @@
 #include "timeline/Timeline.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QImage>
+#include <QMessageBox>
 #include <QProgressDialog>
+#include <QRegularExpression>
+
+#include <cmath>
 
 #include <spdlog/spdlog.h>
 
 namespace rt {
 
 std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrame(
-    int64_t tick, uint32_t outW, uint32_t outH, bool scrubMode)
+    int64_t tick, uint32_t outW, uint32_t outH,
+    bool scrubMode, bool stillMode)
 {
     return m_compositeService
-        ? m_compositeService->compositeFrame(tick, outW, outH, scrubMode)
+        ? m_compositeService->compositeFrame(tick, outW, outH, scrubMode,
+                                             /*isNestedRecursion=*/false,
+                                             stillMode)
+        : nullptr;
+}
+
+void TimelineWorkspace::exportCurrentFrame()
+{
+    if (!m_timeline || !m_compositeService) {
+        QMessageBox::information(this, tr("Export Frame"),
+                                 tr("There is no active sequence to export."));
+        return;
+    }
+
+    const int64_t tick = m_playbackController
+        ? m_playbackController->currentTick()
+        : m_timeline->playheadPosition();
+
+    const double fps = m_timeline->settings().frameRate();
+    const int64_t frameNumber = fps > 0.0
+        ? static_cast<int64_t>(std::llround(
+              (static_cast<double>(tick) / kTicksPerSecond) * fps))
+        : 0;
+
+    QString sequenceName = QString::fromStdString(m_timeline->name()).trimmed();
+    if (sequenceName.isEmpty()) sequenceName = QStringLiteral("frame");
+    sequenceName.replace(QRegularExpression(QStringLiteral(R"([<>:\"/\\|?*])")),
+                         QStringLiteral("_"));
+    const QString defaultName = QStringLiteral("%1_frame_%2.png")
+        .arg(sequenceName)
+        .arg(frameNumber, 6, 10, QLatin1Char('0'));
+
+    auto settings = appSettings();
+    QString lastDir = settings.value(QStringLiteral("export/lastOutputDir")).toString();
+    if (lastDir.isEmpty() || !QDir(lastDir).exists())
+        lastDir = QDir::homePath();
+
+    QString selectedFilter;
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Frame"), QDir(lastDir).filePath(defaultName),
+        tr("PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;BMP Image (*.bmp)"),
+        &selectedFilter);
+    if (path.isEmpty()) return;
+
+    if (QFileInfo(path).suffix().isEmpty()) {
+        if (selectedFilter.startsWith(QStringLiteral("JPEG")))
+            path += QStringLiteral(".jpg");
+        else if (selectedFilter.startsWith(QStringLiteral("BMP")))
+            path += QStringLiteral(".bmp");
+        else
+            path += QStringLiteral(".png");
+    }
+
+    settings.setValue(QStringLiteral("export/lastOutputDir"),
+                      QFileInfo(path).absolutePath());
+    settings.sync();
+
+    // Export a deterministic still rather than a potentially reduced preview.
+    // GPU display mode intentionally skips CPU readback, so temporarily use the
+    // CPU-output path and force full-resolution layer decoding for this frame.
+    if (m_playbackController && m_playbackController->isPlaying())
+        m_playbackController->pause();
+
+    const bool wasGpuMode = m_compositeService->gpuDisplayMode();
+    const bool wasForceFull = m_compositeService->forceFullResolution();
+    m_compositeService->setGpuDisplayMode(false);
+    m_compositeService->setForceFullResolution(true);
+
+    struct CompositeStateGuard {
+        CompositeService* service;
+        bool gpuMode;
+        bool forceFull;
+        ~CompositeStateGuard()
+        {
+            service->setForceFullResolution(forceFull);
+            service->setGpuDisplayMode(gpuMode);
+        }
+    } restore{m_compositeService.get(), wasGpuMode, wasForceFull};
+
+    const auto resolution = m_timeline->settings().resolution();
+    const uint32_t width = resolution.width;
+    const uint32_t height = resolution.height;
+    if (width == 0 || height == 0) {
+        QMessageBox::warning(this, tr("Export Frame"),
+                             tr("The active sequence has an invalid resolution."));
+        return;
+    }
+
+    auto frame = compositeFrame(tick, width, height,
+                                /*scrubMode=*/true,
+                                /*stillMode=*/true);
+    if (!frame || !frame->ensurePixels() || frame->pixels.empty()
+        || frame->width == 0 || frame->height == 0) {
+        QMessageBox::warning(this, tr("Export Frame"),
+                             tr("The current frame could not be rendered."));
+        return;
+    }
+
+    const uint32_t stride = frame->stride > 0 ? frame->stride : frame->width * 4;
+    const QImage image(frame->pixels.data(), static_cast<int>(frame->width),
+                       static_cast<int>(frame->height), static_cast<int>(stride),
+                       QImage::Format_ARGB32);
+    if (image.isNull() || !image.save(path)) {
+        QMessageBox::warning(this, tr("Export Frame"),
+                             tr("Could not save the frame to:\n%1").arg(path));
+        return;
+    }
+
+    spdlog::info("Export Frame: saved tick {} (frame {}) at {}x{} to '{}'",
+                 tick, frameNumber, frame->width, frame->height,
+                 path.toStdString());
+}
+
+std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrameAtTier(
+    int64_t tick, uint32_t outW, uint32_t outH, bool scrubMode,
+    bool stillMode, ResolutionTier tier)
+{
+    return m_compositeService
+        ? m_compositeService->compositeFrame(tick, outW, outH, scrubMode,
+                                             /*isNestedRecursion=*/false,
+                                             stillMode, tier)
         : nullptr;
 }
 

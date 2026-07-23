@@ -159,6 +159,7 @@ private:
     bool createPipeline();
     bool createDescriptorResources();
     bool createSyncObjects();
+    bool createPresentSemaphores();
     bool createFramebuffers();
     void handleResize();
     void presentFrame(VkSemaphore waitSemaphore = VK_NULL_HANDLE);
@@ -210,7 +211,10 @@ private:
 
     // ── Sync ────────────────────────────────────────────────────────────
     VkSemaphore       m_imageAvailable{VK_NULL_HANDLE};
-    VkSemaphore       m_renderFinished{VK_NULL_HANDLE};
+    // Present-wait semaphores are associated with acquired swapchain images.
+    // Reusing one for another image while presentation still owns it violates
+    // VUID-vkQueueSubmit-pSignalSemaphores-00067 and can reset the driver.
+    std::vector<VkSemaphore> m_renderFinishedByImage;
     VkFence           m_inFlightFence{VK_NULL_HANDLE};
     VkCommandPool     m_commandPool{VK_NULL_HANDLE};
     VkCommandBuffer   m_commandBuffer{VK_NULL_HANDLE};

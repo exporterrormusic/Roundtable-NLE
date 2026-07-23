@@ -88,8 +88,10 @@ struct CompositePushConstants
     int32_t height;
     int32_t hqSample;       // 1 = Catmull-Rom bicubic sampling (export), 0 = bilinear (preview)
     int32_t preserveAlpha;  // 1 = keep straight RGBA (alpha export), 0 = flatten over black
+    int32_t outputSwizzleRB; // 1 = BGRA bytes for Qt/readback, 0 = native RGBA intermediate
+    int32_t _pad[3];
 };
-static_assert(sizeof(CompositePushConstants) == 16);
+static_assert(sizeof(CompositePushConstants) == 32);
 
 // ── Layer descriptor ────────────────────────────────────────────────────────
 
@@ -98,6 +100,9 @@ struct CompositorLayer
 {
     VkDescriptorImageInfo textureInfo{};  ///< Sampler + imageView + layout
     glm::mat4  transform{1.0f};          ///< UV-space transform matrix
+    glm::mat4  motionTransformStart{1.0f}; ///< UV transform at exposure start
+    glm::mat4  motionTransformEnd{1.0f};   ///< UV transform at exposure end
+    int32_t    motionSampleCount{1};       ///< 1=off/current only, max 8
     float      opacity{1.0f};            ///< Layer opacity [0,1]
     BlendMode  blendMode{BlendMode::Normal};
     bool       enabled{true};
@@ -123,6 +128,10 @@ struct CompositorLayer
     float cropRight{0.0f};
     float cropTop{0.0f};
     float cropBottom{0.0f};
+    float contentLeft{0.0f};
+    float contentTop{0.0f};
+    float contentRight{1.0f};
+    float contentBottom{1.0f};
 
     /// When true, a mask texture is provided for this layer.
     bool       hasMask{false};
@@ -163,10 +172,14 @@ struct ABPair
 struct alignas(16) LayerParamsGPU
 {
     glm::mat4 transform[kMaxCompositorLayers];   // 32 * 64 = 2048 bytes
+    glm::mat4 motionTransformStart[kMaxCompositorLayers];
+    glm::mat4 motionTransformEnd[kMaxCompositorLayers];
+    int32_t   motionSampleCount[kMaxCompositorLayers];
     float     opacity[kMaxCompositorLayers];      // 32 * 4  = 128 bytes
     int32_t   blendMode[kMaxCompositorLayers];    // 32 * 4  = 128 bytes
     int32_t   enabled[kMaxCompositorLayers];      // 32 * 4  = 128 bytes
     glm::vec4 cropRect[kMaxCompositorLayers];     // 32 * 16 = 512 bytes  (L, R, T, B)
+    glm::vec4 contentRect[kMaxCompositorLayers];  // 32 * 16 = 512 bytes  (L, T, R, B)
     int32_t   isPacked[kMaxCompositorLayers];     // 32 * 4  = 128 bytes  (packed-alpha flag)
     int32_t   isPMA[kMaxCompositorLayers];         // 32 * 4  = 128 bytes  (premultiplied-alpha flag)
     int32_t   needsSwapRB[kMaxCompositorLayers];  // 32 * 4  = 128 bytes  (R↔B swap for nested seq)
@@ -250,6 +263,13 @@ public:
     /// Set per-composite by CompositeService from its export-alpha flag;
     /// defaults false so viewport/playback are unaffected.
     void setPreserveAlpha(bool keep) noexcept { m_preserveAlpha = keep; }
+    [[nodiscard]] bool preserveAlpha() const noexcept { return m_preserveAlpha; }
+
+    /// Final readback/presentation expects BGRA byte order. Internal
+    /// adjustment-layer composites must stay RGBA because EffectProcessor
+    /// samples them directly as ordinary Vulkan textures.
+    void setOutputSwizzleRB(bool swizzle) noexcept { m_outputSwizzleRB = swizzle; }
+    [[nodiscard]] bool outputSwizzleRB() const noexcept { return m_outputSwizzleRB; }
 
     // ── Resize ──────────────────────────────────────────────────────────
 
@@ -286,6 +306,12 @@ public:
     /// Must only be called AFTER a command buffer containing recordReadback()
     /// commands has been submitted and completed.
     bool mapAndCopyReadback(std::vector<uint8_t>& outPixels) override;
+
+    /// Stable readback token for a recorded frame. Lazy CPU fallback may run
+    /// after newer composites have advanced the output ring.
+    [[nodiscard]] uint32_t outputSlot() const noexcept { return m_outputRingIdx; }
+    bool mapAndCopyReadbackSlot(uint32_t slot,
+                                std::vector<uint8_t>& outPixels);
 
     // ── Statistics ──────────────────────────────────────────────────────
 
@@ -330,6 +356,7 @@ public:
 private:
     bool m_hqSampling{false};  // bicubic layer sampling (export); see composite.comp
     bool m_preserveAlpha{false}; // keep straight RGBA for alpha export; see composite.comp
+    bool m_outputSwizzleRB{true}; // final Qt/readback output is BGRA; intermediates are RGBA
     bool createOutputTexture();
     /// Rotate m_outputTexture to the next slot in the output ring.  Called
     /// at the start of every composite() so each composited frame writes
@@ -386,20 +413,20 @@ private:
     // Descriptors
     VkDescriptorPool      m_descriptorPool{VK_NULL_HANDLE};
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
-    VkDescriptorSet       m_descriptorSet{VK_NULL_HANDLE};
+    std::array<VkDescriptorSet, kOutputRing> m_descriptorSets{};
 
-    // SSBO for layer parameters
-    Buffer m_layerParamsBuffer;
+    // Per-output-slot SSBOs. A host upload must never modify a buffer still
+    // referenced by an older pending command buffer.
+    std::array<Buffer, kOutputRing> m_layerParamsBuffers;
 
-    // Persistent readback staging buffer (avoids per-frame VMA alloc/dealloc).
-    // Sized to match the output image; recreated on resize.
-    Buffer m_readbackStaging;
+    // Per-output-slot readback buffers avoid overlapping transfer writes.
+    std::array<Buffer, kOutputRing> m_readbackStaging;
 
     // Placeholder texture for unused layer slots
     Texture m_placeholderTexture;
 
     // Timestamp queries for GPU timing
-    VkQueryPool m_queryPool{VK_NULL_HANDLE};
+    std::array<VkQueryPool, kOutputRing> m_queryPools{};
     float       m_timestampPeriod{0.0f};
 
     // Layer state

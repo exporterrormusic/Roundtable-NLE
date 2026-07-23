@@ -23,6 +23,7 @@ class QTimer;
 namespace rt {
 
 class AudioEngine;
+class AVSyncClock;
 class FullWaveformWidget;
 
 class ManualMatchDialog : public QDialog
@@ -104,11 +105,13 @@ private:
     void startPreviewPlayback();
     void stopPreviewPlayback();
     void setupFullFileSource();
+    void installFullFileSource();
     QTimer* m_playheadTimer{nullptr};
     std::vector<float> m_fullFileBuffer;  ///< Full file resampled to engine rate
     double m_fullFileRate{48000.0};       ///< Engine sample rate
     double m_playbackEndTime{0.0};
     bool m_isPlaying{false};
+    AVSyncClock* m_savedSyncClock{nullptr}; ///< Timeline clock detached during modal preview
 
     // JKL shuttle state
     int m_jShuttleLevel{0};

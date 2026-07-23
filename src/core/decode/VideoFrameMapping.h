@@ -43,8 +43,11 @@
 namespace rt {
 
 struct MappedSourceFrame {
-    int64_t frame{0};   ///< Source frame number (wrapped/clamped per policy)
-    double  fps{24.0};  ///< The fps that produced it (clip > media > 24)
+    int64_t frame{0};       ///< Nearest source frame (legacy sampling API)
+    double  fps{24.0};      ///< The fps that produced it (clip > media > 24)
+    int64_t lowerFrame{0};  ///< Earlier endpoint for temporal interpolation
+    int64_t upperFrame{0};  ///< Later endpoint for temporal interpolation
+    double  blendPhase{0.0};///< Fractional position from lowerFrame to upperFrame
 };
 
 inline MappedSourceFrame mapTickToSourceFrame(const VideoClip& clip,
@@ -57,26 +60,41 @@ inline MappedSourceFrame mapTickToSourceFrame(const VideoClip& clip,
     if (srcTick < 0) srcTick = 0;
 
     double fps = clip.sourceFps();
-    if (fps <= 0.0) fps = 24.0;
-    int64_t frame = std::llround(ticksToSeconds(srcTick) * fps);
+    if (fps <= 0.0)
+        fps = (info && info->fps > 0.0) ? info->fps : 24.0;
 
-    if (clip.sourceFps() <= 0.0 && info && info->fps > 0.0) {
-        fps   = info->fps;
-        frame = std::llround(ticksToSeconds(srcTick) * fps);
-    }
+    double sourceFramePosition = ticksToSeconds(srcTick) * fps;
+    // A mathematically integral frame can arrive a few ulps to either side
+    // after tick/second conversion.  Snap only that numerical noise so the
+    // endpoint pair is stable and does not become an almost-100% blend.
+    const double nearestPosition = std::round(sourceFramePosition);
+    if (std::abs(sourceFramePosition - nearestPosition) < 1e-9)
+        sourceFramePosition = nearestPosition;
 
-    if (info) {
+    const int64_t lowerRaw = static_cast<int64_t>(std::floor(sourceFramePosition));
+    double blendPhase = sourceFramePosition - static_cast<double>(lowerRaw);
+    const int64_t upperRaw = blendPhase > 0.0 ? lowerRaw + 1 : lowerRaw;
+
+    auto normalizeFrame = [&](int64_t candidate) {
+        if (!info) return candidate;
         if (info->frameCount <= 1) {
-            frame = 0;
+            return int64_t(0);
         } else if (clip.isVideoCharacter()) {
-            frame = ((frame % info->frameCount) + info->frameCount)
-                    % info->frameCount;
+            return ((candidate % info->frameCount) + info->frameCount)
+                   % info->frameCount;
         } else if (info->frameCount > 0) {
-            frame = std::clamp(frame, int64_t(0), info->frameCount - 1);
+            return std::clamp(candidate, int64_t(0), info->frameCount - 1);
         }
-    }
+        return candidate;
+    };
 
-    return {frame, fps};
+    const int64_t frame = normalizeFrame(std::llround(sourceFramePosition));
+    const int64_t lowerFrame = normalizeFrame(lowerRaw);
+    const int64_t upperFrame = normalizeFrame(upperRaw);
+    if (lowerFrame == upperFrame)
+        blendPhase = 0.0;
+
+    return {frame, fps, lowerFrame, upperFrame, blendPhase};
 }
 
 } // namespace rt

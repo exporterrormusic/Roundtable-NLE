@@ -2,23 +2,34 @@
 
 #include <cstdint>
 #include <memory>
-
-struct CachedFrame;
-
-class TitleClip;
-class GraphicClip;
+#include <string>
 
 namespace rt {
 
-// CachedFrame actually lives in namespace rt (cache/FrameCache.h); forward-
-// declare it here so the renderCaptionClip return type resolves to the same
-// rt::CachedFrame as its definition (the global `struct CachedFrame;` above is
-// only kept for the legacy renderTitle/Graphic signatures).
 struct CachedFrame;
-
+class TitleClip;
+class GraphicClip;
 class CaptionClip;
 class PngPuppetClip;
 class TierListClip;
+class TextLayer;
+
+/// Tight pre-transform bounds of the same character-style-aware glyph layout
+/// used by renderGraphicClip().  Keeping this measurement beside the renderer
+/// prevents the Program Monitor transform box from falling back to the layer's
+/// base font when only part of a text layer has a different size/style.
+struct GraphicTextLayoutBounds
+{
+    double left{0.0};
+    double top{0.0};
+    double right{0.0};
+    double bottom{0.0};
+    bool valid{false};
+};
+
+GraphicTextLayoutBounds measureGraphicTextLayout(
+    const TextLayer* layer, int64_t localTick, double centerX, double centerY,
+    int horizontalAlignment, int verticalAlignment);
 
 /// CPU-render a PngPuppetClip's currently-selected face (1 of 4 PNGs, chosen
 /// deterministically from time) to a native-resolution BGRA CachedFrame.  The
@@ -33,6 +44,10 @@ std::shared_ptr<CachedFrame> renderPngPuppetClip(PngPuppetClip* clip, int64_t ti
 std::shared_ptr<CachedFrame> renderTierListClip(TierListClip* clip, int64_t tick,
                                                 uint32_t outW, uint32_t outH,
                                                 uint32_t refW = 0, uint32_t refH = 0);
+
+/// Invalidate tier-list source/scaled images and rendered visual states.  Pass
+/// a path for live asset replacement, or an empty string to clear all boards.
+void invalidateTierListRenderCache(const std::string& imagePath = {});
 
 /// CPU-render a CaptionClip as a burned-in (open-caption) subtitle overlay to a
 /// transparent BGRA CachedFrame using QPainter: centered text over a rounded

@@ -26,6 +26,14 @@
 namespace rt {
 namespace {
 
+TEST(RenderStateHash, OutputAlphaModeIsPartOfCacheIdentity)
+{
+    Timeline tl;
+    tl.addVideoTrack("V1");
+    EXPECT_NE(hashCompositeConfigAt(tl, 1000, nullptr, RenderStateNone),
+              hashCompositeConfigAt(tl, 1000, nullptr, RenderStatePreserveAlpha));
+}
+
 Clip* addClip(Track* tr, int64_t in, int64_t dur)
 {
     auto c = std::make_unique<SpineClip>();
@@ -66,6 +74,16 @@ TEST(RenderStateHash, BlendModeChangeInvalidates)
     Clip* c = addClip(v1, 0, 48000);
     const uint64_t before = hashCompositeConfigAt(tl, 1000);
     c->setBlendMode(2);
+    EXPECT_NE(before, hashCompositeConfigAt(tl, 1000));
+}
+
+TEST(RenderStateHash, ShutterAngleChangeInvalidates)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    Clip* c = addClip(v1, 0, 48000);
+    const uint64_t before = hashCompositeConfigAt(tl, 1000);
+    c->shutterAngle().setDefaultValue(180.0f);
     EXPECT_NE(before, hashCompositeConfigAt(tl, 1000));
 }
 

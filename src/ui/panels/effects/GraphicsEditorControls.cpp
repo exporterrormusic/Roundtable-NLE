@@ -6,9 +6,12 @@
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
 #include <QColorDialog>
+#include <QCompleter>
 #include <QFontDatabase>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QSlider>
+#include <QSignalBlocker>
 
 namespace rt {
 
@@ -31,21 +34,29 @@ void GraphicsEditorPanel::clearEditControls()
  m_editLayout->addStretch();
 
  m_textSection = nullptr;
- m_fontCombo = nullptr; m_weightCombo = nullptr;
+ m_fontCombo = nullptr; m_fontStyleCombo = nullptr;
  m_boldBtn = nullptr; m_italicBtn = nullptr;
  m_allCapsBtn = nullptr; m_smallCapsBtn = nullptr;
+ m_fauxBoldBtn = nullptr; m_fauxItalicBtn = nullptr;
+ m_underlineBtn = nullptr; m_superscriptBtn = nullptr;
+ m_subscriptBtn = nullptr; m_rtlBtn = nullptr;
  m_fontSizeSlider = nullptr;
  m_fontSizeSpin = nullptr;
  m_alignLeftBtn = nullptr; m_alignCenterBtn = nullptr;
  m_alignRightBtn = nullptr; m_alignJustifyBtn = nullptr;
  m_valignTopBtn = nullptr; m_valignMiddleBtn = nullptr; m_valignBottomBtn = nullptr;
  m_trackingSpin = nullptr; m_leadingSpin = nullptr; m_baselineShiftSpin = nullptr;
- m_wrapCheck = nullptr; m_wrapWidthSpin = nullptr;
+ m_kerningSpin = nullptr; m_tabWidthSpin = nullptr; m_tsumeSpin = nullptr;
+ m_wrapCheck = nullptr; m_wrapWidthSpin = nullptr; m_wrapHeightSpin = nullptr;
  m_appearanceSection = nullptr;
  m_fillCheck = nullptr; m_fillColorBtn = nullptr;
  m_strokeCheck = nullptr; m_strokeColorBtn = nullptr;
  m_strokeWidthSpin = nullptr; m_strokePosCombo = nullptr;
  m_shadowCheck = nullptr; m_shadowColorBtn = nullptr;
+ m_shadowDistanceSpin = nullptr; m_shadowAngleSpin = nullptr;
+ m_shadowSoftnessSpin = nullptr; m_shadowOpacitySpin = nullptr;
+ m_backgroundCheck = nullptr; m_backgroundColorBtn = nullptr;
+ m_backgroundPaddingSpin = nullptr; m_maskWithTextCheck = nullptr;
  m_transformSection = nullptr;
  m_posXSpin = nullptr; m_posYSpin = nullptr;
  m_anchorXSpin = nullptr; m_anchorYSpin = nullptr;
@@ -134,8 +145,18 @@ void GraphicsEditorPanel::buildEditControls()
  {
  auto* rl = makeRow(10);
  m_fontCombo = new QComboBox(m_editContainer);
+ m_fontCombo->setObjectName(QStringLiteral("graphicsFontFamilyCombo"));
  m_fontCombo->setFixedHeight(22);
  m_fontCombo->addItems(QFontDatabase::families());
+ m_fontCombo->setEditable(true);
+ m_fontCombo->setInsertPolicy(QComboBox::NoInsert);
+ auto* fontCompleter = new QCompleter(m_fontCombo->model(), m_fontCombo);
+ fontCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+ fontCompleter->setFilterMode(Qt::MatchContains);
+ fontCompleter->setCompletionMode(QCompleter::PopupCompletion);
+ m_fontCombo->setCompleter(fontCompleter);
+ m_fontCombo->lineEdit()->setClearButtonEnabled(true);
+ m_fontCombo->lineEdit()->setPlaceholderText(tr("Type to find a font"));
  m_fontCombo->setStyleSheet(QStringLiteral(
  "QComboBox { background: %1; color: %2; border: 1px solid %3; "
  "font-size: 12px; padding: 2px 4px; }"
@@ -144,50 +165,185 @@ void GraphicsEditorPanel::buildEditControls()
  "border-right: 4px solid transparent; border-top: 4px solid %4; }")
  .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
  Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
- connect(m_fontCombo, &QComboBox::currentTextChanged,
- this, [this](const QString&) { applyTextProperties(); commitLayerEdit(); });
+ auto applyFontFamily = [this](const QString& requested) {
+ if (m_updating || !m_fontCombo) return;
+ const QString candidate = requested.trimmed();
+ const int index = m_fontCombo->findText(candidate, Qt::MatchFixedString);
+ if (index < 0) return; // only commit an installed, complete family name
+ const QString family = m_fontCombo->itemText(index);
+ {
+     QSignalBlocker blocker(m_fontCombo);
+     m_fontCombo->setCurrentIndex(index);
+ }
+ if (m_fontStyleCombo) {
+     QSignalBlocker blocker(m_fontStyleCombo);
+     const QString oldStyle = m_fontStyleCombo->currentText();
+     m_fontStyleCombo->clear();
+     m_fontStyleCombo->addItems(QFontDatabase::styles(family));
+     int styleIndex = m_fontStyleCombo->findText(
+         oldStyle, Qt::MatchFixedString);
+     if (styleIndex < 0)
+         styleIndex = m_fontStyleCombo->findText(
+             QStringLiteral("Regular"), Qt::MatchFixedString);
+     if (styleIndex >= 0) m_fontStyleCombo->setCurrentIndex(styleIndex);
+ }
+ if (m_monitorTextEditing) {
+     emit inlineFontFamilyRequested(family);
+     return;
+ }
+ applyTextProperties();
+ commitLayerEdit();
+ };
+ connect(m_fontCombo, &QComboBox::textActivated,
+         this, applyFontFamily);
+ connect(m_fontCombo->lineEdit(), &QLineEdit::editingFinished,
+         this, [this, applyFontFamily]() {
+             if (m_fontCombo) applyFontFamily(m_fontCombo->currentText());
+         });
  rl->addWidget(m_fontCombo, 1);
+ }
+
+ // Actual font face/style, separate from synthetic bold/italic.
+ {
+ auto* rl = makeRow(10);
+ auto* styleLabel = new QLabel(tr("Font Style"), m_editContainer);
+ styleLabel->setStyleSheet(labelSS(tc));
+ styleLabel->setFixedWidth(60);
+ rl->addWidget(styleLabel);
+ m_fontStyleCombo = new QComboBox(m_editContainer);
+ m_fontStyleCombo->setObjectName(QStringLiteral("graphicsFontStyleCombo"));
+ const auto* textLayer = static_cast<TextLayer*>(m_selectedLayer);
+ m_fontStyleCombo->addItems(QFontDatabase::styles(
+     QString::fromStdString(textLayer->fontFamily())));
+ m_fontStyleCombo->setFixedHeight(22);
+ connect(m_fontStyleCombo, &QComboBox::currentTextChanged,
+ this, [this](const QString& style) {
+ if (m_monitorTextEditing) {
+     emit inlineFontStyleRequested(style);
+     return;
+ }
+ applyTextProperties(); commitLayerEdit();
+ });
+ rl->addWidget(m_fontStyleCombo, 1);
  }
 
  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Weight combo + style buttons ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
  {
  auto* rl = makeRow(10);
- m_weightCombo = new QComboBox(m_editContainer);
- m_weightCombo->setFixedHeight(22);
- m_weightCombo->setFixedWidth(90);
- m_weightCombo->addItems({"Thin", "Light", "Regular", "Medium",
- "Semi-Bold", "Bold", "Black"});
- m_weightCombo->setStyleSheet(QStringLiteral(
- "QComboBox { background: %1; color: %2; border: 1px solid %3; "
- "font-size: 12px; padding: 2px 4px; }"
- "QComboBox::drop-down { border: none; width: 16px; }"
- "QComboBox::down-arrow { border-left: 4px solid transparent; "
- "border-right: 4px solid transparent; border-top: 4px solid %4; }")
- .arg(Theme::hex(tc.surface0), Theme::hex(tc.textPrimary),
- Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
- connect(m_weightCombo, &QComboBox::currentIndexChanged,
- this, [this](int) { applyTextProperties(); commitLayerEdit(); });
- rl->addWidget(m_weightCombo);
-
+ // Font Style above is the only face menu; these are direct character toggles.
  m_boldBtn = makeStyleButton(QStringLiteral("B"), tr("Bold"));
  m_boldBtn->setStyleSheet(m_boldBtn->styleSheet().replace(
  "font-weight: bold", "font-weight: 900"));
- connect(m_boldBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_boldBtn, &QToolButton::toggled, this, [this](bool checked) {
+ if (m_monitorTextEditing) {
+ emit inlineFontWeightRequested(checked ? 700 : 400);
+ return;
+ }
+ if (!m_updating && m_selectedLayer
+     && m_selectedLayer->layerType() == GraphicLayerType::Text) {
+     static_cast<TextLayer*>(m_selectedLayer)->setFontWeight(checked ? 700 : 400);
+ }
+ commitLayerEdit();
+ });
  rl->addWidget(m_boldBtn);
 
  m_italicBtn = makeStyleButton(QStringLiteral("I"), tr("Italic"));
  m_italicBtn->setFont([]{QFont f; f.setItalic(true); f.setBold(true); return f;}());
- connect(m_italicBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_italicBtn, &QToolButton::toggled, this, [this](bool checked) {
+ if (m_monitorTextEditing) {
+ emit inlineItalicRequested(checked);
+ return;
+ }
+ applyTextProperties();
+ commitLayerEdit();
+ });
  rl->addWidget(m_italicBtn);
 
  m_allCapsBtn = makeStyleButton(QStringLiteral("TT"), tr("All Caps"));
- connect(m_allCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_allCapsBtn, &QToolButton::toggled, this, [this](bool checked) {
+ if (checked && m_smallCapsBtn) {
+     m_smallCapsBtn->blockSignals(true);
+     m_smallCapsBtn->setChecked(false);
+     m_smallCapsBtn->blockSignals(false);
+ }
+ if (m_monitorTextEditing) {
+     emit inlineCapitalizationRequested(
+         checked, !checked && m_smallCapsBtn && m_smallCapsBtn->isChecked());
+     return;
+ }
+ applyTextProperties();
+ commitLayerEdit();
+ });
  rl->addWidget(m_allCapsBtn);
 
  m_smallCapsBtn = makeStyleButton(QStringLiteral("T\u1D04"), tr("Small Caps"));
- connect(m_smallCapsBtn, &QToolButton::toggled, this, [this](bool) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_smallCapsBtn, &QToolButton::toggled, this, [this](bool checked) {
+ if (checked && m_allCapsBtn) {
+     m_allCapsBtn->blockSignals(true);
+     m_allCapsBtn->setChecked(false);
+     m_allCapsBtn->blockSignals(false);
+ }
+ if (m_monitorTextEditing) {
+     emit inlineCapitalizationRequested(
+         !checked && m_allCapsBtn && m_allCapsBtn->isChecked(), checked);
+     return;
+ }
+ applyTextProperties();
+ commitLayerEdit();
+ });
  rl->addWidget(m_smallCapsBtn);
 
+ rl->addStretch();
+ }
+
+ // Premiere character decorations and synthetic face controls.
+ {
+ auto* rl = makeRow(10);
+ m_fauxBoldBtn = makeStyleButton(QStringLiteral("fB"), tr("Faux Bold"));
+ m_fauxItalicBtn = makeStyleButton(QStringLiteral("fI"), tr("Faux Italic"));
+ m_underlineBtn = makeStyleButton(QStringLiteral("U"), tr("Underline"));
+ m_superscriptBtn = makeStyleButton(QStringLiteral("x\u00B2"), tr("Superscript"));
+ m_subscriptBtn = makeStyleButton(QStringLiteral("x\u2082"), tr("Subscript"));
+ m_rtlBtn = makeStyleButton(QStringLiteral("RTL"), tr("Right-to-left paragraph"));
+ connect(m_fauxBoldBtn, &QToolButton::toggled, this, [this](bool) {
+     if (m_monitorTextEditing) {
+         emit inlineFauxStylesRequested(m_fauxBoldBtn->isChecked(),
+             m_fauxItalicBtn->isChecked()); return;
+     }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_fauxItalicBtn, &QToolButton::toggled, this, [this](bool) {
+     if (m_monitorTextEditing) {
+         emit inlineFauxStylesRequested(m_fauxBoldBtn->isChecked(),
+             m_fauxItalicBtn->isChecked()); return;
+     }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_underlineBtn, &QToolButton::toggled, this, [this](bool checked) {
+     if (m_monitorTextEditing) { emit inlineUnderlineRequested(checked); return; }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_superscriptBtn, &QToolButton::toggled, this, [this](bool checked) {
+     if (checked) { QSignalBlocker b(m_subscriptBtn); m_subscriptBtn->setChecked(false); }
+     if (m_monitorTextEditing) {
+         emit inlineScriptRequested(checked, m_subscriptBtn->isChecked()); return;
+     }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_subscriptBtn, &QToolButton::toggled, this, [this](bool checked) {
+     if (checked) { QSignalBlocker b(m_superscriptBtn); m_superscriptBtn->setChecked(false); }
+     if (m_monitorTextEditing) {
+         emit inlineScriptRequested(m_superscriptBtn->isChecked(), checked); return;
+     }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_rtlBtn, &QToolButton::toggled, this, [this](bool checked) {
+     if (m_monitorTextEditing) { emit inlineParagraphDirectionRequested(checked); return; }
+     applyTextProperties(); commitLayerEdit();
+ });
+ for (auto* button : {m_fauxBoldBtn, m_fauxItalicBtn, m_underlineBtn,
+                      m_superscriptBtn, m_subscriptBtn, m_rtlBtn})
+     rl->addWidget(button);
  rl->addStretch();
  }
 
@@ -239,6 +395,10 @@ void GraphicsEditorPanel::buildEditControls()
  m_fontSizeSpin->blockSignals(true);
  m_fontSizeSpin->setValue(static_cast<double>(v));
  m_fontSizeSpin->blockSignals(false);
+ if (m_monitorTextEditing) {
+ emit inlineFontSizeRequested(static_cast<float>(v));
+ return;
+ }
  applyTextProperties();
  });
 
@@ -249,12 +409,23 @@ void GraphicsEditorPanel::buildEditControls()
  m_fontSizeSlider->blockSignals(true);
  m_fontSizeSlider->setValue(static_cast<int>(v));
  m_fontSizeSlider->blockSignals(false);
+ if (m_monitorTextEditing) {
+ emit inlineFontSizeRequested(static_cast<float>(v));
+ return;
+ }
  applyTextProperties();
  });
 
  // Spin commit (end of drag)
  connect(m_fontSizeSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ this, [this](double, double value) {
+ if (m_monitorTextEditing) {
+ emit inlineFontSizeRequested(static_cast<float>(value));
+ return;
+ }
+ applyTextProperties();
+ commitLayerEdit();
+ });
 
  // Spin text-edit finished (user typed a value and pressed Enter)
  connect(m_fontSizeSpin, QOverload<>::of(&ScrubbySpinBox::editingFinished),
@@ -263,6 +434,11 @@ void GraphicsEditorPanel::buildEditControls()
  m_fontSizeSlider->blockSignals(true);
  m_fontSizeSlider->setValue(static_cast<int>(m_fontSizeSpin->value()));
  m_fontSizeSlider->blockSignals(false);
+ if (m_monitorTextEditing) {
+ emit inlineFontSizeRequested(
+ static_cast<float>(m_fontSizeSpin->value()));
+ return;
+ }
  applyTextProperties();
  commitLayerEdit();
  });
@@ -283,6 +459,15 @@ void GraphicsEditorPanel::buildEditControls()
  // Uncheck siblings
  for (auto* s : {m_alignLeftBtn, m_alignCenterBtn, m_alignRightBtn, m_alignJustifyBtn})
  s->setChecked(s == b);
+ if (m_monitorTextEditing) {
+     const int alignment = b == m_alignLeftBtn
+         ? static_cast<int>(GTextAlign::Left)
+         : b == m_alignRightBtn ? static_cast<int>(GTextAlign::Right)
+         : b == m_alignJustifyBtn ? static_cast<int>(GTextAlign::Justify)
+         : static_cast<int>(GTextAlign::Center);
+     emit inlineParagraphAlignmentRequested(alignment);
+     return;
+ }
  applyTextProperties();
  commitLayerEdit();
  });
@@ -314,9 +499,21 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(trkLabel);
  m_trackingSpin = makeScrubby(-500, 500, 1, 0);
  connect(m_trackingSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ this, [this](double, double value) {
+ if (m_monitorTextEditing) {
+     emit inlineTrackingRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties(); commitLayerEdit();
+ });
  connect(m_trackingSpin, &ScrubbySpinBox::valueScrubbed,
- this, [this](double) { applyTextProperties(); });
+ this, [this](double value) {
+ if (m_monitorTextEditing) {
+     emit inlineTrackingRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties();
+ });
  rl->addWidget(m_trackingSpin);
 
  rl->addSpacing(6);
@@ -324,9 +521,21 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(leadLabel);
  m_leadingSpin = makeScrubby(0, 500, 0.1, 1);
  connect(m_leadingSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ this, [this](double, double value) {
+ if (m_monitorTextEditing) {
+     emit inlineLeadingRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties(); commitLayerEdit();
+ });
  connect(m_leadingSpin, &ScrubbySpinBox::valueScrubbed,
- this, [this](double) { applyTextProperties(); });
+ this, [this](double value) {
+ if (m_monitorTextEditing) {
+     emit inlineLeadingRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties();
+ });
  rl->addWidget(m_leadingSpin);
 
  rl->addSpacing(6);
@@ -334,11 +543,68 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(bsLabel);
  m_baselineShiftSpin = makeScrubby(-200, 200, 1, 0);
  connect(m_baselineShiftSpin, &ScrubbySpinBox::valueCommitted,
- this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ this, [this](double, double value) {
+ if (m_monitorTextEditing) {
+     emit inlineBaselineShiftRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties(); commitLayerEdit();
+ });
  connect(m_baselineShiftSpin, &ScrubbySpinBox::valueScrubbed,
- this, [this](double) { applyTextProperties(); });
+ this, [this](double value) {
+ if (m_monitorTextEditing) {
+     emit inlineBaselineShiftRequested(static_cast<float>(value));
+     return;
+ }
+ applyTextProperties();
+ });
  rl->addWidget(m_baselineShiftSpin);
 
+ rl->addStretch();
+ }
+
+ // Pair kerning, tab width, and Japanese glyph-space reduction (tsume).
+ {
+ auto* rl = makeRow(10);
+ rl->addWidget(makeSmallLabel(QStringLiteral("K")));
+ m_kerningSpin = makeScrubby(-500, 500, 1, 0);
+ connect(m_kerningSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double value) {
+     if (m_monitorTextEditing) { emit inlineKerningRequested(value); return; }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_kerningSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double value) {
+     if (m_monitorTextEditing) { emit inlineKerningRequested(value); return; }
+     applyTextProperties();
+ });
+ rl->addWidget(m_kerningSpin);
+ rl->addWidget(makeSmallLabel(QStringLiteral("Tab")));
+ m_tabWidthSpin = makeScrubby(1, 1000, 1, 0);
+ connect(m_tabWidthSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double value) {
+     if (m_monitorTextEditing) { emit inlineTabWidthRequested(value); return; }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_tabWidthSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double value) {
+     if (m_monitorTextEditing) { emit inlineTabWidthRequested(value); return; }
+     applyTextProperties();
+ });
+ rl->addWidget(m_tabWidthSpin);
+ rl->addWidget(makeSmallLabel(QStringLiteral("Ts")));
+ m_tsumeSpin = makeScrubby(0, 90, 1, 0, QStringLiteral("%"));
+ connect(m_tsumeSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double value) {
+     if (m_monitorTextEditing) { emit inlineTsumeRequested(value); return; }
+     applyTextProperties(); commitLayerEdit();
+ });
+ connect(m_tsumeSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double value) {
+     if (m_monitorTextEditing) { emit inlineTsumeRequested(value); return; }
+     applyTextProperties();
+ });
+ rl->addWidget(m_tsumeSpin);
  rl->addStretch();
  }
 
@@ -352,6 +618,7 @@ void GraphicsEditorPanel::buildEditControls()
  m_wrapCheck->setToolTip(tr("Word-wrap the text inside a fixed-width paragraph box"));
  connect(m_wrapCheck, &QCheckBox::toggled, this, [this](bool on) {
  if (m_wrapWidthSpin) m_wrapWidthSpin->setEnabled(on);
+ if (m_wrapHeightSpin) m_wrapHeightSpin->setEnabled(on);
  applyTextProperties();
  commitLayerEdit();
  });
@@ -364,6 +631,17 @@ void GraphicsEditorPanel::buildEditControls()
  connect(m_wrapWidthSpin, &ScrubbySpinBox::valueScrubbed,
  this, [this](double) { applyTextProperties(); });
  rl->addWidget(m_wrapWidthSpin);
+
+ auto* heightLabel = makeSmallLabel(QStringLiteral("H"));
+ heightLabel->setToolTip(tr("Paragraph box height"));
+ rl->addWidget(heightLabel);
+ m_wrapHeightSpin = makeScrubby(20, 8192, 10, 0, QStringLiteral(" px"));
+ m_wrapHeightSpin->setEnabled(false);
+ connect(m_wrapHeightSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double) { applyTextProperties(); commitLayerEdit(); });
+ connect(m_wrapHeightSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyTextProperties(); });
+ rl->addWidget(m_wrapHeightSpin);
 
  rl->addStretch();
  }
@@ -486,6 +764,10 @@ void GraphicsEditorPanel::buildEditControls()
  connect(m_shadowCheck, &QCheckBox::toggled,
  this, [this](bool on) {
  if (m_shadowColorBtn) m_shadowColorBtn->setEnabled(on);
+ if (m_shadowDistanceSpin) m_shadowDistanceSpin->setEnabled(on);
+ if (m_shadowAngleSpin) m_shadowAngleSpin->setEnabled(on);
+ if (m_shadowSoftnessSpin) m_shadowSoftnessSpin->setEnabled(on);
+ if (m_shadowOpacitySpin) m_shadowOpacitySpin->setEnabled(on);
  applyAppearance();
  commitLayerEdit();
  });
@@ -513,6 +795,80 @@ void GraphicsEditorPanel::buildEditControls()
  }
  });
  rl->addWidget(m_shadowColorBtn);
+ rl->addStretch();
+ }
+
+ {
+ auto addShadowControl = [this](QHBoxLayout* row, const QString& label,
+                                ScrubbySpinBox*& control,
+                                double min, double max, double step,
+                                const QString& suffix) {
+     auto* text = new QLabel(label, m_editContainer);
+     text->setStyleSheet(labelSS(Theme::colors()));
+     text->setFixedWidth(48);
+     row->addWidget(text);
+     control = makeScrubby(min, max, step, 1, suffix);
+     control->setEnabled(false);
+     control->setFixedWidth(74);
+     connect(control, &ScrubbySpinBox::valueCommitted, this,
+             [this](double, double) {
+                 applyAppearance(); commitLayerEdit();
+             });
+     connect(control, &ScrubbySpinBox::valueScrubbed, this,
+             [this](double) { applyAppearance(); });
+     row->addWidget(control);
+ };
+ auto* firstRow = makeRow(34);
+ addShadowControl(firstRow, tr("Distance"), m_shadowDistanceSpin,
+                  0.0, 500.0, 0.5, QStringLiteral(" px"));
+ addShadowControl(firstRow, tr("Angle"), m_shadowAngleSpin,
+                  -360.0, 360.0, 1.0, QStringLiteral("°"));
+ firstRow->addStretch();
+ auto* secondRow = makeRow(34);
+ addShadowControl(secondRow, tr("Softness"), m_shadowSoftnessSpin,
+                  0.0, 200.0, 0.5, QStringLiteral(" px"));
+ addShadowControl(secondRow, tr("Opacity"), m_shadowOpacitySpin,
+                  0.0, 100.0, 1.0, QStringLiteral("%"));
+ secondRow->addStretch();
+ }
+
+ // Text background and text-as-mask controls.
+ if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
+ auto* rl = makeRow(14);
+ m_backgroundCheck = new QCheckBox(tr("Background"), m_editContainer);
+ connect(m_backgroundCheck, &QCheckBox::toggled, this, [this](bool on) {
+     if (m_backgroundColorBtn) m_backgroundColorBtn->setEnabled(on);
+     if (m_backgroundPaddingSpin) m_backgroundPaddingSpin->setEnabled(on);
+     applyAppearance(); commitLayerEdit();
+ });
+ rl->addWidget(m_backgroundCheck);
+ m_backgroundColorBtn = new QPushButton(m_editContainer);
+ m_backgroundColorBtn->setFixedSize(36, 18);
+ m_backgroundColorBtn->setEnabled(false);
+ connect(m_backgroundColorBtn, &QPushButton::clicked, this, [this]() {
+     const QColor chosen = QColorDialog::getColor(
+         m_backgroundColorBtn->palette().color(QPalette::Button), this,
+         tr("Text Background Color"), QColorDialog::ShowAlphaChannel);
+     if (!chosen.isValid()) return;
+     m_backgroundColorBtn->setStyleSheet(QStringLiteral(
+         "background: %1; border: 1px solid %2;")
+         .arg(chosen.name(QColor::HexArgb),
+              Theme::hex(Theme::colors().border)));
+     applyAppearance(); commitLayerEdit();
+ });
+ rl->addWidget(m_backgroundColorBtn);
+ m_backgroundPaddingSpin = makeScrubby(0, 500, 0.5, 1);
+ m_backgroundPaddingSpin->setEnabled(false);
+ connect(m_backgroundPaddingSpin, &ScrubbySpinBox::valueCommitted,
+ this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
+ connect(m_backgroundPaddingSpin, &ScrubbySpinBox::valueScrubbed,
+ this, [this](double) { applyAppearance(); });
+ rl->addWidget(m_backgroundPaddingSpin);
+ m_maskWithTextCheck = new QCheckBox(tr("Mask with Text"), m_editContainer);
+ connect(m_maskWithTextCheck, &QCheckBox::toggled, this, [this](bool) {
+     applyAppearance(); commitLayerEdit();
+ });
+ rl->addWidget(m_maskWithTextCheck);
  rl->addStretch();
  }
 

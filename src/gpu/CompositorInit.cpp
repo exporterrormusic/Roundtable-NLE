@@ -71,14 +71,16 @@ bool Compositor::init(Device& device,
     if (!createComputePipeline())    { shutdown(); return false; }
     if (!createTimestampQueries())   { shutdown(); return false; }
 
-    // Create SSBO for layer parameters (host-visible for easy updates)
-    if (!m_layerParamsBuffer.create(m_allocator->handle(),
-                                    sizeof(LayerParamsGPU),
-                                    BufferUsage::Uniform))
-    {
-        spdlog::error("Compositor: Failed to create layer params SSBO");
-        shutdown();
-        return false;
+    // Create one host-visible SSBO per output slot. Descriptor sets using an
+    // older slot may still be pending when the next frame is recorded.
+    for (uint32_t i = 0; i < kOutputRing; ++i) {
+        if (!m_layerParamsBuffers[i].create(m_allocator->handle(),
+                                            sizeof(LayerParamsGPU),
+                                            BufferUsage::Uniform)) {
+            spdlog::error("Compositor: Failed to create layer params SSBO {}", i);
+            shutdown();
+            return false;
+        }
     }
 
     // Create 1x1 transparent placeholder texture for unused layer slots
@@ -126,10 +128,11 @@ void Compositor::shutdown()
         vkDeviceWaitIdle(dev);
 
     // Destroy timestamp query pool
-    if (m_queryPool != VK_NULL_HANDLE)
-    {
-        vkDestroyQueryPool(dev, m_queryPool, nullptr);
-        m_queryPool = VK_NULL_HANDLE;
+    for (auto& queryPool : m_queryPools) {
+        if (queryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(dev, queryPool, nullptr);
+            queryPool = VK_NULL_HANDLE;
+        }
     }
 
     // Destroy descriptor resources
@@ -137,7 +140,7 @@ void Compositor::shutdown()
     {
         vkDestroyDescriptorPool(dev, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
-        m_descriptorSet  = VK_NULL_HANDLE;
+        m_descriptorSets.fill(VK_NULL_HANDLE);
     }
 
     if (m_descriptorSetLayout != VK_NULL_HANDLE)
@@ -152,8 +155,8 @@ void Compositor::shutdown()
     m_pipelineLayout = VK_NULL_HANDLE;
 
     // Destroy buffers and textures
-    m_readbackStaging.destroy();
-    m_layerParamsBuffer.destroy();
+    for (auto& staging : m_readbackStaging) staging.destroy();
+    for (auto& params : m_layerParamsBuffers) params.destroy();
     m_placeholderTexture.destroy();
     m_outputTexture.reset();
     for (auto& t : m_outputRing) t.reset();
@@ -328,18 +331,18 @@ bool Compositor::createDescriptorResources()
     // ── Descriptor pool ─────────────────────────────────────────────────
     VkDescriptorPoolSize poolSizes[4] = {};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = 1;
+    poolSizes[0].descriptorCount = kOutputRing;
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = kMaxCompositorLayers;
+    poolSizes[1].descriptorCount = kMaxCompositorLayers * kOutputRing;
     poolSizes[2].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[2].descriptorCount = 1;
+    poolSizes[2].descriptorCount = kOutputRing;
     poolSizes[3].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[3].descriptorCount = kMaxCompositorLayers;
+    poolSizes[3].descriptorCount = kMaxCompositorLayers * kOutputRing;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets       = 1;
+    poolInfo.maxSets       = kOutputRing;
     poolInfo.poolSizeCount = 4;
     poolInfo.pPoolSizes    = poolSizes;
 
@@ -353,10 +356,13 @@ bool Compositor::createDescriptorResources()
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool     = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts        = &m_descriptorSetLayout;
+    std::array<VkDescriptorSetLayout, kOutputRing> layouts{};
+    layouts.fill(m_descriptorSetLayout);
+    allocInfo.descriptorSetCount = kOutputRing;
+    allocInfo.pSetLayouts        = layouts.data();
 
-    if (vkAllocateDescriptorSets(dev, &allocInfo, &m_descriptorSet) != VK_SUCCESS)
+    if (vkAllocateDescriptorSets(dev, &allocInfo,
+                                 m_descriptorSets.data()) != VK_SUCCESS)
     {
         spdlog::error("Compositor: Failed to allocate descriptor set");
         return false;
@@ -369,16 +375,18 @@ bool Compositor::createDescriptorResources()
 
 bool Compositor::createTimestampQueries()
 {
-    VkQueryPoolCreateInfo queryInfo{};
-    queryInfo.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-    queryInfo.queryType  = VK_QUERY_TYPE_TIMESTAMP;
-    queryInfo.queryCount = 2;  // begin + end
+    for (uint32_t i = 0; i < kOutputRing; ++i) {
+        VkQueryPoolCreateInfo queryInfo{};
+        queryInfo.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        queryInfo.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+        queryInfo.queryCount = 2;  // begin + end
 
-    if (vkCreateQueryPool(m_device->handle(), &queryInfo, nullptr, &m_queryPool) != VK_SUCCESS)
-    {
-        spdlog::warn("Compositor: Failed to create timestamp query pool (timing disabled)");
-        m_queryPool = VK_NULL_HANDLE;
-        // Non-fatal — timing is optional
+        if (vkCreateQueryPool(m_device->handle(), &queryInfo, nullptr,
+                              &m_queryPools[i]) != VK_SUCCESS) {
+            spdlog::warn("Compositor: Failed to create timestamp query pool {} "
+                         "(timing disabled for slot)", i);
+            m_queryPools[i] = VK_NULL_HANDLE;
+        }
     }
 
     return true;

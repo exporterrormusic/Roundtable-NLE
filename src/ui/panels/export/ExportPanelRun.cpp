@@ -13,6 +13,7 @@
 #include "Encoder.h"
 #include "Muxer.h"
 #include "RenderQueue.h"
+#include "FrameTime.h"
 
 #include <QDir>
 #include <QFileDialog>
@@ -201,14 +202,10 @@ ExportJobConfig ExportPanel::buildJobConfig() const
         cfg.encoderConfig.crf = crf;
     }
     {
-        const double fps = m_fpsCombo->currentData().toDouble();
-        if (std::abs(fps - std::round(fps)) < 0.005) {
-            cfg.encoderConfig.fpsNum = static_cast<uint32_t>(std::lround(fps));
-            cfg.encoderConfig.fpsDen = 1;
-        } else { // NTSC fractional rate: 23.976 → 24000/1001, 29.97 → 30000/1001, …
-            cfg.encoderConfig.fpsNum = static_cast<uint32_t>(std::lround(fps * 1.001) * 1000);
-            cfg.encoderConfig.fpsDen = 1001;
-        }
+        const RationalFrameRate fps = canonicalFrameRate(
+            m_fpsCombo->currentData().toDouble());
+        cfg.encoderConfig.fpsNum = fps.numerator;
+        cfg.encoderConfig.fpsDen = fps.denominator;
     }
 
     cfg.containerFormat = static_cast<uint8_t>(m_containerCombo->currentData().toInt());

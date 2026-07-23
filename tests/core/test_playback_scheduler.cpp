@@ -1,4 +1,5 @@
 #include "playback/PlaybackScheduler.h"
+#include "cache/FrameCache.h"
 
 #include <gtest/gtest.h>
 
@@ -88,6 +89,34 @@ TEST(PlaybackSchedulerTest, PresentationCountersTrackHeldAndDroppedFrames)
     EXPECT_EQ(stats.heldFrames, 1u);
     EXPECT_EQ(stats.droppedFrames, 1u);
     EXPECT_EQ(stats.canceledFrames, 0u);
+}
+
+TEST(PlaybackSchedulerTest, ProducerResetDiscardsHeldAndPublishedFrame)
+{
+    FrameProducer producer;
+    auto expected = std::make_shared<CachedFrame>();
+    expected->width = 320;
+    expected->height = 180;
+
+    producer.setCompositeCallback(
+        [expected](int64_t, uint32_t, uint32_t, bool, bool) {
+            return expected;
+        });
+    producer.start();
+    producer.requestScrubFrame(1000, 320, 180, false);
+
+    ASSERT_TRUE(producer.waitForFrame(std::chrono::seconds(2)));
+    std::shared_ptr<CachedFrame> produced;
+    int64_t producedTick = 0;
+    ASSERT_TRUE(producer.consumeFrame(produced, producedTick));
+    EXPECT_EQ(produced, expected);
+    EXPECT_EQ(producedTick, 1000);
+
+    producer.stop();
+    producer.reset();
+
+    EXPECT_EQ(producer.lastProducedFrame(), nullptr);
+    EXPECT_FALSE(producer.consumeFrame(produced, producedTick));
 }
 
 } // namespace

@@ -686,6 +686,22 @@ TEST(ProjectBin, ClearAll)
     EXPECT_EQ(bin.itemCount(), 0);
 }
 
+TEST(ProjectBin, RelinkUpdatesAllMatchingBinReferencesOnly)
+{
+    rt::ProjectBin bin;
+    const fs::path oldPath("offline/source.mov");
+    const fs::path newPath("fixed/source.mov");
+    bin.addFiles({oldPath, oldPath, fs::path("already/online.mov")});
+
+    EXPECT_EQ(bin.replacePathReferences(oldPath, newPath), 2);
+
+    const auto files = bin.allFiles();
+    EXPECT_EQ(std::count(files.begin(), files.end(), newPath), 2);
+    EXPECT_EQ(std::count(files.begin(), files.end(), oldPath), 0);
+    EXPECT_EQ(std::count(files.begin(), files.end(),
+                         fs::path("already/online.mov")), 1);
+}
+
 TEST(ProjectBin, TabChangeFiltersGrid)
 {
     rt::ProjectBin bin;

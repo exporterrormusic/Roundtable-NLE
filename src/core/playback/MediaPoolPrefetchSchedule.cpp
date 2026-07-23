@@ -38,6 +38,59 @@ namespace rt {
 // WorkerGpuState is defined in MediaPoolPrefetchGpu.h so it can be shared
 // with the convertDecodedToCacheGpu translation unit (Phase 4).
 
+void MediaPool::scheduleExactPrefetch(MediaHandle handle,
+                                      int64_t frameNumber,
+                                      ResolutionTier tier)
+{
+    std::filesystem::path path;
+    VideoStreamInfo info;
+    bool packed = false;
+    bool isLooping = false;
+    {
+        std::lock_guard lock(m_mutex);
+        auto* entry = findEntry(handle);
+        if (!entry) return;
+        info = entry->info;
+        path = entry->path;
+        packed = entry->packedAlpha;
+        isLooping = entry->loopPreDecodeStarted;
+    }
+
+    if (info.frameCount <= 1) {
+        frameNumber = 0;
+    } else {
+        frameNumber = std::clamp(frameNumber, int64_t(0),
+                                 info.frameCount - 1);
+    }
+    if (m_cache->contains(handle, frameNumber, tier)) return;
+
+    m_playheadFrame.store(frameNumber, std::memory_order_relaxed);
+    m_scheduler.setPlayhead(frameNumber);
+
+    PrefetchTask task;
+    task.handle = handle;
+    task.filePath = std::move(path);
+    task.frameNumber = frameNumber;
+    task.tier = tier;
+    task.fps = info.fps > 0.0 ? info.fps : 30.0;
+    task.info = info;
+    task.packedAlpha = packed;
+    task.urgent = true;
+    task.exactRequest = true;
+    task.isLoop = isLooping;
+
+    bool inserted = false;
+    {
+        std::lock_guard lock(m_prefetchMutex);
+        inserted = prefetch_detail::mergeExactTask(m_prefetchQueue,
+                                                    std::move(task));
+    }
+    if (inserted) {
+        m_perf.prefetchScheduled.fetch_add(1, std::memory_order_relaxed);
+    }
+    m_prefetchCv.notify_all();
+}
+
 void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int count, bool urgent, ResolutionTier tier)
 {
     m_playheadFrame.store(afterFrame, std::memory_order_relaxed);
@@ -107,16 +160,19 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             m_prefetchQueue.erase(
                 std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
                     [handle, playhead](const PrefetchTask& t) {
-                        if (t.handle == handle) return true;
-                        if (t.frameNumber < playhead - 4) return true;
-                        return false;
+                        return prefetch_detail::replaceableByDecodeAheadRebuild(
+                            t, handle, playhead);
                     }),
                 m_prefetchQueue.end());
         }
 
         const size_t kMaxQueueSize = interactivePlayback ? 32u : 64u;
         while (m_prefetchQueue.size() > kMaxQueueSize) {
-            m_prefetchQueue.pop_back();
+            const auto replaceable = std::find_if(
+                m_prefetchQueue.rbegin(), m_prefetchQueue.rend(),
+                [](const PrefetchTask& task) { return !task.exactRequest; });
+            if (replaceable == m_prefetchQueue.rend()) break;
+            m_prefetchQueue.erase(std::next(replaceable).base());
         }
 
         const double projFps = m_projectFps.load(std::memory_order_relaxed);
@@ -173,6 +229,14 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             task.packedAlpha = packed;
             task.urgent      = (urgent && i == 0);
             task.isLoop      = isLooping;
+            // A protected exact endpoint may already occupy this key. Do not
+            // add a strided lookahead duplicate behind it.
+            if (prefetch_detail::containsTaskKey(m_prefetchQueue, task))
+                continue;
+            if (m_prefetchQueue.size() >=
+                prefetch_detail::kMaxExactQueueDepth) {
+                continue;
+            }
             if (task.urgent) {
                 m_prefetchQueue.push_front(task);
             } else {
@@ -425,12 +489,13 @@ void MediaPool::prefetchWorker(int workerId)
 
             // Batch-claim consecutive frames to avoid seek contention.
             constexpr int kBatchClaim = 30;
-            {
+            if (!task.exactRequest) {
                 int64_t claimFn = task.frameNumber + 1;
                 const int64_t claimMax = task.frameNumber + kBatchClaim;
                 auto it = m_prefetchQueue.begin();
                 while (it != m_prefetchQueue.end() && claimFn <= claimMax) {
-                    if (it->handle == task.handle && it->frameNumber == claimFn) {
+                    if (!it->exactRequest && it->handle == task.handle &&
+                        it->frameNumber == claimFn) {
                         it = m_prefetchQueue.erase(it);
                         ++claimFn;
                     } else {
@@ -523,7 +588,11 @@ void MediaPool::prefetchWorker(int workerId)
             }
 
             // Sequential follow-up: decode next consecutive frames while decoder is positioned.
-            constexpr int kMaxFollowUp = 30;
+            // Exact temporal endpoints are isolated requests. Returning to
+            // the queue immediately lets the adjacent partner run next;
+            // strided follow-up could otherwise spend 30 decodes on N+2,
+            // N+4, ... while urgent N+1 waits on the same owned handle.
+            const int kMaxFollowUp = task.exactRequest ? 0 : 30;
             // For stills (frameCount 0 or 1) there is no "next consecutive
             // frame" — the previous version defaulted to INT64_MAX when
             // frameCount <= 1, which made the follow-up loop decode 30
@@ -568,11 +637,16 @@ void MediaPool::prefetchWorker(int workerId)
                 if (m_cache->contains(task.handle, nextFn, followTier)) continue;
                 if (!m_prefetchRunning) break;
 
-                // Bail on urgent task for a DIFFERENT handle (same handle is fine).
-                if (f > 3) {
+                // Yield immediately to any exact temporal endpoint, including
+                // one for this same handle. Ordinary same-handle urgency can
+                // still use the warm sequential decoder after three frames;
+                // an adjacent N+1 endpoint cannot wait behind that batch.
+                {
                     std::lock_guard uLock(m_prefetchMutex);
                     for (const auto& qt : m_prefetchQueue) {
-                        if (qt.urgent && qt.handle != task.handle) {
+                        if (qt.urgent &&
+                            (qt.exactRequest ||
+                             (f > 3 && qt.handle != task.handle))) {
                             goto endFollowUp;
                         }
                     }

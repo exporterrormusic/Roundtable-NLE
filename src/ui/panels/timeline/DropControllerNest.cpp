@@ -4,7 +4,6 @@
 #include <volk.h>
 
 #include <algorithm>
-#include <map>
 #include <set>
 #include <unordered_map>
 
@@ -48,6 +47,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
 #include "timeline/ImageClip.h"
+#include "timeline/NestTransitionTransfer.h"
 #include "timeline/OpacityMask.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/SpineClip.h"
@@ -121,6 +121,8 @@ void DropController::wireNestSignals()
                 std::shared_ptr<Clip> clonedClip;  // shared for lambda capture
             };
             auto savedClips = std::make_shared<std::vector<SavedClip>>();
+            auto selectedClipIds =
+                std::make_shared<std::unordered_set<uint64_t>>();
             for (const auto& cr : clips) {
                 auto* trk = m_ws->timeline()->track(cr.trackIndex);
                 if (!trk) continue;
@@ -133,7 +135,15 @@ void DropController::wireNestSignals()
                 sc.clipId     = cr.clipId;
                 sc.clonedClip = std::shared_ptr<Clip>(srcClip->clone().release());
                 savedClips->push_back(std::move(sc));
+                selectedClipIds->insert(cr.clipId);
             }
+            // Transitions are track-owned, not clip-owned. Snapshot every
+            // transition touching the selection before removeClipById()
+            // deletes it, so execute can transfer it and undo can restore it.
+            auto savedTransitions =
+                std::make_shared<std::vector<NestTransitionSnapshot>>(
+                    captureTransitionsForNest(*m_ws->timeline(),
+                                              *selectedClipIds));
 
             // Shared state for execute / undo
             auto seqIdx     = std::make_shared<size_t>(SIZE_MAX);
@@ -169,7 +179,9 @@ void DropController::wireNestSignals()
             m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
                 "Nest Selected Clips",
                 /* execute / redo */
-                [this, savedClips, seqIdx, seqClipId, targetTk, savedMin, savedMax, name, refreshAfter]() {
+                [this, savedClips, selectedClipIds, savedTransitions,
+                 seqIdx, seqClipId, targetTk, savedMin, savedMax, name,
+                 refreshAfter]() {
                     // Create a new sequence for the nested content
                     *seqIdx = m_ws->project()->sequenceCount();
                     auto* nestedTimeline = m_ws->project()->addSequence(name);
@@ -185,7 +197,7 @@ void DropController::wireNestSignals()
                         usedTrackIndices.insert(sc.trackIndex);
 
                     // Mirror tracks: video first, then audio
-                    std::map<size_t, size_t> trackMap;
+                    std::unordered_map<size_t, size_t> trackMap;
                     for (size_t si : usedTrackIndices) {
                         auto* srcTrack = m_ws->timeline()->track(si);
                         if (!srcTrack || srcTrack->type() != TrackType::Video) continue;
@@ -202,6 +214,7 @@ void DropController::wireNestSignals()
                     }
 
                     // Clone saved clips into the nested timeline
+                    std::unordered_map<uint64_t, uint64_t> nestedClipIds;
                     for (const auto& sc : *savedClips) {
                         auto mapIt = trackMap.find(sc.trackIndex);
                         if (mapIt == trackMap.end()) continue;
@@ -211,8 +224,17 @@ void DropController::wireNestSignals()
                         cloned->setTimelineIn(sc.clonedClip->timelineIn() - savedMin);
                         cloned->setDuration(sc.clonedClip->duration());
                         cloned->setSourceIn(sc.clonedClip->sourceIn());
+                        nestedClipIds[sc.clipId] = cloned->id();
                         dstTrack->addClip(std::move(cloned));
                     }
+
+                    // Recreate internal dissolves and one-sided fades on the
+                    // mirrored nested tracks. IDs and edit points must both be
+                    // remapped because clone() assigns fresh IDs and the nest
+                    // starts at timeline tick zero.
+                    addTransitionsInsideNest(
+                        *nestedTimeline, *savedTransitions, *selectedClipIds,
+                        trackMap, nestedClipIds, savedMin);
 
                     // Remove the original clips from the current timeline.
                     // On first execute, clips are removed by their original ID.
@@ -237,12 +259,20 @@ void DropController::wireNestSignals()
                         seqClip->setDuration(savedMax - savedMin);
                         *seqClipId = seqClip->id();
                         targetTrack->addClip(std::move(seqClip));
+
+                        // A dissolve between a selected edge clip and an
+                        // unselected neighbour remains in the parent, now
+                        // attached to the SequenceClip endpoint.
+                        addBoundaryTransitionsToNestClip(
+                            *m_ws->timeline(), *savedTransitions,
+                            *selectedClipIds, *targetTk, *seqClipId);
                     }
 
                     refreshAfter();
                 },
                 /* undo */
-                [this, savedClips, seqIdx, seqClipId, targetTk, refreshAfter]() {
+                [this, savedClips, savedTransitions, seqIdx, seqClipId,
+                 targetTk, refreshAfter]() {
                     // Remove the SequenceClip from the target track
                     if (*targetTk < m_ws->timeline()->trackCount()) {
                         auto* trk = m_ws->timeline()->track(*targetTk);
@@ -252,13 +282,19 @@ void DropController::wireNestSignals()
                     // Restore the original clips.  Because clone() assigns
                     // fresh IDs, we capture the new ID on each SavedClip so
                     // that redo can find and remove them again.
+                    std::unordered_map<uint64_t, uint64_t> restoredClipIds;
                     for (auto& sc : *savedClips) {
                         auto* trk = m_ws->timeline()->track(sc.trackIndex);
                         if (!trk) continue;
                         auto restored = sc.clonedClip->clone();
                         sc.restoredId = restored->id();
+                        restoredClipIds[sc.clipId] = sc.restoredId;
                         trk->addClip(std::move(restored));
                     }
+
+                    restoreTransitionsAfterNestUndo(
+                        *m_ws->timeline(), *savedTransitions,
+                        restoredClipIds);
 
                     // Remove the created nested sequence
                     if (*seqIdx < m_ws->project()->sequenceCount())

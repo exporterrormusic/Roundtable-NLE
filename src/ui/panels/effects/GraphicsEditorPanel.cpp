@@ -172,6 +172,7 @@ void GraphicsEditorPanel::setupUI()
  if (!w) return;
  auto* edit = w->findChild<QPlainTextEdit*>();
  if (edit) {
+ captureEditBaseline();
  edit->setReadOnly(false);
  edit->setTextInteractionFlags(Qt::TextEditorInteraction);
  edit->setFocus(Qt::OtherFocusReason);
@@ -469,9 +470,10 @@ void GraphicsEditorPanel::rebuildLayerList()
  if (isText) {
  // ── Text layers: embed a QPlainTextEdit for inline editing ──
  auto* tl = static_cast<TextLayer*>(layer);
+ const QString editText = QString::fromStdString(tl->text());
 
  // Calculate height from line count (min 1 line = 20px)
- int lineCount = displayName.count('\n') + 1;
+ int lineCount = editText.count('\n') + 1;
  int itemH = qMax(24, lineCount * 18 + 4);
 
  auto* item = new QListWidgetItem(m_layerList);
@@ -496,12 +498,13 @@ void GraphicsEditorPanel::rebuildLayerList()
  rowLay->addWidget(makeIcon(lock));
  rowLay->addWidget(makeIcon(icon));
 
- auto* edit = new QPlainTextEdit(displayName);
+ auto* edit = new QPlainTextEdit(editText);
+ edit->setPlaceholderText(QStringLiteral("(empty)"));
  edit->setFrameShape(QFrame::NoFrame);
  edit->setAttribute(Qt::WA_TranslucentBackground);
  edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
  edit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
- edit->setTabChangesFocus(true);
+ edit->setTabChangesFocus(false);
  edit->document()->setDocumentMargin(0);
  edit->setFixedHeight(itemH - 2);
  edit->setReadOnly(true);
@@ -512,10 +515,15 @@ void GraphicsEditorPanel::rebuildLayerList()
  ).arg(Theme::hex(tc.textPrimary)));
  edit->setToolTip(displayName);
  // Update the underlying TextLayer as the user types
- connect(edit, &QPlainTextEdit::textChanged, this, [tl, this]() {
+ connect(edit, &QPlainTextEdit::textChanged, this, [tl, item, this]() {
  auto* e = qobject_cast<QPlainTextEdit*>(sender());
  if (e) {
- tl->setText(e->toPlainText().toStdString());
+ tl->replaceTextPreservingStyles(e->toPlainText().toStdString());
+ const int lines = e->toPlainText().count('\n') + 1;
+ const int height = qMax(24, lines * 18 + 4);
+ e->setFixedHeight(height - 2);
+ item->setSizeHint(QSize(0, height));
+ m_layerEditDirty = true;
  emit propertyChanged();
  }
  });
@@ -560,17 +568,23 @@ std::vector<int> GraphicsEditorPanel::selectedLayerStackIndices() const
 
 bool GraphicsEditorPanel::eventFilter(QObject* obj, QEvent* event)
 {
- // When a QPlainTextEdit in the layer list loses focus or the user
- // presses Enter, switch it back to read-only display mode.
+ // Premiere-style layer text editing: Return adds a new row, clicking away
+ // commits, and Ctrl/Cmd+Return is the explicit keyboard commit shortcut.
  auto* edit = qobject_cast<QPlainTextEdit*>(obj);
  if (edit) {
  if (event->type() == QEvent::FocusOut) {
+ const bool wasEditing = !edit->isReadOnly();
  edit->setReadOnly(true);
  edit->setTextInteractionFlags(Qt::NoTextInteraction);
+ if (wasEditing) commitLayerEdit();
  } else if (event->type() == QEvent::KeyPress) {
  auto* ke = static_cast<QKeyEvent*>(event);
- if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
- edit->clearFocus();  // triggers FocusOut -> readOnly
+ if (!edit->isReadOnly()
+     && (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)) {
+ if (ke->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+     edit->clearFocus();  // FocusOut records one undoable edit.
+ else
+     edit->insertPlainText(QStringLiteral("\n"));
  return true;
  }
  }

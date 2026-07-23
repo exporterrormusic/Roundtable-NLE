@@ -5,6 +5,7 @@
 #include "Nv12Converter.h"
 #include "PathUtils.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "cache/FrameContentBounds.h"
 #include "cuda/CudaVulkanInterop.h"
 #include <volk.h>
 #include <spdlog/spdlog.h>
@@ -284,34 +285,11 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
 
 
         // â”€â”€ Preview downscale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // The compositing output is 1920Ã—1080.  There is no point
-        // keeping decoded frames at full resolution (e.g. 4096Ã—2304
-        // or 2154Ã—3766) for real-time preview â€” it wastes memory and
-        // CPU.  Cap each dimension based on ResolutionTier:
-        //   Full    â†’ 1920  (for export / still frame grab)
-        //   Half    â†’  960  (for real-time playback in small viewports)
-        //   Quarter â†’  480  (for thumbnails / extreme proxy)
-        int maxDim = 1920;
-        switch (tier) {
-            case ResolutionTier::Half:    maxDim =  960; break;
-            case ResolutionTier::Quarter: maxDim =  480; break;
-            default:                      maxDim = 1920; break;
-        }
-        // Nominal content height: for 2-tile packed alpha this is h/2;
-        // for normal (non-packed) sources it's just h.  (4-tile luma-
-        // packed sources are handled above and never reach this branch.)
-        // The tier clamp must use the NOMINAL height so export/Full tier
-        // doesn't crush a 1888-tall character to ~960 because the packed
-        // frame (e.g. 3776) exceeds the 1920 Full-tier cap.
-        const int contentH = entry.info.contentHeight(h);
-        int dstW = w, dstH = h;
-        if (w > maxDim || contentH > maxDim) {
-            const float scale = std::min(
-                static_cast<float>(maxDim) / w,
-                static_cast<float>(maxDim) / contentH);
-            dstW = std::max(2, static_cast<int>(w * scale) & ~1);
-            dstH = std::max(2, static_cast<int>(h * scale) & ~1);
-        }
+        // Full preserves native dimensions even for unusually tall/wide
+        // artwork. Half and Quarter are true source-relative preview tiers.
+        const auto tierSize = resolutionTierDimensions(w, h, tier);
+        const int dstW = tierSize.width;
+        const int dstH = tierSize.height;
 
         const bool needsResize = (dstW != w || dstH != h);
 
@@ -468,6 +446,9 @@ nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
         entry.lastDecodedFrame = -1;
         return nullptr;
     }
+
+    if (cached->pinned && !cached->pixels.empty())
+        computeBgraContentBounds(*cached);
 
     // Insert into cache (after empty-pixels check so bad frames aren't cached)
     m_cache->put(cached);

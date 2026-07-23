@@ -1,6 +1,7 @@
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 
 #include "cache/FrameCache.h"
+#include "cache/FrameContentBounds.h"
 #include "timeline/TitleClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
@@ -13,16 +14,26 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetrics>
+#include <QRawFont>
 #include <QImage>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QAbstractTextDocumentLayout>
 #include <QRectF>
 #include <QString>
+#include <QTextBlockFormat>
+#include <QTextBlock>
+#include <QTextFragment>
+#include <QTextFormat>
+#include <QTextCursor>
+#include <QTextDocument>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -136,31 +147,155 @@ static QColor tierlistDecodeArgb(uint32_t c)
 }
 
 // Small path→QImage decode cache so entry PNGs aren't re-read every frame.
+// Include mtime in the validity check so a same-name replacement appears
+// immediately rather than remaining pinned for the rest of the session.
+namespace {
+
+struct TierScaledImageKey {
+    std::string path;
+    int width{0};
+    int height{0};
+    bool operator==(const TierScaledImageKey& o) const noexcept
+    { return path == o.path && width == o.width && height == o.height; }
+};
+
+struct TierScaledImageKeyHash {
+    size_t operator()(const TierScaledImageKey& k) const noexcept
+    {
+        size_t h = std::hash<std::string>{}(k.path);
+        h ^= std::hash<int>{}(k.width) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(k.height) + 0x9e3779b9u + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct TierFrameKey {
+    uint64_t clipId{0};
+    uint64_t revision{0};
+    uint64_t visualState{0};
+    uint64_t assetGeneration{0};
+    uint32_t width{0};
+    uint32_t height{0};
+    bool operator==(const TierFrameKey& o) const noexcept
+    {
+        return clipId == o.clipId && revision == o.revision
+            && visualState == o.visualState
+            && assetGeneration == o.assetGeneration
+            && width == o.width && height == o.height;
+    }
+};
+
+struct TierFrameKeyHash {
+    size_t operator()(const TierFrameKey& k) const noexcept
+    {
+        size_t h = std::hash<uint64_t>{}(k.clipId);
+        auto mix = [&h](auto value) {
+            h ^= std::hash<decltype(value)>{}(value)
+               + static_cast<size_t>(0x9e3779b97f4a7c15ull) + (h << 6) + (h >> 2);
+        };
+        mix(k.revision); mix(k.visualState); mix(k.assetGeneration);
+        mix(k.width); mix(k.height);
+        return h;
+    }
+};
+
+std::mutex g_tierCacheMutex;
+std::unordered_map<std::string, QImage> g_tierSourceImages;
+std::unordered_map<TierScaledImageKey, QImage, TierScaledImageKeyHash> g_tierScaledImages;
+std::unordered_map<TierFrameKey, std::shared_ptr<CachedFrame>, TierFrameKeyHash>
+    g_tierRenderedFrames;
+std::deque<TierFrameKey> g_tierFrameOrder;
+size_t g_tierFrameBytes = 0;
+uint64_t g_tierAssetGeneration = 1;
+constexpr size_t kTierFrameCacheBudget = 256ull * 1024ull * 1024ull;
+
+uint64_t tierlistVisualStateHash(const TierListClip& clip, int64_t eventTick)
+{
+    uint64_t h = 1469598103934665603ull;
+    const auto mix = [&h](uint64_t v) {
+        for (unsigned i = 0; i < 8; ++i) {
+            h ^= static_cast<uint8_t>(v >> (i * 8));
+            h *= 1099511628211ull;
+        }
+    };
+    size_t index = 0;
+    for (const TierEvent& event : clip.events()) {
+        bool affectsFrame = eventTick >= event.start;
+        if (event.type == TierEventType::Popup)
+            affectsFrame = affectsFrame && eventTick < event.end;
+        mix(static_cast<uint64_t>(index++));
+        mix(affectsFrame ? 1u : 0u);
+    }
+    return h;
+}
+
+} // namespace
+
 static QImage tierlistLoadImage(const std::string& path)
 {
     if (path.empty()) return QImage();
-    static std::mutex s_mtx;
-    static std::unordered_map<std::string, QImage> s_cache;
-    std::lock_guard<std::mutex> lk(s_mtx);
-    auto it = s_cache.find(path);
-    if (it != s_cache.end()) return it->second;
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        auto it = g_tierSourceImages.find(path);
+        if (it != g_tierSourceImages.end()) return it->second;
+    }
+    const auto filePath = utf8ToPath(path);
     QImage im;
-    im.load(QString::fromStdWString(utf8ToPath(path).wstring()));
-    s_cache.emplace(path, im);   // cache even null to avoid repeated disk hits
+    im.load(QString::fromStdWString(filePath.wstring()));
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        g_tierSourceImages[path] = im;
+    }
     return im;
+}
+
+static QImage tierlistScaledImage(const std::string& path, int width, int height)
+{
+    if (path.empty() || width <= 0 || height <= 0) return {};
+    const TierScaledImageKey key{path, width, height};
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        auto it = g_tierScaledImages.find(key);
+        if (it != g_tierScaledImages.end()) return it->second;
+    }
+    const QImage source = tierlistLoadImage(path);
+    const QImage scaled = source.isNull() ? QImage() : source.scaled(
+        width, height, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        g_tierScaledImages[key] = scaled;
+    }
+    return scaled;
+}
+
+void invalidateTierListRenderCache(const std::string& imagePath)
+{
+    std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+    if (imagePath.empty()) {
+        g_tierSourceImages.clear();
+        g_tierScaledImages.clear();
+    } else {
+        // Changed-file notifications may differ in slash/case/canonical form
+        // from the stored project string on Windows. Asset changes are rare;
+        // clearing all decoded thumbnails is cheap and guarantees freshness.
+        g_tierSourceImages.clear();
+        g_tierScaledImages.clear();
+    }
+    g_tierRenderedFrames.clear();
+    g_tierFrameOrder.clear();
+    g_tierFrameBytes = 0;
+    ++g_tierAssetGeneration;
 }
 
 static void tierlistDrawEntry(QPainter& p, const TierEntry* e, const QRectF& cell)
 {
-    QImage im = e ? tierlistLoadImage(e->imagePath) : QImage();
+    const int targetW = std::max(1, static_cast<int>(std::lround(cell.width())));
+    const int targetH = std::max(1, static_cast<int>(std::lround(cell.height())));
+    QImage im = e ? tierlistScaledImage(e->imagePath, targetW, targetH) : QImage();
     if (!im.isNull()) {
-        QImage scaled = im.scaled(static_cast<int>(std::lround(cell.width())),
-                                  static_cast<int>(std::lround(cell.height())),
-                                  Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation);
-        const double sx = (scaled.width()  - cell.width())  * 0.5;
-        const double sy = (scaled.height() - cell.height()) * 0.5;
-        p.drawImage(cell, scaled, QRectF(sx, sy, cell.width(), cell.height()));
+        const double sx = (im.width()  - cell.width())  * 0.5;
+        const double sy = (im.height() - cell.height()) * 0.5;
+        p.drawImage(cell, im, QRectF(sx, sy, cell.width(), cell.height()));
     } else {
         p.fillRect(cell, QColor(0x33, 0x33, 0x3E));
         p.setPen(QColor(0xB0, 0xB0, 0xBA));
@@ -178,13 +313,31 @@ static void tierlistDrawEntry(QPainter& p, const TierEntry* e, const QRectF& cel
     p.drawRect(cell);
 }
 
+static double tierlistEntryAspect(const TierEntry* entry, double fallback)
+{
+    const QImage image = entry ? tierlistLoadImage(entry->imagePath) : QImage();
+    if (!image.isNull() && image.width() > 0 && image.height() > 0)
+        return static_cast<double>(image.width()) / image.height();
+    return fallback > 0.0 ? fallback : 1.0;
+}
+
 std::shared_ptr<CachedFrame> renderTierListClip(
     TierListClip* clip, int64_t tick, uint32_t outW, uint32_t outH,
     uint32_t /*refW*/, uint32_t /*refH*/)
 {
     if (!clip || outW == 0 || outH == 0) return nullptr;
 
-    const int64_t localTick = tick - clip->timelineIn();
+    const TierListClip& model = *clip;
+    const int64_t eventTick = model.eventTickAt(tick);
+    const uint64_t visualState = tierlistVisualStateHash(model, eventTick);
+    TierFrameKey frameKey;
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        frameKey = {model.id(), model.renderRevision(), visualState,
+                    g_tierAssetGeneration, outW, outH};
+        auto it = g_tierRenderedFrames.find(frameKey);
+        if (it != g_tierRenderedFrames.end()) return it->second;
+    }
     const int W = static_cast<int>(outW);
     const int H = static_cast<int>(outH);
 
@@ -197,21 +350,21 @@ std::shared_ptr<CachedFrame> renderTierListClip(
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
     // Safe-margin insets — reserve top band (channel banner) + right strip (commentators).
-    const int topInset    = static_cast<int>(std::lround(clip->topSafeMargin()   * H));
-    const int rightInset  = static_cast<int>(std::lround(clip->rightSafeMargin() * W));
+    const int topInset    = static_cast<int>(std::lround(model.topSafeMargin()   * H));
+    const int rightInset  = static_cast<int>(std::lround(model.rightSafeMargin() * W));
     const int bottomInset = static_cast<int>(std::lround(topInset * 0.44)); // ~half the top band (measured)
     const QRectF gridArea(0.0, static_cast<double>(topInset),
                           static_cast<double>(W - rightInset),
                           static_cast<double>(H - topInset - bottomInset));
 
-    const auto& tiers = clip->tiers();
+    const auto& tiers = model.tiers();
     const int nTiers  = static_cast<int>(tiers.size());
 
     // Left title sidebar (rotated).
     const double sidebarW = std::max(24.0, W * 0.0568);   // measured
     const QRectF sidebar(gridArea.left(), gridArea.top(), sidebarW, gridArea.height());
     p.fillRect(sidebar, QColor(0, 0, 0));
-    if (!clip->title().empty()) {
+    if (!model.title().empty()) {
         p.save();
         p.translate(sidebar.center());
         p.rotate(-90.0);
@@ -221,7 +374,7 @@ std::shared_ptr<CachedFrame> renderTierListClip(
         p.setPen(QColor(255, 255, 255));
         const QRectF tr(-sidebar.height() * 0.5, -sidebar.width() * 0.5,
                         sidebar.height(), sidebar.width());
-        p.drawText(tr, Qt::AlignCenter, QString::fromStdString(clip->title()));
+        p.drawText(tr, Qt::AlignCenter, QString::fromStdString(model.title()));
         p.restore();
     }
 
@@ -235,9 +388,18 @@ std::shared_ptr<CachedFrame> renderTierListClip(
         std::vector<std::vector<uint64_t>> rows(static_cast<size_t>(nTiers));
         uint64_t popupEntry = 0;   bool   hasPopup = false;
 
-        std::vector<TierEvent> evs = clip->events();
+        std::vector<TierEvent> evs = model.events();
         std::stable_sort(evs.begin(), evs.end(),
                          [](const TierEvent& a, const TierEvent& b) { return a.start < b.start; });
+
+        std::unordered_map<uint64_t, const TierEntry*> entriesById;
+        entriesById.reserve(model.entries().size());
+        for (const TierEntry& entry : model.entries())
+            entriesById.emplace(entry.id, &entry);
+        const auto entryById = [&entriesById](uint64_t id) -> const TierEntry* {
+            auto it = entriesById.find(id);
+            return it != entriesById.end() ? it->second : nullptr;
+        };
 
         auto removeId = [&](uint64_t id) {
             for (auto& row : rows)
@@ -246,9 +408,9 @@ std::shared_ptr<CachedFrame> renderTierListClip(
 
         for (const auto& e : evs) {
             if (e.type == TierEventType::Popup) {
-                if (localTick >= e.start && localTick < e.end) { popupEntry = e.entryId; hasPopup = true; }
+                if (eventTick >= e.start && eventTick < e.end) { popupEntry = e.entryId; hasPopup = true; }
             } else if (e.type == TierEventType::Drop) {
-                if (localTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
+                if (eventTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
                     removeId(e.entryId);
                     auto& row = rows[static_cast<size_t>(e.tier)];
                     int idx = e.index;
@@ -257,7 +419,7 @@ std::shared_ptr<CachedFrame> renderTierListClip(
                     // No animation — the drop is an instant cut into the row.
                 }
             } else { // Reorder
-                if (localTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
+                if (eventTick >= e.start && e.tier >= 0 && e.tier < nTiers) {
                     auto& row = rows[static_cast<size_t>(e.tier)];
                     const int from = e.fromIndex;
                     if (from >= 0 && from < static_cast<int>(row.size())) {
@@ -273,35 +435,56 @@ std::shared_ptr<CachedFrame> renderTierListClip(
         }
 
         // ── Layout in "natural" units, then a single uniform scale to fit the
-        //    grid height. Entries are a fixed size; a tier that overflows its
-        //    content width WRAPS to more lines and GROWS taller. When the total
-        //    exceeds the grid, everything scales down uniformly so it still fits
-        //    (entry size is preserved relative to the rest, never squashed).
-        const double aspect    = static_cast<double>(clip->entryAspectRatio());
-        const double unit      = rowsArea.height() / nTiers;   // one-line row height
-        const double pad       = unit * 0.10;
-        const double eh0       = unit * 0.80;
-        const double ew0       = eh0 * aspect;
-        const double labelW0   = std::max(20.0, unit * 0.575); // measured: ~0.575 x row height
-        const double contentW0 = rowsArea.width() - labelW0;
+        //    grid height. Entries share a height but derive their width from the
+        //    source image. A tier that overflows its content width WRAPS to more
+        //    lines and GROWS taller. When the total exceeds the grid, everything
+        //    scales down uniformly so image proportions are never squashed.
+        const double fallbackAspect = static_cast<double>(model.entryAspectRatio());
+        const double unit           = rowsArea.height() / nTiers;   // one-line row height
+        const double pad            = unit * 0.10;
+        const double eh0            = unit * 0.80;
+        const double labelW0        = std::max(20.0, unit * 0.575); // measured: ~0.575 x row height
+        const double contentW0      = rowsArea.width() - labelW0;
+        const double maxEntryW0     = std::max(1.0, contentW0 - 2.0 * pad);
 
-        const int perLine = std::max(1, static_cast<int>(
-            std::floor((contentW0 - pad) / std::max(1.0, ew0 + pad))));
-
+        struct NaturalEntryLayout {
+            uint64_t id;
+            QRectF rect;
+        };
+        std::vector<std::vector<NaturalEntryLayout>> entryLayouts(
+            static_cast<size_t>(nTiers));
         std::vector<int> lines(static_cast<size_t>(nTiers), 1);
         double totalNaturalH = 0.0;
         for (int i = 0; i < nTiers; ++i) {
-            const int cnt = static_cast<int>(rows[static_cast<size_t>(i)].size());
-            const int L   = std::max(1, (cnt + perLine - 1) / perLine);
-            lines[static_cast<size_t>(i)] = L;
-            totalNaturalH += (L + 1) * pad + L * eh0;
+            double x = pad;
+            int line = 0;
+            auto& layouts = entryLayouts[static_cast<size_t>(i)];
+            for (uint64_t id : rows[static_cast<size_t>(i)]) {
+                const double imageAspect = tierlistEntryAspect(
+                    entryById(id), fallbackAspect);
+                double entryH = eh0;
+                double entryW = entryH * imageAspect;
+                if (entryW > maxEntryW0) {
+                    entryW = maxEntryW0;
+                    entryH = entryW / imageAspect;
+                }
+
+                if (x > pad && x + entryW > contentW0 - pad) {
+                    x = pad;
+                    ++line;
+                }
+                const double y = pad + line * (eh0 + pad) + (eh0 - entryH) * 0.5;
+                layouts.push_back({id, QRectF(x, y, entryW, entryH)});
+                x += entryW + pad;
+            }
+
+            const int lineCount = line + 1;
+            lines[static_cast<size_t>(i)] = lineCount;
+            totalNaturalH += (lineCount + 1) * pad + lineCount * eh0;
         }
         const double scale = (totalNaturalH > 1.0)
                            ? std::min(1.0, rowsArea.height() / totalNaturalH) : 1.0;
 
-        const double eh     = eh0 * scale;
-        const double ew     = ew0 * scale;
-        const double sPad   = pad * scale;
         const double labelW = labelW0 * scale;
 
         double y = rowsArea.top();
@@ -337,16 +520,13 @@ std::shared_ptr<CachedFrame> renderTierListClip(
             const QRectF ccell(lcell.right(), rrow.top(), rrow.width() - labelW, tierH);
             p.fillRect(ccell, QColor(0x1A, 0x1A, 0x17));   // measured content grey
 
-            if (eh > 1.0 && ew > 1.0) {
-                const auto& ids = rows[static_cast<size_t>(i)];
-                for (size_t k = 0; k < ids.size(); ++k) {
-                    const int col = static_cast<int>(k) % perLine;
-                    const int lin = static_cast<int>(k) / perLine;
-                    const QRectF cell(ccell.left() + sPad + col * (ew + sPad),
-                                      ccell.top()  + sPad + lin * (eh + sPad),
-                                      ew, eh);
-                    tierlistDrawEntry(p, clip->entryById(ids[k]), cell);
-                }
+            for (const auto& layout : entryLayouts[static_cast<size_t>(i)]) {
+                const QRectF cell(ccell.left() + layout.rect.left() * scale,
+                                  ccell.top()  + layout.rect.top() * scale,
+                                  layout.rect.width() * scale,
+                                  layout.rect.height() * scale);
+                if (cell.width() > 1.0 && cell.height() > 1.0)
+                    tierlistDrawEntry(p, entryById(layout.id), cell);
             }
 
             y += tierH;
@@ -363,15 +543,22 @@ std::shared_ptr<CachedFrame> renderTierListClip(
         // out with its POPUP window (no animation), on a white sharp-cornered
         // frame. The board behind stays fully visible (no dimming).
         if (hasPopup) {
+            // The full spotlight view also preserves the source image's shape.
+            const TierEntry* popup = entryById(popupEntry);
+            const double popupAspect = tierlistEntryAspect(popup, fallbackAspect);
+
             double panelH = H * 0.72;
-            double panelW = panelH * aspect;
+            double panelW = panelH * popupAspect;
             const double maxW = (W - rightInset) * 0.86;
-            if (panelW > maxW) { panelW = maxW; if (aspect > 0.0) panelH = panelW / aspect; }
+            if (panelW > maxW) {
+                panelW = maxW;
+                if (popupAspect > 0.0) panelH = panelW / popupAspect;
+            }
             const QRectF panel((W - panelW) * 0.5, (H - panelH) * 0.5, panelW, panelH);
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(255, 255, 255));
             p.drawRect(panel.adjusted(-10, -10, 10, 10));   // white frame, sharp corners
-            tierlistDrawEntry(p, clip->entryById(popupEntry), panel);
+            tierlistDrawEntry(p, popup, panel);
         }
     }
 
@@ -389,6 +576,27 @@ std::shared_ptr<CachedFrame> renderTierListClip(
     frame->stride = static_cast<uint32_t>(img.bytesPerLine());
     frame->pixels.resize(static_cast<size_t>(frame->stride) * outH);
     std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
+    frame->pinned = true;
+    computeBgraContentBounds(*frame);
+    frame->mediaId = 0xF17E000000000000ull
+                   ^ static_cast<uint64_t>(TierFrameKeyHash{}(frameKey));
+    frame->frameNumber = static_cast<int64_t>(visualState & 0x7FFFFFFFFFFFFFFFull);
+
+    {
+        std::lock_guard<std::mutex> lk(g_tierCacheMutex);
+        auto [it, inserted] = g_tierRenderedFrames.emplace(frameKey, frame);
+        if (!inserted) return it->second;
+        g_tierFrameOrder.push_back(frameKey);
+        g_tierFrameBytes += frame->pixels.size();
+        while (g_tierFrameBytes > kTierFrameCacheBudget && !g_tierFrameOrder.empty()) {
+            const TierFrameKey oldest = g_tierFrameOrder.front();
+            g_tierFrameOrder.pop_front();
+            auto oldIt = g_tierRenderedFrames.find(oldest);
+            if (oldIt == g_tierRenderedFrames.end()) continue;
+            g_tierFrameBytes -= oldIt->second->pixels.size();
+            g_tierRenderedFrames.erase(oldIt);
+        }
+    }
     return frame;
 }
 
@@ -401,6 +609,126 @@ std::shared_ptr<CachedFrame> renderTierListClip(
 // =========================================================================
 
 namespace {
+
+void boxBlurHorizontal(const uint32_t* source, uint32_t* destination,
+                       int width, int height, int radius)
+{
+    const float divisor = 1.0f / static_cast<float>(radius * 2 + 1);
+    for (int y = 0; y < height; ++y) {
+        const uint32_t* row = source + y * width;
+        uint32_t* output = destination + y * width;
+        float a = 0, r = 0, g = 0, b = 0;
+        for (int x = -radius; x <= radius; ++x) {
+            const uint32_t pixel = row[std::clamp(x, 0, width - 1)];
+            a += static_cast<float>((pixel >> 24) & 0xFF);
+            r += static_cast<float>((pixel >> 16) & 0xFF);
+            g += static_cast<float>((pixel >> 8) & 0xFF);
+            b += static_cast<float>(pixel & 0xFF);
+        }
+        for (int x = 0; x < width; ++x) {
+            output[x] = (static_cast<uint32_t>(a * divisor + 0.5f) << 24)
+                | (static_cast<uint32_t>(r * divisor + 0.5f) << 16)
+                | (static_cast<uint32_t>(g * divisor + 0.5f) << 8)
+                | static_cast<uint32_t>(b * divisor + 0.5f);
+            const uint32_t add = row[std::min(x + radius + 1, width - 1)];
+            const uint32_t sub = row[std::max(x - radius, 0)];
+            a += static_cast<float>((add >> 24) & 0xFF)
+                - static_cast<float>((sub >> 24) & 0xFF);
+            r += static_cast<float>((add >> 16) & 0xFF)
+                - static_cast<float>((sub >> 16) & 0xFF);
+            g += static_cast<float>((add >> 8) & 0xFF)
+                - static_cast<float>((sub >> 8) & 0xFF);
+            b += static_cast<float>(add & 0xFF)
+                - static_cast<float>(sub & 0xFF);
+        }
+    }
+}
+
+void boxBlurVertical(const uint32_t* source, uint32_t* destination,
+                     int width, int height, int radius)
+{
+    const float divisor = 1.0f / static_cast<float>(radius * 2 + 1);
+    for (int x = 0; x < width; ++x) {
+        float a = 0, r = 0, g = 0, b = 0;
+        for (int y = -radius; y <= radius; ++y) {
+            const uint32_t pixel = source[
+                std::clamp(y, 0, height - 1) * width + x];
+            a += static_cast<float>((pixel >> 24) & 0xFF);
+            r += static_cast<float>((pixel >> 16) & 0xFF);
+            g += static_cast<float>((pixel >> 8) & 0xFF);
+            b += static_cast<float>(pixel & 0xFF);
+        }
+        for (int y = 0; y < height; ++y) {
+            destination[y * width + x] =
+                (static_cast<uint32_t>(a * divisor + 0.5f) << 24)
+                | (static_cast<uint32_t>(r * divisor + 0.5f) << 16)
+                | (static_cast<uint32_t>(g * divisor + 0.5f) << 8)
+                | static_cast<uint32_t>(b * divisor + 0.5f);
+            const uint32_t add = source[
+                std::min(y + radius + 1, height - 1) * width + x];
+            const uint32_t sub = source[
+                std::max(y - radius, 0) * width + x];
+            a += static_cast<float>((add >> 24) & 0xFF)
+                - static_cast<float>((sub >> 24) & 0xFF);
+            r += static_cast<float>((add >> 16) & 0xFF)
+                - static_cast<float>((sub >> 16) & 0xFF);
+            g += static_cast<float>((add >> 8) & 0xFF)
+                - static_cast<float>((sub >> 8) & 0xFF);
+            b += static_cast<float>(add & 0xFF)
+                - static_cast<float>(sub & 0xFF);
+        }
+    }
+}
+
+void blurImage(QImage& image, int radius)
+{
+    if (radius <= 0 || image.isNull()) return;
+    QImage temporary(image.size(), image.format());
+    auto* pixels = reinterpret_cast<uint32_t*>(image.bits());
+    auto* scratch = reinterpret_cast<uint32_t*>(temporary.bits());
+    for (int pass = 0; pass < 3; ++pass) {
+        boxBlurHorizontal(pixels, scratch, image.width(), image.height(), radius);
+        boxBlurVertical(scratch, pixels, image.width(), image.height(), radius);
+    }
+}
+
+void paintTextShadow(QPainter& painter, const QImage& canvas,
+                     const QPainterPath& glyphs, const QColor& color,
+                     qreal offsetX, qreal offsetY, qreal softness)
+{
+    const QPainterPath offsetPath = glyphs.translated(offsetX, offsetY);
+    if (softness < 0.5) {
+        painter.fillPath(offsetPath, color);
+        return;
+    }
+
+    const QTransform transform = painter.transform();
+    const qreal scaleX = std::hypot(transform.m11(), transform.m12());
+    const qreal scaleY = std::hypot(transform.m21(), transform.m22());
+    const int radius = std::clamp(static_cast<int>(std::lround(
+        softness * std::max(scaleX, scaleY) / 3.0)), 1, 128);
+    const QPainterPath devicePath = transform.map(offsetPath);
+    QRect bounds = devicePath.boundingRect().toAlignedRect().adjusted(
+        -radius * 3, -radius * 3, radius * 3, radius * 3);
+    bounds = bounds.intersected(canvas.rect());
+    if (bounds.isEmpty()) return;
+
+    QImage shadow(bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    shadow.fill(Qt::transparent);
+    QPainter shadowPainter(&shadow);
+    shadowPainter.setRenderHint(QPainter::Antialiasing, true);
+    shadowPainter.fillPath(
+        devicePath.translated(-bounds.left(), -bounds.top()), color);
+    shadowPainter.end();
+    blurImage(shadow, radius);
+
+    const qreal layerOpacity = painter.opacity();
+    painter.save();
+    painter.resetTransform();
+    painter.setOpacity(layerOpacity);
+    painter.drawImage(bounds.topLeft(), shadow);
+    painter.restore();
+}
 
 /// Fraction of full cap height used for originally-lowercase letters.
 constexpr qreal kSmallCapScale = 0.75;
@@ -473,7 +801,8 @@ QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
                            const QFont& fullFont, const QFont& smallFont,
                            const QFontMetricsF& fmFull, const QFontMetricsF& fmSmall,
                            qreal cx, qreal cy, int hAlign, int vAlign,
-                           qreal extraLeading = 0.0, qreal baselineShift = 0.0)
+                           qreal extraLeading = 0.0, qreal baselineShift = 0.0,
+                           bool pointTextGrowsDown = false)
 {
     QPainterPath path;
     // `extraLeading` is ADDITIVE px on top of the font's natural line spacing
@@ -485,7 +814,8 @@ QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
     const qreal totalH      = lineSpacing * n;
 
     qreal blockTop;
-    if (vAlign == Qt::AlignTop)         blockTop = cy;
+    if (pointTextGrowsDown)             blockTop = cy - lineSpacing * 0.5;
+    else if (vAlign == Qt::AlignTop)    blockTop = cy;
     else if (vAlign == Qt::AlignBottom) blockTop = cy - totalH;
     else                                blockTop = cy - totalH * 0.5;   // VCenter
 
@@ -512,7 +842,475 @@ QPainterPath buildTextPath(const std::vector<std::vector<SmallCapsRun>>& lines,
     return path;
 }
 
+struct StyledGlyphRun {
+    QString text;
+    QFont font;
+    qreal baselineShift{0.0};
+    qreal leading{0.0};
+    qreal advanceOverride{-1.0};
+    TextStyleRun style;
+};
+
+struct StyledGlyphUnit {
+    QString text;
+    QFont font;
+    bool whitespace{false};
+    qreal baselineShift{0.0};
+    qreal leading{0.0};
+    qreal advanceOverride{-1.0};
+    TextStyleRun style;
+};
+
+struct StyledPathPiece {
+    QPainterPath path;
+    TextStyleRun style;
+    QPointF origin;
+    QString text;
+    QFont font;
+    bool colorFont{false};
+};
+
+struct StyledTextPath {
+    QPainterPath combined;
+    std::vector<StyledPathPiece> pieces;
+};
+
+bool fontHasColorGlyphs(const QFont& font)
+{
+    const QRawFont raw = QRawFont::fromFont(font);
+    if (!raw.isValid()) return false;
+    // QPainter can preserve the embedded palette/bitmap/SVG data from these
+    // OpenType formats. Converting the glyph to QPainterPath cannot.
+    return !raw.fontTable("COLR").isEmpty()
+        || !raw.fontTable("CBDT").isEmpty()
+        || !raw.fontTable("sbix").isEmpty()
+        || !raw.fontTable("SVG ").isEmpty();
+}
+
+qreal textUnderlinePadding(const QFontMetricsF& metrics)
+{
+    // Keep the decoration clear of descenders (g, p, q, y). A small
+    // scale-aware gap reads like Premiere's underline instead of touching
+    // the glyph outline, while the clamp prevents extreme sizes drifting.
+    return std::clamp(metrics.height() * 0.04, 2.0, 5.0);
+}
+
+/// Character-style-aware counterpart to buildTextPath(). TextStyleRun offsets
+/// are UTF-16 positions, exactly matching QString/QTextCursor positions.
+StyledTextPath buildStyledTextPath(const QString& source,
+                                   const TextLayer& layer,
+                                   int64_t localTick, qreal cx, qreal cy,
+                                   int hAlign, int vAlign)
+{
+    std::vector<std::vector<StyledGlyphUnit>> paragraphs(1);
+    std::vector<int> paragraphAlignments(1, hAlign);
+    std::vector<bool> paragraphDirections(1, layer.rightToLeft());
+    const auto& styles = layer.styleRuns();
+    auto styleAt = [&](int position) -> TextStyleRun {
+        for (const auto& run : styles) {
+            const uint64_t end = static_cast<uint64_t>(run.start) + run.length;
+            if (position >= static_cast<int>(run.start)
+                && static_cast<uint64_t>(position) < end) {
+                TextStyleRun resolved = run;
+                if (!(run.overrideMask & TextOverrideCapitalization)) {
+                    resolved.allCaps = layer.allCaps();
+                    resolved.smallCaps = layer.smallCaps();
+                }
+                if (!(run.overrideMask & TextOverrideTracking))
+                    resolved.tracking = layer.tracking().evaluate(localTick);
+                if (!(run.overrideMask & TextOverrideBaseline))
+                    resolved.baselineShift =
+                        layer.baselineShift().evaluate(localTick);
+                if (!(run.overrideMask & TextOverrideLeading))
+                    resolved.leading = layer.leading().evaluate(localTick);
+                if (!(run.overrideMask & TextOverrideFontStyle))
+                    resolved.fontStyle = layer.fontStyle();
+                if (!(run.overrideMask & TextOverrideKerning))
+                    resolved.kerning = layer.kerning();
+                if (!(run.overrideMask & TextOverrideTabWidth))
+                    resolved.tabWidth = layer.tabWidth();
+                if (!(run.overrideMask & TextOverrideTsume))
+                    resolved.tsume = layer.tsume();
+                if (!(run.overrideMask & TextOverrideFauxStyle)) {
+                    resolved.fauxBold = layer.fauxBold();
+                    resolved.fauxItalic = layer.fauxItalic();
+                }
+                if (!(run.overrideMask & TextOverrideDecoration))
+                    resolved.underline = layer.underline();
+                if (!(run.overrideMask & TextOverrideScript)) {
+                    resolved.superscript = layer.superscript();
+                    resolved.subscript = layer.subscript();
+                }
+                const auto& app = layer.appearance();
+                if (!(run.overrideMask & TextOverrideFill)) {
+                    resolved.appearance.fillEnabled = !app.fills.empty()
+                        && app.fills.front().enabled;
+                    if (!app.fills.empty())
+                        resolved.appearance.fillColor = app.fills.front().color;
+                }
+                if (!(run.overrideMask & TextOverrideStroke)) {
+                    resolved.appearance.strokeEnabled = !app.strokes.empty()
+                        && app.strokes.front().enabled;
+                    if (!app.strokes.empty()) {
+                        resolved.appearance.strokeColor = app.strokes.front().color;
+                        resolved.appearance.strokeWidth = app.strokes.front().width;
+                        resolved.appearance.strokePosition = app.strokes.front().position;
+                    }
+                }
+                if (!(run.overrideMask & TextOverrideShadow)) {
+                    resolved.appearance.shadowEnabled = !app.shadows.empty()
+                        && app.shadows.front().enabled;
+                    if (!app.shadows.empty()) {
+                        resolved.appearance.shadowColor = app.shadows.front().color;
+                        resolved.appearance.shadowDistance = app.shadows.front().distance;
+                        resolved.appearance.shadowAngle = app.shadows.front().angle;
+                        resolved.appearance.shadowSoftness = app.shadows.front().softness;
+                        resolved.appearance.shadowOpacity = app.shadows.front().opacity;
+                    }
+                }
+                if (!(run.overrideMask & TextOverrideBackground)) {
+                    resolved.appearance.backgroundEnabled = layer.backgroundEnabled();
+                    resolved.appearance.backgroundColor = layer.backgroundColor();
+                    resolved.appearance.backgroundPadding = layer.backgroundPadding();
+                }
+                return resolved;
+            }
+        }
+        TextStyleRun fallback;
+        fallback.fontFamily = layer.fontFamily();
+        fallback.fontStyle = layer.fontStyle();
+        fallback.fontSize = layer.fontSize();
+        fallback.fontWeight = layer.fontWeight();
+        fallback.italic = layer.isItalic();
+        fallback.allCaps = layer.allCaps();
+        fallback.smallCaps = layer.smallCaps();
+        fallback.tracking = layer.tracking().evaluate(localTick);
+        fallback.baselineShift = layer.baselineShift().evaluate(localTick);
+        fallback.leading = layer.leading().evaluate(localTick);
+        fallback.kerning = layer.kerning();
+        fallback.tabWidth = layer.tabWidth();
+        fallback.tsume = layer.tsume();
+        fallback.fauxBold = layer.fauxBold();
+        fallback.fauxItalic = layer.fauxItalic();
+        fallback.underline = layer.underline();
+        fallback.superscript = layer.superscript();
+        fallback.subscript = layer.subscript();
+        const auto& app = layer.appearance();
+        fallback.appearance.fillEnabled = !app.fills.empty()
+            && app.fills.front().enabled;
+        if (!app.fills.empty()) fallback.appearance.fillColor = app.fills.front().color;
+        fallback.appearance.strokeEnabled = !app.strokes.empty()
+            && app.strokes.front().enabled;
+        if (!app.strokes.empty()) {
+            fallback.appearance.strokeColor = app.strokes.front().color;
+            fallback.appearance.strokeWidth = app.strokes.front().width;
+            fallback.appearance.strokePosition = app.strokes.front().position;
+        }
+        fallback.appearance.shadowEnabled = !app.shadows.empty()
+            && app.shadows.front().enabled;
+        if (!app.shadows.empty()) {
+            fallback.appearance.shadowColor = app.shadows.front().color;
+            fallback.appearance.shadowDistance = app.shadows.front().distance;
+            fallback.appearance.shadowAngle = app.shadows.front().angle;
+            fallback.appearance.shadowSoftness = app.shadows.front().softness;
+            fallback.appearance.shadowOpacity = app.shadows.front().opacity;
+        }
+        fallback.appearance.backgroundEnabled = layer.backgroundEnabled();
+        fallback.appearance.backgroundColor = layer.backgroundColor();
+        fallback.appearance.backgroundPadding = layer.backgroundPadding();
+        return fallback;
+    };
+
+    auto append = [&](const QString& text, TextStyleRun style, bool small,
+                      bool whitespace) {
+        if (text.isEmpty()) return;
+        QFont font(QString::fromStdString(style.fontFamily));
+        font.setPointSizeF(std::max(1.0,
+            static_cast<double>(style.fontSize)
+                * (small ? kSmallCapScale : 1.0)));
+        font.setWeight(static_cast<QFont::Weight>(
+            std::clamp(style.fontWeight, 1, 1000)));
+        font.setItalic(style.italic);
+        if (!style.fontStyle.empty())
+            font.setStyleName(QString::fromStdString(style.fontStyle));
+        if (style.fauxBold)
+            font.setWeight(static_cast<QFont::Weight>(
+                std::max(700, static_cast<int>(font.weight()))));
+        if (style.fauxItalic) font.setItalic(true);
+        // Underlines are added to the vector path below so we can control
+        // their offset. QFont's native underline commonly intersects glyph
+        // descenders and cannot be given extra padding.
+        font.setUnderline(false);
+        if (style.superscript || style.subscript) {
+            font.setPointSizeF(std::max(1.0, font.pointSizeF() * 0.6));
+            style.baselineShift += style.superscript
+                ? style.fontSize * 0.35f : -style.fontSize * 0.2f;
+        }
+        font.setLetterSpacing(QFont::AbsoluteSpacing,
+            static_cast<qreal>(style.tracking + style.kerning));
+        font.setStretch(std::clamp(static_cast<int>(std::round(
+            100.0 * std::clamp(1.0 - style.tsume / 100.0, 0.1, 1.0))),
+            1, 4000));
+
+        paragraphs.back().push_back(
+            {text, font, whitespace, static_cast<qreal>(style.baselineShift),
+             static_cast<qreal>(style.leading),
+             text == QStringLiteral("\t")
+                ? static_cast<qreal>(style.tabWidth) : -1.0,
+             std::move(style)});
+    };
+
+    auto paragraphAlignmentAt = [&](int position) {
+        for (const auto& paragraph : layer.paragraphStyles()) {
+            const uint64_t end = static_cast<uint64_t>(paragraph.start)
+                + paragraph.length;
+            if (position >= static_cast<int>(paragraph.start)
+                && static_cast<uint64_t>(position) < end) {
+                switch (paragraph.alignment) {
+                case GTextAlign::Left: return int(Qt::AlignLeft);
+                case GTextAlign::Right: return int(Qt::AlignRight);
+                case GTextAlign::Justify: return int(Qt::AlignJustify);
+                case GTextAlign::Center:
+                default: return int(Qt::AlignHCenter);
+                }
+            }
+        }
+        return hAlign;
+    };
+
+    auto paragraphDirectionAt = [&](int position) {
+        for (const auto& paragraph : layer.paragraphStyles()) {
+            const uint64_t end = static_cast<uint64_t>(paragraph.start)
+                + paragraph.length;
+            if (position >= static_cast<int>(paragraph.start)
+                && static_cast<uint64_t>(position) < end)
+                return paragraph.rightToLeft;
+        }
+        return layer.rightToLeft();
+    };
+
+    for (int pos = 0; pos < source.size(); ++pos) {
+        const QChar ch = source.at(pos);
+        if (ch == QChar('\n')) {
+            paragraphs.emplace_back();
+            paragraphAlignments.push_back(paragraphAlignmentAt(pos + 1));
+            paragraphDirections.push_back(paragraphDirectionAt(pos + 1));
+            continue;
+        }
+        int units = 1;
+        if (ch.isHighSurrogate() && pos + 1 < source.size()
+            && source.at(pos + 1).isLowSurrogate())
+            units = 2;
+        TextStyleRun style = styleAt(pos);
+        const bool small = style.smallCaps && !style.allCaps && ch.isLower();
+        QString glyph = source.mid(pos, units);
+        if (style.allCaps || style.smallCaps) glyph = glyph.toUpper();
+        append(glyph, std::move(style), small, ch.isSpace());
+        pos += units - 1;
+    }
+
+    std::vector<std::vector<StyledGlyphUnit>> unitLines;
+    std::vector<int> lineAlignments;
+    std::vector<bool> lineDirections;
+    const bool wrap = layer.useParagraphBox() && layer.boxWidth() > 1.0f;
+    const qreal maxWidth = static_cast<qreal>(layer.boxWidth());
+    auto widthOf = [](const std::vector<StyledGlyphUnit>& units) {
+        qreal width = 0.0;
+        for (const auto& unit : units)
+            width += unit.advanceOverride >= 0.0
+                ? unit.advanceOverride
+                : QFontMetricsF(unit.font).horizontalAdvance(unit.text);
+        return width;
+    };
+
+    for (size_t paragraphIndex = 0; paragraphIndex < paragraphs.size();
+         ++paragraphIndex) {
+        const auto& paragraph = paragraphs[paragraphIndex];
+        if (!wrap) {
+            unitLines.push_back(paragraph);
+            lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
+            lineDirections.push_back(paragraphDirections[paragraphIndex]);
+            continue;
+        }
+
+        std::vector<StyledGlyphUnit> line;
+        for (const auto& unit : paragraph) {
+            line.push_back(unit);
+            if (line.size() <= 1 || widthOf(line) <= maxWidth) continue;
+
+            size_t breakAt = line.size();
+            for (size_t i = line.size() - 1; i > 0; --i) {
+                if (line[i].whitespace) {
+                    breakAt = i;
+                    break;
+                }
+            }
+
+            std::vector<StyledGlyphUnit> overflow;
+            if (breakAt < line.size()) {
+                overflow.assign(line.begin() + static_cast<std::ptrdiff_t>(breakAt + 1),
+                                line.end());
+                line.erase(line.begin() + static_cast<std::ptrdiff_t>(breakAt),
+                           line.end());
+            } else {
+                overflow.push_back(line.back());
+                line.pop_back();
+            }
+            while (!line.empty() && line.back().whitespace) line.pop_back();
+            if (!line.empty()) {
+                unitLines.push_back(std::move(line));
+                lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
+                lineDirections.push_back(paragraphDirections[paragraphIndex]);
+            }
+            while (!overflow.empty() && overflow.front().whitespace)
+                overflow.erase(overflow.begin());
+            line = std::move(overflow);
+        }
+        unitLines.push_back(std::move(line));
+        lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
+        lineDirections.push_back(paragraphDirections[paragraphIndex]);
+    }
+
+    std::vector<std::vector<StyledGlyphRun>> lines;
+    lines.reserve(unitLines.size());
+    for (const auto& units : unitLines) {
+        std::vector<StyledGlyphRun> line;
+        for (const auto& unit : units) {
+            if (!line.empty() && line.back().font == unit.font
+                && line.back().baselineShift == unit.baselineShift
+                && line.back().leading == unit.leading
+                && line.back().advanceOverride < 0.0
+                && unit.advanceOverride < 0.0
+                && line.back().style == unit.style)
+                line.back().text += unit.text;
+            else
+                line.push_back(
+                    {unit.text, unit.font, unit.baselineShift, unit.leading,
+                     unit.advanceOverride, unit.style});
+        }
+        lines.push_back(std::move(line));
+    }
+
+    struct LineMetrics {
+        qreal width{0};
+        qreal ascent{0};
+        qreal height{0};
+    };
+    std::vector<LineMetrics> metrics(lines.size());
+    const QFont fallbackFont(QString::fromStdString(layer.fontFamily()),
+                             std::max(1, static_cast<int>(layer.fontSize())));
+    const QFontMetricsF fallbackMetrics(fallbackFont);
+    const qreal fallbackLeading = static_cast<qreal>(
+        layer.leading().evaluate(localTick));
+    qreal totalHeight = 0;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        auto& lm = metrics[i];
+        lm.ascent = fallbackMetrics.ascent();
+        lm.height = lines[i].empty()
+            ? fallbackMetrics.lineSpacing() + fallbackLeading : 0.0;
+        for (const auto& run : lines[i]) {
+            const QFontMetricsF fm(run.font);
+            lm.width += run.advanceOverride >= 0.0
+                ? run.advanceOverride : fm.horizontalAdvance(run.text);
+            lm.ascent = std::max(lm.ascent,
+                fm.ascent() + std::max<qreal>(0.0, run.baselineShift));
+            const qreal underlineExtra = run.style.underline
+                ? textUnderlinePadding(fm)
+                    + std::max<qreal>(1.0, fm.lineWidth())
+                : 0.0;
+            lm.height = std::max(lm.height,
+                fm.lineSpacing() + std::abs(run.baselineShift) + run.leading
+                    + underlineExtra);
+        }
+        totalHeight += lm.height;
+    }
+
+    qreal blockTop = cy - totalHeight * 0.5;
+    if (!layer.useParagraphBox() && !metrics.empty())
+        blockTop = cy - metrics.front().height * 0.5;
+    else if (vAlign == Qt::AlignTop) blockTop = cy;
+    else if (vAlign == Qt::AlignBottom) blockTop = cy - totalHeight;
+
+    StyledTextPath result;
+    qreal lineTop = blockTop;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const auto& lm = metrics[i];
+        qreal penX = cx - lm.width * 0.5;
+        const int lineAlignment = i < lineAlignments.size()
+            ? lineAlignments[i] : hAlign;
+        if (lineAlignment == Qt::AlignLeft) penX = cx;
+        else if (lineAlignment == Qt::AlignRight) penX = cx - lm.width;
+        const qreal baseline = lineTop + lm.ascent;
+        auto addRun = [&](const StyledGlyphRun& run) {
+            QPainterPath piece;
+            if (run.advanceOverride < 0.0 && !run.text.isEmpty()) {
+                const QPointF origin(penX, baseline - run.baselineShift);
+                piece.addText(origin, run.font, run.text);
+                if (run.style.underline) {
+                    const QFontMetricsF fm(run.font);
+                    const qreal lineWidth = std::max<qreal>(
+                        1.0, fm.lineWidth());
+                    piece.addRect(QRectF(penX,
+                        baseline - run.baselineShift + fm.descent()
+                            + textUnderlinePadding(fm),
+                        fm.horizontalAdvance(run.text),
+                        lineWidth));
+                }
+                result.combined.addPath(piece);
+                result.pieces.push_back({piece, run.style, origin, run.text,
+                                         run.font,
+                                         fontHasColorGlyphs(run.font)});
+            }
+            penX += run.advanceOverride >= 0.0
+                ? run.advanceOverride
+                : QFontMetricsF(run.font).horizontalAdvance(run.text);
+        };
+        if (i < lineDirections.size() && lineDirections[i]) {
+            for (auto it = lines[i].rbegin(); it != lines[i].rend(); ++it)
+                addRun(*it);
+        } else {
+            for (const auto& run : lines[i]) addRun(run);
+        }
+        lineTop += lm.height;
+    }
+    return result;
+}
+
 } // namespace
+
+GraphicTextLayoutBounds measureGraphicTextLayout(
+    const TextLayer* layer, int64_t localTick, double centerX, double centerY,
+    int horizontalAlignment, int verticalAlignment)
+{
+    GraphicTextLayoutBounds bounds;
+    if (!layer) return bounds;
+
+    // Paragraph text is laid out relative to the selected box edge; point
+    // text is laid out relative to its first-line centre.  This mirrors the
+    // textCy adjustment in renderGraphicClip() below.
+    qreal textCenterY = static_cast<qreal>(centerY);
+    if (layer->useParagraphBox()) {
+        const qreal halfBox = std::max<qreal>(1.0, layer->boxHeight()) * 0.5;
+        if (verticalAlignment == Qt::AlignTop)
+            textCenterY -= halfBox;
+        else if (verticalAlignment == Qt::AlignBottom)
+            textCenterY += halfBox;
+    }
+
+    const StyledTextPath layout = buildStyledTextPath(
+        QString::fromStdString(layer->text()), *layer, localTick,
+        static_cast<qreal>(centerX), textCenterY,
+        horizontalAlignment, verticalAlignment);
+    if (layout.combined.isEmpty()) return bounds;
+
+    const QRectF rect = layout.combined.boundingRect();
+    bounds.left = rect.left();
+    bounds.top = rect.top();
+    bounds.right = rect.right();
+    bounds.bottom = rect.bottom();
+    bounds.valid = rect.isValid() && !rect.isEmpty();
+    return bounds;
+}
 
 // Render-state hash for renderGraphicClip's memo cache. Folds in EVERY field
 // that affects the output bitmap — including each layer transform evaluated at
@@ -557,14 +1355,54 @@ static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
             const auto* tl = static_cast<const TextLayer*>(layer);
             mixBytes(tl->text().data(), tl->text().size());            mixU(0x5354u);
             mixBytes(tl->fontFamily().data(), tl->fontFamily().size()); mixU(0x4646u);
+            mixBytes(tl->fontStyle().data(), tl->fontStyle().size()); mixU(0x4653u);
             mixF(tl->fontSize()); mixU(static_cast<uint64_t>(tl->fontWeight()));
             mixU(tl->isItalic() ? 1u : 0u); mixU(tl->allCaps() ? 1u : 0u); mixU(tl->smallCaps() ? 1u : 0u);
+            mixU(tl->styleRuns().size());
+            for (const auto& run : tl->styleRuns()) {
+                mixU(run.start); mixU(run.length);
+                mixBytes(run.fontFamily.data(), run.fontFamily.size());
+                mixBytes(run.fontStyle.data(), run.fontStyle.size());
+                mixF(run.fontSize); mixU(static_cast<uint64_t>(run.fontWeight));
+                mixU(run.italic ? 1u : 0u);
+                mixU(run.allCaps ? 1u : 0u);
+                mixU(run.smallCaps ? 1u : 0u);
+                mixF(run.tracking); mixF(run.baselineShift); mixF(run.leading);
+                mixF(run.kerning); mixF(run.tabWidth); mixF(run.tsume);
+                mixU(run.fauxBold); mixU(run.fauxItalic); mixU(run.underline);
+                mixU(run.superscript); mixU(run.subscript);
+                mixU(run.appearance.fillEnabled); mixU(run.appearance.fillColor);
+                mixU(run.appearance.strokeEnabled); mixU(run.appearance.strokeColor);
+                mixF(run.appearance.strokeWidth);
+                mixU(static_cast<uint64_t>(run.appearance.strokePosition));
+                mixU(run.appearance.shadowEnabled); mixU(run.appearance.shadowColor);
+                mixF(run.appearance.shadowDistance); mixF(run.appearance.shadowAngle);
+                mixF(run.appearance.shadowSoftness); mixF(run.appearance.shadowOpacity);
+                mixU(run.appearance.backgroundEnabled);
+                mixU(run.appearance.backgroundColor);
+                mixF(run.appearance.backgroundPadding);
+                mixU(run.overrideMask);
+            }
             mixU(static_cast<uint64_t>(tl->alignment())); mixU(static_cast<uint64_t>(tl->vAlignment()));
             mixF(tl->tracking().evaluate(localTick));
             mixF(tl->leading().evaluate(localTick));
             mixF(tl->baselineShift().evaluate(localTick));
+            mixF(tl->kerning()); mixF(tl->tabWidth()); mixF(tl->tsume());
+            mixU(tl->fauxBold()); mixU(tl->fauxItalic()); mixU(tl->underline());
+            mixU(tl->superscript()); mixU(tl->subscript());
+            mixU(tl->rightToLeft()); mixU(tl->backgroundEnabled());
+            mixU(tl->backgroundColor()); mixF(tl->backgroundPadding());
+            mixU(tl->maskWithText());
+            mixBytes(tl->linkedStyleName().data(), tl->linkedStyleName().size());
+            mixU(tl->paragraphStyles().size());
+            for (const auto& paragraph : tl->paragraphStyles()) {
+                mixU(paragraph.start); mixU(paragraph.length);
+                mixU(static_cast<uint64_t>(paragraph.alignment));
+                mixU(paragraph.rightToLeft);
+            }
             mixU(tl->useParagraphBox() ? 1u : 0u);
             mixF(tl->boxWidth());
+            mixF(tl->boxHeight());
         } else {
             const auto* sl = static_cast<const ShapeLayer*>(layer);
             mixU(static_cast<uint64_t>(sl->shapeType()));
@@ -682,7 +1520,8 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
                                   static_cast<qreal>(tracking));
             painter.setFont(font);
 
-            QString text = QString::fromStdString(tl->text());
+            const QString sourceText = QString::fromStdString(tl->text());
+            QString text = sourceText;
             // ALL CAPS takes precedence over small caps when both are set
             // (matches Premiere). Small caps only applies when allCaps is off.
             const bool smallCaps = tl->smallCaps() && !tl->allCaps();
@@ -724,6 +1563,12 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             // register exactly (no offset outline).
             const qreal cx = static_cast<qreal>(renderW) * 0.5;
             const qreal cy = static_cast<qreal>(renderH) * 0.5;
+            qreal textCy = cy;
+            if (tl->useParagraphBox() && tl->boxHeight() > 1.0f) {
+                const qreal halfBox = static_cast<qreal>(tl->boxHeight()) * 0.5;
+                if (vAlign == Qt::AlignTop) textCy = cy - halfBox;
+                else if (vAlign == Qt::AlignBottom) textCy = cy + halfBox;
+            }
 
             QFont smallFont = font;
             std::vector<std::vector<SmallCapsRun>> lines;
@@ -741,12 +1586,134 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             }
             const QFontMetricsF fmFull(font), fmSmall(smallFont);
 
-            const QPainterPath glyphPath = buildTextPath(
-                lines, font, smallFont, fmFull, fmSmall, cx, cy, hAlign, vAlign,
-                static_cast<qreal>(tl->leading().evaluate(localTick)),
-                static_cast<qreal>(tl->baselineShift().evaluate(localTick)));
+            const bool useStyledLayout = !tl->styleRuns().empty()
+                || !tl->paragraphStyles().empty() || !tl->fontStyle().empty()
+                || tl->kerning() != 0.0f || tl->tsume() != 0.0f
+                || tl->tabWidth() != 48.0f || sourceText.contains(QChar('\t'))
+                || tl->fauxBold() || tl->fauxItalic() || tl->underline()
+                || tl->superscript() || tl->subscript()
+                || tl->rightToLeft() || tl->backgroundEnabled()
+                || tl->maskWithText() || fontHasColorGlyphs(font);
+            StyledTextPath styledLayout;
+            QPainterPath glyphPath;
+            if (useStyledLayout) {
+                styledLayout = buildStyledTextPath(
+                    sourceText, *tl, localTick, cx, textCy, hAlign, vAlign);
+                glyphPath = styledLayout.combined;
+            } else {
+                glyphPath = buildTextPath(
+                    lines, font, smallFont, fmFull, fmSmall, cx, textCy,
+                    hAlign, vAlign,
+                    static_cast<qreal>(tl->leading().evaluate(localTick)),
+                    static_cast<qreal>(tl->baselineShift().evaluate(localTick)),
+                    !tl->useParagraphBox());
+            }
 
             painter.setRenderHint(QPainter::Antialiasing, true);
+
+            if (useStyledLayout) {
+                // Range appearance is painted piece-by-piece so disabling a
+                // fill or changing an outline affects only the selected text.
+                for (const auto& piece : styledLayout.pieces) {
+                    const auto& appearance = piece.style.appearance;
+                    if (!appearance.backgroundEnabled) continue;
+                    QRectF rect = piece.path.boundingRect().adjusted(
+                        -appearance.backgroundPadding,
+                        -appearance.backgroundPadding,
+                        appearance.backgroundPadding,
+                        appearance.backgroundPadding);
+                    painter.fillRect(rect, toQColor(appearance.backgroundColor));
+                }
+                for (const auto& piece : styledLayout.pieces) {
+                    const auto& appearance = piece.style.appearance;
+                    if (!appearance.shadowEnabled) continue;
+                    const float radians = appearance.shadowAngle
+                        * 3.14159265f / 180.0f;
+                    QColor color = toQColor(appearance.shadowColor);
+                    color.setAlphaF(std::clamp<double>(
+                        appearance.shadowOpacity, 0.0, 1.0));
+                    const qreal dx = std::cos(radians)
+                        * appearance.shadowDistance;
+                    const qreal dy = std::sin(radians)
+                        * appearance.shadowDistance;
+                    paintTextShadow(painter, canvas, piece.path, color,
+                                    dx, dy, appearance.shadowSoftness);
+                }
+                for (const auto& piece : styledLayout.pieces) {
+                    const auto& appearance = piece.style.appearance;
+                    if (!appearance.strokeEnabled
+                        || appearance.strokeWidth < 0.1f
+                        || appearance.strokePosition != StrokePosition::Outer)
+                        continue;
+                    QPen pen(toQColor(appearance.strokeColor));
+                    pen.setWidthF(appearance.strokeWidth * 2.0);
+                    pen.setJoinStyle(Qt::RoundJoin);
+                    painter.setPen(pen);
+                    painter.setBrush(Qt::NoBrush);
+                    painter.drawPath(piece.path);
+                }
+                for (const auto& piece : styledLayout.pieces) {
+                    const auto& appearance = piece.style.appearance;
+                    if (!appearance.fillEnabled) continue;
+                    if (piece.colorFont) {
+                        // Keep COLR/CBDT/sbix/SVG glyphs in their native form.
+                        // QPainterPath::addText flattens them to a monochrome
+                        // outline, while drawText preserves their palettes.
+                        painter.save();
+                        painter.setFont(piece.font);
+                        painter.setPen(toQColor(appearance.fillColor));
+                        painter.drawText(piece.origin, piece.text);
+                        painter.restore();
+                    } else {
+                        painter.fillPath(piece.path,
+                                         toQColor(appearance.fillColor));
+                    }
+                }
+                for (const auto& piece : styledLayout.pieces) {
+                    const auto& appearance = piece.style.appearance;
+                    if (!appearance.strokeEnabled
+                        || appearance.strokeWidth < 0.1f
+                        || appearance.strokePosition == StrokePosition::Outer)
+                        continue;
+                    QPen pen(toQColor(appearance.strokeColor));
+                    pen.setWidthF(appearance.strokePosition
+                        == StrokePosition::Inner
+                        ? appearance.strokeWidth * 2.0
+                        : appearance.strokeWidth);
+                    pen.setJoinStyle(Qt::RoundJoin);
+                    painter.setPen(pen);
+                    painter.setBrush(Qt::NoBrush);
+                    if (appearance.strokePosition == StrokePosition::Inner) {
+                        painter.save();
+                        painter.setClipPath(piece.path);
+                        painter.drawPath(piece.path);
+                        painter.restore();
+                    } else {
+                        painter.drawPath(piece.path);
+                    }
+                }
+                if (tl->maskWithText()) {
+                    // DestinationIn must cover the entire destination. Filling
+                    // only the glyph path leaves all pixels outside the text
+                    // untouched, which is not a mask at all.
+                    QImage textMask(canvas.size(),
+                                    QImage::Format_ARGB32_Premultiplied);
+                    textMask.fill(Qt::transparent);
+                    QPainter maskPainter(&textMask);
+                    maskPainter.setRenderHint(QPainter::Antialiasing, true);
+                    maskPainter.setTransform(painter.transform());
+                    maskPainter.fillPath(glyphPath, Qt::white);
+                    maskPainter.end();
+
+                    painter.save();
+                    painter.resetTransform();
+                    painter.setOpacity(1.0);
+                    painter.setCompositionMode(
+                        QPainter::CompositionMode_DestinationIn);
+                    painter.drawImage(QPoint(0, 0), textMask);
+                    painter.restore();
+                }
+            } else {
 
             // Strokes honour their position relative to the glyph edge:
             //   Outer  — pen 2*w BEHIND the fill (fill hides the inner half,
@@ -773,7 +1740,8 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
                 qreal sdy = std::sin(rad) * static_cast<qreal>(it->distance);
                 QColor sc = toQColor(it->color);
                 sc.setAlphaF(static_cast<double>(it->opacity));
-                painter.fillPath(glyphPath.translated(sdx, sdy), sc);
+                paintTextShadow(painter, canvas, glyphPath, sc, sdx, sdy,
+                                it->softness);
             }
 
             // Fill
@@ -802,6 +1770,7 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
                     painter.drawPath(glyphPath);
                     painter.restore();
                 }
+            }
             }
 
         } else if (layer->layerType() == GraphicLayerType::Shape) {
@@ -885,6 +1854,8 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
 // per clip (no per-tick animation), so the key covers every editable field
 // plus the output dimensions — an edit changes the key, so the cache is
 // self-invalidating and cannot serve a stale frame.
+static constexpr int kCaptionLeadingProperty = QTextFormat::UserProperty + 1;
+
 static uint64_t hashCaptionClipRenderState(CaptionClip* clip,
                                            uint32_t outW, uint32_t outH,
                                            uint32_t renderW, uint32_t renderH)
@@ -901,12 +1872,47 @@ static uint64_t hashCaptionClipRenderState(CaptionClip* clip,
     mixBytes(clip->text().data(), clip->text().size());             mixU(0x5354u);
     mixBytes(clip->speaker().data(), clip->speaker().size());       mixU(0x5350u);
     mixBytes(clip->fontFamily().data(), clip->fontFamily().size()); mixU(0x4646u);
+    mixBytes(clip->fontStyle().data(), clip->fontStyle().size()); mixU(0x4653u);
     mixF(clip->fontSize());
     mixU(clip->textColor()); mixU(clip->bgColor());
     mixU(static_cast<uint64_t>(clip->position()));
     mixU(clip->isBold() ? 1u : 0u);
     mixU(clip->outlineColor()); mixF(clip->outlineWidth());
     mixU(clip->showSpeaker() ? 1u : 0u);
+    mixU(clip->isItalic()); mixU(clip->allCaps()); mixU(clip->smallCaps());
+    mixU(clip->underline()); mixU(clip->superscript()); mixU(clip->subscript());
+    mixU(clip->fauxBold()); mixU(clip->fauxItalic());
+    mixF(clip->tracking()); mixF(clip->leading());
+    mixU(static_cast<uint64_t>(clip->alignment()));
+    mixBytes(clip->trackStyleName().data(), clip->trackStyleName().size());
+    mixU(clip->styleRuns().size());
+    for (const auto& run : clip->styleRuns()) {
+        mixU(run.start); mixU(run.length);
+        mixBytes(run.fontFamily.data(), run.fontFamily.size());
+        mixBytes(run.fontStyle.data(), run.fontStyle.size());
+        mixF(run.fontSize); mixU(static_cast<uint64_t>(run.fontWeight));
+        mixU(run.italic ? 1u : 0u);
+        mixU(run.allCaps ? 1u : 0u);
+        mixU(run.smallCaps ? 1u : 0u);
+        mixF(run.tracking); mixF(run.baselineShift); mixF(run.leading);
+        mixF(run.kerning); mixF(run.tabWidth); mixF(run.tsume);
+        mixU(run.fauxBold); mixU(run.fauxItalic); mixU(run.underline);
+        mixU(run.superscript); mixU(run.subscript);
+        mixU(run.appearance.fillEnabled); mixU(run.appearance.fillColor);
+        mixU(run.appearance.strokeEnabled); mixU(run.appearance.strokeColor);
+        mixF(run.appearance.strokeWidth);
+        mixU(static_cast<uint64_t>(run.appearance.strokePosition));
+        mixU(run.appearance.backgroundEnabled);
+        mixU(run.appearance.backgroundColor);
+        mixF(run.appearance.backgroundPadding);
+        mixU(run.overrideMask);
+    }
+    mixU(clip->paragraphStyles().size());
+    for (const auto& paragraph : clip->paragraphStyles()) {
+        mixU(paragraph.start); mixU(paragraph.length);
+        mixU(static_cast<uint64_t>(paragraph.alignment));
+        mixU(paragraph.rightToLeft);
+    }
     return h;
 }
 
@@ -919,9 +1925,13 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
     QString text = QString::fromStdString(clip->text());
     if (text.trimmed().isEmpty()) return nullptr;
     // Burn the speaker label into the cue when enabled ("SPEAKER: text").
-    if (clip->showSpeaker() && !clip->speaker().empty())
-        text = QString::fromStdString(clip->speaker()).toUpper()
-             + QStringLiteral(": ") + text;
+    int captionStyleOffset = 0;
+    if (clip->showSpeaker() && !clip->speaker().empty()) {
+        const QString prefix = QString::fromStdString(clip->speaker()).toUpper()
+            + QStringLiteral(": ");
+        captionStyleOffset = prefix.size();
+        text = prefix + text;
+    }
 
     // Render at full project resolution (like renderGraphicClip) so font
     // metrics and pixel sizes match the authored values, then downscale.
@@ -962,16 +1972,184 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
 
     int fontPx = std::max(1, static_cast<int>(std::lround(clip->fontSize())));
     QFont font(QString::fromStdString(clip->fontFamily()), fontPx);
+    font.setItalic(clip->isItalic() || clip->fauxItalic());
+    if (clip->fauxBold()) font.setWeight(QFont::Bold);
+    if (!clip->fontStyle().empty())
+        font.setStyleName(QString::fromStdString(clip->fontStyle()));
+    font.setUnderline(clip->underline());
+    font.setCapitalization(clip->allCaps() ? QFont::AllUppercase
+        : clip->smallCaps() ? QFont::SmallCaps : QFont::MixedCase);
+    font.setLetterSpacing(QFont::AbsoluteSpacing, clip->tracking());
     font.setBold(clip->isBold());   // default on — captions read best bold
     painter.setFont(font);
+
+    if (clip->fauxBold()) {
+        font.setWeight(QFont::Bold);
+        painter.setFont(font);
+    }
 
     // Lay the text out within ~80% of frame width, word-wrapped & centered.
     const int margin = static_cast<int>(renderW) / 10;  // 10% side margins
     const int maxTextW = static_cast<int>(renderW) - 2 * margin;
     QFontMetrics fm(font);
-    QRect boundUnbounded(0, 0, maxTextW, static_cast<int>(renderH));
-    QRect textBound = fm.boundingRect(
-        boundUnbounded, Qt::AlignHCenter | Qt::TextWordWrap, text);
+    QRect textBound;
+    std::unique_ptr<QTextDocument> richDocument;
+    const bool useRichDocument = !clip->styleRuns().empty()
+        || !clip->paragraphStyles().empty() || !clip->fontStyle().empty()
+        || clip->isItalic() || clip->allCaps() || clip->smallCaps()
+        || clip->underline() || clip->superscript() || clip->subscript()
+        || clip->fauxBold() || clip->fauxItalic()
+        || clip->tracking() != 0.0f || clip->leading() != 0.0f;
+    if (useRichDocument) {
+        richDocument = std::make_unique<QTextDocument>();
+        richDocument->setDocumentMargin(0.0);
+        richDocument->setDefaultFont(font);
+        richDocument->setPlainText(text);
+        QTextCursor all(richDocument.get());
+        all.select(QTextCursor::Document);
+        QTextCharFormat baseFormat;
+        baseFormat.setFont(font, QTextCharFormat::FontPropertiesAll);
+        baseFormat.setForeground(toQColor(clip->textColor()));
+        if (clip->outlineWidth() > 0.01f) {
+            QPen outline(toQColor(clip->outlineColor()));
+            outline.setWidthF(clip->outlineWidth());
+            baseFormat.setTextOutline(outline);
+        }
+        if (clip->superscript())
+            baseFormat.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+        else if (clip->subscript())
+            baseFormat.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+        baseFormat.setProperty(kCaptionLeadingProperty, clip->leading());
+        all.mergeCharFormat(baseFormat);
+        QTextBlockFormat blockFormat;
+        blockFormat.setAlignment(clip->alignment() == GTextAlign::Left
+            ? Qt::AlignLeft : clip->alignment() == GTextAlign::Right
+            ? Qt::AlignRight : clip->alignment() == GTextAlign::Justify
+            ? Qt::AlignJustify : Qt::AlignHCenter);
+        all.mergeBlockFormat(blockFormat);
+        for (const auto& run : clip->styleRuns()) {
+            const int start = std::clamp<int>(
+                captionStyleOffset + static_cast<int>(run.start), 0,
+                text.size());
+            const int end = std::clamp<int>(
+                start + static_cast<int>(run.length), start, text.size());
+            if (end <= start) continue;
+            QFont runFont(QString::fromStdString(run.fontFamily));
+            runFont.setPointSizeF(std::max(1.0,
+                static_cast<double>(run.fontSize)));
+            runFont.setWeight(static_cast<QFont::Weight>(
+                std::clamp(run.fontWeight, 1, 1000)));
+            runFont.setItalic(run.italic);
+            const QString runStyle = run.overrideMask & TextOverrideFontStyle
+                ? QString::fromStdString(run.fontStyle)
+                : QString::fromStdString(clip->fontStyle());
+            if (!runStyle.isEmpty()) runFont.setStyleName(runStyle);
+            const bool fauxBold = run.overrideMask & TextOverrideFauxStyle
+                ? run.fauxBold : clip->fauxBold();
+            const bool fauxItalic = run.overrideMask & TextOverrideFauxStyle
+                ? run.fauxItalic : clip->fauxItalic();
+            if (fauxBold) runFont.setWeight(static_cast<QFont::Weight>(
+                std::max(700, static_cast<int>(runFont.weight()))));
+            if (fauxItalic) runFont.setItalic(true);
+            runFont.setUnderline(run.overrideMask & TextOverrideDecoration
+                ? run.underline : clip->underline());
+            if (run.overrideMask & TextOverrideCapitalization) {
+                runFont.setCapitalization(run.allCaps ? QFont::AllUppercase
+                    : (run.smallCaps ? QFont::SmallCaps
+                                     : QFont::MixedCase));
+            }
+            const float runTracking = run.overrideMask & TextOverrideTracking
+                ? run.tracking : clip->tracking();
+            const float runKerning = run.overrideMask & TextOverrideKerning
+                ? run.kerning : 0.0f;
+            runFont.setLetterSpacing(QFont::AbsoluteSpacing,
+                                     runTracking + runKerning);
+            if (run.overrideMask & TextOverrideTsume)
+                runFont.setStretch(std::clamp(static_cast<int>(std::round(
+                    100.0 * std::clamp(1.0 - run.tsume / 100.0, 0.1, 1.0))),
+                    1, 4000));
+            QTextCharFormat format;
+            format.setFont(runFont, QTextCharFormat::FontPropertiesAll);
+            if (run.overrideMask & TextOverrideBaseline) {
+                format.setBaselineOffset(run.fontSize > 0.0f
+                    ? 100.0 * run.baselineShift / run.fontSize : 0.0);
+            }
+            if (run.overrideMask & TextOverrideLeading)
+                format.setProperty(kCaptionLeadingProperty, run.leading);
+            const bool super = run.overrideMask & TextOverrideScript
+                ? run.superscript : clip->superscript();
+            const bool sub = run.overrideMask & TextOverrideScript
+                ? run.subscript : clip->subscript();
+            format.setVerticalAlignment(super
+                ? QTextCharFormat::AlignSuperScript
+                : sub ? QTextCharFormat::AlignSubScript
+                      : QTextCharFormat::AlignNormal);
+            if (run.overrideMask & TextOverrideFill)
+                format.setForeground(run.appearance.fillEnabled
+                    ? toQColor(run.appearance.fillColor)
+                    : QColor(Qt::transparent));
+            if (run.overrideMask & TextOverrideStroke) {
+                QPen outline(Qt::NoPen);
+                if (run.appearance.strokeEnabled) {
+                    outline = QPen(toQColor(run.appearance.strokeColor));
+                    outline.setWidthF(run.appearance.strokeWidth);
+                }
+                format.setTextOutline(outline);
+            }
+            if (run.overrideMask & TextOverrideBackground)
+                format.setBackground(run.appearance.backgroundEnabled
+                    ? toQColor(run.appearance.backgroundColor)
+                    : QColor(Qt::transparent));
+            QTextCursor range(richDocument.get());
+            range.setPosition(start);
+            range.setPosition(end, QTextCursor::KeepAnchor);
+            range.mergeCharFormat(format);
+        }
+        for (const auto& paragraph : clip->paragraphStyles()) {
+            const int start = std::clamp<int>(captionStyleOffset
+                + static_cast<int>(paragraph.start), 0, text.size());
+            const int end = std::clamp<int>(start
+                + static_cast<int>(paragraph.length), start, text.size());
+            QTextCursor range(richDocument.get());
+            range.setPosition(start);
+            range.setPosition(end, QTextCursor::KeepAnchor);
+            QTextBlockFormat format;
+            format.setAlignment(paragraph.alignment == GTextAlign::Left
+                ? Qt::AlignLeft : paragraph.alignment == GTextAlign::Right
+                ? Qt::AlignRight : paragraph.alignment == GTextAlign::Justify
+                ? Qt::AlignJustify : Qt::AlignHCenter);
+            format.setLayoutDirection(paragraph.rightToLeft
+                ? Qt::RightToLeft : Qt::LeftToRight);
+            range.mergeBlockFormat(format);
+        }
+        for (QTextBlock block = richDocument->begin();
+             block.isValid(); block = block.next()) {
+            qreal leading = 0.0;
+            for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fragment = it.fragment();
+                if (!fragment.isValid()) continue;
+                const QTextCharFormat format = fragment.charFormat();
+                if (format.hasProperty(kCaptionLeadingProperty))
+                    leading = std::max(leading, static_cast<qreal>(
+                        format.property(kCaptionLeadingProperty).toDouble()));
+            }
+            if (leading > 0.0) {
+                QTextCursor blockCursor(block);
+                QTextBlockFormat format = blockCursor.blockFormat();
+                format.setLineHeight(leading,
+                    QTextBlockFormat::LineDistanceHeight);
+                blockCursor.setBlockFormat(format);
+            }
+        }
+        richDocument->setTextWidth(maxTextW);
+        textBound = QRect(0, 0,
+            std::max(1, static_cast<int>(std::ceil(richDocument->idealWidth()))),
+            std::max(1, static_cast<int>(std::ceil(richDocument->size().height()))));
+    } else {
+        QRect boundUnbounded(0, 0, maxTextW, static_cast<int>(renderH));
+        textBound = fm.boundingRect(
+            boundUnbounded, Qt::AlignHCenter | Qt::TextWordWrap, text);
+    }
 
     // Background box padding around the text.
     const int padX = std::max(6, fontPx / 3);
@@ -1011,19 +2189,34 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
     // Outline: offset-grid stamp in the outline color behind the fill text.
     // O(width²) drawText calls, but the memo cache above means a caption
     // renders once per edit, not once per frame — so this stays cheap.
-    if (clip->outlineWidth() > 0.01f) {
-        painter.setPen(toQColor(clip->outlineColor()));
-        const int ow = std::max(1, static_cast<int>(std::lround(clip->outlineWidth())));
-        for (int ox = -ow; ox <= ow; ++ox)
-            for (int oy = -ow; oy <= ow; ++oy) {
-                if (ox == 0 && oy == 0) continue;
-                painter.drawText(boxRect.translated(ox, oy),
-                                 Qt::AlignCenter | Qt::TextWordWrap, text);
-            }
-    }
+    if (richDocument) {
+        auto drawRich = [&](int ox, int oy, const QColor& color) {
+            painter.save();
+            painter.translate(margin + ox, boxY + padY + oy);
+            QAbstractTextDocumentLayout::PaintContext context;
+            context.palette.setColor(QPalette::Text, color);
+            context.clip = QRectF(0.0, 0.0, maxTextW,
+                                  richDocument->size().height());
+            richDocument->documentLayout()->draw(&painter, context);
+            painter.restore();
+        };
+        drawRich(0, 0, toQColor(clip->textColor()));
+    } else {
+        if (clip->outlineWidth() > 0.01f) {
+            painter.setPen(toQColor(clip->outlineColor()));
+            const int ow = std::max(1, static_cast<int>(
+                std::lround(clip->outlineWidth())));
+            for (int ox = -ow; ox <= ow; ++ox)
+                for (int oy = -ow; oy <= ow; ++oy) {
+                    if (ox == 0 && oy == 0) continue;
+                    painter.drawText(boxRect.translated(ox, oy),
+                                     Qt::AlignCenter | Qt::TextWordWrap, text);
+                }
+        }
 
-    painter.setPen(toQColor(clip->textColor()));
-    painter.drawText(boxRect, Qt::AlignCenter | Qt::TextWordWrap, text);
+        painter.setPen(toQColor(clip->textColor()));
+        painter.drawText(boxRect, Qt::AlignCenter | Qt::TextWordWrap, text);
+    }
     painter.end();
 
     if (needsDownscale)

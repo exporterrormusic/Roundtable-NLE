@@ -447,11 +447,16 @@ bool ProgramMonitor::presentFrame(const std::shared_ptr<CachedFrame>& frame)
                                  frame->width, frame->height);
                 }
             }
+            // Binary semaphore handoffs are one-shot. Detach one atomically
+            // so a held frame can be presented repeatedly without waiting on
+            // the same signal twice. Same-queue compositor frames carry 0.
+            const uint64_t semaphoreHandle = frame->gpuSemaphore.exchange(
+                0, std::memory_order_acq_rel);
             m_vulkanViewport->displayGpuImage(
                 reinterpret_cast<VkImageView>(frame->gpuImageView),
                 reinterpret_cast<VkSampler>(frame->gpuSampler),
                 frame->width, frame->height,
-                reinterpret_cast<VkSemaphore>(frame->gpuSemaphore.load()),
+                reinterpret_cast<VkSemaphore>(semaphoreHandle),
                 frame->gpuTextureOwner);
             m_lastDirectFrame = frame;
             return true;
@@ -676,6 +681,11 @@ void ProgramMonitor::onScrub(int64_t tick)
 {
     if (!m_controller) return;
 
+    // Manual navigation owns the transport: stop playback before seeking so
+    // the clock cannot immediately advance away from the clicked position.
+    if (m_controller->isPlaying())
+        m_controller->pause();
+
     m_controller->seekTo(tick);
 
     // Delegate to updateDisplay() which has its own scrub throttle
@@ -860,7 +870,7 @@ void ProgramMonitor::updateDisplay()
         // When scrub settle expires, transition to an edit-settle window
         // so the frame is re-rendered at full (non-halved) resolution.
         if (m_scrubSettleCounter == 0 && m_editSettleCounter == 0)
-            m_editSettleCounter = 5;
+            m_editSettleCounter = 60;
     }
 
     // Post-edit settle: same re-render forcing but at FULL resolution.

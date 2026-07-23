@@ -40,6 +40,18 @@ TEST_F(KeyframeTrackTest, EvaluateConstantTrack)
     EXPECT_FLOAT_EQ(track.evaluate(48000), 0.0f);
 }
 
+TEST_F(KeyframeTrackTest, WriteValueKeepsStaticTrackStatic)
+{
+    ASSERT_EQ(track.keyframeCount(), 0u);
+
+    track.writeValue(24000, 0.25f);
+
+    EXPECT_EQ(track.keyframeCount(), 0u);
+    EXPECT_FLOAT_EQ(track.defaultValue(), 0.25f);
+    EXPECT_FLOAT_EQ(track.evaluate(0), 0.25f);
+    EXPECT_FLOAT_EQ(track.evaluate(48000), 0.25f);
+}
+
 TEST_F(KeyframeTrackTest, EvaluateLinearInterpolation)
 {
     // Add two keyframes for interpolation

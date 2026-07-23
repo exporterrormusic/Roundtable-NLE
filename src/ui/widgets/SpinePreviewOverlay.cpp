@@ -156,7 +156,7 @@ QString SpinePreviewWidget::hitTestHandle(const QPoint& pos) const
 
 QString SpinePreviewWidget::hitTestEdge(const QPoint& pos) const
 {
-    // Test edges of the selected layer's bounding box â€” for ALT+drag crop
+    // Test edges of the selected layer's bounding box for Ctrl+drag crop.
     constexpr int EDGE_ZONE = 8; // pixels from edge to trigger
     for (size_t i = 0; i < m_layers.size(); ++i) {
         if (m_layers[i].layerIndex == m_selectedLayerIdx) {
@@ -396,8 +396,9 @@ void SpinePreviewWidget::mousePressEvent(QMouseEvent* event)
         return;
     }
 
-    // ALT + left click on edge â†’ crop drag
-    if (event->modifiers() & Qt::AltModifier) {
+    // Ctrl + left click on edge starts a crop drag. Plain edge/corner drags
+    // remain transform resizing, matching the Program Monitor.
+    if (event->modifiers() & Qt::ControlModifier) {
         QString edge = hitTestEdge(pos);
         if (!edge.isEmpty()) {
             for (size_t i = 0; i < m_layers.size(); ++i) {
@@ -564,7 +565,7 @@ void SpinePreviewWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    // Crop (ALT+drag edge)
+    // Crop (Ctrl+drag edge)
     if (m_cropping && m_dragLayerIdx >= 0 && m_dragLayerIdx < static_cast<int>(m_layers.size())) {
         auto& layer = m_layers[static_cast<size_t>(m_dragLayerIdx)];
         QRect r = layerScreenRect(layer);
@@ -633,8 +634,8 @@ void SpinePreviewWidget::mouseMoveEvent(QMouseEvent* event)
         QString handle = hitTestHandle(pos);
         if (!handle.isEmpty()) {
             setCursor(Qt::SizeFDiagCursor);
-        } else if (event->modifiers() & Qt::AltModifier) {
-            // Show edge crop cursor when ALT is held
+        } else if (event->modifiers() & Qt::ControlModifier) {
+            // Show the edge crop cursor only while Ctrl is held.
             QString edge = hitTestEdge(pos);
             if (edge == "left" || edge == "right")
                 setCursor(Qt::SizeHorCursor);

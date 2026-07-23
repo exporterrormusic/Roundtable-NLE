@@ -5,9 +5,9 @@
  *   - Basic Correction: temperature, tint, exposure, contrast,
  *                        highlights, shadows, whites, blacks, saturation
  *   - Creative: faded film, sharpen, vibrance, creative saturation
- *   - Curves: (future — currently structural placeholder)
+ *   - Curves: master and per-channel response curves
  *   - Color Wheels: shadow/midtone/highlight lift-gamma-gain
- *   - HSL Secondary: (future — currently structural placeholder)
+ *   - HSL Secondary: hue/saturation/luminance qualifier and correction
  *   - Vignette: amount, midpoint, roundness, feather
  *
  * Sections can be individually bypassed via enable flags stored
@@ -95,7 +95,7 @@ public:
     using CurveLUT = std::array<float, 256>;
     enum CurveChannel : uint8_t { CurveMaster = 0, CurveRed, CurveGreen, CurveBlue, CurveCount };
 
-    void setCurveLUT(CurveChannel ch, const CurveLUT& lut) { m_curveLuts[ch] = lut; m_curvesIdentity = false; }
+    void setCurveLUT(CurveChannel ch, const CurveLUT& lut);
     [[nodiscard]] const CurveLUT& curveLUT(CurveChannel ch) const noexcept { return m_curveLuts[ch]; }
     [[nodiscard]] bool curvesIdentity() const noexcept { return m_curvesIdentity; }
     void resetCurveLUTs();
@@ -117,6 +117,26 @@ public:
     void setHslParams(const HslParams& p) noexcept { m_hslParams = p; }
     [[nodiscard]] const HslParams& hslParams() const noexcept { return m_hslParams; }
 
+    /// Complete editable state used by live UI gestures and undo/redo.  Keeping
+    /// this in the model makes non-scalar controls (curves, wheels, section
+    /// toggles, and HSL) just as reversible as ordinary parameter sliders.
+    struct State {
+        bool enabled{true};
+        bool basicEnabled{true};
+        bool creativeEnabled{true};
+        bool wheelsEnabled{true};
+        bool curvesEnabled{true};
+        bool hslEnabled{true};
+        bool vignetteEnabled{true};
+        std::vector<KeyframeTrack<float>> paramTracks;
+        std::array<CurveLUT, CurveCount> curveLuts;
+        bool curvesIdentity{true};
+        HslParams hslParams;
+    };
+
+    [[nodiscard]] State captureState() const;
+    void restoreState(const State& state);
+
     /// Evaluate all params and pack section-enable flags into the float array
     /// so the GPU shader can skip disabled sections.
     [[nodiscard]] std::vector<float> evalAllParamsWithFlags(int64_t time) const;
@@ -126,6 +146,11 @@ public:
     ///         [12-15] Vignette, [16-18] Shadow RGB, [19-21] Midtone RGB,
     ///         [22-24] Highlight RGB, [25-27] Master offsets.
     [[nodiscard]] std::vector<float> evalGpuParams(int64_t time) const;
+
+    /// Additional passes run through the same GPU pipeline.  The vector size
+    /// identifies the pass to the shader: 24 = curves, 9 = HSL Secondary.
+    [[nodiscard]] std::vector<float> evalCurveGpuParams() const;
+    [[nodiscard]] std::vector<float> evalHslGpuParams() const;
 
 private:
     bool m_basicEnabled{true};

@@ -68,6 +68,9 @@ enum class EffectType : uint8_t
     // ("over the shoulder") variant — an intro-graphic preset with its own
     // OTS_INTRO.json defaults; identical shader/params to OtsLeft/OtsRight.
     OtsIntro,
+    // Premiere-style black/white luminance color mapping. Appended to keep
+    // every existing serialized uint8 effect identifier stable.
+    Tint,
     Count
 };
 
@@ -98,6 +101,7 @@ inline const char* effectTypeName(EffectType t) noexcept
     case EffectType::OtsLeft:      return "OTS LEFT";
     case EffectType::OtsRight:     return "OTS RIGHT";
     case EffectType::OtsIntro:     return "OTS INTRO";
+    case EffectType::Tint:         return "Tint";
     case EffectType::FlipHorizontal: return "Flip Horizontal";
     case EffectType::FlipVertical:   return "Flip Vertical";
     case EffectType::Scanlines:        return "Scanlines";

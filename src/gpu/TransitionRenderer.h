@@ -27,6 +27,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -164,7 +165,9 @@ public:
                 float progress,
                 int32_t directionOverride = -1,
                 float extraParam = 0.0f,
-                float softnessOverride = -1.0f);
+                float softnessOverride = -1.0f,
+                uint32_t submissionSlot = 0,
+                uint32_t transitionSlot = 0);
 
     /// Synchronous render (creates own command buffer).
     bool renderSync(const TransitionSourceInfo& sourceA,
@@ -181,12 +184,13 @@ public:
 
     // ── Output access ───────────────────────────────────────────────────
 
-    [[nodiscard]] VkImage       outputImage()     const noexcept { return m_outputTexture.image(); }
-    [[nodiscard]] VkImageView   outputImageView() const noexcept { return m_outputTexture.imageView(); }
+    [[nodiscard]] VkImage       outputImage()     const noexcept;
+    [[nodiscard]] VkImageView   outputImageView() const noexcept;
     [[nodiscard]] uint32_t      outputWidth()     const noexcept { return m_config.outputWidth; }
     [[nodiscard]] uint32_t      outputHeight()    const noexcept { return m_config.outputHeight; }
 
-    [[nodiscard]] VkDescriptorImageInfo outputDescriptorInfo() const;
+    [[nodiscard]] VkDescriptorImageInfo outputDescriptorInfo(
+        uint32_t submissionSlot = 0, uint32_t transitionSlot = 0) const;
 
     /// Black placeholder descriptor (for single-clip FadeToBlack/FadeFromBlack).
     [[nodiscard]] VkDescriptorImageInfo blackDescriptorInfo() const;
@@ -196,18 +200,32 @@ public:
     [[nodiscard]] VkDescriptorImageInfo transparentDescriptorInfo() const;
 
     /// Read back output pixels (for testing).
-    bool readbackOutput(std::vector<uint8_t>& outPixels);
+    bool readbackOutput(std::vector<uint8_t>& outPixels,
+                        uint32_t submissionSlot = 0,
+                        uint32_t transitionSlot = 0);
 
     // ── Statistics ──────────────────────────────────────────────────────
 
     [[nodiscard]] const TransitionStats& stats() const noexcept { return m_stats; }
 
 private:
-    bool createOutputTexture();
+    struct RenderTarget {
+        Texture outputTexture;
+        Buffer sourceParamsBuffer;
+        VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+    };
+
+    static uint64_t renderTargetKey(uint32_t submissionSlot,
+                                    uint32_t transitionSlot) noexcept;
+    RenderTarget* ensureRenderTarget(uint32_t submissionSlot,
+                                     uint32_t transitionSlot);
+    [[nodiscard]] const RenderTarget* findRenderTarget(
+        uint32_t submissionSlot, uint32_t transitionSlot) const noexcept;
     bool createPipelines();
     bool createDescriptorResources();
 
-    void updateSourceDescriptors(const VkDescriptorImageInfo& sourceA,
+    void updateSourceDescriptors(RenderTarget& target,
+                                 const VkDescriptorImageInfo& sourceA,
                                  const VkDescriptorImageInfo& sourceB);
 
     VkPipeline getPipeline(GpuTransitionType type) const;
@@ -221,9 +239,6 @@ private:
 
     TransitionConfig m_config;
     bool             m_initialized{false};
-
-    // Output storage image
-    Texture m_outputTexture;
 
     // Pipelines (one per transition type)
     PipelineManager m_pipelineManager;
@@ -255,15 +270,13 @@ private:
     // Descriptors
     VkDescriptorPool      m_descriptorPool{VK_NULL_HANDLE};
     VkDescriptorSetLayout m_descriptorSetLayout{VK_NULL_HANDLE};
-    VkDescriptorSet       m_descriptorSet{VK_NULL_HANDLE};
+    static constexpr uint32_t kMaxRenderTargets = 1024;
+    std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> m_renderTargets;
 
     // Placeholder textures (1x1 solid-color)
     Texture m_placeholderTexture;            // opaque black
     Texture m_whitePlaceholderTexture;       // opaque white
     Texture m_transparentPlaceholderTexture; // transparent (alpha=0)
-
-    // SSBO for per-source transforms (binding 3)
-    Buffer m_sourceParamsBuffer;
 
     // GPU timing
     VkQueryPool m_queryPool{VK_NULL_HANDLE};

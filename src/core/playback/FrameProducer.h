@@ -37,7 +37,8 @@ public:
     /// Compositor function signature
     /// (wraps TimelineWorkspace::compositeFrame)
     using CompositeCallback = std::function<
-        std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h, bool scrub)>;
+        std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h,
+                                     bool scrub, bool still)>;
 
     FrameProducer();
     ~FrameProducer();
@@ -57,6 +58,9 @@ public:
 
     void start();
     void stop();
+    /// Clear queued requests and every held/published frame. The producer
+    /// must be stopped before this is called (PlaybackScheduler enforces it).
+    void reset() noexcept;
     [[nodiscard]] bool isRunning() const noexcept
     { return m_running.load(std::memory_order_relaxed); }
 

@@ -46,6 +46,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <string>
 #include <unordered_map>
@@ -179,7 +180,9 @@ public:
     ///        every other display tick" during playback / scrub.
     std::shared_ptr<CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                  bool scrubMode,
-                                                 bool isNestedRecursion = false);
+                                                 bool isNestedRecursion = false,
+                                                 bool stillMode = false,
+                                                 std::optional<ResolutionTier> tierOverride = std::nullopt);
 
     /// Phase 4.2 — export 16-bit-float passthrough.  If the composite at
     /// `tick` is a single full-frame opaque >8-bit BT.709-limited-SDR video
@@ -244,6 +247,8 @@ public:
             m_lastGoodComposite.reset();
             m_lastGoodCompositeTick = -1;
             m_lastGoodCompositeClipIds.clear();
+            m_lastStaticComposite.reset();
+            m_lastStaticCompositeKey = 0;
             // Re-arm the settle clock so the next partial composite
             // after invalidation triggers the first-view hold instead
             // of inheriting a stale timestamp from before the reset.
@@ -549,13 +554,16 @@ private:
     // Layer building (extracted to CompositeServiceLayerBuild.cpp)
     std::vector<LayerInfo> buildLayersForFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                 bool scrubMode, bool playbackNonBlocking,
+                                                ResolutionTier requestTier, bool stillMode,
                                                 int& clipsAtTick, bool perfLog,
                                                 std::unique_lock<std::recursive_mutex>& lock,
                                                 bool& gpuSpineUsedThisFrame);
 
     // Per-clip-type layer builders (extracted to reduce CompositeServiceLayerBuild.cpp)
     std::shared_ptr<CachedFrame> resolveMediaFrame(MediaHandle handle, int64_t frameNumber,
-                                                    ResolutionTier tier, bool scrubMode) const;
+                                                    ResolutionTier tier, bool scrubMode,
+                                                    bool exactCacheOnly = false,
+                                                    bool stillMode = false) const;
     // Lazily opens / search-resolves a VideoClip's media handle. skipClip=true
     // means the caller should skip the clip; a 0 return with skipClip=false
     // means an async open is still pending (proceed to sticky-frame fallback).
@@ -568,6 +576,7 @@ private:
     std::shared_ptr<CachedFrame> buildSequenceClipFrame(
         SequenceClip* seqClip, int64_t localTick,
         uint32_t outW, uint32_t outH, bool scrubMode,
+        ResolutionTier requestTier, bool stillMode,
         std::unique_lock<std::recursive_mutex>& lock);
 #ifdef ROUNDTABLE_HAS_SPINE
     // Result of building a live SpineClip layer: either a CPU `frame` or a GPU
@@ -626,6 +635,12 @@ private:
     std::recursive_mutex m_compositeMutex;
     mutable std::mutex   m_lastCompositeMtx;
     std::shared_ptr<CachedFrame> m_lastGoodComposite;
+    // Consecutive-tick final-composite reuse for entirely static layer stacks
+    // (stacked PNGs and cached tier-list states). Guarded by
+    // m_lastCompositeMtx with the normal last-good frame state.
+    std::shared_ptr<CachedFrame> m_lastStaticComposite;
+    uint64_t m_lastStaticCompositeKey{0};
+    std::atomic<uint64_t> m_staticCompositeHits{0};
 
     // The tier a cached composite is keyed under: Full when forcing full
     // resolution (export / full-res preview) so an export never reuses a
@@ -661,11 +676,9 @@ private:
     std::atomic<uint64_t> m_segCacheWrites{0};
     int64_t m_lastGoodCompositeTick{-1};
     /// Clip ids that produced m_lastGoodComposite. Used to detect shot
-    /// boundaries: if NONE of the currently active clips overlap with
-    /// this set, the previous composite represents a *different* shot and
-    /// must not be reused as a stale fallback while the new shot's
-    /// decoders warm up.  Otherwise the prior shot lingers for 1+ frame
-    /// after its clips end (e.g. Wells visible past her clip end).
+    /// boundaries: the complete active visual clip set must match before a
+    /// stale fallback is allowed. Requiring only one overlapping id lets a
+    /// persistent overlay authorize reuse of an unrelated prior shot.
     std::vector<uint64_t> m_lastGoodCompositeClipIds;
 
     // A1: settle-window state.  When a composite is incomplete (fewer

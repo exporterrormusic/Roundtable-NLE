@@ -37,6 +37,20 @@ static std::string waveformCacheKey(const std::string& path, int audioStreamOrdi
     return path + "|" + std::to_string(audioStreamOrdinal);
 }
 
+static std::string normalizedWaveformPath(const std::string& path)
+{
+    const auto generic = utf8ToPath(path).lexically_normal().generic_u8string();
+    return std::string(reinterpret_cast<const char*>(generic.data()), generic.size());
+}
+
+static bool waveformKeyMatchesPath(const std::string& key,
+                                   const std::string& normalizedPath)
+{
+    const auto ordinalSeparator = key.rfind('|');
+    if (ordinalSeparator == std::string::npos) return false;
+    return normalizedWaveformPath(key.substr(0, ordinalSeparator)) == normalizedPath;
+}
+
 // Mirror of MediaPool::open() / ThumbnailGenerator path-fallback search.
 // loadThumbnails() opens VideoDecoder directly (it does not go through
 // MediaPool), so bare filenames like "MARIAN_WALL_HD.png" miss the asset
@@ -121,6 +135,50 @@ void TimelinePanel::invalidateClipWaveform(uint64_t clipId)
     // and applyWaveformPeaks() repaints when it lands.
     m_waveformPeaks.erase(clipId);
     loadWaveforms();
+}
+
+void TimelinePanel::refreshMediaWaveform(const std::filesystem::path& changedPath)
+{
+    if (changedPath.empty()) return;
+
+    const auto changedGeneric = changedPath.lexically_normal().generic_u8string();
+    const std::string changedKey(
+        reinterpret_cast<const char*>(changedGeneric.data()), changedGeneric.size());
+
+    // Retire outstanding decodes so an old result cannot repopulate this
+    // cache after the media is replaced. Clearing the pending set also lets
+    // loadWaveforms() immediately requeue any unrelated retired work.
+    ++m_waveformLoadGeneration;
+    m_pendingWaveformPaths.clear();
+
+    for (auto it = m_waveformByPath.begin(); it != m_waveformByPath.end(); ) {
+        if (waveformKeyMatchesPath(it->first, changedKey))
+            it = m_waveformByPath.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = m_failedWaveformPaths.begin(); it != m_failedWaveformPaths.end(); ) {
+        if (waveformKeyMatchesPath(*it, changedKey))
+            it = m_failedWaveformPaths.erase(it);
+        else
+            ++it;
+    }
+
+    if (m_timeline) {
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            auto* track = m_timeline->track(ti);
+            if (!track || track->type() != TrackType::Audio) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                auto* audio = dynamic_cast<AudioClip*>(track->clip(ci));
+                if (audio && normalizedWaveformPath(audio->mediaPath()) == changedKey)
+                    m_waveformPeaks.erase(audio->id());
+            }
+        }
+    }
+
+    loadWaveforms();
+    for (auto tw : m_trackWidgets)
+        if (tw) tw->update();
 }
 
 void TimelinePanel::queueWaveformLoad(const std::string& path, int audioStreamOrdinal)
@@ -273,6 +331,53 @@ void TimelinePanel::loadThumbnails()
                 queueThumbnailLoad(path);
         }
     }
+}
+
+void TimelinePanel::refreshMediaThumbnail(const std::filesystem::path& changedPath)
+{
+    if (changedPath.empty()) return;
+
+    auto pathKey = [](const std::string& path) {
+        const auto generic = utf8ToPath(path).lexically_normal().generic_u8string();
+        return std::string(reinterpret_cast<const char*>(generic.data()), generic.size());
+    };
+    const auto changedGeneric = changedPath.lexically_normal().generic_u8string();
+    const std::string changedKey(
+        reinterpret_cast<const char*>(changedGeneric.data()), changedGeneric.size());
+
+    // Retire every outstanding result so a decode that began before the file
+    // swap cannot put the old thumbnail back after this method returns.
+    ++m_thumbnailLoadGeneration;
+    m_pendingThumbnailPaths.clear();
+
+    for (auto it = m_thumbnailByPath.begin(); it != m_thumbnailByPath.end(); ) {
+        if (pathKey(it->first) == changedKey)
+            it = m_thumbnailByPath.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = m_failedThumbnailPaths.begin(); it != m_failedThumbnailPaths.end(); ) {
+        if (pathKey(*it) == changedKey)
+            it = m_failedThumbnailPaths.erase(it);
+        else
+            ++it;
+    }
+
+    if (m_timeline) {
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            auto* track = m_timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                auto* video = dynamic_cast<VideoClip*>(track->clip(ci));
+                if (video && pathKey(video->mediaPath()) == changedKey)
+                    m_thumbnailCache.erase(video->id());
+            }
+        }
+    }
+
+    loadThumbnails();
+    for (auto tw : m_trackWidgets)
+        if (tw) tw->update();
 }
 
 void TimelinePanel::queueThumbnailLoad(const std::string& path)

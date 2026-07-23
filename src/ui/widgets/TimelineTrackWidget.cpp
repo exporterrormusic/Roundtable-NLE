@@ -177,6 +177,13 @@ void TimelineTrackWidget::setWaveformCache(
     m_waveformCache = cache;
 }
 
+double TimelineTrackWidget::waveformClipFractionAtPixel(
+    double pixelX, double clipLeft, double clipWidth) noexcept
+{
+    if (!(clipWidth > 0.0)) return 0.0;
+    return std::clamp((pixelX - clipLeft) / clipWidth, 0.0, 1.0);
+}
+
 void TimelineTrackWidget::setThumbnailCache(
     const std::unordered_map<uint64_t, QPixmap>* cache)
 {
@@ -988,9 +995,11 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
 
     // ── Draw waveform for audio clips ───────────────────────────────────
     // Peaks are generated for the ENTIRE source file. During rendering we
-    // map the clip's visible source window [sourceIn .. sourceIn+duration)
-    // into the peak array so that trimming correctly reveals/crops audio.
-    if (clip->isAudio() && m_waveformCache && qRect.width() > 4)
+    // map the clip's visible source window into the peak array so trimming,
+    // speed changes, and viewport clipping all reveal the correct audio.
+    // qRect is deliberately clamped above for safe Qt painting, so waveform
+    // time mapping must use the original, unclipped layoutRect geometry.
+    if (clip->isAudio() && m_waveformCache && layoutRect.width > 4)
     {
         auto it = m_waveformCache->find(clip->id());
         if (it != m_waveformCache->end())
@@ -1001,20 +1010,36 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
                 painter.save();
                 painter.setClipRect(qRect.adjusted(1, 1, -1, -1));
 
-                const int pixW = static_cast<int>(qRect.width());
                 const double centerY = qRect.center().y();
                 const double halfH   = qRect.height() * 0.40; // 80% of clip height
                 const int peakCount  = static_cast<int>(peaks.size());
 
+                const double clipLeft = layoutRect.x;
+                const double clipWidth = layoutRect.width;
+                const double clipRight = clipLeft + clipWidth;
+                const int firstPixel = std::max(
+                    0, static_cast<int>(std::floor(std::max(clipLeft, 0.0))));
+                const int pastLastPixel = std::min(
+                    width(), static_cast<int>(std::ceil(
+                                 std::min(clipRight, static_cast<double>(width())))));
+                const int visiblePixelCount = std::max(0, pastLastPixel - firstPixel);
+
                 // Map the clip's source window into peak indices.
                 // Peaks cover the entire file at 480-frame windows (48 kHz).
-                // duration is in timeline ticks; convert to source ticks via speed.
+                // Match playback's pointwise source mapping, including reverse
+                // playback and animated speed ramps.
                 constexpr int kPeakWindowFrames = 480;
                 const int64_t srcIn = clip->sourceIn();
                 const int64_t dur   = clip->duration();
-                const double spd    = std::max(clip->speed(), 0.01);
-                const double srcStartPeak = static_cast<double>(srcIn) / kPeakWindowFrames;
-                const double srcEndPeak   = static_cast<double>(srcIn + static_cast<int64_t>(dur * spd)) / kPeakWindowFrames;
+                auto sourcePeakAtPixel = [&](double pixelX) {
+                    const double fraction = waveformClipFractionAtPixel(
+                        pixelX, clipLeft, clipWidth);
+                    const int64_t localTick = std::clamp<int64_t>(
+                        static_cast<int64_t>(std::llround(fraction * dur)), 0, dur);
+                    const double sourceTick = static_cast<double>(srcIn) +
+                        static_cast<double>(localTick) * clip->effectiveSpeed(localTick);
+                    return sourceTick / kPeakWindowFrames;
+                };
 
                 QColor wfCol = tc.waveformFg; wfCol.setAlpha(180);
                 painter.setPen(QPen(wfCol, 1.0));
@@ -1022,18 +1047,19 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
                 // Batch all waveform lines into a single drawLines() call
                 // instead of per-pixel drawLine() for ~5x paint speedup.
                 QVector<QLineF> wfLines;
-                wfLines.reserve(pixW);
+                wfLines.reserve(visiblePixelCount);
 
-                for (int px = 0; px < pixW; ++px)
+                for (int x = firstPixel; x < pastLastPixel; ++x)
                 {
-                    // Map pixel column to peak index range within source window
-                    double t0 = static_cast<double>(px) / pixW;
-                    double t1 = static_cast<double>(px + 1) / pixW;
-                    int p0 = static_cast<int>(srcStartPeak + t0 * (srcEndPeak - srcStartPeak));
-                    int p1 = static_cast<int>(srcStartPeak + t1 * (srcEndPeak - srcStartPeak));
-                    p0 = std::clamp(p0, 0, peakCount - 1);
-                    p1 = std::clamp(p1, 0, peakCount);
-                    if (p1 <= p0) p1 = p0 + 1;
+                    const double peakA = sourcePeakAtPixel(static_cast<double>(x));
+                    const double peakB = sourcePeakAtPixel(static_cast<double>(x + 1));
+                    const double lowPeak = std::min(peakA, peakB);
+                    const double highPeak = std::max(peakA, peakB);
+                    int p0 = static_cast<int>(std::clamp(
+                        std::floor(lowPeak), 0.0, static_cast<double>(peakCount - 1)));
+                    int p1 = static_cast<int>(std::clamp(
+                        std::ceil(highPeak), 1.0, static_cast<double>(peakCount)));
+                    if (p1 <= p0) p1 = std::min(p0 + 1, peakCount);
 
                     float maxPeak = 0.0f;
                     for (int pi = p0; pi < p1 && pi < peakCount; ++pi)
@@ -1042,7 +1068,7 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
                     double amp = static_cast<double>(maxPeak) * halfH;
                     if (amp < 0.5) continue; // skip tiny values
 
-                    double xPos = qRect.left() + px;
+                    const double xPos = static_cast<double>(x);
                     wfLines.append(QLineF(xPos, centerY - amp, xPos, centerY + amp));
                 }
 
@@ -1078,7 +1104,6 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
             painter.save();
             painter.setClipRect(qRect.adjusted(1, 1, -1, -1));
 
-            int64_t srcIn = clip->sourceIn();
             int64_t dur   = clip->duration();
             int pixW = static_cast<int>(qRect.width());
 
@@ -1087,7 +1112,7 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
             points.reserve(pixW / 2 + 1);
             for (int px = 0; px <= pixW; px += 2) {
                 double t = static_cast<double>(px) / pixW;
-                int64_t time = srcIn + static_cast<int64_t>(t * dur);
+                int64_t time = static_cast<int64_t>(t * dur);
                 float val = std::clamp(kfTrack->evaluate(time), 0.0f, maxVal);
                 double y = qRect.bottom() - 4.0 - (val / maxVal) * (qRect.height() - 8.0);
                 points.append(QPointF(qRect.left() + px, y));
@@ -1105,8 +1130,8 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
             painter.setBrush(curveColor);
             for (size_t ki = 0; ki < kfTrack->keyframeCount(); ++ki) {
                 const auto& kf = kfTrack->keyframe(ki);
-                if (kf.time >= srcIn && kf.time < srcIn + dur) {
-                    double xPos = qRect.left() + (static_cast<double>(kf.time - srcIn) / dur) * qRect.width();
+                if (kf.time >= 0 && kf.time < dur) {
+                    double xPos = qRect.left() + (static_cast<double>(kf.time) / dur) * qRect.width();
                     float val = std::clamp(kf.value, 0.0f, maxVal);
                     double yPos = qRect.bottom() - 4.0 - (val / maxVal) * (qRect.height() - 8.0);
                     QPointF diamond[4] = {

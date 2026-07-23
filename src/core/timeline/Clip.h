@@ -35,6 +35,16 @@ enum class ClipType : uint8_t
     TierList     // Ranking board: grid + entry pool + timed POPUP/DROP/Reorder events
 };
 
+/// How a retimed visual clip synthesizes timeline frames between source frames.
+/// Numeric values are persisted in project files; append new modes rather than
+/// reordering the existing entries.
+enum class TimeInterpolation : uint8_t
+{
+    FrameSampling = 0,
+    FrameBlending = 1,
+    OpticalFlow   = 2
+};
+
 /// Base clip class. Derived classes add type-specific data.
 class Clip
 {
@@ -204,6 +214,14 @@ public:
     [[nodiscard]] bool maintainPitch() const noexcept { return m_maintainPitch; }
     void setMaintainPitch(bool v) noexcept { m_maintainPitch = v; }
 
+    /// Temporal interpolation used when the timeline lands between source frames.
+    [[nodiscard]] TimeInterpolation timeInterpolation() const noexcept {
+        return m_timeInterpolation;
+    }
+    void setTimeInterpolation(TimeInterpolation mode) noexcept {
+        m_timeInterpolation = mode;
+    }
+
     /// Speed ramp (multiplier over clip-local time). Default 1.0 = uniform speed.
     KeyframeTrack<float>& speedRamp() noexcept { return m_speedRamp; }
     const KeyframeTrack<float>& speedRamp() const noexcept { return m_speedRamp; }
@@ -220,6 +238,9 @@ public:
     KeyframeTrack<float>& scaleX()    noexcept { return m_scaleX; }
     KeyframeTrack<float>& scaleY()    noexcept { return m_scaleY; }
     KeyframeTrack<float>& rotation()  noexcept { return m_rotation; }
+    /// Transform motion-blur exposure in degrees. 0 disables blur, 180
+    /// exposes half a sequence frame, and 360 exposes one full frame.
+    KeyframeTrack<float>& shutterAngle() noexcept { return m_shutterAngle; }
     /// Anchor point — clip-LOCAL pivot offset (REF-1920 px from the
     /// clip's geometric center) used by the compositor as the
     /// rotation/scale pivot. Defaults to (0,0), matching the legacy
@@ -241,6 +262,16 @@ public:
     void removeMask(size_t index) {
         if (index < m_masks.size()) m_masks.erase(m_masks.begin() + static_cast<ptrdiff_t>(index));
     }
+
+    /// Upgrade every legacy clip/effect mask once authoritative source
+    /// metadata is available. Returns the number migrated. If the clip's
+    /// transform is singular at t=0, the first valid transform/key time is
+    /// used; if no finite inverse exists the masks are left untouched.
+    int migrateLegacyMasksToSourceLocal(uint32_t sequenceWidth,
+                                        uint32_t sequenceHeight,
+                                        uint32_t sourceWidth,
+                                        uint32_t sourceHeight,
+                                        int sourceRotation = 0);
 
     // ── Blend mode ──────────────────────────────────────────────────────
     /// Blend mode for compositing (matches BlendMode enum values: 0=Normal, 1=Multiply, etc.)
@@ -277,6 +308,7 @@ protected:
     int64_t m_sourceIn{0};
     double  m_speed{1.0};
     bool    m_maintainPitch{true};  ///< Preserve pitch when speed != 1.0
+    TimeInterpolation m_timeInterpolation{TimeInterpolation::FrameSampling};
     KeyframeTrack<float> m_speedRamp{1.0f};  ///< Speed multiplier ramp
 
     // Keyframeable transform properties (default: single keyframe at t=0)
@@ -286,6 +318,7 @@ protected:
     KeyframeTrack<float> m_scaleX{1.0f};
     KeyframeTrack<float> m_scaleY{1.0f};
     KeyframeTrack<float> m_rotation{0.0f};
+    KeyframeTrack<float> m_shutterAngle{0.0f};
     KeyframeTrack<float> m_anchorX{0.0f};
     KeyframeTrack<float> m_anchorY{0.0f};
 

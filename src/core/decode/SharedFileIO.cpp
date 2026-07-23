@@ -8,7 +8,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <limits>
+#include <new>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -70,6 +73,67 @@ void closeSharedHandle(SharedFileHandle h)
 #else
     std::fclose(h);
 #endif
+}
+
+bool readSharedFileBytes(const std::filesystem::path& p,
+                         std::vector<std::uint8_t>& out,
+                         const char* logTag)
+{
+    out.clear();
+    SharedFileHandle raw = openSharedReadHandle(p, logTag);
+    if (!raw) return false;
+
+    struct HandleGuard {
+        SharedFileHandle handle;
+        ~HandleGuard() { closeSharedHandle(handle); }
+    } guard{raw};
+
+#ifdef _WIN32
+    HANDLE h = static_cast<HANDLE>(raw);
+    LARGE_INTEGER size{};
+    if (!::GetFileSizeEx(h, &size) || size.QuadPart <= 0)
+        return false;
+    if (static_cast<unsigned long long>(size.QuadPart) >
+        static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max()))
+        return false;
+
+    try {
+        out.resize(static_cast<std::size_t>(size.QuadPart));
+    } catch (const std::bad_alloc&) {
+        out.clear();
+        return false;
+    }
+
+    std::size_t done = 0;
+    while (done < out.size()) {
+        const std::size_t remaining = out.size() - done;
+        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
+            remaining, static_cast<std::size_t>(std::numeric_limits<DWORD>::max())));
+        DWORD got = 0;
+        if (!::ReadFile(h, out.data() + done, request, &got, nullptr) || got == 0) {
+            out.clear();
+            return false;
+        }
+        done += got;
+    }
+#else
+    std::FILE* fp = raw;
+    if (std::fseek(fp, 0, SEEK_END) != 0) return false;
+    const long size = std::ftell(fp);
+    if (size <= 0 || std::fseek(fp, 0, SEEK_SET) != 0) return false;
+    try {
+        out.resize(static_cast<std::size_t>(size));
+    } catch (const std::bad_alloc&) {
+        out.clear();
+        return false;
+    }
+    if (std::fread(out.data(), 1, out.size(), fp) != out.size()) {
+        out.clear();
+        return false;
+    }
+#endif
+
+    return true;
 }
 
 #ifdef ROUNDTABLE_HAS_FFMPEG

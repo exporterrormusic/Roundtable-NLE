@@ -63,6 +63,8 @@ public:
 
     void start();
     void stop();
+    /// Discard the frame retained for scopes/queries after the thread stops.
+    void reset() noexcept;
     [[nodiscard]] bool isRunning() const noexcept
     { return m_running.load(std::memory_order_relaxed); }
 

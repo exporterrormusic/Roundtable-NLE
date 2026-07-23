@@ -4,6 +4,9 @@
 
 #include "effects/ColorGrading.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace rt {
 
 ColorGrading::ColorGrading()
@@ -76,6 +79,57 @@ void ColorGrading::resetCurveLUTs()
     m_curvesIdentity = true;
 }
 
+void ColorGrading::setCurveLUT(CurveChannel ch, const CurveLUT& lut)
+{
+    m_curveLuts[ch] = lut;
+    m_curvesIdentity = true;
+    for (const auto& channel : m_curveLuts) {
+        for (size_t i = 0; i < channel.size(); ++i) {
+            const float identity = static_cast<float>(i) / 255.0f;
+            if (std::abs(channel[i] - identity) > 1.0e-5f) {
+                m_curvesIdentity = false;
+                return;
+            }
+        }
+    }
+}
+
+ColorGrading::State ColorGrading::captureState() const
+{
+    State state;
+    state.enabled = m_enabled;
+    state.basicEnabled = m_basicEnabled;
+    state.creativeEnabled = m_creativeEnabled;
+    state.wheelsEnabled = m_wheelsEnabled;
+    state.curvesEnabled = m_curvesEnabled;
+    state.hslEnabled = m_hslEnabled;
+    state.vignetteEnabled = m_vignetteEnabled;
+    state.paramTracks.reserve(m_params.size());
+    for (const auto& param : m_params)
+        state.paramTracks.push_back(param.track);
+    state.curveLuts = m_curveLuts;
+    state.curvesIdentity = m_curvesIdentity;
+    state.hslParams = m_hslParams;
+    return state;
+}
+
+void ColorGrading::restoreState(const State& state)
+{
+    m_enabled = state.enabled;
+    m_basicEnabled = state.basicEnabled;
+    m_creativeEnabled = state.creativeEnabled;
+    m_wheelsEnabled = state.wheelsEnabled;
+    m_curvesEnabled = state.curvesEnabled;
+    m_hslEnabled = state.hslEnabled;
+    m_vignetteEnabled = state.vignetteEnabled;
+    const size_t count = std::min(m_params.size(), state.paramTracks.size());
+    for (size_t i = 0; i < count; ++i)
+        m_params[i].track = state.paramTracks[i];
+    m_curveLuts = state.curveLuts;
+    m_curvesIdentity = state.curvesIdentity;
+    m_hslParams = state.hslParams;
+}
+
 std::vector<float> ColorGrading::evalAllParamsWithFlags(int64_t time) const
 {
     // Evaluate all normal parameters
@@ -101,41 +155,83 @@ std::vector<float> ColorGrading::evalGpuParams(int64_t time) const
     std::vector<float> gpu(28, 0.0f);
 
     // [0-8] Basic Correction (Temperature through Saturation)
-    for (size_t i = 0; i <= Saturation && i < all.size(); ++i)
-        gpu[i] = all[i];
+    if (m_basicEnabled) {
+        for (size_t i = 0; i <= Saturation && i < all.size(); ++i)
+            gpu[i] = all[i];
+    } else {
+        gpu[8] = 100.0f; // neutral saturation
+    }
 
     // [9] Faded Film, [10] Vibrance, [11] Creative Sat
-    if (FadedFilm < all.size())  gpu[9]  = all[FadedFilm];
-    if (Vibrance < all.size())   gpu[10] = all[Vibrance];
-    if (CreativeSat < all.size()) gpu[11] = all[CreativeSat];
+    if (m_creativeEnabled) {
+        if (FadedFilm < all.size())  gpu[9]  = all[FadedFilm];
+        if (Vibrance < all.size())   gpu[10] = all[Vibrance];
+        if (CreativeSat < all.size()) gpu[11] = all[CreativeSat];
+    } else {
+        gpu[11] = 100.0f; // neutral creative saturation
+    }
 
     // [12-15] Vignette
-    if (VignetteAmount < all.size())    gpu[12] = all[VignetteAmount];
-    if (VignetteMidpoint < all.size())  gpu[13] = all[VignetteMidpoint];
-    if (VignetteRoundness < all.size()) gpu[14] = all[VignetteRoundness];
-    if (VignetteFeather < all.size())   gpu[15] = all[VignetteFeather];
+    if (m_vignetteEnabled) {
+        if (VignetteAmount < all.size())    gpu[12] = all[VignetteAmount];
+        if (VignetteMidpoint < all.size())  gpu[13] = all[VignetteMidpoint];
+        if (VignetteRoundness < all.size()) gpu[14] = all[VignetteRoundness];
+        if (VignetteFeather < all.size())   gpu[15] = all[VignetteFeather];
+    }
 
     // [16-18] Shadow R/G/B
-    if (ShadowR < all.size()) gpu[16] = all[ShadowR];
-    if (ShadowG < all.size()) gpu[17] = all[ShadowG];
-    if (ShadowB < all.size()) gpu[18] = all[ShadowB];
+    if (m_wheelsEnabled) {
+        if (ShadowR < all.size()) gpu[16] = all[ShadowR];
+        if (ShadowG < all.size()) gpu[17] = all[ShadowG];
+        if (ShadowB < all.size()) gpu[18] = all[ShadowB];
 
     // [19-21] Midtone R/G/B
-    if (MidtoneR < all.size()) gpu[19] = all[MidtoneR];
-    if (MidtoneG < all.size()) gpu[20] = all[MidtoneG];
-    if (MidtoneB < all.size()) gpu[21] = all[MidtoneB];
+        if (MidtoneR < all.size()) gpu[19] = all[MidtoneR];
+        if (MidtoneG < all.size()) gpu[20] = all[MidtoneG];
+        if (MidtoneB < all.size()) gpu[21] = all[MidtoneB];
 
     // [22-24] Highlight R/G/B
-    if (HighlightR < all.size()) gpu[22] = all[HighlightR];
-    if (HighlightG < all.size()) gpu[23] = all[HighlightG];
-    if (HighlightB < all.size()) gpu[24] = all[HighlightB];
+        if (HighlightR < all.size()) gpu[22] = all[HighlightR];
+        if (HighlightG < all.size()) gpu[23] = all[HighlightG];
+        if (HighlightB < all.size()) gpu[24] = all[HighlightB];
 
     // [25-27] Master offsets
-    if (ShadowMaster < all.size())    gpu[25] = all[ShadowMaster];
-    if (MidtoneMaster < all.size())   gpu[26] = all[MidtoneMaster];
-    if (HighlightMaster < all.size()) gpu[27] = all[HighlightMaster];
+        if (ShadowMaster < all.size())    gpu[25] = all[ShadowMaster];
+        if (MidtoneMaster < all.size())   gpu[26] = all[MidtoneMaster];
+        if (HighlightMaster < all.size()) gpu[27] = all[HighlightMaster];
+    }
 
     return gpu;
+}
+
+std::vector<float> ColorGrading::evalCurveGpuParams() const
+{
+    // Six evenly spaced samples per channel fit all four curves in one
+    // 24-float pass.  The shader linearly interpolates between them.
+    std::vector<float> gpu;
+    gpu.reserve(24);
+    for (const auto& lut : m_curveLuts) {
+        for (size_t sample = 0; sample < 6; ++sample) {
+            const size_t index = sample * 51; // 0, 51, ..., 255
+            gpu.push_back(lut[index]);
+        }
+    }
+    return gpu;
+}
+
+std::vector<float> ColorGrading::evalHslGpuParams() const
+{
+    return {
+        m_hslParams.hueCenter,
+        m_hslParams.hueWidth,
+        m_hslParams.satMin,
+        m_hslParams.satMax,
+        m_hslParams.lumMin,
+        m_hslParams.lumMax,
+        m_hslParams.hueShift,
+        m_hslParams.satAdjust,
+        m_hslParams.lumAdjust
+    };
 }
 
 } // namespace rt

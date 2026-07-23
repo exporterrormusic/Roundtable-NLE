@@ -63,6 +63,11 @@ GpuTextureCache::LookupResult GpuTextureCache::get(
     r.height     = it->second.height;
     r.isPacked   = it->second.isPacked;
     r.isPMA      = it->second.isPMA;
+    r.contentBoundsValid = it->second.contentBoundsValid;
+    r.contentLeft = it->second.contentLeft;
+    r.contentTop = it->second.contentTop;
+    r.contentRight = it->second.contentRight;
+    r.contentBottom = it->second.contentBottom;
     return r;
 }
 
@@ -70,7 +75,9 @@ GpuTextureCache::LookupResult GpuTextureCache::get(
 
 void GpuTextureCache::put(uint64_t mediaId, int64_t frameNumber, uint8_t tier,
                           std::unique_ptr<Texture> tex, size_t textureBytes,
-                          bool isPacked, bool isPMA, bool isLoopFrame)
+                          bool isPacked, bool isPMA, bool isLoopFrame,
+                          bool contentBoundsValid, float contentLeft,
+                          float contentTop, float contentRight, float contentBottom)
 {
     if (!tex) return;
 
@@ -103,6 +110,11 @@ void GpuTextureCache::put(uint64_t mediaId, int64_t frameNumber, uint8_t tier,
     entry.isPacked    = isPacked;
     entry.isPMA       = isPMA;
     entry.isLoopFrame = isLoopFrame;
+    entry.contentBoundsValid = contentBoundsValid;
+    entry.contentLeft = contentLeft;
+    entry.contentTop = contentTop;
+    entry.contentRight = contentRight;
+    entry.contentBottom = contentBottom;
     entry.texture     = std::move(tex);
     entry.lruIt       = m_lru.begin();
 
@@ -115,7 +127,9 @@ void GpuTextureCache::putShared(uint64_t mediaId, int64_t frameNumber, uint8_t t
                                 VkDescriptorImageInfo descriptor,
                                 uint32_t width, uint32_t height,
                                 size_t textureBytes,
-                                bool isPacked, bool isPMA, bool isLoopFrame)
+                                bool isPacked, bool isPMA, bool isLoopFrame,
+                                bool contentBoundsValid, float contentLeft,
+                                float contentTop, float contentRight, float contentBottom)
 {
     if (!sharedOwner) return;
 
@@ -147,6 +161,11 @@ void GpuTextureCache::putShared(uint64_t mediaId, int64_t frameNumber, uint8_t t
     entry.isPacked         = isPacked;
     entry.isPMA            = isPMA;
     entry.isLoopFrame      = isLoopFrame;
+    entry.contentBoundsValid = contentBoundsValid;
+    entry.contentLeft = contentLeft;
+    entry.contentTop = contentTop;
+    entry.contentRight = contentRight;
+    entry.contentBottom = contentBottom;
     entry.sharedOwner      = std::move(sharedOwner);
     entry.sharedDescriptor = descriptor;
     entry.lruIt            = m_lru.begin();

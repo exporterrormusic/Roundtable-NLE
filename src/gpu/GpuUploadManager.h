@@ -56,11 +56,10 @@ public:
 
     // ── Frame lifecycle ────────────────────────────────────────────────
 
-    /// Begin a new composite frame.  Resets the staging ring, unpins only
-    /// the textures that were pinned during this slot's previous submission
-    /// (safe because the triple-buffered slot's fence was just waited on),
-    /// and sets the command buffer that all upload commands will be
-    /// recorded into.
+    /// Begin a new composite frame.  Reclaims only the staging resources
+    /// and texture pins from this slot's previous submission (safe because
+    /// the triple-buffered slot's fence was just waited on), then sets the
+    /// command buffer that all upload commands will be recorded into.
     /// @param cmd            The command buffer for this frame's GPU work.
     /// @param submissionSlot The current GpuWorkSubmission ring slot index
     ///                       (0-2).  Used to track pinned textures per-slot
@@ -69,9 +68,9 @@ public:
     ///                       pinned by other in-flight slots are preserved.
     void beginFrame(VkCommandBuffer cmd, int submissionSlot = 0);
 
-    /// End the current frame — destroys any staging buffers that were
-    /// allocated as fallback (ring-buffer allocations are automatically
-    /// reclaimed on the next beginFrame).
+    /// End recording for the current frame.  Uploaded staging resources stay
+    /// alive until this submission slot's fence signals and beginFrame()
+    /// recycles the slot.
     void endFrame();
 
     // ── Layer texture upload ───────────────────────────────────────────
@@ -101,13 +100,13 @@ public:
     /// Upload a mask texture for a layer.
     /// @param maskPixels  The pre-rasterized mask pixel data (BGRA).
     /// @param maskTex     The texture to upload into (reused across frames).
-    /// @param outW        Output width (mask dimensions).
-    /// @param outH        Output height.
+    /// @param maskW       Clip-local mask raster width.
+    /// @param maskH       Clip-local mask raster height.
     /// @param outMaskDesc  [out] Descriptor for the uploaded mask texture.
     /// @return false if upload fails.
     bool uploadMask(const std::vector<uint8_t>& maskPixels,
                     Texture& maskTex,
-                    uint32_t outW, uint32_t outH,
+                    uint32_t maskW, uint32_t maskH,
                     VkDescriptorImageInfo& outMaskDesc);
 
     // ── Cache management ───────────────────────────────────────────────
@@ -122,6 +121,11 @@ public:
 
     /// Get the current GPU texture cache (may be null).
     [[nodiscard]] GpuTextureCache* textureCache() const noexcept { return m_texCache; }
+
+    /// Pin a cache entry that layer collection resolved before upload.
+    /// The pin is tied to the active submission slot and remains valid until
+    /// that slot's fence has completed and beginFrame() recycles it.
+    void pinCachedTexture(uint64_t mediaId, int64_t frameNumber, uint8_t tier);
 
     // ── First-upload telemetry (UPGRADE_PLAN Phase 0 D.1) ───────────────
     //
@@ -162,27 +166,30 @@ private:
     bool updateViaRingOrBatched(Texture& tex,
                                 const void* data, VkDeviceSize dataSize);
 
+    static constexpr int kRingSize = 3;
+    static constexpr VkDeviceSize kStagingRingCapacity =
+        64u * 1024u * 1024u;
+
     GpuContext&           m_ctx;
-    StagingRing&          m_ring;
+    StagingRing&          m_primaryRing;
     GpuTextureCache*      m_texCache{nullptr};
     VkCommandBuffer       m_cmd{VK_NULL_HANDLE};
 
-    /// Staging buffers allocated via the batched fallback path.
-    /// Destroyed in endFrame().
-    std::vector<Texture::StagingCleanup> m_stagingCleanups;
+    /// Each in-flight submission needs independent staging storage.  Slot 0
+    /// uses the ring owned by CompositeEngine; the manager owns the other two.
+    std::array<std::unique_ptr<StagingRing>, kRingSize - 1> m_additionalRings;
+    StagingRing* m_activeRing{nullptr};
+
+    /// Oversized uploads use VMA staging buffers.  Keep them per slot until
+    /// that slot's fence has completed, just like the persistent rings.
+    std::array<std::vector<Texture::StagingCleanup>, kRingSize>
+        m_slotStagingCleanups;
 
     // ── Per-slot pin tracking ──────────────────────────────────────────
     // GpuWorkSubmission has 3 ring slots.  Each slot tracks which texture
     // keys it pinned.  When beginFrame() is called for a slot, only that
     // slot's previous pins are released — textures pinned by other
     // in-flight slots remain protected from eviction.
-    static constexpr int kRingSize = 3;
-    // A9: cap on how many textures one ring slot can keep pinned at a
-    // time.  Beyond this, the oldest pin in the slot is released to allow
-    // the LRU to evict its texture if memory pressure is high.  Premiere
-    // / Resolve enforce similar caps (~24-32 active media textures per
-    // composite frame).  Pin lifetime is one ring traversal (~3 frames).
-    static constexpr size_t kMaxPinsPerSlot = 32;
     struct PinKey {
         uint64_t mediaId;
         int64_t  frameNumber;
@@ -193,6 +200,7 @@ private:
     int  m_currentSubmissionSlot{0};  // set by beginFrame()
     void recordPin(uint64_t mediaId, int64_t frameNumber, uint8_t tier);
     void releaseSlotPins(int slotIndex);
+    void releaseSlotStaging(int slotIndex);
 
     // ── A4: Recycled-texture pool ──────────────────────────────────────
     // Each cacheable upload used to vmaCreateImage + vkCreateImageView a

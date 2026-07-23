@@ -12,10 +12,14 @@ layout(binding = 1) uniform sampler2D layers[32];
 // Per-layer parameters
 layout(std430, binding = 2) buffer LayerParams {
     mat4  transform[32];    // Per-layer transform matrix
+    mat4  motionTransformStart[32]; // Transform at shutter exposure start
+    mat4  motionTransformEnd[32];   // Transform at shutter exposure end
+    int   motionSampleCount[32];    // 1=disabled/current only, max 8
     float opacity[32];      // Per-layer opacity (0–1)
     int   blendMode[32];    // 0=Normal, 1=Multiply, 2=Screen, 3=Add
     int   enabled[32];      // 0=skip, 1=render
     vec4  cropRect[32];     // Per-layer crop (L, R, T, B) as fractions 0–1
+    vec4  contentRect[32];  // Tight non-zero-alpha bounds (L, T, R, B)
     int   isPacked[32];     // 1=packed-alpha (top=RGB, bottom=alpha greyscale)
     int   isPMA[32];        // 1=premultiplied-alpha (e.g. Spine FBO output)
     int   needsSwapRB[32];  // 1=swap R↔B after sampling (nested sequence composite)
@@ -32,6 +36,10 @@ layout(push_constant) uniform PushConstants {
     int height;
     int hqSample;     // 1 = Catmull-Rom bicubic (export), 0 = bilinear (preview)
     int preserveAlpha; // 1 = keep straight RGBA (alpha export), 0 = flatten over black
+    int outputSwizzleRB; // 1 = BGRA presentation/readback, 0 = RGBA intermediate
+    int _pad0;
+    int _pad1;
+    int _pad2;
 } pc;
 
 vec4 blendNormal(vec4 base, vec4 over)
@@ -291,6 +299,53 @@ vec4 sampleBicubic(sampler2D tex, vec2 uv, float vLo, float vHi)
     return sum / wsum;
 }
 
+// Sample one temporal transform position. Invalid/outside samples are
+// transparent exposure time, which is required for correct leading/trailing
+// edges as a moving layer enters or leaves a pixel.
+vec4 sampleLayerAt(int i, vec2 layerUV, bool useHq, out bool valid)
+{
+    valid = false;
+    if (layerUV.x < 0.0 || layerUV.x > 1.0 ||
+        layerUV.y < 0.0 || layerUV.y > 1.0)
+        return vec4(0.0);
+
+    vec4 crop = params.cropRect[i];
+    if (layerUV.x < crop.x || layerUV.x > (1.0 - crop.y) ||
+        layerUV.y < crop.z || layerUV.y > (1.0 - crop.w))
+        return vec4(0.0);
+
+    vec4 content = params.contentRect[i];
+    if (layerUV.x < content.x || layerUV.x > content.z ||
+        layerUV.y < content.y || layerUV.y > content.w)
+        return vec4(0.0);
+
+    vec4 color;
+    if (params.isPacked[i] == 1) {
+        vec2 rgbUV = vec2(layerUV.x, layerUV.y * 0.5);
+        vec2 alphaUV = vec2(layerUV.x, layerUV.y * 0.5 + 0.5);
+        vec4 rgb = useHq
+            ? sampleBicubic(layers[i], rgbUV, 0.0, 0.5)
+            : texture(layers[i], rgbUV);
+        color = vec4(rgb.rgb, texture(layers[i], alphaUV).r);
+    } else {
+        color = useHq
+            ? sampleBicubic(layers[i], layerUV, 0.0, 1.0)
+            : texture(layers[i], layerUV);
+    }
+
+    if (params.needsSwapRB[i] == 1)
+        color = color.bgra;
+
+    if (params.hasMask[i] == 1) {
+        float maskAlpha = texture(maskTextures[i], layerUV).r;
+        color.a *= maskAlpha;
+        if (params.isPMA[i] == 1)
+            color.rgb *= maskAlpha;
+    }
+    valid = true;
+    return color;
+}
+
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -305,6 +360,48 @@ void main()
     for (int i = 0; i < params.layerCount; i++)
     {
         if (params.enabled[i] == 0) continue;
+
+        vec4 layerColor = vec4(0.0);
+        int motionSamples = clamp(params.motionSampleCount[i], 1, 8);
+        if (motionSamples == 1) {
+            vec4 transformed = params.transform[i] * vec4(uv, 0.0, 1.0);
+            bool valid;
+            layerColor = sampleLayerAt(
+                i, transformed.xy / transformed.w, pc.hqSample != 0, valid);
+            if (!valid) continue;
+        } else {
+            vec3 accumulatedPremul = vec3(0.0);
+            float accumulatedAlpha = 0.0;
+            for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+                if (sampleIndex >= motionSamples) break;
+                float phase = (float(sampleIndex) + 0.5) /
+                              float(motionSamples);
+                vec4 atStart = params.motionTransformStart[i] *
+                               vec4(uv, 0.0, 1.0);
+                vec4 atEnd = params.motionTransformEnd[i] *
+                             vec4(uv, 0.0, 1.0);
+                vec4 transformed = mix(atStart, atEnd, phase);
+                bool valid;
+                // Bilinear is sufficient inside a multi-sample exposure and
+                // avoids multiplying export's 16-tap bicubic cost by eight.
+                vec4 sampleColor = sampleLayerAt(
+                    i, transformed.xy / transformed.w, false, valid);
+                if (!valid) continue;
+                accumulatedAlpha += sampleColor.a;
+                accumulatedPremul += params.isPMA[i] == 1
+                    ? sampleColor.rgb
+                    : sampleColor.rgb * sampleColor.a;
+            }
+            layerColor.a = accumulatedAlpha / float(motionSamples);
+            if (params.isPMA[i] == 1) {
+                layerColor.rgb = accumulatedPremul / float(motionSamples);
+            } else if (accumulatedAlpha > 0.000001) {
+                layerColor.rgb = accumulatedPremul / accumulatedAlpha;
+            }
+            if (layerColor.a <= 0.000001) continue;
+        }
+
+#if 0 // Replaced by sampleLayerAt + temporal accumulation above.
 
         // Transform UV through layer matrix
         vec4 transformedUV = params.transform[i] * vec4(uv, 0.0, 1.0);
@@ -354,13 +451,20 @@ void main()
             layerColor = layerColor.bgra;
         }
 
-        // Apply opacity mask: multiply layer alpha by mask luminance.
-        // The mask texture is a single-channel greyscale where white=opaque, black=transparent.
+        // Apply the clip-local opacity mask. Sampling with layerUV makes the
+        // mask inherit the layer's position, scale, rotation, and source fit.
         if (params.hasMask[i] == 1) {
-            float maskAlpha = texture(maskTextures[i], uv).r;
+            float maskAlpha = texture(maskTextures[i], layerUV).r;
             layerColor.a *= maskAlpha;
+            // Premultiplied sources must attenuate RGB with alpha as well;
+            // otherwise fully-masked pixels retain color energy and create
+            // bright seams when composited.
+            if (params.isPMA[i] == 1) {
+                layerColor.rgb *= maskAlpha;
+            }
         }
 
+#endif
         if (params.isPMA[i] == 1) {
             // PMA layer (e.g. Spine FBO): blend directly without
             // un-premultiplying — avoids lossy division by alpha
@@ -422,5 +526,6 @@ void main()
     // Swizzle R↔B to output BGRA byte order, which matches Qt's ARGB32
     // (BGRA in memory on little-endian).  This avoids a per-pixel CPU swap
     // after readback.
-    imageStore(outputImage, pixel, result.bgra);
+    imageStore(outputImage, pixel,
+               pc.outputSwizzleRB != 0 ? result.bgra : result);
 }

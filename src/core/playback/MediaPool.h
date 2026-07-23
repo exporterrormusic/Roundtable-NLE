@@ -153,15 +153,17 @@ struct PrefetchTask
     VideoStreamInfo        info{};
     bool                   packedAlpha{false};
     bool                   urgent{false};
+    /// Exact temporal endpoint request. These tasks bypass decode-ahead
+    /// stride/cooldown coalescing and are protected from a normal queue
+    /// rebuild until a worker claims them.
+    bool                   exactRequest{false};
     /// True when this handle is a looping clip (loop pre-decode active).
     /// Propagated into CachedFrame::isLoopFrame so the LRU protects it
     /// against "behind playhead" eviction that would otherwise discard
     /// the loop every iteration.
     bool                   isLoop{false};
-    /// True for export (forceExact) decodes: skip the Full-tier 1920px
-    /// downscale cap so the frame is decoded at native source resolution.
-    /// The 1920 cap is a real-time PREVIEW memory optimisation; export wants
-    /// maximum quality (and supersampling headroom for the composite scale).
+    /// True for export (forceExact) decodes: force native source dimensions
+    /// regardless of the requested preview tier.
     bool                   exportFullRes{false};
 };
 
@@ -298,6 +300,14 @@ public:
     /// compositor can skip or reuse the previous frame — matching Premiere
     /// Pro's "never stall the render thread" playback design.
     [[nodiscard]] std::shared_ptr<CachedFrame> tryGetFrame(
+        MediaHandle handle, int64_t frameNumber,
+        ResolutionTier tier = ResolutionTier::Full);
+
+    /// Non-blocking exact-frame access for consumers that need two stable
+    /// temporal endpoints. Unlike tryGetFrame(), this never substitutes a
+    /// nearby or last-good frame and does not advance the anti-rewind state.
+    /// A miss schedules urgent decode-ahead and returns nullptr.
+    [[nodiscard]] std::shared_ptr<CachedFrame> tryGetExactFrame(
         MediaHandle handle, int64_t frameNumber,
         ResolutionTier tier = ResolutionTier::Full);
 
@@ -494,6 +504,11 @@ private:
     void startPrefetchThread();
     void stopPrefetchThread();
     void prefetchWorker(int workerId);
+    /// Merge one exact temporal endpoint into the bounded prefetch queue.
+    /// Unlike schedulePrefetch(), this does not stride or honor the rebuild
+    /// cooldown, so adjacent N/N+1 requests cannot suppress one another.
+    void scheduleExactPrefetch(MediaHandle handle, int64_t frameNumber,
+                               ResolutionTier tier);
     /// Per-worker GPU state is passed in as a pointer so it can be null
     /// for the scrub-path caller (MediaPoolFrame.cpp) that has no worker.
     /// Defined nullable for forward-compatibility; the dispatch helper

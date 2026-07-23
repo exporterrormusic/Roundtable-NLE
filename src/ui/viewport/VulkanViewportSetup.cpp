@@ -252,7 +252,11 @@ void VulkanViewport::destroySwapchainResources()
     }
     m_uploadSlots.clear();
     m_nextUploadSlot = 0;
-    if (m_renderFinished)   { vkDestroySemaphore(device, m_renderFinished, nullptr); m_renderFinished = VK_NULL_HANDLE; }
+    for (VkSemaphore sem : m_renderFinishedByImage) {
+        if (sem != VK_NULL_HANDLE)
+            vkDestroySemaphore(device, sem, nullptr);
+    }
+    m_renderFinishedByImage.clear();
     if (m_imageAvailable)   { vkDestroySemaphore(device, m_imageAvailable, nullptr); m_imageAvailable = VK_NULL_HANDLE; }
     if (m_commandPool)      { vkDestroyCommandPool(device, m_commandPool, nullptr);  m_commandPool = VK_NULL_HANDLE; }
 
@@ -513,8 +517,10 @@ bool VulkanViewport::createSyncObjects()
     // Semaphores + fence
     VkSemaphoreCreateInfo semCI{};
     semCI.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    vkCreateSemaphore(device, &semCI, nullptr, &m_imageAvailable);
-    vkCreateSemaphore(device, &semCI, nullptr, &m_renderFinished);
+    if (vkCreateSemaphore(device, &semCI, nullptr, &m_imageAvailable) != VK_SUCCESS)
+        return false;
+    if (!createPresentSemaphores())
+        return false;
 
     VkFenceCreateInfo fenceCI{};
     fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -537,6 +543,37 @@ bool VulkanViewport::createSyncObjects()
         vkCreateFence(device, &uploadFenceCI, nullptr, &slot.fence);
     }
 
+    return true;
+}
+
+bool VulkanViewport::createPresentSemaphores()
+{
+    if (!m_swapchain || m_swapchain->imageCount() == 0)
+        return false;
+
+    VkDevice device = GpuContext::get().vkDevice();
+    VkSemaphoreCreateInfo semCI{};
+    semCI.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    std::vector<VkSemaphore> replacement(m_swapchain->imageCount(),
+                                          VK_NULL_HANDLE);
+    for (auto& sem : replacement) {
+        if (vkCreateSemaphore(device, &semCI, nullptr, &sem) != VK_SUCCESS) {
+            for (VkSemaphore created : replacement) {
+                if (created != VK_NULL_HANDLE)
+                    vkDestroySemaphore(device, created, nullptr);
+            }
+            return false;
+        }
+    }
+
+    // Resize drains the present queue before calling this function. During
+    // initial setup the old vector is empty.
+    for (VkSemaphore sem : m_renderFinishedByImage) {
+        if (sem != VK_NULL_HANDLE)
+            vkDestroySemaphore(device, sem, nullptr);
+    }
+    m_renderFinishedByImage = std::move(replacement);
     return true;
 }
 

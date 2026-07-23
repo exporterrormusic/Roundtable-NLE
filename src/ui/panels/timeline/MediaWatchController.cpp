@@ -15,6 +15,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/Clip.h"
 #include "timeline/ImageClip.h"
+#include "timeline/TierListClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
@@ -48,6 +49,21 @@ std::pair<std::uintmax_t, std::int64_t> mediaFileSig(const std::string& p)
     std::int64_t mt = ec2 ? 0
         : static_cast<std::int64_t>(lwt.time_since_epoch().count());
     return {sz, mt};
+}
+
+// QFileSystemWatcher reports Windows paths with forward slashes even when the
+// path supplied to addPath() used backslashes. Keep one generic spelling for
+// candidate de-duplication, watcher diffs, signatures, and polling; otherwise
+// the same file is watched once and polled a second time, causing two reloads.
+std::string normalizedWatchPath(const std::filesystem::path& p)
+{
+    const auto normalized = p.lexically_normal().generic_u8string();
+    return {reinterpret_cast<const char*>(normalized.data()), normalized.size()};
+}
+
+std::string normalizedWatchPath(const std::string& p)
+{
+    return normalizedWatchPath(utf8ToPath(p));
 }
 } // namespace
 
@@ -189,18 +205,23 @@ void MediaWatchController::rescan()
             if      (auto* v = dynamic_cast<VideoClip*>(clip)) mp = v->mediaPath();
             else if (auto* i = dynamic_cast<ImageClip*>(clip)) mp = i->mediaPath();
             else if (auto* a = dynamic_cast<AudioClip*>(clip)) mp = a->mediaPath();
-            if (!mp.empty()) candidates.insert(std::move(mp));
+            else if (auto* tier = dynamic_cast<TierListClip*>(clip)) {
+                for (const auto& entry : tier->entries())
+                    if (!entry.imagePath.empty())
+                        candidates.insert(normalizedWatchPath(entry.imagePath));
+            }
+            if (!mp.empty()) candidates.insert(normalizedWatchPath(mp));
         }
     }
     // The MediaPool is ground truth for files the app actually has open (catches
     // nested sequences and shot-boundary prewarm opens the clip walk misses).
     if (MediaPool* pool = m_cfg.mediaPool ? m_cfg.mediaPool() : nullptr)
         for (const auto& p : pool->openMediaPaths())
-            if (!p.empty()) candidates.insert(pathToUtf8(p));
+            if (!p.empty()) candidates.insert(normalizedWatchPath(p));
     // Project-Bin assets live-reload even before they're on the timeline.
     if (ProjectBin* bin = m_cfg.projectBin ? m_cfg.projectBin() : nullptr)
         for (const auto& p : bin->allFiles())
-            if (!p.empty()) candidates.insert(pathToUtf8(p));
+            if (!p.empty()) candidates.insert(normalizedWatchPath(p));
 
     // Cheap early-out (no I/O): the exact same candidate set is already applied
     // and the watcher still holds paths. A genuine content swap fires

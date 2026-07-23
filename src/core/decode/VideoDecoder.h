@@ -281,6 +281,7 @@ private:
     AVIOContext*         m_avioCtx{nullptr};
     void*                m_avioBuf{nullptr};   // av_malloc'd, owned by m_avioCtx after init
     void*                m_avioFile{nullptr};  // FILE* opened in shared mode
+    void*                m_avioMemory{nullptr}; // MemoryAvioSource for stills; no live file handle
     AVFrame*             m_frame{nullptr};
     AVFrame*             m_hwFrame{nullptr};     // For hw→sw transfer
     AVPacket*            m_packet{nullptr};

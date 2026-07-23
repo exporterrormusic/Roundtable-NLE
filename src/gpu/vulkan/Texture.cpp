@@ -392,13 +392,16 @@ bool Texture::createFromDataRing(VmaAllocator allocator, VkDevice device,
                                   const void* pixelData, VkDeviceSize dataSize,
                                   VkCommandBuffer cmd, StagingRing& ring)
 {
-    if (!create(allocator, device, config)) return false;
-
     auto sub = ring.alloc(pixelData, dataSize);
     if (!sub.valid) {
         spdlog::warn("Texture::createFromDataRing: ring full");
         return false;
     }
+
+    // Allocate staging first.  If the ring is full, the caller falls back to
+    // createFromDataBatched(); creating the image before this check would
+    // leak/overwrite that first VkImage when the fallback creates it again.
+    if (!create(allocator, device, config)) return false;
 
     recordUpload(cmd, sub.buffer, sub.offset, VK_IMAGE_LAYOUT_UNDEFINED);
     return true;

@@ -33,6 +33,7 @@
 #include <QFormLayout>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QComboBox>
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QColorDialog>
@@ -41,6 +42,7 @@
 #include <QIcon>
 #include <QProcess>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QDir>
 #include <QProgressDialog>
 #include <QMessageBox>
@@ -204,7 +206,9 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
 
     QAction* revealExplorerAction = nullptr;
     QAction* revealProjectAction  = nullptr;
+    QAction* relinkMediaAction    = nullptr;
     if (!clipMediaPath.empty()) {
+        relinkMediaAction    = menu.addAction("Re-link Media...");
         revealExplorerAction = menu.addAction("Reveal in Explorer");
         revealProjectAction  = menu.addAction("Reveal in Project");
         menu.addSeparator();
@@ -358,6 +362,16 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
             "When unchecked, pitch changes naturally with speed (chipmunk/slow effect).");
         form->addRow(pitchCheck);
 
+        auto* interpolationCombo = new QComboBox;
+        interpolationCombo->setObjectName(
+            QStringLiteral("speedTimeInterpolationCombo"));
+        interpolationCombo->addItem("Frame Sampling");
+        interpolationCombo->addItem("Frame Blending");
+        interpolationCombo->addItem("Optical Flow");
+        interpolationCombo->setCurrentIndex(
+            static_cast<int>(clip->timeInterpolation()));
+        form->addRow("Time Interpolation:", interpolationCombo);
+
         layout->addLayout(form);
 
         auto* buttons = new QDialogButtonBox(
@@ -370,55 +384,95 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
             double pct = speedSpin->value();
             double newSpeed = pct / 100.0;
             if (newSpeed <= 0.0) newSpeed = 0.01;
-            int64_t newDur = static_cast<int64_t>(std::llround(origDur * origSpeed / newSpeed));
-            if (newDur < kMinClipDuration) newDur = kMinClipDuration;
+            struct SpeedChange {
+                Clip*             clip{nullptr};
+                double            oldSpeed{1.0};
+                int64_t           oldDuration{0};
+                int64_t           newDuration{0};
+                bool              oldMaintainPitch{true};
+                TimeInterpolation oldInterpolation{TimeInterpolation::FrameSampling};
+            };
 
-            // Clamp to next clip's start so we don't overlap
-            int64_t maxDur = INT64_MAX;
-            if (m_timeline) {
-                Track* trk = m_timeline->track(ref.trackIndex);
-                if (trk) {
-                    size_t ci = trk->findClipIndexById(ref.clipId);
-                    for (size_t i = ci + 1; i < trk->clipCount(); ++i) {
-                        const Clip* next = trk->clip(i);
-                        if (next && next->timelineIn() > clip->timelineIn()) {
-                            maxDur = next->timelineIn() - clip->timelineIn();
-                            break;
+            // The context menu preserves an existing multi-selection. Resolve
+            // every selected clip and calculate its duration from its own
+            // current speed/duration pair, just as the single-clip path does.
+            std::vector<SpeedChange> changes;
+            changes.reserve(m_selection.count());
+            for (const auto& selectedRef : m_selection.clips()) {
+                Track* selectedTrack = m_timeline->track(selectedRef.trackIndex);
+                if (!selectedTrack) continue;
+                const size_t selectedIndex =
+                    selectedTrack->findClipIndexById(selectedRef.clipId);
+                if (selectedIndex >= selectedTrack->clipCount()) continue;
+
+                Clip* selectedClip = selectedTrack->clip(selectedIndex);
+                if (!selectedClip) continue;
+
+                SpeedChange change;
+                change.clip = selectedClip;
+                change.oldSpeed = selectedClip->speed();
+                change.oldDuration = selectedClip->duration();
+                change.oldMaintainPitch = selectedClip->maintainPitch();
+                change.oldInterpolation = selectedClip->timeInterpolation();
+                change.newDuration = static_cast<int64_t>(std::llround(
+                    change.oldDuration * change.oldSpeed / newSpeed));
+                change.newDuration = std::max(change.newDuration, kMinClipDuration);
+
+                // Clamp each changed clip independently to the next clip on
+                // its track so a slower speed cannot introduce an overlap.
+                for (size_t i = selectedIndex + 1;
+                     i < selectedTrack->clipCount(); ++i) {
+                    const Clip* next = selectedTrack->clip(i);
+                    if (next && next->timelineIn() > selectedClip->timelineIn()) {
+                        const int64_t maxDuration =
+                            next->timelineIn() - selectedClip->timelineIn();
+                        if (change.newDuration > maxDuration &&
+                            maxDuration >= kMinClipDuration) {
+                            change.newDuration = maxDuration;
                         }
+                        break;
                     }
                 }
+
+                changes.push_back(change);
             }
-            if (newDur > maxDur && maxDur >= kMinClipDuration) newDur = maxDur;
+
+            if (changes.empty()) return;
+
+            const bool newMaintainPitch = pitchCheck->isChecked();
+            const TimeInterpolation newInterpolation =
+                static_cast<TimeInterpolation>(interpolationCombo->currentIndex());
+
+            auto applyChanges = [changes, newSpeed, newMaintainPitch,
+                                 newInterpolation, this]() {
+                for (const auto& change : changes) {
+                    change.clip->setSpeed(newSpeed);
+                    change.clip->setDuration(change.newDuration);
+                    change.clip->setMaintainPitch(newMaintainPitch);
+                    change.clip->setTimeInterpolation(newInterpolation);
+                }
+                onScrollChanged();
+                emit contentChanged();
+            };
+            auto restoreChanges = [changes, this]() {
+                for (const auto& change : changes) {
+                    change.clip->setSpeed(change.oldSpeed);
+                    change.clip->setDuration(change.oldDuration);
+                    change.clip->setMaintainPitch(change.oldMaintainPitch);
+                    change.clip->setTimeInterpolation(change.oldInterpolation);
+                }
+                onScrollChanged();
+                emit contentChanged();
+            };
 
             if (m_commandStack) {
-                Clip* c = clip;
-                double oldSpeed = c->speed();
-                int64_t oldDur = c->duration();
-                bool oldPitch = c->maintainPitch();
-                bool newPitch = pitchCheck->isChecked();
                 m_commandStack->execute(std::make_unique<LambdaCommand>(
-                    "Change Speed/Duration",
-                    [c, newSpeed, newDur, newPitch, this]() {
-                        c->setSpeed(newSpeed);
-                        c->setDuration(newDur);
-                        c->setMaintainPitch(newPitch);
-                        onScrollChanged();
-                        emit contentChanged();
-                    },
-                    [c, oldSpeed, oldDur, oldPitch, this]() {
-                        c->setSpeed(oldSpeed);
-                        c->setDuration(oldDur);
-                        c->setMaintainPitch(oldPitch);
-                        onScrollChanged();
-                        emit contentChanged();
-                    }));
+                    changes.size() > 1 ? "Change Clip Speeds"
+                                       : "Change Speed/Duration",
+                    std::move(applyChanges), std::move(restoreChanges)));
             } else {
-                clip->setSpeed(newSpeed);
-                clip->setDuration(newDur);
-                clip->setMaintainPitch(pitchCheck->isChecked());
+                applyChanges();
             }
-            onScrollChanged();
-            emit contentChanged();
         }
     }
     else if (freezeFrameAction && chosen == freezeFrameAction) {
@@ -702,9 +756,12 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     else if (audioGainAction && chosen == audioGainAction) {
         auto* ac = dynamic_cast<AudioClip*>(clip);
         if (ac) {
-            // Current gain: read the first keyframe value (or 1.0 if none)
+            // Current gain: read the first keyframe value, or the static
+            // track value when animation is disabled.
             auto& vol = ac->volume();
-            float currentLin = (vol.keyframeCount() > 0) ? vol.keyframe(0).value : 1.0f;
+            float currentLin = (vol.keyframeCount() > 0)
+                ? vol.keyframe(0).value
+                : vol.defaultValue();
             float currentDb = (currentLin > 1e-6f)
                 ? 20.0f * std::log10(currentLin)
                 : -96.0f;
@@ -735,8 +792,10 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
             if (dlg.exec() == QDialog::Accepted) {
                 float newLin = std::pow(10.0f, static_cast<float>(gainSpin->value()) / 20.0f);
                 if (vol.keyframeCount() == 0) {
-                    // No keyframes — set exactly one at frame 0
-                    vol.keyframe(0).value = newLin;
+                    // A static track deliberately has no keyframes. Keep it
+                    // static and update its default instead of indexing an
+                    // empty keyframe vector.
+                    vol.writeValue(0, newLin);
                 } else {
                     // Scale all keyframes relative to the change
                     float ratio = (currentLin > 1e-6f) ? (newLin / currentLin) : newLin;
@@ -812,6 +871,23 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     }
     else if (revealProjectAction && chosen == revealProjectAction) {
         emit revealInProjectBin(QString::fromStdString(clipMediaPath));
+    }
+    else if (relinkMediaAction && chosen == relinkMediaAction) {
+        const QString oldPath = QString::fromStdString(clipMediaPath);
+        QFileInfo oldInfo(oldPath);
+        QString startDir = oldInfo.absolutePath();
+        if (startDir.isEmpty() || !QDir(startDir).exists())
+            startDir = QDir::homePath();
+
+        const QString newPath = QFileDialog::getOpenFileName(
+            this, tr("Re-link Media - %1").arg(oldInfo.fileName()), startDir,
+            QStringLiteral("Media Files (*.mp4 *.m4v *.mkv *.avi *.mov *.webm "
+                           "*.ts *.mts *.m2ts *.mpg *.mpeg *.wmv *.flv *.mxf "
+                           "*.gif *.png *.jpg *.jpeg *.bmp *.tga *.webp *.tif "
+                           "*.tiff *.avif *.jxl *.wav *.mp3 *.flac *.ogg *.aac "
+                           "*.m4a *.opus *.wma *.aif *.aiff);;All Files (*.*)"));
+        if (!newPath.isEmpty() && newPath != oldPath)
+            emit mediaRelinkRequested(oldPath, newPath);
     }
     else if (chosen == copyEffectsAction) {
         m_effectClipboard = clip->effects().clone();
@@ -969,6 +1045,8 @@ void TimelinePanel::showPasteAttributesDialog()
         auto* chkVolume = new QCheckBox("Volume", &dlg);
         auto* chkPan    = new QCheckBox("Pan", &dlg);
         auto* chkSpeed  = new QCheckBox("Speed", &dlg);
+        chkVolume->setEnabled(m_attrClipboard->audioVolume.has_value());
+        chkPan->setEnabled(m_attrClipboard->audioPan.has_value());
         checks = { chkVolume, chkPan, chkSpeed };
         // Clamp mask to number of checkboxes
         int numChecks = static_cast<int>(checks.size());
@@ -987,7 +1065,9 @@ void TimelinePanel::showPasteAttributesDialog()
         auto* chkRotation  = new QCheckBox("Rotation", &dlg);
         auto* chkSpeed     = new QCheckBox("Speed", &dlg);
         auto* chkSpeedRamp = new QCheckBox("Speed Ramp", &dlg);
-        checks = { chkOpacity, chkPosX, chkPosY, chkScaleX, chkScaleY, chkRotation, chkSpeed, chkSpeedRamp };
+        auto* chkTimeInterpolation = new QCheckBox("Time Interpolation", &dlg);
+        checks = { chkOpacity, chkPosX, chkPosY, chkScaleX, chkScaleY,
+                   chkRotation, chkSpeed, chkSpeedRamp, chkTimeInterpolation };
         int numChecks = static_cast<int>(checks.size());
         unsigned int mask = m_pasteAttrMask & ((1u << numChecks) - 1);
         for (int i = 0; i < numChecks; ++i) {
@@ -1004,7 +1084,9 @@ void TimelinePanel::showPasteAttributesDialog()
         auto* chkRotation  = new QCheckBox("Rotation", &dlg);
         auto* chkSpeed     = new QCheckBox("Speed", &dlg);
         auto* chkSpeedRamp = new QCheckBox("Speed Ramp", &dlg);
-        checks = { chkOpacity, chkPosX, chkPosY, chkScaleX, chkScaleY, chkRotation, chkSpeed, chkSpeedRamp };
+        auto* chkTimeInterpolation = new QCheckBox("Time Interpolation", &dlg);
+        checks = { chkOpacity, chkPosX, chkPosY, chkScaleX, chkScaleY,
+                   chkRotation, chkSpeed, chkSpeedRamp, chkTimeInterpolation };
         int numChecks = static_cast<int>(checks.size());
         unsigned int mask = m_pasteAttrMask & ((1u << numChecks) - 1);
         for (int i = 0; i < numChecks; ++i) {
@@ -1020,6 +1102,10 @@ void TimelinePanel::showPasteAttributesDialog()
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
     if (dlg.exec() == QDialog::Accepted) {
+        // Freeze the copied values into the command. Redo must not depend on
+        // whatever the user may copy after this paste operation.
+        const AttributesClipboard pastedAttributes = *m_attrClipboard;
+
         // Save checkbox state for next time (Premiere-style persistence)
         m_pasteAttrMask = 0;
         for (int i = 0; i < (int)checks.size(); ++i) {
@@ -1041,8 +1127,10 @@ void TimelinePanel::showPasteAttributesDialog()
             float oldRotation{0.0f};
             // Speed ramp
             KeyframeTrack<float> oldSpeedRamp{1.0f};
+            TimeInterpolation oldTimeInterpolation{TimeInterpolation::FrameSampling};
             // Audio
-            float oldVolume{0.0f}, oldPan{0.0f};
+            KeyframeTrack<float> oldVolume{1.0f};
+            KeyframeTrack<float> oldPan{0.0f};
         };
         std::vector<AttrSnapshot> snapshots;
 
@@ -1059,8 +1147,8 @@ void TimelinePanel::showPasteAttributesDialog()
 
             if (isAudio && !isVideo) {
                 if (auto* ac = dynamic_cast<AudioClip*>(target)) {
-                    snap.oldVolume = ac->volume().defaultValue();
-                    snap.oldPan = ac->pan().defaultValue();
+                    snap.oldVolume = ac->volume();
+                    snap.oldPan = ac->pan();
                 }
                 snap.oldSpeed = target->speed();
             } else {
@@ -1072,31 +1160,35 @@ void TimelinePanel::showPasteAttributesDialog()
                 snap.oldRotation = target->rotation().defaultValue();
                 snap.oldSpeed    = target->speed();
                 snap.oldSpeedRamp = target->speedRamp();
+                snap.oldTimeInterpolation = target->timeInterpolation();
             }
             snapshots.push_back(snap);
 
             // Apply new values
             if (isAudio && !isVideo) {
                 if (checks.size() > 0 && checks[0]->isChecked()) {
-                    if (auto* ac = dynamic_cast<AudioClip*>(target))
-                        ac->volume() = m_attrClipboard->opacity;
+                    if (auto* ac = dynamic_cast<AudioClip*>(target);
+                        ac && pastedAttributes.audioVolume)
+                        ac->volume() = *pastedAttributes.audioVolume;
                 }
                 if (checks.size() > 1 && checks[1]->isChecked()) {
-                    if (auto* ac = dynamic_cast<AudioClip*>(target))
-                        ac->pan() = m_attrClipboard->posX;
+                    if (auto* ac = dynamic_cast<AudioClip*>(target);
+                        ac && pastedAttributes.audioPan)
+                        ac->pan() = *pastedAttributes.audioPan;
                 }
                 if (checks.size() > 2 && checks[2]->isChecked()) {
-                    target->setSpeed(m_attrClipboard->speed);
+                    target->setSpeed(pastedAttributes.speed);
                 }
             } else {
-                if (checks.size() > 0 && checks[0]->isChecked()) target->opacity()   = m_attrClipboard->opacity;
-                if (checks.size() > 1 && checks[1]->isChecked()) target->positionX() = m_attrClipboard->posX;
-                if (checks.size() > 2 && checks[2]->isChecked()) target->positionY() = m_attrClipboard->posY;
-                if (checks.size() > 3 && checks[3]->isChecked()) target->scaleX()    = m_attrClipboard->scaleX;
-                if (checks.size() > 4 && checks[4]->isChecked()) target->scaleY()    = m_attrClipboard->scaleY;
-                if (checks.size() > 5 && checks[5]->isChecked()) target->rotation()  = m_attrClipboard->rotation;
-                if (checks.size() > 6 && checks[6]->isChecked()) target->setSpeed(m_attrClipboard->speed);
-                if (checks.size() > 7 && checks[7]->isChecked()) target->speedRamp() = m_attrClipboard->speedRamp;
+                if (checks.size() > 0 && checks[0]->isChecked()) target->opacity()   = pastedAttributes.opacity;
+                if (checks.size() > 1 && checks[1]->isChecked()) target->positionX() = pastedAttributes.posX;
+                if (checks.size() > 2 && checks[2]->isChecked()) target->positionY() = pastedAttributes.posY;
+                if (checks.size() > 3 && checks[3]->isChecked()) target->scaleX()    = pastedAttributes.scaleX;
+                if (checks.size() > 4 && checks[4]->isChecked()) target->scaleY()    = pastedAttributes.scaleY;
+                if (checks.size() > 5 && checks[5]->isChecked()) target->rotation()  = pastedAttributes.rotation;
+                if (checks.size() > 6 && checks[6]->isChecked()) target->setSpeed(pastedAttributes.speed);
+                if (checks.size() > 7 && checks[7]->isChecked()) target->speedRamp() = pastedAttributes.speedRamp;
+                if (checks.size() > 8 && checks[8]->isChecked()) target->setTimeInterpolation(pastedAttributes.timeInterpolation);
             }
         }
 
@@ -1104,14 +1196,14 @@ void TimelinePanel::showPasteAttributesDialog()
         if (m_commandStack) {
             m_commandStack->execute(std::make_unique<LambdaCommand>(
                 "Paste Attributes",
-                [this, snapshots, checks_states = [&]() {
+                [this, snapshots, pastedAttributes, checks_states = [&]() {
                     std::vector<bool> states;
                     for (auto* ck : checks) states.push_back(ck->isChecked());
                     return states;
                 }(), isAudio, isVideo]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    // Redo: re-apply from clipboard
-                    if (!m_timeline || !m_attrClipboard) return;
+                    // Redo: re-apply the values captured by this command.
+                    if (!m_timeline) return;
                     for (const auto& snap : snapshots) {
                         Track* st = m_timeline->track(snap.trackIdx);
                         if (!st) continue;
@@ -1120,24 +1212,27 @@ void TimelinePanel::showPasteAttributesDialog()
                         Clip* target = st->clip(si);
                         if (isAudio && !isVideo) {
                             if (checks_states.size() > 0 && checks_states[0]) {
-                                if (auto* ac = dynamic_cast<AudioClip*>(target))
-                                    ac->volume() = m_attrClipboard->opacity;
+                                if (auto* ac = dynamic_cast<AudioClip*>(target);
+                                    ac && pastedAttributes.audioVolume)
+                                    ac->volume() = *pastedAttributes.audioVolume;
                             }
                             if (checks_states.size() > 1 && checks_states[1]) {
-                                if (auto* ac = dynamic_cast<AudioClip*>(target))
-                                    ac->pan() = m_attrClipboard->posX;
+                                if (auto* ac = dynamic_cast<AudioClip*>(target);
+                                    ac && pastedAttributes.audioPan)
+                                    ac->pan() = *pastedAttributes.audioPan;
                             }
                             if (checks_states.size() > 2 && checks_states[2])
-                                target->setSpeed(m_attrClipboard->speed);
+                                target->setSpeed(pastedAttributes.speed);
                         } else {
-                            if (checks_states.size() > 0 && checks_states[0]) target->opacity()   = m_attrClipboard->opacity;
-                            if (checks_states.size() > 1 && checks_states[1]) target->positionX() = m_attrClipboard->posX;
-                            if (checks_states.size() > 2 && checks_states[2]) target->positionY() = m_attrClipboard->posY;
-                            if (checks_states.size() > 3 && checks_states[3]) target->scaleX()    = m_attrClipboard->scaleX;
-                            if (checks_states.size() > 4 && checks_states[4]) target->scaleY()    = m_attrClipboard->scaleY;
-                            if (checks_states.size() > 5 && checks_states[5]) target->rotation()  = m_attrClipboard->rotation;
-                            if (checks_states.size() > 6 && checks_states[6]) target->setSpeed(m_attrClipboard->speed);
-                            if (checks_states.size() > 7 && checks_states[7]) target->speedRamp() = m_attrClipboard->speedRamp;
+                            if (checks_states.size() > 0 && checks_states[0]) target->opacity()   = pastedAttributes.opacity;
+                            if (checks_states.size() > 1 && checks_states[1]) target->positionX() = pastedAttributes.posX;
+                            if (checks_states.size() > 2 && checks_states[2]) target->positionY() = pastedAttributes.posY;
+                            if (checks_states.size() > 3 && checks_states[3]) target->scaleX()    = pastedAttributes.scaleX;
+                            if (checks_states.size() > 4 && checks_states[4]) target->scaleY()    = pastedAttributes.scaleY;
+                            if (checks_states.size() > 5 && checks_states[5]) target->rotation()  = pastedAttributes.rotation;
+                            if (checks_states.size() > 6 && checks_states[6]) target->setSpeed(pastedAttributes.speed);
+                            if (checks_states.size() > 7 && checks_states[7]) target->speedRamp() = pastedAttributes.speedRamp;
+                            if (checks_states.size() > 8 && checks_states[8]) target->setTimeInterpolation(pastedAttributes.timeInterpolation);
                         }
                     }
                     onScrollChanged();
@@ -1155,8 +1250,8 @@ void TimelinePanel::showPasteAttributesDialog()
                         Clip* target = st->clip(si);
                         if (isAudio && !isVideo) {
                             if (auto* ac = dynamic_cast<AudioClip*>(target)) {
-                                ac->volume().setDefaultValue(snap.oldVolume);
-                                ac->pan().setDefaultValue(snap.oldPan);
+                                ac->volume() = snap.oldVolume;
+                                ac->pan() = snap.oldPan;
                             }
                             target->setSpeed(snap.oldSpeed);
                         } else {
@@ -1168,6 +1263,7 @@ void TimelinePanel::showPasteAttributesDialog()
                             target->rotation().setDefaultValue(snap.oldRotation);
                             target->setSpeed(snap.oldSpeed);
                             target->speedRamp() = snap.oldSpeedRamp;
+                            target->setTimeInterpolation(snap.oldTimeInterpolation);
                         }
                     }
                     onScrollChanged();
@@ -1203,8 +1299,13 @@ void TimelinePanel::copyAttributesFromSelection()
     ac.scaleX    = clip->scaleX();
     ac.scaleY    = clip->scaleY();
     ac.rotation  = clip->rotation();
+    if (auto* audio = dynamic_cast<AudioClip*>(clip)) {
+        ac.audioVolume = audio->volume();
+        ac.audioPan = audio->pan();
+    }
     ac.speed     = clip->speed();
     ac.speedRamp = clip->speedRamp();
+    ac.timeInterpolation = clip->timeInterpolation();
     m_attrClipboard = std::move(ac);
 }
 

@@ -10,6 +10,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "cache/FrameContentBounds.h"
 
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -222,18 +223,9 @@ void MediaPool::loopPreDecodeWorker(
         const int w = static_cast<int>(raw.width);
         const int h = static_cast<int>(raw.height);
 
-        int maxDim = (tier == ResolutionTier::Quarter) ? 480
-                   : (tier == ResolutionTier::Half)    ? 960
-                   :                                     1920;
-        const int contentH = info.contentHeight(h);
-        int dW = w, dH = h;
-        if (w > maxDim || contentH > maxDim) {
-            const float scale = std::min(
-                static_cast<float>(maxDim) / w,
-                static_cast<float>(maxDim) / contentH);
-            dW = std::max(2, static_cast<int>(w * scale) & ~1);
-            dH = std::max(2, static_cast<int>(h * scale) & ~1);
-        }
+        const auto tierSize = resolutionTierDimensions(w, h, tier);
+        const int dW = tierSize.width;
+        const int dH = tierSize.height;
 
         // Shared CPU conversion core (sws cache lives in the locals above;
         // BT.709 pinning, alpha-RGB clear and GREEN chroma key included).
@@ -248,6 +240,8 @@ void MediaPool::loopPreDecodeWorker(
         }
 #endif
 
+        if (cached->pinned && !cached->pixels.empty())
+            computeBgraContentBounds(*cached);
         m_cache->put(cached);
         if (m_diskCache) m_diskCache->putAsync(cached);
         m_perf.prefetchDeliveries.fetch_add(1, std::memory_order_relaxed);

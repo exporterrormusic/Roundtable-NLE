@@ -264,26 +264,10 @@ void DropController::wireEffectDropSignals()
             trans.rightClipId = rightClipId;
             trans.editPointTick = editPointTick;
 
-            // Reject if the new transition's range would overlap any
-            // existing transition on this track (not just a duplicate
-            // edit point — a long dissolve can overlap a fade on the
-            // same clip).
-            {
-                int64_t newStart, newEnd;
-                trans.getRange(newStart, newEnd);
-                bool wouldOverlap = false;
-                for (size_t ti = 0; ti < track->transitionCount(); ++ti) {
-                    const Transition* existing = track->transition(ti);
-                    if (!existing) continue;
-                    int64_t exStart, exEnd;
-                    existing->getRange(exStart, exEnd);
-                    if (newStart < exEnd && exStart < newEnd) {
-                        wouldOverlap = true;
-                        break;
-                    }
-                }
-                if (wouldOverlap) return;
-            }
+            // Dragged transitions use the same fit-to-available behavior as
+            // the default transition shortcut.
+            if (!EditOperations::fitTransitionToAvailableDuration(*track, trans))
+                return;
 
             if (m_ws->commandStack()) {
                 m_ws->commandStack()->execute(

@@ -136,6 +136,10 @@ private:
     bool createPipelines();
     bool createDescriptorResources();
 
+    /// Rebind both output and input sides of the fixed ping-pong pair.
+    /// Recreating a storage Texture during resize invalidates both views.
+    void updatePingPongDescriptorBindings();
+
     /// (Re)point the static bindings of every source/LUT ring set:
     /// binding 0 (output) → storageTexture[0], binding 1 (input) → placeholder,
     /// and (LUT only) binding 2 → placeholder.  Per-call bindings are set in
@@ -204,6 +208,7 @@ private:
     VkPipeline       m_lutPipeline{VK_NULL_HANDLE};
     VkPipeline       m_letterboxPipeline{VK_NULL_HANDLE};
     VkPipeline       m_colorGradingPipeline{VK_NULL_HANDLE};
+    VkPipeline       m_tintPipeline{VK_NULL_HANDLE};
     VkPipeline       m_otsPipeline{VK_NULL_HANDLE};
     VkPipeline       m_flipPipeline{VK_NULL_HANDLE};
     // Glitch building blocks
@@ -223,6 +228,7 @@ private:
     // Effect-mask mix (original/effected blend by rasterized mask alpha)
     VkPipeline       m_maskMixPipeline{VK_NULL_HANDLE};
     VkPipelineLayout m_maskMixPipelineLayout{VK_NULL_HANDLE};
+    VkPipelineLayout m_lutPipelineLayout{VK_NULL_HANDLE};
     VkPipelineLayout m_pipelineLayout{VK_NULL_HANDLE};
 
     // Descriptors

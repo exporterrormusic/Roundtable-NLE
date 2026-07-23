@@ -11,6 +11,7 @@
 #include "timeline/Keyframe.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 #include "command/commands/KeyframeCmds.h"
 
 #include <QPainter>
@@ -483,6 +484,19 @@ void KeyframeEditor::mousePressEvent(QMouseEvent* event)
         m_dragCurveIdx    = hit.curveIndex;
         m_dragKeyIdx      = hit.keyIndex;
         m_dragStartPos    = pos;
+        m_tangentTrack = nullptr;
+        m_hasTangentBefore = false;
+        if (hit.curveIndex >= 0
+            && hit.curveIndex < static_cast<int>(m_curves.size())) {
+            auto* track = m_curves[hit.curveIndex].track;
+            if (track && hit.keyIndex >= 0
+                && hit.keyIndex < static_cast<int>(track->keyframeCount())) {
+                m_tangentTrack = track;
+                m_tangentBefore = track->keyframe(
+                    static_cast<size_t>(hit.keyIndex));
+                m_hasTangentBefore = true;
+            }
+        }
         event->accept();
         return;
     }
@@ -769,6 +783,32 @@ void KeyframeEditor::mouseReleaseEvent(QMouseEvent* event)
     if (m_draggingTangent) {
         m_draggingTangent = false;
         m_velocityDrag    = false;
+        if (m_hasTangentBefore && m_tangentTrack) {
+            const int64_t time = m_tangentBefore.time;
+            const auto it = std::find_if(
+                m_tangentTrack->keyframes().begin(),
+                m_tangentTrack->keyframes().end(),
+                [time](const Keyframe<float>& key) { return key.time == time; });
+            if (it != m_tangentTrack->keyframes().end()) {
+                const Keyframe<float> after = *it;
+                const auto& before = m_tangentBefore;
+                const bool changed = before.interp != after.interp
+                    || before.bezierOutX != after.bezierOutX
+                    || before.bezierOutY != after.bezierOutY
+                    || before.bezierInX != after.bezierInX
+                    || before.bezierInY != after.bezierInY;
+                if (changed && m_commandStack) {
+                    auto* track = m_tangentTrack;
+                    m_commandStack->pushWithoutExecute(
+                        std::make_unique<LambdaCommand>(
+                            "Adjust Keyframe Tangent",
+                            [track, after]() { track->restoreKeyframe(after); },
+                            [track, before]() { track->restoreKeyframe(before); }));
+                }
+            }
+        }
+        m_tangentTrack = nullptr;
+        m_hasTangentBefore = false;
         event->accept();
         return;
     }

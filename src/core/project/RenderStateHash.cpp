@@ -28,7 +28,7 @@ constexpr uint64_t kFnvPrime  = 1099511628211ull;
 // Bump to force every cached segment to re-render after the hash algorithm
 // or its coverage changes (old keys can never collide with new ones).
 // v2: nested-sequence inner config now folds in.
-constexpr uint32_t kHashVersion = 2;
+constexpr uint32_t kHashVersion = 3;
 
 // Belt-and-braces ceiling on nested-sequence recursion; the explicit cycle
 // guard (the ancestor stack) already prevents infinite loops, this just caps
@@ -138,10 +138,11 @@ void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t ti
 } // namespace
 
 uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
-                               const Project* project)
+                               const Project* project, uint32_t renderFlags)
 {
     BinaryWriter w;
     w.writeU32(kHashVersion);
+    w.writeU32(renderFlags);
 
     std::vector<const Timeline*> ancestors;
     appendCompositeConfig(w, timeline, tick, project, /*depth=*/0, ancestors);

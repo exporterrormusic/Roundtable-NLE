@@ -7,6 +7,8 @@
 #include "timeline/Clip.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <limits>
 #include <unordered_map>
 #include <spdlog/spdlog.h>
 
@@ -131,6 +133,29 @@ Track* Timeline::addCaptionTrack()
     return ptr;
 }
 
+size_t Timeline::nearestClipHostTrack(int desiredIndex, TrackType type) const noexcept
+{
+    size_t bestIndex = static_cast<size_t>(-1);
+    int64_t bestDistance = std::numeric_limits<int64_t>::max();
+
+    for (size_t i = 0; i < m_tracks.size(); ++i) {
+        const Track* candidate = m_tracks[i].get();
+        if (!candidate || candidate->isDivider() || candidate->isCaptionTrack()
+                || candidate->type() != type) {
+            continue;
+        }
+
+        const int64_t distance = std::llabs(
+            static_cast<int64_t>(i) - static_cast<int64_t>(desiredIndex));
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
 void Timeline::removeTrack(size_t index)
 {
     if (index >= m_tracks.size()) return;
@@ -167,6 +192,51 @@ void Timeline::moveTrack(size_t from, size_t to)
 
     for (auto* obs : m_observers)
         obs->onTrackMoved(from, to);
+}
+
+bool Timeline::moveTrackToInsertion(size_t from, size_t insertionIndex)
+{
+    const size_t count = m_tracks.size();
+    if (from >= count || count < 2) return false;
+
+    Track* source = m_tracks[from].get();
+    if (!source || source->isPermanentDivider() || source->isCaptionTrack())
+        return false;
+
+    insertionIndex = std::min(insertionIndex, count);
+
+    // The caption row is pinned at index 0. No other row can be inserted
+    // before it, regardless of where the drag indicator was released.
+    if (!m_tracks.empty() && m_tracks.front()->isCaptionTrack())
+        insertionIndex = std::max<size_t>(insertionIndex, 1);
+
+    // User dividers are organizational rows and may move anywhere. Real media
+    // tracks, however, must remain on the correct side of the permanent V/A
+    // divider; allowing an audio row above it (or video below it) makes the
+    // next UI normalization pass unable to identify a valid section boundary.
+    size_t permanentDivider = count;
+    for (size_t i = 0; i < count; ++i) {
+        if (m_tracks[i] && m_tracks[i]->isPermanentDivider()) {
+            permanentDivider = i;
+            break;
+        }
+    }
+    if (!source->isDivider() && permanentDivider < count) {
+        if (source->type() == TrackType::Audio)
+            insertionIndex = std::max(insertionIndex, permanentDivider + 1);
+        else
+            insertionIndex = std::min(insertionIndex, permanentDivider);
+    }
+
+    // insertionIndex describes a gap in the pre-removal list. Removing a row
+    // above that gap shifts the final destination left by one.
+    size_t destination = insertionIndex;
+    if (destination > from) --destination;
+    if (destination >= count) destination = count - 1;
+    if (destination == from) return false;
+
+    moveTrack(from, destination);
+    return true;
 }
 
 void Timeline::sortTracksByType()

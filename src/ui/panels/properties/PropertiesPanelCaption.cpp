@@ -88,13 +88,15 @@ void PropertiesPanel::applyCaptionText()
     std::string newVal = m_capTextEdit->toPlainText().toStdString();
     if (newVal == cc->text()) return;
     std::string oldVal = cc->text();
+    const auto oldStyles = cc->styleRuns();
+    const auto newStyles = remapTextStyleRuns(oldVal, newVal, oldStyles);
     auto* self = this;
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Edit caption text",
-            [cc, newVal, self]() { cc->setText(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
-            [cc, oldVal, self]() { cc->setText(oldVal); self->populateFromCaption(); emit self->propertyChanged(); }));
-    } else { cc->setText(newVal); emit propertyChanged(); }
+            [cc, newVal, newStyles, self]() { cc->setText(newVal); cc->setStyleRuns(newStyles); self->populateFromCaption(); emit self->propertyChanged(); },
+            [cc, oldVal, oldStyles, self]() { cc->setText(oldVal); cc->setStyleRuns(oldStyles); self->populateFromCaption(); emit self->propertyChanged(); }));
+    } else { cc->setText(newVal); cc->setStyleRuns(newStyles); emit propertyChanged(); }
 }
 
 void PropertiesPanel::applyCaptionSpeaker()
@@ -458,13 +460,37 @@ void PropertiesPanel::loadTextPresets()
         TextStylePreset p;
         p.name       = o.value("name").toString().toStdString();
         p.fontFamily = o.value("font").toString("Arial").toStdString();
+        p.fontStyle  = o.value("fontStyle").toString().toStdString();
         p.fontSize   = static_cast<float>(o.value("size").toDouble(32.0));
+        p.fontWeight = o.value("fontWeight").toInt(
+            o.value("bold").toBool(false) ? 700 : 400);
         p.textColor  = static_cast<uint32_t>(o.value("textColor").toVariant().toULongLong());
         p.bgColor    = static_cast<uint32_t>(o.value("bgColor").toVariant().toULongLong());
         p.position   = o.value("position").toInt(0);
         p.bold       = o.value("bold").toBool(false);
         p.italic     = o.value("italic").toBool(false);
         p.alignment  = o.value("align").toInt(1);
+        p.verticalAlignment = o.value("verticalAlign").toInt(1);
+        p.allCaps = o.value("allCaps").toBool(false);
+        p.smallCaps = o.value("smallCaps").toBool(false);
+        p.underline = o.value("underline").toBool(false);
+        p.superscript = o.value("superscript").toBool(false);
+        p.subscript = o.value("subscript").toBool(false);
+        p.fauxBold = o.value("fauxBold").toBool(false);
+        p.fauxItalic = o.value("fauxItalic").toBool(false);
+        p.rightToLeft = o.value("rightToLeft").toBool(false);
+        p.tracking = static_cast<float>(o.value("tracking").toDouble(0.0));
+        p.leading = static_cast<float>(o.value("leading").toDouble(0.0));
+        p.baselineShift = static_cast<float>(
+            o.value("baselineShift").toDouble(0.0));
+        p.kerning = static_cast<float>(o.value("kerning").toDouble(0.0));
+        p.tabWidth = static_cast<float>(o.value("tabWidth").toDouble(48.0));
+        p.tsume = static_cast<float>(o.value("tsume").toDouble(0.0));
+        p.backgroundEnabled = o.value("backgroundEnabled").toBool(false);
+        p.backgroundPadding = static_cast<float>(
+            o.value("backgroundPadding").toDouble(4.0));
+        p.maskWithText = o.value("maskWithText").toBool(false);
+        p.showSpeaker = o.value("showSpeaker").toBool(false);
         p.strokeEnabled = o.value("strokeEnabled").toBool(false);
         if (o.contains("strokeColor"))
             p.strokeColor = static_cast<uint32_t>(o.value("strokeColor").toVariant().toULongLong());
@@ -488,13 +514,34 @@ void PropertiesPanel::saveTextPresetsToDisk() const
         QJsonObject o;
         o["name"]      = QString::fromStdString(p.name);
         o["font"]      = QString::fromStdString(p.fontFamily);
+        o["fontStyle"] = QString::fromStdString(p.fontStyle);
         o["size"]      = static_cast<double>(p.fontSize);
+        o["fontWeight"] = p.fontWeight;
         o["textColor"] = static_cast<qint64>(p.textColor);
         o["bgColor"]   = static_cast<qint64>(p.bgColor);
         o["position"]  = p.position;
         o["bold"]      = p.bold;
         o["italic"]    = p.italic;
         o["align"]     = p.alignment;
+        o["verticalAlign"] = p.verticalAlignment;
+        o["allCaps"] = p.allCaps;
+        o["smallCaps"] = p.smallCaps;
+        o["underline"] = p.underline;
+        o["superscript"] = p.superscript;
+        o["subscript"] = p.subscript;
+        o["fauxBold"] = p.fauxBold;
+        o["fauxItalic"] = p.fauxItalic;
+        o["rightToLeft"] = p.rightToLeft;
+        o["tracking"] = static_cast<double>(p.tracking);
+        o["leading"] = static_cast<double>(p.leading);
+        o["baselineShift"] = static_cast<double>(p.baselineShift);
+        o["kerning"] = static_cast<double>(p.kerning);
+        o["tabWidth"] = static_cast<double>(p.tabWidth);
+        o["tsume"] = static_cast<double>(p.tsume);
+        o["backgroundEnabled"] = p.backgroundEnabled;
+        o["backgroundPadding"] = static_cast<double>(p.backgroundPadding);
+        o["maskWithText"] = p.maskWithText;
+        o["showSpeaker"] = p.showSpeaker;
         o["strokeEnabled"]  = p.strokeEnabled;
         o["strokeColor"]    = static_cast<qint64>(p.strokeColor);
         o["strokeWidth"]    = static_cast<double>(p.strokeWidth);
@@ -541,23 +588,39 @@ void PropertiesPanel::applyTextPreset(int index)
     if (m_clip->isCaption()) {
         auto targets = captionTargets();
         if (targets.empty()) return;
-        struct Old { CaptionClip* cc; std::string font; float size; uint32_t tcol; uint32_t bcol; CaptionPosition pos; };
+        CaptionStyle style;
+        style.fontFamily = preset.fontFamily;
+        style.fontStyle = preset.fontStyle;
+        style.fontSize = preset.fontSize;
+        style.textColor = preset.textColor;
+        style.bgColor = preset.bgColor;
+        style.position = static_cast<CaptionPosition>(preset.position);
+        style.bold = preset.fontWeight >= 700 || preset.bold;
+        style.outlineColor = preset.strokeColor;
+        style.outlineWidth = preset.strokeEnabled ? preset.strokeWidth : 0.0f;
+        style.showSpeaker = preset.showSpeaker;
+        style.italic = preset.italic;
+        style.allCaps = preset.allCaps;
+        style.smallCaps = preset.smallCaps;
+        style.underline = preset.underline;
+        style.superscript = preset.superscript;
+        style.subscript = preset.subscript;
+        style.fauxBold = preset.fauxBold;
+        style.fauxItalic = preset.fauxItalic;
+        style.tracking = preset.tracking;
+        style.leading = preset.leading;
+        style.alignment = static_cast<GTextAlign>(preset.alignment);
+        style.name = preset.name;
+        struct Old { CaptionClip* cc; CaptionStyle style; };
         auto olds = std::make_shared<std::vector<Old>>();
         for (auto* cc : targets)
-            olds->push_back({cc, cc->fontFamily(), cc->fontSize(), cc->textColor(), cc->bgColor(), cc->position()});
-        auto doIt = [olds, preset, self]() {
-            for (auto& o : *olds) {
-                o.cc->setFontFamily(preset.fontFamily); o.cc->setFontSize(preset.fontSize);
-                o.cc->setTextColor(preset.textColor);   o.cc->setBgColor(preset.bgColor);
-                o.cc->setPosition(static_cast<CaptionPosition>(preset.position));
-            }
+            olds->push_back({cc, cc->captionStyle()});
+        auto doIt = [olds, style, self]() {
+            for (auto& o : *olds) o.cc->setCaptionStyle(style);
             self->populateFromCaption(); emit self->propertyChanged();
         };
         auto undoIt = [olds, self]() {
-            for (auto& o : *olds) {
-                o.cc->setFontFamily(o.font); o.cc->setFontSize(o.size);
-                o.cc->setTextColor(o.tcol);  o.cc->setBgColor(o.bcol); o.cc->setPosition(o.pos);
-            }
+            for (auto& o : *olds) o.cc->setCaptionStyle(o.style);
             self->populateFromCaption(); emit self->propertyChanged();
         };
         if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
@@ -587,55 +650,43 @@ void PropertiesPanel::applyTextPreset(int index)
     else if (m_clip->clipType() == ClipType::Graphic) {
         auto* tl = firstGfxTextLayer(static_cast<GraphicClip*>(m_clip));
         if (!tl) return;
-        const uint32_t oldFill = tl->appearance().fills.empty() ? 0xFFFFFFFFu
-                                                                : tl->appearance().fills[0].color;
-        struct Old { std::string font; float size; int weight; bool ital; int align; uint32_t fill;
-                     std::vector<StrokeEntry> strokes; std::vector<ShadowEntry> shadows; };
-        auto old = std::make_shared<Old>(Old{tl->fontFamily(), tl->fontSize(), tl->fontWeight(),
-                                             tl->isItalic(), static_cast<int>(tl->alignment()), oldFill,
-                                             tl->appearance().strokes, tl->appearance().shadows});
-        auto setFill = [](TextLayer* t, uint32_t c) {
-            if (t->appearance().fills.empty()) t->appearance().fills.push_back({c, true});
-            else { t->appearance().fills[0].color = c; t->appearance().fills[0].enabled = true; }
-        };
-        auto doIt = [tl, preset, setFill, self]() {
-            tl->setFontFamily(preset.fontFamily); tl->setFontSize(preset.fontSize);
-            tl->setFontWeight(preset.bold ? 700 : 400); tl->setItalic(preset.italic);
+        auto old = std::shared_ptr<GraphicLayer>(tl->clone().release());
+        auto doIt = [tl, preset, self]() {
+            tl->setFontFamily(preset.fontFamily);
+            tl->setFontStyleForAll(preset.fontStyle);
+            tl->setFontSize(preset.fontSize);
+            tl->setFontWeight(preset.fontWeight);
+            tl->setItalic(preset.italic);
+            tl->setAllCaps(preset.allCaps);
+            tl->setSmallCaps(preset.smallCaps);
             tl->setAlignment(static_cast<GTextAlign>(preset.alignment));
-            setFill(tl, preset.textColor);
-            // The preset defines the whole appearance: slot 0 of stroke/shadow
-            // follows it, including "off" for presets saved without one.
-            auto& ap = tl->appearance();
-            if (preset.strokeEnabled) {
-                if (ap.strokes.empty()) ap.strokes.push_back({});
-                ap.strokes[0].color    = preset.strokeColor;
-                ap.strokes[0].width    = preset.strokeWidth;
-                ap.strokes[0].position = static_cast<StrokePosition>(
-                    std::clamp(preset.strokePosition, 0, 2));
-                ap.strokes[0].enabled  = true;
-            } else if (!ap.strokes.empty()) {
-                ap.strokes[0].enabled = false;
-            }
-            if (preset.shadowEnabled) {
-                if (ap.shadows.empty()) ap.shadows.push_back({});
-                ap.shadows[0].color    = preset.shadowColor;
-                ap.shadows[0].distance = preset.shadowDistance;
-                ap.shadows[0].angle    = preset.shadowAngle;
-                ap.shadows[0].softness = preset.shadowSoftness;
-                ap.shadows[0].opacity  = preset.shadowOpacity;
-                ap.shadows[0].enabled  = true;
-            } else if (!ap.shadows.empty()) {
-                ap.shadows[0].enabled = false;
-            }
+            tl->setVAlignment(static_cast<GTextVAlign>(
+                preset.verticalAlignment));
+            tl->setTrackingForAll(preset.tracking);
+            tl->setLeadingForAll(preset.leading);
+            tl->setBaselineShiftForAll(preset.baselineShift);
+            tl->setKerningForAll(preset.kerning);
+            tl->setTabWidthForAll(preset.tabWidth);
+            tl->setTsumeForAll(preset.tsume);
+            tl->setFauxStylesForAll(preset.fauxBold, preset.fauxItalic);
+            tl->setUnderlineForAll(preset.underline);
+            tl->setScriptForAll(preset.superscript, preset.subscript);
+            tl->setRightToLeft(preset.rightToLeft);
+            tl->setFillForAll(true, preset.textColor);
+            tl->setStrokeForAll(preset.strokeEnabled, preset.strokeColor,
+                preset.strokeWidth, static_cast<StrokePosition>(
+                    std::clamp(preset.strokePosition, 0, 2)));
+            tl->setShadowForAll(preset.shadowEnabled, preset.shadowColor,
+                preset.shadowDistance, preset.shadowAngle,
+                preset.shadowSoftness, preset.shadowOpacity);
+            tl->setBackgroundForAll(preset.backgroundEnabled, preset.bgColor,
+                                    preset.backgroundPadding);
+            tl->setMaskWithText(preset.maskWithText);
+            tl->setLinkedStyleName(preset.name);
             self->populateFromClip(); emit self->propertyChanged();
         };
-        auto undoIt = [tl, old, setFill, self]() {
-            tl->setFontFamily(old->font); tl->setFontSize(old->size);
-            tl->setFontWeight(old->weight); tl->setItalic(old->ital);
-            tl->setAlignment(static_cast<GTextAlign>(old->align));
-            setFill(tl, old->fill);
-            tl->appearance().strokes = old->strokes;
-            tl->appearance().shadows = old->shadows;
+        auto undoIt = [tl, old, self]() {
+            tl->assignStateFrom(*old);
             self->populateFromClip(); emit self->propertyChanged();
         };
         if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
@@ -654,23 +705,53 @@ void PropertiesPanel::saveTextPresetAs()
         auto targets = captionTargets();
         if (targets.empty()) return;
         CaptionClip* cc = targets.front();
-        p.fontFamily = cc->fontFamily(); p.fontSize = cc->fontSize();
-        p.textColor = cc->textColor();   p.bgColor = cc->bgColor();
-        p.position  = static_cast<int>(cc->position());
+        const CaptionStyle style = cc->captionStyle();
+        p.fontFamily = style.fontFamily; p.fontStyle = style.fontStyle;
+        p.fontSize = style.fontSize; p.fontWeight = style.bold ? 700 : 400;
+        p.textColor = style.textColor; p.bgColor = style.bgColor;
+        p.position = static_cast<int>(style.position);
+        p.bold = style.bold; p.italic = style.italic;
+        p.allCaps = style.allCaps; p.smallCaps = style.smallCaps;
+        p.underline = style.underline;
+        p.superscript = style.superscript; p.subscript = style.subscript;
+        p.fauxBold = style.fauxBold; p.fauxItalic = style.fauxItalic;
+        p.tracking = style.tracking; p.leading = style.leading;
+        p.alignment = static_cast<int>(style.alignment);
+        p.strokeEnabled = style.outlineWidth > 0.0f;
+        p.strokeColor = style.outlineColor;
+        p.strokeWidth = style.outlineWidth;
+        p.showSpeaker = style.showSpeaker;
     } else if (m_clip->clipType() == ClipType::Title) {
         auto* tc = static_cast<TitleClip*>(m_clip);
         p.fontFamily = tc->fontFamily(); p.fontSize = tc->fontSize();
         p.textColor = tc->textColor();   p.bgColor = tc->bgColor();
         p.bold = tc->isBold(); p.italic = tc->isItalic();
+        p.fontWeight = p.bold ? 700 : 400;
         p.alignment = static_cast<int>(tc->alignment());
     } else if (m_clip->clipType() == ClipType::Graphic) {
         auto* tl = firstGfxTextLayer(static_cast<GraphicClip*>(m_clip));
         if (!tl) return;
-        p.fontFamily = tl->fontFamily(); p.fontSize = tl->fontSize();
+        p.fontFamily = tl->fontFamily(); p.fontStyle = tl->fontStyle();
+        p.fontSize = tl->fontSize(); p.fontWeight = tl->fontWeight();
         p.textColor = tl->appearance().fills.empty() ? 0xFFFFFFFFu
                                                      : tl->appearance().fills[0].color;
         p.bold = tl->fontWeight() >= 600; p.italic = tl->isItalic();
         p.alignment = static_cast<int>(tl->alignment());
+        p.verticalAlignment = static_cast<int>(tl->vAlignment());
+        p.allCaps = tl->allCaps(); p.smallCaps = tl->smallCaps();
+        p.underline = tl->underline();
+        p.superscript = tl->superscript(); p.subscript = tl->subscript();
+        p.fauxBold = tl->fauxBold(); p.fauxItalic = tl->fauxItalic();
+        p.rightToLeft = tl->rightToLeft();
+        p.tracking = tl->tracking().evaluate(0);
+        p.leading = tl->leading().evaluate(0);
+        p.baselineShift = tl->baselineShift().evaluate(0);
+        p.kerning = tl->kerning(); p.tabWidth = tl->tabWidth();
+        p.tsume = tl->tsume();
+        p.backgroundEnabled = tl->backgroundEnabled();
+        p.bgColor = tl->backgroundColor();
+        p.backgroundPadding = tl->backgroundPadding();
+        p.maskWithText = tl->maskWithText();
         if (!tl->appearance().strokes.empty()) {
             const StrokeEntry& s = tl->appearance().strokes[0];
             p.strokeEnabled  = s.enabled;

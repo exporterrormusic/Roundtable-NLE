@@ -230,7 +230,7 @@ private:
     void moveEntryToSubbin(uint64_t entryId, const QString& subbin);
 
     uint64_t nextEntryId() const;
-    int64_t  playheadLocalTick() const;                 ///< clip-local, clamped ≥0
+    int64_t  playheadEventTick() const; ///< persistent list time across split segments
     std::vector<std::vector<uint64_t>> computeFinalRows() const;
 
     Timeline*     m_timeline{nullptr};

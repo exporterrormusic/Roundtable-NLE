@@ -25,6 +25,7 @@
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
 #include "command/commands/KeyframeCmds.h"
+#include "effects/Effect.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -35,6 +36,7 @@
 #include <QMimeData>
 
 #include <cmath>
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -120,6 +122,12 @@ KeyframeTrack<float>* EffectControlsPanel::effRotation() noexcept
     if (m_graphicLayer) return &m_graphicLayer->transform().rotation;
     return m_clip ? &m_clip->rotation() : nullptr;
 }
+KeyframeTrack<float>* EffectControlsPanel::effShutterAngle() noexcept
+{
+    // Motion blur belongs to the rendered clip as a whole. A selected
+    // Essential Graphics child still uses the parent clip's shutter.
+    return m_clip ? &m_clip->shutterAngle() : nullptr;
+}
 KeyframeTrack<float>* EffectControlsPanel::effOpacity() noexcept
 {
     if (m_graphicLayer) return &m_graphicLayer->transform().opacity;
@@ -165,11 +173,25 @@ void EffectControlsPanel::setSelectedGraphicLayer(GraphicLayer* layer)
     // to the new source on next edit, and populateFromClip below pulls
     // the new values into the spinboxes.
     m_updating = true;
-    if (m_posRow)      m_posRow->setTrack(effPosX());
-    if (m_scaleRow)    m_scaleRow->setTrack(effScaleX());
+    if (m_posRow) {
+        m_posRow->setTrack(effPosX());
+        m_posRow->clearExtraTracks();
+        m_posRow->addExtraTrack(effPosY());
+    }
+    if (m_scaleRow) {
+        m_scaleRow->setTrack(effScaleX());
+        m_scaleRow->clearExtraTracks();
+        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked())
+            m_scaleRow->addExtraTrack(effScaleY());
+    }
     if (m_scaleWRow)   m_scaleWRow->setTrack(effScaleY());
     if (m_rotationRow) m_rotationRow->setTrack(effRotation());
-    if (m_anchorRow)   m_anchorRow->setTrack(effAnchorX());
+    if (m_shutterAngleRow) m_shutterAngleRow->setTrack(effShutterAngle());
+    if (m_anchorRow) {
+        m_anchorRow->setTrack(effAnchorX());
+        m_anchorRow->clearExtraTracks();
+        m_anchorRow->addExtraTrack(effAnchorY());
+    }
     if (m_opacityRow)  m_opacityRow->setTrack(effOpacity());
     populateFromClip();
     m_updating = false;
@@ -178,6 +200,15 @@ void EffectControlsPanel::setSelectedGraphicLayer(GraphicLayer* layer)
 void EffectControlsPanel::setClip(Clip* clip, Track* track)
 {
     if (m_clip == clip) return;
+    m_transformEditSpin = nullptr;
+    m_transformEditBefore.clear();
+    // Effect/mask keyboard selection belongs to the previous clip.  Keeping
+    // either stable ID selected across a clip switch would make the next
+    // Delete target invisible state (or consume the key for no visible row).
+    m_selectedEffectIndex = -1;
+    m_hasSelectedMask = false;
+    m_selectedMaskEffectId = 0;
+    m_selectedMaskId = 0;
     // A fresh clip starts with no per-layer selection — the workspace
     // calls setSelectedGraphicLayer() afterwards if Essential Graphics
     // already has one chosen for this clip.
@@ -218,13 +249,11 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
 
         m_kfTimeline->setClip(clip);
         m_kfTimeline->setPropertyRows(m_propertyRows);
+        syncMaskPathTimelineLanes();
 
-        // Prime each PropertyRow's add/delete diamond click handler for the
-        // current playhead position. PropertyRow::updateForTime captures the
-        // time in the click lambda; without this initial call the diamond
-        // button has no connected slot until something else moves the
-        // playhead, so clicking it right after selecting a clip would do
-        // nothing.
+        // Prime each PropertyRow's visual/nav state at the current playhead.
+        // The click itself resolves the live Timeline time, so this cached
+        // state cannot redirect a later click to an older frame.
         const int64_t relTick = clipRelativeTick();
         for (auto* row : m_propertyRows)
             row->updateForTime(relTick);
@@ -238,6 +267,7 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
         m_clipTypeLabel->setStyleSheet(QStringLiteral(
             "QLabel { background: transparent; border: none; }"));
         m_kfTimeline->setClip(nullptr);
+        m_kfTimeline->setMaskPathLanes({});
 
         // Hide property tree, show empty state
         m_splitter->hide();
@@ -257,14 +287,22 @@ void EffectControlsPanel::removeAllKeyframes()
 {
     if (!m_clip) return;
 
-    // Full snapshot of every animated track so undo restores it exactly.
+    // Full snapshots so undo restores values, interpolation, tangents, and
+    // complete Mask Path geometry exactly.
     struct TrackSnap {
         KeyframeTrack<float>*        trk;
         float                        oldDefault;
         std::vector<Keyframe<float>> oldKfs;
         float                        collapseVal;  // static value to keep
     };
+    struct MaskSnap {
+        quint64 effectId;
+        uint64_t maskId;
+        OpacityMask before;
+        OpacityMask after;
+    };
     std::vector<TrackSnap> snaps;
+    std::vector<MaskSnap> maskSnaps;
     const int64_t t = clipRelativeTick();
 
     auto addTrack = [&](KeyframeTrack<float>* trk) {
@@ -275,6 +313,30 @@ void EffectControlsPanel::removeAllKeyframes()
         snaps.push_back({trk, trk->defaultValue(), trk->keyframes(),
                          trk->evaluate(t)});
     };
+    auto addMask = [&](OpacityMask& mask, quint64 effectId) {
+        const bool hasKeys = !mask.pathKeys.empty()
+            || mask.feather.keyframeCount() > 0
+            || mask.maskOpacity.keyframeCount() > 0
+            || mask.expansion.keyframeCount() > 0;
+        if (!hasKeys) return;
+
+        OpacityMask after = mask;
+        if (!after.pathKeys.empty()) {
+            after.base = after.geometryAt(t);
+            after.pathKeys.clear();
+            after.pathAnimated = false;
+        }
+        auto collapse = [t](KeyframeTrack<float>& track) {
+            if (track.keyframeCount() == 0) return;
+            const float value = track.evaluate(t);
+            while (track.keyframeCount() > 0) track.removeKeyframe(0);
+            track.setDefaultValue(value);
+        };
+        collapse(after.feather);
+        collapse(after.maskOpacity);
+        collapse(after.expansion);
+        maskSnaps.push_back({effectId, mask.maskId, mask, std::move(after)});
+    };
 
     // Clip-level transform tracks.
     addTrack(&m_clip->positionX());
@@ -282,6 +344,7 @@ void EffectControlsPanel::removeAllKeyframes()
     addTrack(&m_clip->scaleX());
     addTrack(&m_clip->scaleY());
     addTrack(&m_clip->rotation());
+    addTrack(&m_clip->shutterAngle());
     addTrack(&m_clip->opacity());
     addTrack(&m_clip->anchorX());
     addTrack(&m_clip->anchorY());
@@ -301,29 +364,63 @@ void EffectControlsPanel::removeAllKeyframes()
             addTrack(&tf.rotation);
             addTrack(&tf.opacity);
             addTrack(&tf.anchorX); addTrack(&tf.anchorY);
-            if (layer->layerType() == GraphicLayerType::Text)
-                addTrack(&static_cast<TextLayer*>(layer)->tracking());
+            if (layer->layerType() == GraphicLayerType::Text) {
+                auto* text = static_cast<TextLayer*>(layer);
+                addTrack(&text->tracking());
+                addTrack(&text->leading());
+                addTrack(&text->baselineShift());
+            }
         }
     }
 
-    if (snaps.empty()) return;  // no keyframes anywhere — nothing to do
+    for (auto& mask : m_clip->masks()) addMask(mask, 0);
+    auto& effects = m_clip->effects();
+    for (size_t i = 0; i < effects.effectCount(); ++i) {
+        Effect& effect = effects.effect(i);
+        for (size_t p = 0; p < effect.paramCount(); ++p)
+            addTrack(&effect.param(p).track);
+        for (auto& mask : effect.masks()) addMask(mask, effect.id());
+    }
+
+    if (snaps.empty() && maskSnaps.empty()) return;
+
+    Clip* clip = m_clip;
+    auto resolveMask = [clip](quint64 effectId, uint64_t maskId)
+            -> OpacityMask* {
+        std::vector<OpacityMask>* masks = nullptr;
+        if (effectId == 0) masks = &clip->masks();
+        else if (Effect* effect = clip->effects().effectById(effectId))
+            masks = &effect->masks();
+        if (!masks) return nullptr;
+        const auto it = std::find_if(masks->begin(), masks->end(),
+            [maskId](const OpacityMask& mask) {
+                return mask.maskId == maskId;
+            });
+        return it == masks->end() ? nullptr : &*it;
+    };
 
     auto* panel = this;
-    auto doRemove = [snaps, panel]() {
+    auto doRemove = [snaps, maskSnaps, resolveMask, panel]() {
         for (const auto& s : snaps) {
             while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
             s.trk->setDefaultValue(s.collapseVal);
         }
+        for (const auto& s : maskSnaps)
+            if (auto* mask = resolveMask(s.effectId, s.maskId)) *mask = s.after;
         panel->refresh();
+        if (!maskSnaps.empty()) emit panel->maskChanged();
         emit panel->propertyChanged();
     };
-    auto undoRemove = [snaps, panel]() {
+    auto undoRemove = [snaps, maskSnaps, resolveMask, panel]() {
         for (const auto& s : snaps) {
             while (s.trk->keyframeCount() > 0) s.trk->removeKeyframe(0);
             s.trk->setDefaultValue(s.oldDefault);
             for (const auto& kf : s.oldKfs) s.trk->restoreKeyframe(kf);
         }
+        for (const auto& s : maskSnaps)
+            if (auto* mask = resolveMask(s.effectId, s.maskId)) *mask = s.before;
         panel->refresh();
+        if (!maskSnaps.empty()) emit panel->maskChanged();
         emit panel->propertyChanged();
     };
 
@@ -342,14 +439,15 @@ void EffectControlsPanel::refresh()
     buildPropertyTree();
     populateFromClip();
     m_kfTimeline->setPropertyRows(m_propertyRows);
+    syncMaskPathTimelineLanes();
     m_updating = false;
 
     // Update property-row button states (diamond add/remove, prev/next)
     // and force the mini-timeline to repaint with current keyframe data.
-    int64_t relTick = (m_playheadTick >= m_clip->timelineIn())
-                    ? (m_playheadTick - m_clip->timelineIn()) : 0;
+    const int64_t relTick = clipRelativeTick();
     for (auto* row : m_propertyRows)
         row->updateForTime(relTick);
+    updateMaskPathControls(relTick);
     m_kfTimeline->update();
 }
 
@@ -360,10 +458,14 @@ void EffectControlsPanel::setPlayheadTick(int64_t tick)
     m_kfTimeline->setPlayheadTick(tick);
 
     // Update keyframe nav buttons for current time
-    int64_t relTick = m_clip ? (tick - m_clip->timelineIn()) : tick;
+    const int64_t relTick = m_clip
+        ? std::clamp<int64_t>(tick - m_clip->timelineIn(), 0,
+                              std::max<int64_t>(0, m_clip->duration()))
+        : tick;
     for (auto* row : m_propertyRows) {
         row->updateForTime(relTick);
     }
+    updateMaskPathControls(relTick);
 
     // Update footer timecode (assume 24fps if no clip frame rate available)
     if (m_footerTimecodeLabel) {
@@ -409,7 +511,55 @@ int64_t EffectControlsPanel::clipRelativeTick() const noexcept
     // time. Falls back to the cached m_playheadTick when no timeline is set.
     const int64_t playhead = m_timeline ? m_timeline->playheadPosition()
                                         : m_playheadTick;
-    return playhead - m_clip->timelineIn();
+    return std::clamp<int64_t>(playhead - m_clip->timelineIn(), 0,
+                               std::max<int64_t>(0, m_clip->duration()));
+}
+
+void EffectControlsPanel::updateMaskPathControls(int64_t clipLocalTime)
+{
+    if (!m_clip) return;
+    const int64_t duration = std::max<int64_t>(0, m_clip->duration());
+    const int64_t t = std::clamp<int64_t>(clipLocalTime, 0, duration);
+    for (const auto& controls : m_maskPathControls) {
+        auto* masks = maskListFor(controls.effectId);
+        if (!masks) continue;
+        auto maskIt = std::find_if(masks->begin(), masks->end(),
+            [&controls](const OpacityMask& mask) {
+                return mask.maskId == controls.maskId;
+            });
+        if (maskIt == masks->end()) continue;
+        const auto& mask = *maskIt;
+        const bool animated = mask.pathAnimated;
+        const bool atKey = animated && mask.hasPathKeyAt(t);
+        const bool hasPrev = animated && mask.prevPathKeyTime(t) != t;
+        const bool hasNext = animated && mask.nextPathKeyTime(t) != t;
+
+        if (controls.stopwatch) {
+            controls.stopwatch->blockSignals(true);
+            controls.stopwatch->setChecked(animated);
+            controls.stopwatch->blockSignals(false);
+        }
+        if (controls.diamond) {
+            controls.diamond->setEnabled(animated);
+            controls.diamond->setChecked(atKey);
+        }
+        if (controls.previous) controls.previous->setEnabled(hasPrev);
+        if (controls.next) controls.next->setEnabled(hasNext);
+    }
+    if (m_kfTimeline) m_kfTimeline->update();
+}
+
+void EffectControlsPanel::syncMaskPathTimelineLanes()
+{
+    if (!m_kfTimeline) return;
+    std::vector<KeyframeTimeline::MaskPathLane> lanes;
+    lanes.reserve(m_maskPathControls.size());
+    for (const auto& controls : m_maskPathControls) {
+        if (controls.row)
+            lanes.push_back(
+                {controls.row, controls.effectId, controls.maskId});
+    }
+    m_kfTimeline->setMaskPathLanes(lanes);
 }
 
 void EffectControlsPanel::syncValuesFromClip()
@@ -423,6 +573,7 @@ void EffectControlsPanel::syncValuesFromClip()
     if (m_kfTimeline) m_kfTimeline->update();
     for (auto* row : m_propertyRows)
         if (row) row->updateForTime(clipRelativeTick());
+    updateMaskPathControls(clipRelativeTick());
     m_updating = false;
 }
 
@@ -607,6 +758,8 @@ void EffectControlsPanel::applyTransformLive()
         }
     } else if (spin == m_rotationSpin) {
         writeIfTrack(effRotation(), static_cast<float>(spin->value()));
+    } else if (spin == m_shutterAngleSpin) {
+        writeIfTrack(effShutterAngle(), static_cast<float>(spin->value()));
     } else if (spin == m_opacitySpin) {
         writeIfTrack(effOpacity(), static_cast<float>(spin->value() / 100.0));
     } else if (spin == m_anchorXSpin) {
@@ -690,6 +843,9 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
 
     auto* spin = qobject_cast<ScrubbySpinBox*>(sender());
     if (!spin) return;
+    auto editBefore = std::move(m_transformEditBefore);
+    m_transformEditBefore.clear();
+    m_transformEditSpin = nullptr;
 
     // Crop has no keyframe track — it lives on the clip. Build an undo
     // command from the four spins' pre-scrub vs current values (only the
@@ -752,6 +908,7 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
     else if (spin == m_scaleWSpin)   { track = effScaleY();
                                        factor = 100.0 * coverFitForCurrentClip(); }
     else if (spin == m_rotationSpin) { track = effRotation(); }
+    else if (spin == m_shutterAngleSpin) { track = effShutterAngle(); }
     else if (spin == m_opacitySpin)  { track = effOpacity(); factor = 100.0; }
     else if (spin == m_anchorXSpin)  { track = effAnchorX(); factor = posDisplayFactorX(); }
     else if (spin == m_anchorYSpin)  { track = effAnchorY(); factor = posDisplayFactorY(); }
@@ -778,6 +935,79 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
     }
 
     if (!track) return;  // crop / anchor / anti-flicker — no track yet
+
+    // The live write has already happened. Record exact before/after states
+    // for a captured gesture, including every compound sibling and handle.
+    if (!editBefore.empty()) {
+        std::vector<TransformTrackSnapshot> editAfter;
+        editAfter.reserve(editBefore.size());
+        for (const auto& state : editBefore) {
+            if (!state.track) continue;
+            editAfter.push_back(
+                {state.track, state.track->defaultValue(), state.track->keyframes()});
+        }
+
+        auto sameKeyframe = [](const Keyframe<float>& a,
+                               const Keyframe<float>& b) {
+            return a.time == b.time && a.value == b.value
+                && a.interp == b.interp
+                && a.bezierOutX == b.bezierOutX
+                && a.bezierOutY == b.bezierOutY
+                && a.bezierInX == b.bezierInX
+                && a.bezierInY == b.bezierInY
+                && a.spatialInterp == b.spatialInterp
+                && a.spatialOutX == b.spatialOutX
+                && a.spatialOutY == b.spatialOutY
+                && a.spatialInX == b.spatialInX
+                && a.spatialInY == b.spatialInY;
+        };
+        auto sameStates = [&sameKeyframe](
+                const std::vector<TransformTrackSnapshot>& a,
+                const std::vector<TransformTrackSnapshot>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].track != b[i].track
+                    || a[i].defaultValue != b[i].defaultValue
+                    || a[i].keyframes.size() != b[i].keyframes.size())
+                    return false;
+                for (size_t k = 0; k < a[i].keyframes.size(); ++k)
+                    if (!sameKeyframe(a[i].keyframes[k], b[i].keyframes[k]))
+                        return false;
+            }
+            return true;
+        };
+        if (sameStates(editBefore, editAfter)) return;
+
+        auto before = std::make_shared<std::vector<TransformTrackSnapshot>>(
+            std::move(editBefore));
+        auto after = std::make_shared<std::vector<TransformTrackSnapshot>>(
+            std::move(editAfter));
+        auto* panel = this;
+        auto applyStates = [panel](
+                const std::vector<TransformTrackSnapshot>& states) {
+            for (const auto& state : states) {
+                if (!state.track) continue;
+                while (state.track->keyframeCount() > 0)
+                    state.track->removeKeyframe(state.track->keyframeCount() - 1);
+                state.track->setDefaultValue(state.defaultValue);
+                for (const auto& key : state.keyframes)
+                    state.track->restoreKeyframe(key);
+            }
+            panel->populateFromClip();
+            const int64_t t = panel->clipRelativeTick();
+            for (auto* row : panel->m_propertyRows)
+                if (row) row->updateForTime(t);
+            if (panel->m_kfTimeline) panel->m_kfTimeline->update();
+            emit panel->propertyChanged();
+        };
+        if (m_commandStack) {
+            m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+                "Transform",
+                [after, applyStates]() { applyStates(*after); },
+                [before, applyStates]() { applyStates(*before); }));
+        }
+        return;
+    }
 
     float oldF;
     float newF;
@@ -882,6 +1112,7 @@ void EffectControlsPanel::resetPropertyRow(PropertyRow* row)
         else if (spin == m_scaleSpin)                addTrack(effScaleX(),   1.0f);
         else if (spin == m_scaleWSpin)               addTrack(effScaleY(),   1.0f);
         else if (spin == m_rotationSpin)             addTrack(effRotation(), 0.0f);
+        else if (spin == m_shutterAngleSpin)         addTrack(effShutterAngle(), 0.0f);
         else if (spin == m_opacitySpin)              addTrack(effOpacity(),  1.0f);
         else if (spin == m_anchorXSpin)              addTrack(effAnchorX(),  0.0f);
         else if (spin == m_anchorYSpin)              addTrack(effAnchorY(),  0.0f);
@@ -1026,9 +1257,73 @@ void EffectControlsPanel::applyTransform()
 
 
 
+void EffectControlsPanel::beginTransformEdit()
+{
+    if (!m_clip || !m_commandStack || m_updating) return;
+    auto* spin = qobject_cast<ScrubbySpinBox*>(sender());
+    if (!spin || m_transformEditSpin == spin) return;
+
+    m_transformEditSpin = spin;
+    m_transformEditBefore.clear();
+    auto snapshot = [this](KeyframeTrack<float>* track) {
+        if (!track) return;
+        const auto duplicate = std::find_if(
+            m_transformEditBefore.begin(), m_transformEditBefore.end(),
+            [track](const TransformTrackSnapshot& state) {
+                return state.track == track;
+            });
+        if (duplicate != m_transformEditBefore.end()) return;
+        m_transformEditBefore.push_back(
+            {track, track->defaultValue(), track->keyframes()});
+    };
+
+    if (spin == m_posXSpin || spin == m_posYSpin) {
+        snapshot(effPosX());
+        snapshot(effPosY());
+    } else if (spin == m_anchorXSpin || spin == m_anchorYSpin) {
+        snapshot(effAnchorX());
+        snapshot(effAnchorY());
+    } else if (spin == m_scaleSpin || spin == m_scaleWSpin) {
+        snapshot(spin == m_scaleSpin ? effScaleX() : effScaleY());
+        if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+            snapshot(effScaleX());
+            snapshot(effScaleY());
+        }
+    } else if (spin == m_rotationSpin) {
+        snapshot(effRotation());
+    } else if (spin == m_shutterAngleSpin) {
+        snapshot(effShutterAngle());
+    } else if (spin == m_opacitySpin) {
+        snapshot(effOpacity());
+    } else if (auto* audio = dynamic_cast<AudioClip*>(m_clip)) {
+        if (spin == m_panSpin) snapshot(&audio->pan());
+        else if (spin == m_audioVolumeSpin) snapshot(&audio->volume());
+    }
+}
+
 void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t time)
 {
     if (!track) return;
+    std::vector<KeyframeTrack<float>*> tracks;
+    auto include = [&tracks](KeyframeTrack<float>* candidate) {
+        if (!candidate) return;
+        if (std::find(tracks.begin(), tracks.end(), candidate) == tracks.end())
+            tracks.push_back(candidate);
+    };
+    include(track);
+    if (track == effPosX() || track == effPosY()) {
+        include(effPosX());
+        include(effPosY());
+    } else if (track == effAnchorX() || track == effAnchorY()) {
+        include(effAnchorX());
+        include(effAnchorY());
+    } else if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()
+               && (track == effScaleX() || track == effScaleY())) {
+        include(effScaleX());
+        include(effScaleY());
+    }
+    const bool compound = m_commandStack && tracks.size() > 1;
+    if (compound) m_commandStack->beginMacro("Add Keyframe");
     auto addOne = [this, time](KeyframeTrack<float>* trk) {
         float v = trk->evaluate(time);
         if (m_commandStack)
@@ -1037,16 +1332,10 @@ void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t tim
         else
             trk->addKeyframe(time, v);
     };
-    addOne(track);
-    // Uniform Scale: a single click on the Scale row's diamond must
-    // keyframe BOTH axes — otherwise scaleY stays static while scaleX
-    // animates and the render stops being uniform between keyframes.
-    if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
-        if (track == effScaleX() && effScaleY())
-            addOne(effScaleY());
-        else if (track == effScaleY() && effScaleX())
-            addOne(effScaleX());
-    }
+    for (auto* trk : tracks) addOne(trk);
+    // Position, anchor, and uniform scale are exposed as one control, so their
+    // component tracks must also be committed as one history action.
+    if (compound) m_commandStack->endMacro();
     // Refresh button states so the diamond switches to "delete" mode
     for (auto* row : m_propertyRows)
         row->updateForTime(time);
@@ -1057,6 +1346,30 @@ void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t tim
 void EffectControlsPanel::onDeleteKeyframe(KeyframeTrack<float>* track, int64_t time)
 {
     if (!track) return;
+    std::vector<KeyframeTrack<float>*> tracks;
+    auto include = [&tracks](KeyframeTrack<float>* candidate) {
+        if (!candidate) return;
+        if (std::find(tracks.begin(), tracks.end(), candidate) == tracks.end())
+            tracks.push_back(candidate);
+    };
+    include(track);
+    if (track == effPosX() || track == effPosY()) {
+        include(effPosX());
+        include(effPosY());
+    } else if (track == effAnchorX() || track == effAnchorY()) {
+        include(effAnchorX());
+        include(effAnchorY());
+    } else if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()
+               && (track == effScaleX() || track == effScaleY())) {
+        include(effScaleX());
+        include(effScaleY());
+    }
+    const size_t removable = static_cast<size_t>(std::count_if(
+        tracks.begin(), tracks.end(), [time](const auto* trk) {
+            return trk && trk->hasKeyframeAt(time);
+        }));
+    const bool compound = m_commandStack && removable > 1;
+    if (compound) m_commandStack->beginMacro("Remove Keyframe");
     auto removeOne = [this, time](KeyframeTrack<float>* trk) {
         if (m_commandStack)
             m_commandStack->execute(
@@ -1064,13 +1377,9 @@ void EffectControlsPanel::onDeleteKeyframe(KeyframeTrack<float>* track, int64_t 
         else
             trk->removeKeyframeAtTime(time);
     };
-    removeOne(track);
-    if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
-        if (track == effScaleX() && effScaleY())
-            removeOne(effScaleY());
-        else if (track == effScaleY() && effScaleX())
-            removeOne(effScaleX());
-    }
+    for (auto* trk : tracks)
+        if (trk->hasKeyframeAt(time)) removeOne(trk);
+    if (compound) m_commandStack->endMacro();
     // Refresh button states so the diamond switches to "add" mode
     for (auto* row : m_propertyRows)
         row->updateForTime(time);
@@ -1081,7 +1390,7 @@ void EffectControlsPanel::onDeleteKeyframe(KeyframeTrack<float>* track, int64_t 
 void EffectControlsPanel::onGoToPrevKeyframe(KeyframeTrack<float>* track)
 {
     if (!track || !m_clip) return;
-    int64_t relTick = m_playheadTick - m_clip->timelineIn();
+    const int64_t relTick = clipRelativeTick();
     int64_t prevTime = -1;
     for (size_t i = 0; i < track->keyframeCount(); ++i) {
         int64_t t = track->keyframe(i).time;
@@ -1097,7 +1406,7 @@ void EffectControlsPanel::onGoToPrevKeyframe(KeyframeTrack<float>* track)
 void EffectControlsPanel::onGoToNextKeyframe(KeyframeTrack<float>* track)
 {
     if (!track || !m_clip) return;
-    int64_t relTick = m_playheadTick - m_clip->timelineIn();
+    const int64_t relTick = clipRelativeTick();
     for (size_t i = 0; i < track->keyframeCount(); ++i) {
         int64_t t = track->keyframe(i).time;
         if (t > relTick) {
@@ -1127,6 +1436,61 @@ void EffectControlsPanel::deleteSelectedEffect()
 {
     if (m_selectedEffectIndex >= 0)
         deleteEffect(static_cast<size_t>(m_selectedEffectIndex));
+}
+
+bool EffectControlsPanel::deleteSelectedMask()
+{
+    if (!m_hasSelectedMask) return false;
+
+    const quint64 effectId = m_selectedMaskEffectId;
+    const uint64_t maskId = m_selectedMaskId;
+    // Once Effect Controls has selected a mask, Delete belongs to that mask.
+    // Consume even a stale id so it can never become a timeline clip delete.
+    if (!deleteMask(effectId, maskId)) {
+        m_hasSelectedMask = false;
+        m_selectedMaskEffectId = 0;
+        m_selectedMaskId = 0;
+    }
+    return true;
+}
+
+bool EffectControlsPanel::selectMaskById(quint64 effectId, uint64_t maskId)
+{
+    auto* masks = maskListFor(effectId);
+    if (!masks) return false;
+    const auto maskIt = std::find_if(
+        masks->begin(), masks->end(),
+        [maskId](const OpacityMask& mask) { return mask.maskId == maskId; });
+    if (maskIt == masks->end()) return false;
+
+    const int maskIndex = static_cast<int>(maskIt - masks->begin());
+    m_hasSelectedMask = true;
+    m_selectedMaskEffectId = effectId;
+    m_selectedMaskId = maskId;
+    m_selectedEffectIndex = -1;
+
+    const auto& tc = Theme::colors();
+    for (auto* effectHeader : m_effectHeaders) {
+        effectHeader->setStyleSheet(QStringLiteral(
+            "background: %1; border-bottom: 1px solid %2;")
+            .arg(Theme::hex(tc.surface2), Theme::hex(tc.border)));
+    }
+    for (auto& section : m_sectionArrows) {
+        const QVariant sectionMaskId = section.header->property("maskId");
+        if (!sectionMaskId.isValid()) continue;
+        const bool selected =
+            sectionMaskId.toULongLong() == maskId
+            && section.header->property("maskEffectId").toULongLong()
+                == effectId;
+        section.header->setStyleSheet(QStringLiteral(
+            "background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2;")
+            .arg(Theme::hex(selected ? tc.accentDim : tc.surface2),
+                 Theme::hex(tc.border)));
+    }
+
+    setFocus(Qt::MouseFocusReason);
+    emit maskSelected(maskIndex, effectId);
+    return true;
 }
 
 void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
@@ -1166,6 +1530,12 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
     if ((event->key() == Qt::Key_V) && (event->modifiers() & Qt::ControlModifier)
         && m_copiedEffect && m_clip) {
         pasteEffect();
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
+        && m_hasSelectedMask) {
+        deleteSelectedMask();
         event->accept();
         return;
     }
@@ -1248,54 +1618,90 @@ void EffectControlsPanel::clearKfClipboard() noexcept
     if (m_kfTimeline) m_kfTimeline->clearKfClipboard();
 }
 
+void EffectControlsPanel::installMaskSelectionFilters(QWidget* root)
+{
+    if (!root) return;
+    root->installEventFilter(this);
+    for (auto* child : root->findChildren<QWidget*>())
+        child->installEventFilter(this);
+}
+
 bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
 {
-    if (event->type() == QEvent::MouseButtonPress) {
-        auto* w = qobject_cast<QWidget*>(watched);
-        if (w) {
-            const auto& tc = Theme::colors();
+    auto* w = qobject_cast<QWidget*>(watched);
+    auto maskRootFor = [this](QWidget* candidate) -> QWidget* {
+        while (candidate && candidate != this) {
+            if (candidate->property("maskIndex").isValid()
+                && candidate->property("maskId").isValid()) {
+                return candidate;
+            }
+            candidate = candidate->parentWidget();
+        }
+        return nullptr;
+    };
+    QWidget* maskRoot = w ? maskRootFor(w) : nullptr;
 
-            // ── Check if a mask header was clicked ──────────────────────
-            QVariant maskIdxVar = w->property("maskIndex");
-            if (maskIdxVar.isValid()) {
-                int clickedMask = maskIdxVar.toInt();
-                quint64 clickedFxId =
-                    w->property("maskEffectId").toULongLong();
-                emit maskSelected(clickedMask, clickedFxId);
-                // Highlight selected mask header, dim others
+    // Tool buttons and non-text mask controls do not own a meaningful Delete
+    // action. Route it straight to the selected mask instead of allowing it
+    // to reach the workspace's clip/layer deletion shortcut. Text/spin
+    // editors retain their normal character-deletion behavior.
+    if (event->type() == QEvent::KeyPress && maskRoot
+        && (qobject_cast<QToolButton*>(w)
+            || qobject_cast<QCheckBox*>(w)
+            || qobject_cast<QComboBox*>(w))) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Delete || key->key() == Qt::Key_Backspace) {
+            const quint64 effectId =
+                maskRoot->property("maskEffectId").toULongLong();
+            const uint64_t maskId =
+                maskRoot->property("maskId").toULongLong();
+            deleteMask(effectId, maskId);
+            key->accept();
+            return true;
+        }
+    }
+
+    if (event->type() == QEvent::MouseButtonPress && w) {
+        const auto& tc = Theme::colors();
+
+        // A filtered child resolves selection through its nearest tagged
+        // mask row/header, then continues into its own normal click.
+        if (maskRoot) {
+            const quint64 clickedFxId =
+                maskRoot->property("maskEffectId").toULongLong();
+            const uint64_t clickedMaskId =
+                maskRoot->property("maskId").toULongLong();
+            selectMaskById(clickedFxId, clickedMaskId);
+            return false; // preserve the child's click/toggle action
+        }
+
+        // Find which effect header was clicked
+        for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
+            // Reset all headers to default style
+            m_effectHeaders[i]->setStyleSheet(QStringLiteral(
+                "background: %1; border-bottom: 1px solid %2;")
+                .arg(Theme::hex(tc.surface2), Theme::hex(tc.border)));
+        }
+        for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
+            if (m_effectHeaders[i] == w) {
+                m_selectedEffectIndex = static_cast<int>(i);
+                m_hasSelectedMask = false;
+                m_selectedMaskEffectId = 0;
+                m_selectedMaskId = 0;
                 for (auto& sec : m_sectionArrows) {
-                    QVariant v = sec.header->property("maskIndex");
-                    if (v.isValid()) {
-                        bool selected =
-                            (v.toInt() == clickedMask &&
-                             sec.header->property("maskEffectId").toULongLong()
-                                 == clickedFxId);
+                    if (sec.header->property("maskId").isValid()) {
                         sec.header->setStyleSheet(QStringLiteral(
                             "background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2;")
-                            .arg(Theme::hex(selected ? tc.accentDim : tc.surface2),
+                            .arg(Theme::hex(tc.surface2),
                                  Theme::hex(tc.border)));
                     }
                 }
-                return false; // let event propagate for collapse toggle
-            }
-
-            // Find which effect header was clicked
-            for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
-                // Reset all headers to default style
-                m_effectHeaders[i]->setStyleSheet(QStringLiteral(
+                // Highlight selected header
+                w->setStyleSheet(QStringLiteral(
                     "background: %1; border-bottom: 1px solid %2;")
-                    .arg(Theme::hex(tc.surface2), Theme::hex(tc.border)));
-            }
-            for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
-                if (m_effectHeaders[i] == w) {
-                    m_selectedEffectIndex = static_cast<int>(i);
-                    // Highlight selected header
-                    w->setStyleSheet(QStringLiteral(
-                        "background: %1; border-bottom: 1px solid %2;")
-                        .arg(Theme::hex(tc.accentDim), Theme::hex(tc.border)));
-                    setFocus(); // Ensure we get key events
-                    break;
-                }
+                    .arg(Theme::hex(tc.accentDim), Theme::hex(tc.border)));
+                setFocus(); // Ensure we get key events
+                break;
             }
         }
     }

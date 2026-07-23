@@ -94,6 +94,12 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
     if (!pt.eligible || !pt.clip) return nullptr;
     VideoClip* clip = pt.clip;
 
+    // Temporal synthesis is an RGBA two-frame operation.  The direct 16F
+    // single-frame passthrough cannot represent it, so route those clips
+    // through the normal compositor (including full-resolution export).
+    if (clip->timeInterpolation() != TimeInterpolation::FrameSampling)
+        return nullptr;
+
     // ── 2. Resolve source handle + stream info ──────────────────────────────
     bool skip = false;
     const uint64_t handle = resolveVideoClipHandle(clip, /*playbackNonBlocking=*/false, skip);

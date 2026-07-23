@@ -26,14 +26,13 @@ void blitLayerWithTransform(
     float cropT = 0.0f, float cropB = 0.0f,
     bool containFit = false);       // true = contain fit, false = cover fit
 
-/// Optional affine mapping from normalized frame space (0–1) into the
+/// Optional affine mapping from normalized mask space (0–1) into the
 /// rasterization target's pixel grid:
 ///   px = m[0]*u + m[1]*v + m[2]
 ///   py = m[3]*u + m[4]*v + m[5]
-/// Used to rasterize effect masks in the clip's source-pixel grid: the
-/// mask is authored in frame space, so the mapping is the composite
-/// transform (output UV → layer UV) scaled to source pixels. When null,
-/// the identity frame→target scaling (u*w, v*h) is used.
+/// Runtime clip/effect masks use the default identity mapping because their
+/// geometry and raster target are both clip-local. The optional mapping is
+/// retained for callers that intentionally rasterize into another grid.
 struct MaskRasterTransform
 {
     float m[6];

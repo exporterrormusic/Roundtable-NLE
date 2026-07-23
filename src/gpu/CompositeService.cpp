@@ -155,7 +155,7 @@ CompositeService::~CompositeService()
 void CompositeService::reset()
 {
     invalidateCacheDirect();
-    m_openMediaHandles.clear();
+    clearMediaHandles();
     if (m_engine) {
         m_engine->clearLru();
     }
@@ -270,6 +270,8 @@ void CompositeService::invalidateCacheDirect()
         m_lastGoodComposite.reset();
         m_lastGoodCompositeTick = -1;
         m_lastGoodCompositeClipIds.clear();
+        m_lastStaticComposite.reset();
+        m_lastStaticCompositeKey = 0;
         // Re-arm the A1 settle window so a project switch / cache flush
         // gets the same first-view grace as cold startup, instead of
         // inheriting the previous project's timestamp.
@@ -318,6 +320,8 @@ void CompositeService::requestCacheInvalidationRange(int64_t fromTick, int64_t t
         m_engine->invalidateLruRange(fromTick, toTick);
     {
         std::lock_guard lg(m_lastCompositeMtx);
+        m_lastStaticComposite.reset();
+        m_lastStaticCompositeKey = 0;
         // If the held last-good frame happens to be in the affected range,
         // drop it too — otherwise keep it to bridge the next composite.
         if (m_lastGoodComposite && m_lastGoodCompositeTick >= fromTick &&

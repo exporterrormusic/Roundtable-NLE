@@ -121,6 +121,76 @@ void translateGeometry(MaskGeometry& g, float dx, float dy)
 
 namespace MaskTracker {
 
+namespace detail {
+
+bool CoordinateMapping::isValid() const noexcept
+{
+    return std::isfinite(determinant) && std::abs(determinant) >= 1.0e-9f;
+}
+
+void CoordinateMapping::toSourcePixels(float u, float v,
+                                       float& x, float& y) const noexcept
+{
+    x = sourceXFromU * u + sourceXFromV * v + sourceXOffset;
+    y = sourceYFromU * u + sourceYFromV * v + sourceYOffset;
+}
+
+void CoordinateMapping::sourceDeltaToMask(float dx, float dy,
+                                          float& du, float& dv) const noexcept
+{
+    du = ( sourceYFromV * dx - sourceXFromV * dy) / determinant;
+    dv = (-sourceYFromU * dx + sourceXFromU * dy) / determinant;
+}
+
+float CoordinateMapping::pixelsPerMaskU() const noexcept
+{
+    return std::hypot(sourceXFromU, sourceYFromU);
+}
+
+float CoordinateMapping::pixelsPerMaskV() const noexcept
+{
+    return std::hypot(sourceXFromV, sourceYFromV);
+}
+
+CoordinateMapping buildCoordinateMapping(const MaskTrackParams& p,
+                                         MaskCoordinateSpace coordinateSpace,
+                                         uint32_t sourceWidth,
+                                         uint32_t sourceHeight,
+                                         int sourceRotationDegrees)
+{
+    CoordinateMapping mapping;
+    if (sourceWidth == 0 || sourceHeight == 0) return mapping;
+
+    if (coordinateSpace == MaskCoordinateSpace::SourceLocal) {
+        // Source-local mask UVs are defined in the decoder's native pixel
+        // orientation. The compositor applies media display rotation and the
+        // clip transform later, so neither belongs in the tracking mapping.
+        mapping.sourceXFromU = static_cast<float>(sourceWidth);
+        mapping.sourceYFromV = static_cast<float>(sourceHeight);
+    } else {
+        // Pre-v33 masks are sequence-frame UVs. Preserve their historical
+        // output-to-source mapping, including media orientation metadata.
+        const glm::mat4 transform = Compositor::buildViewportTransform(
+            sourceWidth, sourceHeight, p.outW, p.outH,
+            p.posX, p.posY, p.scaleX, p.scaleY, p.rotation,
+            /*containFit=*/false, p.anchorX, p.anchorY,
+            sourceRotationDegrees);
+        mapping.sourceXFromU = transform[0][0] * sourceWidth;
+        mapping.sourceXFromV = transform[1][0] * sourceWidth;
+        mapping.sourceXOffset = transform[3][0] * sourceWidth;
+        mapping.sourceYFromU = transform[0][1] * sourceHeight;
+        mapping.sourceYFromV = transform[1][1] * sourceHeight;
+        mapping.sourceYOffset = transform[3][1] * sourceHeight;
+    }
+
+    mapping.determinant =
+        mapping.sourceXFromU * mapping.sourceYFromV
+        - mapping.sourceXFromV * mapping.sourceYFromU;
+    return mapping;
+}
+
+} // namespace detail
+
 int track(const MaskTrackParams& p, OpacityMask& mask, QWidget* parent)
 {
     VideoDecoder dec;
@@ -138,24 +208,15 @@ int track(const MaskTrackParams& p, OpacityMask& mask, QWidget* parent)
     const uint32_t srcW = info.width;
     const uint32_t srcH = static_cast<uint32_t>(contentH);
 
-    // frame-norm → source-px affine, identical to the composite mapping
-    // (output UV → layer UV, scaled to source pixels).
-    const glm::mat4 t = Compositor::buildViewportTransform(
-        srcW, srcH, p.outW, p.outH,
-        p.posX, p.posY, p.scaleX, p.scaleY, p.rotation,
-        /*containFit=*/false, p.anchorX, p.anchorY, info.rotation);
-    const float m0 = t[0][0] * srcW, m1 = t[1][0] * srcW, m2 = t[3][0] * srcW;
-    const float m3 = t[0][1] * srcH, m4 = t[1][1] * srcH, m5 = t[3][1] * srcH;
-    const float det = m0 * m4 - m1 * m3;
-    if (std::abs(det) < 1e-9f) return 0;
+    const detail::CoordinateMapping mapping = detail::buildCoordinateMapping(
+        p, mask.coordinateSpace, srcW, srcH, info.rotation);
+    if (!mapping.isValid()) return 0;
 
     auto toSrc = [&](float u, float v, float& sx, float& sy) {
-        sx = m0 * u + m1 * v + m2;
-        sy = m3 * u + m4 * v + m5;
+        mapping.toSourcePixels(u, v, sx, sy);
     };
     auto deltaToNorm = [&](float dsx, float dsy, float& du, float& dv) {
-        du = ( m4 * dsx - m1 * dsy) / det;
-        dv = (-m3 * dsx + m0 * dsy) / det;
+        mapping.sourceDeltaToMask(dsx, dsy, du, dv);
     };
 
     // Local tick ↔ source frame mapping.
@@ -196,8 +257,8 @@ int track(const MaskTrackParams& p, OpacityMask& mask, QWidget* parent)
     float scx, scy;
     toSrc(ncx, ncy, scx, scy);
     // Half extents in source px (linear part magnitudes per axis)
-    const float axisU = std::hypot(m0, m3);
-    const float axisV = std::hypot(m1, m4);
+    const float axisU = mapping.pixelsPerMaskU();
+    const float axisV = mapping.pixelsPerMaskV();
     Patch tpl;
     tpl.halfW = std::clamp(static_cast<int>(nhw * axisU), 8, 48);
     tpl.halfH = std::clamp(static_cast<int>(nhh * axisV), 8, 48);

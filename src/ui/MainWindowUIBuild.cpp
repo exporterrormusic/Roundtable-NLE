@@ -770,6 +770,7 @@ void MainWindow::buildPanels()
                 m_timelineWorkspace->setForceFullResolution(true);
                 m_timelineWorkspace->setExportAlpha(wantAlpha);
                 auto result = m_timelineWorkspace->compositeFrame(tick, w, h, scrub);
+                if (result) result->preservesAlpha = wantAlpha;
                 m_timelineWorkspace->setExportAlpha(false);
                 m_timelineWorkspace->setForceFullResolution(false);
                 return result;

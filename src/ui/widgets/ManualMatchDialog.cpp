@@ -223,6 +223,9 @@ ManualMatchDialog::ManualMatchDialog(
         m_waveform->setPlayheadVisible(true);
         // Audio scrub — play a short burst at this position
         if (m_audioEngine && !m_isPlaying && !m_fullFileBuffer.empty()) {
+            // Another shared-engine client must not be able to leave this
+            // dialog playing with an empty source list.
+            installFullFileSource();
             auto frame = static_cast<int64_t>(t * m_fullFileRate);
             frame = std::clamp(frame, int64_t(0),
                                static_cast<int64_t>(m_fullFileBuffer.size()) - 1);
@@ -340,6 +343,11 @@ ManualMatchDialog::ManualMatchDialog(
     });
     // ── Stop any in-progress audio from the main app ─────────────────
     if (m_audioEngine) {
+        // Manual Match owns the shared engine for the lifetime of the modal
+        // dialog.  In particular, do not let its preview move the timeline's
+        // master clock.
+        m_savedSyncClock = m_audioEngine->syncClock();
+        m_audioEngine->setSyncClock(nullptr);
         m_audioEngine->stop();
         m_audioEngine->clearTrackSources();
     }
@@ -433,7 +441,13 @@ void ManualMatchDialog::setupFullFileSource()
         m_fullFileRate = srcRate;
     }
 
-    // Set as permanent track source so scrub and play both work
+    installFullFileSource();
+}
+
+void ManualMatchDialog::installFullFileSource()
+{
+    if (!m_audioEngine || m_fullFileBuffer.empty()) return;
+
     AudioTrackSource src;
     src.trackId     = 9999;
     src.samples     = m_fullFileBuffer.data();
@@ -446,7 +460,6 @@ void ManualMatchDialog::setupFullFileSource()
     src.muted       = false;
     src.solo        = false;
 
-    m_audioEngine->stop();
     m_audioEngine->setTrackSources({src});
 }
 
@@ -506,6 +519,12 @@ void ManualMatchDialog::onConfirmClicked()
 ManualMatchDialog::~ManualMatchDialog()
 {
     stopPreviewPlayback();
+    if (m_audioEngine) {
+        // The installed source contains a raw pointer into
+        // m_fullFileBuffer, so remove it before that buffer is destroyed.
+        m_audioEngine->clearTrackSources();
+        m_audioEngine->setSyncClock(m_savedSyncClock);
+    }
 }
 
 void ManualMatchDialog::startPreviewPlayback()
@@ -542,8 +561,9 @@ void ManualMatchDialog::startPreviewPlayback()
                            static_cast<int64_t>(m_fullFileBuffer.size()) - 1);
 
     m_audioEngine->stop();
-    // Re-set track source pointer (stop() doesn't clear sources but the
-    // buffer pointer is still valid from setupFullFileSource)
+    // Reinstall our source on every start.  AudioEngine is shared across
+    // panels, and a stale owner may have cleared its source list.
+    installFullFileSource();
     m_audioEngine->seekToFrame(seekFrame);
     m_audioEngine->play();
 

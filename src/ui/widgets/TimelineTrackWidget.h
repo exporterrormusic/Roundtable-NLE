@@ -77,6 +77,12 @@ public:
     /// Set pointer to waveform peak cache (owned by TimelinePanel).
     void setWaveformCache(const std::unordered_map<uint64_t, std::vector<float>>* cache);
 
+    /// Convert a viewport pixel to its normalized position in the full,
+    /// unclipped timeline clip. Exposed for regression testing of waveform
+    /// mapping when a clip extends beyond the viewport.
+    [[nodiscard]] static double waveformClipFractionAtPixel(
+        double pixelX, double clipLeft, double clipWidth) noexcept;
+
     /// Set in/out point range (ticks). Negative means unset.
     void setInOutPoints(int64_t inPoint, int64_t outPoint);
 

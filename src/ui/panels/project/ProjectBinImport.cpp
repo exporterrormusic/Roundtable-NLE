@@ -338,58 +338,67 @@ bool ProjectBin::removeFile(const std::filesystem::path& filePath)
 
 void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
 {
-    if (!selected || !m_grid) return;
+    if (!selected) return;
 
     const QString oldPath = selected->data(0, Qt::UserRole).toString();
-    const uint64_t itemId = selected->data(0, kBinItemIdRole).toULongLong();
     const QString displayName = selected->text(0);
-
     if (oldPath.isEmpty()) return;
 
-    // Find the grid item to modify in-place
-    auto& items = m_grid->mutableItems();
-    int gridIdx = -1;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (items[i].itemId == itemId ||
-            pathToUtf8(items[i].filePath) == oldPath.toStdString()) {
-            gridIdx = static_cast<int>(i);
-            break;
-        }
-    }
-    if (gridIdx < 0) {
-        spdlog::warn("ProjectBin::replaceMedia: item not found in grid '{}'",
-                     oldPath.toStdString());
-        return;
-    }
+    // The workspace owns the actual mutation so the bin, every sequence,
+    // decode caches, and undo history change as one operation.
+    promptRelinkMedia(utf8ToPath(oldPath.toStdString()), displayName);
+}
 
-    // Open file dialog
+void ProjectBin::promptRelinkMedia(const std::filesystem::path& oldPath,
+                                   const QString& displayName)
+{
+    if (oldPath.empty()) return;
+
     auto settings = rt::appSettings();
-    QString lastDir = settings.value("Import/lastDir", QString()).toString();
-    if (lastDir.isEmpty() || !QDir(lastDir).exists())
-        lastDir = QFileInfo(oldPath).absolutePath();
-    if (lastDir.isEmpty())
-        lastDir = QDir::homePath();
+    QString startDir = settings.value("Import/lastDir", QString()).toString();
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+        startDir = QFileInfo(QString::fromStdString(pathToUtf8(oldPath)))
+                       .absolutePath();
+    }
+    if (startDir.isEmpty() || !QDir(startDir).exists())
+        startDir = QDir::homePath();
 
-    QString newFile = QFileDialog::getOpenFileName(
-        this,
-        QStringLiteral("Replace Media — %1").arg(displayName),
-        lastDir,
-        QStringLiteral("All Files (*.*);;"
-            "Video (*.mp4 *.m4v *.mkv *.avi *.mov *.webm *.ts *.mts *.m2ts "
-            "*.mpg *.mpeg *.wmv *.flv *.mxf *.gif);;"
-            "Images (*.png *.jpg *.jpeg *.bmp *.tga *.gif *.webp *.tif "
-            "*.tiff *.avif *.jxl);;"
-            "Audio (*.wav *.mp3 *.flac *.ogg *.aac *.m4a *.opus *.wma "
-            "*.aif *.aiff)"));
-
+    const QString newFile = QFileDialog::getOpenFileName(
+        this, tr("Re-link Media - %1").arg(displayName), startDir,
+        QStringLiteral("Media Files (*.mp4 *.m4v *.mkv *.avi *.mov *.webm "
+                       "*.ts *.mts *.m2ts *.mpg *.mpeg *.wmv *.flv *.mxf "
+                       "*.gif *.png *.jpg *.jpeg *.bmp *.tga *.webp *.tif "
+                       "*.tiff *.avif *.jxl *.wav *.mp3 *.flac *.ogg *.aac "
+                       "*.m4a *.opus *.wma *.aif *.aiff);;All Files (*.*)"));
     if (newFile.isEmpty()) return;
 
     settings.setValue("Import/lastDir", QFileInfo(newFile).absolutePath());
+    settings.sync();
+    const auto newPath = utf8ToPath(newFile.toStdString());
+    if (newPath == oldPath) return;
 
-    const std::filesystem::path newPath = utf8ToPath(newFile.toStdString());
-    if (pathToUtf8(newPath) == oldPath.toStdString()) return;
+    emit mediaRelinkRequested(
+        QString::fromStdString(pathToUtf8(oldPath)),
+        QString::fromStdString(pathToUtf8(newPath)));
+}
 
-    // Open the new file via MediaPool
+int ProjectBin::replacePathReferences(const std::filesystem::path& oldPath,
+                                      const std::filesystem::path& newPath)
+{
+    if (!m_grid || oldPath.empty() || newPath.empty() || oldPath == newPath)
+        return 0;
+
+    auto savedFolders = binFolderState();
+    const std::string oldUtf8 = pathToUtf8(oldPath);
+    const std::string newUtf8 = pathToUtf8(newPath);
+    auto rewriteFolderKeys = [&](std::vector<BinFolderState>& folders) {
+        for (auto& folder : folders)
+            for (auto& key : folder.childKeys)
+                if (key == oldUtf8) key = newUtf8;
+    };
+    rewriteFolderKeys(savedFolders);
+    rewriteFolderKeys(m_rootFolderState);
+
     uint64_t newHandle = 0;
     if (m_mediaSources) {
         auto result = m_mediaSources->openSource(
@@ -397,24 +406,24 @@ void ProjectBin::replaceMedia(QTreeWidgetItem* selected)
         newHandle = result.handle;
     }
 
-    // Modify the existing grid item in-place — preserves itemId and position
-    auto& item = items[gridIdx];
-    item.filePath    = newPath;
-    item.displayName = displayName;
-    item.type        = ThumbnailGenerator::detectMediaType(newPath);
-    item.mediaHandle = newHandle;
-    item.thumbnail.reset();  // clear old thumbnail so new one loads
+    int updated = 0;
+    for (auto& item : m_grid->mutableItems()) {
+        if (item.isFolder || item.filePath != oldPath) continue;
+        item.filePath = newPath;
+        item.type = ThumbnailGenerator::detectMediaType(newPath);
+        item.mediaHandle = newHandle;
+        item.thumbnail.reset();
+        ++updated;
+    }
+    if (updated == 0) return 0;
 
-    // Rebuild both views
-    syncListView();
-    if (!m_listView)
-        syncIconView();
-
-    // Trigger thumbnail reload for the updated item
+    syncListView(&savedFolders);
+    if (!m_listView) syncIconView();
     m_grid->loadVisibleThumbnails();
 
-    spdlog::info("ProjectBin: replaced '{}' with '{}'",
-                 oldPath.toStdString(), pathToUtf8(newPath));
+    spdlog::info("ProjectBin: relinked {} item(s) '{}' -> '{}'",
+                 updated, oldUtf8, newUtf8);
+    return updated;
 }
 
 void ProjectBin::clearAll()

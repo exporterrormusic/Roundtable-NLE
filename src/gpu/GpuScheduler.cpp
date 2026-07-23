@@ -38,6 +38,16 @@ static VkResult vkQueueSubmitSeh(VkQueue queue, const VkSubmitInfo* submitInfo,
         return VK_ERROR_UNKNOWN;
     }
 }
+
+static VkResult vkQueueWaitIdleSeh(VkQueue queue)
+{
+    __try {
+        return vkQueueWaitIdle(queue);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return VK_ERROR_UNKNOWN;
+    }
+}
 #endif
 
 bool GpuScheduler::init(
@@ -252,6 +262,38 @@ VkResult GpuScheduler::present(VkQueue queue, const VkPresentInfoKHR* info)
         return vkQueuePresentKHR(queue, info);
     }
     return vkQueuePresentKHR(queue, info);
+}
+
+VkResult GpuScheduler::queueWaitIdle(VkQueue queue)
+{
+    if (queue == VK_NULL_HANDLE)
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    std::mutex* mtx = nullptr;
+    if (queue == m_graphics.queue)      mtx = m_graphics.mutex;
+    else if (queue == m_compute.queue)  mtx = m_compute.mutex;
+    else if (queue == m_transfer.queue) mtx = m_transfer.mutex;
+
+    auto wait = [queue]() {
+#ifdef _WIN32
+        return vkQueueWaitIdleSeh(queue);
+#else
+        return vkQueueWaitIdle(queue);
+#endif
+    };
+
+    VkResult result = VK_SUCCESS;
+    if (mtx) {
+        std::lock_guard lock(*mtx);
+        result = wait();
+    } else {
+        result = wait();
+    }
+    if (result != VK_SUCCESS) {
+        spdlog::error("[GpuScheduler] vkQueueWaitIdle failed: VkResult={}",
+                      static_cast<int>(result));
+    }
+    return result;
 }
 
 } // namespace rt

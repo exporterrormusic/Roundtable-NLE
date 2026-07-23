@@ -24,11 +24,15 @@ extern "C" {
 #include "PathUtils.h"
 #include "decode/SharedFileIO.h"
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <mutex>
+#include <set>
 
 #ifdef _WIN32
   #include <io.h>
@@ -70,6 +74,64 @@ namespace rt {
 //     alive until they close, so the order shutdown → MediaPool reset
 //     is safe.
 namespace {
+
+struct MemoryAvioSource {
+    std::vector<std::uint8_t> bytes;
+    std::size_t position{0};
+};
+
+int memoryAvioRead(void* opaque, std::uint8_t* buf, int bufSize)
+{
+    auto* source = static_cast<MemoryAvioSource*>(opaque);
+    if (!source || bufSize <= 0 || source->position >= source->bytes.size())
+        return AVERROR_EOF;
+    const std::size_t count = std::min<std::size_t>(
+        static_cast<std::size_t>(bufSize),
+        source->bytes.size() - source->position);
+    std::memcpy(buf, source->bytes.data() + source->position, count);
+    source->position += count;
+    return static_cast<int>(count);
+}
+
+std::int64_t memoryAvioSeek(void* opaque, std::int64_t offset, int whence)
+{
+    auto* source = static_cast<MemoryAvioSource*>(opaque);
+    if (!source) return AVERROR(EINVAL);
+    if (whence == AVSEEK_SIZE)
+        return static_cast<std::int64_t>(source->bytes.size());
+
+    std::int64_t base = 0;
+    switch (whence & ~AVSEEK_FORCE) {
+    case SEEK_SET: base = 0; break;
+    case SEEK_CUR: base = static_cast<std::int64_t>(source->position); break;
+    case SEEK_END: base = static_cast<std::int64_t>(source->bytes.size()); break;
+    default: return AVERROR(EINVAL);
+    }
+    if (offset >= 0) {
+        if (offset > std::numeric_limits<std::int64_t>::max() - base)
+            return AVERROR(EINVAL);
+    } else if (offset < -base) {
+        return AVERROR(EINVAL);
+    }
+    const std::int64_t next = base + offset;
+    if (next < 0 || static_cast<std::uint64_t>(next) > source->bytes.size())
+        return AVERROR(EINVAL);
+    source->position = static_cast<std::size_t>(next);
+    return next;
+}
+
+bool shouldSnapshotStillImage(const std::filesystem::path& path)
+{
+    std::string ext = pathToUtf8(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // GIF is intentionally absent: it can be animated and needs streaming.
+    static const std::set<std::string> kStillExtensions = {
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp",
+        ".tif", ".tiff", ".exr", ".dpx", ".hdr", ".psd"
+    };
+    return kStillExtensions.count(ext) != 0;
+}
 
 std::mutex   s_hwCtxMtx;
 AVBufferRef* s_cudaHwDeviceCtx{nullptr};
@@ -188,43 +250,61 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
 
     std::string pathStr = pathToUtf8(path);
 
-    // ── Open the file ourselves in shared mode (read | write | delete)
-    //    and feed FFmpeg via a custom AVIOContext. This is what stops
-    //    Explorer from refusing overwrite/delete on the source file.
-    SharedFileHandle sh = openSharedReadHandle(path, "VideoDecoder");
-    if (!sh) {
-        m_lastError = "Cannot open file (shared mode): " + pathStr;
-        spdlog::error("VideoDecoder: {}", m_lastError);
-        return false;
+    // A still image is snapshotted and its source handle is closed before
+    // FFmpeg probes it. Some editors and Explorer overwrite via an exclusive
+    // replace, which can be blocked even by a cooperative handle retained in
+    // a decoder cache. Videos remain streaming through a fully-shared handle.
+    void* ioOpaque = nullptr;
+    int (*ioRead)(void*, std::uint8_t*, int) = &sharedAvioRead;
+    std::int64_t (*ioSeek)(void*, std::int64_t, int) = &sharedAvioSeek;
+    if (shouldSnapshotStillImage(path)) {
+        auto memory = std::make_unique<MemoryAvioSource>();
+        if (!readSharedFileBytes(path, memory->bytes, "VideoDecoder")) {
+            m_lastError = "Cannot snapshot still image: " + pathStr;
+            spdlog::error("VideoDecoder: {}", m_lastError);
+            return false;
+        }
+        ioOpaque = memory.get();
+        ioRead = &memoryAvioRead;
+        ioSeek = &memoryAvioSeek;
+        m_avioMemory = memory.release();
+        spdlog::debug("VideoDecoder: memory-backed still '{}' ({} bytes, source handle closed)",
+                      pathStr,
+                      static_cast<MemoryAvioSource*>(m_avioMemory)->bytes.size());
+    } else {
+        SharedFileHandle sh = openSharedReadHandle(path, "VideoDecoder");
+        if (!sh) {
+            m_lastError = "Cannot open file (shared mode): " + pathStr;
+            spdlog::error("VideoDecoder: {}", m_lastError);
+            return false;
+        }
+        m_avioFile = static_cast<void*>(sh);
+        ioOpaque = static_cast<void*>(sh);
+        spdlog::debug("VideoDecoder: shared-mode stream '{}' (FILE_SHARE_READ|WRITE|DELETE, raw HANDLE)",
+                      pathStr);
     }
-    m_avioFile = static_cast<void*>(sh);
-    // warn-level temporary diagnostic (perf_log.txt is warn+ filtered).
-    spdlog::debug("VideoDecoder: shared-mode open '{}' (FILE_SHARE_READ|WRITE|DELETE, raw HANDLE)",
-                 pathStr);
 
     auto* buf = static_cast<uint8_t*>(av_malloc(kSharedAvioBufSize));
     if (!buf) {
-        closeSharedHandle(sh);
-        m_avioFile = nullptr;
         m_lastError = "av_malloc(AVIO buffer) failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
+        close();
         return false;
     }
     m_avioBuf = buf;
 
     m_avioCtx = avio_alloc_context(buf, kSharedAvioBufSize,
                                    /*write_flag=*/0,
-                                   /*opaque=*/static_cast<void*>(sh),
-                                   &sharedAvioRead,
+                                   /*opaque=*/ioOpaque,
+                                   ioRead,
                                    /*write_packet=*/nullptr,
-                                   &sharedAvioSeek);
+                                   ioSeek);
     if (!m_avioCtx) {
         av_free(buf);
         m_avioBuf = nullptr;
-        closeSharedHandle(sh);
-        m_avioFile = nullptr;
         m_lastError = "avio_alloc_context failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
+        close();
         return false;
     }
 
@@ -233,10 +313,9 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         av_freep(&m_avioCtx->buffer);
         avio_context_free(&m_avioCtx);
         m_avioBuf = nullptr;
-        closeSharedHandle(sh);
-        m_avioFile = nullptr;
         m_lastError = "avformat_alloc_context failed";
         spdlog::error("VideoDecoder: {}", m_lastError);
+        close();
         return false;
     }
     m_fmtCtx->pb    = m_avioCtx;
@@ -255,14 +334,8 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         m_lastError = "Cannot open file: " + std::string(err);
         spdlog::error("VideoDecoder: {}", m_lastError);
         // avformat_open_input frees m_fmtCtx on failure; the AVIOContext
-        // and HANDLE we created independently still need cleanup.
-        if (m_avioCtx) {
-            av_freep(&m_avioCtx->buffer);
-            avio_context_free(&m_avioCtx);
-        }
-        m_avioBuf = nullptr;
-        closeSharedHandle(sh);
-        m_avioFile = nullptr;
+        // and its backing source still need cleanup.
+        close();
         return false;
     }
 
@@ -272,7 +345,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
     {
         m_lastError = "Cannot find stream info";
         spdlog::error("VideoDecoder: {}", m_lastError);
-        avformat_close_input(&m_fmtCtx);
+        close();
         return false;
     }
 
@@ -312,7 +385,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         }
         m_lastError = "No video stream found";
         spdlog::error("VideoDecoder: {}", m_lastError);
-        avformat_close_input(&m_fmtCtx);
+        close();
         return false;
     }
 
@@ -535,7 +608,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
 
         if (!initSoftwareDecoder(preferredDecoder))
         {
-            avformat_close_input(&m_fmtCtx);
+            close();
             return false;
         }
     }
@@ -545,7 +618,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
                       pathToUtf8(path.filename()));
         if (!initSoftwareDecoder())
         {
-            avformat_close_input(&m_fmtCtx);
+            close();
             return false;
         }
     }
@@ -555,7 +628,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
             spdlog::info("VideoDecoder: '{}' — user preference is software-only",
                          pathToUtf8(path.filename()));
             if (!initSoftwareDecoder()) {
-                avformat_close_input(&m_fmtCtx);
+                close();
                 return false;
             }
             goto done_open;
@@ -575,7 +648,7 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
                                  m_info.codecName);
                     if (!initSoftwareDecoder())
                     {
-                        avformat_close_input(&m_fmtCtx);
+                        close();
                         return false;
                     }
                 }
@@ -658,6 +731,11 @@ void VideoDecoder::close()
     {
         closeSharedHandle(static_cast<SharedFileHandle>(m_avioFile));
         m_avioFile = nullptr;
+    }
+    if (m_avioMemory)
+    {
+        delete static_cast<MemoryAvioSource*>(m_avioMemory);
+        m_avioMemory = nullptr;
     }
     if (m_hwDeviceCtx)
     {

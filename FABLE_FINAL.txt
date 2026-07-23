@@ -1,0 +1,154 @@
+================================================================================
+FABLE_FINAL.txt — Whole-project review & prioritized plan
+Date: 2026-07-06
+================================================================================
+
+HOW THIS WAS PRODUCED / COVERAGE HONESTY
+  A multi-agent review fanned out over 9 areas. Two areas completed deep
+  code-verified passes before the run was cut short (credits):
+    - Titles/Graphics/Captions  (14 findings, all with file:line evidence)
+    - Export/Render             (partial notes, grounded in code)
+  The remaining sections combine this session's checks with the project's
+  known-debt ledger. Items marked [CHECK] were NOT verified against code this
+  session — confirm before building.
+
+================================================================================
+P0 — LAND WHAT'S IN FLIGHT (do first; everything else builds on a clean tree)
+================================================================================
+1. Commit masks v30. ~2,226 lines uncommitted across 34 files, PLUS untracked
+   files (src/ui/panels/effects/MaskTracker.{h,cpp}, shaders/mask_mix.comp,
+   tests/core/test_mask_raster.cpp, build.bat). One crash/reset loses the
+   whole mask system. Smoke first if fast, but don't sit on this.
+2. Runtime-smoke batch (owed, in one Release session — build
+   `--config Release --target roundtable`):
+     - Masks v30: draw/feather/expand/invert path, per-effect mask, NCC track
+     - AudioSync boundary accuracy (requires a RE-TRANSCRIBE to take effect)
+     - AudioSync incremental re-export 2A/2B (b059eb7): edits/captions survive
+     - Multi audio stream (4.4): ordinal pick + waveform + export
+     - H264 clip-start skip (preview warm + export keyframe gate)
+     - GPU teardown UAF fix batch (clean exit, no shutdown AV)
+     - Export cluster generally (smart-render passthrough, audio-only path)
+3. Decide the tier-list WIP (UI scale / board select / cross-tier): if
+   "Fable upgrades" (e83dad8) didn't include it, finish or shelve explicitly.
+
+================================================================================
+P1 — VERIFIED BUGS (found this session, code-confirmed, mostly small)
+================================================================================
+Graphics/captions cluster:
+1. Drop Shadow initializer swaps distance/angle -> 135px shadow on enable.
+   PropertiesPanel applyGfxShadowEnabled pushes {color,135,4,...} into
+   ShadowEntry{color,distance,angle,...} (GraphicLayer.h:89-97). Fix the
+   aggregate init; consider designated initializers for appearance structs.
+2. SRT import/export bypasses the caption system entirely. exportSrt scans
+   Graphic clips only (SrtIO.cpp:177-205) -> whisper-transcribed CaptionClips
+   export "no subtitles"; importSrt creates Graphic clips instead of captions.
+   Point both at captionTrack()/CaptionClips.
+3. CaptionsPanel caches raw CaptionClip* (CaptionsPanel.h:125-129) and
+   Timeline fires no clip-level notifications -> dangling pointers after
+   timeline edits. Store IDs, resolve via findCaptionClipById (this is the
+   established clip-lifetime pattern; TierList/Captions already fixed for
+   Timeline*, this is the clip-level residue).
+4. Inline-edit undo lambdas capture raw CaptionClip*/TextLayer*
+   (OverlayController.cpp:883-884, 921-931). Sweep to the ID-capture pattern.
+5. Export panel: "Broadcast 1080i" preset exists in the combo but applyPreset
+   has no case for it (silently does nothing). Remove it or implement it.
+6. Export panel: fps combo stores INTEGER rates for NTSC entries
+   (23.976/29.97 -> 23/29?) — verify and fix rate plumbing end-to-end.
+7. Export queue: "Remove from Queue" only deletes the QListWidget item — job/
+   pipeline-slot state not cleaned. Also audit pipeline-slot reset after
+   failed jobs and what guards timeline editing during an active export.
+
+================================================================================
+P2 — QUICK WINS, HIGH VALUE FOR THE COMMENTARY WORKFLOW (S effort)
+================================================================================
+1. "Apply style to all captions" — style edits are per-clip today
+   (CaptionsPanel.cpp:558-606, single-selection list). One undoable command
+   over all caption clips. Biggest per-video time-saver in this cluster.
+2. Caption search/filter box + replace-all over the caption list
+   (CaptionsPanel.cpp:162-166). Hundreds of cues per video; fixing a whisper
+   mistake currently means scrolling.
+3. Shape layers are model+renderer+serialization complete but UNCREATABLE —
+   no New Layer UI (GraphicLayer.h:249-276 renders fine). Add [+] button +
+   context menu: New Text/Rect/Ellipse/RoundedRect. Unlocks lower-thirds.
+4. Text style presets drop stroke+shadow on save (PropertiesPanel.h:499-509).
+   Extend TextStylePreset JSON.
+5. renderCaptionClip has no memo cache — full project-res ARGB alloc+render
+   EVERY frame a caption is visible (renderGraphicClip already has the
+   hash-keyed cache pattern to copy, ClipRenderers.cpp:564-580).
+
+================================================================================
+P3 — MEDIUM FEATURES (M/L effort, still workflow-relevant)
+================================================================================
+1. Burned-in caption styling: no outline/stroke (the standard way captions
+   stay readable), bold is hard-coded, speaker labels never render
+   (ClipRenderers.cpp:845 area). Needs a format bump — COORDINATE VERSIONS:
+   masks took v30, Commentators plan reserves v31; caption fields ride
+   whichever lands next, don't burn a third number.
+2. Dead controls: Leading, baseline shift, stroke position (Center/Inner/
+   Outer) are stored+serialized but ignored by buildTextPath
+   (GraphicsEditorControls.cpp:324-339, 432-447). Wire them or hide them —
+   silently-dead UI erodes trust in the whole panel.
+3. Layer animation is model-complete (KeyframeTrack transforms evaluated
+   per-tick) but unauthorable — every UI edit writes tick 0. Reuse the
+   EffectControlsPanel stopwatch/keyframe UI for the focused layer's
+   pos/scale/opacity. This is the gateway to animated titles.
+4. TitleClip is creation-orphaned (only clone() constructs one) yet keeps a
+   full UI/render/preset surface. Add load-time migration TitleClip ->
+   GraphicClip(1 TextLayer), then delete the legacy surface.
+5. Paragraph text box half-wired (useParagraphBox/boxWidth serialized, no UI,
+   no wrap in renderer): finish word-wrap or rip the fields out.
+
+================================================================================
+P4 — PREMIERE-PARITY CANDIDATES [CHECK each before building — the review
+      round that would have verified these didn't finish]
+================================================================================
+Ranked by likely value to commentary-video production:
+1. Chapter/marker export — markers exist on the timeline; no YouTube-chapters
+   text export from them (export reviewer confirmed the gap). Cheap + real.
+2. Loudness: LUFS normalization on export + a simple auto-duck (music under
+   dialogue) [CHECK]. audiofx already has the DSP building blocks
+   (dynamics/FxChain); this is orchestration, not new DSP.
+3. Video scopes (waveform/vectorscope) in the Program Monitor [CHECK].
+4. Adjustment layers [CHECK] — glitch/beat macros currently apply per-clip;
+   an adjustment layer would make section-wide looks trivial.
+5. Speed/rate-stretch/time remap [CHECK] — never referenced anywhere in the
+   project's history; confirm absence, then scope smallest useful slice
+   (constant-rate clip speed first, not keyframed remap).
+6. Keyboard shortcut editor (or at minimum a generated cheat-sheet dialog)
+   [CHECK coverage of existing shortcuts first].
+7. Color: basic corrector (exposure/contrast/temp/tint/sat) as a normal
+   effect in the existing EffectStack + LUT apply [CHECK]. HDR tone-map is
+   already deferred to 4.2 — keep it deferred.
+
+================================================================================
+P5 — INFRASTRUCTURE / PROCESS DEBT (carried from the project ledger)
+================================================================================
+1. docs/ is GITIGNORED but holds real design docs (COMMENTATORS_PLAN.md,
+   TIER_LIST_PLAN.md, architecture.md). Un-ignore or move — one disk failure
+   erases the Commentators design.
+2. Archive roundtable.exe + .pdb per release (heap-corruption postmortem
+   showed symbolization is impossible without it).
+3. AnimCache AV (v0.23): run AppVerifier PageHeap session to confirm/deny the
+   heap-corruption suspicion; D1-D3 hardening is in but unproven.
+4. Tests for VideoFrameMapping / ConvertDecodedFrame (the unified tick->frame
+   and CPU-convert paths every consumer now depends on).
+5. ANSI path sweep leftovers: core/media encoders + ui/ (low priority; ship
+   manifest covers the app, matters for test exes).
+6. Suite health: keep tests green in CI (654/654 baseline, -L core gate).
+
+================================================================================
+SEQUENCING RECOMMENDATION
+================================================================================
+  Week 1:  P0 (commit + smoke batch)  ->  P1 bugs (all are S except SRT)
+  Week 2:  P2 quick wins (captions/graphics polish lands before the next
+           video is edited)  ->  P5.1/5.2 (one hour, removes existential risk)
+  Then:    Commentators (design locked, v31) remains the next BIG feature per
+           the active queue; P3.1 caption-format fields should ride the v31
+           bump. P4 items get a [CHECK] verification pass first — several may
+           partially exist.
+
+  Standing queue reference (pre-existing): theme sweep leftovers -> AudioSync
+  1B -> Boost Path-C 5.2 async-enqueue -> Commentators -> per-section UI
+  passes. This plan slots P0-P2 ahead of Commentators; nothing here displaces
+  the locked Commentators design.
+================================================================================

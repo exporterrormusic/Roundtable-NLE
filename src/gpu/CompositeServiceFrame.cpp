@@ -17,12 +17,15 @@
 // Media / timeline
 #include "cache/FrameCache.h"
 #include "cache/SegmentRenderCache.h"
+#include "playback/FrameFallbackPolicy.h"
 #include "playback/MediaPool.h"
 #include "decode/VideoFrameMapping.h"
 #include "cache/CachePolicy.h"
 #include "project/RenderStateHash.h"
 #include "Constants.h"
+#include "FrameTime.h"
 #include "timeline/AudioClip.h"
+#include "timeline/AdjustmentClip.h"
 #include "timeline/ImageClip.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/SpineClip.h"
@@ -46,6 +49,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <optional>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -64,9 +69,126 @@
 
 namespace rt {
 
+namespace {
+
+std::vector<uint64_t> activeVisualClipIds(const Timeline& timeline, int64_t tick)
+{
+    std::vector<uint64_t> ids;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        auto* track = timeline.track(ti);
+        if (!track || track->type() != TrackType::Video || track->isMuted())
+            continue;
+        for (auto* clip : track->clipsAtTime(tick)) {
+            if (!clip || !clip->isEnabled() ||
+                dynamic_cast<AdjustmentClip*>(clip)) {
+                continue;
+            }
+            ids.push_back(clip->id());
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
+bool sameVisualClipSet(const std::vector<uint64_t>& current,
+                       const std::vector<uint64_t>& previous)
+{
+    auto sortedPrevious = previous;
+    std::sort(sortedPrevious.begin(), sortedPrevious.end());
+    sortedPrevious.erase(
+        std::unique(sortedPrevious.begin(), sortedPrevious.end()),
+        sortedPrevious.end());
+    return current == sortedPrevious;
+}
+
+void staticStateHashBytes(uint64_t& hash, const void* data, size_t size)
+{
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+}
+
+template <typename T>
+void staticStateHashValue(uint64_t& hash, const T& value)
+{
+    staticStateHashBytes(hash, &value, sizeof(value));
+}
+
+std::optional<uint64_t> staticCompositeStateKey(
+    const std::vector<LayerInfo>& layers, uint32_t outW, uint32_t outH,
+    ResolutionTier tier, bool preserveAlpha)
+{
+    if (layers.empty()) return std::nullopt;
+    uint64_t hash = 1469598103934665603ull;
+    staticStateHashValue(hash, outW);
+    staticStateHashValue(hash, outH);
+    const uint8_t tierValue = static_cast<uint8_t>(tier);
+    staticStateHashValue(hash, tierValue);
+    staticStateHashValue(hash, preserveAlpha);
+    const uint32_t count = static_cast<uint32_t>(layers.size());
+    staticStateHashValue(hash, count);
+
+    for (const LayerInfo& layer : layers) {
+        if (!layer.contentStableForStateCache || layer.sourceFallbackPending
+            || layer.temporalMode != 0 || layer.motionSampleCount != 1
+            || !layer.effects.empty() || !layer.masks.empty()
+            || layer.wipeProgress >= 0.0f) {
+            return std::nullopt;
+        }
+
+        uint64_t mediaId = 0;
+        int64_t frameNumber = 0;
+        uint8_t sourceTier = 0;
+        if (layer.gpuCacheBacked) {
+            mediaId = layer.gpuCacheMediaId;
+            frameNumber = layer.gpuCacheFrameNumber;
+            sourceTier = layer.gpuCacheTier;
+        } else if (layer.frame && layer.frame->mediaId != 0) {
+            mediaId = layer.frame->mediaId;
+            frameNumber = layer.frame->frameNumber;
+            sourceTier = static_cast<uint8_t>(layer.frame->tier);
+        } else {
+            return std::nullopt;
+        }
+
+        staticStateHashValue(hash, mediaId);
+        staticStateHashValue(hash, frameNumber);
+        staticStateHashValue(hash, sourceTier);
+        staticStateHashValue(hash, layer.clipId);
+        staticStateHashValue(hash, layer.frameWidth);
+        staticStateHashValue(hash, layer.frameHeight);
+        staticStateHashValue(hash, layer.opacity);
+        staticStateHashValue(hash, layer.posX);
+        staticStateHashValue(hash, layer.posY);
+        staticStateHashValue(hash, layer.scX);
+        staticStateHashValue(hash, layer.scY);
+        staticStateHashValue(hash, layer.rot);
+        staticStateHashValue(hash, layer.anchorX);
+        staticStateHashValue(hash, layer.anchorY);
+        staticStateHashValue(hash, layer.cropL);
+        staticStateHashValue(hash, layer.cropR);
+        staticStateHashValue(hash, layer.cropT);
+        staticStateHashValue(hash, layer.cropB);
+        staticStateHashValue(hash, layer.srcRotation);
+        staticStateHashValue(hash, layer.blendMode);
+        staticStateHashValue(hash, layer.containFit);
+        staticStateHashValue(hash, layer.isPacked);
+        staticStateHashValue(hash, layer.isPMA);
+        staticStateHashValue(hash, layer.needsSwapRB);
+    }
+    return hash;
+}
+
+} // namespace
+
 std::shared_ptr<CachedFrame> CompositeService::compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                                 bool scrubMode,
-                                                                bool isNestedRecursion)
+                                                                bool isNestedRecursion,
+                                                                bool stillMode,
+                                                                std::optional<ResolutionTier> tierOverride)
 try
 {
     if (m_shutdown.load(std::memory_order_acquire))
@@ -132,6 +254,11 @@ try
     // temporarily unlocks to allow async media opens.
     std::unique_lock lock(m_compositeMutex);
 
+    const ResolutionTier requestTier = m_forceFullResolution.load()
+        ? ResolutionTier::Full
+        : tierOverride.value_or(playbackTier());
+    const bool exactStillMode = stillMode && !scrubMode;
+
     // Phase B: advance the CachePolicy generation counter and run its
     // throttled eviction + adaptive-budget passes.  These are very cheap
     // — eviction is gated by a 3s throttle, rebalance is gated by a
@@ -186,8 +313,12 @@ try
              || m_forceFullResolution.load(std::memory_order_relaxed))
             && !isNestedRecursion && m_segmentRenderCache
             && m_segmentRenderCache->count() > 0) {
-        const ResolutionTier tier = effectiveCacheTier();
-        const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+        const ResolutionTier tier = requestTier;
+        const uint32_t renderFlags =
+            m_exportAlpha.load(std::memory_order_relaxed)
+                ? RenderStatePreserveAlpha : RenderStateNone;
+        const uint64_t cfgHash = hashCompositeConfigAt(
+            *m_timeline, tick, m_project, renderFlags);
         auto cached = m_segmentRenderCache->get(tick, tier, cfgHash);
         if (!cached) {
             // The (tick,tier,hash) key isn't present — the common, expected
@@ -206,6 +337,8 @@ try
                     m_lastGoodComposite     = cached;
                     m_lastGoodCompositeTick = tick;
                 }
+                cached->segmentCacheHit = true;
+                cached->preservesAlpha = (renderFlags & RenderStatePreserveAlpha) != 0;
                 const uint64_t n = ++m_segCacheHits;
                 if (n == 1 || (n % 300) == 0)
                     spdlog::debug("[SEGCACHE] served {} frame(s) from cache "
@@ -338,8 +471,8 @@ try
                         const auto warmTier = videoClip->isVideoCharacter()
                             ? (m_forceFullResolution.load()
                                ? ResolutionTier::Full
-                               : playbackTier())
-                            : playbackTier();
+                               : requestTier)
+                            : requestTier;
                         if (!m_mediaPool->isFrameCached(handle, srcFrame, warmTier)) {
                             // Two-stage prefetch on shot boundary: a small
                             // *urgent* batch (the current + previous frame)
@@ -472,12 +605,12 @@ try
     // always freshly composite its own content (it is snapshotted to a
     // CPU layer by the caller anyway).
     //
-    // Scrub: ALLOW.  The LRU only stores CPU-readback frames (insertLru
-    // is gated on !result->gpuReady), and they are keyed by (tick, w, h)
-    // so there is no staleness risk.  Letting scrub hit the LRU means an
-    // oscillating drag around the same tick at the same divisor reuses
-    // the prior composite instead of redoing the full layer build.
-    if (m_engine && !isNestedRecursion) {
+    // Scrub: ALLOW.  Letting scrub hit the LRU means an oscillating drag
+    // around the same tick at the same divisor reuses the prior composite.
+    // Exact paused stills deliberately bypass it because the key has no
+    // decode-tier component: an older same-size composite may contain a
+    // lower-tier fallback stretched to the requested canvas.
+    if (m_engine && !isNestedRecursion && !exactStillMode) {
         auto cached = m_engine->checkLru(tick, outW, outH);
         if (cached)
             return cached;
@@ -494,6 +627,7 @@ try
 
     int clipsAtTick = 0;
     layers = buildLayersForFrame(tick, outW, outH, scrubMode, playbackNonBlocking,
+                                 requestTier, exactStillMode,
                                  clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
 
     // ── Phase 4: boundary block-on-arrival ──────────────────────────────
@@ -515,9 +649,7 @@ try
         std::vector<PendingFrame> pending;
         pending.reserve(8);
 
-        const auto wantTier = m_forceFullResolution.load()
-            ? ResolutionTier::Full
-            : playbackTier();
+        const auto wantTier = requestTier;
 
         // Collect VideoClips in a Timeline at the given tick that aren't
         // cached yet.  Extracted as a lambda so we can call it for the
@@ -539,12 +671,7 @@ try
                     const auto& mp = vc->mediaPath();
                     if (mp.empty()) continue;
 
-                    MediaHandle handle = 0;
-                    {
-                        auto it = m_openMediaHandles.find(mp);
-                        if (it != m_openMediaHandles.end())
-                            handle = it->second;
-                    }
+                    const MediaHandle handle = findMediaHandle(mp);
                     if (handle == 0) continue;
 
                     const auto* info = m_mediaPool->getInfo(handle);
@@ -556,11 +683,21 @@ try
                     // instead of clip fps first), so it could prefetch a
                     // different frame than the renderer would request —
                     // wasted prefetch + a cache miss on the real frame.
-                    const int64_t frameNum =
-                        mapTickToSourceFrame(*vc, atTick, info).frame;
-
-                    if (!m_mediaPool->isFrameCached(handle, frameNum, wantTier))
-                        pending.push_back({handle, frameNum, wantTier});
+                    const auto mapped =
+                        mapTickToSourceFrame(*vc, atTick, info);
+                    const bool temporal =
+                        vc->timeInterpolation() != TimeInterpolation::FrameSampling &&
+                        mapped.blendPhase > 0.000001 &&
+                        mapped.lowerFrame != mapped.upperFrame;
+                    const int64_t primary = temporal
+                        ? mapped.lowerFrame : mapped.frame;
+                    if (!m_mediaPool->isFrameCached(handle, primary, wantTier))
+                        pending.push_back({handle, primary, wantTier});
+                    if (temporal &&
+                        !m_mediaPool->isFrameCached(handle, mapped.upperFrame,
+                                                    wantTier)) {
+                        pending.push_back({handle, mapped.upperFrame, wantTier});
+                    }
                 }
             }
         };
@@ -614,6 +751,7 @@ try
                 gpuSpineUsedThisFrame = false;
                 layers = buildLayersForFrame(
                     tick, outW, outH, scrubMode, playbackNonBlocking,
+                    requestTier, exactStillMode,
                     clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
                 spdlog::info("[BLOCK-ON-ARRIVAL] tick={}: retry yielded "
                              "{}/{} layers", tick, layers.size(), clipsAtTick);
@@ -688,25 +826,19 @@ try
             const auto elapsed = duration_cast<milliseconds>(
                 now - m_lastFullCompositeAt).count();
             if (elapsed < kSettleWindowMs) {
-                // Shot-boundary guard: don't hold the prior shot when the
-                // active clips have entirely changed.  Without this the
-                // previous shot lingers for 1 frame after its clips end.
+                // Shot/seek guard: require the complete active visual clip
+                // set to match. "Any overlap" is insufficient because a
+                // long-lived bar/logo above the edit would make every shot
+                // look continuous. Adjustment clips are excluded: they do
+                // not produce pixels of their own.
                 bool sameShot = true;
                 if (m_lastGoodComposite && !m_lastGoodCompositeClipIds.empty()) {
-                    sameShot = false;
-                    for (size_t ti = 0; ti < m_timeline->trackCount() && !sameShot; ++ti) {
-                        auto* trk = m_timeline->track(ti);
-                        if (!trk || trk->type() != TrackType::Video || trk->isMuted())
-                            continue;
-                        for (auto* c : trk->clipsAtTime(tick)) {
-                            if (!c) continue;
-                            uint64_t cid = c->id();
-                            for (uint64_t prev : m_lastGoodCompositeClipIds) {
-                                if (cid == prev) { sameShot = true; break; }
-                            }
-                            if (sameShot) break;
-                        }
-                    }
+                    const auto currentIds = activeVisualClipIds(*m_timeline, tick);
+                    sameShot = sameVisualClipSet(
+                                   currentIds, m_lastGoodCompositeClipIds) &&
+                               m_lastGoodCompositeTick >= 0 &&
+                               isNearbyPlaybackCompositeTick(
+                                   tick, m_lastGoodCompositeTick);
                 }
                 if (sameShot) {
                     hold = m_lastGoodComposite;   // may be null on first view
@@ -741,34 +873,20 @@ try
         }
 
         if (clipsAtTick > 0) {
-            // Shot-boundary guard: collect the clip IDs that would be
-            // active at this tick.  The stale fallback below is meant to
-            // mask mid-shot decoder warm-up, NOT to leak the previous
-            // shot's frame past its clip end.  If NONE of the currently
-            // active clips appear in m_lastGoodCompositeClipIds, we just
-            // crossed a shot boundary — return an empty sentinel instead
-            // of the prior shot's composite (which would cause "Wells
-            // visible for 1 frame after her clip ends" et al.).
-            std::vector<uint64_t> currentClipIds;
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                auto* trk = m_timeline->track(ti);
-                if (!trk || trk->type() != TrackType::Video || trk->isMuted())
-                    continue;
-                for (auto* c : trk->clipsAtTime(tick)) {
-                    if (c) currentClipIds.push_back(c->id());
-                }
-            }
+            // The stale fallback below masks only a short, mid-shot decoder
+            // warm-up. A persistent overlay must not make two different clip
+            // sets count as the same shot, and a distant seek within one long
+            // clip must not borrow the old source position.
+            const auto currentClipIds = activeVisualClipIds(*m_timeline, tick);
 
             std::lock_guard lg(m_lastCompositeMtx);
             if (m_lastGoodComposite && m_lastGoodCompositeTick >= 0) {
-                bool anyOverlap = false;
-                for (uint64_t cur : currentClipIds) {
-                    for (uint64_t prev : m_lastGoodCompositeClipIds) {
-                        if (cur == prev) { anyOverlap = true; break; }
-                    }
-                    if (anyOverlap) break;
-                }
-                if (!anyOverlap) {
+                const bool sameShot = sameVisualClipSet(
+                                          currentClipIds,
+                                          m_lastGoodCompositeClipIds) &&
+                                      isNearbyPlaybackCompositeTick(
+                                          tick, m_lastGoodCompositeTick);
+                if (!sameShot) {
                     // Different shot — don't reuse prior composite. Drop
                     // it so subsequent ticks at this position don't keep
                     // returning the old shot either.
@@ -852,18 +970,59 @@ try
         }
     }
 
+    // If every source is invariant and the evaluated layer state is identical
+    // to the preceding tick, reuse the completed composite. This is the common
+    // stacked-PNG/tier-board case: layer lookup is cheap, while dispatching and
+    // reading back the same full-frame blend again is pure duplicate work.
+    const auto staticStateKey = !isNestedRecursion
+        ? staticCompositeStateKey(
+              layers, outW, outH, requestTier,
+              m_exportAlpha.load(std::memory_order_relaxed))
+        : std::optional<uint64_t>{};
+    if (staticStateKey) {
+        std::shared_ptr<CachedFrame> staticHit;
+        {
+            std::lock_guard lg(m_lastCompositeMtx);
+            if (m_lastStaticComposite
+                && m_lastStaticCompositeKey == *staticStateKey) {
+                staticHit = m_lastStaticComposite;
+                m_lastGoodComposite = staticHit;
+                m_lastGoodCompositeTick = tick;
+                m_lastGoodCompositeClipIds.clear();
+                for (const auto& layer : layers)
+                    if (layer.clipId != 0 && !layer.isAdjustmentLayer)
+                        m_lastGoodCompositeClipIds.push_back(layer.clipId);
+            }
+        }
+        if (staticHit) {
+            const uint64_t hits = ++m_staticCompositeHits;
+            if (hits == 1 || hits % 300 == 0)
+                spdlog::debug("[STATIC-COMPOSITE] reused {} frame(s); "
+                              "tick={} layers={} {}x{}",
+                              hits, tick, layers.size(), outW, outH);
+            return staticHit;
+        }
+    } else if (!isNestedRecursion) {
+        std::lock_guard lg(m_lastCompositeMtx);
+        m_lastStaticComposite.reset();
+        m_lastStaticCompositeKey = 0;
+    }
+
 
     // Single layer fast path
     if (!m_gpuDisplayMode && layers.size() == 1) {
         const auto& L = layers[0];
-        bool isIdentity = L.opacity >= 0.999f &&
+        bool isIdentity = !L.isAdjustmentLayer &&
+                          L.opacity >= 0.999f &&
                           std::abs(L.posX) < 0.5f && std::abs(L.posY) < 0.5f &&
                           std::abs(L.scX - 1.0f) < 0.001f &&
-                          std::abs(L.scY - 1.0f) < 0.001f &&
-                          std::abs(L.rot) < 0.01f &&
-                          L.cropL < 0.01f && L.cropR < 0.01f &&
+                           std::abs(L.scY - 1.0f) < 0.001f &&
+                           std::abs(L.rot) < 0.01f &&
+                           L.motionSampleCount == 1 &&
+                           L.cropL < 0.01f && L.cropR < 0.01f &&
                           L.cropT < 0.01f && L.cropB < 0.01f &&
                           L.effects.empty() &&
+                          L.temporalMode == 0 &&
                           !L.gpuTextureReady;
         if (isIdentity && L.frame && L.frame->width == outW && L.frame->height == outH)
             return L.frame;
@@ -892,6 +1051,13 @@ try
                 const bool wasStale = (m_lastGoodComposite == gpuResult);
                 m_lastGoodComposite     = gpuResult;
                 m_lastGoodCompositeTick = tick;
+                if (staticStateKey) {
+                    m_lastStaticComposite = gpuResult;
+                    m_lastStaticCompositeKey = *staticStateKey;
+                } else {
+                    m_lastStaticComposite.reset();
+                    m_lastStaticCompositeKey = 0;
+                }
                 // Measured-cost render bar: remember how long this FRESH
                 // real-time composite took (perfT0 = start of composite work).
                 // Skip scrub/render passes — those aren't representative of the
@@ -907,7 +1073,7 @@ try
                 m_lastGoodCompositeClipIds.clear();
                 m_lastGoodCompositeClipIds.reserve(layers.size());
                 for (const auto& L : layers) {
-                    if (L.clipId != 0)
+                    if (L.clipId != 0 && !L.isAdjustmentLayer)
                         m_lastGoodCompositeClipIds.push_back(L.clipId);
                 }
                 if (postInvalidate) {
@@ -1012,6 +1178,8 @@ std::shared_ptr<CachedFrame> snapshotForCache(const CachedFrame& frame,
     snap->origin             = frame.origin;
     snap->unpackedAlpha      = frame.unpackedAlpha;
     snap->premultipliedAlpha = frame.premultipliedAlpha;
+    snap->preservesAlpha     = frame.preservesAlpha;
+    snap->segmentCacheHit    = false;
     return snap;
 }
 } // namespace
@@ -1025,7 +1193,10 @@ void CompositeService::cacheExportFrame(
     // Export is always full-resolution → key at the Full tier (what the
     // export consult and full-res playback look up).
     constexpr ResolutionTier tier = ResolutionTier::Full;
-    const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+    const uint32_t renderFlags = frame->preservesAlpha
+        ? RenderStatePreserveAlpha : RenderStateNone;
+    const uint64_t cfgHash = hashCompositeConfigAt(
+        *m_timeline, tick, m_project, renderFlags);
     if (m_segmentRenderCache->hasFresh(tick, tier, cfgHash)) return;  // already cached
 
     m_segmentRenderCache->put(tick, tier, cfgHash,
@@ -1080,9 +1251,10 @@ int CompositeService::renderRangeToCache(
     // sequence fps.  Render exactly the frame-aligned ticks the playback
     // clock would land on (see RenderQueue's frame->tick mapping), so the
     // 2c-read consult later keys identically.
-    double fps = m_timeline->settings().frameRate();
-    if (!(fps > 0.0)) fps = 30.0;
-    const double ticksPerFrame = static_cast<double>(kTicksPerSecond) / fps;
+    const RationalFrameRate fps = canonicalFrameRate(
+        m_timeline->settings().frameRate());
+    const double ticksPerFrame = static_cast<double>(kTicksPerSecond)
+                               * fps.denominator / fps.numerator;
 
     // Frame indices whose tick falls within [fromTick, toTick] (inclusive).
     const int64_t firstFrame = static_cast<int64_t>(
@@ -1105,8 +1277,7 @@ int CompositeService::renderRangeToCache(
     for (int64_t f = firstFrame; f <= lastFrame; ++f) {
         if (shouldCancel && shouldCancel()) break;
 
-        const int64_t tick = static_cast<int64_t>(
-            std::llround(static_cast<double>(f) * ticksPerFrame));
+        const int64_t tick = frameIndexToTick(f, fps);
         const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
 
         // Skip frames already cached under the current config (idempotent /

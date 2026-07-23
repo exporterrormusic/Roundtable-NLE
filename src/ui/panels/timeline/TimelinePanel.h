@@ -20,10 +20,12 @@
 
 #include "timeline/TimelineLayoutEngine.h"
 #include "timeline/EditOperations.h"
+#include "timeline/Clip.h"
 #include "timeline/Transition.h"  // for DragClipState::originalTransitions
 #include "widgets/TimelineTrackWidget.h"  // for EditPointSide enum used below
 
 #include <atomic>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -189,6 +191,14 @@ public:
     /// stream.
     void invalidateClipWaveform(uint64_t clipId);
 
+    /// Drop cached waveform data for media whose bytes or path target changed,
+    /// then asynchronously rebuild it for all matching timeline clips.
+    void refreshMediaWaveform(const std::filesystem::path& path);
+
+    /// Drop every cached timeline thumbnail for one replaced media path and
+    /// asynchronously decode the replacement bytes.
+    void refreshMediaThumbnail(const std::filesystem::path& path);
+
     /// Ensure a single divider track sits between the video and audio
     /// sections (Premiere-style). Mutates the timeline model; call before
     /// (re)building track widgets.
@@ -263,6 +273,14 @@ public:
     /// Get the clipboard (mutable — for populating from workspace shortcuts).
     [[nodiscard]] ClipboardContents& mutableClipboard() { return m_clipboard; }
 
+    /// Copy the selected transition into the timeline clipboard. Returns false
+    /// when the current timeline selection is not a valid transition.
+    bool copySelectedTransitionToClipboard();
+
+    /// Build the appropriate paste command for the clipboard. Standalone
+    /// transitions target the last clicked edit point; clips target playhead.
+    [[nodiscard]] std::unique_ptr<Command> makePasteCommand(int64_t playhead);
+
     /// Toggle snapping on/off.
     void setSnappingEnabled(bool enabled);
 
@@ -316,6 +334,10 @@ public:
 signals:
     /// Emitted when user scrubs the playhead.
     void playheadMoved(int64_t tick);
+
+    /// Emitted after the user chooses a replacement file for clip media.
+    /// TimelineWorkspace applies it project-wide and makes it undoable.
+    void mediaRelinkRequested(const QString& oldPath, const QString& newPath);
 
     /// Emitted when a clip is selected.
     void clipSelected(size_t trackIndex, size_t clipIndex);
@@ -509,14 +531,18 @@ private:
         KeyframeTrack<float> scaleX{1.0f};
         KeyframeTrack<float> scaleY{1.0f};
         KeyframeTrack<float> rotation{0.0f};
+        std::optional<KeyframeTrack<float>> audioVolume;
+        std::optional<KeyframeTrack<float>> audioPan;
         double speed{1.0};
         KeyframeTrack<float> speedRamp{1.0f};
+        TimeInterpolation timeInterpolation{TimeInterpolation::FrameSampling};
     };
     std::optional<AttributesClipboard> m_attrClipboard;
 
     // Persistent paste-attribute checkbox state (Premiere-style: remembers last selection)
-    // Bit flags: 0=opacity, 1=posX, 2=posY, 3=scaleX, 4=scaleY, 5=rotation, 6=speed, 7=speedRamp
-    uint8_t m_pasteAttrMask{0x3F}; // Transform bits default on; speed/speedramp default off
+    // Bit flags: 0=opacity, 1=posX, 2=posY, 3=scaleX, 4=scaleY,
+    // 5=rotation, 6=speed, 7=speedRamp, 8=timeInterpolation
+    uint16_t m_pasteAttrMask{0x003F}; // Transform bits default on; retime bits default off
 
     // Drag state
     enum class DragMode { None, ClipMove, ClipTrimHead, ClipTrimTail,
@@ -694,6 +720,11 @@ private:
     }
     void updateCursorForTool();
     void wireShortcuts();
+
+    /// Complete a header drag through the single atomic model reorder path.
+    /// `commit` is false when a drag was cancelled.
+    void finishTrackReorder(size_t sourceIndex, const QPoint& globalPos,
+                            bool commit);
 
     /// Premiere-style edit-point selection. Setting on a specific track
     /// paints brackets at the given tick. The `side` parameter controls

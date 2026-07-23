@@ -22,7 +22,7 @@ namespace rt {
 class ToolButton : public QToolButton
 {
 public:
-    enum Tool { Selection, Razor, Ripple, Rolling, Slip, Slide, Text, Zoom };
+    enum Tool { Selection, Razor, Ripple, Rolling, Slip, Slide, Text, Zoom, PenMask };
 
     explicit ToolButton(Tool tool, QWidget* parent = nullptr)
         : QToolButton(parent), m_tool(tool)
@@ -79,6 +79,7 @@ protected:
         case Slide:     drawSlide(p, cx, cy, s, color);     break;
         case Text:      drawText(p, cx, cy, s, color);      break;
         case Zoom:      drawZoom(p, cx, cy, s, color);      break;
+        case PenMask:   drawPenMask(p, cx, cy, s, color);   break;
         }
     }
 
@@ -297,6 +298,27 @@ private:
         qreal pcy = cy - s * 0.2;
         p.drawLine(QPointF(pcx - s * 0.3, pcy), QPointF(pcx + s * 0.3, pcy));
         p.drawLine(QPointF(pcx, pcy - s * 0.3), QPointF(pcx, pcy + s * 0.3));
+    }
+
+    // Pen Mask tool: nib plus a small Bezier path/anchor cue.
+    void drawPenMask(QPainter& p, qreal cx, qreal cy, qreal s, const QColor& color)
+    {
+        p.setPen(QPen(color, 1.7));
+        p.setBrush(Qt::NoBrush);
+
+        QPainterPath nib;
+        nib.moveTo(cx - s * 0.85, cy + s * 0.85);
+        nib.lineTo(cx - s * 0.35, cy - s * 0.55);
+        nib.lineTo(cx + s * 0.75, cy - s * 1.0);
+        nib.lineTo(cx + s * 1.0,  cy - s * 0.75);
+        nib.lineTo(cx + s * 0.55, cy + s * 0.35);
+        nib.closeSubpath();
+        p.drawPath(nib);
+        p.drawLine(QPointF(cx - s * 0.85, cy + s * 0.85),
+                   QPointF(cx + s * 0.06, cy - s * 0.08));
+
+        p.setBrush(color);
+        p.drawEllipse(QPointF(cx - s * 0.85, cy + s * 0.85), s * 0.13, s * 0.13);
     }
 
     Tool m_tool;

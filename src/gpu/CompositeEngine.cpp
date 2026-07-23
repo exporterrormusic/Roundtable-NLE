@@ -22,6 +22,7 @@
 #include "GpuUploadManager.h"
 #include "vulkan/Texture.h"
 #include "TransitionRenderer.h"
+#include "TemporalInterpolator.h"
 #include "EffectProcessor.h"
 #include "cache/FrameCache.h"
 #include "effects/Effect.h"
@@ -68,6 +69,26 @@ void CompositeEngine::init(VkDevice device)
     m_stagingRing = std::make_unique<StagingRing>();
     m_uploadManager = std::make_unique<GpuUploadManager>(
         GpuContext::get(), *m_stagingRing);
+
+    m_temporalInterpolator = std::make_unique<TemporalInterpolator>();
+    if (!m_temporalInterpolator->init(GpuContext::get().device())) {
+        // The rest of the compositor remains usable.  Interpolated clips
+        // safely fall back to the lower source frame if the shader is absent.
+        spdlog::warn("Temporal interpolation GPU pipeline is unavailable");
+        m_temporalInterpolator.reset();
+    }
+
+    m_adjustmentEffectProcessor = std::make_unique<EffectProcessor>();
+    EffectProcessorConfig adjustmentConfig{};
+    if (!m_adjustmentEffectProcessor->init(
+            GpuContext::get().device(), GpuContext::get().allocator(),
+            GpuContext::get().graphicsCmdPool(),
+            GpuContext::get().graphicsQueue(), adjustmentConfig)) {
+        // Adjustment clips degrade to a clean passthrough if their dedicated
+        // processor cannot initialize; ordinary clip effects remain usable.
+        spdlog::warn("Adjustment-layer GPU effects are unavailable");
+        m_adjustmentEffectProcessor.reset();
+    }
 
     initTimingPools(device);
 }
@@ -202,12 +223,19 @@ void CompositeEngine::shutdown()
     if (m_uploadManager)
         m_uploadManager->shutdown();
     clearGpuTexCache();
-    m_gpuLayerTextures.clear();
-    m_gpuMaskTextures.clear();
-    m_maskCache.clear();
-    m_effectMaskTextures.clear();
-    m_effectMaskCache.clear();
-    m_layerEffectOutputs.clear();
+    for (auto& v : m_gpuLayerTextures) v.clear();
+    for (auto& v : m_gpuLayerTexKeys) v.clear();
+    for (auto& v : m_gpuMaskTextures) v.clear();
+    for (auto& v : m_maskCache) v.clear();
+    for (auto& v : m_effectMaskTextures) v.clear();
+    for (auto& v : m_effectMaskCache) v.clear();
+    for (auto& v : m_layerEffectOutputs) v.clear();
+    for (auto& v : m_gpuLayerTexturesAlt) v.clear();
+    for (auto& v : m_gpuTemporalSourceTextures) v.clear();
+    for (auto& v : m_gpuTemporalSourceTexKeys) v.clear();
+    for (auto& v : m_layerTemporalOutputs) v.clear();
+    m_adjustmentEffectProcessor.reset();
+    m_temporalInterpolator.reset();
     m_compositeLru.clear();
     m_stagingRing.reset();
 }
@@ -302,12 +330,24 @@ void CompositeEngine::invalidateMediaPoolSlots(uint64_t mediaId)
 {
     if (mediaId == 0) return;
     size_t reset = 0;
-    for (auto& key : m_gpuLayerTexKeys) {
-        if (key.mediaId == mediaId) {
-            key.mediaId     = 0;
-            key.frameNumber = -1;
-            key.framePtr    = nullptr;
-            ++reset;
+    for (auto& slotKeys : m_gpuLayerTexKeys) {
+        for (auto& key : slotKeys) {
+            if (key.mediaId == mediaId) {
+                key.mediaId     = 0;
+                key.frameNumber = -1;
+                key.framePtr    = nullptr;
+                ++reset;
+            }
+        }
+    }
+    for (auto& slotKeys : m_gpuTemporalSourceTexKeys) {
+        for (auto& key : slotKeys) {
+            if (key.mediaId == mediaId) {
+                key.mediaId = 0;
+                key.frameNumber = -1;
+                key.framePtr = nullptr;
+                ++reset;
+            }
         }
     }
     if (reset > 0) {

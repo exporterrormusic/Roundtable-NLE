@@ -195,7 +195,7 @@ void KeyframeEditor::rebuildCurves()
     m_curves.clear();
     if (!m_clip) return;
 
-    // Add the 6 base properties
+    // Add the base Motion properties.
     auto addCurve = [&](const std::string& name, KeyframeTrack<float>* track, int colorIdx) {
         m_curves.push_back({name, kCurveColors[colorIdx % kNumCurveColors], track, true});
     };
@@ -206,6 +206,7 @@ void KeyframeEditor::rebuildCurves()
     addCurve("Scale X",    &m_clip->scaleX(),    3);
     addCurve("Scale Y",    &m_clip->scaleY(),    4);
     addCurve("Rotation",   &m_clip->rotation(),  5);
+    addCurve("Shutter Angle", &m_clip->shutterAngle(), 6);
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -310,6 +311,8 @@ void KeyframeEditor::deleteSelectedKeyframes()
         return a.keyIndex > b.keyIndex;
     });
 
+    const bool batch = m_commandStack && sorted.size() > 1;
+    if (batch) m_commandStack->beginMacro("Delete Keyframes");
     for (auto& sk : sorted) {
         if (sk.curveIndex < 0 || sk.curveIndex >= static_cast<int>(m_curves.size())) continue;
         auto* track = m_curves[sk.curveIndex].track;
@@ -321,6 +324,7 @@ void KeyframeEditor::deleteSelectedKeyframes()
         else
             track->removeKeyframeAtTime(t);
     }
+    if (batch) m_commandStack->endMacro();
 
     m_selection.clear();
     emit keyframeChanged();
@@ -334,6 +338,8 @@ void KeyframeEditor::setInterpolation(int interpMode)
 
     auto mode = static_cast<InterpMode>(std::clamp(interpMode, 0, 6));
 
+    const bool batch = m_commandStack && m_selection.size() > 1;
+    if (batch) m_commandStack->beginMacro("Set Keyframe Interpolation");
     for (auto& sk : m_selection) {
         if (sk.curveIndex < 0 || sk.curveIndex >= static_cast<int>(m_curves.size())) continue;
         auto* track = m_curves[sk.curveIndex].track;
@@ -345,6 +351,7 @@ void KeyframeEditor::setInterpolation(int interpMode)
         else
             track->keyframe(sk.keyIndex).interp = mode;
     }
+    if (batch) m_commandStack->endMacro();
     emit keyframeChanged();
     update();
 }
@@ -374,12 +381,9 @@ void KeyframeEditor::copySelectedKeyframes()
         if (!track || sk.keyIndex < 0 || sk.keyIndex >= static_cast<int>(track->keyframeCount()))
             continue;
         const auto& kf = track->keyframe(sk.keyIndex);
-        m_clipboard.push_back({
-            sk.curveIndex,
-            kf.time - earliest,
-            kf.value,
-            static_cast<int>(kf.interp)
-        });
+        Keyframe<float> copied = kf;
+        copied.time -= earliest;
+        m_clipboard.push_back({sk.curveIndex, copied});
     }
 }
 
@@ -388,28 +392,31 @@ void KeyframeEditor::pasteKeyframes(int64_t time)
     if (m_clipboard.empty()) return;
 
     m_selection.clear();
+    const bool batch = m_commandStack && m_clipboard.size() > 1;
+    if (batch) m_commandStack->beginMacro("Paste Keyframes");
     for (auto& ce : m_clipboard) {
         if (ce.curveIndex < 0 || ce.curveIndex >= static_cast<int>(m_curves.size())) continue;
         auto* track = m_curves[ce.curveIndex].track;
         if (!track) continue;
 
-        auto t = time + ce.relativeTime;
-        auto interp = static_cast<InterpMode>(ce.interp);
+        Keyframe<float> pasted = ce.keyframe;
+        pasted.time += time;
 
         if (m_commandStack)
             m_commandStack->execute(
-                std::make_unique<AddKeyframeCommand>(track, t, ce.value, interp));
+                std::make_unique<AddKeyframeCommand>(track, pasted));
         else
-            track->addKeyframe(t, ce.value, interp);
+            track->restoreKeyframe(pasted);
 
         // Select the pasted keyframe
         for (int ki = 0; ki < static_cast<int>(track->keyframeCount()); ++ki) {
-            if (track->keyframe(ki).time == t) {
+            if (track->keyframe(ki).time == pasted.time) {
                 m_selection.insert({ce.curveIndex, ki});
                 break;
             }
         }
     }
+    if (batch) m_commandStack->endMacro();
     emit keyframeChanged();
     emit selectionChanged();
     update();

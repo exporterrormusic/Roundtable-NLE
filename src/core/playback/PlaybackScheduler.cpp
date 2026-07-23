@@ -141,14 +141,20 @@ void PlaybackScheduler::start()
 
 void PlaybackScheduler::stop()
 {
-    if (!isRunning()) return;
+    if (isRunning()) {
+        spdlog::info("[PlaybackScheduler] Stopping (clock={} prod={} pres={})",
+                     m_clock.isRunning(), m_producer.isRunning(), m_presenter.isRunning());
+        m_clock.stop();
+        m_producer.stop();
+        m_presenter.stop();
+        spdlog::info("[PlaybackScheduler] Stopped");
+    }
 
-    spdlog::info("[PlaybackScheduler] Stopping (clock={} prod={} pres={})",
-                 m_clock.isRunning(), m_producer.isRunning(), m_presenter.isRunning());
-    m_clock.stop();
-    m_producer.stop();
-    m_presenter.stop();
-    spdlog::info("[PlaybackScheduler] Stopped");
+    // A stopped pipeline may later be restarted for a different sequence.
+    // Do not let its producer exchange or either hold-frame cross that
+    // sequence boundary.
+    m_producer.reset();
+    m_presenter.reset();
 }
 
 bool PlaybackScheduler::isRunning() const noexcept
@@ -293,6 +299,10 @@ void PlaybackScheduler::cancelPendingScrub() noexcept
 
 void PlaybackScheduler::reset() noexcept
 {
+    // Callers that reset scheduling state also expect a clean frame boundary.
+    // These are no-ops while running; stop() performs the ordered join/reset.
+    m_producer.reset();
+    m_presenter.reset();
     m_nextRequestId = 0;
     m_generation = 0;
     m_lastPlaybackTick = -1;

@@ -32,6 +32,23 @@ public:
     [[nodiscard]] uint32_t sourceWidth()  const noexcept { return m_sourceWidth; }
     [[nodiscard]] uint32_t sourceHeight() const noexcept { return m_sourceHeight; }
     void setSourceResolution(uint32_t w, uint32_t h) noexcept { m_sourceWidth = w; m_sourceHeight = h; }
+    [[nodiscard]] int sourceRotation() const noexcept { return m_sourceRotation; }
+    void setSourceRotation(int degrees) noexcept {
+        m_sourceRotation = ((degrees % 360) + 360) % 360;
+        m_sourceMetadataAuthoritative = true;
+    }
+    void setSourceMetadata(uint32_t w, uint32_t h, int rotation) noexcept {
+        m_sourceWidth = w;
+        m_sourceHeight = h;
+        setSourceRotation(rotation);
+        m_sourceMetadataAuthoritative = w > 0 && h > 0;
+    }
+    [[nodiscard]] bool sourceMetadataAuthoritative() const noexcept {
+        return m_sourceMetadataAuthoritative;
+    }
+    void setSourceMetadataAuthoritative(bool authoritative) noexcept {
+        m_sourceMetadataAuthoritative = authoritative;
+    }
 
     [[nodiscard]] double sourceFps() const noexcept { return m_sourceFps; }
     void setSourceFps(double fps) noexcept { m_sourceFps = fps; }
@@ -101,6 +118,8 @@ private:
     uint64_t    m_mediaId{0};
     uint32_t    m_sourceWidth{0};
     uint32_t    m_sourceHeight{0};
+    int         m_sourceRotation{0};
+    bool        m_sourceMetadataAuthoritative{false};
     double      m_sourceFps{0.0};
     std::string m_sourceCodecName;
     int64_t     m_sourceDuration{0};

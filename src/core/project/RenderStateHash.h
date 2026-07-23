@@ -43,12 +43,18 @@ namespace rt {
 class Timeline;
 class Project;
 
+enum RenderStateFlag : uint32_t {
+    RenderStateNone           = 0,
+    RenderStatePreserveAlpha  = 1u << 0,
+};
+
 /// 64-bit hash of the compositing configuration governing `tick`.  Pure
 /// (depends only on timeline/project state), so it is deterministic and unit-
 /// tested.  See the file header for what is / isn't covered.  Supply `project`
 /// so edits inside active NESTED sequences invalidate the parent's hash; pass
 /// nullptr (the default) for a flat timeline with no nested sequences.
 [[nodiscard]] uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
-                                             const Project* project = nullptr);
+                                             const Project* project = nullptr,
+                                             uint32_t renderFlags = RenderStateNone);
 
 } // namespace rt

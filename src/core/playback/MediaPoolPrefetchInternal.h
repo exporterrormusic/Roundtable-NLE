@@ -10,7 +10,11 @@
 #include "MediaPool.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <chrono>
+#include <deque>
+#include <iterator>
+#include <utility>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -19,6 +23,81 @@ extern "C" {
 #endif
 
 namespace rt {
+
+namespace prefetch_detail {
+
+constexpr size_t kMaxExactQueueDepth = 64;
+
+inline bool sameTaskKey(const PrefetchTask& lhs,
+                        const PrefetchTask& rhs) noexcept
+{
+    return lhs.handle == rhs.handle &&
+           lhs.frameNumber == rhs.frameNumber && lhs.tier == rhs.tier;
+}
+
+/// Promote or insert one exact endpoint without rebuilding unrelated
+/// decode-ahead work. Returns true only when a new queue entry was added.
+inline bool mergeExactTask(std::deque<PrefetchTask>& queue,
+                           PrefetchTask task,
+                           size_t maxDepth = kMaxExactQueueDepth)
+{
+    task.urgent = true;
+    task.exactRequest = true;
+
+    const auto insertInEndpointOrder = [&](PrefetchTask exact) {
+        auto position = queue.begin();
+        while (position != queue.end() && position->urgent &&
+               position->exactRequest && position->handle == exact.handle &&
+               position->frameNumber < exact.frameNumber) {
+            ++position;
+        }
+        queue.insert(position, std::move(exact));
+    };
+
+    const auto existing = std::find_if(
+        queue.begin(), queue.end(),
+        [&](const PrefetchTask& queued) { return sameTaskKey(queued, task); });
+    if (existing != queue.end()) {
+        task.exportFullRes = task.exportFullRes || existing->exportFullRes;
+        queue.erase(existing);
+        insertInEndpointOrder(std::move(task));
+        return false;
+    }
+
+    // Exact requests are bounded independently of the normal interactive
+    // queue cap. Prefer evicting ordinary lookahead from the back; if all
+    // entries are exact, discard the oldest exact request.
+    if (maxDepth == 0) return false;
+    while (queue.size() >= maxDepth) {
+        const auto replaceable = std::find_if(
+            queue.rbegin(), queue.rend(),
+            [](const PrefetchTask& queued) { return !queued.exactRequest; });
+        if (replaceable != queue.rend()) {
+            queue.erase(std::next(replaceable).base());
+        } else {
+            queue.pop_back();
+        }
+    }
+    insertInEndpointOrder(std::move(task));
+    return true;
+}
+
+inline bool replaceableByDecodeAheadRebuild(const PrefetchTask& task,
+                                             MediaHandle handle,
+                                             int64_t playhead) noexcept
+{
+    if (task.exactRequest) return false;
+    return task.handle == handle || task.frameNumber < playhead - 4;
+}
+
+inline bool containsTaskKey(const std::deque<PrefetchTask>& queue,
+                            const PrefetchTask& task)
+{
+    return std::any_of(queue.begin(), queue.end(),
+        [&](const PrefetchTask& queued) { return sameTaskKey(queued, task); });
+}
+
+} // namespace prefetch_detail
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

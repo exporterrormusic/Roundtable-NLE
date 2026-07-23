@@ -15,6 +15,8 @@
 #include "effects/Glow.h"
 #include "effects/ChromaKey.h"
 #include "effects/Transform2D.h"
+#include "effects/Tint.h"
+#include "effects/ColorGrading.h"
 #include "command/CommandStack.h"
 #include "command/commands/EffectCommands.h"
 
@@ -74,6 +76,21 @@ TEST(EffectTest, Transform2DConstruction)
     EXPECT_EQ(fx.effectType(), EffectType::Transform2D);
     EXPECT_STREQ(fx.name(), "Transform 2D");
     EXPECT_EQ(fx.paramCount(), 6u); // offsetX, offsetY, scale, rotation, anchorX, anchorY
+}
+
+TEST(EffectTest, TintConstructionAndPremiereDefaults)
+{
+    Tint fx;
+    EXPECT_EQ(fx.effectType(), EffectType::Tint);
+    EXPECT_STREQ(fx.name(), "Tint");
+    ASSERT_EQ(fx.paramCount(), Tint::ParamCount);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapBlackR, 0), 0.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapBlackG, 0), 0.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapBlackB, 0), 0.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapWhiteR, 0), 1.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapWhiteG, 0), 1.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::MapWhiteB, 0), 1.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Tint::AmountToTint, 0), 100.0f);
 }
 
 TEST(EffectTest, EnableDisable)
@@ -218,6 +235,62 @@ TEST(EffectTest, CloneTransform2D)
     EXPECT_EQ(cloned->effectType(), EffectType::Transform2D);
 }
 
+TEST(EffectTest, CloneTintPreservesMappedColorsAndAmount)
+{
+    Tint fx;
+    fx.param(Tint::MapBlackR).track.setDefaultValue(0.25f);
+    fx.param(Tint::MapWhiteB).track.setDefaultValue(0.75f);
+    fx.param(Tint::AmountToTint).track.setDefaultValue(40.0f);
+
+    auto cloned = fx.clone();
+    ASSERT_NE(cloned, nullptr);
+    EXPECT_EQ(cloned->effectType(), EffectType::Tint);
+    EXPECT_FLOAT_EQ(cloned->evalParam(Tint::MapBlackR, 0), 0.25f);
+    EXPECT_FLOAT_EQ(cloned->evalParam(Tint::MapWhiteB, 0), 0.75f);
+    EXPECT_FLOAT_EQ(cloned->evalParam(Tint::AmountToTint, 0), 40.0f);
+}
+
+TEST(EffectTest, ColorGradingStateAndGpuPassesCoverAllSections)
+{
+    auto grading = std::make_unique<ColorGrading>();
+    grading->setBasicEnabled(false);
+    grading->setWheelsEnabled(false);
+    grading->param(ColorGrading::Temperature).track.setDefaultValue(75.0f);
+    grading->param(ColorGrading::Saturation).track.setDefaultValue(25.0f);
+    grading->param(ColorGrading::Sharpen).track.setDefaultValue(40.0f);
+
+    ColorGrading::CurveLUT red = grading->curveLUT(ColorGrading::CurveRed);
+    red[51] = 0.35f;
+    grading->setCurveLUT(ColorGrading::CurveRed, red);
+
+    ColorGrading::HslParams hsl;
+    hsl.hueCenter = 120.0f;
+    hsl.hueShift = 45.0f;
+    grading->setHslParams(hsl);
+
+    auto saved = grading->captureState();
+    grading->setBasicEnabled(true);
+    grading->setHslParams({});
+    grading->restoreState(saved);
+    EXPECT_FALSE(grading->basicEnabled());
+    EXPECT_FLOAT_EQ(grading->hslParams().hueShift, 45.0f);
+    EXPECT_FLOAT_EQ(grading->curveLUT(ColorGrading::CurveRed)[51], 0.35f);
+
+    EffectStack stack;
+    stack.addEffect(std::move(grading));
+    const auto passes = stack.evaluate(0);
+    ASSERT_EQ(passes.size(), 4u); // base, curves, HSL, sharpen
+    EXPECT_EQ(passes[0].type, EffectType::ColorGrading);
+    ASSERT_EQ(passes[0].params.size(), 28u);
+    EXPECT_FLOAT_EQ(passes[0].params[0], 0.0f);   // Basic bypassed
+    EXPECT_FLOAT_EQ(passes[0].params[8], 100.0f); // neutral saturation
+    EXPECT_EQ(passes[1].params.size(), 24u);
+    EXPECT_EQ(passes[2].params.size(), 9u);
+    EXPECT_EQ(passes[3].type, EffectType::Sharpen);
+    ASSERT_EQ(passes[3].params.size(), 3u);
+    EXPECT_FLOAT_EQ(passes[3].params[0], 2.0f);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Factory tests
 // ═══════════════════════════════════════════════════════════════════════════
@@ -252,6 +325,7 @@ TEST(EffectFactoryTest, EffectTypeNames)
     EXPECT_STREQ(effectTypeName(EffectType::Glow), "Glow");
     EXPECT_STREQ(effectTypeName(EffectType::ChromaKey), "Ultra Key");
     EXPECT_STREQ(effectTypeName(EffectType::Transform2D), "Transform 2D");
+    EXPECT_STREQ(effectTypeName(EffectType::Tint), "Tint");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

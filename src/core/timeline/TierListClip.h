@@ -22,6 +22,7 @@
 #include "timeline/Clip.h"
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -88,17 +89,17 @@ public:
 
     // ── Grid config ─────────────────────────────────────────────────────
     [[nodiscard]] const std::string& title() const noexcept { return m_title; }
-    void setTitle(const std::string& t) { m_title = t; }
+    void setTitle(const std::string& t) { if (m_title != t) { m_title = t; touchRenderState(); } }
 
     [[nodiscard]] const std::vector<TierDef>& tiers() const noexcept { return m_tiers; }
-    std::vector<TierDef>& tiers() noexcept { return m_tiers; }
+    std::vector<TierDef>& tiers() noexcept { touchRenderState(); return m_tiers; }
 
     [[nodiscard]] TierEntryAspect entryAspect() const noexcept { return m_entryAspect; }
-    void setEntryAspect(TierEntryAspect a) noexcept { m_entryAspect = a; }
+    void setEntryAspect(TierEntryAspect a) noexcept { if (m_entryAspect != a) { m_entryAspect = a; touchRenderState(); } }
 
     [[nodiscard]] float customAspectW() const noexcept { return m_customAspectW; }
     [[nodiscard]] float customAspectH() const noexcept { return m_customAspectH; }
-    void setCustomAspect(float w, float h) noexcept { m_customAspectW = w; m_customAspectH = h; }
+    void setCustomAspect(float w, float h) noexcept { m_customAspectW = w; m_customAspectH = h; touchRenderState(); }
 
     /// Entry width : height ratio for the active aspect.
     [[nodiscard]] float entryAspectRatio() const noexcept;
@@ -106,18 +107,18 @@ public:
     // ── Safe margins (fraction of the canvas, 0..1) ─────────────────────
     /// Reserve the top band for the channel banner; nothing draws into it.
     [[nodiscard]] float topSafeMargin() const noexcept { return m_topSafeMargin; }
-    void setTopSafeMargin(float f) noexcept { m_topSafeMargin = f; }
+    void setTopSafeMargin(float f) noexcept { if (m_topSafeMargin != f) { m_topSafeMargin = f; touchRenderState(); } }
     /// Reserve the right strip for the (separate) commentators panel.
     [[nodiscard]] float rightSafeMargin() const noexcept { return m_rightSafeMargin; }
-    void setRightSafeMargin(float f) noexcept { m_rightSafeMargin = f; }
+    void setRightSafeMargin(float f) noexcept { if (m_rightSafeMargin != f) { m_rightSafeMargin = f; touchRenderState(); } }
 
     /// Background fill (0xAARRGGBB).  Default opaque black.
     [[nodiscard]] uint32_t backgroundColor() const noexcept { return m_bgColor; }
-    void setBackgroundColor(uint32_t c) noexcept { m_bgColor = c; }
+    void setBackgroundColor(uint32_t c) noexcept { if (m_bgColor != c) { m_bgColor = c; touchRenderState(); } }
 
     // ── Entry pool ──────────────────────────────────────────────────────
     [[nodiscard]] const std::vector<TierEntry>& entries() const noexcept { return m_entries; }
-    std::vector<TierEntry>& entries() noexcept { return m_entries; }
+    std::vector<TierEntry>& entries() noexcept { touchRenderState(); return m_entries; }
     [[nodiscard]] const TierEntry* entryById(uint64_t id) const noexcept;
 
     /// Pool-bin subbin (folder) names, for the Project-Bin-style browser.
@@ -126,12 +127,28 @@ public:
 
     // ── Timed events ────────────────────────────────────────────────────
     [[nodiscard]] const std::vector<TierEvent>& events() const noexcept { return m_events; }
-    std::vector<TierEvent>& events() noexcept { return m_events; }
+    std::vector<TierEvent>& events() noexcept { touchRenderState(); return m_events; }
+
+    /// Monotonic identity for the CPU-rendered board. Mutable collection
+    /// access deliberately bumps it: callers may edit in place, so this is the
+    /// only safe point at which to invalidate a visual-state frame cache.
+    [[nodiscard]] uint64_t renderRevision() const noexcept
+    { return m_renderRevision.load(std::memory_order_relaxed); }
+    void markRenderDirty() noexcept { touchRenderState(); }
+
+    /// Map a timeline position to the persistent tier-list event clock.
+    /// sourceIn is deliberately part of this mapping: splitting/trimming a
+    /// tier-list clip advances sourceIn, so every resulting segment continues
+    /// the same event sequence instead of restarting at its own local zero.
+    [[nodiscard]] int64_t eventTickAt(int64_t timelineTick) const noexcept;
 
     // ── Clone ───────────────────────────────────────────────────────────
     [[nodiscard]] std::unique_ptr<Clip> clone() const override;
 
 private:
+    void touchRenderState() noexcept
+    { m_renderRevision.fetch_add(1, std::memory_order_relaxed); }
+
     std::string          m_title{"TIER LIST"};
     std::vector<TierDef> m_tiers;                 ///< default S–F, set in ctor
     TierEntryAspect      m_entryAspect{TierEntryAspect::Banner};
@@ -144,6 +161,7 @@ private:
     std::vector<TierEntry>   m_entries;
     std::vector<std::string> m_subbins;
     std::vector<TierEvent>   m_events;
+    std::atomic<uint64_t>    m_renderRevision{1};
 };
 
 } // namespace rt

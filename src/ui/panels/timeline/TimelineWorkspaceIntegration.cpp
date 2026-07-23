@@ -9,6 +9,7 @@
 #include "PathUtils.h"
 
 #include "CompositeService.h"
+#include "ClipRenderers.h"
 #include "spine/AnimationVideoCache.h"
 #include "Settings.h"
 
@@ -22,16 +23,22 @@
 #include "panels/timeline/TimelinePanel.h"
 
 #include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 #include "audio/AudioPlaybackService.h"
 #include "playback/MediaPool.h"
 #include "playback/MediaSourceService.h"
 #include "playback/PlaybackController.h"
 #include "spine/ModelManager.h"
 #include "timeline/EditOperations.h"
+#include "timeline/MediaRelinker.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "timeline/AudioClip.h"
+#include "timeline/VideoClip.h"
+#include "timeline/ImageClip.h"
 #include "timeline/SpineClip.h"
+#include "project/Project.h"
 
 #include "panels/timeline/MediaWatchController.h"
 
@@ -39,6 +46,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <memory>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -48,7 +57,65 @@
 
 namespace rt {
 
+namespace {
+
+enum class RelinkClipKind { Video, Audio, Image };
+
+struct RelinkClipTarget {
+    Clip* clip{nullptr};
+    RelinkClipKind kind{RelinkClipKind::Video};
+};
+
+void collectRelinkTargets(Timeline* timeline, const std::string& path,
+                          std::vector<RelinkClipTarget>& out)
+{
+    if (!timeline) return;
+    for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+        Track* track = timeline->track(ti);
+        if (!track) continue;
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            Clip* clip = track->clip(ci);
+            if (auto* video = dynamic_cast<VideoClip*>(clip)) {
+                if (video->mediaPath() == path)
+                    out.push_back({video, RelinkClipKind::Video});
+            } else if (auto* audio = dynamic_cast<AudioClip*>(clip)) {
+                if (audio->mediaPath() == path)
+                    out.push_back({audio, RelinkClipKind::Audio});
+            } else if (auto* image = dynamic_cast<ImageClip*>(clip)) {
+                if (image->mediaPath() == path)
+                    out.push_back({image, RelinkClipKind::Image});
+            }
+        }
+    }
+}
+
+void setRelinkTargetPath(const RelinkClipTarget& target,
+                         const std::string& path)
+{
+    if (!target.clip) return;
+    switch (target.kind) {
+    case RelinkClipKind::Video:
+        static_cast<VideoClip*>(target.clip)->setMediaPath(path);
+        break;
+    case RelinkClipKind::Audio:
+        static_cast<AudioClip*>(target.clip)->setMediaPath(path);
+        break;
+    case RelinkClipKind::Image:
+        static_cast<ImageClip*>(target.clip)->setMediaPath(path);
+        break;
+    }
+}
+
+} // namespace
+
 void TimelineWorkspace::setTimeline(Timeline* timeline) {
+    // Stop the compositor/presenter before changing any timeline-owned
+    // pointers. PlaybackScheduler::stop() also discards its held frame, so an
+    // MP4 composite from the prior sequence cannot be re-published while the
+    // new sequence's still-image layers are opening.
+    if (m_programMonitor && m_timeline != timeline)
+        m_programMonitor->stopPolling();
+
     // Reset audio service state for the new timeline
     if (m_audioPlayback) {
         m_audioPlayback->cancelWarm();
@@ -113,9 +180,10 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
             // MainWindow calls setCompositeCallback(nullptr) during cleanup,
             // so we must re-establish it when a new timeline is set.
             m_programMonitor->setCompositeCallback(
-                [this](int64_t tick, uint32_t w, uint32_t h, bool scrubMode)
+                [this](int64_t tick, uint32_t w, uint32_t h,
+                       bool scrubMode, bool stillMode)
                     -> std::shared_ptr<CachedFrame> {
-                    return compositeFrame(tick, w, h, scrubMode);
+                    return compositeFrame(tick, w, h, scrubMode, stillMode);
                 });
 
             // Re-start polling so the Program Monitor updates on every tick.
@@ -166,9 +234,136 @@ void TimelineWorkspace::invalidateCompositeCacheRange(int64_t fromTick, int64_t 
         m_compositeService->requestCacheInvalidationRange(fromTick, toTick);
 }
 
+void TimelineWorkspace::relinkMedia(const QString& oldPath,
+                                    const QString& newPath)
+{
+    if (oldPath.isEmpty() || newPath.isEmpty() || oldPath == newPath)
+        return;
+
+    const std::filesystem::path oldFs = utf8ToPath(oldPath.toStdString());
+    const std::filesystem::path newFs = utf8ToPath(newPath.toStdString());
+    const std::string oldStd = pathToUtf8(oldFs);
+    const std::string newStd = pathToUtf8(newFs);
+    if (oldStd.empty() || newStd.empty() || oldStd == newStd)
+        return;
+
+    auto clipTargets = std::make_shared<std::vector<RelinkClipTarget>>();
+    if (m_project) {
+        for (size_t i = 0; i < m_project->sequenceCount(); ++i)
+            collectRelinkTargets(m_project->sequence(i), oldStd, *clipTargets);
+    } else {
+        collectRelinkTargets(m_timeline, oldStd, *clipTargets);
+    }
+
+    auto binBefore = std::make_shared<std::vector<Project::BinItem>>();
+    auto binAfter = std::make_shared<std::vector<Project::BinItem>>();
+    auto foldersBefore = std::make_shared<std::vector<BinFolderState>>();
+    auto foldersAfter = std::make_shared<std::vector<BinFolderState>>();
+    bool binChanged = false;
+    if (m_projectBin) {
+        *binBefore = m_projectBin->exportBinItems();
+        *binAfter = *binBefore;
+        *foldersBefore = m_projectBin->binFolderState();
+        *foldersAfter = *foldersBefore;
+        for (auto& item : *binAfter) {
+            if (item.path == oldFs) {
+                item.path = newFs;
+                binChanged = true;
+            }
+        }
+        if (binChanged) {
+            for (auto& folder : *foldersAfter)
+                for (auto& key : folder.childKeys)
+                    if (key == oldStd) key = newStd;
+        }
+    }
+
+    auto applyState = [this, clipTargets, binBefore, binAfter,
+                       foldersBefore, foldersAfter, binChanged,
+                       oldFs, newFs, oldStd, newStd](bool forward) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+
+        const auto& fromFs = forward ? oldFs : newFs;
+        const auto& toFs = forward ? newFs : oldFs;
+        const auto& fromStd = forward ? oldStd : newStd;
+        const auto& toStd = forward ? newStd : oldStd;
+
+        if (m_playbackController) m_playbackController->pause();
+
+        bool sourceMonitorUsedFrom = false;
+        if (m_mediaPool && m_sourceMonitor && m_sourceMonitor->hasClip()) {
+            const MediaHandle fromHandle = m_mediaPool->open(fromFs);
+            if (fromHandle != InvalidMedia) {
+                sourceMonitorUsedFrom =
+                    (m_sourceMonitor->mediaHandle() == fromHandle);
+                m_mediaPool->release(fromHandle);
+            }
+        }
+
+        for (const auto& target : *clipTargets)
+            setRelinkTargetPath(target, toStd);
+
+        if (binChanged && m_projectBin) {
+            if (forward)
+                m_projectBin->restoreBinModel(*binAfter, *foldersAfter);
+            else
+                m_projectBin->restoreBinModel(*binBefore, *foldersBefore);
+        }
+
+        if (m_shotPresetManager)
+            MediaRelinker::relinkPresetBackground(
+                m_shotPresetManager, fromStd, toStd);
+
+        if (m_project) m_project->setModified(true);
+
+        if (m_mediaPool) {
+            m_mediaPool->clearFailedPaths();
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(toFs, ec))
+                m_mediaPool->openAsync(toFs);
+        }
+
+        if (sourceMonitorUsedFrom && m_mediaPool && m_sourceMonitor) {
+            const MediaHandle toHandle = m_mediaPool->open(toFs);
+            if (toHandle != InvalidMedia)
+                m_sourceMonitor->loadClip(toHandle, m_mediaPool);
+        }
+
+        if (m_compositeService)
+            m_compositeService->forgetMediaPath(fromStd);
+        invalidateCompositeCache();
+
+        invalidateAudioSources();
+        loadAudioSources(/*allowBlockingMisses=*/true);
+
+        if (m_timelinePanel) {
+            m_timelinePanel->refreshMediaThumbnail(fromFs);
+            m_timelinePanel->refreshMediaThumbnail(toFs);
+            m_timelinePanel->refreshMediaWaveform(fromFs);
+            m_timelinePanel->refreshMediaWaveform(toFs);
+            m_timelinePanel->refreshTrackContents();
+        }
+        if (m_mediaWatch) m_mediaWatch->forceRescan();
+        if (m_programMonitor) m_programMonitor->requestRefresh();
+    };
+
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            "Re-link Media",
+            [applyState]() { applyState(true); },
+            [applyState]() { applyState(false); }));
+    } else {
+        applyState(true);
+    }
+}
+
 void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
 {
     if (path.empty()) return;
+
+    // Tier-list art uses its own decoded/scaled image cache rather than
+    // MediaPool. The watcher is therefore the authoritative invalidator.
+    invalidateTierListRenderCache(pathToUtf8(path));
 
     spdlog::warn("[LIVE-RELOAD] refreshChangedMedia '{}' — invalidate + "
                  "forget + recomposite", pathToUtf8(path));
@@ -219,6 +414,10 @@ void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
     //     thumbnail until the next app restart.
     if (m_projectBin)
         m_projectBin->refreshFileThumbnail(path);
+    if (m_timelinePanel) {
+        m_timelinePanel->refreshMediaThumbnail(path);
+        m_timelinePanel->refreshMediaWaveform(path);
+    }
 
     // 3. Flush composited output and refresh the visible monitor so every
     //    timeline instance shows the new content immediately.

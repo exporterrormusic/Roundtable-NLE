@@ -20,14 +20,11 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "widgets/KeyboardFocusUtils.h"
 
 #include <QApplication>
 #include <QKeySequence>
-#include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QShortcut>
-#include <QSpinBox>
-#include <QTextEdit>
 #include <QWidget>
 
 namespace rt {
@@ -44,16 +41,22 @@ void ShortcutController::registerKeyboardShortcuts()
         connect(sc, &QShortcut::activated, this, std::forward<decltype(fn)>(fn));
     };
 
-    // Home / End: go to start / end of timeline
-    addShortcut(Qt::Key_Home, [this]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw)) return;
-        if (m_ws->playbackController()) m_ws->playbackController()->goToStart();
+    // Home / End follow the active transport target, just like Space / JKL.
+    // The target is sticky (explicitly selected by clicking a monitor), so it
+    // must not depend on the app's focus-follows-hover behavior.
+    auto activeTransportController = [this]() -> PlaybackController* {
+        if (m_ws->sourceTransportActive() && m_ws->sourceMonitor()
+            && m_ws->sourceMonitor()->controller() && m_ws->sourceMonitor()->hasClip())
+            return m_ws->sourceMonitor()->controller();
+        return m_ws->playbackController();
+    };
+    addShortcut(Qt::Key_Home, [activeTransportController]() {
+        if (keyboardFocusConsumesTextKeys()) return;
+        if (auto* ctl = activeTransportController()) ctl->goToStart();
     });
-    addShortcut(Qt::Key_End, [this]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw)) return;
-        if (m_ws->playbackController()) m_ws->playbackController()->goToEnd();
+    addShortcut(Qt::Key_End, [activeTransportController]() {
+        if (keyboardFocusConsumesTextKeys()) return;
+        if (auto* ctl = activeTransportController()) ctl->goToEnd();
     });
 
     // Arrow keys — window-level so they work regardless of which panel has
@@ -88,34 +91,22 @@ void ShortcutController::registerKeyboardShortcuts()
             ctl->pause();
     };
     addGlobalShortcut(Qt::Key_Left, [activeArrowController, stopPlaybackIfRunning]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
-            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
-            return;
+        if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->stepBackward();
     });
     addGlobalShortcut(Qt::Key_Right, [activeArrowController, stopPlaybackIfRunning]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
-            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
-            return;
+        if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->stepForward();
     });
     addGlobalShortcut(Qt::Key_Up, [activeArrowController, stopPlaybackIfRunning]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
-            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
-            return;
+        if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->goToPrevEditPoint();
     });
     addGlobalShortcut(Qt::Key_Down, [activeArrowController, stopPlaybackIfRunning]() {
-        auto* fw = QApplication::focusWidget();
-        if (qobject_cast<QLineEdit*>(fw) || qobject_cast<QTextEdit*>(fw) ||
-            qobject_cast<QPlainTextEdit*>(fw) || qobject_cast<QSpinBox*>(fw))
-            return;
+        if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->goToNextEditPoint();
     });
@@ -218,8 +209,7 @@ void ShortcutController::registerKeyboardShortcuts()
         }
         if (m_ws->timeline() && m_ws->timelinePanel() && m_ws->commandStack() && !m_ws->timelinePanel()->clipboard().empty()) {
             const int64_t pasteTick = m_ws->playbackController() ? m_ws->playbackController()->currentTick() : 0;
-            auto cmd = EditOperations::paste(
-                *m_ws->timeline(), m_ws->timelinePanel()->clipboard(), pasteTick);
+            auto cmd = m_ws->timelinePanel()->makePasteCommand(pasteTick);
             if (cmd) {
                 m_ws->commandStack()->execute(std::move(cmd));
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
@@ -300,10 +290,12 @@ void ShortcutController::registerKeyboardShortcuts()
             m_ws->effectControlsPanel()->clearCopiedEffect();
             m_ws->effectControlsPanel()->clearKfClipboard();
         }
-        EditOperations::copySelection(*m_ws->timeline(),
-            m_ws->timelinePanel()->selection(),
-            m_ws->timelinePanel()->mutableClipboard());
-        m_ws->timelinePanel()->copyAttributesFromSelection();
+        if (!m_ws->timelinePanel()->copySelectedTransitionToClipboard()) {
+            EditOperations::copySelection(*m_ws->timeline(),
+                m_ws->timelinePanel()->selection(),
+                m_ws->timelinePanel()->mutableClipboard());
+            m_ws->timelinePanel()->copyAttributesFromSelection();
+        }
     });
     // Shift+Delete / Shift+Backspace: extract (ripple delete)
     addShortcut(Qt::SHIFT | Qt::Key_Delete, [this]() {
@@ -425,26 +417,11 @@ void ShortcutController::registerKeyboardShortcuts()
             }
         }
 
-        // Reject if the new transition would overlap any existing
-        // transition's range (not just the same edit point — a long
-        // fade-in can overlap a fade-out on the same clip).
-        {
-            int64_t newStart, newEnd;
-            trans.getRange(newStart, newEnd);
-            bool wouldOverlap = false;
-            for (size_t ti2 = 0; ti2 < track->transitionCount(); ++ti2) {
-                const Transition* existing = track->transition(ti2);
-                if (!existing) continue;
-                int64_t exStart, exEnd;
-                existing->getRange(exStart, exEnd);
-                // Two ranges [a,b) and [c,d) overlap if a<d && c<b
-                if (newStart < exEnd && exStart < newEnd) {
-                    wouldOverlap = true;
-                    break;
-                }
-            }
-            if (wouldOverlap) return;
-        }
+        // Preserve the requested edge and transition type, but shorten the
+        // default duration when the opposite edge already uses some of this
+        // clip. Only reject when there is no positive duration left.
+        if (!EditOperations::fitTransitionToAvailableDuration(*track, trans))
+            return;
 
         auto cmd = std::make_unique<AddTransitionCommand>(
             track, clipIdx, clipIdx, trans);

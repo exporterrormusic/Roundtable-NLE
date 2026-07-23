@@ -88,12 +88,12 @@ enum class DNxHRProfile : uint8_t
     Count
 };
 
-/// Image sequence format
+/// Image sequence format.  Only formats with a real encoder belong here —
+/// TIFF/EXR were removed because they silently wrote PNG bytes under a
+/// lying extension; re-add them only alongside an actual encoder.
 enum class ImageFormat : uint8_t
 {
     PNG,
-    TIFF,
-    EXR,
     BMP,
     JPEG,
     Count

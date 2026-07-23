@@ -154,7 +154,28 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
             if (!clip)
                 continue;
 
-            if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
+            if (auto* imageClip = dynamic_cast<ImageClip*>(clip)) {
+                const auto& mediaPath = imageClip->mediaPath();
+                if (mediaPath.empty()) continue;
+                uint64_t handle = 0;
+                auto it = m_openMediaHandles.find(mediaPath);
+                if (it != m_openMediaHandles.end()) {
+                    handle = it->second;
+                } else if (m_mediaPool->isPathOpen(mediaPath)) {
+                    handle = m_mediaPool->open(mediaPath);
+                    if (handle != 0) m_openMediaHandles[mediaPath] = handle;
+                } else {
+                    m_mediaPool->openAsync(mediaPath);
+                }
+                if (handle != 0) {
+                    const auto warmTier = m_forceFullResolution.load()
+                        ? ResolutionTier::Full : previewTier;
+                    (void)m_mediaPool->tryGetFrame(handle, 0, warmTier);
+                    m_mediaPool->schedulePrefetch(
+                        handle, 0, 1, /*urgent=*/true, warmTier);
+                    prerollTargets.push_back({handle, 0, warmTier});
+                }
+            } else if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
                 const auto& mediaPath = videoClip->mediaPath();
                 if (mediaPath.empty())
                     continue;
@@ -182,8 +203,15 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 // Shared tick → source-frame mapping authority
                 // (VideoFrameMapping.h) — must agree exactly with the
                 // render path so the warmed frame is the rendered frame.
-                const int64_t frameNum =
-                    mapTickToSourceFrame(*videoClip, tick, mediaInfo).frame;
+                const auto mapped =
+                    mapTickToSourceFrame(*videoClip, tick, mediaInfo);
+                const bool temporal =
+                    videoClip->timeInterpolation() !=
+                        TimeInterpolation::FrameSampling &&
+                    mapped.blendPhase > 0.000001 &&
+                    mapped.lowerFrame != mapped.upperFrame;
+                const int64_t frameNum = temporal
+                    ? mapped.lowerFrame : mapped.frame;
 
                 // Match the live composite path (CompositeServiceLayerBuild.cpp
                 // charVideoTier / spineVideoTier): forceFullResolution wins,
@@ -196,6 +224,15 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                     ? ResolutionTier::Full
                     : previewTier;
                 (void)m_mediaPool->tryGetFrame(handle, frameNum, warmTier);
+                if (temporal) {
+                    (void)m_mediaPool->tryGetFrame(
+                        handle, mapped.upperFrame, warmTier);
+                    m_mediaPool->schedulePrefetch(
+                        handle, mapped.upperFrame, 2,
+                        /*urgent=*/true, warmTier);
+                    prerollTargets.push_back(
+                        {handle, mapped.upperFrame, warmTier});
+                }
 
                 if (mediaInfo->frameCount > 1) {
                     m_mediaPool->schedulePrefetch(
@@ -268,9 +305,11 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
             for (size_t ci = 0; ci < track->clipCount(); ++ci) {
                 auto* clip = track->clip(ci);
                 if (!clip) continue;
-                auto* videoClip = dynamic_cast<VideoClip*>(clip);
-                if (!videoClip) continue;
-                const auto& mediaPath = videoClip->mediaPath();
+                std::string mediaPath;
+                if (auto* videoClip = dynamic_cast<VideoClip*>(clip))
+                    mediaPath = videoClip->mediaPath();
+                else if (auto* imageClip = dynamic_cast<ImageClip*>(clip))
+                    mediaPath = imageClip->mediaPath();
                 if (mediaPath.empty()) continue;
                 // Outer `lock` at the top of doPrewarmPlaybackResources()
                 // ALREADY holds m_openMediaHandlesMutex on this thread.
@@ -484,6 +523,8 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
                 mp = videoClip->mediaPath();
                 isCharacter = videoClip->isVideoCharacter();
+            } else if (auto* imageClip = dynamic_cast<ImageClip*>(clip)) {
+                mp = imageClip->mediaPath();
             }
             if (mp.empty()) {
                 // Either a non-media clip or a Spine clip with no

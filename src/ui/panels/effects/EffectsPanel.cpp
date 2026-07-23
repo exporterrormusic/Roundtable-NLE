@@ -384,6 +384,7 @@ void EffectsPanel::populateBrowser()
                                  EffectType::ChromaKey, EffectType::Transform2D,
                                  EffectType::Vignette, EffectType::LUT,
                                  EffectType::Letterbox, EffectType::ColorGrading,
+                                 EffectType::Tint,
                                  EffectType::OtsLeft, EffectType::OtsRight,
                                  EffectType::OtsIntro,
                                  EffectType::FlipHorizontal,

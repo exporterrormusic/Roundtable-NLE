@@ -18,16 +18,46 @@
 #include <QFont>
 #include <QPointF>
 #include <QRectF>
+#include <QSizeF>
 #include <QPlainTextEdit>
+#include <QPainterPath>
+#include <QPointer>
 
 #include <cstdint>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "viewport/OverlayMath.h"
 #include "timeline/OpacityMask.h"
+#include "timeline/GraphicLayer.h"
 
 namespace rt {
+
+enum InlineTextMixedFlag : uint32_t
+{
+    InlineMixedFamily         = 1u << 0,
+    InlineMixedSize           = 1u << 1,
+    InlineMixedWeight         = 1u << 2,
+    InlineMixedItalic         = 1u << 3,
+    InlineMixedCapitalization = 1u << 4,
+    InlineMixedTracking       = 1u << 5,
+    InlineMixedBaseline       = 1u << 6,
+    InlineMixedLeading        = 1u << 7,
+    InlineMixedFontStyle      = 1u << 8,
+    InlineMixedKerning        = 1u << 9,
+    InlineMixedTabWidth       = 1u << 10,
+    InlineMixedTsume          = 1u << 11,
+    InlineMixedFauxStyle      = 1u << 12,
+    InlineMixedDecoration     = 1u << 13,
+    InlineMixedScript         = 1u << 14,
+    InlineMixedFill           = 1u << 15,
+    InlineMixedStroke         = 1u << 16,
+    InlineMixedShadow         = 1u << 17,
+    InlineMixedBackground     = 1u << 18,
+    InlineMixedParagraph      = 1u << 19,
+    InlineMixedDirection      = 1u << 20
+};
 
 class VulkanViewport;
 class CommandStack;
@@ -70,7 +100,7 @@ public:
     /// will look like (Premiere-style WYSIWYG). `fontSizeRef` is the layer's
     /// font size in 1920×1080 reference pixels — the overlay scales it to
     /// the on-screen content rect so the editor's text matches the rendered
-    /// text size exactly. Commit (Enter / focus out) emits
+    /// text size exactly. Commit (Ctrl/Cmd+Enter / focus out) emits
     /// inlineTextCommitted(); Esc cancels.
     /// `horizontalStretch` accounts for anisotropic layer scaling: the
     /// renderer applies painter.scale(scaleX, scaleY) so glyph height ∝
@@ -88,10 +118,82 @@ public:
                              bool italic,
                              const QColor& textColor,
                              float horizontalStretch = 1.0f,
-                             Qt::Alignment hAlignFlag = Qt::AlignHCenter);
+                             Qt::Alignment hAlignFlag = Qt::AlignHCenter,
+                             const std::vector<TextStyleRun>& styleRuns = {},
+                             float verticalScale = 1.0f,
+                             bool allCaps = false,
+                             bool smallCaps = false,
+                             float tracking = 0.0f,
+                             float baselineShift = 0.0f,
+                             float leading = 0.0f,
+                             const TextRunAppearance& baseAppearance = {},
+                             const std::vector<TextParagraphStyle>& paragraphStyles = {},
+                             const QString& fontStyle = {},
+                             float kerning = 0.0f,
+                             float tabWidth = 48.0f,
+                             float tsume = 0.0f,
+                             bool fauxBold = false,
+                             bool fauxItalic = false,
+                             bool underline = false,
+                             bool superscript = false,
+                             bool subscript = false,
+                             bool rightToLeft = false);
 
     /// True while the in-place text editor is shown.
     [[nodiscard]] bool isInlineTextEditing() const noexcept;
+
+    /// Keep inline editing alive while focus moves to this widget or one of
+    /// its children (the Graphics Editor's font/style controls).
+    void setInlineTextFormattingWidget(QWidget* widget) noexcept {
+        m_inlineTextFormattingWidget = widget;
+    }
+
+    /// Apply character formatting to the active monitor selection. With only
+    /// a caret, these set the typing format for subsequently inserted text.
+    bool applyInlineTextFontFamily(const QString& family);
+    bool applyInlineTextFontSize(float pointSizeRef);
+    bool applyInlineTextFontWeight(int weight);
+    bool applyInlineTextItalic(bool italic);
+    bool applyInlineTextCapitalization(bool allCaps, bool smallCaps);
+    bool applyInlineTextTracking(float tracking);
+    bool applyInlineTextBaselineShift(float baselineShift);
+    bool applyInlineTextLeading(float leading);
+    bool applyInlineTextFontStyle(const QString& styleName);
+    bool applyInlineTextKerning(float kerning);
+    bool applyInlineTextTabWidth(float tabWidth);
+    bool applyInlineTextTsume(float tsume);
+    bool applyInlineTextFauxStyles(bool fauxBold, bool fauxItalic);
+    bool applyInlineTextUnderline(bool underline);
+    bool applyInlineTextScript(bool superscript, bool subscript);
+    bool applyInlineTextFill(bool enabled, uint32_t color);
+    bool applyInlineTextStroke(bool enabled, uint32_t color, float width,
+                               int position);
+    bool applyInlineTextShadow(bool enabled, uint32_t color, float distance,
+                               float angle, float softness, float opacity);
+    bool applyInlineTextBackground(bool enabled, uint32_t color,
+                                   float padding);
+    bool applyInlineParagraphAlignment(int alignment);
+    bool applyInlineParagraphDirection(bool rightToLeft);
+
+    /// Selection helpers are public for controller synchronization and
+    /// focused UI regression tests. Positions are UTF-16 code units.
+    void setInlineTextSelection(int start, int length);
+    [[nodiscard]] std::pair<int, int> inlineTextSelection() const;
+
+    /// Rich styles captured immediately before inlineTextCommitted() fires.
+    [[nodiscard]] const std::vector<TextStyleRun>& committedInlineTextStyles()
+        const noexcept { return m_committedInlineTextStyles; }
+    [[nodiscard]] std::vector<TextStyleRun> currentInlineTextStyles() const {
+        return collectInlineTextStyles();
+    }
+    [[nodiscard]] const std::vector<TextParagraphStyle>&
+    committedInlineParagraphStyles() const noexcept {
+        return m_committedInlineParagraphStyles;
+    }
+    [[nodiscard]] std::vector<TextParagraphStyle>
+    currentInlineParagraphStyles() const {
+        return collectInlineParagraphStyles();
+    }
 
     /// Set the offset from the overlay's top-left to the viewport's top-left.
     /// When the overlay is clipped to the panel bounds, this offset lets
@@ -99,16 +201,28 @@ public:
     void setViewportOffset(const QPoint& offset) noexcept { m_vpOffset = offset; }
 
     /// Set mask data for overlay drawing + editing. Call after mask changes.
-    void setMasks(std::vector<OpacityMask>* masks) noexcept {
-        m_masks = masks;
-        if (!m_masks || m_masks->empty()) {
-            m_activeMaskIndex = -1;
-        }
+    void setMasks(std::vector<OpacityMask>* masks) noexcept;
+
+    /// Transform of the clip/effect texture that owns the current mask list.
+    /// This is kept separate from the focused graphic-layer transform so a
+    /// clip mask always follows the clip, even while an inner graphic layer
+    /// is selected for its own transform editing.
+    void setMaskOwnerOverlay(const TransformOverlayInfo& info,
+                             bool followsPrimary = false) noexcept {
+        m_maskOwnerOverlay = info;
+        m_hasMaskOwnerOverlay = true;
+        m_maskOwnerFollowsPrimary = followsPrimary;
         update();
     }
 
     /// Set which mask is actively selected for editing (-1 = all drawn, none focused).
-    void setActiveMaskIndex(int idx) noexcept { m_activeMaskIndex = idx; update(); }
+    void setActiveMaskIndex(int idx) noexcept {
+        if (!m_masks || idx < 0 || static_cast<size_t>(idx) >= m_masks->size())
+            m_activeMaskIndex = -1;
+        else
+            m_activeMaskIndex = idx;
+        update();
+    }
 
     /// Set the CLIP-LOCAL time (ticks, same basis the renderer evaluates
     /// masks at: playhead − clip timelineIn) used to evaluate mask geometry
@@ -132,6 +246,14 @@ public:
 
     /// Get current overlay info.
     [[nodiscard]] const TransformOverlayInfo& transformOverlay() const noexcept { return m_overlay; }
+
+    /// Program Monitor crop is a Ctrl-modified edge gesture. Plain edge/corner
+    /// interaction remains reserved for transform resizing.
+    [[nodiscard]] static bool cropGestureRequested(
+        Qt::KeyboardModifiers modifiers) noexcept
+    {
+        return modifiers.testFlag(Qt::ControlModifier);
+    }
 
     // ── Motion path (Premiere-style 2D Position keyframes) ────────────
     /// Attach the selected clip's Position X/Y tracks for motion-path
@@ -179,6 +301,11 @@ signals:
     /// Emitted when a mask drag completes for undo recording.
     void maskDragFinished(int maskIndex, OpacityMask oldMask, OpacityMask newMask);
 
+    /// Emitted after a Pen Mask draft is closed and appended to the active
+    /// clip/effect mask list. The controller records the insertion as one
+    /// undoable command.
+    void maskCreated(int maskIndex, OpacityMask mask);
+
     /// Emitted during mask drag to trigger live composite refresh.
     void maskLiveUpdate();
 
@@ -202,6 +329,35 @@ signals:
     /// Emitted when in-place text editing is committed (Enter / focus out)
     /// with the new text. The workspace writes it back to the text layer.
     void inlineTextCommitted(const QString& text);
+
+    /// Character format at the active caret/selection.  The Graphics Editor
+    /// follows this while rich text is being edited in the monitor.
+    void inlineTextSelectionFormatChanged(const QString& family,
+                                          float pointSize,
+                                          int weight,
+                                          bool italic,
+                                          bool allCaps,
+                                          bool smallCaps,
+                                          float tracking,
+                                          float baselineShift,
+                                          float leading,
+                                          uint32_t mixedFlags);
+    void inlineTextAdvancedFormatChanged(const QString& fontStyle,
+                                         float kerning, float tabWidth,
+                                         float tsume, bool fauxBold,
+                                         bool fauxItalic, bool underline,
+                                         bool superscript, bool subscript,
+                                         uint32_t mixedFlags);
+    void inlineTextSelectionAppearanceChanged(
+        bool fillEnabled, uint32_t fillColor,
+        bool strokeEnabled, uint32_t strokeColor, float strokeWidth,
+        int strokePosition, bool shadowEnabled, uint32_t shadowColor,
+        float shadowDistance, float shadowAngle, float shadowSoftness,
+        float shadowOpacity, bool backgroundEnabled,
+        uint32_t backgroundColor, float backgroundPadding,
+        uint32_t mixedFlags);
+    void inlineParagraphFormatChanged(int alignment, bool rightToLeft,
+                                      uint32_t mixedFlags);
 
     /// Emitted when the eyedropper tool picks a color at frame-space coords.
     void colorPicked(float frameX, float frameY);
@@ -229,6 +385,14 @@ private:
     /// Drop the application override cursor if we installed one.  Safe to
     /// call repeatedly; keeps the override stack balanced.
     void clearCursorOverride();
+    void resizeInlineTextEditorToDocument();
+    [[nodiscard]] QTextCursor inlineTextFormattingCursor() const;
+    void finishInlineTextEdit(bool cancel);
+    [[nodiscard]] std::vector<TextStyleRun> collectInlineTextStyles() const;
+    [[nodiscard]] std::vector<TextParagraphStyle>
+        collectInlineParagraphStyles() const;
+    void notifyInlineTextSelectionFormat();
+    [[nodiscard]] bool focusIsInInlineFormattingUi() const;
     bool m_haveCursorOverride{false};
 
     /// Compute the frame draw-rect (where the frame appears in widget space).
@@ -239,6 +403,24 @@ private:
 
     /// Compute the 4 widget-space corners of the overlay bounding box.
     void computeOverlayCorners(QPointF corners[4]) const;
+
+    /// Map normalized mask-owner coordinates through the same affine clip
+    /// transform used by the compositor. This keeps masks attached to clips.
+    [[nodiscard]] QPointF maskLocalToWidget(
+        float u, float v,
+        MaskCoordinateSpace space = MaskCoordinateSpace::SourceLocal) const;
+    [[nodiscard]] bool widgetToMaskLocal(const QPointF& widgetPos,
+                                         QPointF& local,
+        MaskCoordinateSpace space = MaskCoordinateSpace::SourceLocal) const;
+    [[nodiscard]] QPointF maskVectorToWidget(
+        float du, float dv,
+        MaskCoordinateSpace space = MaskCoordinateSpace::SourceLocal) const;
+    [[nodiscard]] QSizeF maskSourceSize() const;
+    void syncMaskOwnerToEditedOuterTransform() noexcept;
+    [[nodiscard]] QPainterPath buildMaskWidgetPath(const OpacityMask& mask,
+                                                   const MaskGeometry& geo,
+                                                   float expansion = 0.0f,
+                                                   bool closed = true) const;
 
     /// Same as computeOverlayCorners but for an arbitrary TransformOverlayInfo
     /// (used to draw outline boxes for multi-selection siblings).
@@ -285,7 +467,15 @@ private:
 
     /// Add a control point to the closest mask edge near widgetPos.
     /// Returns true if a point was added; sets outMaskIndex.
-    bool addPointOnMaskEdge(const QPointF& widgetPos, const QRectF& fr, int& outMaskIndex);
+    bool addPointOnMaskEdge(const QPointF& widgetPos, int& outMaskIndex);
+
+    /// Pen-mask draft lifecycle. Drafts stay out of the render list until
+    /// closed, preventing an incomplete one/two-point path from blanking a clip.
+    void beginPenPoint(const QPointF& widgetPos);
+    bool commitPenMask();
+    void cancelPenMask() noexcept;
+    bool editExistingMaskWithPen(const QPointF& widgetPos,
+                                 Qt::KeyboardModifiers modifiers);
 
     /// Hit-test whether widgetPos is near a mask edge (for pen cursor hint).
     bool hitTestMaskEdge(const QPointF& widgetPos) const;
@@ -327,6 +517,7 @@ private:
         DragMotionHandle,   ///< spatial bezier handle on a Position keyframe
         MoveAnchor,         ///< anchor point (rotation/scale pivot) handle
         CropEdge,           ///< crop edge handle (Left/Right/Top/Bottom)
+        DrawMaskPoint,      ///< click/drag a new Pen Mask vertex + tangents
     };
     DragMode m_dragMode{DragMode::None};
     int      m_dragHandle{-1};
@@ -354,16 +545,41 @@ private:
     bool     m_showGrid{false};
 
     // Active editing tool (uses uint8_t to avoid EditTool dependency)
-    uint8_t  m_editTool{0};  // 0 = Selection, 6 = Text
+    uint8_t  m_editTool{0};  // 0=Selection, 6=Text, 8=Eyedropper, 9=Pen Mask
 
     // In-place text editor (lazily created child widget shown over the
     // selected text layer's bounding box). Owned via Qt parent.
     QPlainTextEdit* m_inlineTextEdit{nullptr};
     bool             m_committingInlineText{false};
-    /// Screen-space center the inline editor should stay anchored to as
-    /// the text grows/shrinks during typing. Updated in beginInlineTextEdit
-    /// from the transform box centroid; consumed by the textChanged
-    /// handler to resize symmetrically rather than scroll the text.
+    bool             m_initializingInlineText{false};
+    QPointer<QWidget> m_inlineTextFormattingWidget;
+    std::vector<TextStyleRun> m_originalInlineTextStyles;
+    std::vector<TextStyleRun> m_committedInlineTextStyles;
+    std::vector<TextParagraphStyle> m_originalInlineParagraphStyles;
+    std::vector<TextParagraphStyle> m_committedInlineParagraphStyles;
+    QString          m_inlineBaseFontFamily;
+    float            m_inlineBaseFontSize{72.0f};
+    int              m_inlineBaseFontWeight{400};
+    bool             m_inlineBaseItalic{false};
+    bool             m_inlineBaseAllCaps{false};
+    bool             m_inlineBaseSmallCaps{false};
+    float            m_inlineBaseTracking{0.0f};
+    float            m_inlineBaseBaselineShift{0.0f};
+    float            m_inlineBaseLeading{0.0f};
+    QString          m_inlineBaseFontStyle;
+    float            m_inlineBaseKerning{0.0f};
+    float            m_inlineBaseTabWidth{48.0f};
+    float            m_inlineBaseTsume{0.0f};
+    bool             m_inlineBaseFauxBold{false};
+    bool             m_inlineBaseFauxItalic{false};
+    bool             m_inlineBaseUnderline{false};
+    bool             m_inlineBaseSuperscript{false};
+    bool             m_inlineBaseSubscript{false};
+    bool             m_inlineBaseRightToLeft{false};
+    TextRunAppearance m_inlineBaseAppearance;
+    double           m_inlineFontPointScale{1.0};
+    int              m_inlineFontStretch{100};
+    /// Legacy screen-space center retained for transform-overlay bookkeeping.
     QPoint           m_inlineEditCenter{0, 0};
     int              m_inlineEditHeight{32};
     /// Alignment-anchor screen-X coords for the inline editor (snapshotted
@@ -375,6 +591,17 @@ private:
     int              m_inlineEditAnchorRightX{0};
     int              m_inlineEditAnchorCenterX{0};
     int              m_inlineEditAnchorCenterY{0};
+    /// Screen-space top of the first line. Point text grows downward from
+    /// here, so Return never pushes already-entered lines upward.
+    int              m_inlineEditAnchorTopY{0};
+    /// Keep the editor at least as wide as the selected layer's transform
+    /// box, so blank pixels beside the glyphs remain a text-selection surface.
+    int              m_inlineEditMinWidth{40};
+    /// Last explicit monitor-text selection. Native formatting controls can
+    /// transiently collapse the QTextCursor when taking focus; formatting
+    /// still belongs to this highlighted character range.
+    int              m_inlineRetainedSelectionStart{0};
+    int              m_inlineRetainedSelectionEnd{0};
     Qt::Alignment    m_inlineEditAlignH{Qt::AlignHCenter};
     /// Saved overlay info so we can restore the transform box after
     /// inline text editing ends (it is hidden during editing to prevent
@@ -388,6 +615,10 @@ private:
     // Mask overlay data (non-owning pointer to the clip's or an effect's
     // masks vector — both use the same OpacityMask type)
     std::vector<OpacityMask>* m_masks{nullptr};
+
+    TransformOverlayInfo m_maskOwnerOverlay{};
+    bool m_hasMaskOwnerOverlay{false};
+    bool m_maskOwnerFollowsPrimary{false};
 
     // Clip-local time for mask evaluation (geometry + keyframed scalars)
     int64_t m_maskTime{0};
@@ -403,6 +634,13 @@ private:
 
     // Active mask index (-1 = all masks visible, none focused)
     int m_activeMaskIndex{-1};
+
+    // Interactive Pen Mask draft. A click adds a corner; click-drag creates
+    // symmetric Bezier handles; clicking the first point closes/commits.
+    bool        m_penDrawing{false};
+    OpacityMask m_penDraft{};
+    QPointF     m_penPressLocal{};
+    QPointF     m_penHoverWidget{};
 
     // Offset from overlay origin to viewport origin (overlay is clipped to panel)
     QPoint m_vpOffset{0, 0};

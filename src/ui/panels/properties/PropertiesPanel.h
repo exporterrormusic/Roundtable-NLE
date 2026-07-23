@@ -507,13 +507,34 @@ private:
     struct TextStylePreset {
         std::string name;
         std::string fontFamily{"Arial"};
+        std::string fontStyle;
         float       fontSize{32.0f};
+        int         fontWeight{400};
         uint32_t    textColor{0xFFFFFFFFu};
         uint32_t    bgColor{0xCC000000u};
         int         position{0};   // caption only
         bool        bold{false};
         bool        italic{false};
         int         alignment{1};  // 0=left 1=center 2=right
+        int         verticalAlignment{1};
+        bool        allCaps{false};
+        bool        smallCaps{false};
+        bool        underline{false};
+        bool        superscript{false};
+        bool        subscript{false};
+        bool        fauxBold{false};
+        bool        fauxItalic{false};
+        bool        rightToLeft{false};
+        float       tracking{0.0f};
+        float       leading{0.0f};
+        float       baselineShift{0.0f};
+        float       kerning{0.0f};
+        float       tabWidth{48.0f};
+        float       tsume{0.0f};
+        bool        backgroundEnabled{false};
+        float       backgroundPadding{4.0f};
+        bool        maskWithText{false};
+        bool        showSpeaker{false};
         // Stroke + shadow (graphic text only; absent in pre-existing presets)
         bool        strokeEnabled{false};
         uint32_t    strokeColor{0xFF000000u};

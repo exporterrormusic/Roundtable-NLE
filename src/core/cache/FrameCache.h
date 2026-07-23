@@ -34,6 +34,45 @@ enum class ResolutionTier : uint8_t
     Quarter,    // 25% resolution (thumbnail)
 };
 
+/// Pixel dimensions for a source decoded at a preview resolution tier.
+/// Full deliberately preserves the native dimensions exactly. Reduced tiers
+/// are even-aligned because the video conversion paths also serve 4:2:0 media.
+struct ResolutionDimensions
+{
+    int width{0};
+    int height{0};
+};
+
+[[nodiscard]] constexpr int resolutionTierDivisor(ResolutionTier tier) noexcept
+{
+    switch (tier) {
+        case ResolutionTier::Half:    return 2;
+        case ResolutionTier::Quarter: return 4;
+        default:                      return 1;
+    }
+}
+
+[[nodiscard]] constexpr int resolutionTierDimension(
+    int sourceDimension, ResolutionTier tier) noexcept
+{
+    if (sourceDimension <= 0) return 0;
+
+    const int divisor = resolutionTierDivisor(tier);
+    if (divisor == 1) return sourceDimension;
+
+    const int scaled = (sourceDimension / divisor) & ~1;
+    return scaled >= 2 ? scaled : 2;
+}
+
+[[nodiscard]] constexpr ResolutionDimensions resolutionTierDimensions(
+    int sourceWidth, int sourceHeight, ResolutionTier tier) noexcept
+{
+    return {
+        resolutionTierDimension(sourceWidth, tier),
+        resolutionTierDimension(sourceHeight, tier),
+    };
+}
+
 /// Which conversion path produced a CachedFrame's pixels/texture.
 /// Used by the [FLICKER-DIAG] consumption-side check (Phase 0 of the
 /// pipeline upgrade): if the displayed frame for a clip switches origin
@@ -70,6 +109,24 @@ struct CachedFrame
     ResolutionTier tier{ResolutionTier::Full};
     bool        isKeyframe{false};
     double      timestamp{0.0}; // PTS in seconds
+
+    /// Composite-cache diagnostics/output identity.  A segment-cache hit still
+    /// goes through the encoder, but avoids rebuilding and compositing layers.
+    bool        segmentCacheHit{false};
+    /// True when the composite pixels retain straight alpha.  This participates
+    /// in segment-cache identity so transparent and flattened exports cannot
+    /// accidentally reuse one another.
+    bool        preservesAlpha{false};
+
+    /// Tight normalized bounds of pixels whose alpha is non-zero.  Stills are
+    /// scanned once after decode; the composite shader can reject transparent
+    /// margins before issuing texture samples for every output pixel.
+    bool        contentBoundsValid{false};
+    float       contentLeft{0.0f};
+    float       contentTop{0.0f};
+    float       contentRight{1.0f};
+    float       contentBottom{1.0f};
+    bool        contentFullyOpaque{false};
 
     /// Which conversion path produced this frame (Phase 0 diagnostics).
     ConverterOrigin origin{ConverterOrigin::Unknown};

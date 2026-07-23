@@ -129,8 +129,20 @@ public:
     /// Refresh keyframe navigation state for a given playhead time.
     void updateForTime(int64_t time);
 
+    /// Resolve the playhead time when the keyframe button is actually
+    /// clicked. Effect Controls supplies the live timeline time so a button
+    /// painted on an earlier playback tick cannot add/delete a stale key.
+    void setTimeProvider(std::function<int64_t()> provider) {
+        m_timeProvider = std::move(provider);
+    }
+
     /// The stopwatch toggle button.
     [[nodiscard]] QToolButton* stopwatchButton() const noexcept { return m_stopwatch; }
+
+    /// Apply the canonical Effect Controls stopwatch icon and widget metrics.
+    /// Mask Path uses this because its animated value is MaskGeometry rather
+    /// than the float track owned by a PropertyRow.
+    static void configureStopwatchButton(QToolButton* button);
 
     /// Row height (for mini-timeline alignment).
     [[nodiscard]] int rowIndex() const noexcept { return m_rowIndex; }
@@ -152,10 +164,13 @@ signals:
 
 private:
     void buildUI();
+    void syncStopwatchState();
 
     QString               m_name;
     KeyframeTrack<float>* m_track{nullptr};
     std::vector<KeyframeTrack<float>*> m_extraTracks;
+    std::function<int64_t()> m_timeProvider;
+    int64_t               m_displayedTime{0};
     int                   m_rowIndex{0};
 
     // Widgets
@@ -186,6 +201,17 @@ public:
     /// Set the list of property rows (for vertical alignment).
     void setPropertyRows(const std::vector<PropertyRow*>& rows);
 
+    /// A Mask Path row cannot use PropertyRow because its keyframe value is
+    /// a whole MaskGeometry rather than a float. Keep the visual row plus a
+    /// stable model address (effect owner + mask index) so the mini-timeline
+    /// can resolve it after undo replaces an OpacityMask value.
+    struct MaskPathLane {
+        QWidget* row{nullptr};
+        quint64  effectId{0};
+        uint64_t maskId{0};
+    };
+    void setMaskPathLanes(const std::vector<MaskPathLane>& lanes);
+
     /// Set the scroll offset (synced with left-side scroll area).
     void setScrollOffset(int y);
 
@@ -202,9 +228,16 @@ public:
     void copySelectedKeyframes();
     void cutSelectedKeyframes();
     void pasteKeyframes();
-    [[nodiscard]] bool hasKfClipboardData() const noexcept { return !m_kfClipboard.empty(); }
-    [[nodiscard]] bool hasSelectedKeyframes() const noexcept { return !m_selectedKeys.empty(); }
-    void clearKfClipboard() noexcept { m_kfClipboard.clear(); }
+    [[nodiscard]] bool hasKfClipboardData() const noexcept {
+        return !m_kfClipboard.empty() || !m_maskKfClipboard.empty();
+    }
+    [[nodiscard]] bool hasSelectedKeyframes() const noexcept {
+        return !m_selectedKeys.empty() || !m_selectedMaskKeys.empty();
+    }
+    void clearKfClipboard() noexcept {
+        m_kfClipboard.clear();
+        m_maskKfClipboard.clear();
+    }
 
     QSize sizeHint() const override { return {400, 200}; }
     QSize minimumSizeHint() const override { return {100, 50}; }
@@ -212,6 +245,7 @@ public:
 signals:
     void playheadScrubbed(int64_t tick);
     void keyframeChanged();  // emitted after move/delete of a keyframe
+    void maskPathChanged();  // geometry-key edit; refresh Program Monitor mask overlay
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -224,11 +258,31 @@ protected:
                                                       // a non-popup widget
 
 private:
+    struct MaskPathId {
+        quint64 effectId{0};
+        uint64_t maskId{0};
+        bool operator<(const MaskPathId& o) const noexcept {
+            if (effectId != o.effectId) return effectId < o.effectId;
+            return maskId < o.maskId;
+        }
+        bool operator==(const MaskPathId& o) const noexcept {
+            return effectId == o.effectId && maskId == o.maskId;
+        }
+    };
+
     struct HitResult {
         KeyframeTrack<float>* track{nullptr};
         size_t index{0};
+        int maskLane{-1};
+        int64_t time{0};
+        [[nodiscard]] bool isMaskPath() const noexcept { return maskLane >= 0; }
+        [[nodiscard]] bool valid() const noexcept { return track || isMaskPath(); }
     };
     [[nodiscard]] HitResult hitTestKeyframe(const QPoint& pos) const;
+    [[nodiscard]] OpacityMask* resolveMaskPath(const MaskPathId& id) const;
+    [[nodiscard]] const MaskPathLane* laneFor(const MaskPathId& id) const;
+    void beginSelectionDrag(int64_t anchorTick);
+    void deleteSelectedKeyframes(const char* description);
 
     void drawRuler(QPainter& p);
     void drawClipBar(QPainter& p);
@@ -238,9 +292,11 @@ private:
     [[nodiscard]] int tickToX(int64_t tick) const;
     [[nodiscard]] int64_t xToTick(int x) const;
     [[nodiscard]] int rowY(const PropertyRow* row) const;
+    [[nodiscard]] int rowY(const QWidget* row) const;
 
     Clip*                      m_clip{nullptr};
     std::vector<PropertyRow*>  m_rows;
+    std::vector<MaskPathLane>  m_maskPathLanes;
     int                        m_scrollOffsetY{0};
     int64_t                    m_playheadTick{0};
     int64_t                    m_viewStart{0};
@@ -258,11 +314,23 @@ private:
     };
     std::set<SelKey> m_selectedKeys;
 
+    struct SelMaskKey {
+        MaskPathId id;
+        int64_t time{0};
+        bool operator<(const SelMaskKey& o) const noexcept {
+            if (id < o.id) return true;
+            if (o.id < id) return false;
+            return time < o.time;
+        }
+    };
+    std::set<SelMaskKey> m_selectedMaskKeys;
+
     // Marquee rubber-band selection
     bool   m_marqueeActive{false};
     QPoint m_marqueeOrigin;
     QPoint m_marqueeCurrent;
     std::set<SelKey> m_preMarqueeSelection; // keys already selected before marquee
+    std::set<SelMaskKey> m_preMarqueeMaskSelection;
 
     // Group drag of selected keyframes
     bool    m_draggingSelection{false};
@@ -276,6 +344,13 @@ private:
         float biX, biY, boX, boY;
     };
     std::vector<DragEntry> m_dragEntries;
+    struct MaskDragEntry {
+        MaskPathId id;
+        int64_t origTime{0};
+        int64_t currentTime{0};
+        MaskGeometry geometry;
+    };
+    std::vector<MaskDragEntry> m_maskDragEntries;
 
     // Per-track snapshot taken at drag start. Each frame of the drag
     // restores the track from this snapshot, removes the dragged-set's
@@ -290,6 +365,7 @@ private:
         float biX, biY, boX, boY;
     };
     std::map<KeyframeTrack<float>*, std::vector<DragSnapKf>> m_dragTrackSnap;
+    std::map<MaskPathId, std::vector<MaskPathKeyframe>> m_dragMaskSnap;
 
     CommandStack*  m_commandStack{nullptr};
 
@@ -304,6 +380,12 @@ private:
         float   spatialInX, spatialInY, spatialOutX, spatialOutY;
     };
     std::vector<KfClipboardEntry> m_kfClipboard;
+    struct MaskKfClipboardEntry {
+        MaskPathId  id;
+        int64_t     relativeTime{0};
+        MaskGeometry geometry;
+    };
+    std::vector<MaskKfClipboardEntry> m_maskKfClipboard;
 
     static constexpr int kRulerHeight = 24;
     static constexpr int kRowHeight   = 28;
@@ -330,11 +412,9 @@ public:
     void refresh();
     void clearClip();
 
-    /// Remove every keyframe on the current clip AND, for GraphicClips, on
-    /// all of its text/shape layers — collapsing each animated track to its
-    /// current value as a single undoable command. This is the only way to
-    /// clear keyframes on a graphic layer that isn't the selected one, since
-    /// Effect Controls binds the Motion rows to one layer at a time.
+    /// Remove every keyframe on the current clip, its effects and masks, and
+    /// (for GraphicClips) every text/shape layer. Animated values collapse to
+    /// their current playhead value as one undoable command.
     void removeAllKeyframes();
 
     // ── Dependencies ────────────────────────────────────────────────────
@@ -377,6 +457,11 @@ public:
     /// Returns true if an applied effect is currently selected.
     [[nodiscard]] bool hasSelectedEffect() const noexcept { return m_selectedEffectIndex >= 0; }
 
+    /// Returns true if a clip/effect mask is the active Effect Controls
+    /// selection. The workspace uses this to keep Delete from falling
+    /// through to timeline clip deletion when native monitor input owns focus.
+    [[nodiscard]] bool hasSelectedMask() const noexcept { return m_hasSelectedMask; }
+
     /// Returns true if an effect has been copied and is ready to paste.
     [[nodiscard]] bool hasCopiedEffect() const noexcept { return m_copiedEffect != nullptr; }
 
@@ -387,6 +472,15 @@ public:
 
     /// Delete the currently selected effect (no-op if none selected).
     void deleteSelectedEffect();
+
+    /// Delete the currently selected mask. Returns true when Delete belonged
+    /// to a mask, including a stale selection that was safely consumed.
+    bool deleteSelectedMask();
+
+    /// Select a mask by stable owner/id, update the row highlight, and focus
+    /// it in the Program Monitor. Used after interactive Pen-mask creation as
+    /// well as by row clicks. Returns false if the mask no longer exists.
+    bool selectMaskById(quint64 effectId, uint64_t maskId);
 
     /// Copy the currently selected effect to internal clipboard.
     void copySelectedEffect();
@@ -424,6 +518,8 @@ signals:
     /// the Program Monitor. effectId==0 → clip opacity mask; otherwise the
     /// id of the effect whose mask list contains the mask.
     void maskSelected(int maskIndex, quint64 effectId);
+    /// Arm the Program Monitor Pen Mask tool for this clip/effect owner.
+    void penMaskToolRequested(quint64 effectId);
     /// Emitted when an audio clip's volume/pan is scrubbed in the panel.
     /// Values are in engine units (linear gain, pan -1..+1). Listeners push
     /// these directly to AudioEngine so playback reflects the change live.
@@ -446,6 +542,8 @@ private:
     void buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build Letterbox effect UI with preset aspect ratio dropdown
     void buildLetterboxUI(Effect& fx, size_t effectIdx, int& rowIdx);
+    /// Build Premiere-style Tint UI with two color swatches and amount.
+    void buildTintUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build generic flat parameter rows for a non-Ultra Key effect
     void buildGenericEffectUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build a beat-reactive effect UI: generic params + audio-source picker
@@ -459,6 +557,11 @@ private:
                      int& rowIdx);
     /// Add a new mask to the clip (effectId==0) or to an effect's mask list.
     void addMask(uint8_t shapeType, quint64 effectId = 0);
+    /// Delete one mask through the undo stack, resolving it by stable id.
+    bool deleteMask(quint64 effectId, uint64_t maskId);
+    /// Route pointer/key events from every existing child control through the
+    /// mask-selection filter without consuming the control's normal action.
+    void installMaskSelectionFilters(QWidget* root);
     /// Resolve a mask list by owner id: nullptr when the owner is gone.
     [[nodiscard]] std::vector<OpacityMask>* maskListFor(quint64 effectId) const;
 
@@ -476,6 +579,8 @@ private:
     /// through the clip's source video, writing one Mask Path keyframe per
     /// frame (single undo command). Video clips only.
     void trackMask(quint64 effectId, size_t maskIdx, bool forward);
+    void updateMaskPathControls(int64_t clipLocalTime);
+    void syncMaskPathTimelineLanes();
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -491,6 +596,10 @@ protected:
     TransformState captureTransformState() const;
     void restoreTransformState(const TransformState& s);
     void applyTransform();
+    /// Capture exact track state before the first live write of a spin-box
+    /// gesture. Compound properties snapshot every component so Undo cannot
+    /// leave an automatically-created sibling keyframe behind.
+    void beginTransformEdit();
     void applyTransformLive();
     void commitTransform(double oldVal, double newVal);
 
@@ -541,6 +650,7 @@ protected:
     KeyframeTrack<float>* effScaleX() noexcept;
     KeyframeTrack<float>* effScaleY() noexcept;
     KeyframeTrack<float>* effRotation() noexcept;
+    KeyframeTrack<float>* effShutterAngle() noexcept;
     KeyframeTrack<float>* effOpacity() noexcept;
     KeyframeTrack<float>* effAnchorX() noexcept;
     KeyframeTrack<float>* effAnchorY() noexcept;
@@ -563,12 +673,23 @@ protected:
     bool           m_updating{false};
     int64_t        m_playheadTick{0};
     int            m_selectedEffectIndex{-1};  // -1 = none selected
+    bool           m_hasSelectedMask{false};
+    quint64        m_selectedMaskEffectId{0};
+    uint64_t       m_selectedMaskId{0};
     /// Clipboard for copy/paste of a single effect with its settings.
     std::unique_ptr<Effect> m_copiedEffect;
     /// Sequence resolution for Position seq-px display conversion (defaults
     /// to 1920×1080 — same basis as the internal REF representation).
     uint32_t       m_seqW{1920};
     uint32_t       m_seqH{1080};
+
+    struct TransformTrackSnapshot {
+        KeyframeTrack<float>* track{nullptr};
+        float defaultValue{0.0f};
+        std::vector<Keyframe<float>> keyframes;
+    };
+    ScrubbySpinBox* m_transformEditSpin{nullptr};
+    std::vector<TransformTrackSnapshot> m_transformEditBefore;
 
     // ── UI ──────────────────────────────────────────────────────────────
     QLabel*         m_footerTimecodeLabel{nullptr};
@@ -596,6 +717,17 @@ protected:
 
     // ── Property rows ───────────────────────────────────────────────────
     std::vector<PropertyRow*> m_propertyRows;
+    struct MaskPathControls {
+        quint64 effectId{0};
+        size_t maskIndex{0};
+        uint64_t maskId{0};
+        QWidget* row{nullptr};
+        QToolButton* stopwatch{nullptr};
+        QToolButton* previous{nullptr};
+        QToolButton* diamond{nullptr};
+        QToolButton* next{nullptr};
+    };
+    std::vector<MaskPathControls> m_maskPathControls;
 
     // ── Collapsible section tracking ────────────────────────────────────
     struct SectionInfo {
@@ -619,10 +751,12 @@ protected:
     PropertyRow*    m_scaleRow{nullptr};
     PropertyRow*    m_scaleWRow{nullptr};
     PropertyRow*    m_rotationRow{nullptr};
+    PropertyRow*    m_shutterAngleRow{nullptr};
     PropertyRow*    m_anchorRow{nullptr};
     PropertyRow*    m_opacityRow{nullptr};
     QCheckBox*      m_uniformScaleCheck{nullptr};
     ScrubbySpinBox* m_rotationSpin{nullptr};
+    ScrubbySpinBox* m_shutterAngleSpin{nullptr};
     ScrubbySpinBox* m_anchorXSpin{nullptr};
     ScrubbySpinBox* m_anchorYSpin{nullptr};
     ScrubbySpinBox* m_antiFlickerSpin{nullptr};

@@ -7,10 +7,242 @@
 #include "timeline/GraphicLayer.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "viewport/TransformOverlayWidget.h"
 #include <QColorDialog>
+#include <QLineEdit>
+#include <QFontDatabase>
+#include <QSignalBlocker>
+#include <cmath>
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+void GraphicsEditorPanel::setInlineTextSelectionFormat(
+    const QString& family, float pointSize, int weight, bool italic,
+    bool allCaps, bool smallCaps, float tracking, float baselineShift,
+    float leading, uint32_t mixedFlags)
+{
+    if (!m_monitorTextEditing) return;
+    m_updating = true;
+    const auto mixed = [mixedFlags](InlineTextMixedFlag flag) {
+        return (mixedFlags & static_cast<uint32_t>(flag)) != 0;
+    };
+    const auto showMixedValue = [](ScrubbySpinBox* spin, bool isMixed,
+                                   const QString& description) {
+        if (!spin) return;
+        spin->setToolTip(isMixed ? description : QString());
+        if (QLineEdit* edit = spin->findChild<QLineEdit*>()) {
+            edit->setPlaceholderText(isMixed ? QStringLiteral("\u2014")
+                                             : QString());
+            if (isMixed) edit->clear();
+            else edit->setText(spin->locale().toString(
+                spin->value(), 'f', spin->decimals()) + spin->suffix());
+        }
+    };
+    if (m_fontCombo) {
+        m_fontCombo->blockSignals(true);
+        if (mixed(InlineMixedFamily)) {
+            m_fontCombo->setCurrentIndex(-1);
+        } else {
+            const int index = m_fontCombo->findText(family);
+            if (index >= 0) m_fontCombo->setCurrentIndex(index);
+        }
+        m_fontCombo->setToolTip(mixed(InlineMixedFamily)
+            ? tr("Mixed font families in selection") : QString());
+        m_fontCombo->blockSignals(false);
+    }
+    if (m_boldBtn) {
+        m_boldBtn->blockSignals(true);
+        m_boldBtn->setChecked(weight >= 700);
+        m_boldBtn->setText(mixed(InlineMixedWeight)
+            ? QStringLiteral("B\u2014") : QStringLiteral("B"));
+        m_boldBtn->setToolTip(mixed(InlineMixedWeight)
+            ? tr("Mixed font weights in selection") : tr("Bold"));
+        m_boldBtn->blockSignals(false);
+    }
+    if (m_italicBtn) {
+        m_italicBtn->blockSignals(true);
+        m_italicBtn->setChecked(italic);
+        m_italicBtn->setText(mixed(InlineMixedItalic)
+            ? QStringLiteral("I\u2014") : QStringLiteral("I"));
+        m_italicBtn->setToolTip(mixed(InlineMixedItalic)
+            ? tr("Mixed italic styles in selection") : tr("Italic"));
+        m_italicBtn->blockSignals(false);
+    }
+    if (m_allCapsBtn) {
+        m_allCapsBtn->blockSignals(true);
+        m_allCapsBtn->setChecked(allCaps);
+        m_allCapsBtn->setText(mixed(InlineMixedCapitalization)
+            ? QStringLiteral("TT\u2014") : QStringLiteral("TT"));
+        m_allCapsBtn->setToolTip(mixed(InlineMixedCapitalization)
+            ? tr("Mixed capitalization in selection") : tr("All Caps"));
+        m_allCapsBtn->blockSignals(false);
+    }
+    if (m_smallCapsBtn) {
+        m_smallCapsBtn->blockSignals(true);
+        m_smallCapsBtn->setChecked(smallCaps);
+        m_smallCapsBtn->setText(mixed(InlineMixedCapitalization)
+            ? QStringLiteral("T\u1D04\u2014") : QStringLiteral("T\u1D04"));
+        m_smallCapsBtn->setToolTip(mixed(InlineMixedCapitalization)
+            ? tr("Mixed capitalization in selection") : tr("Small Caps"));
+        m_smallCapsBtn->blockSignals(false);
+    }
+    if (m_fontSizeSpin) {
+        m_fontSizeSpin->blockSignals(true);
+        m_fontSizeSpin->setValue(pointSize);
+        m_fontSizeSpin->blockSignals(false);
+        showMixedValue(m_fontSizeSpin, mixed(InlineMixedSize),
+                       tr("Mixed font sizes in selection"));
+    }
+    if (m_fontSizeSlider) {
+        m_fontSizeSlider->blockSignals(true);
+        m_fontSizeSlider->setValue(static_cast<int>(std::round(pointSize)));
+        m_fontSizeSlider->blockSignals(false);
+    }
+    if (m_trackingSpin) {
+        m_trackingSpin->blockSignals(true);
+        m_trackingSpin->setValue(tracking);
+        m_trackingSpin->blockSignals(false);
+        showMixedValue(m_trackingSpin, mixed(InlineMixedTracking),
+                       tr("Mixed tracking in selection"));
+    }
+    if (m_baselineShiftSpin) {
+        m_baselineShiftSpin->blockSignals(true);
+        m_baselineShiftSpin->setValue(baselineShift);
+        m_baselineShiftSpin->blockSignals(false);
+        showMixedValue(m_baselineShiftSpin, mixed(InlineMixedBaseline),
+                       tr("Mixed baseline shifts in selection"));
+    }
+    if (m_leadingSpin) {
+        m_leadingSpin->blockSignals(true);
+        m_leadingSpin->setValue(leading);
+        m_leadingSpin->blockSignals(false);
+        showMixedValue(m_leadingSpin, mixed(InlineMixedLeading),
+                       tr("Mixed leading in selection"));
+    }
+    m_updating = false;
+}
+
+void GraphicsEditorPanel::setInlineTextAdvancedFormat(
+    const QString& fontStyle, float kerning, float tabWidth, float tsume,
+    bool fauxBold, bool fauxItalic, bool underline, bool superscript,
+    bool subscript, uint32_t mixedFlags)
+{
+    if (!m_monitorTextEditing) return;
+    m_updating = true;
+    auto setButton = [](QToolButton* button, bool checked, bool mixed) {
+        if (!button) return;
+        QSignalBlocker blocker(button);
+        button->setChecked(checked);
+        button->setProperty("mixedTextFormat", mixed);
+        button->setToolTip(mixed ? QObject::tr("Mixed values in selection")
+                                 : button->toolTip());
+    };
+    if (m_fontStyleCombo) {
+        QSignalBlocker blocker(m_fontStyleCombo);
+        const bool mixed = mixedFlags & InlineMixedFontStyle;
+        const int index = m_fontStyleCombo->findText(fontStyle);
+        m_fontStyleCombo->setCurrentIndex(mixed ? -1 : index);
+    }
+    auto setSpin = [](ScrubbySpinBox* spin, float value, bool mixed) {
+        if (!spin) return;
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+        if (QLineEdit* edit = spin->findChild<QLineEdit*>()) {
+            edit->setPlaceholderText(mixed ? QStringLiteral("\u2014") : QString());
+            if (mixed) edit->clear();
+        }
+    };
+    setSpin(m_kerningSpin, kerning, mixedFlags & InlineMixedKerning);
+    setSpin(m_tabWidthSpin, tabWidth, mixedFlags & InlineMixedTabWidth);
+    setSpin(m_tsumeSpin, tsume, mixedFlags & InlineMixedTsume);
+    setButton(m_fauxBoldBtn, fauxBold, mixedFlags & InlineMixedFauxStyle);
+    setButton(m_fauxItalicBtn, fauxItalic, mixedFlags & InlineMixedFauxStyle);
+    setButton(m_underlineBtn, underline, mixedFlags & InlineMixedDecoration);
+    setButton(m_superscriptBtn, superscript, mixedFlags & InlineMixedScript);
+    setButton(m_subscriptBtn, subscript, mixedFlags & InlineMixedScript);
+    m_updating = false;
+}
+
+void GraphicsEditorPanel::setInlineTextSelectionAppearance(
+    bool fillEnabled, uint32_t fillColor,
+    bool strokeEnabled, uint32_t strokeColor, float strokeWidth,
+    int strokePosition, bool shadowEnabled, uint32_t shadowColor,
+    float shadowDistance, float shadowAngle, float shadowSoftness,
+    float shadowOpacity, bool backgroundEnabled,
+    uint32_t backgroundColor, float backgroundPadding, uint32_t mixedFlags)
+{
+    if (!m_monitorTextEditing) return;
+    m_updating = true;
+    auto setCheck = [](QCheckBox* check, bool checked, bool mixed) {
+        if (!check) return;
+        QSignalBlocker blocker(check);
+        check->setTristate(mixed);
+        check->setCheckState(mixed ? Qt::PartiallyChecked
+                                   : checked ? Qt::Checked : Qt::Unchecked);
+    };
+    auto setColor = [](QPushButton* button, uint32_t argb) {
+        if (!button) return;
+        const QColor color = QColor::fromRgba(argb);
+        button->setStyleSheet(QStringLiteral(
+            "background: %1; border: 1px solid %2;")
+            .arg(color.name(QColor::HexArgb),
+                 Theme::hex(Theme::colors().border)));
+    };
+    setCheck(m_fillCheck, fillEnabled, mixedFlags & InlineMixedFill);
+    setColor(m_fillColorBtn, fillColor);
+    setCheck(m_strokeCheck, strokeEnabled, mixedFlags & InlineMixedStroke);
+    setColor(m_strokeColorBtn, strokeColor);
+    if (m_strokeWidthSpin) m_strokeWidthSpin->setValue(strokeWidth);
+    if (m_strokePosCombo) m_strokePosCombo->setCurrentIndex(strokePosition);
+    setCheck(m_shadowCheck, shadowEnabled, mixedFlags & InlineMixedShadow);
+    setColor(m_shadowColorBtn, shadowColor);
+    auto setShadowSpin = [shadowEnabled](ScrubbySpinBox* spin, double value) {
+        if (!spin) return;
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+        spin->setEnabled(shadowEnabled);
+    };
+    setShadowSpin(m_shadowDistanceSpin, shadowDistance);
+    setShadowSpin(m_shadowAngleSpin, shadowAngle);
+    setShadowSpin(m_shadowSoftnessSpin, shadowSoftness);
+    setShadowSpin(m_shadowOpacitySpin, shadowOpacity * 100.0);
+    setCheck(m_backgroundCheck, backgroundEnabled,
+             mixedFlags & InlineMixedBackground);
+    setColor(m_backgroundColorBtn, backgroundColor);
+    if (m_backgroundPaddingSpin)
+        m_backgroundPaddingSpin->setValue(backgroundPadding);
+    m_updating = false;
+}
+
+void GraphicsEditorPanel::setInlineParagraphFormat(
+    int alignment, bool rightToLeft, uint32_t mixedFlags)
+{
+    if (!m_monitorTextEditing) return;
+    m_updating = true;
+    const bool mixed = mixedFlags & InlineMixedParagraph;
+    for (auto* button : {m_alignLeftBtn, m_alignCenterBtn,
+                         m_alignRightBtn, m_alignJustifyBtn}) {
+        if (!button) continue;
+        QSignalBlocker blocker(button);
+        const bool selected = !mixed && ((button == m_alignLeftBtn
+            && alignment == static_cast<int>(GTextAlign::Left))
+            || (button == m_alignCenterBtn
+                && alignment == static_cast<int>(GTextAlign::Center))
+            || (button == m_alignRightBtn
+                && alignment == static_cast<int>(GTextAlign::Right))
+            || (button == m_alignJustifyBtn
+                && alignment == static_cast<int>(GTextAlign::Justify)));
+        button->setChecked(selected);
+    }
+    if (m_rtlBtn) {
+        QSignalBlocker blocker(m_rtlBtn);
+        m_rtlBtn->setChecked(rightToLeft);
+        m_rtlBtn->setProperty("mixedTextFormat",
+                              bool(mixedFlags & InlineMixedDirection));
+    }
+    m_updating = false;
+}
 
 void GraphicsEditorPanel::populateFromLayer()
 {
@@ -21,6 +253,13 @@ void GraphicsEditorPanel::populateFromLayer()
  if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
  auto* tl = static_cast<TextLayer*>(m_selectedLayer);
 
+ // Clear any mixed-selection presentation left by the monitor editor.
+ if (m_fontCombo) m_fontCombo->setToolTip(QString());
+ if (m_boldBtn) { m_boldBtn->setText(QStringLiteral("B")); m_boldBtn->setToolTip(tr("Bold")); }
+ if (m_italicBtn) { m_italicBtn->setText(QStringLiteral("I")); m_italicBtn->setToolTip(tr("Italic")); }
+ if (m_allCapsBtn) { m_allCapsBtn->setText(QStringLiteral("TT")); m_allCapsBtn->setToolTip(tr("All Caps")); }
+ if (m_smallCapsBtn) { m_smallCapsBtn->setText(QStringLiteral("T\u1D04")); m_smallCapsBtn->setToolTip(tr("Small Caps")); }
+
  // Text content is edited inline via QLineEdit in the layer list.
  // The list item widgets handle their own population during rebuildLayerList().
 
@@ -30,19 +269,15 @@ void GraphicsEditorPanel::populateFromLayer()
  if (idx >= 0) m_fontCombo->setCurrentIndex(idx);
  m_fontCombo->blockSignals(false);
  }
- if (m_weightCombo) {
- m_weightCombo->blockSignals(true);
- int w = tl->fontWeight();
- int idx = 2;
- if (w <= 150) idx = 0;
- else if (w <= 350) idx = 1;
- else if (w <= 450) idx = 2;
- else if (w <= 550) idx = 3;
- else if (w <= 650) idx = 4;
- else if (w <= 750) idx = 5;
- else idx = 6;
- m_weightCombo->setCurrentIndex(idx);
- m_weightCombo->blockSignals(false);
+ if (m_fontStyleCombo) {
+ m_fontStyleCombo->blockSignals(true);
+ m_fontStyleCombo->clear();
+ m_fontStyleCombo->addItems(QFontDatabase::styles(
+     QString::fromStdString(tl->fontFamily())));
+ int styleIndex = m_fontStyleCombo->findText(
+     QString::fromStdString(tl->fontStyle()));
+ if (styleIndex >= 0) m_fontStyleCombo->setCurrentIndex(styleIndex);
+ m_fontStyleCombo->blockSignals(false);
  }
  if (m_boldBtn) {
  m_boldBtn->blockSignals(true);
@@ -64,6 +299,17 @@ void GraphicsEditorPanel::populateFromLayer()
  m_smallCapsBtn->setChecked(tl->smallCaps());
  m_smallCapsBtn->blockSignals(false);
  }
+ auto setChecked = [](QToolButton* button, bool checked) {
+     if (!button) return;
+     QSignalBlocker blocker(button);
+     button->setChecked(checked);
+ };
+ setChecked(m_fauxBoldBtn, tl->fauxBold());
+ setChecked(m_fauxItalicBtn, tl->fauxItalic());
+ setChecked(m_underlineBtn, tl->underline());
+ setChecked(m_superscriptBtn, tl->superscript());
+ setChecked(m_subscriptBtn, tl->subscript());
+ setChecked(m_rtlBtn, tl->rightToLeft());
  if (m_fontSizeSpin) m_fontSizeSpin->setValue(tl->fontSize());
  if (m_fontSizeSlider) m_fontSizeSlider->setValue(static_cast<int>(tl->fontSize()));
 
@@ -109,6 +355,9 @@ void GraphicsEditorPanel::populateFromLayer()
  if (m_trackingSpin) m_trackingSpin->setValue(tl->tracking().evaluate(0));
  if (m_leadingSpin) m_leadingSpin->setValue(tl->leading().evaluate(0));
  if (m_baselineShiftSpin) m_baselineShiftSpin->setValue(tl->baselineShift().evaluate(0));
+ if (m_kerningSpin) m_kerningSpin->setValue(tl->kerning());
+ if (m_tabWidthSpin) m_tabWidthSpin->setValue(tl->tabWidth());
+ if (m_tsumeSpin) m_tsumeSpin->setValue(tl->tsume());
 
  // Paragraph box
  if (m_wrapCheck) {
@@ -119,6 +368,21 @@ void GraphicsEditorPanel::populateFromLayer()
  if (m_wrapWidthSpin) {
  m_wrapWidthSpin->setEnabled(tl->useParagraphBox());
  m_wrapWidthSpin->setValue(tl->boxWidth() > 1.0f ? tl->boxWidth() : 800.0);
+ }
+ if (m_wrapHeightSpin) {
+ m_wrapHeightSpin->setEnabled(tl->useParagraphBox());
+ m_wrapHeightSpin->setValue(tl->boxHeight() > 1.0f ? tl->boxHeight() : 300.0);
+ }
+ for (ScrubbySpinBox* spin : {m_fontSizeSpin, m_trackingSpin,
+                              m_leadingSpin, m_baselineShiftSpin,
+                              m_kerningSpin, m_tabWidthSpin, m_tsumeSpin}) {
+     if (!spin) continue;
+     spin->setToolTip(QString());
+     if (QLineEdit* edit = spin->findChild<QLineEdit*>()) {
+         edit->setPlaceholderText(QString());
+         edit->setText(spin->locale().toString(
+             spin->value(), 'f', spin->decimals()) + spin->suffix());
+     }
  }
  }
 
@@ -183,9 +447,43 @@ void GraphicsEditorPanel::populateFromLayer()
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(shadowC.name(), Theme::hex(Theme::colors().border)));
  }
+ const ShadowEntry shadow = app.shadows.empty() ? ShadowEntry{}
+                                                : app.shadows[0];
+ auto setShadowSpin = [hasShadow](ScrubbySpinBox* spin, double value) {
+     if (!spin) return;
+     spin->setEnabled(hasShadow);
+     spin->setValue(value);
+ };
+ setShadowSpin(m_shadowDistanceSpin, shadow.distance);
+ setShadowSpin(m_shadowAngleSpin, shadow.angle);
+ setShadowSpin(m_shadowSoftnessSpin, shadow.softness);
+ setShadowSpin(m_shadowOpacitySpin, shadow.opacity * 100.0);
  }
 
  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Layer transform ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+ if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
+ const auto* textLayer = static_cast<TextLayer*>(m_selectedLayer);
+ if (m_backgroundCheck) {
+     QSignalBlocker blocker(m_backgroundCheck);
+     m_backgroundCheck->setChecked(textLayer->backgroundEnabled());
+ }
+ if (m_backgroundColorBtn) {
+     m_backgroundColorBtn->setEnabled(textLayer->backgroundEnabled());
+     const QColor color = QColor::fromRgba(textLayer->backgroundColor());
+     m_backgroundColorBtn->setStyleSheet(QStringLiteral(
+         "background: %1; border: 1px solid %2;")
+         .arg(color.name(QColor::HexArgb),
+              Theme::hex(Theme::colors().border)));
+ }
+ if (m_backgroundPaddingSpin) {
+     m_backgroundPaddingSpin->setEnabled(textLayer->backgroundEnabled());
+     m_backgroundPaddingSpin->setValue(textLayer->backgroundPadding());
+ }
+ if (m_maskWithTextCheck) {
+     QSignalBlocker blocker(m_maskWithTextCheck);
+     m_maskWithTextCheck->setChecked(textLayer->maskWithText());
+ }
+ }
  const auto& xf = m_selectedLayer->transform();
  if (m_posXSpin) m_posXSpin->setValue(xf.posX.evaluate(0));
  if (m_posYSpin) m_posYSpin->setValue(xf.posY.evaluate(0));
@@ -212,26 +510,34 @@ void GraphicsEditorPanel::applyTextProperties()
  // Text content is set directly by the inline QLineEdit in the layer list;
  // no need to read from a separate text edit here.
 
+ // While the monitor owns the live rich-text document, character controls
+ // are applied directly to the caret/selection.  Paragraph controls can still
+ // update the layer, but must not flatten a mixed character selection.
+ if (!m_monitorTextEditing) {
  if (m_fontCombo)
  tl->setFontFamily(m_fontCombo->currentText().toStdString());
 
  if (m_fontSizeSpin)
  tl->setFontSize(static_cast<float>(m_fontSizeSpin->value()));
 
- // Weight from combo
- if (m_weightCombo) {
- static const int weights[] = {100, 300, 400, 500, 600, 700, 900};
- int idx = m_weightCombo->currentIndex();
- if (idx >= 0 && idx < 7)
- tl->setFontWeight(weights[idx]);
- }
- // Bold button overrides weight if toggled on
- if (m_boldBtn && m_boldBtn->isChecked() && tl->fontWeight() < 700)
- tl->setFontWeight(700);
-
  if (m_italicBtn) tl->setItalic(m_italicBtn->isChecked());
  if (m_allCapsBtn) tl->setAllCaps(m_allCapsBtn->isChecked());
  if (m_smallCapsBtn) tl->setSmallCaps(m_smallCapsBtn->isChecked());
+ if (m_fontStyleCombo)
+ tl->setFontStyleForAll(m_fontStyleCombo->currentText().toStdString());
+ if (m_kerningSpin)
+ tl->setKerningForAll(static_cast<float>(m_kerningSpin->value()));
+ if (m_tabWidthSpin)
+ tl->setTabWidthForAll(static_cast<float>(m_tabWidthSpin->value()));
+ if (m_tsumeSpin)
+ tl->setTsumeForAll(static_cast<float>(m_tsumeSpin->value()));
+ tl->setFauxStylesForAll(m_fauxBoldBtn && m_fauxBoldBtn->isChecked(),
+                         m_fauxItalicBtn && m_fauxItalicBtn->isChecked());
+ tl->setUnderlineForAll(m_underlineBtn && m_underlineBtn->isChecked());
+ tl->setScriptForAll(m_superscriptBtn && m_superscriptBtn->isChecked(),
+                     m_subscriptBtn && m_subscriptBtn->isChecked());
+ tl->setRightToLeft(m_rtlBtn && m_rtlBtn->isChecked());
+ }
 
  // Alignment
  if (m_alignLeftBtn && m_alignLeftBtn->isChecked())
@@ -252,13 +558,17 @@ void GraphicsEditorPanel::applyTextProperties()
  tl->setVAlignment(GTextVAlign::Bottom);
 
  // Spacing
- if (m_trackingSpin) tl->tracking().addKeyframe(0, static_cast<float>(m_trackingSpin->value()));
- if (m_leadingSpin) tl->leading().addKeyframe(0, static_cast<float>(m_leadingSpin->value()));
- if (m_baselineShiftSpin) tl->baselineShift().addKeyframe(0, static_cast<float>(m_baselineShiftSpin->value()));
+ if (!m_monitorTextEditing && m_trackingSpin)
+ tl->setTrackingForAll(static_cast<float>(m_trackingSpin->value()));
+ if (!m_monitorTextEditing && m_leadingSpin)
+ tl->setLeadingForAll(static_cast<float>(m_leadingSpin->value()));
+ if (!m_monitorTextEditing && m_baselineShiftSpin)
+ tl->setBaselineShiftForAll(static_cast<float>(m_baselineShiftSpin->value()));
 
  // Paragraph box
  if (m_wrapCheck) tl->setUseParagraphBox(m_wrapCheck->isChecked());
  if (m_wrapWidthSpin) tl->setBoxWidth(static_cast<float>(m_wrapWidthSpin->value()));
+ if (m_wrapHeightSpin) tl->setBoxHeight(static_cast<float>(m_wrapHeightSpin->value()));
 
  m_layerEditDirty = true;
  emit propertyChanged();
@@ -287,6 +597,32 @@ static uint32_t colorFromButton(QPushButton* btn)
 void GraphicsEditorPanel::applyAppearance()
 {
  if (!m_selectedLayer || m_updating) return;
+ if (m_monitorTextEditing
+     && m_selectedLayer->layerType() == GraphicLayerType::Text) {
+ const bool fillOn = m_fillCheck && m_fillCheck->isChecked();
+ emit inlineFillRequested(fillOn, colorFromButton(m_fillColorBtn));
+ const bool strokeOn = m_strokeCheck && m_strokeCheck->isChecked();
+ emit inlineStrokeRequested(strokeOn, colorFromButton(m_strokeColorBtn),
+     m_strokeWidthSpin ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f,
+     m_strokePosCombo ? m_strokePosCombo->currentIndex() : 0);
+ const bool shadowOn = m_shadowCheck && m_shadowCheck->isChecked();
+ emit inlineShadowRequested(shadowOn, colorFromButton(m_shadowColorBtn),
+     m_shadowDistanceSpin
+         ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f,
+     m_shadowAngleSpin
+         ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f,
+     m_shadowSoftnessSpin
+         ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f,
+     m_shadowOpacitySpin
+         ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0) : 0.6f);
+ if (m_backgroundCheck) {
+     emit inlineBackgroundRequested(m_backgroundCheck->isChecked(),
+         colorFromButton(m_backgroundColorBtn),
+         m_backgroundPaddingSpin
+             ? static_cast<float>(m_backgroundPaddingSpin->value()) : 4.0f);
+ }
+ return;
+ }
  auto& app = m_selectedLayer->appearance();
 
  // Fill
@@ -323,12 +659,58 @@ void GraphicsEditorPanel::applyAppearance()
  if (m_shadowCheck) {
  bool on = m_shadowCheck->isChecked();
  uint32_t shc = colorFromButton(m_shadowColorBtn);
+ const float distance = m_shadowDistanceSpin
+     ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f;
+ const float angle = m_shadowAngleSpin
+     ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f;
+ const float softness = m_shadowSoftnessSpin
+     ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f;
+ const float opacity = m_shadowOpacitySpin
+     ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0) : 0.6f;
  if (on) {
  if (app.shadows.empty())
- app.shadows.push_back({shc, 4.0f, 135.0f, 4.0f, 0.6f, on});
+ app.shadows.push_back({shc, distance, angle, softness, opacity, on});
  else {
  app.shadows[0].color = shc;
+ app.shadows[0].distance = distance;
+ app.shadows[0].angle = angle;
+ app.shadows[0].softness = softness;
+ app.shadows[0].opacity = opacity;
  app.shadows[0].enabled = true;
+ }
+
+ if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
+ auto* tl = static_cast<TextLayer*>(m_selectedLayer);
+ if (m_fillCheck)
+     tl->setFillForAll(m_fillCheck->isChecked(),
+                       colorFromButton(m_fillColorBtn));
+ if (m_strokeCheck)
+     tl->setStrokeForAll(m_strokeCheck->isChecked(),
+         colorFromButton(m_strokeColorBtn),
+         m_strokeWidthSpin ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f,
+         m_strokePosCombo
+             ? static_cast<StrokePosition>(m_strokePosCombo->currentIndex())
+             : StrokePosition::Center);
+ if (m_shadowCheck) {
+     tl->setShadowForAll(m_shadowCheck->isChecked(),
+         colorFromButton(m_shadowColorBtn),
+         m_shadowDistanceSpin
+             ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f,
+         m_shadowAngleSpin
+             ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f,
+         m_shadowSoftnessSpin
+             ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f,
+         m_shadowOpacitySpin
+             ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0)
+             : 0.6f);
+ }
+ if (m_backgroundCheck)
+     tl->setBackgroundForAll(m_backgroundCheck->isChecked(),
+         colorFromButton(m_backgroundColorBtn),
+         m_backgroundPaddingSpin
+             ? static_cast<float>(m_backgroundPaddingSpin->value()) : 4.0f);
+ if (m_maskWithTextCheck)
+     tl->setMaskWithText(m_maskWithTextCheck->isChecked());
  }
  } else {
  if (!app.shadows.empty())

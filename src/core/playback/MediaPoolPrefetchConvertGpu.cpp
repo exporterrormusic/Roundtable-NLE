@@ -546,30 +546,13 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     const int srcW = static_cast<int>(zeroCopyAlloc ? hwW : decoded.width);
     const int srcH = static_cast<int>(zeroCopyAlloc ? hwH : decoded.height);
 
-    // ── Tier-clamp identical to convertDecodedToCache so cached frames
-    //    interleave correctly with whatever the CPU path produces. ───────
-    int maxDim = 1920;
-    switch (task.tier) {
-        case ResolutionTier::Half:    maxDim =  960; break;
-        case ResolutionTier::Quarter: maxDim =  480; break;
-        default:                      maxDim = 1920; break;
-    }
-    // For packed-4 the output is the NOMINAL frame (one tile tall), so the
-    // tier clamp is computed against srcH/4, not the 4× stacked height.
-    // For packed-2 (stacked-alpha, e.g. Wells HEVC 1080×3776) the tier
-    // clamp must use the nominal height (srcH/2) so export/Full tier
-    // doesn't crush a 1888-tall character to ~960 because the packed
-    // frame (3776) exceeds the 1920 Full-tier cap.
-    const int nominalH = task.info.contentHeight(static_cast<int>(srcH));
-    const int contentH = srcH;  // packed-2 keeps full stacked height (compositor splits it)
-    int dstW = srcW, dstH = contentH;
-    // exportFullRes (export decode) skips the tier cap → native resolution.
-    if (!task.exportFullRes && (srcW > maxDim || nominalH > maxDim)) {
-        const float scale = std::min(static_cast<float>(maxDim) / srcW,
-                                     static_cast<float>(maxDim) / nominalH);
-        dstW = std::max(2, static_cast<int>(srcW * scale) & ~1);
-        dstH = std::max(2, static_cast<int>(contentH * scale) & ~1);
-    }
+    // Match the CPU conversion path so cached CPU/GPU frames never alternate
+    // dimensions. Full is native; reduced tiers divide both source axes.
+    const ResolutionTier decodeTier = task.exportFullRes
+        ? ResolutionTier::Full : task.tier;
+    const auto tierSize = resolutionTierDimensions(srcW, srcH, decodeTier);
+    const int dstW = tierSize.width;
+    const int dstH = tierSize.height;
     if (dstW > 16384 || dstH > 16384) return nullptr;
 
     // ── Acquire this worker's OWN Nv12Converter sized for dst.

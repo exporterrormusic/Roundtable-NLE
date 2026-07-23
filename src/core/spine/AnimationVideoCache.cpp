@@ -335,13 +335,14 @@ void AnimationVideoCache::queueRender(const std::string& characterName,
         std::lock_guard lock(m_mutex);
         const std::string key = makeKey(characterName, outfit, cacheAnimName);
 
-        // Skip if already cached or in-progress
-        if (m_entries.count(key) > 0 || m_pendingKeys.count(key) > 0) return;
-
         // If the user explicitly re-queues a render for an outfit that
         // was previously deleted (mid-render guard still active), clear
-        // the guard so the new render result is accepted.
+        // the guard BEFORE the in-progress check so a still-in-flight
+        // render of this outfit is accepted instead of discarded.
         m_deletingOutfits.erase(characterName + "|" + outfit);
+
+        // Skip if already cached or in-progress
+        if (m_entries.count(key) > 0 || m_pendingKeys.count(key) > 0) return;
 
         m_pendingKeys.insert(key);
         m_jobQueue.push_back({characterName, outfit, animationName, talking});
@@ -737,21 +738,10 @@ void AnimationVideoCache::removeAllForCharacter(const std::string& characterName
 
     // Collect keys to remove (only this character)
     std::vector<std::string> keysToRemove;
-
-    // Collect the distinct outfit keys so we can guard in-flight renders
-    std::unordered_set<std::string> outfitKeys;
-
     for (const auto& [key, entry] : m_entries) {
-        if (entry.characterName == characterName) {
+        if (entry.characterName == characterName)
             keysToRemove.push_back(key);
-            outfitKeys.insert(characterName + "|" + entry.outfit);
-        }
     }
-
-    // Mark all outfits as being deleted so in-flight worker threads
-    // discard their results instead of re-adding entries.
-    for (const auto& ok : outfitKeys)
-        m_deletingOutfits.insert(ok);
 
     // Release media handles and erase entries
     for (const auto& key : keysToRemove) {
@@ -762,7 +752,7 @@ void AnimationVideoCache::removeAllForCharacter(const std::string& characterName
         m_entries.erase(it);
     }
 
-    // Drop any pending render jobs for this character
+    // Drop any queued (not yet dequeued) render jobs for this character
     for (auto it = m_jobQueue.begin(); it != m_jobQueue.end(); ) {
         if (it->charName == characterName) {
             const std::string cacheAnimName =
@@ -774,34 +764,20 @@ void AnimationVideoCache::removeAllForCharacter(const std::string& characterName
         }
     }
 
-    // Clear any pending keys for jobs already dequeued by workers
-    std::string prefix = characterName + "|";
-    for (auto it = m_pendingKeys.begin(); it != m_pendingKeys.end(); ) {
-        if (it->compare(0, prefix.size(), prefix) == 0)
-            it = m_pendingKeys.erase(it);
-        else
-            ++it;
-    }
-
-    // Clean up deletion guards for outfits with no remaining in-flight renders
-    for (auto it = m_deletingOutfits.begin(); it != m_deletingOutfits.end(); ) {
-        if (it->compare(0, prefix.size(), prefix) != 0) {
-            ++it;
-            continue;
-        }
-        // Check if any pending keys remain for this outfit
-        std::string outfitPrefix = *it + "|";
-        bool hasInFlight = false;
-        for (const auto& pk : m_pendingKeys) {
-            if (pk.compare(0, outfitPrefix.size(), outfitPrefix) == 0) {
-                hasInFlight = true;
-                break;
-            }
-        }
-        if (!hasInFlight)
-            it = m_deletingOutfits.erase(it);
-        else
-            ++it;
+    // Any pending key still present for this character belongs to an
+    // in-flight render (already dequeued by a worker).  Leave the key in
+    // place — the worker erases it on completion — and mark its outfit as
+    // deleted so the worker discards the result instead of re-adding an
+    // entry.  Deriving the guards from m_entries would miss an outfit
+    // whose FIRST render is still in flight (no completed entries yet),
+    // and erasing the in-flight keys here would make the guard-cleanup
+    // checks see "no more renders" prematurely.
+    const std::string prefix = characterName + "|";
+    for (const auto& pk : m_pendingKeys) {
+        if (pk.compare(0, prefix.size(), prefix) != 0) continue;
+        auto sep = pk.find('|', prefix.size());
+        if (sep != std::string::npos)
+            m_deletingOutfits.insert(pk.substr(0, sep));   // "char|outfit"
     }
 
     // Delete the character cache directories across all format subdirectories
@@ -851,9 +827,11 @@ void AnimationVideoCache::removeAllForCharacterOutfit(const std::string& charact
         m_entries.erase(it);
     }
 
-    // Drop any pending render jobs for this character/outfit
-    // Also zap stale pending keys (jobs already dequeued by a worker
-    // but not yet completed will be caught by the m_deletingOutfits check).
+    // Drop any queued (not yet dequeued) render jobs for this
+    // character/outfit.  Pending keys for jobs already dequeued by a
+    // worker are deliberately LEFT in place — the worker erases its key
+    // on completion, and the guard-cleanup checks below and in the
+    // worker rely on those keys to detect in-flight renders.
     for (auto it = m_jobQueue.begin(); it != m_jobQueue.end(); ) {
         if (it->charName == characterName && it->outfit == outfit) {
             const std::string cacheAnimName =
@@ -862,18 +840,6 @@ void AnimationVideoCache::removeAllForCharacterOutfit(const std::string& charact
             it = m_jobQueue.erase(it);
         } else {
             ++it;
-        }
-    }
-
-    // Also clear any pending keys for jobs already dequeued by workers
-    // (the in-flight worker will check m_deletingOutfits and discard).
-    {
-        std::string prefix = outfitKey + "|";
-        for (auto it = m_pendingKeys.begin(); it != m_pendingKeys.end(); ) {
-            if (it->compare(0, prefix.size(), prefix) == 0)
-                it = m_pendingKeys.erase(it);
-            else
-                ++it;
         }
     }
 

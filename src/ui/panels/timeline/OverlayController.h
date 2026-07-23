@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include "timeline/GraphicLayer.h"
+
 namespace rt {
 
 class TimelineWorkspace;
@@ -90,6 +92,7 @@ private:
                                      float newX, float newY);
     void onOverlayMaskDragFinished(int maskIndex, const OpacityMask& oldMask,
                                    const OpacityMask& newMask);
+    void onOverlayMaskCreated(int maskIndex, const OpacityMask& mask);
     void onOverlayEmptyAreaClicked(float frameX, float frameY,
                                    Qt::KeyboardModifiers mods);
     void onOverlayCropChanged(float l, float r, float t, float b);
@@ -119,6 +122,11 @@ private:
     /// doesn't show through behind the editor box (Premiere Pro behavior).
     /// Restored on cancel, replaced with new text on commit.
     std::string m_preEditOriginalText;
+    std::vector<TextStyleRun> m_preEditOriginalStyles;
+    std::vector<TextParagraphStyle> m_preEditOriginalParagraphStyles;
+    uint64_t    m_preEditClipId{0};
+    uint64_t    m_preEditLayerId{0};
+    bool        m_preEditWasCaption{false};
     bool        m_inlineTextEditActive{false};
 
     uint32_t m_overlayRefreshGen{0};   ///< Generation counter for deferred overlay updates

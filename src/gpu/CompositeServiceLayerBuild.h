@@ -27,6 +27,20 @@ namespace rt {
 
 // Forward declarations
 class Clip;
+class AdjustmentClip;
+
+/// One evaluated clip transform in compositor/output coordinates. Motion
+/// blur carries the exposure endpoints alongside the current transform.
+struct LayerTransformSample
+{
+    float posX{0.0f};
+    float posY{0.0f};
+    float scX{1.0f};
+    float scY{1.0f};
+    float rot{0.0f};
+    float anchorX{0.0f};
+    float anchorY{0.0f};
+};
 
 /// Per-layer render state built by buildLayersForFrame().
 /// Carries the decoded frame, transforms, opacity, crop, effects, wipe
@@ -34,6 +48,34 @@ class Clip;
 struct LayerInfo
 {
     std::shared_ptr<CachedFrame> frame;
+
+    // Adjustment clips are render-stream boundaries rather than source
+    // images.  When this marker is encountered, the compositor flattens all
+    // layers collected below it to a full-frame texture, applies `effects`
+    // once to that texture, then continues compositing layers above it.
+    bool isAdjustmentLayer{false};
+
+    // Optional second source frame used by retiming interpolation.  The
+    // interpolation pass consumes frame + temporalFrame in source space,
+    // then sends the synthesized result through the normal clip effects.
+    std::shared_ptr<CachedFrame> temporalFrame;
+    float temporalPhase{0.0f};
+    int32_t temporalMode{0}; // TimeInterpolation numeric value (0/1/2)
+    // The exact requested source frame was not ready and this layer uses a
+    // nearby/last-good substitute (including a temporal nearest-frame
+    // fallback). Composite output for this tick must not enter the LRU or the
+    // substitute can remain pinned after the exact decode finishes.
+    bool sourceFallbackPending{false};
+    /// The source pixels are invariant until explicit cache invalidation
+    /// (single-frame media or a cached tier-list visual state).  When every
+    /// layer has this property the final composite may be reused across ticks.
+    bool contentStableForStateCache{false};
+    bool temporalGpuTextureReady{false};
+    VkDescriptorImageInfo temporalGpuDescriptor{};
+    bool temporalGpuCacheBacked{false};
+    uint64_t temporalGpuCacheMediaId{0};
+    int64_t temporalGpuCacheFrameNumber{0};
+    uint8_t temporalGpuCacheTier{0};
     float opacity{1.0f};
     float posX{0.0f};     // pixels offset
     float posY{0.0f};
@@ -45,6 +87,11 @@ struct LayerInfo
     /// clip's REF-1920 anchor track by buildLayersForFrame.
     float anchorX{0.0f};
     float anchorY{0.0f};
+    /// Transform exposure endpoints. A count of 1 uses the current transform
+    /// only; counts above 1 average evenly-spaced temporal transform samples.
+    LayerTransformSample motionStart{};
+    LayerTransformSample motionEnd{};
+    int32_t motionSampleCount{1};
     float cropL{0.0f};    // crop percentages 0–100
     float cropR{0.0f};
     float cropT{0.0f};
@@ -59,6 +106,11 @@ struct LayerInfo
     bool containFit{false};   // true = contain-fit (for pre-rendered spine cache)
     bool isPacked{false};     // true = packed-alpha (GPU shader handles unpack)
     bool isPMA{false};        // true = premultiplied-alpha (Spine FBO output)
+    bool contentBoundsValid{false};
+    float contentLeft{0.0f};
+    float contentTop{0.0f};
+    float contentRight{1.0f};
+    float contentBottom{1.0f};
     std::vector<EffectStack::EffectSnapshot> effects; // evaluated clip effects
     /// Evaluated clip opacity masks (snapshotted at layer-build time so the
     /// render thread never reads live OpacityMask objects).
@@ -78,6 +130,13 @@ struct LayerInfo
     // directly instead of uploading from frame->pixels.
     bool gpuTextureReady{false};
     VkDescriptorImageInfo gpuDescriptor{};
+    // Cache identity for descriptors resolved before uploadLayer().  The
+    // render phase uses it to pin the exact cache entry for the duration of
+    // the in-flight submission.
+    bool gpuCacheBacked{false};
+    uint64_t gpuCacheMediaId{0};
+    int64_t gpuCacheFrameNumber{0};
+    uint8_t gpuCacheTier{0};
 
     // Nested sequence composite frames have BGRA bytes stored in an
     // R8G8B8A8 texture (because composite.comp writes result.bgra).
@@ -92,5 +151,12 @@ struct LayerInfo
     // Enables GPU texture caching so repeated frame numbers are free.
     bool isLoopContent{false};
 };
+
+/// Append one evaluated adjustment boundary without modifying any ordinary
+/// layer's effect stack. `localTick` is relative to the adjustment clip's
+/// timelineIn().
+void appendAdjustmentLayerBoundary(std::vector<LayerInfo>& layers,
+                                   AdjustmentClip& adjustment,
+                                   int64_t localTick);
 
 } // namespace rt

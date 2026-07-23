@@ -13,17 +13,25 @@
 
 #include <volk.h>
 #include "Compositor.h"
+#include "CompositeServiceLayerBuild.h"
+#include "EffectProcessor.h"
+#include "GpuContext.h"
+#include "TemporalInterpolator.h"
 #include "TransitionRenderer.h"
 #include "vulkan/Instance.h"
 #include "vulkan/Device.h"
 #include "vulkan/Allocator.h"
 #include "vulkan/CommandPool.h"
+#include "timeline/AdjustmentClip.h"
+#include "effects/Blur.h"
+#include "effects/ColorCorrect.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/epsilon.hpp>
 
 #include <cstring>
+#include <mutex>
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -37,6 +45,9 @@ struct TestVulkanContext
     rt::Device      device;
     rt::Allocator   allocator;
     rt::CommandPool cmdPool;
+    std::mutex      graphicsQueueMutex;
+    std::mutex      computeQueueMutex;
+    std::mutex      transferQueueMutex;
     bool            valid{false};
 
     bool init()
@@ -64,6 +75,16 @@ struct TestVulkanContext
                             device.queueFamilies().graphics.value()))
             return false;
 
+        // CommandPool::endSingleTime routes submissions through the global
+        // scheduler. Bind this fixture's device/queues so synchronous GPU
+        // tests do not hang at their first submit.
+        if (!rt::GpuContext::get().scheduler().init(
+                device.handle(),
+                device.graphicsQueue(), &graphicsQueueMutex,
+                device.computeQueue(), &computeQueueMutex,
+                device.transferQueue(), &transferQueueMutex))
+            return false;
+
         valid = true;
         return true;
     }
@@ -72,6 +93,7 @@ struct TestVulkanContext
     {
         if (!valid) return;
         cmdPool.destroy();
+        rt::GpuContext::get().scheduler().shutdown();
         allocator.destroy();
         device.destroy();
         instance.destroy();
@@ -161,6 +183,7 @@ TEST_F(CompositorTest, LayerParamsGPU_DefaultValues)
     for (uint32_t i = 0; i < rt::kMaxCompositorLayers; ++i)
     {
         EXPECT_FLOAT_EQ(params.opacity[i], 0.0f);
+        EXPECT_EQ(params.motionSampleCount[i], 0);
         EXPECT_EQ(params.blendMode[i], 0);
         EXPECT_EQ(params.enabled[i], 0);
     }
@@ -175,6 +198,9 @@ TEST_F(CompositorTest, CompositorLayer_Defaults)
     EXPECT_EQ(layer.blendMode, rt::BlendMode::Normal);
     EXPECT_TRUE(layer.enabled);
     EXPECT_EQ(layer.transform, glm::mat4(1.0f));
+    EXPECT_EQ(layer.motionTransformStart, glm::mat4(1.0f));
+    EXPECT_EQ(layer.motionTransformEnd, glm::mat4(1.0f));
+    EXPECT_EQ(layer.motionSampleCount, 1);
 }
 
 // ── CompositorConfig defaults ───────────────────────────────────────────────
@@ -204,6 +230,43 @@ TEST_F(CompositorTest, TransitionPushConstants_Size)
 {
     // Must be 32 bytes (matching shader layout)
     EXPECT_EQ(sizeof(rt::TransitionPushConstants), 32u);
+}
+
+TEST_F(CompositorTest, CompositePushConstants_Size)
+{
+    // Includes the internal-RGBA/final-BGRA output switch and shader padding.
+    EXPECT_EQ(sizeof(rt::CompositePushConstants), 32u);
+}
+
+TEST_F(CompositorTest, IntermediateOutputEncodingCanBeSelected)
+{
+    rt::Compositor compositor;
+    EXPECT_TRUE(compositor.outputSwizzleRB());
+    EXPECT_FALSE(compositor.preserveAlpha());
+
+    compositor.setOutputSwizzleRB(false);
+    compositor.setPreserveAlpha(true);
+    EXPECT_FALSE(compositor.outputSwizzleRB());
+    EXPECT_TRUE(compositor.preserveAlpha());
+}
+
+TEST_F(CompositorTest, AdjustmentStackIsScheduledOnceAtBoundary)
+{
+    std::vector<rt::LayerInfo> layers(2); // two ordinary layers below it
+    layers[0].clipId = 10;
+    layers[1].clipId = 20;
+
+    rt::AdjustmentClip adjustment;
+    adjustment.effects().addEffect(std::make_unique<rt::ColorCorrect>());
+    adjustment.effects().addEffect(std::make_unique<rt::Blur>());
+
+    rt::appendAdjustmentLayerBoundary(layers, adjustment, 0);
+
+    ASSERT_EQ(layers.size(), 3u);
+    EXPECT_TRUE(layers[2].isAdjustmentLayer);
+    EXPECT_EQ(layers[2].effects.size(), 2u);
+    EXPECT_TRUE(layers[0].effects.empty());
+    EXPECT_TRUE(layers[1].effects.empty());
 }
 
 // ── CompositorStats defaults ────────────────────────────────────────────────
@@ -325,6 +388,94 @@ static rt::Texture createSolidTexture(uint32_t width, uint32_t height,
                        cfg, pixels.data(), pixels.size(),
                        g_vk->cmdPool, g_vk->device.graphicsQueue());
     return tex;
+}
+
+static rt::Texture createLeftHalfMaskTexture(uint32_t width, uint32_t height)
+{
+    rt::Texture tex;
+    std::vector<uint8_t> pixels(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint8_t value = x < width / 2 ? 255 : 0;
+            const size_t i = (static_cast<size_t>(y) * width + x) * 4;
+            pixels[i + 0] = value;
+            pixels[i + 1] = value;
+            pixels[i + 2] = value;
+            pixels[i + 3] = value;
+        }
+    }
+
+    rt::TextureConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+    cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+    tex.createFromData(g_vk->allocator.handle(), g_vk->device.handle(),
+                       cfg, pixels.data(), pixels.size(),
+                       g_vk->cmdPool, g_vk->device.graphicsQueue());
+    return tex;
+}
+
+static rt::Texture createRgbaTexture(uint32_t width, uint32_t height,
+                                     const std::vector<uint8_t>& pixels)
+{
+    rt::Texture tex;
+    if (pixels.size() != static_cast<size_t>(width) * height * 4)
+        return tex;
+
+    rt::TextureConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+    cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    tex.createFromData(g_vk->allocator.handle(), g_vk->device.handle(),
+                       cfg, pixels.data(), pixels.size(),
+                       g_vk->cmdPool, g_vk->device.graphicsQueue());
+    return tex;
+}
+
+static bool renderTemporalPixels(rt::TemporalInterpolator& interpolator,
+                                 rt::Compositor& compositor,
+                                 const rt::Texture& sourceA,
+                                 const rt::Texture& sourceB,
+                                 uint32_t width, uint32_t height,
+                                 float phase, int32_t mode,
+                                 uint32_t layerIndex,
+                                 std::vector<uint8_t>& pixels)
+{
+    rt::Texture output;
+    rt::TextureConfig outputCfg;
+    outputCfg.width = width;
+    outputCfg.height = height;
+    outputCfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+    outputCfg.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!output.create(g_vk->allocator.handle(), g_vk->device.handle(),
+                       outputCfg)) {
+        return false;
+    }
+
+    VkCommandBuffer cmd = g_vk->cmdPool.beginSingleTime();
+    if (cmd == VK_NULL_HANDLE) return false;
+    output.transitionLayout(cmd, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_GENERAL);
+    const bool recorded = interpolator.render(
+        cmd, output.imageView(), sourceA.descriptorInfo(),
+        sourceB.descriptorInfo(), width, height, phase, mode,
+        false, false, 0, layerIndex);
+    output.transitionLayout(cmd, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    g_vk->cmdPool.endSingleTime(cmd, g_vk->device.graphicsQueue());
+    if (!recorded) return false;
+
+    std::vector<rt::CompositorLayer> layers(1);
+    layers[0].textureInfo = output.descriptorInfo();
+    layers[0].transform = rt::Compositor::identityTransform();
+    compositor.setLayers(layers);
+    const bool composited = compositor.compositeSync();
+    const bool readBack = composited && compositor.readbackOutput(pixels);
+    output.destroy();
+    return readBack;
 }
 
 // ── Compositor init/shutdown ────────────────────────────────────────────────
@@ -480,6 +631,405 @@ TEST_F(CompositorTest, GPU_Compositor_SingleSolidLayer)
 
     redTex.destroy();
     compositor.shutdown();
+}
+
+// ── Compositor: clip-local mask follows transform ──────────────────────────
+
+TEST_F(CompositorTest, GPU_Compositor_TransformMotionBlurCreatesTemporalTrail)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kWidth = 32;
+    constexpr uint32_t kHeight = 16;
+    rt::Compositor compositor;
+    rt::CompositorConfig cfg;
+    cfg.outputWidth = kWidth;
+    cfg.outputHeight = kHeight;
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    // Four-pixel opaque white stripe on transparent black.
+    std::vector<uint8_t> source(kWidth * kHeight * 4, 0);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 14; x <= 17; ++x) {
+            const size_t i = (static_cast<size_t>(y) * kWidth + x) * 4;
+            source[i + 0] = 255;
+            source[i + 1] = 255;
+            source[i + 2] = 255;
+            source[i + 3] = 255;
+        }
+    }
+    auto stripe = createRgbaTexture(kWidth, kHeight, source);
+
+    std::vector<rt::CompositorLayer> layers(1);
+    layers[0].textureInfo = stripe.descriptorInfo();
+    layers[0].transform = rt::Compositor::identityTransform();
+
+    compositor.setLayers(layers);
+    ASSERT_TRUE(compositor.compositeSync());
+    std::vector<uint8_t> sharp;
+    ASSERT_TRUE(compositor.readbackOutput(sharp));
+
+    layers[0].motionTransformStart = rt::Compositor::buildLayerTransform(
+        -0.25f, 0.0f, 1.0f, 1.0f);
+    layers[0].motionTransformEnd = rt::Compositor::buildLayerTransform(
+         0.25f, 0.0f, 1.0f, 1.0f);
+    layers[0].motionSampleCount = 8;
+    compositor.setLayers(layers);
+    ASSERT_TRUE(compositor.compositeSync());
+    std::vector<uint8_t> blurred;
+    ASSERT_TRUE(compositor.readbackOutput(blurred));
+
+    const auto valueAt = [](const std::vector<uint8_t>& pixels, uint32_t x) {
+        const size_t i = (static_cast<size_t>(8) * kWidth + x) * 4;
+        return std::max({pixels[i], pixels[i + 1], pixels[i + 2]});
+    };
+    EXPECT_LE(valueAt(sharp, 9), 5u);
+    EXPECT_GE(valueAt(sharp, 15), 250u);
+    EXPECT_GT(valueAt(blurred, 9), 20u);
+    EXPECT_LT(valueAt(blurred, 9), 120u);
+    EXPECT_GT(valueAt(blurred, 23), 20u);
+    EXPECT_LT(valueAt(blurred, 23), 120u);
+    EXPECT_LT(valueAt(blurred, 15), 150u);
+
+    int litColumns = 0;
+    for (uint32_t x = 0; x < kWidth; ++x)
+        if (valueAt(blurred, x) > 10u) ++litColumns;
+    EXPECT_GE(litColumns, 14);
+
+    stripe.destroy();
+    compositor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_EffectProcessor_ResizeThenTwoEffects)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kWidth = 37;
+    constexpr uint32_t kHeight = 19;
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = 64;
+    cfg.height = 64;
+    ASSERT_TRUE(processor.init(
+        g_vk->device, g_vk->allocator, g_vk->cmdPool,
+        g_vk->device.graphicsQueue(), cfg));
+
+    // Adjustment processors start at a default size and then resize to the
+    // preview/export frame. That used to leave effect #2's sampled binding
+    // pointing at the destroyed pre-resize image view.
+    ASSERT_TRUE(processor.resize(kWidth, kHeight));
+
+    std::vector<uint8_t> sourcePixels(kWidth * kHeight * 4);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 0; x < kWidth; ++x) {
+            const size_t i = (static_cast<size_t>(y) * kWidth + x) * 4;
+            sourcePixels[i + 0] = static_cast<uint8_t>((x * 7 + y * 3) & 0xff);
+            sourcePixels[i + 1] = static_cast<uint8_t>((x * 2 + y * 11) & 0xff);
+            sourcePixels[i + 2] = static_cast<uint8_t>((x * 13 + y * 5) & 0xff);
+            sourcePixels[i + 3] = 255;
+        }
+    }
+    auto source = createRgbaTexture(kWidth, kHeight, sourcePixels);
+
+    const std::vector<float> neutralColorCorrect = {
+        0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+    std::vector<rt::EffectStack::EffectSnapshot> effects(2);
+    effects[0].type = rt::EffectType::ColorCorrect;
+    effects[0].params = neutralColorCorrect;
+    effects[1].type = rt::EffectType::ColorCorrect;
+    effects[1].params = neutralColorCorrect;
+
+    VkCommandBuffer cmd = g_vk->cmdPool.beginSingleTime();
+    ASSERT_NE(cmd, VK_NULL_HANDLE);
+    ASSERT_TRUE(processor.process(cmd, source.descriptorInfo(), effects));
+    g_vk->cmdPool.endSingleTime(cmd, g_vk->device.graphicsQueue());
+
+    std::vector<uint8_t> outputPixels;
+    ASSERT_TRUE(processor.readbackOutput(outputPixels));
+    EXPECT_EQ(outputPixels, sourcePixels);
+
+    source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_Compositor_ClipLocalMaskFollowsLayerTransform)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    rt::Compositor compositor;
+    rt::CompositorConfig cfg;
+    cfg.outputWidth = 32;
+    cfg.outputHeight = 16;
+
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    auto redTex = createSolidTexture(16, 16, 255, 0, 0, 255);
+    auto maskTex = createLeftHalfMaskTexture(16, 16);
+
+    std::vector<rt::CompositorLayer> layers(1);
+    layers[0].textureInfo = redTex.descriptorInfo();
+    // Put the source in the output's right half. Its local mask should move
+    // and scale with it, revealing x=[16,24) and hiding x=[24,32).
+    layers[0].transform = rt::Compositor::buildLayerTransform(
+        0.5f, 0.0f, 0.5f, 1.0f);
+    layers[0].hasMask = true;
+    layers[0].maskTextureInfo = maskTex.descriptorInfo();
+
+    compositor.setLayers(layers);
+    ASSERT_TRUE(compositor.compositeSync());
+
+    std::vector<uint8_t> pixels;
+    ASSERT_TRUE(compositor.readbackOutput(pixels));
+    const auto colorAt = [&pixels](uint32_t x, uint32_t y) {
+        const size_t i = (static_cast<size_t>(y) * 32 + x) * 4;
+        return std::max({pixels[i], pixels[i + 1], pixels[i + 2]});
+    };
+
+    EXPECT_LE(colorAt(8, 8), 5u);     // outside the translated layer
+    EXPECT_GE(colorAt(20, 8), 250u);  // revealed by local left-half mask
+    EXPECT_LE(colorAt(28, 8), 5u);    // hidden by local right-half mask
+
+    // Move the same layer into the output's left half (without rebuilding or
+    // repositioning its mask texture). The revealed half must travel with the
+    // source to x=[0,8). buildLayerTransform position is the layer's output-UV
+    // origin, so the left half starts at 0 rather than -0.5.
+    layers[0].transform = rt::Compositor::buildLayerTransform(
+        0.0f, 0.0f, 0.5f, 1.0f);
+    compositor.setLayers(layers);
+    ASSERT_TRUE(compositor.compositeSync());
+    ASSERT_TRUE(compositor.readbackOutput(pixels));
+    EXPECT_GE(colorAt(4, 8), 250u);
+    EXPECT_LE(colorAt(12, 8), 5u);
+    EXPECT_LE(colorAt(20, 8), 5u);
+
+    maskTex.destroy();
+    redTex.destroy();
+    compositor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_Compositor_PremultipliedMaskAttenuatesRgb)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    rt::Compositor compositor;
+    rt::CompositorConfig cfg;
+    cfg.outputWidth = 16;
+    cfg.outputHeight = 16;
+
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    // An opaque white texture is valid in both straight-alpha and PMA form.
+    // A 50% mask must turn it into 50% premultiplied white before blending;
+    // otherwise flattening the result over black leaves a bright white halo.
+    auto whiteTex = createSolidTexture(16, 16, 255, 255, 255, 255);
+    auto halfMask = createSolidTexture(16, 16, 128, 128, 128, 128);
+
+    std::vector<rt::CompositorLayer> layers(1);
+    layers[0].textureInfo = whiteTex.descriptorInfo();
+    layers[0].transform = rt::Compositor::identityTransform();
+    layers[0].isPMA = true;
+    layers[0].hasMask = true;
+    layers[0].maskTextureInfo = halfMask.descriptorInfo();
+
+    compositor.setLayers(layers);
+    ASSERT_TRUE(compositor.compositeSync());
+
+    std::vector<uint8_t> pixels;
+    ASSERT_TRUE(compositor.readbackOutput(pixels));
+    const size_t center = (8 * 16 + 8) * 4;
+    EXPECT_NEAR(pixels[center + 0], 128, 3);
+    EXPECT_NEAR(pixels[center + 1], 128, 3);
+    EXPECT_NEAR(pixels[center + 2], 128, 3);
+    EXPECT_GE(pixels[center + 3], 252);
+
+    halfMask.destroy();
+    whiteTex.destroy();
+    compositor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_TemporalInterpolator_InitShutdown)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan GPU available";
+
+    rt::TemporalInterpolator interpolator;
+    EXPECT_TRUE(interpolator.init(g_vk->device));
+    EXPECT_TRUE(interpolator.isInitialized());
+    interpolator.shutdown();
+    EXPECT_FALSE(interpolator.isInitialized());
+}
+
+TEST_F(CompositorTest, GPU_TemporalInterpolator_FrameBlendingIsDirectMix)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan GPU available";
+
+    constexpr uint32_t kSize = 8;
+    rt::TemporalInterpolator interpolator;
+    ASSERT_TRUE(interpolator.init(g_vk->device));
+
+    auto blackTex = createSolidTexture(kSize, kSize, 0, 0, 0, 255);
+    auto whiteTex = createSolidTexture(kSize, kSize, 255, 255, 255, 255);
+
+    rt::Compositor compositor;
+    rt::CompositorConfig compositorCfg;
+    compositorCfg.outputWidth = kSize;
+    compositorCfg.outputHeight = kSize;
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), compositorCfg));
+
+    std::vector<uint8_t> pixels;
+    ASSERT_TRUE(renderTemporalPixels(interpolator, compositor,
+                                     blackTex, whiteTex,
+                                     kSize, kSize, 0.25f, 1, 0, pixels));
+    const size_t center =
+        (static_cast<size_t>(kSize / 2) * kSize + kSize / 2) * 4;
+    EXPECT_NEAR(pixels[center + 0], 64, 3);
+    EXPECT_NEAR(pixels[center + 1], 64, 3);
+    EXPECT_NEAR(pixels[center + 2], 64, 3);
+    EXPECT_GE(pixels[center + 3], 252);
+
+    compositor.shutdown();
+    whiteTex.destroy();
+    blackTex.destroy();
+    interpolator.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_TemporalInterpolator_OpticalFlowRejectsSceneCut)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan GPU available";
+
+    constexpr uint32_t kSize = 8;
+    rt::TemporalInterpolator interpolator;
+    ASSERT_TRUE(interpolator.init(g_vk->device));
+    auto blackTex = createSolidTexture(kSize, kSize, 0, 0, 0, 255);
+    auto whiteTex = createSolidTexture(kSize, kSize, 255, 255, 255, 255);
+
+    rt::Compositor compositor;
+    rt::CompositorConfig cfg;
+    cfg.outputWidth = kSize;
+    cfg.outputHeight = kSize;
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    for (const auto [phase, expectFirstFrame] :
+         {std::pair{0.25f, true}, std::pair{0.75f, false}}) {
+        std::vector<uint8_t> pixels;
+        ASSERT_TRUE(renderTemporalPixels(interpolator, compositor,
+                                         blackTex, whiteTex, kSize, kSize,
+                                         phase, 2, 1, pixels));
+        const size_t center =
+            (static_cast<size_t>(kSize / 2) * kSize + kSize / 2) * 4;
+        const int expected = expectFirstFrame ? 0 : 255;
+        EXPECT_NEAR(pixels[center + 0], expected, 5);
+        EXPECT_NEAR(pixels[center + 1], expected, 5);
+        EXPECT_NEAR(pixels[center + 2], expected, 5);
+        EXPECT_GE(pixels[center + 3], 252);
+    }
+
+    compositor.shutdown();
+    whiteTex.destroy();
+    blackTex.destroy();
+    interpolator.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_TemporalInterpolator_TracksTwelvePixelMotion)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan GPU available";
+
+    constexpr uint32_t kWidth = 64;
+    constexpr uint32_t kHeight = 64;
+    constexpr int kObjectWidth = 20;
+    constexpr int kObjectHeight = 24;
+    constexpr int kStartY = 20;
+    constexpr int kStartA = 8;
+    constexpr int kStartB = 20; // Deliberately beyond the old +/-10px reach.
+    constexpr int kStartMid = (kStartA + kStartB) / 2;
+
+    const auto makeFrame = [](int objectX) {
+        std::vector<uint8_t> pixels(kWidth * kHeight * 4);
+        for (uint32_t y = 0; y < kHeight; ++y) {
+            for (uint32_t x = 0; x < kWidth; ++x) {
+                const size_t i = (static_cast<size_t>(y) * kWidth + x) * 4;
+                pixels[i + 0] = 8;
+                pixels[i + 1] = 10;
+                pixels[i + 2] = 12;
+                pixels[i + 3] = 255;
+                if (static_cast<int>(x) >= objectX &&
+                    static_cast<int>(x) < objectX + kObjectWidth &&
+                    static_cast<int>(y) >= kStartY &&
+                    static_cast<int>(y) < kStartY + kObjectHeight) {
+                    const int rx = static_cast<int>(x) - objectX;
+                    const int ry = static_cast<int>(y) - kStartY;
+                    const uint32_t hash = static_cast<uint32_t>(
+                        rx * 73 + ry * 151 + rx * ry * 17);
+                    const uint8_t value =
+                        static_cast<uint8_t>(64 + hash % 192);
+                    pixels[i + 0] = value;
+                    pixels[i + 1] = value;
+                    pixels[i + 2] = value;
+                }
+            }
+        }
+        return pixels;
+    };
+
+    const auto frameA = makeFrame(kStartA);
+    const auto frameB = makeFrame(kStartB);
+    const auto expected = makeFrame(kStartMid);
+    auto texA = createRgbaTexture(kWidth, kHeight, frameA);
+    auto texB = createRgbaTexture(kWidth, kHeight, frameB);
+
+    rt::TemporalInterpolator interpolator;
+    ASSERT_TRUE(interpolator.init(g_vk->device));
+    rt::Compositor compositor;
+    rt::CompositorConfig cfg;
+    cfg.outputWidth = kWidth;
+    cfg.outputHeight = kHeight;
+    ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    std::vector<uint8_t> blended;
+    std::vector<uint8_t> optical;
+    ASSERT_TRUE(renderTemporalPixels(interpolator, compositor, texA, texB,
+                                     kWidth, kHeight, 0.5f, 1, 2, blended));
+    ASSERT_TRUE(renderTemporalPixels(interpolator, compositor, texA, texB,
+                                     kWidth, kHeight, 0.5f, 2, 3, optical));
+
+    const auto regionMae = [&expected](const std::vector<uint8_t>& actual) {
+        uint64_t error = 0;
+        uint64_t samples = 0;
+        for (int y = kStartY - 4; y < kStartY + kObjectHeight + 4; ++y) {
+            for (int x = kStartA - 4; x < kStartB + kObjectWidth + 4; ++x) {
+                const size_t i = (static_cast<size_t>(y) * kWidth + x) * 4;
+                for (int channel = 0; channel < 3; ++channel) {
+                    error += static_cast<uint64_t>(std::abs(
+                        static_cast<int>(actual[i + channel]) -
+                        static_cast<int>(expected[i + channel])));
+                    ++samples;
+                }
+            }
+        }
+        return static_cast<double>(error) / static_cast<double>(samples);
+    };
+
+    const double blendError = regionMae(blended);
+    const double opticalError = regionMae(optical);
+    const double nearestAError = regionMae(frameA);
+    const double nearestBError = regionMae(frameB);
+    const double nearestError = std::min(nearestAError, nearestBError);
+    EXPECT_LT(opticalError, blendError * 0.65)
+        << "optical MAE=" << opticalError << ", blend MAE=" << blendError;
+    EXPECT_LT(opticalError, nearestError * 0.80)
+        << "optical MAE=" << opticalError
+        << ", nearest-A MAE=" << nearestAError
+        << ", nearest-B MAE=" << nearestBError;
+
+    compositor.shutdown();
+    texB.destroy();
+    texA.destroy();
+    interpolator.shutdown();
 }
 
 // ── Compositor: half-opacity layer ──────────────────────────────────────────
@@ -888,6 +1438,61 @@ TEST_F(CompositorTest, GPU_Transition_Dissolve_Mid)
 
     redTex.destroy();
     blueTex.destroy();
+    transition.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_Transition_TwoIndependentDissolvesInOneSubmission)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    rt::TransitionRenderer transition;
+    rt::TransitionConfig cfg;
+    cfg.outputWidth  = 16;
+    cfg.outputHeight = 16;
+
+    ASSERT_TRUE(transition.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                                g_vk->device.graphicsQueue(), cfg));
+
+    auto redTex   = createSolidTexture(16, 16, 255, 0, 0, 255);
+    auto blueTex  = createSolidTexture(16, 16, 0, 0, 255, 255);
+    auto whiteTex = createSolidTexture(16, 16, 255, 255, 255, 255);
+    auto greenTex = createSolidTexture(16, 16, 0, 255, 0, 255);
+
+    // Record both dissolves before submitting, matching two connected clip
+    // pairs on different tracks in one composite frame.
+    VkCommandBuffer cmd = g_vk->cmdPool.beginSingleTime();
+    ASSERT_TRUE(transition.render(
+        cmd,
+        rt::TransitionSourceInfo{redTex.descriptorInfo()},
+        rt::TransitionSourceInfo{blueTex.descriptorInfo()},
+        rt::GpuTransitionType::Dissolve, 0.5f,
+        -1, 0.0f, -1.0f, 0, 0));
+    ASSERT_TRUE(transition.render(
+        cmd,
+        rt::TransitionSourceInfo{whiteTex.descriptorInfo()},
+        rt::TransitionSourceInfo{greenTex.descriptorInfo()},
+        rt::GpuTransitionType::Dissolve, 0.25f,
+        -1, 0.0f, -1.0f, 0, 1));
+    g_vk->cmdPool.endSingleTime(cmd, g_vk->device.graphicsQueue());
+
+    std::vector<uint8_t> first;
+    std::vector<uint8_t> second;
+    ASSERT_TRUE(transition.readbackOutput(first, 0, 0));
+    ASSERT_TRUE(transition.readbackOutput(second, 0, 1));
+
+    const size_t ci = (8 * 16 + 8) * 4;
+    EXPECT_NEAR(first[ci + 0], 128u, 20u);
+    EXPECT_LE(first[ci + 1], 5u);
+    EXPECT_NEAR(first[ci + 2], 128u, 20u);
+
+    EXPECT_NEAR(second[ci + 0], 191u, 20u);
+    EXPECT_GE(second[ci + 1], 250u);
+    EXPECT_NEAR(second[ci + 2], 191u, 20u);
+
+    redTex.destroy();
+    blueTex.destroy();
+    whiteTex.destroy();
+    greenTex.destroy();
     transition.shutdown();
 }
 

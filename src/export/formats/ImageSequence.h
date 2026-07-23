@@ -1,5 +1,5 @@
 /*
- * ImageSequence — writes individual frames as PNG/TIFF/EXR/BMP/JPEG.
+ * ImageSequence — writes individual frames as PNG/BMP/JPEG.
  */
 
 #pragma once

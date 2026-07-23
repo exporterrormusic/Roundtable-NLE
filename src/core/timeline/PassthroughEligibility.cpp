@@ -43,6 +43,10 @@ bool isIdentityVideoClip(VideoClip& vc, int64_t localTick) noexcept
     if (std::abs(vc.scaleX().evaluate(localTick) - 1.0f) > kScaleEps) return false;
     if (std::abs(vc.scaleY().evaluate(localTick) - 1.0f) > kScaleEps) return false;
     if (std::abs(vc.rotation().evaluate(localTick)) > kRotEps) return false;
+    // A non-zero shutter explicitly requests temporal transform sampling.
+    // Never bypass the compositor even if the current transform happens to
+    // cross identity at this exact tick.
+    if (vc.shutterAngle().evaluate(localTick) > 0.01f) return false;
     if (vc.cropLeft()  > kCropEps || vc.cropRight()  > kCropEps ||
         vc.cropTop()   > kCropEps || vc.cropBottom() > kCropEps) return false;
     if (vc.effects().hasActiveEffects()) return false;
@@ -50,6 +54,7 @@ bool isIdentityVideoClip(VideoClip& vc, int64_t localTick) noexcept
     if (vc.maskCount() > 0) return false;
     // Retime: only an un-r*ramped*, 1.0× clip is a 1:1 passthrough of
     // contiguous source frames.
+    if (vc.timeInterpolation() != TimeInterpolation::FrameSampling) return false;
     if (std::abs(vc.speed() - 1.0) > 1e-9) return false;
     if (!vc.speedRamp().isStatic()) return false;
     return true;

@@ -236,8 +236,26 @@ struct ClipboardContents
     };
     std::vector<TransitionEntry> transitions;
 
-    [[nodiscard]] bool empty() const noexcept { return entries.empty(); }
-    void clear() { entries.clear(); transitions.clear(); }
+    /// A transition copied directly from a transition selection. Unlike the
+    /// entries above, this is not tied to copied clips; paste remaps it onto
+    /// the edit point currently selected in the timeline.
+    std::optional<Transition> standaloneTransition;
+
+    [[nodiscard]] bool hasClips() const noexcept { return !entries.empty(); }
+    [[nodiscard]] bool hasStandaloneTransition() const noexcept
+    {
+        return standaloneTransition.has_value();
+    }
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return entries.empty() && !standaloneTransition.has_value();
+    }
+    void clear()
+    {
+        entries.clear();
+        transitions.clear();
+        standaloneTransition.reset();
+    }
 };
 
 // ─── Edit Tool Types ─────────────────────────────────────────────────────────
@@ -253,7 +271,8 @@ enum class EditTool : uint8_t
     Slide,      // U — slide clip
     Text,       // T — create / edit graphic text
     Zoom,       // Z — click to zoom in, Alt+click to zoom out
-    Eyedropper  // (internal) — pick color from program monitor
+    Eyedropper, // (internal) — pick color from program monitor
+    PenMask     // P — draw/edit closed Bezier masks in the Program Monitor
 };
 
 /// Edge of a clip (for trim operations).
@@ -370,11 +389,24 @@ public:
     /// Close all gaps between clips on every unlocked track.
     [[nodiscard]] static std::unique_ptr<Command> closeAllGaps(Timeline& timeline);
 
+    /// Shorten a proposed transition, if necessary, so its timeline range
+    /// fits inside its referenced clips and does not overlap transitions at
+    /// other edit points on the track. Returns false only when no positive
+    /// transition duration is available.
+    static bool fitTransitionToAvailableDuration(
+        const Track& track, Transition& transition);
+
     // ── Clipboard ───────────────────────────────────────────────────────
 
     /// Copy selected clips to clipboard.
     static void copySelection(const Timeline& timeline,
                                const SelectionSet& selection,
+                               ClipboardContents& clipboard);
+
+    /// Copy one independently-selected transition. Its destination clip ids
+    /// and edit point are assigned when it is pasted at a selected cut.
+    static void copyTransition(const Timeline& timeline,
+                               size_t trackIndex, size_t transitionIndex,
                                ClipboardContents& clipboard);
 
     /// Cut selected clips (copy + delete).
@@ -386,6 +418,13 @@ public:
     [[nodiscard]] static std::unique_ptr<Command> paste(
         Timeline& timeline, const ClipboardContents& clipboard,
         int64_t playhead);
+
+    /// Paste a directly-copied transition onto the selected edge of a clip.
+    /// A touching neighbour is detected automatically, making the target a
+    /// two-sided cut or an isolated fade edge as appropriate.
+    [[nodiscard]] static std::unique_ptr<Command> pasteTransitionAtEdge(
+        Timeline& timeline, const ClipboardContents& clipboard,
+        size_t trackIndex, uint64_t clipId, ClipEdge edge);
 
     /// Insert-paste: paste clipboard at playhead, pushing subsequent clips right
     /// on targeted tracks (Premiere Pro "," key).
@@ -405,12 +444,18 @@ public:
     [[nodiscard]] static std::unique_ptr<Command> resolveOverlaps(
         Timeline& timeline, size_t trackIndex, uint64_t movedClipId);
 
-    /// Resolve overlaps with an exclusion set (clips with these IDs are
-    /// never trimmed or removed by overlap resolution — used when moving
-    /// multiple clips together so they don't cascade-delete each other).
+    /// Resolve overlaps after a multi-clip edit. The exclusion set is retained
+    /// for caller/API compatibility, but an excluded clip that actually
+    /// overlaps is still resolved: a media track may never contain overlapping
+    /// clips.
     [[nodiscard]] static std::unique_ptr<Command> resolveOverlaps(
         Timeline& timeline, size_t trackIndex, uint64_t movedClipId,
         const std::unordered_set<uint64_t>& excludeClipIds);
+
+    /// Clamp a requested insertion duration to the free gap beginning at
+    /// `timelineIn`. Returns 0 when that point is already occupied.
+    [[nodiscard]] static int64_t nonOverlappingInsertDuration(
+        const Track& track, int64_t timelineIn, int64_t requestedDuration);
 
     // ── In/Out Points ───────────────────────────────────────────────────
 

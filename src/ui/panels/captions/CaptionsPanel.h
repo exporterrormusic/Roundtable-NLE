@@ -77,6 +77,19 @@ public:
  /// Select and scroll to a specific caption clip by track/clip index.
  void selectCaption(size_t trackIndex, size_t clipIndex);
 
+ void setMonitorTextEditing(bool active) noexcept {
+     m_monitorTextEditing = active;
+ }
+ [[nodiscard]] QWidget* textFormattingWidget() const noexcept {
+     return m_editorSection;
+ }
+ void setInlineTextSelectionFormat(const QString& family, float pointSize,
+                                   int weight, bool italic,
+                                   bool allCaps, bool smallCaps,
+                                   float tracking, float baselineShift,
+                                   float leading,
+                                   uint32_t mixedFlags);
+
 signals:
  /// Emitted when the user clicks "Transcribe" (selected clip or sequence).
  void transcribeRequested();
@@ -89,6 +102,8 @@ signals:
 
  /// Emitted when caption content changes.
  void captionEdited();
+ void inlineFontFamilyRequested(const QString& family);
+ void inlineFontSizeRequested(float pointSize);
 
 private slots:
  void onListSelectionChanged();
@@ -165,6 +180,7 @@ private:
  // Data
  std::vector<CaptionEntry> m_entries;
  bool m_updatingUI{false};
+ bool m_monitorTextEditing{false};
 
  // Transcription (whisper) — owned via shared_ptr so a detached worker
  // thread can keep it alive past panel destruction.

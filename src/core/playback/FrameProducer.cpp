@@ -79,6 +79,33 @@ void FrameProducer::stop()
     spdlog::info("[FrameProducer] Stopped");
 }
 
+void FrameProducer::reset() noexcept
+{
+    // m_lastGoodFrame and the adaptive fields are producer-thread-owned.
+    // PlaybackScheduler stops and joins that thread before resetting them.
+    if (m_running.load(std::memory_order_acquire))
+        return;
+
+    {
+        std::lock_guard lock(m_reqMtx);
+        m_pendingTicks.clear();
+        m_pendingScrub.reset();
+        m_consecutiveReplacements = 0;
+    }
+    m_backpressure.store(false, std::memory_order_release);
+
+    {
+        std::lock_guard lock(m_exchangeMtx);
+        m_exchange = {};
+    }
+    m_lastGoodFrame.reset();
+    m_dropNextComposite = false;
+    m_latencyIdx = 0;
+    m_latencyCount = 0;
+    m_promoteStreak = 0;
+    m_changeCooldown = 0;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Request queue (FrameClock → producer thread)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -232,7 +259,8 @@ void FrameProducer::produceFrameImpl(int64_t tick)
     m_dropNextComposite = false;
 
     auto compStart = std::chrono::steady_clock::now();
-    auto frame = m_compositeCB(tick, w, h, /*scrub=*/false);
+    auto frame = m_compositeCB(tick, w, h,
+                               /*scrub=*/false, /*still=*/false);
     auto compEnd = std::chrono::steady_clock::now();
     double compMs = std::chrono::duration<double, std::milli>(compEnd - compStart).count();
 
@@ -310,7 +338,12 @@ void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
     // even if the previous frame tripped the over-budget drop.
     m_dropNextComposite = false;
 
-    auto frame = m_compositeCB(req.tick, req.w, req.h, req.scrub);
+    // Requests through the paused/scrub slot are still-frame renders.  The
+    // compositor uses this bit to require the exact selected decode tier once
+    // active scrubbing has stopped, instead of leaving a lower-tier fallback
+    // stretched across a full-size output canvas.
+    auto frame = m_compositeCB(req.tick, req.w, req.h,
+                               req.scrub, /*still=*/true);
     if (frame && frame->width > 0) {
         m_lastGoodFrame = frame;
     } else if (frame && frame->width == 0) {

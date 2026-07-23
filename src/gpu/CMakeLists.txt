@@ -23,6 +23,7 @@ add_library(roundtable_gpu STATIC
     TextRenderer.cpp
     WaveformRenderer.cpp
     TransitionRenderer.cpp
+    TemporalInterpolator.cpp
     EffectProcessor.cpp
     Nv12Converter.cpp
     Nv12ConverterPipeline.cpp
@@ -51,6 +52,7 @@ add_library(roundtable_gpu STATIC
     CompositeServiceFramePrewarm.cpp
     CompositeServiceBlend.cpp
     CompositeServiceSpine.cpp
+    CompositeServiceAdjustmentLayer.cpp
     CompositeServiceLayerBuild.cpp
     CompositeServiceLayerBuildVideo.cpp
     CompositeServiceLayerBuildNested.cpp

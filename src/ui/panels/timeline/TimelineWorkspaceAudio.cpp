@@ -126,6 +126,72 @@ void TimelineWorkspace::schedulePostEditWork()
 
 // â”€â”€ Video media pre-opening (shared with composite pipeline) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+int TimelineWorkspace::migrateDeferredLegacyMediaMasks()
+{
+    if (!m_timeline || !m_mediaPool) return 0;
+    const auto resolution = m_timeline->settings().resolution();
+    if (resolution.width == 0 || resolution.height == 0) return 0;
+
+    int migrated = 0;
+    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+        Track* track = m_timeline->track(ti);
+        if (!track) continue;
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            Clip* clip = track->clip(ci);
+            if (!clip) continue;
+
+            if (auto* video = dynamic_cast<VideoClip*>(clip)) {
+                if (video->mediaPath().empty()) continue;
+                const MediaHandle handle = m_mediaPool->open(video->mediaPath());
+                if (handle == InvalidMedia) continue;
+                const VideoStreamInfo* info = m_mediaPool->getInfo(handle);
+                if (info && info->width > 0 && info->height > 0) {
+                    video->setSourceMetadata(
+                        info->width, info->height, info->rotation);
+                    migrated += video->migrateLegacyMasksToSourceLocal(
+                        resolution.width, resolution.height,
+                        info->width, info->height, info->rotation);
+                }
+                // Balance this metadata lookup. The warmup's own open keeps
+                // its shared decoder alive for playback.
+                m_mediaPool->release(handle);
+                continue;
+            }
+
+            if (auto* image = dynamic_cast<ImageClip*>(clip)) {
+                uint32_t sourceW = image->sourceWidth();
+                uint32_t sourceH = image->sourceHeight();
+                MediaHandle handle = InvalidMedia;
+                if ((sourceW == 0 || sourceH == 0) &&
+                    !image->mediaPath().empty()) {
+                    handle = m_mediaPool->open(image->mediaPath());
+                    if (handle != InvalidMedia) {
+                        const VideoStreamInfo* info = m_mediaPool->getInfo(handle);
+                        if (info && info->width > 0 && info->height > 0) {
+                            sourceW = info->width;
+                            sourceH = info->height;
+                            image->setSourceResolution(sourceW, sourceH);
+                        }
+                    }
+                }
+                if (sourceW > 0 && sourceH > 0)
+                    migrated += image->migrateLegacyMasksToSourceLocal(
+                        resolution.width, resolution.height,
+                        sourceW, sourceH);
+                if (handle != InvalidMedia) m_mediaPool->release(handle);
+            }
+        }
+    }
+
+    if (migrated > 0) {
+        spdlog::info(
+            "Migrated {} deferred legacy media mask(s) after metadata warmup",
+            migrated);
+        invalidateCompositeCache();
+    }
+    return migrated;
+}
+
 void TimelineWorkspace::preOpenVideoMedia()
 {
     if (!m_timeline || !m_mediaPool || !m_compositeService) return;
@@ -341,6 +407,7 @@ void TimelineWorkspace::preOpenVideoMedia()
                 // the project-loading input lock.  Posted to qApp so it runs
                 // on the UI thread where these are safe to touch.
                 QMetaObject::invokeMethod(qApp, [this]() {
+                    migrateDeferredLegacyMediaMasks();
                     const int remaining =
                         m_backgroundWarmupActive.fetch_sub(1, std::memory_order_release) - 1;
                     if (m_programMonitor) m_programMonitor->requestRefresh();

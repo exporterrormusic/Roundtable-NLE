@@ -25,6 +25,10 @@ class AddKeyframeCommand : public Command
 public:
     AddKeyframeCommand(KeyframeTrack<float>* track, int64_t time, float value,
                        InterpMode interp = InterpMode::Linear);
+    /// Add or replace a complete keyframe, preserving temporal/spatial
+    /// handles. Used by clipboard and other state-restoration paths.
+    AddKeyframeCommand(KeyframeTrack<float>* track,
+                       const Keyframe<float>& keyframe);
 
     void execute() override;
     void undo() override;
@@ -36,6 +40,8 @@ private:
     int64_t               m_time;
     float                 m_value;
     InterpMode            m_interp;
+    bool                  m_restoreFull{false};
+    Keyframe<float>       m_newKeyframe;
 
     bool                  m_hadExisting{false};
     Keyframe<float>       m_oldKeyframe; // Saved if we replaced an existing one

@@ -43,6 +43,8 @@ void TimelinePanel::setTimeline(Timeline* timeline)
     ++m_waveformLoadGeneration;
     m_pendingWaveformPaths.clear();
     m_failedWaveformPaths.clear();
+    m_waveformPeaks.clear();
+    m_waveformByPath.clear();
 
     // Invalidate in-flight background thumbnail decodes from the previous
     // timeline so their results don't land in the new project's caches.
@@ -409,6 +411,9 @@ void TimelinePanel::rebuildTracks()
             spdlog::debug("[SIGNAL] TrackHeader {} lockToggled for track {} locked={}", (void*)sender(), trackIdx, locked);
             if (!m_timeline || trackIdx >= m_timeline->trackCount()) return;
             m_timeline->track(trackIdx)->setLocked(locked);
+            if (locked && m_gapSelection.active &&
+                m_gapSelection.trackIndex == trackIdx)
+                clearGapSelection();
             if (trackIdx < m_trackHeaders.size())
                 m_trackHeaders[trackIdx]->update();
             if (trackIdx < m_trackWidgets.size())
@@ -523,38 +528,7 @@ void TimelinePanel::rebuildTracks()
         QObject::connect(header, &TrackHeader::reorderDragFinished,
             this, [this](size_t srcIdx, const QPoint& gp, bool commit) {
             spdlog::debug("[SIGNAL] TrackHeader {} reorderDragFinished srcIdx={} commit={}", (void*)sender(), srcIdx, commit);
-            size_t dst = computeReorderInsertionIndex(gp);
-            if (m_ghostOverlay) {
-                m_ghostOverlay->reorderMode = false;
-                m_ghostOverlay->hide();
-            }
-            m_reorderSrcIndex = SIZE_MAX;
-            if (!commit || !m_timeline) return;
-            if (dst > srcIdx) --dst; // compensate for removal shift
-            if (dst == srcIdx) return;
-            if (srcIdx >= m_timeline->trackCount()) return;
-            if (dst >= m_timeline->trackCount())
-                dst = m_timeline->trackCount() - 1;
-            // The permanent V/A boundary divider is auto-managed and
-            // cannot be reordered by the user. TrackHeader blocks the
-            // press, but defend here too in case the move came via some
-            // other path.
-            if (Track* src = m_timeline->track(srcIdx);
-                    src && (src->isPermanentDivider() || src->isCaptionTrack()))
-                return;
-            // The caption track is pinned at the top — never let another
-            // track be dropped above it (index 0).
-            if (dst == 0 && m_timeline->trackCount() > 0 &&
-                    m_timeline->track(0) && m_timeline->track(0)->isCaptionTrack())
-                dst = 1;
-            // Defer past the mouseReleaseEvent so we don't delete the
-            // TrackHeader that is currently on the stack.
-            QTimer::singleShot(0, this, [this, srcIdx, dst]() {
-                if (m_destroying.load(std::memory_order_acquire)) return;
-                if (!m_timeline) return;
-                m_timeline->moveTrack(srcIdx, dst);
-                rebuildTracks();
-            });
+            finishTrackReorder(srcIdx, gp, commit);
         });
         QObject::connect(header, &TrackHeader::trackSizePresetRequested,
             this, [this](size_t trackIdx, float height) {
@@ -861,6 +835,37 @@ void TimelinePanel::refreshRenderBar()
 //  insertTrackWidgetIncremental
 // ═════════════════════════════════════════════════════════════════════════════
 
+void TimelinePanel::finishTrackReorder(size_t sourceIndex,
+                                       const QPoint& globalPos,
+                                       bool commit)
+{
+    const size_t insertionIndex = computeReorderInsertionIndex(globalPos);
+    if (m_ghostOverlay) {
+        m_ghostOverlay->reorderMode = false;
+        m_ghostOverlay->hide();
+    }
+    m_reorderSrcIndex = SIZE_MAX;
+
+    if (!commit || !m_timeline || sourceIndex >= m_timeline->trackCount())
+        return;
+
+    // Defer past TrackHeader::mouseReleaseEvent. Crucially this stays one
+    // atomic Timeline::moveTrack notification; the former incremental-header
+    // path used takeTrack()+insertTrack(), which made rebuild observers hide
+    // a tail row between the remove and add and could leave it invisible.
+    QPointer<TimelinePanel> safeThis(this);
+    QTimer::singleShot(0, this, [safeThis, sourceIndex, insertionIndex]() {
+        if (!safeThis || safeThis->m_destroying.load(std::memory_order_acquire)
+            || !safeThis->m_timeline)
+            return;
+        if (!safeThis->m_timeline->moveTrackToInsertion(sourceIndex,
+                                                         insertionIndex))
+            return;
+        safeThis->rebuildTracks();
+        emit safeThis->contentChanged();
+    });
+}
+
 void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
 {
     if (!m_timeline || trackIndex >= m_timeline->trackCount()) return;
@@ -975,11 +980,14 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
             m_trackHeaders[trackIdx]->update();
     });
 
-    auto connectToggle = [&](auto signal, auto setter) {
+    auto connectToggle = [&](auto signal, auto setter, bool clearsLockedGap) {
         QObject::connect(header, signal, this,
-            [this, setter](size_t trackIdx, bool val) {
+            [this, setter, clearsLockedGap](size_t trackIdx, bool val) {
             if (!m_timeline || trackIdx >= m_timeline->trackCount()) return;
             setter(m_timeline->track(trackIdx), val);
+            if (clearsLockedGap && val && m_gapSelection.active &&
+                m_gapSelection.trackIndex == trackIdx)
+                clearGapSelection();
             if (trackIdx < m_trackHeaders.size())
                 m_trackHeaders[trackIdx]->update();
             if (trackIdx < m_trackWidgets.size())
@@ -988,10 +996,14 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
         });
     };
 
-    connectToggle(&TrackHeader::lockToggled, [](Track* t, bool v) { t->setLocked(v); });
-    connectToggle(&TrackHeader::muteToggled, [](Track* t, bool v) { t->setMuted(v); });
-    connectToggle(&TrackHeader::soloToggled, [](Track* t, bool v) { t->setSoloed(v); });
-    connectToggle(&TrackHeader::syncLockToggled, [](Track* t, bool v) { t->setSyncLocked(v); });
+    connectToggle(&TrackHeader::lockToggled,
+                  [](Track* t, bool v) { t->setLocked(v); }, true);
+    connectToggle(&TrackHeader::muteToggled,
+                  [](Track* t, bool v) { t->setMuted(v); }, false);
+    connectToggle(&TrackHeader::soloToggled,
+                  [](Track* t, bool v) { t->setSoloed(v); }, false);
+    connectToggle(&TrackHeader::syncLockToggled,
+                  [](Track* t, bool v) { t->setSyncLocked(v); }, false);
 
     QObject::connect(header, &TrackHeader::collapseToggled,
         this, [this](size_t trackIdx, bool collapsed) {
@@ -1053,27 +1065,9 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
     });
 
     QObject::connect(header, &TrackHeader::reorderDragFinished,
-        this, [this](size_t srcIdx, const QPoint& gp) {
-        m_reorderSrcIndex = SIZE_MAX;
-        if (m_ghostOverlay) { m_ghostOverlay->reorderMode = false; m_ghostOverlay->hide(); }
-        size_t dst = computeReorderInsertionIndex(gp);
-        if (dst != srcIdx && dst != SIZE_MAX) {
-            if (m_timeline) {
-                // Permanent V/A divider is auto-managed — don't allow
-                // reordering it out of its slot.
-                if (Track* src = m_timeline->track(srcIdx);
-                        src && src->isPermanentDivider())
-                    return;
-                auto track = m_timeline->takeTrack(srcIdx);
-                if (track) {
-                    size_t insertAt = dst;
-                    if (dst > srcIdx) --insertAt;
-                    m_timeline->insertTrack(insertAt, std::move(track));
-                    rebuildTracks();
-                }
-            }
-        }
-    });
+        this, [this](size_t srcIdx, const QPoint& gp, bool commit) {
+            finishTrackReorder(srcIdx, gp, commit);
+        });
 
     emit selectionChanged();
     updateMinHeaderWidth();

@@ -134,6 +134,21 @@ void VulkanViewport::handleResize()
             vkWaitForFences(device, 1, &slot.fence, VK_TRUE, 100'000'000);
     }
 
+    // The render fence covers graphics execution, but not the presentation
+    // engine's wait on renderFinished. Drain only the present queue before
+    // destroying its swapchain or replacing the per-image semaphores. This
+    // is substantially narrower than the former device-wide idle.
+    VkResult presentIdle = gpu.scheduler().queueWaitIdle(
+        gpu.device().presentQueue());
+    if (presentIdle != VK_SUCCESS) {
+        if (presentIdle == VK_ERROR_DEVICE_LOST ||
+            presentIdle == VK_ERROR_UNKNOWN) {
+            gpu.signalDeviceLost();
+            gpu.tryRecover();
+        }
+        return;
+    }
+
     // Destroy old framebuffers
     for (auto fb : m_framebuffers)
         if (fb) vkDestroyFramebuffer(device, fb, nullptr);
@@ -142,7 +157,12 @@ void VulkanViewport::handleResize()
     // Recreate swapchain — use cached dimensions (thread-safe)
     uint32_t w = m_cachedWidth.load();
     uint32_t h = m_cachedHeight.load();
-    m_swapchain->recreate(gpu.device(), w, h);
+    if (!m_swapchain->recreate(gpu.device(), w, h))
+        return;
+    if (!createPresentSemaphores()) {
+        spdlog::error("VulkanViewport: failed to recreate present semaphores");
+        return;
+    }
 
     // Recreate framebuffers
     createFramebuffers();

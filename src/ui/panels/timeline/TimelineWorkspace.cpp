@@ -45,6 +45,8 @@
 #include "panels/timeline/TimelinePanel.h"
 
 #include "panels/monitors/ProgramMonitor.h"
+#include "panels/monitors/SourceMonitor.h"
+#include "playback/PlaybackController.h"
 
 #include <QMouseEvent>
 #include <QTimer>
@@ -53,6 +55,36 @@
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+void TimelineWorkspace::setSourceTransportActive(bool active)
+{
+    const bool wasSourceActive = m_sourceTransportActive;
+    m_sourceTransportActive = active;
+
+    if (active) {
+        // A click in the Source Monitor takes ownership immediately. Do not
+        // leave the sequence controller or its audio clock running until
+        // Source Monitor playback happens to start later.
+        if (m_playbackController && m_playbackController->isPlaying())
+            m_playbackController->pause();
+        return;
+    }
+
+    bool sourceWasPlaying = false;
+    if (m_sourceMonitor && m_sourceMonitor->controller()) {
+        sourceWasPlaying = m_sourceMonitor->controller()->isPlaying();
+        if (sourceWasPlaying)
+            m_sourceMonitor->controller()->pause();
+    }
+
+    // Source playback and scrubbing replace or clear the shared AudioEngine's
+    // track sources. AudioPlaybackService may still believe its old sources
+    // are installed, so force a reload on the handoff back to the sequence.
+    if (wasSourceActive || sourceWasPlaying) {
+        invalidateAudioSources();
+        ensureAudioSourcesLoaded();
+    }
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Construction

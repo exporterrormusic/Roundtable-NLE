@@ -49,9 +49,20 @@ public:
     [[nodiscard]] Track* captionTrack() noexcept;
     void   removeTrack(size_t index);
     void   moveTrack(size_t from, size_t to);
+    /// Reorder a track using a UI-style insertion slot in [0, trackCount()].
+    /// The move is atomic (one onTrackMoved notification), preserves user
+    /// dividers, pins captions, and keeps real video/audio tracks on their
+    /// respective side of the permanent V/A divider. Returns true if moved.
+    bool   moveTrackToInsertion(size_t from, size_t insertionIndex);
     [[nodiscard]] size_t       trackCount() const noexcept;
     [[nodiscard]] Track*       track(size_t index) noexcept;
     [[nodiscard]] const Track* track(size_t index) const noexcept;
+
+    /// Return the nearest real track of `type` that can host clips. Divider
+    /// and caption rows are never returned. `desiredIndex` may be outside the
+    /// timeline; SIZE_MAX is returned when no compatible track exists.
+    [[nodiscard]] size_t nearestClipHostTrack(int desiredIndex,
+                                              TrackType type) const noexcept;
 
     /// Insert a track at a specific index (for undo support)
     Track* insertTrack(size_t index, std::unique_ptr<Track> track);

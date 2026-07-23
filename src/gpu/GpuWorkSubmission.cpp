@@ -304,9 +304,6 @@ bool GpuWorkSubmission::submitWithTimelineWait(
     if (externalSemaphore != VK_NULL_HANDLE) {
         signalSemaphores[0] = externalSemaphore;
         signalCount = 1;
-    } else {
-        signalSemaphores[0] = s.signalSemaphore;
-        signalCount = 1;
     }
 
     // ── Wait: producer timeline semaphore at `waitValue`.
@@ -380,16 +377,13 @@ bool GpuWorkSubmission::submit(VkQueue queue, VkSemaphore externalSemaphore,
     // had a ring-buffer wrap race (per-slot semaphore re-signaled before the
     // presenter consumed it).
     //
-    // When no external semaphore is provided (legacy single-shot usage via
-    // submitAndWait or submit with default args), fall back to the per-slot
-    // internal semaphore.
+    // When no external semaphore is provided, do not signal a binary
+    // semaphore. The old per-slot fallback was never consumed by same-queue
+    // callers and could be signaled again while still signaled.
     VkSemaphore signalSemaphores[1]{};
     uint32_t signalCount = 0;
     if (externalSemaphore != VK_NULL_HANDLE) {
         signalSemaphores[0] = externalSemaphore;
-        signalCount = 1;
-    } else {
-        signalSemaphores[0] = s.signalSemaphore;
         signalCount = 1;
     }
     submitInfo.signalSemaphoreCount = signalCount;

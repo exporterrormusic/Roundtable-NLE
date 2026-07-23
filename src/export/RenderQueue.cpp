@@ -12,6 +12,7 @@
 #include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
 #include "PathUtils.h"
+#include "FrameTime.h"
 
 #include <spdlog/spdlog.h>
 
@@ -518,6 +519,8 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     spdlog::info("RndQ[{}]: Step 4 — starting frame loop ({} frames)", job.id, totalFrames);
     std::vector<OwnedPacket> allPackets;
     bool cancelled = false;
+    uint64_t segmentCacheHits = 0;
+    uint64_t segmentCacheMisses = 0;
 
     // ── Smart Render passthrough run state ──────────────────────────────
     // A copied-packet run is only a decodable output GOP if it BEGINS on a
@@ -598,14 +601,18 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // Composite this frame via the main-thread callback (preview compositor;
         // produces a BGRA CachedFrame). Async pre-submit of the next frame's
         // tick lets the main thread composite f+1 while the worker encodes f.
-        int64_t tick = static_cast<int64_t>(
-            static_cast<double>(f) * 48000.0 * fpsDen / fpsNum);
+        const int64_t tick = frameIndexToTick(
+            f, static_cast<uint32_t>(fpsNum), static_cast<uint32_t>(fpsDen));
         int64_t nextTick = -1;
         if (f + 1 < endFrame) {
-            nextTick = static_cast<int64_t>(
-                static_cast<double>(f + 1) * 48000.0 * fpsDen / fpsNum);
+            nextTick = frameIndexToTick(
+                f + 1, static_cast<uint32_t>(fpsNum), static_cast<uint32_t>(fpsDen));
         }
         cframe = m_frameRenderCb(tick, nextTick, outW, outH, true);
+        if (cframe && cframe->segmentCacheHit)
+            ++segmentCacheHits;
+        else
+            ++segmentCacheMisses;
 
         // §4.2 export 16F passthrough: a single full-frame opaque >8-bit clip
         // arrives as a dual-payload frame (RGBA16F + an 8-bit BGRA copy).  For
@@ -761,6 +768,12 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
 
     auto endTime = std::chrono::steady_clock::now();
     double totalElapsed = std::chrono::duration<double>(endTime - startTime).count();
+    const uint64_t cacheLookups = segmentCacheHits + segmentCacheMisses;
+    const double cacheHitPercent = cacheLookups > 0
+        ? 100.0 * static_cast<double>(segmentCacheHits) / cacheLookups : 0.0;
+    spdlog::info("RndQ[{}]: composite segment cache: {} hit(s), {} miss(es) "
+                 "({:.1f}% reused); cached frames were still encoded",
+                 job.id, segmentCacheHits, segmentCacheMisses, cacheHitPercent);
     spdlog::info("RenderQueue: Job {} complete ({:.1f}s, {:.0f} fps)",
                  job.id, totalElapsed, totalFrames / totalElapsed);
     // Completion callback fires ONCE, in workerThread, after this returns.

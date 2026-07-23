@@ -32,6 +32,7 @@ struct TransformOverlayInfo
     float    rotation{0.0f};   ///< Degrees
     uint32_t srcW{0};          ///< Source frame width (after decode)
     uint32_t srcH{0};          ///< Source frame height (after decode)
+    int      srcRotation{0};    ///< Source display rotation, clockwise quarter-turn
     bool     directSize{false};///< If true, srcW/srcH are pixel dims in ref space (no fill-scale)
     bool     containFit{false}; ///< If true, use contain-fit (min) instead of cover-fit (max)
 
@@ -46,6 +47,12 @@ struct TransformOverlayInfo
     float clipPosX{0.0f}, clipPosY{0.0f};
     float clipScaleX{1.0f}, clipScaleY{1.0f};
     float clipRotation{0.0f};
+    float clipAnchorX{0.0f}, clipAnchorY{0.0f};
+
+    /// A whole GraphicClip can still use a tight inner content rectangle for
+    /// its handles. In that case Program Monitor gestures edit the OUTER clip
+    /// transform, not the inner text/shape transform stored in posX/scaleX.
+    bool editOuterClipTransform{false};
 
     /// Anchor point — layer-local offset from the layer's geometric
     /// center that acts as the pivot for rotation/scale (Premiere-style).
@@ -91,5 +98,11 @@ int hitTestHandle(const QPointF& widgetPos, const QPointF corners[4]);
 
 /// Test if a widget-space point is inside the overlay bounding box.
 bool hitTestBody(const QPointF& widgetPos, const QPointF corners[4]);
+
+/// Copy the outer GraphicClip transform being edited through a tight content
+/// rectangle into the standard full-source transform used by mask drawing.
+/// Keeping this pure makes the live-drag mask-owner contract testable.
+void syncMaskOwnerFromOuterClip(const TransformOverlayInfo& edited,
+                                TransformOverlayInfo& maskOwner) noexcept;
 
 } // namespace rt

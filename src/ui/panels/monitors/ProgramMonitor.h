@@ -179,8 +179,9 @@ public:
 
     /// Set a callback that composites the timeline at a given tick and returns
     /// a frame. This allows the compositor (from Step 10) to be plugged in.
-    /// Signature: shared_ptr<CachedFrame> composite(int64_t tick, uint32_t w, uint32_t h, bool scrubMode)
-    using CompositeCallback = std::function<std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h, bool scrubMode)>;
+    /// Signature: shared_ptr<CachedFrame> composite(tick, w, h, scrubMode, stillMode)
+    using CompositeCallback = std::function<std::shared_ptr<CachedFrame>(
+        int64_t tick, uint32_t w, uint32_t h, bool scrubMode, bool stillMode)>;
     void setCompositeCallback(CompositeCallback cb);
 
     /// Set a callback invoked whenever the playback-resolution dropdown

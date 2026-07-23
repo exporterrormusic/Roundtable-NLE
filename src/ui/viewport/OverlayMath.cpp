@@ -48,6 +48,8 @@ void computeOverlayCorners(
         // Clip-level position is in REF-1920 px; scale into canvas space.
         float clipPxX = overlay.clipPosX * (canvasW / REF_W);
         float clipPxY = overlay.clipPosY * (canvasH / REF_H);
+        float clipAnchorPxX = overlay.clipAnchorX * (canvasW / REF_W);
+        float clipAnchorPxY = overlay.clipAnchorY * (canvasH / REF_H);
 
         auto fwd = [&](float x, float y) -> QPointF {
             // Layer transform (inner): same as renderGraphicClip QPainter.
@@ -62,10 +64,12 @@ void computeOverlayCorners(
             float oy = dx * sinR + dy * cosR + cy + lay + overlay.posY;
 
             // Clip-level transform (outer): compositor blitLayerWithTransform
-            float rx = (ox - cx) * overlay.clipScaleX;
-            float ry = (oy - cy) * overlay.clipScaleY;
-            float fx = rx * clipCosR - ry * clipSinR + cx + clipPxX;
-            float fy = rx * clipSinR + ry * clipCosR + cy + clipPxY;
+            float rx = (ox - cx - clipAnchorPxX) * overlay.clipScaleX;
+            float ry = (oy - cy - clipAnchorPxY) * overlay.clipScaleY;
+            float fx = rx * clipCosR - ry * clipSinR
+                     + cx + clipPxX + clipAnchorPxX;
+            float fy = rx * clipSinR + ry * clipCosR
+                     + cy + clipPxY + clipAnchorPxY;
 
             // Map using canvas dimensions so coordinates in 1920x1080 space
             // map correctly even if displayed at half resolution.
@@ -107,16 +111,20 @@ void computeOverlayCorners(
         baseOffX = (outW - fittedW) * 0.5f;
         baseOffY = (outH - fittedH) * 0.5f;
     } else {
-        float srcW = static_cast<float>(overlay.srcW);
-        float srcH = static_cast<float>(overlay.srcH);
+        const int srcRotation = ((overlay.srcRotation % 360) + 360) % 360;
+        const bool quarterTurn = srcRotation == 90 || srcRotation == 270;
+        float srcW = static_cast<float>(
+            quarterTurn ? overlay.srcH : overlay.srcW);
+        float srcH = static_cast<float>(
+            quarterTurn ? overlay.srcW : overlay.srcH);
         float scaleToFitW = outW / srcW;
         float scaleToFitH = outH / srcH;
         float fitScale = overlay.containFit
             ? std::min(scaleToFitW, scaleToFitH)
             : std::max(scaleToFitW, scaleToFitH);
 
-        fittedW = static_cast<float>(overlay.srcW) * fitScale;
-        fittedH = static_cast<float>(overlay.srcH) * fitScale;
+        fittedW = srcW * fitScale;
+        fittedH = srcH * fitScale;
         baseOffX = (outW - fittedW) * 0.5f;
         baseOffY = (outH - fittedH) * 0.5f;
     }
@@ -192,6 +200,18 @@ bool hitTestBody(const QPointF& widgetPos, const QPointF corners[4])
     bool allPos = (c0 >= 0) && (c1 >= 0) && (c2 >= 0) && (c3 >= 0);
     bool allNeg = (c0 <= 0) && (c1 <= 0) && (c2 <= 0) && (c3 <= 0);
     return allPos || allNeg;
+}
+
+void syncMaskOwnerFromOuterClip(const TransformOverlayInfo& edited,
+                                TransformOverlayInfo& maskOwner) noexcept
+{
+    maskOwner.posX = edited.clipPosX;
+    maskOwner.posY = edited.clipPosY;
+    maskOwner.scaleX = edited.clipScaleX;
+    maskOwner.scaleY = edited.clipScaleY;
+    maskOwner.rotation = edited.clipRotation;
+    maskOwner.anchorX = edited.clipAnchorX;
+    maskOwner.anchorY = edited.clipAnchorY;
 }
 
 } // namespace rt

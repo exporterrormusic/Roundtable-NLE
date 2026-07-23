@@ -11,6 +11,7 @@
 #include "effects/Vignette.h"
 #include "effects/Letterbox.h"
 #include "effects/FillChannel.h"
+#include "effects/Tint.h"
 
 namespace rt {
 
@@ -114,6 +115,31 @@ std::unique_ptr<Effect> Letterbox::clone() const
 }
 
 // ── FillLeftWithRight ─────────────────────────────────────────────────────
+
+// Tint (Premiere-style luminance remap)
+
+Tint::Tint()
+    : Effect(EffectType::Tint)
+{
+    addParam("Map Black To R", 0.0f, 0.0f, 1.0f);
+    addParam("Map Black To G", 0.0f, 0.0f, 1.0f);
+    addParam("Map Black To B", 0.0f, 0.0f, 1.0f);
+    addParam("Map White To R", 1.0f, 0.0f, 1.0f);
+    addParam("Map White To G", 1.0f, 0.0f, 1.0f);
+    addParam("Map White To B", 1.0f, 0.0f, 1.0f);
+    addParam("Amount to Tint", 100.0f, 0.0f, 100.0f);
+}
+
+std::unique_ptr<Effect> Tint::clone() const
+{
+    auto copy = std::make_unique<Tint>();
+    copy->m_enabled = m_enabled;
+    for (size_t i = 0; i < m_params.size(); ++i)
+        copy->m_params[i].track = m_params[i].track;
+    return copy;
+}
+
+// FillLeftWithRight
 
 FillLeftWithRight::FillLeftWithRight()
     : Effect(EffectType::FillLeftWithRight)

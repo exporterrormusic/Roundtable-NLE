@@ -788,6 +788,12 @@ std::unique_ptr<Command> EditOperations::closeGap(
     if (trackIndex >= timeline.trackCount() || gapEnd <= gapStart)
         return nullptr;
 
+    // A gap on a locked track is not an editable target. In particular, do
+    // not let that locked track act as the origin of a ripple that moves
+    // otherwise-unlocked sync-locked tracks.
+    if (timeline.track(trackIndex)->isLocked())
+        return nullptr;
+
     int64_t gapDuration = gapEnd - gapStart;
 
     // Closing the gap shifts every clip whose start is at or after gapEnd
@@ -798,7 +804,7 @@ std::unique_ptr<Command> EditOperations::closeGap(
     auto participates = [&](size_t ti) -> bool {
         Track* t = timeline.track(ti);
         if (t->isLocked()) return false;        // padlocked → read-only, never moves
-        if (ti == trackIndex) return true;      // the edited track always closes its gap
+        if (ti == trackIndex) return true;      // edited track was validated unlocked above
         return t->isSyncLocked();               // others follow only when sync-locked
     };
 

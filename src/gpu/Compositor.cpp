@@ -94,11 +94,17 @@ void Compositor::updateSSBO()
     {
         const auto& layer = m_layers[i];
         params.transform[i] = layer.transform;
+        params.motionTransformStart[i] = layer.motionTransformStart;
+        params.motionTransformEnd[i] = layer.motionTransformEnd;
+        params.motionSampleCount[i] = std::clamp(layer.motionSampleCount, 1, 8);
         params.opacity[i]   = layer.opacity;
         params.blendMode[i] = static_cast<int32_t>(layer.blendMode);
         params.enabled[i]   = layer.enabled ? 1 : 0;
         params.cropRect[i]  = glm::vec4(layer.cropLeft, layer.cropRight,
                                         layer.cropTop, layer.cropBottom);
+        params.contentRect[i] = glm::vec4(
+            layer.contentLeft, layer.contentTop,
+            layer.contentRight, layer.contentBottom);
         params.isPacked[i]  = layer.isPacked ? 1 : 0;
         params.isPMA[i]     = layer.isPMA ? 1 : 0;
         params.needsSwapRB[i] = layer.needsSwapRB ? 1 : 0;
@@ -109,17 +115,21 @@ void Compositor::updateSSBO()
     for (uint32_t i = m_layerCount; i < kMaxCompositorLayers; ++i)
     {
         params.transform[i] = glm::mat4(1.0f);
+        params.motionTransformStart[i] = glm::mat4(1.0f);
+        params.motionTransformEnd[i] = glm::mat4(1.0f);
+        params.motionSampleCount[i] = 1;
         params.opacity[i]   = 0.0f;
         params.blendMode[i] = 0;
         params.enabled[i]   = 0;
         params.cropRect[i]  = glm::vec4(0.0f);
+        params.contentRect[i] = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
         params.isPacked[i]  = 0;
         params.isPMA[i]     = 0;
         params.needsSwapRB[i] = 0;
         params.hasMask[i]   = 0;
     }
 
-    m_layerParamsBuffer.upload(&params, sizeof(params));
+    m_layerParamsBuffers[m_outputRingIdx].upload(&params, sizeof(params));
 }
 
 // ── updateDescriptorSet ─────────────────────────────────────────────────────
@@ -127,6 +137,7 @@ void Compositor::updateSSBO()
 void Compositor::updateDescriptorSet()
 {
     VkDevice dev = m_device->handle();
+    VkDescriptorSet descriptorSet = m_descriptorSets[m_outputRingIdx];
 
     // ── Binding 0: output storage image ─────────────────────────────────
     VkDescriptorImageInfo outputInfo{};
@@ -136,7 +147,7 @@ void Compositor::updateDescriptorSet()
     VkWriteDescriptorSet writes[4] = {};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = m_descriptorSet;
+    writes[0].dstSet          = descriptorSet;
     writes[0].dstBinding      = 0;
     writes[0].dstArrayElement = 0;
     writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -160,7 +171,7 @@ void Compositor::updateDescriptorSet()
     }
 
     writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = m_descriptorSet;
+    writes[1].dstSet          = descriptorSet;
     writes[1].dstBinding      = 1;
     writes[1].dstArrayElement = 0;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -169,12 +180,12 @@ void Compositor::updateDescriptorSet()
 
     // ── Binding 2: layer params SSBO ────────────────────────────────────
     VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = m_layerParamsBuffer.handle();
+    bufferInfo.buffer = m_layerParamsBuffers[m_outputRingIdx].handle();
     bufferInfo.offset = 0;
     bufferInfo.range  = sizeof(LayerParamsGPU);
 
     writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet          = m_descriptorSet;
+    writes[2].dstSet          = descriptorSet;
     writes[2].dstBinding      = 2;
     writes[2].dstArrayElement = 0;
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -197,7 +208,7 @@ void Compositor::updateDescriptorSet()
     }
 
     writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet          = m_descriptorSet;
+    writes[3].dstSet          = descriptorSet;
     writes[3].dstBinding      = 3;
     writes[3].dstArrayElement = 0;
     writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -235,24 +246,25 @@ bool Compositor::composite(VkCommandBuffer cmd)
     // binding 0 points at the new slot.
     advanceOutputRing();
 
-    // SSBO only needs re-uploading when the layer set changed, but the
-    // descriptor set MUST be rewritten every composite because binding 0
-    // (the output storage image) just rotated to a different ring slot.
-    // Re-recording happens after the previous submit's fence was waited
-    // (CompositeEngine beginRecording), so updating the shared descriptor
-    // set here is safe w.r.t. in-flight work.
-    if (m_layersDirty)
-    {
-        updateSSBO();
-        m_layersDirty = false;
-    }
+    // Each ring slot owns a separate SSBO.  Populate the slot selected for
+    // this dispatch even when the logical layer list did not change: a slot
+    // may not have been used since the last setLayers()/setPairs() call.
+    // This also keeps repeated composites through the public API correct.
+    updateSSBO();
+    m_layersDirty = false;
+
+    // Binding 0 and the SSBO binding both follow the selected ring slot, so
+    // update only that slot's descriptor set.  Older in-flight sets remain
+    // untouched.
     updateDescriptorSet();
 
     // Reset and write timestamp queries
-    if (m_queryPool != VK_NULL_HANDLE)
+    VkQueryPool queryPool = m_queryPools[m_outputRingIdx];
+    VkDescriptorSet descriptorSet = m_descriptorSets[m_outputRingIdx];
+    if (queryPool != VK_NULL_HANDLE)
     {
-        vkCmdResetQueryPool(cmd, m_queryPool, 0, 2);
-        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_queryPool, 0);
+        vkCmdResetQueryPool(cmd, queryPool, 0, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0);
     }
 
     // Bind compute pipeline
@@ -260,7 +272,7 @@ bool Compositor::composite(VkCommandBuffer cmd)
 
     // Bind descriptor set
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            m_pipelineLayout, 0, 1, &m_descriptorSet,
+                            m_pipelineLayout, 0, 1, &descriptorSet,
                             0, nullptr);
 
     // Push constants
@@ -269,6 +281,8 @@ bool Compositor::composite(VkCommandBuffer cmd)
     pc.height        = static_cast<int32_t>(m_config.outputHeight);
     pc.hqSample      = m_hqSampling ? 1 : 0;
     pc.preserveAlpha = m_preserveAlpha ? 1 : 0;
+    pc.outputSwizzleRB = m_outputSwizzleRB ? 1 : 0;
+    pc._pad[0] = pc._pad[1] = pc._pad[2] = 0;
     vkCmdPushConstants(cmd, m_pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 
@@ -278,9 +292,9 @@ bool Compositor::composite(VkCommandBuffer cmd)
     vkCmdDispatch(cmd, groupsX, groupsY, 1);
 
     // End timestamp
-    if (m_queryPool != VK_NULL_HANDLE)
+    if (queryPool != VK_NULL_HANDLE)
     {
-        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_queryPool, 1);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 1);
     }
 
     // Update stats
@@ -307,11 +321,12 @@ bool Compositor::compositeSync()
     m_cmdPool->endSingleTime(cmd, m_queue);
 
     // Read back GPU timestamp results
-    if (result && m_queryPool != VK_NULL_HANDLE)
+    VkQueryPool queryPool = m_queryPools[m_outputRingIdx];
+    if (result && queryPool != VK_NULL_HANDLE)
     {
         uint64_t timestamps[2] = {};
         VkResult qr = vkGetQueryPoolResults(
-            m_device->handle(), m_queryPool,
+            m_device->handle(), queryPool,
             0, 2,
             sizeof(timestamps), timestamps,
             sizeof(uint64_t),
@@ -339,7 +354,8 @@ bool Compositor::resize(uint32_t width, uint32_t height)
     m_config.outputWidth  = width;
     m_config.outputHeight = height;
 
-    m_readbackStaging.destroy(); // recreated on next readback
+    for (auto& staging : m_readbackStaging)
+        staging.destroy(); // recreated per slot on next readback
     // deviceWaitIdle() above guarantees no in-flight work references any
     // ring slot, so it is safe to drop them all and rebuild at the new
     // size.  createOutputTexture() repopulates the whole ring.
@@ -371,14 +387,15 @@ bool Compositor::readbackOutput(std::vector<uint8_t>& outPixels)
     const uint32_t w = m_config.outputWidth;
     const uint32_t h = m_config.outputHeight;
     const VkDeviceSize imageSize = static_cast<VkDeviceSize>(w) * h * 4; // RGBA8
+    auto& readbackStaging = m_readbackStaging[m_outputRingIdx];
 
     // (Re)create persistent staging buffer if needed (avoids per-frame alloc)
-    if (m_readbackStaging.handle() == VK_NULL_HANDLE ||
-        m_readbackStaging.size() < imageSize)
+    if (readbackStaging.handle() == VK_NULL_HANDLE ||
+        readbackStaging.size() < imageSize)
     {
-        m_readbackStaging.destroy();
-        if (!m_readbackStaging.create(m_allocator->handle(), imageSize,
-                                       BufferUsage::Readback))
+        readbackStaging.destroy();
+        if (!readbackStaging.create(m_allocator->handle(), imageSize,
+                                    BufferUsage::Readback))
         {
             spdlog::error("Compositor: Failed to create readback staging buffer");
             return false;
@@ -406,7 +423,7 @@ bool Compositor::readbackOutput(std::vector<uint8_t>& outPixels)
 
     vkCmdCopyImageToBuffer(cmd, m_outputTexture->image(),
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           m_readbackStaging.handle(), 1, &region);
+                           readbackStaging.handle(), 1, &region);
 
     // Transition back to GENERAL for next composite
     m_outputTexture->transitionLayout(cmd,
@@ -417,14 +434,14 @@ bool Compositor::readbackOutput(std::vector<uint8_t>& outPixels)
 
     // Read from staging buffer
     outPixels.resize(static_cast<size_t>(imageSize));
-    void* mapped = m_readbackStaging.map();
+    void* mapped = readbackStaging.map();
     if (!mapped)
     {
         spdlog::error("Compositor: Failed to map readback buffer");
         return false;
     }
     std::memcpy(outPixels.data(), mapped, static_cast<size_t>(imageSize));
-    m_readbackStaging.unmap();
+    readbackStaging.unmap();
 
     return true;
 }
@@ -440,14 +457,15 @@ bool Compositor::recordReadback(VkCommandBuffer cmd)
     const uint32_t w = m_config.outputWidth;
     const uint32_t h = m_config.outputHeight;
     const VkDeviceSize imageSize = static_cast<VkDeviceSize>(w) * h * 4;
+    auto& readbackStaging = m_readbackStaging[m_outputRingIdx];
 
     // Ensure persistent readback staging buffer exists
-    if (m_readbackStaging.handle() == VK_NULL_HANDLE ||
-        m_readbackStaging.size() < imageSize)
+    if (readbackStaging.handle() == VK_NULL_HANDLE ||
+        readbackStaging.size() < imageSize)
     {
-        m_readbackStaging.destroy();
-        if (!m_readbackStaging.create(m_allocator->handle(), imageSize,
-                                       BufferUsage::Readback))
+        readbackStaging.destroy();
+        if (!readbackStaging.create(m_allocator->handle(), imageSize,
+                                    BufferUsage::Readback))
         {
             spdlog::error("Compositor: Failed to create readback staging buffer");
             return false;
@@ -483,7 +501,7 @@ bool Compositor::recordReadback(VkCommandBuffer cmd)
 
     vkCmdCopyImageToBuffer(cmd, m_outputTexture->image(),
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           m_readbackStaging.handle(), 1, &region);
+                           readbackStaging.handle(), 1, &region);
 
     // Transition back to GENERAL for next composite
     m_outputTexture->transitionLayout(cmd,
@@ -497,23 +515,31 @@ bool Compositor::recordReadback(VkCommandBuffer cmd)
 
 bool Compositor::mapAndCopyReadback(std::vector<uint8_t>& outPixels)
 {
+    return mapAndCopyReadbackSlot(m_outputRingIdx, outPixels);
+}
+
+bool Compositor::mapAndCopyReadbackSlot(uint32_t slot,
+                                        std::vector<uint8_t>& outPixels)
+{
     if (!m_initialized) return false;
+    if (slot >= kOutputRing) return false;
+    auto& readbackStaging = m_readbackStaging[slot];
 
     // Guard against destroyed staging buffer (e.g. compositor resized
     // between recordReadback() and this deferred call via lazyReadback).
-    if (m_readbackStaging.handle() == VK_NULL_HANDLE) return false;
+    if (readbackStaging.handle() == VK_NULL_HANDLE) return false;
 
     const VkDeviceSize imageSize = static_cast<VkDeviceSize>(m_config.outputWidth)
                                    * m_config.outputHeight * 4;
 
     outPixels.resize(static_cast<size_t>(imageSize));
-    void* mapped = m_readbackStaging.map();
+    void* mapped = readbackStaging.map();
     if (!mapped) {
         spdlog::error("Compositor: Failed to map readback staging buffer");
         return false;
     }
     std::memcpy(outPixels.data(), mapped, static_cast<size_t>(imageSize));
-    m_readbackStaging.unmap();
+    readbackStaging.unmap();
     return true;
 }
 

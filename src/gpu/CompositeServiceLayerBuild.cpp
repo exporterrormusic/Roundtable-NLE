@@ -10,6 +10,7 @@
 
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
+#include "playback/FrameFallbackPolicy.h"
 #include "decode/VideoFrameMapping.h"
 #include "Constants.h"
 #include "timeline/AdjustmentClip.h"
@@ -44,6 +45,7 @@
 #include "SpineRenderer.h"
 
 #include <thread>
+#include <algorithm>
 #include <unordered_set>
 #include <unordered_map>
 #include <mutex>
@@ -56,6 +58,7 @@ namespace rt {
 std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     int64_t tick, uint32_t outW, uint32_t outH,
     bool scrubMode, bool playbackNonBlocking,
+    ResolutionTier requestTier, bool stillMode,
     int& clipsAtTick, bool perfLog,
     std::unique_lock<std::recursive_mutex>& lock,
     bool& gpuSpineUsedThisFrame)
@@ -99,40 +102,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     m_gpuSpinePrevLayer = -1;
     m_gpuSpineJustRendered = false;
 
-    // ── Adjustment-layer pre-pass ────────────────────────────────────────
-    // Track convention in this app: lower index = HIGHER in the visual stack
-    // (see TimelinePanelTracks: "Video: topmost (lowest index) = highest
-    // number"). An adjustment on track T must therefore affect clips on
-    // tracks with index > T (visually below it), matching Premiere/AE.
-    //
-    // adjustmentEffectsForTrack[T] = effects from every adjustment clip
-    // active at this tick on any track with index < T (above T in the
-    // visual stack), in top-down order so they post-process correctly.
     const size_t trackCnt = m_timeline->trackCount();
-    std::vector<std::vector<EffectStack::EffectSnapshot>>
-        adjustmentEffectsForTrack(trackCnt);
-    {
-        std::vector<EffectStack::EffectSnapshot> running;
-        for (size_t ti = 0; ti < trackCnt; ++ti) {
-            adjustmentEffectsForTrack[ti] = running;  // applies BEFORE this track contributes
-            auto* tr = m_timeline->track(ti);
-            if (!tr || tr->type() != TrackType::Video || tr->isMuted())
-                continue;
-            for (auto* clip : tr->clipsAtTime(tick)) {
-                if (!clip || !clip->isEnabled()) continue;
-                auto* adj = dynamic_cast<AdjustmentClip*>(clip);
-                if (!adj || !adj->effects().hasActiveEffects()) continue;
-                auto eval = adj->effects().evaluate(tick - adj->timelineIn());
-                for (auto& e : eval)
-                    running.push_back(std::move(e));
-            }
-        }
-    }
 
     for (size_t ti_rev = trackCnt; ti_rev > 0; --ti_rev) {
-        const size_t currentTrackIdx = ti_rev - 1;
-        const auto& pendingAdjustmentEffects =
-            adjustmentEffectsForTrack[currentTrackIdx];
         auto* track = m_timeline->track(ti_rev - 1);
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
@@ -174,14 +146,15 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         for (auto* clip : active) {
             auto perfClipT0 = std::chrono::high_resolution_clock::now();
             if (!clip->isEnabled()) continue;
-            // Adjustment layers don't render a layer of their own — they
-            // contribute their effect stack to lower tracks (harvested after
-            // this inner loop). Skip BEFORE ++clipsAtTick so the settle
-            // window's "layers.size() < clipsAtTick" check doesn't fire and
-            // return an empty sentinel (black flash) every time the cache
-            // is invalidated by an effect add/move.
-            if (dynamic_cast<AdjustmentClip*>(clip))
+            // Adjustment layers are explicit render-stream boundaries.  The
+            // GPU compositor flattens everything below this marker and runs
+            // the stack once over the full frame.  Do not count the marker as
+            // a decoded clip: it intentionally has no source frame.
+            if (auto* adjustment = dynamic_cast<AdjustmentClip*>(clip)) {
+                appendAdjustmentLayerBoundary(
+                    layers, *adjustment, tick - adjustment->timelineIn());
                 continue;
+            }
             ++clipsAtTick;
 
             // Record this clip/character as active this frame so its sticky
@@ -266,6 +239,89 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 sy  *= bo.scale;
                 rot += bo.rot;
             }
+
+            // Evaluate the transform exposure endpoints for shutter-angle
+            // motion blur. The source frame stays at the current time; only
+            // Position, Scale, Rotation, and Anchor are sampled temporally.
+            LayerTransformSample motionStart{px, py, sx, sy, rot, ancX, ancY};
+            LayerTransformSample motionEnd = motionStart;
+            int32_t motionSampleCount = 1;
+            float shutterAngle = 0.0f;
+            try {
+                shutterAngle = std::clamp(
+                    clip->shutterAngle().evaluate(localTick), 0.0f, 720.0f);
+            } catch (...) {
+                shutterAngle = 0.0f;
+            }
+            const double sequenceFps = m_timeline->settings().frameRate();
+            if (shutterAngle > 0.01f && sequenceFps > 0.0 && clip->duration() > 1) {
+                const double frameTicks =
+                    static_cast<double>(kTicksPerSecond) / sequenceFps;
+                const double exposureTicks = frameTicks *
+                    (static_cast<double>(shutterAngle) / 360.0);
+                const int64_t maxLocalTick =
+                    std::max<int64_t>(0, clip->duration() - 1);
+                const int64_t startTick = std::clamp<int64_t>(
+                    static_cast<int64_t>(std::llround(
+                        static_cast<double>(localTick) - exposureTicks * 0.5)),
+                    0, maxLocalTick);
+                const int64_t endTick = std::clamp<int64_t>(
+                    static_cast<int64_t>(std::llround(
+                        static_cast<double>(localTick) + exposureTicks * 0.5)),
+                    0, maxLocalTick);
+
+                auto evaluateMotionAt = [&](int64_t sampleTick) {
+                    LayerTransformSample sample;
+                    const auto p2 = evaluatePosition2D(
+                        clip->positionX(), clip->positionY(), sampleTick);
+                    sample.posX = p2.first * scaleToOutX;
+                    sample.posY = p2.second * scaleToOutY;
+                    sample.scX = clip->scaleX().evaluate(sampleTick);
+                    sample.scY = clip->scaleY().evaluate(sampleTick);
+                    sample.rot = clip->rotation().evaluate(sampleTick);
+                    sample.anchorX = clip->anchorX().evaluate(sampleTick) * scaleToOutX;
+                    sample.anchorY = clip->anchorY().evaluate(sampleTick) * scaleToOutY;
+                    if (auto* puppetClip = dynamic_cast<PngPuppetClip*>(clip)) {
+                        const auto bo = puppetClip->breathing(ticksToSeconds(
+                            clip->timelineIn() + sampleTick));
+                        sample.posX += bo.dx * scaleToOutX;
+                        sample.posY += bo.dy * scaleToOutY;
+                        sample.scX *= bo.scale;
+                        sample.scY *= bo.scale;
+                        sample.rot += bo.rot;
+                    }
+                    return sample;
+                };
+
+                try {
+                    motionStart = evaluateMotionAt(startTick);
+                    motionEnd = evaluateMotionAt(endTick);
+                    const bool moved =
+                        std::abs(motionStart.posX - motionEnd.posX) > 0.001f ||
+                        std::abs(motionStart.posY - motionEnd.posY) > 0.001f ||
+                        std::abs(motionStart.scX - motionEnd.scX) > 0.00001f ||
+                        std::abs(motionStart.scY - motionEnd.scY) > 0.00001f ||
+                        std::abs(motionStart.rot - motionEnd.rot) > 0.0001f ||
+                        std::abs(motionStart.anchorX - motionEnd.anchorX) > 0.001f ||
+                        std::abs(motionStart.anchorY - motionEnd.anchorY) > 0.001f;
+                    if (moved)
+                        motionSampleCount = 8;
+                } catch (...) {
+                    motionStart = {px, py, sx, sy, rot, ancX, ancY};
+                    motionEnd = motionStart;
+                    motionSampleCount = 1;
+                }
+            }
+
+            auto assignMotionBlur = [&](LayerInfo& layer, float composeFit) {
+                layer.motionStart = motionStart;
+                layer.motionEnd = motionEnd;
+                layer.motionStart.scX *= composeFit;
+                layer.motionStart.scY *= composeFit;
+                layer.motionEnd.scX *= composeFit;
+                layer.motionEnd.scY *= composeFit;
+                layer.motionSampleCount = motionSampleCount;
+            };
 
             // Apply transition opacity modulation (for fades & dissolves).
             // Wipe transitions store metadata for GPU spatial blending.
@@ -408,6 +464,13 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
 
             std::shared_ptr<CachedFrame> frame;
+            std::shared_ptr<CachedFrame> temporalFrame;
+            float temporalPhase = 0.0f;
+            int32_t temporalMode = 0;
+            bool sourceFallbackPending = false;
+            bool contentStableForStateCache = false;
+            int64_t temporalPrimaryFrameNum = -1;
+            int64_t temporalSecondFrameNum = -1;
             bool gpuSpineZeroCopy = false;
             bool isPreRenderedSpine = false;  // set when using cached spine video
             bool cpuSpineRendered  = false;   // set when CPU Spine fallback succeeds
@@ -437,8 +500,27 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // the lookahead prewarm call the same function, so what
                 // gets prefetched is exactly what gets rendered.
                 auto* mediaInfo = m_mediaPool->getInfo(handle);
-                int64_t frameNum =
-                    mapTickToSourceFrame(*videoClip, tick, mediaInfo).frame;
+                contentStableForStateCache = mediaInfo &&
+                    (mediaInfo->duration <= 0.0 || mediaInfo->frameCount <= 1);
+                const auto mapped =
+                    mapTickToSourceFrame(*videoClip, tick, mediaInfo);
+                const TimeInterpolation interpolation =
+                    videoClip->timeInterpolation();
+                const bool wantsTemporal =
+                    interpolation != TimeInterpolation::FrameSampling &&
+                    mapped.blendPhase > 0.000001 &&
+                    mapped.lowerFrame != mapped.upperFrame;
+                // Sampling uses Premiere's nearest-frame behavior.  Both
+                // temporal modes synthesize between floor/ceil endpoints.
+                const int64_t frameNum = wantsTemporal
+                    ? mapped.lowerFrame : mapped.frame;
+                temporalPrimaryFrameNum = frameNum;
+                temporalSecondFrameNum = wantsTemporal
+                    ? mapped.upperFrame : -1;
+                temporalPhase = wantsTemporal
+                    ? static_cast<float>(mapped.blendPhase) : 0.0f;
+                temporalMode = wantsTemporal
+                    ? static_cast<int32_t>(interpolation) : 0;
 
                 const bool isVideoChar = videoClip->isVideoCharacter();
 
@@ -466,7 +548,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // Premiere Pro does the same — scrubs are lower quality.
                 auto baseVideoTier = m_forceFullResolution.load()
                     ? ResolutionTier::Full
-                    : playbackTier();
+                    : requestTier;
                 ResolutionTier charVideoTier;
                 if (scrubMode && !m_forceFullResolution.load()) {
                     // Always drop at least one tier during scrub/4x playback
@@ -493,13 +575,46 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 if (texCache && m_engine->isGpuCompositeEnabled()) {
                     auto gpuHit = texCache->get(handle, frameNum,
                         static_cast<uint8_t>(charVideoTier));
-                    if (gpuHit.found) {
+                    auto temporalGpuHit = wantsTemporal
+                        ? texCache->get(handle, temporalSecondFrameNum,
+                            static_cast<uint8_t>(charVideoTier))
+                        : GpuTextureCache::LookupResult{};
+                    const bool temporalGpuCompatible =
+                        !wantsTemporal ||
+                        (temporalGpuHit.found &&
+                         temporalGpuHit.width == gpuHit.width &&
+                         temporalGpuHit.height == gpuHit.height &&
+                         temporalGpuHit.isPacked == gpuHit.isPacked);
+                    // Never let a partial temporal cache hit escape as a raw
+                    // descriptor. Only the all-endpoints-ready branch below
+                    // copies descriptors into LayerInfo, records both cache
+                    // identities, and lets RenderGraph pin both until fence
+                    // completion. A primary-only hit falls through to owned
+                    // CachedFrame endpoint resolution.
+                    if (gpuHit.found && temporalGpuCompatible) {
                         LayerInfo layer;
+                        layer.contentStableForStateCache = contentStableForStateCache;
                         layer.gpuTextureReady = true;
                         layer.gpuDescriptor   = gpuHit.descriptor;
+                        layer.gpuCacheBacked = true;
+                        layer.gpuCacheMediaId = handle;
+                        layer.gpuCacheFrameNumber = frameNum;
+                        layer.gpuCacheTier = static_cast<uint8_t>(charVideoTier);
                         layer.frameWidth      = gpuHit.width;
                         layer.frameHeight     = gpuHit.height;
-                        layer.srcRotation     = mediaInfo ? mediaInfo->rotation : 0;
+                        if (wantsTemporal) {
+                            layer.temporalMode = temporalMode;
+                            layer.temporalPhase = temporalPhase;
+                            layer.temporalGpuTextureReady = true;
+                            layer.temporalGpuDescriptor = temporalGpuHit.descriptor;
+                            layer.temporalGpuCacheBacked = true;
+                            layer.temporalGpuCacheMediaId = handle;
+                            layer.temporalGpuCacheFrameNumber = temporalSecondFrameNum;
+                            layer.temporalGpuCacheTier =
+                                static_cast<uint8_t>(charVideoTier);
+                        }
+                        layer.srcRotation = mediaInfo
+                            ? mediaInfo->rotation : videoClip->sourceRotation();
                         layer.opacity  = opac;
                         layer.posX     = px;
                         layer.posY     = py;
@@ -529,11 +644,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                             layer.scY *= kComposeFit;
                             layer.containFit = true;
                         }
+                        assignMotionBlur(layer, isVideoChar ? 0.85f : 1.0f);
                         // Portrait character frames need contain-fit.
                         // Packed-alpha: use the flag stored in the GPU cache
                         // entry at upload time â€” avoids fragile height heuristics.
                         layer.isPacked = gpuHit.isPacked;
                         layer.isPMA    = gpuHit.isPMA;
+                        layer.contentBoundsValid = gpuHit.contentBoundsValid;
+                        layer.contentLeft = gpuHit.contentLeft;
+                        layer.contentTop = gpuHit.contentTop;
+                        layer.contentRight = gpuHit.contentRight;
+                        layer.contentBottom = gpuHit.contentBottom;
                         // Wipe transition metadata
                         if (activeWipeProgress >= 0.0f) {
                             layer.wipeType        = activeWipeType;
@@ -554,12 +675,6 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         // Opacity masks — snapshot at the same local time
                         if (clip->maskCount() > 0)
                             layer.masks = evaluateMaskStates(clip->masks(), localTick);
-                        // Append adjustment-layer effects from tracks above.
-                        if (!pendingAdjustmentEffects.empty()) {
-                            layer.effects.insert(layer.effects.end(),
-                                                 pendingAdjustmentEffects.begin(),
-                                                 pendingAdjustmentEffects.end());
-                        }
                         if (perfLog) {
                             auto perfClipT1 = std::chrono::high_resolution_clock::now();
                             double clipMs = std::chrono::duration<double, std::milli>(
@@ -582,7 +697,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     // open) — exactly the pattern suspected of being
                     // behind the 6 s LAYER-SLOW events.
                     auto rmfT0 = std::chrono::high_resolution_clock::now();
-                    frame = resolveMediaFrame(handle, frameNum, charVideoTier, scrubMode);
+                    frame = resolveMediaFrame(handle, frameNum, charVideoTier,
+                                              scrubMode,
+                                              /*exactCacheOnly=*/wantsTemporal,
+                                              stillMode);
+                    // MediaPool may return a nearby/last-good frame to keep
+                    // sequential playback smooth.  It is provisional input,
+                    // not the render for this timeline tick.  In particular,
+                    // adjustment effects must not turn it into a persistent
+                    // composite-cache entry under the requested tick.
+                    sourceFallbackPending =
+                        frame && frame->frameNumber != frameNum;
                     auto rmfT1 = std::chrono::high_resolution_clock::now();
                     const double rmfMs = std::chrono::duration<double, std::milli>(
                         rmfT1 - rmfT0).count();
@@ -594,10 +719,79 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     }
                 }
 
+                // Resolve the later endpoint independently.  During normal
+                // playback this remains non-blocking and schedules the cache
+                // miss; export's force-exact path resolves it synchronously.
+                // Never blend against resolveMediaFrame's stale fallback.
+                if (wantsTemporal) {
+                    temporalFrame = resolveMediaFrame(
+                        handle, temporalSecondFrameNum, charVideoTier, scrubMode,
+                        /*exactCacheOnly=*/true, stillMode);
+                    const bool exactEndpointsReady =
+                        frame && frame->frameNumber == temporalPrimaryFrameNum &&
+                        temporalFrame &&
+                        temporalFrame->frameNumber == temporalSecondFrameNum &&
+                        frame->width == temporalFrame->width &&
+                        frame->height == temporalFrame->height;
+                    if (!exactEndpointsReady) {
+                        // While either endpoint warms, show Premiere-style
+                        // nearest sampling instead of always holding the lower
+                        // frame. Reuse an already-held exact endpoint when it
+                        // is the mapped nearest; otherwise use the ordinary
+                        // best-effort playback resolver for that one frame.
+                        std::shared_ptr<CachedFrame> nearest;
+                        if (mapped.frame == temporalPrimaryFrameNum && frame &&
+                            frame->frameNumber == mapped.frame) {
+                            nearest = frame;
+                        } else if (mapped.frame == temporalSecondFrameNum &&
+                                   temporalFrame &&
+                                   temporalFrame->frameNumber == mapped.frame) {
+                            nearest = temporalFrame;
+                        }
+                        if (!nearest) {
+                            nearest = resolveMediaFrame(handle, mapped.frame,
+                                                        charVideoTier, scrubMode,
+                                                        /*exactCacheOnly=*/false,
+                                                        stillMode);
+                        }
+                        frame = std::move(nearest);
+                        temporalFrame.reset();
+                        temporalMode = 0;
+                        temporalPhase = 0.0f;
+                        sourceFallbackPending = true;
+                    }
+                }
+
                 // Packed-alpha unpack is now handled entirely by:
                 //   - GPU path: compositor shader isPacked UV split
                 //   - CPU path: MediaPool::unpackPackedAlphaInPlace()
                 // No manual unpack needed here.
+            }
+            // Still ImageClip: resolve frame zero once through MediaPool.  The
+            // decoded frame is pinned, and the final-composite state cache can
+            // then reuse an unchanged stack of images across timeline ticks.
+            else if (auto* imageClip = dynamic_cast<ImageClip*>(clip)) {
+                if (!m_mediaPool || imageClip->mediaPath().empty()) continue;
+                const std::string& mediaPath = imageClip->mediaPath();
+                uint64_t handle = findMediaHandle(mediaPath);
+                if (handle == 0) {
+                    if (playbackNonBlocking && !m_forceFullResolution.load()) {
+                        if (m_mediaPool->isPathOpen(mediaPath)) {
+                            handle = m_mediaPool->open(mediaPath);
+                            if (handle != 0) registerMediaHandle(mediaPath, handle);
+                        } else {
+                            m_mediaPool->openAsync(mediaPath);
+                            continue;
+                        }
+                    } else {
+                        handle = m_mediaPool->open(mediaPath);
+                        if (handle != 0) registerMediaHandle(mediaPath, handle);
+                    }
+                }
+                if (handle == 0) continue;
+                contentStableForStateCache = true;
+                frame = resolveMediaFrame(handle, 0, requestTier, scrubMode,
+                                          /*exactCacheOnly=*/false, stillMode);
             }
             // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ TitleClip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
             else if (auto* titleClip = dynamic_cast<TitleClip*>(clip)) {
@@ -630,7 +824,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // Recursive composite of the nested sequence into a clean CPU
                 // BGRA frame (see CompositeServiceLayerBuildNested.cpp).
                 frame = buildSequenceClipFrame(seqClip, localTick, outW, outH,
-                                               scrubMode, lock);
+                                               scrubMode, requestTier, stillMode,
+                                               lock);
             }
             // ── PngPuppetClip (Veadotube-style 4-image character) ───────────
             // Use GLOBAL tick so talk/blink phase carries across cuts between
@@ -640,6 +835,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
             // ── TierListClip (ranking board) ────────────────────────────────
             else if (auto* tierClip = dynamic_cast<TierListClip*>(clip)) {
+                contentStableForStateCache = true;
                 uint32_t refW = 0, refH = 0;
                 if (m_project) {
                     refW = m_project->settings().resolution().width;
@@ -705,7 +901,26 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     }
                 }
                 if (stickyFrame) {
+                    // A regular footage clip must not borrow a sticky frame
+                    // from a distant source position after a seek. Character
+                    // loops intentionally wrap and may use their sticky image
+                    // briefly while the loop decoder catches up.
+                    auto* videoClip = dynamic_cast<VideoClip*>(clip);
+                    if (videoClip && !videoClip->isVideoCharacter() &&
+                        temporalPrimaryFrameNum >= 0 &&
+                        !isNearbyPlaybackFrame(temporalPrimaryFrameNum,
+                                               stickyFrame->frameNumber)) {
+                        stickyFrame.reset();
+                    }
+                }
+                if (stickyFrame) {
                     frame = stickyFrame;
+                    if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
+                        if (temporalPrimaryFrameNum >= 0 &&
+                            frame->frameNumber != temporalPrimaryFrameNum) {
+                            sourceFallbackPending = true;
+                        }
+                    }
                 } else {
                     static int s_skipLog = 0;
                     if (++s_skipLog <= 30 || s_skipLog % 60 == 0) {
@@ -740,6 +955,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
 
             LayerInfo layer;
+            layer.sourceFallbackPending = sourceFallbackPending;
+            layer.contentStableForStateCache = contentStableForStateCache;
             if (gpuSpineZeroCopy) {
                 // No CachedFrame needed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the spine FBO is already on the GPU
                 layer.gpuTextureReady = true;
@@ -797,7 +1014,14 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         frame->width, frame->height,
                         static_cast<size_t>(frame->width) * frame->height * 4,
                         cudaPacked, frame->premultipliedAlpha,
-                        frame->isLoopFrame);
+                        frame->isLoopFrame,
+                        frame->contentBoundsValid,
+                        frame->contentLeft, frame->contentTop,
+                        frame->contentRight, frame->contentBottom);
+                    layer.gpuCacheBacked = true;
+                    layer.gpuCacheMediaId = frame->mediaId;
+                    layer.gpuCacheFrameNumber = frame->frameNumber;
+                    layer.gpuCacheTier = static_cast<uint8_t>(frame->tier);
                     auto subT2 = std::chrono::high_resolution_clock::now();
 
                     // Transfer sole ownership to GpuTextureCache
@@ -826,6 +1050,28 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 layer.frame       = frame;
                 layer.frameWidth  = frame->width;
                 layer.frameHeight = frame->height;
+            }
+
+            if (frame && frame->contentBoundsValid) {
+                layer.contentBoundsValid = true;
+                layer.contentLeft = frame->contentLeft;
+                layer.contentTop = frame->contentTop;
+                layer.contentRight = frame->contentRight;
+                layer.contentBottom = frame->contentBottom;
+            }
+
+            if (temporalMode != 0 && temporalFrame && frame &&
+                temporalFrame->width == frame->width &&
+                temporalFrame->height == frame->height) {
+                layer.temporalMode = temporalMode;
+                layer.temporalPhase = temporalPhase;
+                layer.temporalFrame = temporalFrame;
+                // Resolve the second endpoint through uploadLayer(), even when
+                // it is already GPU resident.  That path promotes the shared
+                // texture into GpuTextureCache and pins it to the active
+                // submission slot; handing the raw descriptor straight to the
+                // graph here could let its CachedFrame owner disappear before
+                // the GPU fence signals.
             }
 
             // ── [FLICKER-DIAG] (Phase 0 of pipeline upgrade) ─────────────
@@ -910,8 +1156,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // PNG to canvas height + the shared 0.85× compose-fit.
             const bool isPuppetClip = (dynamic_cast<PngPuppetClip*>(clip) != nullptr);
             float finalSx = sx, finalSy = sy;
-            if (isVideoCharClip || isPreRenderedSpine || gpuSpineZeroCopy || cpuSpineRendered ||
-                isPuppetClip) {
+            const bool useComposeFit =
+                isVideoCharClip || isPreRenderedSpine || gpuSpineZeroCopy ||
+                cpuSpineRendered || isPuppetClip;
+            if (useComposeFit) {
                 constexpr float kComposeFit = 0.85f;
                 finalSx *= kComposeFit;
                 finalSy *= kComposeFit;
@@ -922,6 +1170,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             layer.rot     = rot;
             layer.anchorX = ancX;
             layer.anchorY = ancY;
+            assignMotionBlur(layer, useComposeFit ? 0.85f : 1.0f);
             layer.clipId  = clipId;
             layer.blendMode = clip->blendMode();
             layer.needsSwapRB = fromNestedSequence;
@@ -933,10 +1182,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // Check if source media is packed-alpha
                 bool srcPacked = false;
                 if (auto* vc = dynamic_cast<VideoClip*>(clip)) {
-                    auto* mi = m_mediaPool ? m_mediaPool->getInfo(
-                        m_openMediaHandles.count(vc->mediaPath())
-                            ? m_openMediaHandles[vc->mediaPath()] : 0)
-                        : nullptr;
+                    const uint64_t sourceHandle = findMediaHandle(vc->mediaPath());
+                    auto* mi = m_mediaPool
+                        ? m_mediaPool->getInfo(sourceHandle) : nullptr;
                     srcPacked = (mi && mi->packedAlpha);
                 }
                 if (isPreRenderedSpine && m_mediaPool) {
@@ -964,6 +1212,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
 
             // Read crop from clip if available
             if (auto* vc = dynamic_cast<VideoClip*>(clip)) {
+                layer.srcRotation = vc->sourceRotation();
                 layer.cropL = vc->cropLeft();
                 layer.cropR = vc->cropRight();
                 layer.cropT = vc->cropTop();
@@ -971,11 +1220,16 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // Source display rotation (portrait phone footage etc.).  Same
                 // handle lookup the packed-alpha check above uses.
                 if (m_mediaPool) {
-                    auto* mi = m_mediaPool->getInfo(
-                        m_openMediaHandles.count(vc->mediaPath())
-                            ? m_openMediaHandles[vc->mediaPath()] : 0);
+                    const uint64_t sourceHandle = findMediaHandle(vc->mediaPath());
+                    auto* mi = m_mediaPool->getInfo(sourceHandle);
                     if (mi) layer.srcRotation = mi->rotation;
                 }
+            }
+            else if (auto* image = dynamic_cast<ImageClip*>(clip)) {
+                layer.cropL = image->cropLeft();
+                layer.cropR = image->cropRight();
+                layer.cropT = image->cropTop();
+                layer.cropB = image->cropBottom();
             }
 #ifdef ROUNDTABLE_HAS_SPINE
             else if (auto* sc = dynamic_cast<SpineClip*>(clip)) {
@@ -1046,14 +1300,6 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             if (clip->maskCount() > 0)
                 layer.masks = evaluateMaskStates(clip->masks(),
                                                  tick - clip->timelineIn());
-            // Append adjustment-layer effects from tracks above this one
-            // so they post-process this layer (Premiere/AE behaviour).
-            if (!pendingAdjustmentEffects.empty()) {
-                layer.effects.insert(layer.effects.end(),
-                                     pendingAdjustmentEffects.begin(),
-                                     pendingAdjustmentEffects.end());
-            }
-
             // PERF: per-clip timing
             auto perfClipT1 = std::chrono::high_resolution_clock::now();
             double clipMs = std::chrono::duration<double, std::milli>(perfClipT1 - perfClipT0).count();
@@ -1073,18 +1319,21 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // existing info-level timing).
             if (clipMs > 50.0) {
                 spdlog::warn("[LAYER-SLOW] clip '{}' type={} tick={} -> {:.1f}ms "
-                             "(frame {}x{} gpuTex={} tier={})",
+                             "(layer {}x{} backing {}x{} gpuTex={} requestedTier={})",
                              clip->label(), clipType, tick, clipMs,
                              layer.frameWidth, layer.frameHeight,
+                             frame ? frame->width : 0,
+                             frame ? frame->height : 0,
                              layer.gpuTextureReady,
-                             playbackNonBlocking ? "Half" : "Full");
+                             static_cast<int>(requestTier));
             }
             if (perfLog) {
-                spdlog::info("  [PERF] clip '{}' type={} -> {:.1f}ms (frame {}x{}, gpuTex={} tier={})",
+                spdlog::info("  [PERF] clip '{}' type={} -> {:.1f}ms "
+                             "(frame {}x{}, gpuTex={} requestedTier={})",
                              clip->label(), clipType, clipMs,
                              layer.frameWidth, layer.frameHeight,
                              layer.gpuTextureReady,
-                             playbackNonBlocking ? "Half" : "Full");
+                             static_cast<int>(requestTier));
             }
 
             layer.clipPtr = clip;

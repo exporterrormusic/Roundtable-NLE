@@ -52,6 +52,7 @@
  */
 
 #include "WaveformRenderer.h"
+#include "widgets/TimelineTrackWidget.h"
 #include "widgets/WaveformWidget.h"
 #include "widgets/VUMeter.h"
 
@@ -244,6 +245,23 @@ TEST_F(WaveformRendererTest, LayoutPeaks_amplitude)
     ASSERT_EQ(cols.size(), 2u);
     EXPECT_LT(cols[0].amplitude, cols[1].amplitude);
     EXPECT_NEAR(cols[1].amplitude, 1.0f, 0.01f);
+}
+
+TEST_F(WaveformRendererTest, TimelineClipFractionUsesUnclippedGeometry)
+{
+    // A 1000px clip whose left 400px are offscreen starts the viewport at
+    // 40% of its audio, not at the beginning of the waveform.
+    EXPECT_NEAR(rt::TimelineTrackWidget::waveformClipFractionAtPixel(
+                    0.0, -400.0, 1000.0),
+                0.4, 1e-9);
+    EXPECT_NEAR(rt::TimelineTrackWidget::waveformClipFractionAtPixel(
+                    200.0, -400.0, 1000.0),
+                0.6, 1e-9);
+
+    // Moving that same clip must shift which source fraction is visible.
+    EXPECT_NEAR(rt::TimelineTrackWidget::waveformClipFractionAtPixel(
+                    0.0, -300.0, 1000.0),
+                0.3, 1e-9);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

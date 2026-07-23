@@ -1,0 +1,549 @@
+<title>Roundtable Redesign — 04 Export</title>
+<style>
+  :root{
+    --bg-app:#131518; --bg-page:#1b1e21; --bg-panel:#22262a; --bg-hover:#282d32;
+    --bg-active:#2f353b; --bg-inset:#17191c;
+    --line:#2e343a; --line-strong:#3a4148;
+    --t1:#e9ecef; --t2:#a2abb4; --t3:#6b7580;
+    --accent:#3e90e8; --accent-h:#5aa2f0; --accent-dim:rgba(62,144,232,.14);
+    --danger:#e0564e; --danger-dim:rgba(224,86,78,.12);
+    --ok:#4cae6e; --ok-dim:rgba(76,174,110,.13); --warn:#d9a03c; --warn-dim:rgba(217,160,60,.13);
+    --r:4px; --rl:6px;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    --mono:"Cascadia Mono",Consolas,monospace;
+  }
+  html,body{background:#101214;color:var(--t1);font-family:var(--font);}
+  body{margin:0;padding:28px 24px 64px;}
+  *{box-sizing:border-box;}
+  button{font-family:var(--font);}
+  ::selection{background:var(--accent-dim);}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+
+  .page-eyebrow{max-width:1480px;margin:0 auto 10px;display:flex;align-items:baseline;gap:12px;}
+  .page-eyebrow h1{font-size:15px;font-weight:600;margin:0;}
+  .page-eyebrow span{font-size:12px;color:var(--t3);}
+
+  /* ===== app frame (shared) ===== */
+  .frame{max-width:1480px;margin:0 auto;height:min(860px,82vh);min-height:660px;
+    background:var(--bg-page);border:1px solid var(--line-strong);border-radius:8px;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5);}
+  .titlebar{height:40px;flex:none;background:var(--bg-app);border-bottom:1px solid var(--line);
+    display:flex;align-items:center;padding:0 6px 0 14px;gap:2px;user-select:none;}
+  .app-mark{display:flex;align-items:center;gap:8px;margin-right:14px;}
+  .app-mark .logo{width:18px;height:18px;border-radius:4px;background:linear-gradient(135deg,#3e90e8,#2b5f9e);
+    display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;}
+  .app-mark .name{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--t2);}
+  .menu-item{background:none;border:0;color:var(--t2);font-size:12px;padding:5px 9px;border-radius:var(--r);cursor:default;}
+  .menu-item:hover{background:var(--bg-hover);color:var(--t1);}
+  .titlebar .spacer{flex:1;}
+  .doc-title{font-size:12px;color:var(--t3);margin-right:14px;}
+  .doc-title b{color:var(--t2);font-weight:600;}
+  .win-btns{display:flex;}
+  .win-btns button{width:38px;height:30px;background:none;border:0;color:var(--t3);font-size:11px;cursor:default;border-radius:var(--r);}
+  .win-btns button:hover{background:var(--bg-hover);color:var(--t1);}
+  .win-btns button.close:hover{background:var(--danger);color:#fff;}
+  .frame-body{flex:1;display:flex;min-height:0;}
+  .rail{width:84px;flex:none;background:var(--bg-app);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:10px 8px;gap:2px;user-select:none;}
+  .rail-btn{display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 2px 9px;
+    background:none;border:0;border-radius:var(--rl);color:var(--t3);cursor:pointer;position:relative;}
+  .rail-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+  .rail-btn span{font-size:9.5px;font-weight:600;letter-spacing:.08em;}
+  .rail-btn:hover{color:var(--t2);background:var(--bg-hover);}
+  .rail-btn.active{color:var(--accent-h);background:var(--accent-dim);}
+  .rail-btn.active::before{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:2px;background:var(--accent);border-radius:1px;}
+  .rail .spacer{flex:1;}
+  .rail-collapse{border:0;background:none;color:var(--t3);padding:8px;border-radius:var(--r);cursor:pointer;align-self:center;}
+  .rail-collapse:hover{background:var(--bg-hover);color:var(--t2);}
+  .rail-collapse svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;}
+
+  /* ===== shared controls ===== */
+  .btn{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:var(--r);
+    font-size:12px;font-weight:600;border:1px solid transparent;cursor:pointer;white-space:nowrap;}
+  .btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{background:var(--accent-h);}
+  .btn-ghost{background:var(--bg-panel);color:var(--t1);border-color:var(--line-strong);}
+  .btn-ghost:hover{background:var(--bg-hover);}
+  .btn-ghost.danger{color:var(--danger);}
+  .btn-ghost.danger:hover{background:var(--danger-dim);}
+  .btn:disabled{opacity:.45;cursor:default;}
+  .btn.sm{height:26px;padding:0 10px;font-size:11.5px;}
+  .tin{height:30px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 9px;font-family:var(--font);width:100%;}
+  select.ctl{height:28px;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 7px;font-family:var(--font);cursor:pointer;max-width:100%;}
+  select.ctl:disabled,.tin:disabled,input:disabled{opacity:.45;}
+  .flabel{display:block;font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--t3);}
+  .check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--t2);cursor:pointer;user-select:none;}
+  .check input{accent-color:var(--accent);margin:0;}
+  .switch{position:relative;width:30px;height:16px;border-radius:99px;background:var(--bg-active);border:1px solid var(--line-strong);cursor:pointer;flex:none;transition:background .15s;}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--t2);transition:left .15s,background .15s;}
+  .switch.on{background:var(--accent);border-color:var(--accent);}
+  .switch.on::after{left:16px;background:#fff;}
+
+  /* ===== export layout ===== */
+  .content{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .ex-body{flex:1;display:flex;min-height:0;}
+  .ex-settings{width:372px;flex:none;border-right:1px solid var(--line);overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;}
+  .ex-head{display:flex;flex-direction:column;gap:10px;}
+  .frow{display:flex;align-items:center;gap:10px;}
+  .frow .fl{width:70px;flex:none;font-size:11.5px;color:var(--t3);}
+  .frow .tin,.frow select.ctl{flex:1;}
+  .pathlink{flex:1;font-size:11.5px;color:var(--accent-h);font-family:var(--mono);cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left;}
+  .pathlink:hover{text-decoration:underline;}
+  .estimate{font-size:12px;color:var(--t2);font-variant-numeric:tabular-nums;padding:8px 10px;
+    background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r);}
+  .estimate b{color:var(--t1);font-weight:600;}
+
+  /* collapsible section */
+  .sec{border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;background:var(--bg-panel);}
+  .sec-h{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;user-select:none;background:var(--bg-panel);}
+  .sec-h:hover{background:var(--bg-hover);}
+  .sec-h .chev{width:12px;height:12px;flex:none;transition:transform .12s;}
+  .sec-h .chev svg{display:block;width:12px;height:12px;stroke:var(--t3);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .sec.open .sec-h .chev{transform:rotate(90deg);}
+  .sec-h .st{flex:1;font-size:11px;font-weight:600;letter-spacing:.09em;color:var(--t1);}
+  .sec-body{display:none;border-top:1px solid var(--line);padding:12px;flex-direction:column;gap:10px;background:var(--bg-inset);}
+  .sec.open .sec-body{display:flex;}
+  .sec.off .sec-body{opacity:.42;pointer-events:none;}
+  .sec-row{display:flex;align-items:center;gap:10px;}
+  .sec-row .fl{width:92px;flex:none;font-size:11.5px;color:var(--t3);}
+  .sec-row select.ctl{flex:1;}
+  .dimspin{width:74px;height:28px;background:var(--bg-panel);border:1px solid var(--line-strong);border-radius:var(--r);
+    color:var(--t1);font-size:12px;padding:0 7px;font-variant-numeric:tabular-nums;font-family:var(--font);}
+  .qual{flex:1;display:flex;align-items:center;gap:10px;}
+  .qual input{flex:1;accent-color:var(--accent);}
+  .qual .qv{font-size:11.5px;color:var(--t2);width:74px;text-align:right;font-variant-numeric:tabular-nums;}
+
+  /* preview side */
+  .ex-preview{flex:1;display:flex;flex-direction:column;min-width:0;padding:16px 18px;gap:10px;}
+  .stagebox{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;}
+  .stage{flex:1;min-height:0;position:relative;background:
+    radial-gradient(90% 70% at 50% 22%,rgba(84,110,150,.22),transparent 60%),
+    linear-gradient(180deg,#232c38,#171c24 70%,#12161d);
+    border:1px solid var(--line);border-radius:var(--rl);overflow:hidden;}
+  .stage .fig{position:absolute;bottom:0;transform:translateX(-50%);}
+  .stage .fig svg{display:block;width:100%;height:100%;}
+  .stage .badge{position:absolute;left:10px;top:8px;font-size:10px;font-weight:600;letter-spacing:.07em;color:var(--t3);}
+  .stage .renderpip{position:absolute;right:10px;top:8px;display:none;align-items:center;gap:7px;font-size:10.5px;color:var(--warn);
+    background:rgba(13,16,20,.6);padding:4px 9px;border-radius:99px;border:1px solid rgba(217,160,60,.35);}
+  .stage .renderpip i{width:7px;height:7px;border-radius:50%;background:var(--warn);animation:blink 1s ease-in-out infinite;}
+  @keyframes blink{50%{opacity:.3;}}
+  .stage.rendering .renderpip{display:flex;}
+  .audio-stage{display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--t3);}
+  .stage.audio-only .audio-stage{display:flex;position:absolute;inset:0;background:var(--bg-inset);}
+  .audio-stage svg{width:40px;height:40px;stroke:var(--t3);fill:none;stroke-width:1.5;stroke-linecap:round;}
+
+  /* mini timeline */
+  .mtl{height:34px;flex:none;position:relative;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;cursor:pointer;}
+  .mtl .clips{position:absolute;inset:8px 0;display:flex;gap:2px;padding:0 2px;}
+  .mtl .clips i{flex:1;border-radius:2px;background:#31435c;}
+  .mtl .clips i:nth-child(2){background:#3c3550;flex:1.6;}
+  .mtl .clips i:nth-child(3){background:#314f41;flex:.8;}
+  .mtl .clips i:nth-child(4){background:#4c3a41;flex:1.2;}
+  .mtl .dimr{position:absolute;top:0;bottom:0;background:rgba(10,12,15,.62);}
+  .mtl .mark{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);}
+  .mtl .mark::after{content:"";position:absolute;top:0;width:7px;height:7px;background:var(--accent);}
+  .mtl .mark.in::after{left:0;clip-path:polygon(0 0,100% 0,0 100%);}
+  .mtl .mark.out::after{right:0;clip-path:polygon(0 0,100% 0,100% 100%);}
+  .mtl .ph{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 4px rgba(0,0,0,.6);}
+  .mtl.full .dimr,.mtl.full .mark{display:none;}
+  .transport{display:flex;align-items:center;gap:5px;}
+  .tbtn{width:30px;height:28px;border:1px solid var(--line-strong);background:var(--bg-panel);color:var(--t2);
+    border-radius:var(--r);cursor:pointer;display:grid;place-items:center;}
+  .tbtn:hover{background:var(--bg-hover);color:var(--t1);}
+  .tbtn svg{width:13px;height:13px;fill:currentColor;stroke:none;}
+  .transport .sepv{width:1px;height:18px;background:var(--line);margin:0 5px;}
+  .transport .grow{flex:1;}
+  .previnfo{font-size:11.5px;color:var(--t3);font-variant-numeric:tabular-nums;}
+
+  /* bottom queue bar */
+  .ex-bottom{flex:none;border-top:1px solid var(--line);background:var(--bg-app);padding:12px 18px;display:flex;flex-direction:column;gap:10px;}
+  .runrow{display:none;align-items:center;gap:12px;}
+  .runrow.active{display:flex;}
+  .runrow .pb{flex:1;height:6px;border-radius:3px;background:var(--bg-inset);overflow:hidden;}
+  .runrow .pb i{display:block;height:100%;background:var(--accent);border-radius:3px;width:0;}
+  .runrow .rst{font-size:11.5px;color:var(--t2);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .qrow{display:flex;align-items:center;gap:10px;}
+  .queue{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .job{display:flex;align-items:center;gap:10px;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r);
+    background:var(--bg-panel);font-size:11.5px;color:var(--t2);}
+  .job .jn{font-family:var(--mono);font-size:11px;color:var(--t1);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .job .reveal{visibility:hidden;border:0;background:none;color:var(--accent-h);font-size:11px;cursor:pointer;padding:2px 6px;border-radius:3px;}
+  .job:hover .reveal{visibility:visible;}
+  .job .reveal:hover{background:var(--accent-dim);}
+  .pill-status{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:600;border-radius:99px;padding:2px 9px;flex:none;}
+  .st-done{color:var(--ok);background:var(--ok-dim);}
+  .st-run{color:var(--accent-h);background:var(--accent-dim);}
+  .st-queue{color:var(--t3);background:var(--bg-inset);border:1px solid var(--line);}
+  .st-fail{color:var(--danger);background:var(--danger-dim);}
+  .qactions{display:flex;gap:9px;align-items:center;flex:none;align-self:flex-end;}
+
+  /* toast + spec */
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(8px);z-index:90;
+    background:#2a2f35;border:1px solid var(--line-strong);color:var(--t1);font-size:12.5px;
+    padding:9px 16px;border-radius:var(--rl);box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;
+    transition:opacity .18s ease,transform .18s ease;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .spec{max-width:1480px;margin:34px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;}
+  .spec-card{background:var(--bg-page);border:1px solid var(--line);border-radius:8px;padding:18px 20px;}
+  .spec-card h3{margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--t3);}
+  .spec-card p,.spec-card li{font-size:12.5px;color:var(--t2);line-height:1.6;}
+  .spec-card p{margin:0 0 8px;}
+  .spec-card ul{margin:0;padding-left:18px;}
+  .spec-card li{margin-bottom:6px;}
+  .spec-card li b{color:var(--t1);font-weight:600;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="page-eyebrow">
+  <h1>Roundtable UI redesign — 04 · Export</h1>
+  <span>try: quality slider, Format → ProRes or “MP3 (audio only)”, VIDEO toggle off, and press Export for a simulated run</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <div class="app-mark"><div class="logo">R</div><div class="name">ROUNDTABLE</div></div>
+    <button class="menu-item">File</button><button class="menu-item">Edit</button>
+    <button class="menu-item">View</button><button class="menu-item">Timeline</button>
+    <button class="menu-item">Audio</button><button class="menu-item">Window</button>
+    <button class="menu-item">Help</button>
+    <div class="spacer"></div>
+    <div class="doc-title"><b>S24E03 Anime Openings</b> — saved</div>
+    <div class="win-btns"><button>—</button><button>▢</button><button class="close">✕</button></div>
+  </div>
+
+  <div class="frame-body">
+    <nav class="rail">
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M3.5 8.5h17v10a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M3.7 8.4 5 4.6A1.5 1.5 0 0 1 6.4 3.6l13 1.6a1.5 1.5 0 0 1 1.2 1.8l-.3 1.5"/><path d="m7.5 4 1.6 4M12.5 4.6l1.6 4M17.4 5.2l1.6 3.9"/></svg><span>PROJECTS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.6"/><path d="M4.8 20c.9-3.6 3.8-5.4 7.2-5.4s6.3 1.8 7.2 5.4"/></svg><span>CHARACTERS</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg><span>AUDIO</span></button>
+      <button class="rail-btn"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M3.5 12h17M8.5 5v7M15.5 12v7"/></svg><span>TIMELINE</span></button>
+      <button class="rail-btn active"><svg viewBox="0 0 24 24"><path d="M12 14.5V4M12 4 8.2 7.8M12 4l3.8 3.8"/><path d="M4.5 14.5v3.5A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3.5"/></svg><span>EXPORT</span></button>
+      <div class="spacer"></div>
+      <button class="rail-collapse" title="Collapse rail"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></svg></button>
+    </nav>
+
+    <div class="content">
+      <div class="ex-body">
+        <!-- settings -->
+        <aside class="ex-settings">
+          <div class="ex-head">
+            <div class="frow"><span class="fl">File name</span><input class="tin" id="exName" value="S24E03 Anime Openings.mp4"></div>
+            <div class="frow"><span class="fl">Location</span>
+              <span class="pathlink" data-toast="Choose output folder… (folder dialog)" title="D:\Renders\TierTalk">D:\Renders\TierTalk</span>
+              <button class="btn sm btn-ghost" data-toast="Save as… (file dialog)">Browse…</button></div>
+            <div class="frow"><span class="fl">Preset</span>
+              <select class="ctl" id="exPreset">
+                <option>Custom</option><option selected>YouTube 1080p 30fps</option><option>YouTube 1080p 60fps</option>
+                <option>YouTube 4K 30fps</option><option>YouTube 4K 60fps</option><option>Archive ProRes HQ</option>
+                <option>Web Optimized</option><option>— My preset: Podcast MP3</option>
+              </select>
+              <button class="btn sm btn-ghost" data-toast="Save Preset… / Delete Preset (menu)" title="Preset options" style="width:28px;padding:0;justify-content:center">⋯</button></div>
+            <div class="frow"><span class="fl">Format</span>
+              <select class="ctl" id="exFormat">
+                <option value="h264" selected>H.264</option><option value="h265">H.265 (HEVC)</option>
+                <option value="av1">AV1</option><option value="prores">ProRes</option>
+                <option value="dnxhr">DNxHR</option><option value="imgseq">Image Sequence</option>
+                <option disabled>──────────</option>
+                <option value="a-mp3">MP3 (audio only)</option><option value="a-aac">AAC / M4A (audio only)</option>
+                <option value="a-wav">WAV (audio only)</option><option value="a-flac">FLAC (audio only)</option>
+              </select></div>
+          </div>
+
+          <div class="estimate" id="exEstimate"></div>
+
+          <!-- VIDEO -->
+          <div class="sec open" id="secVideo">
+            <div class="sec-h" data-sec="secVideo">
+              <span class="chev"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>
+              <span class="st">VIDEO</span>
+              <span class="switch on" id="swVideo" title="Include video"></span>
+            </div>
+            <div class="sec-body">
+              <label class="check"><input type="checkbox" id="matchSeq" checked> Match sequence settings (1920 × 1080 · 30 fps)</label>
+              <div class="sec-row"><span class="fl">Frame size</span>
+                <input class="dimspin" id="exW" value="1920" disabled><span style="color:var(--t3)">×</span><input class="dimspin" id="exH" value="1080" disabled></div>
+              <div class="sec-row"><span class="fl">Frame rate</span>
+                <select class="ctl" id="exFps" disabled><option>23.976</option><option>24</option><option>25</option><option>29.97</option><option selected>30</option><option>50</option><option>59.94</option><option>60</option></select></div>
+              <div class="sec-row" id="rowProfile" style="display:none"><span class="fl">Profile</span>
+                <select class="ctl" id="exProfile"></select></div>
+              <div class="sec-row" id="rowAccel"><span class="fl">Acceleration</span>
+                <select class="ctl"><option selected>Auto (NVENC detected)</option><option>CPU only</option><option>NVENC</option><option>Quick Sync</option><option>AMF</option></select></div>
+              <div class="sec-row" id="rowQuality"><span class="fl">Quality</span>
+                <div class="qual"><input type="range" min="0" max="100" value="75" id="exQual"><span class="qv" id="exQualLbl">High · CRF 19</span></div></div>
+              <div class="sec-row"><span class="fl">Container</span>
+                <select class="ctl" id="exContainer"><option selected>MP4</option><option>MOV</option><option>MKV</option><option>WebM</option><option>AVI</option></select></div>
+              <label class="check" id="rowAlpha"><input type="checkbox" id="exAlpha" disabled> Export with alpha (transparent background)</label>
+            </div>
+          </div>
+
+          <!-- AUDIO -->
+          <div class="sec" id="secAudio">
+            <div class="sec-h" data-sec="secAudio">
+              <span class="chev"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></span>
+              <span class="st">AUDIO</span>
+              <span class="switch on" id="swAudio" title="Include audio"></span>
+            </div>
+            <div class="sec-body">
+              <div class="sec-row"><span class="fl">Audio format</span>
+                <select class="ctl" id="exAFmt" disabled><option selected>AAC (M4A)</option><option>MP3</option><option>WAV (PCM)</option><option>FLAC</option></select></div>
+              <div class="sec-row"><span class="fl">Bitrate</span>
+                <select class="ctl" id="exABr"><option>128 kbps</option><option selected>192 kbps</option><option>256 kbps</option><option>320 kbps</option></select></div>
+              <div style="font-size:10.5px;color:var(--t3)">48 kHz stereo. Video exports mux AAC; the format unlocks for audio-only exports.</div>
+            </div>
+          </div>
+
+        </aside>
+
+        <!-- preview -->
+        <div class="ex-preview">
+          <div class="stagebox">
+            <div class="stage" id="exStage">
+              <span class="badge">PREVIEW · 1920 × 1080</span>
+              <div class="renderpip"><i></i>RENDERING FRAME 512 / 1 483</div>
+              <div class="fig" style="left:40%;width:16%;height:76%;">
+                <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#5a4650" d="M50 6c13 0 22 10 22 22 0 9-4 16-11 20 16 6 26 19 27 38l3 60c0 8-6 12-11 11-2 24-2 50 0 76l3 50c0 7-6 10-11 10-5 0-9-3-10-8l-7-48h-10l-7 48c-1 5-5 8-10 8-5 0-11-3-11-10l3-50c2-26 2-52 0-76-5 1-11-3-11-11l3-60c1-19 11-32 27-38-7-4-11-11-11-20 0-12 9-22 22-22z"/></svg>
+              </div>
+              <div class="fig" style="left:66%;width:12%;height:60%;">
+                <svg viewBox="0 0 100 300" preserveAspectRatio="xMidYMax meet"><path fill="#38455a" d="M50 8c11 0 19 9 19 20 0 8-4 14-9 18 14 5 22 16 24 32l5 68c1 8-5 12-10 12-3 22-4 48-2 74l4 56c0 6-5 9-10 9-4 0-8-2-9-7l-9-52h-6l-9 52c-1 5-5 7-9 7-5 0-10-3-10-9l4-56c2-26 1-52-2-74-5 0-11-4-10-12l5-68c2-16 10-27 24-32-5-4-9-10-9-18 0-11 8-20 19-20z"/></svg>
+              </div>
+              <div class="audio-stage">
+                <svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>
+                <span style="font-size:12px">Audio-only export — no video preview</span>
+              </div>
+            </div>
+            <div class="mtl" id="mtl" title="Click to scrub · drag in/out markers">
+              <div class="clips"><i></i><i></i><i></i><i></i></div>
+              <div class="dimr" style="left:0;width:12%"></div>
+              <div class="dimr" style="right:0;width:9%"></div>
+              <div class="mark in" style="left:12%"></div>
+              <div class="mark out" style="right:9%"></div>
+              <div class="ph" id="mtlPh" style="left:34%"></div>
+            </div>
+            <div class="transport">
+              <button class="tbtn" title="Skip to start (Home)" data-toast="Playhead to start"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5 9.5 12 20 19z"/></svg></button>
+              <button class="tbtn" title="Step back (←)" data-toast="Step back one frame"><svg viewBox="0 0 24 24"><path d="M17 5 6.5 12 17 19z"/></svg></button>
+              <button class="tbtn" title="Play / pause (Space)" data-toast="Preview playback (plays real audio, saves/restores the timeline playhead)"><svg viewBox="0 0 24 24"><path d="M7 4.5 19 12 7 19.5z"/></svg></button>
+              <button class="tbtn" title="Step forward (→)" data-toast="Step forward one frame"><svg viewBox="0 0 24 24"><path d="M7 5l10.5 7L7 19z"/></svg></button>
+              <button class="tbtn" title="Skip to end (End)" data-toast="Playhead to end"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5l10.5 7L4 19z"/></svg></button>
+              <span class="sepv"></span>
+              <button class="btn sm btn-ghost" data-toast="In point set at playhead (I)">Set In</button>
+              <button class="btn sm btn-ghost" data-toast="Out point set at playhead (O)">Set Out</button>
+              <button class="btn sm btn-ghost" data-toast="In/out cleared — range back to entire sequence">Clear</button>
+              <label class="check" style="margin-left:6px"><input type="checkbox" id="exRangeChk" checked> Export in → out only</label>
+              <div class="grow"></div>
+              <span class="previnfo">00:12:14 / 00:24:03 · in 00:02:29 → out 00:21:52</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- bottom -->
+      <div class="ex-bottom">
+        <div class="runrow" id="runRow">
+          <div class="pb"><i id="runBar"></i></div>
+          <span class="rst" id="runStat"></span>
+          <button class="btn btn-ghost danger" id="btnCancel">Cancel</button>
+        </div>
+        <div class="qrow">
+          <div class="queue" id="queue">
+            <div class="job"><span class="pill-status st-done">✓ Done</span><span class="jn">S24E02 Rival Duos.mp4 — D:\Renders\TierTalk</span><button class="reveal" data-toast="Revealing in Explorer">Reveal</button><span style="font-size:10.5px;color:var(--t3)">2.4 GB · 11 min</span></div>
+          </div>
+          <div class="qactions">
+            <button class="btn btn-ghost" id="btnQueue">Add to Queue</button>
+            <button class="btn btn-primary" id="btnExport"><svg viewBox="0 0 24 24"><path d="M12 14.5V4M12 4 8.2 7.8M12 4l3.8 3.8"/><path d="M4.5 14.5v3.5A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3.5"/></svg>Export</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ SPEC SHEET ============ -->
+<div class="spec">
+  <div class="spec-card">
+    <h3>WHAT CHANGED (LEAST OF THE FIVE)</h3>
+    <ul>
+      <li>The panel’s recent Premiere-style structure survives intact: header form → estimate → VIDEO / AUDIO / RANGE collapsibles → live preview + transport → queue. This is a re-skin into the shared tokens, not a re-plan.</li>
+      <li><b>Queue rows get status pills</b> (Done / Running / Queued / Failed) matching the CONVERT page, plus a hover <b>Reveal</b> button — today revealing the file is a right-click-only affordance.</li>
+      <li><b>Progress moves into a dedicated run row</b> above the queue with frames · fps · ETA and Cancel, instead of a bar floating between status strings.</li>
+      <li><b>The RANGE section is gone</b> — one dropdown didn’t earn a collapsible. It’s now an “Export in → out only” checkbox in the transport row next to Clear, where in/out points are actually set. Unchecking un-dims the mini-timeline and the estimate re-counts to the full sequence.</li>
+      <li>A small “RENDERING FRAME n / m” pip overlays the preview during a run — the preview already live-updates with rendered frames today; this labels it.</li>
+    </ul>
+  </div>
+  <div class="spec-card">
+    <h3>BEHAVIOR KEPT AS-IS</h3>
+    <ul>
+      <li><b>Audio-only via Format or toggle:</b> picking “MP3 (audio only)” or switching VIDEO off greys the video section, swaps the estimate and file extension, and shows the audio-only preview state.</li>
+      <li><b>Match Sequence Settings</b> locks size/fps to the active sequence; export always targets the active sequence (no picker — deliberate).</li>
+      <li>Profile row appears only for ProRes/DNxHR; alpha checkbox enables only for alpha-capable targets; acceleration only for H.264/H.265; quality slider maps to CRF (shown inline now: “High · CRF 19”).</li>
+      <li>Offline-media warning, Pascal NVENC notice, and the HW→CPU fallback dialog all stay.</li>
+    </ul>
+  </div>
+  <div class="spec-card">
+    <h3>CODE-LEVEL FLAGS FOUND DURING INVENTORY</h3>
+    <ul>
+      <li><b>“Broadcast 1080i” preset is a no-op</b> — it’s in the combo but has no applyPreset case. Dropped from this mockup; either implement or delete in C++.</li>
+      <li><b>“Add to Queue” never starts the worker</b> — queued jobs only render after a subsequent Export press. Worth a “Start Queue” affordance or auto-start; flagged, not designed in.</li>
+      <li>Smart-render passthrough remains hard-disabled in the backend — correctly has no UI.</li>
+      <li>Sample rate/channels hardcoded 48 kHz stereo — left un-exposed on purpose, one line documents it.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $=id=>document.getElementById(id);
+  function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");
+    clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),2400);}
+  document.addEventListener("click",e=>{const b=e.target.closest("[data-toast]");if(b)toast(b.dataset.toast);});
+
+  /* collapsible sections (header click toggles open; switch click toggles include) */
+  document.querySelectorAll(".sec-h").forEach(h=>h.addEventListener("click",e=>{
+    if(e.target.closest(".switch"))return;
+    $(h.dataset.sec).classList.toggle("open");
+  }));
+  function wireSwitch(swId,secId,onMsg,offMsg){
+    $(swId).addEventListener("click",e=>{
+      e.stopPropagation();
+      const sw=$(swId),sec=$(secId);
+      sw.classList.toggle("on");
+      sec.classList.toggle("off",!sw.classList.contains("on"));
+      toast(sw.classList.contains("on")?onMsg:offMsg);
+      update();
+    });
+  }
+  wireSwitch("swVideo","secVideo","Video included","Video off — this export writes an audio file");
+  wireSwitch("swAudio","secAudio","Audio included","Audio muted in export");
+
+  /* match sequence settings */
+  $("matchSeq").addEventListener("change",()=>{
+    const lock=$("matchSeq").checked;
+    ["exW","exH","exFps"].forEach(id=>$(id).disabled=lock);
+  });
+
+  /* quality slider → CRF */
+  function qualLabel(v){
+    const crf=Math.round(35-(v/100)*21);
+    const name=v<20?"Lowest":v<40?"Low":v<63?"Medium":v<88?"High":"Best";
+    return name+" · CRF "+crf;
+  }
+  $("exQual").addEventListener("input",()=>{$("exQualLbl").textContent=qualLabel(+$("exQual").value);update();});
+
+  /* format switching */
+  const PROFILES={prores:["Proxy","LT","422 Standard","422 HQ","4444","4444 XQ"],
+                  dnxhr:["LB (8-bit)","SQ (8-bit)","HQ (8-bit)","HQX (10-bit)","444 (10-bit)"]};
+  const EXT={h264:"mp4",h265:"mp4",av1:"webm",prores:"mov",dnxhr:"mov",imgseq:"png",
+             "a-mp3":"mp3","a-aac":"m4a","a-wav":"wav","a-flac":"flac"};
+  function isAudioOnly(){return $("exFormat").value.startsWith("a-");}
+  $("exFormat").addEventListener("change",()=>{
+    const f=$("exFormat").value,audio=isAudioOnly();
+    /* video section visibility */
+    $("secVideo").style.display=audio?"none":"";
+    $("exStage").classList.toggle("audio-only",audio);
+    /* profile row */
+    if(PROFILES[f]){$("rowProfile").style.display="";
+      $("exProfile").innerHTML=PROFILES[f].map((p,i)=>"<option"+(p.includes("HQ (8-bit)")||p==="422 HQ"?" selected":"")+">"+p+"</option>").join("");}
+    else $("rowProfile").style.display="none";
+    /* accel + quality only for h264/h265 */
+    $("rowAccel").style.display=(f==="h264"||f==="h265")?"":"none";
+    $("rowQuality").style.display=(f==="prores"||f==="dnxhr"||f==="imgseq")?"none":"";
+    /* container auto-switch */
+    $("exContainer").value=f==="prores"||f==="dnxhr"?"MOV":f==="av1"?"WebM":"MP4";
+    /* alpha */
+    const alphaOk=(f==="prores"||f==="imgseq");
+    $("exAlpha").disabled=!alphaOk;if(!alphaOk)$("exAlpha").checked=false;
+    /* audio format unlock */
+    $("exAFmt").disabled=!audio;
+    if(audio)$("exAFmt").value=f==="a-mp3"?"MP3":f==="a-aac"?"AAC (M4A)":f==="a-wav"?"WAV (PCM)":"FLAC";
+    /* filename extension */
+    $("exName").value=$("exName").value.replace(/\.[a-z0-9]+$/i,"")+"."+EXT[f];
+    update();
+  });
+  $("exPreset").addEventListener("change",()=>{
+    const p=$("exPreset").value;
+    if(p.includes("ProRes")){$("exFormat").value="prores";}
+    else if(p.includes("4K")){$("exFormat").value="av1";}
+    else if(p.includes("MP3")){$("exFormat").value="a-mp3";}
+    else{$("exFormat").value="h264";}
+    $("exFormat").dispatchEvent(new Event("change"));
+    toast("Preset applied: "+p);
+  });
+
+  /* range checkbox — replaces the old RANGE section */
+  $("exRangeChk").addEventListener("change",()=>{
+    const inOut=$("exRangeChk").checked;
+    $("mtl").classList.toggle("full",!inOut);
+    toast(inOut?"Exporting in → out (00:24:03)":"Exporting entire sequence (00:30:24)");
+    update();
+  });
+
+  /* estimate */
+  function update(){
+    const audio=isAudioOnly()||!$("swVideo").classList.contains("on");
+    const inOut=$("exRangeChk").checked;
+    const durLbl=inOut?"24:03":"30:24";
+    const frames=inOut?"43 290":"54 720";
+    const scale=inOut?1:1.264;
+    if(audio){
+      $("exEstimate").innerHTML="Est. <b>"+(inOut?"33":"42")+" MB</b> — "+durLbl+" (audio only · 192 kbps)";
+    }else{
+      const q=+$("exQual").value;
+      const f=$("exFormat").value;
+      const base=f==="prores"?18.4:f==="dnxhr"?12.1:f==="av1"?0.9:1.4;
+      const gb=(base*(0.5+q/100)*1.443*scale).toFixed(1);
+      $("exEstimate").innerHTML="Est. <b>"+gb+" GB</b> — "+frames+" frames — "+durLbl+($("swAudio").classList.contains("on")?" (+AAC audio)":" (no audio)");
+    }
+  }
+  update();
+
+  /* simulated export run */
+  let running=false,raf=null;
+  $("btnExport").addEventListener("click",()=>{
+    if(running)return;running=true;
+    const name=$("exName").value;
+    const job=document.createElement("div");job.className="job";
+    job.innerHTML='<span class="pill-status st-run">↻ Running 0%</span><span class="jn">'+name+' — D:\\Renders\\TierTalk</span><button class="reveal" data-toast="Revealing in Explorer">Reveal</button><span style="font-size:10.5px;color:var(--t3)">now</span>';
+    $("queue").prepend(job);
+    $("runRow").classList.add("active");
+    $("exStage").classList.add("rendering");
+    $("btnExport").disabled=true;$("btnQueue").disabled=true;
+    const t0=performance.now(),DUR=5200;
+    function tick(now){
+      const p=Math.min(1,(now-t0)/DUR);
+      $("runBar").style.width=(p*100).toFixed(1)+"%";
+      const fr=Math.round(p*43290);
+      $("runStat").textContent="Rendering — "+fr.toLocaleString()+" / 43 290 frames · "+(52+p*20).toFixed(1)+" fps · ETA "+Math.max(0,Math.round((1-p)*5))+"s";
+      job.querySelector(".pill-status").textContent="↻ Running "+Math.round(p*100)+"%";
+      $("mtlPh").style.left=(12+p*79)+"%";
+      if(p<1&&running){raf=requestAnimationFrame(tick);}
+      else if(running)finish(true);
+    }
+    function finish(ok){
+      running=false;cancelAnimationFrame(raf);
+      $("runRow").classList.remove("active");
+      $("exStage").classList.remove("rendering");
+      $("btnExport").disabled=false;$("btnQueue").disabled=false;
+      const pill=job.querySelector(".pill-status");
+      pill.className="pill-status "+(ok?"st-done":"st-fail");
+      pill.textContent=ok?"✓ Done":"✗ Cancelled";
+      toast(ok?"Export complete — "+name:"Export cancelled");
+    }
+    $("btnCancel").onclick=()=>finish(false);
+    raf=requestAnimationFrame(tick);
+  });
+  $("btnQueue").addEventListener("click",()=>{
+    const name=$("exName").value;
+    const job=document.createElement("div");job.className="job";
+    job.innerHTML='<span class="pill-status st-queue">○ Queued</span><span class="jn">'+name+' — D:\\Renders\\TierTalk</span><button class="reveal" data-toast="Revealing in Explorer">Reveal</button><span style="font-size:10.5px;color:var(--t3)">queued</span>';
+    $("queue").prepend(job);
+    toast("Added to queue — starts with the next Export run");
+  });
+})();
+</script>

@@ -122,6 +122,16 @@ TEST(PassthroughEligibility, ScaledIneligible)
     EXPECT_FALSE(evaluatePassthroughAt(tl, 1000).eligible);
 }
 
+TEST(PassthroughEligibility, ShutterAngleIneligible)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    auto* clip = addVideoClip(v1, 0, 48000);
+    clip->shutterAngle().setDefaultValue(180.0f);
+
+    EXPECT_FALSE(evaluatePassthroughAt(tl, 1000).eligible);
+}
+
 TEST(PassthroughEligibility, EffectIneligible)
 {
     Timeline tl;
@@ -148,6 +158,26 @@ TEST(PassthroughEligibility, RetimeIneligible)
     auto* v1 = tl.addVideoTrack("V1");
     auto* clip = addVideoClip(v1, 0, 48000);
     clip->setSpeed(2.0);
+
+    EXPECT_FALSE(evaluatePassthroughAt(tl, 1000).eligible);
+}
+
+TEST(PassthroughEligibility, FrameBlendingIneligible)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    auto* clip = addVideoClip(v1, 0, 48000);
+    clip->setTimeInterpolation(TimeInterpolation::FrameBlending);
+
+    EXPECT_FALSE(evaluatePassthroughAt(tl, 1000).eligible);
+}
+
+TEST(PassthroughEligibility, OpticalFlowIneligible)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    auto* clip = addVideoClip(v1, 0, 48000);
+    clip->setTimeInterpolation(TimeInterpolation::OpticalFlow);
 
     EXPECT_FALSE(evaluatePassthroughAt(tl, 1000).eligible);
 }

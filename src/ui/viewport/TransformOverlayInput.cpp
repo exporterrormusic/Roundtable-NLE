@@ -15,27 +15,191 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QCoreApplication>
+#include <QApplication>
 #include <QMenu>
 #include <QAction>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QScrollBar>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QFontMetricsF>
+#include <QTextBlock>
+#include <QTextCharFormat>
+#include <QTextCursor>
+#include <QTextFragment>
+#include <QTextOption>
+#include <QTextBlockFormat>
+#include <QSignalBlocker>
 #include <QPointer>
 #include <QTimer>
 #include <algorithm>
 
 #include <cmath>
-#include <algorithm>
 
 #include <spdlog/spdlog.h>
 
 namespace rt {
 
+namespace {
+constexpr int kInlineLeadingProperty = QTextFormat::UserProperty + 1;
+constexpr int kInlineFontStyleProperty = QTextFormat::UserProperty + 2;
+constexpr int kInlineKerningProperty = QTextFormat::UserProperty + 3;
+constexpr int kInlineTabWidthProperty = QTextFormat::UserProperty + 4;
+constexpr int kInlineTsumeProperty = QTextFormat::UserProperty + 5;
+constexpr int kInlineFauxBoldProperty = QTextFormat::UserProperty + 6;
+constexpr int kInlineFauxItalicProperty = QTextFormat::UserProperty + 7;
+constexpr int kInlineFillEnabledProperty = QTextFormat::UserProperty + 8;
+constexpr int kInlineStrokeEnabledProperty = QTextFormat::UserProperty + 9;
+constexpr int kInlineStrokePositionProperty = QTextFormat::UserProperty + 10;
+constexpr int kInlineShadowEnabledProperty = QTextFormat::UserProperty + 11;
+constexpr int kInlineShadowColorProperty = QTextFormat::UserProperty + 12;
+constexpr int kInlineShadowDistanceProperty = QTextFormat::UserProperty + 13;
+constexpr int kInlineShadowAngleProperty = QTextFormat::UserProperty + 14;
+constexpr int kInlineShadowSoftnessProperty = QTextFormat::UserProperty + 15;
+constexpr int kInlineShadowOpacityProperty = QTextFormat::UserProperty + 16;
+constexpr int kInlineBackgroundEnabledProperty = QTextFormat::UserProperty + 17;
+constexpr int kInlineBackgroundPaddingProperty = QTextFormat::UserProperty + 18;
+constexpr int kInlineFillColorProperty = QTextFormat::UserProperty + 19;
+constexpr int kInlineStrokeColorProperty = QTextFormat::UserProperty + 20;
+constexpr int kInlineStrokeWidthProperty = QTextFormat::UserProperty + 21;
+constexpr int kInlineBackgroundColorProperty = QTextFormat::UserProperty + 22;
+constexpr int kInlineTrackingProperty = QTextFormat::UserProperty + 23;
+constexpr int kInlineActualWeightProperty = QTextFormat::UserProperty + 24;
+constexpr int kInlineActualItalicProperty = QTextFormat::UserProperty + 25;
+
+void updateInlineBlockLeading(QPlainTextEdit* edit, float baseLeading,
+                              double pointScale)
+{
+    if (!edit) return;
+    const QSignalBlocker blocker(edit);
+    for (QTextBlock block = edit->document()->begin();
+         block.isValid(); block = block.next()) {
+        float lineLeading = 0.0f;
+        bool haveFragment = false;
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid()) continue;
+            const QTextCharFormat format = fragment.charFormat();
+            const float fragmentLeading = format.hasProperty(
+                kInlineLeadingProperty)
+                ? format.property(kInlineLeadingProperty).toFloat()
+                : baseLeading;
+            lineLeading = std::max(lineLeading, fragmentLeading);
+            haveFragment = true;
+        }
+        if (!haveFragment) lineLeading = baseLeading;
+        QTextCursor cursor(block);
+        QTextBlockFormat blockFormat = cursor.blockFormat();
+        blockFormat.setLineHeight(
+            std::max(0.0, static_cast<double>(lineLeading) * pointScale),
+            QTextBlockFormat::LineDistanceHeight);
+        cursor.setBlockFormat(blockFormat);
+    }
+}
+
+void updateInlineDocumentTabWidth(QPlainTextEdit* edit, float baseTabWidth,
+                                  double pointScale)
+{
+    if (!edit) return;
+    float tabWidth = baseTabWidth;
+    for (QTextBlock block = edit->document()->begin();
+         block.isValid(); block = block.next()) {
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid()) continue;
+            const QTextCharFormat format = fragment.charFormat();
+            if (format.hasProperty(kInlineTabWidthProperty))
+                tabWidth = std::max(tabWidth,
+                    format.property(kInlineTabWidthProperty).toFloat());
+        }
+    }
+    QTextOption option = edit->document()->defaultTextOption();
+    option.setTabStopDistance(std::max(1.0,
+        static_cast<double>(tabWidth) * pointScale));
+    edit->document()->setDefaultTextOption(option);
+}
+}
+
 // Forgiving grab border (widget px) around a selected layer's body, so thin
 // text boxes — which can be only a few px tall on screen at low zoom — are
 // still easy to grab-and-move just outside their tight outline.
 static constexpr double kBodyGrabMarginPx = 14.0;
+static constexpr int kMaskTangentHandleBase = 10000;
+
+static bool editsOuterClipTransform(const TransformOverlayInfo& info) noexcept
+{
+    return info.useContentRect && info.editOuterClipTransform;
+}
+
+static float editPositionX(const TransformOverlayInfo& info) noexcept
+{
+    return editsOuterClipTransform(info) ? info.clipPosX : info.posX;
+}
+
+static float editPositionY(const TransformOverlayInfo& info) noexcept
+{
+    return editsOuterClipTransform(info) ? info.clipPosY : info.posY;
+}
+
+static float editScaleX(const TransformOverlayInfo& info) noexcept
+{
+    return editsOuterClipTransform(info) ? info.clipScaleX : info.scaleX;
+}
+
+static float editScaleY(const TransformOverlayInfo& info) noexcept
+{
+    return editsOuterClipTransform(info) ? info.clipScaleY : info.scaleY;
+}
+
+static float editRotation(const TransformOverlayInfo& info) noexcept
+{
+    return editsOuterClipTransform(info) ? info.clipRotation : info.rotation;
+}
+
+static void setEditPosition(TransformOverlayInfo& info, float x, float y) noexcept
+{
+    if (editsOuterClipTransform(info)) {
+        info.clipPosX = x;
+        info.clipPosY = y;
+    } else {
+        info.posX = x;
+        info.posY = y;
+    }
+}
+
+static void setEditScale(TransformOverlayInfo& info, float x, float y) noexcept
+{
+    if (editsOuterClipTransform(info)) {
+        info.clipScaleX = x;
+        info.clipScaleY = y;
+    } else {
+        info.scaleX = x;
+        info.scaleY = y;
+    }
+}
+
+static void setEditRotation(TransformOverlayInfo& info, float value) noexcept
+{
+    if (editsOuterClipTransform(info))
+        info.clipRotation = value;
+    else
+        info.rotation = value;
+}
+
+static float scaleWithOriginalSign(float start, float ratio) noexcept
+{
+    const float magnitude = std::max(0.01f, std::abs(start) * ratio);
+    return std::signbit(start) ? -magnitude : magnitude;
+}
+
+void TransformOverlayWidget::syncMaskOwnerToEditedOuterTransform() noexcept
+{
+    if (!m_hasMaskOwnerOverlay || m_maskOwnerFollowsPrimary ||
+        !editsOuterClipTransform(m_overlay))
+        return;
+    syncMaskOwnerFromOuterClip(m_overlay, m_maskOwnerOverlay);
+}
 
 void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
 {
@@ -110,16 +274,38 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
         }
     }
 
-    // ── Ctrl+Click: add point on mask border ──────────────────────────
-    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)
-        && m_masks && !m_masks->empty()) {
-        QRectF fr = computeFrameRect();
-        if (!fr.isEmpty()) {
-            int maskIdx = -1;
-            if (addPointOnMaskEdge(event->position(), fr, maskIdx)) {
+    // ── Pen Mask tool ──
+    // Click creates a corner, click-drag creates symmetric Bezier handles,
+    // and clicking the first point closes the path. When hovering an existing
+    // mask the same tool becomes Premiere's add/delete/convert-point tool.
+    if (event->button() == Qt::LeftButton && m_editTool == 9 && m_masks) {
+        const QPointF wPos = event->position();
+        if (m_penDrawing && m_penDraft.base.vertices.size() >= 3) {
+            const auto& first = m_penDraft.base.vertices.front();
+            const QPointF firstWidget = maskLocalToWidget(first.x, first.y);
+            if (std::hypot(wPos.x() - firstWidget.x(),
+                           wPos.y() - firstWidget.y()) <= 18.0) {
+                commitPenMask();
                 event->accept();
                 return;
             }
+        }
+        if (!m_penDrawing && editExistingMaskWithPen(wPos, event->modifiers())) {
+            event->accept();
+            return;
+        }
+        beginPenPoint(wPos);
+        event->accept();
+        return;
+    }
+
+    // ── Ctrl+Click: add point on mask border ──────────────────────────
+    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)
+        && m_masks && !m_masks->empty()) {
+        int maskIdx = -1;
+        if (addPointOnMaskEdge(event->position(), maskIdx)) {
+            event->accept();
+            return;
         }
     }
 
@@ -145,7 +331,9 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
     }
 
     // ── Mask control point interaction ──────────────────────────────────
-    if (event->button() == Qt::LeftButton && m_masks && !m_masks->empty()) {
+    if (event->button() == Qt::LeftButton && (m_editTool == 0 || m_editTool == 9)
+        && (m_activeMaskIndex >= 0 || m_editTool == 9)
+        && m_masks && !m_masks->empty()) {
         QPointF wPos = event->position();
         int maskIdx = -1;
         int handleIdx = hitTestMaskHandle(wPos, maskIdx);
@@ -160,7 +348,8 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             return;
         }
         // Click inside mask body → move the mask
-        maskIdx = hitTestMaskBody(wPos);
+        maskIdx = (m_activeMaskIndex >= 0 || m_editTool == 9)
+            ? hitTestMaskBody(wPos) : -1;
         if (maskIdx >= 0) {
             m_dragMode = DragMode::DragMaskPoint;
             m_dragMaskIndex = maskIdx;
@@ -234,10 +423,10 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             }
         }
 
-        // Crop edge handles (always shown for crop-capable clips). Checked
-        // BEFORE the body so grabbing an edge handle crops instead of moving
-        // the layer; corner handles remain SCALE handles.
-        if (m_overlay.cropEnabled) {
+        // Crop is deliberately Ctrl-only, matching the SHOT workflow. Without
+        // Ctrl, crop handles must not steal a press intended for the normal
+        // transform resize/body interaction.
+        if (m_overlay.cropEnabled && cropGestureRequested(event->modifiers())) {
             int cropH = hitTestCropHandle(wPos);
             if (cropH >= 0) {
                 m_dragMode = DragMode::CropEdge;
@@ -283,19 +472,13 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             bodyHit = true;
         }
         if (bodyHit) {
-            // When masks are active, don't let a body click move the layer;
-            // body clicks should move the mask instead (handled above).
-            if (m_masks && !m_masks->empty()) {
-                event->accept();
-                return;
-            }
             m_dragMode = DragMode::MoveBody;
             m_dragStartWidget = wPos;
-            m_dragStartPosX = m_overlay.posX;
-            m_dragStartPosY = m_overlay.posY;
-            m_dragStartScX  = m_overlay.scaleX;
-            m_dragStartScY  = m_overlay.scaleY;
-            m_dragStartRot  = m_overlay.rotation;
+            m_dragStartPosX = editPositionX(m_overlay);
+            m_dragStartPosY = editPositionY(m_overlay);
+            m_dragStartScX  = editScaleX(m_overlay);
+            m_dragStartScY  = editScaleY(m_overlay);
+            m_dragStartRot  = editRotation(m_overlay);
             applyCursor(Qt::ArrowCursor);   // no special move cursor
             event->accept();
             return;
@@ -306,11 +489,11 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             m_dragMode = DragMode::ScaleCorner;
             m_dragHandle = handle;
             m_dragStartWidget = wPos;
-            m_dragStartPosX = m_overlay.posX;
-            m_dragStartPosY = m_overlay.posY;
-            m_dragStartScX  = m_overlay.scaleX;
-            m_dragStartScY  = m_overlay.scaleY;
-            m_dragStartRot  = m_overlay.rotation;
+            m_dragStartPosX = editPositionX(m_overlay);
+            m_dragStartPosY = editPositionY(m_overlay);
+            m_dragStartScX  = editScaleX(m_overlay);
+            m_dragStartScY  = editScaleY(m_overlay);
+            m_dragStartRot  = editRotation(m_overlay);
             applyCursor(Qt::SizeFDiagCursor);
             event->accept();
             return;
@@ -321,11 +504,11 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             m_dragMode = DragMode::RotateCorner;
             m_dragHandle = rotHandle;
             m_dragStartWidget = wPos;
-            m_dragStartPosX = m_overlay.posX;
-            m_dragStartPosY = m_overlay.posY;
-            m_dragStartScX  = m_overlay.scaleX;
-            m_dragStartScY  = m_overlay.scaleY;
-            m_dragStartRot  = m_overlay.rotation;
+            m_dragStartPosX = editPositionX(m_overlay);
+            m_dragStartPosY = editPositionY(m_overlay);
+            m_dragStartScX  = editScaleX(m_overlay);
+            m_dragStartScY  = editScaleY(m_overlay);
+            m_dragStartRot  = editRotation(m_overlay);
             // Compute starting angle from center to mouse
             QPointF corners[4];
             computeOverlayCorners(corners);
@@ -356,20 +539,16 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             // composite's source pixels directly from the GPU draw rect in
             // HWND space (gpuNorm × surface), which is the SAME space the
             // event coordinates are in.
-            QRectF gnorm = m_vulkanVp->gpuFrameRect();
-            QSize  surf  = m_vulkanVp->nativeSurfaceSize();
+            QRectF frameRect = computeFrameRect();
             float srcW = static_cast<float>(m_vulkanVp->srcWidth());
             float srcH = static_cast<float>(m_vulkanVp->srcHeight());
-            if (!gnorm.isEmpty() && surf.width() > 0 && surf.height() > 0 &&
-                srcW > 0.0f && srcH > 0.0f)
+            if (!frameRect.isEmpty() && srcW > 0.0f && srcH > 0.0f)
             {
                 QPointF wPos = event->position();
-                double drawX = gnorm.x() * surf.width();
-                double drawY = gnorm.y() * surf.height();
-                double drawW = gnorm.width()  * surf.width();
-                double drawH = gnorm.height() * surf.height();
-                float frameX = static_cast<float>((wPos.x() - drawX) / drawW) * srcW;
-                float frameY = static_cast<float>((wPos.y() - drawY) / drawH) * srcH;
+                float frameX = static_cast<float>(
+                    (wPos.x() - frameRect.x()) / frameRect.width()) * srcW;
+                float frameY = static_cast<float>(
+                    (wPos.y() - frameRect.y()) / frameRect.height()) * srcH;
                 emit emptyAreaClicked(frameX, frameY, event->modifiers());
                 event->accept();
                 return;
@@ -383,6 +562,13 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
 
 void TransformOverlayWidget::mouseDoubleClickEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton && m_editTool == 9
+        && m_penDrawing && m_penDraft.base.vertices.size() >= 3) {
+        commitPenMask();
+        event->accept();
+        return;
+    }
+
     // Double-click → edit the text layer under the cursor (Premiere Pro).
     // The preceding single click already selected the layer and bound it
     // to the panels (see emptyAreaClicked handler), so we only need to
@@ -393,20 +579,16 @@ void TransformOverlayWidget::mouseDoubleClickEvent(QMouseEvent* event)
             // from m_vulkanVp's native QWindow are in HWND-local coords, so
             // map the click directly through the GPU draw rect rather than
             // computeFrameRect (which is in overlay-widget-local coords).
-            QRectF gnorm = m_vulkanVp->gpuFrameRect();
-            QSize  surf  = m_vulkanVp->nativeSurfaceSize();
+            QRectF frameRect = computeFrameRect();
             float srcW = static_cast<float>(m_vulkanVp->srcWidth());
             float srcH = static_cast<float>(m_vulkanVp->srcHeight());
-            if (!gnorm.isEmpty() && surf.width() > 0 && surf.height() > 0 &&
-                srcW > 0.0f && srcH > 0.0f)
+            if (!frameRect.isEmpty() && srcW > 0.0f && srcH > 0.0f)
             {
                 QPointF wPos = event->position();
-                double drawX = gnorm.x() * surf.width();
-                double drawY = gnorm.y() * surf.height();
-                double drawW = gnorm.width()  * surf.width();
-                double drawH = gnorm.height() * surf.height();
-                float frameX = static_cast<float>((wPos.x() - drawX) / drawW) * srcW;
-                float frameY = static_cast<float>((wPos.y() - drawY) / drawH) * srcH;
+                float frameX = static_cast<float>(
+                    (wPos.x() - frameRect.x()) / frameRect.width()) * srcW;
+                float frameY = static_cast<float>(
+                    (wPos.y() - frameRect.y()) / frameRect.height()) * srcH;
                 emit textEditRequested(frameX, frameY);
                 event->accept();
                 return;
@@ -428,7 +610,26 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                                                   bool italic,
                                                   const QColor& textColor,
                                                   float horizontalStretch,
-                                                  Qt::Alignment hAlignFlag)
+                                                  Qt::Alignment hAlignFlag,
+                                                  const std::vector<TextStyleRun>& styleRuns,
+                                                  float verticalScale,
+                                                  bool allCaps,
+                                                  bool smallCaps,
+                                                  float tracking,
+                                                  float baselineShift,
+                                                  float leading,
+                                                  const TextRunAppearance& baseAppearance,
+                                                  const std::vector<TextParagraphStyle>& paragraphStyles,
+                                                  const QString& fontStyle,
+                                                  float kerning,
+                                                  float tabWidth,
+                                                  float tsume,
+                                                  bool fauxBold,
+                                                  bool fauxItalic,
+                                                  bool underline,
+                                                  bool superscript,
+                                                  bool subscript,
+                                                  bool rightToLeft)
 {
     // AABB of the selected layer's transform box (widget coords). We use
     // the LEFT / RIGHT / CENTER X coordinates of this box (depending on
@@ -465,6 +666,30 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_savedOverlayBeforeEdit = m_overlay;
     m_overlay.visible = false;
     m_preEditOriginalText = initial.toStdString();
+    m_originalInlineTextStyles = styleRuns;
+    m_committedInlineTextStyles = styleRuns;
+    m_originalInlineParagraphStyles = paragraphStyles;
+    m_committedInlineParagraphStyles = paragraphStyles;
+    m_inlineBaseFontFamily = fontFamily;
+    m_inlineBaseFontSize = fontSizeRef;
+    m_inlineBaseFontWeight = fontWeight;
+    m_inlineBaseItalic = italic;
+    m_inlineBaseAllCaps = allCaps;
+    m_inlineBaseSmallCaps = smallCaps;
+    m_inlineBaseTracking = tracking;
+    m_inlineBaseBaselineShift = baselineShift;
+    m_inlineBaseLeading = leading;
+    m_inlineBaseFontStyle = fontStyle;
+    m_inlineBaseKerning = kerning;
+    m_inlineBaseTabWidth = tabWidth;
+    m_inlineBaseTsume = tsume;
+    m_inlineBaseFauxBold = fauxBold;
+    m_inlineBaseFauxItalic = fauxItalic;
+    m_inlineBaseUnderline = underline;
+    m_inlineBaseSuperscript = superscript;
+    m_inlineBaseSubscript = subscript;
+    m_inlineBaseRightToLeft = rightToLeft;
+    m_inlineBaseAppearance = baseAppearance;
     update();
 
     if (!m_inlineTextEdit) {
@@ -476,8 +701,8 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         // both visibility above the native Vulkan surface AND keyboard
         // focus. Ownership: we delete it in the overlay destructor.
         //
-        // QPlainTextEdit replaces QLineEdit so that Shift+Enter inserts a
-        // newline (Premiere Pro behavior) while plain Enter commits.
+        // QPlainTextEdit provides normal multi-line editing. Return inserts a
+        // newline; Ctrl/Cmd+Return commits the monitor edit.
         m_inlineTextEdit = new QPlainTextEdit(nullptr);
         m_inlineTextEdit->setWindowFlags(Qt::Window
                                          | Qt::FramelessWindowHint
@@ -504,27 +729,19 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         m_inlineTextEdit->setFrameStyle(QFrame::NoFrame);
         m_inlineTextEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_inlineTextEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // Do not center-scroll when a later line grows. The style-aware
+        // auto-grow below gives point text enough room while leaving Qt's
+        // normal wrapping available for paragraph-box text.
+        m_inlineTextEdit->setCenterOnScroll(false);
         // Plain text only — no rich-text paste surprises.
         m_inlineTextEdit->setTabChangesFocus(false);
 
-        auto commit = [this]() {
-            if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()) return;
-            if (m_committingInlineText) return;
-            m_committingInlineText = true;
-            const QString t = m_inlineTextEdit->toPlainText();
-            m_inlineTextEdit->hide();
-            // Restore the transform overlay after editing.
-            m_overlay = m_savedOverlayBeforeEdit;
-            m_preEditOriginalText.clear();
-            update();
-            emit inlineTextCommitted(t);
-            m_committingInlineText = false;
-            setFocus();
-        };
-
-        // Intercept key presses: Enter commits (Premiere Pro), Shift+Enter
-        // inserts a newline (Premiere Pro), Esc cancels (restores original).
+        // Intercept key presses for formatting, commit, and cancel shortcuts.
         m_inlineTextEdit->installEventFilter(this);
+        connect(m_inlineTextEdit, &QPlainTextEdit::selectionChanged,
+                this, &TransformOverlayWidget::notifyInlineTextSelectionFormat);
+        connect(m_inlineTextEdit, &QPlainTextEdit::cursorPositionChanged,
+                this, &TransformOverlayWidget::notifyInlineTextSelectionFormat);
 
         // Auto-grow as the user types: QPlainTextEdit doesn't auto-expand.
         // Recompute the screen geometry from the current text's pixel size
@@ -534,6 +751,13 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         connect(m_inlineTextEdit, &QPlainTextEdit::textChanged, this,
                 [this]() {
             if (!m_inlineTextEdit) return;
+            // Character formatting lives in QTextFragments; the base-font
+            // calculation below is retained only for the one-time document
+            // initialization.  Normal edits must use the style-aware path or
+            // a large selected run gets clipped and the editor scrolls the
+            // preceding text out of view.
+            resizeInlineTextEditorToDocument();
+            if (!m_initializingInlineText) return;
             QFontMetricsF fm(m_inlineTextEdit->font());
             const QString t = m_inlineTextEdit->toPlainText();
 
@@ -544,7 +768,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                 maxLineW = std::max(maxLineW, fm.horizontalAdvance(line));
             double slackW = std::max(8.0, fm.averageCharWidth());
             double wantW = maxLineW + slackW;
-            int minW = 40;
+            int minW = m_inlineEditMinWidth;
             int newW = std::max(minW, static_cast<int>(std::ceil(wantW)));
 
             // Height: number of lines × line height (no border padding —
@@ -563,7 +787,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             else
                 newX = m_inlineEditAnchorCenterX - newW / 2;
 
-            QRect r(newX, m_inlineEditAnchorCenterY - newH / 2, newW, newH);
+            QRect r(newX, m_inlineEditAnchorTopY, newW, newH);
             if (r != m_inlineTextEdit->geometry()) {
                 m_inlineTextEdit->setGeometry(r);
                 // Trigger the overlay widget to repaint so the live
@@ -587,7 +811,11 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     double scaleHeight = (fr.height() > 1.0) ? fr.height()
                                               : double(height());
     double refH = (m_seqH > 0) ? static_cast<double>(m_seqH) : 1080.0;
-    double fontPt = std::max(6.0, double(fontSizeRef) * scaleHeight / refH);
+    if (!std::isfinite(verticalScale) || verticalScale <= 0.0f)
+        verticalScale = 1.0f;
+    m_inlineFontPointScale = verticalScale * scaleHeight / refH;
+    double fontPt = std::max(6.0,
+                             double(fontSizeRef) * m_inlineFontPointScale);
 
     // Force opaque alpha on the text color (the layer's fill might be
     // semi-transparent and would otherwise be unreadable while editing).
@@ -604,7 +832,13 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         "font-size: %2pt; "
         "font-weight: %3; "
         "font-style: %4; "
-        "background: transparent; "
+        // A fully transparent pixel in a translucent top-level window is
+        // click-through on Windows.  That made clicks between glyphs land on
+        // the Vulkan monitor, whose focus change committed the edit and put
+        // the layer back in move mode.  Alpha 1 is visually transparent but
+        // keeps the whole editor rectangle mouse-interactive for normal caret
+        // placement and drag selection.
+        "background: rgba(0, 0, 0, 1); "
         "color: %5; "
         "border: none; "
         "selection-background-color: rgba(77,158,255,180); "
@@ -616,7 +850,16 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         .arg(italic ? "italic" : "normal")
         .arg(visibleColor.name(QColor::HexRgb));
     QFont qf(fontFamily, -1, std::clamp(fontWeight, 1, 1000), italic);
+    if (!fontStyle.isEmpty()) qf.setStyleName(fontStyle);
     qf.setPointSizeF(fontPt);
+    if (fauxBold) qf.setWeight(static_cast<QFont::Weight>(
+        std::max(700, static_cast<int>(qf.weight()))));
+    if (fauxItalic) qf.setItalic(true);
+    qf.setUnderline(underline);
+    qf.setCapitalization(allCaps ? QFont::AllUppercase
+        : (smallCaps ? QFont::SmallCaps : QFont::MixedCase));
+    qf.setLetterSpacing(QFont::AbsoluteSpacing,
+                        (tracking + kerning) * m_inlineFontPointScale);
     // Anisotropic-scale support: the renderer applies painter.scale(sx, sy)
     // which stretches glyph WIDTHS by sx/sy relative to height. QFont has
     // no general anisotropic transform, but setStretch() is exactly this:
@@ -624,10 +867,13 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     // property so setStyleSheet below won't override it. QFontMetricsF
     // honours it too, so the textChanged auto-grow stays accurate.
     if (std::isfinite(horizontalStretch) && horizontalStretch > 0.0f) {
-        const int stretchPct = std::clamp(
-            static_cast<int>(std::round(horizontalStretch * 100.0f)), 1, 4000);
+        const double tsumeScale = std::clamp(
+            1.0 - static_cast<double>(tsume) / 100.0, 0.1, 1.0);
+        const int stretchPct = std::clamp(static_cast<int>(std::round(
+            horizontalStretch * 100.0 * tsumeScale)), 1, 4000);
         qf.setStretch(stretchPct);
     }
+    m_inlineFontStretch = qf.stretch();
     m_inlineTextEdit->setFont(qf);
     m_inlineTextEdit->setStyleSheet(styleSheet);
 
@@ -636,6 +882,9 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     {
         QTextOption opt = m_inlineTextEdit->document()->defaultTextOption();
         opt.setAlignment(hAlignFlag);
+        opt.setTextDirection(rightToLeft ? Qt::RightToLeft : Qt::LeftToRight);
+        opt.setTabStopDistance(std::max(1.0,
+            static_cast<double>(tabWidth) * m_inlineFontPointScale));
         m_inlineTextEdit->document()->setDefaultTextOption(opt);
     }
 
@@ -647,7 +896,11 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     int editH = std::max(12, static_cast<int>(std::ceil(fm.height())));
     double slack0 = std::max(8.0, fm.averageCharWidth());
     double maxLineW0 = fm.horizontalAdvance(initial);
-    int editW = std::max(40,
+    m_inlineEditMinWidth = m_savedOverlayBeforeEdit.useContentRect
+        ? std::max(40, static_cast<int>(std::ceil(
+              std::max(0.0, rightX - leftX))))
+        : 40;
+    int editW = std::max(m_inlineEditMinWidth,
         static_cast<int>(std::ceil(maxLineW0 + slack0)));
 
     // Position the editor so its alignment-anchor edge sits on the
@@ -684,11 +937,261 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineEditAnchorRightX  = globalRight.x();
     m_inlineEditAnchorCenterX = globalCenter.x();
     m_inlineEditAnchorCenterY = globalCenter.y();
+    m_inlineEditAnchorTopY    = screenRect.top();
     m_inlineEditCenter = screenRect.center();          // legacy field
     m_inlineEditHeight = screenRect.height();
 
     m_inlineTextEdit->setGeometry(screenRect);
+    m_initializingInlineText = true;
+    m_inlineRetainedSelectionStart = 0;
+    m_inlineRetainedSelectionEnd = initial.size();
     m_inlineTextEdit->setPlainText(initial);
+
+    // QPlainTextEdit keeps a rich QTextDocument internally. Seed the whole
+    // string with the layer defaults, then overlay the persisted character
+    // runs. Clipboard/input remains plain text, so pasted HTML cannot leak in.
+    QTextCursor all(m_inlineTextEdit->document());
+    all.select(QTextCursor::Document);
+    QTextCharFormat baseFormat;
+    baseFormat.setFont(qf, QTextCharFormat::FontPropertiesAll);
+    QColor baseFill = QColor::fromRgba(baseAppearance.fillColor);
+    if (baseAppearance.fillEnabled) baseFill.setAlpha(255);
+    else baseFill = Qt::transparent;
+    baseFormat.setForeground(baseFill);
+    baseFormat.setBaselineOffset(fontSizeRef > 0.0f
+        ? 100.0 * baselineShift / fontSizeRef : 0.0);
+    if (superscript)
+        baseFormat.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+    else if (subscript)
+        baseFormat.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+    baseFormat.setProperty(kInlineLeadingProperty, leading);
+    baseFormat.setProperty(kInlineTrackingProperty, tracking);
+    baseFormat.setProperty(kInlineActualWeightProperty, fontWeight);
+    baseFormat.setProperty(kInlineActualItalicProperty, italic);
+    baseFormat.setProperty(kInlineFontStyleProperty, fontStyle);
+    baseFormat.setProperty(kInlineKerningProperty, kerning);
+    baseFormat.setProperty(kInlineTabWidthProperty, tabWidth);
+    baseFormat.setProperty(kInlineTsumeProperty, tsume);
+    baseFormat.setProperty(kInlineFauxBoldProperty, fauxBold);
+    baseFormat.setProperty(kInlineFauxItalicProperty, fauxItalic);
+    baseFormat.setProperty(kInlineFillEnabledProperty,
+                           baseAppearance.fillEnabled);
+    baseFormat.setProperty(kInlineFillColorProperty,
+                           baseAppearance.fillColor);
+    baseFormat.setProperty(kInlineStrokeEnabledProperty,
+                           baseAppearance.strokeEnabled);
+    baseFormat.setProperty(kInlineStrokePositionProperty,
+        static_cast<int>(baseAppearance.strokePosition));
+    baseFormat.setProperty(kInlineStrokeColorProperty,
+                           baseAppearance.strokeColor);
+    baseFormat.setProperty(kInlineStrokeWidthProperty,
+                           baseAppearance.strokeWidth);
+    if (baseAppearance.strokeEnabled) {
+        QPen outline(QColor::fromRgba(baseAppearance.strokeColor));
+        outline.setWidthF(baseAppearance.strokeWidth * m_inlineFontPointScale);
+        baseFormat.setTextOutline(outline);
+    }
+    baseFormat.setProperty(kInlineShadowEnabledProperty,
+                           baseAppearance.shadowEnabled);
+    baseFormat.setProperty(kInlineShadowColorProperty,
+                           baseAppearance.shadowColor);
+    baseFormat.setProperty(kInlineShadowDistanceProperty,
+                           baseAppearance.shadowDistance);
+    baseFormat.setProperty(kInlineShadowAngleProperty,
+                           baseAppearance.shadowAngle);
+    baseFormat.setProperty(kInlineShadowSoftnessProperty,
+                           baseAppearance.shadowSoftness);
+    baseFormat.setProperty(kInlineShadowOpacityProperty,
+                           baseAppearance.shadowOpacity);
+    baseFormat.setProperty(kInlineBackgroundEnabledProperty,
+                           baseAppearance.backgroundEnabled);
+    baseFormat.setProperty(kInlineBackgroundPaddingProperty,
+                           baseAppearance.backgroundPadding);
+    baseFormat.setProperty(kInlineBackgroundColorProperty,
+                           baseAppearance.backgroundColor);
+    if (baseAppearance.backgroundEnabled)
+        baseFormat.setBackground(QColor::fromRgba(
+            baseAppearance.backgroundColor));
+    all.setCharFormat(baseFormat);
+    for (const auto& run : styleRuns) {
+        const int start = std::clamp<int>(static_cast<int>(run.start), 0,
+                                          initial.size());
+        const int end = std::clamp<int>(
+            start + static_cast<int>(run.length), start, initial.size());
+        if (end <= start) continue;
+
+        QFont runFont(QString::fromStdString(run.fontFamily));
+        runFont.setPointSizeF(std::max(1.0,
+            static_cast<double>(run.fontSize) * m_inlineFontPointScale));
+        runFont.setWeight(static_cast<QFont::Weight>(
+            std::clamp(run.fontWeight, 1, 1000)));
+        runFont.setItalic(run.italic);
+        const QString runFontStyle = run.overrideMask & TextOverrideFontStyle
+            ? QString::fromStdString(run.fontStyle) : fontStyle;
+        if (!runFontStyle.isEmpty()) runFont.setStyleName(runFontStyle);
+        const bool runAllCaps = run.overrideMask & TextOverrideCapitalization
+            ? run.allCaps : allCaps;
+        const bool runSmallCaps = run.overrideMask & TextOverrideCapitalization
+            ? run.smallCaps : smallCaps;
+        const float runTracking = run.overrideMask & TextOverrideTracking
+            ? run.tracking : tracking;
+        const float runBaseline = run.overrideMask & TextOverrideBaseline
+            ? run.baselineShift : baselineShift;
+        const float runLeading = run.overrideMask & TextOverrideLeading
+            ? run.leading : leading;
+        const float runKerning = run.overrideMask & TextOverrideKerning
+            ? run.kerning : kerning;
+        const float runTabWidth = run.overrideMask & TextOverrideTabWidth
+            ? run.tabWidth : tabWidth;
+        const float runTsume = run.overrideMask & TextOverrideTsume
+            ? run.tsume : tsume;
+        const bool runFauxBold = run.overrideMask & TextOverrideFauxStyle
+            ? run.fauxBold : fauxBold;
+        const bool runFauxItalic = run.overrideMask & TextOverrideFauxStyle
+            ? run.fauxItalic : fauxItalic;
+        const bool runUnderline = run.overrideMask & TextOverrideDecoration
+            ? run.underline : underline;
+        const bool runSuperscript = run.overrideMask & TextOverrideScript
+            ? run.superscript : superscript;
+        const bool runSubscript = run.overrideMask & TextOverrideScript
+            ? run.subscript : subscript;
+        if (runFauxBold) runFont.setWeight(static_cast<QFont::Weight>(
+            std::max(700, static_cast<int>(runFont.weight()))));
+        if (runFauxItalic) runFont.setItalic(true);
+        runFont.setUnderline(runUnderline);
+        const double baseTsumeScale = std::clamp(
+            1.0 - static_cast<double>(tsume) / 100.0, 0.1, 1.0);
+        const double runTsumeScale = std::clamp(
+            1.0 - static_cast<double>(runTsume) / 100.0, 0.1, 1.0);
+        runFont.setStretch(std::clamp(static_cast<int>(std::round(
+            m_inlineFontStretch * runTsumeScale / baseTsumeScale)), 1, 4000));
+        runFont.setCapitalization(runAllCaps ? QFont::AllUppercase
+            : (runSmallCaps ? QFont::SmallCaps : QFont::MixedCase));
+        runFont.setLetterSpacing(QFont::AbsoluteSpacing,
+            (runTracking + runKerning) * m_inlineFontPointScale);
+        QTextCharFormat runFormat;
+        runFormat.setFont(runFont, QTextCharFormat::FontPropertiesAll);
+        TextRunAppearance runAppearance = baseAppearance;
+        if (run.overrideMask & TextOverrideFill) {
+            runAppearance.fillEnabled = run.appearance.fillEnabled;
+            runAppearance.fillColor = run.appearance.fillColor;
+        }
+        if (run.overrideMask & TextOverrideStroke) {
+            runAppearance.strokeEnabled = run.appearance.strokeEnabled;
+            runAppearance.strokeColor = run.appearance.strokeColor;
+            runAppearance.strokeWidth = run.appearance.strokeWidth;
+            runAppearance.strokePosition = run.appearance.strokePosition;
+        }
+        if (run.overrideMask & TextOverrideShadow) {
+            runAppearance.shadowEnabled = run.appearance.shadowEnabled;
+            runAppearance.shadowColor = run.appearance.shadowColor;
+            runAppearance.shadowDistance = run.appearance.shadowDistance;
+            runAppearance.shadowAngle = run.appearance.shadowAngle;
+            runAppearance.shadowSoftness = run.appearance.shadowSoftness;
+            runAppearance.shadowOpacity = run.appearance.shadowOpacity;
+        }
+        if (run.overrideMask & TextOverrideBackground) {
+            runAppearance.backgroundEnabled = run.appearance.backgroundEnabled;
+            runAppearance.backgroundColor = run.appearance.backgroundColor;
+            runAppearance.backgroundPadding = run.appearance.backgroundPadding;
+        }
+        QColor runFill = QColor::fromRgba(runAppearance.fillColor);
+        if (runAppearance.fillEnabled) runFill.setAlpha(255);
+        else runFill = Qt::transparent;
+        runFormat.setForeground(runFill);
+        runFormat.setBaselineOffset(run.fontSize > 0.0f
+            ? 100.0 * runBaseline / run.fontSize : 0.0);
+        if (runSuperscript)
+            runFormat.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+        else if (runSubscript)
+            runFormat.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+        runFormat.setProperty(kInlineLeadingProperty, runLeading);
+        runFormat.setProperty(kInlineTrackingProperty, runTracking);
+        runFormat.setProperty(kInlineActualWeightProperty, run.fontWeight);
+        runFormat.setProperty(kInlineActualItalicProperty, run.italic);
+        runFormat.setProperty(kInlineFontStyleProperty, runFontStyle);
+        runFormat.setProperty(kInlineKerningProperty, runKerning);
+        runFormat.setProperty(kInlineTabWidthProperty, runTabWidth);
+        runFormat.setProperty(kInlineTsumeProperty, runTsume);
+        runFormat.setProperty(kInlineFauxBoldProperty, runFauxBold);
+        runFormat.setProperty(kInlineFauxItalicProperty, runFauxItalic);
+        runFormat.setProperty(kInlineFillEnabledProperty,
+                              runAppearance.fillEnabled);
+        runFormat.setProperty(kInlineFillColorProperty,
+                              runAppearance.fillColor);
+        runFormat.setProperty(kInlineStrokeEnabledProperty,
+                              runAppearance.strokeEnabled);
+        runFormat.setProperty(kInlineStrokePositionProperty,
+            static_cast<int>(runAppearance.strokePosition));
+        runFormat.setProperty(kInlineStrokeColorProperty,
+                              runAppearance.strokeColor);
+        runFormat.setProperty(kInlineStrokeWidthProperty,
+                              runAppearance.strokeWidth);
+        if (runAppearance.strokeEnabled) {
+            QPen outline(QColor::fromRgba(runAppearance.strokeColor));
+            outline.setWidthF(runAppearance.strokeWidth
+                              * m_inlineFontPointScale);
+            runFormat.setTextOutline(outline);
+        }
+        runFormat.setProperty(kInlineShadowEnabledProperty,
+                              runAppearance.shadowEnabled);
+        runFormat.setProperty(kInlineShadowColorProperty,
+                              runAppearance.shadowColor);
+        runFormat.setProperty(kInlineShadowDistanceProperty,
+                              runAppearance.shadowDistance);
+        runFormat.setProperty(kInlineShadowAngleProperty,
+                              runAppearance.shadowAngle);
+        runFormat.setProperty(kInlineShadowSoftnessProperty,
+                              runAppearance.shadowSoftness);
+        runFormat.setProperty(kInlineShadowOpacityProperty,
+                              runAppearance.shadowOpacity);
+        runFormat.setProperty(kInlineBackgroundEnabledProperty,
+                              runAppearance.backgroundEnabled);
+        runFormat.setProperty(kInlineBackgroundPaddingProperty,
+                              runAppearance.backgroundPadding);
+        runFormat.setProperty(kInlineBackgroundColorProperty,
+                              runAppearance.backgroundColor);
+        if (runAppearance.backgroundEnabled)
+            runFormat.setBackground(QColor::fromRgba(
+                runAppearance.backgroundColor));
+        QTextCursor cursor(m_inlineTextEdit->document());
+        cursor.setPosition(start);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+        cursor.setCharFormat(runFormat);
+    }
+    auto qtAlignmentFor = [](GTextAlign alignment) {
+        switch (alignment) {
+        case GTextAlign::Left: return Qt::Alignment(Qt::AlignLeft);
+        case GTextAlign::Right: return Qt::Alignment(Qt::AlignRight);
+        case GTextAlign::Justify: return Qt::Alignment(Qt::AlignJustify);
+        case GTextAlign::Center:
+        default: return Qt::Alignment(Qt::AlignHCenter);
+        }
+    };
+    QTextBlockFormat baseBlockFormat;
+    baseBlockFormat.setAlignment(hAlignFlag);
+    baseBlockFormat.setLayoutDirection(
+        rightToLeft ? Qt::RightToLeft : Qt::LeftToRight);
+    all.setBlockFormat(baseBlockFormat);
+    for (const auto& paragraph : paragraphStyles) {
+        const int start = std::clamp<int>(paragraph.start, 0, initial.size());
+        const int end = std::clamp<int>(
+            start + static_cast<int>(paragraph.length), start, initial.size());
+        QTextCursor cursor(m_inlineTextEdit->document());
+        cursor.setPosition(start);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+        QTextBlockFormat format;
+        format.setAlignment(qtAlignmentFor(paragraph.alignment));
+        format.setLayoutDirection(paragraph.rightToLeft
+            ? Qt::RightToLeft : Qt::LeftToRight);
+        cursor.mergeBlockFormat(format);
+    }
+    updateInlineBlockLeading(m_inlineTextEdit, leading,
+                             m_inlineFontPointScale);
+    updateInlineDocumentTabWidth(m_inlineTextEdit, tabWidth,
+                                 m_inlineFontPointScale);
+    m_initializingInlineText = false;
+    resizeInlineTextEditorToDocument();
     m_inlineTextEdit->show();
     m_inlineTextEdit->raise();
     // Defer activation to the next event-loop tick so the window is fully
@@ -696,12 +1199,1118 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     // pattern PropertiesPanel::focusGraphicTextField uses, for the same
     // "setFocus is ignored on not-yet-shown widget" reason.
     QPointer<QPlainTextEdit> edit(m_inlineTextEdit);
-    QTimer::singleShot(0, edit, [edit]() {
+    QPointer<TransformOverlayWidget> overlay(this);
+    QTimer::singleShot(0, edit, [edit, overlay]() {
         if (!edit) return;
         edit->activateWindow();
         edit->setFocus(Qt::MouseFocusReason);
         edit->selectAll();
+        if (overlay) overlay->notifyInlineTextSelectionFormat();
     });
+}
+
+void TransformOverlayWidget::resizeInlineTextEditorToDocument()
+{
+    if (!m_inlineTextEdit || m_initializingInlineText) return;
+
+    double maxLineWidth = 0.0;
+    double totalHeight = 0.0;
+    const QFontMetricsF defaultMetrics(m_inlineTextEdit->font());
+    for (QTextBlock block = m_inlineTextEdit->document()->begin();
+         block.isValid(); block = block.next()) {
+        double lineWidth = 0.0;
+        double lineHeight = defaultMetrics.height();
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid()) continue;
+            const QFont fragmentFont = fragment.charFormat().font();
+            const QFontMetricsF metrics(fragmentFont);
+            lineWidth += metrics.horizontalAdvance(fragment.text());
+            lineHeight = std::max(lineHeight, metrics.height());
+        }
+        maxLineWidth = std::max(maxLineWidth, lineWidth);
+        totalHeight += lineHeight;
+    }
+
+    const double slack = std::max(8.0, defaultMetrics.averageCharWidth());
+    const int newWidth = std::max(m_inlineEditMinWidth,
+        static_cast<int>(std::ceil(maxLineWidth + slack)));
+    // A few pixels of vertical slack cover QPlainTextEdit's caret/layout
+    // rounding.  Without it the document retains a tiny scroll range and Qt
+    // can scroll the first line away when a later line or selected run grows.
+    const int newHeight = std::max(12,
+        static_cast<int>(std::ceil(std::max(totalHeight,
+                                             defaultMetrics.height()) + 4.0)));
+
+    int newX = m_inlineEditAnchorCenterX - newWidth / 2;
+    if (m_inlineEditAlignH & Qt::AlignRight)
+        newX = m_inlineEditAnchorRightX - newWidth;
+    else if (m_inlineEditAlignH & Qt::AlignLeft)
+        newX = m_inlineEditAnchorLeftX;
+
+    const QRect geometry(newX, m_inlineEditAnchorTopY,
+                         newWidth, newHeight);
+    if (geometry != m_inlineTextEdit->geometry()) {
+        m_inlineTextEdit->setGeometry(geometry);
+        update();
+    }
+    if (auto* bar = m_inlineTextEdit->verticalScrollBar(); bar && bar->maximum() > 0)
+        bar->setValue(0);
+}
+
+QTextCursor TransformOverlayWidget::inlineTextFormattingCursor() const
+{
+    if (!m_inlineTextEdit) return {};
+    QTextCursor cursor = m_inlineTextEdit->textCursor();
+    if (cursor.hasSelection() || m_inlineTextEdit->hasFocus()
+        || m_inlineRetainedSelectionEnd <= m_inlineRetainedSelectionStart)
+        return cursor;
+
+    const int textLength = m_inlineTextEdit->toPlainText().size();
+    const int start = std::clamp(m_inlineRetainedSelectionStart, 0, textLength);
+    const int end = std::clamp(m_inlineRetainedSelectionEnd, start, textLength);
+    cursor.setPosition(start);
+    cursor.setPosition(end, QTextCursor::KeepAnchor);
+    return cursor;
+}
+
+std::vector<TextStyleRun> TransformOverlayWidget::collectInlineTextStyles() const
+{
+    std::vector<TextStyleRun> runs;
+    if (!m_inlineTextEdit) return runs;
+
+    const double inverseScale = m_inlineFontPointScale > 1.0e-6
+        ? 1.0 / m_inlineFontPointScale : 1.0;
+    for (QTextBlock block = m_inlineTextEdit->document()->begin();
+         block.isValid(); block = block.next()) {
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid() || fragment.length() <= 0) continue;
+            const QTextCharFormat format = fragment.charFormat();
+            const QFont font = format.font();
+            TextStyleRun run;
+            run.start = static_cast<uint32_t>(fragment.position());
+            run.length = static_cast<uint32_t>(fragment.length());
+            run.fontFamily = font.family().toStdString();
+            run.fontSize = static_cast<float>(
+                std::max(1.0, font.pointSizeF() * inverseScale));
+            run.fontStyle = format.hasProperty(kInlineFontStyleProperty)
+                ? format.property(kInlineFontStyleProperty).toString().toStdString()
+                : m_inlineBaseFontStyle.toStdString();
+            run.fontWeight = format.hasProperty(kInlineActualWeightProperty)
+                ? format.property(kInlineActualWeightProperty).toInt()
+                : font.weight();
+            run.italic = format.hasProperty(kInlineActualItalicProperty)
+                ? format.property(kInlineActualItalicProperty).toBool()
+                : font.italic();
+            run.allCaps = font.capitalization() == QFont::AllUppercase;
+            run.smallCaps = font.capitalization() == QFont::SmallCaps;
+            run.tracking = format.hasProperty(kInlineTrackingProperty)
+                ? format.property(kInlineTrackingProperty).toFloat()
+                : static_cast<float>(font.letterSpacing() * inverseScale);
+            run.baselineShift = static_cast<float>(
+                format.baselineOffset() * run.fontSize / 100.0);
+            run.leading = format.hasProperty(
+                kInlineLeadingProperty)
+                ? format.property(kInlineLeadingProperty).toFloat()
+                : m_inlineBaseLeading;
+            run.kerning = format.hasProperty(kInlineKerningProperty)
+                ? format.property(kInlineKerningProperty).toFloat()
+                : m_inlineBaseKerning;
+            run.tabWidth = format.hasProperty(kInlineTabWidthProperty)
+                ? format.property(kInlineTabWidthProperty).toFloat()
+                : m_inlineBaseTabWidth;
+            run.tsume = format.hasProperty(kInlineTsumeProperty)
+                ? format.property(kInlineTsumeProperty).toFloat()
+                : m_inlineBaseTsume;
+            run.fauxBold = format.hasProperty(kInlineFauxBoldProperty)
+                ? format.property(kInlineFauxBoldProperty).toBool()
+                : m_inlineBaseFauxBold;
+            run.fauxItalic = format.hasProperty(kInlineFauxItalicProperty)
+                ? format.property(kInlineFauxItalicProperty).toBool()
+                : m_inlineBaseFauxItalic;
+            run.underline = font.underline();
+            run.superscript = format.verticalAlignment()
+                == QTextCharFormat::AlignSuperScript;
+            run.subscript = format.verticalAlignment()
+                == QTextCharFormat::AlignSubScript;
+            // Replacing the editor's auto-selected placeholder can make Qt
+            // create a fresh QTextFragment without our private properties.
+            // Missing metadata means "inherit the layer", not false/zero.
+            // Treating it as false/zero produced a full-length transparent
+            // fill override and made newly edited text disappear on commit.
+            auto propertyOr = [&format](int property, const QVariant& fallback) {
+                return format.hasProperty(property)
+                    ? format.property(property) : fallback;
+            };
+            run.appearance.fillEnabled = propertyOr(
+                kInlineFillEnabledProperty,
+                m_inlineBaseAppearance.fillEnabled).toBool();
+            run.appearance.fillColor = propertyOr(
+                kInlineFillColorProperty,
+                m_inlineBaseAppearance.fillColor).toUInt();
+            run.appearance.strokeEnabled = propertyOr(
+                kInlineStrokeEnabledProperty,
+                m_inlineBaseAppearance.strokeEnabled).toBool();
+            run.appearance.strokeColor = propertyOr(
+                kInlineStrokeColorProperty,
+                m_inlineBaseAppearance.strokeColor).toUInt();
+            run.appearance.strokeWidth = propertyOr(
+                kInlineStrokeWidthProperty,
+                m_inlineBaseAppearance.strokeWidth).toFloat();
+            run.appearance.strokePosition = static_cast<StrokePosition>(
+                propertyOr(kInlineStrokePositionProperty,
+                           static_cast<int>(m_inlineBaseAppearance.strokePosition))
+                    .toInt());
+            run.appearance.shadowEnabled = propertyOr(
+                kInlineShadowEnabledProperty,
+                m_inlineBaseAppearance.shadowEnabled).toBool();
+            run.appearance.shadowColor = propertyOr(
+                kInlineShadowColorProperty,
+                m_inlineBaseAppearance.shadowColor).toUInt();
+            run.appearance.shadowDistance = propertyOr(
+                kInlineShadowDistanceProperty,
+                m_inlineBaseAppearance.shadowDistance).toFloat();
+            run.appearance.shadowAngle = propertyOr(
+                kInlineShadowAngleProperty,
+                m_inlineBaseAppearance.shadowAngle).toFloat();
+            run.appearance.shadowSoftness = propertyOr(
+                kInlineShadowSoftnessProperty,
+                m_inlineBaseAppearance.shadowSoftness).toFloat();
+            run.appearance.shadowOpacity = propertyOr(
+                kInlineShadowOpacityProperty,
+                m_inlineBaseAppearance.shadowOpacity).toFloat();
+            run.appearance.backgroundEnabled = propertyOr(
+                kInlineBackgroundEnabledProperty,
+                m_inlineBaseAppearance.backgroundEnabled).toBool();
+            run.appearance.backgroundColor = propertyOr(
+                kInlineBackgroundColorProperty,
+                m_inlineBaseAppearance.backgroundColor).toUInt();
+            run.appearance.backgroundPadding = propertyOr(
+                kInlineBackgroundPaddingProperty,
+                m_inlineBaseAppearance.backgroundPadding).toFloat();
+            if (run.allCaps != m_inlineBaseAllCaps
+                || run.smallCaps != m_inlineBaseSmallCaps)
+                run.overrideMask |= TextOverrideCapitalization;
+            if (std::abs(run.tracking - m_inlineBaseTracking) > 0.01f)
+                run.overrideMask |= TextOverrideTracking;
+            if (std::abs(run.baselineShift - m_inlineBaseBaselineShift) > 0.01f)
+                run.overrideMask |= TextOverrideBaseline;
+            if (std::abs(run.leading - m_inlineBaseLeading) > 0.01f)
+                run.overrideMask |= TextOverrideLeading;
+            if (QString::fromStdString(run.fontStyle) != m_inlineBaseFontStyle)
+                run.overrideMask |= TextOverrideFontStyle;
+            if (std::abs(run.kerning - m_inlineBaseKerning) > 0.01f)
+                run.overrideMask |= TextOverrideKerning;
+            if (std::abs(run.tabWidth - m_inlineBaseTabWidth) > 0.01f)
+                run.overrideMask |= TextOverrideTabWidth;
+            if (std::abs(run.tsume - m_inlineBaseTsume) > 0.01f)
+                run.overrideMask |= TextOverrideTsume;
+            if (run.fauxBold != m_inlineBaseFauxBold
+                || run.fauxItalic != m_inlineBaseFauxItalic)
+                run.overrideMask |= TextOverrideFauxStyle;
+            if (run.underline != m_inlineBaseUnderline)
+                run.overrideMask |= TextOverrideDecoration;
+            if (run.superscript != m_inlineBaseSuperscript
+                || run.subscript != m_inlineBaseSubscript)
+                run.overrideMask |= TextOverrideScript;
+            if (run.appearance.fillEnabled != m_inlineBaseAppearance.fillEnabled
+                || run.appearance.fillColor != m_inlineBaseAppearance.fillColor)
+                run.overrideMask |= TextOverrideFill;
+            if (run.appearance.strokeEnabled != m_inlineBaseAppearance.strokeEnabled
+                || run.appearance.strokeColor != m_inlineBaseAppearance.strokeColor
+                || std::abs(run.appearance.strokeWidth
+                            - m_inlineBaseAppearance.strokeWidth) > 0.01f
+                || run.appearance.strokePosition
+                    != m_inlineBaseAppearance.strokePosition)
+                run.overrideMask |= TextOverrideStroke;
+            if (run.appearance.shadowEnabled != m_inlineBaseAppearance.shadowEnabled
+                || run.appearance.shadowColor != m_inlineBaseAppearance.shadowColor
+                || std::abs(run.appearance.shadowDistance
+                            - m_inlineBaseAppearance.shadowDistance) > 0.01f
+                || std::abs(run.appearance.shadowAngle
+                            - m_inlineBaseAppearance.shadowAngle) > 0.01f
+                || std::abs(run.appearance.shadowSoftness
+                            - m_inlineBaseAppearance.shadowSoftness) > 0.01f
+                || std::abs(run.appearance.shadowOpacity
+                            - m_inlineBaseAppearance.shadowOpacity) > 0.01f)
+                run.overrideMask |= TextOverrideShadow;
+            if (run.appearance.backgroundEnabled
+                    != m_inlineBaseAppearance.backgroundEnabled
+                || run.appearance.backgroundColor
+                    != m_inlineBaseAppearance.backgroundColor
+                || std::abs(run.appearance.backgroundPadding
+                            - m_inlineBaseAppearance.backgroundPadding) > 0.01f)
+                run.overrideMask |= TextOverrideBackground;
+
+            const bool isBaseStyle =
+                QString::fromStdString(run.fontFamily) == m_inlineBaseFontFamily
+                && std::abs(run.fontSize - m_inlineBaseFontSize) < 0.01f
+                && run.fontWeight == m_inlineBaseFontWeight
+                && run.italic == m_inlineBaseItalic
+                && run.overrideMask == 0;
+            if (isBaseStyle) continue;
+            runs.push_back(std::move(run));
+        }
+    }
+    return runs;
+}
+
+std::vector<TextParagraphStyle>
+TransformOverlayWidget::collectInlineParagraphStyles() const
+{
+    std::vector<TextParagraphStyle> styles;
+    if (!m_inlineTextEdit) return styles;
+    const int documentLength = m_inlineTextEdit->toPlainText().size();
+    auto alignmentFromQt = [](Qt::Alignment alignment) {
+        if (alignment.testFlag(Qt::AlignRight)) return GTextAlign::Right;
+        if (alignment.testFlag(Qt::AlignJustify)) return GTextAlign::Justify;
+        if (alignment.testFlag(Qt::AlignHCenter)) return GTextAlign::Center;
+        return GTextAlign::Left;
+    };
+    const GTextAlign baseAlignment = alignmentFromQt(m_inlineEditAlignH);
+    for (QTextBlock block = m_inlineTextEdit->document()->begin();
+         block.isValid(); block = block.next()) {
+        const QTextBlockFormat format = block.blockFormat();
+        const GTextAlign alignment = alignmentFromQt(format.alignment());
+        const bool rightToLeft = format.layoutDirection() == Qt::RightToLeft;
+        if (alignment == baseAlignment
+            && rightToLeft == m_inlineBaseRightToLeft) continue;
+        TextParagraphStyle style;
+        style.start = static_cast<uint32_t>(block.position());
+        style.length = static_cast<uint32_t>(std::max(0, std::min(
+            block.length(), documentLength - block.position())));
+        style.alignment = alignment;
+        style.rightToLeft = rightToLeft;
+        styles.push_back(style);
+    }
+    return styles;
+}
+
+void TransformOverlayWidget::notifyInlineTextSelectionFormat()
+{
+    if (!isInlineTextEditing() || m_initializingInlineText) return;
+
+    QTextCursor cursor = m_inlineTextEdit->textCursor();
+    if (cursor.hasSelection()) {
+        m_inlineRetainedSelectionStart = cursor.selectionStart();
+        m_inlineRetainedSelectionEnd = cursor.selectionEnd();
+    } else if (m_inlineTextEdit->hasFocus()) {
+        // A deliberate caret click replaces the old range. A focus transfer
+        // to a formatting control must not silently turn range formatting
+        // into a whole-layer operation.
+        m_inlineRetainedSelectionStart = cursor.position();
+        m_inlineRetainedSelectionEnd = cursor.position();
+    }
+    struct SelectionStyle {
+        QString family;
+        QString fontStyle;
+        float pointSize{1.0f};
+        int weight{400};
+        bool italic{false};
+        bool allCaps{false};
+        bool smallCaps{false};
+        float tracking{0.0f};
+        float baselineShift{0.0f};
+        float leading{0.0f};
+        float kerning{0.0f};
+        float tabWidth{48.0f};
+        float tsume{0.0f};
+        bool fauxBold{false};
+        bool fauxItalic{false};
+        bool underline{false};
+        bool superscript{false};
+        bool subscript{false};
+        TextRunAppearance appearance;
+    };
+
+    const auto styleFromFormat = [this](const QTextCharFormat& format) {
+        SelectionStyle style;
+        const QFont font = format.font();
+        style.family = font.family();
+        if (style.family.isEmpty()) style.family = m_inlineBaseFontFamily;
+        double screenPointSize = font.pointSizeF();
+        if (screenPointSize <= 0.0)
+            screenPointSize = m_inlineTextEdit->font().pointSizeF();
+        const double scale = m_inlineFontPointScale > 1.0e-6
+            ? m_inlineFontPointScale : 1.0;
+        style.pointSize = static_cast<float>(
+            std::max(1.0, screenPointSize / scale));
+        style.fontStyle = format.hasProperty(kInlineFontStyleProperty)
+            ? format.property(kInlineFontStyleProperty).toString()
+            : m_inlineBaseFontStyle;
+        style.weight = format.hasProperty(kInlineActualWeightProperty)
+            ? format.property(kInlineActualWeightProperty).toInt()
+            : font.weight();
+        style.italic = format.hasProperty(kInlineActualItalicProperty)
+            ? format.property(kInlineActualItalicProperty).toBool()
+            : font.italic();
+        style.allCaps = font.capitalization() == QFont::AllUppercase;
+        style.smallCaps = font.capitalization() == QFont::SmallCaps;
+        style.tracking = format.hasProperty(kInlineTrackingProperty)
+            ? format.property(kInlineTrackingProperty).toFloat()
+            : m_inlineBaseTracking;
+        style.baselineShift = static_cast<float>(
+            format.baselineOffset() * style.pointSize / 100.0);
+        style.leading = format.hasProperty(kInlineLeadingProperty)
+            ? format.property(kInlineLeadingProperty).toFloat()
+            : m_inlineBaseLeading;
+        style.kerning = format.hasProperty(kInlineKerningProperty)
+            ? format.property(kInlineKerningProperty).toFloat()
+            : m_inlineBaseKerning;
+        style.tabWidth = format.hasProperty(kInlineTabWidthProperty)
+            ? format.property(kInlineTabWidthProperty).toFloat()
+            : m_inlineBaseTabWidth;
+        style.tsume = format.hasProperty(kInlineTsumeProperty)
+            ? format.property(kInlineTsumeProperty).toFloat()
+            : m_inlineBaseTsume;
+        style.fauxBold = format.property(kInlineFauxBoldProperty).toBool();
+        style.fauxItalic = format.property(kInlineFauxItalicProperty).toBool();
+        style.underline = font.underline();
+        style.superscript = format.verticalAlignment()
+            == QTextCharFormat::AlignSuperScript;
+        style.subscript = format.verticalAlignment()
+            == QTextCharFormat::AlignSubScript;
+        style.appearance.fillEnabled = format.property(
+            kInlineFillEnabledProperty).toBool();
+        style.appearance.fillColor = format.property(
+            kInlineFillColorProperty).toUInt();
+        style.appearance.strokeEnabled = format.property(
+            kInlineStrokeEnabledProperty).toBool();
+        style.appearance.strokeColor = format.property(
+            kInlineStrokeColorProperty).toUInt();
+        style.appearance.strokeWidth = format.property(
+            kInlineStrokeWidthProperty).toFloat();
+        style.appearance.strokePosition = static_cast<StrokePosition>(
+            format.property(kInlineStrokePositionProperty).toInt());
+        style.appearance.shadowEnabled = format.property(
+            kInlineShadowEnabledProperty).toBool();
+        style.appearance.shadowColor = format.property(
+            kInlineShadowColorProperty).toUInt();
+        style.appearance.shadowDistance = format.property(
+            kInlineShadowDistanceProperty).toFloat();
+        style.appearance.shadowAngle = format.property(
+            kInlineShadowAngleProperty).toFloat();
+        style.appearance.shadowSoftness = format.property(
+            kInlineShadowSoftnessProperty).toFloat();
+        style.appearance.shadowOpacity = format.property(
+            kInlineShadowOpacityProperty).toFloat();
+        style.appearance.backgroundEnabled = format.property(
+            kInlineBackgroundEnabledProperty).toBool();
+        style.appearance.backgroundColor = format.property(
+            kInlineBackgroundColorProperty).toUInt();
+        style.appearance.backgroundPadding = format.property(
+            kInlineBackgroundPaddingProperty).toFloat();
+        return style;
+    };
+
+    SelectionStyle representative;
+    bool haveRepresentative = false;
+    uint32_t mixedFlags = 0;
+    auto includeStyle = [&](const SelectionStyle& style) {
+        if (!haveRepresentative) {
+            representative = style;
+            haveRepresentative = true;
+            return;
+        }
+        if (representative.family != style.family)
+            mixedFlags |= InlineMixedFamily;
+        if (std::abs(representative.pointSize - style.pointSize) > 0.01f)
+            mixedFlags |= InlineMixedSize;
+        if (representative.weight != style.weight)
+            mixedFlags |= InlineMixedWeight;
+        if (representative.italic != style.italic)
+            mixedFlags |= InlineMixedItalic;
+        if (representative.allCaps != style.allCaps
+            || representative.smallCaps != style.smallCaps)
+            mixedFlags |= InlineMixedCapitalization;
+        if (std::abs(representative.tracking - style.tracking) > 0.01f)
+            mixedFlags |= InlineMixedTracking;
+        if (std::abs(representative.baselineShift - style.baselineShift) > 0.01f)
+            mixedFlags |= InlineMixedBaseline;
+        if (std::abs(representative.leading - style.leading) > 0.01f)
+            mixedFlags |= InlineMixedLeading;
+        if (representative.fontStyle != style.fontStyle)
+            mixedFlags |= InlineMixedFontStyle;
+        if (std::abs(representative.kerning - style.kerning) > 0.01f)
+            mixedFlags |= InlineMixedKerning;
+        if (std::abs(representative.tabWidth - style.tabWidth) > 0.01f)
+            mixedFlags |= InlineMixedTabWidth;
+        if (std::abs(representative.tsume - style.tsume) > 0.01f)
+            mixedFlags |= InlineMixedTsume;
+        if (representative.fauxBold != style.fauxBold
+            || representative.fauxItalic != style.fauxItalic)
+            mixedFlags |= InlineMixedFauxStyle;
+        if (representative.underline != style.underline)
+            mixedFlags |= InlineMixedDecoration;
+        if (representative.superscript != style.superscript
+            || representative.subscript != style.subscript)
+            mixedFlags |= InlineMixedScript;
+        if (representative.appearance.fillEnabled
+                != style.appearance.fillEnabled
+            || representative.appearance.fillColor
+                != style.appearance.fillColor)
+            mixedFlags |= InlineMixedFill;
+        if (representative.appearance.strokeEnabled
+                != style.appearance.strokeEnabled
+            || representative.appearance.strokeColor
+                != style.appearance.strokeColor
+            || std::abs(representative.appearance.strokeWidth
+                        - style.appearance.strokeWidth) > 0.01f
+            || representative.appearance.strokePosition
+                != style.appearance.strokePosition)
+            mixedFlags |= InlineMixedStroke;
+        if (representative.appearance.shadowEnabled
+                != style.appearance.shadowEnabled
+            || representative.appearance.shadowColor
+                != style.appearance.shadowColor
+            || std::abs(representative.appearance.shadowDistance
+                        - style.appearance.shadowDistance) > 0.01f
+            || std::abs(representative.appearance.shadowAngle
+                        - style.appearance.shadowAngle) > 0.01f
+            || std::abs(representative.appearance.shadowSoftness
+                        - style.appearance.shadowSoftness) > 0.01f
+            || std::abs(representative.appearance.shadowOpacity
+                        - style.appearance.shadowOpacity) > 0.01f)
+            mixedFlags |= InlineMixedShadow;
+        if (representative.appearance.backgroundEnabled
+                != style.appearance.backgroundEnabled
+            || representative.appearance.backgroundColor
+                != style.appearance.backgroundColor
+            || std::abs(representative.appearance.backgroundPadding
+                        - style.appearance.backgroundPadding) > 0.01f)
+            mixedFlags |= InlineMixedBackground;
+    };
+
+    if (cursor.hasSelection()) {
+        const int selectionStart = cursor.selectionStart();
+        const int selectionEnd = cursor.selectionEnd();
+        for (QTextBlock block = m_inlineTextEdit->document()->begin();
+             block.isValid(); block = block.next()) {
+            if (block.position() >= selectionEnd) break;
+            if (block.position() + block.length() <= selectionStart) continue;
+            for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fragment = it.fragment();
+                if (!fragment.isValid()) continue;
+                const int start = std::max(fragment.position(), selectionStart);
+                const int end = std::min(fragment.position() + fragment.length(),
+                                         selectionEnd);
+                if (start < end) includeStyle(styleFromFormat(fragment.charFormat()));
+            }
+        }
+    }
+    if (!haveRepresentative)
+        includeStyle(styleFromFormat(m_inlineTextEdit->currentCharFormat()));
+
+    emit inlineTextSelectionFormatChanged(
+        representative.family, representative.pointSize,
+        representative.weight, representative.italic,
+        representative.allCaps, representative.smallCaps,
+        representative.tracking, representative.baselineShift,
+        representative.leading,
+        mixedFlags);
+    emit inlineTextAdvancedFormatChanged(
+        representative.fontStyle, representative.kerning,
+        representative.tabWidth, representative.tsume,
+        representative.fauxBold, representative.fauxItalic,
+        representative.underline, representative.superscript,
+        representative.subscript, mixedFlags);
+    emit inlineTextSelectionAppearanceChanged(
+        representative.appearance.fillEnabled,
+        representative.appearance.fillColor,
+        representative.appearance.strokeEnabled,
+        representative.appearance.strokeColor,
+        representative.appearance.strokeWidth,
+        static_cast<int>(representative.appearance.strokePosition),
+        representative.appearance.shadowEnabled,
+        representative.appearance.shadowColor,
+        representative.appearance.shadowDistance,
+        representative.appearance.shadowAngle,
+        representative.appearance.shadowSoftness,
+        representative.appearance.shadowOpacity,
+        representative.appearance.backgroundEnabled,
+        representative.appearance.backgroundColor,
+        representative.appearance.backgroundPadding,
+        mixedFlags);
+
+    auto alignmentFromQt = [](Qt::Alignment alignment) {
+        if (alignment.testFlag(Qt::AlignRight)) return GTextAlign::Right;
+        if (alignment.testFlag(Qt::AlignJustify)) return GTextAlign::Justify;
+        if (alignment.testFlag(Qt::AlignHCenter)) return GTextAlign::Center;
+        return GTextAlign::Left;
+    };
+    GTextAlign paragraphAlignment = alignmentFromQt(
+        cursor.blockFormat().alignment());
+    bool paragraphRtl = cursor.blockFormat().layoutDirection()
+        == Qt::RightToLeft;
+    uint32_t paragraphMixed = mixedFlags;
+    if (cursor.hasSelection()) {
+        const int start = cursor.selectionStart();
+        const int end = cursor.selectionEnd();
+        bool haveBlock = false;
+        for (QTextBlock block = m_inlineTextEdit->document()->findBlock(start);
+             block.isValid() && block.position() < end; block = block.next()) {
+            const GTextAlign alignment = alignmentFromQt(
+                block.blockFormat().alignment());
+            const bool rtl = block.blockFormat().layoutDirection()
+                == Qt::RightToLeft;
+            if (!haveBlock) {
+                paragraphAlignment = alignment;
+                paragraphRtl = rtl;
+                haveBlock = true;
+            } else {
+                if (paragraphAlignment != alignment)
+                    paragraphMixed |= InlineMixedParagraph;
+                if (paragraphRtl != rtl)
+                    paragraphMixed |= InlineMixedDirection;
+            }
+        }
+    }
+    emit inlineParagraphFormatChanged(static_cast<int>(paragraphAlignment),
+                                      paragraphRtl, paragraphMixed);
+}
+
+bool TransformOverlayWidget::focusIsInInlineFormattingUi() const
+{
+    QObject* focus = QApplication::focusWidget();
+    if (focus == m_inlineTextEdit) return true;
+    if (!m_inlineTextFormattingWidget) return false;
+
+    for (QObject* object = focus; object; object = object->parent()) {
+        if (object == m_inlineTextFormattingWidget) return true;
+    }
+    if (QWidget* popup = QApplication::activePopupWidget()) {
+        for (QObject* object = popup; object; object = object->parent()) {
+            if (object == m_inlineTextFormattingWidget) return true;
+        }
+    }
+    return false;
+}
+
+void TransformOverlayWidget::finishInlineTextEdit(bool cancel)
+{
+    if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()
+        || m_committingInlineText) return;
+
+    m_committingInlineText = true;
+    const QString text = cancel
+        ? QString::fromStdString(m_preEditOriginalText)
+        : m_inlineTextEdit->toPlainText();
+    m_committedInlineTextStyles = cancel
+        ? m_originalInlineTextStyles
+        : collectInlineTextStyles();
+    m_committedInlineParagraphStyles = cancel
+        ? m_originalInlineParagraphStyles
+        : collectInlineParagraphStyles();
+    m_inlineTextEdit->hide();
+    m_overlay = m_savedOverlayBeforeEdit;
+    m_preEditOriginalText.clear();
+    update();
+    emit inlineTextCommitted(text);
+    m_committingInlineText = false;
+    setFocus();
+}
+
+void TransformOverlayWidget::setInlineTextSelection(int start, int length)
+{
+    if (!m_inlineTextEdit) return;
+    const int textLength = m_inlineTextEdit->toPlainText().size();
+    start = std::clamp(start, 0, textLength);
+    const int end = std::clamp(start + std::max(0, length), start, textLength);
+    QTextCursor cursor(m_inlineTextEdit->document());
+    cursor.setPosition(start);
+    cursor.setPosition(end, QTextCursor::KeepAnchor);
+    m_inlineTextEdit->setTextCursor(cursor);
+}
+
+std::pair<int, int> TransformOverlayWidget::inlineTextSelection() const
+{
+    if (!m_inlineTextEdit) return {0, 0};
+    const QTextCursor cursor = m_inlineTextEdit->textCursor();
+    return {cursor.selectionStart(),
+            cursor.selectionEnd() - cursor.selectionStart()};
+}
+
+namespace {
+void refocusInlineEditor(QPlainTextEdit* edit)
+{
+    if (!edit) return;
+    edit->show();
+    edit->raise();
+    edit->activateWindow();
+    edit->setFocus(Qt::OtherFocusReason);
+}
+}
+
+bool TransformOverlayWidget::applyInlineTextFontFamily(const QString& family)
+{
+    if (!isInlineTextEditing() || family.isEmpty()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setFontFamilies(QStringList{family});
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextFontSize(float pointSizeRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(pointSizeRef)
+        || pointSizeRef <= 0.0f) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    const double scale = m_inlineFontPointScale > 1.0e-6
+        ? m_inlineFontPointScale : 1.0;
+    const auto applyToCursor = [this, pointSizeRef, scale](QTextCursor& target) {
+        const QTextCharFormat existing = target.charFormat();
+        double oldScreenSize = existing.fontPointSize();
+        if (oldScreenSize <= 0.0)
+            oldScreenSize = m_inlineTextEdit->font().pointSizeF();
+        const double oldReferenceSize = std::max(1.0, oldScreenSize / scale);
+        const double absoluteBaseline =
+            existing.baselineOffset() * oldReferenceSize / 100.0;
+        QTextCharFormat format;
+        format.setFontPointSize(std::max(1.0,
+            static_cast<double>(pointSizeRef) * scale));
+        format.setBaselineOffset(100.0 * absoluteBaseline / pointSizeRef);
+        target.mergeCharFormat(format);
+    };
+    if (selection.hasSelection()) {
+        for (int position = selection.selectionStart();
+             position < selection.selectionEnd(); ++position) {
+            QTextCursor character(m_inlineTextEdit->document());
+            character.setPosition(position);
+            character.movePosition(QTextCursor::NextCharacter,
+                                   QTextCursor::KeepAnchor);
+            applyToCursor(character);
+        }
+    } else {
+        QTextCursor caret = selection;
+        applyToCursor(caret);
+        m_inlineTextEdit->setCurrentCharFormat(caret.charFormat());
+    }
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextFontWeight(int weight)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setFontWeight(std::clamp(weight, 1, 1000));
+    format.setProperty(kInlineActualWeightProperty,
+                       std::clamp(weight, 1, 1000));
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextItalic(bool italic)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setFontItalic(italic);
+    format.setProperty(kInlineActualItalicProperty, italic);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextCapitalization(bool allCaps,
+                                                            bool smallCaps)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setFontCapitalization(allCaps ? QFont::AllUppercase
+        : smallCaps ? QFont::SmallCaps : QFont::MixedCase);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextTracking(float trackingRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(trackingRef)) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    auto applyToCursor = [this, trackingRef](QTextCursor& target) {
+        const QTextCharFormat existing = target.charFormat();
+        const float kerning = existing.hasProperty(kInlineKerningProperty)
+            ? existing.property(kInlineKerningProperty).toFloat()
+            : m_inlineBaseKerning;
+        QTextCharFormat format;
+        format.setProperty(kInlineTrackingProperty, trackingRef);
+        format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+        format.setFontLetterSpacing((trackingRef + kerning)
+                                    * m_inlineFontPointScale);
+        target.mergeCharFormat(format);
+    };
+    if (selection.hasSelection()) {
+        for (int position = selection.selectionStart();
+             position < selection.selectionEnd(); ++position) {
+            QTextCursor character(m_inlineTextEdit->document());
+            character.setPosition(position);
+            character.movePosition(QTextCursor::NextCharacter,
+                                   QTextCursor::KeepAnchor);
+            applyToCursor(character);
+        }
+    } else {
+        QTextCursor caret = selection;
+        applyToCursor(caret);
+        m_inlineTextEdit->setCurrentCharFormat(caret.charFormat());
+    }
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextBaselineShift(float baselineShiftRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(baselineShiftRef)) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    const auto applyToCursor = [this, baselineShiftRef](QTextCursor& target) {
+        const QTextCharFormat existing = target.charFormat();
+        double screenPointSize = existing.fontPointSize();
+        if (screenPointSize <= 0.0)
+            screenPointSize = m_inlineTextEdit->font().pointSizeF();
+        const double scale = m_inlineFontPointScale > 1.0e-6
+            ? m_inlineFontPointScale : 1.0;
+        const double referencePointSize = std::max(1.0, screenPointSize / scale);
+        QTextCharFormat format;
+        // Qt expresses baseline offset as a percentage of the active font
+        // size; converting per character preserves an absolute shift across
+        // a mixed-size selection, as Premiere does.
+        format.setBaselineOffset(100.0 * baselineShiftRef / referencePointSize);
+        target.mergeCharFormat(format);
+    };
+
+    if (selection.hasSelection()) {
+        for (int position = selection.selectionStart();
+             position < selection.selectionEnd(); ++position) {
+            QTextCursor character(m_inlineTextEdit->document());
+            character.setPosition(position);
+            character.movePosition(QTextCursor::NextCharacter,
+                                   QTextCursor::KeepAnchor);
+            applyToCursor(character);
+        }
+    } else {
+        QTextCursor caret = selection;
+        applyToCursor(caret);
+        m_inlineTextEdit->setCurrentCharFormat(caret.charFormat());
+    }
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextLeading(float leadingRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(leadingRef)
+        || leadingRef < 0.0f) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineLeadingProperty, leadingRef);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    updateInlineBlockLeading(m_inlineTextEdit, m_inlineBaseLeading,
+                             m_inlineFontPointScale);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextFontStyle(const QString& styleName)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    QFont font = m_inlineTextEdit->currentCharFormat().font();
+    font.setStyleName(styleName);
+    format.setFont(font, QTextCharFormat::FontPropertiesSpecifiedOnly);
+    format.setProperty(kInlineFontStyleProperty, styleName);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextKerning(float kerningRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(kerningRef)) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    auto applyToCursor = [this, kerningRef](QTextCursor& target) {
+        const QTextCharFormat existing = target.charFormat();
+        const float tracking = existing.hasProperty(kInlineTrackingProperty)
+            ? existing.property(kInlineTrackingProperty).toFloat()
+            : m_inlineBaseTracking;
+        QTextCharFormat format;
+        format.setProperty(kInlineKerningProperty, kerningRef);
+        format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+        format.setFontLetterSpacing((tracking + kerningRef)
+                                    * m_inlineFontPointScale);
+        target.mergeCharFormat(format);
+    };
+    if (selection.hasSelection()) {
+        for (int position = selection.selectionStart();
+             position < selection.selectionEnd(); ++position) {
+            QTextCursor character(m_inlineTextEdit->document());
+            character.setPosition(position);
+            character.movePosition(QTextCursor::NextCharacter,
+                                   QTextCursor::KeepAnchor);
+            applyToCursor(character);
+        }
+    } else {
+        QTextCursor caret = selection;
+        applyToCursor(caret);
+        m_inlineTextEdit->setCurrentCharFormat(caret.charFormat());
+    }
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextTabWidth(float tabWidthRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(tabWidthRef)
+        || tabWidthRef <= 0.0f) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineTabWidthProperty, tabWidthRef);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    updateInlineDocumentTabWidth(m_inlineTextEdit, m_inlineBaseTabWidth,
+                                 m_inlineFontPointScale);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextTsume(float tsumeRef)
+{
+    if (!isInlineTextEditing() || !std::isfinite(tsumeRef)) return false;
+    tsumeRef = std::clamp(tsumeRef, 0.0f, 90.0f);
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineTsumeProperty, tsumeRef);
+    QFont font = m_inlineTextEdit->currentCharFormat().font();
+    const double baseScale = std::clamp(
+        1.0 - static_cast<double>(m_inlineBaseTsume) / 100.0, 0.1, 1.0);
+    const double scale = std::clamp(
+        1.0 - static_cast<double>(tsumeRef) / 100.0, 0.1, 1.0);
+    font.setStretch(std::clamp(static_cast<int>(std::round(
+        m_inlineFontStretch * scale / baseScale)), 1, 4000));
+    format.setFontStretch(font.stretch());
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextFauxStyles(bool fauxBold,
+                                                        bool fauxItalic)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineFauxBoldProperty, fauxBold);
+    format.setProperty(kInlineFauxItalicProperty, fauxItalic);
+    const QTextCharFormat current = m_inlineTextEdit->currentCharFormat();
+    const int actualWeight = current.hasProperty(kInlineActualWeightProperty)
+        ? current.property(kInlineActualWeightProperty).toInt()
+        : current.fontWeight();
+    const bool actualItalic = current.hasProperty(kInlineActualItalicProperty)
+        ? current.property(kInlineActualItalicProperty).toBool()
+        : current.fontItalic();
+    format.setFontWeight(fauxBold ? std::max(700, actualWeight) : actualWeight);
+    format.setFontItalic(fauxItalic || actualItalic);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextUnderline(bool underline)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setFontUnderline(underline);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextScript(bool superscript,
+                                                    bool subscript)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setVerticalAlignment(superscript
+        ? QTextCharFormat::AlignSuperScript
+        : subscript ? QTextCharFormat::AlignSubScript
+                    : QTextCharFormat::AlignNormal);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextFill(bool enabled, uint32_t color)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineFillEnabledProperty, enabled);
+    format.setProperty(kInlineFillColorProperty, color);
+    format.setForeground(enabled ? QColor::fromRgba(color)
+                                 : QColor(Qt::transparent));
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextStroke(bool enabled,
+                                                    uint32_t color,
+                                                    float width,
+                                                    int position)
+{
+    if (!isInlineTextEditing() || !std::isfinite(width)) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineStrokeEnabledProperty, enabled);
+    format.setProperty(kInlineStrokeColorProperty, color);
+    format.setProperty(kInlineStrokeWidthProperty, std::max(0.0f, width));
+    format.setProperty(kInlineStrokePositionProperty,
+                       std::clamp(position, 0, 2));
+    QPen outline(Qt::NoPen);
+    if (enabled) {
+        outline = QPen(QColor::fromRgba(color));
+        outline.setWidthF(std::max(0.0f, width) * m_inlineFontPointScale);
+    }
+    format.setTextOutline(outline);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextShadow(bool enabled,
+                                                    uint32_t color,
+                                                    float distance,
+                                                    float angle,
+                                                    float softness,
+                                                    float opacity)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineShadowEnabledProperty, enabled);
+    format.setProperty(kInlineShadowColorProperty, color);
+    format.setProperty(kInlineShadowDistanceProperty, distance);
+    format.setProperty(kInlineShadowAngleProperty, angle);
+    format.setProperty(kInlineShadowSoftnessProperty, softness);
+    format.setProperty(kInlineShadowOpacityProperty,
+                       std::clamp(opacity, 0.0f, 1.0f));
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineTextBackground(bool enabled,
+                                                        uint32_t color,
+                                                        float padding)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextCharFormat format;
+    format.setProperty(kInlineBackgroundEnabledProperty, enabled);
+    format.setProperty(kInlineBackgroundColorProperty, color);
+    format.setProperty(kInlineBackgroundPaddingProperty,
+                       std::max(0.0f, padding));
+    format.setBackground(enabled ? QColor::fromRgba(color)
+                                 : QColor(Qt::transparent));
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineParagraphAlignment(int alignment)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextBlockFormat format;
+    switch (static_cast<GTextAlign>(alignment)) {
+    case GTextAlign::Left: format.setAlignment(Qt::AlignLeft); break;
+    case GTextAlign::Right: format.setAlignment(Qt::AlignRight); break;
+    case GTextAlign::Justify: format.setAlignment(Qt::AlignJustify); break;
+    case GTextAlign::Center:
+    default: format.setAlignment(Qt::AlignHCenter); break;
+    }
+    QTextCursor blocks = selection;
+    blocks.mergeBlockFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    resizeInlineTextEditorToDocument();
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
+}
+
+bool TransformOverlayWidget::applyInlineParagraphDirection(bool rightToLeft)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCursor selection = inlineTextFormattingCursor();
+    QTextBlockFormat format;
+    format.setLayoutDirection(rightToLeft
+        ? Qt::RightToLeft : Qt::LeftToRight);
+    QTextCursor blocks = selection;
+    blocks.mergeBlockFormat(format);
+    m_inlineTextEdit->setTextCursor(selection);
+    notifyInlineTextSelectionFormat();
+    refocusInlineEditor(m_inlineTextEdit);
+    return true;
 }
 
 void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
@@ -806,21 +2415,100 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
     }
 
     // ── Mask point drag ─────────────────────────────────────────────────
+    if (m_dragMode == DragMode::DrawMaskPoint && m_penDrawing
+        && (event->buttons() & Qt::LeftButton)
+        && !m_penDraft.base.vertices.empty()) {
+        QPointF local;
+        if (widgetToMaskLocal(wPos, local)) {
+            if (event->modifiers() & Qt::ShiftModifier) {
+                QPointF delta = wPos - m_dragStartWidget;
+                const double length = std::hypot(delta.x(), delta.y());
+                if (length > 1.0e-6) {
+                    constexpr double step =
+                        3.14159265358979323846 / 4.0;
+                    const double angle = std::round(
+                        std::atan2(delta.y(), delta.x()) / step) * step;
+                    const QPointF constrained = m_dragStartWidget + QPointF(
+                        std::cos(angle) * length,
+                        std::sin(angle) * length);
+                    (void)widgetToMaskLocal(constrained, local);
+                }
+            }
+            const float dx = static_cast<float>(local.x() - m_penPressLocal.x());
+            const float dy = static_cast<float>(local.y() - m_penPressLocal.y());
+            auto& vertex = m_penDraft.base.vertices.back();
+            vertex.inTanX = -dx;
+            vertex.inTanY = -dy;
+            vertex.outTanX = dx;
+            vertex.outTanY = dy;
+            m_penHoverWidget = wPos;
+            update();
+        }
+        event->accept();
+        return;
+    }
+
     if (m_dragMode == DragMode::DragMaskPoint && m_masks &&
         (event->buttons() & Qt::LeftButton))
     {
-        QRectF fr = computeFrameRect();
-        if (fr.isEmpty()) return;
+        if (m_dragMaskIndex < 0
+            || static_cast<size_t>(m_dragMaskIndex) >= m_masks->size())
+            return;
 
         auto& mask = (*m_masks)[static_cast<size_t>(m_dragMaskIndex)];
-        float dxNorm = static_cast<float>((wPos.x() - m_dragStartWidget.x()) / fr.width());
-        float dyNorm = static_cast<float>((wPos.y() - m_dragStartWidget.y()) / fr.height());
+        QPointF startLocal, currentLocal;
+        if (!widgetToMaskLocal(
+                m_dragStartWidget, startLocal, mask.coordinateSpace)
+            || !widgetToMaskLocal(wPos, currentLocal, mask.coordinateSpace))
+            return;
+        float dxNorm = static_cast<float>(currentLocal.x() - startLocal.x());
+        float dyNorm = static_cast<float>(currentLocal.y() - startLocal.y());
+
+        // Shift constrains anchor/body movement to the dominant screen axis.
+        // Tangent handles use 45-degree angle snapping further below.
+        if ((event->modifiers() & Qt::ShiftModifier)
+            && m_dragMaskHandle < kMaskTangentHandleBase
+            && (mask.shape == MaskShape::FreeDrawBezier
+                || m_dragMaskHandle == 4
+                || m_dragMaskHandle == INT_MAX)) {
+            QPointF delta = wPos - m_dragStartWidget;
+            if (std::abs(delta.x()) >= std::abs(delta.y()))
+                delta.setY(0.0);
+            else
+                delta.setX(0.0);
+            QPointF constrainedLocal;
+            if (widgetToMaskLocal(m_dragStartWidget + delta,
+                                  constrainedLocal, mask.coordinateSpace)) {
+                dxNorm = static_cast<float>(
+                    constrainedLocal.x() - startLocal.x());
+                dyNorm = static_cast<float>(
+                    constrainedLocal.y() - startLocal.y());
+            }
+        }
 
         // Work on the geometry evaluated at the current time; write back
         // through writeGeometry (Premiere stopwatch model: updates the
         // static path, or records a Mask Path keyframe when animated).
         const MaskGeometry startGeo = m_dragStartMask.geometryAt(m_maskTime);
         MaskGeometry geo = mask.geometryAt(m_maskTime);
+
+        // Resize parametric masks in their own rotated source-pixel axes.
+        const QSizeF sourceSize =
+            mask.coordinateSpace == MaskCoordinateSpace::LegacySequenceFrame
+            ? QSizeF(std::max<uint32_t>(
+                         1u, m_vulkanVp ? m_vulkanVp->srcWidth() : 1u),
+                     std::max<uint32_t>(
+                         1u, m_vulkanVp ? m_vulkanVp->srcHeight() : 1u))
+            : maskSourceSize();
+        const double radians = -static_cast<double>(startGeo.rotation)
+            * 3.14159265358979323846 / 180.0;
+        const double c = std::cos(radians), s = std::sin(radians);
+        const double dxPx = static_cast<double>(dxNorm) * sourceSize.width();
+        const double dyPx = static_cast<double>(dyNorm) * sourceSize.height();
+        const float shapeDx = static_cast<float>(
+            (dxPx * c - dyPx * s) / sourceSize.width());
+        const float shapeDy = static_cast<float>(
+            (dxPx * s + dyPx * c) / sourceSize.height());
 
         if (mask.shape == MaskShape::Ellipse) {
             if (m_dragMaskHandle == 4 || m_dragMaskHandle == INT_MAX) {
@@ -829,12 +2517,20 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
                 geo.centerY = startGeo.centerY + dyNorm;
             } else if (m_dragMaskHandle == 0 || m_dragMaskHandle == 1) {
                 // Right/left cardinal → scale width
-                float d = (m_dragMaskHandle == 0) ? dxNorm : -dxNorm;
+                float d = (m_dragMaskHandle == 0) ? shapeDx : -shapeDx;
                 geo.width = std::max(0.01f, startGeo.width + d * 2.0f);
+                if ((event->modifiers() & Qt::ShiftModifier)
+                    && startGeo.width > 1.0e-6f)
+                    geo.height = std::max(
+                        0.01f, startGeo.height * geo.width / startGeo.width);
             } else {
                 // Bottom/top cardinal → scale height
-                float d = (m_dragMaskHandle == 2) ? dyNorm : -dyNorm;
+                float d = (m_dragMaskHandle == 2) ? shapeDy : -shapeDy;
                 geo.height = std::max(0.01f, startGeo.height + d * 2.0f);
+                if ((event->modifiers() & Qt::ShiftModifier)
+                    && startGeo.height > 1.0e-6f)
+                    geo.width = std::max(
+                        0.01f, startGeo.width * geo.height / startGeo.height);
             }
         }
         else if (mask.shape == MaskShape::Rectangle) {
@@ -846,26 +2542,123 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
                 // 5=top, 6=right, 7=bottom, 8=left
                 if (m_dragMaskHandle == 5) {
                     // Top edge: shrink height from top
-                    geo.height  = std::max(0.01f, startGeo.height - dyNorm * 2.0f);
+                    geo.height  = std::max(0.01f, startGeo.height - shapeDy * 2.0f);
                 } else if (m_dragMaskHandle == 7) {
                     // Bottom edge: grow height from bottom
-                    geo.height  = std::max(0.01f, startGeo.height + dyNorm * 2.0f);
+                    geo.height  = std::max(0.01f, startGeo.height + shapeDy * 2.0f);
                 } else if (m_dragMaskHandle == 6) {
                     // Right edge: grow width from right
-                    geo.width   = std::max(0.01f, startGeo.width + dxNorm * 2.0f);
+                    geo.width   = std::max(0.01f, startGeo.width + shapeDx * 2.0f);
                 } else { // 8 = left
                     // Left edge: shrink width from left
-                    geo.width   = std::max(0.01f, startGeo.width - dxNorm * 2.0f);
+                    geo.width   = std::max(0.01f, startGeo.width - shapeDx * 2.0f);
                 }
             } else {
                 // Corner drag → scale width/height symmetrically
                 float signX = (m_dragMaskHandle == 1 || m_dragMaskHandle == 2) ? 1.0f : -1.0f;
                 float signY = (m_dragMaskHandle == 2 || m_dragMaskHandle == 3) ? 1.0f : -1.0f;
-                geo.width  = std::max(0.01f, startGeo.width  + signX * dxNorm * 2.0f);
-                geo.height = std::max(0.01f, startGeo.height + signY * dyNorm * 2.0f);
+                if ((event->modifiers() & Qt::ShiftModifier)
+                    && startGeo.width > 1.0e-6f
+                    && startGeo.height > 1.0e-6f) {
+                    const float sx = signX * shapeDx * 2.0f / startGeo.width;
+                    const float sy = signY * shapeDy * 2.0f / startGeo.height;
+                    const float deltaScale = std::abs(sx) >= std::abs(sy)
+                        ? sx : sy;
+                    const float scale = std::max(0.01f, 1.0f + deltaScale);
+                    geo.width = startGeo.width * scale;
+                    geo.height = startGeo.height * scale;
+                } else {
+                    geo.width  = std::max(
+                        0.01f, startGeo.width + signX * shapeDx * 2.0f);
+                    geo.height = std::max(
+                        0.01f, startGeo.height + signY * shapeDy * 2.0f);
+                }
             }
         }
         else if (mask.shape == MaskShape::FreeDrawBezier) {
+            // INT_MAX is the whole-mask body sentinel; do not interpret it
+            // as an encoded Bezier tangent handle.
+            if (m_dragMaskHandle != INT_MAX
+                && m_dragMaskHandle >= kMaskTangentHandleBase) {
+                const int encoded = m_dragMaskHandle - kMaskTangentHandleBase;
+                const size_t tangentVertex = static_cast<size_t>(encoded / 2);
+                const bool outgoing = (encoded % 2) == 1;
+                if (tangentVertex < geo.vertices.size()
+                    && tangentVertex < startGeo.vertices.size()) {
+                    auto& vertex = geo.vertices[tangentVertex];
+                    const auto& startVertex = startGeo.vertices[tangentVertex];
+                    auto snapTangent = [&](float tx, float ty) {
+                        if (!(event->modifiers() & Qt::ShiftModifier))
+                            return std::pair<float, float>{tx, ty};
+                        const QPointF anchor = maskLocalToWidget(
+                            startVertex.x, startVertex.y,
+                            mask.coordinateSpace);
+                        QPointF vector = maskVectorToWidget(
+                            tx, ty, mask.coordinateSpace);
+                        const double length = std::hypot(vector.x(), vector.y());
+                        if (length < 1.0e-6)
+                            return std::pair<float, float>{tx, ty};
+                        constexpr double step = 3.14159265358979323846 / 4.0;
+                        const double angle = std::round(
+                            std::atan2(vector.y(), vector.x()) / step) * step;
+                        const QPointF target = anchor + QPointF(
+                            std::cos(angle) * length,
+                            std::sin(angle) * length);
+                        QPointF localTarget;
+                        if (!widgetToMaskLocal(
+                                target, localTarget, mask.coordinateSpace))
+                            return std::pair<float, float>{tx, ty};
+                        return std::pair<float, float>{
+                            static_cast<float>(localTarget.x() - startVertex.x),
+                            static_cast<float>(localTarget.y() - startVertex.y)};
+                    };
+                    auto mirrorDirectionPreservingLength = [&](float tx, float ty,
+                                                                float oldX,
+                                                                float oldY) {
+                        const float px = tx * static_cast<float>(sourceSize.width());
+                        const float py = ty * static_cast<float>(sourceSize.height());
+                        const float len = std::hypot(px, py);
+                        const float oldLen = std::hypot(
+                            oldX * static_cast<float>(sourceSize.width()),
+                            oldY * static_cast<float>(sourceSize.height()));
+                        const float useLen = oldLen > 1.0e-6f ? oldLen : len;
+                        if (len < 1.0e-6f)
+                            return std::pair<float, float>{0.0f, 0.0f};
+                        return std::pair<float, float>{
+                            -(px / len) * useLen /
+                                static_cast<float>(sourceSize.width()),
+                            -(py / len) * useLen /
+                                static_cast<float>(sourceSize.height())};
+                    };
+                    if (outgoing) {
+                        auto tangent = snapTangent(
+                            startVertex.outTanX + dxNorm,
+                            startVertex.outTanY + dyNorm);
+                        vertex.outTanX = tangent.first;
+                        vertex.outTanY = tangent.second;
+                        if (!(event->modifiers() & Qt::AltModifier)) {
+                            auto opposite = mirrorDirectionPreservingLength(
+                                vertex.outTanX, vertex.outTanY,
+                                startVertex.inTanX, startVertex.inTanY);
+                            vertex.inTanX = opposite.first;
+                            vertex.inTanY = opposite.second;
+                        }
+                    } else {
+                        auto tangent = snapTangent(
+                            startVertex.inTanX + dxNorm,
+                            startVertex.inTanY + dyNorm);
+                        vertex.inTanX = tangent.first;
+                        vertex.inTanY = tangent.second;
+                        if (!(event->modifiers() & Qt::AltModifier)) {
+                            auto opposite = mirrorDirectionPreservingLength(
+                                vertex.inTanX, vertex.inTanY,
+                                startVertex.outTanX, startVertex.outTanY);
+                            vertex.outTanX = opposite.first;
+                            vertex.outTanY = opposite.second;
+                        }
+                    }
+                }
+            } else {
             auto vi = static_cast<size_t>(m_dragMaskHandle);
             if (vi < geo.vertices.size() && vi < startGeo.vertices.size()) {
                 // Drag single vertex
@@ -877,6 +2670,7 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
                     geo.vertices[i].x = startGeo.vertices[i].x + dxNorm;
                     geo.vertices[i].y = startGeo.vertices[i].y + dyNorm;
                 }
+            }
             }
         }
 
@@ -900,7 +2694,8 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         //     visibly lagged the cursor.
         //   • Standard mode (video / image): posX/posY are REF-1920 px.
         float pxPerUnitX = 0.0f, pxPerUnitY = 0.0f;
-        if (m_overlay.useContentRect &&
+        const bool outerClipTarget = editsOuterClipTransform(m_overlay);
+        if (m_overlay.useContentRect && !outerClipTarget &&
             m_overlay.contentCanvasW > 0.0f && m_overlay.contentCanvasH > 0.0f)
         {
             pxPerUnitX = static_cast<float>(fr.width())  / m_overlay.contentCanvasW;
@@ -916,14 +2711,16 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         // Account for clip-level scale: layer position is in canvas space,
         // but the clip scale magnifies the whole canvas, so mouse movement
         // needs to be divided by the clip scale to get the correct delta.
-        float effScaleX = std::max(0.001f, m_overlay.clipScaleX);
-        float effScaleY = std::max(0.001f, m_overlay.clipScaleY);
+        float effScaleX = outerClipTarget
+            ? 1.0f : std::max(0.001f, std::abs(m_overlay.clipScaleX));
+        float effScaleY = outerClipTarget
+            ? 1.0f : std::max(0.001f, std::abs(m_overlay.clipScaleY));
 
         float dx = static_cast<float>(wPos.x() - m_dragStartWidget.x()) / (pxPerUnitX * effScaleX);
         float dy = static_cast<float>(wPos.y() - m_dragStartWidget.y()) / (pxPerUnitY * effScaleY);
 
-        m_overlay.posX = m_dragStartPosX + dx;
-        m_overlay.posY = m_dragStartPosY + dy;
+        setEditPosition(m_overlay, m_dragStartPosX + dx,
+                        m_dragStartPosY + dy);
 
         // Premiere-style Ctrl-snap: magnetise the overlay's AABB to the
         // frame edges and centre lines while Ctrl is held. Worked out in
@@ -964,12 +2761,21 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
                 if (d < bestDyAbs) { bestDyAbs = d; bestDy = tgt - src; }
             }
             if (bestDxAbs <= kSnapPx)
-                m_overlay.posX += static_cast<float>(bestDx / (pxPerUnitX * effScaleX));
+                setEditPosition(
+                    m_overlay,
+                    editPositionX(m_overlay) +
+                        static_cast<float>(bestDx / (pxPerUnitX * effScaleX)),
+                    editPositionY(m_overlay));
             if (bestDyAbs <= kSnapPx)
-                m_overlay.posY += static_cast<float>(bestDy / (pxPerUnitY * effScaleY));
+                setEditPosition(
+                    m_overlay, editPositionX(m_overlay),
+                    editPositionY(m_overlay) +
+                        static_cast<float>(bestDy / (pxPerUnitY * effScaleY)));
         }
 
-        emit transformPositionChanged(m_overlay.posX, m_overlay.posY);
+        syncMaskOwnerToEditedOuterTransform();
+        emit transformPositionChanged(editPositionX(m_overlay),
+                                      editPositionY(m_overlay));
         update();
         event->accept();
         return;
@@ -1039,16 +2845,21 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
                 float curDy   = std::abs(static_cast<float>(wPos.y() - center.y()));
                 float ratioX  = (startDx > 1.0f) ? curDx / startDx : 1.0f;
                 float ratioY  = (startDy > 1.0f) ? curDy / startDy : 1.0f;
-                m_overlay.scaleX = std::max(0.01f, m_dragStartScX * ratioX);
-                m_overlay.scaleY = std::max(0.01f, m_dragStartScY * ratioY);
+                setEditScale(
+                    m_overlay,
+                    scaleWithOriginalSign(m_dragStartScX, ratioX),
+                    scaleWithOriginalSign(m_dragStartScY, ratioY));
             } else {
                 // Uniform scale (default): both axes get the same value
                 float ratio = curDist / startDist;
-                float newScale = std::max(0.01f, m_dragStartScX * ratio);
-                m_overlay.scaleX = newScale;
-                m_overlay.scaleY = newScale;
+                setEditScale(
+                    m_overlay,
+                    scaleWithOriginalSign(m_dragStartScX, ratio),
+                    scaleWithOriginalSign(m_dragStartScY, ratio));
             }
-            emit transformScaleChanged(m_overlay.scaleX, m_overlay.scaleY);
+            syncMaskOwnerToEditedOuterTransform();
+            emit transformScaleChanged(editScaleX(m_overlay),
+                                       editScaleY(m_overlay));
             update();
         }
         event->accept();
@@ -1071,16 +2882,23 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         while (deltaAngle < -180.0f) deltaAngle += 360.0f;
 
         float newRot = m_dragStartRot + deltaAngle;
-        m_overlay.rotation = newRot;
-        emit transformRotationChanged(m_overlay.rotation);
+        setEditRotation(m_overlay, newRot);
+        syncMaskOwnerToEditedOuterTransform();
+        emit transformRotationChanged(editRotation(m_overlay));
         update();
         event->accept();
         return;
     }
 
     // ── Cursor hint when hovering ───────────────────────────────────────
-    if (m_editTool == 8 && m_dragMode == DragMode::None) {
+    if (m_editTool == 7 && m_dragMode == DragMode::None) {
         applyCursor(zoomCursor());
+        event->accept();
+        return;
+    }
+
+    if (m_editTool == 8 && m_dragMode == DragMode::None) {
+        applyCursor(Qt::CrossCursor);
         event->accept();
         return;
     }
@@ -1088,13 +2906,31 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
     // Text/Type tool: always show the I-beam over the monitor (Premiere
     // Pro behavior) — even when a clip is selected and its transform
     // handles are visible.
+    if (m_editTool == 9 && m_dragMode == DragMode::None) {
+        m_penHoverWidget = wPos;
+        int maskIndex = -1;
+        const int handle = hitTestMaskHandle(wPos, maskIndex);
+        if (handle >= 0) {
+            m_hoverMaskIndex = maskIndex;
+            m_hoverMaskHandle = handle;
+        } else {
+            m_hoverMaskIndex = -1;
+            m_hoverMaskHandle = -1;
+        }
+        applyCursor(penCursor());
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_editTool == 6 && m_dragMode == DragMode::None) {
         applyCursor(Qt::IBeamCursor);
         event->accept();
         return;
     }
 
-    if (m_dragMode == DragMode::None && m_masks && !m_masks->empty()) {
+    if (m_dragMode == DragMode::None && m_masks && !m_masks->empty()
+        && (m_activeMaskIndex >= 0 || m_editTool == 9)) {
         // Ctrl+hover near mask edge → show pen cursor
         if ((event->modifiers() & Qt::ControlModifier) && hitTestMaskEdge(wPos)) {
             if (m_hoverMaskIndex != -1 || m_hoverMaskHandle != -1) {
@@ -1149,9 +2985,11 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
             }
         }
 
-        // Crop edge handles take cursor priority (matching the press order):
-        // a two-headed resize arrow, not the four-way move cursor.
-        int cropHoverH = m_overlay.cropEnabled ? hitTestCropHandle(wPos) : -1;
+        // Only advertise crop hit targets while Ctrl is held. Plain edge and
+        // corner hover continues through the normal transform cursor path.
+        int cropHoverH = (m_overlay.cropEnabled
+                          && cropGestureRequested(event->modifiers()))
+            ? hitTestCropHandle(wPos) : -1;
         if (cropHoverH >= 0)
             applyCursor(cropHoverH < 2 ? Qt::SizeHorCursor : Qt::SizeVerCursor);
         else if (hitTestHandle(wPos) >= 0)
@@ -1175,6 +3013,15 @@ void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
     if (m_dragMode == DragMode::Pan) {
         m_dragMode = DragMode::None;
         applyCursor(Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+
+    if (m_dragMode == DragMode::DrawMaskPoint) {
+        m_dragMode = DragMode::None;
+        m_penHoverWidget = event->position();
+        applyCursor(penCursor());
+        update();
         event->accept();
         return;
     }
@@ -1277,9 +3124,11 @@ void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
         float oldPX = m_dragStartPosX, oldPY = m_dragStartPosY;
         float oldSX = m_dragStartScX,  oldSY = m_dragStartScY;
         float oldRot = m_dragStartRot;
-        float newPX = m_overlay.posX,  newPY = m_overlay.posY;
-        float newSX = m_overlay.scaleX, newSY = m_overlay.scaleY;
-        float newRot = m_overlay.rotation;
+        float newPX = editPositionX(m_overlay);
+        float newPY = editPositionY(m_overlay);
+        float newSX = editScaleX(m_overlay);
+        float newSY = editScaleY(m_overlay);
+        float newRot = editRotation(m_overlay);
         m_dragMode = DragMode::None;
         applyCursor(Qt::ArrowCursor);
         emit transformDragFinished(oldPX, oldPY, oldSX, oldSY, oldRot,
@@ -1307,63 +3156,80 @@ void TransformOverlayWidget::wheelEvent(QWheelEvent* event)
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
     // ── Inline text editor key handling ──────────────────────────────
-    // Enter commits (Premiere Pro), Shift+Enter inserts newline, Esc cancels.
+    // Return inserts a newline; Ctrl/Cmd+Return commits; Esc cancels.
     if (m_inlineTextEdit && watched == m_inlineTextEdit) {
-        if (event->type() == QEvent::KeyPress) {
+        if (event->type() == QEvent::ShortcutOverride) {
             auto* ke = static_cast<QKeyEvent*>(event);
-            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
-                if (ke->modifiers() & Qt::ShiftModifier) {
-                    // Shift+Enter → insert a newline (Premiere Pro behavior).
-                    // Let QPlainTextEdit handle it natively — it already
-                    // inserts a line break with Shift+Enter by default.
-                    return QWidget::eventFilter(watched, event);
-                }
-                // Plain Enter → commit the text and close the editor.
-                if (!m_committingInlineText) {
-                    m_committingInlineText = true;
-                    const QString t = m_inlineTextEdit->toPlainText();
-                    m_inlineTextEdit->hide();
-                    // Restore the transform overlay after editing.
-                    m_overlay = m_savedOverlayBeforeEdit;
-                    m_preEditOriginalText.clear();
-                    update();
-                    emit inlineTextCommitted(t);
-                    m_committingInlineText = false;
-                    setFocus();
-                }
-                return true;
-            }
-            if (ke->key() == Qt::Key_Escape) {
-                // Esc → cancel, restore original text.
-                if (!m_committingInlineText && !m_preEditOriginalText.empty()) {
-                    m_committingInlineText = true;
-                    QString orig = QString::fromStdString(m_preEditOriginalText);
-                    m_inlineTextEdit->hide();
-                    m_overlay = m_savedOverlayBeforeEdit;
-                    m_preEditOriginalText.clear();
-                    update();
-                    // Emit the original text — the wiring code detects
-                    // newVal==oldVal and restores without an undo entry.
-                    emit inlineTextCommitted(orig);
-                    m_committingInlineText = false;
-                    setFocus();
-                }
+            const auto modifiers = ke->modifiers();
+            const bool plainTyping =
+                !(modifiers & (Qt::ControlModifier | Qt::MetaModifier
+                               | Qt::AltModifier));
+            const bool textEditingShortcut =
+                ke->matches(QKeySequence::Cut)
+                || ke->matches(QKeySequence::Copy)
+                || ke->matches(QKeySequence::Paste)
+                || ke->matches(QKeySequence::Undo)
+                || ke->matches(QKeySequence::Redo)
+                || ke->matches(QKeySequence::SelectAll)
+                || ((modifiers & (Qt::ControlModifier | Qt::MetaModifier))
+                    && (ke->key() == Qt::Key_B || ke->key() == Qt::Key_I
+                        || ke->key() == Qt::Key_Return
+                        || ke->key() == Qt::Key_Enter));
+            if (plainTyping || textEditingShortcut) {
+                // Shortcut dispatch happens before KeyPress. Claim ordinary
+                // typing here so application tool bindings (T, A, B, R, ...)
+                // cannot steal letters from the monitor text editor.
+                event->accept();
                 return true;
             }
         }
-        // Also commit on focus out (editingFinished equivalent).
+        if (event->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(event);
+            if ((ke->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+                && ke->key() == Qt::Key_B) {
+                const int current =
+                    m_inlineTextEdit->currentCharFormat().fontWeight();
+                applyInlineTextFontWeight(current >= 700 ? 400 : 700);
+                return true;
+            }
+            if ((ke->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+                && ke->key() == Qt::Key_I) {
+                const bool current =
+                    m_inlineTextEdit->currentCharFormat().fontItalic();
+                applyInlineTextItalic(!current);
+                return true;
+            }
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                if (ke->modifiers()
+                    & (Qt::ControlModifier | Qt::MetaModifier)) {
+                    finishInlineTextEdit(false);
+                    return true;
+                }
+                // Handle this explicitly instead of relying on propagation
+                // through the frameless top-level editor. On Windows that
+                // propagation could coincide with a focus transition and end
+                // the edit, making the line that was just typed appear to
+                // vanish. Return/Enter always creates another text row;
+                // Ctrl/Cmd+Return remains the explicit commit shortcut.
+                m_inlineTextEdit->insertPlainText(QStringLiteral("\n"));
+                return true;
+            }
+            if (ke->key() == Qt::Key_Escape) {
+                finishInlineTextEdit(true);
+                return true;
+            }
+        }
+        // Defer focus-out handling until Qt has assigned the destination.
+        // Font/style controls deliberately keep the session alive so their
+        // click can operate on the retained monitor selection.
         if (event->type() == QEvent::FocusOut && !m_committingInlineText
             && m_inlineTextEdit->isVisible()) {
-            m_committingInlineText = true;
-            const QString t = m_inlineTextEdit->toPlainText();
-            m_inlineTextEdit->hide();
-            m_overlay = m_savedOverlayBeforeEdit;
-            m_preEditOriginalText.clear();
-            update();
-            emit inlineTextCommitted(t);
-            m_committingInlineText = false;
-            setFocus();
-            return true;
+            QTimer::singleShot(0, this, [this]() {
+                if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()
+                    || m_committingInlineText) return;
+                if (!focusIsInInlineFormattingUi())
+                    finishInlineTextEdit(false);
+            });
         }
         return QWidget::eventFilter(watched, event);
     }
@@ -1372,10 +3238,38 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
     if (!m_vulkanVp || watched != m_vulkanVp->nativeWindow())
         return QWidget::eventFilter(watched, event);
 
+    auto forwardMouse = [this, event](
+        void (TransformOverlayWidget::*handler)(QMouseEvent*)) {
+        auto* source = static_cast<QMouseEvent*>(event);
+        const QPointF overlayPos = QPointF(
+            mapFromGlobal(source->globalPosition().toPoint()));
+        QMouseEvent mapped(source->type(), overlayPos,
+                           source->globalPosition(), source->button(),
+                           source->buttons(), source->modifiers());
+        (this->*handler)(&mapped);
+        event->setAccepted(mapped.isAccepted());
+        return mapped.isAccepted();
+    };
+
     switch (event->type()) {
+    case QEvent::KeyPress:
+    {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (m_editTool == 9 && m_penDrawing) {
+            if (keyEvent->key() == Qt::Key_Escape) {
+                cancelPenMask();
+                return true;
+            }
+            if (keyEvent->key() == Qt::Key_Return
+                || keyEvent->key() == Qt::Key_Enter) {
+                if (commitPenMask()) return true;
+            }
+        }
+        break;
+    }
+
     case QEvent::MouseButtonPress:
-        mousePressEvent(static_cast<QMouseEvent*>(event));
-        return event->isAccepted();
+        return forwardMouse(&TransformOverlayWidget::mousePressEvent);
 
     case QEvent::MouseButtonDblClick:
         // Without this, Qt's auto-generated double-click never reaches our
@@ -1383,16 +3277,13 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
         // event fires on the native Vulkan window, and the overlay filter
         // drops it. Forwarding here is what enables the in-place text
         // editor flow.
-        mouseDoubleClickEvent(static_cast<QMouseEvent*>(event));
-        return event->isAccepted();
+        return forwardMouse(&TransformOverlayWidget::mouseDoubleClickEvent);
 
     case QEvent::MouseMove:
-        mouseMoveEvent(static_cast<QMouseEvent*>(event));
-        return event->isAccepted();
+        return forwardMouse(&TransformOverlayWidget::mouseMoveEvent);
 
     case QEvent::MouseButtonRelease:
-        mouseReleaseEvent(static_cast<QMouseEvent*>(event));
-        return event->isAccepted();
+        return forwardMouse(&TransformOverlayWidget::mouseReleaseEvent);
 
     case QEvent::Leave:
         // Pointer left the Vulkan surface — drop any override cursor so it

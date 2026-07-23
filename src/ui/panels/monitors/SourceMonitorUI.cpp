@@ -10,6 +10,7 @@
 
 #include "Theme.h"
 #include "UiScale.h"
+#include "Settings.h"
 
 #include "viewport/Viewport.h"
 #include "widgets/MiniTimeline.h"
@@ -27,7 +28,11 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QMimeData>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
 #include <QTreeWidget>
@@ -367,8 +372,7 @@ void SourceMonitor::setupUI()
     m_btnExportFrame = monitorui::makeExportFrameButton(this);
     controlLayout->addWidget(m_btnExportFrame, 0, Qt::AlignVCenter);
     connect(m_btnExportFrame, &QPushButton::clicked, this, [this]() {
-        // Source monitor export = screenshot viewport
-        // (no exportFrameRequested signal on SourceMonitor, so do it inline)
+        exportViewportFrame();
     });
 
     // Zoom percentage label (hidden — matches Premiere layout)
@@ -403,7 +407,7 @@ void SourceMonitor::setupUI()
     m_shuttleSpeedLabel = transport.shuttleSpeed;
 
     connect(m_btnScreenshot, &QPushButton::clicked, this, [this]() {
-        // Screenshot from source monitor
+        exportViewportFrame();
     });
     connect(m_btnLoop, &QPushButton::toggled, this, [this](bool checked) {
         if (m_controller) m_controller->setLoopEnabled(checked);
@@ -440,6 +444,50 @@ void SourceMonitor::setupUI()
         child->installEventFilter(this);
 
     mainLayout->addWidget(transportBar);
+}
+
+void SourceMonitor::exportViewportFrame()
+{
+    if (!m_viewport || !m_viewport->hasFrame() || m_audioOnly) {
+        QMessageBox::information(this, tr("Export Frame"),
+                                 tr("There is no video frame to export."));
+        return;
+    }
+
+    auto settings = appSettings();
+    QString lastDir = settings.value(QStringLiteral("export/lastOutputDir")).toString();
+    if (lastDir.isEmpty() || !QDir(lastDir).exists())
+        lastDir = QDir::homePath();
+
+    const int64_t tick = m_controller ? m_controller->currentTick() : 0;
+    const QString defaultName = QStringLiteral("source_frame_%1.png")
+        .arg(tick, 6, 10, QLatin1Char('0'));
+    QString selectedFilter;
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Frame"), QDir(lastDir).filePath(defaultName),
+        tr("PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;BMP Image (*.bmp)"),
+        &selectedFilter);
+    if (path.isEmpty()) return;
+
+    if (QFileInfo(path).suffix().isEmpty()) {
+        if (selectedFilter.startsWith(QStringLiteral("JPEG")))
+            path += QStringLiteral(".jpg");
+        else if (selectedFilter.startsWith(QStringLiteral("BMP")))
+            path += QStringLiteral(".bmp");
+        else
+            path += QStringLiteral(".png");
+    }
+
+    const QPixmap shot = m_viewport->grab();
+    if (shot.isNull() || !shot.save(path)) {
+        QMessageBox::warning(this, tr("Export Frame"),
+                             tr("Could not save the frame to:\n%1").arg(path));
+        return;
+    }
+
+    settings.setValue(QStringLiteral("export/lastOutputDir"),
+                      QFileInfo(path).absolutePath());
+    settings.sync();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

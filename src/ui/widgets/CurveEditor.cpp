@@ -32,6 +32,7 @@ void CurveEditor::setActiveChannel(Channel ch)
 
 void CurveEditor::resetChannel(Channel ch)
 {
+    m_hasLoadedLut[ch] = false;
     m_points[ch].clear();
     m_points[ch].push_back({0.0f, 0.0f});
     m_points[ch].push_back({1.0f, 1.0f});
@@ -129,10 +130,31 @@ float CurveEditor::evaluate(Channel ch, float t) const
 
 std::array<float, 256> CurveEditor::lut(Channel ch) const
 {
+    if (m_hasLoadedLut[ch])
+        return m_loadedLuts[ch];
+
     std::array<float, 256> result{};
     for (int i = 0; i < 256; ++i)
         result[i] = evaluate(ch, i / 255.0f);
     return result;
+}
+
+void CurveEditor::setLut(Channel ch, const std::array<float, 256>& lutValues)
+{
+    m_loadedLuts[ch] = lutValues;
+    m_hasLoadedLut[ch] = true;
+
+    // Seventeen display points communicate the shape without drawing 256
+    // overlapping handles. The full LUT above is returned unchanged unless
+    // the user starts editing this channel.
+    auto& points = m_points[ch];
+    points.clear();
+    for (int sample = 0; sample <= 16; ++sample) {
+        const int index = sample == 16 ? 255 : sample * 16;
+        points.push_back({static_cast<float>(index) / 255.0f,
+                          std::clamp(lutValues[index], 0.0f, 1.0f)});
+    }
+    update();
 }
 
 void CurveEditor::paintEvent(QPaintEvent* event)
@@ -226,6 +248,10 @@ void CurveEditor::paintEvent(QPaintEvent* event)
 void CurveEditor::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton) return;
+
+    // From the first real edit onward, generate the LUT from the displayed
+    // control points. Until now lut() returned the exact loaded effect LUT.
+    m_hasLoadedLut[m_activeChannel] = false;
 
     m_dragIndex = hitTest(m_activeChannel, event->position());
     if (m_dragIndex >= 0) {

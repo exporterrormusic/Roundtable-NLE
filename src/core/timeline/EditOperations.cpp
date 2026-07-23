@@ -13,6 +13,8 @@
 #include "timeline/Clip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/GraphicClip.h"
+#include "timeline/TitleClip.h"
 #include "timeline/Marker.h"
 #include "command/Command.h"
 #include "command/CompoundCommand.h"
@@ -29,6 +31,171 @@
 #include <unordered_set>
 
 namespace rt {
+
+namespace {
+
+// Overwrite remnants are independent clips. Since keyframe times are local to
+// a clip, a verbatim clone duplicates the animation and a head trim moves it.
+// Keep only keys in the surviving interval and rebase them to its local zero.
+KeyframeTrack<float> sliceKeyframeTrack(const KeyframeTrack<float>& source,
+                                        int64_t localIn, int64_t localOut)
+{
+    KeyframeTrack<float> result(source.evaluate(localIn));
+    for (const auto& key : source.keyframes()) {
+        if (key.time < localIn || key.time >= localOut)
+            continue;
+        auto rebased = key;
+        rebased.time -= localIn;
+        result.restoreKeyframe(rebased);
+    }
+    return result;
+}
+
+OpacityMask sliceOpacityMask(const OpacityMask& source,
+                             int64_t localIn, int64_t localOut)
+{
+    OpacityMask result = source;
+    const MaskGeometry boundaryGeometry = source.geometryAt(localIn);
+
+    result.feather = sliceKeyframeTrack(source.feather, localIn, localOut);
+    result.maskOpacity = sliceKeyframeTrack(source.maskOpacity, localIn, localOut);
+    result.expansion = sliceKeyframeTrack(source.expansion, localIn, localOut);
+
+    result.pathKeys.clear();
+    for (const auto& key : source.pathKeys) {
+        if (key.time < localIn || key.time >= localOut)
+            continue;
+        auto rebased = key;
+        rebased.time -= localIn;
+        result.pathKeys.push_back(std::move(rebased));
+    }
+    if (result.pathKeys.empty())
+        result.base = boundaryGeometry;
+
+    return result;
+}
+
+struct ClipKeyframeTargets
+{
+    std::vector<KeyframeTrack<float>*> tracks;
+    std::vector<OpacityMask*> masks;
+};
+
+ClipKeyframeTargets collectClipKeyframeTargets(Clip& clip)
+{
+    ClipKeyframeTargets result;
+    auto addTrack = [&result](KeyframeTrack<float>& track) {
+        result.tracks.push_back(&track);
+    };
+    auto addMask = [&result](OpacityMask& mask) {
+        result.masks.push_back(&mask);
+    };
+
+    addTrack(clip.speedRamp());
+    addTrack(clip.opacity());
+    addTrack(clip.positionX());
+    addTrack(clip.positionY());
+    addTrack(clip.scaleX());
+    addTrack(clip.scaleY());
+    addTrack(clip.rotation());
+    addTrack(clip.shutterAngle());
+    addTrack(clip.anchorX());
+    addTrack(clip.anchorY());
+
+    if (auto* audio = dynamic_cast<AudioClip*>(&clip)) {
+        addTrack(audio->volume());
+        addTrack(audio->pan());
+    }
+    if (auto* title = dynamic_cast<TitleClip*>(&clip)) {
+        addTrack(title->tracking());
+        addTrack(title->lineHeight());
+    }
+    if (auto* graphic = dynamic_cast<GraphicClip*>(&clip)) {
+        for (size_t i = 0; i < graphic->layerCount(); ++i) {
+            GraphicLayer* layer = graphic->layer(i);
+            if (!layer) continue;
+            auto& transform = layer->transform();
+            addTrack(transform.posX);
+            addTrack(transform.posY);
+            addTrack(transform.scaleX);
+            addTrack(transform.scaleY);
+            addTrack(transform.rotation);
+            addTrack(transform.anchorX);
+            addTrack(transform.anchorY);
+            addTrack(transform.opacity);
+            if (auto* text = dynamic_cast<TextLayer*>(layer)) {
+                addTrack(text->tracking());
+                addTrack(text->leading());
+                addTrack(text->baselineShift());
+            }
+        }
+    }
+
+    for (auto& mask : clip.masks())
+        addMask(mask);
+
+    auto& effects = clip.effects();
+    for (size_t i = 0; i < effects.effectCount(); ++i) {
+        Effect& effect = effects.effect(i);
+        for (size_t p = 0; p < effect.paramCount(); ++p)
+            addTrack(effect.param(p).track);
+        for (auto& mask : effect.masks())
+            addMask(mask);
+    }
+
+    return result;
+}
+
+void sliceClipKeyframes(Clip& clip, int64_t localIn, int64_t localOut)
+{
+    auto targets = collectClipKeyframeTargets(clip);
+    for (auto* track : targets.tracks)
+        *track = sliceKeyframeTrack(*track, localIn, localOut);
+    for (auto* mask : targets.masks)
+        *mask = sliceOpacityMask(*mask, localIn, localOut);
+}
+
+struct ClipKeyframeSliceState
+{
+    ClipKeyframeTargets targets;
+    std::vector<KeyframeTrack<float>> beforeTracks;
+    std::vector<KeyframeTrack<float>> afterTracks;
+    std::vector<OpacityMask> beforeMasks;
+    std::vector<OpacityMask> afterMasks;
+};
+
+std::unique_ptr<Command> sliceClipKeyframesCommand(Clip& clip,
+                                                   int64_t localIn,
+                                                   int64_t localOut)
+{
+    auto state = std::make_shared<ClipKeyframeSliceState>();
+    state->targets = collectClipKeyframeTargets(clip);
+
+    for (auto* track : state->targets.tracks) {
+        state->beforeTracks.push_back(*track);
+        state->afterTracks.push_back(sliceKeyframeTrack(*track, localIn, localOut));
+    }
+    for (auto* mask : state->targets.masks) {
+        state->beforeMasks.push_back(*mask);
+        state->afterMasks.push_back(sliceOpacityMask(*mask, localIn, localOut));
+    }
+
+    auto apply = [state](bool after) {
+        const auto& tracks = after ? state->afterTracks : state->beforeTracks;
+        const auto& masks = after ? state->afterMasks : state->beforeMasks;
+        for (size_t i = 0; i < state->targets.tracks.size(); ++i)
+            *state->targets.tracks[i] = tracks[i];
+        for (size_t i = 0; i < state->targets.masks.size(); ++i)
+            *state->targets.masks[i] = masks[i];
+    };
+
+    return std::make_unique<LambdaCommand>(
+        "Preserve overwrite keyframes",
+        [apply]() { apply(true); },
+        [apply]() { apply(false); });
+}
+
+} // namespace
 
 // ─── Move ───────────────────────────────────────────────────────────────────
 
@@ -133,6 +300,25 @@ std::unique_ptr<Command> EditOperations::moveClipToTrack(
 
 // ─── Overwrite / Overlap Resolution ──────────────────────────────────────────
 
+int64_t EditOperations::nonOverlappingInsertDuration(
+    const Track& track, int64_t timelineIn, int64_t requestedDuration)
+{
+    if (requestedDuration <= 0) return 0;
+
+    for (size_t i = 0; i < track.clipCount(); ++i) {
+        const Clip* clip = track.clip(i);
+        if (!clip) continue;
+
+        if (timelineIn >= clip->timelineIn() && timelineIn < clip->timelineOut())
+            return 0;
+
+        if (clip->timelineIn() > timelineIn)
+            return std::min(requestedDuration, clip->timelineIn() - timelineIn);
+    }
+
+    return requestedDuration;
+}
+
 std::unique_ptr<Command> EditOperations::resolveOverlaps(
     Timeline& timeline, size_t trackIndex, uint64_t movedClipId)
 {
@@ -167,18 +353,24 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
 
     // Collect IDs of clips that overlap the moved clip
     for (size_t i = 0; i < track->clipCount(); ++i) {
-        const Clip* other = track->clip(i);
+        Clip* other = track->clip(i);
         if (other->id() == movedClipId) continue;  // skip the moved clip itself
-
-        // Skip clips in the exclusion set (fellow clips from the same
-        // multi-clip move — they're supposed to coexist on this track).
-        if (excludeClipIds.count(other->id())) continue;
 
         int64_t otherIn  = other->timelineIn();
         int64_t otherOut = other->timelineOut();
 
         // No overlap?
         if (otherOut <= movedIn || otherIn >= movedOut) continue;
+
+        // `excludeClipIds` used to bypass resolution here for fellow clips in
+        // a multi-selection. That made it possible for graphics from separate
+        // tracks to collapse onto one destination track and remain stacked in
+        // the same lane. Keep the parameter for compatibility, but never let
+        // it override the track's non-overlap invariant.
+        if (excludeClipIds.count(other->id())) {
+            spdlog::debug("resolveOverlaps: resolving excluded moving clip id={} because ranges overlap",
+                          other->id());
+        }
 
         spdlog::info("[OVERLAP-DIAG]   OVERLAP FOUND: other clip id={} range=[{}, {}) vs moved=[{}, {})",
                      other->id(), otherIn, otherOut, movedIn, movedOut);
@@ -203,6 +395,8 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
             rightClip->setTimelineIn(rightIn);
             rightClip->setDuration(rightDuration);
             rightClip->setSourceIn(rightSourceIn);
+            const int64_t rightLocalIn = movedOut - otherIn;
+            sliceClipKeyframes(*rightClip, rightLocalIn, other->duration());
             compound->addCommand(std::make_unique<AddClipCommand>(
                 track, std::move(rightClip)));
 
@@ -214,6 +408,8 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
                 newDuration,       // trimmed duration
                 other->sourceIn() // sourceIn stays
             ));
+            compound->addCommand(sliceClipKeyframesCommand(
+                *other, 0, newDuration));
         }
         else if (otherIn < movedIn) {
             // Other clip's tail extends into the moved clip → trim tail
@@ -224,6 +420,8 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
                 newDuration,         // new shorter duration
                 other->sourceIn()    // sourceIn stays
             ));
+            compound->addCommand(sliceClipKeyframesCommand(
+                *other, 0, newDuration));
         }
         else {
             // Other clip's head is inside the moved clip → trim head
@@ -239,8 +437,11 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
                     track, other->id(),
                     newIn,          // move timelineIn forward
                     newDuration,    // shorter duration
-                    newSourceIn     // advance sourceIn
+                    newSourceIn,    // advance sourceIn
+                    false           // slice command below owns keyframe rebasing
                 ));
+                compound->addCommand(sliceClipKeyframesCommand(
+                    *other, trimAmount, other->duration()));
             }
         }
     }
@@ -398,6 +599,21 @@ void EditOperations::copySelection(const Timeline& timeline,
     }
 }
 
+void EditOperations::copyTransition(const Timeline& timeline,
+                                    size_t trackIndex, size_t transitionIndex,
+                                    ClipboardContents& clipboard)
+{
+    clipboard.clear();
+    if (trackIndex >= timeline.trackCount()) return;
+
+    const Track* track = timeline.track(trackIndex);
+    if (!track) return;
+    const Transition* transition = track->transition(transitionIndex);
+    if (!transition) return;
+
+    clipboard.standaloneTransition = *transition;
+}
+
 std::unique_ptr<Command> EditOperations::cutSelection(
     Timeline& timeline, const SelectionSet& selection,
     ClipboardContents& clipboard)
@@ -495,7 +711,7 @@ std::unique_ptr<Command> EditOperations::paste(
     Timeline& timeline, const ClipboardContents& clipboard,
     int64_t playhead)
 {
-    if (clipboard.empty()) return nullptr;
+    if (!clipboard.hasClips()) return nullptr;
 
     auto compound = std::make_unique<CompoundCommand>("Paste");
 
@@ -556,7 +772,7 @@ std::unique_ptr<Command> EditOperations::paste(
     std::unordered_map<uint64_t, uint64_t> linkRemap;
 
     // Track each pasted clip so we can resolve overlaps after all are placed.
-    struct PasteTarget { size_t trackIdx; uint64_t clipId; int64_t timelineIn; };
+    struct PasteTarget { size_t trackIdx; uint64_t clipId; };
     std::vector<PasteTarget> targets;
 
     // Map original source-clip ids → freshly pasted ids (and their dest track)
@@ -591,7 +807,6 @@ std::unique_ptr<Command> EditOperations::paste(
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
-        const int64_t pasteIn = cloned->timelineIn();
         remapClonedGroupId(*cloned, gidRemap, nextGid);
         remapClonedLinkId(*cloned, linkRemap);
         const uint64_t newClipId = cloned->id();
@@ -609,7 +824,7 @@ std::unique_ptr<Command> EditOperations::paste(
             clipIdRemap[entry.originalClipId] = newClipId;
             newClipTrack[newClipId] = destIdx;
         }
-        targets.push_back({destIdx, 0, pasteIn});
+        targets.push_back({destIdx, newClipId});
     }
 
     // Resolve overlaps for each pasted clip — the paste operation
@@ -619,16 +834,11 @@ std::unique_ptr<Command> EditOperations::paste(
         Track* track = timeline.track(tgt.trackIdx);
         if (!track) continue;
 
-        // Find the clip we just pasted by matching timelineIn (the ID
-        // changed after clone, so we locate by position).
-        uint64_t pastedId = 0;
-        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-            if (track->clip(ci)->timelineIn() == tgt.timelineIn) {
-                pastedId = track->clip(ci)->id();
-                break;
-            }
-        }
-        if (pastedId == 0) continue;
+        // Use the clone's known ID. Looking it up by timeline position can
+        // select the pre-existing clip when both begin at the paste point,
+        // causing the new paste to be deleted instead of overwriting it.
+        const uint64_t pastedId = tgt.clipId;
+        if (track->findClipIndexById(pastedId) == track->clipCount()) continue;
 
         auto overlapCmd = resolveOverlaps(timeline, tgt.trackIdx, pastedId);
         if (overlapCmd) {
@@ -678,11 +888,158 @@ std::unique_ptr<Command> EditOperations::paste(
     return compound->size() > 0 ? std::move(compound) : nullptr;
 }
 
+bool EditOperations::fitTransitionToAvailableDuration(
+    const Track& track, Transition& transition)
+{
+    if (transition.duration <= 0) return false;
+
+    const bool centered = transition.leftClipId != 0 &&
+                          transition.rightClipId != 0;
+    int64_t maxDuration = transition.duration;
+
+    auto clipById = [&](uint64_t id) -> const Clip* {
+        if (id == 0) return nullptr;
+        const size_t index = track.findClipIndexById(id);
+        return index < track.clipCount() ? track.clip(index) : nullptr;
+    };
+
+    // First fit the transition inside the clip content available around its
+    // edit point. A two-sided transition consumes half its duration from each
+    // clip; a one-sided fade consumes its full duration from its one clip.
+    if (transition.leftClipId == 0) {
+        const Clip* right = clipById(transition.rightClipId);
+        if (!right) return false;
+        maxDuration = std::min(
+            maxDuration, right->timelineOut() - transition.editPointTick);
+    } else if (transition.rightClipId == 0) {
+        const Clip* left = clipById(transition.leftClipId);
+        if (!left) return false;
+        maxDuration = std::min(
+            maxDuration, transition.editPointTick - left->timelineIn());
+    } else {
+        const Clip* left = clipById(transition.leftClipId);
+        const Clip* right = clipById(transition.rightClipId);
+        if (!left || !right) return false;
+        const int64_t halfRoom = std::min(
+            transition.editPointTick - left->timelineIn(),
+            right->timelineOut() - transition.editPointTick);
+        if (halfRoom <= 0) return false;
+        const int64_t doubledRoom = halfRoom > INT64_MAX / 2
+            ? INT64_MAX : halfRoom * 2;
+        maxDuration = std::min(maxDuration, doubledRoom);
+    }
+
+    const int64_t minimumDuration = centered ? 2 : 1;
+    if (maxDuration < minimumDuration) return false;
+
+    // Range expansion is monotonic with duration, so find the longest value
+    // at or below the request that does not collide with another edit point.
+    // A transition at the same endpoint pair is ignored because adding it
+    // replaces that transition rather than stacking a duplicate.
+    auto fitsWithoutOverlap = [&](int64_t duration) {
+        Transition candidate = transition;
+        candidate.duration = duration;
+        int64_t candidateStart = 0;
+        int64_t candidateEnd = 0;
+        candidate.getRange(candidateStart, candidateEnd);
+        if (candidateEnd <= candidateStart) return false;
+
+        for (size_t i = 0; i < track.transitionCount(); ++i) {
+            const Transition* existing = track.transition(i);
+            if (!existing) continue;
+            if (existing->leftClipId == candidate.leftClipId &&
+                existing->rightClipId == candidate.rightClipId)
+                continue;
+
+            int64_t existingStart = 0;
+            int64_t existingEnd = 0;
+            existing->getRange(existingStart, existingEnd);
+            if (candidateStart < existingEnd && existingStart < candidateEnd)
+                return false;
+        }
+        return true;
+    };
+
+    int64_t low = minimumDuration;
+    int64_t high = maxDuration;
+    int64_t best = 0;
+    while (low <= high) {
+        const int64_t mid = low + (high - low) / 2;
+        if (fitsWithoutOverlap(mid)) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    // Centered ranges use duration/2 on each side; keep the stored duration
+    // even so it exactly matches the visible range instead of losing one tick.
+    if (centered && (best & 1)) --best;
+    if (best < minimumDuration) return false;
+
+    transition.duration = best;
+    return true;
+}
+
+std::unique_ptr<Command> EditOperations::pasteTransitionAtEdge(
+    Timeline& timeline, const ClipboardContents& clipboard,
+    size_t trackIndex, uint64_t clipId, ClipEdge edge)
+{
+    if (!clipboard.standaloneTransition || trackIndex >= timeline.trackCount())
+        return nullptr;
+
+    Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked()) return nullptr;
+
+    const size_t clipIndex = track->findClipIndexById(clipId);
+    if (clipIndex >= track->clipCount()) return nullptr;
+    const Clip* targetClip = track->clip(clipIndex);
+    if (!targetClip) return nullptr;
+
+    Transition pasted = *clipboard.standaloneTransition;
+    pasted.leftClipId = 0;
+    pasted.rightClipId = 0;
+
+    size_t leftIndex = clipIndex;
+    size_t rightIndex = clipIndex;
+    if (edge == ClipEdge::Head) {
+        pasted.rightClipId = targetClip->id();
+        pasted.editPointTick = targetClip->timelineIn();
+        for (size_t i = 0; i < track->clipCount(); ++i) {
+            const Clip* candidate = track->clip(i);
+            if (candidate && candidate->id() != targetClip->id()
+                && candidate->timelineOut() == pasted.editPointTick) {
+                pasted.leftClipId = candidate->id();
+                leftIndex = i;
+                break;
+            }
+        }
+    } else {
+        pasted.leftClipId = targetClip->id();
+        pasted.editPointTick = targetClip->timelineOut();
+        for (size_t i = 0; i < track->clipCount(); ++i) {
+            const Clip* candidate = track->clip(i);
+            if (candidate && candidate->id() != targetClip->id()
+                && candidate->timelineIn() == pasted.editPointTick) {
+                pasted.rightClipId = candidate->id();
+                rightIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (!fitTransitionToAvailableDuration(*track, pasted)) return nullptr;
+
+    return std::make_unique<AddTransitionCommand>(
+        track, leftIndex, rightIndex, pasted);
+}
+
 std::unique_ptr<Command> EditOperations::pasteInsert(
     Timeline& timeline, const ClipboardContents& clipboard,
     int64_t playhead)
 {
-    if (clipboard.empty()) return nullptr;
+    if (!clipboard.hasClips()) return nullptr;
 
     auto compound = std::make_unique<CompoundCommand>("Insert paste");
 
@@ -1325,11 +1682,15 @@ std::unique_ptr<Command> EditOperations::extractInOut(
             {
                 // Clip starts inside I/O range and extends beyond — trim head and shift left
                 int64_t trimAmount = outPoint - clip->timelineIn();
-                int64_t newIn = inPoint; // Ripple left to close gap
+                // Keep the head trim separate from the ripple move: the trim
+                // preserves surviving keyframes, then MoveClipCommand moves
+                // the shortened clip and its animation left with the extract.
                 int64_t newDuration = clip->duration() - trimAmount;
                 int64_t newSourceIn = clip->sourceIn() + trimAmount;
                 compound->addCommand(std::make_unique<TrimClipCommand>(
-                    track, clip->id(), newIn, newDuration, newSourceIn));
+                    track, clip->id(), outPoint, newDuration, newSourceIn));
+                compound->addCommand(std::make_unique<MoveClipCommand>(
+                    track, clip->id(), inPoint));
             }
         }
 

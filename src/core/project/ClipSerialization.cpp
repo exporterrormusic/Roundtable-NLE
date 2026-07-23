@@ -21,6 +21,7 @@
 #include "timeline/KeyframeTrack.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "effects/ColorGrading.h"
 #include "effects/LUT.h"
 #include "effects/BeatEffects.h"
 #include "timeline/OpacityMask.h"
@@ -255,6 +256,8 @@ static void writeMask(BinaryWriter& w, const OpacityMask& m)
     writeKeyframeTrack(w, m.feather);
     writeKeyframeTrack(w, m.maskOpacity);
     writeKeyframeTrack(w, m.expansion);
+    w.writeU8(static_cast<uint8_t>(m.coordinateSpace));
+    w.writeU64(m.maskId);
 }
 
 static OpacityMask readMask(BinaryReader& r, uint32_t version)
@@ -280,6 +283,20 @@ static OpacityMask readMask(BinaryReader& r, uint32_t version)
         readKeyframeTrack(r, m.feather, version);
         readKeyframeTrack(r, m.maskOpacity, version);
         readKeyframeTrack(r, m.expansion, version);
+        if (version >= 33) {
+            const uint8_t rawSpace = r.readU8();
+            m.coordinateSpace = rawSpace
+                    <= static_cast<uint8_t>(MaskCoordinateSpace::LegacySequenceFrame)
+                ? static_cast<MaskCoordinateSpace>(rawSpace)
+                : MaskCoordinateSpace::SourceLocal;
+        } else {
+            m.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+        }
+        if (version >= 33) {
+            m.maskId = r.readU64();
+            if (m.maskId == 0) m.maskId = allocateOpacityMaskId();
+            reserveOpacityMaskId(m.maskId);
+        }
         return m;
     }
 
@@ -307,6 +324,7 @@ static OpacityMask readMask(BinaryReader& r, uint32_t version)
         m.base.vertices[vi].outTanX = r.readF32();
         m.base.vertices[vi].outTanY = r.readF32();
     }
+    m.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
     return m;
 }
 
@@ -495,6 +513,11 @@ void writeVideoFields(BinaryWriter& w, const Clip& clip)
     // v12: outfit + animation name for AnimationVideoCache characters
     w.writeString(vc.outfit());
     w.writeString(vc.animationName());
+    // v34: persist source display rotation plus whether it came from actual
+    // media metadata. Pre-v34 records had no rotation; treating their implicit
+    // zero as authoritative would corrupt legacy masks on rotated footage.
+    w.writeU32(static_cast<uint32_t>(vc.sourceRotation()));
+    w.writeU8(vc.sourceMetadataAuthoritative() ? 1 : 0);
 }
 
 void readVideoFields(BinaryReader& r, Clip& clip, uint32_t version)
@@ -521,6 +544,10 @@ void readVideoFields(BinaryReader& r, Clip& clip, uint32_t version)
     if (version >= 12) {
         vc->setOutfit(r.readString());
         vc->setAnimationName(r.readString());
+    }
+    if (version >= 34) {
+        vc->setSourceRotation(static_cast<int>(r.readU32()));
+        vc->setSourceMetadataAuthoritative(r.readU8() != 0);
     }
 }
 
@@ -700,6 +727,83 @@ void readSequenceFields(BinaryReader& r, Clip& clip, uint32_t)
 
 // ── Caption ────────────────────────────────────────────────────────────────
 
+static void writeTextStyleRun(BinaryWriter& w, const TextStyleRun& run)
+{
+    w.writeU32(run.start);
+    w.writeU32(run.length);
+    w.writeString(run.fontFamily);
+    w.writeF32(run.fontSize);
+    w.writeU32(static_cast<uint32_t>(run.fontWeight));
+    w.writeU8(run.italic ? 1 : 0);
+    w.writeU8(run.allCaps ? 1 : 0);
+    w.writeU8(run.smallCaps ? 1 : 0);
+    w.writeF32(run.tracking);
+    w.writeF32(run.baselineShift);
+    w.writeU32(run.overrideMask);
+    w.writeF32(run.leading);
+    w.writeString(run.fontStyle);
+    w.writeF32(run.kerning);
+    w.writeF32(run.tabWidth);
+    w.writeF32(run.tsume);
+    w.writeU8(run.fauxBold ? 1 : 0);
+    w.writeU8(run.fauxItalic ? 1 : 0);
+    w.writeU8(run.underline ? 1 : 0);
+    w.writeU8(run.superscript ? 1 : 0);
+    w.writeU8(run.subscript ? 1 : 0);
+    const auto& a = run.appearance;
+    w.writeU8(a.fillEnabled ? 1 : 0); w.writeU32(a.fillColor);
+    w.writeU8(a.strokeEnabled ? 1 : 0); w.writeU32(a.strokeColor);
+    w.writeF32(a.strokeWidth);
+    w.writeU8(static_cast<uint8_t>(a.strokePosition));
+    w.writeU8(a.shadowEnabled ? 1 : 0); w.writeU32(a.shadowColor);
+    w.writeF32(a.shadowDistance); w.writeF32(a.shadowAngle);
+    w.writeF32(a.shadowSoftness); w.writeF32(a.shadowOpacity);
+    w.writeU8(a.backgroundEnabled ? 1 : 0); w.writeU32(a.backgroundColor);
+    w.writeF32(a.backgroundPadding);
+}
+
+static TextStyleRun readTextStyleRun(BinaryReader& r, uint32_t version)
+{
+    TextStyleRun run;
+    run.start = r.readU32();
+    run.length = r.readU32();
+    run.fontFamily = r.readString();
+    run.fontSize = r.readF32();
+    run.fontWeight = static_cast<int>(r.readU32());
+    run.italic = r.readU8() != 0;
+    if (version >= 38) {
+        run.allCaps = r.readU8() != 0;
+        run.smallCaps = r.readU8() != 0;
+        run.tracking = r.readF32();
+        run.baselineShift = r.readF32();
+        run.overrideMask = version >= 40 ? r.readU32() : r.readU8();
+    }
+    if (version >= 39) run.leading = r.readF32();
+    if (version >= 40) {
+        run.fontStyle = r.readString();
+        run.kerning = r.readF32();
+        run.tabWidth = r.readF32();
+        run.tsume = r.readF32();
+        run.fauxBold = r.readU8() != 0;
+        run.fauxItalic = r.readU8() != 0;
+        run.underline = r.readU8() != 0;
+        run.superscript = r.readU8() != 0;
+        run.subscript = r.readU8() != 0;
+        auto& a = run.appearance;
+        a.fillEnabled = r.readU8() != 0; a.fillColor = r.readU32();
+        a.strokeEnabled = r.readU8() != 0; a.strokeColor = r.readU32();
+        a.strokeWidth = r.readF32();
+        a.strokePosition = static_cast<StrokePosition>(r.readU8());
+        a.shadowEnabled = r.readU8() != 0; a.shadowColor = r.readU32();
+        a.shadowDistance = r.readF32(); a.shadowAngle = r.readF32();
+        a.shadowSoftness = r.readF32(); a.shadowOpacity = r.readF32();
+        a.backgroundEnabled = r.readU8() != 0;
+        a.backgroundColor = r.readU32();
+        a.backgroundPadding = r.readF32();
+    }
+    return run;
+}
+
 void writeCaptionFields(BinaryWriter& w, const Clip& clip)
 {
     auto& cc = static_cast<const CaptionClip&>(clip);
@@ -715,6 +819,29 @@ void writeCaptionFields(BinaryWriter& w, const Clip& clip)
     w.writeU32(cc.outlineColor());
     w.writeF32(cc.outlineWidth());
     w.writeU8(cc.showSpeaker() ? 1 : 0);
+    // v37: resolved per-character font styles (UTF-16 ranges).
+    w.writeU32(static_cast<uint32_t>(cc.styleRuns().size()));
+    for (const auto& run : cc.styleRuns()) writeTextStyleRun(w, run);
+    w.writeString(cc.fontStyle());
+    w.writeU8(cc.isItalic() ? 1 : 0);
+    w.writeU8(cc.allCaps() ? 1 : 0);
+    w.writeU8(cc.smallCaps() ? 1 : 0);
+    w.writeU8(cc.underline() ? 1 : 0);
+    w.writeU8(cc.superscript() ? 1 : 0);
+    w.writeU8(cc.subscript() ? 1 : 0);
+    w.writeU8(cc.fauxBold() ? 1 : 0);
+    w.writeU8(cc.fauxItalic() ? 1 : 0);
+    w.writeF32(cc.tracking());
+    w.writeF32(cc.leading());
+    w.writeU8(static_cast<uint8_t>(cc.alignment()));
+    w.writeString(cc.trackStyleName());
+    w.writeU32(static_cast<uint32_t>(cc.paragraphStyles().size()));
+    for (const auto& paragraph : cc.paragraphStyles()) {
+        w.writeU32(paragraph.start);
+        w.writeU32(paragraph.length);
+        w.writeU8(static_cast<uint8_t>(paragraph.alignment));
+        w.writeU8(paragraph.rightToLeft ? 1 : 0);
+    }
 }
 
 void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
@@ -733,6 +860,43 @@ void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
         cc->setOutlineWidth(r.readF32());
         cc->setShowSpeaker(r.readU8() != 0);
     } // pre-v31 defaults (bold, no outline, no speaker) match the old look
+    std::vector<TextStyleRun> loadedRuns;
+    if (version >= 37) {
+        const uint32_t count = r.readU32();
+        loadedRuns.reserve(count);
+        for (uint32_t i = 0; i < count; ++i)
+            loadedRuns.push_back(readTextStyleRun(r, version));
+    }
+    if (version >= 40) {
+        cc->setFontStyle(r.readString());
+        cc->setItalic(r.readU8() != 0);
+        cc->setAllCaps(r.readU8() != 0);
+        cc->setSmallCaps(r.readU8() != 0);
+        cc->setUnderline(r.readU8() != 0);
+        const bool superscript = r.readU8() != 0;
+        const bool subscript = r.readU8() != 0;
+        cc->setScript(superscript, subscript);
+        const bool fauxBold = r.readU8() != 0;
+        const bool fauxItalic = r.readU8() != 0;
+        cc->setFauxStyles(fauxBold, fauxItalic);
+        cc->setTracking(r.readF32());
+        cc->setLeading(r.readF32());
+        cc->setAlignment(static_cast<GTextAlign>(r.readU8()));
+        cc->setTrackStyleName(r.readString());
+        const uint32_t paragraphCount = r.readU32();
+        std::vector<TextParagraphStyle> paragraphs;
+        paragraphs.reserve(paragraphCount);
+        for (uint32_t pi = 0; pi < paragraphCount; ++pi) {
+            TextParagraphStyle paragraph;
+            paragraph.start = r.readU32();
+            paragraph.length = r.readU32();
+            paragraph.alignment = static_cast<GTextAlign>(r.readU8());
+            paragraph.rightToLeft = r.readU8() != 0;
+            paragraphs.push_back(paragraph);
+        }
+        cc->setParagraphStyles(std::move(paragraphs));
+    }
+    if (version >= 37) cc->setStyleRuns(std::move(loadedRuns));
 }
 
 // ── PngPuppet ──────────────────────────────────────────────────────────────
@@ -818,6 +982,31 @@ void writeGraphicFields(BinaryWriter& w, const Clip& clip)
             w.writeF32(tl->boxWidth());
             w.writeF32(tl->boxHeight());
             w.writeU8(tl->useParagraphBox() ? 1 : 0);
+            w.writeU32(static_cast<uint32_t>(tl->styleRuns().size()));
+            for (const auto& run : tl->styleRuns())
+                writeTextStyleRun(w, run);
+            w.writeString(tl->fontStyle());
+            w.writeF32(tl->kerning());
+            w.writeF32(tl->tabWidth());
+            w.writeF32(tl->tsume());
+            w.writeU8(tl->fauxBold() ? 1 : 0);
+            w.writeU8(tl->fauxItalic() ? 1 : 0);
+            w.writeU8(tl->underline() ? 1 : 0);
+            w.writeU8(tl->superscript() ? 1 : 0);
+            w.writeU8(tl->subscript() ? 1 : 0);
+            w.writeU8(tl->rightToLeft() ? 1 : 0);
+            w.writeU8(tl->backgroundEnabled() ? 1 : 0);
+            w.writeU32(tl->backgroundColor());
+            w.writeF32(tl->backgroundPadding());
+            w.writeU8(tl->maskWithText() ? 1 : 0);
+            w.writeString(tl->linkedStyleName());
+            w.writeU32(static_cast<uint32_t>(tl->paragraphStyles().size()));
+            for (const auto& paragraph : tl->paragraphStyles()) {
+                w.writeU32(paragraph.start);
+                w.writeU32(paragraph.length);
+                w.writeU8(static_cast<uint8_t>(paragraph.alignment));
+                w.writeU8(paragraph.rightToLeft ? 1 : 0);
+            }
         } else if (layer->layerType() == GraphicLayerType::Shape) {
             auto* sl = static_cast<const ShapeLayer*>(layer);
             w.writeU8(static_cast<uint8_t>(sl->shapeType()));
@@ -893,6 +1082,48 @@ void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
             tl->setBoxWidth(r.readF32());
             tl->setBoxHeight(r.readF32());
             tl->setUseParagraphBox(r.readU8() != 0);
+            std::vector<TextStyleRun> loadedRuns;
+            if (version >= 36) {
+                const uint32_t runCount = r.readU32();
+                loadedRuns.reserve(runCount);
+                for (uint32_t ri = 0; ri < runCount; ++ri)
+                    loadedRuns.push_back(readTextStyleRun(r, version));
+            }
+            if (version >= 40) {
+                tl->setFontStyleForAll(r.readString());
+                tl->setKerningForAll(r.readF32());
+                tl->setTabWidthForAll(r.readF32());
+                tl->setTsumeForAll(r.readF32());
+                const bool fauxBold = r.readU8() != 0;
+                const bool fauxItalic = r.readU8() != 0;
+                tl->setFauxStylesForAll(fauxBold, fauxItalic);
+                tl->setUnderlineForAll(r.readU8() != 0);
+                const bool superscript = r.readU8() != 0;
+                const bool subscript = r.readU8() != 0;
+                tl->setScriptForAll(superscript, subscript);
+                tl->setRightToLeft(r.readU8() != 0);
+                const bool backgroundEnabled = r.readU8() != 0;
+                const uint32_t backgroundColor = r.readU32();
+                const float backgroundPadding = r.readF32();
+                tl->setBackgroundForAll(backgroundEnabled, backgroundColor,
+                                        backgroundPadding);
+                tl->setMaskWithText(r.readU8() != 0);
+                tl->setLinkedStyleName(r.readString());
+                const uint32_t paragraphCount = r.readU32();
+                std::vector<TextParagraphStyle> paragraphs;
+                paragraphs.reserve(paragraphCount);
+                for (uint32_t pi = 0; pi < paragraphCount; ++pi) {
+                    TextParagraphStyle paragraph;
+                    paragraph.start = r.readU32();
+                    paragraph.length = r.readU32();
+                    paragraph.alignment = static_cast<GTextAlign>(r.readU8());
+                    paragraph.rightToLeft = r.readU8() != 0;
+                    paragraphs.push_back(paragraph);
+                }
+                tl->setParagraphStyles(std::move(paragraphs));
+            }
+            if (version >= 36)
+                tl->setStyleRuns(std::move(loadedRuns));
         } else if (layerType == GraphicLayerType::Shape) {
             auto* sl = static_cast<ShapeLayer*>(layer.get());
             sl->setShapeType(static_cast<ShapeType>(r.readU8()));
@@ -1085,6 +1316,10 @@ void writeClip(BinaryWriter& w, const Clip& clip)
     writeKeyframeTrack(w, const_cast<Clip&>(clip).anchorX());
     writeKeyframeTrack(w, const_cast<Clip&>(clip).anchorY());
 
+    // Transform motion blur (v35+). 0 degrees is disabled, preserving the
+    // byte-for-byte visual behaviour of projects created before v35.
+    writeKeyframeTrack(w, const_cast<Clip&>(clip).shutterAngle());
+
     // Blend mode (v5+)
     w.writeU32(static_cast<uint32_t>(clip.blendMode()));
 
@@ -1095,6 +1330,10 @@ void writeClip(BinaryWriter& w, const Clip& clip)
     // round-trips through writeU32 (-1 <-> 0xFFFFFFFF), same as v27's
     // audioStreamIndex.
     w.writeU32(static_cast<uint32_t>(clip.syncLine()));
+
+    // Temporal interpolation mode (v32+).  The numeric enum value is part of
+    // the project format and defaults to Frame Sampling in older projects.
+    w.writeU8(static_cast<uint8_t>(clip.timeInterpolation()));
 
     // Type-specific fields — dispatched through the per-type registry
     if (const TypeSerializer* ts = serializerFor(clip.clipType()))
@@ -1124,6 +1363,29 @@ void writeClip(BinaryWriter& w, const Clip& clip)
                 const auto& bt = be.beatTimes();
                 w.writeU32(static_cast<uint32_t>(bt.size()));
                 for (float t : bt) w.writeF32(t);
+            }
+            // Color Grading's non-keyframe scalar state (v41+). Curves and
+            // HSL live outside Effect::m_params, so they need an explicit
+            // payload or they silently reset when the project is reopened.
+            if (fx.effectType() == EffectType::ColorGrading) {
+                const auto& grading = static_cast<const ColorGrading&>(fx);
+                w.writeU8(grading.basicEnabled() ? 1 : 0);
+                w.writeU8(grading.creativeEnabled() ? 1 : 0);
+                w.writeU8(grading.wheelsEnabled() ? 1 : 0);
+                w.writeU8(grading.curvesEnabled() ? 1 : 0);
+                w.writeU8(grading.hslEnabled() ? 1 : 0);
+                w.writeU8(grading.vignetteEnabled() ? 1 : 0);
+                const auto& hsl = grading.hslParams();
+                w.writeF32(hsl.hueCenter); w.writeF32(hsl.hueWidth);
+                w.writeF32(hsl.satMin); w.writeF32(hsl.satMax);
+                w.writeF32(hsl.lumMin); w.writeF32(hsl.lumMax);
+                w.writeF32(hsl.hueShift); w.writeF32(hsl.satAdjust);
+                w.writeF32(hsl.lumAdjust);
+                for (int ch = 0; ch < ColorGrading::CurveCount; ++ch) {
+                    const auto& lut = grading.curveLUT(
+                        static_cast<ColorGrading::CurveChannel>(ch));
+                    for (float sample : lut) w.writeF32(sample);
+                }
             }
             // Effect masks (v30+): masks limiting where this effect applies.
             w.writeU32(static_cast<uint32_t>(fx.maskCount()));
@@ -1231,6 +1493,11 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         readKeyframeTrack(r, clip->anchorY(), version);
     }
 
+    // Transform motion blur (v35+). Pre-v35 projects keep the constructed
+    // 0-degree default, so they render exactly as they did before.
+    if (version >= 35)
+        readKeyframeTrack(r, clip->shutterAngle(), version);
+
     // Blend mode (v5+)
     if (version >= 5)
         clip->setBlendMode(static_cast<int32_t>(r.readU32()));
@@ -1244,6 +1511,14 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
     // falls back to the full/clean path.
     if (version >= 29)
         clip->setSyncLine(static_cast<int32_t>(r.readU32()));
+
+    // Temporal interpolation mode (v32+).  Invalid values from a damaged or
+    // future project safely retain the constructed Frame Sampling default.
+    if (version >= 32) {
+        const uint8_t mode = r.readU8();
+        if (mode <= static_cast<uint8_t>(TimeInterpolation::OpticalFlow))
+            clip->setTimeInterpolation(static_cast<TimeInterpolation>(mode));
+    }
 
     // Type-specific fields — dispatched through the per-type registry
     ts->readFields(r, *clip, version);
@@ -1279,6 +1554,28 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                     std::vector<float> times(n);
                     for (uint32_t i = 0; i < n; ++i) times[i] = r.readF32();
                     be->setBeatTimes(std::move(times));
+                }
+                if (version >= 41 && fxType == EffectType::ColorGrading) {
+                    auto* grading = static_cast<ColorGrading*>(fx.get());
+                    grading->setBasicEnabled(r.readU8() != 0);
+                    grading->setCreativeEnabled(r.readU8() != 0);
+                    grading->setWheelsEnabled(r.readU8() != 0);
+                    grading->setCurvesEnabled(r.readU8() != 0);
+                    grading->setHslEnabled(r.readU8() != 0);
+                    grading->setVignetteEnabled(r.readU8() != 0);
+                    ColorGrading::HslParams hsl;
+                    hsl.hueCenter = r.readF32(); hsl.hueWidth = r.readF32();
+                    hsl.satMin = r.readF32(); hsl.satMax = r.readF32();
+                    hsl.lumMin = r.readF32(); hsl.lumMax = r.readF32();
+                    hsl.hueShift = r.readF32(); hsl.satAdjust = r.readF32();
+                    hsl.lumAdjust = r.readF32();
+                    grading->setHslParams(hsl);
+                    for (int ch = 0; ch < ColorGrading::CurveCount; ++ch) {
+                        ColorGrading::CurveLUT lut{};
+                        for (float& sample : lut) sample = r.readF32();
+                        grading->setCurveLUT(
+                            static_cast<ColorGrading::CurveChannel>(ch), lut);
+                    }
                 }
                 // Effect masks (v30+)
                 if (version >= 30) {

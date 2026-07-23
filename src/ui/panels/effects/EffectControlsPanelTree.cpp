@@ -55,8 +55,12 @@ void EffectControlsPanel::clearPropertyTree()
     }
 
     m_propertyRows.clear();
+    m_maskPathControls.clear();
     m_sectionArrows.clear();
     m_selectedEffectIndex = -1;
+    m_hasSelectedMask = false;
+    m_selectedMaskEffectId = 0;
+    m_selectedMaskId = 0;
     m_effectHeaders.clear();
 
     // Remove all widgets from m_propLayout.
@@ -98,9 +102,11 @@ void EffectControlsPanel::clearPropertyTree()
     m_scaleRow = nullptr;
     m_scaleWRow = nullptr;
     m_rotationRow = nullptr;
+    m_shutterAngleRow = nullptr;
     m_anchorRow = nullptr;
     m_opacityRow = nullptr;
     m_rotationSpin = nullptr;
+    m_shutterAngleSpin = nullptr;
     m_anchorXSpin = nullptr;
     m_anchorYSpin = nullptr;
     m_antiFlickerSpin = nullptr;
@@ -189,6 +195,7 @@ void EffectControlsPanel::buildPropertyTree()
                        KeyframeTrack<float>* track) -> PropertyRow* {
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
+        row->setTimeProvider([this]() { return clipRelativeTick(); });
         m_propertyRows.push_back(row);
 
         // Wire keyframe signals
@@ -207,9 +214,15 @@ void EffectControlsPanel::buildPropertyTree()
             if (!trk || !m_clip) return;
             int64_t t = clipRelativeTick();
 
-            // Determine if we should also toggle the companion scale track
+            // Compound 2D properties must start and stop animation on both
+            // axes. Seeding only Position X makes the later Y edit a static
+            // default change, which retroactively moves the first position.
             KeyframeTrack<float>* companion = nullptr;
-            if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
+            if (trk == effPosX())
+                companion = effPosY();
+            else if (trk == effAnchorX())
+                companion = effAnchorY();
+            else if (m_uniformScaleCheck && m_uniformScaleCheck->isChecked()) {
                 if (trk == effScaleX())
                     companion = effScaleY();
                 else if (trk == effScaleY())
@@ -218,6 +231,9 @@ void EffectControlsPanel::buildPropertyTree()
 
             if (enabled) {
                 // Toggling ON: create a keyframe at the current playhead
+                const bool compound = m_commandStack && companion;
+                if (compound)
+                    m_commandStack->beginMacro("Enable Keyframing");
                 float val = trk->evaluate(t);
                 if (m_commandStack) {
                     m_commandStack->execute(
@@ -240,6 +256,8 @@ void EffectControlsPanel::buildPropertyTree()
                         m_scaleWRow->stopwatchButton()->blockSignals(false);
                     }
                 }
+                if (compound)
+                    m_commandStack->endMacro();
             } else {
                 // Toggling OFF: freeze current value as default, remove all keyframes
                 float val = trk->evaluate(t);
@@ -400,6 +418,18 @@ void EffectControlsPanel::buildPropertyTree()
         m_anchorRow->addValuePair(m_anchorXSpin, m_anchorYSpin);
         m_propLayout->addWidget(m_anchorRow);
 
+        // Shutter Angle — transform motion blur. 0 degrees is off; 180
+        // degrees exposes half a sequence frame, matching NLE convention.
+        m_shutterAngleRow = makeRow("Shutter Angle", effShutterAngle());
+        m_shutterAngleSpin = createScrubby(0, 720, 1.0, 1,
+                                           QStringLiteral("\u00B0"));
+        m_shutterAngleSpin->setObjectName(QStringLiteral("shutterAngleSpin"));
+        m_shutterAngleSpin->setToolTip(
+            tr("Motion blur for animated Position, Scale, Rotation, and Anchor. "
+               "180 degrees exposes half a frame; 0 disables it."));
+        m_shutterAngleRow->addValueWidget(m_shutterAngleSpin);
+        m_propLayout->addWidget(m_shutterAngleRow);
+
         // Anti-flicker Filter
         auto* antiFlickerRow = makeRow("Anti-flicker Filter", nullptr);
         m_antiFlickerSpin = createScrubby(0, 100, 0.01, 2);
@@ -442,7 +472,9 @@ void EffectControlsPanel::buildPropertyTree()
 
                 auto makeMaskBtn = [&](const QString& text, const QString& tip,
                                        uint8_t shapeType) -> QToolButton* {
-                    auto* btn = new QToolButton(m_opacitySection);
+                     auto* btn = new QToolButton(m_opacitySection);
+                     if (shapeType == 2)
+                         btn->setObjectName(QStringLiteral("clipPenMaskButton"));
                     btn->setText(text);
                     btn->setToolTip(tip);
                     btn->setFixedSize(22, 20);
@@ -453,7 +485,10 @@ void EffectControlsPanel::buildPropertyTree()
                              Theme::hex(tc.surface3), Theme::hex(tc.accent))
                         .arg(Theme::typography().sizeXs));
                     connect(btn, &QToolButton::clicked, this, [this, shapeType]() {
-                        addMask(shapeType);
+                        if (shapeType == 2)
+                            emit penMaskToolRequested(0);
+                        else
+                            addMask(shapeType);
                     });
                     return btn;
                 };
@@ -464,7 +499,7 @@ void EffectControlsPanel::buildPropertyTree()
                 headerLayout->insertWidget(headerLayout->count() - 1,
                     makeMaskBtn(QStringLiteral("\u25A1"), tr("Create Rectangle Mask"), 1));
                 headerLayout->insertWidget(headerLayout->count() - 1,
-                    makeMaskBtn(QStringLiteral("\u270E"), tr("Create Free Draw Bezier Mask"), 2));
+                    makeMaskBtn(QStringLiteral("\u270E"), tr("Pen Mask Tool (P)"), 2));
                 // Re-insert stretch before the reset button
                 headerLayout->insertItem(headerLayout->count() - 1, stretchItem);
             }
@@ -477,6 +512,7 @@ void EffectControlsPanel::buildPropertyTree()
         m_propLayout->addWidget(m_opacityRow);
 
         m_blendModeCombo = new QComboBox(m_propContainer);
+        m_blendModeCombo->setObjectName(QStringLiteral("blendModeCombo"));
         m_blendModeCombo->setFixedHeight(22);
         m_blendModeCombo->addItems({"Normal", "Multiply", "Screen", "Add",
                                     "Overlay", "Soft Light", "Hard Light",
@@ -500,9 +536,27 @@ void EffectControlsPanel::buildPropertyTree()
         // Wire combo to clip's blendMode
         connect(m_blendModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int index) {
-            if (m_clip) {
-                m_clip->setBlendMode(index);
-                emit propertyChanged();
+            if (!m_clip || m_updating) return;
+
+            const int oldMode = m_clip->blendMode();
+            if (oldMode == index) return;
+
+            Clip* clip = m_clip;
+            auto* panel = this;
+            auto applyMode = [clip, panel](int mode) {
+                clip->setBlendMode(mode);
+                if (panel->m_clip == clip)
+                    panel->populateFromClip();
+                emit panel->propertyChanged();
+            };
+
+            if (m_commandStack) {
+                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    "Blend Mode",
+                    [applyMode, index]() { applyMode(index); },
+                    [applyMode, oldMode]() { applyMode(oldMode); }));
+            } else {
+                applyMode(index);
             }
         });
 
@@ -616,12 +670,14 @@ void EffectControlsPanel::buildPropertyTree()
             });
 
             // Mask create buttons (Premiere: every effect can be masked —
-            // ○ ellipse, □ rectangle, ✎ free-draw bezier).  Audio effects
+            // ○ ellipse, □ rectangle, ✎ interactive Pen Mask). Audio effects
             // have no image to mask.
             if (!isAudioEffect(fx.effectType())) {
                 auto makeFxMaskBtn = [&](const QString& text, const QString& tip,
                                          uint8_t shapeType) -> QToolButton* {
-                    auto* btn = new QToolButton(fxHeader);
+                     auto* btn = new QToolButton(fxHeader);
+                     if (shapeType == 2)
+                         btn->setObjectName(QStringLiteral("effectPenMaskButton"));
                     btn->setText(text);
                     btn->setToolTip(tip);
                     btn->setFixedSize(22, 20);
@@ -633,7 +689,10 @@ void EffectControlsPanel::buildPropertyTree()
                         .arg(Theme::typography().sizeXs));
                     connect(btn, &QToolButton::clicked, this,
                             [this, shapeType, fxId]() {
-                        addMask(shapeType, fxId);
+                        if (shapeType == 2)
+                            emit penMaskToolRequested(fxId);
+                        else
+                            addMask(shapeType, fxId);
                     });
                     return btn;
                 };
@@ -642,7 +701,7 @@ void EffectControlsPanel::buildPropertyTree()
                 hl->addWidget(makeFxMaskBtn(QStringLiteral("□"),
                                             tr("Create Rectangle Mask"), 1));
                 hl->addWidget(makeFxMaskBtn(QStringLiteral("✎"),
-                                            tr("Create Free Draw Bezier Mask"), 2));
+                                            tr("Pen Mask Tool (P)"), 2));
             }
 
             // Delete button
@@ -716,6 +775,8 @@ void EffectControlsPanel::buildPropertyTree()
                 buildLUTUI(fx, effectIdx, rowIdx);
             } else if (fx.effectType() == EffectType::Letterbox) {
                 buildLetterboxUI(fx, effectIdx, rowIdx);
+            } else if (fx.effectType() == EffectType::Tint) {
+                buildTintUI(fx, effectIdx, rowIdx);
             } else if (isBeatReactEffect(fx.effectType())) {
                 buildBeatUI(fx, effectIdx, rowIdx);
             } else if (fx.effectType() == EffectType::FlipHorizontal ||
@@ -859,7 +920,10 @@ void EffectControlsPanel::buildPropertyTree()
     auto connectTransform = [this](ScrubbySpinBox* spin) {
         if (!spin) return;
         connect(spin, &ScrubbySpinBox::valueScrubbed,
-                this, [this](double) { applyTransformLive(); });
+                this, [this](double) {
+                    beginTransformEdit();
+                    applyTransformLive();
+                });
         connect(spin, &ScrubbySpinBox::valueCommitted,
                 this, &EffectControlsPanel::commitTransform);
         // Note: editingFinished is NOT connected here. Both scrub and
@@ -871,6 +935,7 @@ void EffectControlsPanel::buildPropertyTree()
     connectTransform(m_scaleSpin);
     connectTransform(m_scaleWSpin);
     connectTransform(m_rotationSpin);
+    connectTransform(m_shutterAngleSpin);
     connectTransform(m_opacitySpin);
     connectTransform(m_cropLeftSpin);
     connectTransform(m_cropTopSpin);
@@ -920,8 +985,16 @@ void EffectControlsPanel::populateFromClip()
     // Rotation (degrees)
     if (auto* trk = effRotation(); m_rotationSpin && trk) m_rotationSpin->setValue(trk->evaluate(t));
 
+    // Shutter angle (degrees; 0 = disabled)
+    if (auto* trk = effShutterAngle(); m_shutterAngleSpin && trk)
+        m_shutterAngleSpin->setValue(trk->evaluate(t));
+
     // Opacity (percentage)
     if (auto* trk = effOpacity();  m_opacitySpin  && trk) m_opacitySpin->setValue(trk->evaluate(t) * 100.0);
+
+    // Blend mode (non-keyframeable). Keep the combo synchronized when an
+    // undo/redo command restores the clip state.
+    if (m_blendModeCombo) m_blendModeCombo->setCurrentIndex(m_clip->blendMode());
 
     // Anchor point — same display convention as Position. Clip-level
     // anchor is REF-1920 so multiply by seqW/1920; graphic-layer anchor

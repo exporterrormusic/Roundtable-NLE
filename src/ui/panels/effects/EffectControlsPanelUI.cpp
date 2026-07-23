@@ -222,6 +222,8 @@ void EffectControlsPanel::setupUI()
         syncValuesFromClip();
         emit propertyChanged();
     });
+    connect(m_kfTimeline, &KeyframeTimeline::maskPathChanged,
+            this, &EffectControlsPanel::maskChanged);
 
     // ── Empty state label ───────────────────────────────────────────────
     m_emptyLabel = new QLabel(tr("Select a clip to view properties"), this);
@@ -259,13 +261,12 @@ void EffectControlsPanel::setupUI()
     footerLayout->addWidget(m_footerTimecodeLabel);
     footerLayout->addStretch();
 
-    // "Remove All Keyframes" — clears every keyframe on the clip AND on all
-    // of a GraphicClip's text/shape layers in one undoable step. This is the
-    // only way to reach keyframes on a graphic layer that isn't the currently
-    // selected one (Effect Controls binds to a single layer at a time).
+    // "Remove All Keyframes" clears clip, effect, mask, and graphic-layer
+    // animation in one undoable step.
     auto* removeAllKfBtn = new QPushButton(tr("Remove All Keyframes"), footer);
     removeAllKfBtn->setCursor(Qt::PointingHandCursor);
-    removeAllKfBtn->setToolTip(tr("Clear every keyframe on this clip and all of its layers"));
+    removeAllKfBtn->setToolTip(
+        tr("Clear every clip, effect, mask, and layer keyframe"));
     removeAllKfBtn->setStyleSheet(QStringLiteral(
         "QPushButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0 2px; }"
         "QPushButton:hover { color: %2; }")
