@@ -254,6 +254,7 @@ private:
  QCheckBox* m_strokeCheck{nullptr};
  QPushButton* m_strokeColorBtn{nullptr};
  ScrubbySpinBox* m_strokeWidthSpin{nullptr};
+ ScrubbySpinBox* m_strokeOpacitySpin{nullptr};
  QComboBox* m_strokePosCombo{nullptr};
  QCheckBox* m_shadowCheck{nullptr};
  QPushButton* m_shadowColorBtn{nullptr};
@@ -264,6 +265,7 @@ private:
  QCheckBox* m_backgroundCheck{nullptr};
  QPushButton* m_backgroundColorBtn{nullptr};
  ScrubbySpinBox* m_backgroundPaddingSpin{nullptr};
+ ScrubbySpinBox* m_backgroundOpacitySpin{nullptr};
  QCheckBox* m_maskWithTextCheck{nullptr};
 
  // Ã¢â€â‚¬Ã¢â€â‚¬ Align and Transform section Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬

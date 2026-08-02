@@ -52,6 +52,15 @@ SpineEngine::~SpineEngine() = default;
 SpineEngine::SpineEngine(SpineEngine&&) noexcept = default;
 SpineEngine& SpineEngine::operator=(SpineEngine&&) noexcept = default;
 
+void SpineEngine::setHiddenAttachmentNames(std::vector<std::string> names)
+{
+    m_hiddenAttachmentNames.clear();
+    for (auto& name : names) {
+        if (!name.empty())
+            m_hiddenAttachmentNames.emplace(std::move(name));
+    }
+}
+
 // ─── Version detection ──────────────────────────────────────────────────────
 std::string SpineEngine::detectVersion(const std::string& skelPath)
 {
@@ -489,6 +498,11 @@ SpineRenderData SpineEngine::extractMeshes()
             m_clipper->clipEnd(*slot);
             continue;
         }
+        const char* attachmentName = attachment->getName().buffer();
+        if (attachmentName && m_hiddenAttachmentNames.count(attachmentName) != 0) {
+            m_clipper->clipEnd(*slot);
+            continue;
+        }
 
         float* vertices = nullptr;
         size_t vertexCount = 0;
@@ -563,14 +577,17 @@ SpineRenderData SpineEngine::extractMeshes()
             continue;
         }
 
-        // Compute final vertex color: skeleton color * slot color * attachment color
+        // Atlas texels are PMA, so the vertex tint must also be premultiplied
+        // by the combined skeleton/slot/attachment alpha. Otherwise a faded
+        // slot keeps full-strength RGB and still contributes through the
+        // renderer's src=ONE blend state, even when its alpha reaches zero.
         auto& skelColor = m_skeleton->getColor();
         auto& slotColor = slot->getColor();
 
-        float r = skelColor.r * slotColor.r * attachColor.r;
-        float g = skelColor.g * slotColor.g * attachColor.g;
-        float b = skelColor.b * slotColor.b * attachColor.b;
         float a = skelColor.a * slotColor.a * attachColor.a;
+        float r = skelColor.r * slotColor.r * attachColor.r * a;
+        float g = skelColor.g * slotColor.g * attachColor.g * a;
+        float b = skelColor.b * slotColor.b * attachColor.b * a;
 
         auto blendMode = convertBlendMode(slot->getData().getBlendMode());
 
@@ -675,4 +692,3 @@ SpineRenderData SpineEngine::extractMeshes()
 } // namespace rt
 
 #endif // ROUNDTABLE_HAS_SPINE
-

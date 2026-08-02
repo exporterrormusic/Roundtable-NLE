@@ -447,21 +447,23 @@ public:
     const KeyframeTrack<float>& leading()       const noexcept { return m_leading; }
     const KeyframeTrack<float>& baselineShift() const noexcept { return m_baselineShift; }
     void setTrackingForAll(float value) {
-        m_tracking.addKeyframe(0, value);
+        // Formatting controls are static unless the user has explicitly
+        // enabled animation. Do not manufacture a hidden time-zero keyframe.
+        m_tracking.writeValue(0, value);
         for (auto& run : m_styleRuns) {
             run.tracking = value;
             run.overrideMask &= ~TextOverrideTracking;
         }
     }
     void setBaselineShiftForAll(float value) {
-        m_baselineShift.addKeyframe(0, value);
+        m_baselineShift.writeValue(0, value);
         for (auto& run : m_styleRuns) {
             run.baselineShift = value;
             run.overrideMask &= ~TextOverrideBaseline;
         }
     }
     void setLeadingForAll(float value) {
-        m_leading.addKeyframe(0, value);
+        m_leading.writeValue(0, value);
         for (auto& run : m_styleRuns) {
             run.leading = value;
             run.overrideMask &= ~TextOverrideLeading;

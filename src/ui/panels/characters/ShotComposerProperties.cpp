@@ -675,10 +675,11 @@ QWidget* ShotComposer::createPropertiesPanel()
     connect(m_flipXCheck,    &QCheckBox::toggled, this, charChanged);
     connect(m_flipYCheck,    &QCheckBox::toggled, this, charChanged);
     connect(m_visibleCheck,  &QCheckBox::toggled, this, charChanged);
-    connect(m_cropLeftSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
-    connect(m_cropRightSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
-    connect(m_cropTopSpin,   QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
-    connect(m_cropBottomSpin,QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
+    auto cropChanged = [this]() { onCharacterCropChanged(); };
+    connect(m_cropLeftSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, cropChanged);
+    connect(m_cropRightSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, cropChanged);
+    connect(m_cropTopSpin,   QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, cropChanged);
+    connect(m_cropBottomSpin,QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, cropChanged);
     connect(btnResetCrop, &QPushButton::clicked, this, [this]() {
         m_updating = true;
         m_cropLeftSpin->setValue(0);
@@ -686,7 +687,7 @@ QWidget* ShotComposer::createPropertiesPanel()
         m_cropTopSpin->setValue(0);
         m_cropBottomSpin->setValue(0);
         m_updating = false;
-        onCharacterPropertyChanged();
+        onCharacterCropChanged();
     });
 
     // â”€â”€ Page 2: Background properties (tabbed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

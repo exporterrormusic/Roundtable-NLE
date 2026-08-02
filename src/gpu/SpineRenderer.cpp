@@ -1063,4 +1063,3 @@ std::shared_ptr<CachedFrame> SpineRenderer::readbackPixels()
 }
 
 } // namespace rt
-

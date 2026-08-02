@@ -1,0 +1,93 @@
+{
+  "name": "Grave (Wide)",
+  "show": "ROUNDTABLE TALK",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "TABLE_OVERLAY.png",
+      "posX": 0.497724,
+      "posY": 0.494975,
+      "scale": 1.020703,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000
+    },
+    {
+      "path": "TABLE_LARGE_FINAL.png",
+      "posX": 0.499734,
+      "posY": 0.494975,
+      "scale": 1.020703,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Grave the Great (GraGre)",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.793035,
+      "posY": 0.606654,
+      "scale": 0.884150,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 17.500000,
+      "blur": 0.000000,
+      "visible": true
+    },
+    {
+      "characterName": "Anachiro _ Cinderella_ Crystal Wave",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.311930,
+      "posY": 0.556612,
+      "scale": 0.725244,
+      "rotation": 0.000000,
+      "flipX": true,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "bg", "index": 0},
+    {"type": "ch", "index": 0},
+    {"type": "ch", "index": 1},
+    {"type": "bg", "index": 1}
+  ]
+}

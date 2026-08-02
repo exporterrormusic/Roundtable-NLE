@@ -771,6 +771,37 @@ void ShotComposer::onCharacterPropertyChanged()
     emit shotChanged();
 }
 
+void ShotComposer::onCharacterCropChanged()
+{
+    if (m_updating) return;
+    if (m_selectedLayer < 0 || m_selectedLayer >= m_currentShot.layerCount())
+        return;
+
+    const auto& ref = m_currentShot.layerOrder()[static_cast<size_t>(m_selectedLayer)];
+    if (ref.type != LayerType::Character)
+        return;
+
+    auto* ch = m_currentShot.character(ref.index);
+    if (!ch) return;
+
+    if (!m_undoPropertyPushed) {
+        pushUndoState();
+        m_undoPropertyPushed = true;
+    }
+    m_undoCoalesceTimer->start();
+
+    // Crop controls must not round-trip the rest of the transform through its
+    // display widgets. Position and scale may contain more precision than the
+    // one-decimal percentage fields expose (especially after a viewport drag).
+    ch->cropLeft   = static_cast<float>(m_cropLeftSpin->value());
+    ch->cropRight  = static_cast<float>(m_cropRightSpin->value());
+    ch->cropTop    = static_cast<float>(m_cropTopSpin->value());
+    ch->cropBottom = static_cast<float>(m_cropBottomSpin->value());
+
+    updatePreview();
+    emit shotChanged();
+}
+
 void ShotComposer::onBackgroundPropertyChanged()
 {
     if (m_updating) return;

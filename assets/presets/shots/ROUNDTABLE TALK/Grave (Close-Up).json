@@ -1,0 +1,72 @@
+{
+  "name": "Grave (Close-Up)",
+  "show": "ROUNDTABLE TALK",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "TABLE_OVERLAY.png",
+      "posX": -0.373025,
+      "posY": 0.674895,
+      "scale": 3.183000,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000
+    },
+    {
+      "path": "TABLE_LARGE_FINAL.png",
+      "posX": -0.373025,
+      "posY": 0.674895,
+      "scale": 3.183000,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 2.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Grave the Great (GraGre)",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.533166,
+      "posY": 1.182384,
+      "scale": 2.558918,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "bg", "index": 0},
+    {"type": "ch", "index": 0},
+    {"type": "bg", "index": 1}
+  ]
+}

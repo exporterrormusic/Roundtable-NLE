@@ -97,6 +97,95 @@ TEST(GraphicsEditorPanel, TextRowsAreMultilineAndFontFamilyIsSearchable)
     EXPECT_TRUE(rt::widgetConsumesTextKeys(fontCombo->lineEdit()));
 }
 
+TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
+{
+    rt::GraphicClip clip;
+    clip.setDuration(48000);
+    auto* layer = clip.addTextLayer("appearance");
+    ASSERT_NE(layer, nullptr);
+
+    rt::GraphicsEditorPanel panel;
+    panel.setClip(&clip);
+
+    auto* shadow = panel.findChild<QCheckBox*>(
+        QStringLiteral("graphicsShadowCheck"));
+    auto* stroke = panel.findChild<QCheckBox*>(
+        QStringLiteral("graphicsStrokeCheck"));
+    auto* background = panel.findChild<QCheckBox*>(
+        QStringLiteral("graphicsBackgroundCheck"));
+    auto* backgroundSize = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("graphicsBackgroundSize"));
+    auto* backgroundOpacity = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("graphicsBackgroundOpacity"));
+    ASSERT_NE(shadow, nullptr);
+    ASSERT_NE(stroke, nullptr);
+    ASSERT_NE(background, nullptr);
+    ASSERT_NE(backgroundSize, nullptr);
+    ASSERT_NE(backgroundOpacity, nullptr);
+    EXPECT_FALSE(shadow->isChecked());
+
+    stroke->setChecked(true);
+    background->setChecked(true);
+
+    EXPECT_TRUE(layer->backgroundEnabled());
+    EXPECT_GT(layer->backgroundPadding(), 0.0f);
+    EXPECT_GT((layer->backgroundColor() >> 24) & 0xFFu, 0u);
+    ASSERT_FALSE(layer->styleRuns().empty());
+    EXPECT_TRUE(layer->styleRuns().front().appearance.strokeEnabled);
+    EXPECT_TRUE(layer->styleRuns().front().appearance.backgroundEnabled);
+    EXPECT_FALSE(layer->styleRuns().front().appearance.shadowEnabled);
+}
+
+TEST(GraphicsEditorPanel, TextLayerEyeTogglesRenderedVisibility)
+{
+    rt::GraphicClip clip;
+    clip.setDuration(48000);
+    auto* layer = clip.addTextLayer("toggle me");
+    ASSERT_NE(layer, nullptr);
+
+    rt::GraphicsEditorPanel panel;
+    panel.setClip(&clip);
+    auto* eye = panel.findChild<QToolButton*>(
+        QStringLiteral("graphicsLayerVisibilityButton"));
+    ASSERT_NE(eye, nullptr);
+
+    QSignalSpy changed(&panel, &rt::GraphicsEditorPanel::propertyChanged);
+    EXPECT_TRUE(layer->isVisible());
+    eye->click();
+    EXPECT_FALSE(layer->isVisible());
+    EXPECT_EQ(changed.count(), 1);
+    eye->click();
+    EXPECT_TRUE(layer->isVisible());
+    EXPECT_EQ(changed.count(), 2);
+}
+
+TEST(GraphicsEditorPanel, StaticTextEditsDoNotCreateHiddenKeyframes)
+{
+    rt::GraphicClip clip;
+    clip.setDuration(48000);
+    auto* layer = clip.addTextLayer("static");
+    ASSERT_NE(layer, nullptr);
+
+    rt::GraphicsEditorPanel panel;
+    panel.setClip(&clip);
+    auto* tracking = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("graphicsTrackingSpin"));
+    auto* positionX = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("graphicsPositionXSpin"));
+    ASSERT_NE(tracking, nullptr);
+    ASSERT_NE(positionX, nullptr);
+
+    tracking->setValue(25.0);
+    tracking->valueScrubbed(25.0);
+    positionX->setValue(640.0);
+    positionX->valueScrubbed(640.0);
+
+    EXPECT_EQ(layer->tracking().keyframeCount(), 0u);
+    EXPECT_FLOAT_EQ(layer->tracking().defaultValue(), 25.0f);
+    EXPECT_EQ(layer->transform().posX.keyframeCount(), 0u);
+    EXPECT_FLOAT_EQ(layer->transform().posX.defaultValue(), 640.0f);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  QApplication fixture
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1540,6 +1629,75 @@ TEST(EffectControlsPanel, MaskScalarTimelineUndoSurvivesMaskVectorReallocation)
     EXPECT_EQ(maskIt->feather.keyframe(0).time, 10000);
     ASSERT_TRUE(stack.redo());
     EXPECT_EQ(maskIt->feather.keyframe(0).time, 20000);
+}
+
+TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadFollowsExactTick)
+{
+    rt::VideoClip clip;
+    clip.setTimelineIn(5000);
+    clip.setDuration(48000);
+    clip.positionX().addKeyframe(10000, 10.0f);
+    clip.positionX().addKeyframe(20000, 20.0f);
+
+    rt::PropertyRow row(QStringLiteral("Position X"), &clip.positionX());
+    row.move(0, 100);
+    row.resize(200, 28);
+    row.show();
+
+    rt::CommandStack stack;
+    rt::KeyframeTimeline timeline;
+    timeline.setCommandStack(&stack);
+    timeline.resize(481, 240); // 100 ticks per horizontal pixel
+    timeline.setClip(&clip);
+    timeline.setPropertyRows({&row});
+    timeline.show();
+    QApplication::processEvents();
+
+    QSignalSpy seekSpy(&timeline, &rt::KeyframeTimeline::playheadScrubbed);
+    QTest::mousePress(&timeline, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(100, 114));
+    ASSERT_GE(seekSpy.count(), 1);
+    EXPECT_EQ(seekSpy.last().at(0).toLongLong(), 15000);
+    QTest::mouseMove(&timeline, QPoint(200, 114));
+    QTest::mouseRelease(&timeline, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(200, 114));
+
+    ASSERT_EQ(clip.positionX().keyframeCount(), 1u);
+    EXPECT_EQ(clip.positionX().keyframe(0).time, 20000);
+    EXPECT_FLOAT_EQ(clip.positionX().keyframe(0).value, 10.0f);
+    EXPECT_EQ(seekSpy.last().at(0).toLongLong(), 25000);
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(clip.positionX().keyframeCount(), 2u);
+    EXPECT_EQ(clip.positionX().keyframe(0).time, 10000);
+    EXPECT_EQ(clip.positionX().keyframe(1).time, 20000);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(clip.positionX().keyframeCount(), 1u);
+}
+
+TEST(EffectControlsPanel, FirstAudioLaneDiamondWinsOverClipBar)
+{
+    rt::AudioClip clip;
+    clip.setDuration(48000);
+    clip.volume().addKeyframe(24000, 0.5f);
+
+    // Audio's first property row begins directly below its 24 px header.
+    // Its centre is y=38, which used to fall inside the clip-bar scrub zone.
+    rt::PropertyRow row(QStringLiteral("Volume"), &clip.volume());
+    row.move(0, 24);
+    row.resize(200, 28);
+    row.show();
+
+    rt::KeyframeTimeline timeline;
+    timeline.resize(481, 160);
+    timeline.setClip(&clip);
+    timeline.setPropertyRows({&row});
+    timeline.show();
+    QApplication::processEvents();
+
+    QTest::mouseClick(&timeline, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(240, 38));
+    EXPECT_TRUE(timeline.hasSelectedKeyframes());
 }
 
 TEST(EffectControlsPanel, RemoveAllKeyframesIncludesMaskPathAndScalars)

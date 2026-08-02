@@ -25,6 +25,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <cstdint>
 
@@ -175,6 +176,11 @@ public:
     /// Groups triangles by texture page and blend mode.
     [[nodiscard]] SpineRenderData extractMeshes();
 
+    /// Omit named attachments during mesh extraction. This supports narrowly
+    /// scoped per-character corrections without altering the source skeleton
+    /// or disabling a blend mode globally.
+    void setHiddenAttachmentNames(std::vector<std::string> names);
+
     /// Get axis-aligned bounding box of current pose
     void getBounds(float& x, float& y, float& w, float& h);
 
@@ -214,6 +220,7 @@ private:
     void computeAlphaAnimatedSlots();
 
     std::vector<char>                                     m_slotAlphaAnimated;  ///< by slot index
+    std::unordered_set<std::string>                       m_hiddenAttachmentNames;
     std::string                                           m_loadedSkelPath;
     std::string                                           m_loadedAtlasPath;
     SpineAtlas                                            m_atlas;

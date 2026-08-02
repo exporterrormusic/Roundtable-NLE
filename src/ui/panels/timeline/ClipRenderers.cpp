@@ -863,6 +863,7 @@ struct StyledGlyphUnit {
 
 struct StyledPathPiece {
     QPainterPath path;
+    QRectF layoutRect;
     TextStyleRun style;
     QPointF origin;
     QString text;
@@ -873,6 +874,8 @@ struct StyledPathPiece {
 struct StyledTextPath {
     QPainterPath combined;
     std::vector<StyledPathPiece> pieces;
+    QRectF layoutRect;
+    bool hasLayoutRect{false};
 };
 
 bool fontHasColorGlyphs(const QFont& font)
@@ -1240,8 +1243,17 @@ StyledTextPath buildStyledTextPath(const QString& source,
             ? lineAlignments[i] : hAlign;
         if (lineAlignment == Qt::AlignLeft) penX = cx;
         else if (lineAlignment == Qt::AlignRight) penX = cx - lm.width;
+        if (lm.width > 0.0 && lm.height > 0.0) {
+            const QRectF lineRect(penX, lineTop, lm.width, lm.height);
+            result.layoutRect = result.hasLayoutRect
+                ? result.layoutRect.united(lineRect) : lineRect;
+            result.hasLayoutRect = true;
+        }
         const qreal baseline = lineTop + lm.ascent;
         auto addRun = [&](const StyledGlyphRun& run) {
+            const qreal runWidth = run.advanceOverride >= 0.0
+                ? run.advanceOverride
+                : QFontMetricsF(run.font).horizontalAdvance(run.text);
             QPainterPath piece;
             if (run.advanceOverride < 0.0 && !run.text.isEmpty()) {
                 const QPointF origin(penX, baseline - run.baselineShift);
@@ -1257,13 +1269,13 @@ StyledTextPath buildStyledTextPath(const QString& source,
                         lineWidth));
                 }
                 result.combined.addPath(piece);
-                result.pieces.push_back({piece, run.style, origin, run.text,
-                                         run.font,
+                result.pieces.push_back({piece,
+                                         QRectF(penX, lineTop, runWidth,
+                                                lm.height),
+                                         run.style, origin, run.text, run.font,
                                          fontHasColorGlyphs(run.font)});
             }
-            penX += run.advanceOverride >= 0.0
-                ? run.advanceOverride
-                : QFontMetricsF(run.font).horizontalAdvance(run.text);
+            penX += runWidth;
         };
         if (i < lineDirections.size() && lineDirections[i]) {
             for (auto it = lines[i].rbegin(); it != lines[i].rend(); ++it)
@@ -1614,15 +1626,27 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
             if (useStyledLayout) {
                 // Range appearance is painted piece-by-piece so disabling a
                 // fill or changing an outline affects only the selected text.
-                for (const auto& piece : styledLayout.pieces) {
-                    const auto& appearance = piece.style.appearance;
-                    if (!appearance.backgroundEnabled) continue;
-                    QRectF rect = piece.path.boundingRect().adjusted(
-                        -appearance.backgroundPadding,
-                        -appearance.backgroundPadding,
-                        appearance.backgroundPadding,
-                        appearance.backgroundPadding);
-                    painter.fillRect(rect, toQColor(appearance.backgroundColor));
+                // A layer background is one typographic block, rather than a
+                // union of glyph outlines.  Besides matching Premiere, this
+                // keeps ascenders, descenders, spaces, and style-run breaks
+                // from producing jagged edges.
+                if (tl->backgroundEnabled() && styledLayout.hasLayoutRect) {
+                    const qreal padding = tl->backgroundPadding();
+                    painter.fillRect(styledLayout.layoutRect.adjusted(
+                        -padding, -padding, padding, padding),
+                        toQColor(tl->backgroundColor()));
+                } else {
+                    // Character-range backgrounds still use their own style,
+                    // but cover the run's full line cell instead of tracing
+                    // the visible shapes of its letters.
+                    for (const auto& piece : styledLayout.pieces) {
+                        const auto& appearance = piece.style.appearance;
+                        if (!appearance.backgroundEnabled) continue;
+                        const qreal padding = appearance.backgroundPadding;
+                        painter.fillRect(piece.layoutRect.adjusted(
+                            -padding, -padding, padding, padding),
+                            toQColor(appearance.backgroundColor));
+                    }
                 }
                 for (const auto& piece : styledLayout.pieces) {
                     const auto& appearance = piece.style.appearance;

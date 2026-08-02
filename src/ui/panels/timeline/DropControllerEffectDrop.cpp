@@ -3,8 +3,10 @@
 
 #include <volk.h>
 
+#include <algorithm>
 #include <map>
 #include <set>
+#include <vector>
 
 #include "panels/timeline/DropController.h"
 #include "panels/timeline/TimelineWorkspace.h"
@@ -80,6 +82,50 @@
 
 namespace rt {
 
+namespace {
+
+struct EffectDropTarget
+{
+    size_t trackIdx{SIZE_MAX};
+    size_t clipIdx{SIZE_MAX};
+    Track* track{nullptr};
+    Clip* clip{nullptr};
+};
+
+// A drop broadcasts to the current multi-selection only when the actual drop
+// target belongs to that selection. Dropping on an unselected clip remains a
+// single-clip operation. Incompatible selected clips are skipped.
+std::vector<EffectDropTarget> resolveEffectDropTargets(
+    Timeline* timeline, TimelinePanel* panel,
+    size_t anchorTrackIdx, uint64_t anchorClipId,
+    bool audioOnly)
+{
+    std::vector<EffectDropTarget> result;
+    if (!timeline || !panel) return result;
+
+    const ClipRef anchor{anchorTrackIdx, anchorClipId};
+    std::vector<ClipRef> refs;
+    const auto& selection = panel->selection();
+    if (selection.count() > 1 && selection.isSelected(anchor))
+        refs = selection.clips();
+    else
+        refs.push_back(anchor);
+
+    for (const auto& ref : refs) {
+        auto* track = timeline->track(ref.trackIndex);
+        if (!track) continue;
+        const size_t clipIdx = track->findClipIndexById(ref.clipId);
+        if (clipIdx == SIZE_MAX) continue;
+        auto* clip = track->clip(clipIdx);
+        if (!clip) continue;
+        if (audioOnly ? !clip->isAudio() : !clip->isVisual()) continue;
+        result.push_back({ref.trackIndex, clipIdx, track, clip});
+    }
+    return result;
+}
+
+} // namespace
+
 void DropController::wireEffectDropSignals()
 {
     // =====================================================================
@@ -90,24 +136,41 @@ void DropController::wireEffectDropSignals()
                 this, [this](size_t trackIdx, uint64_t clipId, int effectType) {
             if (m_ws->isDestroying()) return;
             if (!m_ws->timeline()) return;
-            auto* track = m_ws->timeline()->track(trackIdx);
-            if (!track) return;
-            size_t clipIdx = track->findClipIndexById(clipId);
-            if (clipIdx == SIZE_MAX) return;
-            auto* clip = track->clip(clipIdx);
-            if (!clip) return;
-
             auto type = static_cast<EffectType>(effectType);
-            auto& stack = clip->effects();
+            auto targets = resolveEffectDropTargets(
+                m_ws->timeline(), m_ws->timelinePanel(),
+                trackIdx, clipId, /*audioOnly=*/false);
+            if (targets.empty()) return;
 
             if (m_ws->commandStack()) {
-                m_ws->commandStack()->execute(
-                    std::make_unique<AddEffectCommand>(&stack, type));
+                auto* commands = m_ws->commandStack();
+                const bool grouped = targets.size() > 1;
+                if (grouped)
+                    commands->beginMacro(std::string("Add ") + effectTypeName(type) +
+                                         " to selected clips");
+                for (auto& target : targets) {
+                    commands->execute(std::make_unique<AddEffectCommand>(
+                        &target.clip->effects(), type));
+                }
+                if (grouped) commands->endMacro();
             } else {
-                stack.addEffect(createEffect(type));
+                for (auto& target : targets)
+                    target.clip->effects().addEffect(createEffect(type));
             }
 
-            // Select the clip and refresh Effect Controls + Program Monitor
+            // Keep the dropped-on clip as the primary inspector target when
+            // compatible; otherwise inspect the first clip that received it.
+            auto primaryIt = std::find_if(
+                targets.begin(), targets.end(),
+                [clipId](const EffectDropTarget& target) {
+                    return target.clip && target.clip->id() == clipId;
+                });
+            auto& primary = primaryIt != targets.end() ? *primaryIt : targets.front();
+            auto* clip = primary.clip;
+            auto* track = primary.track;
+            const size_t clipIdx = primary.clipIdx;
+            trackIdx = primary.trackIdx;
+
             if (m_ws->propertiesPanel()) {
                 m_ws->propertiesPanel()->setClip(clip, track);
                 m_ws->propertiesPanel()->refreshEffects();
@@ -124,8 +187,8 @@ void DropController::wireEffectDropSignals()
             m_ws->invalidateCompositeCache();
             if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 
-            spdlog::info("Effect '{}' added to clip '{}' via drag-drop",
-                         effectTypeName(type), clip->label());
+            spdlog::info("Effect '{}' added to {} selected-compatible clip(s) via drag-drop",
+                         effectTypeName(type), targets.size());
         });
     }
 
@@ -137,23 +200,42 @@ void DropController::wireEffectDropSignals()
                 this, [this](size_t trackIdx, uint64_t clipId, int presetId) {
             if (m_ws->isDestroying()) return;
             if (!m_ws->timeline()) return;
-            auto* track = m_ws->timeline()->track(trackIdx);
-            if (!track) return;
-            size_t clipIdx = track->findClipIndexById(clipId);
-            if (clipIdx == SIZE_MAX) return;
-            auto* clip = track->clip(clipIdx);
-            if (!clip) return;
-
             auto preset = static_cast<GlitchPreset>(presetId);
-            auto& stack = clip->effects();
+            auto targets = resolveEffectDropTargets(
+                m_ws->timeline(), m_ws->timelinePanel(),
+                trackIdx, clipId, /*audioOnly=*/false);
+            if (targets.empty()) return;
 
             if (m_ws->commandStack()) {
-                if (auto cmd = makeAddGlitchPresetCommand(&stack, preset))
-                    m_ws->commandStack()->execute(std::move(cmd));
+                auto* commands = m_ws->commandStack();
+                const bool grouped = targets.size() > 1;
+                if (grouped)
+                    commands->beginMacro(std::string("Add ") + glitchPresetName(preset) +
+                                         " to selected clips");
+                for (auto& target : targets) {
+                    if (auto cmd = makeAddGlitchPresetCommand(
+                            &target.clip->effects(), preset)) {
+                        commands->execute(std::move(cmd));
+                    }
+                }
+                if (grouped) commands->endMacro();
             } else {
-                for (auto& fx : buildGlitchPreset(preset))
-                    stack.addEffect(std::move(fx));
+                for (auto& target : targets) {
+                    for (auto& fx : buildGlitchPreset(preset))
+                        target.clip->effects().addEffect(std::move(fx));
+                }
             }
+
+            auto primaryIt = std::find_if(
+                targets.begin(), targets.end(),
+                [clipId](const EffectDropTarget& target) {
+                    return target.clip && target.clip->id() == clipId;
+                });
+            auto& primary = primaryIt != targets.end() ? *primaryIt : targets.front();
+            auto* clip = primary.clip;
+            auto* track = primary.track;
+            const size_t clipIdx = primary.clipIdx;
+            trackIdx = primary.trackIdx;
 
             if (m_ws->propertiesPanel()) {
                 m_ws->propertiesPanel()->setClip(clip, track);
@@ -171,8 +253,8 @@ void DropController::wireEffectDropSignals()
             m_ws->invalidateCompositeCache();
             if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
 
-            spdlog::info("Glitch preset '{}' added to clip '{}' via drag-drop",
-                         glitchPresetName(preset), clip->label());
+            spdlog::info("Glitch preset '{}' added to {} selected-compatible clip(s) via drag-drop",
+                         glitchPresetName(preset), targets.size());
         });
     }
 
@@ -184,38 +266,60 @@ void DropController::wireEffectDropSignals()
                 this, [this](size_t trackIdx, uint64_t clipId, int kindInt) {
             if (m_ws->isDestroying()) return;
             if (!m_ws->timeline()) return;
-            auto* track = m_ws->timeline()->track(trackIdx);
-            if (!track) return;
-            size_t clipIdx = track->findClipIndexById(clipId);
-            if (clipIdx == SIZE_MAX) return;
-            auto* clip = track->clip(clipIdx);
-            if (!clip || !clip->isAudio()) return;
-            auto* aclip = static_cast<AudioClip*>(clip);
             const auto kind = static_cast<audiofx::ProcessorKind>(kindInt);
+            auto targets = resolveEffectDropTargets(
+                m_ws->timeline(), m_ws->timelinePanel(),
+                trackIdx, clipId, /*audioOnly=*/true);
+            if (targets.empty()) return;
 
-            // Whole-chain snapshot undo, matching AudioFxSection::commitEdit so
-            // both entry points behave identically.
-            auto before = std::make_shared<audiofx::FxChain>(aclip->audioFx().clone());
-            auto after  = std::make_shared<audiofx::FxChain>(aclip->audioFx().clone());
-            auto* proc = after->add(kind);
-            if (kind == audiofx::ProcessorKind::Dynamics)
-                static_cast<audiofx::Dynamics*>(proc)->loadVoicePreset();
+            struct AudioFxChange {
+                AudioClip* clip{nullptr};
+                audiofx::FxChain before;
+                audiofx::FxChain after;
+            };
+            auto changes = std::make_shared<std::vector<AudioFxChange>>();
+            changes->reserve(targets.size());
+            for (auto& target : targets) {
+                auto* audioClip = static_cast<AudioClip*>(target.clip);
+                AudioFxChange change{
+                    audioClip, audioClip->audioFx().clone(), audioClip->audioFx().clone()};
+                auto* proc = change.after.add(kind);
+                if (kind == audiofx::ProcessorKind::Dynamics)
+                    static_cast<audiofx::Dynamics*>(proc)->loadVoicePreset();
+                changes->push_back(std::move(change));
+            }
 
-            auto refresh = [this, trackIdx, clipId]() {
+            auto primaryIt = std::find_if(
+                targets.begin(), targets.end(),
+                [clipId](const EffectDropTarget& target) {
+                    return target.clip && target.clip->id() == clipId;
+                });
+            const auto& primary = primaryIt != targets.end() ? *primaryIt : targets.front();
+            const size_t primaryTrackIdx = primary.trackIdx;
+            const uint64_t primaryClipId = primary.clip->id();
+            auto refresh = [this, primaryTrackIdx, primaryClipId]() {
                 if (m_ws->isDestroying() || !m_ws->timeline()) return;
-                auto* tr = m_ws->timeline()->track(trackIdx);
+                auto* tr = m_ws->timeline()->track(primaryTrackIdx);
                 if (!tr) return;
-                size_t ci = tr->findClipIndexById(clipId);
+                size_t ci = tr->findClipIndexById(primaryClipId);
                 if (ci == SIZE_MAX) return;
                 auto* c = tr->clip(ci);
                 if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(c, tr);
                 m_ws->selection().clip = c;
-                m_ws->selection().trackIdx = trackIdx;
+                m_ws->selection().trackIdx = primaryTrackIdx;
                 m_ws->selection().clipIdx = ci;
                 m_ws->selection().graphicLayerIdx = -1;
             };
-            auto redo = [aclip, after, refresh]() { aclip->audioFx() = after->clone(); refresh(); };
-            auto undo = [aclip, before, refresh]() { aclip->audioFx() = before->clone(); refresh(); };
+            auto redo = [changes, refresh]() {
+                for (auto& change : *changes)
+                    change.clip->audioFx() = change.after.clone();
+                refresh();
+            };
+            auto undo = [changes, refresh]() {
+                for (auto& change : *changes)
+                    change.clip->audioFx() = change.before.clone();
+                refresh();
+            };
 
             if (m_ws->commandStack())
                 m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
@@ -223,8 +327,8 @@ void DropController::wireEffectDropSignals()
             else
                 redo();
 
-            spdlog::info("Audio FX '{}' added to clip '{}' via drag-drop",
-                         audiofx::processorKindName(kind), clip->label());
+            spdlog::info("Audio FX '{}' added to {} selected-compatible clip(s) via drag-drop",
+                         audiofx::processorKindName(kind), targets.size());
         });
     }
 

@@ -99,9 +99,11 @@ public:
     /// When true, dragged clips are hidden entirely (shown in ghost overlay instead).
     void setGhostDragActive(bool active) { m_ghostDragActive = active; update(); }
 
-    /// Set / clear the effect-drop highlight.  When non-zero, the clip with
-    /// this ID gets a darkened overlay + border to indicate an effect is about
-    /// to be applied on drop.
+    /// Set / clear effect-drop highlights. Every listed clip gets a darkened
+    /// overlay + border to indicate the effect will be applied on drop.
+    void setEffectHighlightClipIds(std::unordered_set<uint64_t> clipIds);
+
+    /// Convenience wrapper for a single highlighted clip.
     void setEffectHighlightClipId(uint64_t clipId);
 
     /// Set / clear the gap selection highlight.  Draws a translucent rectangle
@@ -153,7 +155,7 @@ private:
     const AnimationVideoCache*  m_animVideoCache{nullptr};
     int64_t                     m_inPoint{-1};
     int64_t                     m_outPoint{-1};
-    uint64_t                    m_effectHighlightClipId{0};
+    std::unordered_set<uint64_t> m_effectHighlightClipIds;
     int64_t                     m_transitionDropEdgeTick{-1};
     int64_t                     m_gapHighlightStart{-1};
     int64_t                     m_gapHighlightEnd{-1};

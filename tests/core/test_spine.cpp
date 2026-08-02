@@ -577,6 +577,126 @@ TEST_F(SpineTest, MeshExtractionMultipleFrames)
     }
 }
 
+TEST_F(SpineTest, MeshVertexColorsUsePremultipliedAlpha)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Chime");
+    if (!files.valid()) GTEST_SKIP() << "Chime not available";
+
+    rt::SpineEngine engine;
+    ASSERT_TRUE(engine.loadSkeleton(files.skel, files.atlas));
+    engine.animation().setBodyAnimation("idle", true);
+    ASSERT_EQ(engine.animation().currentBodyAnimation(), "idle");
+    engine.animation().startTalking();
+
+    size_t translucentVertices = 0;
+    size_t nonPremultipliedVertices = 0;
+    float maxRgbAlphaExcess = 0.0f;
+    for (int sample = 0; sample <= 60; ++sample) {
+        const float time = static_cast<float>(sample) / 30.0f;
+        engine.evaluateAtTime(time, time);
+
+        const auto meshData = engine.extractMeshes();
+        for (const auto& batch : meshData.batches) {
+            for (const auto& vertex : batch.vertices) {
+                if (vertex.a < 1.0f) ++translucentVertices;
+                const float excess = std::max({vertex.r, vertex.g, vertex.b}) - vertex.a;
+                if (excess > 1e-6f) {
+                    ++nonPremultipliedVertices;
+                    maxRgbAlphaExcess = std::max(maxRgbAlphaExcess, excess);
+                }
+            }
+        }
+    }
+
+    EXPECT_GT(translucentVertices, 0u)
+        << "Chime should exercise slot/attachment alpha in this regression";
+    EXPECT_EQ(nonPremultipliedVertices, 0u)
+        << "Worst RGB-over-alpha excess: " << maxRgbAlphaExcess;
+}
+
+TEST_F(SpineTest, HiddenAttachmentsAreOmittedFromMeshes)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Grave the Great (GraGre)");
+    if (!files.valid()) GTEST_SKIP() << "Grave not available";
+
+    rt::SpineEngine engine;
+    ASSERT_TRUE(engine.loadSkeleton(files.skel, files.atlas));
+    size_t partialRemoved = 0;
+    size_t fullRemoved = 0;
+    for (const auto& anim : engine.animation().listAnimations()) {
+        engine.animation().setBodyAnimation(anim.name, true);
+        for (int sample = 0; sample <= 20; ++sample) {
+            const float time = anim.duration > 0.0f
+                ? anim.duration * static_cast<float>(sample) / 20.0f
+                : 0.0f;
+            engine.evaluateAtTime(time);
+
+            auto indexCount = [](const rt::SpineRenderData& data) {
+                size_t count = 0;
+                for (const auto& batch : data.batches)
+                    count += batch.indices.size();
+                return count;
+            };
+
+            engine.setHiddenAttachmentNames({});
+            const size_t visible = indexCount(engine.extractMeshes());
+            engine.setHiddenAttachmentNames(
+                {"add_blue1", "add_blue2", "eff_eye"});
+            const size_t partial = indexCount(engine.extractMeshes());
+            engine.setHiddenAttachmentNames(
+                {"add_blue1", "add_blue2",
+                 "add_eff1", "add_eff2", "add_eff3", "add_eff4",
+                 "eff_eye",
+                 "fx_se_5", "fx_se_6", "fx_se_7", "fx_se_8", "fx_se_9",
+                 "fx_se_10", "fx_se_11", "fx_se_12", "fx_se_13", "fx_se_14"});
+            const size_t full = indexCount(engine.extractMeshes());
+
+            partialRemoved += visible - partial;
+            fullRemoved += visible - full;
+        }
+    }
+
+    EXPECT_GT(partialRemoved, 0u);
+    EXPECT_GT(fullRemoved, partialRemoved);
+
+    // Match the Roundtable preset that exposed the artifact: looping idle on
+    // the body track with talking enabled on the overlay track.
+    engine.animation().setBodyAnimation("idle", true);
+    engine.animation().startTalking();
+    size_t talkingPartialRemoved = 0;
+    size_t talkingFullRemoved = 0;
+    for (int sample = 0; sample <= 60; ++sample) {
+        const float time = static_cast<float>(sample) / 30.0f;
+        engine.evaluateAtTime(time, time);
+        auto countIndices = [](const rt::SpineRenderData& data) {
+            size_t count = 0;
+            for (const auto& batch : data.batches)
+                count += batch.indices.size();
+            return count;
+        };
+        engine.setHiddenAttachmentNames({});
+        const size_t visible = countIndices(engine.extractMeshes());
+        engine.setHiddenAttachmentNames(
+            {"add_blue1", "add_blue2", "eff_eye"});
+        const size_t partial = countIndices(engine.extractMeshes());
+        engine.setHiddenAttachmentNames(
+            {"add_blue1", "add_blue2",
+             "add_eff1", "add_eff2", "add_eff3", "add_eff4",
+             "eff_eye",
+             "fx_se_5", "fx_se_6", "fx_se_7", "fx_se_8", "fx_se_9",
+             "fx_se_10", "fx_se_11", "fx_se_12", "fx_se_13", "fx_se_14"});
+        const size_t full = countIndices(engine.extractMeshes());
+        talkingPartialRemoved += visible - partial;
+        talkingFullRemoved += visible - full;
+    }
+    EXPECT_GT(talkingPartialRemoved, 0u);
+    EXPECT_GT(talkingFullRemoved, talkingPartialRemoved);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  SpineEngine — Bounds
 // ═════════════════════════════════════════════════════════════════════════════

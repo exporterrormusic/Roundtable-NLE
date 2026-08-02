@@ -358,13 +358,7 @@ private:
     // positions. This guarantees that dragging a keyframe past a
     // non-dragged keyframe never silently destroys the non-dragged one
     // (the snapshot brings it back on the next move).
-    struct DragSnapKf {
-        int64_t time;
-        float value;
-        InterpMode interp;
-        float biX, biY, boX, boY;
-    };
-    std::map<KeyframeTrack<float>*, std::vector<DragSnapKf>> m_dragTrackSnap;
+    std::map<KeyframeTrack<float>*, std::vector<Keyframe<float>>> m_dragTrackSnap;
     std::map<MaskPathId, std::vector<MaskPathKeyframe>> m_dragMaskSnap;
 
     CommandStack*  m_commandStack{nullptr};
@@ -389,7 +383,9 @@ private:
 
     static constexpr int kRulerHeight = 24;
     static constexpr int kRowHeight   = 28;
-    static constexpr int kClipBarHeight = 18;
+    // Keep the duration strip clear of the first property lane. The left
+    // property tree has no matching spacer below its section header.
+    static constexpr int kClipBarHeight = 8;
     static constexpr int kDiamondRadius = 5;
 };
 

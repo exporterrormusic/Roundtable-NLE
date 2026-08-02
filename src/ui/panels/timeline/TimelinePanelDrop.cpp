@@ -178,6 +178,9 @@ void TimelinePanel::dropEvent(QDropEvent* event)
 
     // ── Audio FX drop (EQ / Dynamics → clip FxChain) ────────────────────
     if (event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
+        m_effectDropTarget.reset();
+        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
         QByteArray fxData = event->mimeData()->data("application/x-roundtable-audiofx");
         bool ok = false;
         int kind = fxData.toInt(&ok);
@@ -192,9 +195,27 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         size_t clipIdx = track->findClipIndexById(hitRef->clipId);
         if (clipIdx == SIZE_MAX) { event->ignore(); return; }
 
-        // Audio DSP only applies to audio clips.
+        // Audio DSP applies only to audio clips. For a mixed multi-selection,
+        // however, the clip under the mouse may be visual while another
+        // selected clip is audio; let the controller broadcast to those
+        // compatible selected clips.
         const Clip* clip = track->clip(clipIdx);
-        if (!clip || !clip->isAudio()) { event->ignore(); return; }
+        bool hasAudioTarget = clip && clip->isAudio();
+        const auto& selected = selection();
+        if (!hasAudioTarget && selected.count() > 1 && selected.isSelected(*hitRef)) {
+            for (const auto& ref : selected.clips()) {
+                auto* selectedTrack = m_timeline->track(ref.trackIndex);
+                if (!selectedTrack) continue;
+                const size_t selectedIdx = selectedTrack->findClipIndexById(ref.clipId);
+                if (selectedIdx == SIZE_MAX) continue;
+                const auto* selectedClip = selectedTrack->clip(selectedIdx);
+                if (selectedClip && selectedClip->isAudio()) {
+                    hasAudioTarget = true;
+                    break;
+                }
+            }
+        }
+        if (!hasAudioTarget) { event->ignore(); return; }
 
         emit audioFxDroppedOnClip(hitRef->trackIndex, hitRef->clipId, kind);
         event->acceptProposedAction();

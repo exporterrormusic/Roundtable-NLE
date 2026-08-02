@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QFontDatabase>
 #include <QSignalBlocker>
+#include <algorithm>
 #include <cmath>
 #include <spdlog/spdlog.h>
 
@@ -183,6 +184,7 @@ void GraphicsEditorPanel::setInlineTextSelectionAppearance(
     };
     auto setColor = [](QPushButton* button, uint32_t argb) {
         if (!button) return;
+        button->setProperty("appearanceColor", argb);
         const QColor color = QColor::fromRgba(argb);
         button->setStyleSheet(QStringLiteral(
             "background: %1; border: 1px solid %2;")
@@ -193,10 +195,17 @@ void GraphicsEditorPanel::setInlineTextSelectionAppearance(
     setColor(m_fillColorBtn, fillColor);
     setCheck(m_strokeCheck, strokeEnabled, mixedFlags & InlineMixedStroke);
     setColor(m_strokeColorBtn, strokeColor);
+    if (m_strokeColorBtn) m_strokeColorBtn->setEnabled(strokeEnabled);
     if (m_strokeWidthSpin) m_strokeWidthSpin->setValue(strokeWidth);
+    if (m_strokeOpacitySpin) {
+        m_strokeOpacitySpin->setEnabled(strokeEnabled);
+        m_strokeOpacitySpin->setValue(
+            ((strokeColor >> 24) & 0xFF) * 100.0 / 255.0);
+    }
     if (m_strokePosCombo) m_strokePosCombo->setCurrentIndex(strokePosition);
     setCheck(m_shadowCheck, shadowEnabled, mixedFlags & InlineMixedShadow);
     setColor(m_shadowColorBtn, shadowColor);
+    if (m_shadowColorBtn) m_shadowColorBtn->setEnabled(shadowEnabled);
     auto setShadowSpin = [shadowEnabled](ScrubbySpinBox* spin, double value) {
         if (!spin) return;
         QSignalBlocker blocker(spin);
@@ -210,8 +219,16 @@ void GraphicsEditorPanel::setInlineTextSelectionAppearance(
     setCheck(m_backgroundCheck, backgroundEnabled,
              mixedFlags & InlineMixedBackground);
     setColor(m_backgroundColorBtn, backgroundColor);
-    if (m_backgroundPaddingSpin)
+    if (m_backgroundColorBtn) m_backgroundColorBtn->setEnabled(backgroundEnabled);
+    if (m_backgroundPaddingSpin) {
+        m_backgroundPaddingSpin->setEnabled(backgroundEnabled);
         m_backgroundPaddingSpin->setValue(backgroundPadding);
+    }
+    if (m_backgroundOpacitySpin) {
+        m_backgroundOpacitySpin->setEnabled(backgroundEnabled);
+        m_backgroundOpacitySpin->setValue(
+            ((backgroundColor >> 24) & 0xFF) * 100.0 / 255.0);
+    }
     m_updating = false;
 }
 
@@ -399,7 +416,8 @@ void GraphicsEditorPanel::populateFromLayer()
  if (m_fillColorBtn) {
  uint32_t fc = 0xFFFFFFFF;
  if (!app.fills.empty()) fc = app.fills[0].color;
- QColor fillC((fc >> 16) & 0xFF, (fc >> 8) & 0xFF, fc & 0xFF, (fc >> 24) & 0xFF);
+  QColor fillC((fc >> 16) & 0xFF, (fc >> 8) & 0xFF, fc & 0xFF, (fc >> 24) & 0xFF);
+  m_fillColorBtn->setProperty("appearanceColor", fc);
  m_fillColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(fillC.name(), Theme::hex(Theme::colors().border)));
@@ -408,6 +426,7 @@ void GraphicsEditorPanel::populateFromLayer()
  // Stroke
  if (m_strokeCheck) {
  bool hasStroke = !app.strokes.empty() && app.strokes[0].enabled;
+ uint32_t sc = !app.strokes.empty() ? app.strokes[0].color : 0xFF000000;
  m_strokeCheck->blockSignals(true);
  m_strokeCheck->setChecked(hasStroke);
  m_strokeCheck->blockSignals(false);
@@ -417,12 +436,19 @@ void GraphicsEditorPanel::populateFromLayer()
  }
  if (m_strokeColorBtn) {
  m_strokeColorBtn->setEnabled(hasStroke);
- uint32_t sc = hasStroke ? app.strokes[0].color : 0xFF000000;
- QColor strokeC((sc >> 16) & 0xFF, (sc >> 8) & 0xFF, sc & 0xFF);
+  QColor strokeC((sc >> 16) & 0xFF, (sc >> 8) & 0xFF, sc & 0xFF);
+  m_strokeColorBtn->setProperty("appearanceColor", sc);
  m_strokeColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(strokeC.name(), Theme::hex(Theme::colors().border)));
- }
+  }
+  if (m_strokeOpacitySpin) {
+  m_strokeOpacitySpin->setEnabled(hasStroke);
+  const double opacity = app.strokes.empty()
+      ? ((sc >> 24) & 0xFF) * 100.0 / 255.0
+      : app.strokes[0].opacity * 100.0;
+  m_strokeOpacitySpin->setValue(opacity);
+  }
  if (m_strokePosCombo) {
  m_strokePosCombo->setEnabled(hasStroke);
  if (hasStroke) {
@@ -441,8 +467,9 @@ void GraphicsEditorPanel::populateFromLayer()
  m_shadowCheck->blockSignals(false);
  if (m_shadowColorBtn) {
  m_shadowColorBtn->setEnabled(hasShadow);
- uint32_t shc = hasShadow ? app.shadows[0].color : 0x80000000;
- QColor shadowC((shc >> 16) & 0xFF, (shc >> 8) & 0xFF, shc & 0xFF, (shc >> 24) & 0xFF);
+ uint32_t shc = app.shadows.empty() ? 0xFF000000 : app.shadows[0].color;
+  QColor shadowC((shc >> 16) & 0xFF, (shc >> 8) & 0xFF, shc & 0xFF, (shc >> 24) & 0xFF);
+  m_shadowColorBtn->setProperty("appearanceColor", shc);
  m_shadowColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(shadowC.name(), Theme::hex(Theme::colors().border)));
@@ -469,16 +496,23 @@ void GraphicsEditorPanel::populateFromLayer()
  }
  if (m_backgroundColorBtn) {
      m_backgroundColorBtn->setEnabled(textLayer->backgroundEnabled());
-     const QColor color = QColor::fromRgba(textLayer->backgroundColor());
+      const QColor color = QColor::fromRgba(textLayer->backgroundColor());
+      m_backgroundColorBtn->setProperty("appearanceColor",
+                                        textLayer->backgroundColor());
      m_backgroundColorBtn->setStyleSheet(QStringLiteral(
          "background: %1; border: 1px solid %2;")
          .arg(color.name(QColor::HexArgb),
               Theme::hex(Theme::colors().border)));
  }
- if (m_backgroundPaddingSpin) {
+  if (m_backgroundPaddingSpin) {
      m_backgroundPaddingSpin->setEnabled(textLayer->backgroundEnabled());
      m_backgroundPaddingSpin->setValue(textLayer->backgroundPadding());
- }
+  }
+  if (m_backgroundOpacitySpin) {
+      m_backgroundOpacitySpin->setEnabled(textLayer->backgroundEnabled());
+      m_backgroundOpacitySpin->setValue(
+          ((textLayer->backgroundColor() >> 24) & 0xFF) * 100.0 / 255.0);
+  }
  if (m_maskWithTextCheck) {
      QSignalBlocker blocker(m_maskWithTextCheck);
      m_maskWithTextCheck->setChecked(textLayer->maskWithText());
@@ -581,6 +615,8 @@ void GraphicsEditorPanel::applyTextProperties()
 static uint32_t colorFromButton(QPushButton* btn)
 {
  if (!btn) return 0xFF000000;
+ const QVariant stored = btn->property("appearanceColor");
+ if (stored.isValid()) return stored.toUInt();
  QString ss = btn->styleSheet();
  int bgIdx = ss.indexOf("background:");
  if (bgIdx < 0) return 0xFF000000;
@@ -594,128 +630,99 @@ static uint32_t colorFromButton(QPushButton* btn)
  static_cast<uint32_t>(c.blue());
 }
 
+static uint32_t colorWithOpacity(uint32_t color, ScrubbySpinBox* opacity)
+{
+ if (!opacity) return color;
+ const auto alpha = static_cast<uint32_t>(std::clamp(
+     qRound(opacity->value() * 2.55), 0, 255));
+ return (color & 0x00FFFFFFu) | (alpha << 24);
+}
+
 void GraphicsEditorPanel::applyAppearance()
 {
  if (!m_selectedLayer || m_updating) return;
+
+ const bool fillOn = m_fillCheck && m_fillCheck->isChecked();
+ const uint32_t fillColor = colorFromButton(m_fillColorBtn);
+ const bool strokeOn = m_strokeCheck && m_strokeCheck->isChecked();
+ const uint32_t strokeColor = colorWithOpacity(
+     colorFromButton(m_strokeColorBtn), m_strokeOpacitySpin);
+ const float strokeWidth = m_strokeWidthSpin
+     ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f;
+ const StrokePosition strokePosition = m_strokePosCombo
+     ? static_cast<StrokePosition>(m_strokePosCombo->currentIndex())
+     : StrokePosition::Center;
+ const bool shadowOn = m_shadowCheck && m_shadowCheck->isChecked();
+ const uint32_t shadowColor = colorFromButton(m_shadowColorBtn);
+ const float shadowDistance = m_shadowDistanceSpin
+     ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f;
+ const float shadowAngle = m_shadowAngleSpin
+     ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f;
+ const float shadowSoftness = m_shadowSoftnessSpin
+     ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f;
+ const float shadowOpacity = m_shadowOpacitySpin
+     ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0) : 0.6f;
+ const bool backgroundOn = m_backgroundCheck && m_backgroundCheck->isChecked();
+ const uint32_t backgroundColor = colorWithOpacity(
+     colorFromButton(m_backgroundColorBtn), m_backgroundOpacitySpin);
+ const float backgroundSize = m_backgroundPaddingSpin
+     ? static_cast<float>(m_backgroundPaddingSpin->value()) : 4.0f;
+
  if (m_monitorTextEditing
      && m_selectedLayer->layerType() == GraphicLayerType::Text) {
- const bool fillOn = m_fillCheck && m_fillCheck->isChecked();
- emit inlineFillRequested(fillOn, colorFromButton(m_fillColorBtn));
- const bool strokeOn = m_strokeCheck && m_strokeCheck->isChecked();
- emit inlineStrokeRequested(strokeOn, colorFromButton(m_strokeColorBtn),
-     m_strokeWidthSpin ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f,
-     m_strokePosCombo ? m_strokePosCombo->currentIndex() : 0);
- const bool shadowOn = m_shadowCheck && m_shadowCheck->isChecked();
- emit inlineShadowRequested(shadowOn, colorFromButton(m_shadowColorBtn),
-     m_shadowDistanceSpin
-         ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f,
-     m_shadowAngleSpin
-         ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f,
-     m_shadowSoftnessSpin
-         ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f,
-     m_shadowOpacitySpin
-         ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0) : 0.6f);
- if (m_backgroundCheck) {
-     emit inlineBackgroundRequested(m_backgroundCheck->isChecked(),
-         colorFromButton(m_backgroundColorBtn),
-         m_backgroundPaddingSpin
-             ? static_cast<float>(m_backgroundPaddingSpin->value()) : 4.0f);
+     emit inlineFillRequested(fillOn, fillColor);
+     emit inlineStrokeRequested(strokeOn, strokeColor, strokeWidth,
+                                static_cast<int>(strokePosition));
+     emit inlineShadowRequested(shadowOn, shadowColor, shadowDistance,
+                                shadowAngle, shadowSoftness, shadowOpacity);
+     emit inlineBackgroundRequested(backgroundOn, backgroundColor,
+                                    backgroundSize);
+     return;
  }
- return;
- }
+
  auto& app = m_selectedLayer->appearance();
-
- // Fill
- if (m_fillCheck) {
- bool on = m_fillCheck->isChecked();
- uint32_t fc = colorFromButton(m_fillColorBtn);
- if (app.fills.empty())
- app.fills.push_back({fc, 1.0f, on});
+ if (app.fills.empty()) app.fills.push_back({fillColor, 1.0f, fillOn});
  else {
- app.fills[0].color = fc;
- app.fills[0].enabled = on;
+     app.fills[0].color = fillColor;
+     app.fills[0].enabled = fillOn;
  }
- }
-
- // Stroke
- if (m_strokeCheck) {
- bool on = m_strokeCheck->isChecked();
- float w = m_strokeWidthSpin ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f;
- uint32_t sc = colorFromButton(m_strokeColorBtn);
- StrokePosition pos = m_strokePosCombo
- ? static_cast<StrokePosition>(m_strokePosCombo->currentIndex())
- : StrokePosition::Center;
+ const float strokeOpacity = m_strokeOpacitySpin
+     ? static_cast<float>(m_strokeOpacitySpin->value() / 100.0) : 1.0f;
  if (app.strokes.empty())
- app.strokes.push_back({sc, w, pos, 1.0f, on});
+     app.strokes.push_back(
+         {strokeColor, strokeWidth, strokePosition, strokeOpacity, strokeOn});
  else {
- app.strokes[0].color = sc;
- app.strokes[0].width = w;
- app.strokes[0].position = pos;
- app.strokes[0].enabled = on;
+     auto& stroke = app.strokes[0];
+     stroke.color = strokeColor;
+     stroke.width = strokeWidth;
+     stroke.position = strokePosition;
+     stroke.opacity = strokeOpacity;
+     stroke.enabled = strokeOn;
  }
- }
-
- // Shadow
- if (m_shadowCheck) {
- bool on = m_shadowCheck->isChecked();
- uint32_t shc = colorFromButton(m_shadowColorBtn);
- const float distance = m_shadowDistanceSpin
-     ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f;
- const float angle = m_shadowAngleSpin
-     ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f;
- const float softness = m_shadowSoftnessSpin
-     ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f;
- const float opacity = m_shadowOpacitySpin
-     ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0) : 0.6f;
- if (on) {
  if (app.shadows.empty())
- app.shadows.push_back({shc, distance, angle, softness, opacity, on});
+     app.shadows.push_back({shadowColor, shadowDistance, shadowAngle,
+                            shadowSoftness, shadowOpacity, shadowOn});
  else {
- app.shadows[0].color = shc;
- app.shadows[0].distance = distance;
- app.shadows[0].angle = angle;
- app.shadows[0].softness = softness;
- app.shadows[0].opacity = opacity;
- app.shadows[0].enabled = true;
+     auto& shadow = app.shadows[0];
+     shadow.color = shadowColor;
+     shadow.distance = shadowDistance;
+     shadow.angle = shadowAngle;
+     shadow.softness = shadowSoftness;
+     shadow.opacity = shadowOpacity;
+     shadow.enabled = shadowOn;
  }
 
  if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
- auto* tl = static_cast<TextLayer*>(m_selectedLayer);
- if (m_fillCheck)
-     tl->setFillForAll(m_fillCheck->isChecked(),
-                       colorFromButton(m_fillColorBtn));
- if (m_strokeCheck)
-     tl->setStrokeForAll(m_strokeCheck->isChecked(),
-         colorFromButton(m_strokeColorBtn),
-         m_strokeWidthSpin ? static_cast<float>(m_strokeWidthSpin->value()) : 2.0f,
-         m_strokePosCombo
-             ? static_cast<StrokePosition>(m_strokePosCombo->currentIndex())
-             : StrokePosition::Center);
- if (m_shadowCheck) {
-     tl->setShadowForAll(m_shadowCheck->isChecked(),
-         colorFromButton(m_shadowColorBtn),
-         m_shadowDistanceSpin
-             ? static_cast<float>(m_shadowDistanceSpin->value()) : 4.0f,
-         m_shadowAngleSpin
-             ? static_cast<float>(m_shadowAngleSpin->value()) : 135.0f,
-         m_shadowSoftnessSpin
-             ? static_cast<float>(m_shadowSoftnessSpin->value()) : 4.0f,
-         m_shadowOpacitySpin
-             ? static_cast<float>(m_shadowOpacitySpin->value() / 100.0)
-             : 0.6f);
- }
- if (m_backgroundCheck)
-     tl->setBackgroundForAll(m_backgroundCheck->isChecked(),
-         colorFromButton(m_backgroundColorBtn),
-         m_backgroundPaddingSpin
-             ? static_cast<float>(m_backgroundPaddingSpin->value()) : 4.0f);
- if (m_maskWithTextCheck)
-     tl->setMaskWithText(m_maskWithTextCheck->isChecked());
- }
- } else {
- if (!app.shadows.empty())
- app.shadows[0].enabled = false;
- }
+     auto* text = static_cast<TextLayer*>(m_selectedLayer);
+     text->setFillForAll(fillOn, fillColor);
+     text->setStrokeForAll(strokeOn, strokeColor, strokeWidth, strokePosition);
+     if (!text->appearance().strokes.empty())
+         text->appearance().strokes[0].opacity = strokeOpacity;
+     text->setShadowForAll(shadowOn, shadowColor, shadowDistance, shadowAngle,
+                           shadowSoftness, shadowOpacity);
+     text->setBackgroundForAll(backgroundOn, backgroundColor, backgroundSize);
+     if (m_maskWithTextCheck)
+         text->setMaskWithText(m_maskWithTextCheck->isChecked());
  }
 
  m_layerEditDirty = true;
@@ -731,20 +738,23 @@ void GraphicsEditorPanel::applyLayerTransform()
  if (!m_selectedLayer || m_updating) return;
  auto& xf = m_selectedLayer->transform();
 
- if (m_posXSpin) xf.posX.addKeyframe(0, static_cast<float>(m_posXSpin->value()));
- if (m_posYSpin) xf.posY.addKeyframe(0, static_cast<float>(m_posYSpin->value()));
- if (m_anchorXSpin) xf.anchorX.addKeyframe(0, static_cast<float>(m_anchorXSpin->value()));
- if (m_anchorYSpin) xf.anchorY.addKeyframe(0, static_cast<float>(m_anchorYSpin->value()));
+ // writeValue() changes the default for a static track and only creates a
+ // keyframe when animation is already enabled. The old addKeyframe(0, ...)
+ // calls silently animated every Graphics-editor adjustment at time zero.
+ if (m_posXSpin) xf.posX.writeValue(0, static_cast<float>(m_posXSpin->value()));
+ if (m_posYSpin) xf.posY.writeValue(0, static_cast<float>(m_posYSpin->value()));
+ if (m_anchorXSpin) xf.anchorX.writeValue(0, static_cast<float>(m_anchorXSpin->value()));
+ if (m_anchorYSpin) xf.anchorY.writeValue(0, static_cast<float>(m_anchorYSpin->value()));
 
  float scaleX = m_scaleXSpin ? static_cast<float>(m_scaleXSpin->value() / 100.0) : xf.scaleX.evaluate(0);
  float scaleY = (m_uniformScaleCheck && m_uniformScaleCheck->isChecked())
  ? scaleX
  : (m_scaleYSpin ? static_cast<float>(m_scaleYSpin->value() / 100.0) : xf.scaleY.evaluate(0));
- xf.scaleX.addKeyframe(0, scaleX);
- xf.scaleY.addKeyframe(0, scaleY);
+ xf.scaleX.writeValue(0, scaleX);
+ xf.scaleY.writeValue(0, scaleY);
 
- if (m_rotationSpin) xf.rotation.addKeyframe(0, static_cast<float>(m_rotationSpin->value()));
- if (m_opacitySpin) xf.opacity.addKeyframe(0, static_cast<float>(m_opacitySpin->value() / 100.0));
+ if (m_rotationSpin) xf.rotation.writeValue(0, static_cast<float>(m_rotationSpin->value()));
+ if (m_opacitySpin) xf.opacity.writeValue(0, static_cast<float>(m_opacitySpin->value() / 100.0));
 
  m_layerEditDirty = true;
  emit propertyChanged();

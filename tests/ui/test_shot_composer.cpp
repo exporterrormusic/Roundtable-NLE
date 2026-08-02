@@ -921,6 +921,29 @@ TEST_F(ShotComposerUITest, EditCharacterProperties)
     EXPECT_TRUE(ch->flipX);
 }
 
+TEST_F(ShotComposerUITest, CropEditPreservesPreciseCharacterTransform)
+{
+    m_panel->newShot("Test Shot");
+    CharacterState state;
+    state.characterName = "Rapi";
+    state.posX = 0.50049f;
+    state.posY = 0.74951f;
+    state.scale = 1.23456f;
+    m_panel->currentShot().addCharacter(state);
+    m_panel->selectLayer(0);
+
+    // The display widgets intentionally expose less precision than the model.
+    // Editing crop must not overwrite the model from those rounded displays.
+    m_panel->cropLeftSpin()->setValue(12.5);
+
+    const auto* ch = m_panel->currentShot().character(0);
+    ASSERT_NE(ch, nullptr);
+    EXPECT_FLOAT_EQ(ch->posX, state.posX);
+    EXPECT_FLOAT_EQ(ch->posY, state.posY);
+    EXPECT_FLOAT_EQ(ch->scale, state.scale);
+    EXPECT_FLOAT_EQ(ch->cropLeft, 12.5f);
+}
+
 TEST_F(ShotComposerUITest, EditBackgroundProperties)
 {
     m_panel->newShot("Test Shot");

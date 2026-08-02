@@ -243,6 +243,10 @@ public:
     [[nodiscard]] QCheckBox*      flipXCheck()        const noexcept { return m_flipXCheck; }
     [[nodiscard]] QCheckBox*      flipYCheck()        const noexcept { return m_flipYCheck; }
     [[nodiscard]] QCheckBox*      visibleCheck()      const noexcept { return m_visibleCheck; }
+    [[nodiscard]] ScrubbySpinBox* cropLeftSpin()      const noexcept { return m_cropLeftSpin; }
+    [[nodiscard]] ScrubbySpinBox* cropRightSpin()     const noexcept { return m_cropRightSpin; }
+    [[nodiscard]] ScrubbySpinBox* cropTopSpin()       const noexcept { return m_cropTopSpin; }
+    [[nodiscard]] ScrubbySpinBox* cropBottomSpin()    const noexcept { return m_cropBottomSpin; }
 
     // Background properties
     [[nodiscard]] ScrubbySpinBox* bgPosXSpin()        const noexcept { return m_bgPosXSpin; }
@@ -293,6 +297,7 @@ private slots:
     void onLayerListSelectionChanged();
     void onShotNameChanged(const QString& name);
     void onCharacterPropertyChanged();
+    void onCharacterCropChanged();
     void onBackgroundPropertyChanged();
     void onCameraPropertyChanged();
 

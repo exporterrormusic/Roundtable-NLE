@@ -618,6 +618,50 @@ TEST(GraphicTextRendering, RangeAppearanceAndDecorationChangeCompositePixels)
     EXPECT_NE(plain->pixels, styled->pixels);
 }
 
+TEST(GraphicTextRendering, BackgroundIsAUniformTextBlockRectangle)
+{
+    GraphicClip clip;
+    auto* text = clip.addTextLayer("Jagged gap");
+    text->setFontFamily("Arial");
+    text->setFontSize(72.0f);
+    text->setFillForAll(false, 0xFFFFFFFFu);
+    text->setStrokeForAll(false, 0xFFFFFFFFu, 0.0f,
+                          StrokePosition::Outer);
+    text->setBackgroundForAll(true, 0xFF00FF00u, 8.0f);
+
+    const auto frame = renderGraphicClip(&clip, 0, 640, 360, 640, 360);
+    ASSERT_NE(frame, nullptr);
+
+    int left = static_cast<int>(frame->width);
+    int top = static_cast<int>(frame->height);
+    int right = -1;
+    int bottom = -1;
+    for (int y = 0; y < static_cast<int>(frame->height); ++y) {
+        for (int x = 0; x < static_cast<int>(frame->width); ++x) {
+            const size_t offset = static_cast<size_t>(y) * frame->stride
+                + static_cast<size_t>(x) * 4;
+            if (frame->pixels[offset + 3] == 0) continue;
+            left = std::min(left, x);
+            top = std::min(top, y);
+            right = std::max(right, x);
+            bottom = std::max(bottom, y);
+        }
+    }
+    ASSERT_GT(right, left);
+    ASSERT_GT(bottom, top);
+
+    // Ignore the anti-aliased outermost edge. Every pixel inside it must be
+    // occupied; glyph-bounds backgrounds leave transparent holes here.
+    for (int y = top + 1; y < bottom; ++y) {
+        for (int x = left + 1; x < right; ++x) {
+            const size_t offset = static_cast<size_t>(y) * frame->stride
+                + static_cast<size_t>(x) * 4;
+            EXPECT_EQ(frame->pixels[offset + 3], 255)
+                << "transparent gap at (" << x << ", " << y << ')';
+        }
+    }
+}
+
 TEST(GraphicTextRendering, StyledParagraphTextHonorsWrapWidth)
 {
     GraphicClip clip;

@@ -464,8 +464,42 @@ void GraphicsEditorPanel::rebuildLayerList()
  displayName = QString::fromStdString(layer->name());
  }
 
- QString vis = layer->isVisible() ? QStringLiteral("\U0001F441 ") : QStringLiteral(" \u2003");
  QString lock = layer->isLocked() ? QStringLiteral("\U0001F512 ") : QStringLiteral(" \u2003");
+
+ auto makeIcon = [](const QString& t) {
+ auto* lbl = new QLabel(t);
+ lbl->setFixedWidth(18);
+ lbl->setAlignment(Qt::AlignCenter);
+ lbl->setAttribute(Qt::WA_TranslucentBackground);
+ lbl->setStyleSheet(QStringLiteral("background: transparent;"));
+ return lbl;
+ };
+ auto makeVisibilityButton = [this](GraphicLayer* target) {
+ auto* button = new QToolButton();
+ button->setObjectName(QStringLiteral("graphicsLayerVisibilityButton"));
+ button->setProperty("layerId",
+                     QVariant::fromValue<qulonglong>(target->layerId()));
+ button->setFixedSize(18, 20);
+ button->setAutoRaise(true);
+ button->setCursor(Qt::PointingHandCursor);
+ auto sync = [button](bool visible) {
+     button->setText(visible ? QStringLiteral("\U0001F441")
+                             : QStringLiteral("\u25CB"));
+     button->setToolTip(visible ? QObject::tr("Hide layer")
+                                : QObject::tr("Show layer"));
+ };
+ sync(target->isVisible());
+ button->setStyleSheet(QStringLiteral(
+     "QToolButton { background: transparent; border: none; padding: 0; }"
+     "QToolButton:hover { background: rgba(255,255,255,28); }"));
+ connect(button, &QToolButton::clicked, this,
+         [this, target, sync]() {
+             target->setVisible(!target->isVisible());
+             sync(target->isVisible());
+             emit propertyChanged();
+         });
+ return button;
+ };
 
  if (isText) {
  // ── Text layers: embed a QPlainTextEdit for inline editing ──
@@ -486,15 +520,7 @@ void GraphicsEditorPanel::rebuildLayerList()
  rowLay->setContentsMargins(3, 1, 3, 1);
  rowLay->setSpacing(1);
 
- auto makeIcon = [](const QString& t) {
- auto* lbl = new QLabel(t);
- lbl->setFixedWidth(18);
- lbl->setAlignment(Qt::AlignCenter);
- lbl->setAttribute(Qt::WA_TranslucentBackground);
- lbl->setStyleSheet(QStringLiteral("background: transparent;"));
- return lbl;
- };
- rowLay->addWidget(makeIcon(vis));
+ rowLay->addWidget(makeVisibilityButton(layer));
  rowLay->addWidget(makeIcon(lock));
  rowLay->addWidget(makeIcon(icon));
 
@@ -532,11 +558,23 @@ void GraphicsEditorPanel::rebuildLayerList()
  m_layerList->setItemWidget(item, row);
  } else {
  // ── Shape layers: plain text item ───────────────────────────
- auto* item = new QListWidgetItem(
- vis + lock + icon + displayName,
- m_layerList);
+ auto* item = new QListWidgetItem(m_layerList);
  item->setData(Qt::UserRole, QVariant::fromValue(static_cast<quintptr>(layer->layerId())));
  item->setToolTip(displayName);
+ item->setSizeHint(QSize(0, 24));
+ auto* row = new QWidget();
+ row->setAttribute(Qt::WA_TranslucentBackground);
+ auto* rowLay = new QHBoxLayout(row);
+ rowLay->setContentsMargins(3, 1, 3, 1);
+ rowLay->setSpacing(1);
+ rowLay->addWidget(makeVisibilityButton(layer));
+ rowLay->addWidget(makeIcon(lock));
+ rowLay->addWidget(makeIcon(icon));
+ auto* name = new QLabel(displayName, row);
+ name->setAttribute(Qt::WA_TranslucentBackground);
+ name->setStyleSheet(QStringLiteral("background: transparent;"));
+ rowLay->addWidget(name, 1);
+ m_layerList->setItemWidget(item, row);
  }
  }
  m_layerList->blockSignals(false);

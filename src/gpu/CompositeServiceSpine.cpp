@@ -243,6 +243,21 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
         }
     }
 
+    // Grave's default skeleton contains a multi-part blue eye effect that
+    // Compose does not present but the live timeline renderer otherwise
+    // exposes as a bright cyan patch. The visible cloud/spark regions are the
+    // fx_se_* attachment family; add_eff3/add_eff4 also reuse add_eff1/add_eff2
+    // atlas regions. Suppress the complete effect family, not just eff_eye.
+    if (clip->characterName() == "Grave the Great (GraGre)" &&
+        clip->outfit() == "default") {
+        state->engine.setHiddenAttachmentNames(
+            {"add_blue1", "add_blue2",
+             "add_eff1", "add_eff2", "add_eff3", "add_eff4",
+             "eff_eye",
+             "fx_se_5", "fx_se_6", "fx_se_7", "fx_se_8", "fx_se_9",
+             "fx_se_10", "fx_se_11", "fx_se_12", "fx_se_13", "fx_se_14"});
+    }
+
     // Record the clip settings the engine was just configured with so a
     // later out-of-band clip mutation (undo/redo, shot switch) can be
     // detected and reconciled without a full skeleton reload.

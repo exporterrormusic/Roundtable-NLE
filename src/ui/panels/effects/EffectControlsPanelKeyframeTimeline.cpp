@@ -318,26 +318,19 @@ void KeyframeTimeline::drawClipBar(QPainter& p)
 {
     if (!m_clip) return;
 
-    const auto& tc = Theme::colors();
-
-    int y = kRulerHeight + 2;
+    int y = kRulerHeight + 1;
     int x0 = tickToX(0);
     int x1 = tickToX(m_clip->duration());
     int barW = std::max(1, x1 - x0);
 
     // Clip bar (magenta/pink like Premiere Pro)
-    QRect barRect(x0, y, barW, kClipBarHeight - 4);
+    QRect barRect(x0, y, barW, kClipBarHeight - 2);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(200, 70, 200, 180));
     p.drawRect(barRect);
 
-    // Clip name inside bar
-    p.setPen(tc.textPrimary);
-    QFont barFont;
-    barFont.setPixelSize(9);
-    p.setFont(barFont);
-    p.drawText(barRect.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
-               QString::fromStdString(m_clip->label()));
+    // The clip name already appears in the panel header. Keeping this as a
+    // slim duration strip prevents it from covering the first keyframe lane.
 }
 
 void KeyframeTimeline::drawKeyframeDiamonds(QPainter& p)
@@ -591,8 +584,13 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         return;
     }
     if (event->button() == Qt::LeftButton) {
+        // A diamond takes priority wherever its click target meets the
+        // ruler/duration strip. The old ordering turned top-lane Volume
+        // keyframe clicks into playhead scrubs.
+        auto hit = hitTestKeyframe(event->pos());
         // Ruler / clip-bar area → scrub, clamped to clip edges
-        if (event->pos().y() < kRulerHeight + kClipBarHeight) {
+        if (!hit.valid()
+            && event->pos().y() < kRulerHeight + kClipBarHeight) {
             m_scrubbing = true;
             int64_t tick = xToTick(event->pos().x());
             if (m_clip) {
@@ -608,7 +606,6 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         bool shift = event->modifiers() & Qt::ShiftModifier;
 
         // Hit-test keyframe diamonds
-        auto hit = hitTestKeyframe(event->pos());
         if (hit.isMaskPath()) {
             const auto& lane = m_maskPathLanes[static_cast<size_t>(hit.maskLane)];
             SelMaskKey key{{lane.effectId, lane.maskId}, hit.time};
@@ -621,6 +618,8 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
                 m_selectedMaskKeys.clear();
                 m_selectedMaskKeys.insert(key);
             }
+            emit playheadScrubbed(hit.time
+                + (m_clip ? m_clip->timelineIn() : 0));
             beginSelectionDrag(xToTick(event->pos().x()));
             setFocus();
             update();
@@ -628,6 +627,8 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         }
         if (hit.track) {
             const int64_t hitTime = hit.time;
+            emit playheadScrubbed(hitTime
+                + (m_clip ? m_clip->timelineIn() : 0));
 
             // Compound rows (Position = X + Y) render ONE diamond per time
             // across every bound track. Expand the selection so clicking
@@ -735,9 +736,7 @@ void KeyframeTimeline::beginSelectionDrag(int64_t anchorTick)
         snap.reserve(entry.track->keyframeCount());
         for (size_t i = 0; i < entry.track->keyframeCount(); ++i) {
             const auto& kf = entry.track->keyframe(i);
-            snap.push_back({kf.time, kf.value, kf.interp,
-                            kf.bezierInX, kf.bezierInY,
-                            kf.bezierOutX, kf.bezierOutY});
+            snap.push_back(kf);
         }
     }
     for (const auto& entry : m_maskDragEntries) {
@@ -918,82 +917,30 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
         for (auto& [trk, snap] : m_dragTrackSnap) {
             while (trk->keyframeCount() > 0)
                 trk->removeKeyframe(trk->keyframeCount() - 1);
-            for (const auto& s : snap) {
-                Keyframe<float> kf;
-                kf.time       = s.time;
-                kf.value      = s.value;
-                kf.interp     = s.interp;
-                kf.bezierInX  = s.biX;
-                kf.bezierInY  = s.biY;
-                kf.bezierOutX = s.boX;
-                kf.bezierOutY = s.boY;
-                trk->restoreKeyframe(kf);
-            }
+            for (const auto& key : snap) trk->restoreKeyframe(key);
         }
         for (const auto& [id, snap] : m_dragMaskSnap) {
             if (OpacityMask* mask = resolveMaskPath(id))
                 mask->pathKeys = snap;
         }
-        // Build the set of non-dragged keyframe times per track. A new-time
-        // landing on one of these would silently overwrite it (addKeyframe
-        // replaces on collision), so we shift by ±1 tick to skip past it.
-        std::unordered_map<KeyframeTrack<float>*, std::set<int64_t>> nonDragTimes;
-        for (auto& [trk, snap] : m_dragTrackSnap) {
-            auto& set = nonDragTimes[trk];
-            for (const auto& s : snap) set.insert(s.time);
-        }
+        // Remove dragged originals before reinserting the live positions.
+        // Exact destination collisions merge through addKeyframe(), so the
+        // timeline never creates a nearly-overlapping one-tick copy.
         for (const auto& entry : m_dragEntries) {
-            auto it = nonDragTimes.find(entry.track);
-            if (it != nonDragTimes.end()) it->second.erase(entry.origTime);
             entry.track->removeKeyframeAtTime(entry.origTime);
         }
-        std::map<MaskPathId, std::set<int64_t>> nonDragMaskTimes;
-        for (const auto& [id, snap] : m_dragMaskSnap) {
-            auto& times = nonDragMaskTimes[id];
-            for (const auto& kf : snap) times.insert(kf.time);
-        }
         for (const auto& entry : m_maskDragEntries) {
-            nonDragMaskTimes[entry.id].erase(entry.origTime);
             if (OpacityMask* mask = resolveMaskPath(entry.id))
                 mask->removePathKeyAtTime(entry.origTime);
         }
 
         // Reinsert at new positions. The group delta is already clamped to
-        // [0, clipDuration]; collision resolution also reserves each chosen
-        // destination so two selected keys can never replace one another.
+        // [0, clipDuration].
         m_selectedKeys.clear();
         m_selectedMaskKeys.clear();
-        const int64_t shiftDir = (delta >= 0) ? +1 : -1;
-        auto availableTime = [maxTime, shiftDir](
-                                 std::set<int64_t>& occupied,
-                                 int64_t desired) {
-            if (occupied.count(desired) == 0) return desired;
-
-            int64_t candidate = desired;
-            for (size_t step = 0; step <= occupied.size(); ++step) {
-                if ((shiftDir > 0 && candidate >= maxTime)
-                    || (shiftDir < 0 && candidate <= 0))
-                    break;
-                candidate += shiftDir;
-                if (occupied.count(candidate) == 0) return candidate;
-            }
-
-            candidate = desired;
-            for (size_t step = 0; step <= occupied.size(); ++step) {
-                if ((shiftDir > 0 && candidate <= 0)
-                    || (shiftDir < 0 && candidate >= maxTime))
-                    break;
-                candidate -= shiftDir;
-                if (occupied.count(candidate) == 0) return candidate;
-            }
-            return desired;
-        };
         for (auto& entry : m_dragEntries) {
-            const int64_t desired = entry.origTime + delta;
-            auto& occupied = nonDragTimes[entry.track];
-            const int64_t newTime = availableTime(occupied, desired);
+            const int64_t newTime = entry.origTime + delta;
             entry.track->addKeyframe(newTime, entry.value, entry.interp);
-            occupied.insert(newTime);
             // Restore bezier handles
             for (size_t i = 0; i < entry.track->keyframeCount(); ++i) {
                 if (entry.track->keyframe(i).time == newTime) {
@@ -1011,14 +958,37 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
         for (auto& entry : m_maskDragEntries) {
             OpacityMask* mask = resolveMaskPath(entry.id);
             if (!mask) continue;
-            auto& occupied = nonDragMaskTimes[entry.id];
-            const int64_t desired = entry.origTime + delta;
-            const int64_t newTime = availableTime(occupied, desired);
+            const int64_t newTime = entry.origTime + delta;
             mask->addPathKey(newTime, entry.geometry);
-            occupied.insert(newTime);
             entry.currentTime = newTime;
             m_selectedMaskKeys.insert({entry.id, newTime});
         }
+
+        // Keep the playhead on the keyframe being dragged. Property edits
+        // immediately after the drag must update this exact tick, not create
+        // a second key at the old or nearest rendered frame.
+        int64_t leaderTime = 0;
+        int64_t leaderDistance = std::numeric_limits<int64_t>::max();
+        bool haveLeader = false;
+        for (const auto& entry : m_dragEntries) {
+            const int64_t distance = std::abs(entry.origTime - m_dragAnchorTick);
+            if (distance < leaderDistance) {
+                leaderDistance = distance;
+                leaderTime = entry.currentTime;
+                haveLeader = true;
+            }
+        }
+        for (const auto& entry : m_maskDragEntries) {
+            const int64_t distance = std::abs(entry.origTime - m_dragAnchorTick);
+            if (distance < leaderDistance) {
+                leaderDistance = distance;
+                leaderTime = entry.currentTime;
+                haveLeader = true;
+            }
+        }
+        if (haveLeader)
+            emit playheadScrubbed(leaderTime
+                + (m_clip ? m_clip->timelineIn() : 0));
 
         // Emit live during the drag so the Effect Controls spinboxes and
         // the Program Monitor track the new keyframe positions in real
@@ -1084,21 +1054,16 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* event)
             }
         }
         if (moved && m_commandStack) {
-            // Build undo/redo data: snapshot original and final positions
-            struct MoveInfo {
+            // Whole-track snapshots make collision merges fully undoable.
+            struct TrackMoveState {
                 StableScalarTrackRef track;
-                int64_t origTime;
-                int64_t newTime;
-                float value;
-                InterpMode interp;
-                float biX, biY, boX, boY;
+                std::vector<Keyframe<float>> before;
+                std::vector<Keyframe<float>> after;
             };
-            auto moves = std::make_shared<std::vector<MoveInfo>>();
-            for (const auto& entry : m_dragEntries) {
-                moves->push_back({stableTrackRef(m_clip, entry.track),
-                                  entry.origTime, entry.currentTime,
-                                  entry.value, entry.interp,
-                                  entry.biX, entry.biY, entry.boX, entry.boY});
+            auto trackMoves = std::make_shared<std::vector<TrackMoveState>>();
+            for (const auto& [track, before] : m_dragTrackSnap) {
+                trackMoves->push_back(
+                    {stableTrackRef(m_clip, track), before, track->keyframes()});
             }
             struct MaskMoveState {
                 quint64 effectId;
@@ -1116,21 +1081,15 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* event)
             m_commandStack->pushWithoutExecute(
                 std::make_unique<LambdaCommand>(
                     "Move Keyframes",
-                    [moves, maskMoves, clip]() {
+                    [trackMoves, maskMoves, clip]() {
                         // Redo: move from orig → new
-                        for (auto& m : *moves) {
-                            auto* track = m.track.resolve(clip);
+                        for (const auto& state : *trackMoves) {
+                            auto* track = state.track.resolve(clip);
                             if (!track) continue;
-                            track->removeKeyframeAtTime(m.origTime);
-                            track->addKeyframe(m.newTime, m.value, m.interp);
-                            for (size_t i = 0; i < track->keyframeCount(); ++i) {
-                                if (track->keyframe(i).time == m.newTime) {
-                                    auto& kf = track->keyframe(i);
-                                    kf.bezierInX = m.biX;  kf.bezierInY = m.biY;
-                                    kf.bezierOutX = m.boX; kf.bezierOutY = m.boY;
-                                    break;
-                                }
-                            }
+                            while (track->keyframeCount() > 0)
+                                track->removeKeyframe(track->keyframeCount() - 1);
+                            for (const auto& key : state.after)
+                                track->restoreKeyframe(key);
                         }
                         for (const auto& state : *maskMoves) {
                             if (OpacityMask* mask = resolveMaskById(
@@ -1138,21 +1097,15 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* event)
                                 mask->pathKeys = state.after;
                         }
                     },
-                    [moves, maskMoves, clip]() {
+                    [trackMoves, maskMoves, clip]() {
                         // Undo: move from new → orig
-                        for (auto& m : *moves) {
-                            auto* track = m.track.resolve(clip);
+                        for (const auto& state : *trackMoves) {
+                            auto* track = state.track.resolve(clip);
                             if (!track) continue;
-                            track->removeKeyframeAtTime(m.newTime);
-                            track->addKeyframe(m.origTime, m.value, m.interp);
-                            for (size_t i = 0; i < track->keyframeCount(); ++i) {
-                                if (track->keyframe(i).time == m.origTime) {
-                                    auto& kf = track->keyframe(i);
-                                    kf.bezierInX = m.biX;  kf.bezierInY = m.biY;
-                                    kf.bezierOutX = m.boX; kf.bezierOutY = m.boY;
-                                    break;
-                                }
-                            }
+                            while (track->keyframeCount() > 0)
+                                track->removeKeyframe(track->keyframeCount() - 1);
+                            for (const auto& key : state.before)
+                                track->restoreKeyframe(key);
                         }
                         for (const auto& state : *maskMoves) {
                             if (OpacityMask* mask = resolveMaskById(

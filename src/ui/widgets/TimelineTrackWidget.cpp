@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <set>
+#include <utility>
 
 namespace rt {
 
@@ -452,12 +453,12 @@ void TimelineTrackWidget::paintEvent(QPaintEvent* event)
     }
 
     // ── Effect-drop highlight (darken clip + border + "fx" badge) ───────
-    if (m_effectHighlightClipId != 0)
+    if (!m_effectHighlightClipIds.empty())
     {
         for (size_t i = 0; i < m_track->clipCount(); ++i)
         {
             const Clip* clip = m_track->clip(i);
-            if (!clip || clip->id() != m_effectHighlightClipId) continue;
+            if (!clip || m_effectHighlightClipIds.count(clip->id()) == 0) continue;
 
             auto lr = m_engine->clipRect(
                 clip->timelineIn(), clip->duration(),
@@ -1197,15 +1198,23 @@ void TimelineTrackWidget::setInOutPoints(int64_t inPoint, int64_t outPoint)
 
 void TimelineTrackWidget::setEffectHighlightClipId(uint64_t clipId)
 {
-    if (m_effectHighlightClipId != clipId) {
-        m_effectHighlightClipId = clipId;
+    std::unordered_set<uint64_t> ids;
+    if (clipId != 0) ids.insert(clipId);
+    setEffectHighlightClipIds(std::move(ids));
+}
+
+void TimelineTrackWidget::setEffectHighlightClipIds(
+    std::unordered_set<uint64_t> clipIds)
+{
+    if (m_effectHighlightClipIds != clipIds) {
+        m_effectHighlightClipIds = std::move(clipIds);
         update();
     }
 }
 
 void TimelineTrackWidget::clearEffectHighlight()
 {
-    setEffectHighlightClipId(0);
+    setEffectHighlightClipIds({});
 }
 
 void TimelineTrackWidget::setTransitionDropEdgeTick(int64_t tick)

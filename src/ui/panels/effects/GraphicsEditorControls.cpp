@@ -51,12 +51,14 @@ void GraphicsEditorPanel::clearEditControls()
  m_appearanceSection = nullptr;
  m_fillCheck = nullptr; m_fillColorBtn = nullptr;
  m_strokeCheck = nullptr; m_strokeColorBtn = nullptr;
- m_strokeWidthSpin = nullptr; m_strokePosCombo = nullptr;
+ m_strokeWidthSpin = nullptr; m_strokeOpacitySpin = nullptr;
+ m_strokePosCombo = nullptr;
  m_shadowCheck = nullptr; m_shadowColorBtn = nullptr;
  m_shadowDistanceSpin = nullptr; m_shadowAngleSpin = nullptr;
  m_shadowSoftnessSpin = nullptr; m_shadowOpacitySpin = nullptr;
  m_backgroundCheck = nullptr; m_backgroundColorBtn = nullptr;
- m_backgroundPaddingSpin = nullptr; m_maskWithTextCheck = nullptr;
+ m_backgroundPaddingSpin = nullptr; m_backgroundOpacitySpin = nullptr;
+ m_maskWithTextCheck = nullptr;
  m_transformSection = nullptr;
  m_posXSpin = nullptr; m_posYSpin = nullptr;
  m_anchorXSpin = nullptr; m_anchorYSpin = nullptr;
@@ -498,6 +500,7 @@ void GraphicsEditorPanel::buildEditControls()
  auto* trkLabel = makeSmallLabel(QStringLiteral("VA"));
  rl->addWidget(trkLabel);
  m_trackingSpin = makeScrubby(-500, 500, 1, 0);
+ m_trackingSpin->setObjectName(QStringLiteral("graphicsTrackingSpin"));
  connect(m_trackingSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double value) {
  if (m_monitorTextEditing) {
@@ -677,9 +680,10 @@ void GraphicsEditorPanel::buildEditControls()
  QColor chosen = QColorDialog::getColor(initial, this, tr("Fill Color"),
  QColorDialog::ShowAlphaChannel);
  if (chosen.isValid()) {
+ m_fillColorBtn->setProperty("appearanceColor", chosen.rgba());
  m_fillColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
- .arg(chosen.name(), Theme::hex(Theme::colors().border)));
+ .arg(chosen.name(QColor::HexArgb), Theme::hex(Theme::colors().border)));
  applyAppearance();
  commitLayerEdit();
  }
@@ -692,12 +696,14 @@ void GraphicsEditorPanel::buildEditControls()
  {
  auto* rl = makeRow(14);
  m_strokeCheck = new QCheckBox(m_editContainer);
+ m_strokeCheck->setObjectName(QStringLiteral("graphicsStrokeCheck"));
  m_strokeCheck->setStyleSheet(QStringLiteral(
  "QCheckBox { background: transparent; spacing: 4px; }"
  "QCheckBox::indicator { width: 14px; height: 14px; }"));
  connect(m_strokeCheck, &QCheckBox::toggled, this, [this](bool on) {
  if (m_strokeColorBtn) m_strokeColorBtn->setEnabled(on);
  if (m_strokeWidthSpin) m_strokeWidthSpin->setEnabled(on);
+ if (m_strokeOpacitySpin) m_strokeOpacitySpin->setEnabled(on);
  if (m_strokePosCombo) m_strokePosCombo->setEnabled(on);
  applyAppearance();
  commitLayerEdit();
@@ -710,13 +716,19 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(strokeLbl);
 
  m_strokeColorBtn = new QPushButton(m_editContainer);
+ m_strokeColorBtn->setObjectName(QStringLiteral("graphicsStrokeColor"));
  m_strokeColorBtn->setFixedSize(36, 18);
  m_strokeColorBtn->setCursor(Qt::PointingHandCursor);
  m_strokeColorBtn->setEnabled(false);
  connect(m_strokeColorBtn, &QPushButton::clicked, this, [this]() {
- QColor initial = m_strokeColorBtn->palette().color(QPalette::Button);
+ QColor initial = QColor::fromRgba(
+     m_strokeColorBtn->property("appearanceColor").toUInt());
  QColor chosen = QColorDialog::getColor(initial, this, tr("Stroke Color"));
  if (chosen.isValid()) {
+ const int alpha = m_strokeOpacitySpin
+     ? qRound(m_strokeOpacitySpin->value() * 2.55) : 255;
+ chosen.setAlpha(alpha);
+ m_strokeColorBtn->setProperty("appearanceColor", chosen.rgba());
  m_strokeColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(chosen.name(), Theme::hex(Theme::colors().border)));
@@ -727,6 +739,7 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(m_strokeColorBtn);
 
  m_strokeWidthSpin = makeScrubby(0.5, 50, 0.5, 1, QStringLiteral(" px"));
+ m_strokeWidthSpin->setObjectName(QStringLiteral("graphicsStrokeWidth"));
  m_strokeWidthSpin->setEnabled(false);
  connect(m_strokeWidthSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
@@ -754,10 +767,28 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addStretch();
  }
 
+ {
+ auto* rl = makeRow(34);
+ auto* opacityLabel = new QLabel(tr("Stroke Opacity"), m_editContainer);
+ opacityLabel->setStyleSheet(labelSS(tc));
+ opacityLabel->setFixedWidth(92);
+ rl->addWidget(opacityLabel);
+ m_strokeOpacitySpin = makeScrubby(0, 100, 1, 0, QStringLiteral("%"));
+ m_strokeOpacitySpin->setObjectName(QStringLiteral("graphicsStrokeOpacity"));
+ m_strokeOpacitySpin->setEnabled(false);
+ connect(m_strokeOpacitySpin, &ScrubbySpinBox::valueCommitted,
+         this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
+ connect(m_strokeOpacitySpin, &ScrubbySpinBox::valueScrubbed,
+         this, [this](double) { applyAppearance(); });
+ rl->addWidget(m_strokeOpacitySpin);
+ rl->addStretch();
+ }
+
  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shadow ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
  {
  auto* rl = makeRow(14);
  m_shadowCheck = new QCheckBox(m_editContainer);
+ m_shadowCheck->setObjectName(QStringLiteral("graphicsShadowCheck"));
  m_shadowCheck->setStyleSheet(QStringLiteral(
  "QCheckBox { background: transparent; spacing: 4px; }"
  "QCheckBox::indicator { width: 14px; height: 14px; }"));
@@ -779,14 +810,17 @@ void GraphicsEditorPanel::buildEditControls()
  rl->addWidget(shadowLbl);
 
  m_shadowColorBtn = new QPushButton(m_editContainer);
+ m_shadowColorBtn->setObjectName(QStringLiteral("graphicsShadowColor"));
  m_shadowColorBtn->setFixedSize(36, 18);
  m_shadowColorBtn->setCursor(Qt::PointingHandCursor);
  m_shadowColorBtn->setEnabled(false);
  connect(m_shadowColorBtn, &QPushButton::clicked, this, [this]() {
- QColor initial = m_shadowColorBtn->palette().color(QPalette::Button);
- QColor chosen = QColorDialog::getColor(initial, this, tr("Shadow Color"),
- QColorDialog::ShowAlphaChannel);
+ QColor initial = QColor::fromRgba(
+     m_shadowColorBtn->property("appearanceColor").toUInt());
+ QColor chosen = QColorDialog::getColor(initial, this, tr("Shadow Color"));
  if (chosen.isValid()) {
+ chosen.setAlpha(255);
+ m_shadowColorBtn->setProperty("appearanceColor", chosen.rgba());
  m_shadowColorBtn->setStyleSheet(
  QStringLiteral("background: %1; border: 1px solid %2;")
  .arg(chosen.name(), Theme::hex(Theme::colors().border)));
@@ -836,20 +870,32 @@ void GraphicsEditorPanel::buildEditControls()
  if (m_selectedLayer->layerType() == GraphicLayerType::Text) {
  auto* rl = makeRow(14);
  m_backgroundCheck = new QCheckBox(tr("Background"), m_editContainer);
+ m_backgroundCheck->setObjectName(QStringLiteral("graphicsBackgroundCheck"));
  connect(m_backgroundCheck, &QCheckBox::toggled, this, [this](bool on) {
      if (m_backgroundColorBtn) m_backgroundColorBtn->setEnabled(on);
      if (m_backgroundPaddingSpin) m_backgroundPaddingSpin->setEnabled(on);
+     if (m_backgroundOpacitySpin) m_backgroundOpacitySpin->setEnabled(on);
+     if (on && m_backgroundOpacitySpin
+         && m_backgroundOpacitySpin->value() <= 0.0)
+         m_backgroundOpacitySpin->setValue(75.0);
      applyAppearance(); commitLayerEdit();
  });
  rl->addWidget(m_backgroundCheck);
  m_backgroundColorBtn = new QPushButton(m_editContainer);
+ m_backgroundColorBtn->setObjectName(QStringLiteral("graphicsBackgroundColor"));
  m_backgroundColorBtn->setFixedSize(36, 18);
+ m_backgroundColorBtn->setCursor(Qt::PointingHandCursor);
  m_backgroundColorBtn->setEnabled(false);
  connect(m_backgroundColorBtn, &QPushButton::clicked, this, [this]() {
-     const QColor chosen = QColorDialog::getColor(
-         m_backgroundColorBtn->palette().color(QPalette::Button), this,
-         tr("Text Background Color"), QColorDialog::ShowAlphaChannel);
-     if (!chosen.isValid()) return;
+      QColor initial = QColor::fromRgba(
+          m_backgroundColorBtn->property("appearanceColor").toUInt());
+      QColor chosen = QColorDialog::getColor(
+          initial, this, tr("Text Background Color"));
+      if (!chosen.isValid()) return;
+      const int alpha = m_backgroundOpacitySpin
+          ? qRound(m_backgroundOpacitySpin->value() * 2.55) : 255;
+      chosen.setAlpha(alpha);
+      m_backgroundColorBtn->setProperty("appearanceColor", chosen.rgba());
      m_backgroundColorBtn->setStyleSheet(QStringLiteral(
          "background: %1; border: 1px solid %2;")
          .arg(chosen.name(QColor::HexArgb),
@@ -857,13 +903,37 @@ void GraphicsEditorPanel::buildEditControls()
      applyAppearance(); commitLayerEdit();
  });
  rl->addWidget(m_backgroundColorBtn);
- m_backgroundPaddingSpin = makeScrubby(0, 500, 0.5, 1);
+ auto* sizeLabel = new QLabel(tr("Size"), m_editContainer);
+ sizeLabel->setStyleSheet(labelSS(tc));
+ rl->addWidget(sizeLabel);
+ m_backgroundPaddingSpin = makeScrubby(0, 500, 0.5, 1,
+                                        QStringLiteral(" px"));
+ m_backgroundPaddingSpin->setObjectName(QStringLiteral("graphicsBackgroundSize"));
  m_backgroundPaddingSpin->setEnabled(false);
  connect(m_backgroundPaddingSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
  connect(m_backgroundPaddingSpin, &ScrubbySpinBox::valueScrubbed,
  this, [this](double) { applyAppearance(); });
  rl->addWidget(m_backgroundPaddingSpin);
+ rl->addStretch();
+ }
+
+ {
+ auto* rl = makeRow(34);
+ auto* opacityLabel = new QLabel(tr("Background Opacity"), m_editContainer);
+ opacityLabel->setStyleSheet(labelSS(tc));
+ opacityLabel->setFixedWidth(120);
+ rl->addWidget(opacityLabel);
+ m_backgroundOpacitySpin = makeScrubby(0, 100, 1, 0, QStringLiteral("%"));
+ m_backgroundOpacitySpin->setObjectName(
+     QStringLiteral("graphicsBackgroundOpacity"));
+ m_backgroundOpacitySpin->setEnabled(false);
+ connect(m_backgroundOpacitySpin, &ScrubbySpinBox::valueCommitted,
+         this, [this](double, double) { applyAppearance(); commitLayerEdit(); });
+ connect(m_backgroundOpacitySpin, &ScrubbySpinBox::valueScrubbed,
+         this, [this](double) { applyAppearance(); });
+ rl->addWidget(m_backgroundOpacitySpin);
+
  m_maskWithTextCheck = new QCheckBox(tr("Mask with Text"), m_editContainer);
  connect(m_maskWithTextCheck, &QCheckBox::toggled, this, [this](bool) {
      applyAppearance(); commitLayerEdit();
@@ -883,6 +953,7 @@ void GraphicsEditorPanel::buildEditControls()
  auto* rl = makeRow(14);
  rl->addWidget(makeLabel(tr("Position")));
  m_posXSpin = makeScrubby(-1000000, 1000000, 0.1, 1);
+ m_posXSpin->setObjectName(QStringLiteral("graphicsPositionXSpin"));
  connect(m_posXSpin, &ScrubbySpinBox::valueCommitted,
  this, [this](double, double) { applyLayerTransform(); commitLayerEdit(); });
  connect(m_posXSpin, &ScrubbySpinBox::valueScrubbed,

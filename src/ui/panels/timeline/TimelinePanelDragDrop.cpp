@@ -215,12 +215,35 @@ void TimelinePanel::dragMoveEvent(QDragMoveEvent* event)
         auto hitRef = hitTestClip(pos);
         if (hitRef != m_effectDropTarget) {
             m_effectDropTarget = hitRef;
-            // Forward highlight to the correct TimelineTrackWidget
-            for (size_t i = 0; i < m_trackWidgets.size(); ++i) {
-                if (hitRef && i == hitRef->trackIndex)
-                    m_trackWidgets[i]->setEffectHighlightClipId(hitRef->clipId);
+
+            std::vector<std::unordered_set<uint64_t>> highlightIds(
+                m_trackWidgets.size());
+            if (hitRef && m_timeline) {
+                const bool audioOnly = event->mimeData()->hasFormat(
+                    "application/x-roundtable-audiofx");
+                std::vector<ClipRef> refs;
+                if (m_selection.count() > 1 && m_selection.isSelected(*hitRef))
+                    refs = m_selection.clips();
                 else
-                    m_trackWidgets[i]->clearEffectHighlight();
+                    refs.push_back(*hitRef);
+
+                for (const auto& ref : refs) {
+                    if (ref.trackIndex >= highlightIds.size()) continue;
+                    auto* track = m_timeline->track(ref.trackIndex);
+                    if (!track) continue;
+                    const size_t clipIdx = track->findClipIndexById(ref.clipId);
+                    if (clipIdx == SIZE_MAX) continue;
+                    const auto* clip = track->clip(clipIdx);
+                    if (!clip) continue;
+                    if (audioOnly ? !clip->isAudio() : !clip->isVisual()) continue;
+                    highlightIds[ref.trackIndex].insert(ref.clipId);
+                }
+            }
+
+            // A track can contain several selected compatible clips.
+            for (size_t i = 0; i < m_trackWidgets.size(); ++i) {
+                m_trackWidgets[i]->setEffectHighlightClipIds(
+                    std::move(highlightIds[i]));
             }
         }
         event->acceptProposedAction();

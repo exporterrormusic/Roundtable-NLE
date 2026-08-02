@@ -1305,28 +1305,26 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 // Temporal synthesis is deliberately before the effect chain.
                 // A layer with no effects can proceed directly to composite.
                 if (layer.effects.empty()) break;
-                if (!effectProcessor || !effectProcessor->isInitialized()) break;
+
+                const bool ots = std::any_of(
+                    layer.effects.begin(), layer.effects.end(),
+                    [](const EffectStack::EffectSnapshot& snap) {
+                        return snap.type == EffectType::OtsLeft ||
+                               snap.type == EffectType::OtsRight ||
+                               snap.type == EffectType::OtsIntro;
+                    });
 
                 ++effectLayerCount;
                 effectPassCount += (int)layer.effects.size();
 
-                for (const auto& snap : layer.effects) {
-                    if (snap.type == EffectType::LUT && layer.clipPtr) {
-                        for (size_t cfi = 0; cfi < layer.clipPtr->effects().effectCount(); ++cfi) {
-                            auto& clipFx = layer.clipPtr->effects().effect(cfi);
-                            if (clipFx.effectType() == EffectType::LUT && clipFx.isEnabled()) {
-                                auto* lutFx = static_cast<LUT*>(&clipFx);
-                                if (lutFx->hasLUT()) effectProcessor->uploadLUT3D(lutFx->lutData(), lutFx->lutSize());
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                // Resize EffectProcessor to match this layer's source
-                // resolution so effects are clip-bounded (Premiere Pro
-                // behaviour: effects apply to the clip, not the full frame).
+                // Select an EffectProcessor matching this layer's processing
+                // resolution.  Never resize the shared processor here: this
+                // function records every layer into one command buffer, so a
+                // resize would destroy images still referenced by commands
+                // recorded for an earlier layer and can cause DEVICE_LOST.
+                //
+                // Normal effects are clip-bounded. OTS deliberately builds a
+                // full-frame composition, so it processes at output size.
                 // Compute source dimensions from layer info, handling
                 // packed-alpha where the texture height is 2× the logical
                 // frame height.
@@ -1337,22 +1335,48 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     srcH = outH;
                 }
                 if (layer.isPacked && srcH > 1) srcH /= 2;
-                effectProcessor->resize(srcW, srcH);
+                const uint32_t effectW = ots ? outW : srcW;
+                const uint32_t effectH = ots ? outH : srcH;
+                EffectProcessor* activeEffectProcessor =
+                    (effectProcessor &&
+                     effectProcessor->outputWidth() == effectW &&
+                     effectProcessor->outputHeight() == effectH)
+                        ? effectProcessor
+                        : ctx.effectProcessor(effectW, effectH);
+                if (!activeEffectProcessor || !activeEffectProcessor->isInitialized())
+                    break;
+
+                for (const auto& snap : layer.effects) {
+                    if (snap.type == EffectType::LUT && layer.clipPtr) {
+                        for (size_t cfi = 0; cfi < layer.clipPtr->effects().effectCount(); ++cfi) {
+                            auto& clipFx = layer.clipPtr->effects().effect(cfi);
+                            if (clipFx.effectType() == EffectType::LUT && clipFx.isEnabled()) {
+                                auto* lutFx = static_cast<LUT*>(&clipFx);
+                                if (lutFx->hasLUT()) {
+                                    activeEffectProcessor->uploadLUT3D(
+                                        lutFx->lutData(), lutFx->lutSize());
+                                }
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
 
                 VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
                 const std::vector<VkDescriptorImageInfo>* fxMasks =
                     (li < layerEffectMaskInfos.size() &&
                      !layerEffectMaskInfos[li].empty())
                         ? &layerEffectMaskInfos[li] : nullptr;
-                if (effectProcessor->process(cmd, srcInfo, layer.effects,
-                                             fxMasks)) {
-                    gpuLayers[li].textureInfo = effectProcessor->outputDescriptorInfo();
+                if (activeEffectProcessor->process(cmd, srcInfo, layer.effects,
+                                                   fxMasks)) {
+                    gpuLayers[li].textureInfo = activeEffectProcessor->outputDescriptorInfo();
                     gpuLayers[li].needsSwapRB = false;
                     gpuLayers[li].isPacked = false;
                     gpuLayers[li].isPMA = false;
 
                     // Barrier: compute write → sampler read (#40 fix)
-                    if (effectProcessor->outputImage() != VK_NULL_HANDLE) {
+                    if (activeEffectProcessor->outputImage() != VK_NULL_HANDLE) {
                         VkImageMemoryBarrier b{};
                         b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                         b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1361,7 +1385,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
                         b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                        b.image = effectProcessor->outputImage();
+                        b.image = activeEffectProcessor->outputImage();
                         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
@@ -1378,16 +1402,16 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     // layer's textureInfo independent of the shared storage.
                     if (li < layerEffectOutputs.size()) {
                         auto& snap = *layerEffectOutputs[li];
-                        if (snap.image() == VK_NULL_HANDLE || snap.width() != srcW || snap.height() != srcH) {
+                        if (snap.image() == VK_NULL_HANDLE || snap.width() != effectW || snap.height() != effectH) {
                             snap.destroy();
                             TextureConfig cfg;
-                            cfg.width = srcW; cfg.height = srcH;
+                            cfg.width = effectW; cfg.height = effectH;
                             cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
                             cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
                             snap.create(ctx.allocator().handle(), ctx.vkDevice(), cfg);
                         }
                         if (snap.image() != VK_NULL_HANDLE) {
-                            VkImage ei = effectProcessor->outputImage();
+                            VkImage ei = activeEffectProcessor->outputImage();
                             VkImageMemoryBarrier toSrc{};
                             toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                             toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -1404,7 +1428,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                             VkImageCopy r{};
                             r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                             r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                            r.extent = {srcW, srcH, 1};
+                            r.extent = {effectW, effectH, 1};
                             vkCmdCopyImage(cmd, ei, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                 snap.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
                             VkImageMemoryBarrier toGen{};
@@ -1451,10 +1475,6 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     //
                     // Exception: OTS (On-The-Shoulder) effects intentionally
                     // work at full-frame size and override the transform.
-                    bool ots = false;
-                    for (const auto& s : layer.effects)
-                        if (s.type == EffectType::OtsLeft || s.type == EffectType::OtsRight ||
-                            s.type == EffectType::OtsIntro) { ots = true; break; }
                     if (ots) {
                         setStaticTransform(gpuLayers[li],
                             Compositor::buildViewportTransform(

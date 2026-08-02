@@ -2793,6 +2793,21 @@
                 }
             }
         },
+        "c322": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Marciana: Marine Study",
+            "outfits": {
+                "default": {
+                    "display_name": "Marciana: Marine Study",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c330": {
             "category": "Character",
             "has_mouth_animation": true,
@@ -3485,6 +3500,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_03": {
+                    "display_name": "Tia Sea Lizzie",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3736,6 +3759,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_03": {
+                    "display_name": "Little Mermaid | Siren Shell Princess",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3754,6 +3785,21 @@
                 },
                 "outfit_01": {
                     "display_name": "Grave the Great (GraGre) Beatiful You",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c515": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Anachiro | Cinderella: Crystal Wave",
+            "outfits": {
+                "default": {
+                    "display_name": "Anachiro | Cinderella: Crystal Wave",
                     "variants": [
                         "default",
                         "aim",
@@ -5478,6 +5524,66 @@
                 },
                 "outfit_01": {
                     "display_name": "Andersen Soaked",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9034": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Penguin",
+            "outfits": {
+                "default": {
+                    "display_name": "Penguin",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9035": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Penguin",
+            "outfits": {
+                "default": {
+                    "display_name": "Penguin",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9036": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Penguin",
+            "outfits": {
+                "default": {
+                    "display_name": "Penguin",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9037": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Penguin",
+            "outfits": {
+                "default": {
+                    "display_name": "Penguin",
                     "variants": [
                         "default",
                         "aim",
