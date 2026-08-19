@@ -92,8 +92,6 @@ public:
     void setGpuDisplayEnabled(bool enabled);
     [[nodiscard]] bool isGpuDisplayEnabled() const noexcept { return m_gpuDisplay; }
 
-    // CPU Safe Mode banner — removed in P2 of CLAUDE_IMPROVEMENT_PLAN.
-
     // ── Display control ─────────────────────────────────────────────────
 
     /// Start polling for playback position updates (~60fps).
@@ -362,8 +360,6 @@ private:
     // cycles when the view is static.
     std::atomic<bool> m_newFrameAvailable{false};
     std::shared_ptr<CachedFrame> m_pendingFrame;
-
-    // Safe mode banner widgets removed in P2.
 
     /// Present callback wired into the pipeline — called from present thread.
     bool presentFrame(const std::shared_ptr<CachedFrame>& frame);

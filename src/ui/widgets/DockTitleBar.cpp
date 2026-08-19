@@ -84,6 +84,13 @@ void DockTitleBar::resizeEvent(QResizeEvent* event)
 
     QWidget::resizeEvent(event);
 
+    // A tabbed dock uses QMainWindow's tab bar as its complete header.
+    // Do not let resize handling restore height to the zero-height shim.
+    if (m_tabbed) {
+        s_inResize = false;
+        return;
+    }
+
     // For "Audio Meters", dynamically switch between single-line and stacked
     // based on available width to prevent text from being cut off.
     if (m_isAudioMeters && m_titleLabel) {
@@ -129,11 +136,15 @@ void DockTitleBar::setTitle(const QString& title)
 
 QSize DockTitleBar::sizeHint() const
 {
+    if (m_tabbed)
+        return {0, 0};
     return {200, Theme::metrics().panelHeaderHeight};
 }
 
 QSize DockTitleBar::minimumSizeHint() const
 {
+    if (m_tabbed)
+        return {0, 0};
     // For "Audio Meters", ensure minimum width accommodates stacked text
     if (m_isAudioMeters && m_titleLabel) {
         QFontMetrics fm(m_titleLabel->font());
@@ -170,10 +181,7 @@ void DockTitleBar::paintEvent(QPaintEvent* event)
     const auto& tc = Theme::colors();
 
     // Background — subtle gradient for depth
-    QLinearGradient grad(0, 0, 0, height());
-    grad.setColorAt(0.0, tc.dockTitleBg.lighter(108));
-    grad.setColorAt(1.0, tc.dockTitleBg);
-    p.fillRect(rect(), grad);
+    p.fillRect(rect(), tc.dockTitleBg);
 
     // Bottom separator
     p.setPen(tc.border);
@@ -183,7 +191,7 @@ void DockTitleBar::paintEvent(QPaintEvent* event)
     if (m_dock && m_dock->property("panelFocused").toBool()) {
         p.setPen(Qt::NoPen);
         p.setBrush(tc.accent);
-        p.drawRect(0, 0, width(), 2);
+        p.drawRect(0, height() - 2, width(), 2);
     }
 
     --s_paintDepth;
@@ -281,13 +289,16 @@ void DockTitleBar::updateVisibility()
     m_updatingVisibility = true;
 
     m_tabbed = isTabbed();
-    // Always show the title bar at full height.  When tabbed, Qt's tab
-    // bar provides the drag handle, but DockTitleBar must STILL be
-    // visible so that if the tab bar disappears (e.g. dock is separated
-    // from a tab group), there's always a drag handle and right-click
-    // target.  The small height cost is acceptable for reliability.
-    // Height is now dynamically managed by resizeEvent for Audio Meters.
-    setVisible(true);
+    // Qt still reserves a custom title bar's size hint when it is merely
+    // hidden. Collapse it to a true zero-height shim so tab content starts
+    // directly under the QMainWindow tab row.
+    if (m_tabbed) {
+        setFixedHeight(0);
+        setVisible(false);
+    } else {
+        setVisible(true);
+        setFixedHeight(Theme::metrics().panelHeaderHeight);
+    }
     updateGeometry();
 
     m_updatingVisibility = false;

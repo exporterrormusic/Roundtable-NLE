@@ -138,7 +138,7 @@ bool GpuContext::init(VkSurfaceKHR surface)
     // 6) Initialize the central GPU submission scheduler.  After this,
     //    new code should route every vkQueueSubmit through it.  Existing
     //    direct callers are migrated incrementally in subsequent P1
-    //    commits per CLAUDE_IMPROVEMENT_PLAN.
+    //    commits.
     if (!m_scheduler.init(m_device.handle(),
                            m_device.graphicsQueue(), &m_graphicsQueueMutex,
                            m_device.computeQueue(),  &m_computeQueueMutex,
@@ -184,14 +184,20 @@ void GpuContext::shutdown()
 
     spdlog::info("GpuContext: Shutting down Vulkan...");
 
-    // Wait for GPU to finish
-    if (m_device.handle())
+    const bool deviceLost = gpuState() != GpuState::Healthy;
+
+    // A lost device is not guaranteed to signal idle. Vulkan objects may be
+    // destroyed after device loss, and no work is resumed in this process.
+    if (m_device.handle() && !deviceLost)
         m_device.waitIdle();
+    else if (m_device.handle())
+        spdlog::warn("GpuContext: skipping device-idle wait after device loss");
 
     // Drain the inter-queue binary-semaphore pool before destroying the
     // device.  These semaphores are owned process-wide and shared between
     // CompositeEngine (acquire) and VulkanViewport (release); the only
-    // safe time to destroy them is here, after waitIdle and before
+    // safe time to destroy them is here, after normal waitIdle (or once a
+    // lost device has been declared unusable) and before
     // m_device.destroy().
     {
         std::lock_guard lock(m_binarySemaphorePoolMutex);
@@ -204,7 +210,8 @@ void GpuContext::shutdown()
 
     // Tear down the scheduler.  Just drops queue/mutex pointers — the
     // actual VkQueues live in Device and are destroyed below.  No GPU
-    // work is drained here because waitIdle above already did that.
+    // work is drained here because normal shutdown waited above; fatal
+    // shutdown deliberately abandons in-flight work on the lost device.
     m_scheduler.shutdown();
 
     // Destroy in reverse order.
@@ -634,7 +641,7 @@ bool GpuContext::readbackTexture(void* texturePtr,
 {
     if (!m_initialized || !texturePtr) return false;
 
-    // UPGRADE_PLAN Phase 7 K.4: serialise concurrent readbacks.  m_cmdPool
+    // Serialise concurrent readbacks. m_cmdPool
     // is host-externally-synchronised; without this, the disk cache worker
     // and an export thread racing on a freshly-decoded GPU-resident frame
     // would crash in vkAllocateCommandBuffers / vkBeginCommandBuffer.

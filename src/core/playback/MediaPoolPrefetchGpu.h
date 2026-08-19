@@ -1,6 +1,6 @@
 /*
  * MediaPoolPrefetchGpu.h — Vulkan-aware helpers for the GPU-resident
- * prefetch decode path (UPGRADE_PLAN Phase 4).
+ * prefetch decode path.
  *
  * Kept in its own header so the broader prefetch translation units
  * (MediaPoolPrefetchSchedule.cpp, MediaPoolPrefetchDecode.cpp, etc.)
@@ -38,8 +38,8 @@ struct CachedFrame;
 /// in MediaPool::prefetchWorker; destroyed when the worker exits.
 ///
 /// cmdPool: spec-correct per-worker VkCommandPool, addresses the May
-///   2026 crash documented in UPGRADE_PLAN section C.
-/// signalSem: reserved for UPGRADE_PLAN Phase 6 — the compositor-bound
+///   driver teardown crash.
+/// signalSem: the compositor-bound
 ///   inter-queue signal.  Created here so the lifecycle is wired up,
 ///   not used until PR-5 lands and the flag flips.
 /// device: stored solely so the destructor can call vkDestroySemaphore;
@@ -49,7 +49,7 @@ struct WorkerGpuState {
     VkSemaphore     signalSem{VK_NULL_HANDLE};
     VkDevice        device{VK_NULL_HANDLE};
 
-    /// Per-worker Nv12Converter (UPGRADE_PLAN item 3 — per-worker
+    /// Per-worker Nv12Converter (per-worker
     /// descriptor sets refactor, 2026-05-22).  Each prefetch worker
     /// gets its OWN converter instance so the input planar textures,
     /// output texture, and descriptor sets are not shared across
@@ -84,18 +84,11 @@ struct WorkerGpuState {
     /// executing the submission. pollAndCleanup() walks the deque in
     /// submit-order; the destructor drains anything still in flight.
     ///
-    /// Path C (2026-05-22) note: under the previous single-queue model
-    /// (both compositor and prefetch on GpuQueueKind::Compute), Vulkan's
-    /// per-queue FIFO ordering meant the convert+copy submission was
-    /// guaranteed to be visible to any later compositor submission that
-    /// sampled the destination texture without an explicit wait.  After
-    /// Path C the compositor submits on GpuQueueKind::Graphics, so that
-    /// guarantee no longer holds.  convertDecodedToCacheGpu now blocks
-    /// on this fence inline before returning the CachedFrame — see the
-    /// "Cross-queue visibility wait" comment in
-    /// MediaPoolPrefetchConvertGpu.cpp.  By the time pollAndCleanup
-    /// runs over an entry in this deque, its fence is already signalled
-    /// and the cleanup is purely a resource-reclaim step.
+    /// Prefetch submits on the compute queue while the compositor submits on
+    /// the graphics queue. Each CachedFrame carries the producer timeline
+    /// semaphore/value, and the compositor waits for that value in its own
+    /// submission. The fence here therefore governs CPU-side resource
+    /// lifetime only; it is not an inline cross-queue visibility wait.
     ///
     /// sharedAlloc (when set) is returned to its interop pool on
     /// cleanup — the zero-copy CUDA buffer can't be released until the

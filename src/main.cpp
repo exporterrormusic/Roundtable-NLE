@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QIcon>
 #include <QLoggingCategory>
+#include <QMessageBox>
 #include <QStyleFactory>
 #include <QTimer>
 #include <QAbstractNativeEventFilter>
@@ -299,6 +300,15 @@ int main(int argc, char* argv[])
     if (!app.init())
     {
         spdlog::critical("Failed to initialize application services");
+        splash.hide();
+        QMessageBox::critical(
+            nullptr,
+            QStringLiteral("GPU Initialization Failed"),
+            QStringLiteral(
+                "ROUNDTABLE could not initialize its Vulkan renderer and cannot start.\n\n"
+                "A Vulkan 1.3-capable GPU and current graphics driver are required. "
+                "Update or reinstall the graphics driver, then try again.\n\n"
+                "Details were written to the application log."));
         return 1;
     }
     splash.setProgress(60);

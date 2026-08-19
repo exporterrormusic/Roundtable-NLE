@@ -102,6 +102,10 @@ public:
     void clearLastSavedAudioSyncBlob() { m_lastSavedAudioSyncBlob.clear(); }
 
 private:
+    /// Persist the current saved project state before a fatal GPU exit.
+    /// Untitled projects are deliberately excluded, matching auto-save.
+    [[nodiscard]] std::filesystem::path saveGpuRecoverySnapshot();
+
     struct ProjectLoadTask {
         std::shared_ptr<std::atomic<bool>> finished;
         std::jthread worker;

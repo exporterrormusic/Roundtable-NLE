@@ -42,7 +42,7 @@ namespace monitorui {
 /// "#ControlBar" container + its HBox layout (Premiere-style info bar).
 [[nodiscard]] QWidget* makeControlBar(QWidget* parent, QHBoxLayout** outLayout);
 
-/// Green monospace timecode display (click-to-edit pattern: the caller
+/// Accent-blue monospace timecode display (click-to-edit pattern: the caller
 /// installs its event filter and pairs it with makeTimecodeEdit()).
 [[nodiscard]] QLabel* makeTimecodeLabel(QWidget* parent);
 
@@ -62,7 +62,7 @@ namespace monitorui {
 /// Checkable safe-area toggle button (caller connects toggled()).
 [[nodiscard]] QPushButton* makeSafeAreaButton(QWidget* parent);
 
-/// 📷 export-frame button (caller connects clicked()).
+/// Line-icon export-frame button (caller connects clicked()).
 [[nodiscard]] QPushButton* makeExportFrameButton(QWidget* parent);
 
 /// Hidden zoom-percentage label (updated from viewZoomChanged).
@@ -75,11 +75,8 @@ namespace monitorui {
 [[nodiscard]] QFrame* makeVDivider(QWidget* parent);
 
 // ── Transport bar ────────────────────────────────────────────────────────
-/// Everything both monitors put in the bottom transport strip, laid out
-/// left-to-right: [stretch] goStart stepBack playPause stop stepForward
-/// goEnd | screenshot | loop shuttleSpeed.  The caller appends any extra
-/// widgets (e.g. the Program Monitor's drop indicator), then MUST finish
-/// with layout->addStretch(), and connects all the buttons itself.
+/// Shared playback controls appended to an existing monitor control row.
+/// Export Frame remains a single distinct action in that same row.
 struct TransportBarKit {
     QWidget*         bar{nullptr};
     QHBoxLayout*     layout{nullptr};
@@ -89,11 +86,11 @@ struct TransportBarKit {
     TransportButton* stop{nullptr};
     TransportButton* stepForward{nullptr};
     TransportButton* goEnd{nullptr};
-    TransportButton* screenshot{nullptr};
     QPushButton*     loop{nullptr};
     QLabel*          shuttleSpeed{nullptr};
 };
-[[nodiscard]] TransportBarKit makeTransportBar(QWidget* parent);
+[[nodiscard]] TransportBarKit makeTransportBar(QWidget* parent,
+                                               QHBoxLayout* layout);
 
 } // namespace monitorui
 } // namespace rt

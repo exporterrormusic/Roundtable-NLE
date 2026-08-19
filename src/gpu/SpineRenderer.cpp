@@ -138,7 +138,8 @@ void SpineRenderer::shutdown()
 {
     if (!m_initialized) return;
 
-    if (m_vkDevice != VK_NULL_HANDLE)
+    if (m_vkDevice != VK_NULL_HANDLE &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(m_vkDevice);
 
     // Release textures

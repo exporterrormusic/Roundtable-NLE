@@ -6,6 +6,7 @@
 
 #include <volk.h>
 #include "Compositor.h"
+#include "GpuContext.h"
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
@@ -123,8 +124,9 @@ void Compositor::shutdown()
 
     VkDevice dev = m_device->handle();
 
-    // Wait for GPU idle before destroying
-    if (dev != VK_NULL_HANDLE)
+    // A lost device may never report idle; no GPU work resumes after failure.
+    if (dev != VK_NULL_HANDLE &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 
     // Destroy timestamp query pool

@@ -427,8 +427,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // subsequent vkCmd* call writes into an unstarted command buffer
         // and the driver raises an SEH exception inside FrameProducer
         // ("Unknown exception in produceFrame").  Surface device-lost so
-        // the next composite call short-circuits into CPU safe mode and
-        // we stop spamming the same failure 60+ times per second.
+        // the next composite call stops the pipeline and triggers the fatal
+        // Restart/Quit flow instead of repeating the failure every frame.
         GpuContext::get().signalDeviceLost();
         m_gpuCompositeState = -1;
         return nullptr;

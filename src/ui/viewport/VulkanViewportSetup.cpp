@@ -165,9 +165,14 @@ void VulkanViewport::shutdownGpu()
     if (!gpu.isInitialized()) return;
 
     VkDevice device = gpu.vkDevice();
-    vkDeviceWaitIdle(device);
+    const bool deviceLost = gpu.gpuState() != GpuState::Healthy;
+    if (!deviceLost)
+        vkDeviceWaitIdle(device);
+    else
+        spdlog::warn("VulkanViewport: skipping device-idle wait after device loss");
 
-    // Destroy all recycled inter-queue semaphores (safe after vkDeviceWaitIdle)
+    // Destroy recycled semaphores after normal idle, or after the lost device
+    // has been declared permanently unusable.
     for (VkSemaphore sem : m_recycledSemaphores) {
         if (sem != VK_NULL_HANDLE)
             vkDestroySemaphore(device, sem, nullptr);

@@ -268,11 +268,8 @@ try
         ~DepthGuard() { --compositeDepth(); }
     } depthGuard;
 
-    // P2: CPU safe-mode fallback was deleted here.  When GPU compositing
-    // fails persistently, GpuContext::tryRecover() transitions to Failed
-    // and fires the fatal-failure callback (modal restart dialog).  No
-    // per-frame "safe-mode" compositor — every major NLE treats device-
-    // lost as fatal; we do the same.
+    // Persistent GPU failure transitions to Failed and fires the fatal
+    // recovery callback. There is no per-frame CPU compositor.
 
     // Blocking lock — FrameProducer is now the sole compositor thread.
     // The old try_to_lock pattern (which returned stale m_lastGoodComposite

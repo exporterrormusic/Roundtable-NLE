@@ -27,9 +27,9 @@ QString comboStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QComboBox { background: %1; border: 1px solid %2; "
-        "border-radius: 3px; color: %3; font-size: %4px; "
-        "padding: 4px 8px 4px 8px; }"
-        "QComboBox::drop-down { border: none; width: 20px; }")
+        "border-radius: 2px; color: %3; font-size: %4px; "
+        "padding: 2px 6px; }"
+        "QComboBox::drop-down { border: none; width: 16px; }")
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().controlBorder))
         .arg(Theme::hex(Theme::colors().textPrimary))
@@ -40,7 +40,7 @@ QString checkedButtonStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: 1px solid %1; "
-        "border-radius: 3px; padding: 3px; } "
+        "border-radius: 2px; padding: 2px; } "
         "QPushButton:hover { background: %2; } "
         "QPushButton:checked { background: %3; border-color: %3; }")
         .arg(Theme::hex(Theme::colors().controlBorder))
@@ -52,7 +52,7 @@ QString exportButtonStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QPushButton { background: %1; border: 1px solid %2; "
-        "border-radius: 4px; color: %3; font-size: %5px; padding: 1px; } "
+        "border-radius: 2px; color: %3; font-size: %5px; padding: 1px; } "
         "QPushButton:hover { background: %4; }")
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::hex(Theme::colors().controlBorder))
@@ -65,8 +65,8 @@ QString loopButtonStyle()
 {
     return rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QPushButton { background: transparent; border: 1px solid %1; "
-        "border-radius: 3px; color: %2; font-size: 10px; font-weight: bold; "
-        "padding: 2px 6px; } "
+        "border-radius: 2px; color: %2; font-size: 10px; font-weight: 600; "
+        "padding: 1px 5px; } "
         "QPushButton:hover { background: %3; } "
         "QPushButton:checked { background: %4; color: %5; border-color: %4; }")
         .arg(Theme::hex(Theme::colors().controlBorder))
@@ -90,16 +90,16 @@ QWidget* makeControlBar(QWidget* parent, QHBoxLayout** outLayout)
 {
     auto* controlBar = new QWidget(parent);
     controlBar->setObjectName(QStringLiteral("ControlBar"));
-    rt::UiScale::setScaledFixedHeight(controlBar, 52);
+    rt::UiScale::setScaledFixedHeight(controlBar, 34);
     controlBar->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "#ControlBar { background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2; }")
         .arg(Theme::hex(Theme::colors().surface0))
         .arg(Theme::hex(Theme::colors().border))));
 
     auto* layout = new QHBoxLayout(controlBar);
-    layout->setContentsMargins(rt::UiScale::px(8), rt::UiScale::px(10),
-                               rt::UiScale::px(8), rt::UiScale::px(10));
-    layout->setSpacing(rt::UiScale::px(6));
+    layout->setContentsMargins(rt::UiScale::px(6), rt::UiScale::px(4),
+                               rt::UiScale::px(6), rt::UiScale::px(4));
+    layout->setSpacing(rt::UiScale::px(4));
     if (outLayout) *outLayout = layout;
     return controlBar;
 }
@@ -109,10 +109,11 @@ QLabel* makeTimecodeLabel(QWidget* parent)
     auto* label = new QLabel(QStringLiteral("00:00:00:00"), parent);
     label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
-        "font-weight: bold; color: #00CC88; background: transparent; "
+        "font-weight: 600; color: %2; background: transparent; "
         "padding: 0px 6px 0px 0px; }")
-        .arg(Theme::typography().sizeSmall)));
-    rt::UiScale::setScaledFixedWidth(label, 120);
+        .arg(Theme::typography().sizeSmall)
+        .arg(Theme::hex(Theme::colors().accent))));
+    rt::UiScale::setScaledFixedWidth(label, 96);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     label->setCursor(Qt::IBeamCursor);
     label->setToolTip(QObject::tr("Click to enter timecode"));
@@ -124,12 +125,13 @@ QLineEdit* makeTimecodeEdit(QWidget* parent)
     auto* edit = new QLineEdit(parent);
     edit->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QLineEdit { font-family: 'Consolas', monospace; font-size: %2px; "
-        "font-weight: bold; color: #00CC88; background: %1; "
-        "border: 1px solid #00CC88; border-radius: 3px; "
+        "font-weight: 600; color: %3; background: %1; "
+        "border: 1px solid %3; border-radius: 2px; "
         "padding: 0px 6px 0px 0px; }")
         .arg(Theme::hex(Theme::colors().surface2))
-        .arg(Theme::typography().sizeSmall)));
-    rt::UiScale::setScaledFixedWidth(edit, 120);
+        .arg(Theme::typography().sizeSmall)
+        .arg(Theme::hex(Theme::colors().accent))));
+    rt::UiScale::setScaledFixedWidth(edit, 96);
     edit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     edit->setValidator(new QRegularExpressionValidator(
         QRegularExpression(QStringLiteral("\\d{0,2}:?\\d{0,2}:?\\d{0,2}:?\\d{0,2}")), edit));
@@ -152,7 +154,7 @@ QComboBox* makeFitModeCombo(QWidget* parent)
     combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     combo->setFocusPolicy(Qt::NoFocus);
     combo->setStyleSheet(comboStyle());
-    rt::UiScale::setScaledMinimumWidth(combo, 80);
+    rt::UiScale::setScaledMinimumWidth(combo, 64);
     rt::UiScale::setScaledFixedHeight(combo, 24);
     return combo;
 }
@@ -170,7 +172,7 @@ QComboBox* makePlaybackResCombo(QWidget* parent, bool withAuto)
     combo->setFocusPolicy(Qt::NoFocus);
     combo->setToolTip(QObject::tr("Playback Resolution"));
     combo->setStyleSheet(comboStyle());
-    rt::UiScale::setScaledMinimumWidth(combo, 70);
+    rt::UiScale::setScaledMinimumWidth(combo, 58);
     rt::UiScale::setScaledFixedHeight(combo, 24);
     return combo;
 }
@@ -206,8 +208,23 @@ QPushButton* makeSafeAreaButton(QWidget* parent)
 
 QPushButton* makeExportFrameButton(QWidget* parent)
 {
-    auto* btn = new QPushButton(QStringLiteral("📷"), parent);
+    auto* btn = new QPushButton(parent);
     btn->setToolTip(QObject::tr("Export Frame (Ctrl+Shift+E)"));
+    QPixmap px(20, 20);
+    px.fill(Qt::transparent);
+    QPainter painter(&px);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(Theme::colors().textSecondary, 1.4,
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(QRectF(3.0, 6.0, 14.0, 10.0), 1.5, 1.5);
+    painter.drawEllipse(QRectF(7.5, 8.0, 5.0, 5.0));
+    painter.drawLine(QPointF(6.0, 6.0), QPointF(8.0, 4.0));
+    painter.drawLine(QPointF(8.0, 4.0), QPointF(12.0, 4.0));
+    painter.drawLine(QPointF(12.0, 4.0), QPointF(14.0, 6.0));
+    painter.end();
+    btn->setIcon(QIcon(px));
+    btn->setIconSize(QSize(rt::UiScale::px(16), rt::UiScale::px(16)));
     rt::UiScale::setScaledFixedSize(btn, 28, 22);
     btn->setFocusPolicy(Qt::NoFocus);
     btn->setStyleSheet(exportButtonStyle());
@@ -236,7 +253,7 @@ QLabel* makeDurationLabel(QWidget* parent)
         "color: %1; background: transparent; padding: 0px 8px 0px 6px; }")
         .arg(Theme::hex(Theme::colors().textSecondary))
         .arg(Theme::typography().sizeSmall)));
-    rt::UiScale::setScaledFixedWidth(label, 120);
+    rt::UiScale::setScaledFixedWidth(label, 96);
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     return label;
 }
@@ -251,22 +268,11 @@ QFrame* makeVDivider(QWidget* parent)
     return divider;
 }
 
-TransportBarKit makeTransportBar(QWidget* parent)
+TransportBarKit makeTransportBar(QWidget* parent, QHBoxLayout* layout)
 {
     TransportBarKit kit;
-
-    kit.bar = new QWidget(parent);
-    kit.bar->setObjectName(QStringLiteral("TransportBar"));
-    rt::UiScale::setScaledFixedHeight(kit.bar, 36);
-    kit.bar->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "#TransportBar { background: %1; border-top: 1px solid %2; }")
-        .arg(Theme::hex(Theme::colors().surface0))
-        .arg(Theme::hex(Theme::colors().border))));
-
-    kit.layout = new QHBoxLayout(kit.bar);
-    kit.layout->setContentsMargins(rt::UiScale::px(8), 0, rt::UiScale::px(8), 0);
-    kit.layout->setSpacing(rt::UiScale::px(4));
-    kit.layout->addStretch();
+    kit.bar = parent;
+    kit.layout = layout;
 
     kit.goStart     = new TransportButton(TransportButton::GoStart, kit.bar);
     kit.stepBack    = new TransportButton(TransportButton::StepBack, kit.bar);
@@ -275,17 +281,17 @@ TransportBarKit makeTransportBar(QWidget* parent)
     kit.stepForward = new TransportButton(TransportButton::StepForward, kit.bar);
     kit.goEnd       = new TransportButton(TransportButton::GoEnd, kit.bar);
 
-    rt::UiScale::setScaledFixedSize(kit.goStart, 22, 22);
+    rt::UiScale::setScaledFixedSize(kit.goStart, 20, 20);
     kit.goStart->setToolTip(QObject::tr("Go to Start"));
-    rt::UiScale::setScaledFixedSize(kit.stepBack, 22, 22);
+    rt::UiScale::setScaledFixedSize(kit.stepBack, 20, 20);
     kit.stepBack->setToolTip(QObject::tr("Step Back"));
-    rt::UiScale::setScaledFixedSize(kit.playPause, 26, 26);
+    rt::UiScale::setScaledFixedSize(kit.playPause, 24, 24);
     kit.playPause->setToolTip(QObject::tr("Play/Pause"));
-    rt::UiScale::setScaledFixedSize(kit.stop, 22, 22);
+    rt::UiScale::setScaledFixedSize(kit.stop, 20, 20);
     kit.stop->setToolTip(QObject::tr("Stop"));
-    rt::UiScale::setScaledFixedSize(kit.stepForward, 22, 22);
+    rt::UiScale::setScaledFixedSize(kit.stepForward, 20, 20);
     kit.stepForward->setToolTip(QObject::tr("Step Forward"));
-    rt::UiScale::setScaledFixedSize(kit.goEnd, 22, 22);
+    rt::UiScale::setScaledFixedSize(kit.goEnd, 20, 20);
     kit.goEnd->setToolTip(QObject::tr("Go to End"));
 
     kit.layout->addWidget(kit.goStart, 0, Qt::AlignVCenter);
@@ -294,16 +300,6 @@ TransportBarKit makeTransportBar(QWidget* parent)
     kit.layout->addWidget(kit.stop, 0, Qt::AlignVCenter);
     kit.layout->addWidget(kit.stepForward, 0, Qt::AlignVCenter);
     kit.layout->addWidget(kit.goEnd, 0, Qt::AlignVCenter);
-
-    // Vertical divider + screenshot button
-    kit.layout->addSpacing(rt::UiScale::px(4));
-    kit.layout->addWidget(makeVDivider(kit.bar), 0, Qt::AlignVCenter);
-    kit.layout->addSpacing(rt::UiScale::px(4));
-
-    kit.screenshot = new TransportButton(TransportButton::Screenshot, kit.bar);
-    kit.screenshot->setToolTip(QObject::tr("Take Screenshot"));
-    rt::UiScale::setScaledFixedSize(kit.screenshot, 22, 22);
-    kit.layout->addWidget(kit.screenshot, 0, Qt::AlignVCenter);
 
     // Divider + loop toggle
     kit.layout->addSpacing(rt::UiScale::px(4));
@@ -322,9 +318,10 @@ TransportBarKit makeTransportBar(QWidget* parent)
     kit.shuttleSpeed = new QLabel(kit.bar);
     kit.shuttleSpeed->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
-        "font-weight: bold; color: #FFD700; background: transparent; "
+        "font-weight: 600; color: %2; background: transparent; "
         "padding: 0px 8px; }")
-        .arg(Theme::typography().sizeXs)));
+        .arg(Theme::typography().sizeXs)
+        .arg(Theme::hex(Theme::colors().warning))));
     rt::UiScale::setScaledMinimumWidth(kit.shuttleSpeed, 50);
     kit.shuttleSpeed->setAlignment(Qt::AlignCenter);
     kit.shuttleSpeed->hide();

@@ -30,7 +30,7 @@ void Theme::applyDarkPreset()
 
     c.textPrimary   = QColor(210, 210, 210);
     c.textSecondary = QColor(153, 153, 153);
-    c.textTertiary  = QColor(105, 105, 105);
+    c.textTertiary  = QColor(118, 118, 118);
     c.textDisabled  = QColor(68, 68, 68);
     c.text          = c.textPrimary;
     c.textDim       = c.textSecondary;
@@ -99,7 +99,7 @@ void Theme::applyDarkPreset()
     c.separator   = QColor(40, 40, 40);
 
     c.dockTitleBg     = QColor(37, 37, 37);
-    c.dockTitleText   = QColor(160, 160, 160);
+    c.dockTitleText   = QColor(180, 180, 180);
     c.dockTitleActive = c.accent;
 
     c.waveformBg  = c.surface0;
@@ -123,8 +123,12 @@ void Theme::applyDarkPreset()
     m.spacingXl  = 12;
     m.spacingXxl = 18;
 
-    m.panelHeaderHeight  = 32;
-    m.sectionHeaderHeight= 28;
+    // Premiere-style compact chrome shared by headers and standard controls.
+    m.controlHeight      = 28;
+    m.controlHeightSm    = 24;
+    m.controlHeightLg    = 32;
+    m.panelHeaderHeight  = 28;
+    m.sectionHeaderHeight= 26;
 
     t.sizeBody    = 13;
     t.sizeCaption = 12;

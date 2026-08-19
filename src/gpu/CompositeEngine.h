@@ -7,7 +7,7 @@
  * composite -> readback.
  *
  * CompositeService holds an instance and delegates to it, keeping only
- * the higher-level orchestration (layer building, prewarm, spine, safe mode).
+ * the higher-level orchestration (layer building, prewarm, spine, recovery).
  *
  * NOTE: This class is in the global namespace (not rt::) to avoid a
  * vexing C2888 "symbol cannot be defined within namespace 'rt'" compiler

@@ -1,10 +1,10 @@
 /*
- * MediaPoolPrefetchConvertGpu.cpp — UPGRADE_PLAN Phase 4.
+ * MediaPoolPrefetchConvertGpu.cpp — GPU-resident prefetch conversion.
  *
  * Implements MediaPool::convertDecodedToCacheGpu: the GPU-resident
  * sibling of convertDecodedToCache.  Routes NV12 / YUV420P → BGRA
  * through Nv12Converter into a per-frame pooled VkImage so the
- * compositor (Phase 5) can sample without a CPU bounce.
+ * compositor can sample without a CPU bounce.
  *
  * Lives in its own TU so the rest of core/media stays Vulkan-free.
  * Also defines WorkerGpuState's destructor (the only spot that needs
@@ -25,7 +25,7 @@
 #include "GpuContext.h"
 #include "GpuScheduler.h"
 #include "Nv12Converter.h"
-#include "cuda/CudaVulkanInterop.h"   // UPGRADE_PLAN A: zero-copy
+#include "cuda/CudaVulkanInterop.h"
 #include "vulkan/Texture.h"
 #include "vulkan/Device.h"
 #include "vulkan/Allocator.h"
@@ -70,13 +70,16 @@ WorkerGpuState::~WorkerGpuState()
 {
     // Drain any in-flight submissions. The worker thread has exited by
     // the time this runs (MediaPool::stopPrefetchThread joins workers
-    // before MediaPool dtor runs to completion).  Wait on each pending
-    // fence so the GPU finishes before we free staging buffers and
-    // command buffers — anything else would crash the driver mid-DMA.
+    // before MediaPool dtor runs to completion). Normal shutdown waits for
+    // each pending fence before freeing submission resources. A lost device
+    // cannot resume work and may never signal those fences, so fatal shutdown
+    // skips only the waits and continues handle cleanup.
+    const bool deviceLost = GpuContext::get().gpuState() != GpuState::Healthy;
     if (device != VK_NULL_HANDLE) {
         for (auto& p : pending) {
             if (p.fence != VK_NULL_HANDLE) {
-                vkWaitForFences(device, 1, &p.fence, VK_TRUE, UINT64_MAX);
+                if (!deviceLost)
+                    vkWaitForFences(device, 1, &p.fence, VK_TRUE, UINT64_MAX);
                 vkDestroyFence(device, p.fence, nullptr);
             }
             if (p.cmdBuf != VK_NULL_HANDLE) {
@@ -255,6 +258,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     if (!ctx.isInitialized() || !ctx.isOperational()) return nullptr;
     if (!wgs.ready())                                  return nullptr;
     if (!m_prefetchTexPool)                            return nullptr;
+    if (prefetchTimelineSem() == 0)                    return nullptr;
 
     // ── Colourspace gate (Phase 4.1) ────────────────────────────────────
     // The convert shaders (nv12/yuv420p/p010/yuva444p12) hardcode the BT.709
@@ -304,21 +308,11 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     // perf_log.txt at 2026-05-22 12:38:58+: even though `ZC=100%` and
     // gpuDisplay=true, every compositor submit queued behind 6 in-flight
     // prefetch convert+copy submissions (2 NVDEC workers × cap 3).
-    // The single shared compute queue serialized them — exactly the
-    // UPGRADE_PLAN §1.2 "shared compute queue" architectural symptom.
-    //
-    // With cap=1, max in-flight prefetch work on the compute queue is 2
-    // (one per worker), so the compositor's submit waits at most ~10 ms
-    // (one convert+copy cycle) before its turn.  Throughput per worker
-    // halves but each worker still runs ~30-60 fps decode, giving the
-    // pair ~60-120 fps cache fill — well above the 30 fps playback
-    // target and the lookahead prewarm rate.
-    //
-    // This is a backpressure tightening, not a fix — the real fix is
-    // UPGRADE_PLAN §1.3 Path C (dedicated async-compute queue for
-    // prefetch work).  Once Path C lands, the cap can return to 3 (or
-    // higher) because compositor and prefetch run on independent
-    // hardware engines.
+    // Some devices expose distinct logical graphics/compute queues backed by
+    // the same execution hardware, so deep prefetch bursts can still delay
+    // interactive work. Cap=1 is the measured conservative limit: at most one
+    // submission per worker owns staging/CUDA resources while preserving more
+    // than enough aggregate cache-fill throughput for playback.
     gWorkerStep("convertDecodedToCacheGpu/backpressure-wait");
     constexpr size_t kMaxPendingPerWorker = 1;
     while (wgs.pending.size() >= kMaxPendingPerWorker) {
@@ -327,7 +321,17 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
             wgs.pending.pop_front();
             continue;
         }
-        vkWaitForFences(ctx.vkDevice(), 1, &oldest.fence, VK_TRUE, UINT64_MAX);
+        constexpr uint64_t kBackpressureWaitNs = 1'500'000'000ull;
+        const VkResult waitResult = vkWaitForFences(
+            ctx.vkDevice(), 1, &oldest.fence, VK_TRUE, kBackpressureWaitNs);
+        if (waitResult != VK_SUCCESS) {
+            spdlog::warn("GPU prefetch backpressure wait failed/timed out (vk={}); "
+                         "using CPU conversion for this frame",
+                         static_cast<int>(waitResult));
+            if (waitResult == VK_ERROR_DEVICE_LOST)
+                ctx.signalDeviceLost();
+            return nullptr;
+        }
         vkDestroyFence(ctx.vkDevice(), oldest.fence, nullptr);
         if (oldest.cmdBuf != VK_NULL_HANDLE) {
             wgs.cmdPool.freeBuffer(oldest.cmdBuf);
@@ -356,7 +360,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     const uint32_t hwW = decoded.width;
     const uint32_t hwH = decoded.height;
 
-    // UPGRADE_PLAN item 4: classify the hwframe so the ZC preflight
+    // Classify the hardware frame so the zero-copy preflight
     // picks the right copy routine.  NVDEC HEVC 10-bit / AV1 10-bit
     // outputs sw_format=P010LE; HEVC 12-bit can output P016LE.  Both
     // share the NV12 plane layout (Y then interleaved UV at 4:2:0) but
@@ -387,7 +391,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     // made the 2026-05-22 13:28 log silent about ZC dropping from
     // 100% to 0%.
     //
-    // UPGRADE_PLAN item 5: re-keyed on (handle, reason).  The previous
+    // Key failures on (handle, reason). The previous
     // handle-only key meant the FIRST failure mode for a handle silenced
     // every other reason on the same handle — so a clip whose NVDEC went
     // soft (isHardware=false) early would never log a later
@@ -519,7 +523,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
                 default:                   return nullptr;
             }
         }
-        // UPGRADE_PLAN item 4: accept P010 / P016 (10/16-bit NV12) on top
+        // Accept P010 / P016 (10/16-bit NV12) on top
         // of the original NV12 + YUV420P GPU paths.  Bail out for anything
         // else and let the CPU sws_scale path handle it.
         const bool acceptedFmt =
@@ -556,7 +560,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     if (dstW > 16384 || dstH > 16384) return nullptr;
 
     // ── Acquire this worker's OWN Nv12Converter sized for dst.
-    //    Per-worker instance (UPGRADE_PLAN item 3) — no shared apiMutex,
+    //    Per-worker instance — no shared apiMutex,
     //    no inline wait, no cross-worker serialisation.  Multiple
     //    workers pipeline freely on the compute queue. ──────────────────
     gWorkerStep("convertDecodedToCacheGpu/ensure-converter");
@@ -604,7 +608,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     //    - zero-copy NV12: read 8-bit NV12 from the shared VkBuffer the
     //                  interop populated (no CPU staging, no per-plane upload).
     //    - zero-copy P010: read 16-bit P010 from the shared VkBuffer
-    //                  (UPGRADE_PLAN item 4 — HEVC 10-bit / AV1 10-bit ZC).
+    //                  (HEVC 10-bit / AV1 10-bit zero-copy).
     //                  UV plane lives at offset W*H*2 (twice NV12's offset
     //                  because each sample is 2 bytes).
     //    - NV12 CPU:  upload 8-bit Y/UV planes from CPU, run NV12 shader.
@@ -765,11 +769,10 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     gWorkerStep("convertDecodedToCacheGpu/submit");
 
     // ── Per-call fence for deferred CPU-side cleanup of staging
-    //    buffers + cmd buffer.  NOT used for compositor ordering:
-    //    compositor submits on the same compute queue (via the same
-    //    GpuScheduler) so Vulkan's per-queue FIFO ordering already
-    //    guarantees this convert+copy completes before the compositor's
-    //    later sample.  See WorkerGpuState::pending in MediaPoolPrefetchGpu.h.
+    //    buffers + cmd buffer. NOT used for compositor ordering: the
+    //    compositor submits on the graphics queue and waits on the producer
+    //    timeline semaphore instead. See WorkerGpuState::pending in
+    //    MediaPoolPrefetchGpu.h.
     gWorkerStep("convertDecodedToCacheGpu/submit/create-fence");
     VkFenceCreateInfo fci{};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -804,8 +807,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
         tlInfo.pWaitSemaphoreValues    = &waitValue;
     }
 
-    // UPGRADE_PLAN Path C optimisation (2026-05-22): signal the shared
-    // prefetch timeline semaphore at a monotonically increasing value.
+    // Signal the shared prefetch timeline semaphore at a monotonically
+    // increasing value.
     // The compositor's submit on the graphics queue will wait on this
     // (sem, value) pair before sampling textures whose CachedFrame
     // carries this value — making the cross-queue memory-visibility
@@ -871,14 +874,9 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     // worker can immediately return the CachedFrame; its texture will
     // only be sampled after the GPU semaphore wait is satisfied.
     //
-    // Fallback: if the timeline semaphore could not be created at init
-    // (vkCreateSemaphore failed in MediaPool::onGpuContextReady),
-    // prefetchTimelineSem() returns 0 and the convert+copy proceeds
-    // WITHOUT a producer signal.  In that degraded mode the CachedFrame
-    // carries no producer value, the compositor's max-value collection
-    // sees 0, and no GPU wait is inserted — the resulting cross-queue
-    // visibility hole is rare enough (only on driver init failure) to
-    // accept rather than fall back to the per-frame fence stall.
+    // The entry gate disables this GPU path if the shared timeline semaphore
+    // could not be created, so every returned GPU-resident frame has a valid
+    // producer signal for the graphics-queue wait.
 
     // Deferred cleanup: with the fence already signalled above, the
     // first pollAndCleanup pass on the next worker iteration will
@@ -930,7 +928,6 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     cached->gpuImageView    = reinterpret_cast<uint64_t>(dstTex->imageView());
     cached->gpuSampler      = reinterpret_cast<uint64_t>(dstTex->sampler());
     cached->gpuTextureOwner = dstTex;   // shared_ptr — co-owned with the cache
-    // cached->gpuSemaphore stays 0 in PR-4 (Phase 6 wires it).
     // cached->pixels stays empty; lazyReadback materialises on demand.
 
     // Producer (sem, value) for the cross-queue visibility wait
@@ -942,7 +939,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     // Lazy CPU readback for disk cache + export.  Captures the texture
     // shared_ptr by value so the readback can outlive the original
     // gpuTextureOwner if needed.  GpuContext::readbackTexture is
-    // thread-safe (UPGRADE_PLAN Phase 7 K.4).
+    // thread-safe.
     cached->lazyReadback = [texOwner = dstTex](std::vector<uint8_t>& outPixels) {
         if (!texOwner) return false;
         const uint32_t w = texOwner->width();

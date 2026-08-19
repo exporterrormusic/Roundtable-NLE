@@ -140,7 +140,8 @@ void TransitionRenderer::shutdown()
     if (!m_device) return;
 
     VkDevice dev = m_device->handle();
-    if (dev != VK_NULL_HANDLE)
+    if (dev != VK_NULL_HANDLE &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 
     if (m_queryPool != VK_NULL_HANDLE)

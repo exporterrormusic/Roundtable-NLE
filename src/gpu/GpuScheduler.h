@@ -1,9 +1,7 @@
 /*
  * GpuScheduler — Central authority for all vkQueueSubmit calls.
  *
- * P1 of CLAUDE_IMPROVEMENT_PLAN.  The single most important
- * architectural change for stability: no other code in the project
- * should call vkQueueSubmit directly.
+ * No other code in the project should call vkQueueSubmit directly.
  *
  * Why centralize?
  *
@@ -22,17 +20,14 @@
  *   Cross-queue dependencies are expressed via semaphores attached
  *   to GpuSubmission — never by callers calling vkQueueWaitIdle.
  *
- * v1 design (this revision):
+ * Submission model:
  *
  *   submit() is synchronous.  The vkQueueSubmit happens on the
  *   calling thread, under the appropriate queue mutex held by
- *   GpuContext.  This is intentionally simple: the goal of v1 is
- *   consolidation, not threading rework.
- *
- *   Future revisions will spawn one dedicated thread per VkQueue
- *   and turn submit() into a non-blocking enqueue.  That belongs
- *   in a later P1.x once every caller is routed through here and
- *   the API has stabilized.
+ *   GpuContext. This is deliberate: queue submission is short, ordering is
+ *   explicit, and callers retain ownership of submission data until return.
+ *   A threaded enqueue would require a different ownership and lifetime API;
+ *   it is not an assumed follow-up optimization.
  *
  * Migration policy:
  *

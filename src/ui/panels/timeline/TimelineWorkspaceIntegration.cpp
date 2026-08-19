@@ -146,7 +146,6 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
             });
 #endif
 
-        // Safe-mode callback wiring removed in P2 of CLAUDE_IMPROVEMENT_PLAN.
     }
 
     // Forward to TimelinePanel so its track widgets and ensureDefaultTracks

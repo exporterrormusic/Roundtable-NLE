@@ -40,6 +40,7 @@
 #include "audio/AudioEngine.h"
 #include "cache/FrameCache.h"
 #include "playback/PlaybackController.h"
+#include "CompositeService.h"
 #include "spine/ModelManager.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -66,6 +67,7 @@
 #include <QAbstractButton>
 #include <QClipboard>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QGuiApplication>
@@ -95,11 +97,34 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <set>
+#include <thread>
 
 
 namespace rt {
+
+namespace {
+
+constexpr auto kGpuRecoveryFileKey = "GpuRecovery/pendingFile";
+constexpr auto kGpuRecoveryProjectKey = "GpuRecovery/originalProjectPath";
+constexpr auto kGpuRestartGuardKey = "GpuRecovery/restartGuardUntilMs";
+constexpr qint64 kGpuRestartGuardMs = 2 * 60 * 1000;
+
+// A lost graphics device can leave a vendor driver call permanently blocked.
+// Normal shutdown remains orderly, but fatal shutdown gets a last-resort bound
+// so Restart/Quit cannot strand an invisible process indefinitely.
+void armFatalShutdownWatchdog()
+{
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::_Exit(EXIT_FAILURE);
+    }).detach();
+}
+
+} // namespace
 
 // Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 //  Auto-save
@@ -308,8 +333,8 @@ void ProjectController::checkCrashRecovery()
                            "Crash details: %1\n\n"
                            "Would you like to reset the dock layout and workspace "
                            "to safe defaults?\n\n"
-                           "• Reset & Continue — clears GPU cache, resets layout,\n"
-                           "  and starts with GPU acceleration disabled.\n"
+                           "• Reset & Continue — clears stored GPU cache settings\n"
+                           "  and resets the layout.\n"
                            "• Continue — tries to restore your previous session.")
                 .arg(summary),
             &dlg);
@@ -393,9 +418,9 @@ void ProjectController::checkCrashRecovery()
             m_mw->applyDefaultLayout();
 
             // ── Clear GPU cache settings ──────────────────────────────
-            // Force safe mode on next composite by clearing GPU state
-            // in the settings, so the compositor starts fresh.
-            settings.setValue("GpuEnabled", false);
+            // Discard the obsolete CPU-fallback toggle. Roundtable has one
+            // Vulkan rendering path; a reset must not silently disable it.
+            settings.remove("GpuEnabled");
 
             // ── Reset workspace to default ────────────────────────────
             settings.remove("WorkspaceState");
@@ -427,6 +452,63 @@ void ProjectController::checkCrashRecovery()
 
         // Clear the marker regardless — we've handled it
         CrashHandler::clearCrashMarker();
+    }
+
+    // A graceful device-lost exit writes a specific snapshot marker. Load
+    // that snapshot directly instead of presenting the generic newer-file
+    // prompt: Restart Now promised to restore this exact state.
+    const QString gpuRecoveryFile = settings.value(kGpuRecoveryFileKey).toString();
+    if (!gpuRecoveryFile.isEmpty()) {
+        const QString originalPath = settings.value(kGpuRecoveryProjectKey, lastPath).toString();
+        const auto recoveryPath = std::filesystem::path(gpuRecoveryFile.toStdWString());
+        std::error_code existsError;
+
+        ProjectSerializer serializer;
+        auto project = std::filesystem::exists(recoveryPath, existsError)
+            ? serializer.load(recoveryPath)
+            : nullptr;
+
+        if (!project || originalPath.isEmpty()) {
+            settings.remove(kGpuRecoveryFileKey);
+            settings.remove(kGpuRecoveryProjectKey);
+            settings.sync();
+            spdlog::error("GPU recovery snapshot could not be loaded: {}",
+                          pathToUtf8(recoveryPath));
+            QMessageBox::warning(
+                m_mw, "Recovery Failed",
+                "The project recovery copy created after the GPU failure "
+                "could not be loaded. The file was left in the project's "
+                "Roundtable Auto-Save folder for manual recovery.");
+            return;
+        }
+
+        const auto projectPath = std::filesystem::path(originalPath.toStdWString());
+        project->setFilePath(projectPath);
+        project->setModified(true);
+        setCurrentProject(std::move(project));
+
+        if (m_mw->audioSync() && m_mw->currentProject()) {
+            const auto& blob = m_mw->currentProject()->audioSyncBlob();
+            if (!blob.empty())
+                m_mw->audioSync()->deserializeFromBlob(blob);
+            else
+                m_mw->audioSync()->restoreProjectState(
+                    QString::fromStdString(m_mw->currentProject()->name()));
+            m_lastSavedAudioSyncBlob = m_mw->audioSync()->serializeToBlob();
+        }
+
+        // Clear the marker only after the full project/UI restore succeeds.
+        // If setCurrentProject ever terminates unexpectedly, the next launch
+        // still has a chance to retry the intact recovery file.
+        settings.remove(kGpuRecoveryFileKey);
+        settings.remove(kGpuRecoveryProjectKey);
+        settings.sync();
+
+        m_mw->statusBar()->showMessage(
+            "Recovered project state after GPU failure", 7000);
+        spdlog::info("Recovered project after GPU failure from: {}",
+                     pathToUtf8(recoveryPath));
+        return;
     }
 
     // ── Auto-save recovery (existing) ──────────────────────────────────
@@ -597,46 +679,147 @@ void ProjectController::updateRecentFilesMenu()
 //  we never try to re-init in-place.
 // ─────────────────────────────────────────────────────────────────────────────
 
+std::filesystem::path ProjectController::saveGpuRecoverySnapshot()
+{
+    if (!m_mw || !m_mw->currentProject())
+        return {};
+
+    auto* project = m_mw->currentProject();
+    const auto projectPath = project->filePath();
+    if (projectPath.empty()) {
+        spdlog::info("GPU recovery: untitled project excluded from recovery save");
+        return {};
+    }
+
+    try {
+        const auto folder = AutoSave::autoSaveFolder(projectPath);
+        std::error_code ec;
+        std::filesystem::create_directories(folder, ec);
+        if (ec) {
+            spdlog::error("GPU recovery: failed to create '{}': {}",
+                          pathToUtf8(folder), ec.message());
+            return {};
+        }
+
+        if (m_mw->audioSync())
+            project->setAudioSyncBlob(m_mw->audioSync()->serializeToBlob());
+
+        const auto savePath = AutoSave::makeTimestampedPath(folder, project->name());
+        ProjectSerializer serializer;
+        if (!serializer.save(*project, savePath)) {
+            spdlog::error("GPU recovery: failed to save '{}'", pathToUtf8(savePath));
+            return {};
+        }
+
+        auto settings = rt::appSettings();
+        const size_t maxKeep = static_cast<size_t>(
+            std::max(1, settings.value("MaxAutoSaves", 20).toInt()));
+        AutoSave::pruneAutoSaves(folder, maxKeep);
+        settings.setValue("LastProjectPath",
+                          QString::fromStdString(pathToUtf8(projectPath)));
+        settings.setValue(kGpuRecoveryFileKey,
+                          QString::fromStdString(pathToUtf8(savePath)));
+        settings.setValue(kGpuRecoveryProjectKey,
+                          QString::fromStdString(pathToUtf8(projectPath)));
+        settings.sync();
+
+        spdlog::info("GPU recovery snapshot saved to: {}", pathToUtf8(savePath));
+        return savePath;
+    } catch (const std::exception& e) {
+        spdlog::error("GPU recovery snapshot failed: {}", e.what());
+    } catch (...) {
+        spdlog::error("GPU recovery snapshot failed with an unknown error");
+    }
+    return {};
+}
+
 void ProjectController::showGpuFatalError()
 {
     static bool s_alreadyShown = false;
     if (s_alreadyShown) return;
     s_alreadyShown = true;
 
-    // Stop playback immediately so the FrameProducer / FramePresenter stop
-    // hammering Vulkan with stale handles while the user reads the dialog.
+    // Stop new rendering work immediately so background playback cannot keep
+    // submitting commands through stale handles while the dialog is visible.
     if (m_mw->playbackController()) {
         m_mw->playbackController()->pause();
+    }
+    if (auto* workspace = m_mw->timelineWorkspace()) {
+        if (auto* monitor = workspace->programMonitor())
+            monitor->stopPlaybackPipeline();
+        if (auto* compositor = workspace->compositeService())
+            compositor->requestShutdown();
+    }
+
+    const bool hadSavedProject = m_mw->currentProject()
+        && !m_mw->currentProject()->filePath().empty();
+    const auto recoveryPath = saveGpuRecoverySnapshot();
+
+    auto settings = rt::appSettings();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 restartGuardUntil = settings.value(kGpuRestartGuardKey, 0).toLongLong();
+    const bool restartBlocked = restartGuardUntil > now;
+    if (!restartBlocked && restartGuardUntil != 0) {
+        settings.remove(kGpuRestartGuardKey);
+        settings.sync();
     }
 
     QMessageBox box(m_mw);
     box.setIcon(QMessageBox::Critical);
     box.setWindowTitle("GPU Error");
     box.setText("The GPU renderer has crashed and cannot continue.");
-    box.setInformativeText(
+    QString details =
         "Roundtable detected an unrecoverable Vulkan device error "
         "(typically VK_ERROR_DEVICE_LOST from the graphics driver). "
-        "The application will continue running in CPU safe mode for "
-        "this session, but playback and effects will be very slow.\n\n"
-        "Please save your work and restart Roundtable.\n\n"
+        "Rendering cannot continue in this session. Restart Roundtable "
+        "to restore GPU rendering.\n\n";
+    if (!recoveryPath.empty()) {
+        details += "A recovery copy of the current saved project was created "
+                   "and will open automatically after restart.\n\n";
+    } else if (m_mw->currentProject() && !hadSavedProject) {
+        details += "The current project has never been saved, so it was not "
+                   "eligible for a recovery copy.\n\n";
+    } else if (hadSavedProject) {
+        details += "Roundtable could not write a recovery copy. Recent unsaved "
+                   "changes may be lost.\n\n";
+    }
+    if (restartBlocked) {
+        details += "Roundtable already restarted once after a recent GPU failure. "
+                   "Automatic restart is disabled to prevent a restart loop.\n\n";
+    }
+    details +=
         "If this happens repeatedly, update your graphics driver or "
-        "disable third-party overlays (NVIDIA App, OBS, Discord overlay).");
-    QPushButton* btnRestart  = box.addButton("Restart Now",       QMessageBox::AcceptRole);
-    QPushButton* btnQuit     = box.addButton("Quit",              QMessageBox::DestructiveRole);
-    box.addButton("Continue in safe mode",                        QMessageBox::RejectRole);
-    box.setDefaultButton(btnRestart);
+        "disable third-party overlays (NVIDIA App, OBS, Discord overlay).";
+    box.setInformativeText(details);
+
+    QPushButton* btnRestart = restartBlocked
+        ? nullptr
+        : box.addButton("Restart Now", QMessageBox::AcceptRole);
+    QPushButton* btnQuit = box.addButton("Quit", QMessageBox::DestructiveRole);
+    box.setDefaultButton(btnRestart ? btnRestart : btnQuit);
     box.exec();
 
     QAbstractButton* clicked = box.clickedButton();
-    if (clicked == btnRestart) {
+    if (btnRestart && clicked == btnRestart) {
         const QString exe  = QCoreApplication::applicationFilePath();
         const QStringList args = QCoreApplication::arguments().mid(1);
-        QProcess::startDetached(exe, args);
-        QCoreApplication::quit();
-    } else if (clicked == btnQuit) {
-        QCoreApplication::quit();
+
+        settings.setValue(kGpuRestartGuardKey, now + kGpuRestartGuardMs);
+        settings.sync();
+        if (!QProcess::startDetached(exe, args)) {
+            settings.remove(kGpuRestartGuardKey);
+            settings.sync();
+            QMessageBox::critical(
+                m_mw, "Restart Failed",
+                "Roundtable could not start a new process. Your recovery copy "
+                "was kept; start Roundtable manually to restore it.");
+        }
     }
-    // Continue: drop back into the running app; compositor will use safe mode.
+
+    // Closing the dialog is equivalent to Quit. Once a device is lost there
+    // is no valid rendering session to return to.
+    armFatalShutdownWatchdog();
+    QCoreApplication::quit();
 }
 
 } // namespace rt

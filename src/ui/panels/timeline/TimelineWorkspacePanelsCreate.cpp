@@ -248,7 +248,7 @@ void TimelineWorkspace::createPanelWidgets()
         dock->setWidget(widget);
         dock->setObjectName(title);
         dock->setTitleBarWidget(new DockTitleBar(dock, title));
-        dock->setContentsMargins(4, 0, 4, 4);
+        dock->setContentsMargins(0, 0, 0, 0);
         m_dockWidgets.insert(title, dock);
 
         connect(dock, &QDockWidget::topLevelChanged,

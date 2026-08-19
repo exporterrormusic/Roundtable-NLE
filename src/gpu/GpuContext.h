@@ -49,12 +49,12 @@ class CudaVulkanInterop;
 class GpuResourceManager;
 // GpuScheduler is fully defined by the #include above; used by value.
 
-/// GPU device health state for device-lost recovery (Phase 2.B).
+/// GPU device health state.
 enum class GpuState : uint8_t {
     Healthy,      ///< Normal operation
     DeviceLost,   ///< GPU device lost detected (e.g. VK_ERROR_DEVICE_LOST)
     Recovering,   ///< Recovery in progress (tryRecover active)
-    Failed        ///< Recovery failed — fall back to CPU safe mode
+    Failed        ///< Device is unusable; the application must restart or exit
 };
 
 class GpuContext
@@ -156,10 +156,9 @@ public:
     /// callers migrate one-shot uploads to the transfer queue.
     [[nodiscard]] std::mutex& transferQueueMutex() const noexcept { return m_transferQueueMutex; }
 
-    /// Central GPU submission authority — see GpuScheduler.h.  P1 of
-    /// CLAUDE_IMPROVEMENT_PLAN: all vkQueueSubmit calls should route
-    /// through this scheduler.  Direct vkQueueSubmit + manual queue
-    /// mutex locking is the legacy path being migrated out.
+    /// Central GPU submission authority — see GpuScheduler.h. All
+    /// vkQueueSubmit calls should route through this scheduler; direct queue
+    /// submission and manual queue locking are legacy paths being removed.
     [[nodiscard]] GpuScheduler& scheduler() noexcept { return m_scheduler; }
     [[nodiscard]] const GpuScheduler& scheduler() const noexcept { return m_scheduler; }
 
@@ -312,7 +311,7 @@ private:
     mutable std::mutex m_computeQueueMutex;   ///< Serialise compute queue submits
     mutable std::mutex m_transferQueueMutex;  ///< Serialise transfer queue submits (P1)
     mutable std::mutex m_subsystemMutex;      ///< Serialise lazy subsystem creation
-    /// UPGRADE_PLAN Phase 7 K.4: serialises GpuContext::readbackTexture
+    /// Serialises GpuContext::readbackTexture
     /// across threads.  Lazy CPU readback (CachedFrame::lazyReadback) can
     /// fire from the disk cache worker, the export thread, or anywhere
     /// that calls ensurePixels() — all share m_cmdPool, which is

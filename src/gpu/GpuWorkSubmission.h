@@ -49,7 +49,8 @@ public:
     /// Allocates 3 command buffers and creates 3 fences.
     bool init(VkDevice device, VkCommandPool cmdPool);
 
-    /// Destroy all resources.  Calls waitForAll() first.
+    /// Destroy all resources. Drains in-flight work during normal shutdown;
+    /// skips unbounded fence waits after a fatal device loss.
     void destroy();
 
     /// Begin recording into the current ring slot.
@@ -68,8 +69,8 @@ public:
     bool submit(VkQueue queue, VkSemaphore signalSemaphore, std::mutex* queueLock = nullptr);
 
     /// Submit with an external signal semaphore AND an optional
-    /// producer-side timeline wait (UPGRADE_PLAN Path C optimisation,
-    /// 2026-05-22).  When `waitSem != VK_NULL_HANDLE`, the submission's
+    /// producer-side timeline wait. When `waitSem != VK_NULL_HANDLE`, the
+    /// submission's
     /// VkSubmitInfo is given a VkTimelineSemaphoreSubmitInfo pNext that
     /// waits on `waitSem` at `waitValue` at the COMPUTE_SHADER stage,
     /// so the GPU does not begin executing this submission's compute

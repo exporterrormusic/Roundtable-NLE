@@ -189,7 +189,7 @@ App::~App()
     m_syncClock.reset();
     m_mediaPool.reset();
 
-    // UPGRADE_PLAN item 3: drop the shared NVDEC/CUDA hw_device_ctx
+    // Drop the shared NVDEC/CUDA hw_device_ctx
     // refs now that MediaPool (and all its VideoDecoders) are gone.
     // Must happen before GpuContext::shutdown() so FFmpeg can still
     // free its CUDA context cleanly.
@@ -308,7 +308,12 @@ bool App::init()
         }
         if (!capturing) {
             if (!GpuContext::get().init()) {
-                spdlog::warn("App: GPU context failed — falling back to software compositor");
+                // Roundtable no longer has a CPU compositor.  Continuing here
+                // creates a UI that can open projects but can never render a
+                // frame, so fail startup honestly and let main() explain the
+                // Vulkan requirement to the user.
+                spdlog::critical("App: GPU context initialization failed; rendering is unavailable");
+                return false;
             } else {
                 // ── Hardware diagnostics ───────────────────────────────────
                 // Scan loaded modules for known overlay/capture hooks and
@@ -355,15 +360,14 @@ bool App::init()
                 // first composite and already see the profile.
                 if (m_cachePolicy) m_cachePolicy->reapplyBudgets();
 
-                // UPGRADE_PLAN: arm the GPU-resident prefetch decode
-                // path now that GpuContext is up.  MediaPool was
+                // Arm the GPU-resident prefetch decode path now that
+                // GpuContext is up.  MediaPool was
                 // constructed earlier (above) without access to GPU
                 // resources, so it deferred allocating PrefetchTexturePool
                 // until this call.
                 if (m_mediaPool) m_mediaPool->onGpuContextReady();
 
-                // UPGRADE_PLAN item 3: pay the 100-200 ms NVDEC/CUDA
-                // cold-init cost once here so the first character clip
+                // Pay the NVDEC/CUDA cold-init cost once here so the first clip
                 // doesn't.  Subsequent VideoDecoder::open(hw=true) calls
                 // ref this cached context instead of creating a new one.
                 prewarmHardwareDecoders();

@@ -307,9 +307,8 @@ void ProgramMonitor::setGpuDisplayEnabled(bool enabled)
         m_pipeline->start();
 }
 
-// CPU Safe Mode UI (Phase 6) was deleted in P2 of CLAUDE_IMPROVEMENT_PLAN.
-// Device-lost is now fatal: GpuContext::tryRecover() fires the fatal-failure
-// callback which the app translates into a modal restart dialog.
+// Device loss is fatal: GpuContext fires the recovery callback and the app
+// stops this pipeline before presenting Restart/Quit.
 // ═════════════════════════════════════════════════════════════════════════════
 //  PlaybackPipeline integration
 // ═════════════════════════════════════════════════════════════════════════════
@@ -425,9 +424,8 @@ bool ProgramMonitor::presentFrame(const std::shared_ptr<CachedFrame>& frame)
 
     // Refuse GPU-direct display path when the GPU has entered Failed state
     // (VK_ERROR_DEVICE_LOST). The raw gpuImageView/gpuSampler in `frame`
-    // points at handles whose VkDevice no longer exists; using them would
-    // crash inside nvoglv64.dll.  When in safe mode the frame's CPU pixels
-    // are populated by the safe-mode compositor, so the CPU path works.
+    // is no longer safe to use. Already-produced CPU pixels may still be
+    // displayed, but no fallback compositor creates new frames.
     //
     // NOTE: we do NOT check frame->gpuTextureOwner here. That field is only
     // set on media-layer frames (uploaded video / character textures from

@@ -401,7 +401,8 @@ void VideoUploader::shutdown()
 
     releaseAll();
 
-    if (m_impl->device != VK_NULL_HANDLE)
+    if (m_impl->device != VK_NULL_HANDLE &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(m_impl->device);
 
     m_impl->destroyAll();
@@ -584,4 +585,3 @@ bool VideoUploader::createTextureSlots() { return false; }
 } // namespace rt
 
 #endif // ROUNDTABLE_HAS_FFMPEG
-

@@ -224,7 +224,7 @@ void SourceMonitor::setupUI()
     QHBoxLayout* controlLayout = nullptr;
     auto* controlBar = monitorui::makeControlBar(this, &controlLayout);
 
-    // Timecode display (left side, Premiere Pro green style — click to edit)
+    // Timecode display (left side, Premiere Pro style; click to edit)
     m_timecodeLabel = monitorui::makeTimecodeLabel(this);
     m_timecodeLabel->installEventFilter(this);
 
@@ -324,6 +324,18 @@ void SourceMonitor::setupUI()
     m_btnDragAudio->installEventFilter(this);
     controlLayout->addWidget(m_btnDragAudio, 0, Qt::AlignVCenter);
 
+    // Premiere-style single monitor row: playback controls share this bar
+    // with timecode and display controls, below the permanent mini-timeline.
+    auto transport = monitorui::makeTransportBar(controlBar, controlLayout);
+    m_btnGoStart     = transport.goStart;
+    m_btnStepBack    = transport.stepBack;
+    m_btnPlayPause   = transport.playPause;
+    m_btnStop        = transport.stop;
+    m_btnStepForward = transport.stepForward;
+    m_btnGoEnd       = transport.goEnd;
+    m_btnLoop        = transport.loop;
+    m_shuttleSpeedLabel = transport.shuttleSpeed;
+
     controlLayout->addStretch();
 
     // Fit mode / zoom presets combo box. Added to the layout later, next
@@ -386,34 +398,15 @@ void SourceMonitor::setupUI()
     m_durationLabel = monitorui::makeDurationLabel(this);
     controlLayout->addWidget(m_durationLabel, 0, Qt::AlignVCenter);
 
-    mainLayout->addWidget(controlBar);
-
     // ── Mini-timeline scrub bar ─────────────────────────────────────────
     m_miniTimeline->setMinimumHeight(rt::UiScale::px(56));
     mainLayout->addWidget(m_miniTimeline);
+    mainLayout->addWidget(controlBar);
 
-    // ── Transport controls (Premiere Pro style — matches Program Monitor) ──
-    auto transport = monitorui::makeTransportBar(this);
-    auto* transportBar    = transport.bar;
-    auto* transportLayout = transport.layout;
-    m_btnGoStart     = transport.goStart;
-    m_btnStepBack    = transport.stepBack;
-    m_btnPlayPause   = transport.playPause;
-    m_btnStop        = transport.stop;
-    m_btnStepForward = transport.stepForward;
-    m_btnGoEnd       = transport.goEnd;
-    m_btnScreenshot  = transport.screenshot;
-    m_btnLoop        = transport.loop;
-    m_shuttleSpeedLabel = transport.shuttleSpeed;
-
-    connect(m_btnScreenshot, &QPushButton::clicked, this, [this]() {
-        exportViewportFrame();
-    });
+    // Unified-row transport connections.
     connect(m_btnLoop, &QPushButton::toggled, this, [this](bool checked) {
         if (m_controller) m_controller->setLoopEnabled(checked);
     });
-
-    transportLayout->addStretch();
 
     // Connect transport buttons
     connect(m_btnGoStart, &QPushButton::clicked, this, [this]() {
@@ -439,11 +432,9 @@ void SourceMonitor::setupUI()
     // Install event filter on transport bar and its children so that
     // clicking playback buttons (which have Qt::NoFocus) or the bar
     // background still grabs keyboard focus for JKL/Space shortcuts.
-    transportBar->installEventFilter(this);
-    for (auto* child : transportBar->findChildren<QWidget*>())
+    controlBar->installEventFilter(this);
+    for (auto* child : controlBar->findChildren<QWidget*>())
         child->installEventFilter(this);
-
-    mainLayout->addWidget(transportBar);
 }
 
 void SourceMonitor::exportViewportFrame()

@@ -47,11 +47,13 @@ public:
         m_header = new QFrame(this);
         m_header->setObjectName(QStringLiteral("SectionHeader"));
         m_header->setCursor(Qt::PointingHandCursor);
+        m_header->setFixedHeight(m.sectionHeaderHeight);
         m_header->setStyleSheet(QStringLiteral(
-            "#SectionHeader { background: %1; border-radius: %2px; }")
-            .arg(Theme::hex(tc.surface3)).arg(m.radiusMd));
+            "#SectionHeader { background: %1; border: none;"
+            " border-bottom: 1px solid %2; }")
+            .arg(Theme::hex(tc.surface2)).arg(Theme::hex(tc.border)));
         auto* hh = new QHBoxLayout(m_header);
-        hh->setContentsMargins(m.spacingMd, m.spacingSm, m.spacingMd, m.spacingSm);
+        hh->setContentsMargins(m.spacingMd, 0, m.spacingMd, 0);
         hh->setSpacing(m.spacingSm);
 
         m_arrow = new QToolButton(m_header);
@@ -80,8 +82,9 @@ public:
         m_content = new QWidget(this);
         m_content->setObjectName(QStringLiteral("SectionContent"));
         m_content->setStyleSheet(QStringLiteral(
-            "#SectionContent { background: %1; border-radius: %2px; }")
-            .arg(Theme::hex(tc.surface2)).arg(m.radiusMd));
+            "#SectionContent { background: %1; border: none;"
+            " border-bottom: 1px solid %2; }")
+            .arg(Theme::hex(tc.surface1)).arg(Theme::hex(tc.border)));
         m_contentLayout = new QVBoxLayout(m_content);
         m_contentLayout->setContentsMargins(m.spacingLg, m.spacingMd,
                                             m.spacingLg, m.spacingMd);

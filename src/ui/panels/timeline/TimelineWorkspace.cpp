@@ -193,8 +193,6 @@ TimelineWorkspace::~TimelineWorkspace()
         m_programMonitor->setCompositeCallback(nullptr);
     }
 
-    // Safe-mode callback cleanup removed in P2 of CLAUDE_IMPROVEMENT_PLAN.
-
     // Cancel any in-flight background audio decode before destroying
     if (m_audioPlayback) {
         m_audioPlayback->cancelWarm();

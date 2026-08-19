@@ -191,7 +191,7 @@ void ProgramMonitor::setupUI()
     QHBoxLayout* controlLayout = nullptr;
     auto* controlBar = monitorui::makeControlBar(this, &controlLayout);
 
-    // Timecode display (left side, Premiere Pro green style — click to edit)
+    // Timecode display (left side, Premiere Pro style; click to edit)
     m_timecodeLabel = monitorui::makeTimecodeLabel(this);
     m_timecodeLabel->installEventFilter(this);
 
@@ -222,6 +222,24 @@ void ProgramMonitor::setupUI()
     controlLayout->addWidget(m_timecodeLabel, 0, Qt::AlignVCenter);
     controlLayout->addWidget(m_timecodeEdit, 0, Qt::AlignVCenter);
     controlLayout->addSpacing(rt::UiScale::px(12));
+
+    // Premiere-style single monitor row: playback controls share this bar
+    // with timecode and display controls, below the permanent mini-timeline.
+    auto transport = monitorui::makeTransportBar(controlBar, controlLayout);
+    m_btnGoStart     = transport.goStart;
+    m_btnStepBack    = transport.stepBack;
+    m_btnPlayPause   = transport.playPause;
+    m_btnStop        = transport.stop;
+    m_btnStepForward = transport.stepForward;
+    m_btnGoEnd       = transport.goEnd;
+    m_btnLoop        = transport.loop;
+    m_shuttleSpeedLabel = transport.shuttleSpeed;
+
+    m_dropIndicator = new QLabel(controlBar);
+    m_dropIndicator->setFixedSize(10, 10);
+    m_dropIndicator->setToolTip(tr("Dropped frames"));
+    m_dropIndicator->hide();
+    controlLayout->addWidget(m_dropIndicator);
 
     // Fit mode / zoom presets combo box
     m_fitModeCombo = monitorui::makeFitModeCombo(this);
@@ -374,42 +392,15 @@ void ProgramMonitor::setupUI()
             m_transformOverlay->setGridVisible(checked);
     });
 
-    mainLayout->addWidget(controlBar);
-    mainLayout->addSpacing(rt::UiScale::px(4));   // gap between control bar and mini-timeline
-
     // Give the mini-timeline a distinct background so it's clearly visible
     m_miniTimeline->setMinimumHeight(rt::UiScale::px(56));
     mainLayout->addWidget(m_miniTimeline);
+    mainLayout->addWidget(controlBar);
 
-    // ── Transport controls (Premiere Pro style) ─────────────────────────
-    auto transport = monitorui::makeTransportBar(this);
-    auto* transportBar    = transport.bar;
-    auto* transportLayout = transport.layout;
-    m_btnGoStart     = transport.goStart;
-    m_btnStepBack    = transport.stepBack;
-    m_btnPlayPause   = transport.playPause;
-    m_btnStop        = transport.stop;
-    m_btnStepForward = transport.stepForward;
-    m_btnGoEnd       = transport.goEnd;
-    m_btnScreenshot  = transport.screenshot;
-    m_btnLoop        = transport.loop;
-    m_shuttleSpeedLabel = transport.shuttleSpeed;
-
-    connect(m_btnScreenshot, &QPushButton::clicked, this, [this]() {
-        emit exportFrameRequested();
-    });
+    // Unified-row transport connections.
     connect(m_btnLoop, &QPushButton::toggled, this, [this](bool checked) {
         if (m_controller) m_controller->setLoopEnabled(checked);
     });
-
-    // Frame drop indicator — green/yellow/red dot, hidden when no drops
-    m_dropIndicator = new QLabel(transportBar);
-    m_dropIndicator->setFixedSize(10, 10);
-    m_dropIndicator->setToolTip(tr("Dropped frames"));
-    m_dropIndicator->hide();
-    transportLayout->addWidget(m_dropIndicator);
-
-    transportLayout->addStretch();
 
     // Connect transport buttons
     connect(m_btnGoStart, &QPushButton::clicked, this, [this]() {
@@ -431,7 +422,6 @@ void ProgramMonitor::setupUI()
         if (m_controller) m_controller->goToEnd();
     });
 
-    mainLayout->addWidget(transportBar);
 }
 
 } // namespace rt

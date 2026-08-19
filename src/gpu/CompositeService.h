@@ -5,7 +5,7 @@
  * subsystem from UI orchestration.  Lives in gpu/ — no Qt dependency.
  *
  * Owns: composite frame orchestration, layer building, prewarm, spine
- *       rendering, safe mode, sticky frame fallback, and the
+ *       rendering, sticky-frame handling, and the
  *       CompositeEngine (GPU compositing pipeline).
  *
  * GPU resources (command buffers, staging ring, texture cache, upload
@@ -17,7 +17,7 @@
  *   CompositeService          THIS FILE.  The API the rest of the app calls
  *     │                       (compositeFrame for preview AND export).
  *     │                       Layer building (CompositeServiceLayerBuild),
- *     │                       prewarm, spine, safe-mode/sticky-frame policy.
+ *     │                       prewarm, spine, sticky-frame policy.
  *     ▼
  *   CompositeEngine           GPU resource owner + per-frame orchestration:
  *     │                       upload → effects → transitions → composite →
@@ -429,8 +429,8 @@ public:
     std::recursive_mutex& compositeMutex() { return m_compositeMutex; }
 
     // ── Last good composite ─────────────────────────────────────────────
-    // Kept for safe-mode fallback and exception safety.  The normal
-    // compositeFrame() path no longer returns stale frames.
+    // Kept for bounded recursion and exception safety. The normal
+    // compositeFrame() path does not return stale frames.
     std::shared_ptr<CachedFrame> lastGoodComposite() const {
         std::lock_guard lg(m_lastCompositeMtx);
         return m_lastGoodComposite;
@@ -544,10 +544,8 @@ public:
 #endif
 
     // ── Reset (new timeline / project close) ────────────────────────────
-    // P2 (CLAUDE_IMPROVEMENT_PLAN): CPU safe-mode fallback was removed.
-    // Device-lost is now fatal — GpuContext::tryRecover() fires the
-    // fatal-failure callback which the UI translates into a modal
-    // restart dialog.  Every major NLE behaves the same way.
+    // Device loss is fatal. GpuContext fires a failure callback which the UI
+    // translates into the recovery-save and Restart/Quit flow.
     void reset();
 
 private:
@@ -812,11 +810,6 @@ private:
     bool                    m_prewarmPending{false};
     std::atomic<bool> m_compositorReady{false};
     std::atomic<bool> m_destroying{false};
-
-    // P2 (CLAUDE_IMPROVEMENT_PLAN): the safe-mode CPU fallback state
-    // (m_safeMode, m_lastSafeModeComposite, m_safeModeCallback,
-    // m_lastRecoveryCheck) was deleted.  Device-lost is now treated
-    // as fatal — see CompositeServiceFrame.cpp.
 
     bool m_gpuDisplayMode{false};
     std::atomic<bool> m_shutdown{false};

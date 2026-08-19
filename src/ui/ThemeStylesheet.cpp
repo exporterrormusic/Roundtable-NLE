@@ -45,9 +45,9 @@ QDockWidget {
     font-weight: bold;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
-    margin: 3px;
-    padding: 4px;
-    border: 2px solid %4;
+    margin: 0px;
+    padding: 0px;
+    border: 1px solid %4;
 }
 QDockWidget::title {
     background: %2;
@@ -249,9 +249,9 @@ QTabBar {
 QTabBar::tab {
     background: %1;
     color: %2;
-    padding: 6px 14px;
-    border-top: 2px solid transparent;
-    border-bottom: none;
+    padding: 4px 12px;
+    border-top: none;
+    border-bottom: 2px solid transparent;
     border-left: none;
     border-right: none;
     margin-right: 1px;
@@ -260,7 +260,7 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: %3;
     color: %4;
-    border-top-color: %6;
+    border-bottom-color: %6;
 }
 QTabBar::tab:hover:!selected {
     background: %7;
@@ -370,7 +370,7 @@ QComboBox {
     border-radius: %4px;
     padding: 0px 24px 0px 10px;
     min-height: %5px;
-    font-size: 15px;
+    font-size: %13px;
 }
 QComboBox:hover {
     border-color: %6;
@@ -419,7 +419,8 @@ QComboBox QAbstractItemView::item:hover {
    .arg(rgb(c.surface3))         // 9: dropdown bg
    .arg(rgb(c.accent))           // 10: selection bg
    .arg(rgb(c.highlightedText))  // 11: selection text
-   .arg(rgb(c.controlBgHover));  // 12: item hover
+   .arg(rgb(c.controlBgHover))   // 12: item hover
+   .arg(t.sizeBody);             // 13: font size
 
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //  PUSH BUTTONS (default style)

@@ -143,8 +143,13 @@ bool GpuWorkSubmission::init(VkDevice device, VkCommandPool cmdPool)
 void GpuWorkSubmission::destroy()
 {
     if (m_device != VK_NULL_HANDLE) {
-        // Wait for ALL in-flight slots before destroying resources
-        waitForAll();
+        // A lost device may never signal its outstanding fences. Normal
+        // teardown drains every slot; fatal teardown destroys handles without
+        // an unbounded wait because the process cannot resume GPU work.
+        if (GpuContext::get().gpuState() == GpuState::Healthy)
+            waitForAll();
+        else
+            spdlog::warn("GpuWorkSubmission: skipping fence drain after device loss");
 
         for (int i = 0; i < kRingSize; ++i) {
             auto& s = m_slots[i];
@@ -275,8 +280,7 @@ bool GpuWorkSubmission::submit(VkQueue queue, std::mutex* queueLock)
 
 // ── submit with timeline wait (cross-queue producer→compositor sync) ───────
 //
-// UPGRADE_PLAN Path C optimisation (2026-05-22).  The compositor's
-// VkSubmitInfo is given a VkTimelineSemaphoreSubmitInfo pNext that
+// The compositor's VkSubmitInfo carries a VkTimelineSemaphoreSubmitInfo that
 // waits on the prefetch shared timeline semaphore at the maximum
 // value across all CachedFrames being sampled this frame.  Until that
 // value is signalled, the GPU does not begin executing this

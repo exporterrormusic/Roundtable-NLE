@@ -205,8 +205,11 @@ void CompositeEngine::releaseFrameSemaphore(VkSemaphore sem)
 
 void CompositeEngine::shutdown()
 {
-    if (m_device != VK_NULL_HANDLE)
+    const bool deviceLost = GpuContext::get().gpuState() != GpuState::Healthy;
+    if (m_device != VK_NULL_HANDLE && !deviceLost)
         vkDeviceWaitIdle(m_device);
+    else if (m_device != VK_NULL_HANDLE)
+        spdlog::warn("CompositeEngine: skipping device-idle wait after device loss");
 
     // Inter-queue semaphores are owned by GpuContext now and destroyed
     // from GpuContext::shutdown after device waitIdle — see the matching
@@ -406,8 +409,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
     // -- GPU device-lost / failed --
     // tryRecover() now transitions to Failed and fires the fatal-failure
     // callback exactly once.  We never resume the GPU path on the same
-    // process — the user is expected to restart.  Returning nullptr lets
-    // CompositeService fall through to safe-mode CPU compositing.
+    // process — the user is expected to restart. Returning nullptr stops
+    // the frame pipeline while the fatal Restart/Quit dialog is presented.
     {
         auto& gpu = GpuContext::get();
         const GpuState st = gpu.gpuState();

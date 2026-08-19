@@ -46,7 +46,7 @@ namespace rt {
 // is instantiated (MediaPool.cpp).
 class PrefetchTexturePool;
 
-// UPGRADE_PLAN Phase 4: convertDecodedToCacheGpu takes a reference to
+// convertDecodedToCacheGpu takes a reference to
 // per-worker Vulkan state.  Definition lives in MediaPoolPrefetchGpu.h
 // (Vulkan-tainted); forward-declared here to keep MediaPool.h clean.
 struct WorkerGpuState;
@@ -524,7 +524,7 @@ public:
         DecodedFrame& decoded, int64_t frameNumber,
         WorkerGpuState& wgs);
 
-    /// UPGRADE_PLAN: App calls this after GpuContext::init() succeeds.
+    /// App calls this after GpuContext::init() succeeds.
     /// Allocates m_prefetchTexPool, which the ctor could not create
     /// because GpuContext was not initialised at that point.  Idempotent;
     /// safe to call multiple times.  Without this call, the GPU-resident
@@ -533,7 +533,7 @@ public:
 
     /// Shared producer-side timeline VkSemaphore used by every prefetch
     /// convert+copy submission to signal a monotonically increasing
-    /// value (UPGRADE_PLAN Path C, 2026-05-22).  Each CachedFrame
+    /// value. Each CachedFrame
     /// produced by convertDecodedToCacheGpu carries the value its
     /// submission signalled; the compositor waits on the per-frame
     /// max value before sampling — replacing the previous synchronous
@@ -588,7 +588,7 @@ private:
     FrameScheduler                                  m_scheduler;
     uint64_t                                        m_nextHandle{1};
 
-    // UPGRADE_PLAN Path C: shared timeline semaphore for cross-queue
+    // Shared timeline semaphore for cross-queue
     // memory visibility between prefetch (compute queue) and
     // compositor (graphics queue).  Created in onGpuContextReady,
     // destroyed in the destructor.  Stored as uint64_t (VkSemaphore

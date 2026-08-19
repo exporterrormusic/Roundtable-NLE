@@ -56,9 +56,8 @@ void VulkanViewport::displayGpuImage(VkImageView imageView, VkSampler sampler,
 
     // If GpuContext has transitioned to Failed (VK_ERROR_DEVICE_LOST), every
     // Vulkan handle in the caller's hands — including imageView and
-    // waitSemaphore — points at a destroyed device.  Refusing here means
-    // ProgramMonitor falls back to the CPU display path, which the safe-mode
-    // compositor populates with valid pixels.
+    // waitSemaphore — is no longer safe to use. Refuse presentation while
+    // the fatal recovery dialog stops this session.
     if (!GpuContext::get().isOperational()) {
         return;
     }

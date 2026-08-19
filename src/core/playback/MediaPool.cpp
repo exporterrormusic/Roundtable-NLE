@@ -79,8 +79,8 @@ MediaPool::MediaPool(std::shared_ptr<FrameCache> cache)
     m_scheduler.setMaxLookahead(perfProfile().prefetchAheadFrames);
     m_scheduler.setMaxWorkers(perfProfile().prefetchThreadCount);
 
-    // UPGRADE_PLAN Phase 3: try to allocate the GPU-resident texture pool
-    // here.  In the typical App startup MediaPool is constructed BEFORE
+    // Try to allocate the GPU-resident texture pool here. In the typical App
+    // startup MediaPool is constructed BEFORE
     // GpuContext::init() runs (App.cpp), so this branch is rarely taken
     // — App calls onGpuContextReady() once init succeeds to retry the
     // allocation.  Keeping the eager attempt for headless test paths
@@ -95,12 +95,13 @@ MediaPool::MediaPool(std::shared_ptr<FrameCache> cache)
 
 void MediaPool::onGpuContextReady()
 {
-    if (m_prefetchTexPool) return;
     if (!GpuContext::get().isInitialized()) return;
-    m_prefetchTexPool = std::make_unique<PrefetchTexturePool>();
+    if (m_prefetchTexPool && m_prefetchTimelineSem != 0) return;
+    if (!m_prefetchTexPool)
+        m_prefetchTexPool = std::make_unique<PrefetchTexturePool>();
 
-    // UPGRADE_PLAN Path C: shared producer-side timeline semaphore.
-    // Created once here, owned by MediaPool for the rest of its
+    // Shared producer-side timeline semaphore. Created once here, owned by
+    // MediaPool for the rest of its
     // lifetime, signalled by every convert+copy submission, waited on
     // GPU-side by the compositor.
     if (m_prefetchTimelineSem == 0) {
@@ -118,18 +119,18 @@ void MediaPool::onGpuContextReady()
             GpuContext::get().vkDevice(), &semInfo, nullptr, &sem);
         if (sr == VK_SUCCESS) {
             m_prefetchTimelineSem = reinterpret_cast<uint64_t>(sem);
-            spdlog::warn("MediaPool: prefetch timeline semaphore created — "
-                         "cross-queue compositor wait now active");
+            spdlog::info("MediaPool: prefetch timeline semaphore created; "
+                         "cross-queue compositor wait active");
         } else {
             spdlog::warn("MediaPool: failed to create prefetch timeline "
-                         "semaphore (vk={}); cross-queue path will fall "
-                         "back to per-submit fence wait",
+                         "semaphore (vk={}); GPU-resident prefetch remains "
+                         "disabled to preserve cross-queue visibility",
                          static_cast<int>(sr));
+            return;
         }
     }
 
-    spdlog::warn("MediaPool: PrefetchTexturePool allocated post-GpuContext init "
-                 "— GPU-resident prefetch decode path now armed");
+    spdlog::info("MediaPool: GPU-resident prefetch decode path armed");
 }
 
 uint64_t MediaPool::prefetchTimelineSem() const noexcept
@@ -154,7 +155,8 @@ MediaPool::~MediaPool()
     // Destroy the shared timeline semaphore.  All prefetch work has
     // been joined by stopPrefetchThread() above, and the compositor's
     // composite ring's fences have been drained as part of GpuContext
-    // shutdown, so no one can be waiting on this anymore.
+    // shutdown, or the device has been declared permanently lost, so no new
+    // submission can wait on this semaphore.
     if (m_prefetchTimelineSem != 0 && GpuContext::get().isInitialized()) {
         vkDestroySemaphore(GpuContext::get().vkDevice(),
                            reinterpret_cast<VkSemaphore>(m_prefetchTimelineSem),

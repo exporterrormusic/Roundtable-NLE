@@ -124,7 +124,8 @@ void EffectProcessor::shutdown()
     if (!m_device) return;
 
     VkDevice dev = m_device->handle();
-    if (dev) vkDeviceWaitIdle(dev);
+    if (dev && GpuContext::get().gpuState() == GpuState::Healthy)
+        vkDeviceWaitIdle(dev);
 
     // Query pool
     if (m_queryPool != VK_NULL_HANDLE) {

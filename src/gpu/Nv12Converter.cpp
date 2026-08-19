@@ -62,7 +62,8 @@ void Nv12Converter::shutdown()
 {
     if (!m_device) return;
     VkDevice dev = m_device->handle();
-    if (dev) vkDeviceWaitIdle(dev);
+    if (dev && GpuContext::get().gpuState() == GpuState::Healthy)
+        vkDeviceWaitIdle(dev);
 
     if (m_pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(dev, m_pipeline, nullptr);
