@@ -6,6 +6,7 @@
  */
 
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/KeyframeEditor.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "Theme.h"
 
@@ -30,6 +31,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QPushButton>
+#include <QDialog>
 
 #include <cmath>
 
@@ -45,6 +47,64 @@ inline float gainToDb(float gain) noexcept {
 }
 } // namespace
 
+void EffectControlsPanel::registerPropertyRow(PropertyRow* row)
+{
+    if (!row) return;
+    m_propertyRows.push_back(row);
+    connect(row, &PropertyRow::curveEditorRequested,
+            this, &EffectControlsPanel::showPropertyCurveEditor);
+}
+
+void EffectControlsPanel::showPropertyCurveEditor(PropertyRow* row, bool expanded)
+{
+    if (!expanded) {
+        if (m_curveEditorDialog) m_curveEditorDialog->hide();
+        return;
+    }
+    if (!row || !m_clip || !m_track || m_track->isLocked()) {
+        if (row) row->setCurveExpanded(false);
+        return;
+    }
+
+    if (!m_curveEditorDialog) {
+        m_curveEditorDialog = new QDialog(this, Qt::Tool);
+        m_curveEditorDialog->resize(720, 420);
+        auto* layout = new QVBoxLayout(m_curveEditorDialog);
+        m_curveEditor = new KeyframeEditor(m_curveEditorDialog);
+        layout->addWidget(m_curveEditor);
+        connect(m_curveEditorDialog, &QDialog::finished, this, [this]() {
+            for (auto* propertyRow : m_propertyRows)
+                if (propertyRow) propertyRow->setCurveExpanded(false);
+        });
+    }
+
+    std::vector<CurveEntry> curves;
+    const auto tracks = row->allTracks();
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const std::string suffix = tracks.size() > 1
+            ? " " + std::to_string(i + 1) : std::string{};
+        curves.push_back({row->propertyName().toStdString() + suffix,
+                          QColor::fromHsv(static_cast<int>(i * 83) % 360, 180, 235),
+                          tracks[i], true});
+    }
+    if (curves.empty()) {
+        row->setCurveExpanded(false);
+        return;
+    }
+
+    for (auto* propertyRow : m_propertyRows)
+        if (propertyRow && propertyRow != row) propertyRow->setCurveExpanded(false);
+
+    m_curveEditor->setCommandStack(m_commandStack);
+    m_curveEditor->setCurves(std::move(curves), m_clip);
+    m_curveEditor->setShowVelocityGraph(true);
+    m_curveEditor->fitViewToAll();
+    m_curveEditorDialog->setWindowTitle(
+        tr("%1 — Keyframe Graph").arg(row->propertyName()));
+    m_curveEditorDialog->show();
+    m_curveEditorDialog->raise();
+}
+
 void EffectControlsPanel::clearPropertyTree()
 {
     // Preserve collapse state before destroying widgets
@@ -54,6 +114,7 @@ void EffectControlsPanel::clearPropertyTree()
                 (sec.arrow->text() == QStringLiteral("\u25B6"));
     }
 
+    if (m_curveEditorDialog) m_curveEditorDialog->hide();
     m_propertyRows.clear();
     m_maskPathControls.clear();
     m_sectionArrows.clear();
@@ -196,7 +257,7 @@ void EffectControlsPanel::buildPropertyTree()
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
 
         // Wire keyframe signals
         connect(row, &PropertyRow::addKeyframeRequested,

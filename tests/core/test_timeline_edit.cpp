@@ -1201,6 +1201,47 @@ TEST(EditOperations, PasteInsertCrossSequenceAddsOverflowTracksAndShifts)
     EXPECT_EQ(after, 1u);                     // only the pre-existing clip
 }
 
+TEST(EditOperations, PasteRejectsWholeBatchWhenDestinationLocked)
+{
+    rt::Timeline src;
+    auto* s0 = src.addVideoTrack("");
+    auto* s1 = src.addVideoTrack("");
+    addClip(s0, 0.0, 1.0); addClip(s1, 0.0, 1.0);
+    rt::SelectionSet selection;
+    selection.selectClip({0, s0->clip(0)->id()}, true);
+    selection.selectClip({1, s1->clip(0)->id()}, true);
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, selection, clipboard);
+
+    rt::Timeline dst;
+    auto* v1 = dst.addVideoTrack("");
+    v1->setLocked(true);
+    const size_t tracksBefore = dst.trackCount();
+    EXPECT_EQ(rt::EditOperations::paste(dst, clipboard, 0), nullptr);
+    EXPECT_EQ(dst.trackCount(), tracksBefore);
+    EXPECT_EQ(v1->clipCount(), 0u);
+}
+
+TEST(EditOperations, PasteInsertRejectsWholeBatchWhenDestinationUntargeted)
+{
+    rt::Timeline src;
+    auto* source = src.addVideoTrack("");
+    addClip(source, 0.0, 1.0);
+    rt::SelectionSet selection;
+    selection.selectClip({0, source->clip(0)->id()}, true);
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(src, selection, clipboard);
+
+    rt::Timeline dst;
+    auto* v1 = dst.addVideoTrack("");
+    v1->setTargeted(false);
+    addClip(v1, 2.0, 1.0);
+    const int64_t originalIn = v1->clip(0)->timelineIn();
+    EXPECT_EQ(rt::EditOperations::pasteInsert(dst, clipboard, 0), nullptr);
+    EXPECT_EQ(v1->clipCount(), 1u);
+    EXPECT_EQ(v1->clip(0)->timelineIn(), originalIn);
+}
+
 TEST(EditOperations, CutSelection)
 {
     TestTimeline tt;

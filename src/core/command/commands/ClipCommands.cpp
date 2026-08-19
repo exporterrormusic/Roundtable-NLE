@@ -18,21 +18,25 @@ AddClipCommand::AddClipCommand(Track* track, std::unique_ptr<Clip> clip)
     : m_track(track)
     , m_clip(std::move(clip))
     , m_clipId(m_clip ? m_clip->id() : 0)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
 void AddClipCommand::execute()
 {
-    if (m_clip)
+    if (m_authorized && m_clip)
     {
-        m_track->addClip(std::move(m_clip));
-        m_clip = nullptr; // Track now owns it
+        if (m_track->addClip(std::move(m_clip), TrackMutationPolicy::BypassLock))
+            m_applied = true;
     }
 }
 
 void AddClipCommand::undo()
 {
-    m_clip = m_track->removeClipById(m_clipId);
+    if (!m_applied) return;
+    m_clip = m_track->removeClipById(
+        m_clipId, TrackMutationPolicy::BypassLock);
+    m_applied = false;
 }
 
 std::string AddClipCommand::description() const
@@ -45,6 +49,7 @@ std::string AddClipCommand::description() const
 RemoveClipCommand::RemoveClipCommand(Track* track, uint64_t clipId)
     : m_track(track)
     , m_clipId(clipId)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
@@ -53,6 +58,7 @@ void RemoveClipCommand::execute()
     // Capture transitions that reference this clip BEFORE removeClipById drops
     // them, so undo can restore the dissolve/fade. (Re-captured on every redo,
     // keyed by clip id, so this stays correct across undo/redo cycles.)
+    if (!m_authorized) return;
     m_savedTransitions.clear();
     if (m_track) {
         for (const auto& t : m_track->transitions()) {
@@ -60,20 +66,20 @@ void RemoveClipCommand::execute()
                 m_savedTransitions.push_back(t);
         }
     }
-    m_clip = m_track->removeClipById(m_clipId);
+    m_clip = m_track->removeClipById(
+        m_clipId, TrackMutationPolicy::BypassLock);
 }
 
 void RemoveClipCommand::undo()
 {
     if (m_clip)
     {
-        m_track->addClip(std::move(m_clip));
-        m_clip = nullptr;
+        m_track->addClip(std::move(m_clip), TrackMutationPolicy::BypassLock);
         // Re-attach the transitions dropped on execute. addTransition() is
         // add-or-replace keyed on the clip-id edit point, so this won't stack
         // duplicates if one already exists.
         for (const auto& t : m_savedTransitions)
-            m_track->addTransition(t);
+            m_track->addTransition(t, TrackMutationPolicy::BypassLock);
         m_savedTransitions.clear();
     }
 }
@@ -90,24 +96,29 @@ MoveClipCommand::MoveClipCommand(Track* track, uint64_t clipId, int64_t newPosit
     , m_clipId(clipId)
     , m_oldPosition(0)
     , m_newPosition(newPosition)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
 void MoveClipCommand::execute()
 {
+    if (!m_authorized) return;
     size_t idx = m_track->findClipIndexById(m_clipId);
     if (idx == m_track->clipCount()) return;
 
     m_oldPosition = m_track->clip(idx)->timelineIn();
-    m_track->moveClip(idx, m_newPosition);
+    m_track->moveClip(idx, m_newPosition, TrackMutationPolicy::BypassLock);
+    m_applied = true;
 }
 
 void MoveClipCommand::undo()
 {
+    if (!m_applied) return;
     size_t idx = m_track->findClipIndexById(m_clipId);
     if (idx == m_track->clipCount()) return;
 
-    m_track->moveClip(idx, m_oldPosition);
+    m_track->moveClip(idx, m_oldPosition, TrackMutationPolicy::BypassLock);
+    m_applied = false;
 }
 
 std::string MoveClipCommand::description() const
@@ -119,6 +130,7 @@ bool MoveClipCommand::mergeWith(const Command& next)
 {
     auto* moveCmd = dynamic_cast<const MoveClipCommand*>(&next);
     if (!moveCmd) return false;
+    if (!m_authorized || !moveCmd->m_authorized) return false;
     if (moveCmd->m_clipId != m_clipId || moveCmd->m_track != m_track) return false;
 
     // Absorb the new destination, keep our original old position
@@ -137,6 +149,7 @@ TrimClipCommand::TrimClipCommand(Track* track, uint64_t clipId,
     , m_oldDuration(0),   m_newDuration(newDuration)
     , m_oldSourceIn(0),   m_newSourceIn(newSourceIn)
     , m_preserveKeyframeTimes(preserveKeyframeTimes)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
@@ -240,13 +253,15 @@ void retargetTransitionsForClip(Track* track, uint64_t clipId, const Clip* c)
         else if (t.rightClipId == clipId) {
             if (t.editPointTick != inTick) { t.editPointTick = inTick; changed = true; }
         }
-        if (changed) track->setTransition(i, t);
+        if (changed) track->setTransition(
+            i, t, TrackMutationPolicy::BypassLock);
     }
 }
 } // namespace
 
 void TrimClipCommand::execute()
 {
+    if (!m_authorized) return;
     size_t idx = m_track->findClipIndexById(m_clipId);
     if (idx == m_track->clipCount()) return;
 
@@ -262,10 +277,12 @@ void TrimClipCommand::execute()
     c->setSourceIn(m_newSourceIn);
 
     retargetTransitionsForClip(m_track, m_clipId, c);
+    m_applied = true;
 }
 
 void TrimClipCommand::undo()
 {
+    if (!m_applied) return;
     size_t idx = m_track->findClipIndexById(m_clipId);
     if (idx == m_track->clipCount()) return;
 
@@ -277,6 +294,7 @@ void TrimClipCommand::undo()
     c->setSourceIn(m_oldSourceIn);
 
     retargetTransitionsForClip(m_track, m_clipId, c);
+    m_applied = false;
 }
 
 std::string TrimClipCommand::description() const
@@ -288,6 +306,7 @@ bool TrimClipCommand::mergeWith(const Command& next)
 {
     auto* trimCmd = dynamic_cast<const TrimClipCommand*>(&next);
     if (!trimCmd) return false;
+    if (!m_authorized || !trimCmd->m_authorized) return false;
     if (trimCmd->m_clipId != m_clipId || trimCmd->m_track != m_track) return false;
     if (trimCmd->m_preserveKeyframeTimes != m_preserveKeyframeTimes) return false;
 

@@ -35,6 +35,7 @@
 #include "panels/timeline/TimelineWorkspace.h"
 
 #include "CompositeService.h"
+#include "cache/CachePolicy.h"
 #include "audio/AudioPlaybackService.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "panels/timeline/DropController.h"
@@ -170,6 +171,15 @@ TimelineWorkspace::~TimelineWorkspace()
 {
     m_destroying.store(true, std::memory_order_release);
 
+    // MediaPool may already have copied its callback on another thread. Clear
+    // future callbacks, close the controller's shared callback gate, then join
+    // all stat/warmup workers before any non-owning dependency can disappear.
+    if (m_mediaPool)
+        m_mediaPool->setOnMediaOpened({});
+    if (m_mediaWatch)
+        m_mediaWatch->shutdown();
+    cancelAndJoinBackgroundMediaWarmups();
+
     // Stop timers before destroying members
     if (m_meterTimer) {
         m_meterTimer->stop();
@@ -191,7 +201,12 @@ TimelineWorkspace::~TimelineWorkspace()
         m_audioPlayback->waitForWarm();
     }
 
-    // Destroy composite service (flushes GPU caches, destroys composite slot)
+    // Destroy both compositors while their model snapshots/dependencies are
+    // still alive (the export service is created lazily).
+    m_exportCompositeService.reset();
+    m_exportCachePolicy.reset();
+    m_exportTimelineSnapshot.reset();
+    m_exportProjectSnapshot.reset();
     m_compositeService.reset();
 }
 

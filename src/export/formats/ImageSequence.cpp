@@ -54,9 +54,12 @@ bool ImageSequence::init(const EncoderConfig& config)
 {
     m_config = config;
     m_framesEncoded = 0;
+    m_failed = false;
+    m_lastError.clear();
 
     if (m_outputDir.empty()) {
         m_lastError = "ImageSequence: Output directory not set";
+        m_failed = true;
         return false;
     }
 
@@ -64,6 +67,7 @@ bool ImageSequence::init(const EncoderConfig& config)
     std::filesystem::create_directories(m_outputDir, ec);
     if (ec) {
         m_lastError = "ImageSequence: Cannot create output dir: " + ec.message();
+        m_failed = true;
         return false;
     }
 
@@ -76,7 +80,11 @@ bool ImageSequence::init(const EncoderConfig& config)
 
 bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
 {
-    if (!m_initialized) return false;
+    if (!m_initialized || !rgbaPixels) {
+        m_lastError = "ImageSequence: invalid frame input";
+        m_failed = true;
+        return false;
+    }
 
     // Build filename
     char numBuf[64];
@@ -117,6 +125,7 @@ bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
             // format's extension produces files no reader can open.
             m_lastError = "ImageSequence: unsupported image format "
                         + std::to_string(static_cast<int>(m_config.imageFormat));
+            m_failed = true;
             spdlog::error("{}", m_lastError);
             return false;
     }
@@ -134,6 +143,7 @@ bool ImageSequence::encodeFrame(const uint8_t* rgbaPixels, int64_t frameIndex)
 
     if (!ok) {
         m_lastError = "ImageSequence: Failed to write " + pathToUtf8(path);
+        m_failed = true;
         spdlog::error("{}", m_lastError);
         return false;
     }

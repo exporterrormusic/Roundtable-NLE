@@ -5,6 +5,7 @@
 
 #include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelineWorkspace.h"
+#include "ShortcutManager.h"
 
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
@@ -60,19 +61,19 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         return;
     }
 
-    // Tilde (`) key toggles maximize/restore
-    if (event->key() == Qt::Key_QuoteLeft || event->key() == Qt::Key_AsciiTilde) {
-        m_ws->togglePanelMaximize();
-        event->accept();
-        return;
-    }
-
     const int key = event->key();
     const auto mod = event->modifiers();
     const bool noMod = (mod == Qt::NoModifier);
     const bool shiftOnly = (mod == Qt::ShiftModifier);
     const bool ctrlOnly = (mod == Qt::ControlModifier);
     const bool ctrlShift = (mod == (Qt::ControlModifier | Qt::ShiftModifier));
+    auto matchesAction = [this, key, mod](const char* actionId,
+                                          int fallbackKey,
+                                          Qt::KeyboardModifiers fallbackMods) {
+        if (auto* manager = m_ws->shortcutManager())
+            return manager->matches(QString::fromLatin1(actionId), key, mod);
+        return key == fallbackKey && mod == fallbackMods;
+    };
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Transport ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     // Route transport keys to the Source Monitor's controller when it is the
@@ -193,37 +194,46 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tools (FCP7) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (noMod && key == Qt::Key_A) {
+    if (matchesAction(ShortcutManager::kToolSelection,
+                      Qt::Key_A, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Selection);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_B) {
+    if (matchesAction(ShortcutManager::kToolRazor,
+                      Qt::Key_B, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Razor);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_R) {
+    if (matchesAction(ShortcutManager::kToolRolling,
+                      Qt::Key_R, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Rolling);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_S) {
+    if (matchesAction(ShortcutManager::kToolSlip,
+                      Qt::Key_S, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Slip);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_T) {
+    if (matchesAction(ShortcutManager::kToolText, Qt::Key_T, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Text);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_P) {
+    if (matchesAction(ShortcutManager::kToolPen, Qt::Key_P, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::PenMask);
         event->accept(); return;
     }
-    if (noMod && key == Qt::Key_Z) {
+    if (matchesAction(ShortcutManager::kToolZoom, Qt::Key_Z, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Zoom);
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Delete = Lift ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (noMod && (key == Qt::Key_Delete || key == Qt::Key_Backspace)) {
+    const auto* deleteAction = m_ws->shortcutManager()
+        ? m_ws->shortcutManager()->action(ShortcutManager::kDelete) : nullptr;
+    const bool deleteAlias = noMod && key == Qt::Key_Backspace
+        && (!deleteAction || deleteAction->currentKey == deleteAction->defaultKey);
+    if (matchesAction(ShortcutManager::kDelete,
+                      Qt::Key_Delete, Qt::NoModifier) || deleteAlias) {
         // Mask selection is an explicit edit target, not a focus accident.
         // Native Program Monitor input can leave keyboard focus on the
         // workspace, so route this before any clip/layer fallback.
@@ -269,12 +279,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     if (cmd) {
                         m_ws->timelinePanel()->clearGapSelection();
                         m_ws->commandStack()->execute(std::move(cmd));
-                        m_ws->timelinePanel()->refreshTrackContents();
-                        m_ws->invalidateAudioSources();
-                        m_ws->invalidateCompositeCache();
-                        m_ws->updateTransformOverlay();
-                        if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                        m_ws->schedulePostEditWork();
+                        m_ws->applyEditImpact();
                     }
                 }
                 event->accept(); return;
@@ -285,18 +290,12 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             size_t transIndex = m_ws->timelinePanel()->selectedTransitionIndex();
             if (transTrack < m_ws->timeline()->trackCount()) {
                 Track* track = m_ws->timeline()->track(transTrack);
-                if (track && transIndex < track->transitionCount()) {
+                if (track && !track->isLocked()
+                    && transIndex < track->transitionCount()) {
                     auto cmd = std::make_unique<RemoveTransitionCommand>(track, transIndex);
                     m_ws->timelinePanel()->clearTransitionSelection();
                     m_ws->commandStack()->execute(std::move(cmd));
-                    m_ws->timelinePanel()->refreshTrackContents();
-                    m_ws->invalidateCompositeCache();
-                    // Removing an audio cross-dissolve must rebuild the mixed
-                    // audio source so the baked crossfade is actually dropped.
-                    m_ws->invalidateAudioSources();
-                    m_ws->updateTransformOverlay();
-                    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                    m_ws->schedulePostEditWork();
+                    m_ws->applyEditImpact();
                     event->accept(); return;
                 }
             }
@@ -307,9 +306,6 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 m_ws->timelinePanel()->selection().clear();
                 m_ws->commandStack()->execute(std::move(cmd));
                 // Refresh the timeline UI so deleted clips disappear immediately
-                m_ws->timelinePanel()->refreshTrackContents();
-                m_ws->invalidateAudioSources();
-                m_ws->invalidateCompositeCache();
                 // Clear panels that were showing the now-deleted clip
                 m_ws->selection().clip = nullptr;
                 m_ws->selection().graphicLayerIdx = -1;
@@ -317,16 +313,17 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->clearClip();
                 if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->clearClip();
                 if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->clearClip();
-                m_ws->updateTransformOverlay();
-                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                m_ws->schedulePostEditWork();
+                EditImpact impact;
+                impact.selection = true;
+                m_ws->applyEditImpact(impact);
             }
         }
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Snapping toggle (N) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (noMod && key == Qt::Key_N) {
+    if (matchesAction(ShortcutManager::kToggleSnapping,
+                      Qt::Key_N, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) {
             bool current = m_ws->timelinePanel()->snapEngine().isEnabled();
             m_ws->timelinePanel()->setSnappingEnabled(!current);
@@ -335,7 +332,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shift+Z = Zoom to Fit ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (shiftOnly && key == Qt::Key_Z) {
+    if (matchesAction(ShortcutManager::kZoomToFit, Qt::Key_Z, Qt::ShiftModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->zoomToFit();
         event->accept(); return;
     }
@@ -343,7 +340,8 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ F = Split at playhead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     // If any clips are selected, split every selected clip the playhead
     // crosses; otherwise split all clips at the playhead.
-    if (noMod && key == Qt::Key_F) {
+    if (matchesAction(ShortcutManager::kSplitAt,
+                      Qt::Key_F, Qt::NoModifier)) {
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {
             int64_t tick = m_ws->playbackController()->currentTick();
             std::unique_ptr<Command> cmd;
@@ -402,29 +400,24 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         }
                     }
                 }
-                m_ws->invalidateAudioSources();
-                m_ws->invalidateCompositeCache();
-                m_ws->updateTransformOverlay();
-                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                m_ws->schedulePostEditWork();
+                EditImpact impact;
+                impact.timeline = TimelineRefresh::None; // refreshed before selection update
+                impact.selection = true;
+                m_ws->applyEditImpact(impact);
             }
         }
         event->accept(); return;
     }
 
     // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shift+F = Split all tracks at playhead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-    if (shiftOnly && key == Qt::Key_F) {
+    if (matchesAction(ShortcutManager::kSplitAll,
+                      Qt::Key_F, Qt::ShiftModifier)) {
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {
             int64_t tick = m_ws->playbackController()->currentTick();
             auto cmd = EditOperations::splitAllAtPlayhead(*m_ws->timeline(), tick);
             if (cmd) {
                 m_ws->commandStack()->execute(std::move(cmd));
-                if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                m_ws->invalidateAudioSources();
-                m_ws->invalidateCompositeCache();
-                m_ws->updateTransformOverlay();
-                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                m_ws->schedulePostEditWork();
+                m_ws->applyEditImpact();
             }
         }
         event->accept(); return;
@@ -451,7 +444,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 int64_t minIn = std::numeric_limits<int64_t>::max();
                 for (const auto& sel : selClips) {
                     Track* tr = m_ws->timeline()->track(sel.trackIndex);
-                    if (!tr) continue;
+                    if (!tr || tr->isLocked()) continue;
                     size_t ci = tr->findClipIndexById(sel.clipId);
                     if (ci >= tr->clipCount()) continue;
                     minIn = std::min(minIn, tr->clip(ci)->timelineIn());
@@ -466,7 +459,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         keyLeft ? "Nudge left" : "Nudge right");
                     for (const auto& sel : selClips) {
                         Track* tr = m_ws->timeline()->track(sel.trackIndex);
-                        if (!tr) continue;
+                        if (!tr || tr->isLocked()) continue;
                         size_t ci = tr->findClipIndexById(sel.clipId);
                         if (ci >= tr->clipCount()) continue;
                         int64_t newIn = tr->clip(ci)->timelineIn() + deltaTicks;
@@ -483,9 +476,14 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     // other when nudged into overlapping positions.
                     {
                         std::unordered_set<uint64_t> nudgedIds;
-                        for (const auto& sel : selClips)
-                            nudgedIds.insert(sel.clipId);
                         for (const auto& sel : selClips) {
+                            const Track* tr = m_ws->timeline()->track(sel.trackIndex);
+                            if (tr && !tr->isLocked())
+                                nudgedIds.insert(sel.clipId);
+                        }
+                        for (const auto& sel : selClips) {
+                            const Track* tr = m_ws->timeline()->track(sel.trackIndex);
+                            if (!tr || tr->isLocked()) continue;
                             auto fix = EditOperations::resolveOverlaps(
                                 *m_ws->timeline(), sel.trackIndex, sel.clipId, nudgedIds);
                             if (fix) {
@@ -496,12 +494,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     }
                     if (compound->size() > 0) {
                         m_ws->commandStack()->pushWithoutExecute(std::move(compound));
-                        m_ws->timelinePanel()->refreshTrackContents();
-                        m_ws->invalidateAudioSources();
-                        m_ws->invalidateCompositeCache();
-                        m_ws->updateTransformOverlay();
-                        if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                        m_ws->schedulePostEditWork();
+                        m_ws->applyEditImpact();
                     }
                 }
             }
@@ -558,12 +551,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 auto cmd = EditOperations::liftInOut(*m_ws->timeline(), inPt, outPt);
                 if (cmd) {
                     m_ws->commandStack()->execute(std::move(cmd));
-                    if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                    m_ws->invalidateAudioSources();
-                    m_ws->invalidateCompositeCache();
-                    m_ws->updateTransformOverlay();
-                    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                    m_ws->schedulePostEditWork();
+                    m_ws->applyEditImpact();
                 }
             }
         }
@@ -579,12 +567,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 auto cmd = EditOperations::extractInOut(*m_ws->timeline(), inPt, outPt);
                 if (cmd) {
                     m_ws->commandStack()->execute(std::move(cmd));
-                    if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                    m_ws->invalidateAudioSources();
-                    m_ws->invalidateCompositeCache();
-                    m_ws->updateTransformOverlay();
-                    if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                    m_ws->schedulePostEditWork();
+                    m_ws->applyEditImpact();
                 }
             }
         }
@@ -597,12 +580,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             auto cmd = EditOperations::closeAllGaps(*m_ws->timeline());
             if (cmd) {
                 m_ws->commandStack()->execute(std::move(cmd));
-                if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                m_ws->invalidateAudioSources();
-                m_ws->invalidateCompositeCache();
-                m_ws->updateTransformOverlay();
-                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                m_ws->schedulePostEditWork();
+                m_ws->applyEditImpact();
             }
         }
         event->accept(); return;
@@ -660,12 +638,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         *m_ws->timeline(), ti, c->id(), ClipEdge::Head, tick);
                     if (cmd) {
                         m_ws->commandStack()->execute(std::move(cmd));
-                        if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                        m_ws->invalidateAudioSources();
-                        m_ws->invalidateCompositeCache();
-                        m_ws->updateTransformOverlay();
-                        if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                        m_ws->schedulePostEditWork();
+                        m_ws->applyEditImpact();
                     }
                     break;
                 }
@@ -687,12 +660,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         *m_ws->timeline(), ti, c->id(), ClipEdge::Tail, tick);
                     if (cmd) {
                         m_ws->commandStack()->execute(std::move(cmd));
-                        if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
-                        m_ws->invalidateAudioSources();
-                        m_ws->invalidateCompositeCache();
-                        m_ws->updateTransformOverlay();
-                        if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-                        m_ws->schedulePostEditWork();
+                        m_ws->applyEditImpact();
                     }
                     break;
                 }
@@ -702,7 +670,8 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // â”€â”€ = / + = Timeline zoom in â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (noMod && (key == Qt::Key_Equal || key == Qt::Key_Plus)) {
+    if (matchesAction(ShortcutManager::kZoomInAlt, Qt::Key_Equal, Qt::NoModifier)
+        || (noMod && key == Qt::Key_Plus)) {
         if (m_ws->timelinePanel()) {
             auto& engine = m_ws->timelinePanel()->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
@@ -713,7 +682,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // â”€â”€ - = Timeline zoom out â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (noMod && key == Qt::Key_Minus) {
+    if (matchesAction(ShortcutManager::kZoomOutAlt, Qt::Key_Minus, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) {
             auto& engine = m_ws->timelinePanel()->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
@@ -724,13 +693,13 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // â”€â”€ \ = Zoom to fit (alternate binding) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (noMod && key == Qt::Key_Backslash) {
+    if (matchesAction(ShortcutManager::kZoomToFitAlt, Qt::Key_Backslash, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->zoomToFit();
         event->accept(); return;
     }
 
     // â”€â”€ D = Select clip at playhead â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if (noMod && key == Qt::Key_D) {
+    if (matchesAction(ShortcutManager::kSelectAtPlayhead, Qt::Key_D, Qt::NoModifier)) {
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->timelinePanel()) {
             int64_t tick = m_ws->playbackController()->currentTick();
             auto result = EditOperations::matchFrame(*m_ws->timeline(), tick);
@@ -745,7 +714,8 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // ── ` (backtick / tilde) = Toggle panel maximize (Premiere Pro style) ──
-    if (noMod && (key == Qt::Key_QuoteLeft || key == Qt::Key_AsciiTilde)) {
+    if (matchesAction(ShortcutManager::kPanelMaximize, Qt::Key_QuoteLeft, Qt::NoModifier)
+        || (noMod && key == Qt::Key_AsciiTilde)) {
         m_ws->togglePanelMaximize();
         event->accept(); return;
     }

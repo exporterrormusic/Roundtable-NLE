@@ -30,7 +30,7 @@ namespace rt {
 
 void PropertiesPanel::applySpineCharacter()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Spine) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
     auto* sc = static_cast<SpineClip*>(m_clip);
     // Use folder name from item data (not display text)
     auto newVal = m_characterCombo->currentData().toString().toStdString();
@@ -53,7 +53,7 @@ void PropertiesPanel::applySpineCharacter()
 
 void PropertiesPanel::applySpineOutfit()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
 
     // Handle VideoClip video characters
     if (m_clip->clipType() == ClipType::Video) {
@@ -137,7 +137,7 @@ void PropertiesPanel::applySpineOutfit()
 
 void PropertiesPanel::applySpineStance()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Spine) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
     auto* sc = static_cast<SpineClip*>(m_clip);
     auto newVal = static_cast<CharacterStance>(m_stanceCombo->currentIndex());
     if (newVal == sc->stance()) return;
@@ -155,7 +155,7 @@ void PropertiesPanel::applySpineStance()
 
 void PropertiesPanel::applySpineAnimation()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
 
     // Handle VideoClip video characters
     if (m_clip->clipType() == ClipType::Video) {
@@ -261,7 +261,7 @@ void PropertiesPanel::applySpineAnimation()
 
 void PropertiesPanel::applySpineLooping()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Spine) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
     auto* sc = static_cast<SpineClip*>(m_clip);
     bool newVal = m_loopingCheck->isChecked();
     if (newVal == sc->isLooping()) return;
@@ -287,7 +287,7 @@ void PropertiesPanel::applySpineLooping()
 
 void PropertiesPanel::applySpineTalking()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
 
     // Handle VideoClip video characters
     if (m_clip->clipType() == ClipType::Video) {
@@ -342,7 +342,7 @@ void PropertiesPanel::applySpineTalking()
 
 void PropertiesPanel::applySpineAnimSpeed()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Spine) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
     auto* sc = static_cast<SpineClip*>(m_clip);
     float newVal = static_cast<float>(m_animSpeedSpin->value());
     if (newVal == sc->animationSpeed()) return;
@@ -368,7 +368,7 @@ void PropertiesPanel::applySpineAnimSpeed()
 
 void PropertiesPanel::applySpineContinuity()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Spine) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
     auto* sc = static_cast<SpineClip*>(m_clip);
     bool newVal = m_continuityCheck->isChecked();
     if (newVal == sc->useGlobalTime()) return;

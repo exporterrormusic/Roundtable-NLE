@@ -6,10 +6,12 @@
 #include "CompositeService.h"
 #include "Constants.h"
 #include "Settings.h"
+#include "cache/CachePolicy.h"
 #include "cache/FrameCache.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "playback/PlaybackController.h"
+#include "project/Project.h"
 #include "timeline/Timeline.h"
 
 #include <QCoreApplication>
@@ -36,6 +38,90 @@ std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrame(
                                              /*isNestedRecursion=*/false,
                                              stillMode)
         : nullptr;
+}
+
+std::shared_ptr<CachedFrame> TimelineWorkspace::compositeExportFrame(
+    const std::shared_ptr<const Project>& projectSnapshot,
+    const std::shared_ptr<const Timeline>& timelineSnapshot,
+    int64_t tick, uint32_t outW, uint32_t outH,
+    bool scrubMode, bool preserveAlpha)
+{
+    if (!projectSnapshot || !timelineSnapshot || outW == 0 || outH == 0)
+        return nullptr;
+
+    // Keep export state physically separate from the Program Monitor service.
+    // Rebinding the live service for each frame would race its producer thread
+    // and a project switch could overwrite the binding between queued frames.
+    if (!m_exportCompositeService) {
+        // CachePolicy is stateful and documented for one composite thread; a
+        // separate instance keeps its LRU generations/VRAM callbacks from
+        // racing or overwriting the Program Monitor's policy hooks.
+        m_exportCachePolicy = std::make_unique<CachePolicy>();
+        m_exportCompositeService = std::make_unique<CompositeService>();
+        m_exportCompositeService->setMediaPool(m_mediaPool);
+        m_exportCompositeService->setMediaSourceService(m_mediaSourceService);
+        m_exportCompositeService->setModelManager(m_modelManager);
+        m_exportCompositeService->setShotPresetManager(m_shotPresetManager);
+        m_exportCompositeService->setCachePolicy(m_exportCachePolicy.get());
+        m_exportCompositeService->setGpuDisplayMode(false);
+        m_exportCompositeService->setForceFullResolution(true);
+        m_exportCompositeService->setSegmentCacheReadEnabled(true);
+#ifdef ROUNDTABLE_HAS_SPINE
+        if (m_mediaPool)
+            m_exportCompositeService->initAnimVideoCache(m_mediaPool);
+        m_exportCompositeService->setSpineLoadScheduler(
+            [this](const std::string& c, const std::string& o,
+                   int s, const std::string& a) {
+                scheduleSpineSharedLoad(c, o, s, a);
+            });
+#endif
+    }
+
+    if (m_exportProjectSnapshot.get() != projectSnapshot.get() ||
+        m_exportTimelineSnapshot.get() != timelineSnapshot.get()) {
+        // Reset while the old strong references are still alive, then bind the
+        // new immutable graph. CompositeService's historical setter surface is
+        // non-const; its render path only reads these model objects.
+        m_exportCompositeService->reset();
+        m_exportProjectSnapshot = projectSnapshot;
+        m_exportTimelineSnapshot = timelineSnapshot;
+        m_exportCompositeService->setProject(
+            const_cast<Project*>(m_exportProjectSnapshot.get()));
+        m_exportCompositeService->setTimeline(
+            const_cast<Timeline*>(m_exportTimelineSnapshot.get()));
+#ifdef ROUNDTABLE_HAS_SPINE
+        if (m_mediaPool)
+            m_exportCompositeService->initAnimVideoCache(m_mediaPool);
+#endif
+    }
+
+#ifdef ROUNDTABLE_HAS_SPINE
+    // Spine shared assets are loaded/integrated by the live UI scheduler. Copy
+    // immutable decoded atlas/skeleton payloads into the isolated export
+    // service; missing entries requested this frame arrive on a later frame.
+    if (m_compositeService) {
+        for (const auto& [key, data] : m_compositeService->spineSharedCache()) {
+            if (data && !m_exportCompositeService->findSpineSharedData(key))
+                m_exportCompositeService->storeSpineSharedData(key, data);
+        }
+    }
+#endif
+
+    m_exportCompositeService->setForceFullResolution(true);
+    m_exportCompositeService->setExportAlpha(preserveAlpha);
+
+    // Preserve the existing >8-bit single-clip fast path, but bind it to the
+    // snapshot service instead of the live/current timeline.
+    auto result = m_exportCompositeService->tryBuild16fPassthrough(tick, outW, outH);
+    if (!result) {
+        result = m_exportCompositeService->compositeFrame(
+            tick, outW, outH, scrubMode,
+            /*isNestedRecursion=*/false,
+            /*stillMode=*/true);
+    }
+    if (result)
+        result->preservesAlpha = preserveAlpha;
+    return result;
 }
 
 void TimelineWorkspace::exportCurrentFrame()
@@ -177,6 +263,22 @@ void TimelineWorkspace::cacheExportFrame(
         m_compositeService->cacheExportFrame(tick, frame);
 }
 
+void TimelineWorkspace::cacheSnapshotExportFrame(
+    const std::shared_ptr<const Project>& projectSnapshot,
+    const std::shared_ptr<const Timeline>& timelineSnapshot,
+    int64_t tick, const std::shared_ptr<CachedFrame>& frame)
+{
+    // The first composite for a job performs the binding on the main thread.
+    // Never rebind from this worker-thread callback: if identities differ,
+    // caching is skipped rather than hashing a frame against the wrong graph.
+    if (!m_exportCompositeService || !frame ||
+        m_exportProjectSnapshot.get() != projectSnapshot.get() ||
+        m_exportTimelineSnapshot.get() != timelineSnapshot.get()) {
+        return;
+    }
+    m_exportCompositeService->cacheExportFrame(tick, frame);
+}
+
 void TimelineWorkspace::refreshRenderBar()
 {
     if (m_timelinePanel)
@@ -282,6 +384,14 @@ void TimelineWorkspace::setExportAlpha(bool keep)
 bool TimelineWorkspace::gpuDisplayMode() const noexcept
 {
     return m_compositeService ? m_compositeService->gpuDisplayMode() : false;
+}
+
+void TimelineWorkspace::shutdownCompositeServices()
+{
+    if (m_exportCompositeService)
+        m_exportCompositeService->shutdown();
+    if (m_compositeService)
+        m_compositeService->shutdown();
 }
 
 } // namespace rt

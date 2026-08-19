@@ -72,6 +72,7 @@ signals:
  void propertyChanged();
 
 private:
+ [[nodiscard]] bool canMutateBoundClip() const noexcept;
  void setupUI();
  void populateFromEffect();
  void applyToEffect();

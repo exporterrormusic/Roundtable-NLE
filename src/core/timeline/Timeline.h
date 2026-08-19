@@ -58,9 +58,10 @@ public:
     [[nodiscard]] Track*       track(size_t index) noexcept;
     [[nodiscard]] const Track* track(size_t index) const noexcept;
 
-    /// Return the nearest real track of `type` that can host clips. Divider
-    /// and caption rows are never returned. `desiredIndex` may be outside the
-    /// timeline; SIZE_MAX is returned when no compatible track exists.
+    /// Return the nearest unlocked real track of `type` that can host clips.
+    /// Locked, divider, and caption rows are never returned. `desiredIndex`
+    /// may be outside the timeline; SIZE_MAX is returned when no compatible
+    /// track exists.
     [[nodiscard]] size_t nearestClipHostTrack(int desiredIndex,
                                               TrackType type) const noexcept;
 
@@ -109,6 +110,9 @@ public:
     /// Deep-clone the entire timeline (tracks, clips, markers, playback state).
     /// Observers are NOT copied — the clone starts with no observers.
     [[nodiscard]] std::unique_ptr<Timeline> clone() const;
+    /// Replace model state from a deep copy while preserving observers.
+    /// Used by transactional compound edits and their undo/redo snapshots.
+    void restoreFrom(const Timeline& snapshot);
 
 private:
     std::string                        m_name{"Sequence 1"};

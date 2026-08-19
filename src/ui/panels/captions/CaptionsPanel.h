@@ -17,11 +17,15 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QCheckBox>
 #include <QProgressBar>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace rt {
@@ -54,6 +58,7 @@ struct PreparedCaptionCue {
  int64_t     clipEndTick{0};  ///< end of the source audio clip — captions never extend past this
  std::string text;
  std::string speaker;
+ float       confidence{1.0f};
 };
 
 class CaptionsPanel : public QWidget, public TimelineObserver
@@ -73,6 +78,9 @@ public:
 
  /// Rebuild the caption list from the active timeline.
  void refresh();
+
+ /// Re-evaluate locked-track editability without rebuilding list contents.
+ void refreshLockState();
 
  /// Select and scroll to a specific caption clip by track/clip index.
  void selectCaption(size_t trackIndex, size_t clipIndex);
@@ -118,6 +126,7 @@ private slots:
  void onReplaceAll();
  void onClearAll();
  void onFillGaps();
+ void onReflowCaptions();
  void onTranscribe();
  void onAddCaptionsToTimeline();
 
@@ -128,6 +137,7 @@ private:
 
  /// Hide list rows that don't match the filter box (text or speaker).
  void applyCaptionFilter();
+ void updateQualityWarnings();
 
  /// Resolve a clip id to the live CaptionClip on the timeline (nullptr if it
  /// was deleted). Undo/redo lambdas capture ids, never Clip pointers.
@@ -144,6 +154,12 @@ private:
  /// Add prepared caption cues (from all sources, merged) to the caption
  /// track as one undoable batch.
  void applyPreparedCues(const std::vector<PreparedCaptionCue>& cues);
+
+ /// Cancel the active worker without waiting on the UI thread. Destruction
+ /// follows this with a join before the panel's dependencies are released.
+ void requestTranscriptionCancel() noexcept;
+
+ [[nodiscard]] bool captionTrackLocked() const noexcept;
 
  /// Info about a caption clip shown in the list.
  struct CaptionEntry {
@@ -172,6 +188,15 @@ private:
  QPushButton* m_addBtn{nullptr};
  QPushButton* m_deleteBtn{nullptr};
  QPushButton* m_fillGapsBtn{nullptr};
+ QPushButton* m_reflowBtn{nullptr};
+ QSpinBox* m_maxCharsSpin{nullptr};
+ QSpinBox* m_maxLinesSpin{nullptr};
+ QDoubleSpinBox* m_maxCpsSpin{nullptr};
+ QDoubleSpinBox* m_minDurationSpin{nullptr};
+ QDoubleSpinBox* m_maxDurationSpin{nullptr};
+ QDoubleSpinBox* m_minGapSpin{nullptr};
+ QCheckBox* m_orphanCheck{nullptr};
+ QCheckBox* m_lowConfidenceCheck{nullptr};
  QProgressBar* m_progressBar{nullptr};
  QLabel* m_timeLabel{nullptr};
  QLabel* m_countLabel{nullptr};
@@ -183,8 +208,12 @@ private:
  bool m_monitorTextEditing{false};
 
  // Transcription (whisper) — owned via shared_ptr so a detached worker
- // thread can keep it alive past panel destruction.
+ // worker lifetime is owned and joined before panel destruction completes.
  std::shared_ptr<Transcriber> m_transcriber;
+ std::jthread m_transcriptionThread;
+ std::atomic<bool> m_destroying{false};
+ std::atomic<uint64_t> m_timelineRevision{0};
+ uint64_t m_transcriptionTaskId{0};
  bool m_transcribing{false};
 };
 

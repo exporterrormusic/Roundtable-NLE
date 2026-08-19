@@ -26,7 +26,7 @@ namespace rt {
 
 void PropertiesPanel::applyVideoVolume()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Video) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Video) return;
     auto* vc = static_cast<VideoClip*>(m_clip);
     float newVal = static_cast<float>(m_volumeSpin->value());
     if (newVal == vc->volume()) return;

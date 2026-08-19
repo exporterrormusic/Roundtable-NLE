@@ -75,6 +75,10 @@ std::vector<SrtEntry> parseSrt(const std::filesystem::path& path)
         switch (state) {
         case ExpectIndex: {
             if (line.empty()) continue;
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF
+                && static_cast<unsigned char>(line[1]) == 0xBB
+                && static_cast<unsigned char>(line[2]) == 0xBF)
+                line.erase(0, 3);
             // Try to parse as integer index
             try {
                 current.index = std::stoi(line);
@@ -140,6 +144,7 @@ int importSrt(Timeline& timeline, const std::vector<SrtEntry>& entries)
 
     int count = 0;
     for (const auto& entry : entries) {
+        if (entry.endTick <= entry.startTick || entry.text.empty()) continue;
         auto clip = std::make_unique<CaptionClip>();
         clip->setText(entry.text);
         clip->setTimelineIn(entry.startTick);
@@ -170,9 +175,9 @@ int exportSrt(const Timeline& timeline, const std::filesystem::path& path)
         for (size_t ci = 0; ci < ct->clipCount(); ++ci) {
             const auto* cc = dynamic_cast<const CaptionClip*>(ct->clip(ci));
             if (!cc || cc->text().empty()) continue;
-            std::string text = cc->speaker().empty()
-                ? cc->text() : cc->speaker() + ": " + cc->text();
-            subs.push_back({cc->timelineIn(), cc->timelineOut(), std::move(text)});
+            // SRT has no speaker or rich-style metadata. Export caption text
+            // verbatim so importing the sidecar does not alter its content.
+            subs.push_back({cc->timelineIn(), cc->timelineOut(), cc->text()});
         }
     }
 

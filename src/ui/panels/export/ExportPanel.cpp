@@ -69,7 +69,11 @@ bool ExportPanel::isExporting() const noexcept
 
 ExportPanel::~ExportPanel()
 {
-    m_destroying.store(true);
+    m_destroying.store(true, std::memory_order_release);
+    if (m_pollTimer) m_pollTimer->stop();
+    if (m_playbackTimer) m_playbackTimer->stop();
+    m_exportFrameCallback = {};
+    m_previewCallback = {};
 
     // Stop the render queue and join the worker thread so the process
     // can exit cleanly when the main window is closed during an export.
@@ -215,6 +219,11 @@ void ExportPanel::setPreviewCallback(PreviewCallback cb)
     m_previewCallback = std::move(cb);
 }
 
+void ExportPanel::setExportFrameCallback(ExportFrameCallback cb)
+{
+    m_exportFrameCallback = std::move(cb);
+}
+
 void ExportPanel::applyInOutPointEdit(const std::string& description,
                                        int64_t newInPoint,
                                        int64_t newOutPoint,
@@ -266,9 +275,20 @@ void ExportPanel::applyInOutPointEdit(const std::string& description,
 }
 
 std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
+    const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
     int64_t tick, int64_t nextTick,
-    uint32_t w, uint32_t h, bool scrub)
+    uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)
 {
+    auto waitForComposite = [this](
+        const std::shared_future<std::shared_ptr<CachedFrame>>& future)
+        -> std::shared_ptr<CachedFrame> {
+        while (future.valid() &&
+               future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
+            if (m_destroying.load(std::memory_order_acquire))
+                return nullptr;
+        }
+        return future.valid() ? future.get() : nullptr;
+    };
     // ═══════════════════════════════════════════════════════════════════
     // PIPELINE using nextTick from RenderQueue:
     //
@@ -286,12 +306,13 @@ std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
     auto trySubmit = [&](int64_t targetTick, int slotIdx) {
         auto promise = std::make_shared<std::promise<std::shared_ptr<CachedFrame>>>();
         auto sf = promise->get_future().share();
+        m_pipelineSlots[slotIdx].snapshot = snapshot;
         m_pipelineSlots[slotIdx].tick = targetTick;
         m_pipelineSlots[slotIdx].future = sf;
-        if (m_previewCallback) {
-            auto cb = m_previewCallback;
+        if (m_exportFrameCallback && snapshot) {
+            auto cb = m_exportFrameCallback;
             QMetaObject::invokeMethod(this,
-                [promise, cb, targetTick, w, h, scrub]() {
+                [promise, cb, snapshot, targetTick, w, h, scrub, preserveAlpha]() {
                     // /EHa is set on this TU (see ui/CMakeLists.txt) so
                     // catch(...) covers SEH access violations and the
                     // 0x000006BA hook-DLL exception that fires while the
@@ -299,15 +320,17 @@ std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
                     // raised on the main thread during the composite
                     // would (a) kill the process and (b) leave the
                     // worker thread blocked forever on promise.get_future().
-                    // On failure we set the promise to nullptr; the
-                    // worker treats that as "skip this frame".
+                    // On failure we set the promise to nullptr; the worker
+                    // retries this exact tick and fails the export if the
+                    // bounded retry budget is exhausted.
                     try {
-                        auto frame = cb(targetTick, w, h, scrub);
+                        auto frame = cb(snapshot, targetTick, w, h, scrub,
+                                        preserveAlpha);
                         if (frame) frame->ensurePixels();
                         promise->set_value(std::move(frame));
                     } catch (...) {
                         spdlog::error("ExportPanel: SEH/exception during main-thread "
-                                      "composite at tick={} — skipping frame", targetTick);
+                                      "composite at tick={} — returning failure", targetTick);
                         try { promise->set_value(nullptr); } catch (...) {}
                     }
                 },
@@ -328,16 +351,21 @@ std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
     // the previous export's last composited frame via the stale future.
     int cur = m_pipelineCurrentSlot;
     int prev = (cur + 1) % 2;
-    bool firstCall = (m_pipelineSlots[prev].tick != tick)
+    bool firstCall = (m_pipelineSlots[prev].snapshot.get() != snapshot.get())
+                     || (m_pipelineSlots[prev].tick != tick)
                      || !m_pipelineSlots[prev].future.valid();
     std::shared_ptr<CachedFrame> result;
 
     if (!firstCall && m_pipelineSlots[prev].future.valid()) {
         try {
-            result = m_pipelineSlots[prev].future.get();
+            result = waitForComposite(m_pipelineSlots[prev].future);
         } catch (const std::exception& e) {
             spdlog::error("ExportPanel: pipeline wait exception: {}", e.what());
         }
+        // A shared_future can be read repeatedly.  Retaining it here made a
+        // retry of the final frame return the same failed result forever
+        // instead of asking the compositor to render that tick again.
+        m_pipelineSlots[prev] = CompositeSlot{};
     }
 
     // ── Phase B: Submit this frame (first call only) / Submit next frame ─
@@ -345,7 +373,15 @@ std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
         // First call: submit frame 0 and wait for it.
         auto sf0 = trySubmit(tick, cur);
         m_pipelineCurrentSlot = (cur + 1) % 2;
-        result = sf0.get();
+        try {
+            result = waitForComposite(sf0);
+        } catch (const std::exception& e) {
+            spdlog::error("ExportPanel: pipeline first-frame wait exception: {}",
+                          e.what());
+        }
+        // Mark the result consumed so a bounded retry of this same tick
+        // always invokes the compositor again.
+        m_pipelineSlots[cur] = CompositeSlot{};
 
         // Also submit frame 1 for the next call.
         if (nextTick >= 0) {

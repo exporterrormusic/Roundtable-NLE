@@ -24,9 +24,10 @@ Track::~Track() = default;
 
 // ── Clip management ─────────────────────────────────────────────────────────
 
-Clip* Track::addClip(std::unique_ptr<Clip> clip)
+Clip* Track::addClip(std::unique_ptr<Clip>&& clip, TrackMutationPolicy policy)
 {
     if (!clip) return nullptr;
+    if (!mutationAllowed(policy)) return nullptr;
     if (m_isDivider) return nullptr;  // Dividers cannot hold clips
 
     // Insert maintaining sorted order by timelineIn
@@ -40,8 +41,9 @@ Clip* Track::addClip(std::unique_ptr<Clip> clip)
     return ptr;
 }
 
-std::unique_ptr<Clip> Track::removeClip(size_t index)
+std::unique_ptr<Clip> Track::removeClip(size_t index, TrackMutationPolicy policy)
 {
+    if (!mutationAllowed(policy)) return nullptr;
     if (index >= m_clips.size()) return nullptr;
     auto clip = std::move(m_clips[index]);
     const uint64_t removedId = clip->id();
@@ -68,15 +70,18 @@ size_t Track::findClipIndexById(uint64_t clipId) const noexcept
     return m_clips.size(); // not found
 }
 
-std::unique_ptr<Clip> Track::removeClipById(uint64_t clipId)
+std::unique_ptr<Clip> Track::removeClipById(uint64_t clipId,
+                                           TrackMutationPolicy policy)
 {
     size_t idx = findClipIndexById(clipId);
     if (idx == m_clips.size()) return nullptr;
-    return removeClip(idx);
+    return removeClip(idx, policy);
 }
 
-void Track::moveClip(size_t index, int64_t newTimelinePosition)
+void Track::moveClip(size_t index, int64_t newTimelinePosition,
+                     TrackMutationPolicy policy)
 {
+    if (!mutationAllowed(policy)) return;
     if (index >= m_clips.size()) return;
 
     auto clip = std::move(m_clips[index]);
@@ -131,8 +136,9 @@ std::vector<Clip*> Track::clipsAtTime(int64_t timeTick) const
 
 // ── Transition management ───────────────────────────────────────────────────
 
-size_t Track::addTransition(Transition t)
+size_t Track::addTransition(Transition t, TrackMutationPolicy policy)
 {
+    if (!mutationAllowed(policy)) return kNoTransition;
     // Add-or-replace: one transition per edit point.  See Track.h.
     const size_t existing = findTransition(t.leftClipId, t.rightClipId);
     if (existing != kNoTransition) {
@@ -155,16 +161,19 @@ size_t Track::findTransition(uint64_t leftClipId,
     return kNoTransition;
 }
 
-Transition Track::removeTransition(size_t index)
+Transition Track::removeTransition(size_t index, TrackMutationPolicy policy)
 {
+    if (!mutationAllowed(policy)) return {};
     if (index >= m_transitions.size()) return {};
     Transition t = m_transitions[index];
     m_transitions.erase(m_transitions.begin() + static_cast<ptrdiff_t>(index));
     return t;
 }
 
-void Track::setTransition(size_t index, const Transition& t)
+void Track::setTransition(size_t index, const Transition& t,
+                          TrackMutationPolicy policy)
 {
+    if (!mutationAllowed(policy)) return;
     if (index < m_transitions.size())
         m_transitions[index] = t;
 }

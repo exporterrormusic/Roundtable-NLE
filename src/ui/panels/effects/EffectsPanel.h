@@ -30,6 +30,7 @@
 namespace rt {
 
 class Clip;
+class Track;
 class EffectStack;
 class CommandStack;
 class Effect;
@@ -43,7 +44,7 @@ public:
     ~EffectsPanel() override;
 
     // ── Clip binding ────────────────────────────────────────────────────
-    void setClip(Clip* clip);
+    void setClip(Clip* clip, Track* track);
     [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
 
     // ── Command stack ───────────────────────────────────────────────────
@@ -83,8 +84,10 @@ private:
     void loadPresetsFromDisk();
     void saveEffectPreset(const Effect& fx);
     std::unique_ptr<Effect> loadEffectPreset(const std::filesystem::path& path);
+    [[nodiscard]] bool canMutateClip() const noexcept;
 
     Clip*         m_clip{nullptr};
+    Track*        m_track{nullptr};
     CommandStack* m_commandStack{nullptr};
 
     // Browser

@@ -387,6 +387,29 @@ void DropController::wireNestSignals()
                 m_ws->timeline()->track(trackIndex)->type() == TrackType::Audio)
                 preferredAudioTrack = m_ws->timeline()->track(trackIndex);
 
+            Track* videoTargetTrack = targetTrackIdx < m_ws->timeline()->trackCount()
+                ? m_ws->timeline()->track(targetTrackIdx) : nullptr;
+            Track* audioTargetTrack = preferredAudioTrack;
+            if (!audioTargetTrack && dropAudio && innerHasAudio) {
+                for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
+                    Track* candidate = m_ws->timeline()->track(i);
+                    if (candidate && candidate->type() == TrackType::Audio &&
+                        !candidate->isDivider()) {
+                        audioTargetTrack = candidate;
+                        break;
+                    }
+                }
+            }
+            // A sequence drop is one compound edit. Reject it before the
+            // command runs if either existing destination is locked, so the
+            // unlocked half can never be left behind on the timeline.
+            if ((dropVideo && videoTargetTrack && videoTargetTrack->isLocked()) ||
+                (dropAudio && innerHasAudio && audioTargetTrack &&
+                 audioTargetTrack->isLocked())) {
+                spdlog::warn("Sequence drop rejected: a destination track is locked");
+                return;
+            }
+
             auto audioClipId      = std::make_shared<uint64_t>(0);
             auto audioTkIdx       = std::make_shared<size_t>(SIZE_MAX);
             auto createdAudioTk   = std::make_shared<bool>(false);
@@ -412,7 +435,7 @@ void DropController::wireNestSignals()
                  needsNewTrack, forceGhostVideoTrack, innerHasAudio,
                  dropVideo, dropAudio,
                  clipId, createdTk, tkIdx, overlapCmd2, seqName,
-                 preferredAudioTrack,
+                 audioTargetTrack,
                  audioClipId, audioTkIdx, createdAudioTk, audioOverlapCmd,
                  refreshAfter]() {
                     if (dropVideo) {
@@ -478,9 +501,9 @@ void DropController::wireNestSignals()
                         size_t aIdx = SIZE_MAX;
                         // 1) Drop target audio track (resolved by identity so
                         //    a just-inserted video track doesn't misalign it).
-                        if (preferredAudioTrack) {
+                        if (audioTargetTrack) {
                             for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
-                                if (m_ws->timeline()->track(i) == preferredAudioTrack) {
+                                if (m_ws->timeline()->track(i) == audioTargetTrack) {
                                     aIdx = i; break;
                                 }
                             }

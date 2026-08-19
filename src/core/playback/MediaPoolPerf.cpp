@@ -15,6 +15,22 @@
 
 namespace rt {
 
+void MediaPool::PerfMetrics::reset()
+{
+    cacheHits.store(0, std::memory_order_relaxed);
+    nearbyHits.store(0, std::memory_order_relaxed);
+    staleReturns.store(0, std::memory_order_relaxed);
+    inlineDecodes.store(0, std::memory_order_relaxed);
+    prefetchDeliveries.store(0, std::memory_order_relaxed);
+    totalMisses.store(0, std::memory_order_relaxed);
+    totalRequests.store(0, std::memory_order_relaxed);
+    prefetchScheduled.store(0, std::memory_order_relaxed);
+    avgDecodeUs.store(0, std::memory_order_relaxed);
+    gpuResidentDecoded.store(0, std::memory_order_relaxed);
+    cpuConvertDecoded.store(0, std::memory_order_relaxed);
+    zeroCopyDecoded.store(0, std::memory_order_relaxed);
+}
+
 // ─── prefetchStats ──────────────────────────────────────────────────────────
 
 MediaPool::PrefetchStats MediaPool::prefetchStats() const

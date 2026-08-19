@@ -8,11 +8,20 @@
 
 #include <gtest/gtest.h>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <set>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "project/Project.h"
 #include "project/Settings.h"
 #include "project/AssetDatabase.h"
 #include "project/ProjectSerializer.h"
+#include "project/BinaryIO.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
@@ -41,6 +50,48 @@
 #include "audiofx/Dynamics.h"
 
 using namespace rt;
+
+namespace {
+
+uint32_t readLe32(const std::vector<uint8_t>& data, size_t offset)
+{
+    if (offset > data.size() || data.size() - offset < 4) return 0;
+    return static_cast<uint32_t>(data[offset])
+         | (static_cast<uint32_t>(data[offset + 1]) << 8)
+         | (static_cast<uint32_t>(data[offset + 2]) << 16)
+         | (static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+void writeLe32(std::vector<uint8_t>& data, size_t offset, uint32_t value)
+{
+    ASSERT_LE(offset + 4, data.size());
+    data[offset]     = static_cast<uint8_t>(value);
+    data[offset + 1] = static_cast<uint8_t>(value >> 8);
+    data[offset + 2] = static_cast<uint8_t>(value >> 16);
+    data[offset + 3] = static_cast<uint8_t>(value >> 24);
+}
+
+size_t findSectionPayload(const std::vector<uint8_t>& data, uint32_t wantedTag)
+{
+    if (data.size() < 32) return std::string::npos;
+    const uint32_t count = readLe32(data, 12);
+    size_t pos = 32;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (pos > data.size() || data.size() - pos < 8)
+            return std::string::npos;
+        const uint32_t tag = readLe32(data, pos);
+        const uint32_t size = readLe32(data, pos + 4);
+        pos += 8;
+        if (size > data.size() - pos)
+            return std::string::npos;
+        if (tag == wantedTag)
+            return pos;
+        pos += size;
+    }
+    return std::string::npos;
+}
+
+} // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Settings tests
@@ -330,7 +381,8 @@ protected:
         adj->setTimelineIn(24000);
         adj->setDuration(48000);
         adj->setLabel("Color Grade");
-        vt2->addClip(std::move(adj));
+        vt2->addClip(
+            std::move(adj), TrackMutationPolicy::BypassLock);
 
         // Add a transition to Video 1
         Transition t;
@@ -790,11 +842,120 @@ TEST_F(SerializerTest, FutureVersion)
     EXPECT_EQ(result, nullptr);
 }
 
+TEST(BinaryReaderTest, ShortReadFailureIsPersistent)
+{
+    const uint8_t bytes[] = {0x12, 0x34};
+    BinaryReader reader(bytes, sizeof(bytes));
+
+    EXPECT_EQ(reader.readU32(), 0u);
+    EXPECT_FALSE(reader.ok());
+    const size_t failedAt = reader.errorPosition();
+
+    // A failure cannot be cleared accidentally by a later successful-size read.
+    EXPECT_EQ(reader.readU8(), 0u);
+    EXPECT_FALSE(reader.ok());
+    EXPECT_EQ(reader.position(), 0u);
+    EXPECT_EQ(reader.errorPosition(), failedAt);
+}
+
+TEST(BinaryReaderTest, InvalidStringAndCountFailBeforeAllocation)
+{
+    const uint8_t oversizedString[] = {0xFF, 0xFF, 0xFF, 0x7F};
+    BinaryReader stringReader(oversizedString, sizeof(oversizedString));
+    EXPECT_TRUE(stringReader.readString().empty());
+    EXPECT_FALSE(stringReader.ok());
+
+    const uint8_t oversizedCount[] = {0xFF, 0xFF, 0xFF, 0xFF};
+    BinaryReader countReader(oversizedCount, sizeof(oversizedCount));
+    EXPECT_EQ(countReader.readCount(1000, 1), 0u);
+    EXPECT_FALSE(countReader.ok());
+}
+
+TEST_F(SerializerTest, RejectsTruncationAtEveryStructuralBoundary)
+{
+    auto original = makeTestProject();
+    const auto complete = serializer.serialize(*original);
+    ASSERT_GT(complete.size(), 32u);
+
+    std::set<size_t> cutPoints;
+    for (size_t cut = 0; cut < 32; ++cut)
+        cutPoints.insert(cut);
+
+    const uint32_t sectionCount = readLe32(complete, 12);
+    size_t pos = 32;
+    for (uint32_t section = 0; section < sectionCount; ++section) {
+        ASSERT_LE(pos + 8, complete.size());
+        for (size_t headerByte = 0; headerByte < 8; ++headerByte)
+            cutPoints.insert(pos + headerByte);
+
+        const uint32_t payloadSize = readLe32(complete, pos + 4);
+        const size_t payloadStart = pos + 8;
+        ASSERT_LE(payloadStart + payloadSize, complete.size());
+        cutPoints.insert(payloadStart);
+        if (payloadSize > 0) {
+            cutPoints.insert(payloadStart + payloadSize / 2);
+            cutPoints.insert(payloadStart + payloadSize - 1);
+        }
+        cutPoints.insert(payloadStart + payloadSize);
+        pos = payloadStart + payloadSize;
+    }
+    ASSERT_EQ(pos, complete.size());
+
+    for (const size_t cut : cutPoints) {
+        if (cut >= complete.size()) continue;
+        SCOPED_TRACE(::testing::Message() << "truncated length=" << cut);
+        const std::vector<uint8_t> truncated(complete.begin(), complete.begin() + cut);
+        EXPECT_EQ(serializer.deserialize(truncated), nullptr);
+    }
+}
+
+TEST_F(SerializerTest, RejectsMaliciousSectionAndCollectionCounts)
+{
+    auto original = makeTestProject();
+
+    auto sectionCountData = serializer.serialize(*original);
+    writeLe32(sectionCountData, 12, std::numeric_limits<uint32_t>::max());
+    EXPECT_EQ(serializer.deserialize(sectionCountData), nullptr);
+
+    auto sequenceCountData = serializer.serialize(*original);
+    const size_t sequences = findSectionPayload(
+        sequenceCountData, ProjectSerializer::Section_Sequences);
+    ASSERT_NE(sequences, std::string::npos);
+    writeLe32(sequenceCountData, sequences, std::numeric_limits<uint32_t>::max());
+    EXPECT_EQ(serializer.deserialize(sequenceCountData), nullptr);
+}
+
+TEST_F(SerializerTest, RejectsMaliciousSectionAndStringLengths)
+{
+    auto original = makeTestProject();
+    original->setShow("Test Show");
+
+    auto sectionLengthData = serializer.serialize(*original);
+    writeLe32(sectionLengthData, 36, std::numeric_limits<uint32_t>::max());
+    EXPECT_EQ(serializer.deserialize(sectionLengthData), nullptr);
+
+    auto stringLengthData = serializer.serialize(*original);
+    const size_t projectMeta = findSectionPayload(
+        stringLengthData, ProjectSerializer::Section_ProjectMeta);
+    ASSERT_NE(projectMeta, std::string::npos);
+    writeLe32(stringLengthData, projectMeta, std::numeric_limits<uint32_t>::max());
+    EXPECT_EQ(serializer.deserialize(stringLengthData), nullptr);
+}
+
 TEST_F(SerializerTest, FileRoundTrip)
 {
     auto original = makeTestProject();
 
     auto tempPath = std::filesystem::temp_directory_path() / "test_roundtable.rtp";
+    auto backupPath = tempPath;
+    backupPath += ".bak";
+    auto temporaryPath = tempPath;
+    temporaryPath += ".tmp";
+
+    std::error_code cleanupError;
+    std::filesystem::remove(tempPath, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
 
     // Save
     bool saved = serializer.save(*original, tempPath);
@@ -813,8 +974,103 @@ TEST_F(SerializerTest, FileRoundTrip)
     EXPECT_EQ(loaded->filePath(), tempPath);
 
     // Clean up
-    std::filesystem::remove(tempPath);
+    std::filesystem::remove(tempPath, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
 }
+
+TEST_F(SerializerTest, ReplacingExistingFilePreservesPreviousProjectAsBackup)
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      "test_roundtable_atomic_replace.rtp";
+    auto backupPath = path;
+    backupPath += ".bak";
+    auto temporaryPath = path;
+    temporaryPath += ".tmp";
+
+    std::error_code cleanupError;
+    std::filesystem::remove(path, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
+
+    auto project = makeTestProject();
+    project->setName("Before replacement");
+    ASSERT_TRUE(serializer.save(*project, path));
+
+    project->setName("After replacement");
+    ASSERT_TRUE(serializer.save(*project, path));
+
+    auto current = serializer.load(path);
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(current->name(), "After replacement");
+
+    auto backup = serializer.load(backupPath);
+    ASSERT_NE(backup, nullptr);
+    EXPECT_EQ(backup->name(), "Before replacement");
+    EXPECT_FALSE(std::filesystem::exists(temporaryPath));
+
+    std::filesystem::remove(path, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
+}
+
+#ifdef _WIN32
+TEST_F(SerializerTest, FailedReplacementReportsFailureAndPreservesProjectAndBackup)
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      "test_roundtable_locked_replace.rtp";
+    auto backupPath = path;
+    backupPath += ".bak";
+    auto temporaryPath = path;
+    temporaryPath += ".tmp";
+
+    std::error_code cleanupError;
+    std::filesystem::remove(path, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
+
+    auto project = makeTestProject();
+    project->setName("Last committed project");
+    ASSERT_TRUE(serializer.save(*project, path));
+
+    const std::string priorBackup = "pre-existing backup must survive";
+    {
+        std::ofstream backupFile(backupPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(backupFile.is_open());
+        backupFile.write(priorBackup.data(),
+                         static_cast<std::streamsize>(priorBackup.size()));
+        ASSERT_TRUE(backupFile.good());
+    }
+
+    // Denying FILE_SHARE_DELETE makes ReplaceFileW fail after staging has
+    // succeeded, exercising the promotion/cleanup error boundary.
+    HANDLE lockedDestination = ::CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(lockedDestination, INVALID_HANDLE_VALUE);
+
+    project->setName("Uncommitted replacement");
+    const bool saved = serializer.save(*project, path);
+    ::CloseHandle(lockedDestination);
+
+    EXPECT_FALSE(saved);
+    EXPECT_FALSE(std::filesystem::exists(temporaryPath));
+
+    auto current = serializer.load(path);
+    ASSERT_NE(current, nullptr);
+    EXPECT_EQ(current->name(), "Last committed project");
+
+    std::ifstream backupFile(backupPath, std::ios::binary);
+    const std::string backupContents(
+        (std::istreambuf_iterator<char>(backupFile)),
+        std::istreambuf_iterator<char>());
+    EXPECT_EQ(backupContents, priorBackup);
+
+    std::filesystem::remove(path, cleanupError);
+    std::filesystem::remove(backupPath, cleanupError);
+    std::filesystem::remove(temporaryPath, cleanupError);
+}
+#endif
 
 TEST_F(SerializerTest, KeyframeTrackRoundTrip)
 {

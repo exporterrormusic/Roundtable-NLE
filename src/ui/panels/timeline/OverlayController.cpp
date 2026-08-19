@@ -58,6 +58,17 @@
 #include <filesystem>
 namespace rt {
 
+bool OverlayController::selectedTrackIsEditable() const noexcept
+{
+    if (!m_ws || !m_ws->timeline() || !m_ws->selection().clip)
+        return false;
+    const size_t trackIndex = m_ws->selection().trackIdx;
+    if (trackIndex >= m_ws->timeline()->trackCount())
+        return false;
+    const Track* track = m_ws->timeline()->track(trackIndex);
+    return track && !track->isLocked();
+}
+
 // Transform overlay - update the Program Monitor handle overlay for the
 // currently selected clip so the user can drag-to-move / drag-to-scale.
 
@@ -194,7 +205,8 @@ void OverlayController::updateTransformOverlay()
     if (!m_ws->programMonitor() || !m_ws->programMonitor()->viewport()) return;
     auto* vp = m_ws->programMonitor()->viewport();
 
-    if (!m_ws->selection().clip || !m_ws->timeline()) {
+    if (!m_ws->selection().clip || !m_ws->timeline()
+            || !selectedTrackIsEditable()) {
         vp->clearTransformOverlay();
         if (m_ws->programMonitor()->transformOverlay())
             m_ws->programMonitor()->transformOverlay()->clearTransformOverlay();

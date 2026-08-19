@@ -500,7 +500,7 @@ void PropertiesPanel::refreshShotDropdown()
 
 void PropertiesPanel::onShotChanged(const std::string& newShotName)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     // Placeholder item — ignore
     if (newShotName.empty() || newShotName == "-- Choose a shot --") return;
 
@@ -897,7 +897,7 @@ void PropertiesPanel::populateFromGraphic()
 
 void PropertiesPanel::applyLabel()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
     std::string newLabel = m_labelEdit->text().toStdString();
     if (newLabel == m_clip->label()) return;
     auto oldLabel = m_clip->label();
@@ -916,7 +916,7 @@ void PropertiesPanel::applyLabel()
 
 void PropertiesPanel::applyEnabled()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
     bool newVal = m_enabledCheck->isChecked();
     if (newVal == m_clip->isEnabled()) return;
     bool oldVal = m_clip->isEnabled();
@@ -934,7 +934,7 @@ void PropertiesPanel::applyEnabled()
 
 void PropertiesPanel::applySpeed()
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
     double newPct = m_speedSpin->value();
     double newVal = newPct / 100.0;
     if (newVal <= 0.0) newVal = 0.01;
@@ -979,6 +979,7 @@ int64_t PropertiesPanel::clipRelativeTick() const noexcept
 
 void PropertiesPanel::applyTransformLive()
 {
+    if (!canMutateBoundClip()) return;
     // Live preview during scrub drag — writes current spinbox values to
     // clip properties without creating undo commands, so the program
     // monitor recomposites on the next poll cycle.
@@ -1012,7 +1013,7 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
     // scrubStartValue) used to clobber unrelated fields on undo, e.g.
     // undoing a scale change would also revert a Flip H/V, since the flip
     // lives in the scaleX/scaleY default value.
-    if (m_updating || !m_clip || !src || !m_commandStack) return;
+    if (m_updating || !canMutateBoundClip() || !src || !m_commandStack) return;
     auto* clip = m_clip;
     const int64_t t = clipRelativeTick();
 
@@ -1133,4 +1134,3 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 // (their firstTextLayer() helper lives there too)
 
 } // namespace rt
-

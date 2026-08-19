@@ -140,7 +140,8 @@ size_t Timeline::nearestClipHostTrack(int desiredIndex, TrackType type) const no
 
     for (size_t i = 0; i < m_tracks.size(); ++i) {
         const Track* candidate = m_tracks[i].get();
-        if (!candidate || candidate->isDivider() || candidate->isCaptionTrack()
+        if (!candidate || candidate->isLocked() || candidate->isDivider()
+                || candidate->isCaptionTrack()
                 || candidate->type() != type) {
             continue;
         }
@@ -446,7 +447,8 @@ std::unique_ptr<Timeline> Timeline::clone() const
             auto cloned = srcClip->clone();
             uint64_t newId = cloned->id();
             idMap[oldId] = newId;
-            dstTrack->addClip(std::move(cloned));
+            dstTrack->addClip(
+                std::move(cloned), TrackMutationPolicy::BypassLock);
         }
 
         // Copy transitions, remapping clip IDs to the new cloned clips
@@ -464,7 +466,7 @@ std::unique_ptr<Timeline> Timeline::clone() const
                 if (it != idMap.end())
                     t.rightClipId = it->second;
             }
-            dstTrack->addTransition(t);
+            dstTrack->addTransition(t, TrackMutationPolicy::BypassLock);
         }
     }
 
@@ -479,6 +481,19 @@ std::unique_ptr<Timeline> Timeline::clone() const
     dup->setOutPoint(m_outPoint);
 
     return dup;
+}
+
+void Timeline::restoreFrom(const Timeline& snapshot)
+{
+    auto copy = snapshot.clone();
+    m_name = std::move(copy->m_name);
+    m_settings = std::move(copy->m_settings);
+    m_tracks = std::move(copy->m_tracks);
+    m_markers = std::move(copy->m_markers);
+    m_playhead = copy->m_playhead;
+    m_inPoint = copy->m_inPoint;
+    m_outPoint = copy->m_outPoint;
+    notifyStructureChanged();
 }
 
 } // namespace rt

@@ -302,7 +302,6 @@ set_source_files_properties(
 # worker thread is blocked on the promise.  /EHa lets catch(...) inside
 # the lambda swallow the SEH and set the promise to null — the worker
 # then skips that one frame instead of deadlocking forever.
-set_source_files_properties(panels/export/ExportPanel.cpp PROPERTIES COMPILE_FLAGS "/EHa")
 
 target_include_directories(roundtable_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

@@ -128,6 +128,52 @@ struct AudioStreamSibling {
     std::unique_ptr<Command> overlapCmd;
 };
 
+size_t indexOfTrack(const Timeline* timeline, const Track* target)
+{
+    if (!timeline || !target) return SIZE_MAX;
+    for (size_t i = 0; i < timeline->trackCount(); ++i) {
+        if (timeline->track(i) == target)
+            return i;
+    }
+    return SIZE_MAX;
+}
+
+bool compoundDropTargetsUnlocked(Timeline* timeline, Track* primary,
+                                 Track* audioCompanion,
+                                 int audioStreamCount)
+{
+    auto rejectLocked = [](Track* track, const char* role) {
+        if (!track || !track->isLocked()) return false;
+        spdlog::warn("Timeline drop rejected: {} track '{}' is locked",
+                     role, track->name());
+        return true;
+    };
+
+    if (rejectLocked(primary, "primary") ||
+        rejectLocked(audioCompanion, "audio companion")) {
+        return false;
+    }
+
+    // Multi-stream media reuses consecutive existing audio tracks before it
+    // creates any missing tracks. Preflight the whole block so stream 0 can
+    // never land while a later stream is rejected by a lock.
+    if (timeline && audioCompanion && audioStreamCount > 1) {
+        const size_t base = indexOfTrack(timeline, audioCompanion);
+        if (base == SIZE_MAX) return false;
+        for (int stream = 1; stream < audioStreamCount; ++stream) {
+            const size_t idx = base + static_cast<size_t>(stream);
+            if (idx >= timeline->trackCount()) break;
+            Track* candidate = timeline->track(idx);
+            if (candidate && candidate->type() == TrackType::Audio &&
+                !candidate->isDivider() &&
+                rejectLocked(candidate, "additional audio stream")) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // Returns how many audio streams `path` has (0/1 = nothing to explode).
 int probeAudioStreamCount(const std::string& path)
 {
@@ -309,6 +355,10 @@ void DropController::wireMediaDropSignals()
                     }
                 }
                 if (!track) return;
+                if (!compoundDropTargetsUnlocked(
+                        m_ws->timeline(), track, nullptr, 0)) {
+                    return;
+                }
 
                 auto pc = std::make_unique<PngPuppetClip>(
                     manifest.displayName.toStdString(), variant.toStdString());
@@ -646,12 +696,22 @@ void DropController::wireMediaDropSignals()
                     if (audioTargetIdx == SIZE_MAX) needsNewAudioTrack = true;
                 }
             }
+            Track* primaryTargetTrack = targetTrackIdx < m_ws->timeline()->trackCount()
+                ? m_ws->timeline()->track(targetTrackIdx) : nullptr;
+            Track* audioTargetTrack = audioTargetIdx < m_ws->timeline()->trackCount()
+                ? m_ws->timeline()->track(audioTargetIdx) : nullptr;
+            if (!compoundDropTargetsUnlocked(
+                    m_ws->timeline(), primaryTargetTrack, audioTargetTrack,
+                    m_ws->commandStack() ? audioStreamCount : 1)) {
+                return;
+            }
             auto audioClipId      = std::make_shared<uint64_t>(0);
             auto audioCreatedTk   = std::make_shared<bool>(false);
             auto audioTkIdx       = std::make_shared<size_t>(audioTargetIdx);
             auto audioOverlapCmd  = std::make_shared<std::unique_ptr<Command>>(nullptr);
             auto audioSiblings =
                 std::make_shared<std::vector<AudioStreamSibling>>();
+            auto dropApplied = std::make_shared<bool>(false);
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
                 if (m_ws->isDestroying()) return;
@@ -673,12 +733,29 @@ void DropController::wireMediaDropSignals()
                      srcW, srcH, srcRotation,
                      needsNewTrack, needsNewAudioTrack, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd,
-                     audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
-                     audioStreamCount, audioSiblings,
-                     refreshAfter,
+                      audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
+                      audioStreamCount, audioSiblings,
+                      primaryTargetTrack, audioTargetTrack, dropApplied,
+                      refreshAfter,
                      vcCharName, vcMutePath, vcTalkPath, vcOutfit, vcAnimName,
-                     vcPosX, vcPosY, vcScale, vcOpacity, vcIsTalking,
-                     spineCharName, spineOutfit, spineStanceInt, spineAnimName]() {
+                      vcPosX, vcPosY, vcScale, vcOpacity, vcIsTalking,
+                      spineCharName, spineOutfit, spineStanceInt, spineAnimName]() {
+                        *dropApplied = false;
+                        if (!compoundDropTargetsUnlocked(
+                                m_ws->timeline(), primaryTargetTrack,
+                                audioTargetTrack, audioStreamCount)) {
+                            return;
+                        }
+                        if (primaryTargetTrack) {
+                            *tkIdx = indexOfTrack(m_ws->timeline(),
+                                                 primaryTargetTrack);
+                            if (*tkIdx == SIZE_MAX) return;
+                        }
+                        if (audioTargetTrack) {
+                            *audioTkIdx = indexOfTrack(m_ws->timeline(),
+                                                      audioTargetTrack);
+                            if (*audioTkIdx == SIZE_MAX) return;
+                        }
                         // Create track if needed
                         if (needsNewTrack && *tkIdx == SIZE_MAX) {
                             // Snapshot the current "standard" track height
@@ -821,6 +898,11 @@ void DropController::wireMediaDropSignals()
 
                         // -- Create companion AudioClip for video+audio media --
                         if (mediaHasAudio) {
+                            if (audioTargetTrack) {
+                                *audioTkIdx = indexOfTrack(m_ws->timeline(),
+                                                          audioTargetTrack);
+                                if (*audioTkIdx == SIZE_MAX) return;
+                            }
                             if (needsNewAudioTrack && *audioTkIdx == SIZE_MAX) {
                                 // Snapshot existing track height before adding,
                                 // so the companion audio track doesn't tower
@@ -897,11 +979,13 @@ void DropController::wireMediaDropSignals()
                         const bool trackStructureChanged =
                             (*createdTk || *audioCreatedTk || !audioSiblings->empty());
                         refreshAfter(trackStructureChanged);
+                        *dropApplied = true;
                     },
                     /* undo */
                     [this, clipId, createdTk, tkIdx, overlapCmd,
-                     mediaHasAudio, audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
-                     audioSiblings, refreshAfter]() {
+                      mediaHasAudio, audioClipId, audioCreatedTk, audioTkIdx, audioOverlapCmd,
+                      audioSiblings, dropApplied, refreshAfter]() {
+                        if (!*dropApplied) return;
                         const bool trackStructureChanged =
                             (*createdTk || *audioCreatedTk || !audioSiblings->empty());
                         // Undo audio companion first
@@ -934,6 +1018,7 @@ void DropController::wireMediaDropSignals()
                             *createdTk = false;
                         }
                         refreshAfter(trackStructureChanged);
+                        *dropApplied = false;
                     }
                 );
                 m_ws->commandStack()->execute(std::move(cmd));
@@ -974,7 +1059,7 @@ void DropController::wireMediaDropSignals()
                     }
                 }
                 else
-                    track = m_ws->timeline()->track(targetTrackIdx);
+                    track = primaryTargetTrack;
                 if (!track) return;
 
                 std::unique_ptr<Clip> clip;
@@ -1028,13 +1113,7 @@ void DropController::wireMediaDropSignals()
 
                 // -- Create companion AudioClip for video+audio media (fallback path) --
                 if (mediaHasAudio) {
-                    Track* audioTrack = nullptr;
-                    for (size_t i = 0; i < m_ws->timeline()->trackCount(); ++i) {
-                        if (m_ws->timeline()->track(i)->type() == TrackType::Audio) {
-                            audioTrack = m_ws->timeline()->track(i);
-                            break;
-                        }
-                    }
+                    Track* audioTrack = audioTargetTrack;
                     if (!audioTrack) {
                         // Snapshot height before creating, so the new audio
                         // track matches the existing standard track height
@@ -1304,12 +1383,22 @@ void DropController::wireMediaDropSignals()
                 }
                 if (audioTargetIdx2 == SIZE_MAX) needsNewAudioTrack2 = true;
             }
+            Track* primaryTargetTrack2 = targetTrackIdx < m_ws->timeline()->trackCount()
+                ? m_ws->timeline()->track(targetTrackIdx) : nullptr;
+            Track* audioTargetTrack2 = audioTargetIdx2 < m_ws->timeline()->trackCount()
+                ? m_ws->timeline()->track(audioTargetIdx2) : nullptr;
+            if (!compoundDropTargetsUnlocked(
+                    m_ws->timeline(), primaryTargetTrack2, audioTargetTrack2,
+                    audioStreamCount2)) {
+                return;
+            }
             auto audioClipId2      = std::make_shared<uint64_t>(0);
             auto audioCreatedTk2   = std::make_shared<bool>(false);
             auto audioTkIdx2       = std::make_shared<size_t>(audioTargetIdx2);
             auto audioOverlapCmd2  = std::make_shared<std::unique_ptr<Command>>(nullptr);
             auto audioSiblings2 =
                 std::make_shared<std::vector<AudioStreamSibling>>();
+            auto dropApplied2 = std::make_shared<bool>(false);
 
             auto refreshAfter = [this](bool trackStructureChanged = false) {
                 if (m_ws->isDestroying()) return;
@@ -1331,11 +1420,28 @@ void DropController::wireMediaDropSignals()
                      sourceWidth, sourceHeight, sourceRotation,
                      needsNewTrack, needsNewAudioTrack2, forceGhostVideoTrack, forceGhostAudioTrack,
                      clipId, createdTk, tkIdx, overlapCmd2,
-                     audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
-                     audioStreamCount2, audioSiblings2,
-                     refreshAfter,
+                      audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
+                      audioStreamCount2, audioSiblings2,
+                      primaryTargetTrack2, audioTargetTrack2, dropApplied2,
+                      refreshAfter,
                      vcCharName2, vcMutePath2, vcTalkPath2, vcOutfit2, vcAnimName2,
-                     vcPosX2, vcPosY2, vcScale2, vcOpacity2, vcIsTalking2]() {
+                      vcPosX2, vcPosY2, vcScale2, vcOpacity2, vcIsTalking2]() {
+                        *dropApplied2 = false;
+                        if (!compoundDropTargetsUnlocked(
+                                m_ws->timeline(), primaryTargetTrack2,
+                                audioTargetTrack2, audioStreamCount2)) {
+                            return;
+                        }
+                        if (primaryTargetTrack2) {
+                            *tkIdx = indexOfTrack(m_ws->timeline(),
+                                                 primaryTargetTrack2);
+                            if (*tkIdx == SIZE_MAX) return;
+                        }
+                        if (audioTargetTrack2) {
+                            *audioTkIdx2 = indexOfTrack(m_ws->timeline(),
+                                                       audioTargetTrack2);
+                            if (*audioTkIdx2 == SIZE_MAX) return;
+                        }
                         if (needsNewTrack && *tkIdx == SIZE_MAX) {
                             // Match the existing standard track height —
                             // see comment in the mediaDropped variant.
@@ -1439,6 +1545,11 @@ void DropController::wireMediaDropSignals()
 
                         // -- Create companion AudioClip for video+audio media --
                         if (mediaHasAudio) {
+                            if (audioTargetTrack2) {
+                                *audioTkIdx2 = indexOfTrack(m_ws->timeline(),
+                                                           audioTargetTrack2);
+                                if (*audioTkIdx2 == SIZE_MAX) return;
+                            }
                             if (needsNewAudioTrack2 && *audioTkIdx2 == SIZE_MAX) {
                                 // Match existing track height — see comment
                                 // in the mediaDropped variant.
@@ -1500,11 +1611,13 @@ void DropController::wireMediaDropSignals()
                         const bool trackStructureChanged =
                             (*createdTk || *audioCreatedTk2 || !audioSiblings2->empty());
                         refreshAfter(trackStructureChanged);
+                        *dropApplied2 = true;
                     },
                     /* undo */
                     [this, clipId, createdTk, tkIdx, overlapCmd2,
-                     mediaHasAudio, audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
-                     audioSiblings2, refreshAfter]() {
+                      mediaHasAudio, audioClipId2, audioCreatedTk2, audioTkIdx2, audioOverlapCmd2,
+                      audioSiblings2, dropApplied2, refreshAfter]() {
+                        if (!*dropApplied2) return;
                         const bool trackStructureChanged =
                             (*createdTk || *audioCreatedTk2 || !audioSiblings2->empty());
                         // Undo audio companion first
@@ -1535,6 +1648,7 @@ void DropController::wireMediaDropSignals()
                             *createdTk = false;
                         }
                         refreshAfter(trackStructureChanged);
+                        *dropApplied2 = false;
                     }
                 );
                 m_ws->commandStack()->execute(std::move(cmd));

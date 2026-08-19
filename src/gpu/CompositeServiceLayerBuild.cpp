@@ -59,7 +59,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     int64_t tick, uint32_t outW, uint32_t outH,
     bool scrubMode, bool playbackNonBlocking,
     ResolutionTier requestTier, bool stillMode,
-    int& clipsAtTick, bool perfLog,
+    int& clipsAtTick, int& resolvedClipsAtTick, bool perfLog,
     std::unique_lock<std::recursive_mutex>& lock,
     bool& gpuSpineUsedThisFrame)
 {
@@ -97,6 +97,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         (m_buildLayersDepth == 1) && (tick == m_lastBuiltTick);
 
     clipsAtTick = 0;
+    resolvedClipsAtTick = 0;
     m_gpuSpineCount = 0;
     m_gpuSpineInsertedLayer = -1;
     m_gpuSpinePrevLayer = -1;
@@ -685,6 +686,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         layer.clipPtr = clip;
                         layer.isLoopContent = isVideoChar;
                         layers.push_back(std::move(layer));
+                        ++resolvedClipsAtTick;
                         continue;
                     }
                 }
@@ -865,6 +867,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // GPU zero-copy spine layers bypass the CachedFrame requirement.
             // GPU-resident decoded frames (gpuReady) may have empty pixels.
             if (!gpuSpineZeroCopy && (!frame || (frame->pixels.empty() && !frame->gpuReady))) {
+                // Exact still/export requests must never borrow a sticky
+                // last-good source picture. Leave this clip unresolved so
+                // the caller retries this tick or fails the export cleanly.
+                if (stillMode)
+                    continue;
                 // Build a character/media-level sticky key — same string
                 // across all clip IDs that reference the same video file.
                 // This is what lets a BRAND NEW shot of Modernia/Chime
@@ -953,6 +960,12 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 if (!charKey.empty())
                     m_stickyLastCharFrame[charKey] = frame;
             }
+
+            // Temporal interpolation may use nearest sampling while its second
+            // endpoint warms during interactive playback. That is not a
+            // complete export frame: exact requests wait for both endpoints.
+            if (stillMode && sourceFallbackPending)
+                continue;
 
             LayerInfo layer;
             layer.sourceFallbackPending = sourceFallbackPending;
@@ -1349,6 +1362,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
 
             layers.push_back(std::move(layer));
+            ++resolvedClipsAtTick;
         }
     }
 

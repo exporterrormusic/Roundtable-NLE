@@ -16,6 +16,7 @@
 #include "timeline/TitleClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/Track.h"
+#include "timeline/ClipMutation.h"
 #include "timeline/Timeline.h"
 #include "timeline/Transition.h"
 #include "spine/ShotPreset.h"
@@ -48,8 +49,11 @@ void PropertiesPanel::setClip(Clip* clip, Track* track)
 {
     auto pp0 = std::chrono::steady_clock::now();
     m_clip  = clip;
+    m_clipId = clip ? clip->id() : 0;
     m_multiSelection.clear(); // single-clip path: no multi-selection in flight
     m_track = track;
+    const bool editable = rt::canMutateClip(clip, track);
+    m_scrollArea->setEnabled(editable);
     m_transitionIndex = SIZE_MAX; // clear transition selection
     m_spineClip = (clip && clip->clipType() == ClipType::Spine)
                       ? static_cast<SpineClip*>(clip)
@@ -63,7 +67,10 @@ void PropertiesPanel::setClip(Clip* clip, Track* track)
     m_scrollArea->setVisible(hasClip);
     m_emptyLabel->setVisible(!hasClip);
     if (m_statusLabel)
-        m_statusLabel->setText(hasClip ? QStringLiteral("Clip selected") : QStringLiteral("No clip"));
+        m_statusLabel->setText(hasClip && !editable
+            ? QStringLiteral("Track locked — read only")
+            : (hasClip ? QStringLiteral("Clip selected")
+                       : QStringLiteral("No clip")));
 
     showSectionsForType();
     auto pp1 = std::chrono::steady_clock::now();
@@ -79,11 +86,13 @@ void PropertiesPanel::setClip(Clip* clip, Track* track)
 void PropertiesPanel::clearClip()
 {
     m_clip  = nullptr;
+    m_clipId = 0;
     m_multiSelection.clear();
     m_spineClip = nullptr;
     m_puppetClip = nullptr;
     m_track = nullptr;
     m_transitionIndex = SIZE_MAX;
+    m_scrollArea->setEnabled(true);
     showSectionsForType();
     if (m_transitionSection) m_transitionSection->setVisible(false);
     m_headerLabel->setText("");
@@ -99,7 +108,8 @@ void PropertiesPanel::clearClip()
     emit clipChanged(nullptr);
 }
 
-void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
+void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
+                                        bool editable)
 {
     if (clips.empty()) {
         clearClip();
@@ -109,6 +119,8 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
         setClip(clips.front());
         return;
     }
+
+    m_scrollArea->setEnabled(editable);
 
     // Retain the full selection so the Shot dropdown (and any other future
     // multi-clip action) can operate on every selected clip, not just the
@@ -161,6 +173,8 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
         m_scrollArea->setVisible(true);
         m_emptyLabel->setVisible(false);
         if (m_statusLabel) m_statusLabel->setText(QStringLiteral("Captions"));
+        if (!editable && m_statusLabel)
+            m_statusLabel->setText(QStringLiteral("Locked selection — read only"));
         populateFromCaption();
         emit clipChanged(m_clip);
         return;
@@ -187,6 +201,8 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
         m_scrollArea->setVisible(true);
         m_emptyLabel->setVisible(false);
         if (m_statusLabel) m_statusLabel->setText(QStringLiteral("Shot group"));
+        if (!editable && m_statusLabel)
+            m_statusLabel->setText(QStringLiteral("Locked selection — read only"));
 
         updateShotSection();
 
@@ -250,6 +266,8 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips)
         m_scrollArea->setVisible(true);
         m_emptyLabel->setVisible(false);
         if (m_statusLabel) m_statusLabel->setText(QStringLiteral("Mixed selection"));
+        if (!editable && m_statusLabel)
+            m_statusLabel->setText(QStringLiteral("Locked selection — read only"));
 
         if (visualRep) {
             m_shotSection->setVisible(true);
@@ -333,6 +351,8 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
 {
     m_track = track;
     m_transitionIndex = transitionIndex;
+    const bool editable = !track || !track->isLocked();
+    m_scrollArea->setEnabled(editable);
     m_clip = nullptr; // clear clip selection
     m_multiSelection.clear();
 
@@ -357,7 +377,42 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
     // Show scroll area for transition editing
     m_scrollArea->setVisible(true);
     m_emptyLabel->setVisible(false);
-    if (m_statusLabel) m_statusLabel->setText(QStringLiteral("Transition"));
+    if (m_statusLabel) m_statusLabel->setText(editable
+        ? QStringLiteral("Transition")
+        : QStringLiteral("Track locked — read only"));
+}
+
+void PropertiesPanel::setTimeline(Timeline* timeline) noexcept
+{
+    if (m_timeline != timeline) clearClip();
+    m_timeline = timeline;
+}
+
+bool PropertiesPanel::resolveBoundClip() noexcept
+{
+    if (!m_timeline)
+        return m_clip && m_track && rt::canMutateClip(m_clip, m_track);
+    Track* track = nullptr;
+    Clip* clip = rt::resolveClipById(m_timeline, m_clipId, &track);
+    if (!clip) {
+        m_clip = nullptr;
+        m_track = nullptr;
+        m_spineClip = nullptr;
+        m_puppetClip = nullptr;
+        return false;
+    }
+    m_clip = clip;
+    m_track = track;
+    m_spineClip = clip->clipType() == ClipType::Spine
+        ? static_cast<SpineClip*>(clip) : nullptr;
+    m_puppetClip = clip->clipType() == ClipType::PngPuppet
+        ? static_cast<PngPuppetClip*>(clip) : nullptr;
+    return true;
+}
+
+bool PropertiesPanel::canMutateBoundClip() noexcept
+{
+    return resolveBoundClip() && m_track && !m_track->isLocked();
 }
 
 

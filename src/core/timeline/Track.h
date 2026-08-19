@@ -26,6 +26,15 @@ enum class TrackType : uint8_t
     Audio
 };
 
+/// Locked tracks reject normal edit mutations.  Deserialization, cloning,
+/// and the undo/redo implementation may explicitly bypass the lock so they
+/// can restore an already-authorized project state deterministically.
+enum class TrackMutationPolicy : uint8_t
+{
+    RespectLock,
+    BypassLock
+};
+
 class Track
 {
 public:
@@ -40,13 +49,17 @@ public:
     [[nodiscard]] bool isLocked() const noexcept { return m_locked; }
     [[nodiscard]] bool isMuted()  const noexcept { return m_muted; }
     [[nodiscard]] bool isSoloed() const noexcept { return m_soloed; }
-    void setLocked(bool v) noexcept { m_locked = v; }
+    void setLocked(bool v) noexcept
+    {
+        m_locked = v;
+        if (v) m_targeted = false;
+    }
     void setMuted(bool v)  noexcept { m_muted = v; }
     void setSoloed(bool v) noexcept { m_soloed = v; }
 
     /// Track targeting — targeted tracks receive paste/insert edits (Premiere Pro V1/A1 patch).
     [[nodiscard]] bool isTargeted() const noexcept { return m_targeted; }
-    void setTargeted(bool v) noexcept { m_targeted = v; }
+    void setTargeted(bool v) noexcept { m_targeted = v && !m_locked; }
 
     /// Track collapse — collapsed tracks show a minimal thin header.
     [[nodiscard]] bool isCollapsed() const noexcept { return m_collapsed; }
@@ -91,9 +104,13 @@ public:
     void setPan(float p) noexcept { m_pan = p; }
 
     // ── Clip management ─────────────────────────────────────────────────
-    Clip*  addClip(std::unique_ptr<Clip> clip);
-    std::unique_ptr<Clip> removeClip(size_t index);
-    void   moveClip(size_t index, int64_t newTimelinePosition);
+    Clip*  addClip(std::unique_ptr<Clip>&& clip,
+                   TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
+    std::unique_ptr<Clip> removeClip(
+        size_t index,
+        TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
+    void   moveClip(size_t index, int64_t newTimelinePosition,
+                    TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
     [[nodiscard]] size_t       clipCount() const noexcept;
     [[nodiscard]] Clip*        clip(size_t index) noexcept;
     [[nodiscard]] const Clip*  clip(size_t index) const noexcept;
@@ -102,7 +119,9 @@ public:
     [[nodiscard]] size_t findClipIndexById(uint64_t clipId) const noexcept;
 
     /// Remove clip by ID, returning ownership. Returns nullptr if not found.
-    std::unique_ptr<Clip> removeClipById(uint64_t clipId);
+    std::unique_ptr<Clip> removeClipById(
+        uint64_t clipId,
+        TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
 
     /// Find all clips active at a given time
     [[nodiscard]] std::vector<Clip*> clipsAtTime(int64_t timeTick) const;
@@ -118,7 +137,9 @@ public:
     /// endpoints may simply not have been relinked yet and two of them are
     /// not provably the same edit point.
     /// @return index of the added (or replaced-in-place) transition.
-    size_t addTransition(Transition t);
+    size_t addTransition(
+        Transition t,
+        TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
 
     /// Index of the transition on the (leftClipId, rightClipId) edit point,
     /// or kNoTransition.  (0, 0) always returns kNoTransition — see
@@ -126,8 +147,12 @@ public:
     static constexpr size_t kNoTransition = static_cast<size_t>(-1);
     [[nodiscard]] size_t findTransition(uint64_t leftClipId,
                                         uint64_t rightClipId) const noexcept;
-    Transition removeTransition(size_t index);
-    void setTransition(size_t index, const Transition& t);
+    Transition removeTransition(
+        size_t index,
+        TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
+    void setTransition(
+        size_t index, const Transition& t,
+        TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
     [[nodiscard]] const Transition* transition(size_t index) const noexcept;
     [[nodiscard]] size_t transitionCount() const noexcept;
     [[nodiscard]] const std::vector<Transition>& transitions() const noexcept;
@@ -137,6 +162,11 @@ public:
     [[nodiscard]] int64_t duration() const noexcept;
 
 private:
+    [[nodiscard]] bool mutationAllowed(TrackMutationPolicy policy) const noexcept
+    {
+        return policy == TrackMutationPolicy::BypassLock || !m_locked;
+    }
+
     TrackType                              m_type;
     std::string                            m_name;
     bool                                   m_locked{false};

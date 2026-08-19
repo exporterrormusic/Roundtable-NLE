@@ -154,6 +154,7 @@ std::unique_ptr<Clip> CaptionClip::clone() const
  // CaptionClip-specific
  copy->m_text = m_text;
  copy->m_speaker = m_speaker;
+ copy->m_confidence = m_confidence;
  copy->m_fontFamily = m_fontFamily;
  copy->m_fontStyle = m_fontStyle;
  copy->m_fontSize = m_fontSize;

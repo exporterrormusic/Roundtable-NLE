@@ -190,7 +190,7 @@ void PropertiesPanel::populateFromPuppet()
 
 void PropertiesPanel::applyPuppetTalking()
 {
-    if (m_updating || !m_puppetClip) return;
+    if (m_updating || !canMutateBoundClip() || !m_puppetClip) return;
     auto* pc = m_puppetClip;
     const bool newVal = m_puppetTalkingCheck->isChecked();
     if (newVal == pc->isTalking()) return;
@@ -216,7 +216,7 @@ void PropertiesPanel::applyPuppetTalking()
 
 void PropertiesPanel::applyPuppetOutfit()
 {
-    if (m_updating || !m_puppetClip) return;
+    if (m_updating || !canMutateBoundClip() || !m_puppetClip) return;
     auto* pc = m_puppetClip;
     const QString newOutfit = m_puppetOutfitCombo->currentText();
 
@@ -270,7 +270,7 @@ void PropertiesPanel::applyPuppetOutfit()
 
 void PropertiesPanel::applyPuppetAction()
 {
-    if (m_updating || !m_puppetClip) return;
+    if (m_updating || !canMutateBoundClip() || !m_puppetClip) return;
     auto* pc = m_puppetClip;
     const QString newAction = m_puppetActionCombo->currentText();
 
@@ -324,7 +324,7 @@ void PropertiesPanel::applyPuppetFloat(
     const std::function<void(PngPuppetClip*, float)>& setter,
     float newVal, float oldVal)
 {
-    if (!m_puppetClip) return;
+    if (!canMutateBoundClip() || !m_puppetClip) return;
     auto* pc = m_puppetClip;
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(

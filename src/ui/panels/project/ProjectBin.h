@@ -171,6 +171,7 @@ public:
 
     /// Whether the bin clipboard currently holds something pasteable.
     [[nodiscard]] bool hasClipboard() const noexcept;
+    [[nodiscard]] bool hasSelection() const noexcept;
 
     /// Number of items in the bin.
     [[nodiscard]] int itemCount() const noexcept;

@@ -2,7 +2,9 @@
 #
 # All dependencies are fetched at CMake configure time via FetchContent.
 # FFmpeg is pre-built and shipped in third_party/ffmpeg/.
-# CUDA headers are optional — NVDEC works through FFmpeg's hwaccel API.
+# CUDA build tools are required by the default Windows Whisper build.  The
+# redistributable runtime DLLs are bundled with Roundtable, so end users only
+# need an NVIDIA display driver (not a CUDA Toolkit installation).
 #
 # To use on a new machine: just run setup.ps1 then build.ps1.
 
@@ -249,18 +251,75 @@ endif()
 
 # ─── whisper.cpp (speech-to-text — optional) ─────────────────────────────────
 option(ROUNDTABLE_ENABLE_WHISPER "Enable whisper.cpp transcription" ON)
+option(ROUNDTABLE_ENABLE_WHISPER_CUDA "Enable CUDA acceleration for whisper.cpp when the CUDA Toolkit is available" ON)
 if(ROUNDTABLE_ENABLE_WHISPER)
     FetchContent_Declare(whisper
-        GIT_REPOSITORY https://github.com/ggerganov/whisper.cpp.git
-        GIT_TAG        v1.7.4
+        GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+        GIT_TAG        v1.8.6
         GIT_SHALLOW    TRUE
     )
     set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(WHISPER_CCACHE OFF CACHE BOOL "" FORCE)
+    set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(GGML_METAL OFF CACHE BOOL "" FORCE)
-    set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+    # Some earlier dependencies leave a failed Unix libm lookup in the shared
+    # cache. ggml treats any defined value as linkable, including *-NOTFOUND.
+    if(WIN32 AND MATH_LIBRARY MATCHES "-NOTFOUND$")
+        unset(MATH_LIBRARY CACHE)
+        unset(MATH_LIBRARY)
+    endif()
+    if(WIN32 AND ROUNDTABLE_ENABLE_WHISPER_CUDA AND NOT CUDAToolkit_FOUND)
+        message(FATAL_ERROR
+            "whisper.cpp CUDA is enabled by default, but the CUDA Toolkit was not found. "
+            "Install the CUDA Toolkit for the production build, or explicitly configure "
+            "-DROUNDTABLE_ENABLE_WHISPER_CUDA=OFF for the emergency CPU-only fallback.")
+    endif()
+    if(ROUNDTABLE_ENABLE_WHISPER_CUDA AND CUDAToolkit_FOUND)
+        set(GGML_CUDA ON CACHE BOOL "" FORCE)
+        set(ROUNDTABLE_WHISPER_CUDA_FOUND TRUE CACHE BOOL "whisper.cpp CUDA backend built" FORCE)
+        message(STATUS "whisper.cpp: CUDA backend enabled")
+    else()
+        set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+        set(ROUNDTABLE_WHISPER_CUDA_FOUND FALSE CACHE BOOL "whisper.cpp CUDA backend built" FORCE)
+        message(STATUS "whisper.cpp: CUDA backend disabled (CPU transcription)")
+    endif()
     FetchContent_MakeAvailable(whisper)
+
+    # The static Roundtable/whisper link still imports the CUDA runtime and
+    # cuBLAS DLLs on Windows. Record the two direct runtime seeds here; the
+    # deploy helper walks their PE dependency closure so transitive libraries
+    # such as cublasLt are bundled as well. Match exactly one DLL per toolkit
+    # bin directory so a partial or ambiguous Toolkit install fails at
+    # configure time instead of producing an installer that cannot launch.
+    if(WIN32 AND ROUNDTABLE_WHISPER_CUDA_FOUND)
+        function(_roundtable_find_cuda_runtime_dll out_var glob_pattern description)
+            file(GLOB _matches LIST_DIRECTORIES FALSE
+                "${CUDAToolkit_BIN_DIR}/${glob_pattern}")
+            list(FILTER _matches EXCLUDE REGEX "[.]alt[.]dll$")
+            list(SORT _matches)
+            list(LENGTH _matches _match_count)
+            if(NOT _match_count EQUAL 1)
+                string(JOIN ", " _match_list ${_matches})
+                message(FATAL_ERROR
+                    "CUDA runtime packaging expected exactly one ${description} DLL matching "
+                    "'${CUDAToolkit_BIN_DIR}/${glob_pattern}', found ${_match_count}: ${_match_list}")
+            endif()
+            set(${out_var} "${_matches}" PARENT_SCOPE)
+        endfunction()
+
+        _roundtable_find_cuda_runtime_dll(
+            _roundtable_cudart_dll "cudart64_*.dll" "CUDA runtime")
+        _roundtable_find_cuda_runtime_dll(
+            _roundtable_cublas_dll "cublas64_*.dll" "cuBLAS runtime")
+
+        set(ROUNDTABLE_CUDA_RUNTIME_SEEDS
+            "${_roundtable_cudart_dll};${_roundtable_cublas_dll}"
+            CACHE INTERNAL "Direct CUDA runtime DLLs required by Roundtable" FORCE)
+        set(ROUNDTABLE_CUDA_RUNTIME_SOURCE_DIR "${CUDAToolkit_BIN_DIR}"
+            CACHE INTERNAL "CUDA runtime DLL source directory" FORCE)
+    endif()
 
     if(TARGET whisper)
         set(WHISPER_FOUND TRUE CACHE BOOL "whisper.cpp found" FORCE)
@@ -275,5 +334,6 @@ if(ROUNDTABLE_ENABLE_WHISPER)
     endif()
 else()
     set(WHISPER_FOUND FALSE CACHE BOOL "whisper.cpp disabled" FORCE)
+    set(ROUNDTABLE_WHISPER_CUDA_FOUND FALSE CACHE BOOL "whisper.cpp CUDA backend built" FORCE)
     message(STATUS "whisper.cpp: disabled (set ROUNDTABLE_ENABLE_WHISPER=ON to enable)")
 endif()

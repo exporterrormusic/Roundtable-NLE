@@ -27,6 +27,8 @@
 #include "timeline/PngPuppetClip.h"
 #include "panels/characters/PuppetLibrary.h"
 #include "Theme.h"
+#include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 
 #include <spdlog/spdlog.h>
 
@@ -104,6 +106,29 @@ int applyIncremental(Timeline* timeline,
 int AudioSync::exportToTimeline(Timeline* timeline)
 {
     if (!timeline) return 0;
+    m_lastExportError.clear();
+
+    // Build and apply against a detached deep clone first. Nothing visible is
+    // mutated until every validation and placement step has succeeded. The
+    // before/after snapshots then form one history entry.
+    if (m_commandStack && !m_exportTransactionActive) {
+        auto before = timeline->clone();
+        auto staged = timeline->clone();
+        m_exportTransactionActive = true;
+        const int result = exportToTimeline(staged.get());
+        m_exportTransactionActive = false;
+        if (result <= 0) return result;
+
+        auto after = staged->clone();
+        timeline->restoreFrom(*staged);
+        auto beforeShared = std::shared_ptr<Timeline>(std::move(before));
+        auto afterShared = std::shared_ptr<Timeline>(std::move(after));
+        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+            "Audio Sync Export",
+            [timeline, afterShared]() { timeline->restoreFrom(*afterShared); },
+            [timeline, beforeShared]() { timeline->restoreFrom(*beforeShared); }));
+        return result;
+    }
 
     // ── EXPORT == MATCH tab, exactly ────────────────────────────────────
     // The MATCH tab shows (and plays) exactly ONE clip per script line: its
@@ -266,7 +291,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
         for (size_t i = 0; i < timeline->trackCount(); ++i) {
             Track* t = timeline->track(i);
             if (t && t->type() == TrackType::Audio && !t->isDivider()
-                && t->name() == name) {
+                && !t->isLocked() && t->name() == name) {
                 speakerTracks.emplace(name, t);
                 return t;
             }
@@ -354,7 +379,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
         for (size_t vi = 0; vi < timeline->trackCount(); ++vi) {
             Track* tk = timeline->track(vi);
             if (tk && tk->type() == TrackType::Video && !tk->isDivider()
-                && !tk->isCaptionTrack())
+                && !tk->isCaptionTrack() && !tk->isLocked())
                 videoIndices.push_back(vi);
         }
 
@@ -556,6 +581,57 @@ int AudioSync::exportToTimeline(Timeline* timeline)
         }
     }
 
+    // Preflight every track the operation owns before making any changes.
+    // AudioSync is a compound timeline edit, so partially updating around a
+    // locked track would create duplicated dialogue or mismatched shots.
+    if (incremental) {
+        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+            Track* track = timeline->track(ti);
+            if (!track || !track->isLocked()) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                const Clip* clip = track->clip(ci);
+                if (clip && clip->syncLine() >= 0) {
+                    spdlog::warn(
+                        "AudioSync: re-export blocked by locked track '{}'",
+                        track->name());
+                    m_lastExportError = tr("Track '%1' is locked; clip '%2' (line %3) cannot be updated.")
+                        .arg(QString::fromStdString(track->name()),
+                             QString::fromStdString(clip->label()))
+                        .arg(clip->syncLine());
+                    return kExportBlockedByLockedTrack;
+                }
+            }
+        }
+    } else {
+        std::unordered_set<std::string> speakerNames;
+        for (const auto& pa : plannedAudio)
+            speakerNames.insert(pa.character.empty() ? std::string("VO")
+                                                      : pa.character);
+        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+            Track* track = timeline->track(ti);
+            if (!track || !track->isLocked()) continue;
+            bool wouldMutate =
+                track->type() == TrackType::Audio
+                && !track->isDivider()
+                && speakerNames.count(track->name()) != 0;
+            if (track->type() == TrackType::Video && !track->isCaptionTrack()) {
+                for (size_t ci = 0; ci < track->clipCount() && !wouldMutate; ++ci) {
+                    const Clip* clip = track->clip(ci);
+                    wouldMutate = clip && (clip->syncLine() >= 0
+                        || (clip->groupId() != 0 && !clip->shotName().empty()));
+                }
+            }
+            if (wouldMutate) {
+                spdlog::warn(
+                    "AudioSync: export blocked by locked track '{}'",
+                    track->name());
+                m_lastExportError = tr("Track '%1' is locked and is required by this export.")
+                    .arg(QString::fromStdString(track->name()));
+                return kExportBlockedByLockedTrack;
+            }
+        }
+    }
+
     if (!incremental) {
         return applyFull(timeline, plannedAudio, groups,
                          m_shotPresetManager != nullptr,
@@ -591,6 +667,7 @@ int applyFull(Timeline* timeline,
         for (size_t i = 0; i < timeline->trackCount(); ++i) {
             Track* t = timeline->track(i);
             if (!t || t->type() != TrackType::Audio || t->isDivider()) continue;
+            if (t->isLocked()) continue;
             if (t->clipCount() == 0 || speakerNames.count(t->name()))
                 removeIndices.push_back(i);
             else
@@ -621,7 +698,7 @@ int applyFull(Timeline* timeline,
         for (size_t i = 0; i < timeline->trackCount(); ++i) {
             Track* t = timeline->track(i);
             if (!t || t->type() != TrackType::Video) continue;
-            if (t->isCaptionTrack()) continue;
+            if (t->isCaptionTrack() || t->isLocked()) continue;
             for (size_t ci = t->clipCount(); ci > 0; --ci) {
                 const Clip* c = t->clip(ci - 1);
                 if (!c) continue;

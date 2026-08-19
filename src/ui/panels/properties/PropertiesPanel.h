@@ -119,7 +119,8 @@ public:
     void clearClip();
 
     /// Set multi-selection: shows shot section if all clips share a group.
-    void setMultiSelection(const std::vector<Clip*>& clips);
+    void setMultiSelection(const std::vector<Clip*>& clips,
+                           bool editable = true);
 
     // ── Command system ──────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ public:
     void refreshShotDropdown();
 
     /// Set the timeline for shot switching (needed to find group clips).
-    void setTimeline(Timeline* tl) noexcept { m_timeline = tl; }
+    void setTimeline(Timeline* tl) noexcept;
 
     /// Set the model manager for character/outfit/stance dropdowns.
     void setModelManager(ModelManager* mgr) noexcept { m_modelManager = mgr; }
@@ -221,6 +222,8 @@ signals:
     void shotSwitchRequested(uint64_t groupId, const std::string& newShotName);
 
 private:
+    [[nodiscard]] bool canMutateBoundClip() noexcept;
+    [[nodiscard]] bool resolveBoundClip() noexcept;
     void setupUI();
     void setupIdentitySection(QWidget* container);
     void setupTransformSection(QWidget* container);
@@ -372,6 +375,7 @@ private:
     ModelManager*      m_modelManager{nullptr};
     ShotPresetManager* m_shotManager{nullptr};
     Timeline*          m_timeline{nullptr};
+    uint64_t           m_clipId{0};
     bool               m_updating{false};
     AnimNamesProvider  m_animNamesProvider;
     VideoAnimNamesProvider m_videoAnimNamesProvider;

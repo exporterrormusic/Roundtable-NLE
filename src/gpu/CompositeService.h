@@ -555,7 +555,9 @@ private:
     std::vector<LayerInfo> buildLayersForFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                 bool scrubMode, bool playbackNonBlocking,
                                                 ResolutionTier requestTier, bool stillMode,
-                                                int& clipsAtTick, bool perfLog,
+                                                int& clipsAtTick,
+                                                int& resolvedClipsAtTick,
+                                                bool perfLog,
                                                 std::unique_lock<std::recursive_mutex>& lock,
                                                 bool& gpuSpineUsedThisFrame);
 

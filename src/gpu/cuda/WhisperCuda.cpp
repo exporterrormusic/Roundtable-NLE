@@ -90,6 +90,7 @@ size_t WhisperCuda::estimateModelVRAM(const std::string& modelSize) const noexce
     if (modelSize == "base")     return 150;
     if (modelSize == "small")    return 500;
     if (modelSize == "medium")   return 1500;
+    if (modelSize == "large-v3-turbo") return 1700;
     if (modelSize == "large-v2") return 3000;
     if (modelSize == "large-v3") return 3000;
     return 500; // default estimate

@@ -18,6 +18,7 @@
 // FFmpeg forward declarations
 struct AVFormatContext;
 struct AVPacket;
+struct AVCodecContext;
 
 namespace rt {
 
@@ -49,10 +50,15 @@ public:
 
     /// Get the video stream index.
     [[nodiscard]] int videoStreamIndex() const noexcept { return m_videoStream; }
+    [[nodiscard]] bool strictlyMatches(const AVCodecContext* target,
+                                       uint32_t width, uint32_t height,
+                                       int fpsNum, int fpsDen) const noexcept;
+    [[nodiscard]] AVCodecContext* codecContext() const noexcept { return m_codecContext; }
 
 private:
     AVFormatContext* m_fmtCtx{nullptr};
     AVPacket*        m_pkt{nullptr};
+    AVCodecContext*  m_codecContext{nullptr};
     int              m_videoStream{-1};
     double           m_fps{0.0};
     int64_t          m_startPts{0};

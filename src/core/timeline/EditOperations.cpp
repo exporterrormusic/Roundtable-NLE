@@ -207,6 +207,8 @@ std::unique_ptr<Command> EditOperations::moveClip(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
@@ -232,7 +234,8 @@ std::unique_ptr<Command> EditOperations::moveClipToTrack(
     // this guard the AddClipCommand would silently no-op while the paired
     // RemoveClipCommand still pulls the clip off srcTrack — the clip ends
     // up destroyed instead of moved.
-    if (!srcTrack || !dstTrack || dstTrack->isDivider())
+    if (!srcTrack || !dstTrack || srcTrack->isLocked() ||
+        dstTrack->isLocked() || dstTrack->isDivider())
         return nullptr;
 
     size_t idx = srcTrack->findClipIndexById(clipId);
@@ -333,6 +336,8 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t movedIdx = track->findClipIndexById(movedClipId);
     if (movedIdx == track->clipCount()) {
         spdlog::warn("[OVERLAP-DIAG] resolveOverlaps: clip id={} NOT FOUND on track {}",
@@ -469,6 +474,7 @@ std::unique_ptr<Command> EditOperations::deleteSelection(
     {
         if (ref.trackIndex >= timeline.trackCount()) continue;
         Track* track = timeline.track(ref.trackIndex);
+        if (!track || track->isLocked()) continue;
         if (track->findClipIndexById(ref.clipId) == track->clipCount()) continue;
 
         compound->addCommand(std::make_unique<RemoveClipCommand>(
@@ -707,6 +713,53 @@ static size_t captionTrackIndex(const Timeline& tl)
     return SIZE_MAX;
 }
 
+// One compatibility-preserving destination resolver for clipboard edits.
+// Placement remains V1/A1-relative exactly as before; callers choose whether
+// Premiere-style track targeting is required. Validation is batch-atomic.
+struct ClipboardDestinationPlan {
+    std::vector<size_t> destinations;
+    bool valid{true};
+};
+
+static ClipboardDestinationPlan planClipboardDestinations(
+    const Timeline& timeline, const ClipboardContents& clipboard,
+    bool requireTargeted)
+{
+    ClipboardDestinationPlan plan;
+    const auto videos = realVideoTracks(timeline);
+    const auto audios = realAudioTracks(timeline);
+    const size_t captions = captionTrackIndex(timeline);
+    plan.destinations.reserve(clipboard.entries.size());
+    for (const auto& entry : clipboard.entries) {
+        size_t destination = SIZE_MAX;
+        if (!entry.clip) {
+            plan.destinations.push_back(destination);
+            continue;
+        }
+        if (entry.clip->isCaption()) {
+            destination = captions;
+        } else if (entry.clip->isAudio() && !audios.empty()) {
+            const int offset = std::clamp(entry.trackOffset, 0,
+                                          static_cast<int>(audios.size()) - 1);
+            destination = audios[static_cast<size_t>(offset)];
+        } else if (!entry.clip->isAudio() && !videos.empty()) {
+            const int offset = std::clamp(entry.trackOffset, 0,
+                                          static_cast<int>(videos.size()) - 1);
+            destination = videos[videos.size() - 1 - static_cast<size_t>(offset)];
+        }
+        plan.destinations.push_back(destination);
+        if (destination >= timeline.trackCount()) {
+            plan.valid = false;
+            continue;
+        }
+        const Track* track = timeline.track(destination);
+        if (!track || track->isLocked() || track->isDivider()
+            || (requireTargeted && !track->isTargeted()))
+            plan.valid = false;
+    }
+    return plan;
+}
+
 std::unique_ptr<Command> EditOperations::paste(
     Timeline& timeline, const ClipboardContents& clipboard,
     int64_t playhead)
@@ -763,9 +816,11 @@ std::unique_ptr<Command> EditOperations::paste(
             }
         }
     }
-    const auto finalVids = realVideoTracks(timeline);
-    const auto finalAuds = realAudioTracks(timeline);
-    const size_t capIdx  = captionTrackIndex(timeline);
+    const auto destinationPlan = planClipboardDestinations(timeline, clipboard, false);
+    if (!destinationPlan.valid) {
+        compound->undo();
+        return nullptr;
+    }
 
     uint64_t nextGid = freshGroupIdBase(timeline);
     std::unordered_map<uint64_t, uint64_t> gidRemap;
@@ -780,30 +835,16 @@ std::unique_ptr<Command> EditOperations::paste(
     std::unordered_map<uint64_t, uint64_t> clipIdRemap;
     std::unordered_map<uint64_t, size_t>   newClipTrack;
 
-    for (const auto& entry : clipboard.entries)
+    for (size_t entryIndex = 0; entryIndex < clipboard.entries.size(); ++entryIndex)
     {
+        const auto& entry = clipboard.entries[entryIndex];
         if (!entry.clip) continue;
         // Resolve the destination track from the captured V1/A1 offset.
         // Caption cues stay on the pinned caption track; video counts up from
         // V1 (back of the list), audio counts down from A1 (front). The
         // overflow tracks created above guarantee the offset is in range, but
         // clamp defensively so a stray offset never indexes out of bounds.
-        size_t destIdx;
-        if (entry.clip->isCaption()) {
-            if (capIdx == SIZE_MAX) continue;   // no caption track to host it
-            destIdx = capIdx;
-        } else if (entry.clip->isAudio()) {
-            if (finalAuds.empty()) continue;
-            int off = std::clamp(entry.trackOffset, 0,
-                                 static_cast<int>(finalAuds.size()) - 1);
-            destIdx = finalAuds[static_cast<size_t>(off)];          // A1 = front
-        } else {
-            if (finalVids.empty()) continue;
-            int off = std::clamp(entry.trackOffset, 0,
-                                 static_cast<int>(finalVids.size()) - 1);
-            destIdx = finalVids[finalVids.size() - 1 - static_cast<size_t>(off)]; // V1 = back
-        }
-        if (destIdx >= timeline.trackCount()) continue;
+        const size_t destIdx = destinationPlan.destinations[entryIndex];
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
@@ -812,6 +853,7 @@ std::unique_ptr<Command> EditOperations::paste(
         const uint64_t newClipId = cloned->id();
 
         Track* track = timeline.track(destIdx);
+        if (!track || track->isLocked()) continue;
 
         // Execute the add immediately so the clip is resident on the
         // track when we call resolveOverlaps below.  Use addExecuted so
@@ -1099,30 +1141,12 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
             }
         }
     }
-    const auto finalVids = realVideoTracks(timeline);
-    const auto finalAuds = realAudioTracks(timeline);
-    const size_t capIdx  = captionTrackIndex(timeline);
-
-    // Resolve each entry's destination track once (V1/A1-anchored; caption
-    // cues go to the pinned caption track).  SIZE_MAX = no valid host.
-    auto resolveDest = [&](const ClipboardContents::Entry& entry) -> size_t {
-        if (!entry.clip) return SIZE_MAX;
-        if (entry.clip->isCaption())
-            return capIdx;   // SIZE_MAX when there is no caption track
-        if (entry.clip->isAudio()) {
-            if (finalAuds.empty()) return SIZE_MAX;
-            int off = std::clamp(entry.trackOffset, 0,
-                                 static_cast<int>(finalAuds.size()) - 1);
-            return finalAuds[static_cast<size_t>(off)];             // A1 = front
-        }
-        if (finalVids.empty()) return SIZE_MAX;
-        int off = std::clamp(entry.trackOffset, 0,
-                             static_cast<int>(finalVids.size()) - 1);
-        return finalVids[finalVids.size() - 1 - static_cast<size_t>(off)]; // V1 = back
-    };
-    std::vector<size_t> destFor(clipboard.entries.size(), SIZE_MAX);
-    for (size_t i = 0; i < clipboard.entries.size(); ++i)
-        destFor[i] = resolveDest(clipboard.entries[i]);
+    const auto destinationPlan = planClipboardDestinations(timeline, clipboard, true);
+    if (!destinationPlan.valid) {
+        compound->undo();
+        return nullptr;
+    }
+    const auto& destFor = destinationPlan.destinations;
 
     // Tracks that will actually receive a pasted clip (valid destination
     // AND targeted — same gate as the add loop below). They must ripple to
@@ -1132,7 +1156,8 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
         const size_t destIdx = destFor[i];
         if (destIdx >= timeline.trackCount()) continue;
         const Track* t = timeline.track(destIdx);
-        if (t && t->isTargeted()) contentTracks.insert(destIdx);
+        if (t && !t->isLocked() && t->isTargeted())
+            contentTracks.insert(destIdx);
     }
 
     // First: shift existing clips at/after the playhead to the right.
@@ -1180,7 +1205,7 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
         const size_t destIdx = destFor[i];
         if (destIdx >= timeline.trackCount()) continue;
         Track* track = timeline.track(destIdx);
-        if (!track->isTargeted()) continue;
+        if (!track || track->isLocked() || !track->isTargeted()) continue;
 
         auto cloned = entry.clip->clone();
         cloned->setTimelineIn(playhead + entry.relativeTime);
@@ -1260,6 +1285,7 @@ std::unique_ptr<Command> EditOperations::duplicateSelection(
     {
         if (ref.trackIndex >= timeline.trackCount()) continue;
         Track* track = timeline.track(ref.trackIndex);
+        if (!track || track->isLocked()) continue;
         size_t idx = track->findClipIndexById(ref.clipId);
         if (idx == track->clipCount()) continue;
 

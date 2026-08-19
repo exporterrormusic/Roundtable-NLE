@@ -119,6 +119,9 @@ std::vector<EffectDropTarget> resolveEffectDropTargets(
         auto* clip = track->clip(clipIdx);
         if (!clip) continue;
         if (audioOnly ? !clip->isAudio() : !clip->isVisual()) continue;
+        // Preflight the complete compatible selection. Never apply an effect
+        // to only the unlocked subset of a mixed locked/unlocked selection.
+        if (track->isLocked()) return {};
         result.push_back({ref.trackIndex, clipIdx, track, clip});
     }
     return result;

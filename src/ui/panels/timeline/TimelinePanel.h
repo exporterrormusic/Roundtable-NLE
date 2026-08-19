@@ -556,6 +556,7 @@ private:
     int64_t   m_dragOriginalIn{0};
     int64_t   m_dragOriginalSourceIn{0};
     int64_t   m_dragOriginalDuration{0};
+    int64_t   m_dragLastAppliedDelta{0};
     size_t    m_dragOriginalTrack{0};
 
     // Rolling edit drag state

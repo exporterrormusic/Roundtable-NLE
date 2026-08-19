@@ -99,6 +99,11 @@ void PropertyRow::setTrack(KeyframeTrack<float>* track)
     syncStopwatchState();
 }
 
+void PropertyRow::setCurveExpanded(bool expanded)
+{
+    if (m_expandBtn) m_expandBtn->setChecked(expanded);
+}
+
 void PropertyRow::addExtraTrack(KeyframeTrack<float>* track)
 {
     if (!track) return;
@@ -183,6 +188,11 @@ void PropertyRow::buildUI()
         .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary))
         .arg(Theme::typography().sizeXxs));
     layout->addWidget(m_expandBtn);
+    m_expandBtn->setToolTip(tr("Show keyframe value and velocity graphs"));
+    connect(m_expandBtn, &QToolButton::toggled, this, [this](bool expanded) {
+        m_expandBtn->setText(expanded ? QStringLiteral("v") : QStringLiteral(">"));
+        emit curveEditorRequested(this, expanded);
+    });
 
     // Stopwatch / clock icon (keyframe toggle)
     m_stopwatch = new QToolButton(this);

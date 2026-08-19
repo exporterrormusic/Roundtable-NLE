@@ -136,6 +136,7 @@ void OverlayController::wireTransformOverlaySignals()
 void OverlayController::onOverlayPositionChanged(float posX, float posY)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip) return;
     const int64_t relTick = m_ws->playbackController()
         ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
@@ -200,6 +201,7 @@ void OverlayController::onOverlayPositionChanged(float posX, float posY)
 void OverlayController::onOverlayScaleChanged(float scX, float scY)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip) return;
     const int64_t relTick = m_ws->playbackController()
         ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
@@ -261,6 +263,7 @@ void OverlayController::onOverlayScaleChanged(float scX, float scY)
 void OverlayController::onOverlayRotationChanged(float rot)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip) return;
     const int64_t relTick = m_ws->playbackController()
         ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
@@ -286,6 +289,7 @@ void OverlayController::onOverlayRotationChanged(float rot)
 void OverlayController::onOverlayAnchorChanged(float ax, float ay)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip) return;
     const int64_t relTick = m_ws->playbackController()
         ? std::max<int64_t>(0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn())
@@ -319,6 +323,7 @@ void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
                                                     float newX, float newY)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip || !m_ws->commandStack()) return;
     if (std::abs(oldX - newX) < 1e-4f && std::abs(oldY - newY) < 1e-4f) return;
     Clip* clip = m_ws->selection().clip;
@@ -371,6 +376,7 @@ void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
 void OverlayController::onOverlayCropChanged(float l, float r, float t, float b)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     auto* clip = m_ws->selection().clip;
     if (!clip || !clip->supportsCrop()) return;
     clip->setCrop(l, r, t, b);   // setCrop is virtual on Clip (Video/Spine override)
@@ -384,6 +390,7 @@ void OverlayController::onOverlayCropDragFinished(
     float newL, float newR, float newT, float newB)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     auto* clip = m_ws->selection().clip;
     if (!clip || !clip->supportsCrop()) return;
     if (oldL == newL && oldR == newR && oldT == newT && oldB == newB) return;  // no-op
@@ -412,6 +419,7 @@ void OverlayController::onOverlayDragFinished(
     float newPosX, float newPosY, float newScX, float newScY, float newRot)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     // Capture pre-drag static state before resetting
     bool sxWasStatic = m_scaleXWasStaticAtDragStart;
     bool syWasStatic = m_scaleYWasStaticAtDragStart;
@@ -690,6 +698,7 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
                                                   const OpacityMask& newMask)
 {
     if (m_ws->isDestroying()) return;
+    if (!selectedTrackIsEditable()) return;
     if (!m_ws->selection().clip || !m_ws->commandStack()) return;
     m_ws->invalidateCompositeCache();
     if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
@@ -740,6 +749,7 @@ void OverlayController::onOverlayMaskCreated(int maskIndex,
     if (m_ws->isDestroying() || !m_ws->selection().clip
         || !m_ws->commandStack())
         return;
+    if (!selectedTrackIsEditable()) return;
 
     Clip* clip = m_ws->selection().clip;
     const int index = maskIndex;
@@ -995,7 +1005,8 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     size_t targetTrackIdx = 0;
     for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
         auto* trk = m_ws->timeline()->track(ti);
-        if (trk && trk->type() == TrackType::Video && !trk->isDivider()
+        if (trk && !trk->isLocked() && trk->type() == TrackType::Video
+                && !trk->isDivider()
                 && !trk->isCaptionTrack()) {
             targetTrack = trk;
             targetTrackIdx = ti;

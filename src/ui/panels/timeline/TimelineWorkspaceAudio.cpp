@@ -30,7 +30,6 @@
 #endif
 
 #include <QTimer>
-#include <QApplication>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -43,6 +42,48 @@
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+struct TimelineWorkspace::MediaWarmupBatch {
+    MediaWarmupBatch(uint64_t generationValue, int workerCount)
+        : generation(generationValue)
+        , workersRemaining(workerCount)
+    {}
+
+    uint64_t generation{0};
+    std::atomic<bool> finished{false};
+    std::atomic<int> workersRemaining{0};
+    std::vector<std::jthread> workers;
+};
+
+void TimelineWorkspace::cancelBackgroundMediaWarmups() noexcept
+{
+    m_mediaWarmupGeneration.fetch_add(1, std::memory_order_acq_rel);
+    for (const auto& batch : m_mediaWarmupBatches) {
+        for (auto& worker : batch->workers)
+            worker.request_stop();
+    }
+}
+
+void TimelineWorkspace::cancelAndJoinBackgroundMediaWarmups() noexcept
+{
+    cancelBackgroundMediaWarmups();
+    for (const auto& batch : m_mediaWarmupBatches) {
+        for (auto& worker : batch->workers) {
+            if (worker.joinable())
+                worker.join();
+        }
+    }
+    m_mediaWarmupBatches.clear();
+    if (m_destroying.load(std::memory_order_acquire))
+        m_backgroundWarmupActive.store(0, std::memory_order_release);
+}
+
+void TimelineWorkspace::reapFinishedBackgroundMediaWarmups()
+{
+    std::erase_if(m_mediaWarmupBatches, [](const auto& batch) {
+        return batch->finished.load(std::memory_order_acquire);
+    });
+}
 
 // â”€â”€ Thin delegation wrappers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -194,7 +235,14 @@ int TimelineWorkspace::migrateDeferredLegacyMediaMasks()
 
 void TimelineWorkspace::preOpenVideoMedia()
 {
+    // A new warmup supersedes work collected from an earlier timeline/edit.
+    // Cancellation is non-blocking here; completed batches are reaped without
+    // keeping their worker thread objects around indefinitely.
+    cancelBackgroundMediaWarmups();
+    reapFinishedBackgroundMediaWarmups();
     if (!m_timeline || !m_mediaPool || !m_compositeService) return;
+    const uint64_t generation =
+        m_mediaWarmupGeneration.load(std::memory_order_acquire);
 
     // Collect (path, isCharacter) for every clip on the timeline that
     // references a media file:
@@ -310,8 +358,8 @@ void TimelineWorkspace::preOpenVideoMedia()
                  "{} audio/image) on background thread",
                  paths.size(), videoCount, audioImageCount);
 
-    // Dispatch the actual open()+loop-pre-decode work to a detached
-    // worker thread so the UI thread (and any pending compositeFrame
+    // Dispatch the actual open()+loop-pre-decode work to owned workers so the
+    // UI thread (and any pending compositeFrame
     // calls) are not blocked by FFmpeg probe + NVDEC init, which for a
     // modern H.264 packed-alpha character clip costs 100-170ms each.
     //
@@ -353,15 +401,20 @@ void TimelineWorkspace::preOpenVideoMedia()
     unsigned hw = std::thread::hardware_concurrency();
     int nThreads = static_cast<int>(hw ? std::min(hw, 6u) : 4u);
     nThreads = std::max(2, std::min(nThreads, total));
-    auto threadsRemaining = std::make_shared<std::atomic<int>>(nThreads);
+    auto batch = std::make_shared<MediaWarmupBatch>(generation, nThreads);
+    auto* batchPtr = batch.get();
+    batch->workers.reserve(static_cast<size_t>(nThreads));
+    m_mediaWarmupBatches.push_back(batch);
 
     spdlog::warn("preOpenVideoMedia: warming {} handle(s) across {} thread(s)",
                  total, nThreads);
 
     for (int ti = 0; ti < nThreads; ++ti) {
-        std::thread([this, pool, work, workIndex, processed,
-                     threadsRemaining, startTime, total, nThreads]() {
+        batch->workers.emplace_back(
+            [this, pool, work, workIndex, processed, batchPtr, generation,
+             startTime, total, nThreads](std::stop_token stop) {
             for (;;) {
+                if (stop.stop_requested()) break;
                 int idx = workIndex->fetch_add(1, std::memory_order_relaxed);
                 if (idx >= total) break;
                 const auto& path = (*work)[idx].first;
@@ -391,31 +444,46 @@ void TimelineWorkspace::preOpenVideoMedia()
                 }
 
                 const int done = processed->fetch_add(1, std::memory_order_acq_rel) + 1;
-                QMetaObject::invokeMethod(qApp, [this, done, total]() {
+                QMetaObject::invokeMethod(this, [this, generation, done, total]() {
+                    if (m_destroying.load(std::memory_order_acquire)
+                        || generation != m_mediaWarmupGeneration.load(
+                            std::memory_order_acquire)) {
+                        return;
+                    }
                     emit backgroundWarmupProgress(done, total);
                 }, Qt::QueuedConnection);
             }
 
             // The last worker to finish finalizes the batch on the UI thread.
-            if (threadsRemaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (batchPtr->workersRemaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 auto ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - *startTime).count();
-                spdlog::warn("preOpenVideoMedia(bg): warmed {} handle(s) on {} thread(s) in {:.0f}ms",
-                             total, nThreads, ms);
+                const int completed = processed->load(std::memory_order_acquire);
+                spdlog::warn("preOpenVideoMedia(bg): warmed {} of {} handle(s) on {} thread(s) in {:.0f}ms",
+                             completed, total, nThreads, ms);
                 // Re-kick the Program Monitor so the just-warmed media paints,
                 // decrement the batch counter, and signal MainWindow to drop
-                // the project-loading input lock.  Posted to qApp so it runs
-                // on the UI thread where these are safe to touch.
-                QMetaObject::invokeMethod(qApp, [this]() {
-                    migrateDeferredLegacyMediaMasks();
+                // the project-loading input lock. The workspace is the Qt
+                // receiver, so Qt discards this if destruction has begun.
+                QMetaObject::invokeMethod(this, [this, generation]() {
                     const int remaining =
                         m_backgroundWarmupActive.fetch_sub(1, std::memory_order_release) - 1;
-                    if (m_programMonitor) m_programMonitor->requestRefresh();
-                    if (remaining <= 0)
+                    const bool current =
+                        !m_destroying.load(std::memory_order_acquire)
+                        && generation == m_mediaWarmupGeneration.load(
+                            std::memory_order_acquire);
+                    if (current) {
+                        migrateDeferredLegacyMediaMasks();
+                        if (m_programMonitor) m_programMonitor->requestRefresh();
+                    }
+                    if (!m_destroying.load(std::memory_order_acquire)
+                        && remaining <= 0) {
                         emit backgroundWarmupFinished();
+                    }
                 }, Qt::QueuedConnection);
+                batchPtr->finished.store(true, std::memory_order_release);
             }
-        }).detach();
+        });
     }
 }
 

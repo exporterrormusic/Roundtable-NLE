@@ -54,6 +54,7 @@ public:
  [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
  [[nodiscard]] GraphicClip* graphicClip() const noexcept { return m_graphicClip; }
  [[nodiscard]] GraphicLayer* selectedLayer() const noexcept { return m_selectedLayer; }
+ [[nodiscard]] bool hasCopiedLayer() const noexcept { return m_copiedLayer != nullptr; }
  [[nodiscard]] int selectedLayerIndex() const noexcept { return m_selectedLayerIdx; }
 
  /// Stack indices of every selected layer in the layer list (focused +
@@ -82,7 +83,7 @@ public:
  void deleteSelectedLayer();
 
  void setCommandStack(CommandStack* stack) noexcept { m_commandStack = stack; }
- void setTimeline(Timeline* tl) noexcept { m_timeline = tl; }
+ void setTimeline(Timeline* tl) noexcept;
 
  /// The Program Monitor owns the live QTextDocument while inline editing is
  /// active. Character controls route to that document instead of overwriting
@@ -157,6 +158,8 @@ signals:
  void textEditRequested();
 
 private:
+ [[nodiscard]] bool canMutateBoundClip() noexcept;
+ [[nodiscard]] bool resolveBoundClip() noexcept;
  void setupUI();
  void rebuildLayerList();
  void selectLayer(int index);
@@ -187,6 +190,7 @@ private:
  int m_selectedLayerIdx{-1};
  CommandStack* m_commandStack{nullptr};
  Timeline* m_timeline{nullptr};
+ uint64_t m_clipId{0};
  bool m_updating{false};
  std::unique_ptr<GraphicLayer> m_copiedLayer; ///< Clipboard for layer copy/paste
 

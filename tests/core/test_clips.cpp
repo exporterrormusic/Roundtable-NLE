@@ -703,6 +703,70 @@ TEST(TrackTest, Properties)
     EXPECT_TRUE(track.isMuted());
     EXPECT_TRUE(track.isSoloed());
     EXPECT_FLOAT_EQ(track.height(), 120.0f);
+    EXPECT_FALSE(track.isTargeted());
+    track.setTargeted(true);
+    EXPECT_FALSE(track.isTargeted());
+    track.setLocked(false);
+    track.setTargeted(true);
+    EXPECT_TRUE(track.isTargeted());
+}
+
+TEST(TrackTest, LockRejectsContentMutationsUnlessExplicitlyBypassed)
+{
+    Track track(TrackType::Video, "V1");
+
+    auto clip = std::make_unique<SpineClip>();
+    clip->setTimelineIn(0);
+    clip->setDuration(48000);
+    const uint64_t clipId = clip->id();
+    ASSERT_NE(track.addClip(std::move(clip)), nullptr);
+
+    Transition transition;
+    transition.leftClipId = clipId;
+    transition.editPointTick = 48000;
+    transition.duration = 12000;
+    ASSERT_EQ(track.addTransition(transition), 0u);
+
+    track.setLocked(true);
+
+    auto refusedClip = std::make_unique<SpineClip>();
+    refusedClip->setTimelineIn(96000);
+    refusedClip->setDuration(48000);
+    EXPECT_EQ(track.addClip(std::move(refusedClip)), nullptr);
+    EXPECT_EQ(track.clipCount(), 1u);
+
+    track.moveClip(0, 96000);
+    ASSERT_NE(track.clip(0), nullptr);
+    EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+    EXPECT_EQ(track.removeClip(0), nullptr);
+    EXPECT_EQ(track.removeClipById(clipId), nullptr);
+    EXPECT_EQ(track.clipCount(), 1u);
+
+    Transition replacement = transition;
+    replacement.duration = 24000;
+    track.setTransition(0, replacement);
+    ASSERT_NE(track.transition(0), nullptr);
+    EXPECT_EQ(track.transition(0)->duration, 12000);
+    EXPECT_EQ(track.removeTransition(0).duration, 0);
+    EXPECT_EQ(track.transitionCount(), 1u);
+
+    Transition second;
+    second.rightClipId = clipId;
+    second.editPointTick = 0;
+    second.duration = 6000;
+    EXPECT_EQ(track.addTransition(second), Track::kNoTransition);
+    EXPECT_EQ(track.transitionCount(), 1u);
+
+    // Loading, cloning, and undo/redo restore already-authorized state via
+    // the explicit bypass, even if the track is currently padlocked.
+    track.moveClip(0, 96000, TrackMutationPolicy::BypassLock);
+    EXPECT_EQ(track.clip(0)->timelineIn(), 96000);
+    track.setTransition(0, replacement, TrackMutationPolicy::BypassLock);
+    EXPECT_EQ(track.transition(0)->duration, 24000);
+    auto removed = track.removeClipById(
+        clipId, TrackMutationPolicy::BypassLock);
+    ASSERT_NE(removed, nullptr);
+    EXPECT_EQ(track.clipCount(), 0u);
 }
 
 TEST(TrackTest, MixedClipTypes)

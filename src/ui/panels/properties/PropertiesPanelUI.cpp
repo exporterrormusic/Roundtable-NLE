@@ -519,7 +519,7 @@ void PropertiesPanel::setupTransformSection(QWidget* container)
     // snapshot the whole scale KeyframeTrack and run a real execute-style
     // undoable command (same pattern as applySpeed()).
     auto applyFlip = [this](bool vertical, bool on) {
-        if (!m_clip) return;
+        if (!canMutateBoundClip()) return;
         auto* clip = m_clip;
         KeyframeTrack<float>& track = vertical ? clip->scaleY()
                                                : clip->scaleX();
@@ -752,7 +752,7 @@ void PropertiesPanel::setupShotSection(QWidget* container)
     connect(m_shotCombo, QOverload<int>::of(&QComboBox::activated),
             this, [this](int /*index*/) {
                 if (m_updating) return;
-                if (!m_clip) return;
+                if (!canMutateBoundClip()) return;
                 // Item data carries the full "show/name" key; fall back to the
                 // display text for the "-- Choose a shot --" placeholder.
                 QString key = m_shotCombo->currentData().toString();

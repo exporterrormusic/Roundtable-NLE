@@ -64,6 +64,23 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         return;
     }
 
+    // A shot switch replaces every visual member and updates metadata on the
+    // rest of the group.  Refuse the whole operation if any member is on a
+    // locked track; partially switching a group would leave a broken shot.
+    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+        Track* track = m_timeline->track(ti);
+        if (!track || !track->isLocked()) continue;
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            const Clip* clip = track->clip(ci);
+            if (clip && clip->groupId() == groupId) {
+                spdlog::info(
+                    "TimelineWorkspace: shot switch refused because track '{}' is locked",
+                    track->name());
+                return;
+            }
+        }
+    }
+
     auto presetOpt = m_shotPresetManager->load(newShotName);
     if (!presetOpt) {
         spdlog::warn("TimelineWorkspace: shot preset '{}' not found", newShotName);
@@ -214,7 +231,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         // on the timeline are still usable when they're clear at this spot.
         auto trackEmptyInRange = [this](size_t ti, int64_t start, int64_t end) -> bool {
             Track* t = m_timeline->track(ti);
-            if (!t) return false;
+            if (!t || t->isLocked()) return false;
             for (size_t ci = 0; ci < t->clipCount(); ++ci) {
                 Clip* c = t->clip(ci);
                 if (!c) continue;
@@ -542,7 +559,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             for (int ci = static_cast<int>(trk->clipCount()) - 1; ci >= 0; --ci) {
                 Clip* c = trk->clip(static_cast<size_t>(ci));
                 if (c && c->groupId() == groupId && c->isVisual())
-                    trk->removeClip(static_cast<size_t>(ci));
+                    trk->removeClip(static_cast<size_t>(ci),
+                                    TrackMutationPolicy::BypassLock);
             }
         }
     };
@@ -556,18 +574,25 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             size_t idx = snap.trackIndex;
             if (idx < m_timeline->trackCount()) {
                 trk = m_timeline->track(idx);
-                if (trk && trk->type() != TrackType::Video) trk = nullptr;
+                if (trk && (trk->type() != TrackType::Video || trk->isLocked()))
+                    trk = nullptr;
             }
             if (!trk) {
                 // Fallback: nearest video track upward, then downward.
                 for (size_t si = idx; si < m_timeline->trackCount(); ++si) {
                     Track* t = m_timeline->track(si);
-                    if (t && t->type() == TrackType::Video) { trk = t; break; }
+                    if (t && t->type() == TrackType::Video && !t->isLocked()) {
+                        trk = t;
+                        break;
+                    }
                 }
                 if (!trk) {
                     for (size_t si = idx; si > 0; --si) {
                         Track* t = m_timeline->track(si - 1);
-                        if (t && t->type() == TrackType::Video) { trk = t; break; }
+                        if (t && t->type() == TrackType::Video && !t->isLocked()) {
+                            trk = t;
+                            break;
+                        }
                     }
                 }
                 if (!trk) trk = m_timeline->addVideoTrack("");
@@ -581,7 +606,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 // commands referencing the prior id would silently no-op.
                 auto reClone = snap.clip->clone();
                 reClone->setId(snap.clip->id());
-                trk->addClip(std::move(reClone));
+                trk->addClip(std::move(reClone),
+                             TrackMutationPolicy::BypassLock);
             }
         }
         // Propagate the shot name to remaining group members (audio).

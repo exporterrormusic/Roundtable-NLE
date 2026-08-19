@@ -119,6 +119,17 @@ SmartRenderPlan analyzeSmartRender(
         return plan;
     }
 
+    // Transition influence can extend around an edit and requires compositing.
+    // Until the analyzer proves the exact affected interval, any transition
+    // makes the complete export ineligible.
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        const auto* track = timeline.track(ti);
+        if (track && track->transitionCount() > 0) {
+            plan.reEncodeCount = plan.totalFrames;
+            return plan;
+        }
+    }
+
     for (int64_t f = startFrame; f < endFrame; ++f) {
         // Convert frame number to timeline tick
         int64_t tick = static_cast<int64_t>(

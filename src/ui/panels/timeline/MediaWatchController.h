@@ -33,8 +33,11 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 
 class QFileSystemWatcher;
@@ -88,6 +91,15 @@ public:
     /// ~1.5 s later — an unthrottled rescan per open was a GUI-thread storm.
     void notifyMediaOpened();
 
+    /// Return a MediaPool callback that remains safe even if MediaPool copied
+    /// it immediately before this controller was shut down.
+    [[nodiscard]] std::function<void(std::filesystem::path)>
+    mediaOpenedCallback() const;
+
+    /// Idempotent cancellation barrier. After this returns, no scan worker or
+    /// copied MediaPool callback can enter the controller again.
+    void shutdown() noexcept;
+
 private:
     /// UI-thread apply step for rescan(): given the off-thread existence +
     /// (size, mtime) results, diff the QFileSystemWatcher, arm the poll
@@ -124,6 +136,8 @@ private:
     /// Coalescing for the background stat pass.
     bool m_scanInFlight{false};   ///< a background stat pass is running
     bool m_scanQueued{false};     ///< a rescan was requested mid-flight
+    std::atomic<uint64_t> m_scanGeneration{0};
+    std::jthread m_scanThread;
 
     // ── MediaPool onMediaOpened coalescing ─────────────────────────────
     std::atomic<bool> m_openedMarshalQueued{false};  ///< one cross-thread marshal at a time
@@ -134,6 +148,9 @@ private:
     /// story as the pre-extraction code: the controller (like the
     /// workspace that owns it) lives until app shutdown, so the detached
     /// stat thread's invokeMethod target is valid in practice.
+    struct CallbackGate;
+    std::shared_ptr<CallbackGate> m_callbackGate;
+
     std::atomic<bool> m_destroying{false};
 };
 

@@ -52,21 +52,27 @@ void ShortcutManager::removeAction(const QString& id)
 void ShortcutManager::setShortcut(const QString& actionId, const QKeySequence& key)
 {
     auto it = m_actions.find(actionId);
-    if (it != m_actions.end())
+    if (it != m_actions.end()) {
         it->second.currentKey = key;
+        emit shortcutChanged(actionId, key);
+    }
 }
 
 void ShortcutManager::resetToDefault(const QString& actionId)
 {
     auto it = m_actions.find(actionId);
-    if (it != m_actions.end())
+    if (it != m_actions.end()) {
         it->second.currentKey = it->second.defaultKey;
+        emit shortcutChanged(actionId, it->second.currentKey);
+    }
 }
 
 void ShortcutManager::resetAllToDefaults()
 {
-    for (auto& [id, action] : m_actions)
+    for (auto& [id, action] : m_actions) {
         action.currentKey = action.defaultKey;
+        emit shortcutChanged(id, action.currentKey);
+    }
 }
 
 // ── Lookup ──────────────────────────────────────────────────────────────────
@@ -127,6 +133,28 @@ bool ShortcutManager::handleKeyPress(int key, Qt::KeyboardModifiers modifiers)
     return false;
 }
 
+bool ShortcutManager::matches(const QString& actionId, int key,
+                              Qt::KeyboardModifiers modifiers) const
+{
+    const auto it = m_actions.find(actionId);
+    if (it == m_actions.end() || !it->second.enabled
+        || it->second.currentKey.isEmpty())
+        return false;
+    return it->second.currentKey
+        == QKeySequence(static_cast<int>(key) | static_cast<int>(modifiers));
+}
+
+bool ShortcutManager::triggerAction(const QString& actionId)
+{
+    auto it = m_actions.find(actionId);
+    if (it == m_actions.end() || !it->second.enabled || !it->second.callback)
+        return false;
+
+    it->second.callback();
+    emit actionTriggered(actionId);
+    return true;
+}
+
 void ShortcutManager::setActionEnabled(const QString& id, bool enabled)
 {
     auto it = m_actions.find(id);
@@ -158,14 +186,18 @@ void ShortcutManager::registerNLEDefaults()
     registerAction(kSelectAll, "Select All", QKeySequence(Qt::CTRL | Qt::Key_A), empty, "Edit");
     registerAction(kSplitAt, "Split Selected Clips", QKeySequence(Qt::Key_F), empty, "Edit");
     registerAction(kSplitAll, "Split All Tracks", QKeySequence(Qt::SHIFT | Qt::Key_F), empty, "Edit");
+    registerAction(kToggleSnapping, "Toggle Snapping", QKeySequence(Qt::Key_N), empty, "Timeline");
 
     // Tools (FCP7 bindings)
     registerAction(kToolSelection, "Selection Tool", QKeySequence(Qt::Key_A), empty, "Tools");
     registerAction(kToolRazor, "Razor Tool", QKeySequence(Qt::Key_B), empty, "Tools");
     registerAction(kToolRolling, "Rolling Edit Tool", QKeySequence(Qt::Key_R), empty, "Tools");
-    registerAction(kToolRipple, "Ripple Edit Tool", QKeySequence(Qt::Key_N), empty, "Tools");
+    registerAction(kToolRipple, "Ripple Edit Tool", QKeySequence(), empty, "Tools");
     registerAction(kToolSlip, "Slip Tool", QKeySequence(Qt::Key_S), empty, "Tools");
     registerAction(kToolSlide, "Slide Tool", QKeySequence(Qt::Key_U), empty, "Tools");
+    registerAction(kToolText, "Text Tool", QKeySequence(Qt::Key_T), empty, "Tools");
+    registerAction(kToolPen, "Pen Mask Tool", QKeySequence(Qt::Key_P), empty, "Tools");
+    registerAction(kToolZoom, "Zoom Tool", QKeySequence(Qt::Key_Z), empty, "Tools");
 
     // Additional editing (FCP7)
     registerAction(kMarkSelection, "Mark Selection", QKeySequence(Qt::Key_X), empty, "Edit");
@@ -174,13 +206,8 @@ void ShortcutManager::registerNLEDefaults()
 
     // Transport
     registerAction(kPlayPause, "Play/Pause", QKeySequence(Qt::Key_Space), empty, "Transport");
-    // Left/Right arrows are NOT registered here — they are handled by
-    // TimelineWorkspace::keyPressEvent for frame-by-frame stepping with
-    // auto-repeat support (held key = continuous stepping).  Registering
-    // them with empty callbacks here would consume the events before they
-    // reach the workspace handler, breaking auto-repeat.
-    // registerAction(kFrameForward, ..., QKeySequence(Qt::Key_Right), ...);
-    // registerAction(kFrameBack, ..., QKeySequence(Qt::Key_Left), ...);
+    registerAction(kFrameForward, "Step Forward", QKeySequence(Qt::Key_Right), empty, "Transport");
+    registerAction(kFrameBack, "Step Backward", QKeySequence(Qt::Key_Left), empty, "Transport");
     registerAction(kNextEdit, "Next Edit Point", QKeySequence(Qt::Key_Down), empty, "Transport");
     registerAction(kPrevEdit, "Previous Edit Point", QKeySequence(Qt::Key_Up), empty, "Transport");
     registerAction(kGoStart, "Go to Start", QKeySequence(Qt::Key_Home), empty, "Transport");
@@ -196,6 +223,22 @@ void ShortcutManager::registerNLEDefaults()
     registerAction(kSetIn, "Set In Point", QKeySequence(), empty, "In/Out");
     registerAction(kSetOut, "Set Out Point", QKeySequence(), empty, "In/Out");
     registerAction(kClearIO, "Clear In/Out", QKeySequence(Qt::ALT | Qt::Key_X), empty, "In/Out");
+    registerAction(kClearIOAlt, "Clear In/Out (Alternate)", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_X), empty, "In/Out");
+    registerAction(kGoIn, "Go to In Point", QKeySequence(Qt::SHIFT | Qt::Key_I), empty, "In/Out");
+    registerAction(kGoOut, "Go to Out Point", QKeySequence(Qt::SHIFT | Qt::Key_O), empty, "In/Out");
+
+    registerAction(kDeselectAll, "Deselect All", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A), empty, "Edit");
+    registerAction(kDefaultTransition, "Apply Default Transition", QKeySequence(Qt::CTRL | Qt::Key_T), empty, "Edit");
+    registerAction(kNewBin, "New Bin", QKeySequence(Qt::CTRL | Qt::Key_B), empty, "Project");
+    registerAction(kZoomIn, "Zoom In", QKeySequence(Qt::CTRL | Qt::Key_Equal), empty, "Timeline");
+    registerAction(kZoomOut, "Zoom Out", QKeySequence(Qt::CTRL | Qt::Key_Minus), empty, "Timeline");
+    registerAction(kZoomToFit, "Zoom to Fit", QKeySequence(Qt::SHIFT | Qt::Key_Z), empty, "Timeline");
+    registerAction(kZoomInAlt, "Zoom In (Alternate)", QKeySequence(Qt::Key_Equal), empty, "Timeline");
+    registerAction(kZoomOutAlt, "Zoom Out (Alternate)", QKeySequence(Qt::Key_Minus), empty, "Timeline");
+    registerAction(kZoomToFitAlt, "Zoom to Fit (Alternate)", QKeySequence(Qt::Key_Backslash), empty, "Timeline");
+    registerAction(kSelectAtPlayhead, "Select Clip at Playhead", QKeySequence(Qt::Key_D), empty, "Edit");
+    registerAction(kPanelMaximize, "Maximize Panel", QKeySequence(Qt::Key_QuoteLeft), empty, "Window");
+    registerAction(kOpenExport, "Open Export", QKeySequence(Qt::CTRL | Qt::Key_E), empty, "Window");
 
     // Undo/Redo
     registerAction(kUndo, "Undo", QKeySequence(Qt::CTRL | Qt::Key_Z), empty, "Edit");
@@ -227,8 +270,10 @@ void ShortcutManager::loadFromSettings()
     s.beginGroup("Shortcuts");
     for (const auto& key : s.childKeys()) {
         auto it = m_actions.find(key);
-        if (it != m_actions.end())
+        if (it != m_actions.end()) {
             it->second.currentKey = QKeySequence(s.value(key).toString());
+            emit shortcutChanged(key, it->second.currentKey);
+        }
     }
     s.endGroup();
 }
@@ -259,8 +304,10 @@ bool ShortcutManager::importFromFile(const QString& filePath)
     QJsonObject root = doc.object();
     for (auto it = root.begin(); it != root.end(); ++it) {
         auto aid = m_actions.find(it.key());
-        if (aid != m_actions.end())
+        if (aid != m_actions.end()) {
             aid->second.currentKey = QKeySequence(it.value().toString());
+            emit shortcutChanged(it.key(), aid->second.currentKey);
+        }
     }
     return true;
 }

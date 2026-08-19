@@ -106,9 +106,26 @@ public:
     using PreviewCallback = std::function<std::shared_ptr<struct CachedFrame>(int64_t tick, uint32_t w, uint32_t h, bool scrub)>;
     void setPreviewCallback(PreviewCallback cb);
 
+    /// Production export renderer.  Unlike PreviewCallback, every invocation
+    /// carries the immutable queue-time project graph and captured alpha mode;
+    /// it must never consult ExportPanel's current live timeline/project.
+    using ExportFrameCallback = std::function<std::shared_ptr<struct CachedFrame>(
+        const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+        int64_t tick, uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)>;
+    void setExportFrameCallback(ExportFrameCallback cb);
+
     /// Optional: receives each finished full-res export frame for segment-cache
     /// write-through (§4.6).  Wired through to RenderQueue::setFrameStoreCallback.
-    void setFrameStoreCallback(FrameStoreFn cb) { m_frameStoreCallback = std::move(cb); }
+    void setFrameStoreCallback(FrameStoreFn cb) {
+        m_frameStoreCallback = [cb = std::move(cb)](
+            const std::shared_ptr<const ExportRenderSnapshot>&,
+            int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
+                if (cb) cb(tick, frame);
+            };
+    }
+    void setSnapshotFrameStoreCallback(SnapshotFrameStoreFn cb) {
+        m_frameStoreCallback = std::move(cb);
+    }
 
     /// Update the preview thumbnail (called when panel becomes visible).
     void refreshPreview();
@@ -224,7 +241,7 @@ private:
 
     /// Check for offline media in the timeline. Returns false if the user
     /// decides to cancel the export when warned about offline clips.
-    bool checkOfflineMedia();
+    bool checkOfflineMedia(const Timeline* timeline);
     void populatePresets();
     /// Populate the AUDIO section's file-format combo (AAC / MP3 / WAV / FLAC).
     /// Each item carries its AudioCodec int as data.
@@ -330,7 +347,8 @@ private:
     QLabel*       m_previewInfoLabel{nullptr};
     ExportMiniTimeline* m_miniTimeline{nullptr};
     PreviewCallback m_previewCallback;
-    FrameStoreFn    m_frameStoreCallback;
+    ExportFrameCallback m_exportFrameCallback;
+    SnapshotFrameStoreFn m_frameStoreCallback;
 
     // Transport controls
     QPushButton*  m_skipToStartBtn{nullptr};
@@ -385,6 +403,7 @@ private:
     // ── Async composite pipeline ────────────────────────────────────────
     struct CompositeSlot {
         std::shared_future<std::shared_ptr<CachedFrame>> future;
+        std::shared_ptr<const ExportRenderSnapshot> snapshot;
         int64_t tick{-1};
     };
     CompositeSlot m_pipelineSlots[2];
@@ -393,8 +412,9 @@ private:
     /// Called from worker thread: pipeline composite for (tick, nextTick).
     /// Submits nextTick's composite (non-blocking), waits for tick's result.
     std::shared_ptr<CachedFrame> pipelineComposite(
+        const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
         int64_t tick, int64_t nextTick,
-        uint32_t w, uint32_t h, bool scrub);
+        uint32_t w, uint32_t h, bool scrub, bool preserveAlpha);
 
     /// Guards against recursive re-entry into refreshPreview() which can
     /// cause infinite paint recursion and stack overflow (crash pattern

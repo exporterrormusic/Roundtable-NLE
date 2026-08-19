@@ -323,6 +323,11 @@ bool ProjectBin::hasClipboard() const noexcept
     return static_cast<bool>(m_clipboardSequence) || !m_clipboardItems.empty();
 }
 
+bool ProjectBin::hasSelection() const noexcept
+{
+    return m_listWidget && !m_listWidget->selectedItems().isEmpty();
+}
+
 bool ProjectBin::copySelection()
 {
     if (!m_listWidget) return false;

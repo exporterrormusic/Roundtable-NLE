@@ -69,6 +69,20 @@ jobs:
           $env:PATH = "${cmakeDir};${env:PATH}"
           & $cmake --build build --config Release --target roundtable --parallel
 
+      - name: Verify CUDA runtime package when enabled
+        shell: pwsh
+        run: |
+          $manifest = Join-Path "${{ github.workspace }}" "build/generated/cuda-runtime/CudaRuntimeSeeds.cmake"
+          if (Test-Path -LiteralPath $manifest) {
+            $cmake = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\cmake.exe" |
+                     Select-Object -First 1 -ExpandProperty FullName
+            if (-not $cmake) { $cmake = "cmake" }
+            & $cmake --build build --config Release --target check_cuda_runtime_package
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "CUDA backend not configured; package verification not applicable."
+          }
+
       - name: Build Installer
         shell: pwsh
         run: |

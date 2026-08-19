@@ -120,7 +120,8 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             bool overClip = false;
             if (ti < m_timeline->trackCount()) {
                 Track* trk = m_timeline->track(ti);
-                for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+                for (size_t ci = 0;
+                     trk && !trk->isLocked() && ci < trk->clipCount(); ++ci) {
                     const Clip* c = trk->clip(ci);
                     if (tick > c->timelineIn() && tick < c->timelineOut()) {
                         overClip = true;
@@ -146,7 +147,9 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                 if (hti < m_timeline->trackCount()) {
                     Track* hTrack = m_timeline->track(hti);
                     constexpr double kHandleThreshold = 8.0;
-                    for (size_t trI = 0; trI < hTrack->transitionCount(); ++trI) {
+                    for (size_t trI = 0;
+                         hTrack && !hTrack->isLocked()
+                         && trI < hTrack->transitionCount(); ++trI) {
                         const Transition* trans = hTrack->transition(trI);
                         if (!trans) continue;
                         int64_t tStart, tEnd;
@@ -200,7 +203,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                 // Check edge proximity for trim cursor
                 Track* track = m_timeline->track(hitRef->trackIndex);
                 size_t idx = track ? track->findClipIndexById(hitRef->clipId) : SIZE_MAX;
-                if (idx < track->clipCount())
+                if (track && !track->isLocked() && idx < track->clipCount())
                 {
                     const Clip* clip = track->clip(idx);
                     double px = event->position().x() - headerWidth();
@@ -770,17 +773,47 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     }
     case DragMode::SlipTool:
     {
-        auto cmd = EditOperations::slipClip(*m_timeline, m_dragClipRef.trackIndex,
-                                            m_dragClipRef.clipId, tickDelta);
-        executeCommand(std::move(cmd));
+        const int64_t snappedDelta = m_layoutEngine.snapToFrame(tickDelta);
+        const int64_t incrementalDelta = snappedDelta - m_dragLastAppliedDelta;
+        std::vector<std::unique_ptr<Command>> commands;
+        for (const auto& state : m_dragSelectedClips) {
+            auto command = EditOperations::slipClip(*m_timeline, state.ref.trackIndex,
+                                                    state.ref.clipId, incrementalDelta);
+            if (!command) { commands.clear(); break; }
+            commands.push_back(std::move(command));
+        }
+        if (!commands.empty()) {
+            for (auto& command : commands) executeCommand(std::move(command));
+            if (auto* track = m_timeline->track(m_dragClipRef.trackIndex)) {
+                const size_t index = track->findClipIndexById(m_dragClipRef.clipId);
+                if (index < track->clipCount())
+                    m_dragLastAppliedDelta = track->clip(index)->sourceIn()
+                        - m_dragOriginalSourceIn;
+            }
+        }
         onScrollChanged();
         break;
     }
     case DragMode::SlideTool:
     {
-        auto cmd = EditOperations::slideClip(*m_timeline, m_dragClipRef.trackIndex,
-                                            m_dragClipRef.clipId, tickDelta);
-        executeCommand(std::move(cmd));
+        const int64_t snappedDelta = m_layoutEngine.snapToFrame(tickDelta);
+        const int64_t incrementalDelta = snappedDelta - m_dragLastAppliedDelta;
+        std::vector<std::unique_ptr<Command>> commands;
+        for (const auto& state : m_dragSelectedClips) {
+            auto command = EditOperations::slideClip(*m_timeline, state.ref.trackIndex,
+                                                     state.ref.clipId, incrementalDelta);
+            if (!command) { commands.clear(); break; }
+            commands.push_back(std::move(command));
+        }
+        if (!commands.empty()) {
+            for (auto& command : commands) executeCommand(std::move(command));
+            if (auto* track = m_timeline->track(m_dragClipRef.trackIndex)) {
+                const size_t index = track->findClipIndexById(m_dragClipRef.clipId);
+                if (index < track->clipCount())
+                    m_dragLastAppliedDelta = track->clip(index)->timelineIn()
+                        - m_dragOriginalIn;
+            }
+        }
         onScrollChanged();
         break;
     }
@@ -815,7 +848,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         }
 
         Track* rollTrack = m_timeline->track(m_rollTrackIndex);
-        if (rollTrack) {
+        if (rollTrack && !rollTrack->isLocked()) {
             size_t li = rollTrack->findClipIndexById(m_rollLeftClipId);
             size_t ri = rollTrack->findClipIndexById(m_rollRightClipId);
             if (li < rollTrack->clipCount() && ri < rollTrack->clipCount()) {
@@ -866,6 +899,10 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         // User started dragging — determine mode based on where the
         // original click landed relative to clip edges.
         Track* track = m_timeline->track(m_dragClipRef.trackIndex);
+        if (!track || track->isLocked()) {
+            m_dragMode = DragMode::None;
+            break;
+        }
         size_t idx = track->findClipIndexById(m_dragClipRef.clipId);
         if (idx < track->clipCount()) {
             const Clip* clip = track->clip(idx);
@@ -907,7 +944,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             m_dragTargetTrack = m_dragClipRef.trackIndex;
             for (const auto& sel : m_selection.clips()) {
                 Track* selTrack = m_timeline->track(sel.trackIndex);
-                if (!selTrack) continue;
+                if (!selTrack || selTrack->isLocked()) continue;
                 size_t si = selTrack->findClipIndexById(sel.clipId);
                 if (si < selTrack->clipCount()) {
                     DragClipState dcs;
@@ -1034,7 +1071,8 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     case DragMode::TransitionTrim:
     {
         Track* track = m_timeline->track(m_transTrimTrackIndex);
-        if (track && m_transTrimIndex < track->transitionCount()) {
+        if (track && !track->isLocked()
+                && m_transTrimIndex < track->transitionCount()) {
             Transition t = *track->transition(m_transTrimIndex);
             double px = pos.x() - headerWidth();
             int64_t dragTick = m_layoutEngine.pixelXToTime(px);

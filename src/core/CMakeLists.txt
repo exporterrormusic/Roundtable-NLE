@@ -148,9 +148,6 @@ add_library(roundtable_core STATIC
 # /EHa for FrameProducer.cpp only — catch(...) catches SEH exceptions
 # (access violations, etc.) so the producer thread survives GPU crashes
 # instead of aborting silently via std::terminate.
-if(MSVC)
-    set_source_files_properties(playback/FrameProducer.cpp PROPERTIES COMPILE_FLAGS "/EHa")
-endif()
 
 target_include_directories(roundtable_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -216,6 +213,9 @@ endif()
 if(WHISPER_FOUND)
     target_link_libraries(roundtable_core PUBLIC whisper)
     target_compile_definitions(roundtable_core PUBLIC ROUNDTABLE_HAS_WHISPER)
+    if(ROUNDTABLE_WHISPER_CUDA_FOUND)
+        target_compile_definitions(roundtable_core PUBLIC ROUNDTABLE_HAS_WHISPER_CUDA)
+    endif()
 endif()
 
 # SoundTouch — pitch-preserving time-stretch

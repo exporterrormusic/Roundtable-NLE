@@ -387,6 +387,13 @@ void MainWindow::buildPanels()
         if (!targetTimeline) return;
 
         int count = m_audioSync->exportToTimeline(targetTimeline);
+        if (count == AudioSync::kExportBlockedByLockedTrack) {
+            QMessageBox::warning(this, "Locked Tracks",
+                m_audioSync->lastExportError().isEmpty()
+                    ? tr("Audio Sync cannot update this sequence while an export-owned track is locked.")
+                    : m_audioSync->lastExportError());
+            return;
+        }
         if (count == 0) {
             QMessageBox::warning(this, "No Confirmed Clips",
                 "No confirmed clips to export.\n"
@@ -469,6 +476,13 @@ void MainWindow::buildPanels()
             switchSequence(targetIdx);
 
         const int count = m_audioSync->exportToTimeline(targetTimeline);
+        if (count == AudioSync::kExportBlockedByLockedTrack) {
+            QMessageBox::warning(this, "Locked Tracks",
+                m_audioSync->lastExportError().isEmpty()
+                    ? tr("Audio Sync cannot update this sequence while an export-owned track is locked.")
+                    : m_audioSync->lastExportError());
+            return;
+        }
         if (count == 0) {
             QMessageBox::warning(this, "No Confirmed Clips",
                 "No confirmed clips to export.\n"
@@ -769,7 +783,12 @@ void MainWindow::buildPanels()
                 // during export — §4.6 slice 3 read side.)
                 m_timelineWorkspace->setForceFullResolution(true);
                 m_timelineWorkspace->setExportAlpha(wantAlpha);
-                auto result = m_timelineWorkspace->compositeFrame(tick, w, h, scrub);
+                // Export preview/render is an exact-frame request.  Passing
+                // stillMode prevents the compositor from satisfying a failed
+                // tick with m_lastGoodComposite; RenderQueue can then retry the
+                // same tick or fail cleanly instead of encoding a stale frame.
+                auto result = m_timelineWorkspace->compositeFrame(
+                    tick, w, h, scrub, /*stillMode=*/true);
                 if (result) result->preservesAlpha = wantAlpha;
                 m_timelineWorkspace->setExportAlpha(false);
                 m_timelineWorkspace->setForceFullResolution(false);
@@ -777,14 +796,34 @@ void MainWindow::buildPanels()
             }
             return nullptr;
         });
+    // Queue/running exports use a separate callback that is permanently bound
+    // to the job's immutable project graph. ProjectController may replace the
+    // live preview callback on a project switch; it cannot affect this path.
+    m_exportPanel->setExportFrameCallback(
+        [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+               int64_t tick, uint32_t w, uint32_t h, bool scrub,
+               bool preserveAlpha) -> std::shared_ptr<CachedFrame> {
+            if (m_destroying.load(std::memory_order_acquire) ||
+                !m_timelineWorkspace || !snapshot ||
+                !snapshot->project || !snapshot->timeline) {
+                return nullptr;
+            }
+            return m_timelineWorkspace->compositeExportFrame(
+                snapshot->project, snapshot->timeline,
+                tick, w, h, scrub, preserveAlpha);
+        });
     // §4.6 export write-through: RenderQueue hands each finished full-res frame
     // here (worker thread, pixels ready) → store it in the segment cache so a
     // re-export reuses it and the render bar shows it green.
-    m_exportPanel->setFrameStoreCallback(
-        [this](int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
+    m_exportPanel->setSnapshotFrameStoreCallback(
+        [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+               int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
             if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_timelineWorkspace)
-                m_timelineWorkspace->cacheExportFrame(tick, frame);
+            if (m_timelineWorkspace && snapshot &&
+                snapshot->project && snapshot->timeline) {
+                m_timelineWorkspace->cacheSnapshotExportFrame(
+                    snapshot->project, snapshot->timeline, tick, frame);
+            }
         });
     m_pageStack->addWidget(m_exportPanel);
 

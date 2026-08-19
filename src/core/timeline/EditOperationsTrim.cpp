@@ -95,6 +95,8 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
@@ -192,7 +194,8 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
                 Transition t = *tp;
                 t.leftClipId   = rightId;
                 t.editPointTick = originalOut;
-                track->setTransition(i, t);
+                track->setTransition(
+                    i, t, TrackMutationPolicy::BypassLock);
             }
         };
         auto undoFix = [track, clipId, rightId, originalOut, tailPeers]() {
@@ -204,7 +207,8 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
                 Transition t = *tp;
                 t.leftClipId   = clipId;
                 t.editPointTick = originalOut;
-                track->setTransition(i, t);
+                track->setTransition(
+                    i, t, TrackMutationPolicy::BypassLock);
             }
         };
         compound->addCommand(std::make_unique<LambdaCommand>(
@@ -256,6 +260,8 @@ std::unique_ptr<Command> EditOperations::trimClip(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
@@ -390,6 +396,8 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
 
     size_t li = track->findClipIndexById(leftClipId);
     size_t ri = track->findClipIndexById(rightClipId);
@@ -569,6 +577,8 @@ std::unique_ptr<Command> EditOperations::rippleTrim(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
@@ -645,6 +655,7 @@ std::unique_ptr<Command> EditOperations::rippleDelete(
     {
         if (ref.trackIndex >= timeline.trackCount()) continue;
         const Track* track = timeline.track(ref.trackIndex);
+        if (!track || track->isLocked()) continue;
         size_t idx = track->findClipIndexById(ref.clipId);
         if (idx == track->clipCount()) continue;
         const Clip* clip = track->clip(idx);
@@ -776,7 +787,7 @@ std::unique_ptr<Command> EditOperations::rippleDelete(
         }
     }
 
-    return compound;
+    return compound->size() > 0 ? std::move(compound) : nullptr;
 }
 
 // ─── Close Gap ───────────────────────────────────────────────────────────────
@@ -867,6 +878,8 @@ std::unique_ptr<Command> EditOperations::openGap(
     bool anyMoved = false;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     for (size_t ci = 0; ci < track->clipCount(); ++ci) {
         const Clip* clip = track->clip(ci);
         // Only shift clips whose START is at or after the insert point.
@@ -883,6 +896,7 @@ std::unique_ptr<Command> EditOperations::openGap(
     for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
         if (ti == trackIndex) continue;
         Track* otherTrack = timeline.track(ti);
+        if (!otherTrack || otherTrack->isLocked()) continue;
         if (!otherTrack->isSyncLocked()) continue;
 
         for (size_t ci = 0; ci < otherTrack->clipCount(); ++ci) {
@@ -908,6 +922,8 @@ std::unique_ptr<Command> EditOperations::slipClip(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
@@ -952,11 +968,30 @@ std::unique_ptr<Command> EditOperations::slideClip(
         return nullptr;
 
     Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked())
+        return nullptr;
     size_t idx = track->findClipIndexById(clipId);
     if (idx == track->clipCount())
         return nullptr;
 
     const Clip* clip = track->clip(idx);
+    const Clip* left = nullptr;
+    const Clip* right = nullptr;
+    for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+        const Clip* neighbor = track->clip(ci);
+        if (!neighbor || neighbor->id() == clipId) continue;
+        if (neighbor->timelineOut() == clip->timelineIn()) left = neighbor;
+        if (neighbor->timelineIn() == clip->timelineOut()) right = neighbor;
+    }
+    if (!left || !right) return nullptr;
+
+    int64_t minDelta = std::max(-clip->timelineIn(),
+                                kMinClipDuration - left->duration());
+    minDelta = std::max(minDelta, -right->sourceIn());
+    int64_t maxDelta = right->duration() - kMinClipDuration;
+    slideDelta = std::clamp(slideDelta, minDelta, maxDelta);
+    if (slideDelta == 0) return nullptr;
+
     auto compound = std::make_unique<CompoundCommand>("Slide clip");
 
     // Move the clip

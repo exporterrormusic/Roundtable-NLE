@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <thread>
 #include <unordered_set>
@@ -182,6 +183,33 @@ std::optional<uint64_t> staticCompositeStateKey(
     return hash;
 }
 
+std::shared_ptr<CachedFrame> makeExactBlankFrame(
+    uint32_t outW, uint32_t outH, bool preserveAlpha)
+{
+    if (outW == 0 || outH == 0 ||
+        outW > std::numeric_limits<uint32_t>::max() / 4u) {
+        return nullptr;
+    }
+    const uint32_t stride = outW * 4u;
+    const size_t rowBytes = static_cast<size_t>(stride);
+    if (static_cast<size_t>(outH) >
+        std::numeric_limits<size_t>::max() / rowBytes) {
+        return nullptr;
+    }
+
+    auto frame = std::make_shared<CachedFrame>();
+    frame->width = outW;
+    frame->height = outH;
+    frame->stride = stride;
+    frame->preservesAlpha = preserveAlpha;
+    frame->pixels.assign(rowBytes * static_cast<size_t>(outH), 0);
+    if (!preserveAlpha) {
+        for (size_t i = 3; i < frame->pixels.size(); i += 4)
+            frame->pixels[i] = 0xFF;
+    }
+    return frame;
+}
+
 } // namespace
 
 std::shared_ptr<CachedFrame> CompositeService::compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
@@ -204,7 +232,7 @@ try
     if (s_modalDialogActive.load(std::memory_order_acquire)) {
         // Nested recursion: don't fall back to OUTER's last-good frame
         // for an INNER layer (would render outer content inside itself).
-        if (isNestedRecursion) return nullptr;
+        if (isNestedRecursion || stillMode) return nullptr;
         std::lock_guard lg(m_lastCompositeMtx);
         if (m_lastGoodComposite) {
             m_lastGoodComposite->gpuReady     = false;
@@ -231,7 +259,7 @@ try
     auto& depth = compositeDepth();
     constexpr int kMaxCompositeDepth = 2;
     if (depth >= kMaxCompositeDepth) {
-        if (isNestedRecursion) return nullptr;
+        if (isNestedRecursion || stillMode) return nullptr;
         std::lock_guard lg(m_lastCompositeMtx);
         return m_lastGoodComposite;
     }
@@ -257,7 +285,11 @@ try
     const ResolutionTier requestTier = m_forceFullResolution.load()
         ? ResolutionTier::Full
         : tierOverride.value_or(playbackTier());
-    const bool exactStillMode = stillMode && !scrubMode;
+    // stillMode is also used by the export callback.  Export requests use
+    // scrubMode to force exact source decoding, but they must still bypass
+    // composite LRUs and every last-good substitution: a stale picture is a
+    // valid-looking payload that output validation cannot identify later.
+    const bool exactStillMode = stillMode;
 
     // Phase B: advance the CachePolicy generation counter and run its
     // throttled eviction + adaptive-budget passes.  These are very cheap
@@ -626,9 +658,11 @@ try
     std::vector<LayerInfo> layers;
 
     int clipsAtTick = 0;
+    int resolvedClipsAtTick = 0;
     layers = buildLayersForFrame(tick, outW, outH, scrubMode, playbackNonBlocking,
                                  requestTier, exactStillMode,
-                                 clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
+                                 clipsAtTick, resolvedClipsAtTick, perfLog,
+                                 lock, gpuSpineUsedThisFrame);
 
     // ── Phase 4: boundary block-on-arrival ──────────────────────────────
     // When layers.empty() while clipsAtTick > 0, the prewarm prefetches
@@ -752,9 +786,11 @@ try
                 layers = buildLayersForFrame(
                     tick, outW, outH, scrubMode, playbackNonBlocking,
                     requestTier, exactStillMode,
-                    clipsAtTick, perfLog, lock, gpuSpineUsedThisFrame);
+                    clipsAtTick, resolvedClipsAtTick, perfLog,
+                    lock, gpuSpineUsedThisFrame);
                 spdlog::info("[BLOCK-ON-ARRIVAL] tick={}: retry yielded "
-                             "{}/{} layers", tick, layers.size(), clipsAtTick);
+                             "{}/{} clips", tick, resolvedClipsAtTick,
+                             clipsAtTick);
             } else {
                 static std::atomic<int> s_missCount{0};
                 int n = ++s_missCount;
@@ -779,9 +815,22 @@ try
     // inner layer for this tick (it retries next tick) is the documented
     // correct behavior — see the isNestedRecursion nullptr fallback after
     // tryCompositeOnGpu below.
+    // A valid timeline gap is a deliberate blank canvas.  It is distinct from
+    // a failed source/composite and must be represented by a complete payload
+    // so export can encode the gap without substituting a failure frame.
+    if (exactStillMode && clipsAtTick == 0 && layers.empty()) {
+        return makeExactBlankFrame(
+            outW, outH, m_exportAlpha.load(std::memory_order_relaxed));
+    }
+
+    // LayerInfo also contains adjustment boundaries, so layers.size() cannot
+    // prove every active source clip resolved.  Exact export fails this tick
+    // closed whenever even one real visual clip is absent.
+    if (exactStillMode && resolvedClipsAtTick < clipsAtTick)
+        return nullptr;
+
     if (isNestedRecursion &&
-        ((clipsAtTick > 0 && static_cast<int>(layers.size()) < clipsAtTick) ||
-         layers.empty())) {
+        (resolvedClipsAtTick < clipsAtTick || layers.empty())) {
         return nullptr;
     }
 
@@ -872,7 +921,7 @@ try
                          tick, clipsAtTick);
         }
 
-        if (clipsAtTick > 0) {
+        if (clipsAtTick > 0 && !exactStillMode) {
             // The stale fallback below masks only a short, mid-shot decoder
             // warm-up. A persistent overlay must not make two different clip
             // sets count as the same shot, and a distant seek within one long
@@ -1115,7 +1164,7 @@ try
     // INSIDE itself, which is the visual feedback loop the user sees.
     // Returning nullptr cleanly skips the inner layer for this frame;
     // the next composite tick will retry.
-    if (isNestedRecursion)
+    if (isNestedRecursion || exactStillMode)
         return nullptr;
     {
         std::lock_guard lg(m_lastCompositeMtx);
@@ -1131,14 +1180,14 @@ try
 catch (const std::exception& ex)
 {
     spdlog::error("compositeFrame: exception: {}", ex.what());
-    if (isNestedRecursion) return nullptr;
+    if (isNestedRecursion || stillMode) return nullptr;
     std::lock_guard lg(m_lastCompositeMtx);
     return m_lastGoodComposite;
 }
 catch (...)
 {
     spdlog::error("compositeFrame: unknown exception");
-    if (isNestedRecursion) return nullptr;
+    if (isNestedRecursion || stillMode) return nullptr;
     std::lock_guard lg(m_lastCompositeMtx);
     return m_lastGoodComposite;
 }

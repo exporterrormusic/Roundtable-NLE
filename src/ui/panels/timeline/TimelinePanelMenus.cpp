@@ -217,6 +217,43 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     // ── Properties ──────────────────────────────────────────────────────
     QAction* propsAction = menu.addAction("Properties...");
 
+    // A track lock makes every clip-level mutation read-only. Copy, reveal,
+    // open, and properties remain available for inspection. Mixed selections
+    // containing a locked track do not silently mutate only their unlocked
+    // subset.
+    bool selectionTouchesLockedTrack = false;
+    for (const auto& selected : m_selection.clips()) {
+        const Track* selectedTrack = m_timeline->track(selected.trackIndex);
+        if (selectedTrack && selectedTrack->isLocked()) {
+            selectionTouchesLockedTrack = true;
+            break;
+        }
+    }
+    if (selectionTouchesLockedTrack) {
+        cutAction->setEnabled(false);
+        deleteAction->setEnabled(false);
+        rippleDeleteAction->setEnabled(false);
+        nestAction->setEnabled(false);
+        colorMenu->setEnabled(false);
+        pasteEffectsAction->setEnabled(false);
+        pasteAttrsAction->setEnabled(false);
+    }
+    if (track->isLocked()) {
+        splitAction->setEnabled(false);
+        enableAction->setEnabled(false);
+        speedAction->setEnabled(false);
+        renameAction->setEnabled(false);
+        colorMenu->setEnabled(false);
+        pasteEffectsAction->setEnabled(false);
+        pasteAttrsAction->setEnabled(false);
+        if (freezeFrameAction) freezeFrameAction->setEnabled(false);
+        if (sceneDetectAction) sceneDetectAction->setEnabled(false);
+        if (normalizeAction) normalizeAction->setEnabled(false);
+        if (audioGainAction) audioGainAction->setEnabled(false);
+        if (audioStreamMenu) audioStreamMenu->setEnabled(false);
+        if (relinkMediaAction) relinkMediaAction->setEnabled(false);
+    }
+
     // ── Execute ─────────────────────────────────────────────────────────
     QAction* chosen = menu.exec(globalPos.toPoint());
     if (!chosen) return;

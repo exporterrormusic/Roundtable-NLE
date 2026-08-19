@@ -199,7 +199,12 @@ void EffectControlsPanel::setSelectedGraphicLayer(GraphicLayer* layer)
 
 void EffectControlsPanel::setClip(Clip* clip, Track* track)
 {
-    if (m_clip == clip) return;
+    const bool editable = !track || !track->isLocked();
+    if (m_splitter) m_splitter->setEnabled(editable);
+    if (m_clip == clip) {
+        m_track = track;
+        return;
+    }
     m_transformEditSpin = nullptr;
     m_transformEditBefore.clear();
     // Effect/mask keyboard selection belongs to the previous clip.  Keeping
@@ -1422,7 +1427,8 @@ void EffectControlsPanel::onGoToNextKeyframe(KeyframeTrack<float>* track)
 
 void EffectControlsPanel::deleteEffect(size_t index)
 {
-    if (!m_clip || index >= m_clip->effects().effectCount()) return;
+    if (!m_clip || (m_track && m_track->isLocked())
+        || index >= m_clip->effects().effectCount()) return;
     if (m_commandStack) {
         m_commandStack->execute(
             std::make_unique<RemoveEffectCommand>(&m_clip->effects(), index));
@@ -1441,6 +1447,9 @@ void EffectControlsPanel::deleteSelectedEffect()
 bool EffectControlsPanel::deleteSelectedMask()
 {
     if (!m_hasSelectedMask) return false;
+    // Delete is still consumed while locked so it cannot fall through and
+    // delete a timeline clip or another focused object.
+    if (m_track && m_track->isLocked()) return true;
 
     const quint64 effectId = m_selectedMaskEffectId;
     const uint64_t maskId = m_selectedMaskId;
@@ -1507,13 +1516,13 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
         }
         if (event->key() == Qt::Key_X && m_kfTimeline
             && m_kfTimeline->hasSelectedKeyframes()) {
-            m_kfTimeline->cutSelectedKeyframes();
+            cutSelectedKeyframes();
             event->accept();
             return;
         }
         if (event->key() == Qt::Key_V && m_kfTimeline
             && m_kfTimeline->hasKfClipboardData()) {
-            m_kfTimeline->pasteKeyframes();
+            pasteKeyframes();
             event->accept();
             return;
         }
@@ -1560,7 +1569,8 @@ void EffectControlsPanel::copySelectedEffect()
 
 void EffectControlsPanel::pasteEffect()
 {
-    if (!m_copiedEffect || !m_clip || !m_commandStack) return;
+    if (!m_copiedEffect || !m_clip || !m_commandStack
+        || (m_track && m_track->isLocked())) return;
 
     // Guard: audio effects (FillLeft/Right) only on AudioClip;
     // video/image effects only on non-AudioClip.
@@ -1595,12 +1605,14 @@ void EffectControlsPanel::copySelectedKeyframes()
 
 void EffectControlsPanel::cutSelectedKeyframes()
 {
-    if (m_kfTimeline) m_kfTimeline->cutSelectedKeyframes();
+    if (m_kfTimeline && !(m_track && m_track->isLocked()))
+        m_kfTimeline->cutSelectedKeyframes();
 }
 
 void EffectControlsPanel::pasteKeyframes()
 {
-    if (m_kfTimeline) m_kfTimeline->pasteKeyframes();
+    if (m_kfTimeline && !(m_track && m_track->isLocked()))
+        m_kfTimeline->pasteKeyframes();
 }
 
 bool EffectControlsPanel::hasKfClipboardData() const noexcept

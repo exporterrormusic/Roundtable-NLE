@@ -109,6 +109,9 @@ void setRelinkTargetPath(const RelinkClipTarget& target,
 } // namespace
 
 void TimelineWorkspace::setTimeline(Timeline* timeline) {
+    if (m_timeline != timeline)
+        cancelBackgroundMediaWarmups();
+
     // Stop the compositor/presenter before changing any timeline-owned
     // pointers. PlaybackScheduler::stop() also discards its held frame, so an
     // MP4 composite from the prior sequence cannot be re-published while the

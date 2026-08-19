@@ -61,7 +61,6 @@ jobs:
           & $cmake --build build --config Release --parallel
 
       - name: Run export tests
-        continue-on-error: true   # harden to required once observed green
         shell: pwsh
         run: |
           $ctest = Get-ChildItem "${{ github.workspace }}\tools\cmake\cmake-*\bin\ctest.exe" |

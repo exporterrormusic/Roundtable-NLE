@@ -121,6 +121,11 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             double px = pos.x() - headerWidth();
             int64_t tick = m_layoutEngine.pixelXToTime(px);
             Track* track = m_timeline->track(ti);
+            if (track->isLocked()) {
+                m_dragMode = DragMode::None;
+                event->accept();
+                return;
+            }
             for (size_t ci = 0; ci < track->clipCount(); ++ci)
             {
                 const Clip* clip = track->clip(ci);
@@ -150,7 +155,9 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             if (ti < m_timeline->trackCount()) {
                 Track* track = m_timeline->track(ti);
                 constexpr double kHandleThreshold = 8.0;  // pixels
-                for (size_t trI = 0; trI < track->transitionCount(); ++trI) {
+                for (size_t trI = 0;
+                     !track->isLocked() && trI < track->transitionCount();
+                     ++trI) {
                     const Transition* trans = track->transition(trI);
                     if (!trans) continue;
                     int64_t tStart, tEnd;
@@ -342,7 +349,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                 // trims on a plain click.
                 // Shift+click bypasses edge mode for selection toggling.
                 const bool shiftClick = event->modifiers() & Qt::ShiftModifier;
-                bool edgeModeOk = (!shiftClick && (nearLeft || nearRight));
+                bool edgeModeOk = (!hitTrack->isLocked() && !shiftClick
+                                   && (nearLeft || nearRight));
                 if (edgeModeOk)
                     {
                         // Look for a touching neighbour on the relevant side.
@@ -676,11 +684,33 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     case EditTool::Slip:
     {
         auto hitRef = hitTestClip(pos);
-        if (hitRef)
+        Track* track = hitRef ? m_timeline->track(hitRef->trackIndex) : nullptr;
+        if (hitRef && track && !track->isLocked())
         {
+            m_selection.clear();
+            m_selection.selectClip(*hitRef, false);
+            if (!(event->modifiers() & Qt::AltModifier))
+                setLinkPartnersSelected(*hitRef, true);
+            m_dragSelectedClips.clear();
+            for (const auto& selected : m_selection.clips()) {
+                Track* selectedTrack = m_timeline->track(selected.trackIndex);
+                if (!selectedTrack || selectedTrack->isLocked()) {
+                    m_dragSelectedClips.clear();
+                    m_dragMode = DragMode::None;
+                    event->accept();
+                    return;
+                }
+                const size_t selectedIndex = selectedTrack->findClipIndexById(selected.clipId);
+                if (selectedIndex < selectedTrack->clipCount()) {
+                    const Clip* selectedClip = selectedTrack->clip(selectedIndex);
+                    m_dragSelectedClips.push_back({selected, selectedClip->timelineIn(),
+                        selectedClip->duration(), selectedClip->sourceIn(),
+                        selected.trackIndex, {}});
+                }
+            }
             m_dragClipRef = *hitRef;
             m_dragMode = DragMode::SlipTool;
-            Track* track = m_timeline->track(hitRef->trackIndex);
+            m_dragLastAppliedDelta = 0;
             size_t idx = track->findClipIndexById(hitRef->clipId);
             if (idx < track->clipCount())
                 m_dragOriginalSourceIn = track->clip(idx)->sourceIn();
@@ -698,11 +728,33 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     case EditTool::Slide:
     {
         auto hitRef = hitTestClip(pos);
-        if (hitRef)
+        Track* track = hitRef ? m_timeline->track(hitRef->trackIndex) : nullptr;
+        if (hitRef && track && !track->isLocked())
         {
+            m_selection.clear();
+            m_selection.selectClip(*hitRef, false);
+            if (!(event->modifiers() & Qt::AltModifier))
+                setLinkPartnersSelected(*hitRef, true);
+            m_dragSelectedClips.clear();
+            for (const auto& selected : m_selection.clips()) {
+                Track* selectedTrack = m_timeline->track(selected.trackIndex);
+                if (!selectedTrack || selectedTrack->isLocked()) {
+                    m_dragSelectedClips.clear();
+                    m_dragMode = DragMode::None;
+                    event->accept();
+                    return;
+                }
+                const size_t selectedIndex = selectedTrack->findClipIndexById(selected.clipId);
+                if (selectedIndex < selectedTrack->clipCount()) {
+                    const Clip* selectedClip = selectedTrack->clip(selectedIndex);
+                    m_dragSelectedClips.push_back({selected, selectedClip->timelineIn(),
+                        selectedClip->duration(), selectedClip->sourceIn(),
+                        selected.trackIndex, {}});
+                }
+            }
             m_dragClipRef = *hitRef;
             m_dragMode = DragMode::SlideTool;
-            Track* track = m_timeline->track(hitRef->trackIndex);
+            m_dragLastAppliedDelta = 0;
             size_t idx = track->findClipIndexById(hitRef->clipId);
             if (idx < track->clipCount())
                 m_dragOriginalIn = track->clip(idx)->timelineIn();
@@ -724,6 +776,12 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             double px = pos.x() - headerWidth();
             int64_t clickTick = m_layoutEngine.pixelXToTime(px);
             Track* track = m_timeline->track(ti);
+
+            if (track->isLocked()) {
+                m_dragMode = DragMode::None;
+                event->accept();
+                return;
+            }
 
             // Look for the closest edit point (where one clip ends and another begins)
             int64_t bestDist = INT64_MAX;
@@ -861,9 +919,9 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     {
         // Ripple tool: trim head/tail with ripple (shift subsequent clips)
         auto hitRef = hitTestClip(pos);
-        if (hitRef) {
+        Track* track = hitRef ? m_timeline->track(hitRef->trackIndex) : nullptr;
+        if (hitRef && track && !track->isLocked()) {
             m_dragClipRef = *hitRef;
-            Track* track = m_timeline->track(hitRef->trackIndex);
             size_t idx = track->findClipIndexById(hitRef->clipId);
             if (idx < track->clipCount()) {
                 const Clip* clip = track->clip(idx);
@@ -934,7 +992,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
                 // the next clip on this same track.
                 Track* track = m_timeline->track(ti);
                 const bool canHostGraphic = track && track->type() == TrackType::Video
-                    && !track->isDivider() && !track->isCaptionTrack();
+                    && !track->isLocked() && !track->isDivider()
+                    && !track->isCaptionTrack();
                 const int64_t duration = canHostGraphic
                     ? EditOperations::nonOverlappingInsertDuration(
                           *track, tick, kDefaultGraphicDuration)

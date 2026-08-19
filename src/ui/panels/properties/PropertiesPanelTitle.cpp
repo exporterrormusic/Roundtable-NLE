@@ -31,7 +31,7 @@ namespace rt {
 
 void PropertiesPanel::applyTitleText()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     auto newVal = m_textEdit->text().toStdString();
     if (newVal == tc->text()) return;
@@ -49,7 +49,7 @@ void PropertiesPanel::applyTitleText()
 
 void PropertiesPanel::applyTitleFontFamily()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     auto newVal = m_fontFamilyEdit->text().toStdString();
     if (newVal == tc->fontFamily()) return;
@@ -67,7 +67,7 @@ void PropertiesPanel::applyTitleFontFamily()
 
 void PropertiesPanel::applyTitleFontSize()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     float newVal = static_cast<float>(m_fontSizeSpin->value());
     if (newVal == tc->fontSize()) return;
@@ -85,7 +85,7 @@ void PropertiesPanel::applyTitleFontSize()
 
 void PropertiesPanel::applyTitleBold()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     bool newVal = m_boldCheck->isChecked();
     if (newVal == tc->isBold()) return;
@@ -103,7 +103,7 @@ void PropertiesPanel::applyTitleBold()
 
 void PropertiesPanel::applyTitleItalic()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     bool newVal = m_italicCheck->isChecked();
     if (newVal == tc->isItalic()) return;
@@ -121,7 +121,7 @@ void PropertiesPanel::applyTitleItalic()
 
 void PropertiesPanel::applyTitleAlign()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Title) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Title) return;
     auto* tc = static_cast<TitleClip*>(m_clip);
     auto newVal = static_cast<TextAlign>(m_alignCombo->currentIndex());
     if (newVal == tc->alignment()) return;

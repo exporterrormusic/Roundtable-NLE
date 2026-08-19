@@ -65,6 +65,8 @@ private:
     Track*                 m_track;
     std::unique_ptr<Clip>  m_clip;     // Held when not on the track (before execute / after undo)
     uint64_t               m_clipId;
+    bool                   m_authorized{false};
+    bool                   m_applied{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ private:
     // them here so undo can put them back — otherwise a cross-dissolve/fade
     // silently vanished when a move/delete was undone.
     std::vector<Transition> m_savedTransitions;
+    bool                    m_authorized{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +113,8 @@ private:
     uint64_t m_clipId;
     int64_t  m_oldPosition;
     int64_t  m_newPosition;
+    bool     m_authorized{false};
+    bool     m_applied{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,6 +141,8 @@ private:
     int64_t  m_oldDuration,   m_newDuration;
     int64_t  m_oldSourceIn,   m_newSourceIn;
     bool     m_preserveKeyframeTimes;
+    bool     m_authorized{false};
+    bool     m_applied{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,24 +165,29 @@ public:
         , m_setter(setter)
         , m_desc(std::move(desc))
         , m_typeIdVal(typeIdVal)
+        , m_authorized(track && !track->isLocked())
     {
     }
 
     void execute() override
     {
+        if (!m_authorized) return;
         size_t idx = m_track->findClipIndexById(m_clipId);
         if (idx == m_track->clipCount()) return;
         Clip* c = m_track->clip(idx);
         m_oldValue = m_getter(*c);
         m_setter(*c, m_newValue);
+        m_applied = true;
     }
 
     void undo() override
     {
+        if (!m_applied) return;
         size_t idx = m_track->findClipIndexById(m_clipId);
         if (idx == m_track->clipCount()) return;
         Clip* c = m_track->clip(idx);
         m_setter(*c, m_oldValue);
+        m_applied = false;
     }
 
     [[nodiscard]] std::string description() const override { return m_desc; }
@@ -190,6 +202,8 @@ private:
     Setter   m_setter;
     std::string m_desc;
     int         m_typeIdVal;
+    bool        m_authorized{false};
+    bool        m_applied{false};
 };
 
 } // namespace rt

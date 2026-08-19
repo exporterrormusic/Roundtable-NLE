@@ -9,6 +9,7 @@
 #include "Theme.h"
 
 #include "timeline/Clip.h"
+#include "timeline/ClipMutation.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "audiofx/FxChain.h"
@@ -564,16 +565,22 @@ void EffectsPanel::filterBrowser(const QString& text)
     }
 }
 
-void EffectsPanel::setClip(Clip* clip)
+void EffectsPanel::setClip(Clip* clip, Track* track)
 {
     m_clip = clip;
+    m_track = clip ? track : nullptr;
     refresh();
+}
+
+bool EffectsPanel::canMutateClip() const noexcept
+{
+    return rt::canMutateClip(m_clip, m_track);
 }
 
 void EffectsPanel::refresh()
 {
     refreshStack();
-    if (m_clip) {
+    if (canMutateClip()) {
         auto* item = m_browserTree->currentItem();
         bool valid = item && item->data(0, Qt::UserRole).isValid();
         m_addButton->setEnabled(valid);
@@ -603,7 +610,7 @@ void EffectsPanel::refreshStack()
 
 void EffectsPanel::onAddClicked()
 {
-    if (!m_clip) return;
+    if (!canMutateClip()) return;
     auto* item = m_browserTree->currentItem();
     if (!item) return;
     auto& stack = m_clip->effects();
@@ -639,7 +646,7 @@ void EffectsPanel::onAddClicked()
 
 void EffectsPanel::onRemoveClicked()
 {
-    if (!m_clip) return;
+    if (!canMutateClip()) return;
     int row = m_stackList->currentRow();
     if (row < 0) return;
 
@@ -659,7 +666,7 @@ void EffectsPanel::onRemoveClicked()
 
 void EffectsPanel::onMoveUpClicked()
 {
-    if (!m_clip) return;
+    if (!canMutateClip()) return;
     int row = m_stackList->currentRow();
     if (row <= 0) return;
 
@@ -681,7 +688,7 @@ void EffectsPanel::onMoveUpClicked()
 
 void EffectsPanel::onMoveDownClicked()
 {
-    if (!m_clip) return;
+    if (!canMutateClip()) return;
     int row = m_stackList->currentRow();
     if (row < 0) return;
 
@@ -706,7 +713,7 @@ void EffectsPanel::onStackSelectionChanged()
 {
     if (m_updating) return;
     int row = m_stackList->currentRow();
-    bool hasSelection = row >= 0;
+    bool hasSelection = row >= 0 && canMutateClip();
 
     m_removeButton->setEnabled(hasSelection);
     m_moveUpButton->setEnabled(hasSelection && row > 0);
@@ -744,9 +751,9 @@ void EffectsPanel::onBrowserContextMenu(const QPoint& pos)
     if (isPresetItem) {
         QAction* applyAction  = menu.addAction("Apply to Clip");
         QAction* deleteAction = menu.addAction("Delete Preset");
-        applyAction->setEnabled(m_clip != nullptr);
+        applyAction->setEnabled(canMutateClip());
         QAction* chosen = menu.exec(m_browserTree->mapToGlobal(pos));
-        if (chosen == applyAction && m_clip) {
+        if (chosen == applyAction && canMutateClip()) {
             auto path = std::filesystem::path(
                 item->data(0, Qt::UserRole + 2).toString().toStdString());
             auto effect = loadEffectPreset(path);

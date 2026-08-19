@@ -53,6 +53,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -79,21 +80,60 @@ void ProjectController::beginAsyncProjectLoad(
 {
     m_mw->engageLoadingOverlay(busyMessage);
 
+    // Supersede earlier parses without synchronously waiting on the UI thread.
+    // Completed jobs are cheap to reap; any still-running jobs remain owned and
+    // are joined by the controller destructor before MainWindow goes away.
+    const uint64_t generation =
+        m_projectLoadGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    for (auto& task : m_projectLoadTasks)
+        task.worker.request_stop();
+    std::erase_if(m_projectLoadTasks, [](const ProjectLoadTask& task) {
+        return task.finished->load(std::memory_order_acquire);
+    });
+
     std::filesystem::path p = path;  // owned copy for the worker thread
     // shared_ptr keeps the move-only-payload continuation alive across the
     // thread hop while staying copyable for QMetaObject::invokeMethod.
     auto cont = std::make_shared<std::function<void(std::unique_ptr<Project>)>>(
         std::move(continuation));
 
-    std::thread([this, p, cont]() {
-        ProjectSerializer serializer;
-        Project* raw = serializer.load(p).release();
-        QMetaObject::invokeMethod(qApp, [this, raw, cont]() {
-            std::unique_ptr<Project> project(raw);
-            if (m_mw->isDestroying()) return;
-            (*cont)(std::move(project));
-        }, Qt::QueuedConnection);
-    }).detach();
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    m_projectLoadTasks.push_back(ProjectLoadTask{
+        finished,
+        std::jthread([this, p, cont, finished, generation](std::stop_token stop) {
+            std::unique_ptr<Project> loaded;
+            try {
+                if (!stop.stop_requested()) {
+                    ProjectSerializer serializer;
+                    loaded = serializer.load(p);
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("Project load failed for '{}': {}",
+                              p.string(), e.what());
+            } catch (...) {
+                spdlog::error("Project load failed for '{}' with an unknown error",
+                              p.string());
+            }
+
+            if (!stop.stop_requested()) {
+                // A shared move slot keeps a loaded Project owned even when Qt
+                // drops the queued call because its receiver was destroyed.
+                auto result = std::make_shared<std::unique_ptr<Project>>(
+                    std::move(loaded));
+                QMetaObject::invokeMethod(this,
+                    [this, result, cont, generation]() mutable {
+                        if (generation != m_projectLoadGeneration.load(
+                                std::memory_order_acquire)
+                            || m_mw->isDestroying()) {
+                            return;
+                        }
+                        (*cont)(std::move(*result));
+                    },
+                    Qt::QueuedConnection);
+            }
+            finished->store(true, std::memory_order_release);
+        })
+    });
 }
 
 // Common tail for the async open paths: drop the input lock now, or keep the
@@ -365,7 +405,7 @@ void ProjectController::onDeleteProjectFromPanel(const QString& name, const QStr
                 if (auto* ecp = m_mw->timelineWorkspace()->effectControlsPanel())
                     ecp->clearClip();
                 if (auto* eff = m_mw->timelineWorkspace()->effectsPanel())
-                    eff->setClip(nullptr);
+                    eff->setClip(nullptr, nullptr);
                 if (auto* sm = m_mw->timelineWorkspace()->sourceMonitor())
                     sm->clearClip();
                 if (auto* lib = m_mw->timelineWorkspace()->libraryPanel())

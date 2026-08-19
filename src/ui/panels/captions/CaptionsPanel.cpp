@@ -77,6 +77,31 @@ static QString buildCaptionLabel(int64_t timelineIn, const QString& speaker,
  return QString("[%1] %2").arg(tc, text);
 }
 
+static QString reflowCaptionText(QString text, int maxChars, int maxLines,
+                                 bool preventOrphan)
+{
+ text = text.simplified();
+ if (text.isEmpty() || maxLines <= 1) return text;
+ const QStringList words = text.split(' ', Qt::SkipEmptyParts);
+ QStringList lines;
+ QString line;
+ for (const QString& word : words) {
+ const QString candidate = line.isEmpty() ? word : line + ' ' + word;
+ if (!line.isEmpty() && candidate.size() > maxChars && lines.size() + 1 < maxLines) {
+ lines.push_back(line); line = word;
+ } else line = candidate;
+ }
+ if (!line.isEmpty()) lines.push_back(line);
+ if (preventOrphan && lines.size() > 1 && !lines.back().contains(' ')) {
+ QStringList previous = lines[lines.size() - 2].split(' ', Qt::SkipEmptyParts);
+ if (previous.size() > 1) {
+ lines.back().prepend(previous.takeLast() + ' ');
+ lines[lines.size() - 2] = previous.join(' ');
+ }
+ }
+ return lines.join('\n');
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Construction
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -160,6 +185,50 @@ void CaptionsPanel::buildUI()
  m_countLabel = new QLabel("No captions", this);
  m_countLabel->setObjectName("captionCountLabel");
  mainLayout->addWidget(m_countLabel);
+
+ // Premiere-style caption creation controls: compact limits above the text
+ // list, with reflow as an explicit undoable action.
+ auto* qualityRow1 = new QHBoxLayout;
+ m_maxCharsSpin = new QSpinBox(this);
+ m_maxCharsSpin->setRange(10, 100); m_maxCharsSpin->setValue(42);
+ m_maxCharsSpin->setPrefix("Chars ");
+ m_maxLinesSpin = new QSpinBox(this);
+ m_maxLinesSpin->setRange(1, 3); m_maxLinesSpin->setValue(2);
+ m_maxLinesSpin->setPrefix("Lines ");
+ m_maxCpsSpin = new QDoubleSpinBox(this);
+ m_maxCpsSpin->setRange(5.0, 40.0); m_maxCpsSpin->setValue(20.0);
+ m_maxCpsSpin->setSuffix(" cps");
+ qualityRow1->addWidget(m_maxCharsSpin);
+ qualityRow1->addWidget(m_maxLinesSpin);
+ qualityRow1->addWidget(m_maxCpsSpin);
+ mainLayout->addLayout(qualityRow1);
+
+ auto* qualityRow2 = new QHBoxLayout;
+ m_minDurationSpin = new QDoubleSpinBox(this);
+ m_minDurationSpin->setRange(0.1, 10.0); m_minDurationSpin->setValue(1.0);
+ m_minDurationSpin->setPrefix("Min "); m_minDurationSpin->setSuffix("s");
+ m_maxDurationSpin = new QDoubleSpinBox(this);
+ m_maxDurationSpin->setRange(0.5, 30.0); m_maxDurationSpin->setValue(7.0);
+ m_maxDurationSpin->setPrefix("Max "); m_maxDurationSpin->setSuffix("s");
+ m_minGapSpin = new QDoubleSpinBox(this);
+ m_minGapSpin->setRange(0.0, 2.0); m_minGapSpin->setValue(0.08);
+ m_minGapSpin->setPrefix("Gap "); m_minGapSpin->setSuffix("s");
+ qualityRow2->addWidget(m_minDurationSpin);
+ qualityRow2->addWidget(m_maxDurationSpin);
+ qualityRow2->addWidget(m_minGapSpin);
+ mainLayout->addLayout(qualityRow2);
+
+ auto* qualityActions = new QHBoxLayout;
+ m_orphanCheck = new QCheckBox("Prevent orphan words", this);
+ m_orphanCheck->setChecked(true);
+ m_lowConfidenceCheck = new QCheckBox("Low confidence", this);
+ m_reflowBtn = new QPushButton("Reflow", this);
+ m_reflowBtn->setToolTip("Wrap all captions to these limits without changing timing (one undo step)");
+ qualityActions->addWidget(m_orphanCheck);
+ qualityActions->addWidget(m_lowConfidenceCheck);
+ qualityActions->addStretch();
+ qualityActions->addWidget(m_reflowBtn);
+ mainLayout->addLayout(qualityActions);
 
  // â”€â”€ Filter box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  m_filterEdit = new QLineEdit(this);
@@ -279,6 +348,17 @@ void CaptionsPanel::buildUI()
  this, &CaptionsPanel::onDeleteCaption);
  connect(m_fillGapsBtn, &QPushButton::clicked,
  this, &CaptionsPanel::onFillGaps);
+ connect(m_reflowBtn, &QPushButton::clicked,
+ this, &CaptionsPanel::onReflowCaptions);
+ auto refreshQuality = [this] { updateQualityWarnings(); };
+ connect(m_maxCharsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, refreshQuality);
+ connect(m_maxLinesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, refreshQuality);
+ connect(m_maxCpsSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, refreshQuality);
+ connect(m_minDurationSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, refreshQuality);
+ connect(m_maxDurationSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, refreshQuality);
+ connect(m_minGapSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, refreshQuality);
+ connect(m_lowConfidenceCheck, &QCheckBox::toggled,
+ this, [this] { applyCaptionFilter(); });
 
  updateButtonStates();
 }
@@ -324,12 +404,43 @@ void CaptionsPanel::applyTheme()
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 CaptionsPanel::~CaptionsPanel()
 {
+ m_destroying.store(true, std::memory_order_release);
+ m_timelineRevision.fetch_add(1, std::memory_order_acq_rel);
+ ++m_transcriptionTaskId;
+ requestTranscriptionCancel();
+ if (m_transcriptionThread.joinable())
+ m_transcriptionThread.join();
  if (m_timeline)
  m_timeline->removeObserver(this);
 }
 
+void CaptionsPanel::requestTranscriptionCancel() noexcept
+{
+ if (m_transcriptionThread.joinable())
+ m_transcriptionThread.request_stop();
+ if (m_transcriber)
+ m_transcriber->cancelAsync();
+}
+
+bool CaptionsPanel::captionTrackLocked() const noexcept
+{
+ if (!m_timeline) return false;
+ for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+ const Track* track = m_timeline->track(i);
+ if (track && track->isCaptionTrack())
+ return track->isLocked();
+ }
+ return false;
+}
+
 void CaptionsPanel::setTimeline(Timeline* timeline)
 {
+ if (m_timeline == timeline) {
+ refresh();
+ return;
+ }
+ m_timelineRevision.fetch_add(1, std::memory_order_acq_rel);
+ requestTranscriptionCancel();
  if (m_timeline)
  m_timeline->removeObserver(this);
  m_timeline = timeline;
@@ -341,6 +452,8 @@ void CaptionsPanel::setTimeline(Timeline* timeline)
 void CaptionsPanel::onTimelineDestroyed(Timeline* tl)
 {
  if (tl != m_timeline) return;
+ m_timelineRevision.fetch_add(1, std::memory_order_acq_rel);
+ requestTranscriptionCancel();
  // The timeline owns every caption clip — drop all cached pointers together.
  // Do NOT call removeObserver(): the observer list dies with the timeline.
  m_timeline = nullptr;
@@ -435,7 +548,48 @@ void CaptionsPanel::refresh()
  }
 
  applyCaptionFilter();
+ updateQualityWarnings();
  updateButtonStates();
+}
+
+void CaptionsPanel::updateQualityWarnings()
+{
+ if (!m_captionList || !m_maxCharsSpin) return;
+ int warningCount = 0;
+ for (int row = 0; row < m_captionList->count(); ++row) {
+ auto* item = m_captionList->item(row);
+ auto* clip = entryClip(row);
+ if (!item || !clip) continue;
+ QStringList problems;
+ const QStringList lines = QString::fromStdString(clip->text()).split('\n');
+ if (lines.size() > m_maxLinesSpin->value()) problems << "too many lines";
+ for (const QString& line : lines)
+ if (line.size() > m_maxCharsSpin->value()) { problems << "line too long"; break; }
+ const double seconds = static_cast<double>(clip->duration()) / kTicksPerSecond;
+ const int chars = QString::fromStdString(clip->text()).remove('\n').size();
+ if (seconds > 0.0 && chars / seconds > m_maxCpsSpin->value()) problems << "reading speed";
+ if (seconds < m_minDurationSpin->value()) problems << "too short";
+ if (seconds > m_maxDurationSpin->value()) problems << "too long";
+ if (clip->confidence() < 0.75f)
+ problems << QString("low confidence (%1%)").arg(qRound(clip->confidence() * 100.0f));
+ if (row + 1 < m_captionList->count()) {
+ auto* next = entryClip(row + 1);
+ if (next) {
+ const int64_t gap = next->timelineIn() - clip->timelineOut();
+ if (gap < 0) problems << "overlap";
+ else if (static_cast<double>(gap) / kTicksPerSecond < m_minGapSpin->value())
+ problems << "gap too small";
+ }
+ }
+ const bool warned = !problems.isEmpty();
+ warningCount += warned ? 1 : 0;
+ item->setForeground(warned ? QColor("#ffb454") : palette().color(QPalette::Text));
+ item->setToolTip(warned ? "QC: " + problems.join(", ") : QString());
+ }
+ if (!m_entries.empty())
+ m_countLabel->setText(m_countLabel->text().section(" \xC2\xB7 QC:", 0, 0)
+ + QString(" \xC2\xB7 QC: %1 warning%2")
+ .arg(warningCount).arg(warningCount == 1 ? "" : "s"));
 }
 
 void CaptionsPanel::applyCaptionFilter()
@@ -444,8 +598,12 @@ void CaptionsPanel::applyCaptionFilter()
  const QString needle = m_filterEdit->text().trimmed();
  for (int i = 0; i < m_captionList->count(); ++i) {
  auto* item = m_captionList->item(i);
- item->setHidden(!needle.isEmpty() &&
- !item->text().contains(needle, Qt::CaseInsensitive));
+ auto* clip = entryClip(i);
+ const bool textMismatch = !needle.isEmpty()
+ && !item->text().contains(needle, Qt::CaseInsensitive);
+ const bool confidenceMismatch = m_lowConfidenceCheck
+ && m_lowConfidenceCheck->isChecked() && (!clip || clip->confidence() >= 0.75f);
+ item->setHidden(textMismatch || confidenceMismatch);
  }
 }
 
@@ -489,12 +647,14 @@ void CaptionsPanel::onListSelectionChanged()
 
  m_updatingUI = false;
 
+ updateButtonStates();
  emit captionSelected(cc->timelineIn());
 }
 
 void CaptionsPanel::onTextChanged()
 {
  if (m_updatingUI) return;
+ if (captionTrackLocked()) return;
 
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
@@ -545,6 +705,7 @@ void CaptionsPanel::onTextChanged()
 void CaptionsPanel::onSpeakerChanged()
 {
  if (m_updatingUI) return;
+ if (captionTrackLocked()) return;
 
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
@@ -585,6 +746,7 @@ void CaptionsPanel::onSpeakerChanged()
 void CaptionsPanel::onPositionChanged(int index)
 {
  if (m_updatingUI) return;
+ if (captionTrackLocked()) return;
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
  if (index < 0) return;
@@ -612,6 +774,7 @@ void CaptionsPanel::onPositionChanged(int index)
 void CaptionsPanel::onFontChanged(const QString& family)
 {
  if (m_updatingUI) return;
+ if (captionTrackLocked()) return;
  if (m_monitorTextEditing) {
  emit inlineFontFamilyRequested(family);
  return;
@@ -642,6 +805,7 @@ void CaptionsPanel::onFontChanged(const QString& family)
 void CaptionsPanel::onFontSizeChanged(int size)
 {
  if (m_updatingUI) return;
+ if (captionTrackLocked()) return;
  if (m_monitorTextEditing) {
  emit inlineFontSizeRequested(static_cast<float>(size));
  return;
@@ -690,6 +854,7 @@ void CaptionsPanel::setInlineTextSelectionFormat(
 void CaptionsPanel::onAddCaption()
 {
  if (!m_timeline) return;
+ if (captionTrackLocked()) return;
 
  // Find or create a caption track
  Track* captionTrack = nullptr;
@@ -730,7 +895,7 @@ void CaptionsPanel::onAddCaption()
  }
  if (!trk) trk = tl->addCaptionTrack();
  if (*clipShared) {
- trk->addClip(std::move(*clipShared));
+ trk->addClip(std::move(*clipShared), TrackMutationPolicy::BypassLock);
  }
  self->refresh();
  emit self->captionEdited();
@@ -742,7 +907,8 @@ void CaptionsPanel::onAddCaption()
  for (size_t i = 0; i < tl->trackCount(); ++i) {
  auto* trk = tl->track(i);
  if (!trk->isCaptionTrack()) continue;
- auto removed = trk->removeClipById(clipId);
+ auto removed = trk->removeClipById(
+ clipId, TrackMutationPolicy::BypassLock);
  if (removed) {
  *clipShared = std::unique_ptr<CaptionClip>(
  static_cast<CaptionClip*>(removed.release()));
@@ -769,6 +935,7 @@ void CaptionsPanel::onAddCaption()
 void CaptionsPanel::onDeleteCaption()
 {
  if (!m_timeline) return;
+ if (captionTrackLocked()) return;
 
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
@@ -798,7 +965,8 @@ void CaptionsPanel::onDeleteCaption()
  for (size_t i = 0; i < tl->trackCount(); ++i) {
  auto* trk = tl->track(i);
  if (!trk->isCaptionTrack()) continue;
- auto re = trk->removeClipById(clipId);
+ auto re = trk->removeClipById(
+ clipId, TrackMutationPolicy::BypassLock);
  if (re) {
  *clipShared = std::move(re);
  self->refresh();
@@ -819,7 +987,7 @@ void CaptionsPanel::onDeleteCaption()
  }
  }
  if (!trk || !*clipShared) return;
- trk->addClip(std::move(*clipShared));
+ trk->addClip(std::move(*clipShared), TrackMutationPolicy::BypassLock);
  self->refresh();
  emit self->captionEdited();
  }));
@@ -832,6 +1000,7 @@ void CaptionsPanel::onDeleteCaption()
 void CaptionsPanel::onApplyStyleToAll()
 {
  if (!m_timeline || m_entries.empty()) return;
+ if (captionTrackLocked()) return;
 
  CaptionClip* source = entryClip(m_captionList->currentRow());
  if (!source) source = findCaptionClipById(m_entries.front().clipId);
@@ -880,6 +1049,7 @@ void CaptionsPanel::onApplyStyleToAll()
 void CaptionsPanel::onReplaceAll()
 {
  if (!m_timeline || m_entries.empty()) return;
+ if (captionTrackLocked()) return;
  const QString needle = m_filterEdit ? m_filterEdit->text() : QString();
  if (needle.trimmed().isEmpty()) {
  QMessageBox::information(this, "Replace All",
@@ -948,6 +1118,7 @@ void CaptionsPanel::onReplaceAll()
 void CaptionsPanel::onClearAll()
 {
  if (!m_timeline || m_entries.empty()) return;
+ if (captionTrackLocked()) return;
 
  if (QMessageBox::question(this, "Clear All Captions",
  QString("Remove all %1 caption(s) from the timeline?").arg(m_entries.size()),
@@ -968,7 +1139,7 @@ void CaptionsPanel::onClearAll()
  Track* trk = tl->captionTrack();
  if (trk) {
  while (trk->clipCount() > 0)
- trk->removeClip(0);
+ trk->removeClip(0, TrackMutationPolicy::BypassLock);
  }
  self->refresh();
  emit self->captionEdited();
@@ -978,7 +1149,7 @@ void CaptionsPanel::onClearAll()
  if (!tl) return;
  Track* trk = tl->addCaptionTrack();
  for (auto& c : *saved)
- if (c) trk->addClip(c->clone());
+ if (c) trk->addClip(c->clone(), TrackMutationPolicy::BypassLock);
  self->refresh();
  emit self->captionEdited();
  };
@@ -996,6 +1167,7 @@ void CaptionsPanel::onClearAll()
 void CaptionsPanel::onFillGaps()
 {
  if (!m_timeline) return;
+ if (captionTrackLocked()) return;
 
  int row = m_captionList->currentRow();
  if (row < 0 || row >= static_cast<int>(m_entries.size())) return;
@@ -1156,6 +1328,7 @@ std::vector<CaptionTranscribeSource> CaptionsPanel::findTranscriptionSources() c
 void CaptionsPanel::onAddCaptionsToTimeline()
 {
  if (!m_timeline) return;
+ if (captionTrackLocked()) return;
 
  // Already present — just make sure the panel/preview are in sync.
  if (m_timeline->captionTrack()) {
@@ -1189,10 +1362,16 @@ void CaptionsPanel::onAddCaptionsToTimeline()
 
 void CaptionsPanel::onTranscribe()
 {
- emit transcribeRequested(); // keep external hook (e.g. status wiring)
-
  if (m_transcribing) return;
  if (!m_timeline) return;
+ if (captionTrackLocked()) return;
+
+ emit transcribeRequested(); // keep external hook (e.g. status wiring)
+
+ // m_transcribing is cleared only by completion, so this reaps an already
+ // finished worker rather than waiting on active transcription in the UI.
+ if (m_transcriptionThread.joinable())
+ m_transcriptionThread.join();
 
  std::vector<CaptionTranscribeSource> sources = findTranscriptionSources();
  if (sources.empty()) {
@@ -1215,9 +1394,15 @@ void CaptionsPanel::onTranscribe()
  m_progressBar->setFormat("Loading model\xE2\x80\xA6");
  m_progressBar->setVisible(true);
 
+ const uint64_t taskId = ++m_transcriptionTaskId;
+ const uint64_t timelineRevision =
+ m_timelineRevision.load(std::memory_order_acquire);
+
  // Progress reporter — posts UI updates back to the panel safely.
- auto report = [this](int pct, const QString& status) {
- QMetaObject::invokeMethod(this, [this, pct, status]() {
+ auto report = [this, taskId](int pct, const QString& status) {
+ QMetaObject::invokeMethod(this, [this, taskId, pct, status]() {
+ if (m_destroying.load(std::memory_order_acquire)
+ || taskId != m_transcriptionTaskId) return;
  if (!m_progressBar) return;
  if (pct < 0) {                       // indeterminate / busy
  m_progressBar->setRange(0, 0);
@@ -1233,11 +1418,17 @@ void CaptionsPanel::onTranscribe()
  // if the panel is destroyed mid-run. Results are posted back via
  // invokeMethod(this, ...) which Qt drops if `this` was destroyed.
  std::shared_ptr<Transcriber> tr = m_transcriber;
- std::thread([this, tr, sources, report]() {
+ m_transcriptionThread = std::jthread(
+ [this, tr, sources, report, taskId, timelineRevision](std::stop_token stop) {
+ QString transcriptionError;
+ bool transcriptionCancelled = false;
  if (!tr->isModelLoaded()) {
  report(-1, "Loading model\xE2\x80\xA6");
- tr->loadModel(WhisperModelSize::Base);
+ if (!tr->loadModel(kDefaultWhisperModel))
+ transcriptionError = QString::fromStdString(tr->lastError());
  }
+ if (stop.stop_requested())
+ tr->cancelAsync();
 
  // Group clips by media path, and transcribe each UNIQUE file ONCE
  // (cache by path). Transcribing per-clip would re-run the whole file for
@@ -1249,8 +1440,13 @@ void CaptionsPanel::onTranscribe()
  const int total = static_cast<int>(byPath.size());
  int idx = 0;
  for (auto& kv : byPath) {
+ if (stop.stop_requested() || !transcriptionError.isEmpty()) break;
  const int fileIdx = idx;
- auto fileProg = [report, fileIdx, total](float pct, const std::string&) {
+ auto fileProg = [report, fileIdx, total, stop, tr](float pct, const std::string&) {
+ if (stop.stop_requested()) {
+ tr->cancelAsync();
+ return;
+ }
  int overall = total > 0
  ? static_cast<int>((fileIdx + pct / 100.0f) / total * 100.0f)
  : 0;
@@ -1258,7 +1454,18 @@ void CaptionsPanel::onTranscribe()
  };
  spdlog::info("[Captions] transcribing source '{}' ({} clip(s))",
  kv.first, kv.second.size());
- cache[kv.first] = tr->transcribe(kv.first, "", fileProg);
+ auto result = tr->transcribe(kv.first, "", fileProg);
+ if (result.status == TranscriptionStatus::Cancelled) {
+ transcriptionCancelled = true;
+ break;
+ }
+ if (!result.succeeded()) {
+ transcriptionError = QString::fromStdString(
+ result.error.message.empty() ? "Transcription failed" : result.error.message);
+ break;
+ }
+ cache[kv.first] = std::move(result);
+ if (stop.stop_requested()) break;
  ++idx;
  }
 
@@ -1272,13 +1479,15 @@ void CaptionsPanel::onTranscribe()
  // cues.
  std::vector<PreparedCaptionCue> cues;
  for (auto& kv : byPath) {
+ if (stop.stop_requested()) break;
  const TranscriptionResult& result = cache[kv.first];
- const bool windowFilter = kv.second.size() > 1;
  for (const CaptionTranscribeSource* s : kv.second) {
+ if (stop.stop_requested()) break;
  const int64_t srcStart = s->sourceInTicks;
  const int64_t srcEnd   = s->sourceInTicks + s->durationTicks;
  const int64_t clipEnd  = s->timelineInTicks + s->durationTicks;
  for (const auto& seg : result.segments) {
+ if (stop.stop_requested()) break;
  std::string text = trimmedText(seg.text);
  if (text.empty() || isNonSpeechAnnotation(text)) continue; // skip [Music] etc.
 
@@ -1286,7 +1495,7 @@ void CaptionsPanel::onTranscribe()
  int64_t segEndSrc   = static_cast<int64_t>(seg.end   * kTicksPerSecond);
  if (segEndSrc <= segStartSrc) segEndSrc = segStartSrc + kTicksPerSecond / 2;
 
- if (windowFilter && s->durationTicks > 0) {
+ if (s->durationTicks > 0) {
  // Keep only segments that overlap this clip's source window,
  // then clamp them to it.
  if (segEndSrc <= srcStart || segStartSrc >= srcEnd) continue;
@@ -1298,10 +1507,19 @@ void CaptionsPanel::onTranscribe()
  cue.inTick  = s->timelineInTicks + (segStartSrc - s->sourceInTicks);
  cue.outTick = s->timelineInTicks + (segEndSrc   - s->sourceInTicks);
  if (cue.inTick < 0) cue.inTick = 0;
+ if (s->durationTicks > 0 && cue.inTick >= clipEnd) continue;
+ if (s->durationTicks > 0 && cue.outTick > clipEnd) cue.outTick = clipEnd;
  if (cue.outTick <= cue.inTick) cue.outTick = cue.inTick + kTicksPerSecond / 2;
+ if (s->durationTicks > 0 && cue.outTick > clipEnd) cue.outTick = clipEnd;
+ if (cue.outTick <= cue.inTick) continue;
  cue.clipEndTick = clipEnd;
  cue.text = text;
  cue.speaker = !seg.character.empty() ? seg.character : s->speaker;
+ if (!seg.words.empty()) {
+ float totalConfidence = 0.0f;
+ for (const auto& word : seg.words) totalConfidence += word.probability;
+ cue.confidence = totalConfidence / static_cast<float>(seg.words.size());
+ }
  cues.push_back(std::move(cue));
  }
  }
@@ -1316,6 +1534,7 @@ void CaptionsPanel::onTranscribe()
  std::vector<PreparedCaptionCue> deduped;
  deduped.reserve(cues.size());
  for (auto& c : cues) {
+ if (stop.stop_requested()) break;
  if (!deduped.empty()) {
  auto& prev = deduped.back();
  // Same text + same speaker starting within 300 ms ⇒ duplicate
@@ -1339,27 +1558,80 @@ void CaptionsPanel::onTranscribe()
  for (size_t i = 0; i + 1 < deduped.size(); ++i) {
  const int64_t gap = deduped[i + 1].inTick - deduped[i].outTick;
  if (gap > 0 && gap < kMaxBridge)
- deduped[i].outTick = deduped[i + 1].inTick;
+ deduped[i].outTick = std::min(deduped[i + 1].inTick,
+                               deduped[i].clipEndTick);
  }
 
- QMetaObject::invokeMethod(this, [this, deduped]() {
+ const bool cancelled = stop.stop_requested() || transcriptionCancelled;
+ QMetaObject::invokeMethod(this,
+ [this, deduped = std::move(deduped), taskId, timelineRevision,
+  cancelled, transcriptionError]() mutable {
+ if (m_destroying.load(std::memory_order_acquire)
+ || taskId != m_transcriptionTaskId) return;
  m_transcribing = false;
- m_transcribeBtn->setEnabled(true);
  m_transcribeBtn->setText("\xF0\x9F\x8E\x99 Transcribe");
  if (m_progressBar) m_progressBar->setVisible(false);
+ updateButtonStates();
+ if (cancelled
+ || timelineRevision != m_timelineRevision.load(std::memory_order_acquire)
+ || captionTrackLocked()) return;
+ if (!transcriptionError.isEmpty()) {
+ QMessageBox::warning(this, "Transcribe", transcriptionError);
+ return;
+ }
  if (deduped.empty()) {
  QMessageBox::warning(this, "Transcribe",
- "Transcription produced no results.");
+ "No speech was detected.");
  return;
  }
  applyPreparedCues(deduped);
  }, Qt::QueuedConnection);
- }).detach();
+ });
+}
+
+void CaptionsPanel::onReflowCaptions()
+{
+ if (!m_timeline || m_entries.empty() || captionTrackLocked()) return;
+ struct Change {
+ uint64_t id;
+ std::string oldText, newText;
+ std::vector<TextStyleRun> oldStyles, newStyles;
+ };
+ auto changes = std::make_shared<std::vector<Change>>();
+ for (const auto& entry : m_entries) {
+ auto* clip = findCaptionClipById(entry.clipId);
+ if (!clip) continue;
+ const std::string oldText = clip->text();
+ const std::string newText = reflowCaptionText(
+ QString::fromStdString(oldText), m_maxCharsSpin->value(),
+ m_maxLinesSpin->value(), m_orphanCheck->isChecked()).toStdString();
+ if (oldText != newText)
+ changes->push_back({entry.clipId, oldText, newText, clip->styleRuns(),
+ remapTextStyleRuns(oldText, newText, clip->styleRuns())});
+ }
+ if (changes->empty()) return;
+ CaptionsPanel* self = this;
+ auto apply = [self, changes](bool forward) {
+ if (self->captionTrackLocked()) return;
+ for (const auto& change : *changes) {
+ if (auto* clip = self->findCaptionClipById(change.id)) {
+ clip->setText(forward ? change.newText : change.oldText);
+ clip->setStyleRuns(forward ? change.newStyles : change.oldStyles);
+ }
+ }
+ self->refresh();
+ emit self->captionEdited();
+ };
+ if (m_commandStack)
+ m_commandStack->execute(std::make_unique<LambdaCommand>(
+ "Reflow Captions", [apply] { apply(true); }, [apply] { apply(false); }));
+ else apply(true);
 }
 
 void CaptionsPanel::applyPreparedCues(const std::vector<PreparedCaptionCue>& cues)
 {
  if (!m_timeline || cues.empty()) return;
+ if (captionTrackLocked()) return;
 
  // Build the caption clips up-front (UI thread, so clip-id assignment is
  // safe), sorted by timeline position.
@@ -1370,6 +1642,7 @@ void CaptionsPanel::applyPreparedCues(const std::vector<PreparedCaptionCue>& cue
  cc->setDuration(cue.outTick - cue.inTick);
  cc->setText(cue.text);
  if (!cue.speaker.empty()) cc->setSpeaker(cue.speaker);
+ cc->setConfidence(cue.confidence);
  clips->push_back(std::move(cc));
  }
  if (clips->empty()) return;
@@ -1387,7 +1660,7 @@ void CaptionsPanel::applyPreparedCues(const std::vector<PreparedCaptionCue>& cue
  if (!c) continue;
  auto clone = c->clone();
  addedIds->push_back(clone->id());
- trk->addClip(std::move(clone));
+ trk->addClip(std::move(clone), TrackMutationPolicy::BypassLock);
  }
  self->refresh();
  emit self->captionEdited();
@@ -1395,7 +1668,8 @@ void CaptionsPanel::applyPreparedCues(const std::vector<PreparedCaptionCue>& cue
  auto undoIt = [tl, addedIds, self]() {
  Track* trk = tl->captionTrack();
  if (!trk) return;
- for (uint64_t id : *addedIds) trk->removeClipById(id);
+ for (uint64_t id : *addedIds)
+ trk->removeClipById(id, TrackMutationPolicy::BypassLock);
  addedIds->clear();
  self->refresh();
  emit self->captionEdited();
@@ -1413,11 +1687,18 @@ void CaptionsPanel::updateButtonStates()
 {
  bool hasCaptions = !m_entries.empty();
  bool hasSelection = m_captionList->currentRow() >= 0;
+ const bool editable = !captionTrackLocked();
 
- m_deleteBtn->setEnabled(hasSelection);
- m_fillGapsBtn->setEnabled(hasSelection);
- m_clearAllBtn->setEnabled(hasCaptions);
+ m_addTrackBtn->setEnabled(editable);
+ m_transcribeBtn->setEnabled(editable && !m_transcribing);
+ m_addBtn->setEnabled(editable);
+ m_deleteBtn->setEnabled(editable && hasSelection);
+ m_fillGapsBtn->setEnabled(editable && hasSelection);
+ m_clearAllBtn->setEnabled(editable && hasCaptions);
+ m_replaceAllBtn->setEnabled(editable && hasCaptions);
+ m_applyAllBtn->setEnabled(editable && hasCaptions);
  m_editorSection->setVisible(hasCaptions);
+ m_editorSection->setEnabled(editable);
 }
 
 } // namespace rt

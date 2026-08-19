@@ -129,7 +129,7 @@ void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
         connect(row, &PropertyRow::addKeyframeRequested,
                 this, &EffectControlsPanel::onAddKeyframe);
         connect(row, &PropertyRow::deleteKeyframeRequested,
@@ -167,7 +167,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
         connect(row, &PropertyRow::addKeyframeRequested,
                 this, &EffectControlsPanel::onAddKeyframe);
         connect(row, &PropertyRow::deleteKeyframeRequested,
@@ -418,6 +418,7 @@ std::vector<OpacityMask>* EffectControlsPanel::maskListFor(quint64 effectId) con
 
 bool EffectControlsPanel::deleteMask(quint64 effectId, uint64_t maskId)
 {
+    if (m_track && m_track->isLocked()) return false;
     auto* list = maskListFor(effectId);
     if (!list || !m_clip) return false;
     const auto current = std::find_if(
@@ -478,6 +479,7 @@ bool EffectControlsPanel::deleteMask(quint64 effectId, uint64_t maskId)
 
 void EffectControlsPanel::addMask(uint8_t shapeType, quint64 effectId)
 {
+    if (m_track && m_track->isLocked()) return;
     // A free-draw mask is created interactively in the Program Monitor.  Do
     // not manufacture the old four-corner placeholder: arm the dedicated Pen
     // Mask tool so the first click starts the real Bezier path instead.
@@ -772,7 +774,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                          QVariant::fromValue<qulonglong>(stableMaskId));
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
         auto resolveTrack = [clip = m_clip, effectId, stableMaskId, which]()
                 -> KeyframeTrack<float>* {
             std::vector<OpacityMask>* list = nullptr;
@@ -1376,7 +1378,7 @@ void EffectControlsPanel::buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx)
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
         connect(row, &PropertyRow::addKeyframeRequested,
                 this, &EffectControlsPanel::onAddKeyframe);
         connect(row, &PropertyRow::deleteKeyframeRequested,
@@ -1881,7 +1883,7 @@ void EffectControlsPanel::buildTintUI(Effect& fx, size_t effectIdx, int& rowIdx)
             QStringLiteral("Amount to Tint"), &amount.track, m_propContainer);
         amountRow->setRowIndex(rowIdx++);
         amountRow->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(amountRow);
+        registerPropertyRow(amountRow);
         connect(amountRow, &PropertyRow::addKeyframeRequested,
                 this, &EffectControlsPanel::onAddKeyframe);
         connect(amountRow, &PropertyRow::deleteKeyframeRequested,
@@ -1910,7 +1912,7 @@ void EffectControlsPanel::buildLetterboxUI(Effect& fx, size_t effectIdx, int& ro
         auto* row = new PropertyRow(name, track, m_propContainer);
         row->setRowIndex(rowIdx++);
         row->setTimeProvider([this]() { return clipRelativeTick(); });
-        m_propertyRows.push_back(row);
+        registerPropertyRow(row);
         connect(row, &PropertyRow::addKeyframeRequested,
                 this, &EffectControlsPanel::onAddKeyframe);
         connect(row, &PropertyRow::deleteKeyframeRequested,

@@ -50,6 +50,13 @@ bool PacketDemuxer::open(const std::string& path)
     }
 
     auto* st = m_fmtCtx->streams[m_videoStream];
+    m_codecContext = avcodec_alloc_context3(nullptr);
+    if (!m_codecContext ||
+        avcodec_parameters_to_context(m_codecContext, st->codecpar) < 0) {
+        spdlog::error("PacketDemuxer: Cannot copy codec parameters for '{}'", path);
+        close();
+        return false;
+    }
     m_startPts = (st->start_time != AV_NOPTS_VALUE) ? st->start_time : 0;
 
     // Compute FPS from stream time_base and codec framerate
@@ -67,6 +74,8 @@ bool PacketDemuxer::open(const std::string& path)
 
 void PacketDemuxer::close()
 {
+    if (m_codecContext)
+        avcodec_free_context(&m_codecContext);
     if (m_fmtCtx) {
         avformat_close_input(&m_fmtCtx);
         m_fmtCtx = nullptr;
@@ -76,6 +85,34 @@ void PacketDemuxer::close()
     m_startPts = 0;
     m_path.clear();
     m_buffer.clear();
+}
+
+bool PacketDemuxer::strictlyMatches(const AVCodecContext* target,
+                                    uint32_t width, uint32_t height,
+                                    int fpsNum, int fpsDen) const noexcept
+{
+    if (!isOpen() || !m_codecContext || !target || fpsNum <= 0 || fpsDen <= 0)
+        return false;
+    const AVStream* st = m_fmtCtx->streams[m_videoStream];
+    const AVRational sourceRate = st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0
+        ? st->avg_frame_rate : st->r_frame_rate;
+    const AVRational targetRate{fpsNum, fpsDen};
+    return sourceRate.num > 0 && sourceRate.den > 0 &&
+           av_cmp_q(sourceRate, targetRate) == 0 &&
+           m_codecContext->codec_id == target->codec_id &&
+           m_codecContext->width == static_cast<int>(width) &&
+           m_codecContext->height == static_cast<int>(height) &&
+           m_codecContext->pix_fmt == target->pix_fmt &&
+           m_codecContext->profile == target->profile &&
+           m_codecContext->level == target->level &&
+           m_codecContext->color_range == target->color_range &&
+           m_codecContext->color_primaries == target->color_primaries &&
+           m_codecContext->color_trc == target->color_trc &&
+           m_codecContext->colorspace == target->colorspace &&
+           m_codecContext->chroma_sample_location == target->chroma_sample_location &&
+           av_cmp_q(m_codecContext->sample_aspect_ratio,
+                    target->sample_aspect_ratio) == 0 &&
+           m_codecContext->extradata && m_codecContext->extradata_size > 0;
 }
 
 bool PacketDemuxer::isOpen() const noexcept

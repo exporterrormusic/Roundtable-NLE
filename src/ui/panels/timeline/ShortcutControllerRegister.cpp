@@ -5,6 +5,7 @@
 
 #include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelineWorkspace.h"
+#include "ShortcutManager.h"
 
 #include "command/CommandStack.h"
 #include "command/commands/TransitionCmds.h"
@@ -27,6 +28,8 @@
 #include <QShortcut>
 #include <QWidget>
 
+#include <functional>
+
 namespace rt {
 
 void ShortcutController::registerKeyboardShortcuts()
@@ -40,6 +43,28 @@ void ShortcutController::registerKeyboardShortcuts()
         sc->setContext(Qt::WidgetWithChildrenShortcut);
         connect(sc, &QShortcut::activated, this, std::forward<decltype(fn)>(fn));
     };
+    auto addActionShortcut = [this](const char* actionId,
+                                    const QKeySequence& fallback,
+                                    auto&& fn) {
+        auto* manager = m_ws->shortcutManager();
+        std::function<void()> callback = std::forward<decltype(fn)>(fn);
+        const auto* action = manager
+            ? manager->action(QString::fromLatin1(actionId)) : nullptr;
+        auto* sc = new QShortcut(action ? action->currentKey : fallback, m_ws);
+        sc->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(sc, &QShortcut::activated, this, callback);
+        if (manager) {
+            // Menus and customized shortcuts must invoke this same
+            // focus-sensitive target selection, not TimelinePanel's
+            // older clip-only callback.
+            manager->setActionCallback(QString::fromLatin1(actionId), callback);
+            connect(manager, &ShortcutManager::shortcutChanged, sc,
+                    [sc, id = QString::fromLatin1(actionId)](
+                        const QString& changedId, const QKeySequence& changedKey) {
+                if (changedId == id) sc->setKey(changedKey);
+            });
+        }
+    };
 
     // Home / End follow the active transport target, just like Space / JKL.
     // The target is sticky (explicitly selected by clicking a monitor), so it
@@ -50,11 +75,11 @@ void ShortcutController::registerKeyboardShortcuts()
             return m_ws->sourceMonitor()->controller();
         return m_ws->playbackController();
     };
-    addShortcut(Qt::Key_Home, [activeTransportController]() {
+    addActionShortcut(ShortcutManager::kGoStart, Qt::Key_Home, [activeTransportController]() {
         if (keyboardFocusConsumesTextKeys()) return;
         if (auto* ctl = activeTransportController()) ctl->goToStart();
     });
-    addShortcut(Qt::Key_End, [activeTransportController]() {
+    addActionShortcut(ShortcutManager::kGoEnd, Qt::Key_End, [activeTransportController]() {
         if (keyboardFocusConsumesTextKeys()) return;
         if (auto* ctl = activeTransportController()) ctl->goToEnd();
     });
@@ -62,10 +87,20 @@ void ShortcutController::registerKeyboardShortcuts()
     // Arrow keys — window-level so they work regardless of which panel has
     // focus (text inputs are still guarded).  Left/Right step frame-by-frame
     // with auto-repeat; Up/Down jump between edit points.
-    auto addGlobalShortcut = [this](const QKeySequence& key, auto&& fn) {
-        auto* sc = new QShortcut(key, m_ws);
+    auto addGlobalShortcut = [this](const char* actionId, const QKeySequence& fallback, auto&& fn) {
+        auto* manager = m_ws->shortcutManager();
+        std::function<void()> callback = std::forward<decltype(fn)>(fn);
+        const auto* action = manager ? manager->action(QString::fromLatin1(actionId)) : nullptr;
+        auto* sc = new QShortcut(action ? action->currentKey : fallback, m_ws);
         sc->setContext(Qt::WindowShortcut);
-        connect(sc, &QShortcut::activated, this, std::forward<decltype(fn)>(fn));
+        connect(sc, &QShortcut::activated, this, callback);
+        if (manager) {
+            manager->setActionCallback(QString::fromLatin1(actionId), callback);
+            connect(manager, &ShortcutManager::shortcutChanged, sc,
+                    [sc, id = QString::fromLatin1(actionId)](const QString& changedId, const QKeySequence& changedKey) {
+                if (changedId == id) sc->setKey(changedKey);
+            });
+        }
     };
     // Arrow keys nudge the playhead.  If playback is active, stop it first
     // (Premiere Pro behaviour: pressing Left/Right/Up/Down to navigate halts
@@ -90,36 +125,36 @@ void ShortcutController::registerKeyboardShortcuts()
         if (auto* ctl = activeArrowController(); ctl && ctl->isPlaying())
             ctl->pause();
     };
-    addGlobalShortcut(Qt::Key_Left, [activeArrowController, stopPlaybackIfRunning]() {
+    addGlobalShortcut(ShortcutManager::kFrameBack, Qt::Key_Left, [activeArrowController, stopPlaybackIfRunning]() {
         if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->stepBackward();
     });
-    addGlobalShortcut(Qt::Key_Right, [activeArrowController, stopPlaybackIfRunning]() {
+    addGlobalShortcut(ShortcutManager::kFrameForward, Qt::Key_Right, [activeArrowController, stopPlaybackIfRunning]() {
         if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->stepForward();
     });
-    addGlobalShortcut(Qt::Key_Up, [activeArrowController, stopPlaybackIfRunning]() {
+    addGlobalShortcut(ShortcutManager::kPrevEdit, Qt::Key_Up, [activeArrowController, stopPlaybackIfRunning]() {
         if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->goToPrevEditPoint();
     });
-    addGlobalShortcut(Qt::Key_Down, [activeArrowController, stopPlaybackIfRunning]() {
+    addGlobalShortcut(ShortcutManager::kNextEdit, Qt::Key_Down, [activeArrowController, stopPlaybackIfRunning]() {
         if (keyboardFocusConsumesTextKeys()) return;
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->goToNextEditPoint();
     });
 
     // Shift+I / Shift+O: go to in/out point
-    addShortcut(Qt::SHIFT | Qt::Key_I, [this]() {
+    addActionShortcut(ShortcutManager::kGoIn, Qt::SHIFT | Qt::Key_I, [this]() {
         if (m_ws->playbackController()) m_ws->playbackController()->goToInPoint();
     });
-    addShortcut(Qt::SHIFT | Qt::Key_O, [this]() {
+    addActionShortcut(ShortcutManager::kGoOut, Qt::SHIFT | Qt::Key_O, [this]() {
         if (m_ws->playbackController()) m_ws->playbackController()->goToOutPoint();
     });
     // Alt+X: clear in/out
-    addShortcut(Qt::ALT | Qt::Key_X, [this]() {
+    addActionShortcut(ShortcutManager::kClearIO, Qt::ALT | Qt::Key_X, [this]() {
         if (m_ws->timeline()) {
             EditOperations::clearInOutPoints(*m_ws->timeline());
             if (m_ws->timelinePanel()) m_ws->timelinePanel()->updateInOutRange();
@@ -127,7 +162,7 @@ void ShortcutController::registerKeyboardShortcuts()
         }
     });
     // Ctrl+Shift+X: clear in/out points
-    addShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_X, [this]() {
+    addActionShortcut(ShortcutManager::kClearIOAlt, Qt::CTRL | Qt::SHIFT | Qt::Key_X, [this]() {
         if (m_ws->timeline()) {
             EditOperations::clearInOutPoints(*m_ws->timeline());
             if (m_ws->timelinePanel()) m_ws->timelinePanel()->updateInOutRange();
@@ -135,11 +170,13 @@ void ShortcutController::registerKeyboardShortcuts()
         }
     });
     // Ctrl+Shift+V: Paste Attributes dialog
-    addShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_V, [this]() {
+    addActionShortcut(ShortcutManager::kPasteAttributes,
+                      Qt::CTRL | Qt::SHIFT | Qt::Key_V, [this]() {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->showPasteAttributesDialog();
     });
     // Ctrl+Shift+C: Paste Insert
-    addShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_C, [this]() {
+    addActionShortcut(ShortcutManager::kPasteInsert,
+                      Qt::CTRL | Qt::SHIFT | Qt::Key_C, [this]() {
         if (m_ws->timeline() && m_ws->timelinePanel() && m_ws->commandStack() && !m_ws->timelinePanel()->clipboard().empty()) {
             const int64_t pasteTick = m_ws->playbackController() ? m_ws->playbackController()->currentTick() : 0;
             auto cmd = EditOperations::pasteInsert(
@@ -163,7 +200,7 @@ void ShortcutController::registerKeyboardShortcuts()
     // Ctrl+V: paste at playhead (or paste keyframes if Effect Controls has
     //          keyframe clipboard, paste layer if Essential Graphics focused,
     //          or paste effect if one was copied from Effect Controls)
-    addShortcut(Qt::CTRL | Qt::Key_V, [this]() {
+    addActionShortcut(ShortcutManager::kPaste, Qt::CTRL | Qt::Key_V, [this]() {
         auto* fw = QApplication::focusWidget();
         // ── Keyframe clipboard takes highest priority ──────────────────
         // If the user copied keyframes in Effect Controls, Ctrl+V pastes
@@ -227,7 +264,7 @@ void ShortcutController::registerKeyboardShortcuts()
         }
     });
     // Ctrl+X: cut (or cut keyframes if Effect Controls has selection)
-    addShortcut(Qt::CTRL | Qt::Key_X, [this]() {
+    addActionShortcut(ShortcutManager::kCut, Qt::CTRL | Qt::Key_X, [this]() {
         // ── Keyframe selection in Effect Controls → cut keyframes ──────
         if (m_ws->effectControlsPanel() && m_ws->effectControlsPanel()->hasSelectedKeyframes()) {
             m_ws->effectControlsPanel()->cutSelectedKeyframes();
@@ -250,7 +287,7 @@ void ShortcutController::registerKeyboardShortcuts()
     // Ctrl+C: copy (or copy keyframes if Effect Controls has selection,
     //          or copy layer if Essential Graphics focused,
     //          or copy effect if Effect Controls focused)
-    addShortcut(Qt::CTRL | Qt::Key_C, [this]() {
+    addActionShortcut(ShortcutManager::kCopy, Qt::CTRL | Qt::Key_C, [this]() {
         auto* fw = QApplication::focusWidget();
         // ── Keyframe selection in Effect Controls → copy keyframes ─────
         if (m_ws->effectControlsPanel() && m_ws->effectControlsPanel()->hasSelectedKeyframes()) {
@@ -297,8 +334,8 @@ void ShortcutController::registerKeyboardShortcuts()
             m_ws->timelinePanel()->copyAttributesFromSelection();
         }
     });
-    // Shift+Delete / Shift+Backspace: extract (ripple delete)
-    addShortcut(Qt::SHIFT | Qt::Key_Delete, [this]() {
+    // Shift+Delete: extract (ripple delete)
+    auto rippleDelete = [this]() {
         if (!m_ws->timeline() || !m_ws->timelinePanel() || !m_ws->commandStack()) return;
         auto cmd = EditOperations::rippleDelete(*m_ws->timeline(),
             m_ws->timelinePanel()->selection());
@@ -312,24 +349,12 @@ void ShortcutController::registerKeyboardShortcuts()
             if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
             m_ws->schedulePostEditWork();
         }
-    });
-    addShortcut(Qt::SHIFT | Qt::Key_Backspace, [this]() {
-        if (!m_ws->timeline() || !m_ws->timelinePanel() || !m_ws->commandStack()) return;
-        auto cmd = EditOperations::rippleDelete(*m_ws->timeline(),
-            m_ws->timelinePanel()->selection());
-        if (cmd) {
-            m_ws->timelinePanel()->selection().clear();
-            m_ws->commandStack()->execute(std::move(cmd));
-            m_ws->timelinePanel()->refreshTrackContents();
-            m_ws->invalidateAudioSources();
-            m_ws->invalidateCompositeCache();
-            m_ws->updateTransformOverlay();
-            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
-            m_ws->schedulePostEditWork();
-        }
-    });
+    };
+    addActionShortcut(ShortcutManager::kRippleDel,
+                      Qt::SHIFT | Qt::Key_Delete, rippleDelete);
     // Ctrl+A: select all
-    addShortcut(Qt::CTRL | Qt::Key_A, [this]() {
+    addActionShortcut(ShortcutManager::kSelectAll,
+                      Qt::CTRL | Qt::Key_A, [this]() {
         if (m_ws->projectBin() && m_ws->projectBin()->isAncestorOf(
                 QApplication::focusWidget())) {
             m_ws->projectBin()->selectAllItems();
@@ -340,14 +365,14 @@ void ShortcutController::registerKeyboardShortcuts()
         emit m_ws->timelinePanel()->selectionChanged();
     });
     // Ctrl+Shift+A: deselect all
-    addShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_A, [this]() {
+    addActionShortcut(ShortcutManager::kDeselectAll, Qt::CTRL | Qt::SHIFT | Qt::Key_A, [this]() {
         if (!m_ws->timelinePanel()) return;
         m_ws->timelinePanel()->selection().clear();
         emit m_ws->timelinePanel()->selectionChanged();
     });
 
     // Ctrl+B: New Bin when Project Bin is focused
-    addShortcut(Qt::CTRL | Qt::Key_B, [this]() {
+    addActionShortcut(ShortcutManager::kNewBin, Qt::CTRL | Qt::Key_B, [this]() {
         if (m_ws->projectBin() && m_ws->projectBin()->isAncestorOf(
                 QApplication::focusWidget())) {
             m_ws->projectBin()->createNewBin();
@@ -356,13 +381,13 @@ void ShortcutController::registerKeyboardShortcuts()
     });
 
     // Ctrl+T: add default transition
-    addShortcut(Qt::CTRL | Qt::Key_T, [this]() {
+    addActionShortcut(ShortcutManager::kDefaultTransition, Qt::CTRL | Qt::Key_T, [this]() {
         if (!m_ws->timeline() || !m_ws->commandStack() || !m_ws->timelinePanel()) return;
         auto edge = m_ws->timelinePanel()->lastClickedEdge();
         if (!edge.valid) return;
 
         Track* track = m_ws->timeline()->track(edge.clipRef.trackIndex);
-        if (!track) return;
+        if (!track || track->isLocked()) return;
 
         size_t clipIdx = track->findClipIndexById(edge.clipRef.clipId);
         if (clipIdx >= track->clipCount()) return;
@@ -445,7 +470,7 @@ void ShortcutController::registerKeyboardShortcuts()
     });
 
     // Ctrl+=: zoom in
-    addShortcut(Qt::CTRL | Qt::Key_Equal, [this]() {
+    addActionShortcut(ShortcutManager::kZoomIn, Qt::CTRL | Qt::Key_Equal, [this]() {
         if (m_ws->timelinePanel()) {
             auto& engine = m_ws->timelinePanel()->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
@@ -459,7 +484,7 @@ void ShortcutController::registerKeyboardShortcuts()
         }
     });
     // Ctrl+-: zoom out
-    addShortcut(Qt::CTRL | Qt::Key_Minus, [this]() {
+    addActionShortcut(ShortcutManager::kZoomOut, Qt::CTRL | Qt::Key_Minus, [this]() {
         if (m_ws->timelinePanel()) {
             auto& engine = m_ws->timelinePanel()->layoutEngine();
             double anchorPx = engine.viewportWidth() * 0.5;
@@ -474,7 +499,7 @@ void ShortcutController::registerKeyboardShortcuts()
     });
 
     // Ctrl+E: switch to Export tab
-    addShortcut(Qt::CTRL | Qt::Key_E, [this]() {
+    addActionShortcut(ShortcutManager::kOpenExport, Qt::CTRL | Qt::Key_E, [this]() {
         for (QWidget* w = m_ws->parentWidget(); w; w = w->parentWidget()) {
             if (auto* mw = qobject_cast<MainWindow*>(w)) {
                 mw->setCurrentPage(Page::Export);

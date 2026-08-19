@@ -86,6 +86,15 @@ public:
     /// Attempt to handle a key event. Returns true if a matching action was found.
     bool handleKeyPress(int key, Qt::KeyboardModifiers modifiers);
 
+    /// Test a key event against one registered action's current binding.
+    [[nodiscard]] bool matches(const QString& actionId, int key,
+                               Qt::KeyboardModifiers modifiers) const;
+
+    /// Trigger an action by ID without synthesizing a key event.  Menus and
+    /// toolbar buttons use this so they share the exact callback registered by
+    /// the customizable keyboard-shortcut path without changing its binding.
+    bool triggerAction(const QString& actionId);
+
     /// Enable/disable an action.
     void setActionEnabled(const QString& id, bool enabled);
 
@@ -125,6 +134,7 @@ public:
     static constexpr const char* kSelectAll = "edit.select_all";
     static constexpr const char* kSplitAt   = "edit.split";
     static constexpr const char* kSplitAll   = "edit.split_all";
+    static constexpr const char* kToggleSnapping = "timeline.toggle_snapping";
 
     // Tools
     static constexpr const char* kToolSelection = "tool.selection";
@@ -133,6 +143,9 @@ public:
     static constexpr const char* kToolRipple    = "tool.ripple";
     static constexpr const char* kToolSlip      = "tool.slip";
     static constexpr const char* kToolSlide     = "tool.slide";
+    static constexpr const char* kToolText      = "tool.text";
+    static constexpr const char* kToolPen       = "tool.pen_mask";
+    static constexpr const char* kToolZoom      = "tool.zoom";
 
     // Additional editing
     static constexpr const char* kMarkSelection = "edit.mark_selection";  ///< FCP7: X
@@ -157,6 +170,22 @@ public:
     static constexpr const char* kSetIn      = "io.set_in";
     static constexpr const char* kSetOut     = "io.set_out";
     static constexpr const char* kClearIO    = "io.clear";
+    static constexpr const char* kClearIOAlt = "io.clear_alt";
+    static constexpr const char* kGoIn       = "io.go_in";
+    static constexpr const char* kGoOut      = "io.go_out";
+
+    static constexpr const char* kDeselectAll       = "edit.deselect_all";
+    static constexpr const char* kDefaultTransition = "edit.default_transition";
+    static constexpr const char* kNewBin            = "project.new_bin";
+    static constexpr const char* kZoomIn            = "timeline.zoom_in";
+    static constexpr const char* kZoomOut           = "timeline.zoom_out";
+    static constexpr const char* kZoomToFit         = "timeline.zoom_to_fit";
+    static constexpr const char* kZoomInAlt         = "timeline.zoom_in_alt";
+    static constexpr const char* kZoomOutAlt        = "timeline.zoom_out_alt";
+    static constexpr const char* kZoomToFitAlt      = "timeline.zoom_to_fit_alt";
+    static constexpr const char* kSelectAtPlayhead  = "edit.select_at_playhead";
+    static constexpr const char* kPanelMaximize     = "window.maximize_panel";
+    static constexpr const char* kOpenExport        = "window.open_export";
 
     // Undo/Redo
     static constexpr const char* kUndo = "edit.undo";
@@ -168,6 +197,9 @@ signals:
 
     /// Emitted when a shortcut is triggered.
     void actionTriggered(const QString& actionId);
+
+    /// Emitted when a binding changes so live QShortcut instances update.
+    void shortcutChanged(const QString& actionId, const QKeySequence& key);
 
 private:
     std::unordered_map<QString, ShortcutAction> m_actions;

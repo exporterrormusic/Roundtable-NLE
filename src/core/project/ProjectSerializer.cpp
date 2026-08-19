@@ -30,6 +30,19 @@ namespace rt {
 
 namespace {
 
+constexpr uint32_t kMaxProjectSections = 256;
+constexpr uint32_t kMaxSequences = 10000;
+constexpr uint32_t kMaxTracksPerSequence = 65536;
+constexpr uint32_t kMaxClipsPerTrack = 1000000;
+constexpr uint32_t kMaxTransitionsPerTrack = 1000000;
+constexpr uint32_t kMaxMarkersPerSequence = 1000000;
+constexpr uint32_t kMaxAssets = 1000000;
+constexpr uint32_t kMaxCharacters = 100000;
+constexpr uint32_t kMaxBinItems = 1000000;
+constexpr uint32_t kMaxBinFolders = 100000;
+constexpr uint32_t kMaxFolderChildren = 1000000;
+constexpr uint32_t kMaxSectionBytes = 256u * 1024u * 1024u;
+
 // Re-link a track's transitions to its clips by timeline geometry.
 //
 // readClip() regenerates clip IDs on load (the global ID counter is process-
@@ -514,27 +527,39 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         return nullptr;
     }
 
-    uint32_t sectionCount = r.readU32();
+    const uint32_t sectionCount = r.readCount(kMaxProjectSections, 8);
     r.skip(16); // Reserved
+
+    if (!r.ok()) {
+        spdlog::error("ProjectSerializer: corrupt project header at byte {}",
+                      r.errorPosition());
+        return nullptr;
+    }
 
     auto project = std::make_unique<Project>();
     bool hasSequencesSection = false;  // Track whether v4 multi-sequence section exists
 
     // ── Read sections ───────────────────────────────────────────────────
-    for (uint32_t s = 0; s < sectionCount && r.remaining() >= 8; ++s)
+    for (uint32_t s = 0; s < sectionCount; ++s)
     {
+        if (!r.hasRemaining(8)) {
+            spdlog::error("ProjectSerializer: missing section header {} of {}",
+                          s + 1, sectionCount);
+            return nullptr;
+        }
         uint32_t tag  = r.readU32();
         uint32_t size = r.readU32();
 
-        if (!r.hasRemaining(size))
+        if (size > kMaxSectionBytes || !r.hasRemaining(size))
         {
-            spdlog::warn("ProjectSerializer: section {} truncated", tag);
-            break;
+            spdlog::error("ProjectSerializer: section {} has invalid size {} ({} bytes remain)",
+                          tag, size, r.remaining());
+            return nullptr;
         }
 
         // Create a sub-reader for this section
-        BinaryReader sr(data.data() + r.position(), size);
-        r.skip(size); // Advance past the section
+        const size_t sectionStart = r.position();
+        BinaryReader sr = r.readSubReader(size);
 
         switch (tag)
         {
@@ -583,8 +608,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                 while (tl->trackCount() > 0)
                     tl->removeTrack(0);
 
-                uint32_t trackCount = sr.readU32();
-                for (uint32_t ti = 0; ti < trackCount; ++ti)
+                const uint32_t trackCount = sr.readCount(kMaxTracksPerSequence, 20);
+                for (uint32_t ti = 0; ti < trackCount && sr.ok(); ++ti)
                 {
                     auto type = static_cast<TrackType>(sr.readU8());
                     std::string name = sr.readString();
@@ -632,17 +657,19 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     }
 
                     // Clips
-                    uint32_t clipCount = sr.readU32();
-                    for (uint32_t ci = 0; ci < clipCount; ++ci)
+                    const uint32_t clipCount = sr.readCount(kMaxClipsPerTrack, 50);
+                    for (uint32_t ci = 0; ci < clipCount && sr.ok(); ++ci)
                     {
                         auto clip = readClip(sr, version);
                         if (clip)
-                            track->addClip(std::move(clip));
+                            track->addClip(
+                                std::move(clip), TrackMutationPolicy::BypassLock);
                     }
 
                     // Transitions
-                    uint32_t transCount = sr.readU32();
-                    for (uint32_t xi = 0; xi < transCount; ++xi)
+                    const uint32_t transCount = sr.readCount(
+                        kMaxTransitionsPerTrack, version >= 16 ? 49 : 25);
+                    for (uint32_t xi = 0; xi < transCount && sr.ok(); ++xi)
                     {
                         Transition t;
                         t.type     = static_cast<TransitionType>(sr.readU8());
@@ -656,7 +683,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                             t.rightClipId   = sr.readU64();
                             t.editPointTick = sr.readI64();
                         }
-                        track->addTransition(t);
+                        track->addTransition(
+                            t, TrackMutationPolicy::BypassLock);
                     }
 
                     relinkTransitionsByGeometry(*track);
@@ -674,8 +702,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         case Section_Markers: {
             if (!hasSequencesSection) {
                 Timeline* tl = project->timeline();
-                uint32_t count = sr.readU32();
-                for (uint32_t i = 0; i < count; ++i)
+                const uint32_t count = sr.readCount(kMaxMarkersPerSequence, 16);
+                for (uint32_t i = 0; i < count && sr.ok(); ++i)
                 {
                     int64_t time     = sr.readI64();
                     std::string label = sr.readString();
@@ -694,10 +722,10 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
             while (project->sequenceCount() > 1)
                 project->removeSequence(project->sequenceCount() - 1);
 
-            uint32_t seqCount    = sr.readU32();
+            const uint32_t seqCount = sr.readCount(kMaxSequences, 36);
             uint32_t activeIndex = sr.readU32();
 
-            for (uint32_t si = 0; si < seqCount; ++si)
+            for (uint32_t si = 0; si < seqCount && sr.ok(); ++si)
             {
                 Timeline* tl = nullptr;
                 if (si == 0) {
@@ -720,8 +748,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                 tl->setOutPoint(sr.readI64());
 
                 // Read tracks + clips
-                uint32_t trackCount = sr.readU32();
-                for (uint32_t ti = 0; ti < trackCount; ++ti)
+                const uint32_t trackCount = sr.readCount(kMaxTracksPerSequence, 20);
+                for (uint32_t ti = 0; ti < trackCount && sr.ok(); ++ti)
                 {
                     auto type = static_cast<TrackType>(sr.readU8());
                     std::string name = sr.readString();
@@ -759,16 +787,18 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                         track->setCaptionTrack(sr.readU8() != 0);
                     }
 
-                    uint32_t clipCount = sr.readU32();
-                    for (uint32_t ci = 0; ci < clipCount; ++ci)
+                    const uint32_t clipCount = sr.readCount(kMaxClipsPerTrack, 50);
+                    for (uint32_t ci = 0; ci < clipCount && sr.ok(); ++ci)
                     {
                         auto clip = readClip(sr, version);
                         if (clip)
-                            track->addClip(std::move(clip));
+                            track->addClip(
+                                std::move(clip), TrackMutationPolicy::BypassLock);
                     }
 
-                    uint32_t transCount = sr.readU32();
-                    for (uint32_t xi = 0; xi < transCount; ++xi)
+                    const uint32_t transCount = sr.readCount(
+                        kMaxTransitionsPerTrack, version >= 17 ? 49 : 25);
+                    for (uint32_t xi = 0; xi < transCount && sr.ok(); ++xi)
                     {
                         Transition t;
                         t.type     = static_cast<TransitionType>(sr.readU8());
@@ -782,7 +812,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                             t.rightClipId   = sr.readU64();
                             t.editPointTick = sr.readI64();
                         }
-                        track->addTransition(t);
+                        track->addTransition(
+                            t, TrackMutationPolicy::BypassLock);
                     }
 
                     relinkTransitionsByGeometry(*track);
@@ -797,8 +828,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                     tl->removeMarker(0);
 
                 // Read markers for this sequence
-                uint32_t markerCount = sr.readU32();
-                for (uint32_t mi = 0; mi < markerCount; ++mi)
+                const uint32_t markerCount = sr.readCount(kMaxMarkersPerSequence, 16);
+                for (uint32_t mi = 0; mi < markerCount && sr.ok(); ++mi)
                 {
                     int64_t time     = sr.readI64();
                     std::string label = sr.readString();
@@ -841,8 +872,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         }
 
         case Section_Assets: {
-            uint32_t count = sr.readU32();
-            for (uint32_t i = 0; i < count; ++i)
+            const uint32_t count = sr.readCount(kMaxAssets, 33);
+            for (uint32_t i = 0; i < count && sr.ok(); ++i)
             {
                 AssetEntry a;
                 a.id           = sr.readU64();
@@ -872,30 +903,31 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         }
 
         case Section_Characters: {
-            uint32_t count = sr.readU32();
-            for (uint32_t i = 0; i < count; ++i)
+            const uint32_t count = sr.readCount(kMaxCharacters, 16);
+            for (uint32_t i = 0; i < count && sr.ok(); ++i)
             {
                 // Read and discard for backward compatibility.
                 // Characters are restored via AssetDatabase::scanCharacters().
                 sr.readString();  // name
                 sr.readPath();     // base path
-                uint32_t outfitCount = sr.readU32();
-                for (uint32_t o = 0; o < outfitCount; ++o) sr.readString();
-                uint32_t stanceCount = sr.readU32();
-                for (uint32_t st = 0; st < stanceCount; ++st) sr.readString();
+                const uint32_t outfitCount = sr.readCount(100000, 4);
+                for (uint32_t o = 0; o < outfitCount && sr.ok(); ++o) sr.readString();
+                const uint32_t stanceCount = sr.readCount(100000, 4);
+                for (uint32_t st = 0; st < stanceCount && sr.ok(); ++st) sr.readString();
             }
             break;
         }
 
         case Section_BinState: {
-            uint32_t fileCount = sr.readU32();
+            const uint32_t fileCount = sr.readCount(
+                kMaxBinItems, version >= 14 ? 20 : 4);
             std::vector<std::filesystem::path> binFiles;
             binFiles.reserve(fileCount);
             if (version >= 14) {
                 // Rich per-instance bin items.
                 std::vector<Project::BinItem> items;
                 items.reserve(fileCount);
-                for (uint32_t i = 0; i < fileCount; ++i) {
+                for (uint32_t i = 0; i < fileCount && sr.ok(); ++i) {
                     Project::BinItem bi;
                     bi.id          = sr.readU64();
                     bi.path        = sr.readPath();
@@ -908,24 +940,25 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                 project->setBinFiles(std::move(binFiles));
             } else {
                 // Legacy: flat path list (no per-item identity).
-                for (uint32_t i = 0; i < fileCount; ++i)
+                for (uint32_t i = 0; i < fileCount && sr.ok(); ++i)
                     binFiles.push_back(sr.readPath());
                 project->setBinFiles(std::move(binFiles));
             }
 
             // Bin folder structure
-            uint32_t folderCount = sr.readU32();
+            const uint32_t folderCount = sr.readCount(
+                kMaxBinFolders, version >= 6 ? 9 : 8);
             std::vector<Project::BinFolder> binFolders;
             binFolders.reserve(folderCount);
-            for (uint32_t i = 0; i < folderCount; ++i)
+            for (uint32_t i = 0; i < folderCount && sr.ok(); ++i)
             {
                 Project::BinFolder bf;
                 bf.name = sr.readString();
                 if (version >= 6)
                     bf.expanded = (sr.readU8() != 0);
-                uint32_t keyCount = sr.readU32();
+                const uint32_t keyCount = sr.readCount(kMaxFolderChildren, 4);
                 bf.childKeys.reserve(keyCount);
-                for (uint32_t k = 0; k < keyCount; ++k)
+                for (uint32_t k = 0; k < keyCount && sr.ok(); ++k)
                     bf.childKeys.push_back(sr.readString());
                 binFolders.push_back(std::move(bf));
             }
@@ -938,7 +971,7 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
 
         case Section_AudioSync: {
             // Store the raw blob — AudioSync panel will deserialize it
-            const uint8_t* blobStart = data.data() + r.position() - size;
+            const uint8_t* blobStart = data.data() + sectionStart;
             std::vector<uint8_t> blob(blobStart, blobStart + size);
             project->setAudioSyncBlob(std::move(blob));
             spdlog::info("ProjectSerializer: loaded AudioSync blob ({} bytes)", size);
@@ -955,6 +988,19 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
             spdlog::warn("ProjectSerializer: unknown section tag 0x{:02X}, skipping", tag);
             break;
         }
+
+        if (!sr.ok()) {
+            spdlog::error(
+                "ProjectSerializer: corrupt section {} at section byte {}",
+                tag, sr.errorPosition());
+            return nullptr;
+        }
+    }
+
+    if (!r.ok()) {
+        spdlog::error("ProjectSerializer: corrupt section table at byte {}",
+                      r.errorPosition());
+        return nullptr;
     }
 
     // ── Pre-v25 per-sequence settings migration ─────────────────────────
@@ -1047,9 +1093,11 @@ bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata
         if (r.readU8() != MAGIC[i]) return false;
     }
 
-    [[maybe_unused]] uint32_t version = r.readU32();
-    uint32_t sectionCount = r.readU32();
+    const uint32_t version = r.readU32();
+    if (version > FORMAT_VERSION) return false;
+    const uint32_t sectionCount = r.readCount(kMaxProjectSections, 8);
     r.skip(16); // reserved
+    if (!r.ok()) return false;
 
     bool gotSettings = false, gotName = false;
 
@@ -1066,12 +1114,14 @@ bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata
             out.resW = sr.readU32();
             out.resH = sr.readU32();
             out.fps  = sr.readF64();
-            gotSettings = true;
+            gotSettings = sr.ok();
         } else if (tag == Section_Timeline) {
             sr.readString(); // timeline name (skip)
             out.name = sr.readString(); // project name
-            gotName = true;
+            gotName = sr.ok();
         }
+
+        if (!sr.ok()) return false;
 
         if (gotSettings && gotName) break; // early exit
     }
@@ -1081,8 +1131,12 @@ bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata
 
 std::string ProjectSerializer::readProjectShow(const std::filesystem::path& path)
 {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) return {};
+
+    const std::streamoff fileSize = file.tellg();
+    if (fileSize < 32) return {};
+    file.seekg(0, std::ios::beg);
 
     auto readU32 = [&file]() -> uint32_t {
         uint8_t b[4];
@@ -1099,24 +1153,38 @@ std::string ProjectSerializer::readProjectShow(const std::filesystem::path& path
     for (int i = 0; i < 8; ++i)
         if (magic[i] != MAGIC[i]) return {};
 
-    (void)readU32();                       // version
-    uint32_t sectionCount = readU32();
+    const uint32_t version = readU32();
+    if (!file || version > FORMAT_VERSION) return {};
+    const uint32_t sectionCount = readU32();
+    if (!file || sectionCount > kMaxProjectSections) return {};
     file.seekg(16, std::ios::cur);         // reserved
+    if (!file) return {};
 
     // Scan section headers; read only the ProjectMeta section's data.
     for (uint32_t si = 0; si < sectionCount && file; ++si) {
         uint32_t tag  = readU32();
         uint32_t size = readU32();
-        if (!file) break;
+        if (!file || size > kMaxSectionBytes) return {};
+
+        const std::streamoff payloadStart = file.tellg();
+        if (payloadStart < 0 ||
+            static_cast<uint64_t>(payloadStart) + size >
+                static_cast<uint64_t>(fileSize))
+            return {};
+
         if (tag == Section_ProjectMeta) {
+            if (size > BinaryReader::kMaxStringBytes + sizeof(uint32_t))
+                return {};
             std::vector<uint8_t> data(size);
             file.read(reinterpret_cast<char*>(data.data()),
                       static_cast<std::streamsize>(size));
-            if (!file) break;
+            if (!file) return {};
             BinaryReader sr(data.data(), data.size());
-            return sr.readString();        // first field of ProjectMeta = show
+            std::string show = sr.readString(); // first field of ProjectMeta = show
+            return sr.ok() ? show : std::string{};
         }
         file.seekg(size, std::ios::cur);   // skip this section's data
+        if (!file) return {};
     }
     return {};
 }

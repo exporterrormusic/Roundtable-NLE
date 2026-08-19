@@ -83,7 +83,7 @@ std::vector<CaptionClip*> PropertiesPanel::captionTargets() const
 
 void PropertiesPanel::applyCaptionText()
 {
-    if (m_updating || !m_clip || !m_clip->isCaption()) return;
+    if (m_updating || !canMutateBoundClip() || !m_clip->isCaption()) return;
     auto* cc = static_cast<CaptionClip*>(m_clip);
     std::string newVal = m_capTextEdit->toPlainText().toStdString();
     if (newVal == cc->text()) return;
@@ -101,7 +101,7 @@ void PropertiesPanel::applyCaptionText()
 
 void PropertiesPanel::applyCaptionSpeaker()
 {
-    if (m_updating || !m_clip || !m_clip->isCaption()) return;
+    if (m_updating || !canMutateBoundClip() || !m_clip->isCaption()) return;
     auto* cc = static_cast<CaptionClip*>(m_clip);
     std::string newVal = m_capSpeakerEdit->text().toStdString();
     if (newVal == cc->speaker()) return;
@@ -119,7 +119,7 @@ void PropertiesPanel::applyCaptionSpeaker()
 
 void PropertiesPanel::applyCaptionFontFamily()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     std::string newVal = m_capFontCombo->currentFont().family().toStdString();
@@ -138,7 +138,7 @@ void PropertiesPanel::applyCaptionFontFamily()
 
 void PropertiesPanel::applyCaptionFontSize()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     float newVal = static_cast<float>(m_capFontSizeSpin->value());
@@ -157,7 +157,7 @@ void PropertiesPanel::applyCaptionFontSize()
 
 void PropertiesPanel::applyCaptionPosition()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     auto newVal = static_cast<CaptionPosition>(m_capPositionCombo->currentIndex());
@@ -218,7 +218,7 @@ void PropertiesPanel::applyCaptionBgColor()
 
 void PropertiesPanel::applyCaptionBold()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     bool newVal = m_capBoldCheck && m_capBoldCheck->isChecked();
@@ -237,7 +237,7 @@ void PropertiesPanel::applyCaptionBold()
 
 void PropertiesPanel::applyCaptionOutlineWidth()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     float newVal = m_capOutlineWidthSpin
@@ -277,7 +277,7 @@ void PropertiesPanel::applyCaptionOutlineColor()
 
 void PropertiesPanel::applyCaptionShowSpeaker()
 {
-    if (m_updating) return;
+    if (m_updating || !canMutateBoundClip()) return;
     auto targets = captionTargets();
     if (targets.empty()) return;
     bool newVal = m_capShowSpeakerCheck && m_capShowSpeakerCheck->isChecked();
@@ -580,7 +580,7 @@ void PropertiesPanel::rebuildPresetCombos()
 
 void PropertiesPanel::applyTextPreset(int index)
 {
-    if (m_updating || !m_clip) return;
+    if (m_updating || !canMutateBoundClip()) return;
     if (index <= 0 || index > static_cast<int>(m_textPresets.size())) return;
     const TextStylePreset preset = m_textPresets[static_cast<size_t>(index - 1)];
     auto* self = this;

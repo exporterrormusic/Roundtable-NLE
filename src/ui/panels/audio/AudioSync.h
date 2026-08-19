@@ -93,7 +93,7 @@ private:
     Transcriber* m_transcriber;
     std::string  m_audioPath;
     std::string  m_language;
-    WhisperModelSize m_modelSize{WhisperModelSize::Base};
+    WhisperModelSize m_modelSize{kDefaultWhisperModel};
     TranscriptionResult m_result;
 };
 
@@ -235,7 +235,9 @@ public:
 
     /// Export confirmed clips to a Timeline as AudioClips (back-to-back).
     /// Ported from Python _export_timeline(). Returns number of clips exported.
+    static constexpr int kExportBlockedByLockedTrack = -1;
     int exportToTimeline(Timeline* timeline);
+    [[nodiscard]] const QString& lastExportError() const noexcept { return m_lastExportError; }
 
     /// Derive a friendly display name from a URL / file path.
     static QString displayNameForScriptUrl(const QString& url);
@@ -380,6 +382,8 @@ private:
 
     // ── State ───────────────────────────────────────────────────────────
     CommandStack*     m_commandStack{nullptr};
+    bool              m_exportTransactionActive{false};
+    QString           m_lastExportError;
     AudioEngine*      m_audioEngine{nullptr};
     AVSyncClock*      m_savedSyncClock{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};

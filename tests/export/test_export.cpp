@@ -11,19 +11,27 @@
 #include "AudioMixdown.h"
 #include "Muxer.h"
 #include "RenderQueue.h"
+#include "ExportIntegrity.h"
 
+#include "cache/FrameCache.h"
+#include "project/Project.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/AudioClip.h"
+#include "timeline/VideoClip.h"
 #include "Constants.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/FxChain.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <thread>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
@@ -662,6 +670,94 @@ TEST(ExportRenderQueue, AddJob)
     EXPECT_EQ(jobs[0]->status.load(), JobStatus::Queued);
 }
 
+TEST(ExportRenderQueue, FullSnapshotSurvivesEditsAndProjectSwitch)
+{
+    RenderQueue queue;
+    ExportJobConfig cfg;
+    cfg.outputPath = "immutable_snapshot.mp4";
+
+    auto liveProject = Project::createNew("Queue-Time Project");
+    ASSERT_NE(liveProject, nullptr);
+    ASSERT_EQ(liveProject->activeSequenceIndex(), 0u);
+
+    Timeline* exportedTimeline = liveProject->addSequence("Queued Sequence");
+    ASSERT_NE(exportedTimeline, nullptr);
+    ASSERT_GE(exportedTimeline->trackCount(), 1u);
+
+    auto sourceClip = std::make_unique<VideoClip>("C:/media/original.mov");
+    sourceClip->setLabel("Queue-Time Clip");
+    sourceClip->setTimelineIn(1200);
+    sourceClip->setDuration(96000);
+    VideoClip* liveClip = sourceClip.get();
+    ASSERT_NE(exportedTimeline->track(0)->addClip(std::move(sourceClip)), nullptr);
+
+    // Export a non-active sequence to verify the snapshot aliases the selected
+    // sequence by identity/index rather than blindly using Project::timeline().
+    const uint32_t id = queue.addJob(cfg, liveProject.get(), exportedTimeline);
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    ASSERT_TRUE(job->snapshotCaptureError.empty()) << job->snapshotCaptureError;
+    ASSERT_NE(job->renderSnapshot, nullptr);
+    ASSERT_TRUE(job->renderSnapshot->isFullProject());
+
+    const auto snapshot = job->renderSnapshot;
+    EXPECT_EQ(snapshot->sequenceIndex, 1u);
+    ASSERT_EQ(snapshot->project->sequenceCount(), 2u);
+    EXPECT_EQ(snapshot->project->activeSequenceIndex(), 1u);
+    EXPECT_EQ(snapshot->timeline.get(), snapshot->project->sequence(1));
+    EXPECT_FALSE(snapshot->project.owner_before(snapshot->timeline));
+    EXPECT_FALSE(snapshot->timeline.owner_before(snapshot->project));
+    EXPECT_EQ(snapshot->timeline->name(), "Queued Sequence");
+    ASSERT_GE(snapshot->timeline->trackCount(), 1u);
+    ASSERT_EQ(snapshot->timeline->track(0)->clipCount(), 1u);
+    const auto* capturedClip = dynamic_cast<const VideoClip*>(
+        snapshot->timeline->track(0)->clip(0));
+    ASSERT_NE(capturedClip, nullptr);
+    EXPECT_EQ(capturedClip->mediaPath(), "C:/media/original.mov");
+    EXPECT_EQ(capturedClip->label(), "Queue-Time Clip");
+    EXPECT_EQ(capturedClip->duration(), 96000);
+
+    // Simulate edits while queued/running, then a complete project switch that
+    // destroys every live source object. The retained render graph must remain
+    // byte-for-byte at its queue-time state.
+    exportedTimeline->setName("Edited After Queue");
+    liveClip->setMediaPath("C:/media/replacement.mov");
+    liveClip->setLabel("Edited Clip");
+    liveClip->setDuration(48000);
+    liveProject = Project::createNew("Different Project");
+
+    EXPECT_EQ(snapshot->project->name(), "Queue-Time Project");
+    EXPECT_EQ(snapshot->timeline->name(), "Queued Sequence");
+    capturedClip = dynamic_cast<const VideoClip*>(
+        snapshot->timeline->track(0)->clip(0));
+    ASSERT_NE(capturedClip, nullptr);
+    EXPECT_EQ(capturedClip->mediaPath(), "C:/media/original.mov");
+    EXPECT_EQ(capturedClip->label(), "Queue-Time Clip");
+    EXPECT_EQ(capturedClip->duration(), 96000);
+}
+
+TEST(ExportRenderQueue, FullSnapshotFailsClosedForForeignTimeline)
+{
+    RenderQueue queue;
+    ExportJobConfig cfg;
+    cfg.outputPath = "foreign_timeline.mp4";
+    auto project = Project::createNew("Owner");
+    Timeline foreignTimeline;
+
+    const uint32_t id = queue.addJob(cfg, project.get(), &foreignTimeline);
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->renderSnapshot, nullptr);
+    EXPECT_FALSE(job->snapshotCaptureError.empty());
+
+    queue.start(nullptr);
+    queue.waitForAll();
+    const auto failed = queue.job(id);
+    ASSERT_NE(failed, nullptr);
+    EXPECT_EQ(failed->status.load(), JobStatus::Failed);
+    EXPECT_EQ(failed->error, failed->snapshotCaptureError);
+}
+
 TEST(ExportRenderQueue, AddMultipleJobs)
 {
     RenderQueue queue;
@@ -797,6 +893,236 @@ TEST(ExportRenderQueue, HeldJobReferenceSurvivesRemoval)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// Fail-closed frame/file integrity
+// =============================================================================
+
+namespace {
+
+std::filesystem::path uniqueExportTestPath(const std::string& suffix)
+{
+    static std::atomic<uint64_t> serial{0};
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("roundtable_export_integrity_" + std::to_string(now) + "_" +
+            std::to_string(serial.fetch_add(1)) + suffix);
+}
+
+std::string readTestFile(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+bool waitForRenderQueue(RenderQueue& queue,
+                        std::chrono::milliseconds timeout = std::chrono::seconds(15))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (queue.isRunning() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return !queue.isRunning();
+}
+
+EncoderConfig proResIntegrityConfig()
+{
+    EncoderConfig config;
+    config.width = 128;
+    config.height = 128;
+    config.fpsNum = 30;
+    config.fpsDen = 1;
+    config.codec = EncoderCodec::ProRes;
+    config.proresProfile = ProResProfile::HQ;
+    config.hwAccel = HardwareAccel::None;
+    return config;
+}
+
+bool hasProResEncoderForIntegrityTest()
+{
+    auto encoder = Encoder::create(EncoderCodec::ProRes, HardwareAccel::None);
+    if (!encoder || !encoder->init(proResIntegrityConfig()))
+        return false;
+    encoder->shutdown();
+    return true;
+}
+
+ExportJobConfig proResIntegrityJob(const std::filesystem::path& path)
+{
+    ExportJobConfig config;
+    config.outputPath = path;
+    config.outputWidth = 128;
+    config.outputHeight = 128;
+    config.encoderConfig = proResIntegrityConfig();
+    config.containerFormat = static_cast<uint8_t>(ContainerFormat::MOV);
+    config.includeAudio = false;
+    config.startFrame = 0;
+    config.endFrame = 1;
+    return config;
+}
+
+std::shared_ptr<CachedFrame> makeIntegrityFrame(uint32_t width,
+                                                uint32_t height,
+                                                uint32_t padding = 0)
+{
+    auto frame = std::make_shared<CachedFrame>();
+    frame->width = width;
+    frame->height = height;
+    frame->stride = width * 4u + padding;
+    frame->pixels.resize(static_cast<size_t>(frame->stride) * height, 0x70);
+    return frame;
+}
+
+} // namespace
+
+TEST(ExportIntegrity, RejectsIncompleteFramePayloadsAndAcceptsPaddedRows)
+{
+    EXPECT_FALSE(validateExportFrame(nullptr, 64, 32, false).valid);
+
+    CachedFrame frame;
+    frame.width = 64;
+    frame.height = 32;
+    frame.stride = 64 * 4;
+    EXPECT_FALSE(validateExportFrame(&frame, 64, 32, false).valid);
+
+    frame.pixels.resize(static_cast<size_t>(frame.stride) * frame.height);
+    EXPECT_TRUE(validateExportFrame(&frame, 64, 32, false).valid);
+    EXPECT_FALSE(validateExportFrame(&frame, 65, 32, false).valid);
+
+    frame.stride = 64 * 4 + 16;
+    frame.pixels.resize(static_cast<size_t>(frame.stride) * frame.height);
+    const auto padded = validateExportFrame(&frame, 64, 32, false);
+    EXPECT_TRUE(padded.valid);
+    EXPECT_TRUE(padded.needsBgraRepack);
+
+    frame.depth = 16;
+    frame.rgba16fStride = 64 * 8;
+    frame.rgba16f.resize(static_cast<size_t>(frame.rgba16fStride) * frame.height);
+    const auto highDepth = validateExportFrame(&frame, 64, 32, true);
+    EXPECT_TRUE(highDepth.valid);
+    EXPECT_TRUE(highDepth.useRgba16f);
+
+    frame.rgba16f.pop_back();
+    const auto safeFallback = validateExportFrame(&frame, 64, 32, true);
+    EXPECT_TRUE(safeFallback.valid);
+    EXPECT_FALSE(safeFallback.useRgba16f);
+}
+
+TEST(ExportIntegrity, AtomicPublicationPreservesOrReplacesDestination)
+{
+    const auto destination = uniqueExportTestPath(".mov");
+    const auto staged = uniqueExportTestPath(".partial");
+    {
+        std::ofstream out(destination, std::ios::binary);
+        out << "prior";
+    }
+
+    std::string error;
+    EXPECT_FALSE(publishStagedExport(staged, destination, error));
+    EXPECT_EQ(readTestFile(destination), "prior");
+
+    {
+        std::ofstream out(staged, std::ios::binary);
+        out << "validated-new-output";
+    }
+    EXPECT_TRUE(publishStagedExport(staged, destination, error)) << error;
+    EXPECT_EQ(readTestFile(destination), "validated-new-output");
+    EXPECT_FALSE(std::filesystem::exists(staged));
+
+    std::filesystem::remove(destination);
+}
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+TEST(ExportIntegrity, PersistentCompositeFailureRetriesAndPreservesPriorOutput)
+{
+    if (!hasProResEncoderForIntegrityTest())
+        GTEST_SKIP() << "ProRes encoder unavailable in this FFmpeg build";
+
+    const auto destination = uniqueExportTestPath(".mov");
+    {
+        std::ofstream out(destination, std::ios::binary);
+        out << "known-prior-output";
+    }
+
+    RenderQueue queue;
+    std::atomic<int> attempts{0};
+    std::atomic<int> wrongTickAttempts{0};
+    queue.setFrameRenderCallback(
+        [&](int64_t tick, int64_t nextTick, uint32_t, uint32_t, bool) {
+            ++attempts;
+            if (tick != 0 || nextTick != -1)
+                ++wrongTickAttempts;
+            return std::shared_ptr<CachedFrame>{};
+        });
+    const uint32_t id = queue.addJob(proResIntegrityJob(destination));
+    queue.start(nullptr, nullptr);
+
+    ASSERT_TRUE(waitForRenderQueue(queue));
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->status.load(), JobStatus::Failed);
+    EXPECT_EQ(attempts.load(), 3);
+    EXPECT_EQ(wrongTickAttempts.load(), 0);
+    EXPECT_EQ(job->progress.currentFrame.load(), 0);
+    EXPECT_EQ(readTestFile(destination), "known-prior-output");
+
+    std::filesystem::remove(destination);
+}
+
+TEST(ExportIntegrity, RetrySuccessPublishesOnlyExactDecodableTimeline)
+{
+    if (!hasProResEncoderForIntegrityTest())
+        GTEST_SKIP() << "ProRes encoder unavailable in this FFmpeg build";
+
+    const auto destination = uniqueExportTestPath(".mov");
+    {
+        std::ofstream out(destination, std::ios::binary);
+        out << "prior";
+    }
+
+    RenderQueue queue;
+    std::atomic<int> attempts{0};
+    std::atomic<int> wrongTickAttempts{0};
+    queue.setFrameRenderCallback(
+        [&](int64_t tick, int64_t nextTick, uint32_t, uint32_t, bool) {
+            if (tick != 0 || nextTick != -1)
+                ++wrongTickAttempts;
+            const int attempt = ++attempts;
+            if (attempt == 1)
+                return std::shared_ptr<CachedFrame>{};
+            if (attempt == 2)
+                return makeIntegrityFrame(64, 64); // wrong dimensions
+            return makeIntegrityFrame(128, 128, 16); // valid padded BGRA
+        });
+    const uint32_t id = queue.addJob(proResIntegrityJob(destination));
+    queue.start(nullptr, nullptr);
+
+    ASSERT_TRUE(waitForRenderQueue(queue));
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    ASSERT_EQ(job->status.load(), JobStatus::Completed) << job->error;
+    EXPECT_EQ(attempts.load(), 3);
+    EXPECT_EQ(wrongTickAttempts.load(), 0);
+
+    const auto valid = validateExportFile(destination, 1, 128, 128, 30, 1);
+    EXPECT_TRUE(valid.ok) << valid.error;
+    EXPECT_EQ(valid.decodedFrames, 1);
+
+    const auto wrongCount = validateExportFile(destination, 2, 128, 128, 30, 1);
+    EXPECT_FALSE(wrongCount.ok);
+
+    const auto truncated = uniqueExportTestPath("_truncated.mov");
+    std::filesystem::copy_file(destination, truncated,
+                               std::filesystem::copy_options::overwrite_existing);
+    const auto originalSize = std::filesystem::file_size(truncated);
+    ASSERT_GT(originalSize, 32u);
+    std::filesystem::resize_file(truncated, 32);
+    EXPECT_FALSE(validateExportFile(truncated, 1, 128, 128, 30, 1).ok);
+
+    std::filesystem::remove(truncated);
+    std::filesystem::remove(destination);
+}
+#endif
+
 // Total: ~50 tests
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -811,7 +1137,6 @@ TEST(ExportRenderQueue, HeldJobReferenceSurvivesRemoval)
 // =============================================================================
 
 #include "SmartRenderAnalyzer.h"
-#include "timeline/VideoClip.h"
 #include "timeline/OpacityMask.h"
 
 namespace {

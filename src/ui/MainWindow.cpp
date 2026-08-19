@@ -387,6 +387,27 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 
     const bool isKeyPress   = (t == QEvent::KeyPress);
     const bool isKeyRelease = (t == QEvent::KeyRelease);
+    // Tool commands are global within the Timeline page, but their actual
+    // keys come from the customizable registry. Keep the same text-entry and
+    // modal-dialog safeguards as the legacy hardcoded routing below.
+    if (isKeyPress && m_shortcutManager && m_timelineWorkspace
+        && currentPage() == Page::Timeline && !keyboardFocusConsumesTextKeys()
+        && !QApplication::activeModalWidget()) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        const char* focusAwareTools[] = {
+            ShortcutManager::kToolSelection,
+            ShortcutManager::kToolRazor,
+            ShortcutManager::kToolRolling,
+            ShortcutManager::kToolSlip
+        };
+        for (const char* actionId : focusAwareTools) {
+            if (m_shortcutManager->matches(QString::fromLatin1(actionId),
+                                           keyEvent->key(), keyEvent->modifiers())) {
+                m_shortcutManager->triggerAction(QString::fromLatin1(actionId));
+                return true;
+            }
+        }
+    }
     if ((isKeyPress || isKeyRelease) && m_playbackController) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->modifiers() == Qt::NoModifier) {
@@ -466,10 +487,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
                 if (m_timelineWorkspace)
                     m_timelineWorkspace->togglePanelMaximize();
                 return true;
-            case Qt::Key_A: if (setTool(EditTool::Selection)) return true; break;
-            case Qt::Key_B: if (setTool(EditTool::Razor))     return true; break;
-            case Qt::Key_R: if (setTool(EditTool::Rolling))   return true; break;
-            case Qt::Key_S: if (setTool(EditTool::Slip))      return true; break;
             case Qt::Key_T: if (setTool(EditTool::Text))      return true; break;
             case Qt::Key_P: if (setTool(EditTool::PenMask))   return true; break;
             case Qt::Key_Z: if (setTool(EditTool::Zoom))      return true; break;

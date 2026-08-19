@@ -69,6 +69,10 @@ public:
     [[nodiscard]] uint64_t activeMaskEffectId() const noexcept { return m_activeMaskEffectId; }
 
 private:
+    /// Program-monitor editing is read-only while the selected clip's track
+    /// is padlocked. Playback and rendering remain unaffected.
+    [[nodiscard]] bool selectedTrackIsEditable() const noexcept;
+
     /// Measure a text layer's rendered glyph bounds and fill the overlay's
     /// content-rect fields (useContentRect + contentL/T/R/B + canvas dims) so
     /// the selection box hugs the actual text. Mirrors renderGraphicClip's

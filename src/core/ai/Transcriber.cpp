@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +36,31 @@
 
 namespace rt {
 
+namespace {
+
+constexpr const char* kVadModelFileName = "ggml-silero-v6.2.0.bin";
+constexpr const char* kVadModelUrl =
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
+constexpr double kVadCentisecondsToSamples = 160.0; // 16 kHz / 100
+
+bool downloadFile(const std::string& url, const std::string& destination,
+                  std::string& error)
+{
+#ifdef _WIN32
+    std::wstring wurl(url.begin(), url.end());
+    std::wstring wdest(destination.begin(), destination.end());
+    const HRESULT hr = URLDownloadToFileW(nullptr, wurl.c_str(), wdest.c_str(), 0, nullptr);
+    if (hr == S_OK)
+        return true;
+    error = "Download failed (HRESULT: " + std::to_string(hr) + ")";
+#else
+    error = "Auto-download is only supported on Windows. Please download: " + url;
+#endif
+    return false;
+}
+
+} // namespace
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Utility
 // ═══════════════════════════════════════════════════════════════════════════
@@ -46,6 +72,7 @@ const char* whisperModelName(WhisperModelSize size) noexcept
     case WhisperModelSize::Base:    return "base";
     case WhisperModelSize::Small:   return "small";
     case WhisperModelSize::Medium:  return "medium";
+    case WhisperModelSize::LargeV3Turbo: return "large-v3-turbo";
     case WhisperModelSize::LargeV2: return "large-v2";
     case WhisperModelSize::LargeV3: return "large-v3";
     default:                        return "unknown";
@@ -58,9 +85,10 @@ WhisperModelSize whisperModelFromName(const std::string& name) noexcept
     if (name == "base")     return WhisperModelSize::Base;
     if (name == "small")    return WhisperModelSize::Small;
     if (name == "medium")   return WhisperModelSize::Medium;
+    if (name == "large-v3-turbo") return WhisperModelSize::LargeV3Turbo;
     if (name == "large-v2") return WhisperModelSize::LargeV2;
     if (name == "large-v3") return WhisperModelSize::LargeV3;
-    return WhisperModelSize::Base;
+    return kDefaultWhisperModel;
 }
 
 std::string TranscriptionResult::fullText() const
@@ -82,11 +110,12 @@ struct Transcriber::Impl
 #ifdef ROUNDTABLE_HAS_WHISPER
     whisper_context* ctx{nullptr};
 #endif
-    WhisperModelSize modelSize{WhisperModelSize::Base};
+    WhisperModelSize modelSize{kDefaultWhisperModel};
     bool             loaded{false};
     std::atomic<bool> loading{false};
     std::atomic<bool> transcribing{false};
     std::atomic<bool> cancelRequested{false};
+    std::atomic<bool> vadEnabled{true};
     bool             cudaAvailable{false};
     std::string      lastError;
     std::string      modelsDir{"models"};
@@ -101,7 +130,7 @@ Transcriber::Transcriber()
     : m_impl(std::make_unique<Impl>())
 {
     m_impl->modelsDir = "models";
-#ifdef ROUNDTABLE_HAS_CUDA
+#ifdef ROUNDTABLE_HAS_WHISPER_CUDA
     m_impl->cudaAvailable = true;
 #endif
     spdlog::debug("Transcriber created (whisper: {})",
@@ -154,21 +183,9 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
         const std::string url = std::string("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-")
                               + modelName + ".bin";
 
-        bool downloadOk = false;
-#ifdef _WIN32
-        std::wstring wurl(url.begin(), url.end());
-        std::wstring wdest(modelFile.begin(), modelFile.end());
-        HRESULT hr = URLDownloadToFileW(nullptr, wurl.c_str(), wdest.c_str(), 0, nullptr);
-        downloadOk = (hr == S_OK);
-        if (!downloadOk) {
-            m_impl->lastError = "Download failed (HRESULT: " + std::to_string(hr) + ")";
+        const bool downloadOk = downloadFile(url, modelFile, m_impl->lastError);
+        if (!downloadOk)
             spdlog::error("Transcriber: {}", m_impl->lastError);
-        }
-#else
-        m_impl->lastError = "Auto-download only supported on Windows. "
-                            "Please manually download the model from:\n  " + url;
-        spdlog::error("Transcriber: {}", m_impl->lastError);
-#endif
 
         if (!downloadOk) {
             m_impl->loading.store(false);
@@ -192,12 +209,32 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
         return false;
     }
 
+    // VAD is deliberately optional: a missing network connection must not make
+    // the main Whisper model unusable. The transcription path falls back to
+    // processing the full audio when this tiny companion model is unavailable.
+    const std::string vadModelFile = m_impl->modelsDir + "/" + kVadModelFileName;
+    if (m_impl->vadEnabled.load() && !std::filesystem::exists(vadModelFile)) {
+        if (progress)
+            progress(55.0f, "Downloading Silero voice-activity model...");
+        std::string vadError;
+        if (downloadFile(kVadModelUrl, vadModelFile, vadError)) {
+            spdlog::info("Transcriber: VAD model downloaded to '{}'", vadModelFile);
+        } else {
+            spdlog::warn("Transcriber: VAD model unavailable ({}); full-audio fallback will be used",
+                         vadError);
+        }
+    }
+
     whisper_context_params cparams = whisper_context_default_params();
-#ifdef ROUNDTABLE_HAS_CUDA
+#ifdef ROUNDTABLE_HAS_WHISPER_CUDA
     cparams.use_gpu = true;
 #else
     cparams.use_gpu = false;
 #endif
+    // whisper.cpp 1.8 enables Flash Attention by default, but it cannot expose
+    // the cross-attention weights required by DTW. Timing accuracy matters more
+    // than this optimization for caption and clip alignment.
+    cparams.flash_attn = false;
 
     // DTW (cross-attention) token-level timestamps: far more accurate than the
     // heuristic t0/t1 — the heuristic's token ENDS run long before silence,
@@ -211,6 +248,9 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
     case WhisperModelSize::Base:    cparams.dtw_aheads_preset = WHISPER_AHEADS_BASE;     break;
     case WhisperModelSize::Small:   cparams.dtw_aheads_preset = WHISPER_AHEADS_SMALL;    break;
     case WhisperModelSize::Medium:  cparams.dtw_aheads_preset = WHISPER_AHEADS_MEDIUM;   break;
+    case WhisperModelSize::LargeV3Turbo:
+        cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3_TURBO;
+        break;
     case WhisperModelSize::LargeV2: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V2; break;
     case WhisperModelSize::LargeV3: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3; break;
     }
@@ -240,14 +280,13 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
     return true;
 
 #else
-    // Stub: pretend model is loaded
-    m_impl->modelSize = size;
-    m_impl->loaded = true;
+    m_impl->lastError = "Whisper transcription backend is not available in this build";
+    m_impl->loaded = false;
     m_impl->loading.store(false);
-    spdlog::info("Transcriber (stub): Model '{}' marked as loaded", whisperModelName(size));
+    spdlog::error("Transcriber: {}", m_impl->lastError);
     if (progress)
-        progress(100.0f, "Model loaded (stub mode)");
-    return true;
+        progress(0.0f, m_impl->lastError);
+    return false;
 #endif
 }
 
@@ -276,7 +315,23 @@ void Transcriber::unloadModel()
 bool Transcriber::isModelLoaded() const noexcept { return m_impl->loaded; }
 bool Transcriber::isLoading() const noexcept { return m_impl->loading.load(); }
 WhisperModelSize Transcriber::currentModel() const noexcept { return m_impl->modelSize; }
+void Transcriber::setVadEnabled(bool enabled) noexcept { m_impl->vadEnabled.store(enabled); }
+bool Transcriber::isVadEnabled() const noexcept { return m_impl->vadEnabled.load(); }
 bool Transcriber::isCudaAvailable() const noexcept { return m_impl->cudaAvailable; }
+TranscriberCapabilities Transcriber::capabilities() const noexcept
+{
+    TranscriberCapabilities result;
+#ifdef ROUNDTABLE_HAS_WHISPER
+    result.available = true;
+    result.segmentTiming = true;
+    result.wordTiming = true;
+    result.confidence = true;
+    result.languageDetection = true;
+    result.gpu = m_impl->cudaAvailable;
+    result.cancellation = true;
+#endif
+    return result;
+}
 const std::string& Transcriber::lastError() const noexcept { return m_impl->lastError; }
 bool Transcriber::isTranscribing() const noexcept { return m_impl->transcribing.load(); }
 
@@ -285,15 +340,32 @@ TranscriptionResult Transcriber::transcribe(
     const std::string& language,
     const TranscribeProgressFn& progress)
 {
+    m_impl->lastError.clear();
+    auto failure = [&](TranscriptionStatus status, TranscriptionErrorCode code) {
+        TranscriptionResult failed;
+        failed.status = status;
+        failed.error = {code, m_impl->lastError};
+        return failed;
+    };
+
+    if (!capabilities().available) {
+        m_impl->lastError = "Whisper transcription backend is not available in this build";
+        return failure(TranscriptionStatus::Unavailable,
+                       TranscriptionErrorCode::BackendUnavailable);
+    }
+
     if (!m_impl->loaded) {
         loadModel(m_impl->modelSize, progress);
-        if (!m_impl->loaded) return {};
+        if (!m_impl->loaded)
+            return failure(TranscriptionStatus::Unavailable,
+                           TranscriptionErrorCode::ModelUnavailable);
     }
 
     if (!std::filesystem::exists(audioPath)) {
         m_impl->lastError = "Audio file not found: " + audioPath;
         spdlog::error("Transcriber: {}", m_impl->lastError);
-        return {};
+        return failure(TranscriptionStatus::Failed,
+                       TranscriptionErrorCode::AudioNotFound);
     }
 
     m_impl->transcribing.store(true);
@@ -314,7 +386,8 @@ TranscriptionResult Transcriber::transcribe(
             m_impl->lastError = "Failed to open audio file: " + audioPath;
             spdlog::error("Transcriber: {}", m_impl->lastError);
             m_impl->transcribing.store(false);
-            return {};
+            return failure(TranscriptionStatus::Failed,
+                           TranscriptionErrorCode::AudioDecodeFailed);
         }
 
         if (progress)
@@ -326,7 +399,8 @@ TranscriptionResult Transcriber::transcribe(
             m_impl->lastError = "Failed to read audio samples from: " + audioPath;
             spdlog::error("Transcriber: {}", m_impl->lastError);
             m_impl->transcribing.store(false);
-            return {};
+            return failure(TranscriptionStatus::Failed,
+                           TranscriptionErrorCode::AudioDecodeFailed);
         }
 
         // Mix down to mono if multi-channel
@@ -352,8 +426,16 @@ TranscriptionResult Transcriber::transcribe(
         m_impl->lastError = "Audio file loading requires libsndfile (ROUNDTABLE_HAS_SNDFILE)";
         spdlog::error("Transcriber: {}", m_impl->lastError);
         m_impl->transcribing.store(false);
-        return {};
+        return failure(TranscriptionStatus::Unavailable,
+                       TranscriptionErrorCode::BackendUnavailable);
 #endif
+    }
+
+    if (m_impl->cancelRequested.load(std::memory_order_acquire)) {
+        m_impl->lastError = "Transcription cancelled";
+        m_impl->transcribing.store(false);
+        return failure(TranscriptionStatus::Cancelled,
+                       TranscriptionErrorCode::Cancelled);
     }
 
     if (progress)
@@ -368,15 +450,21 @@ TranscriptionResult Transcriber::transcribe(
     wparams.no_timestamps    = false;
     wparams.token_timestamps = true;
     wparams.max_len          = 0; // No max segment length
+    wparams.abort_callback = [](void* userData) {
+        return static_cast<std::atomic<bool>*>(userData)->load(
+            std::memory_order_acquire);
+    };
+    wparams.abort_callback_user_data = &m_impl->cancelRequested;
     wparams.suppress_nst     = true; // no "(sighs)"-style non-speech tokens —
                                      // they became junk words that skewed the
                                      // script alignment's clip boundaries
 
-    // Wire whisper's built-in progress callback so the bar advances smoothly.
-    // Whisper reports 0-100 int; we map that to 10-95 float range
-    // (0-10 reserved for audio loading, 95-100 for post-processing).
+    // Whisper reports 0-100 for each call. VAD can produce multiple calls, so
+    // the callback's base/span are updated for each original-audio range.
     struct ProgressCtx {
         const TranscribeProgressFn* fn;
+        float base{10.0f};
+        float span{85.0f};
     };
     ProgressCtx progressCtx{&progress};
 
@@ -386,7 +474,7 @@ TranscriptionResult Transcriber::transcribe(
                                        int pct, void* user_data) {
             auto* pctx = static_cast<ProgressCtx*>(user_data);
             if (pctx->fn && *pctx->fn) {
-                float mapped = 10.0f + static_cast<float>(pct) * 0.85f; // 10..95
+                const float mapped = pctx->base + pctx->span * static_cast<float>(pct) / 100.0f;
                 (*pctx->fn)(mapped,
                     "Transcribing... " + std::to_string(static_cast<int>(mapped)) + "%");
             }
@@ -397,74 +485,167 @@ TranscriptionResult Transcriber::transcribe(
     if (!language.empty())
         wparams.language = language.c_str();
 
-    if (whisper_full(m_impl->ctx, wparams, samples.data(),
-                     static_cast<int>(samples.size())) != 0) {
-        m_impl->lastError = "Whisper transcription failed";
-        m_impl->transcribing.store(false);
-        return {};
+    // Extract the just-completed whisper call, adding the original-audio offset
+    // when the call covered one VAD speech range. This avoids whisper.cpp's
+    // built-in VAD path, which remaps segment times but not token/word times.
+    auto appendWhisperSegments = [&](double timeOffset) {
+        const int nSegments = whisper_full_n_segments(m_impl->ctx);
+        int64_t prevDtw = -1;
+        for (int i = 0; i < nSegments; ++i) {
+            TranscriptionSegment seg;
+            seg.id    = static_cast<int>(result.segments.size());
+            seg.text  = whisper_full_get_segment_text(m_impl->ctx, i);
+            seg.start = timeOffset + whisper_full_get_segment_t0(m_impl->ctx, i) / 100.0;
+            seg.end   = timeOffset + whisper_full_get_segment_t1(m_impl->ctx, i) / 100.0;
+
+            // Merge whisper sub-word tokens into whole words. DTW supplies the
+            // end time; the range offset keeps every word on the source clock.
+            WordSegment cur;
+            bool haveCur = false;
+            auto flushWord = [&]() {
+                if (haveCur && !cur.word.empty()) {
+                    if (cur.end <= cur.start) cur.end = cur.start + 0.01;
+                    seg.words.push_back(std::move(cur));
+                }
+                cur = WordSegment{};
+                haveCur = false;
+            };
+
+            const int nTokens = whisper_full_n_tokens(m_impl->ctx, i);
+            for (int j = 0; j < nTokens; ++j) {
+                const auto td = whisper_full_get_token_data(m_impl->ctx, i, j);
+                const char* tokenText = whisper_full_get_token_text(m_impl->ctx, i, j);
+                if (!tokenText || tokenText[0] == '\0' || tokenText[0] == '[')
+                    continue;
+
+                double t0 = timeOffset + td.t0 / 100.0;
+                double t1 = timeOffset + td.t1 / 100.0;
+                if (td.t_dtw >= 0) {
+                    t1 = timeOffset + td.t_dtw / 100.0;
+                    const double lo = prevDtw >= 0
+                        ? timeOffset + prevDtw / 100.0
+                        : seg.start;
+                    t0 = std::min(std::max(t0, lo), t1);
+                    prevDtw = td.t_dtw;
+                }
+
+                if (!haveCur || tokenText[0] == ' ') {
+                    flushWord();
+                    cur.word        = tokenText;
+                    cur.start       = t0;
+                    cur.end         = t1;
+                    cur.probability = td.p;
+                    haveCur = true;
+                } else {
+                    cur.word += tokenText;
+                    cur.end = std::max(cur.end, t1);
+                    cur.probability = std::min(cur.probability, td.p);
+                }
+            }
+            flushWord();
+            semanticSplit(seg, result.segments);
+        }
+    };
+
+    struct SpeechRange {
+        int startSample;
+        int endSample;
+    };
+    std::vector<SpeechRange> speechRanges;
+    bool vadSucceeded = false;
+    const std::string vadModelFile = m_impl->modelsDir + "/" + kVadModelFileName;
+
+    if (m_impl->vadEnabled.load() && std::filesystem::exists(vadModelFile)) {
+        if (progress)
+            progress(10.0f, "Detecting speech regions...");
+
+        whisper_vad_context_params vadContextParams = whisper_vad_default_context_params();
+#ifdef ROUNDTABLE_HAS_WHISPER_CUDA
+        vadContextParams.use_gpu = true;
+#else
+        vadContextParams.use_gpu = false;
+#endif
+        whisper_vad_context* vadContext =
+            whisper_vad_init_from_file_with_params(vadModelFile.c_str(), vadContextParams);
+        if (vadContext) {
+            whisper_vad_params vadParams = whisper_vad_default_params();
+            whisper_vad_segments* vadSegments = whisper_vad_segments_from_samples(
+                vadContext, vadParams, samples.data(), static_cast<int>(samples.size()));
+            if (vadSegments) {
+                vadSucceeded = true;
+                const int count = whisper_vad_segments_n_segments(vadSegments);
+                speechRanges.reserve(static_cast<size_t>(count));
+                const int sampleCount = static_cast<int>(samples.size());
+                for (int i = 0; i < count; ++i) {
+                    const auto start = static_cast<int>(std::llround(
+                        whisper_vad_segments_get_segment_t0(vadSegments, i)
+                        * kVadCentisecondsToSamples));
+                    const auto end = static_cast<int>(std::llround(
+                        whisper_vad_segments_get_segment_t1(vadSegments, i)
+                        * kVadCentisecondsToSamples));
+                    const int clampedStart = std::clamp(start, 0, sampleCount);
+                    const int clampedEnd = std::clamp(end, clampedStart, sampleCount);
+                    if (clampedEnd > clampedStart)
+                        speechRanges.push_back({clampedStart, clampedEnd});
+                }
+                whisper_vad_free_segments(vadSegments);
+            } else {
+                spdlog::warn("Transcriber: VAD detection failed; transcribing full audio");
+            }
+            whisper_vad_free(vadContext);
+        } else {
+            spdlog::warn("Transcriber: Could not load VAD model '{}'; transcribing full audio",
+                         vadModelFile);
+        }
     }
 
-    int nSegments = whisper_full_n_segments(m_impl->ctx);
-    int64_t prevDtw = -1;   // emit time of the previous token (global to the file)
-    for (int i = 0; i < nSegments; ++i) {
-        TranscriptionSegment seg;
-        seg.id    = i;
-        seg.text  = whisper_full_get_segment_text(m_impl->ctx, i);
-        seg.start = whisper_full_get_segment_t0(m_impl->ctx, i) / 100.0;
-        seg.end   = whisper_full_get_segment_t1(m_impl->ctx, i) / 100.0;
+    bool transcriptionOk = true;
+    if (vadSucceeded) {
+        int64_t totalSpeechSamples = 0;
+        for (const auto& range : speechRanges)
+            totalSpeechSamples += range.endSample - range.startSample;
 
-        // Merge whisper's sub-word TOKENS into whole words (a token whose text
-        // starts with a space begins a new word; punctuation/continuations
-        // attach to the current one).  Raw tokens made poor "words": a script
-        // word like "consider" arrived as "cons"+"ider", which could never
-        // text-match during alignment and depressed clip confidence.
-        //
-        // Timestamps prefer DTW when computed (t_dtw = the moment the token was
-        // emitted, ≈ its end — accurate) over the heuristic t0/t1, whose ends
-        // run long before silence.  A token's start is its heuristic t0 bounded
-        // to [previous token's emit, own end] so gaps between words survive but
-        // gross early/late starts cannot.
-        WordSegment cur;
-        bool haveCur = false;
-        auto flushWord = [&]() {
-            if (haveCur && !cur.word.empty()) {
-                if (cur.end <= cur.start) cur.end = cur.start + 0.01;
-                seg.words.push_back(std::move(cur));
+        int64_t completedSamples = 0;
+        for (const auto& range : speechRanges) {
+            if (m_impl->cancelRequested.load(std::memory_order_acquire)) {
+                transcriptionOk = false;
+                break;
             }
-            cur = WordSegment{};
-            haveCur = false;
-        };
-        int nTokens = whisper_full_n_tokens(m_impl->ctx, i);
-        for (int j = 0; j < nTokens; ++j) {
-            auto td = whisper_full_get_token_data(m_impl->ctx, i, j);
-            const char* tokenText = whisper_full_get_token_text(m_impl->ctx, i, j);
-            if (!tokenText || tokenText[0] == '\0' || tokenText[0] == '[')
-                continue; // special tokens
-            double t0 = td.t0 / 100.0;
-            double t1 = td.t1 / 100.0;
-            if (td.t_dtw >= 0) {
-                t1 = td.t_dtw / 100.0;
-                const double lo = (prevDtw >= 0) ? prevDtw / 100.0 : seg.start;
-                t0 = std::min(std::max(t0, lo), t1);
-                prevDtw = td.t_dtw;
+            const int rangeSamples = range.endSample - range.startSample;
+            progressCtx.base = 10.0f + 85.0f * static_cast<float>(completedSamples)
+                                           / static_cast<float>(totalSpeechSamples);
+            progressCtx.span = 85.0f * static_cast<float>(rangeSamples)
+                                      / static_cast<float>(totalSpeechSamples);
+            if (whisper_full(m_impl->ctx, wparams, samples.data() + range.startSample,
+                             rangeSamples) != 0) {
+                transcriptionOk = false;
+                break;
             }
-            if (!haveCur || tokenText[0] == ' ') {
-                flushWord();
-                cur.word        = tokenText;
-                cur.start       = t0;
-                cur.end         = t1;
-                cur.probability = td.p;
-                haveCur = true;
-            } else {
-                cur.word += tokenText;
-                cur.end   = std::max(cur.end, t1);
-                cur.probability = std::min(cur.probability, td.p);
-            }
+            appendWhisperSegments(static_cast<double>(range.startSample) / 16000.0);
+            completedSamples += rangeSamples;
         }
-        flushWord();
+        spdlog::info("Transcriber: VAD selected {} speech range(s), {:.1f}s of {:.1f}s",
+                     speechRanges.size(), static_cast<double>(totalSpeechSamples) / 16000.0,
+                     result.duration);
+    } else {
+        progressCtx.base = 10.0f;
+        progressCtx.span = 85.0f;
+        transcriptionOk = whisper_full(m_impl->ctx, wparams, samples.data(),
+                                       static_cast<int>(samples.size())) == 0;
+        if (transcriptionOk)
+            appendWhisperSegments(0.0);
+    }
 
-        // Semantic split into smaller pieces
-        semanticSplit(seg, result.segments);
+    if (!transcriptionOk) {
+        const bool cancelled = m_impl->cancelRequested.load(std::memory_order_acquire);
+        m_impl->lastError = cancelled
+            ? "Transcription cancelled"
+            : "Whisper transcription failed";
+        m_impl->transcribing.store(false);
+        return failure(cancelled ? TranscriptionStatus::Cancelled
+                                 : TranscriptionStatus::Failed,
+                       cancelled ? TranscriptionErrorCode::Cancelled
+                                 : TranscriptionErrorCode::InferenceFailed);
     }
 
     if (progress)
@@ -474,8 +655,10 @@ TranscriptionResult Transcriber::transcribe(
 #else
     // Stub: return empty result
     spdlog::info("Transcriber (stub): transcribe('{}') — returning empty result", audioPath);
-    result.language = language.empty() ? "en" : language;
-    result.duration = 0.0;
+    m_impl->lastError = "Whisper transcription backend is not available in this build";
+    m_impl->transcribing.store(false);
+    return failure(TranscriptionStatus::Unavailable,
+                   TranscriptionErrorCode::BackendUnavailable);
 #endif
 
     // Re-index segments
@@ -483,6 +666,9 @@ TranscriptionResult Transcriber::transcribe(
         result.segments[i].id = static_cast<int>(i);
 
     m_impl->transcribing.store(false);
+    result.status = result.segments.empty()
+        ? TranscriptionStatus::NoSpeech
+        : TranscriptionStatus::Success;
 
     if (progress)
         progress(100.0f, "Transcription complete");

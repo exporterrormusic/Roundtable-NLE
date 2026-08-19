@@ -51,6 +51,35 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 Set-Location $root
 
+function Assert-CudaRuntimeReady([string]$ExePath) {
+    # CUDA imports are resolved before roundtable's main() can log an error.
+    # The generated package manifest gives diagnostic launches a precise,
+    # actionable failure while CPU-only emergency builds (no manifest) pass.
+    $exeDir = Split-Path -Parent $ExePath
+    $manifest = Join-Path $exeDir "roundtable-cuda-runtime.txt"
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return }
+
+    $required = Get-Content -LiteralPath $manifest |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and -not $_.StartsWith("#") }
+    $missing = @($required | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $exeDir $_) -PathType Leaf)
+    })
+    if ($missing.Count -gt 0) {
+        Write-Host "ERROR: Bundled CUDA runtime is incomplete beside roundtable.exe:" -ForegroundColor Red
+        $missing | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        Write-Host "Reinstall/rebuild ROUNDTABLE; do not add the CUDA Toolkit to PATH as a workaround." -ForegroundColor Yellow
+        exit 2
+    }
+
+    $driver = Join-Path ([System.Environment]::GetFolderPath("System")) "nvcuda.dll"
+    if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) {
+        Write-Host "ERROR: NVIDIA display-driver component nvcuda.dll was not found." -ForegroundColor Red
+        Write-Host "The CUDA runtime is bundled, but an NVIDIA display driver is still required." -ForegroundColor Yellow
+        exit 3
+    }
+}
+
 # --- Qt on PATH: local third_party (portable) first, system Qt fallback ---
 $qtLocal  = Join-Path $root "third_party\qt\6.8.3\msvc2022_64\bin"
 $qtSystem = "C:\Qt\6.8.3\msvc2022_64\bin"
@@ -104,6 +133,7 @@ if ($Debug) {
     } else {
         Write-Host "Release build selected (no heap validation)"
     }
+    Assert-CudaRuntimeReady $target
     $logFile = Join-Path $root "debug.log"
     Write-Host "Launching: $target"
     Write-Host "Console output is being saved to $logFile"

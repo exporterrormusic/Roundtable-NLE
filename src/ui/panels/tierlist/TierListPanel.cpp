@@ -11,6 +11,7 @@
 #include "timeline/TierListClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
+#include "timeline/ClipMutation.h"
 #include "timeline/Clip.h"
 #include "Constants.h"
 #include "PathUtils.h"   // utf8ToPath — Unicode-safe path handling
@@ -651,6 +652,11 @@ TierListPanel::~TierListPanel()
 
 void TierListPanel::setTimeline(Timeline* timeline)
 {
+    if (m_timeline != timeline) {
+        m_clip = nullptr;
+        m_track = nullptr;
+        m_clipId = 0;
+    }
     if (m_timeline)
         m_timeline->removeObserver(this);
     m_timeline = timeline;
@@ -666,6 +672,7 @@ void TierListPanel::onTimelineDestroyed(Timeline* tl)
     m_timeline = nullptr;
     m_clip     = nullptr;
     m_track    = nullptr;
+    m_clipId   = 0;
     showBound(false);
 }
 
@@ -721,7 +728,7 @@ void TierListPanel::buildUI()
         connect(gridBtn, &QPushButton::clicked, this, [this]() { openGridDialog(); });
     }
     connect(m_titleEdit, &QLineEdit::editingFinished, this, [this]() {
-        if (!m_clip) return;
+        if (!canMutateBoundClip()) return;
         const std::string nt = m_titleEdit->text().toUtf8().toStdString();
         if (nt == m_clip->title()) return;   // no-op (e.g. plain focus-out)
         auto before = snapshot();
@@ -919,19 +926,40 @@ void TierListPanel::showBound(bool bound)
     if (m_content)     m_content->setVisible(bound);
 }
 
+bool TierListPanel::resolveBoundClip() noexcept
+{
+    Track* track = nullptr;
+    Clip* clip = rt::resolveClipById(m_timeline, m_clipId, &track);
+    if (!clip || clip->clipType() != ClipType::TierList) {
+        m_clip = nullptr;
+        m_track = nullptr;
+        return false;
+    }
+    m_clip = static_cast<TierListClip*>(clip);
+    m_track = track;
+    return true;
+}
+
+bool TierListPanel::canMutateBoundClip() noexcept
+{
+    return resolveBoundClip() && !m_track->isLocked();
+}
+
 void TierListPanel::setClip(Clip* clip, Track* track)
 {
-    m_track = track;
     TierListClip* tl = nullptr;
     if (clip && clip->clipType() == ClipType::TierList)
         tl = static_cast<TierListClip*>(clip);
     m_clip = tl;
+    m_track = track;
+    m_clipId = tl ? tl->id() : 0;
+    if (m_content) m_content->setEnabled(canMutateBoundClip());
     refresh();
 }
 
 void TierListPanel::refresh()
 {
-    const bool bound = (m_clip != nullptr);
+    const bool bound = resolveBoundClip();
     showBound(bound);
     if (!bound) return;
     if (m_titleEdit) {
@@ -1315,7 +1343,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
 
         connect(combo, &QComboBox::currentIndexChanged, this,
                 [this, eventIndex, applyComboColor](int t) {
-            if (!m_clip || eventIndex >= m_clip->events().size()) return;
+            if (!canMutateBoundClip() || eventIndex >= m_clip->events().size()) return;
             applyComboColor();
             if (m_clip->events()[eventIndex].tier == t) return;
             auto before = snapshot();
@@ -1351,7 +1379,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
     h->addWidget(endTime);
 
     connect(setStart, &QPushButton::clicked, this, [this, eventIndex, startTime, endTime]() {
-        if (!m_clip || eventIndex >= m_clip->events().size()) return;
+        if (!canMutateBoundClip() || eventIndex >= m_clip->events().size()) return;
         auto before = snapshot();
         m_clip->events()[eventIndex].start = playheadEventTick();
         normalizeEvents();   // clamp start up to the previous event's end
@@ -1364,7 +1392,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
         emit tierListEdited();
     });
     connect(setEnd, &QPushButton::clicked, this, [this, eventIndex, startTime, endTime]() {
-        if (!m_clip || eventIndex >= m_clip->events().size()) return;
+        if (!canMutateBoundClip() || eventIndex >= m_clip->events().size()) return;
         auto before = snapshot();
         auto& ev2 = m_clip->events()[eventIndex];
         ev2.end = playheadEventTick();
@@ -1397,7 +1425,7 @@ QWidget* TierListPanel::buildEventRow(size_t eventIndex)
         .arg(Theme::hex(Theme::colors().textBright)));
     h->addWidget(del, 0, Qt::AlignVCenter);
     connect(del, &QPushButton::clicked, this, [this, eventIndex]() {
-        if (!m_clip || eventIndex >= m_clip->events().size()) return;
+        if (!canMutateBoundClip() || eventIndex >= m_clip->events().size()) return;
         auto before = snapshot();
         m_clip->events().erase(m_clip->events().begin() + static_cast<ptrdiff_t>(eventIndex));
         pushUndo(QStringLiteral("Delete event"), before);
@@ -1443,7 +1471,7 @@ void TierListPanel::rebuildEvents()
 
 void TierListPanel::onAddImages()
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
 
     // Start in the last folder used (shared with the Project Bin's import).
     auto settings = rt::appSettings();
@@ -1547,7 +1575,7 @@ void TierListPanel::showEntryContextMenu(uint64_t entryId, const QPoint& globalP
 
 void TierListPanel::moveEntryToSubbin(uint64_t entryId, const QString& subbin)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     for (auto& en : m_clip->entries()) {
         if (en.id != entryId) continue;
         const std::string s = subbin.toUtf8().toStdString();
@@ -1568,7 +1596,7 @@ void TierListPanel::moveEntryToSubbin(uint64_t entryId, const QString& subbin)
 
 void TierListPanel::onReorderInRow(uint64_t entryId, int tier, int fromIndex, int toIndex)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     if (tier < 0 || fromIndex < 0 || toIndex < 0 || fromIndex == toIndex) return;
 
     auto before = snapshot();
@@ -1601,7 +1629,7 @@ void TierListPanel::onReorderInRow(uint64_t entryId, int tier, int fromIndex, in
 
 void TierListPanel::onMoveEntry(uint64_t entryId, int fromTier, int toTier, int toIndex)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     if (fromTier < 0 || toTier < 0 || fromTier == toTier) return;
 
     auto before = snapshot();
@@ -1652,7 +1680,7 @@ TierEvent* TierListPanel::findDropEventForEntry(uint64_t entryId)
 
 void TierListPanel::onDeleteBoardEntry(uint64_t entryId)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     auto before = snapshot();
 
     // Remove every Popup and Drop event that references this entry.
@@ -1706,7 +1734,7 @@ bool TierListPanel::eventFilter(QObject* obj, QEvent* event)
 
 void TierListPanel::onMediaDroppedOnEvents(const QString& filePath)
 {
-    if (!m_clip || filePath.isEmpty()) return;
+    if (!canMutateBoundClip() || filePath.isEmpty()) return;
 
     // Only accept common image formats.
     const QString lower = filePath.toLower();
@@ -1745,7 +1773,7 @@ void TierListPanel::onMediaDroppedOnEvents(const QString& filePath)
 
 void TierListPanel::openGridDialog()
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
 
     QDialog dlg(this);
     dlg.setWindowTitle(QStringLiteral("Tier List Grid"));
@@ -1952,7 +1980,7 @@ void TierListPanel::openGridDialog()
 
 void TierListPanel::removeEntry(uint64_t entryId)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     auto before = snapshot();
     auto& entries = m_clip->entries();
     entries.erase(std::remove_if(entries.begin(), entries.end(),
@@ -1968,7 +1996,7 @@ void TierListPanel::removeEntry(uint64_t entryId)
 
 void TierListPanel::renameEntry(uint64_t entryId)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     for (auto& en : m_clip->entries()) {
         if (en.id != entryId) continue;
         bool ok = false;
@@ -1987,7 +2015,7 @@ void TierListPanel::renameEntry(uint64_t entryId)
 
 void TierListPanel::onEntryDroppedOnTier(uint64_t entryId, int tier)
 {
-    if (!m_clip) return;
+    if (!canMutateBoundClip()) return;
     // A drop outside any row (or with no tiers) reports -1 — land it in the
     // first tier instead of writing an invalid event.
     tier = std::clamp(tier, 0, std::max(0, static_cast<int>(m_clip->tiers().size()) - 1));

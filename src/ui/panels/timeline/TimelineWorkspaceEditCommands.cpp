@@ -32,6 +32,24 @@
 
 namespace rt {
 
+void TimelineWorkspace::applyEditImpact(const EditImpact& impact)
+{
+    if (m_destroying.load(std::memory_order_acquire)) return;
+    if (m_timelinePanel) {
+        if (impact.timeline == TimelineRefresh::Rebuild)
+            m_timelinePanel->rebuildTracks();
+        else if (impact.timeline == TimelineRefresh::Contents)
+            m_timelinePanel->refreshTrackContents();
+        if (impact.selection)
+            emit m_timelinePanel->selectionChanged();
+    }
+    if (impact.audio) invalidateAudioSources();
+    if (impact.composite) invalidateCompositeCache();
+    if (impact.overlay) updateTransformOverlay();
+    if (impact.monitor && m_programMonitor) m_programMonitor->requestRefresh();
+    if (impact.postEdit) schedulePostEditWork();
+}
+
 void TimelineWorkspace::setInPoint()
 {
     if (!m_timeline || !m_playbackController) return;
@@ -202,12 +220,7 @@ void TimelineWorkspace::nestSequence(size_t sequenceIndex, const QString& sequen
     auto cmd = std::make_unique<AddClipCommand>(targetTrack, std::move(clip));
     m_commandStack->execute(std::move(cmd));
 
-    if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-    invalidateAudioSources();
-    invalidateCompositeCache();
-    updateTransformOverlay();
-    if (m_programMonitor) m_programMonitor->requestRefresh();
-    schedulePostEditWork();
+    applyEditImpact();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -32,10 +32,12 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace rt {
@@ -46,6 +48,7 @@ class Project;
 class ProjectController : public QObject {
 public:
     explicit ProjectController(MainWindow* mw) : m_mw(mw) {}
+    ~ProjectController() override;
 
     // ── New / open / save ───────────────────────────────────────────────
     void onNewProject();
@@ -99,7 +102,18 @@ public:
     void clearLastSavedAudioSyncBlob() { m_lastSavedAudioSyncBlob.clear(); }
 
 private:
+    struct ProjectLoadTask {
+        std::shared_ptr<std::atomic<bool>> finished;
+        std::jthread worker;
+    };
+
     MainWindow* m_mw{nullptr};
+
+    // Project parsing cannot safely outlive MainWindow/ProjectController.
+    // Completed tasks are reaped on the UI thread; destruction cancels and
+    // joins every remaining parse before the MainWindow dependencies vanish.
+    std::atomic<uint64_t> m_projectLoadGeneration{0};
+    std::vector<ProjectLoadTask> m_projectLoadTasks;
 
     /// Serialized AudioSync state captured at last save — compared on
     /// auto-save to detect Audio-tab changes (project-lifecycle state,

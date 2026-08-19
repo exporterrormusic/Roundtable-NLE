@@ -355,14 +355,16 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             } else if (sel.count() > 1) {
                 std::vector<Clip*> clips;
                 clips.reserve(sel.count());
+                bool editable = true;
                 for (const auto& ref : sel.clips()) {
                     if (auto* trk = m_timeline->track(ref.trackIndex)) {
+                        if (trk->isLocked()) editable = false;
                         size_t idx = trk->findClipIndexById(ref.clipId);
                         if (idx < trk->clipCount())
                             clips.push_back(trk->clip(idx));
                     }
                 }
-                m_propertiesPanel->setMultiSelection(clips);
+                m_propertiesPanel->setMultiSelection(clips, editable);
             }
         });
     }

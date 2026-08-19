@@ -321,7 +321,7 @@ public:
                           ResolutionTier tier = ResolutionTier::Full);
 
     /// Set project frame rate so prefetch can skip unnecessary source frames.
-    void setProjectFps(double fps) { m_projectFps.store(fps > 0.0 ? fps : 30.0, std::memory_order_relaxed); }
+    void setProjectFps(double fps);
 
     /// Set the current playback speed (1.0 = normal, 4.0 = 4×, etc.).  At high
     /// speed the player only displays every ~Nth source frame, so the prefetch
@@ -329,7 +329,7 @@ public:
     /// otherwise it wastes (N-1)/N of the decoder on frames that are skipped,
     /// which is why heavy videos can't keep up at 4× while procedural Spine
     /// (no decode) plays fine.
-    void setPlaybackSpeed(double s) { m_playbackSpeed.store(s, std::memory_order_relaxed); }
+    void setPlaybackSpeed(double s);
 
     // ── Queries ─────────────────────────────────────────────────────────
 
@@ -390,20 +390,7 @@ public:
         // zeroCopyDecoded) = all GPU-resident decodes in the window.
         std::atomic<uint64_t> zeroCopyDecoded{0};
 
-        void reset() {
-            cacheHits.store(0, std::memory_order_relaxed);
-            nearbyHits.store(0, std::memory_order_relaxed);
-            staleReturns.store(0, std::memory_order_relaxed);
-            inlineDecodes.store(0, std::memory_order_relaxed);
-            prefetchDeliveries.store(0, std::memory_order_relaxed);
-            totalMisses.store(0, std::memory_order_relaxed);
-            totalRequests.store(0, std::memory_order_relaxed);
-            prefetchScheduled.store(0, std::memory_order_relaxed);
-            avgDecodeUs.store(0, std::memory_order_relaxed);
-            gpuResidentDecoded.store(0, std::memory_order_relaxed);
-            cpuConvertDecoded.store(0, std::memory_order_relaxed);
-            zeroCopyDecoded.store(0, std::memory_order_relaxed);
-        }
+        void reset();
     };
     PerfMetrics m_perf;
 
@@ -428,17 +415,17 @@ public:
     // ── Disk cache ──────────────────────────────────────────────────────
     /// Attach a persistent disk-backed second-level cache.
     /// Call after construction, before opening any media.
-    void setDiskCache(std::shared_ptr<DiskFrameCache> dc) { m_diskCache = std::move(dc); }
+    void setDiskCache(std::shared_ptr<DiskFrameCache> dc);
 
     /// Get the disk cache (may be null).
-    [[nodiscard]] DiskFrameCache* diskCache() const noexcept { return m_diskCache.get(); }
+    [[nodiscard]] DiskFrameCache* diskCache() const noexcept;
 
     // ── Frame Scheduler ──────────────────────────────────────────────
     /// Access the frame scheduler used to prioritise and bound decode work.
     /// The scheduler mediates between frame consumers and decode workers,
     /// enforcing lookahead limits and cancelling stale work on seek.
-    [[nodiscard]] FrameScheduler& scheduler() noexcept { return m_scheduler; }
-    [[nodiscard]] const FrameScheduler& scheduler() const noexcept { return m_scheduler; }
+    [[nodiscard]] FrameScheduler& scheduler() noexcept;
+    [[nodiscard]] const FrameScheduler& scheduler() const noexcept;
 
     /// Quick non-blocking probe: is this exact (handle, frame, tier) in the
     /// in-memory FrameCache right now? Used by play-start preroll to wait

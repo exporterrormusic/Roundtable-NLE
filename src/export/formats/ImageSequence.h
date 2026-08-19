@@ -35,6 +35,8 @@ public:
     [[nodiscard]] bool isHardwareAccelerated() const noexcept override { return false; }
     [[nodiscard]] const std::string& lastError() const noexcept override { return m_lastError; }
     [[nodiscard]] int64_t framesEncoded() const noexcept override { return m_framesEncoded; }
+    [[nodiscard]] int64_t framesSubmitted() const noexcept override { return m_framesEncoded; }
+    [[nodiscard]] bool hasFatalError() const noexcept override { return m_failed; }
 
 private:
     std::filesystem::path      m_outputDir;
@@ -45,6 +47,7 @@ private:
     std::string                m_lastError;
     int64_t                    m_framesEncoded{0};
     bool                       m_initialized{false};
+    bool                       m_failed{false};
 };
 
 } // namespace rt

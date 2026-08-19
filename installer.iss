@@ -60,6 +60,10 @@ Source: "build\bin\Release\roundtable.exe"; DestDir: "{app}"; Flags: ignoreversi
 
 ; Runtime DLLs
 Source: "build\bin\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Generated CUDA closure used by launch.vbs for loader-time diagnostics.
+; No skipifsourcedoesntexist: a default CUDA release must fail packaging if
+; the post-link deployment/verification step did not produce this manifest.
+Source: "build\bin\Release\roundtable-cuda-runtime.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; FFmpeg CLI tools — required by ShotComposer for thumbnail extraction
 ; (libav* DLLs are already covered by the *.dll glob above).  Search path
@@ -97,13 +101,15 @@ Source: "launch.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "docs\THIRD_PARTY_LICENSES.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+; Route installed shortcuts through the silent preflight launcher.  Keep the
+; application icon and working directory identical to a direct EXE shortcut.
+Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 ; Launch app after install (unless silent update)
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: postinstall nowait skipifsilent
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Description: "Launch {#MyAppName}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 ; Clean up cache on uninstall (optional)

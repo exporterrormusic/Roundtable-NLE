@@ -29,6 +29,7 @@
 #include "timeline/VideoClip.h"
 
 #include <spdlog/spdlog.h>
+#include <cmath>
 #include <cstring>
 
 namespace rt {
@@ -109,6 +110,7 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
 
     // ── 3. Source-level gates ───────────────────────────────────────────────
     if (info->bitDepth <= 8) return nullptr;                       // only >8-bit benefits
+    if (!std::isfinite(info->fps) || info->fps <= 0.0) return nullptr;
     if (info->hasAlpha && info->packedAlpha) return nullptr;       // packed-alpha needs the unpack path
     if (info->packedTiles > 0) return nullptr;                     // stacked-tile proxy unsupported here
     if (info->isVFR) return nullptr;                               // frame mapping assumes CFR
@@ -146,11 +148,38 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
     // right after the last, just decode forward — a Precise SEEK per frame would
     // re-decode from the GOP keyframe each time (O(N²) on long-GOP HEVC/AV1).
     DecodedFrame decoded;
+    bool decodedExactFrame = false;
     if (frameNum == m_passthroughLastFrame + 1) {
-        if (!m_passthroughDecoder->decodeNext(decoded)) { m_passthroughLastFrame = -1; return nullptr; }
+        decodedExactFrame = m_passthroughDecoder->decodeNext(decoded);
     } else {
-        if (!m_passthroughDecoder->seekToFrame(frameNum, SeekMode::Precise)) { m_passthroughLastFrame = -1; return nullptr; }
-        if (!m_passthroughDecoder->decodeNext(decoded)) { m_passthroughLastFrame = -1; return nullptr; }
+        // VideoDecoder's Precise seek consumes the target while finding it.
+        // Seek to the preceding keyframe instead and decode forward until the
+        // requested presentation time, with a hard bound for malformed media.
+        if (!m_passthroughDecoder->seekToFrame(frameNum, SeekMode::Keyframe)) {
+            m_passthroughLastFrame = -1;
+            return nullptr;
+        }
+        constexpr int kMaxSeekDecodeFrames = 4096;
+        const double targetTime = static_cast<double>(frameNum) / info->fps;
+        const double halfFrame = 0.5 / info->fps;
+        for (int i = 0; i < kMaxSeekDecodeFrames; ++i) {
+            if (!m_passthroughDecoder->decodeNext(decoded))
+                break;
+            if (decoded.timestamp >= targetTime - halfFrame) {
+                decodedExactFrame = true;
+                break;
+            }
+        }
+    }
+    if (!decodedExactFrame || !std::isfinite(decoded.timestamp) ||
+        info->fps <= 0.0) {
+        m_passthroughLastFrame = -1;
+        return nullptr;
+    }
+    const double expectedTime = static_cast<double>(frameNum) / info->fps;
+    if (std::abs(decoded.timestamp - expectedTime) > 0.5 / info->fps + 1e-6) {
+        m_passthroughLastFrame = -1;
+        return nullptr;
     }
     m_passthroughLastFrame = frameNum;
     if (decoded.width != outW || decoded.height != outH) return nullptr;  // unexpected; bail safely

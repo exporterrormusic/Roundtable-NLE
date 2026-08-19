@@ -46,6 +46,7 @@ private:
     size_t     m_index{0};
     bool       m_replaced{false};
     Transition m_replacedValue;
+    bool       m_authorized{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,6 +67,7 @@ private:
     size_t     m_transitionIndex;
     Transition m_savedTransition;
     bool       m_removed{false};
+    bool       m_authorized{false};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,6 +88,8 @@ private:
     size_t     m_transitionIndex;
     Transition m_oldValues;
     Transition m_newValues;
+    bool       m_authorized{false};
+    bool       m_applied{false};
 };
 
 } // namespace rt

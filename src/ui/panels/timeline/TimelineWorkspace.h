@@ -61,6 +61,19 @@ namespace rt {
 
 enum class ResolutionTier : uint8_t;
 
+enum class TimelineRefresh : uint8_t { None, Contents, Rebuild };
+
+struct EditImpact
+{
+    TimelineRefresh timeline{TimelineRefresh::Contents};
+    bool selection{false};
+    bool audio{true};
+    bool composite{true};
+    bool overlay{true};
+    bool monitor{true};
+    bool postEdit{true};
+};
+
 // Forward declarations — panels
 class CaptionsPanel;
 class TierListPanel;
@@ -89,6 +102,7 @@ class AudioPlaybackService;
 class AnimationVideoCache;
 class Clip;
 class CompositeService;
+class CachePolicy;
 struct OpacityMask;
 class DockLayoutManager;
 class DropController;
@@ -188,6 +202,7 @@ public:
     // surfaces are narrowed off the workspace.
     [[nodiscard]] Timeline*            timeline()            const noexcept { return m_timeline; }
     [[nodiscard]] CommandStack*        commandStack()        const noexcept { return m_commandStack; }
+    [[nodiscard]] ShortcutManager*     shortcutManager()     const noexcept { return m_shortcutManager; }
     [[nodiscard]] MediaPool*           mediaPool()           const noexcept { return m_mediaPool; }
     [[nodiscard]] PlaybackController*  playbackController()  const noexcept { return m_playbackController; }
     [[nodiscard]] ShotPresetManager*   shotPresetManager()   const noexcept { return m_shotPresetManager; }
@@ -205,6 +220,8 @@ public:
 
     /// Flush the composite result LRU cache (call when transforms change).
     void invalidateCompositeCache();
+    /// Apply all UI/cache consequences of a completed edit in a stable order.
+    void applyEditImpact(const EditImpact& impact = {});
     /// A3: drop only LRU entries whose tick is in [fromTick, toTick].
     /// Edit commands that affect a known time slice (trim, split, ripple
     /// of a single clip) should call this instead of the full-flush form,
@@ -260,6 +277,15 @@ public:
                                                        bool scrubMode = false,
                                                        bool stillMode = false);
 
+    /// Composite against an immutable queue-time project graph using a
+    /// dedicated service.  Live setProject/setTimeline calls never rebind this
+    /// path, so an edit or project switch cannot alter an in-flight export.
+    std::shared_ptr<struct CachedFrame> compositeExportFrame(
+        const std::shared_ptr<const Project>& projectSnapshot,
+        const std::shared_ptr<const Timeline>& timelineSnapshot,
+        int64_t tick, uint32_t outW, uint32_t outH,
+        bool scrubMode, bool preserveAlpha);
+
     /// Prompt for a destination and export the Program Monitor's current
     /// playhead frame at the active sequence's full resolution.
     void exportCurrentFrame();
@@ -286,6 +312,14 @@ public:
     /// it (re-exports reuse).  Forwards to CompositeService::cacheExportFrame.
     void cacheExportFrame(int64_t tick,
                           const std::shared_ptr<struct CachedFrame>& frame);
+
+    /// Snapshot-aware export write-through.  Hashes/stores the frame against
+    /// the same project graph that produced it, never whichever live project
+    /// happens to be open when the worker reaches the encoder.
+    void cacheSnapshotExportFrame(
+        const std::shared_ptr<const Project>& projectSnapshot,
+        const std::shared_ptr<const Timeline>& timelineSnapshot,
+        int64_t tick, const std::shared_ptr<struct CachedFrame>& frame);
 
     /// §4.6 2d: "Render In to Out" — pre-render the marked in/out range into
     /// the segment cache at the current playback composite size, then enable
@@ -374,6 +408,13 @@ private:
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
+    // Dedicated compositor plus strong ownership of the immutable graph it is
+    // currently bound to.  The service's legacy setter API is non-const, but
+    // export rendering treats this model as read-only.
+    std::shared_ptr<const Project>  m_exportProjectSnapshot;
+    std::shared_ptr<const Timeline> m_exportTimelineSnapshot;
+    std::unique_ptr<CachePolicy> m_exportCachePolicy;
+    std::unique_ptr<CompositeService> m_exportCompositeService;
     // Guards re-entrant renderInToOut() (its processEvents pump could redispatch
     // the Ctrl+Shift+R action mid-render).
     bool m_renderingInToOut{false};
@@ -469,6 +510,9 @@ private:
 
     /// Pre-open all video/image media handles so first compositeFrame is fast.
     void preOpenVideoMedia();
+    void cancelBackgroundMediaWarmups() noexcept;
+    void cancelAndJoinBackgroundMediaWarmups() noexcept;
+    void reapFinishedBackgroundMediaWarmups();
 
     /// Upgrade legacy media masks after MediaPool supplies authoritative
     /// dimensions/rotation. Offline sources remain safely in legacy space.
@@ -486,8 +530,12 @@ public:
     [[nodiscard]] bool isBackgroundWarmupActive() const noexcept { return m_backgroundWarmupActive.load(std::memory_order_acquire); }
 
 private:
+    struct MediaWarmupBatch;
+
     /// Number of background warmup threads still running.
     std::atomic<int> m_backgroundWarmupActive{0};
+    std::atomic<uint64_t> m_mediaWarmupGeneration{0};
+    std::vector<std::shared_ptr<MediaWarmupBatch>> m_mediaWarmupBatches;
 
     /// Destruction guard — checked by lambdas and callbacks.
     std::atomic<bool> m_destroying{false};
@@ -573,6 +621,10 @@ public:
 
     /// Access the composite service (GPU compositing + spine rendering).
     CompositeService* compositeService() { return m_compositeService.get(); }
+
+    /// Phase-1 application teardown: stop both live and lazily-created export
+    /// compositor threads before MediaPool/GPU resources are destroyed.
+    void shutdownCompositeServices();
 
     /// Save the dock layout (dock positions, sizes, tab order) into the given QSettings group.
     void saveDockLayout(QSettings& settings);

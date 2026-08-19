@@ -8,7 +8,8 @@
  *   - CommandPool (compute queue)
  *
  * Both the timeline viewport (real-time compositing) and the export
- * path (FrameRenderer) share the same Vulkan device through this context.
+ * path (RenderQueue through CompositeService) share the same Vulkan device
+ * through this context.
  *
  * Lifecycle:
  *   1. App::init() calls GpuContext::instance().init()

@@ -120,7 +120,7 @@ ctest --test-dir build -C Release -L core --output-on-failure
 - AudioSync: context menus, auto-match improvements, script session management
 
 ### 🤖 AI Script Sync
-- GPU-accelerated speech-to-text via whisper.cpp (models from Tiny to Large V3)
+- CUDA-accelerated speech-to-text via whisper.cpp 1.8.6 (Tiny through Large V3, including Large V3 Turbo) with Silero VAD
 - Script parser supporting plain text, HTML/Google Docs, and JSON formats
 - Fuzzy script-to-audio matching with sequential bias and timecode awareness
 - Raw content persistence for reliable multi-session workflows

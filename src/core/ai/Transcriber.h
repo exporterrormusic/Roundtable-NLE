@@ -2,7 +2,7 @@
  * Transcriber — whisper.cpp integration for audio transcription.
  *
  * Provides GPU-accelerated speech-to-text with word-level timestamps.
- * Supports multiple model sizes (tiny → large-v3).
+ * Supports multiple model sizes (tiny → large-v3, including turbo).
  * Runs transcription on a dedicated thread — never blocks UI.
  *
  * When ROUNDTABLE_HAS_WHISPER is defined, uses whisper.cpp directly.
@@ -43,12 +43,45 @@ struct TranscriptionSegment
     std::string              character;   // Assigned after matching
 };
 
+enum class TranscriptionStatus { NotStarted, Success, NoSpeech, Cancelled, Unavailable, Failed };
+enum class TranscriptionErrorCode
+{
+    None, BackendUnavailable, ModelUnavailable, AudioNotFound,
+    AudioDecodeFailed, InferenceFailed, Cancelled
+};
+
+struct TranscriptionError
+{
+    TranscriptionErrorCode code{TranscriptionErrorCode::None};
+    std::string message;
+};
+
+struct TranscriberCapabilities
+{
+    bool available{false};
+    bool segmentTiming{false};
+    bool wordTiming{false};
+    bool confidence{false};
+    bool languageDetection{false};
+    bool diarization{false};
+    bool gpu{false};
+    bool cancellation{false};
+};
+
 /// Complete transcription result.
 struct TranscriptionResult
 {
     std::vector<TranscriptionSegment> segments;
     std::string                       language;
     double                            duration{0.0}; // Total audio duration
+    TranscriptionStatus               status{TranscriptionStatus::NotStarted};
+    TranscriptionError                error;
+
+    [[nodiscard]] bool succeeded() const noexcept
+    {
+        return status == TranscriptionStatus::Success
+            || status == TranscriptionStatus::NoSpeech;
+    }
 
     /// Concatenated full text of all segments.
     [[nodiscard]] std::string fullText() const;
@@ -62,10 +95,13 @@ enum class WhisperModelSize
     Base,
     Small,
     Medium,
+    LargeV3Turbo,
     LargeV2,
     LargeV3,
     Count
 };
+
+inline constexpr WhisperModelSize kDefaultWhisperModel = WhisperModelSize::Small;
 
 [[nodiscard]] const char* whisperModelName(WhisperModelSize size) noexcept;
 [[nodiscard]] WhisperModelSize whisperModelFromName(const std::string& name) noexcept;
@@ -107,7 +143,7 @@ public:
     /// \param size    Model size to load.
     /// \param progress  Optional progress callback.
     /// \return true on success, false on failure.
-    bool loadModel(WhisperModelSize size = WhisperModelSize::Base,
+    bool loadModel(WhisperModelSize size = kDefaultWhisperModel,
                    const TranscribeProgressFn& progress = nullptr);
 
     /// Unload the current model, freeing memory.
@@ -121,6 +157,13 @@ public:
 
     /// Current loaded model size.
     [[nodiscard]] WhisperModelSize currentModel() const noexcept;
+
+    /// Enable Silero VAD to skip silence while preserving original word offsets.
+    /// Enabled by default; falls back to full-audio transcription if unavailable.
+    void setVadEnabled(bool enabled) noexcept;
+
+    /// True when VAD is requested for subsequent transcriptions.
+    [[nodiscard]] bool isVadEnabled() const noexcept;
 
     // ── Synchronous transcription ───────────────────────────────────────
 
@@ -153,6 +196,9 @@ public:
 
     /// True if CUDA acceleration is available.
     [[nodiscard]] bool isCudaAvailable() const noexcept;
+
+    /// Features provided by the compiled transcription backend.
+    [[nodiscard]] TranscriberCapabilities capabilities() const noexcept;
 
     /// Last error message.
     [[nodiscard]] const std::string& lastError() const noexcept;

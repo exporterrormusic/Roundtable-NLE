@@ -58,6 +58,8 @@ public:
     [[nodiscard]] bool isHardwareAccelerated() const noexcept override { return m_hwAccel; }
     [[nodiscard]] const std::string& lastError() const noexcept override { return m_lastError; }
     [[nodiscard]] int64_t framesEncoded() const noexcept override { return m_framesEncoded; }
+    [[nodiscard]] int64_t framesSubmitted() const noexcept override { return m_framesSubmitted; }
+    [[nodiscard]] bool hasFatalError() const noexcept override { return m_failed; }
 
 protected:
     /// Short name used in log/error messages ("H264Encoder", ...).
@@ -128,8 +130,10 @@ protected:
     std::vector<EncodedPacket> m_pendingPackets;  // extra packets from draining
     std::string                m_lastError;
     int64_t                    m_framesEncoded{0};
+    int64_t                    m_framesSubmitted{0};
     bool                       m_initialized{false};
     bool                       m_hwAccel{false};
+    bool                       m_failed{false};
 };
 
 } // namespace rt

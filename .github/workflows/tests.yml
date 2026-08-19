@@ -74,3 +74,10 @@ jobs:
                    Select-Object -First 1 -ExpandProperty FullName
           if (-not $ctest) { $ctest = "ctest" }
           & $ctest --test-dir build -C Release -L core --output-on-failure
+
+      - name: Run hardened export regressions (fast, headless-safe)
+        shell: pwsh
+        run: |
+          $test = Join-Path "${{ github.workspace }}" "build/bin/Release/test_export.exe"
+          & $test "--gtest_filter=ExportRenderQueue.FullSnapshot*:ExportIntegrity.*"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

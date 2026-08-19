@@ -118,7 +118,8 @@ void PropertiesPanel::populateFromTransition()
 
 void PropertiesPanel::applyTransitionType()
 {
-    if (m_updating || !m_track || m_transitionIndex >= m_track->transitionCount()) return;
+    if (m_updating || !m_track || m_track->isLocked()
+        || m_transitionIndex >= m_track->transitionCount()) return;
     const auto* tr = m_track->transition(m_transitionIndex);
     if (!tr) return;
     auto newType = static_cast<TransitionType>(m_transTypeCombo->currentIndex());
@@ -133,8 +134,8 @@ void PropertiesPanel::applyTransitionType()
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Change transition type",
-            [track, idx, newTr, this]() { track->setTransition(idx, newTr); populateFromTransition(); emit propertyChanged(); },
-            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr); populateFromTransition(); emit propertyChanged(); }));
+            [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
+            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
     } else {
         track->setTransition(idx, newTr);
         populateFromTransition();
@@ -144,7 +145,8 @@ void PropertiesPanel::applyTransitionType()
 
 void PropertiesPanel::applyTransitionDuration()
 {
-    if (m_updating || !m_track || m_transitionIndex >= m_track->transitionCount()) return;
+    if (m_updating || !m_track || m_track->isLocked()
+        || m_transitionIndex >= m_track->transitionCount()) return;
     const auto* tr = m_track->transition(m_transitionIndex);
     if (!tr) return;
 
@@ -161,8 +163,8 @@ void PropertiesPanel::applyTransitionDuration()
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Change transition duration",
-            [track, idx, newTr, this]() { track->setTransition(idx, newTr); populateFromTransition(); emit propertyChanged(); },
-            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr); populateFromTransition(); emit propertyChanged(); }));
+            [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
+            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
     } else {
         track->setTransition(idx, newTr);
         populateFromTransition();
@@ -172,7 +174,8 @@ void PropertiesPanel::applyTransitionDuration()
 
 void PropertiesPanel::applyTransitionSoftness()
 {
-    if (m_updating || !m_track || m_transitionIndex >= m_track->transitionCount()) return;
+    if (m_updating || !m_track || m_track->isLocked()
+        || m_transitionIndex >= m_track->transitionCount()) return;
     const auto* tr = m_track->transition(m_transitionIndex);
     if (!tr) return;
 
@@ -188,8 +191,8 @@ void PropertiesPanel::applyTransitionSoftness()
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Change transition softness",
-            [track, idx, newTr, this]() { track->setTransition(idx, newTr); populateFromTransition(); emit propertyChanged(); },
-            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr); populateFromTransition(); emit propertyChanged(); }));
+            [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
+            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
     } else {
         track->setTransition(idx, newTr);
         populateFromTransition();
@@ -199,7 +202,8 @@ void PropertiesPanel::applyTransitionSoftness()
 
 void PropertiesPanel::applyTransitionAlignment()
 {
-    if (m_updating || !m_track || m_transitionIndex >= m_track->transitionCount()) return;
+    if (m_updating || !m_track || m_track->isLocked()
+        || m_transitionIndex >= m_track->transitionCount()) return;
     const auto* tr = m_track->transition(m_transitionIndex);
     if (!tr) return;
 
@@ -225,8 +229,8 @@ void PropertiesPanel::applyTransitionAlignment()
     if (m_commandStack) {
         m_commandStack->execute(std::make_unique<LambdaCommand>(
             "Change transition alignment",
-            [track, idx, newTr, this]() { track->setTransition(idx, newTr); populateFromTransition(); emit propertyChanged(); },
-            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr); populateFromTransition(); emit propertyChanged(); }));
+            [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
+            [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
     } else {
         track->setTransition(idx, newTr);
         populateFromTransition();

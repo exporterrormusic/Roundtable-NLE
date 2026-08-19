@@ -458,11 +458,26 @@ void ExportPanel::onAddToQueue()
         return;
     }
 
+    if (!m_project || !m_timeline) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("No project sequence is loaded — nothing to queue."));
+        return;
+    }
+
     auto config = buildJobConfig();
+    if (!config.audioOnly) {
+        if (!m_exportFrameCallback) {
+            QMessageBox::warning(this, tr("Export"),
+                                 tr("No renderer available — cannot queue export."));
+            return;
+        }
+        if (!checkOfflineMedia(m_timeline))
+            return;
+    }
     rememberExportDir(pathToUtf8(config.outputPath));
-    // Snapshot the timeline (main thread) so the worker's audio mixdown
-    // never reads the live timeline while the user keeps editing.
-    uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
+    // One full queue-time snapshot drives both video and audio even if the
+    // user edits this sequence or opens another project before Start Queue.
+    uint32_t jobId = m_renderQueue->addJob(config, m_project, m_timeline);
 
     // Show job in list; "Start Queue" arms now that a job is pending.
     setJobRowState(jobId, JobRowState::Queued);

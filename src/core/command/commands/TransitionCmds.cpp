@@ -16,11 +16,13 @@ AddTransitionCommand::AddTransitionCommand(Track* track, size_t clipIndexA, size
     , m_clipIndexA(clipIndexA)
     , m_clipIndexB(clipIndexB)
     , m_transition(transition)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
 void AddTransitionCommand::execute()
 {
+    if (!m_authorized) return;
     // addTransition() replaces any existing transition on the same edit
     // point; capture the prior value so undo can restore it.
     const size_t existing = m_track->findTransition(
@@ -31,17 +33,20 @@ void AddTransitionCommand::execute()
     } else {
         m_replaced = false;
     }
-    m_index   = m_track->addTransition(m_transition);
-    m_applied = true;
+    m_index = m_track->addTransition(
+        m_transition, TrackMutationPolicy::BypassLock);
+    m_applied = (m_index != Track::kNoTransition);
 }
 
 void AddTransitionCommand::undo()
 {
     if (!m_applied) return;
     if (m_replaced) {
-        m_track->setTransition(m_index, m_replacedValue);
+        m_track->setTransition(
+            m_index, m_replacedValue, TrackMutationPolicy::BypassLock);
     } else if (m_index < m_track->transitionCount()) {
-        m_track->removeTransition(m_index);
+        m_track->removeTransition(
+            m_index, TrackMutationPolicy::BypassLock);
     }
     m_applied = false;
 }
@@ -56,12 +61,16 @@ std::string AddTransitionCommand::description() const
 RemoveTransitionCommand::RemoveTransitionCommand(Track* track, size_t transitionIndex)
     : m_track(track)
     , m_transitionIndex(transitionIndex)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
 void RemoveTransitionCommand::execute()
 {
-    m_savedTransition = m_track->removeTransition(m_transitionIndex);
+    if (!m_authorized) return;
+    if (m_transitionIndex >= m_track->transitionCount()) return;
+    m_savedTransition = m_track->removeTransition(
+        m_transitionIndex, TrackMutationPolicy::BypassLock);
     m_removed = true;
 }
 
@@ -71,7 +80,8 @@ void RemoveTransitionCommand::undo()
     {
         // Re-insert at the same position. For simplicity, we add back and it goes at the end.
         // A more sophisticated approach would insert at m_transitionIndex.
-        m_track->addTransition(m_savedTransition);
+        m_track->addTransition(
+            m_savedTransition, TrackMutationPolicy::BypassLock);
         m_removed = false;
     }
 }
@@ -88,22 +98,29 @@ SetTransitionPropertyCommand::SetTransitionPropertyCommand(
     : m_track(track)
     , m_transitionIndex(transitionIndex)
     , m_newValues(newValues)
+    , m_authorized(track && !track->isLocked())
 {
 }
 
 void SetTransitionPropertyCommand::execute()
 {
+    if (!m_authorized) return;
     const Transition* t = m_track->transition(m_transitionIndex);
     if (t)
     {
         m_oldValues = *t;
-        m_track->setTransition(m_transitionIndex, m_newValues);
+        m_track->setTransition(
+            m_transitionIndex, m_newValues, TrackMutationPolicy::BypassLock);
+        m_applied = true;
     }
 }
 
 void SetTransitionPropertyCommand::undo()
 {
-    m_track->setTransition(m_transitionIndex, m_oldValues);
+    if (!m_applied) return;
+    m_track->setTransition(
+        m_transitionIndex, m_oldValues, TrackMutationPolicy::BypassLock);
+    m_applied = false;
 }
 
 std::string SetTransitionPropertyCommand::description() const

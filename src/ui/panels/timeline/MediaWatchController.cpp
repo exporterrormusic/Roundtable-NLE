@@ -67,14 +67,56 @@ std::string normalizedWatchPath(const std::string& p)
 }
 } // namespace
 
+struct MediaWatchController::CallbackGate {
+    std::mutex mutex;
+    MediaWatchController* receiver{nullptr};
+};
+
 MediaWatchController::MediaWatchController(Config cfg)
     : m_cfg(std::move(cfg))
+    , m_callbackGate(std::make_shared<CallbackGate>())
 {
+    m_callbackGate->receiver = this;
 }
 
 MediaWatchController::~MediaWatchController()
 {
-    m_destroying.store(true, std::memory_order_release);
+    shutdown();
+}
+
+std::function<void(std::filesystem::path)>
+MediaWatchController::mediaOpenedCallback() const
+{
+    const auto gate = m_callbackGate;
+    return [gate](std::filesystem::path) {
+        // Holding the gate while entering notifyMediaOpened means shutdown()
+        // either waits for this short call or prevents it from starting.
+        std::lock_guard lock(gate->mutex);
+        if (gate->receiver)
+            gate->receiver->notifyMediaOpened();
+    };
+}
+
+void MediaWatchController::shutdown() noexcept
+{
+    if (m_destroying.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    m_scanGeneration.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard lock(m_callbackGate->mutex);
+        m_callbackGate->receiver = nullptr;
+    }
+
+    if (m_debounce) m_debounce->stop();
+    if (m_pollTimer) m_pollTimer->stop();
+    if (m_openedRescanTimer) m_openedRescanTimer->stop();
+
+    m_scanThread.request_stop();
+    if (m_scanThread.joinable())
+        m_scanThread.join();
+    m_scanInFlight = false;
+    m_scanQueued = false;
 }
 
 void MediaWatchController::forceRescan()
@@ -237,8 +279,15 @@ void MediaWatchController::rescan()
         m_scanQueued = true;
         return;
     }
+    // m_scanInFlight is cleared by the queued completion only after the
+    // previous worker has posted its result. Reaping here is therefore a
+    // bounded join of an already-completed (or just-returning) thread.
+    if (m_scanThread.joinable())
+        m_scanThread.join();
     m_lastWant = candidates;
     m_scanInFlight = true;
+    const uint64_t generation =
+        m_scanGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
 
     // Snapshot the currently-watched paths so the worker can stat them too
     // (to refresh/seed signatures) without touching Qt off the UI thread.
@@ -247,31 +296,38 @@ void MediaWatchController::rescan()
         watchedSnapshot.push_back(w.toStdString());
 
     // ── Background: existence + (size, mtime) for every path ─────────────
-    std::thread([this, candidates, watchedSnapshot]() {
+    m_scanThread = std::jthread(
+        [this, candidates, watchedSnapshot, generation](std::stop_token stop) {
         std::set<std::string> existing;
         std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> sigs;
         std::set<std::string> all = candidates;
         all.insert(watchedSnapshot.begin(), watchedSnapshot.end());
         for (const auto& p : all) {
+            if (stop.stop_requested()) return;
             std::error_code ec;
             if (std::filesystem::exists(p, ec) && !ec) {
                 existing.insert(p);
                 sigs.emplace(p, mediaFileSig(p));
             }
         }
+        if (stop.stop_requested()) return;
         // Hop back to the UI thread to mutate the QFileSystemWatcher.
         QMetaObject::invokeMethod(this,
             [this, candidates, existing = std::move(existing),
-             sigs = std::move(sigs)]() mutable {
+             sigs = std::move(sigs), generation]() mutable {
+                if (generation != m_scanGeneration.load(std::memory_order_acquire)
+                    || m_destroying.load(std::memory_order_acquire)) {
+                    return;
+                }
                 m_scanInFlight = false;
-                if (m_destroying.load(std::memory_order_acquire)) return;
                 applyScan(candidates, existing, sigs);
                 if (m_scanQueued) {
                     m_scanQueued = false;
                     forceRescan();
                 }
-            });
-    }).detach();
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 void MediaWatchController::applyScan(

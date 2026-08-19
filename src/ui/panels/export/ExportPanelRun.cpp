@@ -164,6 +164,7 @@ ExportJobConfig ExportPanel::buildJobConfig() const
     cfg.outputPath  = m_outputPath->text().toStdString();
     cfg.outputWidth  = m_widthSpin->value();
     cfg.outputHeight = m_heightSpin->value();
+    cfg.preserveAlpha = exportAlphaRequested();
 
     cfg.encoderConfig.width  = cfg.outputWidth;
     cfg.encoderConfig.height = cfg.outputHeight;
@@ -266,13 +267,13 @@ ExportJobConfig ExportPanel::buildJobConfig() const
     return cfg;
 }
 
-bool ExportPanel::checkOfflineMedia()
+bool ExportPanel::checkOfflineMedia(const Timeline* timeline)
 {
-    if (!m_timeline) return true;
+    if (!timeline) return true;
 
     std::vector<std::string> offlineClips;
-    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-        const auto* trk = m_timeline->track(ti);
+    for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+        const auto* trk = timeline->track(ti);
         if (!trk || trk->isDivider()) continue;
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
             const auto* clip = trk->clip(ci);
@@ -312,8 +313,9 @@ void ExportPanel::onStartExport()
         return;
     }
 
-    if (!m_timeline) {
-        QMessageBox::warning(this, tr("Export"), tr("No timeline loaded — nothing to export."));
+    if (!m_project || !m_timeline) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("No project sequence is loaded — nothing to export."));
         return;
     }
 
@@ -322,13 +324,13 @@ void ExportPanel::onStartExport()
     // Video-export pre-flight (skipped entirely for audio-only exports, which
     // need neither the compositor nor a hardware video encoder).
     if (!config.audioOnly) {
-        if (!m_previewCallback) {
+        if (!m_exportFrameCallback) {
             QMessageBox::warning(this, tr("Export"), tr("No renderer available — cannot export."));
             return;
         }
 
         // Check for offline media and warn the user
-        if (!checkOfflineMedia())
+        if (!checkOfflineMedia(m_timeline))
             return;
 
         // ── Pascal NVENC pre-flight ───────────────────────────────────────
@@ -377,10 +379,9 @@ void ExportPanel::onStartExport()
     }
 
     rememberExportDir(pathToUtf8(config.outputPath));
-    // Pass the timeline so addJob (main thread) deep-clones it for the
-    // audio mixdown — the worker then never reads the live timeline for
-    // audio while the user keeps editing.
-    uint32_t jobId = m_renderQueue->addJob(config, m_timeline);
+    // Capture one complete project graph now.  Both video and audio retain it,
+    // so edits/project switches after this point cannot alter the job.
+    uint32_t jobId = m_renderQueue->addJob(config, m_project, m_timeline);
     m_activeJobId = jobId;
 
     setJobRowState(jobId, JobRowState::Queued);
@@ -393,26 +394,20 @@ void ExportPanel::onStartQueue()
 {
     if (!m_renderQueue || m_renderQueue->isRunning()) return;
     if (m_renderQueue->pendingCount() == 0) return;
-    if (!m_timeline) {
-        QMessageBox::warning(this, tr("Export"),
-                             tr("No timeline loaded \u2014 nothing to export."));
-        return;
-    }
 
-    // Video jobs need the renderer + the offline-media check; audio-only
-    // jobs need neither. (Per-job encode settings were captured at Add time.)
+    // Queued jobs own their project/timeline snapshots and remain runnable
+    // after the live project is closed or switched. Offline-media warnings
+    // were made against the source timeline when each job was enqueued.
     bool anyVideo = false;
     for (const auto& j : m_renderQueue->jobs())
         if (j && j->status.load() == JobStatus::Queued && !j->config.audioOnly)
             anyVideo = true;
     if (anyVideo) {
-        if (!m_previewCallback) {
+        if (!m_exportFrameCallback) {
             QMessageBox::warning(this, tr("Export"),
                                  tr("No renderer available \u2014 cannot export."));
             return;
         }
-        if (!checkOfflineMedia())
-            return;
     }
 
     // Follow the first job the worker will pick up.
@@ -531,20 +526,22 @@ void ExportPanel::armQueueAndRun()
     //   3) Returns the previous frame's pixels for encoding
     //
     // The first call composites synchronously since there's no previous frame.
-    if (m_previewCallback) {
-        m_renderQueue->setFrameRenderCallback(
-            [this](int64_t tick, int64_t nextTick,
-                   uint32_t w, uint32_t h, bool scrub)
+    if (m_exportFrameCallback) {
+        m_renderQueue->setSnapshotFrameRenderCallback(
+            [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+                   int64_t tick, int64_t nextTick,
+                   uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)
                 -> std::shared_ptr<CachedFrame> {
                 if (m_destroying.load(std::memory_order_acquire)) return nullptr;
-                return pipelineComposite(tick, nextTick, w, h, scrub);
+                return pipelineComposite(snapshot, tick, nextTick, w, h,
+                                         scrub, preserveAlpha);
             });
     }
     // §4.6 export write-through: store each finished full-res frame into the
     // segment cache so a re-export reuses it (called on the worker thread with
     // pixels already present).
     if (m_frameStoreCallback)
-        m_renderQueue->setFrameStoreCallback(m_frameStoreCallback);
+        m_renderQueue->setSnapshotFrameStoreCallback(m_frameStoreCallback);
 
     // Reset the composite pipeline between exports: the slots still hold the
     // previous export's last tick + shared_future, which broke first-call
@@ -558,8 +555,10 @@ void ExportPanel::armQueueAndRun()
         m_pipelineCurrentSlot = 0;
     }
 
-    // Start rendering
-    m_renderQueue->start(m_timeline, m_compositor);
+    // Production jobs are self-contained. Do not retain/pass the live timeline
+    // as a fallback: it may be destroyed by a project switch while this queue
+    // runs, and a missing snapshot must fail rather than read current state.
+    m_renderQueue->start(nullptr, m_compositor);
 
     setRunningUiState(true);
     m_jobList->setVisible(true);

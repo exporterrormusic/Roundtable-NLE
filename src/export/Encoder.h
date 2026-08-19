@@ -221,6 +221,16 @@ public:
     [[nodiscard]] virtual const std::string& lastError() const noexcept = 0;
     [[nodiscard]] virtual int64_t framesEncoded() const noexcept = 0;
 
+    /// Number of input pictures the codec has successfully accepted.  This is
+    /// deliberately separate from framesEncoded(): a delayed encoder may
+    /// accept several frames before emitting its first packet.  Export uses
+    /// this counter to distinguish normal buffering from a rejected frame.
+    [[nodiscard]] virtual int64_t framesSubmitted() const noexcept = 0;
+
+    /// Sticky failure state for conversion, upload, send, receive, or flush
+    /// errors.  Once set, the current encoded stream must not be published.
+    [[nodiscard]] virtual bool hasFatalError() const noexcept = 0;
+
     // ── Factory ─────────────────────────────────────────────────────────
 
     /// Create an encoder for the given codec. Tries hardware acceleration first.

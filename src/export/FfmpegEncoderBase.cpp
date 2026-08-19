@@ -37,7 +37,10 @@ void FfmpegEncoderBase::beginInit(const EncoderConfig& config)
     if (m_initialized) shutdown();
     m_config = config;
     m_framesEncoded = 0;
+    m_framesSubmitted = 0;
     m_hwAccel = false;
+    m_failed = false;
+    m_lastError.clear();
 }
 
 void FfmpegEncoderBase::applyCommonParams(AVCodecContext* ctx,
@@ -240,14 +243,27 @@ bool FfmpegEncoderBase::initCpuCodec(const EncoderConfig& config,
 
 bool FfmpegEncoderBase::finishInit(int swFrameFormat)
 {
+    auto failInit = [&](std::string message) {
+        m_lastError = std::move(message);
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        shutdown();
+        return false;
+    };
+
     // If using CUDA HW frames, allocate with codec-context dimensions
     // (NVENC may align them); the HW upload path transfers the full frame.
     m_frame = av_frame_alloc();
+    if (!m_frame)
+        return failInit(std::string(logName()) + ": failed to allocate frame");
     m_frame->format = swFrameFormat;
     m_frame->width  = m_codecCtx->width;
     m_frame->height = m_codecCtx->height;
-    av_frame_get_buffer(m_frame, 0);
+    if (av_frame_get_buffer(m_frame, 0) < 0)
+        return failInit(std::string(logName()) + ": failed to allocate frame buffer");
     m_packet = av_packet_alloc();
+    if (!m_packet)
+        return failInit(std::string(logName()) + ": failed to allocate packet");
 
     m_swsCtx = sws_getContext(
         m_codecCtx->width, m_codecCtx->height, AV_PIX_FMT_BGRA,
@@ -255,11 +271,8 @@ bool FfmpegEncoderBase::finishInit(int swFrameFormat)
         static_cast<AVPixelFormat>(swFrameFormat),
         SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!m_swsCtx) {
-        m_lastError = std::string(logName()) + ": failed to create sws context";
-        spdlog::error("{} pix_fmt={} wxh={}x{}", m_lastError,
-                      swFrameFormat, m_codecCtx->width, m_codecCtx->height);
-        avcodec_free_context(&m_codecCtx);
-        return false;
+        return failInit(std::string(logName()) +
+                        ": failed to create pixel conversion context");
     }
 
     m_initialized = true;
@@ -273,8 +286,17 @@ bool FfmpegEncoderBase::finishInit(int swFrameFormat)
 
 bool FfmpegEncoderBase::encodeFrame(const uint8_t* bgraPixels, int64_t frameIndex)
 {
-    if (!m_initialized) { spdlog::error("{}: !initialized", logName()); return false; }
-    av_frame_make_writable(m_frame);
+    if (!m_initialized || !bgraPixels) {
+        m_lastError = std::string(logName()) + ": invalid BGRA frame input";
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        return false;
+    }
+    if (av_frame_make_writable(m_frame) < 0) {
+        m_lastError = std::string(logName()) + ": frame buffer is not writable";
+        m_failed = true;
+        return false;
+    }
 
     const uint8_t* srcSlice[] = { bgraPixels };
     int srcStride[] = { static_cast<int>(m_config.width * 4) };
@@ -283,8 +305,15 @@ bool FfmpegEncoderBase::encodeFrame(const uint8_t* bgraPixels, int64_t frameInde
     // caller's BGRA buffer (config-sized).  m_frame may be taller if NVENC
     // aligned the dimensions — extra lines stay zero (black).
     int srcLines = std::min(static_cast<int>(m_config.height), m_frame->height);
-    sws_scale(m_swsCtx, srcSlice, srcStride, 0, srcLines,
-              m_frame->data, m_frame->linesize);
+    const int convertedRows = sws_scale(
+        m_swsCtx, srcSlice, srcStride, 0, srcLines,
+        m_frame->data, m_frame->linesize);
+    if (convertedRows != m_frame->height) {
+        m_lastError = std::string(logName()) +
+                      ": BGRA conversion returned an incomplete frame";
+        m_failed = true;
+        return false;
+    }
 
     return finishFrame(frameIndex);
 }
@@ -306,8 +335,12 @@ bool FfmpegEncoderBase::is10BitTarget() const noexcept
 bool FfmpegEncoderBase::encodeFrame16f(const uint16_t* rgba16f, int srcStrideBytes,
                                        int64_t frameIndex)
 {
-    if (!m_initialized) { spdlog::error("{}: !initialized", logName()); return false; }
-    if (!rgba16f || !is10BitTarget()) return false;   // caller falls back to encodeFrame(BGRA)
+    if (!m_initialized || !rgba16f || !is10BitTarget() || srcStrideBytes <= 0) {
+        m_lastError = std::string(logName()) + ": invalid RGBA16F frame input";
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        return false;
+    }
 
     PackTarget target;
     switch (m_codecCtx->pix_fmt) {
@@ -315,10 +348,17 @@ bool FfmpegEncoderBase::encodeFrame16f(const uint16_t* rgba16f, int srcStrideByt
         case AV_PIX_FMT_YUV444P10LE:  target = PackTarget::YUV444P10LE;  break;
         case AV_PIX_FMT_YUVA444P10LE: target = PackTarget::YUVA444P10LE; break;
         case AV_PIX_FMT_P010LE:       target = PackTarget::P010LE;       break;
-        default:                      return false;
+        default:
+            m_lastError = std::string(logName()) + ": unsupported 10-bit pixel format";
+            m_failed = true;
+            return false;
     }
 
-    av_frame_make_writable(m_frame);
+    if (av_frame_make_writable(m_frame) < 0) {
+        m_lastError = std::string(logName()) + ": frame buffer is not writable";
+        m_failed = true;
+        return false;
+    }
 
     // Pack RGBA16F directly into the AVFrame's native 10-bit planes — no
     // swscale, no 8-bit intermediate.  linesizes are in BYTES (FFmpeg may pad
@@ -355,13 +395,17 @@ bool FfmpegEncoderBase::finishFrame(int64_t frameIndex)
 
         int ret = av_hwframe_get_buffer(m_codecCtx->hw_frames_ctx, hwFrame, 0);
         if (ret < 0) {
-            spdlog::error("{}: failed to get HW frame buffer", logName());
+            m_lastError = std::string(logName()) + ": failed to get HW frame buffer";
+            m_failed = true;
+            spdlog::error("{}", m_lastError);
             av_frame_free(&hwFrame);
             return false;
         }
         ret = av_hwframe_transfer_data(hwFrame, m_frame, 0);
         if (ret < 0) {
-            spdlog::error("{}: failed to upload frame to GPU", logName());
+            m_lastError = std::string(logName()) + ": failed to upload frame to GPU";
+            m_failed = true;
+            spdlog::error("{}", m_lastError);
             av_frame_free(&hwFrame);
             return false;
         }
@@ -381,8 +425,11 @@ bool FfmpegEncoderBase::sendFrame(AVFrame* frame)
     int ret = avcodec_send_frame(m_codecCtx, frame);
     if (ret < 0) {
         m_lastError = std::string(logName()) + ": error sending frame";
+        m_failed = true;
         return false;
     }
+    if (frame)
+        ++m_framesSubmitted;
 
     // Drain ALL available packets.  One send may produce several packets
     // (B-frame reordering) or none (EAGAIN — encoder needs more frames).
@@ -395,6 +442,7 @@ bool FfmpegEncoderBase::sendFrame(AVFrame* frame)
             break;
         if (ret < 0) {
             m_lastError = std::string(logName()) + ": receive error";
+            m_failed = true;
             return gotOne;
         }
 
@@ -418,10 +466,23 @@ int FfmpegEncoderBase::flush()
     if (!m_initialized) return 0;
     m_flushedPackets.clear();
     m_pktStore.clear();  // prior packets already consumed by the caller
-    avcodec_send_frame(m_codecCtx, nullptr);
+    int ret = avcodec_send_frame(m_codecCtx, nullptr);
+    if (ret < 0 && ret != AVERROR_EOF) {
+        m_lastError = std::string(logName()) + ": error flushing encoder";
+        m_failed = true;
+        return 0;
+    }
 
     int count = 0;
-    while (avcodec_receive_packet(m_codecCtx, m_packet) == 0) {
+    while (true) {
+        ret = avcodec_receive_packet(m_codecCtx, m_packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+        if (ret < 0) {
+            m_lastError = std::string(logName()) + ": receive error while flushing";
+            m_failed = true;
+            break;
+        }
         EncodedPacket ep;
         ep.pts        = m_packet->pts;
         ep.dts        = m_packet->dts;

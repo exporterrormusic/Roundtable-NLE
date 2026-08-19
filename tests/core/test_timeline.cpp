@@ -198,6 +198,12 @@ TEST_F(TimelineTest, ClipHostLookupSkipsDividerBetweenExportAndMusic)
     EXPECT_EQ(timeline->nearestClipHostTrack(2, TrackType::Audio), 2u);
     EXPECT_EQ(timeline->nearestClipHostTrack(-10, TrackType::Audio), 0u);
     EXPECT_EQ(timeline->nearestClipHostTrack(99, TrackType::Audio), 2u);
+
+    musicTrack->setLocked(true);
+    EXPECT_EQ(timeline->nearestClipHostTrack(2, TrackType::Audio), 0u);
+    exportTrack->setLocked(true);
+    EXPECT_EQ(timeline->nearestClipHostTrack(1, TrackType::Audio),
+              static_cast<size_t>(-1));
 }
 
 TEST_F(TimelineTest, AccessTrackByIndex)

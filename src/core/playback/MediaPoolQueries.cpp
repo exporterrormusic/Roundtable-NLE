@@ -7,6 +7,36 @@
 
 namespace rt {
 
+void MediaPool::setProjectFps(double fps)
+{
+    m_projectFps.store(fps > 0.0 ? fps : 30.0, std::memory_order_relaxed);
+}
+
+void MediaPool::setPlaybackSpeed(double speed)
+{
+    m_playbackSpeed.store(speed, std::memory_order_relaxed);
+}
+
+void MediaPool::setDiskCache(std::shared_ptr<DiskFrameCache> cache)
+{
+    m_diskCache = std::move(cache);
+}
+
+DiskFrameCache* MediaPool::diskCache() const noexcept
+{
+    return m_diskCache.get();
+}
+
+FrameScheduler& MediaPool::scheduler() noexcept
+{
+    return m_scheduler;
+}
+
+const FrameScheduler& MediaPool::scheduler() const noexcept
+{
+    return m_scheduler;
+}
+
 // ─── Queries ─────────────────────────────────────────────────────────────────
 
 const VideoStreamInfo* MediaPool::getInfo(MediaHandle handle) const

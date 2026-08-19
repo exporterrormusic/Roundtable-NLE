@@ -129,12 +129,8 @@ void writeKeyframeTrack(BinaryWriter& w, const KeyframeTrack<float>& track)
 
 void readKeyframeTrack(BinaryReader& r, KeyframeTrack<float>& track, uint32_t version)
 {
-    uint32_t count = r.readU32();
-    // Guard against corrupted files with absurd keyframe counts
-    if (count > 100000) {
-        spdlog::warn("ProjectSerializer: keyframe count {} exceeds limit, clamping", count);
-        count = 100000;
-    }
+    const size_t bytesPerKeyframe = version >= 15 ? 46u : 29u;
+    const uint32_t count = r.readCount(100000, bytesPerKeyframe);
 
     // v8+: count=0 means static track — read default value
     if (count == 0) {
@@ -148,7 +144,7 @@ void readKeyframeTrack(BinaryReader& r, KeyframeTrack<float>& track, uint32_t ve
     while (track.keyframeCount() > 0)
         track.removeKeyframe(0);
 
-    for (uint32_t i = 0; i < count; ++i)
+    for (uint32_t i = 0; i < count && r.ok(); ++i)
     {
         int64_t time = r.readI64();
         float value  = r.readF32();
@@ -224,14 +220,9 @@ static void readMaskGeometry(BinaryReader& r, MaskGeometry& g)
     g.width    = r.readF32();
     g.height   = r.readF32();
     g.rotation = r.readF32();
-    uint32_t vertCount = r.readU32();
-    if (vertCount > 100000) {
-        spdlog::warn("ProjectSerializer: mask vertex count {} exceeds limit, clamping",
-                     vertCount);
-        vertCount = 100000;
-    }
+    const uint32_t vertCount = r.readCount(100000, 24);
     g.vertices.resize(vertCount);
-    for (uint32_t vi = 0; vi < vertCount; ++vi) {
+    for (uint32_t vi = 0; vi < vertCount && r.ok(); ++vi) {
         g.vertices[vi].x       = r.readF32();
         g.vertices[vi].y       = r.readF32();
         g.vertices[vi].inTanX  = r.readF32();
@@ -269,14 +260,9 @@ static OpacityMask readMask(BinaryReader& r, uint32_t version)
         m.name     = r.readString();
         readMaskGeometry(r, m.base);
         m.pathAnimated = r.readU8() != 0;
-        uint32_t keyCount = r.readU32();
-        if (keyCount > 100000) {
-            spdlog::warn("ProjectSerializer: mask path key count {} exceeds limit, clamping",
-                         keyCount);
-            keyCount = 100000;
-        }
+        const uint32_t keyCount = r.readCount(100000, 32);
         m.pathKeys.resize(keyCount);
-        for (uint32_t ki = 0; ki < keyCount; ++ki) {
+        for (uint32_t ki = 0; ki < keyCount && r.ok(); ++ki) {
             m.pathKeys[ki].time = r.readI64();
             readMaskGeometry(r, m.pathKeys[ki].geometry);
         }
@@ -312,11 +298,9 @@ static OpacityMask readMask(BinaryReader& r, uint32_t version)
     m.maskOpacity.setDefaultValue(r.readF32());
     m.inverted      = r.readU8() != 0;
     m.name          = r.readString();
-    uint32_t vertCount = r.readU32();
-    if (vertCount > 100000)
-        vertCount = 100000;
+    const uint32_t vertCount = r.readCount(100000, 24);
     m.base.vertices.resize(vertCount);
-    for (uint32_t vi = 0; vi < vertCount; ++vi) {
+    for (uint32_t vi = 0; vi < vertCount && r.ok(); ++vi) {
         m.base.vertices[vi].x       = r.readF32();
         m.base.vertices[vi].y       = r.readF32();
         m.base.vertices[vi].inTanX  = r.readF32();
@@ -378,53 +362,57 @@ static void writeAudioFx(BinaryWriter& w, const audiofx::FxChain& chain)
 
 static void readAudioFx(BinaryReader& r, audiofx::FxChain& chain)
 {
-    const uint32_t count = r.readU32();
-    for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t count = r.readCount(1024, 6);
+    for (uint32_t i = 0; i < count && r.ok(); ++i) {
         const uint8_t kind    = r.readU8();
         const bool    enabled = r.readU8() != 0;
         const uint32_t payloadLen = r.readU32();
-        const size_t endPos = r.position() + payloadLen;
+        BinaryReader payload = r.readSubReader(payloadLen);
 
         if (kind == static_cast<uint8_t>(audiofx::ProcessorKind::ParametricEQ)) {
             auto* eq = static_cast<audiofx::ParametricEQ*>(
                 chain.add(audiofx::ProcessorKind::ParametricEQ));
             eq->setEnabled(enabled);
-            const bool  hOn = r.readU8() != 0;
-            const float hF = r.readF32(), hQ = r.readF32();
+            const bool  hOn = payload.readU8() != 0;
+            const float hF = payload.readF32(), hQ = payload.readF32();
             eq->setHighPass(hOn, hF, hQ);
-            const bool  lOn = r.readU8() != 0;
-            const float lF = r.readF32(), lQ = r.readF32();
+            const bool  lOn = payload.readU8() != 0;
+            const float lF = payload.readF32(), lQ = payload.readF32();
             eq->setLowPass(lOn, lF, lQ);
-            const uint32_t bands = r.readU32();
-            for (uint32_t b = 0; b < bands; ++b) {
+            const uint32_t bands = payload.readCount(64, 14);
+            for (uint32_t b = 0; b < bands && payload.ok(); ++b) {
                 audiofx::ParametricEQ::Band bd;
-                bd.enabled = r.readU8() != 0;
-                bd.type    = static_cast<audiofx::Biquad::Type>(r.readU8());
-                bd.freqHz  = r.readF32(); bd.gainDb = r.readF32(); bd.q = r.readF32();
+                bd.enabled = payload.readU8() != 0;
+                bd.type    = static_cast<audiofx::Biquad::Type>(payload.readU8());
+                bd.freqHz  = payload.readF32(); bd.gainDb = payload.readF32(); bd.q = payload.readF32();
                 if (static_cast<int>(b) < eq->bandCount()) eq->setBand(static_cast<int>(b), bd);
             }
-            eq->setOutputGainDb(r.readF32());
+            eq->setOutputGainDb(payload.readF32());
         } else if (kind == static_cast<uint8_t>(audiofx::ProcessorKind::Dynamics)) {
             auto* dyn = static_cast<audiofx::Dynamics*>(
                 chain.add(audiofx::ProcessorKind::Dynamics));
             dyn->setEnabled(enabled);
             audiofx::Dynamics::GateSettings g;
-            g.enabled = r.readU8() != 0;
-            g.thresholdDb = r.readF32(); g.ratio = r.readF32(); g.rangeDb = r.readF32();
-            g.attackMs = r.readF32();    g.releaseMs = r.readF32();
+            g.enabled = payload.readU8() != 0;
+            g.thresholdDb = payload.readF32(); g.ratio = payload.readF32(); g.rangeDb = payload.readF32();
+            g.attackMs = payload.readF32();    g.releaseMs = payload.readF32();
             dyn->setGate(g);
             audiofx::Dynamics::CompSettings c;
-            c.enabled = r.readU8() != 0;
-            c.thresholdDb = r.readF32(); c.ratio = r.readF32(); c.kneeDb = r.readF32();
-            c.makeupDb = r.readF32();    c.attackMs = r.readF32(); c.releaseMs = r.readF32();
+            c.enabled = payload.readU8() != 0;
+            c.thresholdDb = payload.readF32(); c.ratio = payload.readF32(); c.kneeDb = payload.readF32();
+            c.makeupDb = payload.readF32();    c.attackMs = payload.readF32(); c.releaseMs = payload.readF32();
             dyn->setCompressor(c);
             audiofx::Dynamics::LimiterSettings l;
-            l.enabled = r.readU8() != 0;
-            l.ceilingDb = r.readF32(); l.releaseMs = r.readF32();
+            l.enabled = payload.readU8() != 0;
+            l.ceilingDb = payload.readF32(); l.releaseMs = payload.readF32();
             dyn->setLimiter(l);
         }
-        // Unknown kind or trailing future fields: re-sync to the payload end.
-        if (r.position() < endPos) r.skip(endPos - r.position());
+        if (!payload.ok()) {
+            r.invalidate();
+            return;
+        }
+        // Unknown kinds and trailing future fields remain safely bounded by
+        // the payload sub-reader and need no special re-synchronization.
     }
 }
 
@@ -842,6 +830,7 @@ void writeCaptionFields(BinaryWriter& w, const Clip& clip)
         w.writeU8(static_cast<uint8_t>(paragraph.alignment));
         w.writeU8(paragraph.rightToLeft ? 1 : 0);
     }
+    w.writeF32(cc.confidence());
 }
 
 void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
@@ -862,9 +851,9 @@ void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
     } // pre-v31 defaults (bold, no outline, no speaker) match the old look
     std::vector<TextStyleRun> loadedRuns;
     if (version >= 37) {
-        const uint32_t count = r.readU32();
+        const uint32_t count = r.readCount(100000, 21);
         loadedRuns.reserve(count);
-        for (uint32_t i = 0; i < count; ++i)
+        for (uint32_t i = 0; i < count && r.ok(); ++i)
             loadedRuns.push_back(readTextStyleRun(r, version));
     }
     if (version >= 40) {
@@ -883,10 +872,10 @@ void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
         cc->setLeading(r.readF32());
         cc->setAlignment(static_cast<GTextAlign>(r.readU8()));
         cc->setTrackStyleName(r.readString());
-        const uint32_t paragraphCount = r.readU32();
+        const uint32_t paragraphCount = r.readCount(100000, 10);
         std::vector<TextParagraphStyle> paragraphs;
         paragraphs.reserve(paragraphCount);
-        for (uint32_t pi = 0; pi < paragraphCount; ++pi) {
+        for (uint32_t pi = 0; pi < paragraphCount && r.ok(); ++pi) {
             TextParagraphStyle paragraph;
             paragraph.start = r.readU32();
             paragraph.length = r.readU32();
@@ -897,6 +886,7 @@ void readCaptionFields(BinaryReader& r, Clip& clip, uint32_t version)
         cc->setParagraphStyles(std::move(paragraphs));
     }
     if (version >= 37) cc->setStyleRuns(std::move(loadedRuns));
+    if (version >= 42) cc->setConfidence(r.readF32());
 }
 
 // ── PngPuppet ──────────────────────────────────────────────────────────────
@@ -1021,8 +1011,8 @@ void writeGraphicFields(BinaryWriter& w, const Clip& clip)
 void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
 {
     auto* gc = static_cast<GraphicClip*>(&clip);
-    uint32_t layerCount = r.readU32();
-    for (uint32_t li = 0; li < layerCount; ++li) {
+    const uint32_t layerCount = r.readCount(100000, 7);
+    for (uint32_t li = 0; li < layerCount && r.ok(); ++li) {
         auto layerType = static_cast<GraphicLayerType>(r.readU8());
         std::string layerName = r.readString();
         bool visible = r.readU8() != 0;
@@ -1047,20 +1037,20 @@ void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
         // Appearance
         auto& app = layer->appearance();
         app.fills.clear();
-        uint32_t fillCount = r.readU32();
-        for (uint32_t fi = 0; fi < fillCount; ++fi) {
+        const uint32_t fillCount = r.readCount(100000, 9);
+        for (uint32_t fi = 0; fi < fillCount && r.ok(); ++fi) {
             FillEntry fe; fe.color = r.readU32(); fe.opacity = r.readF32(); fe.enabled = r.readU8() != 0;
             app.fills.push_back(fe);
         }
         app.strokes.clear();
-        uint32_t strokeCount = r.readU32();
-        for (uint32_t si = 0; si < strokeCount; ++si) {
+        const uint32_t strokeCount = r.readCount(100000, 14);
+        for (uint32_t si = 0; si < strokeCount && r.ok(); ++si) {
             StrokeEntry se; se.color = r.readU32(); se.width = r.readF32(); se.position = static_cast<StrokePosition>(r.readU8()); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
             app.strokes.push_back(se);
         }
         app.shadows.clear();
-        uint32_t shadowCount = r.readU32();
-        for (uint32_t si = 0; si < shadowCount; ++si) {
+        const uint32_t shadowCount = r.readCount(100000, 21);
+        for (uint32_t si = 0; si < shadowCount && r.ok(); ++si) {
             ShadowEntry se; se.color = r.readU32(); se.distance = r.readF32(); se.angle = r.readF32(); se.softness = r.readF32(); se.opacity = r.readF32(); se.enabled = r.readU8() != 0;
             app.shadows.push_back(se);
         }
@@ -1084,9 +1074,9 @@ void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
             tl->setUseParagraphBox(r.readU8() != 0);
             std::vector<TextStyleRun> loadedRuns;
             if (version >= 36) {
-                const uint32_t runCount = r.readU32();
+                const uint32_t runCount = r.readCount(100000, 21);
                 loadedRuns.reserve(runCount);
-                for (uint32_t ri = 0; ri < runCount; ++ri)
+                for (uint32_t ri = 0; ri < runCount && r.ok(); ++ri)
                     loadedRuns.push_back(readTextStyleRun(r, version));
             }
             if (version >= 40) {
@@ -1109,10 +1099,10 @@ void readGraphicFields(BinaryReader& r, Clip& clip, uint32_t version)
                                         backgroundPadding);
                 tl->setMaskWithText(r.readU8() != 0);
                 tl->setLinkedStyleName(r.readString());
-                const uint32_t paragraphCount = r.readU32();
+                const uint32_t paragraphCount = r.readCount(100000, 10);
                 std::vector<TextParagraphStyle> paragraphs;
                 paragraphs.reserve(paragraphCount);
-                for (uint32_t pi = 0; pi < paragraphCount; ++pi) {
+                for (uint32_t pi = 0; pi < paragraphCount && r.ok(); ++pi) {
                     TextParagraphStyle paragraph;
                     paragraph.start = r.readU32();
                     paragraph.length = r.readU32();
@@ -1205,8 +1195,8 @@ void readTierListFields(BinaryReader& r, Clip& clip, uint32_t version)
     tc->setBackgroundColor(r.readU32());
     // Tiers
     tc->tiers().clear();
-    uint32_t tierCount = r.readU32();
-    for (uint32_t i = 0; i < tierCount; ++i) {
+    const uint32_t tierCount = r.readCount(100000, 8);
+    for (uint32_t i = 0; i < tierCount && r.ok(); ++i) {
         TierDef t;
         t.label = r.readString();
         t.color = r.readU32();
@@ -1214,13 +1204,13 @@ void readTierListFields(BinaryReader& r, Clip& clip, uint32_t version)
     }
     // Subbins
     tc->subbins().clear();
-    uint32_t subCount = r.readU32();
-    for (uint32_t i = 0; i < subCount; ++i)
+    const uint32_t subCount = r.readCount(100000, 4);
+    for (uint32_t i = 0; i < subCount && r.ok(); ++i)
         tc->subbins().push_back(r.readString());
     // Entries
     tc->entries().clear();
-    uint32_t entryCount = r.readU32();
-    for (uint32_t i = 0; i < entryCount; ++i) {
+    const uint32_t entryCount = r.readCount(100000, 20);
+    for (uint32_t i = 0; i < entryCount && r.ok(); ++i) {
         TierEntry e;
         e.id        = r.readU64();
         e.imagePath = r.readString();
@@ -1230,8 +1220,8 @@ void readTierListFields(BinaryReader& r, Clip& clip, uint32_t version)
     }
     // Events
     tc->events().clear();
-    uint32_t eventCount = r.readU32();
-    for (uint32_t i = 0; i < eventCount; ++i) {
+    const uint32_t eventCount = r.readCount(100000, 41);
+    for (uint32_t i = 0; i < eventCount && r.ok(); ++i) {
         TierEvent ev;
         uint8_t evType = r.readU8();
         if (evType > static_cast<uint8_t>(TierEventType::Reorder))
@@ -1421,8 +1411,10 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
     double speed      = r.readF64();
 
     const TypeSerializer* ts = serializerFor(type);
-    if (!ts)
+    if (!ts) {
+        r.invalidate();
         return nullptr;
+    }
     std::unique_ptr<Clip> clip = ts->make();
 
     // Restore the saved clip id so transitions (which reference clips by id)
@@ -1525,11 +1517,11 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
 
     // ── Effect stack (v10+) ────────────────────────────────────────────
     if (version >= 10 && clip) {
-        uint32_t fxCount = r.readU32();
-        for (uint32_t ei = 0; ei < fxCount; ++ei) {
+        const uint32_t fxCount = r.readCount(1024, 6);
+        for (uint32_t ei = 0; ei < fxCount && r.ok(); ++ei) {
             auto fxType = static_cast<EffectType>(r.readU8());
             bool fxEnabled = r.readU8() != 0;
-            uint32_t paramCount = r.readU32();
+            const uint32_t paramCount = r.readCount(4096, 4);
             auto fx = createEffect(fxType);
             if (fx) {
                 fx->setEnabled(fxEnabled);
@@ -1550,9 +1542,9 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                 if (version >= 24 && isBeatReactEffect(fxType)) {
                     auto* be = static_cast<BeatReactEffect*>(fx.get());
                     be->setAudioSourceId(r.readU64());
-                    uint32_t n = r.readU32();
+                    const uint32_t n = r.readCount(1000000, 4);
                     std::vector<float> times(n);
-                    for (uint32_t i = 0; i < n; ++i) times[i] = r.readF32();
+                    for (uint32_t i = 0; i < n && r.ok(); ++i) times[i] = r.readF32();
                     be->setBeatTimes(std::move(times));
                 }
                 if (version >= 41 && fxType == EffectType::ColorGrading) {
@@ -1579,37 +1571,25 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                 }
                 // Effect masks (v30+)
                 if (version >= 30) {
-                    uint32_t fxMaskCount = r.readU32();
-                    for (uint32_t mi = 0; mi < fxMaskCount; ++mi)
+                    const uint32_t fxMaskCount = r.readCount(10000, 68);
+                    for (uint32_t mi = 0; mi < fxMaskCount && r.ok(); ++mi)
                         fx->addMask(readMask(r, version));
                 }
                 clip->effects().addEffect(std::move(fx));
             } else {
-                // Unknown effect type — skip its data
-                for (uint32_t pi = 0; pi < paramCount; ++pi) {
-                    KeyframeTrack<float> discard(0.0f);
-                    readKeyframeTrack(r, discard, version);
-                }
-                if (fxType == EffectType::LUT)
-                    r.readString(); // discard LUT path
-                if (version >= 24 && isBeatReactEffect(fxType)) {
-                    r.readU64();
-                    uint32_t n = r.readU32();
-                    for (uint32_t i = 0; i < n; ++i) r.readF32();
-                }
-                if (version >= 30) {
-                    uint32_t fxMaskCount = r.readU32();
-                    for (uint32_t mi = 0; mi < fxMaskCount; ++mi)
-                        (void)readMask(r, version);  // discard
-                }
+                // Supported-format effects are not individually length-delimited,
+                // so an unknown type cannot be skipped without risking drift into
+                // the next record. Treat it as corruption instead.
+                r.invalidate();
+                return nullptr;
             }
         }
     }
 
     // ── Opacity masks (v11+; v30 record) ───────────────────────────────
     if (version >= 11 && clip) {
-        uint32_t maskCount = r.readU32();
-        for (uint32_t mi = 0; mi < maskCount; ++mi)
+        const uint32_t maskCount = r.readCount(10000, version >= 30 ? 68 : 42);
+        for (uint32_t mi = 0; mi < maskCount && r.ok(); ++mi)
             clip->addMask(readMask(r, version));
     }
 

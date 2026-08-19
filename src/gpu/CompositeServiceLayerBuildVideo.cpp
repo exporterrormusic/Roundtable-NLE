@@ -107,13 +107,16 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         return frame;
     }
 
-    // A paused, non-scrubbing monitor frame is a quality request, not a
-    // latency request.  Require the exact frame at the selected tier and do
+    // A paused monitor or export frame is a quality request, not a latency
+    // request. Require the exact frame at the selected tier and do
     // the blocking decode on FrameProducer's worker thread.  In particular,
     // never accept MediaPool's alternate-tier/last-good fallback here: that
     // was how a Half decode remained stretched over a Full 1080p composite
     // after the playhead stopped.
-    if (stillMode && !scrubMode) {
+    // stillMode is the exact paused/export contract.  Export also passes
+    // scrubMode=true to avoid interactive settle delays, so scrub must not
+    // weaken exact source-frame resolution here.
+    if (stillMode) {
         auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
         if (frame && frame->frameNumber == frameNumber && frame->tier == tier) {
             return frame;

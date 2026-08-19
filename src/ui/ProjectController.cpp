@@ -48,6 +48,17 @@
 
 namespace rt {
 
+ProjectController::~ProjectController()
+{
+    m_projectLoadGeneration.fetch_add(1, std::memory_order_acq_rel);
+    for (auto& task : m_projectLoadTasks)
+        task.worker.request_stop();
+    for (auto& task : m_projectLoadTasks) {
+        if (task.worker.joinable())
+            task.worker.join();
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Project management helpers
 // ═════════════════════════════════════════════════════════════════════════════

@@ -76,6 +76,45 @@ if(Qt6_FOUND)
         add_dependencies(roundtable shaders)
     endif()
 
+    if(TARGET copy_cuda_runtime_dlls)
+        add_dependencies(roundtable copy_cuda_runtime_dlls)
+
+        # Re-scan the linked executable so a future CUDA-using backend cannot
+        # add a runtime import that is accidentally satisfied only by PATH.
+        # The second pass hashes every packaged DLL against its Toolkit source;
+        # a failed copy therefore fails the application build before release.
+        add_custom_command(TARGET roundtable POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                "-DROUNDTABLE_CUDA_SEED_MANIFEST=${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+                "-DROUNDTABLE_CUDA_DESTINATION=$<TARGET_FILE_DIR:roundtable>"
+                "-DROUNDTABLE_CUDA_EXECUTABLE=$<TARGET_FILE:roundtable>"
+                "-DROUNDTABLE_CUDA_MODE=DEPLOY"
+                -P "${CMAKE_SOURCE_DIR}/cmake/DeployCudaRuntime.cmake"
+            COMMAND "${CMAKE_COMMAND}"
+                "-DROUNDTABLE_CUDA_SEED_MANIFEST=${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+                "-DROUNDTABLE_CUDA_DESTINATION=$<TARGET_FILE_DIR:roundtable>"
+                "-DROUNDTABLE_CUDA_EXECUTABLE=$<TARGET_FILE:roundtable>"
+                "-DROUNDTABLE_CUDA_MODE=VERIFY"
+                -P "${CMAKE_SOURCE_DIR}/cmake/DeployCudaRuntime.cmake"
+            COMMENT "Verifying bundled CUDA runtime against roundtable.exe"
+            VERBATIM)
+
+        # Narrow release/package check. It is intentionally not part of CTest:
+        # it validates the concrete Release/Debug PE and hundreds of MB of CUDA
+        # payload without expanding the normal unit-test suite.
+        add_custom_target(check_cuda_runtime_package
+            COMMAND "${CMAKE_COMMAND}"
+                "-DROUNDTABLE_CUDA_SEED_MANIFEST=${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+                "-DROUNDTABLE_CUDA_DESTINATION=$<TARGET_FILE_DIR:roundtable>"
+                "-DROUNDTABLE_CUDA_EXECUTABLE=$<TARGET_FILE:roundtable>"
+                "-DROUNDTABLE_CUDA_MODE=VERIFY"
+                -P "${CMAKE_SOURCE_DIR}/cmake/DeployCudaRuntime.cmake"
+            DEPENDS roundtable
+            COMMENT "Checking Roundtable CUDA runtime package"
+            VERBATIM)
+        set_property(TARGET check_cuda_runtime_package PROPERTY FOLDER "Deployment")
+    endif()
+
     # Copy qt.conf to build output so deployed Qt finds its plugins
     # (overrides hardcoded prefix path from portable Qt installation)
     add_custom_command(TARGET roundtable POST_BUILD

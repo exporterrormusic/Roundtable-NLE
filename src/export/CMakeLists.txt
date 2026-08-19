@@ -3,6 +3,7 @@
 add_library(roundtable_export STATIC
     Encoder.cpp
     FfmpegEncoderBase.cpp
+    ExportIntegrity.cpp
     Rgba16fPack.cpp
     RenderQueue.cpp
     SmartRenderAnalyzer.cpp

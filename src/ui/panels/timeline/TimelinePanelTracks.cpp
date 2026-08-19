@@ -418,6 +418,7 @@ void TimelinePanel::rebuildTracks()
                 m_trackHeaders[trackIdx]->update();
             if (trackIdx < m_trackWidgets.size())
                 m_trackWidgets[trackIdx]->update();
+            emit selectionChanged();
         });
         QObject::connect(header, &TrackHeader::muteToggled,
             this, [this](size_t trackIdx, bool muted) {
@@ -992,6 +993,8 @@ void TimelinePanel::insertTrackWidgetIncremental(size_t trackIndex)
                 m_trackHeaders[trackIdx]->update();
             if (trackIdx < m_trackWidgets.size())
                 m_trackWidgets[trackIdx]->update();
+            if (clearsLockedGap)
+                emit selectionChanged();
             emit contentChanged();
         });
     };

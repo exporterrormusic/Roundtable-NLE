@@ -317,6 +317,33 @@ TEST(ClipCommands, MoveClip)
     EXPECT_EQ(track.clip(idx)->timelineIn(), 0);
 }
 
+TEST(ClipCommands, LockedTrackRejectsNewCommandButUndoRedoRestoresHistory)
+{
+    Track track(TrackType::Video, "V1");
+    auto clip = std::make_unique<SpineClip>("Hero", "default");
+    clip->setTimelineIn(0);
+    clip->setDuration(48000);
+    const uint64_t clipId = clip->id();
+    ASSERT_NE(track.addClip(std::move(clip)), nullptr);
+
+    CommandStack stack;
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 48000));
+    ASSERT_EQ(track.clip(0)->timelineIn(), 48000);
+
+    track.setLocked(true);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 48000);
+
+    // A command first created while locked is unauthorized and remains a
+    // no-op; unlocking later must not retroactively apply it through undo.
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 96000));
+    EXPECT_EQ(track.clip(0)->timelineIn(), 48000);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 48000);
+}
+
 TEST(ClipCommands, MoveClipMerge)
 {
     Track track(TrackType::Video, "V1");

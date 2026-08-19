@@ -36,6 +36,7 @@
 
 #include "timeline/Clip.h"
 #include "timeline/Track.h"
+#include "timeline/ClipMutation.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
 
@@ -369,9 +370,15 @@ void GraphicsEditorPanel::setupUI()
 
 void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
 {
- if (m_clip == clip) return;
+ const bool editable = rt::canMutateClip(clip, track);
+ if (m_splitter) m_splitter->setEnabled(editable);
+ if (m_clip == clip) {
+ m_track = track;
+ return;
+ }
  m_clip = clip;
  m_track = track;
+ m_clipId = clip ? clip->id() : 0;
  m_graphicClip = nullptr;
  m_selectedLayer = nullptr;
  m_selectedLayerIdx = -1;
@@ -411,8 +418,50 @@ void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
  }
 }
 
+void GraphicsEditorPanel::setTimeline(Timeline* timeline) noexcept
+{
+ if (m_timeline != timeline) clearClip();
+ m_timeline = timeline;
+}
+
+bool GraphicsEditorPanel::resolveBoundClip() noexcept
+{
+ if (!m_timeline) {
+     if (!m_clip || !m_track || m_clip->clipType() != ClipType::Graphic
+         || !rt::canMutateClip(m_clip, m_track))
+         return false;
+     m_graphicClip = static_cast<GraphicClip*>(m_clip);
+     return true;
+ }
+ Track* track = nullptr;
+ Clip* clip = rt::resolveClipById(m_timeline, m_clipId, &track);
+ if (!clip || clip->clipType() != ClipType::Graphic) {
+     m_clip = nullptr;
+     m_track = nullptr;
+     m_graphicClip = nullptr;
+     m_selectedLayer = nullptr;
+     m_selectedLayerIdx = -1;
+     return false;
+ }
+ m_clip = clip;
+ m_track = track;
+ m_graphicClip = static_cast<GraphicClip*>(clip);
+ if (m_selectedLayerIdx >= 0
+     && m_selectedLayerIdx < static_cast<int>(m_graphicClip->layerCount()))
+     m_selectedLayer = m_graphicClip->layer(static_cast<size_t>(m_selectedLayerIdx));
+ else
+     m_selectedLayer = nullptr;
+ return true;
+}
+
+bool GraphicsEditorPanel::canMutateBoundClip() noexcept
+{
+ return resolveBoundClip() && !m_track->isLocked();
+}
+
 void GraphicsEditorPanel::refresh()
 {
+ if (!resolveBoundClip()) { clearClip(); return; }
  if (m_selectedLayer) populateFromLayer();
 }
 
@@ -423,6 +472,7 @@ void GraphicsEditorPanel::clearClip()
  m_graphicClip = nullptr;
  m_selectedLayer = nullptr;
  m_selectedLayerIdx = -1;
+ m_clipId = 0;
  clearEditControls();
  m_layerList->clear();
  m_clipNameLabel->setText(tr("Graphics Editor"));

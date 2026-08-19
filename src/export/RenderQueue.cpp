@@ -6,10 +6,13 @@
 #include "AudioMixdown.h"
 #include "Muxer.h"
 #include "Encoder.h"
+#include "ExportIntegrity.h"
 #include "SmartRenderAnalyzer.h"
 #include "PacketDemuxer.h"
 
 #include "cache/FrameCache.h"
+#include "project/Project.h"
+#include "project/ProjectSerializer.h"
 #include "timeline/Timeline.h"
 #include "PathUtils.h"
 #include "FrameTime.h"
@@ -17,6 +20,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <unordered_map>
@@ -121,23 +125,129 @@ RenderQueue::~RenderQueue()
 }
 
 uint32_t RenderQueue::addJob(const ExportJobConfig& config,
-                             const Timeline* timelineForAudio)
+                             const Timeline* timeline)
 {
-    // Snapshot the timeline for the audio mixdown BEFORE taking the queue
-    // mutex (clone is non-trivial).  addJob is called on the MAIN thread,
-    // so cloning here cannot race user edits; the worker later mixes audio
-    // from this snapshot instead of the live timeline.
-    std::shared_ptr<const Timeline> snapshot;
-    if (timelineForAudio && (config.includeAudio || config.audioOnly))
-        snapshot = timelineForAudio->clone();
+    const size_t cleaned = cleanupAbandonedStagedExports(
+        config.outputPath.parent_path(), std::chrono::hours(24 * 7));
+    if (cleaned > 0)
+        spdlog::info("RenderQueue: removed {} abandoned staged export(s)", cleaned);
+    // Legacy callers may not own a Project.  Still snapshot the timeline for
+    // BOTH video-derived calculations and audio (not just when audio is on),
+    // so no worker-side duration/smart-render decision observes later edits.
+    std::shared_ptr<const ExportRenderSnapshot> snapshot;
+    std::string captureError;
+    if (timeline) {
+        try {
+            auto captured = std::make_shared<ExportRenderSnapshot>();
+            captured->timeline = timeline->clone();
+            if (!captured->timeline)
+                captureError = "Failed to clone export timeline";
+            else
+                snapshot = std::move(captured);
+        } catch (const std::exception& e) {
+            captureError = std::string("Failed to clone export timeline: ") + e.what();
+        } catch (...) {
+            captureError = "Failed to clone export timeline";
+        }
+    }
 
     std::lock_guard<std::mutex> lock(m_mutex);
     auto job = std::make_shared<ExportJob>();
     job->id     = m_nextJobId++;
     job->config = config;
-    job->timelineSnapshot = std::move(snapshot);
+    job->renderSnapshot = std::move(snapshot);
+    job->snapshotCaptureError = std::move(captureError);
     m_jobs.push_back(job);
     spdlog::info("RenderQueue: Added job {} → {}", job->id, pathToUtf8(config.outputPath));
+    return job->id;
+}
+
+uint32_t RenderQueue::addJob(const ExportJobConfig& config,
+                             const Project* project,
+                             const Timeline* timeline)
+{
+    const size_t cleaned = cleanupAbandonedStagedExports(
+        config.outputPath.parent_path(), std::chrono::hours(24 * 7));
+    if (cleaned > 0)
+        spdlog::info("RenderQueue: removed {} abandoned staged export(s)", cleaned);
+    // Capture before taking the queue mutex: serialization is non-trivial and
+    // addJob is a main-thread operation, where the live project is stable.
+    // The serializer is deliberately used instead of independently cloning a
+    // Timeline: nested SequenceClips resolve through Project, so only one full
+    // graph can guarantee video and audio see the same queue-time state.
+    std::shared_ptr<const ExportRenderSnapshot> snapshot;
+    std::string captureError;
+
+    if (!project) {
+        captureError = "Cannot capture export: no project is loaded";
+    } else if (!timeline) {
+        captureError = "Cannot capture export: no sequence is selected";
+    } else {
+        size_t selectedIndex = project->sequenceCount();
+        for (size_t i = 0; i < project->sequenceCount(); ++i) {
+            if (project->sequence(i) == timeline) {
+                selectedIndex = i;
+                break;
+            }
+        }
+
+        if (selectedIndex == project->sequenceCount()) {
+            captureError = "Cannot capture export: selected sequence is not part of the project";
+        } else {
+            try {
+                ProjectSerializer serializer;
+                const auto bytes = serializer.serialize(*project);
+                if (bytes.empty()) {
+                    captureError = "Cannot capture export: project serialization returned no data";
+                } else {
+                    auto capturedProject = serializer.deserialize(bytes);
+                    if (!capturedProject ||
+                        selectedIndex >= capturedProject->sequenceCount() ||
+                        !capturedProject->sequence(selectedIndex)) {
+                        captureError = "Cannot capture export: project snapshot validation failed";
+                    } else {
+                        // Make Project::settings()/timeline() agree with the
+                        // explicitly exported sequence inside the snapshot.
+                        // filePath is intentionally file-I/O metadata rather
+                        // than part of the .rtp payload, so carry it across the
+                        // in-memory round-trip explicitly as well.
+                        capturedProject->setFilePath(project->filePath());
+                        capturedProject->setModified(project->isModified());
+                        capturedProject->setActiveSequence(selectedIndex);
+
+                        auto renderSnapshot = std::make_shared<ExportRenderSnapshot>();
+                        renderSnapshot->sequenceIndex = selectedIndex;
+                        renderSnapshot->project =
+                            std::shared_ptr<const Project>(std::move(capturedProject));
+                        renderSnapshot->timeline = std::shared_ptr<const Timeline>(
+                            renderSnapshot->project,
+                            renderSnapshot->project->sequence(selectedIndex));
+                        snapshot = std::move(renderSnapshot);
+                    }
+                }
+            } catch (const std::exception& e) {
+                captureError = std::string("Cannot capture export project: ") + e.what();
+            } catch (...) {
+                captureError = "Cannot capture export project";
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto job = std::make_shared<ExportJob>();
+    job->id     = m_nextJobId++;
+    job->config = config;
+    job->renderSnapshot = std::move(snapshot);
+    job->snapshotCaptureError = std::move(captureError);
+    m_jobs.push_back(job);
+
+    if (job->snapshotCaptureError.empty()) {
+        spdlog::info("RenderQueue: Added immutable project snapshot job {} → {}",
+                     job->id, pathToUtf8(config.outputPath));
+    } else {
+        spdlog::error("RenderQueue: Job {} snapshot capture failed: {}",
+                      job->id, job->snapshotCaptureError);
+    }
     return job->id;
 }
 
@@ -246,6 +356,23 @@ struct JobRunContext
 {
     std::unique_ptr<Encoder> encoder;
     std::unordered_map<std::string, std::unique_ptr<PacketDemuxer>> demuxers;
+    std::filesystem::path stagedOutputPath;
+
+    ~JobRunContext()
+    {
+        // A staged container is cleared only after atomic publication.  Any
+        // ordinary failure, cancellation, C++ exception, or caught SEH leaves
+        // it here for guaranteed cleanup while preserving the prior target.
+        if (!stagedOutputPath.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(stagedOutputPath, ec);
+            if (ec) {
+                spdlog::warn("RenderQueue: could not remove incomplete staged "
+                             "export '{}': {}",
+                             pathToUtf8(stagedOutputPath), ec.message());
+            }
+        }
+    }
 };
 
 namespace {
@@ -342,10 +469,24 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
 {
     spdlog::info("RenderQueue: Processing job {} → {}", job.id, pathToUtf8(job.config.outputPath));
 
+    // A production capture failure is terminal.  Falling back to `timeline`
+    // here would silently render whichever project happens to be open when the
+    // worker starts, defeating queue-time immutability.
+    if (!job.snapshotCaptureError.empty()) {
+        job.status = JobStatus::Failed;
+        job.error = job.snapshotCaptureError;
+        return;
+    }
+
+    const Timeline* renderTimeline =
+        (job.renderSnapshot && job.renderSnapshot->timeline)
+            ? job.renderSnapshot->timeline.get()
+            : timeline; // legacy no-source addJob/start callers only
+
     // Audio-only export: no compositor / encoder / frame loop — just mix the
     // timeline audio and write a standalone WAV/MP3/AAC/FLAC file.
     if (job.config.audioOnly) {
-        processAudioOnlyJob(job, timeline);
+        processAudioOnlyJob(job, renderTimeline);
         return;
     }
 
@@ -362,6 +503,12 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     const int      fpsNum = job.config.encoderConfig.fpsNum;
     const int      fpsDen = job.config.encoderConfig.fpsDen;
 
+    if (job.config.outputPath.empty() || outW == 0 || outH == 0 ||
+        fpsNum <= 0 || fpsDen <= 0) {
+        job.status = JobStatus::Failed;
+        job.error = "RenderQueue: invalid output path, dimensions, or frame rate";
+        return;
+    }
     if (!m_frameRenderCb) {
         job.status = JobStatus::Failed;
         job.error = "RenderQueue: no frame-render callback set";
@@ -375,6 +522,12 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     spdlog::info("RndQ[{}]: Step 2 — create encoder (codec={}, hw={})",
                  job.id, static_cast<int>(job.config.encoderConfig.codec),
                  static_cast<int>(job.config.encoderConfig.hwAccel));
+    // The requested output canvas is authoritative.  Keeping the encoder's
+    // input dimensions in lock-step prevents it from reading a different row
+    // width/height than the validated compositor payload.
+    job.config.encoderConfig.width = outW;
+    job.config.encoderConfig.height = outH;
+
     std::unique_ptr<Encoder>& encoder = ctx.encoder;
     encoder = Encoder::create(job.config.encoderConfig.codec,
                               job.config.encoderConfig.hwAccel);
@@ -416,15 +569,40 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     spdlog::info("RndQ[{}]: Step 3 — frame range", job.id);
     int64_t startFrame = job.config.startFrame;
     int64_t endFrame   = job.config.endFrame;
-    if (endFrame <= startFrame && timeline) {
-        double duration = ticksToSeconds(timeline->duration());
+    if (endFrame <= startFrame && renderTimeline) {
+        double duration = ticksToSeconds(renderTimeline->duration());
         endFrame = static_cast<int64_t>(duration * fpsNum / fpsDen);
     }
     int64_t totalFrames = endFrame - startFrame;
-    if (totalFrames <= 0) totalFrames = 1;
+    if (totalFrames <= 0) {
+        endFrame = startFrame + 1;
+        totalFrames = 1;
+    }
     spdlog::info("RndQ[{}]: frames [{}, {}) total={}", job.id, startFrame, endFrame, totalFrames);
 
     job.progress.totalFrames = totalFrames;
+
+    // Estimate same-volume staging space before expensive rendering. This is
+    // advisory because CRF output size is content-dependent; publication
+    // remains fail-closed even when the estimate is low.
+    {
+        const double seconds = static_cast<double>(totalFrames) * fpsDen / fpsNum;
+        double estimatedMbps = job.config.encoderConfig.bitrateMbps > 0
+            ? static_cast<double>(job.config.encoderConfig.bitrateMbps)
+            : std::max(8.0, static_cast<double>(outW) * outH * fpsNum / fpsDen
+                              / (1920.0 * 1080.0 * 30.0) * 16.0);
+        const uintmax_t estimatedBytes = static_cast<uintmax_t>(
+            seconds * estimatedMbps * 1000000.0 / 8.0 * 1.25);
+        std::error_code spaceError;
+        const auto space = std::filesystem::space(job.config.outputPath.parent_path(), spaceError);
+        if (!spaceError) {
+            spdlog::info("RndQ[{}]: estimated staging space {:.1f} MiB; available {:.1f} MiB",
+                         job.id, estimatedBytes / 1048576.0, space.available / 1048576.0);
+            if (space.available < estimatedBytes)
+                spdlog::warn("RndQ[{}]: available disk space is below the estimated staging requirement",
+                             job.id);
+        }
+    }
 
     // ── Smart Render Analysis ───────────────────────────────────────────
     // Determine which frames can be passed through (raw packet copy from
@@ -444,14 +622,17 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // h264_mp4toannexb/av_bsf bitstream path, source-extradata handling, a
     // refusal to mix incompatible/multiple sources, and transition-awareness
     // in analyzeSmartRender.
-    constexpr bool kEnableSmartRenderPassthrough = false;
     SmartRenderPlan smartPlan;
-    if constexpr (kEnableSmartRenderPassthrough) {
-        if (timeline) {
-            smartPlan = analyzeSmartRender(*timeline, job.config.encoderConfig,
-                                           job.config.outputWidth, job.config.outputHeight,
-                                           startFrame, endFrame);
-        }
+    const bool intraCodec = job.config.encoderConfig.codec == EncoderCodec::ProRes ||
+                            job.config.encoderConfig.codec == EncoderCodec::DNxHR;
+    if (intraCodec && renderTimeline) {
+        smartPlan = analyzeSmartRender(*renderTimeline, job.config.encoderConfig,
+                                       job.config.outputWidth, job.config.outputHeight,
+                                       startFrame, endFrame);
+        // Never mix copied and encoded packets. A partial plan can cross codec
+        // headers or edit/GOP boundaries, so it always falls back in full.
+        if (smartPlan.passthroughCount != totalFrames)
+            smartPlan = {};
     }
 
     // Open PacketDemuxers for source files used in passthrough.
@@ -470,6 +651,13 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                 }
             }
         }
+        if (demuxers.size() != 1 ||
+            !demuxers.begin()->second->strictlyMatches(
+                encoder->avCodecContext(), outW, outH, fpsNum, fpsDen)) {
+            spdlog::info("SmartRender: source parameters are not an exact match; full render");
+            smartPlan = {};
+            demuxers.clear();
+        }
     }
 
     // Render frame by frame
@@ -480,15 +668,21 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         std::vector<uint8_t> storage;
         EncodedPacket        pkt;
     };
+    std::vector<OwnedPacket> allPackets;
 
-    // Helper: create an OwnedPacket from an EncodedPacket by deep-copying storage
-    auto makeOwnedPacket = [](const EncodedPacket& pkt) -> OwnedPacket {
+    // Deep-copy packets while rejecting malformed output.  An encoder packet
+    // with no payload cannot contribute a decodable frame and must never make
+    // it as far as the muxer.
+    auto appendOwnedPacket = [&](const EncodedPacket& pkt) -> bool {
+        if (!pkt.data || pkt.size <= 0)
+            return false;
         OwnedPacket op;
         op.storage.assign(pkt.data, pkt.data + pkt.size);
         op.pkt = pkt;
         op.pkt.data = op.storage.data();
         op.pkt.ownsData = false;
-        return op;
+        allPackets.push_back(std::move(op));
+        return true;
     };
 
     // Helper: update render progress.  Numeric fields are atomics (polled by
@@ -501,7 +695,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         const double fps = elapsed > 0 ? framesCompleted / elapsed : 0.0;
 
         job.progress.currentFrame = framesCompleted;
-        job.progress.percent = 100.0f * static_cast<float>(framesCompleted) / totalFrames;
+        job.progress.percent = 95.0f * static_cast<float>(framesCompleted) / totalFrames;
         job.progress.elapsedSeconds = elapsed;
         job.progress.fps = fps;
         job.progress.estimatedRemaining = fps > 0
@@ -517,10 +711,11 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
 
     // ── Step 4: Frame loop ──────────────────────────────────────────
     spdlog::info("RndQ[{}]: Step 4 — starting frame loop ({} frames)", job.id, totalFrames);
-    std::vector<OwnedPacket> allPackets;
     bool cancelled = false;
     uint64_t segmentCacheHits = 0;
     uint64_t segmentCacheMisses = 0;
+    int64_t acceptedVideoFrames = 0;
+    int64_t encodedVideoFrames = 0;
 
     // ── Smart Render passthrough run state ──────────────────────────────
     // A copied-packet run is only a decodable output GOP if it BEGINS on a
@@ -537,6 +732,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // than a full re-encode.
     std::string ptRunMedia;
     int64_t     ptExpectedSrc = -1;
+    const bool passthroughRequired = smartPlan.passthroughCount == totalFrames;
 
     for (int64_t f = startFrame; f < endFrame; ++f) {
         // Check cancellation (per-job atomic on the job itself — no map race)
@@ -572,11 +768,17 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                         rawPkt.dts = frameIdx;
                         rawPkt.duration = 1;
 
-                        allPackets.push_back(makeOwnedPacket(rawPkt));
-                        ptRunMedia    = pf.mediaPath;
-                        ptExpectedSrc = pf.sourceFrame + 1;
-                        updateProgress(f);
-                        continue;
+                        if (!appendOwnedPacket(rawPkt)) {
+                            spdlog::warn("RndQ[{}]: passthrough source returned an "
+                                         "empty packet for frame {}; re-encoding",
+                                         job.id, f);
+                        } else {
+                            ++acceptedVideoFrames;
+                            ptRunMedia    = pf.mediaPath;
+                            ptExpectedSrc = pf.sourceFrame + 1;
+                            updateProgress(f);
+                            continue;
+                        }
                     }
                     // Non-keyframe run start (clip in-point not GOP-aligned):
                     // fall through to re-encode so the leading frames survive.
@@ -584,19 +786,29 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                 // Fall through to normal render if read failed
             }
         }
+        // A proven plan is all-or-nothing. Never silently create a stream that
+        // mixes source codec headers with newly encoded packets if a source
+        // packet fails the final runtime checks.
+        if (passthroughRequired) {
+            job.status = JobStatus::Failed;
+            job.error = "Smart rendering source packet validation failed at frame " +
+                        std::to_string(f) + "; no output was published";
+            encoder->shutdown();
+            return;
+        }
         // Reaching here means this frame is composited + re-encoded, which
         // breaks any in-progress passthrough run.  The next passthrough frame
         // must re-validate from a keyframe before copying resumes.
         ptRunMedia.clear();
         ptExpectedSrc = -1;
 
-        {
         // Render frame. Composited frames are BGRA; the encoder's swscale
         // converts BGRA→YUV420P directly (SIMD), so we pass the buffer
         // straight through — no per-frame CPU channel-swap + 4K alloc.
         // The holders below MUST outlive the encodeFrame() call.
         std::shared_ptr<CachedFrame> cframe;
         const uint8_t* encodePixels = nullptr;
+        ExportFrameValidation frameValidation;
 
         // Composite this frame via the main-thread callback (preview compositor;
         // produces a BGRA CachedFrame). Async pre-submit of the next frame's
@@ -608,7 +820,41 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
             nextTick = frameIndexToTick(
                 f + 1, static_cast<uint32_t>(fpsNum), static_cast<uint32_t>(fpsDen));
         }
-        cframe = m_frameRenderCb(tick, nextTick, outW, outH, true);
+        // Transient decoder/GPU misses are recoverable, but only by retrying
+        // the SAME timeline tick.  Never advance progress or touch the encoder
+        // until a complete frame payload has been returned.
+        constexpr int kMaxCompositeAttempts = 3;
+        for (int attempt = 1; attempt <= kMaxCompositeAttempts; ++attempt) {
+            if (m_cancelAll.load() || job.cancelRequested.load()) {
+                cancelled = true;
+                break;
+            }
+            cframe = m_frameRenderCb(job.renderSnapshot,
+                                     tick, nextTick, outW, outH, true,
+                                     job.config.preserveAlpha);
+            frameValidation = validateExportFrame(
+                cframe.get(), outW, outH, encoder->is10BitTarget());
+            if (frameValidation.valid)
+                break;
+
+            spdlog::warn("RndQ[{}]: invalid composite for frame {} "
+                         "(attempt {}/{}): {}",
+                         job.id, f, attempt, kMaxCompositeAttempts,
+                         frameValidation.error);
+            if (attempt < kMaxCompositeAttempts)
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (cancelled)
+            break;
+        if (!frameValidation.valid) {
+            job.status = JobStatus::Failed;
+            job.error = "Rendering failed at frame " + std::to_string(f) +
+                        " after " + std::to_string(kMaxCompositeAttempts) +
+                        " attempts: " + frameValidation.error;
+            encoder->shutdown();
+            return;
+        }
+
         if (cframe && cframe->segmentCacheHit)
             ++segmentCacheHits;
         else
@@ -620,18 +866,42 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // BGRA round-trip — and SKIP the 8-bit segment write-through (the cache
         // is BGRA-only).  8-bit encoders / non-passthrough frames fall through
         // to the normal path below.
-        if (cframe && cframe->depth == 16 && !cframe->rgba16f.empty()
-                && encoder->is10BitTarget()) {
+        if (frameValidation.useRgba16f) {
+            const int64_t submissionsBefore = encoder->framesSubmitted();
             const bool got = encoder->encodeFrame16f(
                 reinterpret_cast<const uint16_t*>(cframe->rgba16f.data()),
                 static_cast<int>(cframe->rgba16fStride), f - startFrame);
+            if (encoder->hasFatalError() ||
+                encoder->framesSubmitted() != submissionsBefore + 1) {
+                job.status = JobStatus::Failed;
+                job.error = encoder->lastError().empty()
+                    ? "Encoder rejected RGBA16F frame " + std::to_string(f)
+                    : encoder->lastError();
+                encoder->shutdown();
+                return;
+            }
+            ++acceptedVideoFrames;
+            ++encodedVideoFrames;
             if (got)
-                allPackets.push_back(makeOwnedPacket(encoder->lastPacket()));
+            {
+                if (!appendOwnedPacket(encoder->lastPacket())) {
+                    job.status = JobStatus::Failed;
+                    job.error = "Encoder emitted an empty packet";
+                    encoder->shutdown();
+                    return;
+                }
+            }
             else
                 spdlog::debug("RndQ[{}]: encoder buffering at f={} (16F, no packet yet)",
                               job.id, f);
-            for (const auto& ep : encoder->pendingPackets())
-                allPackets.push_back(makeOwnedPacket(ep));
+            for (const auto& ep : encoder->pendingPackets()) {
+                if (!appendOwnedPacket(ep)) {
+                    job.status = JobStatus::Failed;
+                    job.error = "Encoder emitted an empty pending packet";
+                    encoder->shutdown();
+                    return;
+                }
+            }
             updateProgress(f);
             continue;
         }
@@ -640,25 +910,57 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // returning (it does ensurePixels inside the BlockingQueuedConnection
         // dispatch). We do NOT call ensurePixels() here — it may trigger a GPU
         // readback (lazyReadback) which is NOT thread-safe.
-        if (!cframe || cframe->pixels.empty()) {
-            spdlog::warn("RndQ[{}]: null or empty frame at f={}, skipping", job.id, f);
-            updateProgress(f);
-            continue;
+        std::vector<uint8_t> tightBgra;
+        if (frameValidation.needsBgraRepack) {
+            const size_t rowBytes = static_cast<size_t>(outW) * 4u;
+            tightBgra.resize(rowBytes * static_cast<size_t>(outH));
+            for (uint32_t row = 0; row < outH; ++row) {
+                std::memcpy(tightBgra.data() + static_cast<size_t>(row) * rowBytes,
+                            cframe->pixels.data() +
+                                static_cast<size_t>(row) * cframe->stride,
+                            rowBytes);
+            }
+            encodePixels = tightBgra.data();
+        } else {
+            encodePixels = cframe->pixels.data();
         }
-        encodePixels = cframe->pixels.data();
 
         // §4.6 export write-through: this frame is full-res with CPU pixels
         // ready — store it in the segment cache so a re-export reuses it.
         if (m_frameStoreCb)
-            m_frameStoreCb(tick, cframe);
+            m_frameStoreCb(job.renderSnapshot, tick, cframe);
 
         // Encode frame
-        if (encoder->encodeFrame(encodePixels, f - startFrame)) {
+        const int64_t submissionsBefore = encoder->framesSubmitted();
+        const bool gotPacket = encoder->encodeFrame(encodePixels, f - startFrame);
+        if (encoder->hasFatalError() ||
+            encoder->framesSubmitted() != submissionsBefore + 1) {
+            job.status = JobStatus::Failed;
+            job.error = encoder->lastError().empty()
+                ? "Encoder rejected frame " + std::to_string(f)
+                : encoder->lastError();
+            encoder->shutdown();
+            return;
+        }
+        ++acceptedVideoFrames;
+        ++encodedVideoFrames;
+        if (gotPacket) {
             const auto& lp = encoder->lastPacket();
-            allPackets.push_back(makeOwnedPacket(lp));
+            if (!appendOwnedPacket(lp)) {
+                job.status = JobStatus::Failed;
+                job.error = "Encoder emitted an empty packet";
+                encoder->shutdown();
+                return;
+            }
             // Collect any extra packets the encoder produced (B-frame drain)
-            for (const auto& ep : encoder->pendingPackets())
-                allPackets.push_back(makeOwnedPacket(ep));
+            for (const auto& ep : encoder->pendingPackets()) {
+                if (!appendOwnedPacket(ep)) {
+                    job.status = JobStatus::Failed;
+                    job.error = "Encoder emitted an empty pending packet";
+                    encoder->shutdown();
+                    return;
+                }
+            }
         } else {
             // NOT an error: the encoder produced no packet THIS call — normal
             // while it fills its look-ahead/B-frame buffer (every frame at the
@@ -667,11 +969,15 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
             // as a failure in perf_log.
             spdlog::debug("RndQ[{}]: encoder buffering at f={} (no packet yet)",
                           job.id, f);
-            for (const auto& ep : encoder->pendingPackets())
-                allPackets.push_back(makeOwnedPacket(ep));
+            for (const auto& ep : encoder->pendingPackets()) {
+                if (!appendOwnedPacket(ep)) {
+                    job.status = JobStatus::Failed;
+                    job.error = "Encoder emitted an empty pending packet";
+                    encoder->shutdown();
+                    return;
+                }
+            }
         }
-        } // end normal render block
-
         updateProgress(f);
     }
 
@@ -681,23 +987,47 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         return;
     }
 
-    // Flush encoder
-    encoder->flush();
-    for (const auto& ep : encoder->flushedPackets()) {
-        allPackets.push_back(makeOwnedPacket(ep));
+    if (acceptedVideoFrames != totalFrames ||
+        encoder->framesSubmitted() != encodedVideoFrames) {
+        job.status = JobStatus::Failed;
+        job.error = "Export frame accounting mismatch; refusing incomplete output";
+        encoder->shutdown();
+        return;
     }
 
-    // Audio mixdown — mixes from the job's timeline SNAPSHOT (cloned on the
-    // main thread in addJob) so concurrent user edits to the live timeline
-    // can't race the worker.  Falls back to the live timeline only when no
-    // snapshot was provided (tests / legacy callers).
+    // Flush encoder
+    encoder->flush();
+    if (encoder->hasFatalError()) {
+        job.status = JobStatus::Failed;
+        job.error = encoder->lastError().empty()
+            ? "Encoder failed while flushing"
+            : encoder->lastError();
+        encoder->shutdown();
+        return;
+    }
+    for (const auto& ep : encoder->flushedPackets()) {
+        if (!appendOwnedPacket(ep)) {
+            job.status = JobStatus::Failed;
+            job.error = "Encoder emitted an empty flushed packet";
+            encoder->shutdown();
+            return;
+        }
+    }
+    if (allPackets.empty()) {
+        job.status = JobStatus::Failed;
+        job.error = "Encoder produced no video packets";
+        encoder->shutdown();
+        return;
+    }
+
+    // Audio consumes the SAME renderTimeline used for duration/video dispatch,
+    // so edits cannot produce queue-time audio under live/current video (or the
+    // reverse).
     MixdownResult audioResult;
     {
-        const Timeline* audioTimeline =
-            job.timelineSnapshot ? job.timelineSnapshot.get() : timeline;
-        if (job.config.includeAudio && audioTimeline) {
+        if (job.config.includeAudio && renderTimeline) {
             AudioMixdown mixdown;
-            audioResult = mixdown.mix(*audioTimeline, job.config.audioConfig);
+            audioResult = mixdown.mix(*renderTimeline, job.config.audioConfig);
         }
     }
 
@@ -707,7 +1037,14 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // AV1 seq header) into the container. Shutting it down here would free
     // the AVCodecContext and produce a file that only plays in VLC.
     MuxerConfig mCfg;
-    mCfg.outputPath     = job.config.outputPath;
+    ctx.stagedOutputPath = makeStagedExportPath(job.config.outputPath, job.id);
+    if (ctx.stagedOutputPath.empty()) {
+        job.status = JobStatus::Failed;
+        job.error = "Could not create a staged export path";
+        encoder->shutdown();
+        return;
+    }
+    mCfg.outputPath     = ctx.stagedOutputPath;
     mCfg.format         = static_cast<ContainerFormat>(job.config.containerFormat);
     mCfg.videoWidth     = job.config.outputWidth;
     mCfg.videoHeight    = job.config.outputHeight;
@@ -721,7 +1058,9 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     mCfg.videoCodecId = encoder ? encoder->avCodecId() : 0;
     // Hand the opened codec context to the muxer so it can copy
     // extradata + full codec params into the container's stream.
-    mCfg.videoCodecContext = encoder ? encoder->avCodecContext() : nullptr;
+    mCfg.videoCodecContext = smartPlan.passthroughCount == totalFrames && demuxers.size() == 1
+        ? demuxers.begin()->second->codecContext()
+        : (encoder ? encoder->avCodecContext() : nullptr);
     spdlog::info("RndQ[{}]: mux config fps={}/{} codecId={}", job.id,
                  mCfg.videoFpsNum, mCfg.videoFpsDen, mCfg.videoCodecId);
 
@@ -747,7 +1086,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     muxPackets.reserve(allPackets.size());
     for (const auto& op : allPackets)
         muxPackets.push_back(op.pkt);
-    bool muxOk = Muxer::muxFile(job.config.outputPath, muxPackets, audioPtr, mCfg);
+    bool muxOk = Muxer::muxFile(ctx.stagedOutputPath, muxPackets, audioPtr, mCfg);
 
     // Safe to release the encoder now that the muxer has read its params.
     encoder->shutdown();
@@ -758,6 +1097,50 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         job.error  = "Muxing failed — output file not written";
         return;
     }
+
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        job.progress.statusText = "Validating export...";
+    }
+    if (m_progressCb) m_progressCb(job.id, job.progress);
+
+    const auto validationStart = std::chrono::steady_clock::now();
+    const ExportFileValidation validation = validateExportFile(
+        ctx.stagedOutputPath, totalFrames, outW, outH, fpsNum, fpsDen,
+        [this, &job](int64_t decoded, int64_t expected) {
+            job.progress.percent = 95.0f + 4.9f * static_cast<float>(decoded) / expected;
+            {
+                std::lock_guard<std::mutex> lk(m_mutex);
+                job.progress.statusText = "Validating frame " + std::to_string(decoded)
+                    + "/" + std::to_string(expected);
+            }
+            if (m_progressCb) m_progressCb(job.id, job.progress);
+        });
+    const double validationSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - validationStart).count();
+    spdlog::info("RndQ[{}]: strict validation decoded {} frames in {:.2f}s ({:.1f} fps)",
+                 job.id, validation.decodedFrames, validationSeconds,
+                 validationSeconds > 0.0 ? validation.decodedFrames / validationSeconds : 0.0);
+    if (!validation.ok) {
+        spdlog::error("RenderQueue: validation failed for job {}: {}",
+                      job.id, validation.error);
+        job.status = JobStatus::Failed;
+        job.error = "Export validation failed: " + validation.error;
+        return;
+    }
+
+    std::string publishError;
+    if (!publishStagedExport(ctx.stagedOutputPath, job.config.outputPath,
+                             publishError)) {
+        spdlog::error("RenderQueue: publication failed for job {}: {}",
+                      job.id, publishError);
+        job.status = JobStatus::Failed;
+        job.error = publishError;
+        return;
+    }
+    // Ownership moved atomically to outputPath; prevent context cleanup from
+    // attempting to remove the now-nonexistent staged name.
+    ctx.stagedOutputPath.clear();
 
     job.progress.percent = 100.0f;
     {
@@ -779,15 +1162,11 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // Completion callback fires ONCE, in workerThread, after this returns.
 }
 
-void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
+void RenderQueue::processAudioOnlyJob(ExportJob& job, const Timeline* timeline)
 {
     spdlog::info("RndQ[{}]: audio-only export → {}", job.id, pathToUtf8(job.config.outputPath));
 
-    // Prefer the job's timeline snapshot (cloned on the main thread at
-    // addJob) so the mixdown never races live edits.
-    const Timeline* audioTimeline =
-        job.timelineSnapshot ? job.timelineSnapshot.get() : timeline;
-    if (!audioTimeline) {
+    if (!timeline) {
         job.status = JobStatus::Failed;
         job.error  = "No timeline loaded — nothing to export";
         return;
@@ -817,7 +1196,7 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, Timeline* timeline)
     // to 0–90%; the file write takes the last slice.
     AudioMixdown mixdown;
     MixdownResult result = mixdown.mix(
-        *audioTimeline, job.config.audioConfig,
+        *timeline, job.config.audioConfig,
         [&](float p, const std::string& s) {
             job.progress.percent = p * 90.0f;
             setStatusText(s);

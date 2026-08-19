@@ -43,6 +43,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
@@ -239,6 +243,17 @@ TEST_F(AutoSaveTest, TickSavesAfterInterval)
     // Verify auto-save folder was created with a file inside
     auto asFolder = as.currentAutoSaveFolder();
     EXPECT_TRUE(fs::exists(asFolder));
+
+    const auto committed = rt::AutoSave::findNewestAutoSave(proj->filePath());
+    ASSERT_FALSE(committed.empty());
+    EXPECT_EQ(committed.extension(), ".rtp");
+    EXPECT_TRUE(fs::is_regular_file(committed));
+
+    // AutoSave delegates the complete staging transaction to the serializer;
+    // it must not leave its former second-level .tmp file behind.
+    for (const auto& entry : fs::directory_iterator(asFolder)) {
+        EXPECT_NE(entry.path().extension(), ".tmp");
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -265,6 +280,57 @@ TEST_F(AutoSaveTest, SaveNowFailsWithNoProject)
     rt::AutoSave as;
     EXPECT_FALSE(as.saveNow());
 }
+
+#ifdef _WIN32
+TEST_F(AutoSaveTest, LockedExistingAutoSaveIsReportedAsFailure)
+{
+    rt::AutoSave as;
+    auto proj = createAndSaveProject();
+    as.setProject(proj.get());
+
+    const auto folder = as.currentAutoSaveFolder();
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    ASSERT_FALSE(ec);
+
+    // Start just after the timestamp changes so both saves reliably target
+    // the same second-resolution auto-save path.
+    const auto previousPath = rt::AutoSave::makeTimestampedPath(folder, proj->name());
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (rt::AutoSave::makeTimestampedPath(folder, proj->name()) == previousPath &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(2ms);
+    }
+    ASSERT_NE(rt::AutoSave::makeTimestampedPath(folder, proj->name()), previousPath);
+
+    ASSERT_TRUE(as.saveNow());
+    const auto committed = rt::AutoSave::findNewestAutoSave(proj->filePath());
+    ASSERT_FALSE(committed.empty());
+    ASSERT_EQ(rt::AutoSave::makeTimestampedPath(folder, proj->name()), committed);
+
+    HANDLE lockedDestination = ::CreateFileW(
+        committed.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(lockedDestination, INVALID_HANDLE_VALUE);
+
+    const bool saved = as.saveNow();
+    ::CloseHandle(lockedDestination);
+
+    EXPECT_FALSE(saved);
+    EXPECT_EQ(as.status(), rt::AutoSaveStatus::Failed);
+    EXPECT_EQ(as.stats().saveCount, 1u);
+    EXPECT_EQ(as.stats().failCount, 1u);
+
+    auto temporaryPath = committed;
+    temporaryPath += ".tmp";
+    EXPECT_FALSE(fs::exists(temporaryPath));
+
+    rt::ProjectSerializer serializer;
+    auto recovered = serializer.load(committed);
+    ASSERT_NE(recovered, nullptr);
+    EXPECT_EQ(recovered->name(), proj->name());
+}
+#endif
 
 TEST_F(AutoSaveTest, MultipleSavesIncrementCount)
 {

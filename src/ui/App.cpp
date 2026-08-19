@@ -175,8 +175,7 @@ App::~App()
             //
             // shutdown() is idempotent; the later ~CompositeEngine call
             // from ~CompositeService is a safe no-op.
-            if (auto* cs = tw->compositeService())
-                cs->shutdown();
+            tw->shutdownCompositeServices();
         }
     }
     if (m_audioEngine) m_audioEngine->shutdown();

@@ -179,14 +179,10 @@ bool TimelinePanel::eventFilter(QObject* watched, QEvent* event)
 
 void TimelinePanel::keyPressEvent(QKeyEvent* event)
 {
-    if (m_shortcuts && m_shortcuts->handleKeyPress(event->key(), event->modifiers()))
-    {
-        event->accept();
-        return;
-    }
-    // Forward unhandled keys to the enclosing TimelineWorkspace so its
-    // keyPressEvent can handle transport (Left/Right arrows with auto-repeat)
-    // and other workspace-level shortcuts.  parentWidget() is an
+    // Forward first to the focus-aware workspace router. It consults the
+    // same customizable bindings for Delete, Split and tools, while retaining
+    // richer gap/transition/effect behavior than the generic fallback.
+    // parentWidget() is an
     // intermediate container widget here (the layout's host), not the
     // workspace itself — sending to it sat the event in a chain whose top
     // sometimes swallowed arrow keys.  Walk up explicitly until we find the
@@ -200,6 +196,13 @@ void TimelinePanel::keyPressEvent(QKeyEvent* event)
         QApplication::sendEvent(w, event);
         if (event->isAccepted())
             return;
+    }
+    // Actions not owned by the focus-aware router (for example Duplicate)
+    // still use the centralized registry callback.
+    if (m_shortcuts && m_shortcuts->handleKeyPress(event->key(), event->modifiers()))
+    {
+        event->accept();
+        return;
     }
     QWidget::keyPressEvent(event);
 }

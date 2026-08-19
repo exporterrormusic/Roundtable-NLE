@@ -14,6 +14,7 @@
 #include "project/Project.h"
 #include "dialogs/ProjectSettingsDialog.h"
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/GraphicsEditorPanel.h"
 #include "dialogs/KeyboardShortcutsDialog.h"
 #include "dialogs/AppPreferencesDialog.h"
 #include "dialogs/RelinkMediaDialog.h"
@@ -34,6 +35,7 @@
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QMenuBar>
 #include <QMessageBox>
 #include "Settings.h"
@@ -169,6 +171,120 @@ void MainWindow::buildEditMenu(QMenuBar* menuBar)
     auto* selectAllAct = menu->addAction("Select &All");
     // Shortcut handled by TimelineWorkspace (Ctrl+A at widget scope)
 
+    auto triggerEditAction = [this](const char* actionId) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (QString::fromLatin1(actionId) == QString::fromLatin1(ShortcutManager::kDelete)
+            && m_timelineWorkspace && m_shortcutManager) {
+            const auto* action = m_shortcutManager->action(
+                QString::fromLatin1(ShortcutManager::kDelete));
+            if (!action || action->currentKey.isEmpty()) return;
+            const auto combo = action->currentKey[0];
+            QKeyEvent event(QEvent::KeyPress, combo.key(), combo.keyboardModifiers());
+            QApplication::sendEvent(m_timelineWorkspace, &event);
+            return;
+        }
+        if (m_shortcutManager)
+            m_shortcutManager->triggerAction(QString::fromLatin1(actionId));
+    };
+    connect(cutAct, &QAction::triggered, this,
+            [triggerEditAction]() { triggerEditAction(ShortcutManager::kCut); });
+    connect(copyAct, &QAction::triggered, this,
+            [triggerEditAction]() { triggerEditAction(ShortcutManager::kCopy); });
+    connect(pasteAct, &QAction::triggered, this,
+            [triggerEditAction]() { triggerEditAction(ShortcutManager::kPaste); });
+    connect(deleteAct, &QAction::triggered, this,
+            [triggerEditAction]() { triggerEditAction(ShortcutManager::kDelete); });
+    connect(selectAllAct, &QAction::triggered, this,
+            [triggerEditAction]() { triggerEditAction(ShortcutManager::kSelectAll); });
+
+    // Keep the visible shortcut hints synchronized with customization without
+    // registering a second QAction shortcut that could conflict with the
+    // workspace's focus-aware routing.
+    connect(menu, &QMenu::aboutToShow, this,
+            [this, cutAct, copyAct, pasteAct, deleteAct, selectAllAct]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        auto* panel = m_timelineWorkspace ? m_timelineWorkspace->timelinePanel() : nullptr;
+        auto* timeline = m_timelineWorkspace ? m_timelineWorkspace->timeline() : nullptr;
+        auto* fw = QApplication::focusWidget();
+        const bool binFocused = projectBin() && fw && projectBin()->isAncestorOf(fw);
+        const bool graphicsFocused = m_timelineWorkspace
+            && m_timelineWorkspace->graphicsEditorPanel() && fw
+            && m_timelineWorkspace->graphicsEditorPanel()->isAncestorOf(fw);
+        const bool effectsFocused = effectControlsPanel() && fw
+            && effectControlsPanel()->isAncestorOf(fw);
+
+        auto hasMutableTimelineTarget = [timeline, panel]() {
+            if (!timeline || !panel) return false;
+            if (panel->gapSelection().active) {
+                const size_t ti = panel->gapSelection().trackIndex;
+                auto* track = ti < timeline->trackCount() ? timeline->track(ti) : nullptr;
+                if (track && !track->isLocked()) return true;
+            }
+            const size_t ti = panel->selectedTransitionTrack();
+            auto* transitionTrack = ti < timeline->trackCount() ? timeline->track(ti) : nullptr;
+            if (transitionTrack && !transitionTrack->isLocked()
+                && panel->selectedTransitionIndex() < transitionTrack->transitionCount())
+                return true;
+            for (const auto& ref : panel->selection().clips()) {
+                auto* track = ref.trackIndex < timeline->trackCount()
+                    ? timeline->track(ref.trackIndex) : nullptr;
+                if (track && !track->isLocked()
+                    && track->findClipIndexById(ref.clipId) < track->clipCount())
+                    return true;
+            }
+            return false;
+        };
+        auto hasTimelineContent = [timeline]() {
+            if (!timeline) return false;
+            for (size_t i = 0; i < timeline->trackCount(); ++i)
+                if (auto* track = timeline->track(i); track && track->clipCount() > 0)
+                    return true;
+            return false;
+        };
+
+        const bool keySelection = effectControlsPanel()
+            && effectControlsPanel()->hasSelectedKeyframes();
+        const bool timelineCopyTarget = panel && (!panel->selection().empty()
+            || panel->selectedTransitionTrack() != SIZE_MAX);
+        const bool canCut = keySelection || hasMutableTimelineTarget();
+        const bool canCopy = (binFocused && projectBin()->hasSelection())
+            || (graphicsFocused && m_timelineWorkspace->graphicsEditorPanel()->selectedLayer())
+            || (effectsFocused && effectControlsPanel()
+                && (effectControlsPanel()->hasSelectedEffect() || keySelection))
+            || timelineCopyTarget;
+        const bool canPaste = (binFocused && projectBin()->hasClipboard())
+            || (graphicsFocused && m_timelineWorkspace->graphicsEditorPanel()->hasCopiedLayer())
+            || (effectControlsPanel() && effectControlsPanel()->clip()
+                && (effectControlsPanel()->hasCopiedEffect()
+                    || effectControlsPanel()->hasKfClipboardData()))
+            || (panel && !panel->clipboard().empty());
+        const bool canDelete = (graphicsFocused && m_timelineWorkspace
+                && m_timelineWorkspace->graphicsEditorPanel()->selectedLayer())
+            || (effectControlsPanel()
+                && (effectControlsPanel()->hasSelectedMask()
+                    || effectControlsPanel()->hasSelectedEffect()
+                    || (effectsFocused && keySelection)))
+            || hasMutableTimelineTarget();
+        const bool canSelectAll = binFocused
+            ? projectBin()->itemCount() > 0 : hasTimelineContent();
+
+        auto syncAction = [this](QAction* menuAction, const QString& label,
+                                 const char* actionId, bool canExecute) {
+            const auto* action = m_shortcutManager
+                ? m_shortcutManager->action(QString::fromLatin1(actionId))
+                : nullptr;
+            menuAction->setEnabled(canExecute && action && action->enabled);
+            const QString key = action ? action->currentKey.toString(
+                QKeySequence::NativeText) : QString();
+            menuAction->setText(key.isEmpty() ? label : label + "\t" + key);
+        };
+        syncAction(cutAct, tr("Cu&t"), ShortcutManager::kCut, canCut);
+        syncAction(copyAct, tr("&Copy"), ShortcutManager::kCopy, canCopy);
+        syncAction(pasteAct, tr("&Paste"), ShortcutManager::kPaste, canPaste);
+        syncAction(deleteAct, tr("&Delete"), ShortcutManager::kDelete, canDelete);
+        syncAction(selectAllAct, tr("Select &All"), ShortcutManager::kSelectAll, canSelectAll);
+    });
+
     menu->addSeparator();
 
     menu->addAction("Project &Settings...", this, [this]() {
@@ -232,8 +348,6 @@ void MainWindow::buildEditMenu(QMenuBar* menuBar)
         }
     });
 
-    (void)cutAct; (void)copyAct; (void)pasteAct;
-    (void)deleteAct; (void)selectAllAct;
 }
 
 void MainWindow::buildViewMenu(QMenuBar* menuBar)
@@ -259,8 +373,34 @@ void MainWindow::buildTimelineMenu(QMenuBar* menuBar)
 {
     auto* menu = menuBar->addMenu("&Timeline");
 
-    menu->addAction("Add Video Track");
-    menu->addAction("Add Audio Track");
+    auto* addVideoTrackAct = menu->addAction("Add Video Track");
+    auto* addAudioTrackAct = menu->addAction("Add Audio Track");
+    auto addTrack = [this](bool video) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (!m_timelineWorkspace || !m_timelineWorkspace->timelinePanel()) return;
+        auto* timeline = m_timelineWorkspace->timeline();
+        if (!timeline) return;
+
+        // Insert next to the permanent video/audio divider, matching the
+        // existing track-context-menu path (and therefore its undo behavior).
+        size_t dividerIndex = timeline->trackCount();
+        for (size_t i = 0; i < timeline->trackCount(); ++i) {
+            const Track* track = timeline->track(i);
+            if (track && track->isPermanentDivider()) {
+                dividerIndex = i;
+                break;
+            }
+        }
+        auto* panel = m_timelineWorkspace->timelinePanel();
+        if (video)
+            emit panel->addTrackAbove(dividerIndex, true);
+        else
+            emit panel->addTrackBelow(dividerIndex, false);
+    };
+    connect(addVideoTrackAct, &QAction::triggered, this,
+            [addTrack]() { addTrack(true); });
+    connect(addAudioTrackAct, &QAction::triggered, this,
+            [addTrack]() { addTrack(false); });
     // Shared placement: drop a (possibly pre-seeded) tier-list clip on the
     // LOWEST available video track at the playhead — the tier list is a
     // background/base layer. Search from the bottom-most (base) video track
@@ -327,8 +467,28 @@ void MainWindow::buildTimelineMenu(QMenuBar* menuBar)
     });
 
     menu->addSeparator();
-    menu->addAction("Split at Playhead")->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
-    menu->addAction("Ripple Delete")->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
+    auto* splitAct = menu->addAction("Split at Playhead");
+    connect(splitAct, &QAction::triggered, this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_shortcutManager)
+            m_shortcutManager->triggerAction(ShortcutManager::kSplitAt);
+    });
+    auto* rippleDeleteAct = menu->addAction("Ripple Delete");
+    rippleDeleteAct->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
+    connect(rippleDeleteAct, &QAction::triggered, this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_shortcutManager)
+            m_shortcutManager->triggerAction(ShortcutManager::kRippleDel);
+    });
+    connect(menu, &QMenu::aboutToShow, this,
+            [this, addVideoTrackAct, addAudioTrackAct, splitAct, rippleDeleteAct]() {
+        const bool enabled = !m_destroying.load(std::memory_order_acquire)
+            && m_timelineWorkspace && m_timelineWorkspace->timeline();
+        addVideoTrackAct->setEnabled(enabled);
+        addAudioTrackAct->setEnabled(enabled);
+        splitAct->setEnabled(enabled);
+        rippleDeleteAct->setEnabled(enabled);
+    });
     menu->addSeparator();
     // In/Out — QAction text includes shortcut hint for display.
     // Actual key handling is done by TimelineWorkspace::keyPressEvent

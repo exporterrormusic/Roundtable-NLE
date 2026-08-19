@@ -85,6 +85,7 @@ public:
     // ── Clip binding ────────────────────────────────────────────────────
     /// Bind to a clip — populates curves from its keyframeable properties.
     void setClip(Clip* clip);
+    void setCurves(std::vector<CurveEntry> curves, Clip* owningClip = nullptr);
     [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
 
     // ── Command stack ───────────────────────────────────────────────────

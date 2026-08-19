@@ -148,6 +148,16 @@ void KeyframeEditor::setClip(Clip* clip)
     update();
 }
 
+void KeyframeEditor::setCurves(std::vector<CurveEntry> curves, Clip* owningClip)
+{
+    m_clip = owningClip;
+    m_selection.clear();
+    m_curves = std::move(curves);
+    recomputeVelocityRange();
+    emit selectionChanged();
+    update();
+}
+
 void KeyframeEditor::setShowVelocityGraph(bool on) noexcept
 {
     if (m_showVelocityGraph == on) return;

@@ -5,6 +5,7 @@
 #include "Theme.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
+#include "timeline/Track.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "viewport/TransformOverlayWidget.h"
@@ -23,6 +24,7 @@ void GraphicsEditorPanel::setInlineTextSelectionFormat(
     bool allCaps, bool smallCaps, float tracking, float baselineShift,
     float leading, uint32_t mixedFlags)
 {
+ if (!canMutateBoundClip()) return;
     if (!m_monitorTextEditing) return;
     m_updating = true;
     const auto mixed = [mixedFlags](InlineTextMixedFlag flag) {
@@ -129,6 +131,7 @@ void GraphicsEditorPanel::setInlineTextAdvancedFormat(
     bool fauxBold, bool fauxItalic, bool underline, bool superscript,
     bool subscript, uint32_t mixedFlags)
 {
+ if (!canMutateBoundClip()) return;
     if (!m_monitorTextEditing) return;
     m_updating = true;
     auto setButton = [](QToolButton* button, bool checked, bool mixed) {
@@ -173,6 +176,7 @@ void GraphicsEditorPanel::setInlineTextSelectionAppearance(
     float shadowOpacity, bool backgroundEnabled,
     uint32_t backgroundColor, float backgroundPadding, uint32_t mixedFlags)
 {
+ if (!canMutateBoundClip()) return;
     if (!m_monitorTextEditing) return;
     m_updating = true;
     auto setCheck = [](QCheckBox* check, bool checked, bool mixed) {
@@ -235,6 +239,7 @@ void GraphicsEditorPanel::setInlineTextSelectionAppearance(
 void GraphicsEditorPanel::setInlineParagraphFormat(
     int alignment, bool rightToLeft, uint32_t mixedFlags)
 {
+ if (!canMutateBoundClip()) return;
     if (!m_monitorTextEditing) return;
     m_updating = true;
     const bool mixed = mixedFlags & InlineMixedParagraph;
@@ -537,6 +542,7 @@ void GraphicsEditorPanel::populateFromLayer()
 
 void GraphicsEditorPanel::applyTextProperties()
 {
+ if (!canMutateBoundClip()) return;
  if (!m_selectedLayer || m_updating) return;
  if (m_selectedLayer->layerType() != GraphicLayerType::Text) return;
  auto* tl = static_cast<TextLayer*>(m_selectedLayer);
@@ -640,6 +646,7 @@ static uint32_t colorWithOpacity(uint32_t color, ScrubbySpinBox* opacity)
 
 void GraphicsEditorPanel::applyAppearance()
 {
+ if (!canMutateBoundClip()) return;
  if (!m_selectedLayer || m_updating) return;
 
  const bool fillOn = m_fillCheck && m_fillCheck->isChecked();
@@ -735,6 +742,7 @@ void GraphicsEditorPanel::applyAppearance()
 
 void GraphicsEditorPanel::applyLayerTransform()
 {
+ if (!canMutateBoundClip()) return;
  if (!m_selectedLayer || m_updating) return;
  auto& xf = m_selectedLayer->transform();
 
@@ -775,6 +783,7 @@ void GraphicsEditorPanel::captureEditBaseline()
 
 void GraphicsEditorPanel::commitLayerEdit()
 {
+ if (!canMutateBoundClip()) return;
     if (!m_layerEditDirty) return;
     m_layerEditDirty = false;
 
@@ -831,7 +840,7 @@ void GraphicsEditorPanel::copySelectedLayer()
 
 void GraphicsEditorPanel::pasteLayer()
 {
- if (!m_copiedLayer || !m_graphicClip) return;
+ if (!m_copiedLayer || !m_graphicClip || !canMutateBoundClip()) return;
 
  auto cloned = m_copiedLayer->clone();
  // Offset position slightly so the paste is visually distinct
@@ -883,7 +892,7 @@ void GraphicsEditorPanel::pasteLayer()
 
 void GraphicsEditorPanel::deleteSelectedLayer()
 {
- if (!m_selectedLayer || !m_graphicClip) return;
+ if (!m_selectedLayer || !m_graphicClip || !canMutateBoundClip()) return;
  if (m_graphicClip->layerCount() <= 1) return; // keep at least one
 
  size_t delIdx = static_cast<size_t>(m_selectedLayerIdx);

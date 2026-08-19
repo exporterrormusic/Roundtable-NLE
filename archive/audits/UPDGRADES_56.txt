@@ -1,0 +1,442 @@
+ROUNDTABLE NLE - REMAINING REVIEW / UPGRADE HANDOFF
+Generated: 2026-08-11
+
+PURPOSE
+=======
+This is the remainder of the full NLE review after Issues 1-10 were implemented.
+It is intended as a handoff to another AI/developer. Items are ordered by
+priority. "Confirmed" means a concrete source-level problem was found.
+"Upgrade" means planned product/parity work rather than a proven defect.
+
+IMPORTANT OWNER REQUIREMENTS
+============================
+1. Premiere Pro UI behavior is the reference for interaction and command
+   targeting, but the existing keyboard mappings are generally intentional.
+   DO NOT remap any shortcut without explicit owner approval.
+2. CUDA must be bundled and available by default. CPU transcription is an
+   emergency fallback, not the normal product path.
+3. Preserve the existing dirty working tree. Issues 1-10 are uncommitted and
+   touch many files. Do not reset, revert, or overwrite unrelated changes.
+4. Make changes one at a time. Before each material change, state the issue,
+   proposed fix, and side effects, then obtain approval.
+5. Keep verification focused. Do not run broad suites unless the change is
+   high-risk or the owner requests it.
+
+ALREADY COMPLETED - DO NOT REDO
+===============================
+1. Atomic/truthful project save and autosave.
+2. Fail-closed corrupt project loading and .bak recovery.
+3. Async lifetime, cancellation, and stale-result protection.
+4. Immutable queue-time export snapshots.
+5. Export integrity: exact frames, retries, staged validation, atomic publish,
+   and preservation of the previous destination on failure.
+6. Caption transcription timing for single and multiple trimmed/slipped clips.
+7. Bundled Windows CUDA runtime for whisper.cpp (cudart, cuBLAS, cuBLASLt;
+   nvcuda remains supplied by the NVIDIA driver).
+8. Major locked-track enforcement and compound-drop preflight paths.
+9. Previously inert Edit/Timeline menu commands were connected.
+10. Registered workspace shortcuts now follow the customizable command
+    registry and update live without changing existing defaults.
+
+REMAINING CONFIRMED DEFECTS / SAFETY GAPS
+========================================
+
+11. Effects panel can mutate a clip on a locked track [HIGH, CONFIRMED]
+Issue:
+  EffectsPanel receives only Clip* through setClip() and has no track/read-only
+  context. Preset application and other EffectStack mutations can therefore
+  modify a clip whose track is locked.
+Relevant code:
+  src/ui/panels/effects/EffectsPanel.h
+  src/ui/panels/effects/EffectsPanel.cpp (setClip and preset actions)
+  TimelineWorkspace clip-selection wiring that calls EffectsPanel::setClip.
+Proposed fix:
+  Pass Track* or an explicit read-only/locked state with the selected clip.
+  Disable mutation UI while locked and also fail closed inside every mutation
+  handler (preset apply, add, remove, reorder, drop). Inspection and copying
+  may remain available.
+Side effects:
+  Users must unlock the track before changing effects. Existing locked clips
+  remain viewable.
+
+12. Finish a complete locked-track mutation audit [HIGH, CONFIRMED FOLLOW-UP]
+Issue:
+  The main track and drop paths are guarded, but special-feature panels often
+  hold direct Clip* pointers and call setters without passing through Track.
+  EffectsPanel is a confirmed example. A final audit is needed for every
+  user-triggered direct setter and every undo/redo lambda.
+Audit scope:
+  Effects browser/controls, color grading, properties, graphics, transform
+  overlay, tier-list editor, captions, Audio Sync, transitions, relink/replace,
+  media-watch replacement, clip enable, speed/duration, and context menus.
+Proposed fix:
+  Introduce one shared "can mutate clip/track" preflight API and require it at
+  UI entry points. Commands should fail closed before partial mutation. Preserve
+  the deliberate internal undo/redo bypass only where the command already
+  captured a valid unlocked operation.
+Side effects:
+  Some operations that previously changed only half of a linked/compound edit
+  will now reject the entire edit, matching Premiere's locked-track behavior.
+
+13. Resolve remaining shortcut aliases/conflicts only with owner approval
+    [MEDIUM, CONFIRMED]
+Issue:
+  The current source still contains intentional hardcoded aliases and at least
+  one historical registry disagreement. Examples to inspect include N
+  (workspace snapping versus a registry tool entry), F / Shift+F split
+  behavior, the Timeline menu's Ctrl+K split alias, Shift+Backspace ripple
+  alias, and fixed shortcuts for new bin/default transition/zoom/export.
+Proposed fix:
+  Produce a command-by-command matrix: command ID, current registry key,
+  hardcoded aliases, focus context, menu label, and actual behavior. Ask the
+  owner separately about every proposed mapping change. After approval, model
+  legitimate aliases explicitly instead of leaving hidden duplicate routers.
+Side effects:
+  Shortcut behavior can change if handled incorrectly. No remapping is
+  authorized by this handoff.
+
+14. Complete context-sensitive menu enable/target behavior [MEDIUM, CONFIRMED]
+Issue:
+  Issue 9 connected the previously inert menu items, but enablement is still
+  coarse (mostly "timeline exists"). Premiere enables and targets Cut/Copy/
+  Paste/Delete/Split/Ripple based on the active panel, selection type, clipboard,
+  locked state, edit point/gap/transition selection, and valid playhead range.
+Proposed fix:
+  Add central canExecute(command, focusContext) queries. Use the same query for
+  menus, toolbar buttons, context menus, and keyboard dispatch. Preserve the
+  specialized delete/copy/paste targets for keyframes, masks, effects, graphics,
+  Project Bin items, transitions, gaps, and timeline clips.
+Side effects:
+  Commands will visibly disable when they cannot perform a valid operation,
+  instead of silently doing nothing.
+
+TRANSCRIPTION / CRISPERWHISPER ROADMAP
+=====================================
+
+15. Do not ship CrisperWhisper until commercial licensing is resolved
+    [HIGH, LEGAL/BLOCKING]
+Finding:
+  CrisperWhisper v1 is deprecated and noncommercial. CrisperWhisper 2 is the
+  only version worth evaluating, but Nyra Labs' published terms apply a
+  noncommercial research license to weights/config/tokenizer and generated
+  outputs. Production use or bundling requires a signed commercial agreement.
+Reference:
+  https://nyra-labs.com/crisperwhisper
+Required action:
+  Obtain written commercial terms covering application distribution, model
+  weights, generated transcripts/captions, updates, and customer use. Record
+  the license in NOTICES/installer materials. If terms are unacceptable, retain
+  whisper.cpp and evaluate a commercially compatible alternative.
+Side effects:
+  This is a release blocker for CrisperWhisper, not for the current whisper.cpp
+  backend.
+
+16. Prototype CrisperWhisper 2 as an isolated optional worker [HIGH, UPGRADE]
+Issue:
+  CrisperWhisper 2's fast custom CTranslate2 wheel was Linux x86_64-only during
+  the investigation. Windows falls back to PyTorch/Transformers, which is much
+  heavier and should not replace the current in-process whisper.cpp path.
+Proposed implementation:
+  Build an out-of-process worker with a versioned JSON/IPC contract. Keep
+  whisper.cpp as the production/default backend until benchmarks and licensing
+  pass. The worker must support cancellation, progress, bounded memory, model
+  warmup, crash recovery, word timestamps, and deterministic teardown.
+Side effects:
+  Larger install/model footprint, slower cold start, Python/PyTorch dependency
+  management, more VRAM/RAM, and another process to package and update.
+
+17. Run a transcript and sync benchmark before selecting a new model
+    [HIGH, UPGRADE]
+Benchmark corpus:
+  Clean dialogue, noisy dialogue, music under speech, overlapping speakers,
+  accents, proper names, short clips, hour-long recordings, silence, retakes,
+  clips with non-zero source-in, speed changes, and mixed sample rates.
+Measure:
+  Word error rate, punctuation/casing, word-boundary timestamp error (median,
+  p95, max), drift over long files, dropped/duplicated words at chunk seams,
+  diarization/speaker usefulness, Audio Sync alignment accuracy, real-time
+  factor, cold/warm startup, RAM, VRAM, GPU utilization, and cancellation time.
+Acceptance requirement:
+  The replacement must materially improve timestamp/sync accuracy, not merely
+  transcript wording. Store golden expected timing data and make the benchmark
+  repeatable.
+
+18. Add a backend capability contract and graceful model diagnostics
+    [MEDIUM, UPGRADE]
+Issue:
+  Transcript consumers need to know whether a backend provides segment-only
+  timing, word timing, confidence, language detection, diarization, and GPU
+  execution. Stub/unsupported builds can currently return empty results.
+Proposed fix:
+  Add explicit backend capabilities and structured errors. The UI should show
+  unavailable model/runtime/license conditions before starting, distinguish
+  cancellation from failure, and never treat an empty stub result as success.
+Side effects:
+  Requires a small API change across Transcriber, Captions, and Audio Sync.
+
+19. Improve caption quality-control and transcript editing [MEDIUM, UPGRADE]
+Proposed additions:
+  Configurable max characters per line, max lines, characters-per-second,
+  minimum/maximum duration, minimum gap, orphan-word prevention, overlap
+  warnings, searchable low-confidence words, and reflow that preserves word
+  timing. Ensure SRT import/export round-trips timing and styling predictably.
+Premiere parity:
+  Caption edits should be undoable, track-lock aware, and selection/playhead
+  synchronized without rebuilding unrelated timeline UI.
+
+CUDA / PACKAGING FOLLOW-UP
+==========================
+
+20. Validate the CUDA package on a clean Windows machine [HIGH, PENDING CHECK]
+Current implementation:
+  Release post-link packaging copies and hash-checks cudart64_12.dll,
+  cublas64_12.dll, and cublasLt64_12.dll. nvcuda.dll is driver-provided.
+Required check:
+  Test the actual installer on a machine without the CUDA Toolkit or Visual
+  Studio installed, but with a supported NVIDIA driver. Verify app launch,
+  model load, GPU transcription, missing/outdated-driver diagnostics, repair,
+  upgrade, and uninstall. Run the focused CMake target
+  check_cuda_runtime_package.
+Side effects:
+  None expected; this validates that development-machine PATH entries are not
+  masking a packaging error.
+
+21. Reduce the bundled CUDA payload without making CPU the default
+    [MEDIUM, UPGRADE]
+Finding:
+  The three runtime DLLs total roughly 637 MB uncompressed, dominated by
+  cuBLASLt. The owner still requires CUDA to be bundled.
+Proposed fix:
+  Measure installer compression, avoid duplicate copies across app/model
+  components, support repair/download caching, and consider a signed optional
+  CUDA payload installer that is selected by default. Do not silently depend
+  on a system CUDA Toolkit and do not switch normal operation to CPU.
+Side effects:
+  Split installers/download-on-demand add deployment complexity and require
+  strong hash/signature/offline-install handling.
+
+PREMIERE UI / EDITING PARITY REMAINDER
+=====================================
+
+22. Build an automated Premiere behavior matrix [HIGH, UPGRADE]
+Cover:
+  Selection replacement/add/toggle, linked selection, track targeting, sync
+  lock, locked tracks, snapping, playhead/ruler scrubbing, clip/gap/transition
+  selection, lift/extract/ripple delete, add edit, insert/overwrite, paste and
+  paste-insert, drag between tracks, trim/ripple/rolling/slip/slide, undo/redo,
+  focus ownership, Source vs Program Monitor transport, and menu enablement.
+Method:
+  Document expected Premiere behavior, current behavior, and approved product
+  differences. Add focused tests around the command/model layer and a small
+  number of UI event-routing tests. Do not assume Premiere's default keymap.
+
+23. Unify source patching, track targeting, and destination resolution
+    [HIGH, UPGRADE]
+Issue:
+  Different entry paths (source drag, media drop, sequence drop, clipboard
+  paste, paste-insert, nest, Audio Sync, and menu commands) resolve video/audio
+  destinations independently. This risks behavior differences and partial
+  edits, especially with locked or untargeted tracks.
+Proposed fix:
+  Create one destination-planning API that returns the complete video/audio
+  placement plan, validates locks/targets/sync-lock requirements, and only then
+  mutates. Expose Premiere-style source-patch and track-target state clearly in
+  track headers.
+Side effects:
+  Some formerly auto-rerouted drops may be rejected or placed differently;
+  compare each decision with Premiere and obtain approval for intentional
+  differences.
+
+24. Finish trim-tool parity and visual feedback [MEDIUM, UPGRADE]
+Review/upgrade:
+  Ripple, rolling, slip, and slide should share frame snapping, linked A/V
+  behavior, transition-handle constraints, locked/sync-locked track rules,
+  multi-selection rules, trim preview, cursor/tooltip feedback, and one undo
+  transaction per gesture. Verify J/K/L dynamic trimming only if desired; do
+  not assign new keys without approval.
+
+25. Standardize edit refreshes and selection after commands [MEDIUM, UPGRADE]
+Issue:
+  Command handlers currently choose among refreshTrackContents, rebuildTracks,
+  cache invalidation, audio reload, overlay refresh, monitor refresh, and panel
+  clearing independently. This causes behavior drift and unnecessary flashes.
+Proposed fix:
+  Return an EditImpact/result object from commands describing affected ranges,
+  tracks, selection, audio, overlays, and render cache. Apply it through one
+  post-edit coordinator. Match Premiere's predictable post-cut/paste/split
+  selection and playhead behavior.
+Side effects:
+  Broad but mechanical refactor; do it incrementally with focused behavior
+  checks.
+
+26. Finish keyboard-command coverage in the registry [MEDIUM, UPGRADE]
+Issue:
+  Issue 10 centralized commands that already had registry entries, but several
+  intentional actions/aliases remain hardcoded (for example some monitor
+  navigation, clear-I/O alias, deselect-all, new bin, default transition,
+  zoom, export-page navigation, Text/Pen/Zoom tools, and tilde maximize).
+Proposed fix:
+  Give each real command a stable action ID, explicit scope, callback, and
+  optional alias list. Preserve every current mapping during migration. Any
+  conflict or proposed mapping change requires owner approval.
+Side effects:
+  Shortcut dialog becomes complete and live customization becomes consistent.
+
+COLOR / EFFECTS / SPECIAL FEATURES
+==================================
+
+27. Replace placeholder color-grading sections with real processing
+    [MEDIUM, CONFIRMED PLACEHOLDERS]
+Finding:
+  Curves, Color Wheels & Match, and HSL Secondary are labeled placeholders in
+  ColorGradingPanel.cpp/.h.
+Proposed implementation:
+  Add serializable, undoable effect parameters; GPU shader paths; bypass/reset;
+  keyframing where appropriate; scopes-assisted feedback; and export/preview
+  parity. Include proper color-space transforms rather than applying controls
+  blindly in encoded gamma space.
+Side effects:
+  New project serialization data, shader compilation, render-cache invalidation,
+  and GPU performance cost.
+
+28. Complete keyframe interpolation/editing parity [MEDIUM, CONFIRMED GAP]
+Finding:
+  Effect control property rows still contain a Bezier-control expansion
+  placeholder.
+Proposed fix:
+  Implement hold/linear/Bezier interpolation, temporal ease, tangent editing,
+  multi-keyframe moves/scaling, copy/paste, snapping, and consistent delete
+  ownership. Keep all operations undoable and locked-track aware.
+Side effects:
+  Requires stable serialization and careful handling of old projects.
+
+29. Harden Audio Sync as a transactional special-feature edit
+    [MEDIUM, UPGRADE]
+Current state:
+  Locked destination preflight and a previous null-dereference/partial-update
+  risk were addressed in the current dirty tree.
+Remaining work:
+  Build the full destination/update plan before mutation; make the entire
+  export-to-timeline operation one undoable transaction; preserve unrelated
+  user edits; report exactly which clip/track caused rejection; and add golden
+  alignment tests for retakes, deleted regions, speaker tracks, speed changes,
+  and repeated exports.
+Side effects:
+  A failed sync will make no partial timeline changes, which is safer but may
+  reject cases previously accepted incompletely.
+
+30. Audit Tier List, Graphics, Captions, and Character/Spine panels for a
+    common undo/read-only contract [MEDIUM, UPGRADE]
+Issue:
+  These special-feature panels directly edit domain objects and each implements
+  selection, undo, locked state, cache invalidation, and stale-pointer handling
+  differently.
+Proposed fix:
+  Bind panels through stable clip IDs plus timeline/track context, not bare
+  long-lived Clip* alone. Centralize mutation preflight and edit-impact refresh.
+  Keep panel-specific behavior, but make project switch/deletion/undo safe.
+Side effects:
+  Moderate wiring refactor; user-visible behavior should only change where a
+  previously unsafe or locked edit is rejected.
+
+EXPORT / RENDERING FOLLOW-UP
+============================
+
+31. Optimize strict export verification without weakening it
+    [MEDIUM, UPGRADE]
+Current state:
+  Export now stages output, performs strict payload checks, then fully decodes
+  and validates count/dimensions/CFR timestamps before atomic publication.
+Issue:
+  The validation adds one complete decode pass and extra same-volume disk use.
+Proposed fix:
+  Profile first. Parallelize safe validation work, reuse encoder accounting,
+  expose validation progress, estimate temporary disk requirements, and clean
+  abandoned staging files on startup. Retain the final independent decode for
+  formats where packet accounting cannot prove integrity.
+Side effects:
+  Optimization must never reintroduce publication of truncated or mis-timed
+  output.
+
+32. Reintroduce smart rendering/passthrough only behind strict eligibility
+    [LOW/MEDIUM, UPGRADE]
+Current state:
+  Smart passthrough is disabled for correctness.
+Proposed fix:
+  Add a proven eligibility graph covering codec/profile/level, resolution,
+  frame rate/time base, color metadata, GOP/edit boundaries, audio parameters,
+  effects/transforms/transitions, alpha, speed, and exact timestamp continuity.
+  Fall back to full render for any uncertainty and run the same final integrity
+  validation.
+Side effects:
+  Large correctness surface; performance benefit is substantial only for
+  eligible media.
+
+33. Unify preview and export rendering cores [MEDIUM, ARCHITECTURE]
+Finding:
+  docs/architecture.md identifies duplicated preview (CompositeEngine/
+  GpuRenderGraph) and export (FrameRenderer/service) layer/frame-map logic.
+Proposed fix:
+  Define one immutable render request and render graph used by preview, cache,
+  frame export, and queued export, with explicit quality/readback policies.
+Side effects:
+  High regression risk. Migrate one layer type at a time and compare frame
+  hashes before removing either path.
+
+PERFORMANCE / ARCHITECTURE / MAINTAINABILITY
+===========================================
+
+34. Continue decomposing TimelineWorkspace [MEDIUM, ARCHITECTURE]
+Finding:
+  docs/architecture.md still identifies TimelineWorkspace and its many wiring
+  translation units as a god-object/coordination hotspot.
+Proposed fix:
+  Extract command routing, selection coordination, track operations, panel
+  binding, and edit-impact refresh into narrow services with explicit lifetime
+  ownership. Do not perform a single large rewrite.
+Side effects:
+  Mostly internal, but signal order and object lifetime are sensitive.
+
+35. Reduce heavy public headers and build coupling [LOW, ARCHITECTURE]
+Targets from docs/architecture.md:
+  CompositeService.h, TimelinePanel.h, MediaPool.h, and FrameCache.h.
+Proposed fix:
+  Move inline bodies to .cpp files, use forward declarations/PImpl where useful,
+  and separate interfaces from implementation-only GPU/FFmpeg types.
+Side effects:
+  Faster incremental builds and fewer unity-build collisions; little intended
+  runtime change.
+
+36. Remove /EHa exception-handling band-aids after lifetime fixes
+    [MEDIUM, ARCHITECTURE/SAFETY]
+Finding:
+  docs/architecture.md identifies /EHa use around AudioMixer/ExportPanel as
+  masking project-close lifetime problems.
+Proposed fix:
+  Trace ownership/shutdown, replace access to dying services with explicit
+  stop/join phases and generation guards, then return to normal C++ exception
+  handling. Do not merely remove /EHa without reproducing close/export races.
+Side effects:
+  May expose previously swallowed access violations during development, which
+  should be fixed rather than caught.
+
+37. Add focused CI coverage for the newly hardened paths [MEDIUM, QUALITY]
+Add focused tests for:
+  Atomic save/backup recovery and corrupt nested records; stale async results;
+  immutable export snapshots; missing/mistimed frames and atomic publication;
+  single slipped caption timing; locked special-feature mutations; menu command
+  dispatch; live shortcut customization; CUDA package manifest/clean-machine
+  smoke test; and transcript timing benchmarks.
+Constraints:
+  Keep normal developer verification narrow. Put broad/costly media and GPU
+  cases in scheduled or release CI rather than every local edit.
+
+HANDOFF / CURRENT TREE NOTES
+============================
+- The working tree is intentionally very dirty and uncommitted. Preserve it.
+- The Release roundtable_ui target compiled successfully after Issues 9-10.
+- Earlier focused core tests passed; a broad final suite was intentionally not
+  run at the owner's request.
+- CUDA runtime deployment succeeded in the Release output, but a clean-machine
+  installer test remains Item 20.
+- CrisperWhisper is research/prototype-only until Item 15 is resolved.

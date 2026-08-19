@@ -26,6 +26,7 @@ TEST(TranscriberTest, ModelNames)
     EXPECT_STREQ(whisperModelName(WhisperModelSize::Base), "base");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::Small), "small");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::Medium), "medium");
+    EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV3Turbo), "large-v3-turbo");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV2), "large-v2");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV3), "large-v3");
 }
@@ -36,9 +37,24 @@ TEST(TranscriberTest, ModelFromName)
     EXPECT_EQ(whisperModelFromName("base"), WhisperModelSize::Base);
     EXPECT_EQ(whisperModelFromName("small"), WhisperModelSize::Small);
     EXPECT_EQ(whisperModelFromName("medium"), WhisperModelSize::Medium);
+    EXPECT_EQ(whisperModelFromName("large-v3-turbo"), WhisperModelSize::LargeV3Turbo);
     EXPECT_EQ(whisperModelFromName("large-v2"), WhisperModelSize::LargeV2);
     EXPECT_EQ(whisperModelFromName("large-v3"), WhisperModelSize::LargeV3);
-    EXPECT_EQ(whisperModelFromName("invalid"), WhisperModelSize::Base); // default
+    EXPECT_EQ(whisperModelFromName("invalid"), kDefaultWhisperModel);
+}
+
+TEST(TranscriberTest, Defaults)
+{
+    Transcriber t;
+    EXPECT_EQ(t.currentModel(), kDefaultWhisperModel);
+    EXPECT_TRUE(t.isVadEnabled());
+    t.setVadEnabled(false);
+    EXPECT_FALSE(t.isVadEnabled());
+#ifdef ROUNDTABLE_HAS_WHISPER_CUDA
+    EXPECT_TRUE(t.isCudaAvailable());
+#else
+    EXPECT_FALSE(t.isCudaAvailable());
+#endif
 }
 
 TEST(TranscriberTest, TranscriptionResultFullText)

@@ -55,25 +55,25 @@ endif()
 # ─── Compiler flags ─────────────────────────────────────────────────────────
 if(MSVC)
     add_compile_options(
-        /W4             # High warning level
-        /MP             # Multi-processor compilation (use all Ryzen cores)
-        /permissive-    # Standards conformance
-        /Zc:__cplusplus # Report correct __cplusplus value
-        /utf-8          # Source and execution charset
+        $<$<COMPILE_LANGUAGE:C,CXX>:/W4>             # High warning level
+        $<$<COMPILE_LANGUAGE:C,CXX>:/MP>             # Multi-processor compilation (use all Ryzen cores)
+        $<$<COMPILE_LANGUAGE:C,CXX>:/permissive->    # Standards conformance
+        $<$<COMPILE_LANGUAGE:C,CXX>:/Zc:__cplusplus> # Report correct __cplusplus value
+        $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>          # Source and execution charset
     )
     # Prevent Windows.h from defining min/max macros (safe for third-party libs)
     add_compile_definitions(NOMINMAX)
     # WIN32_LEAN_AND_MEAN applied per-target to avoid breaking PortAudio WASAPI
     # Release optimizations (generator expression for multi-config generators)
     add_compile_options(
-        $<$<CONFIG:Release>:/O2>
-        $<$<CONFIG:Release>:/Oi>
-        $<$<CONFIG:Release>:/Gy>
+        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/O2>
+        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/Oi>
+        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/Gy>
         # /Zi: emit debug info into a PDB.  Does NOT disable optimizations.
         # Needed so the in-process SEH crash handler can resolve
         # roundtable.exe frames to function names — without it every
         # frame in crash_log.txt is a raw "+0xNNNN" offset.
-        $<$<CONFIG:Release>:/Zi>
+        $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/Zi>
     )
     add_link_options(
         $<$<CONFIG:Release>:/OPT:REF>
@@ -92,7 +92,7 @@ if(MSVC)
     # linking, so it force-disables LTO below.
     option(ROUNDTABLE_ASAN "Build with AddressSanitizer (disables LTO)" OFF)
     if(ROUNDTABLE_ASAN)
-        add_compile_options(/fsanitize=address)
+        add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/fsanitize=address>)
         add_link_options(/INCREMENTAL:NO)
         message(STATUS "ROUNDTABLE_ASAN=ON — AddressSanitizer enabled, LTO disabled")
     endif()
@@ -100,20 +100,71 @@ if(MSVC)
     # Link-Time Code Generation (very slow — only for final distribution builds)
     option(ROUNDTABLE_LTO "Enable /GL + /LTCG for whole-program optimization (slow)" ON)
     if(ROUNDTABLE_LTO AND NOT ROUNDTABLE_ASAN)
-        add_compile_options($<$<CONFIG:Release>:/GL>)
+        add_compile_options($<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/GL>)
         add_link_options($<$<CONFIG:Release>:/LTCG>)
     endif()
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:C,CXX>:-Wall>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-Wextra>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-Wpedantic>
+    )
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_compile_options(-O3 -march=native -flto)
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C,CXX>:-O3>
+            $<$<COMPILE_LANGUAGE:C,CXX>:-march=native>
+            $<$<COMPILE_LANGUAGE:C,CXX>:-flto>
+        )
     endif()
 endif()
 
 # ─── Portable dependencies (no system install required) ──────────────────────
-# All deps fetched via FetchContent or shipped in third_party/.
-# No vcpkg, no Vulkan SDK, no CUDA Toolkit install needed.
+# All deps fetched via FetchContent or shipped in third_party/. End-user
+# machines do not need a CUDA Toolkit: Windows CUDA builds copy the exact
+# redistributable runtime closure into the application directory below.
 add_subdirectory(third_party)
+
+# ─── Windows CUDA runtime deployment ────────────────────────────────────────
+# whisper.cpp/ggml links CUDA statically into Roundtable but imports the
+# versioned CUDA runtime and cuBLAS DLLs. Keep those DLLs beside the executable
+# so transcription never succeeds only because the build machine has CUDA on
+# PATH. DeployCudaRuntime also follows cuBLAS' PE imports (currently cublasLt)
+# and writes the manifest consumed by the launch diagnostics and installer.
+if(WIN32 AND ROUNDTABLE_WHISPER_CUDA_FOUND)
+    if(NOT ROUNDTABLE_CUDA_RUNTIME_SEEDS OR
+       NOT ROUNDTABLE_CUDA_RUNTIME_SOURCE_DIR)
+        message(FATAL_ERROR
+            "whisper.cpp CUDA is enabled, but its runtime packaging metadata is missing")
+    endif()
+
+    set(_roundtable_cuda_generated_dir "${CMAKE_BINARY_DIR}/generated/cuda-runtime")
+    file(MAKE_DIRECTORY "${_roundtable_cuda_generated_dir}")
+    set(ROUNDTABLE_CUDA_RUNTIME_SEED_ENTRIES "")
+    foreach(_cuda_seed IN LISTS ROUNDTABLE_CUDA_RUNTIME_SEEDS)
+        string(APPEND ROUNDTABLE_CUDA_RUNTIME_SEED_ENTRIES
+            "    [==[${_cuda_seed}]==]\n")
+    endforeach()
+    set(ROUNDTABLE_CUDA_SEED_MANIFEST
+        "${_roundtable_cuda_generated_dir}/CudaRuntimeSeeds.cmake")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/CudaRuntimeSeeds.cmake.in"
+        "${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+        @ONLY)
+
+    add_custom_target(copy_cuda_runtime_dlls ALL
+        COMMAND "${CMAKE_COMMAND}"
+            "-DROUNDTABLE_CUDA_SEED_MANIFEST=${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+            "-DROUNDTABLE_CUDA_DESTINATION=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
+            "-DROUNDTABLE_CUDA_MODE=DEPLOY"
+            -P "${CMAKE_SOURCE_DIR}/cmake/DeployCudaRuntime.cmake"
+        DEPENDS
+            ${ROUNDTABLE_CUDA_RUNTIME_SEEDS}
+            "${ROUNDTABLE_CUDA_SEED_MANIFEST}"
+            "${CMAKE_SOURCE_DIR}/cmake/DeployCudaRuntime.cmake"
+        COMMENT "Bundling CUDA runtime DLL dependency closure"
+        VERBATIM)
+    set_property(TARGET copy_cuda_runtime_dlls PROPERTY FOLDER "Deployment")
+endif()
 
 # ─── Dev-build isolation ────────────────────────────────────────────────────
 # When ON, QSettings uses ("ROUNDTABLE", "NLE-Dev") so dev builds don't
@@ -214,6 +265,18 @@ endif()
 # ─── Install ─────────────────────────────────────────────────────────────────
 if(TARGET roundtable)
     install(TARGETS roundtable RUNTIME DESTINATION bin)
+endif()
+
+if(WIN32 AND ROUNDTABLE_WHISPER_CUDA_FOUND)
+    set(_roundtable_cuda_install_script
+        "${_roundtable_cuda_generated_dir}/InstallCudaRuntime.cmake")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/InstallCudaRuntime.cmake.in"
+        "${_roundtable_cuda_install_script}"
+        @ONLY)
+    # Registered after install(TARGETS roundtable) so the install-time helper
+    # can validate the installed executable's actual PE dependency closure.
+    install(SCRIPT "${_roundtable_cuda_install_script}")
 endif()
 
 install(DIRECTORY ${SPIRV_OUTPUT_DIR}/ DESTINATION shaders)

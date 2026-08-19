@@ -176,6 +176,8 @@ private:
     void rebuildEvents();
     void rebuildBoard();
     void showBound(bool bound);
+    [[nodiscard]] bool canMutateBoundClip() noexcept;
+    [[nodiscard]] bool resolveBoundClip() noexcept;
     QWidget* buildEventRow(size_t eventIndex);
     /// Enforce the sequence invariant: each event's start ≥ the previous
     /// (earlier-starting) event's end, and each event's end ≥ its own start.
@@ -237,6 +239,7 @@ private:
     CommandStack* m_commandStack{nullptr};
     TierListClip* m_clip{nullptr};
     Track*        m_track{nullptr};
+    uint64_t      m_clipId{0};
 
     // Widgets
     QWidget*                m_placeholder{nullptr};

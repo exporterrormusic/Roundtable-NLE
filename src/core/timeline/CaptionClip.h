@@ -61,6 +61,7 @@ public:
  // â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  [[nodiscard]] const std::string& text() const noexcept { return m_text; }
  [[nodiscard]] const std::string& speaker() const noexcept { return m_speaker; }
+ [[nodiscard]] float confidence() const noexcept { return m_confidence; }
  // Keep the base-clip label in sync with the caption text so the timeline
  // clip widget shows the caption content directly.
  void setText(const std::string& t) {
@@ -73,6 +74,7 @@ public:
  }
  void replaceTextPreservingStyles(const std::string& t);
  void setSpeaker(const std::string& s) { m_speaker = s; }
+ void setConfidence(float value) noexcept { m_confidence = value; }
 
  // â”€â”€ Style â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  [[nodiscard]] const std::string& fontFamily() const noexcept { return m_fontFamily; }
@@ -207,6 +209,7 @@ public:
 private:
  std::string m_text;
  std::string m_speaker;
+ float m_confidence{1.0f};
  std::string m_fontFamily{"Arial"};
  std::string m_fontStyle;
  float m_fontSize{32.0f};

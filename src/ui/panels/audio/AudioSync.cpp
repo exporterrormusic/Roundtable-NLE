@@ -103,8 +103,13 @@ void TranscriptionWorker::process()
 
     m_result = m_transcriber->transcribe(m_audioPath, m_language, progress);
 
-    if (m_result.segments.empty() && !m_transcriber->lastError().empty()) {
-        emit errorOccurred(QString::fromStdString(m_transcriber->lastError()));
+    if (!m_result.succeeded()) {
+        if (m_result.status != TranscriptionStatus::Cancelled) {
+            emit errorOccurred(QString::fromStdString(
+                m_result.error.message.empty()
+                    ? "Transcription failed"
+                    : m_result.error.message));
+        }
         emit finished(false);
     } else {
         emit finished(true);

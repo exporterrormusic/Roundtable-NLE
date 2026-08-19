@@ -58,7 +58,7 @@ void PropertiesPanel::focusGraphicTextField()
 
 void PropertiesPanel::applyGfxText()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     std::string val = m_gfxTextEdit->text().toStdString();
@@ -69,7 +69,7 @@ void PropertiesPanel::applyGfxText()
 
 void PropertiesPanel::applyGfxFontFamily()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     std::string val = m_gfxFontFamilyEdit->text().toStdString();
@@ -80,7 +80,7 @@ void PropertiesPanel::applyGfxFontFamily()
 
 void PropertiesPanel::applyGfxFontSize()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     float val = static_cast<float>(m_gfxFontSizeSpin->value());
@@ -91,7 +91,7 @@ void PropertiesPanel::applyGfxFontSize()
 
 void PropertiesPanel::applyGfxFontWeight()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     int val = static_cast<int>(m_gfxFontWeightSpin->value());
@@ -102,7 +102,7 @@ void PropertiesPanel::applyGfxFontWeight()
 
 void PropertiesPanel::applyGfxItalic()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     tl->setItalic(m_gfxItalicCheck->isChecked());
@@ -111,7 +111,7 @@ void PropertiesPanel::applyGfxItalic()
 
 void PropertiesPanel::applyGfxAllCaps()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     tl->setAllCaps(m_gfxAllCapsCheck->isChecked());
@@ -120,7 +120,7 @@ void PropertiesPanel::applyGfxAllCaps()
 
 void PropertiesPanel::applyGfxSmallCaps()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     tl->setSmallCaps(m_gfxSmallCapsCheck->isChecked());
@@ -129,7 +129,7 @@ void PropertiesPanel::applyGfxSmallCaps()
 
 void PropertiesPanel::applyGfxAlign()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     auto val = static_cast<GTextAlign>(m_gfxAlignCombo->currentIndex());
@@ -140,7 +140,7 @@ void PropertiesPanel::applyGfxAlign()
 
 void PropertiesPanel::applyGfxFillColor()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     uint32_t current = 0xFFFFFFFF;
@@ -171,7 +171,7 @@ void PropertiesPanel::applyGfxFillColor()
 
 void PropertiesPanel::applyGfxStrokeEnabled()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     bool enabled = m_gfxStrokeCheck->isChecked();
@@ -186,7 +186,7 @@ void PropertiesPanel::applyGfxStrokeEnabled()
 
 void PropertiesPanel::applyGfxStrokeWidth()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl || tl->appearance().strokes.empty()) return;
     tl->appearance().strokes[0].width = static_cast<float>(m_gfxStrokeWidthSpin->value());
@@ -195,7 +195,7 @@ void PropertiesPanel::applyGfxStrokeWidth()
 
 void PropertiesPanel::applyGfxStrokeColor()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     uint32_t current = 0xFF000000;
@@ -222,7 +222,7 @@ void PropertiesPanel::applyGfxStrokeColor()
 
 void PropertiesPanel::applyGfxShadowEnabled()
 {
-    if (m_updating || !m_clip || m_clip->clipType() != ClipType::Graphic) return;
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
     bool enabled = m_gfxShadowCheck->isChecked();

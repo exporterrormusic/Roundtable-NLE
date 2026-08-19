@@ -55,6 +55,7 @@
 #include <QGroupBox>
 #include <QKeyEvent>
 #include <QTimer>
+#include <QDialog>
 
 #include <atomic>
 #include <cstdint>
@@ -72,6 +73,7 @@ namespace rt {
 // Forward declarations
 class Clip;
 class CommandStack;
+class KeyframeEditor;
 class Effect;
 class GraphicLayer;
 class Timeline;
@@ -150,6 +152,7 @@ public:
 
     /// Property name.
     [[nodiscard]] QString propertyName() const;
+    void setCurveExpanded(bool expanded);
 
 signals:
     void addKeyframeRequested(KeyframeTrack<float>* track, int64_t time);
@@ -161,6 +164,7 @@ signals:
     /// their factory default and clear any keyframes (undoable). Handled by
     /// EffectControlsPanel which knows the spin→track mapping.
     void resetRequested();
+    void curveEditorRequested(PropertyRow* row, bool expanded);
 
 private:
     void buildUI();
@@ -611,6 +615,8 @@ protected:
     /// row to its engine-native factory default and clears that property's
     /// keyframes, as a single undoable command.
     void resetPropertyRow(PropertyRow* row);
+    void registerPropertyRow(PropertyRow* row);
+    void showPropertyCurveEditor(PropertyRow* row, bool expanded);
 
     // ── Keyframe operations ─────────────────────────────────────────────
     void onAddKeyframe(KeyframeTrack<float>* track, int64_t time);
@@ -700,6 +706,8 @@ protected:
     QWidget*        m_propContainer{nullptr};
     QVBoxLayout*    m_propLayout{nullptr};
     KeyframeTimeline* m_kfTimeline{nullptr};
+    QDialog*          m_curveEditorDialog{nullptr};
+    KeyframeEditor*   m_curveEditor{nullptr};
 
     // ── Sections ────────────────────────────────────────────────────────
     QWidget*        m_motionSection{nullptr};

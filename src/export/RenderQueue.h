@@ -12,6 +12,7 @@
 #include "AudioMixdown.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -29,6 +30,25 @@ class Project;
 class Compositor;
 struct CachedFrame;
 
+/// Immutable project graph captured when an export job is enqueued.
+///
+/// `timeline` aliases the selected sequence inside `project` (and therefore
+/// shares its lifetime/control block) for full production snapshots.  The
+/// project may be null only for the legacy timeline-only addJob overload used
+/// by low-level tests/callers.  Video and audio must consume this same object;
+/// no queued job is allowed to re-snapshot later.
+struct ExportRenderSnapshot
+{
+    std::shared_ptr<const Project>  project;
+    std::shared_ptr<const Timeline> timeline;
+    size_t                          sequenceIndex{0};
+
+    [[nodiscard]] bool hasTimeline() const noexcept { return timeline != nullptr; }
+    [[nodiscard]] bool isFullProject() const noexcept {
+        return project != nullptr && timeline != nullptr;
+    }
+};
+
 /// Callback that composites a single frame at a given tick.
 /// Returns a CachedFrame (BGRA) or nullptr on failure.
 /// nextTick is the tick of the NEXT frame (for async pre-submit pipeline),
@@ -37,11 +57,22 @@ using FrameRenderFn = std::function<std::shared_ptr<CachedFrame>(
     int64_t tick, int64_t nextTick,
     uint32_t width, uint32_t height, bool scrubMode)>;
 
+/// Snapshot-aware production compositor callback.  preserveAlpha is also
+/// job-local, so changing Export-panel controls cannot affect a running job.
+using SnapshotFrameRenderFn = std::function<std::shared_ptr<CachedFrame>(
+    const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+    int64_t tick, int64_t nextTick,
+    uint32_t width, uint32_t height, bool scrubMode, bool preserveAlpha)>;
+
 /// Optional: receives each finished export frame (full-res, CPU pixels ready)
 /// right before it is encoded, so it can be written into the segment render
 /// cache (§4.6 export write-through).  Called on the export worker thread.
 using FrameStoreFn = std::function<void(int64_t tick,
                                         const std::shared_ptr<CachedFrame>&)>;
+
+using SnapshotFrameStoreFn = std::function<void(
+    const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+    int64_t tick, const std::shared_ptr<CachedFrame>&)>;
 
 // ── Export preset ────────────────────────────────────────────────────────────
 
@@ -74,6 +105,7 @@ struct ExportJobConfig
     EncoderConfig         encoderConfig;
     uint32_t              outputWidth{1920};
     uint32_t              outputHeight{1080};
+    bool                  preserveAlpha{false};
 
     // Container
     uint8_t               containerFormat{0}; // ContainerFormat enum
@@ -135,12 +167,16 @@ struct ExportJob
     /// cancelJob/cancelAll, polled lock-free by the worker's frame loop.
     std::atomic<bool> cancelRequested{false};
 
-    /// Deep clone of the timeline taken on the MAIN thread when the job is
-    /// enqueued (addJob), so the worker's AudioMixdown never reads the live
-    /// timeline while the user edits it.  Owned by the job — it outlives
-    /// processJob, so an SEH unwind there cannot leak it.  Null = fall back
-    /// to the live timeline (tests / callers that pass no timeline).
-    std::shared_ptr<const Timeline> timelineSnapshot;
+    /// One deep project/timeline snapshot captured on the MAIN thread at
+    /// enqueue time.  Video, audio, duration analysis, nested-sequence
+    /// resolution, alpha mode and cache writes all receive this exact object.
+    /// Null is retained only for legacy callers that enqueue no source state.
+    std::shared_ptr<const ExportRenderSnapshot> renderSnapshot;
+
+    /// Non-empty when a requested production snapshot could not be captured.
+    /// The worker fails before opening an encoder/output and never substitutes
+    /// live mutable state after a capture failure.
+    std::string snapshotCaptureError;
 
     /// Set when the encoder requested for `config.encoderConfig.hwAccel`
     /// failed to initialise and processJob silently fell back to CPU
@@ -174,12 +210,18 @@ public:
 
     // ── Job management ──────────────────────────────────────────────────
 
-    /// Add a new export job. Returns job ID.
-    /// `timelineForAudio` (optional) is deep-cloned HERE — call addJob on the
-    /// main thread — and stored on the job as the snapshot the audio mixdown
-    /// reads, so live edits during the export can't race it.
+    /// Legacy path.  A supplied timeline is deep-cloned here and used for all
+    /// timeline-derived worker work.  Production UI code should use the full
+    /// Project overload so nested sequences and project render state are also
+    /// captured.
     uint32_t addJob(const ExportJobConfig& config,
-                    const Timeline* timelineForAudio = nullptr);
+                    const Timeline* timeline = nullptr);
+
+    /// Production enqueue path.  Captures the complete project graph on the
+    /// caller/main thread and aliases `timeline` into that captured graph.
+    uint32_t addJob(const ExportJobConfig& config,
+                    const Project* project,
+                    const Timeline* timeline);
 
     /// Remove a job (must be Queued or Completed/Failed/Cancelled).
     bool removeJob(uint32_t jobId);
@@ -226,11 +268,31 @@ public:
     /// Set a callback that produces composited frames for export. REQUIRED:
     /// processJob composites every frame through this (the preview compositor).
     /// The old internal FrameRenderer fallback was removed (#18).
-    void setFrameRenderCallback(FrameRenderFn fn) { m_frameRenderCb = std::move(fn); }
+    void setFrameRenderCallback(FrameRenderFn fn) {
+        m_frameRenderCb = [fn = std::move(fn)](
+            const std::shared_ptr<const ExportRenderSnapshot>&,
+            int64_t tick, int64_t nextTick, uint32_t width, uint32_t height,
+            bool scrubMode, bool) -> std::shared_ptr<CachedFrame> {
+                if (!fn) return nullptr;
+                return fn(tick, nextTick, width, height, scrubMode);
+            };
+    }
+    void setSnapshotFrameRenderCallback(SnapshotFrameRenderFn fn) {
+        m_frameRenderCb = std::move(fn);
+    }
 
     /// Optional segment-cache write-through (§4.6): called with each finished
     /// full-res frame just before encoding (pixels guaranteed present).
-    void setFrameStoreCallback(FrameStoreFn fn) { m_frameStoreCb = std::move(fn); }
+    void setFrameStoreCallback(FrameStoreFn fn) {
+        m_frameStoreCb = [fn = std::move(fn)](
+            const std::shared_ptr<const ExportRenderSnapshot>&,
+            int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
+                if (fn) fn(tick, frame);
+            };
+    }
+    void setSnapshotFrameStoreCallback(SnapshotFrameStoreFn fn) {
+        m_frameStoreCb = std::move(fn);
+    }
 
     // processJob is public so the SEH-safe wrapper (safeProcessJob in
     // RenderQueue.cpp) can call it.  It is NOT part of the public API.
@@ -246,7 +308,7 @@ private:
     /// Audio-only job: mix the timeline's audio and write a standalone audio
     /// file (no video encode/composite).  Called from processJob when
     /// job.config.audioOnly is set.
-    void processAudioOnlyJob(ExportJob& job, Timeline* timeline);
+    void processAudioOnlyJob(ExportJob& job, const Timeline* timeline);
 
     // Jobs are held by shared_ptr: the worker keeps its own reference to the
     // job it is processing, so removeJob erasing a vector element can never
@@ -264,8 +326,8 @@ private:
 
     JobProgressFn               m_progressCb;
     JobCompleteFn               m_completeCb;
-    FrameRenderFn               m_frameRenderCb;
-    FrameStoreFn                m_frameStoreCb;
+    SnapshotFrameRenderFn       m_frameRenderCb;
+    SnapshotFrameStoreFn        m_frameStoreCb;
 };
 
 } // namespace rt

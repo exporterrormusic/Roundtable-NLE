@@ -313,32 +313,10 @@ bool AutoSave::doSave()
         ser = m_ownedSerializer.get();
     }
 
-    // Write to a temporary file first (atomic write pattern).
-    // Append via path::operator+= — round-tripping through path::string() decodes
-    // the path with the ANSI codepage (throws or mojibakes on non-ANSI
-    // project names).
-    auto tmpPath = savePath;
-    tmpPath += ".tmp";
-
-    bool success = ser->save(*m_project, tmpPath);
-
-    if (success) {
-        // Rename temp → final (atomic on most filesystems)
-        std::filesystem::rename(tmpPath, savePath, ec);
-
-        if (ec) {
-            // Rename failed — try copy + delete as fallback
-            std::filesystem::copy_file(tmpPath, savePath,
-                std::filesystem::copy_options::overwrite_existing, ec);
-            std::filesystem::remove(tmpPath, ec);
-            if (ec) success = false;
-        }
-    }
-
-    // Clean up temp file on failure
-    if (!success) {
-        std::filesystem::remove(tmpPath, ec);
-    }
+    // ProjectSerializer owns the single staging-and-replacement transaction.
+    // A second auto-save staging layer previously reintroduced a non-atomic
+    // copy fallback and could erase its error while cleaning up the temp file.
+    const bool success = ser->save(*m_project, savePath);
 
     // Update stats
     m_lastSave = Clock::now();

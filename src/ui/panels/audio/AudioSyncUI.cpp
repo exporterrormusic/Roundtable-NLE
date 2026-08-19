@@ -455,8 +455,8 @@ void AudioSync::setupUi()
     transcribePageLayout->addWidget(modelLabel);
 
     m_modelCombo = new QComboBox;
-    m_modelCombo->addItems({"tiny", "base", "small", "medium", "large-v2", "large-v3"});
-    m_modelCombo->setCurrentIndex(2);  // default to "small" for better accuracy
+    m_modelCombo->addItems({"tiny", "base", "small", "medium", "large-v3-turbo", "large-v2", "large-v3"});
+    m_modelCombo->setCurrentText(QString::fromUtf8(whisperModelName(kDefaultWhisperModel)));
     m_modelCombo->setMinimumHeight(44);
     m_modelCombo->setStyleSheet(QStringLiteral(
         "QComboBox {"

@@ -205,8 +205,7 @@ void TimelinePanel::wireShortcuts()
     // ── Cut: copy + delete selection ──────────────────────────────────
     m_shortcuts->setActionCallback(ShortcutManager::kCut, [this]() {
         if (!m_timeline || !m_commandStack) return;
-        ClipboardContents cb;
-        auto cmd = EditOperations::cutSelection(*m_timeline, m_selection, cb);
+        auto cmd = EditOperations::cutSelection(*m_timeline, m_selection, m_clipboard);
         if (cmd) {
             m_selection.clear();
             m_commandStack->execute(std::move(cmd));

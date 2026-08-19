@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -87,22 +88,46 @@ private:
 class BinaryReader
 {
 public:
+    // Project records use 32-bit lengths, but no legitimate individual text
+    // field or collection should be able to consume unbounded memory.  These
+    // limits are deliberately generous and do not change the on-disk format.
+    static constexpr uint32_t kMaxStringBytes = 16u * 1024u * 1024u;
+    static constexpr uint32_t kMaxCollectionItems = 1'000'000u;
+
     explicit BinaryReader(const uint8_t* data, size_t size)
         : m_data(data), m_size(size), m_pos(0) {}
 
-    [[nodiscard]] bool hasRemaining(size_t n) const { return m_pos + n <= m_size; }
+    [[nodiscard]] bool hasRemaining(size_t n) const
+    {
+        return m_pos <= m_size && n <= (m_size - m_pos);
+    }
+    [[nodiscard]] bool ok() const { return m_ok; }
     [[nodiscard]] size_t position() const { return m_pos; }
-    [[nodiscard]] size_t remaining() const { return m_size - m_pos; }
+    [[nodiscard]] size_t remaining() const
+    {
+        return m_pos <= m_size ? m_size - m_pos : 0;
+    }
+    [[nodiscard]] size_t errorPosition() const { return m_errorPos; }
+
+    // Mark semantically invalid data (for example an unknown non-delimited
+    // clip type) with the same persistent failure state as a short read.
+    void invalidate()
+    {
+        if (m_ok) {
+            m_ok = false;
+            m_errorPos = m_pos;
+        }
+    }
 
     uint8_t readU8()
     {
-        if (!hasRemaining(1)) return 0;
+        if (!requireRemaining(1)) return 0;
         return m_data[m_pos++];
     }
 
     uint32_t readU32()
     {
-        if (!hasRemaining(4)) return 0;
+        if (!requireRemaining(4)) return 0;
         uint32_t v = static_cast<uint32_t>(m_data[m_pos])
                    | (static_cast<uint32_t>(m_data[m_pos + 1]) << 8)
                    | (static_cast<uint32_t>(m_data[m_pos + 2]) << 16)
@@ -113,7 +138,7 @@ public:
 
     uint64_t readU64()
     {
-        if (!hasRemaining(8)) return 0;
+        if (!requireRemaining(8)) return 0;
         uint64_t v = 0;
         for (int i = 0; i < 8; ++i)
             v |= static_cast<uint64_t>(m_data[m_pos + i]) << (i * 8);
@@ -142,10 +167,47 @@ public:
     std::string readString()
     {
         uint32_t len = readU32();
-        if (!hasRemaining(len)) return "";
+        if (!m_ok) return {};
+        if (len > kMaxStringBytes || !hasRemaining(len)) {
+            invalidate();
+            return {};
+        }
+        if (len == 0) return {};
         std::string s(reinterpret_cast<const char*>(m_data + m_pos), len);
         m_pos += len;
         return s;
+    }
+
+    // Reads a file-controlled collection count and validates it before callers
+    // reserve memory or enter a loop. minBytesPerItem is the smallest encoded
+    // size of one item and prevents compact malicious buffers from requesting
+    // large allocations even when the absolute cap is not exceeded.
+    uint32_t readCount(uint32_t maxCount = kMaxCollectionItems,
+                       size_t minBytesPerItem = 1)
+    {
+        const uint32_t count = readU32();
+        if (!m_ok) return 0;
+        if (count > maxCount ||
+            (minBytesPerItem > 0 && count > remaining() / minBytesPerItem)) {
+            invalidate();
+            return 0;
+        }
+        return count;
+    }
+
+    // Returns a bounded reader for a length-delimited payload and advances the
+    // parent. A short payload marks both the parent and returned reader failed.
+    BinaryReader readSubReader(size_t n)
+    {
+        if (!requireRemaining(n)) {
+            BinaryReader failed(nullptr, 0);
+            failed.invalidate();
+            return failed;
+        }
+        const uint8_t* childData = n == 0 ? nullptr : m_data + m_pos;
+        BinaryReader child(childData, n);
+        m_pos += n;
+        return child;
     }
 
     // The stored string is UTF-8 (writePath uses pathToUtf8).  The raw
@@ -154,12 +216,28 @@ public:
     // test exes without the UTF-8 ACP manifest — always go through utf8ToPath.
     std::filesystem::path readPath() { return utf8ToPath(readString()); }
 
-    void skip(size_t n) { m_pos = std::min(m_pos + n, m_size); }
+    void skip(size_t n)
+    {
+        if (!requireRemaining(n)) return;
+        m_pos += n;
+    }
 
 private:
+    bool requireRemaining(size_t n)
+    {
+        if (!m_ok) return false;
+        if (!hasRemaining(n)) {
+            invalidate();
+            return false;
+        }
+        return true;
+    }
+
     const uint8_t* m_data;
     size_t         m_size;
     size_t         m_pos;
+    bool           m_ok{true};
+    size_t         m_errorPos{0};
 };
 
 } // namespace rt
