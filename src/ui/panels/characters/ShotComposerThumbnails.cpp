@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QListWidget>
 #include <QPainter>
@@ -30,6 +31,10 @@
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+namespace {
+constexpr int kCharacterGroupRole = Qt::UserRole + 2;
+}
 
 void ShotComposer::refreshShotList()
 {
@@ -77,8 +82,6 @@ void ShotComposer::refreshShotList()
     };
     std::vector<ShotInfo> allShotInfos;
     std::map<std::string, int> charShotCount; // character real name -> shot count (within active show)
-    int unassignedCount = 0;                  // char-unassigned shots (within active show)
-    int showFilteredTotal = 0;                // ALL count for CHARACTERS column (within active show)
 
     // Per-show counts span ALL shots (the SHOWS column is the top-level filter
     // and is not narrowed by the character selection). Keyed by lowercased
@@ -139,10 +142,7 @@ void ShotComposer::refreshShotList()
         // Per-character shot occurrences, narrowed to the active show so the
         // CHARACTERS column cascades from the selected show.
         if (shotMatchesShow(si.shows)) {
-            ++showFilteredTotal; // ALL count reflects the selected show
-            if (si.charTags.isEmpty()) {
-                ++unassignedCount;
-            } else {
+            if (!si.charTags.isEmpty()) {
                 for (const auto& tag : seenReal)
                     charShotCount[tag.toStdString()]++;
             }
@@ -286,76 +286,73 @@ void ShotComposer::refreshShotList()
         if (m_filterSearchEdit)
             filterSearchText = m_filterSearchEdit->text().trimmed().toLower();
 
-        // ALL item
-        {
-            QString label = QString("ALL");
-            auto* item = new QListWidgetItem(label);
-            item->setData(Qt::UserRole, QString()); // empty = ALL
-            // Count reflects the active SHOWS filter (cascade): the number of
-            // shots in the selected show, or every shot when no show is selected.
-            item->setData(Qt::UserRole + 1, showFilteredTotal);
-            item->setSizeHint(QSize(0, 56));
-            QFont allFont = item->font();
-            allFont.setPixelSize(18);
-            allFont.setBold(true);
-            item->setFont(allFont);
-            item->setForeground(QColor(180, 220, 180));
-            m_charFilterList->addItem(item);
-            if (prevFilter.isEmpty()) restoreRow = row;
-            ++row;
-        }
-
-        // UNASSIGNED item
-        {
-            QString label = QString("UNASSIGNED");
-            auto* item = new QListWidgetItem(label);
-            item->setData(Qt::UserRole, QStringLiteral("__UNASSIGNED__"));
-            item->setData(Qt::UserRole + 1, unassignedCount);
-            item->setSizeHint(QSize(0, 56));
-            QFont uaFont = item->font();
-            uaFont.setPixelSize(18);
-            uaFont.setBold(true);
-            item->setFont(uaFont);
-            item->setForeground(QColor(210, 170, 80));
-            m_charFilterList->addItem(item);
-            if (prevFilter == QStringLiteral("__UNASSIGNED__")) restoreRow = row;
-            ++row;
-        }
-
-        // Separator divider line (unselectable, thin grey like tab dividers)
-        {
-            auto* sep = new QListWidgetItem(QString());
-            sep->setFlags(sep->flags() & ~Qt::ItemIsSelectable);
-            sep->setSizeHint(QSize(0, 8));
-            QColor sepColor(100, 100, 130, 50);
-            sep->setBackground(sepColor);
-            m_charFilterList->addItem(sep);
-            ++row;
-        }
-
         // Character items — sort by the *displayed* name (alias if any)
         // so the user sees alphabetical order matching the labels.
-        struct CharEntry { QString real; QString display; };
+        struct CharEntry {
+            QString real;
+            QString display;
+            ShotPresetManager::CharacterGroup group;
+        };
         std::vector<CharEntry> entries;
         entries.reserve(validNames.size());
         for (const auto& cn : validNames) {
             QString disp = QString::fromStdString(
                 m_presetManager.displayNameFor(cn.toStdString()));
-            entries.push_back({cn, disp});
+            entries.push_back({cn, disp,
+                m_presetManager.characterGroup(cn.toStdString())});
         }
         std::sort(entries.begin(), entries.end(),
             [](const CharEntry& a, const CharEntry& b) {
+                auto rank = [](ShotPresetManager::CharacterGroup group) {
+                    switch (group) {
+                    case ShotPresetManager::CharacterGroup::Favorite: return 0;
+                    case ShotPresetManager::CharacterGroup::Normal:   return 1;
+                    case ShotPresetManager::CharacterGroup::Hidden:   return 2;
+                    }
+                    return 1;
+                };
+                if (rank(a.group) != rank(b.group))
+                    return rank(a.group) < rank(b.group);
                 return a.display.compare(b.display, Qt::CaseInsensitive) < 0;
             });
+
+        const QString groupScope = m_charGroupFilterCombo
+            ? m_charGroupFilterCombo->currentData().toString()
+            : QString{};
+        std::optional<ShotPresetManager::CharacterGroup> onlyGroup;
+        if (groupScope == QStringLiteral("__FAVORITE__"))
+            onlyGroup = ShotPresetManager::CharacterGroup::Favorite;
+        else if (groupScope == QStringLiteral("__HIDDEN__"))
+            onlyGroup = ShotPresetManager::CharacterGroup::Hidden;
+
+        std::optional<ShotPresetManager::CharacterGroup> previousGroup;
 
         for (const auto& entry : entries) {
             const QString& cn = entry.real;
             const QString& disp = entry.display;
 
+            if (groupScope == QStringLiteral("__UNASSIGNED__"))
+                continue;
+            if (groupScope.isEmpty() &&
+                entry.group == ShotPresetManager::CharacterGroup::Hidden)
+                continue;
+            if (onlyGroup && entry.group != *onlyGroup)
+                continue;
+
             // Apply search filter (search the displayed label so renamed
             // entries match what the user types).
             if (!filterSearchText.isEmpty() && !disp.toLower().contains(filterSearchText))
                 continue;
+
+            if (!onlyGroup && previousGroup && entry.group != *previousGroup) {
+                auto* sep = new QListWidgetItem(QString());
+                sep->setFlags(sep->flags() & ~Qt::ItemIsSelectable);
+                sep->setSizeHint(QSize(0, 8));
+                sep->setBackground(QColor(100, 100, 130, 50));
+                m_charFilterList->addItem(sep);
+                ++row;
+            }
+            previousGroup = entry.group;
 
             int count = 0;
             auto it = charShotCount.find(cn.toStdString());
@@ -367,16 +364,23 @@ void ShotComposer::refreshShotList()
                 ? m_modelManager->getFolderName(cn.toStdString())
                 : cn.toStdString();
             QPixmap thumb = makeCharacterThumbnail(folderName, 96);
+            if (entry.group == ShotPresetManager::CharacterGroup::Hidden && !thumb.isNull()) {
+                QImage mono = thumb.toImage().convertToFormat(QImage::Format_Grayscale8);
+                thumb = QPixmap::fromImage(mono);
+            }
 
             // Label shows alias display name; UserRole stores real character
             // name so downstream filter matching against shot tags works.
             auto* item = new QListWidgetItem(QIcon(thumb), disp);
             item->setData(Qt::UserRole, cn);
             item->setData(Qt::UserRole + 1, count);
+            item->setData(kCharacterGroupRole, static_cast<int>(entry.group));
             item->setSizeHint(QSize(0, 104));
             QFont chFont = item->font();
             chFont.setPixelSize(Theme::typography().sizeBody);
             item->setFont(chFont);
+            if (entry.group == ShotPresetManager::CharacterGroup::Hidden)
+                item->setForeground(Theme::colors().textTertiary);
             if (cn == disp)
                 item->setToolTip(QString("%1 - %2 shots").arg(cn).arg(count));
             else
@@ -390,6 +394,10 @@ void ShotComposer::refreshShotList()
             m_charFilterList->setCurrentRow(restoreRow);
         m_charFilterList->blockSignals(false);
     }
+
+    // Re-read after rebuilding: a search or group change may have removed the
+    // previously selected character, in which case the dropdown scope applies.
+    charFilter = activeCharFilter();
 
     // --- Build shot list (m_shotList) ---
     constexpr int kThumbW = 320;
@@ -437,6 +445,20 @@ void ShotComposer::refreshShotList()
         if (!charFilter.isEmpty()) {
             if (charFilter == QStringLiteral("__UNASSIGNED__")) {
                 if (!si.charTags.isEmpty())
+                    continue;
+            } else if (charFilter == QStringLiteral("__FAVORITE__") ||
+                       charFilter == QStringLiteral("__HIDDEN__")) {
+                const auto wanted = charFilter == QStringLiteral("__FAVORITE__")
+                    ? ShotPresetManager::CharacterGroup::Favorite
+                    : ShotPresetManager::CharacterGroup::Hidden;
+                bool hasGroupedCharacter = false;
+                for (const auto& tag : si.charTags) {
+                    if (m_presetManager.characterGroup(tag.toStdString()) == wanted) {
+                        hasGroupedCharacter = true;
+                        break;
+                    }
+                }
+                if (!hasGroupedCharacter)
                     continue;
             } else {
                 bool hasChar = false;
@@ -637,11 +659,8 @@ void ShotComposer::refreshLayerList()
             const auto* ch = m_currentShot.character(ref.index);
             if (ch) {
                 typeIcon = QStringLiteral("\xF0\x9F\x91\xA4");  // 👤
-                // Show display name (with colons) instead of folder name
-                std::string dn = m_modelManager
-                    ? m_modelManager->getDisplayName(ch->characterName)
-                    : ch->characterName;
-                label = QString::fromStdString(dn);
+                label = QString::fromStdString(
+                    characterDisplayName(ch->characterName));
                 isVisible = ch->visible;
                 opacity = ch->opacity;
             } else {
@@ -757,26 +776,37 @@ void ShotComposer::refreshLayerList()
     m_layerList->blockSignals(false);
 
     // Ã¢â€â‚¬Ã¢â€â‚¬ Refresh default-shot character dropdown Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-    if (m_defaultCharCombo) {
-        QString prev = m_defaultCharCombo->currentText();
-        m_defaultCharCombo->blockSignals(true);
-        m_defaultCharCombo->clear();
-        for (const auto& ch : m_currentShot.characters()) {
-            // Show display name in combo
-            std::string dn = m_modelManager
-                ? m_modelManager->getDisplayName(ch.characterName)
-                : ch.characterName;
-            m_defaultCharCombo->addItem(QString::fromStdString(dn));
-        }
-        // Restore previous selection if still present
-        int prevIdx = m_defaultCharCombo->findText(prev);
-        if (prevIdx >= 0)
-            m_defaultCharCombo->setCurrentIndex(prevIdx);
-        m_defaultCharCombo->blockSignals(false);
-        bool hasChars = m_defaultCharCombo->count() > 0;
-        m_defaultCharCombo->setEnabled(hasChars && !m_currentShot.name().empty());
-        m_setDefaultBtn->setEnabled(hasChars && !m_currentShot.name().empty());
+    refreshDefaultCharacterCombo();
+}
+
+void ShotComposer::refreshDefaultCharacterCombo()
+{
+    if (!m_defaultCharCombo) return;
+
+    QString previousReal = m_defaultCharCombo->currentData().toString();
+    if (previousReal.isEmpty() && m_defaultCharCombo->currentIndex() >= 0) {
+        previousReal = QString::fromStdString(
+            m_presetManager.realNameFor(m_defaultCharCombo->currentText().toStdString()));
     }
+
+    m_defaultCharCombo->blockSignals(true);
+    m_defaultCharCombo->clear();
+    for (const auto& ch : m_currentShot.characters()) {
+        const std::string realName = canonicalCharacterName(ch.characterName);
+        const std::string displayName = m_presetManager.displayNameFor(realName);
+        m_defaultCharCombo->addItem(QString::fromStdString(displayName),
+                                    QString::fromStdString(realName));
+    }
+
+    const int previousIndex = m_defaultCharCombo->findData(previousReal);
+    if (previousIndex >= 0)
+        m_defaultCharCombo->setCurrentIndex(previousIndex);
+    m_defaultCharCombo->blockSignals(false);
+
+    const bool hasCharacters = m_defaultCharCombo->count() > 0;
+    m_defaultCharCombo->setEnabled(hasCharacters && !m_currentShot.name().empty());
+    if (m_setDefaultBtn)
+        m_setDefaultBtn->setEnabled(hasCharacters && !m_currentShot.name().empty());
 }
 
 // Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â

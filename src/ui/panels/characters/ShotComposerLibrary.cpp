@@ -54,13 +54,16 @@ void ShotComposer::refreshCharacterLibrary()
         }
 
         for (const auto& name : names) {
-            // Get display name (with colons) for UI
-            std::string dispName = m_modelManager->getDisplayName(name);
+            // Keep the folder/model key for rendering, but honor the Compose
+            // alias everywhere the character is presented to the user.
+            const std::string realName = canonicalCharacterName(name);
+            const std::string dispName = m_presetManager.displayNameFor(realName);
 
             // Apply search filter
             if (!searchTerm.isEmpty()) {
                 QString qname = QString::fromStdString(dispName).toLower();
-                if (!qname.contains(searchTerm))
+                QString qreal = QString::fromStdString(realName).toLower();
+                if (!qname.contains(searchTerm) && !qreal.contains(searchTerm))
                     continue;
             }
 
@@ -71,6 +74,7 @@ void ShotComposer::refreshCharacterLibrary()
             QPixmap thumb = makeCharacterThumbnail(name, m_iconSize);
             auto* item = new QListWidgetItem(QIcon(thumb), displayName);
             item->setData(Qt::UserRole, QString::fromStdString(name));  // folder name for addCharacter
+            item->setData(Qt::UserRole + 10, QString::fromStdString(realName));
 
             if (m_animVideoCache && m_animVideoCache->hasAnyForCharacter(name)) {
                 size_t count = m_animVideoCache->countForCharacter(name);

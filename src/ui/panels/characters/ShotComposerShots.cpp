@@ -50,6 +50,9 @@ void ShotComposer::setPresetsDirectory(const std::filesystem::path& dir)
     m_presetManager.scan(dir);
     loadDefaults();
     refreshShotList();
+    // Aliases live beside shot presets, so the character asset library must
+    // be rebuilt after this scan even if ModelManager was attached earlier.
+    refreshCharacterLibrary();
     refreshBackgroundLibrary();
     refreshVideoLibrary();
     refreshPuppetLibrary();
@@ -125,8 +128,6 @@ std::string ShotComposer::activeShowNamespace() const
 
 QString ShotComposer::activeCharFilter() const
 {
-    // The character filter list now contains ALL (item 0, empty UserRole),
-    // UNASSIGNED (item 1, "__UNASSIGNED__"), and character entries.
     if (m_charFilterList) {
         auto* curItem = m_charFilterList->currentItem();
         if (curItem) {
@@ -135,7 +136,9 @@ QString ShotComposer::activeCharFilter() const
                 return val;
         }
     }
-    return {};
+    return m_charGroupFilterCombo
+        ? m_charGroupFilterCombo->currentData().toString()
+        : QString{};
 }
 
 QString ShotComposer::activeShowFilter() const
@@ -244,7 +247,7 @@ void ShotComposer::newShot(const QString& name)
 
     // If a specific character filter is active, auto-add that character
     QString filterVal = activeCharFilter();
-    if (!filterVal.isEmpty() && filterVal != QStringLiteral("__UNASSIGNED__")) {
+    if (!filterVal.isEmpty() && !filterVal.startsWith(QStringLiteral("__"))) {
         std::string folderName = m_modelManager
             ? m_modelManager->getFolderName(filterVal.toStdString())
             : filterVal.toStdString();
@@ -405,11 +408,7 @@ void ShotComposer::setCurrentShot(const ShotPreset& preset)
     m_defaultCharCombo->setEnabled(true);
     m_setDefaultBtn->setEnabled(true);
 
-    // Populate default-shot character dropdown with characters in this shot
-    m_defaultCharCombo->clear();
-    for (const auto& ch : preset.characters()) {
-        m_defaultCharCombo->addItem(QString::fromStdString(ch.characterName));
-    }
+    refreshDefaultCharacterCombo();
 
     m_cameraZoomSpin->setValue(preset.cameraZoom() * 100.0);
     m_cameraPanXSpin->setValue(static_cast<double>(preset.cameraX()) * 100.0);

@@ -59,6 +59,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <numeric>
 #include <sstream>
 #include <filesystem>
@@ -78,6 +79,14 @@ void TranscriptionWorker::process()
 {
     if (!m_transcriber) {
         emit errorOccurred("Transcriber not initialized");
+        emit finished(false);
+        return;
+    }
+
+    try {
+
+    if (m_cancelRequested.load(std::memory_order_acquire)) {
+        emit finished(false);
         return;
     }
 
@@ -89,8 +98,8 @@ void TranscriptionWorker::process()
     // if not cached — can take a while on slow connections).  Previously
     // this was done on the UI thread, freezing the app for the entire
     // download duration.
-    if (!m_transcriber->isModelLoaded()) {
-        emit progressChanged(0.0f, QStringLiteral("Loading Whisper model..."));
+    if (!m_transcriber->isModelLoaded() || m_transcriber->currentModel() != m_modelSize) {
+        emit progressChanged(0.0f, QStringLiteral("Loading transcription model..."));
         if (!m_transcriber->loadModel(m_modelSize, progress)) {
             emit errorOccurred(QString::fromStdString(
                 m_transcriber->lastError().empty()
@@ -99,6 +108,15 @@ void TranscriptionWorker::process()
             emit finished(false);
             return;
         }
+    }
+
+    // A cancellation request may arrive while loadModel() is starting. The
+    // Transcriber resets its backend cancellation flag at model boundaries,
+    // so retain this worker-owned token and check it before inference.
+    if (m_cancelRequested.load(std::memory_order_acquire)) {
+        m_transcriber->cancelAsync();
+        emit finished(false);
+        return;
     }
 
     m_result = m_transcriber->transcribe(m_audioPath, m_language, progress);
@@ -113,6 +131,14 @@ void TranscriptionWorker::process()
         emit finished(false);
     } else {
         emit finished(true);
+    }
+    } catch (const std::exception& error) {
+        emit errorOccurred(QStringLiteral("Transcription exception: %1")
+            .arg(QString::fromUtf8(error.what())));
+        emit finished(false);
+    } catch (...) {
+        emit errorOccurred(QStringLiteral("Unknown transcription exception"));
+        emit finished(false);
     }
 }
 
@@ -183,10 +209,27 @@ AudioSync::AudioSync(QWidget* parent)
 AudioSync::~AudioSync()
 {
     m_destroying.store(true);
-    if (m_workerThread && m_workerThread->isRunning()) {
+    ++m_transcriptionRunId; // Invalidate queued callbacks from the active run.
+    m_transcriptionState = TranscriptionState::Cancelling;
+
+    QPointer<QThread> thread = m_workerThread;
+    if (thread) {
         m_transcriber->cancelAsync();
-        m_workerThread->quit();
-        m_workerThread->wait(3000);
+        thread->quit();
+
+        // QThread's destructor aborts the process if the thread is still
+        // running. Cancellation is cooperative for both whisper.cpp and the
+        // CrisperWhisper pipe worker, so wait for it to finish rather than
+        // allowing QObject child destruction to hit that fatal path.
+        if (thread->isRunning())
+            thread->wait();
+
+        QObject::disconnect(thread, nullptr, this, nullptr);
+        if (m_worker)
+            delete m_worker.data();
+        m_worker = nullptr;
+        delete thread.data();
+        m_workerThread = nullptr;
     }
 }
 
@@ -464,7 +507,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                 QAction* ch = menu.exec(ctxEv->globalPos());
                 if (ch == trAct) {
                     showAudioSidePanel(2);
-                    startTranscriptionForFile(static_cast<size_t>(row));
+                    startSingleFileTranscription(static_cast<size_t>(row));
                 } else if (ch == relinkAct) {
                     relinkAudioFile(row);
                 } else if (ch == rmAct) {
@@ -484,7 +527,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                 QAction* expAct = menu.addAction(QStringLiteral("\U0001F4C2  Show in Explorer"));
                 QAction* ch = menu.exec(ctxEv->globalPos());
                 if (ch == trAct) {
-                    startTranscriptionForFile(static_cast<size_t>(row));
+                    startSingleFileTranscription(static_cast<size_t>(row));
                 } else if (ch == clAct) {
                     clearTranscriptionForFile(static_cast<size_t>(row));
                 } else if (ch == rmAct) {
@@ -837,8 +880,20 @@ bool AudioSync::importAudio(const std::string& audioPath)
 {
     if (audioPath.empty()) return false;
 
+    // One imported path owns exactly one transcription-result slot. Avoid a
+    // duplicate row if the same file is selected twice.
+    if (std::find(m_audioPaths.begin(), m_audioPaths.end(), audioPath)
+        != m_audioPaths.end()) {
+        spdlog::info("AudioSync: Audio already imported: {}", audioPath);
+        return true;
+    }
+
+    // Repair any legacy size mismatch before appending the new parallel slot.
+    m_allTranscriptionResults.resize(m_audioPaths.size());
+
     m_audioPath = audioPath;
     m_audioPaths.push_back(audioPath);
+    m_allTranscriptionResults.emplace_back();
     m_audioImported = true;
     if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(audioPath));
     m_audioStatus->setText(QString("%1 file(s)").arg(m_audioPaths.size()));
@@ -850,6 +905,7 @@ bool AudioSync::importAudio(const std::string& audioPath)
     if (m_audioFileList) {
         addAudioFileListItem(QString::fromStdString(audioPath));
     }
+    refreshTranscribeFileList();
 
     updateWorkflowState();
 
@@ -866,6 +922,12 @@ void AudioSync::importAudioFiles(const QStringList& paths)
 
 void AudioSync::startTranscription()
 {
+    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread) {
+        spdlog::warn("AudioSync: Ignoring Transcribe request while run {} is active",
+                     m_transcriptionRunId);
+        return;
+    }
+
     if (m_audioPaths.empty()) {
         m_transcribeStatus->setText("No audio files imported");
         return;
@@ -890,71 +952,134 @@ void AudioSync::startTranscription()
         filesWithClips.insert(c.sourceFile);
 
     // Build list of file indices that still need transcription
-    m_pendingTranscriptionIndices.clear();
+    std::vector<size_t> pendingIndices;
     for (size_t i = 0; i < m_audioPaths.size(); ++i) {
         const bool hasSegments = !m_allTranscriptionResults[i].segments.empty();
         const bool hasClips    = filesWithClips.count(m_audioPaths[i]) > 0;
         if (!hasSegments && !hasClips)
-            m_pendingTranscriptionIndices.push_back(i);
+            pendingIndices.push_back(i);
     }
 
-    if (m_pendingTranscriptionIndices.empty()) {
+    if (pendingIndices.empty()) {
         m_transcribeStatus->setText("All files already transcribed");
         m_transcribeStatus->setStyleSheet(QString("color: %1;").arg(Theme::hex(Theme::colors().success)));
         return;
     }
 
-    // Start from the first pending file
-    m_currentTranscriptionIndex = m_pendingTranscriptionIndices.front();
-
-    // Show status
-    m_transcribeStatus->setText(QString("Transcribing file 1/%1 (%2 already done)...")
-        .arg(m_pendingTranscriptionIndices.size())
-        .arg(m_audioPaths.size() - m_pendingTranscriptionIndices.size()));
-    m_progressBar->setVisible(true);
-    m_progressBar->setValue(0);
-    m_transcribeBtn->setEnabled(false);
-
-    emit transcriptionStarted();
-
-    // Start transcribing the first pending file
-    startTranscriptionForFile(m_currentTranscriptionIndex);
+    beginTranscriptionRun(std::move(pendingIndices));
 }
 
-void AudioSync::startTranscriptionForFile(size_t index)
+void AudioSync::startSingleFileTranscription(size_t index)
 {
-    if (index >= m_audioPaths.size()) return;
+    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread) {
+        spdlog::warn("AudioSync: Ignoring per-file Transcribe request while run {} is active",
+                     m_transcriptionRunId);
+        if (m_transcribeStatus)
+            m_transcribeStatus->setText(QStringLiteral("A transcription is already in progress"));
+        return;
+    }
+    if (index >= m_audioPaths.size())
+        return;
+
+    if (m_allTranscriptionResults.size() < m_audioPaths.size())
+        m_allTranscriptionResults.resize(m_audioPaths.size());
+    beginTranscriptionRun({index});
+}
+
+void AudioSync::beginTranscriptionRun(std::vector<size_t> indices)
+{
+    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread || indices.empty())
+        return;
+
+    indices.erase(std::remove_if(indices.begin(), indices.end(), [this](size_t index) {
+        return index >= m_audioPaths.size();
+    }), indices.end());
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    if (indices.empty())
+        return;
+
+    m_pendingTranscriptionIndices = std::move(indices);
+    m_transcriptionRunTotal = m_pendingTranscriptionIndices.size();
+    m_transcriptionRunCompleted = 0;
+    m_transcriptionRunHadSuccess = false;
+    m_transcriptionRunError.clear();
+    m_transcriptionState = TranscriptionState::Running;
+    const uint64_t runId = ++m_transcriptionRunId;
+    m_currentTranscriptionIndex = m_pendingTranscriptionIndices.front();
+
+    m_transcribeStatus->setText(QString("Transcribing file 1/%1...")
+        .arg(m_transcriptionRunTotal));
+    m_progressBar->setVisible(true);
+    m_progressBar->setValue(0);
+    updateTranscriptionControls();
+
+    spdlog::info("AudioSync: Starting transcription run {} with {} file(s)",
+                 runId, m_transcriptionRunTotal);
+    emit transcriptionStarted();
+    startTranscriptionForFile(m_currentTranscriptionIndex, runId);
+}
+
+void AudioSync::startTranscriptionForFile(size_t index, uint64_t runId)
+{
+    if (runId != m_transcriptionRunId
+        || m_transcriptionState == TranscriptionState::Idle
+        || index >= m_audioPaths.size()) {
+        return;
+    }
+
+    // A new worker is launched only after the previous QThread::finished
+    // callback has cleared these pointers. Never replace an active worker.
+    if (m_workerThread || m_worker) {
+        spdlog::error("AudioSync: Refusing to replace active worker in run {}", runId);
+        return;
+    }
 
     m_audioPath = m_audioPaths[index];
 
-    // Create worker thread
-    if (m_workerThread) {
-        m_workerThread->quit();
-        m_workerThread->wait();
-        delete m_workerThread;
-    }
-    delete m_worker;  // Free previous worker (moveToThread removed Qt parent)
-
-    m_workerThread = new QThread(this);
-    m_worker = new TranscriptionWorker(m_transcriber.get());
-    m_worker->setAudioPath(m_audioPath);
+    auto* thread = new QThread;
+    auto* worker = new TranscriptionWorker(m_transcriber.get());
+    m_workerThread = thread;
+    m_worker = worker;
+    worker->setAudioPath(m_audioPath);
     {
-        auto modelName = m_modelCombo->currentText().toStdString();
-        m_worker->setModelSize(whisperModelFromName(modelName));
+        const QString modelId = m_modelCombo->currentData().isValid()
+            ? m_modelCombo->currentData().toString()
+            : m_modelCombo->currentText();
+        auto modelName = modelId.toStdString();
+        worker->setModelSize(whisperModelFromName(modelName));
     }
-    m_worker->moveToThread(m_workerThread);
+    worker->moveToThread(thread);
 
-    connect(m_workerThread, &QThread::started, m_worker, &TranscriptionWorker::process);
-    connect(m_worker, &TranscriptionWorker::progressChanged,
-            this, &AudioSync::onTranscriptionProgress, Qt::QueuedConnection);
-    connect(m_worker, &TranscriptionWorker::finished,
-            this, &AudioSync::onTranscriptionFinished, Qt::QueuedConnection);
-    connect(m_worker, &TranscriptionWorker::errorOccurred,
-            this, &AudioSync::onTranscriptionError, Qt::QueuedConnection);
-    connect(m_worker, &TranscriptionWorker::finished,
-            m_workerThread, &QThread::quit, Qt::QueuedConnection);
+    const QPointer<TranscriptionWorker> safeWorker(worker);
+    const QPointer<QThread> safeThread(thread);
+    connect(thread, &QThread::started, worker, &TranscriptionWorker::process);
+    connect(worker, &TranscriptionWorker::progressChanged, this,
+            [this, runId, safeWorker](float percent, const QString& status) {
+                if (runId == m_transcriptionRunId && safeWorker == m_worker)
+                    onTranscriptionProgress(percent, status);
+            }, Qt::QueuedConnection);
+    connect(worker, &TranscriptionWorker::errorOccurred, this,
+            [this, runId, safeWorker](const QString& error) {
+                if (safeWorker == m_worker)
+                    handleTranscriptionError(runId, error);
+            }, Qt::QueuedConnection);
+    connect(worker, &TranscriptionWorker::finished, this,
+            [this, runId, safeWorker, safeThread](bool success) {
+                if (safeWorker == m_worker)
+                    handleTranscriptionFinished(runId, safeWorker, success);
+                // The worker slot has returned after this signal. Asking the
+                // event loop to quit is safe even for a stale/invalidated run.
+                if (safeThread)
+                    safeThread->quit();
+            }, Qt::QueuedConnection);
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this,
+            [this, runId, safeThread] {
+                handleTranscriptionThreadFinished(runId, safeThread);
+            }, Qt::QueuedConnection);
 
-    m_workerThread->start();
+    thread->start();
 }
 
 int AudioSync::scriptLineCount() const

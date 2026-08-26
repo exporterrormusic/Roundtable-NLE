@@ -39,6 +39,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QStyledItemDelegate>
@@ -50,6 +51,10 @@
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+namespace {
+constexpr int kCharacterGroupRole = Qt::UserRole + 2;
+}
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Character filter thumbnail column â€” sits between rail and shots column
@@ -71,6 +76,8 @@ public:
         int count = index.data(Qt::UserRole + 1).toInt();
         QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
         const bool hasIcon = !icon.isNull();
+        const bool isHidden = index.data(kCharacterGroupRole).toInt()
+            == static_cast<int>(ShotPresetManager::CharacterGroup::Hidden);
         bool isSelected = option.state & QStyle::State_Selected;
         bool isHovered = option.state & QStyle::State_MouseOver;
 
@@ -135,7 +142,8 @@ public:
             if (!text.isEmpty()) {
                 painter->setFont(option.font);
                 painter->setPen(isSelected ? Theme::colors().textBright
-                                           : option.palette.color(QPalette::Text));
+                                           : (isHidden ? Theme::colors().textTertiary
+                                                       : option.palette.color(QPalette::Text)));
                 QRect textRect(r.left() + 2, box.bottom() + 2, r.width() - 4, textH);
                 QString elided = painter->fontMetrics().elidedText(
                     text, Qt::ElideRight, textRect.width());
@@ -187,13 +195,116 @@ public:
     }
 };
 
+std::string ShotComposer::canonicalCharacterName(const std::string& storedName) const
+{
+#ifdef ROUNDTABLE_HAS_SPINE
+    if (m_modelManager)
+        return m_modelManager->getDisplayName(storedName);
+#endif
+    return storedName;
+}
+
+std::string ShotComposer::characterDisplayName(const std::string& storedName) const
+{
+    return m_presetManager.displayNameFor(canonicalCharacterName(storedName));
+}
+
+void ShotComposer::setCharacterDisplayAlias(const QString& storedName,
+                                            const QString& displayName)
+{
+    const std::string folderName = storedName.toStdString();
+    const std::string realName = canonicalCharacterName(folderName);
+    if (realName.empty())
+        return;
+
+    // A sync before ModelManager is attached can use the folder key directly.
+    // Remove that stale entry once the canonical shot character is available.
+    if (realName != folderName)
+        m_presetManager.setAlias(folderName, std::string{});
+
+    m_presetManager.setAlias(realName, displayName.trimmed().toStdString());
+    refreshCharacterAliasViews();
+}
+
+void ShotComposer::refreshCharacterAliasViews()
+{
+    refreshShotList();
+    refreshCharacterLibrary();
+    refreshLayerList();
+}
+
+void ShotComposer::promptRenameCharacter(const std::string& realName)
+{
+    if (realName.empty()) return;
+
+    const QString currentName = QString::fromStdString(
+        m_presetManager.displayNameFor(realName));
+    bool ok = false;
+    QString newName = QInputDialog::getText(
+        this, tr("Rename Character"),
+        tr("Name to use for \"%1\" throughout Compose:")
+            .arg(QString::fromStdString(realName)),
+        QLineEdit::Normal, currentName, &ok);
+    if (!ok) return;
+    newName = newName.trimmed();
+
+    auto sameName = [](const std::string& a, const QString& b) {
+        return QString::fromStdString(a).compare(b, Qt::CaseInsensitive) == 0;
+    };
+    auto conflictsWith = [&](const std::string& otherReal) {
+        if (QString::fromStdString(otherReal).compare(
+                QString::fromStdString(realName), Qt::CaseInsensitive) == 0)
+            return false;
+        return sameName(otherReal, newName)
+            || sameName(m_presetManager.displayNameFor(otherReal), newName);
+    };
+
+    if (!newName.isEmpty()
+        && newName.compare(QString::fromStdString(realName), Qt::CaseInsensitive) != 0) {
+        bool collision = false;
+        for (const auto& [otherReal, _] : m_presetManager.aliases()) {
+            if (conflictsWith(otherReal)) { collision = true; break; }
+        }
+#ifdef ROUNDTABLE_HAS_SPINE
+        if (!collision && m_modelManager) {
+            for (const auto& entry : m_modelManager->entries()) {
+                if (conflictsWith(m_modelManager->getDisplayName(entry.name))) {
+                    collision = true;
+                    break;
+                }
+            }
+        }
+#endif
+        if (!collision) {
+            for (const auto& [_, preset] : m_presetManager.allPresets()) {
+                for (const auto& ch : preset.characters()) {
+                    if (conflictsWith(canonicalCharacterName(ch.characterName))) {
+                        collision = true;
+                        break;
+                    }
+                }
+                if (collision) break;
+            }
+        }
+        if (collision) {
+            QMessageBox::warning(this, tr("Rename Character"),
+                tr("\"%1\" is already used by another character.").arg(newName));
+            return;
+        }
+    }
+
+    m_presetManager.setAlias(realName, newName.toStdString());
+    refreshCharacterAliasViews();
+}
+
 QWidget* ShotComposer::createCharFilterColumn()
 {
     const auto& c = Theme::colors();
 
     auto* column = new QWidget;
     column->setObjectName("CharFilterColumn");
-    column->setFixedWidth(220);
+    column->setMinimumWidth(150);
+    column->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     column->setStyleSheet(QStringLiteral(
         "#CharFilterColumn { background: %1; border-right: 1px solid %2; }")
         .arg(Theme::hex(c.surface0))
@@ -209,6 +320,28 @@ QWidget* ShotComposer::createCharFilterColumn()
         "font-weight: bold; font-size: 13px; color: %1; padding: 2px 0; letter-spacing: 0.5px;")
         .arg(Theme::hex(c.textSecondary)));
     colLayout->addWidget(headerLabel);
+
+    // Scope selector replaces the old ALL/UNASSIGNED pseudo-items in the list.
+    m_charGroupFilterCombo = new QComboBox;
+    m_charGroupFilterCombo->setObjectName("CharacterGroupFilter");
+    m_charGroupFilterCombo->addItem(QStringLiteral("ALL"), QString());
+    m_charGroupFilterCombo->addItem(QStringLiteral("UNASSIGNED"),
+                                    QStringLiteral("__UNASSIGNED__"));
+    m_charGroupFilterCombo->addItem(QStringLiteral("FAVORITE"),
+                                    QStringLiteral("__FAVORITE__"));
+    m_charGroupFilterCombo->addItem(QStringLiteral("HIDDEN"),
+                                    QStringLiteral("__HIDDEN__"));
+    m_charGroupFilterCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { background: %1; color: %2; border: 1px solid %3;"
+        "  border-radius: 4px; padding: 5px 8px; font-weight: bold; }"
+        "QComboBox::drop-down { border: none; width: 20px; }"
+        "QComboBox QAbstractItemView { background: %1; color: %2;"
+        "  selection-background-color: %4; }")
+        .arg(Theme::hex(c.surface1))
+        .arg(Theme::hex(c.text))
+        .arg(Theme::hex(c.border))
+        .arg(Theme::hex(c.accent)));
+    colLayout->addWidget(m_charGroupFilterCombo);
 
     // Search bar
     m_filterSearchEdit = new QLineEdit;
@@ -251,6 +384,15 @@ QWidget* ShotComposer::createCharFilterColumn()
             this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshShotList(); });
     connect(m_filterSearchEdit, &QLineEdit::textChanged,
             this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; refreshShotList(); });
+    connect(m_charGroupFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_charFilterList) {
+            const QSignalBlocker blocker(m_charFilterList);
+            m_charFilterList->setCurrentRow(-1);
+        }
+        refreshShotList();
+    });
 
     // Right-click context menu: rename character (alias) so script lines
     // for the new display name resolve to the original character's default
@@ -263,9 +405,8 @@ QWidget* ShotComposer::createCharFilterColumn()
         auto* item = m_charFilterList->itemAt(pos);
         if (!item) return;
         const QString tag = item->data(Qt::UserRole).toString();
-        // Skip ALL ("") and UNASSIGNED — only real character entries.
-        if (tag.isEmpty() || tag == QStringLiteral("__UNASSIGNED__"))
-            return;
+        // Divider rows have no tag; only real character rows get a menu.
+        if (tag.isEmpty()) return;
 
         // UserRole stores the real character name; the item's text is the
         // current display label (alias if one is set).
@@ -273,6 +414,14 @@ QWidget* ShotComposer::createCharFilterColumn()
         const std::string displayName = item->text().toStdString();
 
         QMenu menu(this);
+        const auto group = m_presetManager.characterGroup(realName);
+        auto* favoriteAct = menu.addAction(QStringLiteral("Favorite"));
+        favoriteAct->setCheckable(true);
+        favoriteAct->setChecked(group == ShotPresetManager::CharacterGroup::Favorite);
+        auto* hideAct = menu.addAction(QStringLiteral("Hide"));
+        hideAct->setCheckable(true);
+        hideAct->setChecked(group == ShotPresetManager::CharacterGroup::Hidden);
+        menu.addSeparator();
         auto* renameAct = menu.addAction(QStringLiteral("Rename..."));
         QAction* clearAct = nullptr;
         if (realName != displayName)
@@ -282,47 +431,31 @@ QWidget* ShotComposer::createCharFilterColumn()
         QAction* chosen = menu.exec(m_charFilterList->mapToGlobal(pos));
         if (!chosen) return;
 
-        if (chosen == clearAct) {
-            m_presetManager.setAlias(realName, std::string{});
+        if (chosen == favoriteAct) {
+            m_presetManager.setCharacterGroup(
+                realName, group == ShotPresetManager::CharacterGroup::Favorite
+                    ? ShotPresetManager::CharacterGroup::Normal
+                    : ShotPresetManager::CharacterGroup::Favorite);
+            refreshShotList();
+            return;
+        }
+        if (chosen == hideAct) {
+            m_presetManager.setCharacterGroup(
+                realName, group == ShotPresetManager::CharacterGroup::Hidden
+                    ? ShotPresetManager::CharacterGroup::Normal
+                    : ShotPresetManager::CharacterGroup::Hidden);
             refreshShotList();
             return;
         }
 
+        if (chosen == clearAct) {
+            m_presetManager.setAlias(realName, std::string{});
+            refreshCharacterAliasViews();
+            return;
+        }
+
         if (chosen == renameAct) {
-            bool ok = false;
-            QString newName = QInputDialog::getText(
-                this, tr("Rename Character"),
-                tr("New display name for \"%1\":")
-                    .arg(QString::fromStdString(realName)),
-                QLineEdit::Normal,
-                QString::fromStdString(displayName), &ok);
-            if (!ok) return;
-            newName = newName.trimmed();
-            // Reject collisions with other real character names (would
-            // shadow them in the filter).
-            if (!newName.isEmpty() &&
-                newName.compare(QString::fromStdString(realName), Qt::CaseInsensitive) != 0)
-            {
-                for (int i = 0; i < m_charFilterList->count(); ++i) {
-                    auto* it = m_charFilterList->item(i);
-                    if (!it) continue;
-                    const QString existingTag = it->data(Qt::UserRole).toString();
-                    if (existingTag.isEmpty() ||
-                        existingTag == QStringLiteral("__UNASSIGNED__"))
-                        continue;
-                    const std::string existingReal =
-                        m_presetManager.realNameFor(existingTag.toStdString());
-                    if (existingReal != realName &&
-                        QString::fromStdString(existingReal).compare(newName, Qt::CaseInsensitive) == 0)
-                    {
-                        QMessageBox::warning(this, tr("Rename Character"),
-                            tr("\"%1\" is already a character name.").arg(newName));
-                        return;
-                    }
-                }
-            }
-            m_presetManager.setAlias(realName, newName.toStdString());
-            refreshShotList();
+            promptRenameCharacter(realName);
         }
     });
 
@@ -339,7 +472,8 @@ QWidget* ShotComposer::createShowFilterColumn()
 
     auto* column = new QWidget;
     column->setObjectName("ShowFilterColumn");
-    column->setFixedWidth(180);
+    column->setMinimumWidth(120);
+    column->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     column->setStyleSheet(QStringLiteral(
         "#ShowFilterColumn { background: %1; border-right: 1px solid %2; }")
         .arg(Theme::hex(c.surface0))
@@ -565,12 +699,42 @@ void ShotComposer::setupUI()
     m_showFilterColumn = createShowFilterColumn();
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->setObjectName("ComposeMainSplitter");
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setHandleWidth(6);
+    m_splitter->setStyleSheet(QStringLiteral(
+        "QSplitter#ComposeMainSplitter::handle { background: %1; }"
+        "QSplitter#ComposeMainSplitter::handle:hover { background: %2; }")
+        .arg(Theme::hex(Theme::colors().border))
+        .arg(Theme::hex(Theme::colors().accent)));
 
     m_splitter->addWidget(createLeftPanel());
     m_splitter->addWidget(createPropertiesPanel());
 
     m_splitter->setStretchFactor(0, 2);   // Preview + Library
     m_splitter->setStretchFactor(1, 1);   // Properties + Layers
+
+    auto restoreSplitter = [](QSplitter* splitter, const QString& key) {
+        if (!splitter) return;
+        auto settings = rt::appSettings();
+        const QByteArray saved = settings.value(key).toByteArray();
+        if (!saved.isEmpty()) splitter->restoreState(saved);
+    };
+    restoreSplitter(m_splitter,      QStringLiteral("Characters/composeMainSplitter"));
+    restoreSplitter(m_leftSplitter,  QStringLiteral("Characters/composeLeftSplitter"));
+    restoreSplitter(m_rightSplitter, QStringLiteral("Characters/composeRightSplitter"));
+
+    auto saveOnMove = [this](QSplitter* splitter, const QString& key) {
+        if (!splitter) return;
+        connect(splitter, &QSplitter::splitterMoved, this,
+                [splitter, key](int, int) {
+            auto settings = rt::appSettings();
+            settings.setValue(key, splitter->saveState());
+        });
+    };
+    saveOnMove(m_splitter,      QStringLiteral("Characters/composeMainSplitter"));
+    saveOnMove(m_leftSplitter,  QStringLiteral("Characters/composeLeftSplitter"));
+    saveOnMove(m_rightSplitter, QStringLiteral("Characters/composeRightSplitter"));
 
     layout->addWidget(m_splitter);
 }

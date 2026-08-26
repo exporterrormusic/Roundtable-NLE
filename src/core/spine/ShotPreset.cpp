@@ -704,6 +704,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
     m_directory = presetsDir;
     m_presets.clear();
     m_aliases.clear();
+    m_characterGroups.clear();
     m_knownShows.clear();
     m_showThumbnails.clear();
     m_showDefaults.clear();
@@ -715,6 +716,7 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
     }
 
     loadAliases();
+    loadCharacterGroups();
     loadShows();
     loadShowThumbnails();
     loadShowDefaults();
@@ -1169,6 +1171,73 @@ void ShotPresetManager::saveAliases() const
     }
 }
 
+void ShotPresetManager::setCharacterGroup(const std::string& realName,
+                                           CharacterGroup group)
+{
+    if (realName.empty()) return;
+    if (group == CharacterGroup::Normal)
+        m_characterGroups.erase(realName);
+    else
+        m_characterGroups[realName] = group;
+    saveCharacterGroups();
+}
+
+ShotPresetManager::CharacterGroup
+ShotPresetManager::characterGroup(const std::string& realName) const
+{
+    auto it = m_characterGroups.find(realName);
+    return it == m_characterGroups.end() ? CharacterGroup::Normal : it->second;
+}
+
+void ShotPresetManager::loadCharacterGroups()
+{
+    if (m_directory.empty()) return;
+    std::ifstream f(m_directory / "_character_groups.json");
+    if (!f.is_open()) return;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+    JLexer lex(content);
+    if (lex.next() != JTok::LBrace) return;
+    while (true) {
+        auto t = lex.next();
+        if (t == JTok::RBrace || t == JTok::End) break;
+        if (t == JTok::Comma) continue;
+        if (t != JTok::String) break;
+        std::string realName = lex.sval;
+        if (lex.next() != JTok::Colon || lex.next() != JTok::String) break;
+        if (lex.sval == "favorite")
+            m_characterGroups[realName] = CharacterGroup::Favorite;
+        else if (lex.sval == "hidden")
+            m_characterGroups[realName] = CharacterGroup::Hidden;
+    }
+}
+
+void ShotPresetManager::saveCharacterGroups() const
+{
+    if (m_directory.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(m_directory, ec);
+
+    std::ostringstream os;
+    os << '{';
+    bool first = true;
+    for (const auto& [realName, group] : m_characterGroups) {
+        if (group == CharacterGroup::Normal) continue;
+        if (!first) os << ',';
+        first = false;
+        os << '"' << jsonEscape(realName) << "\":\""
+           << (group == CharacterGroup::Favorite ? "favorite" : "hidden")
+           << '"';
+    }
+    os << '}';
+
+    std::ofstream f(m_directory / "_character_groups.json", std::ios::trunc);
+    if (f.is_open()) {
+        const auto s = os.str();
+        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    }
+}
+
 // ── Show registry ────────────────────────────────────────────────────────
 
 namespace {
@@ -1357,17 +1426,18 @@ void ShotPresetManager::setShowDefaultShot(const std::string& show,
                                             const std::string& shotName)
 {
     if (show.empty() || characterName.empty()) return;
+    const std::string realName = realNameFor(characterName);
     std::string lowerShow = show;
     std::transform(lowerShow.begin(), lowerShow.end(), lowerShow.begin(), ::tolower);
 
     if (shotName.empty()) {
         auto sit = m_showDefaults.find(lowerShow);
         if (sit != m_showDefaults.end()) {
-            sit->second.erase(characterName);
+            sit->second.erase(realName);
             if (sit->second.empty()) m_showDefaults.erase(sit);
         }
     } else {
-        m_showDefaults[lowerShow][characterName] = shotName;
+        m_showDefaults[lowerShow][realName] = shotName;
     }
     saveShowDefaults();
 }
@@ -1463,4 +1533,3 @@ std::filesystem::path ShotPresetManager::pathForPreset(const std::string& show,
 }
 
 } // namespace rt
-

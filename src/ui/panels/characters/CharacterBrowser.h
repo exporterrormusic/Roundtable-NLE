@@ -83,6 +83,12 @@ public:
     /// Scroll the character list to the first entry starting with the given letter.
     void scrollToLetter(QChar letter);
 
+    /// User-defined Library display names, keyed by the on-disk folder name.
+    [[nodiscard]] const QMap<QString, QString>& customDisplayNames() const noexcept
+    {
+        return m_customDisplayNames;
+    }
+
     // ── Accessors (testing) ─────────────────────────────────────────────
 
     [[nodiscard]] QLineEdit*    searchField()       const noexcept { return m_searchField; }
@@ -103,6 +109,8 @@ signals:
     void characterSelected(const QString& name);
     void downloadRequested(const QString& name);
     void deleteRequested(const QString& name);
+    void characterDisplayNameChanged(const QString& folderName,
+                                     const QString& displayName);
 
 private slots:
     void onSearchChanged(const QString& text);
@@ -142,6 +150,9 @@ private:
     void resolveCharacterName(const QString& charId) const;
     void saveHiddenChars();
     void saveRenamedDisplayNames();
+    [[nodiscard]] QString displayNameFor(const QString& folderName,
+                                         const QString& fallback = {}) const;
+    void promptRenameCharacter(const QString& folderName);
 
     // State
     ModelManager* m_modelManager{nullptr};
@@ -153,7 +164,8 @@ private:
     std::set<QString> m_localCharNames;     // Downloaded locally
     std::set<QString> m_videoCharNames;     // Video-only characters (from shot presets)
     std::set<QString> m_hiddenCharNames;    // Permanently hidden characters
-    QMap<QString, QString> m_renamedDisplayNames; // folderName → custom display label
+    QMap<QString, QString> m_defaultDisplayNames;
+    QMap<QString, QString> m_customDisplayNames;
     QProgressBar* m_downloadProgress{nullptr};
     std::unique_ptr<SpineEngine> m_spineEngine; // For loading skeleton data
     QJsonObject   m_cachedCharacters;           // P1: Cached metadata

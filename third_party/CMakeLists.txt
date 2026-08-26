@@ -76,7 +76,10 @@ FetchContent_MakeAvailable(vma)
 FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4  # pinned commit (stb doesn't tag releases)
-    GIT_SHALLOW    TRUE
+    # A raw historical commit is not guaranteed to be reachable from a
+    # depth-one clone.  Use a full fetch so fresh build trees can always check
+    # out the exact pinned object.
+    GIT_SHALLOW    FALSE
 )
 FetchContent_MakeAvailable(stb)
 # stb is header-only, create an interface target
@@ -277,6 +280,46 @@ if(ROUNDTABLE_ENABLE_WHISPER)
             "-DROUNDTABLE_ENABLE_WHISPER_CUDA=OFF for the emergency CPU-only fallback.")
     endif()
     if(ROUNDTABLE_ENABLE_WHISPER_CUDA AND CUDAToolkit_FOUND)
+        # CMake's CUDA_ARCHITECTURES=native probe is unreliable with the
+        # Visual Studio generator.  Ask the driver for the installed GPUs'
+        # compute capabilities and pass explicit architecture numbers instead.
+        if(WIN32 AND (NOT CMAKE_CUDA_ARCHITECTURES OR
+                      CMAKE_CUDA_ARCHITECTURES STREQUAL "native"))
+            find_program(ROUNDTABLE_NVIDIA_SMI_EXECUTABLE nvidia-smi
+                HINTS "$ENV{SystemRoot}/System32")
+            if(ROUNDTABLE_NVIDIA_SMI_EXECUTABLE)
+                execute_process(
+                    COMMAND "${ROUNDTABLE_NVIDIA_SMI_EXECUTABLE}"
+                            --query-gpu=compute_cap --format=csv,noheader
+                    OUTPUT_VARIABLE _roundtable_compute_caps
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+                string(REPLACE "\r" "" _roundtable_compute_caps
+                               "${_roundtable_compute_caps}")
+                string(REPLACE "\n" ";" _roundtable_compute_caps
+                               "${_roundtable_compute_caps}")
+                set(_roundtable_cuda_architectures "")
+                foreach(_compute_cap IN LISTS _roundtable_compute_caps)
+                    if(_compute_cap MATCHES "^([0-9]+)\\.([0-9]+)$")
+                        list(APPEND _roundtable_cuda_architectures
+                             "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+                    endif()
+                endforeach()
+                list(REMOVE_DUPLICATES _roundtable_cuda_architectures)
+            endif()
+            if(_roundtable_cuda_architectures)
+                set(CMAKE_CUDA_ARCHITECTURES
+                    "${_roundtable_cuda_architectures}" CACHE STRING
+                    "CUDA architectures detected from the NVIDIA driver" FORCE)
+                message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+            else()
+                message(FATAL_ERROR
+                    "Unable to detect an NVIDIA GPU compute capability. Set "
+                    "-DCMAKE_CUDA_ARCHITECTURES explicitly, or configure "
+                    "-DROUNDTABLE_ENABLE_WHISPER_CUDA=OFF for the CPU fallback.")
+            endif()
+        endif()
+
         set(GGML_CUDA ON CACHE BOOL "" FORCE)
         set(ROUNDTABLE_WHISPER_CUDA_FOUND TRUE CACHE BOOL "whisper.cpp CUDA backend built" FORCE)
         message(STATUS "whisper.cpp: CUDA backend enabled")
@@ -286,6 +329,15 @@ if(ROUNDTABLE_ENABLE_WHISPER)
         message(STATUS "whisper.cpp: CUDA backend disabled (CPU transcription)")
     endif()
     FetchContent_MakeAvailable(whisper)
+
+    # ggml's CUDA sources deliberately include shared implementation headers
+    # from multiple translation units. Combining those sources into CMake
+    # unity files makes NVCC see duplicate definitions, so keep this target as
+    # ordinary one-source translation units even when Roundtable unity builds
+    # are enabled globally.
+    if(TARGET ggml-cuda)
+        set_target_properties(ggml-cuda PROPERTIES UNITY_BUILD OFF)
+    endif()
 
     # The static Roundtable/whisper link still imports the CUDA runtime and
     # cuBLAS DLLs on Windows. Record the two direct runtime seeds here; the

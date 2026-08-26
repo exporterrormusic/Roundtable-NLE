@@ -8,6 +8,7 @@
 #include "panels/characters/PuppetLibraryPanel.h"
 #include "ShotComposer.h"
 #include "Theme.h"
+#include "Settings.h"
 
 #include <QFrame>
 #include <QHBoxLayout>
@@ -15,6 +16,7 @@
 #include <QParallelAnimationGroup>
 #include <QPropertyAnimation>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QVBoxLayout>
 
 #include <spdlog/spdlog.h>
@@ -42,11 +44,24 @@ void CharacterShotPanel::setModelManager(ModelManager* mgr)
     if (m_characterBrowser) m_characterBrowser->setModelManager(mgr);
     if (m_shotComposer)     m_shotComposer->setModelManager(mgr);
     if (m_conversionPanel)  m_conversionPanel->setModelManager(mgr);
+
+    if (m_characterBrowser && m_shotComposer) {
+        const auto& names = m_characterBrowser->customDisplayNames();
+        for (auto it = names.cbegin(); it != names.cend(); ++it)
+            m_shotComposer->setCharacterDisplayAlias(it.key(), it.value());
+    }
 }
 
 void CharacterShotPanel::setPresetsDirectory(const std::filesystem::path& dir)
 {
-    if (m_shotComposer) m_shotComposer->setPresetsDirectory(dir);
+    if (!m_shotComposer) return;
+
+    m_shotComposer->setPresetsDirectory(dir);
+    if (m_characterBrowser) {
+        const auto& names = m_characterBrowser->customDisplayNames();
+        for (auto it = names.cbegin(); it != names.cend(); ++it)
+            m_shotComposer->setCharacterDisplayAlias(it.key(), it.value());
+    }
 }
 
 void CharacterShotPanel::setAnimVideoCache(AnimationVideoCache* cache)
@@ -181,16 +196,27 @@ void CharacterShotPanel::setupUI()
     railLayout->addStretch();
     rootLayout->addWidget(m_rail);
 
+    m_workspaceSplitter = new QSplitter(Qt::Horizontal, this);
+    m_workspaceSplitter->setObjectName("ComposeWorkspaceSplitter");
+    m_workspaceSplitter->setChildrenCollapsible(false);
+    m_workspaceSplitter->setHandleWidth(6);
+    m_workspaceSplitter->setStyleSheet(QStringLiteral(
+        "QSplitter#ComposeWorkspaceSplitter::handle { background: %1; }"
+        "QSplitter#ComposeWorkspaceSplitter::handle:hover { background: %2; }")
+        .arg(Theme::hex(c.border))
+        .arg(Theme::hex(c.accent)));
+    rootLayout->addWidget(m_workspaceSplitter, 1);
+
     // ── Letter side panel (A-Z navigation, pop-out column) ──────────────
     buildLetterSidePanel();
-    rootLayout->addWidget(m_letterSidePanel);
+    m_workspaceSplitter->addWidget(m_letterSidePanel);
 
     // ── Content stack (fills remaining width) ────────────────────────────
     m_contentStack = new QStackedWidget;
     m_contentStack->setStyleSheet(QStringLiteral(
         "QStackedWidget { background: %1; }")
         .arg(Theme::hex(c.surface1)));
-    rootLayout->addWidget(m_contentStack, 1);
+    m_workspaceSplitter->addWidget(m_contentStack);
 
     // ── Page 0: LIBRARY — CharacterBrowser ──────────────────────────────
     m_characterBrowser = new CharacterBrowser(this);
@@ -208,26 +234,48 @@ void CharacterShotPanel::setupUI()
     m_shotComposer = new ShotComposer(this);
     m_contentStack->addWidget(m_shotComposer);       // index 3
 
+    connect(m_characterBrowser, &CharacterBrowser::characterDisplayNameChanged,
+            this, [this](const QString& folderName, const QString& displayName) {
+        if (m_shotComposer)
+            m_shotComposer->setCharacterDisplayAlias(folderName, displayName);
+    });
+
     // ── Shots column (sidebar between rail and content, COMPOSE-only) ──
     m_shotsColumnWidget = m_shotComposer->shotsColumn();
     if (m_shotsColumnWidget) {
-        rootLayout->insertWidget(1, m_shotsColumnWidget); // rail(0) → shots(1) → letter(2) → content(3)
+        m_workspaceSplitter->insertWidget(0, m_shotsColumnWidget);
         m_shotsColumnWidget->setVisible(false);           // hidden until COMPOSE is selected
     }
 
     // ── Character filter column (between rail and shots, COMPOSE-only) ──
     m_charFilterWidget = m_shotComposer->charFilterColumn();
     if (m_charFilterWidget) {
-        rootLayout->insertWidget(1, m_charFilterWidget);  // rail(0) → charFilter(1) → shots(2) → letter(3) → content(4)
+        m_workspaceSplitter->insertWidget(0, m_charFilterWidget);
         m_charFilterWidget->setVisible(false);
     }
 
     // ── Show filter column (between rail and character filter, COMPOSE-only) ──
     m_showFilterWidget = m_shotComposer->showFilterColumn();
     if (m_showFilterWidget) {
-        rootLayout->insertWidget(1, m_showFilterWidget); // rail(0) → show(1) → charFilter(2) → shots(3) → letter(4) → content(5)
+        m_workspaceSplitter->insertWidget(0, m_showFilterWidget);
         m_showFilterWidget->setVisible(false);
+
+        // show / character / shots / letter-nav / editor
+        m_workspaceSplitter->setStretchFactor(0, 0);
+        m_workspaceSplitter->setStretchFactor(1, 0);
+        m_workspaceSplitter->setStretchFactor(2, 0);
+        m_workspaceSplitter->setStretchFactor(3, 0);
+        m_workspaceSplitter->setStretchFactor(4, 1);
+        m_workspaceSplitter->setSizes({180, 220, 260, 0, 900});
     }
+
+    connect(m_workspaceSplitter, &QSplitter::splitterMoved, this,
+            [this](int, int) {
+        if (currentMode() != Compose) return;
+        auto settings = rt::appSettings();
+        settings.setValue(QStringLiteral("Characters/composeWorkspaceSplitter"),
+                          m_workspaceSplitter->saveState());
+    });
 
     // ── Page 4: SETTINGS ────────────────────────────────────────
     m_contentStack->addWidget(createSettingsPage());  // index 4
@@ -259,6 +307,15 @@ void CharacterShotPanel::setupUI()
             m_charFilterWidget->setVisible(id == Compose);
         if (m_showFilterWidget)
             m_showFilterWidget->setVisible(id == Compose);
+        if (id == Compose && m_workspaceSplitter) {
+            auto settings = rt::appSettings();
+            const QByteArray saved = settings.value(
+                QStringLiteral("Characters/composeWorkspaceSplitter")).toByteArray();
+            if (!saved.isEmpty())
+                m_workspaceSplitter->restoreState(saved);
+            else
+                m_workspaceSplitter->setSizes({180, 220, 260, 0, 900});
+        }
 
         // Auto-refresh conversion table when switching to Convert page
         if (id == Convert && m_conversionPanel)

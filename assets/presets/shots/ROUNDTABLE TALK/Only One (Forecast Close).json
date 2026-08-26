@@ -1,0 +1,53 @@
+{
+  "name": "Only One (Forecast Close)",
+  "show": "ROUNDTABLE TALK",
+  "cameraZoom": 1.000000,
+  "cameraX": 0.000000,
+  "cameraY": 0.000000,
+  "backgrounds": [
+    {
+      "path": "MARIAN_WALL_ALT.png",
+      "posX": 0.712000,
+      "posY": 0.569000,
+      "scale": 2.150000,
+      "opacity": 1.000000,
+      "nativeWidth": 0,
+      "nativeHeight": 0,
+      "visible": true,
+      "layerType": "image",
+      "inPoint": 0.000000,
+      "outPoint": 0.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 5.000000
+    }
+  ],
+  "characters": [
+    {
+      "characterName": "Rapi (c992)",
+      "outfit": "default",
+      "stance": "default",
+      "animation": "idle",
+      "isTalking": true,
+      "posX": 0.290721,
+      "posY": 1.102748,
+      "scale": 2.268913,
+      "rotation": 0.000000,
+      "flipX": false,
+      "flipY": false,
+      "opacity": 1.000000,
+      "cropLeft": 0.000000,
+      "cropRight": 0.000000,
+      "cropTop": 0.000000,
+      "cropBottom": 0.000000,
+      "blur": 0.000000,
+      "visible": true
+    }
+  ],
+  "layerOrder": [
+    {"type": "ch", "index": 0},
+    {"type": "bg", "index": 0}
+  ]
+}

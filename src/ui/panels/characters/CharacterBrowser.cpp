@@ -70,8 +70,7 @@ CharacterBrowser::CharacterBrowser(QWidget* parent)
     // Default display name overrides for characters with duplicate/suffixed entries
     // (these can be overridden by the user via the Rename... context menu)
     auto setDefaultName = [&](const QString& folderName, const QString& customName) {
-        if (!m_renamedDisplayNames.contains(folderName))
-            m_renamedDisplayNames[folderName] = customName;
+        m_defaultDisplayNames[folderName] = customName;
     };
     setDefaultName("E.H. (c113)", "E.H.");
     setDefaultName("E.H. (c940)", "E.H. (Original)");
@@ -110,8 +109,13 @@ CharacterBrowser::CharacterBrowser(QWidget* parent)
         settings.setArrayIndex(i);
         QString folderName = settings.value("folderName").toString();
         QString customName = settings.value("customName").toString();
-        if (!folderName.isEmpty() && !customName.isEmpty())
-            m_renamedDisplayNames[folderName] = customName;
+        // Older builds wrote all built-in defaults to this settings array.
+        // Ignore those generated entries so only actual user renames are
+        // synchronized into Compose.
+        if (!folderName.isEmpty() && !customName.isEmpty()
+            && m_defaultDisplayNames.value(folderName) != customName) {
+            m_customDisplayNames[folderName] = customName;
+        }
     }
     settings.endArray();
 
@@ -412,11 +416,8 @@ void CharacterBrowser::populateCharacterList()
         }
 #endif
 
-        // Apply custom display name override if set
-        QString effectiveDisplay = display;
-        auto renameIt = m_renamedDisplayNames.find(name);
-        if (renameIt != m_renamedDisplayNames.end())
-            effectiveDisplay = renameIt.value();
+        // Apply a user rename first, then the built-in label for suffixed entries.
+        const QString effectiveDisplay = displayNameFor(name, display);
 
         // U7: Download status icon per list item
         bool isVideoOnly = m_videoCharNames.contains(name);
@@ -1054,12 +1055,55 @@ void CharacterBrowser::saveRenamedDisplayNames()
     QSettings settings;
     settings.beginWriteArray("CharacterBrowser/RenamedDisplayNames");
     int i = 0;
-    for (auto it = m_renamedDisplayNames.begin(); it != m_renamedDisplayNames.end(); ++it) {
+    for (auto it = m_customDisplayNames.cbegin(); it != m_customDisplayNames.cend(); ++it) {
         settings.setArrayIndex(i++);
         settings.setValue("folderName", it.key());
         settings.setValue("customName", it.value());
     }
     settings.endArray();
+}
+
+QString CharacterBrowser::displayNameFor(const QString& folderName,
+                                         const QString& fallback) const
+{
+    auto customIt = m_customDisplayNames.constFind(folderName);
+    if (customIt != m_customDisplayNames.cend())
+        return customIt.value();
+
+    auto defaultIt = m_defaultDisplayNames.constFind(folderName);
+    if (defaultIt != m_defaultDisplayNames.cend())
+        return defaultIt.value();
+
+    return fallback.isEmpty() ? folderName : fallback;
+}
+
+void CharacterBrowser::promptRenameCharacter(const QString& folderName)
+{
+    const QString currentName = displayNameFor(folderName, folderName);
+    bool ok = false;
+    QString newName = QInputDialog::getText(
+        this, tr("Rename Character"), tr("New display name:"),
+        QLineEdit::Normal, currentName, &ok);
+    if (!ok)
+        return;
+
+    newName = newName.trimmed();
+    if (newName == currentName)
+        return;
+
+    const QString defaultName = m_defaultDisplayNames.value(folderName, folderName);
+    if (newName.isEmpty() || newName == defaultName)
+        m_customDisplayNames.remove(folderName);
+    else
+        m_customDisplayNames[folderName] = newName;
+
+    saveRenamedDisplayNames();
+    populateCharacterList();
+
+    // Emit the final visible Library label. An empty edit resets to the
+    // built-in/folder label, and Compose should reflect that reset too.
+    emit characterDisplayNameChanged(folderName,
+                                     displayNameFor(folderName, folderName));
 }
 
 void CharacterBrowser::onContextMenu(const QPoint& pos)
@@ -1124,25 +1168,8 @@ void CharacterBrowser::onContextMenu(const QPoint& pos)
             });
         }
         menu.addSeparator();
-        menu.addAction(QStringLiteral("\xF0\x9F\x93\x9D  Rename..."), this, [this, name]() {
-            QString currentName = name;
-            auto it = m_renamedDisplayNames.find(name);
-            if (it != m_renamedDisplayNames.end())
-                currentName = it.value();
-            bool ok = false;
-            QString newName = QInputDialog::getText(this, "Rename Character",
-                "New display name:", QLineEdit::Normal, currentName, &ok);
-            if (ok && !newName.isEmpty() && newName != currentName) {
-                m_renamedDisplayNames[name] = newName;
-                saveRenamedDisplayNames();
-                populateCharacterList();
-            } else if (ok && newName.isEmpty()) {
-                // Clear custom name (revert to default)
-                m_renamedDisplayNames.remove(name);
-                saveRenamedDisplayNames();
-                populateCharacterList();
-            }
-        });
+        menu.addAction(QStringLiteral("\xF0\x9F\x93\x9D  Rename..."), this,
+                       [this, name]() { promptRenameCharacter(name); });
         menu.addSeparator();
         menu.addAction(QStringLiteral("\xF0\x9F\x97\x91  Delete"), this,
                        &CharacterBrowser::onDeleteClicked);
@@ -1167,24 +1194,8 @@ void CharacterBrowser::onContextMenu(const QPoint& pos)
             });
         }
         menu.addSeparator();
-        menu.addAction(QStringLiteral("\xF0\x9F\x93\x9D  Rename..."), this, [this, name]() {
-            QString currentName = name;
-            auto it = m_renamedDisplayNames.find(name);
-            if (it != m_renamedDisplayNames.end())
-                currentName = it.value();
-            bool ok = false;
-            QString newName = QInputDialog::getText(this, "Rename Character",
-                "New display name:", QLineEdit::Normal, currentName, &ok);
-            if (ok && !newName.isEmpty() && newName != currentName) {
-                m_renamedDisplayNames[name] = newName;
-                saveRenamedDisplayNames();
-                populateCharacterList();
-            } else if (ok && newName.isEmpty()) {
-                m_renamedDisplayNames.remove(name);
-                saveRenamedDisplayNames();
-                populateCharacterList();
-            }
-        });
+        menu.addAction(QStringLiteral("\xF0\x9F\x93\x9D  Rename..."), this,
+                       [this, name]() { promptRenameCharacter(name); });
     }
 
     menu.exec(m_characterList->mapToGlobal(pos));

@@ -29,6 +29,10 @@ TEST(TranscriberTest, ModelNames)
     EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV3Turbo), "large-v3-turbo");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV2), "large-v2");
     EXPECT_STREQ(whisperModelName(WhisperModelSize::LargeV3), "large-v3");
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    EXPECT_STREQ(whisperModelName(WhisperModelSize::CrisperWhisper2Large),
+                 "crisperwhisper-2-large-personal");
+#endif
 }
 
 TEST(TranscriberTest, ModelFromName)
@@ -40,6 +44,10 @@ TEST(TranscriberTest, ModelFromName)
     EXPECT_EQ(whisperModelFromName("large-v3-turbo"), WhisperModelSize::LargeV3Turbo);
     EXPECT_EQ(whisperModelFromName("large-v2"), WhisperModelSize::LargeV2);
     EXPECT_EQ(whisperModelFromName("large-v3"), WhisperModelSize::LargeV3);
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    EXPECT_EQ(whisperModelFromName("crisperwhisper-2-large-personal"),
+              WhisperModelSize::CrisperWhisper2Large);
+#endif
     EXPECT_EQ(whisperModelFromName("invalid"), kDefaultWhisperModel);
 }
 

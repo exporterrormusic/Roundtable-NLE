@@ -32,6 +32,7 @@
 class QLabel;
 class QPropertyAnimation;
 class QParallelAnimationGroup;
+class QSplitter;
 
 namespace rt {
 
@@ -99,6 +100,7 @@ private:
 
     // ── Content ─────────────────────────────────────────────────────────
     QStackedWidget* m_contentStack{nullptr};
+    QSplitter*      m_workspaceSplitter{nullptr};
 
     // ── Sub-panels ──────────────────────────────────────────────────────
     CharacterBrowser*   m_characterBrowser{nullptr};

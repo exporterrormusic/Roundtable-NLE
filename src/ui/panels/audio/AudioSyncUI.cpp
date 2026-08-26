@@ -10,18 +10,21 @@
 #include "Theme.h"
 
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QStyledItemDelegate>
+#include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -364,41 +367,13 @@ void AudioSync::setupUi()
         auto selected = m_audioFileList->selectedItems();
         if (selected.isEmpty()) return;
 
-        // Collect rows in descending order so removal doesn't shift indices
+        // Remove the whole selection atomically so indices and dependent views
+        // are updated once from the same final state.
         std::vector<int> rows;
         rows.reserve(static_cast<size_t>(selected.size()));
         for (auto* item : selected)
             rows.push_back(m_audioFileList->row(item));
-        std::sort(rows.begin(), rows.end(), std::greater<int>());
-
-        QPointer<QListWidget> safeList = m_audioFileList;
-        for (int row : rows) {
-            if (row < 0 || row >= static_cast<int>(m_audioPaths.size())) continue;
-            std::string removed = m_audioPaths[static_cast<size_t>(row)];
-            m_audioPaths.erase(m_audioPaths.begin() + row);
-            m_audioSamples.erase(removed);
-            if (safeList) {
-                QListWidgetItem* item = safeList->takeItem(row);
-                if (item) {
-                    spdlog::debug("AudioSync: Deleting audio file list item at row {} (remove)", row);
-                    delete item;
-                }
-            }
-            spdlog::info("AudioSync: Removed audio: {}", removed);
-        }
-
-        m_audioStatus->setText(m_audioPaths.empty() ? "No files imported"
-            : QString("%1 file(s) imported").arg(m_audioPaths.size()));
-        m_clips.clear();
-        m_allTranscriptionResults.clear();
-        m_transcriptionDone = false;
-        m_syncDone = false;
-        populateCards();
-        if (m_audioPaths.empty()) {
-            m_audioImported = false;
-            m_audioPath.clear();
-        }
-        updateWorkflowState();
+        removeFilesFromSync(std::move(rows));
     });
     importPageLayout->addWidget(m_removeAudioBtn);
 
@@ -456,7 +431,10 @@ void AudioSync::setupUi()
 
     m_modelCombo = new QComboBox;
     m_modelCombo->addItems({"tiny", "base", "small", "medium", "large-v3-turbo", "large-v2", "large-v3"});
-    m_modelCombo->setCurrentText(QString::fromUtf8(whisperModelName(kDefaultWhisperModel)));
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    m_modelCombo->addItem(QStringLiteral("CrisperWhisper 2 Large (Personal)"),
+                          QStringLiteral("crisperwhisper-2-large-personal"));
+#endif
     m_modelCombo->setMinimumHeight(44);
     m_modelCombo->setStyleSheet(QStringLiteral(
         "QComboBox {"
@@ -487,7 +465,63 @@ void AudioSync::setupUi()
              Theme::rgb(c.surface3)));
     transcribePageLayout->addWidget(m_modelCombo);
 
-    // Transcribe button
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    connect(m_modelCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (m_modelCombo->itemData(index).toString()
+            != QStringLiteral("crisperwhisper-2-large-personal")) {
+            return;
+        }
+
+        QSettings settings;
+        if (settings.value(QStringLiteral("transcription/crisperWhisperPersonalAccepted"),
+                           false).toBool()) {
+            return;
+        }
+
+        QMessageBox notice(this);
+        notice.setIcon(QMessageBox::Information);
+        notice.setWindowTitle(QStringLiteral("Enable CrisperWhisper for personal use?"));
+        notice.setText(QStringLiteral("CrisperWhisper 2 model weights and their outputs are "
+                                      "licensed for non-commercial use only."));
+        notice.setInformativeText(QStringLiteral(
+            "Roundtable does not include the model. The first transcription will download it "
+            "to your local Hugging Face cache. Enable this option only for personal, "
+            "non-commercial use."));
+        auto* enable = notice.addButton(QStringLiteral("Enable for Personal Use"),
+                                        QMessageBox::AcceptRole);
+        notice.addButton(QMessageBox::Cancel);
+        notice.exec();
+        if (notice.clickedButton() == enable) {
+            settings.setValue(QStringLiteral("transcription/crisperWhisperPersonalAccepted"), true);
+        } else {
+            m_modelCombo->setCurrentText(QStringLiteral("small"));
+        }
+    });
+#endif
+
+    // CrisperWhisper has a friendly display label and a separate internal ID,
+    // so select defaults by item data first and visible text second.  Do this
+    // after wiring the personal-use notice so a first-time default selection
+    // still requires the same acknowledgement as a manual selection.
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    const QString defaultModelId = QStringLiteral("crisperwhisper-2-large-personal");
+#else
+    const QString defaultModelId =
+        QString::fromUtf8(whisperModelName(kDefaultWhisperModel));
+#endif
+    const int defaultModelIndex = m_modelCombo->findData(defaultModelId);
+    if (defaultModelIndex >= 0)
+        m_modelCombo->setCurrentIndex(defaultModelIndex);
+    else
+        m_modelCombo->setCurrentText(defaultModelId);
+
+    // Transcribe / cancellation controls. Cancellation is a separate button
+    // so a rapid double-click on Transcribe can never turn into an accidental
+    // cancel or a second worker launch.
+    auto* transcribeActionLayout = new QHBoxLayout;
+    transcribeActionLayout->setContentsMargins(0, 0, 0, 0);
+    transcribeActionLayout->setSpacing(8);
+
     m_transcribeBtn = new QPushButton("\u26A1  Transcribe All");
     m_transcribeBtn->setMinimumHeight(48);
     m_transcribeBtn->setCursor(Qt::PointingHandCursor);
@@ -505,7 +539,32 @@ void AudioSync::setupUi()
         .arg(Theme::rgb(c.primaryBtnHover))
         .arg(Theme::rgb(c.accent)));
     connect(m_transcribeBtn, &QPushButton::clicked, this, &AudioSync::onTranscribeClicked);
-    transcribePageLayout->addWidget(m_transcribeBtn);
+    transcribeActionLayout->addWidget(m_transcribeBtn, 1);
+
+    m_cancelTranscriptionBtn = new QPushButton(QStringLiteral("Cancel"));
+    m_cancelTranscriptionBtn->setObjectName(QStringLiteral("cancelTranscriptionButton"));
+    m_cancelTranscriptionBtn->setMinimumHeight(48);
+    m_cancelTranscriptionBtn->setCursor(Qt::PointingHandCursor);
+    m_cancelTranscriptionBtn->setVisible(false);
+    m_cancelTranscriptionBtn->setStyleSheet(QStringLiteral(
+        "QPushButton {"
+        "  background: %1; color: %2; border: 1px solid %3;"
+        "  border-radius: %4px; font-size: %5px;"
+        "  font-weight: 700; padding: 12px 18px; }"
+        "QPushButton:hover { background: %6; }"
+        "QPushButton:disabled { color: %7; border-color: %8; }")
+        .arg(Theme::rgb(c.surface2))
+        .arg(Theme::rgb(c.error))
+        .arg(Theme::rgb(c.error))
+        .arg(m.radiusMd)
+        .arg(t.sizeBody)
+        .arg(Theme::rgb(c.surface3))
+        .arg(Theme::rgb(c.textDisabled))
+        .arg(Theme::rgb(c.border)));
+    connect(m_cancelTranscriptionBtn, &QPushButton::clicked,
+            this, &AudioSync::onCancelTranscriptionClicked);
+    transcribeActionLayout->addWidget(m_cancelTranscriptionBtn);
+    transcribePageLayout->addLayout(transcribeActionLayout);
 
     // Progress bar
     m_progressBar = new QProgressBar;
@@ -892,6 +951,50 @@ void AudioSync::setupUi()
         "\U0001F504  Auto-Sync", c.accentDim, c.accentHover, c.textPrimary);
     connect(m_syncActionBtn, &QPushButton::clicked, this, &AudioSync::onAutoSyncClicked);
     actionBarLayout->addWidget(m_syncActionBtn);
+
+    auto makePaddingInput = [&](const QString& labelText, double value,
+                                const QString& objectName,
+                                const QString& toolTip) -> QDoubleSpinBox*
+    {
+        auto* label = new QLabel(labelText);
+        label->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; font-size: %2px; border: none; }")
+            .arg(Theme::rgb(c.textSecondary))
+            .arg(t.sizeXs));
+        actionBarLayout->addWidget(label);
+
+        auto* input = new QDoubleSpinBox;
+        input->setObjectName(objectName);
+        input->setRange(0.0, 10.0);
+        input->setDecimals(2);
+        input->setSingleStep(0.05);
+        input->setValue(value);
+        input->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        input->setSuffix(QStringLiteral(" s"));
+        input->setFixedWidth(76);
+        input->setMinimumHeight(32);
+        input->setToolTip(toolTip);
+        input->setStyleSheet(QStringLiteral(
+            "QDoubleSpinBox { background: %1; color: %2; border: 1px solid %3;"
+            "  border-radius: %4px; padding: 4px 6px; }"
+            "QDoubleSpinBox:focus { border-color: %5; }")
+            .arg(Theme::rgb(c.surface1))
+            .arg(Theme::rgb(c.textPrimary))
+            .arg(Theme::rgb(c.border))
+            .arg(m.radiusSm)
+            .arg(Theme::rgb(c.accent)));
+        actionBarLayout->addWidget(input);
+        return input;
+    };
+
+    m_syncFrontPaddingSpin = makePaddingInput(
+        QStringLiteral("Front"), m_syncFrontPaddingSec,
+        QStringLiteral("autoSyncFrontPadding"),
+        QStringLiteral("Seconds before detected speech on the next Auto-Sync"));
+    m_syncEndPaddingSpin = makePaddingInput(
+        QStringLiteral("End"), m_syncEndPaddingSec,
+        QStringLiteral("autoSyncEndPadding"),
+        QStringLiteral("Seconds after detected speech on the next Auto-Sync"));
 
     // Rebuild routine shared by all bulk action handlers \u2014 defers via
     // QTimer::singleShot so the clicked widget isn't destroyed mid-signal.

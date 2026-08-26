@@ -171,6 +171,14 @@ endif()
 # contaminate the installed version's settings (RecentFiles, workspaces, etc.).
 option(ROUNDTABLE_DEV_BUILD "Isolate dev build settings from installed version" OFF)
 
+# CrisperWhisper 2 uses non-commercial model weights.  The adapter is enabled for
+# the owner's personal builds for now; turn this option OFF for the public
+# distribution when requested.  The Python package and model weights are never
+# downloaded or redistributed by the build.
+option(ROUNDTABLE_ENABLE_CRISPERWHISPER_PERSONAL
+       "Enable the personal-use CrisperWhisper adapter" ON)
+
+
 # Native .shotanim runtime — ABANDONED; spine-cpp is the permanent production
 # renderer (the parked tools/native_engine/ sources were removed 2026-07-01;
 # recover from git history if ever needed). The owner holds a Spine Editor
@@ -185,6 +193,9 @@ add_compile_definitions(
                               # to volk's pointer variables instead of calling through them.
     $<$<CONFIG:Debug>:ROUNDTABLE_DEBUG>
     $<$<BOOL:${ROUNDTABLE_DEV_BUILD}>:ROUNDTABLE_DEV_BUILD>
+    $<$<BOOL:${ROUNDTABLE_ENABLE_CRISPERWHISPER_PERSONAL}>:ROUNDTABLE_HAS_CRISPERWHISPER>
+    ROUNDTABLE_CRISPERWHISPER_WORKER_PATH="${CMAKE_SOURCE_DIR}/src/core/ai/crisperwhisper_worker.py"
+    ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe"
     $<$<BOOL:${CUDAToolkit_FOUND}>:ROUNDTABLE_HAS_CUDA>
     $<$<BOOL:${FFMPEG_FOUND}>:ROUNDTABLE_HAS_FFMPEG>
 )
@@ -298,5 +309,11 @@ if(FFMPEG_FOUND)
             COMMENT "Copying ${DLL_NAME}"
         )
     endforeach()
+    # Keep deployment inside the app's build graph.  Passing both targets to
+    # `cmake --build` makes the Visual Studio generator launch back-to-back
+    # parallel MSBuild sessions, whose reusable nodes can race over .tlog files.
+    if(TARGET roundtable)
+        add_dependencies(roundtable copy_ffmpeg_dlls)
+    endif()
 endif()
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION assets)

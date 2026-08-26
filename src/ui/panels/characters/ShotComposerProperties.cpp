@@ -7,6 +7,7 @@
 #include "panels/characters/ShotComposerInternal.h"
 
 #include "Theme.h"
+#include "Settings.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "spine/ModelManager.h"
@@ -72,7 +73,15 @@ QWidget* ShotComposer::createPropertiesPanel()
     const auto& c = Theme::colors();
     // Right panel: vertical splitter â€” top = Shot Name + Properties, bottom = Layers
     auto* rightSplitter = new QSplitter(Qt::Vertical);
+    m_rightSplitter = rightSplitter;
+    rightSplitter->setObjectName("ComposeRightSplitter");
     rightSplitter->setChildrenCollapsible(false);
+    rightSplitter->setHandleWidth(6);
+    rightSplitter->setStyleSheet(QStringLiteral(
+        "QSplitter#ComposeRightSplitter::handle { background: %1; }"
+        "QSplitter#ComposeRightSplitter::handle:hover { background: %2; }")
+        .arg(Theme::hex(c.border))
+        .arg(Theme::hex(c.accent)));
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TOP SECTION: Shot Name + Layer Properties + Camera
@@ -220,7 +229,12 @@ QWidget* ShotComposer::createPropertiesPanel()
         int idx = m_defaultCharCombo->currentIndex();
         if (idx < 0) return;
 
-        QString charName = m_defaultCharCombo->currentText();
+        const QString displayName = m_defaultCharCombo->currentText();
+        QString charName = m_defaultCharCombo->currentData().toString();
+        if (charName.isEmpty()) {
+            charName = QString::fromStdString(
+                m_presetManager.realNameFor(displayName.toStdString()));
+        }
 
         // When a specific show is selected in the SHOWS filter, set a
         // per-show default for that show; otherwise set the global default.
@@ -244,8 +258,8 @@ QWidget* ShotComposer::createPropertiesPanel()
         refreshShotList();
         QToolTip::showText(m_setDefaultBtn->mapToGlobal(QPoint(0, -30)),
                            perShow
-                             ? QString("Set as default for %1 in \"%2\"").arg(charName, show)
-                             : QString("Set as default for %1").arg(charName),
+                             ? QString("Set as default for %1 in \"%2\"").arg(displayName, show)
+                             : QString("Set as default for %1").arg(displayName),
                            m_setDefaultBtn, {}, 2500);
     });
 

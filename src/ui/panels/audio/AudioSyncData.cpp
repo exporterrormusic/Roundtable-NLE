@@ -476,8 +476,8 @@ void AudioSync::runAutoSync()
     constexpr double kEnvHopSec  = 0.010;  // 10 ms hop
     constexpr float  kEdgeFrac   = 0.12f;  // edgeThresh   = noise + 12% of range
     constexpr float  kSpeechFrac = 0.40f;  // speechThresh = noise + 40% of range
-    constexpr double kPrePadSec  = 0.040;  // lead cushion
-    constexpr double kPostPadSec = 0.060;  // trail cushion (releases run a touch long)
+    const double kPrePadSec  = std::max(0.0, m_syncFrontPaddingSec);
+    const double kPostPadSec = std::max(0.0, m_syncEndPaddingSec);
     constexpr double kWordPadSec = 0.20;   // word-span overlap slack
 
     int trimCount = 0;
@@ -635,8 +635,10 @@ void AudioSync::runAutoSync()
             // earlier.  (The START stays with the VAD: whisper's first-word start
             // runs EARLY, so anchoring the in-point to it pulls every start too
             // early.)
-            constexpr double kWordTrailPad = 0.08;  // small tail past the (loose-late) word end
-            newEnd = std::min(newEnd, wLastEnd + kWordTrailPad);
+            // Preserve the requested breathing room without changing the
+            // transcriber's pinpoint word timestamps.  The VAD result and the
+            // clip's existing source/neighbour bounds remain the other caps.
+            newEnd = std::min(newEnd, wLastEnd + kPostPadSec);
         } else if (!vadOk) {
             continue;   // no words and no audio core — nothing reliable; leave as-is
         }
@@ -867,4 +869,3 @@ void AudioSync::appendClipsFromNewTranscriptions()
 }
 
 } // namespace rt
-

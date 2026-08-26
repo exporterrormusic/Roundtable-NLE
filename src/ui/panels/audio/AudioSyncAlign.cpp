@@ -40,7 +40,9 @@ namespace rt {
 // chunk and cut the softer real speech on both sides).
 static void refineSpeechBounds(const std::vector<float>& samples, int sr,
                                double& clipStart, double& clipEnd,
-                               double wordStart, double wordEnd)
+                               double wordStart, double wordEnd,
+                               double frontPaddingSec, double endPaddingSec,
+                               bool& refined)
 {
     if (sr <= 0) return;
     const int N  = static_cast<int>(samples.size());
@@ -142,14 +144,25 @@ static void refineSpeechBounds(const std::vector<float>& samples, int sr,
             if (env[static_cast<size_t>(k)] >= lvl) { bEnd = k; break; }
     }
 
-    const int ss = std::max(s0, pos[static_cast<size_t>(bStart)] - static_cast<int>(0.02 * sr));
-    const int se = std::min(s1, pos[static_cast<size_t>(bEnd)] + win + static_cast<int>(0.03 * sr));
-    if (se > ss) { clipStart = static_cast<double>(ss) / sr; clipEnd = static_cast<double>(se) / sr; }
+    const int ss = std::max(s0, pos[static_cast<size_t>(bStart)]
+                                - static_cast<int>(frontPaddingSec * sr));
+    // Apply the padding selected for this Auto-Sync run. The incoming clip
+    // window is already clamped to the source and adjacent aligned lines.
+    const int se = std::min(s1, pos[static_cast<size_t>(bEnd)] + win
+                                + static_cast<int>(endPaddingSec * sr));
+    if (se > ss) {
+        clipStart = static_cast<double>(ss) / sr;
+        clipEnd = static_cast<double>(se) / sr;
+        refined = true;
+    }
 }
 
 bool AudioSync::alignClipsToScript()
 {
     if (!m_script || m_script->lines.empty()) return false;
+
+    const double frontPaddingSec = std::max(0.0, m_syncFrontPaddingSec);
+    const double endPaddingSec   = std::max(0.0, m_syncEndPaddingSec);
 
     // Require word timestamps on at least one file (else nothing to align with).
     size_t totalWords = 0, validTimed = 0, emptyText = 0;
@@ -349,8 +362,9 @@ bool AudioSync::alignClipsToScript()
             // whisper timed late and find the true speech end.  The refine
             // locks onto the line's connected segment, so this extra room
             // doesn't add dead space (disconnected breath/bleed is dropped).
-            clip.start            = std::max(0.0, W[g.fa].start - 0.25);
-            clip.end              = W[g.la].end + 0.20;
+            clip.start            = std::max(
+                0.0, W[g.fa].start - std::max(0.25, frontPaddingSec));
+            clip.end              = W[g.la].end + std::max(0.20, endPaddingSec);
             // Neighbour clamp: the window may not cross into the adjacent
             // line's words.  Midpoint of the gap when the lines sit closer
             // than the margin allows; and the head clamp never moves past
@@ -371,10 +385,40 @@ bool AudioSync::alignClipsToScript()
             const double wSpanS = std::max(W[g.fa].start, clip.start);
             const double wSpanE = std::max(wSpanS, std::min(W[g.la].end, clip.end));
             // Snap the (loose) word-edge boundaries to the actual speech.
-            if (auto as = m_audioSamples.find(file); as != m_audioSamples.end())
+            bool refined = false;
+            auto as = m_audioSamples.find(file);
+            if (as != m_audioSamples.end())
                 refineSpeechBounds(as->second.samples,
                                    static_cast<int>(as->second.sampleRate),
-                                   clip.start, clip.end, wSpanS, wSpanE);
+                                   clip.start, clip.end, wSpanS, wSpanE,
+                                   frontPaddingSec, endPaddingSec, refined);
+            if (!refined) {
+                // If energy analysis is unavailable or inconclusive, apply the
+                // selected padding directly to the aligned word timestamps.
+                clip.start = std::max(0.0, W[g.fa].start - frontPaddingSec);
+                clip.end = W[g.la].end + endPaddingSec;
+                if (gi > 0) {
+                    const double prevEnd = W[groups[gi - 1].la].end;
+                    double lim = std::min(prevEnd + 0.02,
+                                          0.5 * (prevEnd + W[g.fa].start));
+                    lim = std::min(lim, W[g.fa].start);
+                    clip.start = std::max(clip.start, lim);
+                }
+                if (gi + 1 < groups.size()) {
+                    const double nextStart = W[groups[gi + 1].fa].start;
+                    const double lim = std::max(
+                        nextStart - 0.02,
+                        0.5 * (W[g.la].end + nextStart));
+                    clip.end = std::min(clip.end, lim);
+                }
+                if (as != m_audioSamples.end() && as->second.sampleRate > 0) {
+                    const double duration = static_cast<double>(as->second.samples.size())
+                                          / as->second.sampleRate;
+                    clip.end = std::min(clip.end, duration);
+                }
+                if (clip.end < clip.start + 0.05)
+                    clip.end = clip.start + 0.05;
+            }
             clip.transcript       = sl ? sl->dialogue : std::string();
             clip.editedText       = clip.transcript;
             clip.scriptLineNumber = g.ln;

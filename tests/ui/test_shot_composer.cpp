@@ -704,6 +704,63 @@ TEST_F(ShotPresetManagerTest, LoadNonexistent)
     EXPECT_FALSE(loaded.has_value());
 }
 
+TEST_F(ShotPresetManagerTest, CharacterGroupsPersistWithoutChangingShots)
+{
+    {
+        ShotPresetManager mgr;
+        mgr.scan(m_tmpDir.path());
+        EXPECT_TRUE(mgr.save(ShotPreset::createDefault("Black Ark Ranger")));
+        mgr.setCharacterGroup("Black Ark Ranger",
+                              ShotPresetManager::CharacterGroup::Hidden);
+        mgr.setCharacterGroup("Rapi",
+                              ShotPresetManager::CharacterGroup::Favorite);
+        EXPECT_EQ(mgr.presetCount(), 1);
+    }
+
+    ShotPresetManager reloaded;
+    EXPECT_EQ(reloaded.scan(m_tmpDir.path()), 1);
+    EXPECT_EQ(reloaded.characterGroup("Black Ark Ranger"),
+              ShotPresetManager::CharacterGroup::Hidden);
+    EXPECT_EQ(reloaded.characterGroup("Rapi"),
+              ShotPresetManager::CharacterGroup::Favorite);
+    EXPECT_EQ(reloaded.characterGroup("Modernia"),
+              ShotPresetManager::CharacterGroup::Normal);
+    EXPECT_TRUE(reloaded.hasPreset("Black Ark Ranger - Default"));
+
+    reloaded.setCharacterGroup("Black Ark Ranger",
+                               ShotPresetManager::CharacterGroup::Normal);
+    ShotPresetManager reset;
+    reset.scan(m_tmpDir.path());
+    EXPECT_EQ(reset.characterGroup("Black Ark Ranger"),
+              ShotPresetManager::CharacterGroup::Normal);
+}
+
+TEST_F(ShotPresetManagerTest, AliasUsesRealNameForShowDefault)
+{
+    ShotPresetManager mgr;
+    mgr.scan(m_tmpDir.path());
+
+    ShotPreset preset("Only One Close-Up");
+    preset.setShow("Roundtable Talk");
+    CharacterState character;
+    character.characterName = "Rapi";
+    preset.addCharacter(character);
+    ASSERT_TRUE(mgr.save(preset));
+
+    mgr.setAlias("Rapi", "Only One");
+    mgr.setShowDefaultShot("Roundtable Talk", "Only One", preset.name());
+
+    auto resolved = mgr.resolveDefaultShot("Only One", "Roundtable Talk");
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(resolved->name(), preset.name());
+
+    ShotPresetManager reloaded;
+    reloaded.scan(m_tmpDir.path());
+    EXPECT_EQ(reloaded.displayNameFor("Rapi"), "Only One");
+    EXPECT_EQ(reloaded.realNameFor("Only One"), "Rapi");
+    EXPECT_TRUE(reloaded.resolveDefaultShot("Only One", "Roundtable Talk").has_value());
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ShotComposer — UI Panel Tests
 // ═════════════════════════════════════════════════════════════════════════════
@@ -921,6 +978,21 @@ TEST_F(ShotComposerUITest, EditCharacterProperties)
     EXPECT_TRUE(ch->flipX);
 }
 
+TEST_F(ShotComposerUITest, CharacterGroupFilterIsDropdown)
+{
+    auto* combo = m_panel->findChild<QComboBox*>("CharacterGroupFilter");
+    ASSERT_NE(combo, nullptr);
+    ASSERT_EQ(combo->count(), 4);
+    EXPECT_EQ(combo->itemText(0), "ALL");
+    EXPECT_EQ(combo->itemText(1), "UNASSIGNED");
+    EXPECT_EQ(combo->itemText(2), "FAVORITE");
+    EXPECT_EQ(combo->itemText(3), "HIDDEN");
+
+    ASSERT_NE(m_panel->charFilterColumn(), nullptr);
+    EXPECT_LT(m_panel->charFilterColumn()->minimumWidth(),
+              m_panel->charFilterColumn()->maximumWidth());
+}
+
 TEST_F(ShotComposerUITest, CropEditPreservesPreciseCharacterTransform)
 {
     m_panel->newShot("Test Shot");
@@ -1087,6 +1159,29 @@ TEST_F(ShotComposerUITest, NoSpuriousSignalOnLoad)
 
     // Only one shotChanged on setCurrentShot, not extra from widgets
     EXPECT_EQ(spy.count(), 1);
+}
+
+TEST_F(ShotComposerUITest, DefaultCharacterComboDisplaysAliasAndStoresRealName)
+{
+    TempDir tempDir;
+    m_panel->setPresetsDirectory(tempDir.path());
+    m_panel->setCharacterDisplayAlias(QStringLiteral("Rapi"),
+                                      QStringLiteral("Only One"));
+    ShotPreset preset("Only One Close-Up");
+    CharacterState character;
+    character.characterName = "Rapi";
+    preset.addCharacter(character);
+    m_panel->setCurrentShot(preset);
+
+    auto* combo = m_panel->defaultCharCombo();
+    ASSERT_NE(combo, nullptr);
+    ASSERT_EQ(combo->count(), 1);
+    EXPECT_EQ(combo->itemText(0), QStringLiteral("Only One"));
+    EXPECT_EQ(combo->itemData(0).toString(), QStringLiteral("Rapi"));
+
+    ShotPresetManager reloaded;
+    reloaded.scan(tempDir.path());
+    EXPECT_EQ(reloaded.displayNameFor("Rapi"), "Only One");
 }
 
 TEST_F(ShotComposerUITest, PresetManagerIntegration)

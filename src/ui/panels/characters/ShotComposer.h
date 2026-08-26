@@ -123,6 +123,10 @@ public:
     /// Refresh the shot list and character filter sidebar.
     void refreshShotList();
 
+    /// Apply a Library display-name change without changing the stored model key.
+    void setCharacterDisplayAlias(const QString& storedName,
+                                  const QString& displayName);
+
     // ── Character management ────────────────────────────────────────────
 
     /// Add a character to the current shot by name.
@@ -219,6 +223,7 @@ public:
 
     // Right panel — shot info
     [[nodiscard]] QLineEdit*    shotNameEdit()        const noexcept { return m_shotNameEdit; }
+    [[nodiscard]] QComboBox*    defaultCharCombo()    const noexcept { return m_defaultCharCombo; }
     [[nodiscard]] QListWidget*  layerList()           const noexcept { return m_layerList; }
     [[nodiscard]] QPushButton*  addCharBtn()          const noexcept { return m_addCharBtn; }
     [[nodiscard]] QPushButton*  addBgBtn()            const noexcept { return m_addBgBtn; }
@@ -322,6 +327,11 @@ private:
     [[nodiscard]] std::string activeShowNamespace() const;
 
     void refreshLayerList();
+    void refreshDefaultCharacterCombo();
+    [[nodiscard]] std::string canonicalCharacterName(const std::string& storedName) const;
+    [[nodiscard]] std::string characterDisplayName(const std::string& storedName) const;
+    void promptRenameCharacter(const std::string& realName);
+    void refreshCharacterAliasViews();
     void copySelectedLayer();
     void pasteLayer();
     void copyTransform();
@@ -376,8 +386,8 @@ private:
     void loadDefaults();
 
     /// Return the active character filter value from the filter list.
-    /// Returns empty string for "ALL", "__UNASSIGNED__" for unassigned,
-    /// or the character display name for a specific character filter.
+    /// Returns empty string for ALL, a reserved group-filter token, or the
+    /// real character name for a specific character filter.
     [[nodiscard]] QString activeCharFilter() const;
 
     // ── State ───────────────────────────────────────────────────────────
@@ -437,6 +447,7 @@ private:
     QWidget*      m_shotsColumn        = nullptr;   ///< Standalone shots sidebar column
     QWidget*      m_charFilterColumn   = nullptr;   ///< Character thumbnail filter column
     QListWidget*  m_charFilterList     = nullptr;   ///< Character thumbnail filter chip list
+    QComboBox*    m_charGroupFilterCombo = nullptr; ///< ALL / UNASSIGNED / FAVORITE / HIDDEN
     QWidget*      m_showFilterColumn   = nullptr;   ///< Show filter column
     QListWidget*  m_showFilterList     = nullptr;   ///< Show filter chip list
     QLineEdit*    m_showFilterSearchEdit = nullptr; ///< Show filter search bar
@@ -555,6 +566,8 @@ private:
 
     // Layout
     QSplitter*    m_splitter          = nullptr;
+    QSplitter*    m_leftSplitter      = nullptr;
+    QSplitter*    m_rightSplitter     = nullptr;
 };
 
 } // namespace rt

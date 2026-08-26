@@ -63,7 +63,7 @@ QWidget* ShotComposer::createShotsColumn()
     auto* column = new QWidget;
     column->setObjectName("ShotsColumn");
     column->setMinimumWidth(200);
-    column->setMaximumWidth(320);
+    column->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     column->setStyleSheet(QStringLiteral(
         "#ShotsColumn { background: %1; border-right: 1px solid %2; }")
         .arg(Theme::hex(c.surface1))

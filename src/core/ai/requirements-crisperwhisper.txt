@@ -1,0 +1,5 @@
+# CrisperWhisper runs in a separate Python worker.  Keep soxr explicit: older
+# system-site-packages copies (notably 0.3.x) were built against NumPy 1.x and
+# crash when the host Python provides NumPy 2.x.
+crisperwhisper[transformers]==2.0.2
+soxr>=1.0

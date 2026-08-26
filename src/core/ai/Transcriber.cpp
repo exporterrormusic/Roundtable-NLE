@@ -10,8 +10,10 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +44,110 @@ constexpr const char* kVadModelFileName = "ggml-silero-v6.2.0.bin";
 constexpr const char* kVadModelUrl =
     "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
 constexpr double kVadCentisecondsToSamples = 160.0; // 16 kHz / 100
+
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+std::string base64Encode(const std::string& input)
+{
+    static constexpr char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output;
+    output.reserve(((input.size() + 2) / 3) * 4);
+    uint32_t accumulator = 0;
+    int bits = -6;
+    for (const unsigned char byte : input) {
+        accumulator = (accumulator << 8) | byte;
+        bits += 8;
+        while (bits >= 0) {
+            output.push_back(alphabet[(accumulator >> bits) & 0x3f]);
+            bits -= 6;
+        }
+    }
+    if (bits > -6)
+        output.push_back(alphabet[((accumulator << 8) >> (bits + 8)) & 0x3f]);
+    while (output.size() % 4)
+        output.push_back('=');
+    return output;
+}
+
+std::string base64Decode(const std::string& input)
+{
+    static constexpr unsigned char invalid = 0xff;
+    static const auto table = [] {
+        std::array<unsigned char, 256> result{};
+        result.fill(invalid);
+        const std::string alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (size_t i = 0; i < alphabet.size(); ++i)
+            result[static_cast<unsigned char>(alphabet[i])] = static_cast<unsigned char>(i);
+        return result;
+    }();
+
+    std::string output;
+    uint32_t accumulator = 0;
+    int bits = -8;
+    for (const unsigned char c : input) {
+        if (c == '=') break;
+        if (table[c] == invalid) continue;
+        accumulator = (accumulator << 6) | table[c];
+        bits += 6;
+        if (bits >= 0) {
+            output.push_back(static_cast<char>((accumulator >> bits) & 0xff));
+            bits -= 8;
+        }
+    }
+    return output;
+}
+
+std::vector<std::string> splitTabs(const std::string& line)
+{
+    std::vector<std::string> fields;
+    size_t start = 0;
+    while (true) {
+        const size_t tab = line.find('\t', start);
+        fields.push_back(line.substr(start, tab == std::string::npos
+            ? std::string::npos : tab - start));
+        if (tab == std::string::npos) break;
+        start = tab + 1;
+    }
+    return fields;
+}
+
+#ifdef _WIN32
+std::wstring utf8ToWide(const std::string& text)
+{
+    if (text.empty()) return {};
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                            static_cast<int>(text.size()), nullptr, 0);
+    if (length <= 0) return {};
+    std::wstring result(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        result.data(), length);
+    return result;
+}
+
+std::wstring quoteWindowsArg(const std::wstring& value)
+{
+    std::wstring result = L"\"";
+    size_t slashes = 0;
+    for (const wchar_t c : value) {
+        if (c == L'\\') {
+            ++slashes;
+        } else if (c == L'\"') {
+            result.append(slashes * 2 + 1, L'\\');
+            result.push_back(c);
+            slashes = 0;
+        } else {
+            result.append(slashes, L'\\');
+            slashes = 0;
+            result.push_back(c);
+        }
+    }
+    result.append(slashes * 2, L'\\');
+    result.push_back(L'\"');
+    return result;
+}
+#endif
+#endif
 
 bool downloadFile(const std::string& url, const std::string& destination,
                   std::string& error)
@@ -75,6 +181,9 @@ const char* whisperModelName(WhisperModelSize size) noexcept
     case WhisperModelSize::LargeV3Turbo: return "large-v3-turbo";
     case WhisperModelSize::LargeV2: return "large-v2";
     case WhisperModelSize::LargeV3: return "large-v3";
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    case WhisperModelSize::CrisperWhisper2Large: return "crisperwhisper-2-large-personal";
+#endif
     default:                        return "unknown";
     }
 }
@@ -88,6 +197,10 @@ WhisperModelSize whisperModelFromName(const std::string& name) noexcept
     if (name == "large-v3-turbo") return WhisperModelSize::LargeV3Turbo;
     if (name == "large-v2") return WhisperModelSize::LargeV2;
     if (name == "large-v3") return WhisperModelSize::LargeV3;
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    if (name == "crisperwhisper-2-large-personal")
+        return WhisperModelSize::CrisperWhisper2Large;
+#endif
     return kDefaultWhisperModel;
 }
 
@@ -109,6 +222,179 @@ struct Transcriber::Impl
 {
 #ifdef ROUNDTABLE_HAS_WHISPER
     whisper_context* ctx{nullptr};
+#endif
+#if defined(ROUNDTABLE_HAS_CRISPERWHISPER) && defined(_WIN32)
+    HANDLE crisperProcess{nullptr};
+    HANDLE crisperStdin{nullptr};
+    HANDLE crisperStdout{nullptr};
+    std::string crisperReadBuffer;
+
+    void stopCrisper()
+    {
+        if (crisperStdin) {
+            CloseHandle(crisperStdin);
+            crisperStdin = nullptr;
+        }
+        if (crisperProcess) {
+            if (WaitForSingleObject(crisperProcess, 500) == WAIT_TIMEOUT)
+                TerminateProcess(crisperProcess, 1);
+            CloseHandle(crisperProcess);
+            crisperProcess = nullptr;
+        }
+        if (crisperStdout) {
+            CloseHandle(crisperStdout);
+            crisperStdout = nullptr;
+        }
+        crisperReadBuffer.clear();
+    }
+
+    bool readCrisperLine(std::string& line)
+    {
+        while (true) {
+            const size_t newline = crisperReadBuffer.find('\n');
+            if (newline != std::string::npos) {
+                line = crisperReadBuffer.substr(0, newline);
+                crisperReadBuffer.erase(0, newline + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                return true;
+            }
+
+            if (cancelRequested.load(std::memory_order_acquire)) {
+                lastError = "Transcription cancelled";
+                stopCrisper();
+                return false;
+            }
+
+            DWORD available = 0;
+            if (!crisperStdout ||
+                !PeekNamedPipe(crisperStdout, nullptr, 0, nullptr, &available, nullptr)) {
+                lastError = "CrisperWhisper worker pipe closed unexpectedly";
+                stopCrisper();
+                return false;
+            }
+            if (available > 0) {
+                char buffer[4096];
+                DWORD read = 0;
+                const DWORD amount = std::min<DWORD>(available, sizeof(buffer));
+                if (!ReadFile(crisperStdout, buffer, amount, &read, nullptr) || read == 0) {
+                    lastError = "Failed reading from the CrisperWhisper worker";
+                    stopCrisper();
+                    return false;
+                }
+                crisperReadBuffer.append(buffer, read);
+                continue;
+            }
+
+            DWORD exitCode = STILL_ACTIVE;
+            if (!crisperProcess || !GetExitCodeProcess(crisperProcess, &exitCode) ||
+                exitCode != STILL_ACTIVE) {
+                lastError = "CrisperWhisper worker exited before returning a result";
+                stopCrisper();
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+    }
+
+    bool startCrisper()
+    {
+        stopCrisper();
+
+        if (!std::filesystem::exists(ROUNDTABLE_CRISPERWHISPER_WORKER_PATH)) {
+            lastError = std::string("CrisperWhisper worker script not found: ")
+                + ROUNDTABLE_CRISPERWHISPER_WORKER_PATH;
+            return false;
+        }
+
+        SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE childStdoutWrite = nullptr;
+        HANDLE childStdinRead = nullptr;
+        HANDLE childStderr = nullptr;
+        if (!CreatePipe(&crisperStdout, &childStdoutWrite, &security, 0) ||
+            !SetHandleInformation(crisperStdout, HANDLE_FLAG_INHERIT, 0) ||
+            !CreatePipe(&childStdinRead, &crisperStdin, &security, 0) ||
+            !SetHandleInformation(crisperStdin, HANDLE_FLAG_INHERIT, 0)) {
+            lastError = "Unable to create CrisperWhisper worker pipes";
+            if (childStdoutWrite) CloseHandle(childStdoutWrite);
+            if (childStdinRead) CloseHandle(childStdinRead);
+            stopCrisper();
+            return false;
+        }
+
+        wchar_t pythonBuffer[32768]{};
+        const DWORD pythonLength = GetEnvironmentVariableW(
+            L"ROUNDTABLE_CRISPERWHISPER_PYTHON", pythonBuffer,
+            static_cast<DWORD>(std::size(pythonBuffer)));
+        std::wstring python;
+        if (pythonLength > 0 && pythonLength < std::size(pythonBuffer)) {
+            python.assign(pythonBuffer, pythonLength);
+        } else if (std::filesystem::exists(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH)) {
+            python = utf8ToWide(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH);
+        } else {
+            python = L"python";
+        }
+        const std::wstring worker = utf8ToWide(ROUNDTABLE_CRISPERWHISPER_WORKER_PATH);
+        std::wstring command = quoteWindowsArg(python) + L" -u " + quoteWindowsArg(worker);
+
+        childStderr = CreateFileW(L"NUL", GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = childStdinRead;
+        startup.hStdOutput = childStdoutWrite;
+        startup.hStdError = childStderr != INVALID_HANDLE_VALUE
+            ? childStderr : childStdoutWrite;
+        PROCESS_INFORMATION process{};
+        const BOOL created = CreateProcessW(
+            nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+            nullptr, nullptr, &startup, &process);
+        CloseHandle(childStdinRead);
+        CloseHandle(childStdoutWrite);
+        if (childStderr && childStderr != INVALID_HANDLE_VALUE)
+            CloseHandle(childStderr);
+        if (!created) {
+            lastError = "Unable to start Python for CrisperWhisper (Windows error "
+                + std::to_string(GetLastError()) + ")";
+            stopCrisper();
+            return false;
+        }
+        CloseHandle(process.hThread);
+        crisperProcess = process.hProcess;
+
+        while (true) {
+            std::string line;
+            if (!readCrisperLine(line)) return false;
+            const auto fields = splitTabs(line);
+            if (!fields.empty() && fields[0] == "READY") return true;
+            if (!fields.empty() && fields[0] == "ERROR") {
+                lastError = fields.size() >= 2
+                    ? base64Decode(fields[1])
+                    : "CrisperWhisper worker failed during startup";
+                stopCrisper();
+                return false;
+            }
+            // Ignore incidental third-party stdout produced while importing or
+            // downloading; protocol records are the only authoritative lines.
+        }
+    }
+
+    bool sendCrisperRequest(const std::string& audioPath, const std::string& language)
+    {
+        const std::string request = "TRANSCRIBE\t" + base64Encode(audioPath)
+            + "\t" + base64Encode(language) + "\n";
+        DWORD written = 0;
+        if (!crisperStdin ||
+            !WriteFile(crisperStdin, request.data(), static_cast<DWORD>(request.size()),
+                       &written, nullptr) || written != request.size()) {
+            lastError = "Unable to send audio to the CrisperWhisper worker";
+            stopCrisper();
+            return false;
+        }
+        return true;
+    }
 #endif
     WhisperModelSize modelSize{kDefaultWhisperModel};
     bool             loaded{false};
@@ -154,10 +440,48 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
     m_impl->loading.store(true);
     m_impl->lastError.clear();
 
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    if (size == WhisperModelSize::CrisperWhisper2Large) {
+        m_impl->cancelRequested.store(false);
+        if (progress)
+            progress(0.0f, "Starting CrisperWhisper 2 Large (first use downloads the model)...");
+#ifdef ROUNDTABLE_HAS_WHISPER
+        if (m_impl->ctx) {
+            whisper_free(m_impl->ctx);
+            m_impl->ctx = nullptr;
+        }
+#endif
+#ifdef _WIN32
+        if (!m_impl->startCrisper()) {
+            m_impl->loaded = false;
+            m_impl->loading.store(false);
+            if (progress) progress(0.0f, m_impl->lastError);
+            spdlog::error("Transcriber: {}", m_impl->lastError);
+            return false;
+        }
+        m_impl->modelSize = size;
+        m_impl->loaded = true;
+        m_impl->loading.store(false);
+        if (progress) progress(100.0f, "CrisperWhisper 2 Large ready");
+        spdlog::info("Transcriber: CrisperWhisper 2 Large worker ready");
+        return true;
+#else
+        m_impl->lastError = "The personal CrisperWhisper adapter currently supports Windows only";
+        m_impl->loaded = false;
+        m_impl->loading.store(false);
+        if (progress) progress(0.0f, m_impl->lastError);
+        return false;
+#endif
+    }
+#endif
+
     if (progress)
         progress(0.0f, std::string("Loading Whisper ") + whisperModelName(size) + " model...");
 
 #ifdef ROUNDTABLE_HAS_WHISPER
+#if defined(ROUNDTABLE_HAS_CRISPERWHISPER) && defined(_WIN32)
+    m_impl->stopCrisper();
+#endif
     // Unload previous
     if (m_impl->ctx) {
         whisper_free(m_impl->ctx);
@@ -253,6 +577,10 @@ bool Transcriber::loadModel(WhisperModelSize size, const TranscribeProgressFn& p
         break;
     case WhisperModelSize::LargeV2: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V2; break;
     case WhisperModelSize::LargeV3: cparams.dtw_aheads_preset = WHISPER_AHEADS_LARGE_V3; break;
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    case WhisperModelSize::CrisperWhisper2Large: break; // handled above
+#endif
+    case WhisperModelSize::Count: break;
     }
 
     m_impl->ctx = whisper_init_from_file_with_params(modelFile.c_str(), cparams);
@@ -302,6 +630,9 @@ const std::string& Transcriber::modelsDirectory() const noexcept
 
 void Transcriber::unloadModel()
 {
+#if defined(ROUNDTABLE_HAS_CRISPERWHISPER) && defined(_WIN32)
+    m_impl->stopCrisper();
+#endif
 #ifdef ROUNDTABLE_HAS_WHISPER
     if (m_impl->ctx) {
         whisper_free(m_impl->ctx);
@@ -321,13 +652,17 @@ bool Transcriber::isCudaAvailable() const noexcept { return m_impl->cudaAvailabl
 TranscriberCapabilities Transcriber::capabilities() const noexcept
 {
     TranscriberCapabilities result;
-#ifdef ROUNDTABLE_HAS_WHISPER
+#if defined(ROUNDTABLE_HAS_WHISPER) || defined(ROUNDTABLE_HAS_CRISPERWHISPER)
     result.available = true;
     result.segmentTiming = true;
     result.wordTiming = true;
     result.confidence = true;
     result.languageDetection = true;
-    result.gpu = m_impl->cudaAvailable;
+    result.gpu = m_impl->cudaAvailable
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+        || m_impl->modelSize == WhisperModelSize::CrisperWhisper2Large
+#endif
+        ;
     result.cancellation = true;
 #endif
     return result;
@@ -376,6 +711,88 @@ TranscriptionResult Transcriber::transcribe(
 
     TranscriptionResult result;
 
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    if (m_impl->modelSize == WhisperModelSize::CrisperWhisper2Large) {
+#ifdef _WIN32
+        if (progress)
+            progress(10.0f, "Running CrisperWhisper 2 Large...");
+        if (!m_impl->crisperProcess && !m_impl->startCrisper()) {
+            m_impl->transcribing.store(false);
+            return failure(TranscriptionStatus::Unavailable,
+                           TranscriptionErrorCode::BackendUnavailable);
+        }
+        if (!m_impl->sendCrisperRequest(audioPath, language)) {
+            m_impl->transcribing.store(false);
+            return failure(TranscriptionStatus::Failed,
+                           TranscriptionErrorCode::InferenceFailed);
+        }
+
+        TranscriptionSegment complete;
+        bool receivedBegin = false;
+        bool receivedEnd = false;
+        while (!receivedEnd) {
+            std::string line;
+            if (!m_impl->readCrisperLine(line)) {
+                const bool cancelled = m_impl->cancelRequested.load(std::memory_order_acquire);
+                m_impl->transcribing.store(false);
+                return failure(cancelled ? TranscriptionStatus::Cancelled
+                                         : TranscriptionStatus::Failed,
+                               cancelled ? TranscriptionErrorCode::Cancelled
+                                         : TranscriptionErrorCode::InferenceFailed);
+            }
+
+            const auto fields = splitTabs(line);
+            if (fields.empty()) continue;
+            if (fields[0] == "ERROR") {
+                m_impl->lastError = fields.size() >= 2
+                    ? base64Decode(fields[1]) : "CrisperWhisper transcription failed";
+                m_impl->transcribing.store(false);
+                return failure(TranscriptionStatus::Failed,
+                               TranscriptionErrorCode::InferenceFailed);
+            }
+            if (fields[0] == "BEGIN" && fields.size() >= 3) {
+                result.language = base64Decode(fields[1]);
+                try {
+                    result.duration = std::stod(fields[2]);
+                } catch (...) {
+                    result.duration = 0.0;
+                }
+                receivedBegin = true;
+                if (progress) progress(95.0f, "Receiving word-level timestamps...");
+            } else if (fields[0] == "WORD" && fields.size() >= 4 && receivedBegin) {
+                WordSegment word;
+                try {
+                    word.start = std::stod(fields[1]);
+                    word.end = std::stod(fields[2]);
+                } catch (...) {
+                    continue;
+                }
+                word.word = base64Decode(fields[3]);
+                if (!complete.words.empty() && !word.word.empty() && word.word.front() != ' ')
+                    word.word.insert(word.word.begin(), ' ');
+                word.probability = 1.0f;
+                complete.words.push_back(std::move(word));
+            } else if (fields[0] == "END" && receivedBegin) {
+                receivedEnd = true;
+            }
+        }
+
+        if (!complete.words.empty()) {
+            complete.start = complete.words.front().start;
+            complete.end = complete.words.back().end;
+            for (const auto& word : complete.words)
+                complete.text += word.word;
+            semanticSplit(complete, result.segments);
+        }
+#else
+        m_impl->lastError = "The personal CrisperWhisper adapter currently supports Windows only";
+        m_impl->transcribing.store(false);
+        return failure(TranscriptionStatus::Unavailable,
+                       TranscriptionErrorCode::BackendUnavailable);
+#endif
+    } else
+#endif
+    {
 #ifdef ROUNDTABLE_HAS_WHISPER
     // Load audio file using AudioFile, resample to 16kHz mono for whisper
     std::vector<float> samples;
@@ -660,6 +1077,7 @@ TranscriptionResult Transcriber::transcribe(
     return failure(TranscriptionStatus::Unavailable,
                    TranscriptionErrorCode::BackendUnavailable);
 #endif
+    }
 
     // Re-index segments
     for (size_t i = 0; i < result.segments.size(); ++i)

@@ -123,6 +123,15 @@ QWidget* ShotComposer::createLeftPanel()
     const auto& m = Theme::metrics();
 
     auto* leftSplitter = new QSplitter(Qt::Vertical);
+    m_leftSplitter = leftSplitter;
+    leftSplitter->setObjectName("ComposeLeftSplitter");
+    leftSplitter->setChildrenCollapsible(false);
+    leftSplitter->setHandleWidth(6);
+    leftSplitter->setStyleSheet(QStringLiteral(
+        "QSplitter#ComposeLeftSplitter::handle { background: %1; }"
+        "QSplitter#ComposeLeftSplitter::handle:hover { background: %2; }")
+        .arg(Theme::hex(c.border))
+        .arg(Theme::hex(c.accent)));
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TOP: Shot Header + Preview Viewport
@@ -458,9 +467,20 @@ QWidget* ShotComposer::createLeftPanel()
         } else {
             // ── Spine character ────────────────────────────────────────
             const QString charFolder = item->data(Qt::UserRole).toString();
+            const QString storedRealName = item->data(Qt::UserRole + 10).toString();
+            const std::string realName = storedRealName.isEmpty()
+                ? canonicalCharacterName(charFolder.toStdString())
+                : storedRealName.toStdString();
+            const std::string displayName = m_presetManager.displayNameFor(realName);
             const QString charDir = QStringLiteral("assets/characters/") + charFolder;
 
             QAction* showAct = menu.addAction(tr("Show in Explorer"));
+            QAction* renameAct = menu.addAction(tr("Rename in Compose..."));
+            QAction* resetNameAct = nullptr;
+            if (displayName != realName) {
+                resetNameAct = menu.addAction(
+                    tr("Reset Name to \"%1\"").arg(QString::fromStdString(realName)));
+            }
             menu.addSeparator();
             QAction* deleteAct = menu.addAction(tr("Delete"));
             QAction* chosen = menu.exec(m_characterLibrary->viewport()->mapToGlobal(pos));
@@ -476,6 +496,11 @@ QWidget* ShotComposer::createLeftPanel()
                         QDir(charDir).absolutePath()));
 #endif
                 }
+            } else if (chosen == renameAct) {
+                promptRenameCharacter(realName);
+            } else if (chosen == resetNameAct) {
+                m_presetManager.setAlias(realName, std::string{});
+                refreshCharacterAliasViews();
             } else if (chosen == deleteAct) {
                 auto reply = QMessageBox::question(m_characterLibrary, tr("Delete"),
                     tr("Permanently delete character \"%1\" and all its files?\nThis cannot be undone.")

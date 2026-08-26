@@ -283,6 +283,12 @@ private:
 class ShotPresetManager
 {
 public:
+    enum class CharacterGroup {
+        Normal,
+        Favorite,
+        Hidden
+    };
+
     ShotPresetManager() = default;
 
     /// Scan a directory for saved presets (*.json).
@@ -389,6 +395,13 @@ public:
         return m_aliases;
     }
 
+    /// Place a character in the normal, favorite, or hidden COMPOSE group.
+    /// This never removes or changes saved shots that use the character.
+    void setCharacterGroup(const std::string& realName, CharacterGroup group);
+
+    /// Return the saved COMPOSE group for a real character name.
+    [[nodiscard]] CharacterGroup characterGroup(const std::string& realName) const;
+
     // ── Show registry ─────────────────────────────────────────────────────
     /// Registered show names. This is a superset of the shows actually used by
     /// shots — it lets a user create a show (via the "+" button) before any
@@ -422,6 +435,10 @@ private:
     void loadAliases();
     void saveAliases() const;
 
+    /// Load/save favorite/hidden character groups from `_character_groups.json`.
+    void loadCharacterGroups();
+    void saveCharacterGroups() const;
+
     /// Load/save the registered show list from `_shows.json`.
     void loadShows();
     void saveShows() const;
@@ -437,6 +454,7 @@ private:
     std::filesystem::path                             m_directory;
     std::vector<std::pair<std::string, ShotPreset>>   m_presets; ///< name → preset
     std::map<std::string, std::string>                m_aliases; ///< realName → displayName
+    std::map<std::string, CharacterGroup>             m_characterGroups; ///< realName → non-normal group
     std::vector<std::string>                          m_knownShows; ///< registered show names
     std::map<std::string, std::string>                m_showThumbnails; ///< lowercased show → image path
     /// lowercased show → (real character name → shot name). Per-show defaults.

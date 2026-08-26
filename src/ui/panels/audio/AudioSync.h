@@ -30,6 +30,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QProgressBar>
 #include <QProgressDialog>
 #include <QListWidget>
@@ -48,6 +49,7 @@
 #include "ai/Transcriber.h"    // For TranscriptionResult
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -77,6 +79,7 @@ public:
     void setAudioPath(const std::string& path) { m_audioPath = path; }
     void setLanguage(const std::string& lang)   { m_language = lang; }
     void setModelSize(WhisperModelSize size)    { m_modelSize = size; }
+    void requestCancel() noexcept { m_cancelRequested.store(true, std::memory_order_release); }
 
     /// Access the result after finished(true).
     [[nodiscard]] const TranscriptionResult& result() const { return m_result; }
@@ -95,6 +98,7 @@ private:
     std::string  m_language;
     WhisperModelSize m_modelSize{kDefaultWhisperModel};
     TranscriptionResult m_result;
+    std::atomic<bool> m_cancelRequested{false};
 };
 
 // ─── Audio clip data model ──────────────────────────────────────────────────
@@ -272,12 +276,11 @@ private slots:
     void onLoadScriptClicked();
     void onImportAudioClicked();
     void onTranscribeClicked();
+    void onCancelTranscriptionClicked();
     void onAutoSyncClicked();
     void onExportClicked();
     void onReExportClicked();
     void onTranscriptionProgress(float percent, const QString& status);
-    void onTranscriptionFinished(bool success);
-    void onTranscriptionError(const QString& error);
     void onClipSelectionChanged();
     void onScriptFilterChanged(int index);
 
@@ -293,7 +296,17 @@ private:
     void appendClipsFromNewTranscriptions();
     void mergeSegmentsToMatchScript();
     void resegmentByScript();          // script-guided re-segmentation (#2)
-    void startTranscriptionForFile(size_t index);
+    void startSingleFileTranscription(size_t index);
+    void beginTranscriptionRun(std::vector<size_t> indices);
+    void startTranscriptionForFile(size_t index, uint64_t runId);
+    void handleTranscriptionFinished(uint64_t runId,
+                                     const QPointer<TranscriptionWorker>& worker,
+                                     bool success);
+    void handleTranscriptionError(uint64_t runId, const QString& error);
+    void handleTranscriptionThreadFinished(uint64_t runId,
+                                           const QPointer<QThread>& thread);
+    void finishTranscriptionRun(bool cancelled);
+    void updateTranscriptionControls();
     void fetchScriptFromUrl(const QString& url);
     void loadScriptHistory();
     void addToScriptHistory(const QString& url);
@@ -362,6 +375,9 @@ private:
 
     /// Remove an audio file and all associated clips / transcriptions.
     void removeFileFromSync(int fileIdx);
+
+    /// Remove several audio files as one operation, then rebuild dependent UI once.
+    void removeFilesFromSync(std::vector<int> fileIndices);
 
     /// Sort the audio file list by the given criterion.
     void sortAudioFileList(int criterion);  // 0=name, 1=date, 2=size
@@ -450,8 +466,13 @@ private:
     std::vector<size_t> m_pendingTranscriptionIndices;  ///< File indices still needing transcription
 
     // Transcription worker
-    QThread*              m_workerThread{nullptr};
-    TranscriptionWorker*  m_worker{nullptr};
+    enum class TranscriptionState { Idle, Running, Cancelling };
+    TranscriptionState m_transcriptionState{TranscriptionState::Idle};
+    uint64_t m_transcriptionRunId{0};
+    bool m_transcriptionRunHadSuccess{false};
+    QString m_transcriptionRunError;
+    QPointer<QThread>             m_workerThread;
+    QPointer<TranscriptionWorker> m_worker;
 
     // ── UI widgets ──────────────────────────────────────────────────────
 
@@ -478,6 +499,8 @@ private:
     QWidget*      m_audioContentArea{nullptr};
     QWidget*      m_audioActionBar{nullptr};
     QPushButton*  m_syncActionBtn{nullptr};
+    QDoubleSpinBox* m_syncFrontPaddingSpin{nullptr};
+    QDoubleSpinBox* m_syncEndPaddingSpin{nullptr};
     QPushButton*  m_confirmAllActionBtn{nullptr};
     QPushButton*  m_unconfirmAllActionBtn{nullptr};
     QPushButton*  m_clearActionBtn{nullptr};
@@ -520,6 +543,7 @@ private:
 
     // Setup Panel — Transcribe column
     QPushButton*  m_transcribeBtn{nullptr};
+    QPushButton*  m_cancelTranscriptionBtn{nullptr};
     QPushButton*  m_clearSelectedTranscriptionBtn{nullptr};
     QPushButton*  m_clearAllTranscriptionsBtn{nullptr};
     QProgressBar* m_progressBar{nullptr};
@@ -609,6 +633,11 @@ private:
     QLabel*       m_clipCountLabel{nullptr};
     QListWidget*  m_scriptList{nullptr};
     QComboBox*    m_scriptFilterCombo{nullptr};
+
+    // Snapshotted when Auto-Sync is clicked; confirmed clip bounds are never
+    // rebuilt, so changing these only affects the next unconfirmed sync pass.
+    double        m_syncFrontPaddingSec{0.0};
+    double        m_syncEndPaddingSec{0.2};
 
     // Use-after-free guard
     std::atomic<bool> m_destroying{false};

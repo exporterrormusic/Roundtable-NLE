@@ -27,6 +27,12 @@ $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $projectDir
 
+# CMake can invoke MSBuild more than once during a scripted build (for example,
+# clean followed by build).  Reusable MSBuild worker nodes may retain handles to
+# a target's .tlog files between those invocations, causing a successful build
+# to end with MSB3061 while deleting the `unsuccessfulbuild` marker.
+$env:MSBUILDDISABLENODEREUSE = "1"
+
 # Clean stale FetchContent _deps directories (fixes Windows file-lock errors)
 # like "Error removing directory .../vulkan_headers-src".
 if ($CleanDeps) {
@@ -88,25 +94,35 @@ if (-not $cmakeExe) {
 $cmakeBinDir = Split-Path -Parent $cmakeExe
 $env:PATH = "${cmakeBinDir};${env:PATH}"
 
-# Also fix the CMAKE_COMMAND in the existing CMakeCache.txt if it points
-# to the wrong cmake (e.g. conda's cmake that was on PATH during setup).
-# FetchContent sub-builds use this value and fail if it's too old.
+# Keep all cached CMake tool paths together.  Updating only CMAKE_COMMAND (the
+# old behavior) can mix a bundled CMake executable with Miniconda's older
+# module tree, which fails as soon as CUDA enables another language.
 $cmakeCachePath = "build\CMakeCache.txt"
 if (Test-Path $cmakeCachePath) {
-    $currentCmd = Select-String -Path $cmakeCachePath -Pattern "^CMAKE_COMMAND:" -Quiet
-    if ($currentCmd) {
-        $expectedCmd = $cmakeExe -replace '\\', '/'
+    $cmakeInstallDir = Split-Path -Parent $cmakeBinDir
+    $cmakeRoot = Get-ChildItem (Join-Path $cmakeInstallDir "share\cmake-*") `
+        -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmakeRoot) {
+        $expectedTools = [ordered]@{
+            CMAKE_COMMAND       = $cmakeExe
+            CMAKE_CPACK_COMMAND = Join-Path $cmakeBinDir "cpack.exe"
+            CMAKE_CTEST_COMMAND = Join-Path $cmakeBinDir "ctest.exe"
+            CMAKE_ROOT          = $cmakeRoot.FullName
+        }
         $content = Get-Content $cmakeCachePath
         $updated = $false
-        for ($i = 0; $i -lt $content.Count; $i++) {
-            if ($content[$i] -match '^CMAKE_COMMAND:') {
-                $oldVal = $content[$i]
-                $content[$i] = "CMAKE_COMMAND:INTERNAL=$expectedCmd"
-                if ($oldVal -ne $content[$i]) {
-                    Write-Host "  Fixed CMAKE_COMMAND in CMakeCache.txt: $expectedCmd" -ForegroundColor Yellow
-                    $updated = $true
+        foreach ($entry in $expectedTools.GetEnumerator()) {
+            $expectedValue = $entry.Value -replace '\\', '/'
+            for ($i = 0; $i -lt $content.Count; $i++) {
+                if ($content[$i] -match "^$([regex]::Escape($entry.Key)):") {
+                    $newLine = "$($entry.Key):INTERNAL=$expectedValue"
+                    if ($content[$i] -ne $newLine) {
+                        $content[$i] = $newLine
+                        Write-Host "  Fixed $($entry.Key) in CMakeCache.txt: $expectedValue" -ForegroundColor Yellow
+                        $updated = $true
+                    }
+                    break
                 }
-                break
             }
         }
         if ($updated) {
@@ -175,11 +191,13 @@ if ($Clean) {
     }
 }
 
-# Default: build only the app (+ the FFmpeg DLL copy step), skipping the test
-# suite. Pass -All to build everything (ALL_BUILD), e.g. before running ctest.
+# Default: build only the app, skipping the test suite.  Runtime deployment
+# targets such as FFmpeg are dependencies of roundtable in CMake, so keeping a
+# single top-level target also keeps this to one MSBuild invocation.
+# Pass -All to build everything (ALL_BUILD), e.g. before running ctest.
 $buildArgs = @("--build", "build", "--config", $Config, "--parallel")
 if (-not $All) {
-    $buildArgs += @("--target", "roundtable", "copy_ffmpeg_dlls")
+    $buildArgs += @("--target", "roundtable")
     Write-Host "Building app target only (use -All to include tests)." -ForegroundColor DarkGray
 } else {
     Write-Host "Building all targets including tests..." -ForegroundColor DarkGray

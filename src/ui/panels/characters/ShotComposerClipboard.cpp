@@ -77,8 +77,8 @@ void ShotComposer::pasteLayer()
          !m_layerList->hasFocus())) {
         // Determine target character from character filter
         QString charFilter = activeCharFilter();
-        // UNASSIGNED filter behaves like ALL for paste purposes
-        if (charFilter == QStringLiteral("__UNASSIGNED__"))
+        // Group filters behave like ALL for paste purposes.
+        if (charFilter.startsWith(QStringLiteral("__")))
             charFilter.clear();
 
         // Build a new name: replace source character prefix with target character

@@ -98,6 +98,9 @@ enum class WhisperModelSize
     LargeV3Turbo,
     LargeV2,
     LargeV3,
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    CrisperWhisper2Large,
+#endif
     Count
 };
 
