@@ -430,6 +430,8 @@ void AudioSync::stopPlayback()
 
     // Keep playhead visible at last position (don't hide it)
     m_playingClipIdx = -1;
+    m_voiceDraftAuditionActive = false;
+    m_voiceDraftSamples.clear();
     updateTransportBar();
 }
 

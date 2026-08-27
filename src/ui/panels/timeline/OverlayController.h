@@ -82,6 +82,11 @@ private:
     void measureTextContentRect(TextLayer* tl, int64_t relTick,
                                 TransformOverlayInfo& info) const;
 
+    /// Select the visible text layer at an exact Program Monitor point.
+    /// Double-click uses this instead of ordinary click cycling, which can
+    /// select a stacked shape during the first click of the gesture.
+    [[nodiscard]] bool selectTextLayerAt(float frameX, float frameY);
+
     // ── Shared drag/click handlers ──────────────────────────────────────
     // Connected from BOTH wiring sites (GPU overlay + software viewport).
     void onOverlayPositionChanged(float posX, float posY);

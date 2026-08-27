@@ -76,6 +76,9 @@ struct LayerInfo
     uint64_t temporalGpuCacheMediaId{0};
     int64_t temporalGpuCacheFrameNumber{0};
     uint8_t temporalGpuCacheTier{0};
+    // Ordinary layers use this as source opacity. Adjustment markers use it
+    // as effect strength: 0 keeps the pre-effect composite, 1 uses the fully
+    // processed result, and intermediate values dissolve between the two.
     float opacity{1.0f};
     float posX{0.0f};     // pixels offset
     float posY{0.0f};
@@ -157,6 +160,15 @@ struct LayerInfo
 /// timelineIn().
 void appendAdjustmentLayerBoundary(std::vector<LayerInfo>& layers,
                                    AdjustmentClip& adjustment,
-                                   int64_t localTick);
+                                   int64_t localTick,
+                                   float effectStrength = 1.0f);
+
+/// Evaluate an adjustment layer's effect strength, including its opacity
+/// track and any Cross Dissolve attached to its head or tail.
+[[nodiscard]] float adjustmentLayerStrengthAtTick(
+    AdjustmentClip& adjustment,
+    int64_t localTick,
+    int64_t timelineTick,
+    const std::vector<Transition>& transitions);
 
 } // namespace rt

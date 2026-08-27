@@ -114,13 +114,17 @@ void ProjectBin::importFiles()
 
 void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
 {
+    const bool restoreFocusedBin = m_listView && m_listViewFocused
+        && !m_iconBinPath.isEmpty();
+    const auto savedFolders = restoreFocusedBin
+        ? m_rootFolderState : binFolderState();
+
     for (const auto& f : files) {
         // Skip empty paths (synthetic items saved inadvertently)
         if (f.empty())
             continue;
-        // Skip duplicates — Premiere Pro silently ignores re-imports
-        if (m_grid->hasItem(f))
-            continue;
+        // Explicit imports create independent master items. Stable item IDs,
+        // not source paths, distinguish duplicate references in the bin.
         // Synthetic adjustment-layer items: no source media to open, no
         // thumbnail to load. Recreate them with their existing name.
         if (projectBinIsAdjustmentPath(f)) {
@@ -139,7 +143,9 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
     }
     m_grid->loadVisibleThumbnails();
     // Always sync the list view (source of truth for bins)
-    syncListView();
+    syncListView(savedFolders.empty() ? nullptr : &savedFolders);
+    if (restoreFocusedBin)
+        focusListViewOnBin();
     if (!m_listView)
         syncIconView();
 }
@@ -157,21 +163,31 @@ void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
         if (node->data(0, Qt::UserRole + 2).toBool())
             targetBinPath.prepend(node->text(0));
     }
+    if (targetBinPath.isEmpty() && !m_iconBinPath.isEmpty())
+        targetBinPath = m_iconBinPath;
     addFilesToBinPath(files, targetBinPath);
 }
 
 void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& files,
                                    const QStringList& targetBinPath)
 {
-    // Add to the grid (data model), skipping duplicates
+    const bool restoreFocusedBin = m_listView && m_listViewFocused
+        && !m_iconBinPath.isEmpty();
+    const auto savedFolders = restoreFocusedBin
+        ? m_rootFolderState : binFolderState();
+
+    std::vector<uint64_t> addedIds;
+    addedIds.reserve(files.size());
     for (const auto& f : files) {
-        if (m_grid->hasItem(f))
-            continue;
+        if (f.empty()) continue;
         if (projectBinIsAdjustmentPath(f)) {
             QString name = QString::fromStdString(pathToUtf8(f.stem()));
-            m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
-                                    /*itemId*/ 0, name,
-                                    /*labelColor*/ 0xFFFFAA44);
+            const int index = m_grid->addRestoredItem(
+                f, MediaType::Unknown, /*handle*/ 0, /*itemId*/ 0, name,
+                /*labelColor*/ 0xFFFFAA44);
+            if (index >= 0)
+                addedIds.push_back(
+                    m_grid->items()[static_cast<size_t>(index)].itemId);
             continue;
         }
         uint64_t handle = 0;
@@ -180,11 +196,12 @@ void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& fil
             handle = result.handle;
         }
         m_grid->addItem(f, MediaType::Unknown, handle);
+        addedIds.push_back(m_grid->items().back().itemId);
     }
     m_grid->loadVisibleThumbnails();
 
     // Rebuild the list view (creates tree items at top-level)
-    syncListView();
+    syncListView(savedFolders.empty() ? nullptr : &savedFolders);
 
     // If a target bin was specified, walk the saved breadcrumb path
     // to locate the same bin again (handles nested sub-bins correctly).
@@ -211,11 +228,10 @@ void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& fil
             bin = next;
         }
         if (bin) {
-            for (const auto& f : files) {
-                QString key = QString::fromStdString(pathToUtf8(f));
+            for (uint64_t addedId : addedIds) {
                 for (int i = m_listWidget->topLevelItemCount() - 1; i >= 0; --i) {
                     auto* it = m_listWidget->topLevelItem(i);
-                    if (it->data(0, Qt::UserRole).toString() == key) {
+                    if (it->data(0, kBinItemIdRole).toULongLong() == addedId) {
                         auto* taken = m_listWidget->takeTopLevelItem(i);
                         if (taken) bin->addChild(taken);
                         break;
@@ -226,6 +242,8 @@ void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& fil
         }
     }
 
+    if (restoreFocusedBin)
+        focusListViewOnBin();
     if (!m_listView)
         syncIconView();
 }
@@ -236,18 +254,28 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
 {
     if (files.empty() || binName.isEmpty()) return;
 
-    // Add to the grid (data model), skipping duplicates
+    const bool restoreFocusedBin = m_listView && m_listViewFocused
+        && !m_iconBinPath.isEmpty();
+    const auto savedFolders = restoreFocusedBin
+        ? m_rootFolderState : binFolderState();
+
+    // Explicit imports are independent master items, even when two items
+    // reference the same source path. Track their stable IDs so only these
+    // new instances are moved into the requested bin after rebuilding.
+    std::vector<uint64_t> addedIds;
+    addedIds.reserve(files.size());
     for (const auto& f : files) {
-        if (m_grid->hasItem(f)) continue;
+        if (f.empty()) continue;
         uint64_t handle = 0;
         if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});
             handle = result.handle;
         }
         m_grid->addItem(f, MediaType::Unknown, handle);
+        addedIds.push_back(m_grid->items().back().itemId);
     }
     m_grid->loadVisibleThumbnails();
-    syncListView();
+    syncListView(savedFolders.empty() ? nullptr : &savedFolders);
 
     // Find or create the parent bin
     QTreeWidgetItem* parentBin = nullptr;
@@ -298,29 +326,15 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
             m_listWidget->addTopLevelItem(targetBin);
     }
 
-    // Move the newly-added files into the target bin
-    for (const auto& f : files) {
-        QString key = QString::fromStdString(pathToUtf8(f));
+    // Move the exact newly-added instances into the target bin. Matching by
+    // path would grab an older duplicate instead.
+    for (uint64_t addedId : addedIds) {
         for (int i = m_listWidget->topLevelItemCount() - 1; i >= 0; --i) {
             auto* it = m_listWidget->topLevelItem(i);
-            if (it->data(0, Qt::UserRole).toString() == key) {
+            if (it->data(0, kBinItemIdRole).toULongLong() == addedId) {
                 auto* taken = m_listWidget->takeTopLevelItem(i);
                 if (taken) targetBin->addChild(taken);
                 break;
-            }
-        }
-        // Also check children of other bins (in case syncListView placed them elsewhere)
-        if (parentBin) {
-            for (int bi = 0; bi < m_listWidget->topLevelItemCount(); ++bi) {
-                auto* bin = m_listWidget->topLevelItem(bi);
-                if (bin == targetBin || !bin->data(0, Qt::UserRole + 2).toBool()) continue;
-                for (int ci = bin->childCount() - 1; ci >= 0; --ci) {
-                    auto* child = bin->child(ci);
-                    if (child->data(0, Qt::UserRole).toString() == key) {
-                        auto* taken = bin->takeChild(ci);
-                        if (taken) targetBin->addChild(taken);
-                    }
-                }
             }
         }
     }
@@ -328,6 +342,8 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
     targetBin->setExpanded(true);
     if (parentBin) parentBin->setExpanded(true);
 
+    if (restoreFocusedBin)
+        focusListViewOnBin();
     if (!m_listView) syncIconView();
 }
 

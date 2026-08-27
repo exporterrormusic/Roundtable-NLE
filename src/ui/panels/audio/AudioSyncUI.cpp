@@ -125,7 +125,7 @@ void AudioSync::setupUi()
     // Rail button style (matches main nav rail exactly)
     QString railBtnStyle = QStringLiteral(
         "QPushButton { background: transparent; border: none;"
-        "  border-radius: %1px; color: %2; font-size: 42px;"
+        "  border-radius: %1px; color: %2; font-size: 36px;"
         "  padding: 12px 0; }"
         "QPushButton:hover { background: %3; color: %4; }"
         "QPushButton:pressed { background: %5; color: %6; }"
@@ -144,17 +144,17 @@ void AudioSync::setupUi()
     {
         auto* btn = new QPushButton(icon);
         btn->setToolTip(tip);
-        btn->setFixedSize(128, 84);
+        btn->setFixedSize(128, 62);
         btn->setCursor(Qt::PointingHandCursor);
         btn->setCheckable(checkable);
         btn->setStyleSheet(railBtnStyle);
         railLayout->addWidget(btn, 0, Qt::AlignHCenter);
 
-        railLayout->addSpacing(4);
+        railLayout->addSpacing(2);
 
         auto* lbl = new QLabel(label);
         lbl->setAlignment(Qt::AlignCenter);
-        lbl->setFixedHeight(20);
+        lbl->setFixedHeight(18);
         lbl->setStyleSheet(QStringLiteral(
             "font-size: %1px; color: %2; font-weight: 800;")
             .arg(t.sizeCaption)
@@ -168,7 +168,7 @@ void AudioSync::setupUi()
     // widget wrapping a 1px line to prevent DPI drift.
     auto addRailDivider = [&]() {
         auto* div = new QWidget;
-        div->setFixedHeight(17);
+        div->setFixedHeight(10);
         auto* lay = new QVBoxLayout(div);
         lay->setContentsMargins(16, 0, 16, 0);
         lay->setSpacing(0);
@@ -202,6 +202,12 @@ void AudioSync::setupUi()
     m_matchRailBtn = makeRailBtn("\U0001F517", "MATCH", "Character filter & matching", true);
     connect(m_matchRailBtn, &QPushButton::clicked,
             this, [this]() { toggleAudioSidePanel(3); });
+
+    addRailDivider();
+
+    m_voiceRailBtn = makeRailBtn("\U0001F50A", "TTS", "Text to speech & voice cloning", true);
+    connect(m_voiceRailBtn, &QPushButton::clicked,
+            this, [this]() { toggleAudioSidePanel(5); });
 
     addRailDivider();
 

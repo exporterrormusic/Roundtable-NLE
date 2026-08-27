@@ -1096,6 +1096,20 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
 
     AVStream* stream = m_impl->fmtCtx->streams[m_impl->audioStreamIdx];
     const AVRational sampleTimeBase{1, static_cast<int>(std::max<uint32_t>(1, m_info.sampleRate))};
+    // Containers such as Matroska commonly store audio timestamps on a
+    // coarse 1 ms time base.  At 48 kHz, consecutive 1024-sample PCM frames
+    // therefore arrive with PTS positions such as 0, 1008, 2064, 3072...
+    // even though the decoded samples themselves are contiguous at
+    // 0, 1024, 2048, 3072....  Re-positioning every decoded frame from those
+    // quantized timestamps creates small overlaps and zero-filled gaps.  A
+    // steady reference tone makes the resulting clicks especially obvious.
+    //
+    // Anchor the first frame after a seek from its timestamp, then keep
+    // contiguous decoded frames sample-contiguous whenever their timestamp
+    // differs from the expected position by no more than one container time-
+    // base tick.  Larger jumps are retained as genuine stream discontinuities.
+    const int64_t timestampQuantumFrames = std::max<int64_t>(
+        1, std::abs(av_rescale_q(1, stream->time_base, sampleTimeBase)));
     const int64_t endFrame = startFrame + numFrames;
     const int64_t seekTarget = av_rescale_q(startFrame, sampleTimeBase, stream->time_base);
 
@@ -1110,12 +1124,19 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
     AVFrame* frame = av_frame_alloc();
     int64_t framesWritten = 0;
     int64_t fallbackFramePos = startFrame;
+    bool haveDecodedPosition = false;
 
     auto consumeFrame = [&](AVFrame* decodedFrame) {
         int64_t frameStart = fallbackFramePos;
         if (decodedFrame->best_effort_timestamp != AV_NOPTS_VALUE) {
-            frameStart = av_rescale_q(decodedFrame->best_effort_timestamp,
-                                      stream->time_base, sampleTimeBase);
+            const int64_t timestampFrame = av_rescale_q(
+                decodedFrame->best_effort_timestamp,
+                stream->time_base, sampleTimeBase);
+            const int64_t timestampDelta = timestampFrame - fallbackFramePos;
+            if (!haveDecodedPosition ||
+                std::abs(timestampDelta) > timestampQuantumFrames) {
+                frameStart = timestampFrame;
+            }
         }
 
         const int outFrameCapacity = swr_get_out_samples(m_impl->swrCtx, decodedFrame->nb_samples);
@@ -1134,6 +1155,7 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
         tmp.resize(static_cast<size_t>(converted * m_info.channels));
         const int64_t frameEnd = frameStart + converted;
         fallbackFramePos = frameEnd;
+        haveDecodedPosition = true;
 
         const int64_t copyStart = std::max<int64_t>(startFrame, frameStart);
         const int64_t copyEnd = std::min<int64_t>(endFrame, frameEnd);
@@ -1187,4 +1209,3 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
 #endif
 
 } // namespace rt
-

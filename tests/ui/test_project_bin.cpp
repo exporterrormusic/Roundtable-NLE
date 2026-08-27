@@ -624,6 +624,18 @@ TEST(ProjectBin, Construction)
     EXPECT_EQ(bin.activeTabType(), rt::MediaType::Unknown); // All
 }
 
+TEST(ProjectBin, RecognizesGeneratedBarsAndToneAssets)
+{
+    EXPECT_TRUE(rt::ProjectBin::isBarsAndTone(
+        fs::path("project/Bars and Tone/Bars and Tone.mkv")));
+    EXPECT_TRUE(rt::ProjectBin::isBarsAndTone(
+        fs::path("project/BARS AND TONE/Test Pattern.mkv")));
+    EXPECT_FALSE(rt::ProjectBin::isBarsAndTone(
+        fs::path("project/imports/Bars and Tone.mkv")));
+    EXPECT_FALSE(rt::ProjectBin::isColorMatte(
+        fs::path("project/Bars and Tone/Bars and Tone.mkv")));
+}
+
 TEST(ProjectBin, AddAndQueryFiles)
 {
     rt::ProjectBin bin;
@@ -638,6 +650,22 @@ TEST(ProjectBin, AddAndQueryFiles)
 
     EXPECT_EQ(bin.itemCount(), 4);
     EXPECT_EQ(bin.allFiles().size(), 4u);
+}
+
+TEST(ProjectBin, ExplicitReimportCreatesIndependentBinItems)
+{
+    rt::ProjectBin bin;
+    const fs::path source("same-source.mov");
+
+    bin.addFiles({source});
+    bin.addFiles({source});
+
+    EXPECT_EQ(bin.itemCount(), 2);
+    const auto items = bin.exportBinItems();
+    ASSERT_EQ(items.size(), 2u);
+    EXPECT_EQ(items[0].path, source);
+    EXPECT_EQ(items[1].path, source);
+    EXPECT_NE(items[0].id, items[1].id);
 }
 
 TEST(ProjectBin, FilesOfType)

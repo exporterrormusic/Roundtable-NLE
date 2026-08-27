@@ -117,6 +117,9 @@ class TitleClip;
 class Timeline;
 class VUMeter;
 class Project;
+class AudioSync;
+class VoiceGenerationPanel;
+class VoiceGenerationService;
 
 /// The TIMELINE page — splitter-based NLE workspace matching original layout.
 class TimelineWorkspace : public QWidget
@@ -144,6 +147,10 @@ public:
     void setModelManager(ModelManager* mgr);
     void setShotPresetManager(ShotPresetManager* mgr);
     void setProject(Project* project);
+    void setVoiceGenerationService(VoiceGenerationService* service) noexcept;
+    void setVoiceScriptSource(AudioSync* audioSync) noexcept;
+    /// Import a user-approved generated voice file into Project Bin.
+    void importApprovedVoiceClip(const QString& outputPath);
 
     // ── Build ───────────────────────────────────────────────────────────
     void buildPanels();
@@ -166,6 +173,10 @@ public:
     /// Mark a sequence as open in the tab bar (Premiere Pro style).
     /// Does nothing if already open.
     void openSequenceTab(size_t index);
+
+    /// Copy the live tab set into the Project model. Save paths call this as
+    /// a final guard so serialization never relies on a delayed UI refresh.
+    void syncSequenceTabStateToProject();
 
     /// Insert a nested sequence clip at the playhead on the first targeted video track.
     void nestSequence(size_t sequenceIndex, const QString& sequenceName);
@@ -195,6 +206,7 @@ public:
     [[nodiscard]] ScopesPanel*      scopesPanel()      const noexcept { return m_scopesPanel; }
     [[nodiscard]] CharactersPanel*   charactersPanel()   const noexcept { return m_charactersPanel; }
     [[nodiscard]] LibraryPanel*      libraryPanel()      const noexcept { return m_libraryPanel; }
+    [[nodiscard]] VoiceGenerationPanel* voiceGenerationPanel() const noexcept { return m_voiceGenerationPanel; }
 
     // ── Binder/controller accessors (god-class decomposition, §3.1) ─────
     // Public surface the extracted binder controllers (DropController, ...)
@@ -398,6 +410,8 @@ private:
     ModelManager*  m_modelManager{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
     Project*       m_project{nullptr};
+    VoiceGenerationService* m_voiceGenerationService{nullptr};
+    AudioSync* m_voiceScriptSource{nullptr};
 
     // ── Live media file-swap watcher ────────────────────────────────────
     // Watches every media file the timeline references so overwriting one
@@ -440,6 +454,7 @@ private:
     ScopesPanel*      m_scopesPanel{nullptr};
     CharactersPanel*   m_charactersPanel{nullptr};
     LibraryPanel*      m_libraryPanel{nullptr};
+    VoiceGenerationPanel* m_voiceGenerationPanel{nullptr};
 
     // Audio meter (right side of timeline, Premiere Pro style)
     VUMeter*          m_timelineVUMeter{nullptr};

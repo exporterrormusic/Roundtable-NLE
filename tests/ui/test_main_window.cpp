@@ -20,6 +20,8 @@
 #include "ShortcutManager.h"
 
 #include "command/CommandStack.h"
+#include "project/Project.h"
+#include "project/ProjectSerializer.h"
 #include "timeline/Timeline.h"
 
 // Panels (for type checking)
@@ -30,10 +32,13 @@
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/timeline/TimelineWorkspace.h"
 
 #include <QApplication>
 #include <QDockWidget>
 #include <QMenuBar>
+#include <QSettings>
+#include <QTabBar>
 
 #include <memory>
 
@@ -55,6 +60,10 @@ protected:
         if (!QApplication::instance()) {
             m_app = std::make_unique<QApplication>(g_argc, g_argv);
         }
+        // Headless UI tests must never block on the first-use personal-model
+        // acknowledgement dialog.
+        QSettings().setValue(
+            QStringLiteral("transcription/crisperWhisperPersonalAccepted"), true);
     }
 
     std::unique_ptr<QApplication> m_app;
@@ -240,13 +249,39 @@ TEST_F(MainWindowTest, BuildPanelsIdempotent)
     EXPECT_EQ(mw.dockCount(), count);
 }
 
+TEST_F(MainWindowTest, ClosingSequenceTabImmediatelyUpdatesSavedProjectState)
+{
+    auto project = Project::createNew("Sequence Tab State");
+    project->addSequence("Sequence 2");
+    project->addSequence("Sequence 3");
+    project->setOpenSequenceIndices({0, 1, 2});
+
+    TimelineWorkspace workspace;
+    workspace.buildPanels();
+    workspace.setProject(project.get());
+
+    auto* tabs = workspace.findChild<QTabBar*>(QStringLiteral("SequenceTabBar"));
+    ASSERT_NE(tabs, nullptr);
+    ASSERT_EQ(tabs->count(), 3);
+
+    tabs->tabCloseRequested(1);
+
+    EXPECT_EQ(tabs->count(), 2);
+    EXPECT_EQ(project->openSequenceIndices(), (std::vector<size_t>{0, 2}));
+
+    ProjectSerializer serializer;
+    auto loaded = serializer.deserialize(serializer.serialize(*project));
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->openSequenceIndices(), (std::vector<size_t>{0, 2}));
+}
+
 TEST_F(MainWindowTest, DockCount)
 {
     MainWindow mw;
     mw.buildPanels();
-    // 15 dock widgets in the dockable layout. Update this count when a
+    // 16 dock widgets in the dockable layout. Update this count when a
     // dock panel is added/removed — it catches accidentally dropped docks.
-    EXPECT_EQ(mw.dockCount(), 15);
+    EXPECT_EQ(mw.dockCount(), 16);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

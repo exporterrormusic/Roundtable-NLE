@@ -58,23 +58,31 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
     if (m_motionX && m_motionY)
         drawMotionPath(painter);
 
-    // ── Live bounding box around the inline text editor ─────────────────
-    // The editor is a top-level borderless window so the user has no
-    // visual cue for the text bounds while typing. Mirror Premiere by
-    // drawing a thin dashed rectangle that hugs the editor's current
-    // screen geometry — the editor's textChanged handler resizes the
-    // widget as text grows, so this box automatically tracks size.
+    // ── Compositor-aligned inline-edit bounds and caret ─────────────────
     if (inlineEditing) {
-        const QRect g = m_inlineTextEdit->geometry();        // screen coords
-        const QPoint tl = mapFromGlobal(g.topLeft());        // overlay-local
-        const QRect local(tl, g.size());
+        // Use the compositor's measured glyph bounds. The invisible editor
+        // rectangle contains caret slack and rounded line cells, so it cannot
+        // be used as a visual transform/text box.
+        QPointF corners[4];
+        computeOverlayCornersFor(inlineTextLayoutOverlay(), corners);
         const auto& tc = Theme::colors();
         QColor c = tc.accent; c.setAlpha(200);
         QPen pen(c, 1.5, Qt::DashLine);
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
-        // Small inset so the line doesn't clip glyph descenders.
-        painter.drawRect(local.adjusted(-2, -2, 2, 2));
+        QPolygonF bounds;
+        for (const QPointF& corner : corners) bounds << corner;
+        bounds << corners[0];
+        painter.drawPolyline(bounds);
+
+        const QTextCursor cursor = m_inlineTextEdit->textCursor();
+        if (!cursor.hasSelection() && m_inlineTextEdit->hasFocus()
+            && m_inlineCaretVisible) {
+            const QLineF caret = inlineTextCaretLine();
+            painter.setPen(QPen(tc.textBright, 1.5, Qt::SolidLine,
+                                Qt::SquareCap));
+            if (!caret.isNull()) painter.drawLine(caret);
+        }
     }
 }
 

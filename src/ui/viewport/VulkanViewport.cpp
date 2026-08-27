@@ -613,8 +613,23 @@ bool VulkanViewport::eventFilter(QObject* watched, QEvent* event)
             return true;
         }
         if (event->type() == QEvent::MouseButtonDblClick) {
-            mouseDoubleClickEvent(static_cast<QMouseEvent*>(event));
-            return true;
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                // Route explicitly instead of relying on the native event to
+                // fall through to another event filter. On Windows, embedded
+                // QWindow filter ordering can otherwise swallow the gesture.
+                spdlog::warn("[INLINE-TEXT] Vulkan native left double-click local=({}, {}) global=({}, {})",
+                             mouseEvent->position().x(), mouseEvent->position().y(),
+                             mouseEvent->globalPosition().x(),
+                             mouseEvent->globalPosition().y());
+                emit nativeLeftDoubleClicked(mouseEvent->globalPosition(),
+                                              mouseEvent->modifiers());
+                return true;
+            }
+            if (mouseEvent->button() == Qt::MiddleButton) {
+                mouseDoubleClickEvent(mouseEvent);
+                return true;
+            }
         }
     }
     return QWidget::eventFilter(watched, event);

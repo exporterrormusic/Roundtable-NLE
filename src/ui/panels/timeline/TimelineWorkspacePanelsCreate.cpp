@@ -26,6 +26,9 @@
 #include "panels/monitors/ProgramMonitor.h"
 #include "playback/PlaybackScheduler.h"
 #include "panels/project/ProjectBin.h"
+#include "panels/audio/AudioSync.h"
+#include "panels/audio/VoiceGenerationPanel.h"
+#include "panels/audio/VoiceGenerationService.h"
 
 #include "widgets/MiniTimeline.h"
 #include "panels/properties/PropertiesPanel.h"
@@ -316,6 +319,24 @@ void TimelineWorkspace::createPanelWidgets()
     connect(m_projectBin, &ProjectBin::mediaRelinkRequested,
             this, &TimelineWorkspace::relinkMedia);
     makeDock("Project Bin", m_projectBin);
+
+    // -- Voice Generator -------------------------------------------------
+    // Shares one persistent service with the Audio page. Only user-approved
+    // drafts are imported into Project Bin and become draggable from the list.
+    if (m_voiceGenerationService) {
+        m_voiceGenerationPanel = new VoiceGenerationPanel(
+            m_voiceGenerationService, true, this);
+        m_voiceGenerationPanel->setAudioSync(m_voiceScriptSource);
+        m_voiceGenerationPanel->setMinimumWidth(240);
+        makeDock("Voice Generator", m_voiceGenerationPanel);
+
+        connect(m_voiceGenerationPanel,
+                &VoiceGenerationPanel::approvedForProject,
+                this, [this](const QString& outputPath) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            importApprovedVoiceClip(outputPath);
+        });
+    }
 
     // -- Source Monitor ---------------------------------------------------
     m_sourceMonitor = new SourceMonitor(this);
@@ -786,6 +807,7 @@ void TimelineWorkspace::createPanelWidgets()
 
     // -- Sequence tab bar row ---------------------------------------------
     m_sequenceTabBar = new QTabBar;
+    m_sequenceTabBar->setObjectName(QStringLiteral("SequenceTabBar"));
     m_sequenceTabBar->setTabsClosable(true);
     m_sequenceTabBar->setExpanding(false);
     m_sequenceTabBar->setMovable(true);
@@ -826,6 +848,7 @@ void TimelineWorkspace::createPanelWidgets()
 
         // Remove from open set
         m_openSequenceTabs.erase(seqIdx);
+        syncSequenceTabStateToProject();
 
         // If closing the active sequence, switch to the first remaining one.
         // Don't call setActiveSequence here — let switchSequence() handle
@@ -874,6 +897,7 @@ void TimelineWorkspace::createPanelWidgets()
             // Don't close the last open tab
             if (m_openSequenceTabs.size() <= 1) return;
             m_openSequenceTabs.erase(seqIdx);
+            syncSequenceTabStateToProject();
             // IMPORTANT: when closing the active sequence, emit
             // sequenceTabChanged BEFORE refreshSequenceTabs (see the
             // tabCloseRequested handler above for the full rationale).
@@ -894,6 +918,7 @@ void TimelineWorkspace::createPanelWidgets()
             const bool keptWasActive = (m_project->activeSequenceIndex() == seqIdx);
             m_openSequenceTabs.clear();
             m_openSequenceTabs.insert(seqIdx);
+            syncSequenceTabStateToProject();
             // Same ordering hazard as Close above: if the kept tab wasn't the
             // active one, emit BEFORE refreshing so switchSequence() takes the
             // full refresh path instead of the "already active" early-return.

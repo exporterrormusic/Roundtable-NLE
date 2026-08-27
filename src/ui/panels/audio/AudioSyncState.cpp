@@ -192,6 +192,7 @@ static constexpr int kAudioSidePanelWidth = 400;
 static int audioSidePanelWidthForMode(int mode) {
     switch (mode) {
         case 3: return 180;  // Match ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â same as icon rail
+        case 5: return 540;  // TTS controls; script/matches remain visible at right
         default: return kAudioSidePanelWidth;  // Script, Import, Transcribe, Settings
     }
 }
@@ -208,6 +209,8 @@ void AudioSync::showAudioSidePanel(int mode)
     // Refresh the transcribe file list when opening the Transcribe panel
     if (mode == 2)
         refreshTranscribeFileList();
+    if (mode == 5)
+        emit voiceContextChanged();
 
     // Uncheck all rail buttons, then check the active one
     if (m_scriptRailBtn)    m_scriptRailBtn->setChecked(mode == 0);
@@ -215,6 +218,7 @@ void AudioSync::showAudioSidePanel(int mode)
     if (m_transcribeRailBtn) m_transcribeRailBtn->setChecked(mode == 2);
     if (m_matchRailBtn)     m_matchRailBtn->setChecked(mode == 3);
     if (m_audioSettingsRailBtn) m_audioSettingsRailBtn->setChecked(mode == 4);
+    if (m_voiceRailBtn)     m_voiceRailBtn->setChecked(mode == 5);
 
     if (m_audioSidePanel->isVisible() && m_audioSidePanel->width() > 10)
     {
@@ -292,6 +296,7 @@ void AudioSync::hideAudioSidePanel()
     if (m_transcribeRailBtn)  m_transcribeRailBtn->setChecked(false);
     if (m_matchRailBtn)       m_matchRailBtn->setChecked(false);
     if (m_audioSettingsRailBtn) m_audioSettingsRailBtn->setChecked(false);
+    if (m_voiceRailBtn)       m_voiceRailBtn->setChecked(false);
 
     m_audioSidePanelMode = -1;
 

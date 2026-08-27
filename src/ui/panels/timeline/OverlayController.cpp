@@ -51,6 +51,7 @@
 #include <QFontMetrics>
 #include <QImage>
 #include <QPainter>
+#include <QPolygonF>
 #include <QTimer>
 
 #include <spdlog/spdlog.h>
@@ -155,25 +156,41 @@ void OverlayController::measureTextContentRect(TextLayer* tl, int64_t relTick,
     // cost. boundingRect() returns the identical rect drawText would occupy.
     const QFontMetricsF fm(font);
     QRectF textBounds;
+    QRectF textLayoutBounds;
     const bool needsStyledLayout = !tl->styleRuns().empty()
         || !tl->paragraphStyles().empty() || !tl->fontStyle().empty()
         || tl->kerning() != 0.0f || tl->tsume() != 0.0f
         || tl->tabWidth() != 48.0f || sourceText.contains(QChar('\t'))
         || tl->fauxBold() || tl->fauxItalic() || tl->underline()
         || tl->superscript() || tl->subscript() || tl->rightToLeft();
-    if (needsStyledLayout) {
-        const auto styled = measureGraphicTextLayout(
-            tl, relTick, cxD, cyD, hAlign, vAlign);
-        if (styled.valid) {
-            textBounds = QRectF(QPointF(styled.left, styled.top),
-                                QPointF(styled.right, styled.bottom));
-        }
+    // Always ask the renderer-owned layout path for both ink and logical line
+    // geometry. Even an unstyled title needs the latter for its caret origin;
+    // the padded transform box is deliberately wider/taller than the text.
+    const auto styled = measureGraphicTextLayout(
+        tl, relTick, cxD, cyD, hAlign, vAlign);
+    bool usedRendererLayout = false;
+    if (styled.valid) {
+        textBounds = QRectF(QPointF(styled.left, styled.top),
+                            QPointF(styled.right, styled.bottom));
+        usedRendererLayout = true;
+    }
+    if (styled.layoutValid) {
+        textLayoutBounds = QRectF(
+            QPointF(styled.layoutLeft, styled.layoutTop),
+            QPointF(styled.layoutRight, styled.layoutBottom));
+    }
+    info.textCarets.clear();
+    info.textCarets.reserve(styled.carets.size());
+    for (const auto& caret : styled.carets) {
+        info.textCarets.push_back({
+            static_cast<float>(caret.x), static_cast<float>(caret.top),
+            static_cast<float>(caret.bottom), caret.valid});
     }
     if (textBounds.isEmpty()) {
         textBounds = fm.boundingRect(
             textRect, hAlign | vAlign | Qt::TextWordWrap, text);
     }
-    if (!needsStyledLayout && !tl->useParagraphBox()) {
+    if (!usedRendererLayout && !needsStyledLayout && !tl->useParagraphBox()) {
         // Point text keeps its first line anchored and grows downward. Qt's
         // AlignVCenter bounds center the entire multiline block, so translate
         // the measured bounds by half of the additional line height to match
@@ -198,6 +215,182 @@ void OverlayController::measureTextContentRect(TextLayer* tl, int64_t relTick,
     info.contentB = static_cast<float>(textBounds.bottom()) + vertPad;
     info.contentCanvasW = static_cast<float>(outW);
     info.contentCanvasH = static_cast<float>(outH);
+    if (textLayoutBounds.isValid() && !textLayoutBounds.isEmpty()) {
+        info.useTextLayoutRect = true;
+        info.textLayoutL = static_cast<float>(textLayoutBounds.left());
+        info.textLayoutT = static_cast<float>(textLayoutBounds.top());
+        info.textLayoutR = static_cast<float>(textLayoutBounds.right());
+        info.textLayoutB = static_cast<float>(textLayoutBounds.bottom());
+    }
+}
+
+bool OverlayController::selectTextLayerAt(float frameX, float frameY)
+{
+    if (!m_ws || !m_ws->timeline() || !m_ws->graphicsEditorPanel())
+        return false;
+
+    uint32_t canvasW = 0, canvasH = 0;
+    graphicCanvasRes(canvasW, canvasH);
+    if (canvasW == 0 || canvasH == 0) return false;
+
+    // textEditRequested is already expressed in this sequence-canvas space.
+    // ProgramMonitor::compositeWidth() describes the most recent preview
+    // frame and may lag or intentionally differ from the active sequence.
+    const float hitX = frameX;
+    const float hitY = frameY;
+
+    const int64_t playheadTick = m_ws->playbackController()
+        ? m_ws->playbackController()->currentTick() : 0;
+    struct Hit {
+        GraphicClip* clip{nullptr};
+        Track* track{nullptr};
+        size_t trackIndex{0};
+        size_t clipIndex{0};
+        int layerIndex{-1};
+    };
+
+    auto hitInClip = [&](GraphicClip* clip, Track* track,
+                         size_t trackIndex, size_t clipIndex) -> Hit {
+        if (!clip || !track || track->isLocked()
+            || playheadTick < clip->timelineIn()
+            || playheadTick >= clip->timelineOut()) {
+            return {};
+        }
+
+        const int64_t localTick = playheadTick - clip->timelineIn();
+        const float cx = static_cast<float>(canvasW) * 0.5f;
+        const float cy = static_cast<float>(canvasH) * 0.5f;
+        const auto clipPosition = evaluatePosition2D(
+            clip->positionX(), clip->positionY(), localTick);
+        const float clipPosX = clipPosition.first
+            * (static_cast<float>(canvasW) / 1920.0f);
+        const float clipPosY = clipPosition.second
+            * (static_cast<float>(canvasH) / 1080.0f);
+        const float clipScaleX = clip->scaleX().evaluate(localTick);
+        const float clipScaleY = clip->scaleY().evaluate(localTick);
+        const float clipRotation = clip->rotation().evaluate(localTick)
+            * 3.14159265358979f / 180.0f;
+        const float clipCos = std::cos(clipRotation);
+        const float clipSin = std::sin(clipRotation);
+        const float clipAnchorX = clip->anchorX().evaluate(localTick)
+            * (static_cast<float>(canvasW) / 1920.0f);
+        const float clipAnchorY = clip->anchorY().evaluate(localTick)
+            * (static_cast<float>(canvasH) / 1080.0f);
+
+        for (int i = static_cast<int>(clip->layerCount()) - 1; i >= 0; --i) {
+            auto* layer = clip->layer(static_cast<size_t>(i));
+            if (!layer || layer->layerType() != GraphicLayerType::Text
+                || !layer->isVisible() || layer->isLocked()) {
+                continue;
+            }
+
+            auto* text = static_cast<TextLayer*>(layer);
+            TransformOverlayInfo bounds;
+            measureTextContentRect(text, localTick, bounds);
+            if (!bounds.useContentRect) continue;
+
+            const auto& transform = text->transform();
+            const float posX = transform.posX.evaluate(localTick);
+            const float posY = transform.posY.evaluate(localTick);
+            const float scaleX = transform.scaleX.evaluate(localTick);
+            const float scaleY = transform.scaleY.evaluate(localTick);
+            const float rotation = transform.rotation.evaluate(localTick)
+                * 3.14159265358979f / 180.0f;
+            const float cosR = std::cos(rotation);
+            const float sinR = std::sin(rotation);
+            const float anchorX = transform.anchorX.evaluate(localTick);
+            const float anchorY = transform.anchorY.evaluate(localTick);
+
+            auto mapPoint = [&](float x, float y) -> QPointF {
+                const float dx = scaleX * (x - cx - anchorX);
+                const float dy = scaleY * (y - cy - anchorY);
+                const float layerX = dx * cosR - dy * sinR
+                    + cx + anchorX + posX;
+                const float layerY = dx * sinR + dy * cosR
+                    + cy + anchorY + posY;
+
+                const float outerX = (layerX - cx - clipAnchorX) * clipScaleX;
+                const float outerY = (layerY - cy - clipAnchorY) * clipScaleY;
+                return QPointF(
+                    outerX * clipCos - outerY * clipSin
+                        + cx + clipPosX + clipAnchorX,
+                    outerX * clipSin + outerY * clipCos
+                        + cy + clipPosY + clipAnchorY);
+            };
+
+            QPolygonF polygon;
+            polygon << mapPoint(bounds.contentL, bounds.contentT)
+                    << mapPoint(bounds.contentR, bounds.contentT)
+                    << mapPoint(bounds.contentR, bounds.contentB)
+                    << mapPoint(bounds.contentL, bounds.contentB);
+            if (polygon.containsPoint(QPointF(hitX, hitY), Qt::WindingFill))
+                return {clip, track, trackIndex, clipIndex, i};
+        }
+        return {};
+    };
+
+    Hit hit;
+    // Preserve the existing preference for the selected graphic clip, but
+    // independently resolve the layer as text instead of trusting the single
+    // click that precedes a double-click.
+    if (m_ws->selection().clip
+        && m_ws->selection().clip->clipType() == ClipType::Graphic
+        && m_ws->selection().trackIdx < m_ws->timeline()->trackCount()) {
+        Track* track = m_ws->timeline()->track(m_ws->selection().trackIdx);
+        if (track) {
+            hit = hitInClip(static_cast<GraphicClip*>(m_ws->selection().clip),
+                            track, m_ws->selection().trackIdx,
+                            m_ws->selection().clipIdx);
+        }
+    }
+
+    if (!hit.clip) {
+        for (size_t ti = 0; ti < m_ws->timeline()->trackCount() && !hit.clip;
+             ++ti) {
+            Track* track = m_ws->timeline()->track(ti);
+            if (!track || track->type() != TrackType::Video
+                || track->isLocked()) {
+                continue;
+            }
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                Clip* candidate = track->clip(ci);
+                if (!candidate || candidate == m_ws->selection().clip
+                    || candidate->clipType() != ClipType::Graphic) {
+                    continue;
+                }
+                hit = hitInClip(static_cast<GraphicClip*>(candidate), track,
+                                ti, ci);
+                if (hit.clip) break;
+            }
+        }
+    }
+    if (!hit.clip) {
+        spdlog::warn("[INLINE-TEXT] hit-test miss canvas=({}, {}) tick={} size={}x{}",
+                     hitX, hitY, playheadTick, canvasW, canvasH);
+        return false;
+    }
+
+    spdlog::warn("[INLINE-TEXT] hit-test selected clip={} layerIndex={} track={} canvas=({}, {})",
+                 hit.clip->id(), hit.layerIndex, hit.trackIndex, hitX, hitY);
+
+    m_ws->selection().clip = hit.clip;
+    m_ws->selection().trackIdx = hit.trackIndex;
+    m_ws->selection().clipIdx = hit.clipIndex;
+    m_ws->selection().graphicLayerIdx = hit.layerIndex;
+    if (m_ws->effectControlsPanel())
+        m_ws->effectControlsPanel()->setClip(hit.clip, hit.track);
+    m_ws->graphicsEditorPanel()->setClip(hit.clip, hit.track);
+    m_ws->graphicsEditorPanel()->selectLayerByStackIndex(hit.layerIndex);
+    if (m_ws->colorGradingPanel())
+        m_ws->colorGradingPanel()->setClip(hit.clip, hit.track);
+    if (m_ws->propertiesPanel())
+        m_ws->propertiesPanel()->setClip(hit.clip, hit.track);
+    if (m_ws->timelinePanel()) {
+        m_ws->timelinePanel()->selection().selectClip(
+            ClipRef{hit.trackIndex, hit.clip->id()}, false);
+    }
+    updateTransformOverlay();
+    return true;
 }
 
 void OverlayController::updateTransformOverlay()
@@ -280,7 +473,44 @@ void OverlayController::updateTransformOverlay()
             info.useContentRect = true;
 
             if (layer->layerType() == GraphicLayerType::Text) {
-                measureTextContentRect(static_cast<TextLayer*>(layer), relTick, info);
+                auto* textLayer = static_cast<TextLayer*>(layer);
+                measureTextContentRect(textLayer, relTick, info);
+
+                // Text is laid out around an alignment origin on the full
+                // sequence canvas, while a new layer's anchor tracks start at
+                // (0, 0), i.e. that canvas origin.  For left/right alignment
+                // and for the font's asymmetric ascent/descent, that is not
+                // the visual center of the text.  Seed untouched, static text
+                // anchors from the measured content center.  Restrict this
+                // migration to unrotated, unscaled layers so existing visuals
+                // can never jump when an older project is opened.
+                auto& anchorX = textLayer->transform().anchorX;
+                auto& anchorY = textLayer->transform().anchorY;
+                const bool untouchedAnchor = anchorX.isStatic()
+                    && anchorY.isStatic()
+                    && std::abs(anchorX.defaultValue()) < 1e-4f
+                    && std::abs(anchorY.defaultValue()) < 1e-4f;
+                const bool unchangedPivotTransform =
+                    textLayer->transform().scaleX.isStatic()
+                    && textLayer->transform().scaleY.isStatic()
+                    && textLayer->transform().rotation.isStatic()
+                    && std::abs(info.scaleX - 1.0f) < 1e-4f
+                    && std::abs(info.scaleY - 1.0f) < 1e-4f
+                    && std::abs(info.rotation) < 1e-4f;
+                if (untouchedAnchor && unchangedPivotTransform
+                    && info.contentCanvasW > 0.0f
+                    && info.contentCanvasH > 0.0f) {
+                    const float centeredAnchorX =
+                        (info.contentL + info.contentR) * 0.5f
+                        - info.contentCanvasW * 0.5f;
+                    const float centeredAnchorY =
+                        (info.contentT + info.contentB) * 0.5f
+                        - info.contentCanvasH * 0.5f;
+                    anchorX.setDefaultValue(centeredAnchorX);
+                    anchorY.setDefaultValue(centeredAnchorY);
+                    info.anchorX = centeredAnchorX;
+                    info.anchorY = centeredAnchorY;
+                }
             } else {
                 auto* sl = static_cast<ShapeLayer*>(layer);
                 float sw = sl->shapeWidth();
@@ -797,14 +1027,20 @@ void OverlayController::setActiveMaskContext(uint64_t effectId)
 
 void OverlayController::graphicCanvasRes(uint32_t& w, uint32_t& h) const
 {
-    // Mirror renderGraphicClip()'s reference: the project/sequence
-    // resolution. Fall back to the monitor preview res, then 1920×1080.
+    // Mirror renderGraphicClip()'s reference: the active sequence resolution.
+    // A project can contain sequences whose dimensions differ from its
+    // defaults, so the timeline must win for overlay hit-testing.
     w = 0;
     h = 0;
-    if (m_ws->project()) {
-        const auto& res = m_ws->project()->settings().resolution();
+    if (m_ws->timeline()) {
+        const auto& res = m_ws->timeline()->settings().resolution();
         w = res.width;
         h = res.height;
+    }
+    if (m_ws->project()) {
+        const auto& res = m_ws->project()->settings().resolution();
+        if (w == 0) w = res.width;
+        if (h == 0) h = res.height;
     }
     if ((w == 0 || h == 0) && m_ws->programMonitor()) {
         w = m_ws->programMonitor()->outputWidth();
@@ -932,8 +1168,10 @@ void OverlayController::wireOverlayToolSignals()
         };
 
         connect(ov2, &TransformOverlayWidget::textEditRequested,
-                this, [this, ov2, currentTextLayer](float, float) {
+                this, [this, ov2, currentTextLayer](float frameX, float frameY) {
             if (m_ws->isDestroying()) return;
+            spdlog::warn("[INLINE-TEXT] controller request canvas=({}, {})",
+                         frameX, frameY);
 
             // Caption clip selected → edit the caption's text in place,
             // just like a graphic text layer.
@@ -952,9 +1190,6 @@ void OverlayController::wireOverlayToolSignals()
                 m_preEditWasCaption = true;
                 m_inlineTextEditActive = true;
                 updateTransformOverlay();
-                cc->setText(std::string{});           // hide while editing
-                m_ws->invalidateCompositeCache();
-                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
                 QColor textColor = QColor::fromRgba(cc->textColor());
                 TextRunAppearance captionAppearance;
                 captionAppearance.fillEnabled = true;
@@ -984,12 +1219,69 @@ void OverlayController::wireOverlayToolSignals()
                     m_preEditOriginalParagraphStyles,
                     QString::fromStdString(cc->fontStyle()),
                     0.0f, 48.0f, 0.0f, cc->fauxBold(), cc->fauxItalic(),
-                    cc->underline(), cc->superscript(), cc->subscript(), false);
+                    cc->underline(), cc->superscript(), cc->subscript(),
+                    false, true);
                 return;
             }
 
+            // Resolve the exact visible text layer at the double-click point.
+            // Do not rely on the first click of the gesture: ordinary layer
+            // selection can cycle to a shape stacked beneath the text.
+            TextLayer* selectedBeforeHitTest = currentTextLayer();
+            if (!selectedBeforeHitTest
+                && ov2->doubleClickStartedOnSelectedBody()
+                && m_ws->selection().clip
+                && m_ws->selection().clip->clipType() == ClipType::Graphic) {
+                // A timeline-selected graphic can reach this gesture before
+                // GraphicsEditorPanel has synchronized selectedLayer(). For a
+                // one-title graphic (the common lower-third/timecode case),
+                // resolve that unambiguous editable layer directly.
+                auto* selectedGraphic = static_cast<GraphicClip*>(
+                    m_ws->selection().clip);
+                TextLayer* onlyText = nullptr;
+                int onlyTextIndex = -1;
+                for (size_t i = 0; i < selectedGraphic->layerCount(); ++i) {
+                    GraphicLayer* layer = selectedGraphic->layer(i);
+                    if (!layer || layer->layerType() != GraphicLayerType::Text
+                        || !layer->isVisible() || layer->isLocked()) {
+                        continue;
+                    }
+                    if (onlyText) {
+                        onlyText = nullptr;
+                        onlyTextIndex = -1;
+                        break;
+                    }
+                    onlyText = static_cast<TextLayer*>(layer);
+                    onlyTextIndex = static_cast<int>(i);
+                }
+                if (onlyText) {
+                    selectedBeforeHitTest = onlyText;
+                    m_ws->selection().graphicLayerIdx = onlyTextIndex;
+                    if (m_ws->graphicsEditorPanel())
+                        m_ws->graphicsEditorPanel()->selectLayerByStackIndex(
+                            onlyTextIndex);
+                    spdlog::warn("[INLINE-TEXT] recovered unsynchronized single text layer={} index={}",
+                                 onlyText->layerId(), onlyTextIndex);
+                }
+            }
+            if (!selectTextLayerAt(frameX, frameY)) {
+                // A selected text body already proved the gesture target on
+                // the first press.  Do not discard its double-click merely
+                // because the independent canvas-space hit-test raced a
+                // monitor resize or preview-resolution update.
+                if (!selectedBeforeHitTest
+                    || !ov2->doubleClickStartedOnSelectedBody()) {
+                    return;
+                }
+            }
             TextLayer* tl = currentTextLayer();
-            if (!tl) return;
+            if (!tl) tl = selectedBeforeHitTest;
+            if (!tl) {
+                spdlog::warn("[INLINE-TEXT] controller stopped: no editable TextLayer");
+                return;
+            }
+            spdlog::warn("[INLINE-TEXT] controller starting editor layer={} textLength={}",
+                         tl->layerId(), tl->text().size());
             if (m_ws->graphicsEditorPanel()) {
                 ov2->setInlineTextFormattingWidget(
                     m_ws->graphicsEditorPanel()->textFormattingWidget());
@@ -1037,11 +1329,9 @@ void OverlayController::wireOverlayToolSignals()
             // Force a synchronous overlay update with the current text bounds.
             updateTransformOverlay();
 
-            // Now clear the text for compositing so it doesn't show behind
-            // the editor box (Premiere Pro).
-            tl->setText(std::string{});
-            m_ws->invalidateCompositeCache();
-            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+            // Keep the compositor-rendered title visible. The transparent
+            // input control supplies only caret/selection and sends live text
+            // below, avoiding a second differently hinted rendering.
 
             // Pass the layer's font in REFERENCE units. The renderer
             // multiplies the rasterised glyphs by the layer's vertical
@@ -1060,9 +1350,20 @@ void OverlayController::wireOverlayToolSignals()
                     0, m_ws->playbackController()->currentTick() - m_ws->selection().clip->timelineIn());
                 scaleX = tl->transform().scaleX.evaluate(localTick);
                 scaleY = tl->transform().scaleY.evaluate(localTick);
+                // The final composite applies the GraphicClip transform after
+                // the text-layer transform. The editor previously included
+                // only the inner layer scale, so a clip scaled to 277% snapped
+                // much larger on commit while a clip scaled to 78% snapped
+                // smaller. Bake both transform levels into the live editor.
+                scaleX *= std::abs(
+                    m_ws->selection().clip->scaleX().evaluate(localTick));
+                scaleY *= std::abs(
+                    m_ws->selection().clip->scaleY().evaluate(localTick));
                 if (!std::isfinite(scaleX) || scaleX <= 0.0f) scaleX = 1.0f;
                 if (!std::isfinite(scaleY) || scaleY <= 0.0f) scaleY = 1.0f;
             }
+            spdlog::warn("[INLINE-TEXT] effective scale layer+clip=({}, {})",
+                         scaleX, scaleY);
             // Translate the text layer's GTextAlign into a Qt::Alignment
             // flag so the inline editor anchors and aligns its glyphs the
             // same way the renderer does (otherwise center-aligned text
@@ -1124,7 +1425,59 @@ void OverlayController::wireOverlayToolSignals()
                 QString::fromStdString(tl->fontStyle()), tl->kerning(),
                 tl->tabWidth(), tl->tsume(), tl->fauxBold(),
                 tl->fauxItalic(), tl->underline(), tl->superscript(),
-                tl->subscript(), tl->rightToLeft());
+                tl->subscript(), tl->rightToLeft(), tl->useParagraphBox());
+        });
+
+        connect(ov2, &TransformOverlayWidget::inlineTextPreviewChanged,
+                this, [this, ov2](const QString& previewText) {
+            if (m_ws->isDestroying() || !m_inlineTextEditActive
+                || !m_preEditClipId) {
+                return;
+            }
+
+            Clip* editedClip = nullptr;
+            Timeline* timeline = m_ws->timeline();
+            if (timeline) {
+                for (size_t i = 0; i < timeline->trackCount(); ++i) {
+                    Track* track = timeline->track(i);
+                    if (!track) continue;
+                    const size_t index = track->findClipIndexById(
+                        m_preEditClipId);
+                    if (index != track->clipCount()) {
+                        editedClip = track->clip(index);
+                        break;
+                    }
+                }
+            }
+            if (!editedClip) return;
+
+            const auto styles = ov2->currentInlineTextStyles();
+            const auto paragraphs = ov2->currentInlineParagraphStyles();
+            if (m_preEditWasCaption && editedClip->isCaption()) {
+                auto* caption = static_cast<CaptionClip*>(editedClip);
+                caption->setText(previewText.toStdString());
+                caption->setStyleRuns(styles);
+                caption->setParagraphStyles(paragraphs);
+            } else if (editedClip->clipType() == ClipType::Graphic) {
+                GraphicLayer* layer = static_cast<GraphicClip*>(editedClip)
+                    ->findLayerById(m_preEditLayerId);
+                if (!layer || layer->layerType() != GraphicLayerType::Text)
+                    return;
+                auto* textLayer = static_cast<TextLayer*>(layer);
+                textLayer->setText(previewText.toStdString());
+                textLayer->setStyleRuns(styles);
+                textLayer->setParagraphStyles(paragraphs);
+            } else {
+                return;
+            }
+
+            // Remeasure from the live model text immediately. While editing,
+            // TransformOverlayWidget stores this as the compositor-aligned
+            // geometry for its dashed bounds and custom caret.
+            updateTransformOverlay();
+            m_ws->invalidateCompositeCache();
+            if (m_ws->programMonitor())
+                m_ws->programMonitor()->requestRefresh();
         });
 
         connect(ov2, &TransformOverlayWidget::inlineTextCommitted,

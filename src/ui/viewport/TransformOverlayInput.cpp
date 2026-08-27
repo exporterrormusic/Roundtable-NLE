@@ -16,6 +16,7 @@
 #include <QWheelEvent>
 #include <QCoreApplication>
 #include <QApplication>
+#include <QScreen>
 #include <QMenu>
 #include <QAction>
 #include <QLineEdit>
@@ -33,7 +34,9 @@
 #include <QSignalBlocker>
 #include <QPointer>
 #include <QTimer>
+#include <QStyleHints>
 #include <algorithm>
+#include <limits>
 
 #include <cmath>
 
@@ -99,7 +102,7 @@ void updateInlineBlockLeading(QPlainTextEdit* edit, float baseLeading,
 }
 
 void updateInlineDocumentTabWidth(QPlainTextEdit* edit, float baseTabWidth,
-                                  double pointScale)
+                                   double pointScale)
 {
     if (!edit) return;
     float tabWidth = baseTabWidth;
@@ -118,6 +121,116 @@ void updateInlineDocumentTabWidth(QPlainTextEdit* edit, float baseTabWidth,
     option.setTabStopDistance(std::max(1.0,
         static_cast<double>(tabWidth) * pointScale));
     edit->document()->setDefaultTextOption(option);
+}
+
+QFont inlineRendererFont(const QTextCharFormat& format, double pointScale,
+                         double sizeScale = 1.0)
+{
+    const QFont editorFont = format.font();
+    QFont font(editorFont.family());
+    const double safeScale = pointScale > 1.0e-6 ? pointScale : 1.0;
+    const double editorPoints = editorFont.pointSizeF() > 0.0
+        ? editorFont.pointSizeF() : 1.0;
+    font.setPointSizeF(std::max(1.0,
+        editorPoints / safeScale * sizeScale));
+    font.setWeight(static_cast<QFont::Weight>(std::clamp(
+        format.hasProperty(kInlineActualWeightProperty)
+            ? format.property(kInlineActualWeightProperty).toInt()
+            : static_cast<int>(editorFont.weight()), 1, 1000)));
+    font.setItalic(format.hasProperty(kInlineActualItalicProperty)
+        ? format.property(kInlineActualItalicProperty).toBool()
+        : editorFont.italic());
+    if (format.hasProperty(kInlineFontStyleProperty)) {
+        const QString style = format.property(
+            kInlineFontStyleProperty).toString();
+        if (!style.isEmpty()) font.setStyleName(style);
+    }
+    if (format.property(kInlineFauxBoldProperty).toBool())
+        font.setWeight(static_cast<QFont::Weight>(
+            std::max(700, static_cast<int>(font.weight()))));
+    if (format.property(kInlineFauxItalicProperty).toBool())
+        font.setItalic(true);
+    if (format.verticalAlignment() == QTextCharFormat::AlignSuperScript
+        || format.verticalAlignment() == QTextCharFormat::AlignSubScript) {
+        font.setPointSizeF(std::max(1.0, font.pointSizeF() * 0.6));
+    }
+    const double tracking = format.hasProperty(kInlineTrackingProperty)
+        ? format.property(kInlineTrackingProperty).toDouble() : 0.0;
+    const double kerning = format.hasProperty(kInlineKerningProperty)
+        ? format.property(kInlineKerningProperty).toDouble() : 0.0;
+    font.setLetterSpacing(QFont::AbsoluteSpacing, tracking + kerning);
+    const double tsume = format.hasProperty(kInlineTsumeProperty)
+        ? format.property(kInlineTsumeProperty).toDouble() : 0.0;
+    font.setStretch(std::clamp(static_cast<int>(std::lround(
+        100.0 * std::clamp(1.0 - tsume / 100.0, 0.1, 1.0))), 1, 4000));
+    font.setCapitalization(QFont::MixedCase);
+    font.setUnderline(false);
+    return font;
+}
+
+double inlineRendererAdvance(const QTextCharFormat& format,
+                             const QString& source, double pointScale)
+{
+    if (source.isEmpty()) return 0.0;
+    const QFont editorFont = format.font();
+    const bool allCaps = editorFont.capitalization() == QFont::AllUppercase;
+    const bool smallCaps = editorFont.capitalization() == QFont::SmallCaps;
+    const double tabWidth = format.hasProperty(kInlineTabWidthProperty)
+        ? format.property(kInlineTabWidthProperty).toDouble() : 48.0;
+
+    double width = 0.0;
+    QString run;
+    bool runSmall = false;
+    auto flush = [&]() {
+        if (run.isEmpty()) return;
+        width += QFontMetricsF(inlineRendererFont(
+            format, pointScale, runSmall ? 0.8 : 1.0)).horizontalAdvance(run);
+        run.clear();
+    };
+    for (int i = 0; i < source.size(); ++i) {
+        const QChar ch = source.at(i);
+        if (ch == QChar('\t')) {
+            flush();
+            width += tabWidth;
+            continue;
+        }
+        const bool thisSmall = smallCaps && !allCaps && ch.isLower();
+        if (!run.isEmpty() && thisSmall != runSmall) flush();
+        runSmall = thisSmall;
+        QString glyph(ch);
+        if (ch.isHighSurrogate() && i + 1 < source.size()
+            && source.at(i + 1).isLowSurrogate()) {
+            glyph += source.at(++i);
+        }
+        run += (allCaps || smallCaps) ? glyph.toUpper() : glyph;
+    }
+    flush();
+    return width;
+}
+
+double inlineBlockAdvance(const QTextBlock& block, int utf16Length,
+                          double pointScale,
+                          const QTextCharFormat& fallbackFormat)
+{
+    const int blockLength = static_cast<int>(block.text().size());
+    const int wanted = std::clamp(utf16Length, 0, blockLength);
+    double width = 0.0;
+    bool measured = false;
+    for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment fragment = it.fragment();
+        if (!fragment.isValid()) continue;
+        const int localStart = fragment.position() - block.position();
+        if (localStart >= wanted) break;
+        const int take = std::min(fragment.length(), wanted - localStart);
+        if (take <= 0) continue;
+        width += inlineRendererAdvance(fragment.charFormat(),
+            fragment.text().left(take), pointScale);
+        measured = true;
+    }
+    if (!measured && wanted > 0)
+        width = inlineRendererAdvance(fallbackFormat,
+            block.text().left(wanted), pointScale);
+    return width;
 }
 }
 
@@ -203,6 +316,9 @@ void TransformOverlayWidget::syncMaskOwnerToEditedOuterTransform() noexcept
 
 void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton)
+        m_lastLeftPressHitSelectedBody = false;
+
     // ── Right button on a motion-path waypoint → Spatial Interpolation menu
     if (event->button() == Qt::RightButton && m_motionX && m_motionY) {
         int wp = hitTestMotionWaypoint(event->position());
@@ -451,6 +567,7 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
         // the workspace applies that delta to every sibling — so the
         // user can grab any selected box and pull the whole group.
         bool bodyHit = hitTestBody(wPos);
+        bool selectedBodyHit = bodyHit;
         if (!bodyHit) {
             for (const auto& sov : m_secondaryOverlays) {
                 if (!sov.visible) continue;
@@ -470,8 +587,10 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
             hitTestBodyMargin(wPos, kBodyGrabMarginPx) &&
             hitTestHandle(wPos) < 0 && hitTestRotate(wPos) < 0) {
             bodyHit = true;
+            selectedBodyHit = true;
         }
         if (bodyHit) {
+            m_lastLeftPressHitSelectedBody = selectedBodyHit;
             m_dragMode = DragMode::MoveBody;
             m_dragStartWidget = wPos;
             m_dragStartPosX = editPositionX(m_overlay);
@@ -569,27 +688,42 @@ void TransformOverlayWidget::mouseDoubleClickEvent(QMouseEvent* event)
         return;
     }
 
-    // Double-click → edit the text layer under the cursor (Premiere Pro).
-    // The preceding single click already selected the layer and bound it
-    // to the panels (see emptyAreaClicked handler), so we only need to
-    // signal "enter text editing" with the frame-space coordinates.
+    // Double-click -> edit the text layer under the cursor (Premiere Pro).
+    // Emit in sequence-canvas coordinates. The displayed Vulkan image may
+    // be a reduced preview, so its source dimensions are not a stable space
+    // for selecting layers in the full-resolution graphic canvas.
     if (event->button() == Qt::LeftButton) {
         if (m_vulkanVp) {
-            // Same coord-space caveat as emptyAreaClicked: events forwarded
-            // from m_vulkanVp's native QWindow are in HWND-local coords, so
-            // map the click directly through the GPU draw rect rather than
-            // computeFrameRect (which is in overlay-widget-local coords).
             QRectF frameRect = computeFrameRect();
-            float srcW = static_cast<float>(m_vulkanVp->srcWidth());
-            float srcH = static_cast<float>(m_vulkanVp->srcHeight());
-            if (!frameRect.isEmpty() && srcW > 0.0f && srcH > 0.0f)
-            {
-                QPointF wPos = event->position();
+            const float canvasW = m_seqW > 0
+                ? static_cast<float>(m_seqW)
+                : static_cast<float>(m_vulkanVp->srcWidth());
+            const float canvasH = m_seqH > 0
+                ? static_cast<float>(m_seqH)
+                : static_cast<float>(m_vulkanVp->srcHeight());
+            const QPointF wPos = event->position();
+            spdlog::warn("[INLINE-TEXT] overlay double-click pos=({}, {}) frame=({}, {}, {}, {}) canvas={}x{} inside={}",
+                         wPos.x(), wPos.y(), frameRect.x(), frameRect.y(),
+                         frameRect.width(), frameRect.height(), canvasW, canvasH,
+                         frameRect.contains(wPos));
+            if (!frameRect.isEmpty() && canvasW > 0.0f && canvasH > 0.0f
+                && frameRect.contains(wPos)) {
                 float frameX = static_cast<float>(
-                    (wPos.x() - frameRect.x()) / frameRect.width()) * srcW;
+                    (wPos.x() - frameRect.x()) / frameRect.width()) * canvasW;
                 float frameY = static_cast<float>(
-                    (wPos.y() - frameRect.y()) / frameRect.height()) * srcH;
+                    (wPos.y() - frameRect.y()) / frameRect.height()) * canvasH;
+                m_pendingInlineCaretGlobal = event->globalPosition().toPoint();
+                m_hasPendingInlineCaret = true;
+                m_doubleClickStartedOnSelectedBody =
+                    m_lastLeftPressHitSelectedBody;
+                spdlog::warn("[INLINE-TEXT] requesting layer edit canvas=({}, {}) selectedBody={}",
+                             frameX, frameY, m_doubleClickStartedOnSelectedBody);
                 emit textEditRequested(frameX, frameY);
+                // Direct UI connections consume this synchronously in
+                // beginInlineTextEdit(). If nothing was hit, do not let a
+                // stale click reposition a later programmatic edit session.
+                m_hasPendingInlineCaret = false;
+                m_doubleClickStartedOnSelectedBody = false;
                 event->accept();
                 return;
             }
@@ -629,17 +763,35 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                                                   bool underline,
                                                   bool superscript,
                                                   bool subscript,
-                                                  bool rightToLeft)
+                                                  bool rightToLeft,
+                                                  bool paragraphBox)
 {
+    Q_UNUSED(textColor);
+    const uint64_t editSession = ++m_inlineEditSession;
+    m_inlineEditorHasFocused = false;
+    m_inlineEditorFocusSettling = true;
+    m_inlinePointerRerouted = false;
+    spdlog::warn("[INLINE-TEXT] begin session={} textLength={} font='{}'",
+                 editSession, initial.size(), fontFamily.toStdString());
+
     // AABB of the selected layer's transform box (widget coords). We use
     // the LEFT / RIGHT / CENTER X coordinates of this box (depending on
     // hAlignFlag) as the anchor the editor sticks to as the user types —
     // so center-aligned text doesn't drift left and left-aligned text
     // doesn't get centered.
-    double leftX, centerX, rightX, centerY;
+    double leftX, centerX, rightX, topY, centerY;
     {
         QPointF c[4];
-        computeOverlayCorners(c);
+        // Inline input belongs to the renderer's logical line box, not the
+        // deliberately padded transform-handle bounds.
+        TransformOverlayInfo editLayout = m_overlay;
+        if (editLayout.useContentRect && editLayout.useTextLayoutRect) {
+            editLayout.contentL = editLayout.textLayoutL;
+            editLayout.contentT = editLayout.textLayoutT;
+            editLayout.contentR = editLayout.textLayoutR;
+            editLayout.contentB = editLayout.textLayoutB;
+        }
+        computeOverlayCornersFor(editLayout, c);
         double minX = c[0].x(), minY = c[0].y(), maxX = c[0].x(), maxY = c[0].y();
         for (int i = 1; i < 4; ++i) {
             minX = std::min(minX, c[i].x()); maxX = std::max(maxX, c[i].x());
@@ -649,11 +801,13 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             leftX   = width()  * 0.5;
             centerX = width()  * 0.5;
             rightX  = width()  * 0.5;
+            topY    = height() * 0.5;
             centerY = height() * 0.5;
         } else {
             leftX   = minX;
             centerX = (minX + maxX) * 0.5;
             rightX  = maxX;
+            topY    = minY;
             centerY = (minY + maxY) * 0.5;
         }
     }
@@ -689,6 +843,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineBaseSuperscript = superscript;
     m_inlineBaseSubscript = subscript;
     m_inlineBaseRightToLeft = rightToLeft;
+    m_inlineUsesParagraphBox = paragraphBox;
     m_inlineBaseAppearance = baseAppearance;
     update();
 
@@ -718,6 +873,18 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         m_inlineTextEdit->setAttribute(Qt::WA_ShowWithoutActivating, false);
         m_inlineTextEdit->setAttribute(Qt::WA_DeleteOnClose, false);
         m_inlineTextEdit->setObjectName(QStringLiteral("inlineTextEdit"));
+        // The editor is input/selection infrastructure only. Its native caret
+        // uses the editor's independently hinted glyph positions and leaks
+        // through a transparent foreground on Windows, creating a second,
+        // misaligned blinking line. The compositor-aligned caret below is the
+        // sole visible insertion indicator.
+        m_inlineTextEdit->setCursorWidth(0);
+        m_inlineCaretBlinkTimer = new QTimer(this);
+        connect(m_inlineCaretBlinkTimer, &QTimer::timeout, this, [this]() {
+            if (!isInlineTextEditing()) return;
+            m_inlineCaretVisible = !m_inlineCaretVisible;
+            update();
+        });
         // No document margin — text hugs the edge so the editor's glyph
         // origin matches the renderer's exactly. Any padding here would
         // shift the live text away from the original rendered position.
@@ -736,12 +903,30 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         // Plain text only — no rich-text paste surprises.
         m_inlineTextEdit->setTabChangesFocus(false);
 
-        // Intercept key presses for formatting, commit, and cancel shortcuts.
-        m_inlineTextEdit->installEventFilter(this);
+        // Key/focus events are intercepted by this overlay's application-wide
+        // event filter. Installing the same filter on the editor as well would
+        // deliver FocusIn/FocusOut twice.
         connect(m_inlineTextEdit, &QPlainTextEdit::selectionChanged,
                 this, &TransformOverlayWidget::notifyInlineTextSelectionFormat);
         connect(m_inlineTextEdit, &QPlainTextEdit::cursorPositionChanged,
                 this, &TransformOverlayWidget::notifyInlineTextSelectionFormat);
+        connect(m_inlineTextEdit, &QPlainTextEdit::cursorPositionChanged,
+                this, [this]() {
+            // Typing or clicking restarts the blink cycle with the caret on,
+            // matching native editor behaviour.
+            m_inlineCaretVisible = true;
+            if (m_inlineCaretBlinkTimer && m_inlineCaretBlinkTimer->isActive())
+                m_inlineCaretBlinkTimer->start();
+            update();
+        });
+        connect(m_inlineTextEdit->document(), &QTextDocument::contentsChanged,
+                this, [this]() {
+            if (m_initializingInlineText || m_committingInlineText
+                || !m_inlineTextEdit || !m_inlineTextEdit->isVisible()) {
+                return;
+            }
+            emit inlineTextPreviewChanged(m_inlineTextEdit->toPlainText());
+        });
 
         // Auto-grow as the user types: QPlainTextEdit doesn't auto-expand.
         // Recompute the screen geometry from the current text's pixel size
@@ -758,7 +943,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             // preceding text out of view.
             resizeInlineTextEditorToDocument();
             if (!m_initializingInlineText) return;
-            QFontMetricsF fm(m_inlineTextEdit->font());
+            QFontMetricsF fm(m_inlineTextEdit->font(), m_inlineTextEdit);
             const QString t = m_inlineTextEdit->toPlainText();
 
             // Width: longest line + slack for caret.
@@ -813,19 +998,32 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     double refH = (m_seqH > 0) ? static_cast<double>(m_seqH) : 1080.0;
     if (!std::isfinite(verticalScale) || verticalScale <= 0.0f)
         verticalScale = 1.0f;
-    m_inlineFontPointScale = verticalScale * scaleHeight / refH;
-    double fontPt = std::max(6.0,
+    m_inlinePixelScale = verticalScale * scaleHeight / refH;
+    // QPainterPath resolves point sizes at the application's render-screen
+    // DPI, while the top-level inline editor resolves them on whichever
+    // monitor contains the Program panel. Correct that DPI conversion so
+    // opening edit mode cannot stretch or resize the same font on a second
+    // monitor with different display scaling.
+    const QPoint screenPoint = mapToGlobal(QPoint(
+        static_cast<int>(std::lround(centerX)),
+        static_cast<int>(std::lround(centerY))));
+    QScreen* renderScreen = QGuiApplication::primaryScreen();
+    QScreen* editorScreen = QGuiApplication::screenAt(screenPoint);
+    const double renderDpi = renderScreen
+        ? renderScreen->logicalDotsPerInchY() : 96.0;
+    const double editorDpi = editorScreen
+        ? editorScreen->logicalDotsPerInchY() : renderDpi;
+    const double dpiCorrection = editorDpi > 1.0
+        ? renderDpi / editorDpi : 1.0;
+    m_inlineFontPointScale = m_inlinePixelScale * dpiCorrection;
+    double fontPt = std::max(1.0,
                              double(fontSizeRef) * m_inlineFontPointScale);
+    spdlog::warn("[INLINE-TEXT] font sizing ref={} pointScale={} pixelScale={} editorPt={} renderDpi={} editorDpi={}",
+                 fontSizeRef, m_inlineFontPointScale, m_inlinePixelScale,
+                 fontPt, renderDpi, editorDpi);
 
-    // Force opaque alpha on the text color (the layer's fill might be
-    // semi-transparent and would otherwise be unreadable while editing).
-    QColor visibleColor = textColor;
-    visibleColor.setAlpha(255);
-
-    // Premiere-style invisible editor: transparent background, no border.
-    // Only the glyphs and the selection highlight should be visible, so
-    // the live edit looks identical to the renderer's output (just with
-    // a selection block over the highlighted text).
+    // Premiere-style invisible input surface. The compositor paints the
+    // glyphs; the overlay paints the compositor-aligned caret and bounds.
     const QString styleSheet = QStringLiteral(
         "QPlainTextEdit { "
         "font-family: \"%1\"; "
@@ -839,16 +1037,17 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         // keeps the whole editor rectangle mouse-interactive for normal caret
         // placement and drag selection.
         "background: rgba(0, 0, 0, 1); "
-        "color: %5; "
+        // Keep the editor's glyphs and native caret invisible so Qt cannot
+        // redraw or vertically position them from its rounded line boxes.
+        "color: transparent; "
         "border: none; "
         "selection-background-color: rgba(77,158,255,180); "
-        "selection-color: white; "
+        "selection-color: transparent; "
         "padding: 0px; }")
         .arg(fontFamily)
         .arg(fontPt, 0, 'f', 1)
         .arg(std::clamp(fontWeight, 1, 1000))
-        .arg(italic ? "italic" : "normal")
-        .arg(visibleColor.name(QColor::HexRgb));
+        .arg(italic ? "italic" : "normal");
     QFont qf(fontFamily, -1, std::clamp(fontWeight, 1, 1000), italic);
     if (!fontStyle.isEmpty()) qf.setStyleName(fontStyle);
     qf.setPointSizeF(fontPt);
@@ -859,7 +1058,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     qf.setCapitalization(allCaps ? QFont::AllUppercase
         : (smallCaps ? QFont::SmallCaps : QFont::MixedCase));
     qf.setLetterSpacing(QFont::AbsoluteSpacing,
-                        (tracking + kerning) * m_inlineFontPointScale);
+                        (tracking + kerning) * m_inlinePixelScale);
     // Anisotropic-scale support: the renderer applies painter.scale(sx, sy)
     // which stretches glyph WIDTHS by sx/sy relative to height. QFont has
     // no general anisotropic transform, but setStretch() is exactly this:
@@ -877,6 +1076,29 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineTextEdit->setFont(qf);
     m_inlineTextEdit->setStyleSheet(styleSheet);
 
+    // Save vertical metrics from the same full-size font used by the
+    // compositor. Scaling those metrics once is more accurate than asking
+    // Qt's smaller, hinted editor font which line it visually belongs to.
+    QFont rendererFont(fontFamily,
+        std::max(1, static_cast<int>(fontSizeRef)));
+    if (!fontStyle.isEmpty()) rendererFont.setStyleName(fontStyle);
+    rendererFont.setWeight(static_cast<QFont::Weight>(
+        std::clamp(fontWeight, 1, 1000)));
+    rendererFont.setItalic(italic || fauxItalic);
+    if (fauxBold) rendererFont.setWeight(static_cast<QFont::Weight>(
+        std::max(700, static_cast<int>(rendererFont.weight()))));
+    const QFontMetricsF rendererMetrics(rendererFont);
+    m_inlineRendererLineAdvancePx = std::max(1.0,
+        (rendererMetrics.lineSpacing() + static_cast<double>(leading))
+            * m_inlinePixelScale);
+    m_inlineRendererCaretHeightPx = std::max(2.0,
+        rendererMetrics.height() * m_inlinePixelScale);
+    // Point text has no authored right edge: keep it on one visual line and
+    // grow the editor as the user types. QPlainTextEdit's default wrapping
+    // clipped or wrapped characters past the original selection box.
+    m_inlineTextEdit->setLineWrapMode(paragraphBox
+        ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap);
+
     // Apply horizontal text alignment to the document so the editor's
     // glyphs sit on the same side of its box as the renderer drew them.
     {
@@ -884,7 +1106,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         opt.setAlignment(hAlignFlag);
         opt.setTextDirection(rightToLeft ? Qt::RightToLeft : Qt::LeftToRight);
         opt.setTabStopDistance(std::max(1.0,
-            static_cast<double>(tabWidth) * m_inlineFontPointScale));
+            static_cast<double>(tabWidth) * m_inlinePixelScale));
         m_inlineTextEdit->document()->setDefaultTextOption(opt);
     }
 
@@ -892,10 +1114,17 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     // metrics — width = enough to hold the initial string plus caret slack,
     // height = one glyph line. No border/margin padding (borderless editor),
     // so the box matches glyph bounds.
-    QFontMetricsF fm(qf);
-    int editH = std::max(12, static_cast<int>(std::ceil(fm.height())));
+    QFontMetricsF fm(qf, m_inlineTextEdit);
+    const QStringList initialLines = initial.split(QChar('\n'));
+    const int initialLineCount = std::max(1,
+        static_cast<int>(initialLines.size()));
+    const double editorLineHeight = fm.height() + fm.leading();
+    int editH = std::max(12, static_cast<int>(std::ceil(
+        editorLineHeight * initialLineCount)));
     double slack0 = std::max(8.0, fm.averageCharWidth());
-    double maxLineW0 = fm.horizontalAdvance(initial);
+    double maxLineW0 = 0.0;
+    for (const QString& line : initialLines)
+        maxLineW0 = std::max(maxLineW0, fm.horizontalAdvance(line));
     m_inlineEditMinWidth = m_savedOverlayBeforeEdit.useContentRect
         ? std::max(40, static_cast<int>(std::ceil(
               std::max(0.0, rightX - leftX))))
@@ -916,9 +1145,18 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     else
         editX = static_cast<int>(std::round(centerX - editW * 0.5));
 
-    QRect g(editX,
-            static_cast<int>(std::round(centerY - editH * 0.5)),
-            editW, editH);
+    // The saved content rect already is the compositor's measured glyph
+    // bounds. Anchor the invisible editor directly to that exact Y. Applying
+    // an additional font-ascent estimate moved the caret/selection surface a
+    // few pixels above the text because QTextEdit's cursor geometry already
+    // includes its own line-box ascent.
+    const bool hasMeasuredContent =
+        m_savedOverlayBeforeEdit.useContentRect
+        && rightX - leftX >= 1.0;
+    const double editTop = hasMeasuredContent && initialLineCount > 1
+        ? topY
+        : centerY - editH * 0.5;
+    QRect g(editX, static_cast<int>(std::round(editTop)), editW, editH);
 
     // Convert to GLOBAL screen coordinates: a top-level window's geometry
     // is screen-relative, not parent-relative.
@@ -954,10 +1192,11 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     all.select(QTextCursor::Document);
     QTextCharFormat baseFormat;
     baseFormat.setFont(qf, QTextCharFormat::FontPropertiesAll);
-    QColor baseFill = QColor::fromRgba(baseAppearance.fillColor);
-    if (baseAppearance.fillEnabled) baseFill.setAlpha(255);
-    else baseFill = Qt::transparent;
-    baseFormat.setForeground(baseFill);
+    // Preserve authored appearance in the private properties below, but do
+    // not paint editor glyphs. The compositor supplies the exact same vector
+    // outlines used for final playback while this document supplies input,
+    // caret placement and selection geometry only.
+    baseFormat.setForeground(QColor(Qt::transparent));
     baseFormat.setBaselineOffset(fontSizeRef > 0.0f
         ? 100.0 * baselineShift / fontSizeRef : 0.0);
     if (superscript)
@@ -986,11 +1225,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                            baseAppearance.strokeColor);
     baseFormat.setProperty(kInlineStrokeWidthProperty,
                            baseAppearance.strokeWidth);
-    if (baseAppearance.strokeEnabled) {
-        QPen outline(QColor::fromRgba(baseAppearance.strokeColor));
-        outline.setWidthF(baseAppearance.strokeWidth * m_inlineFontPointScale);
-        baseFormat.setTextOutline(outline);
-    }
+    baseFormat.setTextOutline(QPen(Qt::NoPen));
     baseFormat.setProperty(kInlineShadowEnabledProperty,
                            baseAppearance.shadowEnabled);
     baseFormat.setProperty(kInlineShadowColorProperty,
@@ -1009,9 +1244,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                            baseAppearance.backgroundPadding);
     baseFormat.setProperty(kInlineBackgroundColorProperty,
                            baseAppearance.backgroundColor);
-    if (baseAppearance.backgroundEnabled)
-        baseFormat.setBackground(QColor::fromRgba(
-            baseAppearance.backgroundColor));
+    baseFormat.setBackground(QColor(Qt::transparent));
     all.setCharFormat(baseFormat);
     for (const auto& run : styleRuns) {
         const int start = std::clamp<int>(static_cast<int>(run.start), 0,
@@ -1068,7 +1301,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         runFont.setCapitalization(runAllCaps ? QFont::AllUppercase
             : (runSmallCaps ? QFont::SmallCaps : QFont::MixedCase));
         runFont.setLetterSpacing(QFont::AbsoluteSpacing,
-            (runTracking + runKerning) * m_inlineFontPointScale);
+            (runTracking + runKerning) * m_inlinePixelScale);
         QTextCharFormat runFormat;
         runFormat.setFont(runFont, QTextCharFormat::FontPropertiesAll);
         TextRunAppearance runAppearance = baseAppearance;
@@ -1095,10 +1328,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             runAppearance.backgroundColor = run.appearance.backgroundColor;
             runAppearance.backgroundPadding = run.appearance.backgroundPadding;
         }
-        QColor runFill = QColor::fromRgba(runAppearance.fillColor);
-        if (runAppearance.fillEnabled) runFill.setAlpha(255);
-        else runFill = Qt::transparent;
-        runFormat.setForeground(runFill);
+        runFormat.setForeground(QColor(Qt::transparent));
         runFormat.setBaselineOffset(run.fontSize > 0.0f
             ? 100.0 * runBaseline / run.fontSize : 0.0);
         if (runSuperscript)
@@ -1127,12 +1357,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                               runAppearance.strokeColor);
         runFormat.setProperty(kInlineStrokeWidthProperty,
                               runAppearance.strokeWidth);
-        if (runAppearance.strokeEnabled) {
-            QPen outline(QColor::fromRgba(runAppearance.strokeColor));
-            outline.setWidthF(runAppearance.strokeWidth
-                              * m_inlineFontPointScale);
-            runFormat.setTextOutline(outline);
-        }
+        runFormat.setTextOutline(QPen(Qt::NoPen));
         runFormat.setProperty(kInlineShadowEnabledProperty,
                               runAppearance.shadowEnabled);
         runFormat.setProperty(kInlineShadowColorProperty,
@@ -1151,9 +1376,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                               runAppearance.backgroundPadding);
         runFormat.setProperty(kInlineBackgroundColorProperty,
                               runAppearance.backgroundColor);
-        if (runAppearance.backgroundEnabled)
-            runFormat.setBackground(QColor::fromRgba(
-                runAppearance.backgroundColor));
+        runFormat.setBackground(QColor(Qt::transparent));
         QTextCursor cursor(m_inlineTextEdit->document());
         cursor.setPosition(start);
         cursor.setPosition(end, QTextCursor::KeepAnchor);
@@ -1187,25 +1410,77 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         cursor.mergeBlockFormat(format);
     }
     updateInlineBlockLeading(m_inlineTextEdit, leading,
-                             m_inlineFontPointScale);
+                             m_inlinePixelScale);
     updateInlineDocumentTabWidth(m_inlineTextEdit, tabWidth,
-                                 m_inlineFontPointScale);
+                                 m_inlinePixelScale);
     m_initializingInlineText = false;
     resizeInlineTextEditorToDocument();
+    spdlog::warn("[INLINE-TEXT] show session={} geometry=({}, {}, {}, {})",
+                 editSession, m_inlineTextEdit->geometry().x(),
+                 m_inlineTextEdit->geometry().y(),
+                 m_inlineTextEdit->geometry().width(),
+                 m_inlineTextEdit->geometry().height());
     m_inlineTextEdit->show();
     m_inlineTextEdit->raise();
+    m_inlineTextEdit->setCursorWidth(0);
+    m_inlineCaretVisible = true;
+    if (m_inlineCaretBlinkTimer) {
+        const int flashTime = QGuiApplication::styleHints()->cursorFlashTime();
+        if (flashTime > 0) {
+            m_inlineCaretBlinkTimer->setInterval(std::max(100, flashTime / 2));
+            m_inlineCaretBlinkTimer->start();
+        } else {
+            m_inlineCaretBlinkTimer->stop();
+        }
+    }
     // Defer activation to the next event-loop tick so the window is fully
     // realised before Windows is asked to give it foreground focus. Same
     // pattern PropertiesPanel::focusGraphicTextField uses, for the same
     // "setFocus is ignored on not-yet-shown widget" reason.
     QPointer<QPlainTextEdit> edit(m_inlineTextEdit);
     QPointer<TransformOverlayWidget> overlay(this);
-    QTimer::singleShot(0, edit, [edit, overlay]() {
-        if (!edit) return;
+    const bool placeCaretAtClick = m_hasPendingInlineCaret;
+    const QPoint caretGlobal = m_pendingInlineCaretGlobal;
+    m_hasPendingInlineCaret = false;
+    QTimer::singleShot(0, edit, [edit, overlay, editSession,
+                                placeCaretAtClick, caretGlobal]() {
+        if (!edit || !overlay || overlay->m_inlineEditSession != editSession)
+            return;
         edit->activateWindow();
         edit->setFocus(Qt::MouseFocusReason);
-        edit->selectAll();
-        if (overlay) overlay->notifyInlineTextSelectionFormat();
+        if (placeCaretAtClick) {
+            QTextCursor cursor(edit->document());
+            cursor.setPosition(overlay->inlineTextPositionAtGlobal(caretGlobal));
+            edit->setTextCursor(cursor);
+        } else {
+            edit->selectAll();
+        }
+        overlay->notifyInlineTextSelectionFormat();
+        spdlog::warn("[INLINE-TEXT] activation session={} focus={} activeWindow={}",
+                     editSession, edit->hasFocus(), edit->isActiveWindow());
+    });
+
+    // A native createWindowContainer can reclaim focus at the tail of the
+    // same double-click. Retry once after that mouse gesture has completed,
+    // then end the settling window. A real later click outside the editor is
+    // still handled by the normal FocusOut commit path below.
+    QTimer::singleShot(120, edit, [edit, overlay, editSession]() {
+        if (!edit || !overlay || overlay->m_inlineEditSession != editSession
+            || !edit->isVisible()) return;
+        if (!overlay->focusIsInInlineFormattingUi()) {
+            edit->raise();
+            edit->activateWindow();
+            edit->setFocus(Qt::MouseFocusReason);
+            spdlog::warn("[INLINE-TEXT] focus retry session={} focus={} activeWindow={}",
+                         editSession, edit->hasFocus(), edit->isActiveWindow());
+        }
+    });
+    QTimer::singleShot(250, this, [this, editSession]() {
+        if (m_inlineEditSession != editSession) return;
+        m_inlineEditorFocusSettling = false;
+        spdlog::warn("[INLINE-TEXT] focus settled session={} focused={} formattingUi={}",
+                     editSession, m_inlineTextEdit && m_inlineTextEdit->hasFocus(),
+                     focusIsInInlineFormattingUi());
     });
 }
 
@@ -1215,7 +1490,8 @@ void TransformOverlayWidget::resizeInlineTextEditorToDocument()
 
     double maxLineWidth = 0.0;
     double totalHeight = 0.0;
-    const QFontMetricsF defaultMetrics(m_inlineTextEdit->font());
+    const QFontMetricsF defaultMetrics(m_inlineTextEdit->font(),
+                                       m_inlineTextEdit);
     for (QTextBlock block = m_inlineTextEdit->document()->begin();
          block.isValid(); block = block.next()) {
         double lineWidth = 0.0;
@@ -1224,7 +1500,7 @@ void TransformOverlayWidget::resizeInlineTextEditorToDocument()
             const QTextFragment fragment = it.fragment();
             if (!fragment.isValid()) continue;
             const QFont fragmentFont = fragment.charFormat().font();
-            const QFontMetricsF metrics(fragmentFont);
+            const QFontMetricsF metrics(fragmentFont, m_inlineTextEdit);
             lineWidth += metrics.horizontalAdvance(fragment.text());
             lineHeight = std::max(lineHeight, metrics.height());
         }
@@ -1233,14 +1509,21 @@ void TransformOverlayWidget::resizeInlineTextEditorToDocument()
     }
 
     const double slack = std::max(8.0, defaultMetrics.averageCharWidth());
-    const int newWidth = std::max(m_inlineEditMinWidth,
-        static_cast<int>(std::ceil(maxLineWidth + slack)));
+    const int newWidth = m_inlineUsesParagraphBox
+        ? m_inlineEditMinWidth
+        : std::max(m_inlineEditMinWidth,
+              static_cast<int>(std::ceil(maxLineWidth + slack)));
     // A few pixels of vertical slack cover QPlainTextEdit's caret/layout
     // rounding.  Without it the document retains a tiny scroll range and Qt
     // can scroll the first line away when a later line or selected run grows.
+    // QTextBlock fragments describe logical lines, while the document layout
+    // owns the actual line cells (including final-line descent and wrapped
+    // lines). Honor both measurements. This prevents the last line from
+    // retaining a scroll range and appearing vertically cut off.
+    double wantedHeight = std::max({totalHeight, defaultMetrics.height(),
+        m_inlineTextEdit->document()->size().height()});
     const int newHeight = std::max(12,
-        static_cast<int>(std::ceil(std::max(totalHeight,
-                                             defaultMetrics.height()) + 4.0)));
+        static_cast<int>(std::ceil(wantedHeight + 4.0)));
 
     int newX = m_inlineEditAnchorCenterX - newWidth / 2;
     if (m_inlineEditAlignH & Qt::AlignRight)
@@ -1490,6 +1773,10 @@ TransformOverlayWidget::collectInlineParagraphStyles() const
 void TransformOverlayWidget::notifyInlineTextSelectionFormat()
 {
     if (!isInlineTextEditing() || m_initializingInlineText) return;
+
+    // Qt's native caret is transparent; repaint the custom caret at every
+    // document cursor/selection change.
+    update();
 
     QTextCursor cursor = m_inlineTextEdit->textCursor();
     if (cursor.hasSelection()) {
@@ -1793,6 +2080,10 @@ void TransformOverlayWidget::finishInlineTextEdit(bool cancel)
         || m_committingInlineText) return;
 
     m_committingInlineText = true;
+    m_inlineEditorFocusSettling = false;
+    m_inlinePointerRerouted = false;
+    spdlog::warn("[INLINE-TEXT] finish session={} cancel={} focused={}",
+                 m_inlineEditSession, cancel, m_inlineTextEdit->hasFocus());
     const QString text = cancel
         ? QString::fromStdString(m_preEditOriginalText)
         : m_inlineTextEdit->toPlainText();
@@ -1803,6 +2094,8 @@ void TransformOverlayWidget::finishInlineTextEdit(bool cancel)
         ? m_originalInlineParagraphStyles
         : collectInlineParagraphStyles();
     m_inlineTextEdit->hide();
+    if (m_inlineCaretBlinkTimer) m_inlineCaretBlinkTimer->stop();
+    m_inlineCaretVisible = false;
     m_overlay = m_savedOverlayBeforeEdit;
     m_preEditOriginalText.clear();
     update();
@@ -1829,6 +2122,204 @@ std::pair<int, int> TransformOverlayWidget::inlineTextSelection() const
     const QTextCursor cursor = m_inlineTextEdit->textCursor();
     return {cursor.selectionStart(),
             cursor.selectionEnd() - cursor.selectionStart()};
+}
+
+QLineF TransformOverlayWidget::inlineTextCaretLine() const
+{
+    if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()) return {};
+    const QTextCursor cursor = m_inlineTextEdit->textCursor();
+    if (cursor.hasSelection()) return {};
+
+    const TransformOverlayInfo layout = inlineTextLayoutOverlay();
+    const int cursorPosition = cursor.position();
+    if (cursorPosition >= 0
+        && cursorPosition < static_cast<int>(layout.textCarets.size())) {
+        const auto& exact = layout.textCarets[static_cast<size_t>(cursorPosition)];
+        if (exact.valid) {
+            TransformOverlayInfo caretOverlay = m_savedOverlayBeforeEdit;
+            caretOverlay.contentL = caretOverlay.contentR = exact.x;
+            caretOverlay.contentT = exact.top;
+            caretOverlay.contentB = exact.bottom;
+            QPointF caretCorners[4];
+            computeOverlayCornersFor(caretOverlay, caretCorners);
+            return QLineF(caretCorners[0], caretCorners[3]);
+        }
+    }
+    QPointF layoutCorners[4];
+    computeOverlayCornersFor(layout, layoutCorners);
+    QPointF verticalAxis = layoutCorners[3] - layoutCorners[0];
+    const double verticalLength = std::hypot(verticalAxis.x(), verticalAxis.y());
+    if (verticalLength > 1.0e-6)
+        verticalAxis /= verticalLength;
+    else
+        verticalAxis = QPointF(0.0, 1.0);
+
+    QPointF start;
+    const QTextBlock block = cursor.block();
+    const bool canUseRendererMetrics = block.isValid()
+        && layout.useTextLayoutRect && !m_inlineUsesParagraphBox
+        && !m_inlineBaseRightToLeft
+        && layout.contentCanvasW > 0.0f
+        && layout.textLayoutR > layout.textLayoutL;
+    if (canUseRendererMetrics) {
+        // Recreate the renderer's full-resolution advances. Measuring the
+        // hidden editor's small on-screen font lets hinting/rounding error
+        // accumulate until the visible caret is a character or more away.
+        const int blockLength = static_cast<int>(block.text().size());
+        const int positionInBlock = std::clamp(
+            cursor.position() - block.position(), 0, blockLength);
+        const QTextCharFormat fallback = cursor.charFormat();
+        const double lineWidth = inlineBlockAdvance(
+            block, block.text().size(), m_inlineFontPointScale, fallback);
+        const double prefixWidth = inlineBlockAdvance(
+            block, positionInBlock, m_inlineFontPointScale, fallback);
+
+        Qt::Alignment alignment = block.blockFormat().alignment();
+        if (!(alignment & (Qt::AlignLeft | Qt::AlignRight
+                           | Qt::AlignHCenter | Qt::AlignJustify)))
+            alignment = m_inlineEditAlignH;
+        double offsetFromAnchor = prefixWidth;
+        if (alignment & Qt::AlignRight)
+            offsetFromAnchor -= lineWidth;
+        else if (!(alignment & Qt::AlignLeft))
+            offsetFromAnchor -= lineWidth * 0.5;
+
+        // The renderer aligns every point-text line around canvas centre.
+        // Map that exact canvas anchor and one canvas-X unit through the same
+        // layer + clip transforms as the visible compositor output.
+        TransformOverlayInfo anchor = m_savedOverlayBeforeEdit;
+        const float canvasCenterX = anchor.contentCanvasW * 0.5f;
+        anchor.contentL = anchor.contentR = canvasCenterX;
+        anchor.contentT = anchor.contentB = anchor.textLayoutT;
+        QPointF anchorCorners[4];
+        computeOverlayCornersFor(anchor, anchorCorners);
+
+        const double layoutCanvasWidth = static_cast<double>(
+            layout.textLayoutR - layout.textLayoutL);
+        const QPointF pixelsPerCanvasX =
+            (layoutCorners[1] - layoutCorners[0]) / layoutCanvasWidth;
+        start = anchorCorners[0] + pixelsPerCanvasX * offsetFromAnchor;
+    } else {
+        // Paragraph wrapping and RTL reordering remain owned by QTextLayout.
+        // Preserve their native horizontal cursor mapping while still using
+        // the compositor's stable vertical line origin.
+        const QRect nativeCursor = m_inlineTextEdit->cursorRect(cursor);
+        const QPoint nativeGlobal = m_inlineTextEdit->viewport()
+            ->mapToGlobal(nativeCursor.topLeft());
+        const QPoint nativeLocal = mapFromGlobal(nativeGlobal);
+        start = QPointF(nativeLocal.x(), layoutCorners[0].y());
+    }
+
+    start += verticalAxis
+        * (std::max(0, cursor.blockNumber()) * m_inlineRendererLineAdvancePx);
+    return QLineF(start, start + verticalAxis * m_inlineRendererCaretHeightPx);
+}
+
+int TransformOverlayWidget::inlineTextPositionAtGlobal(const QPoint& global) const
+{
+    if (!m_inlineTextEdit) return 0;
+    const TransformOverlayInfo layout = inlineTextLayoutOverlay();
+    if (!layout.textCarets.empty()) {
+        const QPointF widgetPoint = mapFromGlobal(global);
+        int closestPosition = 0;
+        double closestDistanceSquared = std::numeric_limits<double>::max();
+        for (size_t position = 0; position < layout.textCarets.size(); ++position) {
+            const auto& exact = layout.textCarets[position];
+            if (!exact.valid) continue;
+            TransformOverlayInfo caretOverlay = m_savedOverlayBeforeEdit;
+            caretOverlay.contentL = caretOverlay.contentR = exact.x;
+            caretOverlay.contentT = exact.top;
+            caretOverlay.contentB = exact.bottom;
+            QPointF caretCorners[4];
+            computeOverlayCornersFor(caretOverlay, caretCorners);
+            const QPointF a = caretCorners[0];
+            const QPointF segment = caretCorners[3] - a;
+            const double lengthSquared = QPointF::dotProduct(segment, segment);
+            double t = lengthSquared > 1.0e-12
+                ? QPointF::dotProduct(widgetPoint - a, segment) / lengthSquared
+                : 0.0;
+            t = std::clamp(t, 0.0, 1.0);
+            const QPointF delta = widgetPoint - (a + segment * t);
+            const double distanceSquared = QPointF::dotProduct(delta, delta);
+            if (distanceSquared < closestDistanceSquared) {
+                closestDistanceSquared = distanceSquared;
+                closestPosition = static_cast<int>(position);
+            }
+        }
+        return closestPosition;
+    }
+    const bool canUseRendererMetrics = layout.useTextLayoutRect
+        && !m_inlineUsesParagraphBox && !m_inlineBaseRightToLeft
+        && layout.contentCanvasW > 0.0f
+        && layout.textLayoutR > layout.textLayoutL;
+    if (!canUseRendererMetrics) {
+        const QPoint viewportPoint =
+            m_inlineTextEdit->viewport()->mapFromGlobal(global);
+        return m_inlineTextEdit->cursorForPosition(viewportPoint).position();
+    }
+
+    QPointF layoutCorners[4];
+    computeOverlayCornersFor(layout, layoutCorners);
+    QPointF verticalAxis = layoutCorners[3] - layoutCorners[0];
+    const double verticalLength = std::hypot(verticalAxis.x(), verticalAxis.y());
+    if (verticalLength > 1.0e-6)
+        verticalAxis /= verticalLength;
+    else
+        verticalAxis = QPointF(0.0, 1.0);
+
+    const QPointF widgetPoint = mapFromGlobal(global);
+    const QPointF fromTop = widgetPoint - layoutCorners[0];
+    const double verticalDistance = QPointF::dotProduct(fromTop, verticalAxis);
+    int lineIndex = static_cast<int>(std::floor(
+        verticalDistance / std::max(1.0, m_inlineRendererLineAdvancePx)));
+    lineIndex = std::clamp(lineIndex, 0,
+        std::max(0, m_inlineTextEdit->document()->blockCount() - 1));
+
+    QTextBlock block = m_inlineTextEdit->document()->begin();
+    for (int i = 0; i < lineIndex && block.isValid(); ++i)
+        block = block.next();
+    if (!block.isValid()) return m_inlineTextEdit->toPlainText().size();
+
+    TransformOverlayInfo anchor = m_savedOverlayBeforeEdit;
+    const float canvasCenterX = anchor.contentCanvasW * 0.5f;
+    anchor.contentL = anchor.contentR = canvasCenterX;
+    anchor.contentT = anchor.contentB = anchor.textLayoutT;
+    QPointF anchorCorners[4];
+    computeOverlayCornersFor(anchor, anchorCorners);
+    const double layoutCanvasWidth = static_cast<double>(
+        layout.textLayoutR - layout.textLayoutL);
+    const QPointF pixelsPerCanvasX =
+        (layoutCorners[1] - layoutCorners[0]) / layoutCanvasWidth;
+    const double horizontalScaleSquared = QPointF::dotProduct(
+        pixelsPerCanvasX, pixelsPerCanvasX);
+    if (horizontalScaleSquared < 1.0e-12) return block.position();
+    const double clickedOffset = QPointF::dotProduct(
+        widgetPoint - anchorCorners[0], pixelsPerCanvasX)
+        / horizontalScaleSquared;
+
+    const int blockLength = static_cast<int>(block.text().size());
+    const QTextCharFormat fallback = m_inlineTextEdit->textCursor().charFormat();
+    const double lineWidth = inlineBlockAdvance(
+        block, blockLength, m_inlineFontPointScale, fallback);
+    Qt::Alignment alignment = block.blockFormat().alignment();
+    if (!(alignment & (Qt::AlignLeft | Qt::AlignRight
+                       | Qt::AlignHCenter | Qt::AlignJustify)))
+        alignment = m_inlineEditAlignH;
+    const double lineOrigin = (alignment & Qt::AlignRight) ? -lineWidth
+        : ((alignment & Qt::AlignLeft) ? 0.0 : -lineWidth * 0.5);
+
+    int closest = 0;
+    double closestDistance = std::numeric_limits<double>::max();
+    for (int position = 0; position <= blockLength; ++position) {
+        const double boundary = lineOrigin + inlineBlockAdvance(
+            block, position, m_inlineFontPointScale, fallback);
+        const double distance = std::abs(boundary - clickedOffset);
+        if (distance < closestDistance) {
+            closestDistance = distance;
+            closest = position;
+        }
+    }
+    return block.position() + closest;
 }
 
 namespace {
@@ -1958,7 +2449,7 @@ bool TransformOverlayWidget::applyInlineTextTracking(float trackingRef)
         format.setProperty(kInlineTrackingProperty, trackingRef);
         format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
         format.setFontLetterSpacing((trackingRef + kerning)
-                                    * m_inlineFontPointScale);
+                                    * m_inlinePixelScale);
         target.mergeCharFormat(format);
     };
     if (selection.hasSelection()) {
@@ -2033,7 +2524,7 @@ bool TransformOverlayWidget::applyInlineTextLeading(float leadingRef)
     m_inlineTextEdit->mergeCurrentCharFormat(format);
     m_inlineTextEdit->setTextCursor(selection);
     updateInlineBlockLeading(m_inlineTextEdit, m_inlineBaseLeading,
-                             m_inlineFontPointScale);
+                             m_inlinePixelScale);
     resizeInlineTextEditorToDocument();
     notifyInlineTextSelectionFormat();
     refocusInlineEditor(m_inlineTextEdit);
@@ -2070,7 +2561,7 @@ bool TransformOverlayWidget::applyInlineTextKerning(float kerningRef)
         format.setProperty(kInlineKerningProperty, kerningRef);
         format.setFontLetterSpacingType(QFont::AbsoluteSpacing);
         format.setFontLetterSpacing((tracking + kerningRef)
-                                    * m_inlineFontPointScale);
+                                    * m_inlinePixelScale);
         target.mergeCharFormat(format);
     };
     if (selection.hasSelection()) {
@@ -2104,7 +2595,7 @@ bool TransformOverlayWidget::applyInlineTextTabWidth(float tabWidthRef)
     m_inlineTextEdit->mergeCurrentCharFormat(format);
     m_inlineTextEdit->setTextCursor(selection);
     updateInlineDocumentTabWidth(m_inlineTextEdit, m_inlineBaseTabWidth,
-                                 m_inlineFontPointScale);
+                                 m_inlinePixelScale);
     resizeInlineTextEditorToDocument();
     notifyInlineTextSelectionFormat();
     refocusInlineEditor(m_inlineTextEdit);
@@ -2198,8 +2689,7 @@ bool TransformOverlayWidget::applyInlineTextFill(bool enabled, uint32_t color)
     QTextCharFormat format;
     format.setProperty(kInlineFillEnabledProperty, enabled);
     format.setProperty(kInlineFillColorProperty, color);
-    format.setForeground(enabled ? QColor::fromRgba(color)
-                                 : QColor(Qt::transparent));
+    format.setForeground(QColor(Qt::transparent));
     m_inlineTextEdit->mergeCurrentCharFormat(format);
     m_inlineTextEdit->setTextCursor(selection);
     notifyInlineTextSelectionFormat();
@@ -2220,12 +2710,7 @@ bool TransformOverlayWidget::applyInlineTextStroke(bool enabled,
     format.setProperty(kInlineStrokeWidthProperty, std::max(0.0f, width));
     format.setProperty(kInlineStrokePositionProperty,
                        std::clamp(position, 0, 2));
-    QPen outline(Qt::NoPen);
-    if (enabled) {
-        outline = QPen(QColor::fromRgba(color));
-        outline.setWidthF(std::max(0.0f, width) * m_inlineFontPointScale);
-    }
-    format.setTextOutline(outline);
+    format.setTextOutline(QPen(Qt::NoPen));
     m_inlineTextEdit->mergeCurrentCharFormat(format);
     m_inlineTextEdit->setTextCursor(selection);
     notifyInlineTextSelectionFormat();
@@ -2268,8 +2753,7 @@ bool TransformOverlayWidget::applyInlineTextBackground(bool enabled,
     format.setProperty(kInlineBackgroundColorProperty, color);
     format.setProperty(kInlineBackgroundPaddingProperty,
                        std::max(0.0f, padding));
-    format.setBackground(enabled ? QColor::fromRgba(color)
-                                 : QColor(Qt::transparent));
+    format.setBackground(QColor(Qt::transparent));
     m_inlineTextEdit->mergeCurrentCharFormat(format);
     m_inlineTextEdit->setTextCursor(selection);
     notifyInlineTextSelectionFormat();
@@ -3155,9 +3639,85 @@ void TransformOverlayWidget::wheelEvent(QWheelEvent* event)
 
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    // The editor is a translucent top-level window above a native Vulkan
+    // QWindow. Windows occasionally gives transparent pixels between glyphs
+    // to that underlying HWND even though the point is inside the editor's
+    // rectangle. Reclaim those events before the native viewport interprets
+    // the press as an outside click and commits the edit.
+    if (m_inlineTextEdit && m_inlineTextEdit->isVisible()) {
+        const QEvent::Type type = event->type();
+        const bool pointerEvent = type == QEvent::MouseButtonPress
+            || type == QEvent::MouseButtonDblClick
+            || type == QEvent::MouseMove
+            || type == QEvent::MouseButtonRelease;
+        if (pointerEvent) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            const QPoint global = mouse->globalPosition().toPoint();
+            const QRect editorRect(m_inlineTextEdit->mapToGlobal(QPoint(0, 0)),
+                                   m_inlineTextEdit->size());
+            const bool insideEditor = editorRect.adjusted(-2, -2, 2, 2)
+                .contains(global);
+            const bool leftPress = mouse->button() == Qt::LeftButton
+                && type == QEvent::MouseButtonPress;
+            const bool leftDoubleClick = mouse->button() == Qt::LeftButton
+                && type == QEvent::MouseButtonDblClick;
+            if ((leftPress || leftDoubleClick) && insideEditor) {
+                QTextCursor cursor(m_inlineTextEdit->document());
+                cursor.setPosition(inlineTextPositionAtGlobal(global));
+                if (leftDoubleClick) {
+                    cursor.select(QTextCursor::WordUnderCursor);
+                    m_inlinePointerRerouted = false;
+                } else if (mouse->modifiers() & Qt::ShiftModifier) {
+                    const int position = cursor.position();
+                    cursor = m_inlineTextEdit->textCursor();
+                    m_inlinePointerAnchor = cursor.anchor();
+                    cursor.setPosition(position, QTextCursor::KeepAnchor);
+                    m_inlinePointerRerouted = true;
+                } else {
+                    m_inlinePointerAnchor = cursor.position();
+                    m_inlinePointerRerouted = true;
+                }
+                m_inlineTextEdit->setTextCursor(cursor);
+                m_inlineTextEdit->raise();
+                m_inlineTextEdit->activateWindow();
+                m_inlineTextEdit->setFocus(Qt::MouseFocusReason);
+                notifyInlineTextSelectionFormat();
+                spdlog::warn("[INLINE-TEXT] reclaimed pointer event type={} global=({}, {}) cursor={}",
+                             static_cast<int>(type), global.x(), global.y(),
+                             cursor.position());
+                event->accept();
+                return true;
+            }
+            if (m_inlinePointerRerouted && type == QEvent::MouseMove
+                && (mouse->buttons() & Qt::LeftButton)) {
+                const int position = inlineTextPositionAtGlobal(global);
+                QTextCursor cursor(m_inlineTextEdit->document());
+                cursor.setPosition(std::clamp(
+                    m_inlinePointerAnchor, 0,
+                    static_cast<int>(m_inlineTextEdit->toPlainText().size())));
+                cursor.setPosition(position, QTextCursor::KeepAnchor);
+                m_inlineTextEdit->setTextCursor(cursor);
+                event->accept();
+                return true;
+            }
+            if (m_inlinePointerRerouted
+                && type == QEvent::MouseButtonRelease
+                && mouse->button() == Qt::LeftButton) {
+                m_inlinePointerRerouted = false;
+                notifyInlineTextSelectionFormat();
+                event->accept();
+                return true;
+            }
+        }
+    }
+
     // ── Inline text editor key handling ──────────────────────────────
     // Return inserts a newline; Ctrl/Cmd+Return commits; Esc cancels.
     if (m_inlineTextEdit && watched == m_inlineTextEdit) {
+        if (event->type() == QEvent::FocusIn) {
+            m_inlineEditorHasFocused = true;
+            spdlog::warn("[INLINE-TEXT] FocusIn session={}", m_inlineEditSession);
+        }
         if (event->type() == QEvent::ShortcutOverride) {
             auto* ke = static_cast<QKeyEvent*>(event);
             const auto modifiers = ke->modifiers();
@@ -3224,14 +3784,62 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
         // click can operate on the retained monitor selection.
         if (event->type() == QEvent::FocusOut && !m_committingInlineText
             && m_inlineTextEdit->isVisible()) {
-            QTimer::singleShot(0, this, [this]() {
+            const uint64_t editSession = m_inlineEditSession;
+            spdlog::warn("[INLINE-TEXT] FocusOut session={} hadFocus={} settling={}",
+                         editSession, m_inlineEditorHasFocused,
+                         m_inlineEditorFocusSettling);
+            QTimer::singleShot(0, this, [this, editSession]() {
                 if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()
-                    || m_committingInlineText) return;
+                    || m_committingInlineText
+                    || m_inlineEditSession != editSession) return;
+                if (m_inlineEditorFocusSettling || !m_inlineEditorHasFocused) {
+                    // This is the native-window activation race, not a user
+                    // click away from an established edit session.
+                    m_inlineTextEdit->raise();
+                    m_inlineTextEdit->activateWindow();
+                    m_inlineTextEdit->setFocus(Qt::MouseFocusReason);
+                    spdlog::warn("[INLINE-TEXT] ignored activation FocusOut session={} focus={}",
+                                 editSession, m_inlineTextEdit->hasFocus());
+                    return;
+                }
                 if (!focusIsInInlineFormattingUi())
                     finishInlineTextEdit(false);
             });
         }
         return QWidget::eventFilter(watched, event);
+    }
+
+    // Program-Monitor-wide double-click routing. The displayed image is split
+    // across two top-level/native windows: opaque overlay pixels receive the
+    // event here, while transparent pixels receive it in the embedded Vulkan
+    // QWindow. An application event filter observes both before either target
+    // can consume the gesture, so editing no longer depends on per-pixel HWND
+    // ownership or QObject event-filter ordering.
+    if (event->type() == QEvent::MouseButtonDblClick
+        && !isInlineTextEditing()) {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton && isVisible()) {
+            const QPoint globalPoint = mouseEvent->globalPosition().toPoint();
+            const QRect globalOverlayRect(mapToGlobal(QPoint(0, 0)), size());
+            if (globalOverlayRect.contains(globalPoint)) {
+                const QPointF overlayPosition = QPointF(
+                    mapFromGlobal(globalPoint));
+                spdlog::warn("[INLINE-TEXT] application route target='{}' global=({}, {}) overlay=({}, {})",
+                             watched ? watched->metaObject()->className() : "null",
+                             globalPoint.x(), globalPoint.y(),
+                             overlayPosition.x(), overlayPosition.y());
+                QMouseEvent mapped(QEvent::MouseButtonDblClick,
+                                   overlayPosition,
+                                   mouseEvent->globalPosition(),
+                                   Qt::LeftButton, Qt::LeftButton,
+                                   mouseEvent->modifiers());
+                mouseDoubleClickEvent(&mapped);
+                if (mapped.isAccepted()) {
+                    event->accept();
+                    return true;
+                }
+            }
+        }
     }
 
     // Only intercept events from the VulkanViewport's native QWindow.
@@ -3272,11 +3880,13 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
         return forwardMouse(&TransformOverlayWidget::mousePressEvent);
 
     case QEvent::MouseButtonDblClick:
-        // Without this, Qt's auto-generated double-click never reaches our
-        // mouseDoubleClickEvent — the user double-clicks a text layer, the
-        // event fires on the native Vulkan window, and the overlay filter
-        // drops it. Forwarding here is what enables the in-place text
-        // editor flow.
+        // VulkanViewport explicitly routes native left double-clicks through
+        // nativeLeftDoubleClicked. Returning false here lets that single
+        // owner handle the gesture without relying on filter ordering.
+        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+            return false;
+        // Preserve overlay-owned double-click behavior for any other button;
+        // ignored events continue to VulkanViewport (middle resets the view).
         return forwardMouse(&TransformOverlayWidget::mouseDoubleClickEvent);
 
     case QEvent::MouseMove:

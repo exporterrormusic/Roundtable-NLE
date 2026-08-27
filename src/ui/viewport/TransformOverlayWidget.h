@@ -17,11 +17,13 @@
 #include <QColor>
 #include <QFont>
 #include <QPointF>
+#include <QLineF>
 #include <QRectF>
 #include <QSizeF>
 #include <QPlainTextEdit>
 #include <QPainterPath>
 #include <QPointer>
+#include <QTimer>
 
 #include <cstdint>
 #include <cmath>
@@ -137,10 +139,19 @@ public:
                              bool underline = false,
                              bool superscript = false,
                              bool subscript = false,
-                             bool rightToLeft = false);
+                             bool rightToLeft = false,
+                             bool paragraphBox = false);
 
     /// True while the in-place text editor is shown.
     [[nodiscard]] bool isInlineTextEditing() const noexcept;
+
+    /// True while dispatching a double-click whose first press landed on the
+    /// selected transform body.  The controller uses this as a safe fallback
+    /// when its full-resolution text hit-test cannot resolve an already-
+    /// selected text layer (for example while preview geometry is changing).
+    [[nodiscard]] bool doubleClickStartedOnSelectedBody() const noexcept {
+        return m_doubleClickStartedOnSelectedBody;
+    }
 
     /// Keep inline editing alive while focus moves to this widget or one of
     /// its children (the Graphics Editor's font/style controls).
@@ -179,6 +190,15 @@ public:
     /// focused UI regression tests. Positions are UTF-16 code units.
     void setInlineTextSelection(int start, int length);
     [[nodiscard]] std::pair<int, int> inlineTextSelection() const;
+
+    /// Compositor-metric caret line in overlay/widget coordinates. The
+    /// editor's native caret is intentionally hidden because its monitor-size
+    /// hinted advances do not match the full-resolution renderer.
+    [[nodiscard]] QLineF inlineTextCaretLine() const;
+
+    /// Resolve a screen click to a UTF-16 document position using the same
+    /// full-resolution advances used by inlineTextCaretLine().
+    [[nodiscard]] int inlineTextPositionAtGlobal(const QPoint& global) const;
 
     /// Rich styles captured immediately before inlineTextCommitted() fires.
     [[nodiscard]] const std::vector<TextStyleRun>& committedInlineTextStyles()
@@ -323,12 +343,17 @@ signals:
 
     /// Emitted on a double-click in the monitor — used to enter text-edit
     /// mode on the text layer under the cursor (Premiere Pro behavior).
-    /// Coordinates are in frame-space (0..outputWidth, 0..outputHeight).
+    /// Coordinates are in sequence-canvas space, independent of preview
+    /// resolution (0..sequenceWidth, 0..sequenceHeight).
     void textEditRequested(float frameX, float frameY);
 
     /// Emitted when in-place text editing is committed (Enter / focus out)
     /// with the new text. The workspace writes it back to the text layer.
     void inlineTextCommitted(const QString& text);
+
+    /// Emitted for live compositor-backed preview while the editor owns the
+    /// caret. The editor itself does not paint a second copy of the glyphs.
+    void inlineTextPreviewChanged(const QString& text);
 
     /// Character format at the active caret/selection.  The Graphics Editor
     /// follows this while rich text is being edited in the monitor.
@@ -403,6 +428,10 @@ private:
 
     /// Compute the 4 widget-space corners of the overlay bounding box.
     void computeOverlayCorners(QPointF corners[4]) const;
+
+    /// Copy the selected text overlay with its renderer-owned logical layout
+    /// rectangle substituted for the padded transform-handle rectangle.
+    [[nodiscard]] TransformOverlayInfo inlineTextLayoutOverlay() const;
 
     /// Map normalized mask-owner coordinates through the same affine clip
     /// transform used by the compositor. This keeps masks attached to clips.
@@ -550,8 +579,16 @@ private:
     // In-place text editor (lazily created child widget shown over the
     // selected text layer's bounding box). Owned via Qt parent.
     QPlainTextEdit* m_inlineTextEdit{nullptr};
+    QTimer*          m_inlineCaretBlinkTimer{nullptr};
+    bool             m_inlineCaretVisible{false};
     bool             m_committingInlineText{false};
     bool             m_initializingInlineText{false};
+    /// Windows can briefly return focus to the embedded Vulkan HWND while a
+    /// newly-shown top-level editor is being activated. Do not interpret
+    /// that activation hand-off as the user's request to commit the edit.
+    bool             m_inlineEditorHasFocused{false};
+    bool             m_inlineEditorFocusSettling{false};
+    uint64_t         m_inlineEditSession{0};
     QPointer<QWidget> m_inlineTextFormattingWidget;
     std::vector<TextStyleRun> m_originalInlineTextStyles;
     std::vector<TextStyleRun> m_committedInlineTextStyles;
@@ -577,7 +614,16 @@ private:
     bool             m_inlineBaseSubscript{false};
     bool             m_inlineBaseRightToLeft{false};
     TextRunAppearance m_inlineBaseAppearance;
+    /// Authored point size -> Program Monitor logical point size.
     double           m_inlineFontPointScale{1.0};
+    /// Authored project pixels -> displayed logical pixels. Unlike font-point
+    /// scale, this must not include a DPI ratio (tracking/strokes are pixels).
+    double           m_inlinePixelScale{1.0};
+    /// Full-size compositor font metrics converted to Program Monitor pixels.
+    /// The small hinted editor font can round these differently, so its native
+    /// caret is not a reliable vertical indicator for multiline text.
+    double           m_inlineRendererLineAdvancePx{1.0};
+    double           m_inlineRendererCaretHeightPx{1.0};
     int              m_inlineFontStretch{100};
     /// Legacy screen-space center retained for transform-overlay bookkeeping.
     QPoint           m_inlineEditCenter{0, 0};
@@ -597,6 +643,21 @@ private:
     /// Keep the editor at least as wide as the selected layer's transform
     /// box, so blank pixels beside the glyphs remain a text-selection surface.
     int              m_inlineEditMinWidth{40};
+    /// Point text grows horizontally as it is typed. Paragraph text keeps
+    /// its authored box width and wraps inside it.
+    bool             m_inlineUsesParagraphBox{false};
+    /// Carry a monitor double-click into the newly-created editor so its
+    /// initial caret lands where the user clicked. Programmatic edit starts
+    /// retain the existing select-all behavior.
+    QPoint           m_pendingInlineCaretGlobal;
+    bool             m_hasPendingInlineCaret{false};
+    bool             m_lastLeftPressHitSelectedBody{false};
+    bool             m_doubleClickStartedOnSelectedBody{false};
+    /// A translucent top-level editor can lose per-pixel hit testing to the
+    /// native Vulkan HWND underneath. Track a reclaimed press so move/release
+    /// events can still perform ordinary drag selection in the text document.
+    bool             m_inlinePointerRerouted{false};
+    int              m_inlinePointerAnchor{0};
     /// Last explicit monitor-text selection. Native formatting controls can
     /// transiently collapse the QTextCursor when taking focus; formatting
     /// still belongs to this highlighted character range.

@@ -91,6 +91,27 @@ size_t findSectionPayload(const std::vector<uint8_t>& data, uint32_t wantedTag)
     return std::string::npos;
 }
 
+bool removeSection(std::vector<uint8_t>& data, uint32_t wantedTag)
+{
+    if (data.size() < 32) return false;
+    const uint32_t count = readLe32(data, 12);
+    size_t pos = 32;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (pos > data.size() || data.size() - pos < 8) return false;
+        const uint32_t tag = readLe32(data, pos);
+        const uint32_t size = readLe32(data, pos + 4);
+        if (size > data.size() - pos - 8) return false;
+        if (tag == wantedTag) {
+            data.erase(data.begin() + static_cast<ptrdiff_t>(pos),
+                       data.begin() + static_cast<ptrdiff_t>(pos + 8 + size));
+            writeLe32(data, 12, count - 1);
+            return true;
+        }
+        pos += 8 + size;
+    }
+    return false;
+}
+
 } // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -813,6 +834,35 @@ TEST_F(SerializerTest, EmptyProject)
     EXPECT_EQ(loaded->timeline()->trackCount(), 0u);
     EXPECT_EQ(loaded->assets()->assetCount(), 0u);
     EXPECT_EQ(loaded->timeline()->markers().size(), 0u);
+}
+
+TEST_F(SerializerTest, OpenSequenceTabsRoundTrip)
+{
+    auto project = Project::createNew("Tab State Test");
+    project->addSequence("Sequence 2");
+    project->addSequence("Sequence 3");
+    project->setActiveSequence(2);
+    project->setOpenSequenceIndices({0, 2});
+
+    auto loaded = serializer.deserialize(serializer.serialize(*project));
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->activeSequenceIndex(), 2u);
+    EXPECT_EQ(loaded->openSequenceIndices(), (std::vector<size_t>{0, 2}));
+}
+
+TEST_F(SerializerTest, ProjectWithoutWorkspaceStateOpensAllSequences)
+{
+    auto project = Project::createNew("Legacy Tab State Test");
+    project->addSequence("Sequence 2");
+    project->addSequence("Sequence 3");
+    project->setOpenSequenceIndices({1});
+
+    auto data = serializer.serialize(*project);
+    ASSERT_TRUE(removeSection(data, ProjectSerializer::Section_WorkspaceState));
+
+    auto loaded = serializer.deserialize(data);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->openSequenceIndices(), (std::vector<size_t>{0, 1, 2}));
 }
 
 TEST_F(SerializerTest, InvalidMagic)

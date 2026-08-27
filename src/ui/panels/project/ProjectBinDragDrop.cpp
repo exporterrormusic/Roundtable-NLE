@@ -5,6 +5,7 @@
 
 #include "panels/project/ProjectBin.h"
 #include "panels/project/ProjectBinInternal.h"
+#include "PathUtils.h"
 #include "widgets/MediaDragTreeWidget.h"
 #include "Theme.h"
 #include "project/Project.h"
@@ -156,7 +157,8 @@ bool ProjectBin::handleDropEvent(QEvent* ev)
         std::vector<std::filesystem::path> paths;
         for (const QUrl& url : de->mimeData()->urls()) {
             if (url.isLocalFile())
-                paths.emplace_back(url.toLocalFile().toStdString());
+                paths.emplace_back(utf8ToPath(
+                    url.toLocalFile().toUtf8().toStdString()));
         }
         if (!paths.empty()) {
             auto* hitItem = m_listWidget->itemAt(de->position().toPoint());

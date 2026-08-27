@@ -475,7 +475,7 @@ private:
     // Graphic section
     QWidget*        m_graphicSection{nullptr};
     QLineEdit*      m_gfxTextEdit{nullptr};
-    QLineEdit*      m_gfxFontFamilyEdit{nullptr};
+    QComboBox*      m_gfxFontFamilyCombo{nullptr};
     ScrubbySpinBox* m_gfxFontSizeSpin{nullptr};
     ScrubbySpinBox* m_gfxFontWeightSpin{nullptr};
     QCheckBox*      m_gfxItalicCheck{nullptr};

@@ -17,6 +17,8 @@
 
 // Pages / panels
 #include "panels/audio/AudioSync.h"
+#include "panels/audio/VoiceGenerationPanel.h"
+#include "panels/audio/VoiceGenerationService.h"
 #include "panels/characters/CharacterBrowser.h"
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/export/ExportPanel.h"
@@ -144,9 +146,14 @@ void MainWindow::buildPanels()
     m_pageStack->addWidget(m_characterShotPanel);
 
     // ── Page 2: AUDIO ───────────────────────────────────────────────────
+    m_voiceGenerationService = new VoiceGenerationService(this);
     m_audioSync = new AudioSync(this);
     if (m_commandStack) m_audioSync->setCommandStack(m_commandStack);
     if (m_audioEngine) m_audioSync->setAudioEngine(m_audioEngine);
+    m_voiceGenerationPanel = new VoiceGenerationPanel(
+        m_voiceGenerationService, true, this);
+    m_voiceGenerationPanel->setAudioSync(m_audioSync);
+    m_audioSync->setVoiceGenerationPanel(m_voiceGenerationPanel);
     m_pageStack->addWidget(m_audioSync);
 
     // Give AudioSync access to the ShotPresetManager for default shot lookup
@@ -505,8 +512,14 @@ void MainWindow::buildPanels()
     m_timelineWorkspace->setMediaPool(m_mediaPool);
     m_timelineWorkspace->setMediaSourceService(m_mediaSourceService);
     m_timelineWorkspace->setModelManager(m_modelManager);
+    m_timelineWorkspace->setVoiceGenerationService(m_voiceGenerationService);
+    m_timelineWorkspace->setVoiceScriptSource(m_audioSync);
     m_timelineWorkspace->setTimeline(m_timeline);
     m_timelineWorkspace->buildPanels();
+    connect(m_voiceGenerationPanel,
+            &VoiceGenerationPanel::approvedForProject,
+            m_timelineWorkspace,
+            &TimelineWorkspace::importApprovedVoiceClip);
 
     // Propagate GPU display mode from ProgramMonitor → TimelineWorkspace
     // so compositeFrame() can skip CPU readback when VulkanViewport is active.

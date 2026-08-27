@@ -152,8 +152,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // the stack once over the full frame.  Do not count the marker as
             // a decoded clip: it intentionally has no source frame.
             if (auto* adjustment = dynamic_cast<AdjustmentClip*>(clip)) {
+                const int64_t localTick = tick - adjustment->timelineIn();
+                const float effectStrength = adjustmentLayerStrengthAtTick(
+                    *adjustment, localTick, tick, track->transitions());
                 appendAdjustmentLayerBoundary(
-                    layers, *adjustment, tick - adjustment->timelineIn());
+                    layers, *adjustment, localTick, effectStrength);
                 continue;
             }
             ++clipsAtTick;
@@ -184,6 +187,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             const float scaleToOutX = static_cast<float>(outW) / REF_W;
             const float scaleToOutY = static_cast<float>(outH) / REF_H;
             const int64_t localTick = tick - clip->timelineIn();
+            auto* graphicClipForTransform = dynamic_cast<GraphicClip*>(clip);
+            const bool graphicOuterTransformBaked = graphicClipForTransform
+                && rt::graphicClipBakesOuterTransform(graphicClipForTransform,
+                                                       localTick);
 
             // Guard: if the clip's internal state is invalid (e.g. timeline
             // population is still in progress from a background thread),
@@ -1142,8 +1149,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
 #endif
             layer.opacity = opac;
-            layer.posX    = px;
-            layer.posY    = py;
+            layer.posX    = graphicOuterTransformBaked ? 0.0f : px;
+            layer.posY    = graphicOuterTransformBaked ? 0.0f : py;
             // Detect video-character clips so we can apply the 0.85× fit.
             bool isVideoCharClip = false;
             if (auto* vc = dynamic_cast<VideoClip*>(clip)) {
@@ -1178,12 +1185,21 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 finalSy *= kComposeFit;
                 layer.containFit = true;
             }
-            layer.scX     = finalSx;
-            layer.scY     = finalSy;
-            layer.rot     = rot;
-            layer.anchorX = ancX;
-            layer.anchorY = ancY;
-            assignMotionBlur(layer, useComposeFit ? 0.85f : 1.0f);
+            layer.scX     = graphicOuterTransformBaked ? 1.0f : finalSx;
+            layer.scY     = graphicOuterTransformBaked ? 1.0f : finalSy;
+            layer.rot     = graphicOuterTransformBaked ? 0.0f : rot;
+            layer.anchorX = graphicOuterTransformBaked ? 0.0f : ancX;
+            layer.anchorY = graphicOuterTransformBaked ? 0.0f : ancY;
+            if (graphicOuterTransformBaked) {
+                const LayerTransformSample identity{};
+                layer.motionStart = identity;
+                layer.motionEnd = identity;
+                layer.motionStart.scX = layer.motionStart.scY = 1.0f;
+                layer.motionEnd.scX = layer.motionEnd.scY = 1.0f;
+                layer.motionSampleCount = 1;
+            } else {
+                assignMotionBlur(layer, useComposeFit ? 0.85f : 1.0f);
+            }
             layer.clipId  = clipId;
             layer.blendMode = clip->blendMode();
             layer.needsSwapRB = fromNestedSequence;

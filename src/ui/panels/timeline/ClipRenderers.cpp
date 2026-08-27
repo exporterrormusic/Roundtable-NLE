@@ -28,6 +28,7 @@
 #include <QTextFormat>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -849,6 +850,8 @@ struct StyledGlyphRun {
     qreal leading{0.0};
     qreal advanceOverride{-1.0};
     TextStyleRun style;
+    int sourceStart{0};
+    int sourceLength{0};
 };
 
 struct StyledGlyphUnit {
@@ -859,6 +862,8 @@ struct StyledGlyphUnit {
     qreal leading{0.0};
     qreal advanceOverride{-1.0};
     TextStyleRun style;
+    int sourceStart{0};
+    int sourceLength{0};
 };
 
 struct StyledPathPiece {
@@ -876,6 +881,7 @@ struct StyledTextPath {
     std::vector<StyledPathPiece> pieces;
     QRectF layoutRect;
     bool hasLayoutRect{false};
+    std::vector<GraphicTextCaretGeometry> carets;
 };
 
 bool fontHasColorGlyphs(const QFont& font)
@@ -906,6 +912,7 @@ StyledTextPath buildStyledTextPath(const QString& source,
                                    int hAlign, int vAlign)
 {
     std::vector<std::vector<StyledGlyphUnit>> paragraphs(1);
+    std::vector<int> paragraphStarts(1, 0);
     std::vector<int> paragraphAlignments(1, hAlign);
     std::vector<bool> paragraphDirections(1, layer.rightToLeft());
     const auto& styles = layer.styleRuns();
@@ -1025,12 +1032,13 @@ StyledTextPath buildStyledTextPath(const QString& source,
     };
 
     auto append = [&](const QString& text, TextStyleRun style, bool small,
-                      bool whitespace) {
+                       bool whitespace, int sourceStart, int sourceLength) {
         if (text.isEmpty()) return;
-        QFont font(QString::fromStdString(style.fontFamily));
-        font.setPointSizeF(std::max(1.0,
+        const double authoredPointSize = std::max(1.0,
             static_cast<double>(style.fontSize)
-                * (small ? kSmallCapScale : 1.0)));
+                * (small ? kSmallCapScale : 1.0));
+        QFont font(QString::fromStdString(style.fontFamily),
+                   std::max(1, static_cast<int>(std::lround(authoredPointSize))));
         font.setWeight(static_cast<QFont::Weight>(
             std::clamp(style.fontWeight, 1, 1000)));
         font.setItalic(style.italic);
@@ -1051,16 +1059,22 @@ StyledTextPath buildStyledTextPath(const QString& source,
         }
         font.setLetterSpacing(QFont::AbsoluteSpacing,
             static_cast<qreal>(style.tracking + style.kerning));
-        font.setStretch(std::clamp(static_cast<int>(std::round(
-            100.0 * std::clamp(1.0 - style.tsume / 100.0, 0.1, 1.0))),
-            1, 4000));
+        // QFont's default stretch of 0 preserves the face's native width
+        // class. Impact and other condensed faces become roughly 4/3 wider if
+        // we explicitly set 100, even though 100 sounds like a no-op. Only
+        // override the native width when the user actually authored Tsume.
+        if (std::abs(style.tsume) > 0.001f) {
+            font.setStretch(std::clamp(static_cast<int>(std::round(
+                100.0 * std::clamp(1.0 - style.tsume / 100.0, 0.1, 1.0))),
+                1, 4000));
+        }
 
         paragraphs.back().push_back(
             {text, font, whitespace, static_cast<qreal>(style.baselineShift),
              static_cast<qreal>(style.leading),
-             text == QStringLiteral("\t")
-                ? static_cast<qreal>(style.tabWidth) : -1.0,
-             std::move(style)});
+              text == QStringLiteral("\t")
+                 ? static_cast<qreal>(style.tabWidth) : -1.0,
+              std::move(style), sourceStart, sourceLength});
     };
 
     auto paragraphAlignmentAt = [&](int position) {
@@ -1096,6 +1110,7 @@ StyledTextPath buildStyledTextPath(const QString& source,
         const QChar ch = source.at(pos);
         if (ch == QChar('\n')) {
             paragraphs.emplace_back();
+            paragraphStarts.push_back(pos + 1);
             paragraphAlignments.push_back(paragraphAlignmentAt(pos + 1));
             paragraphDirections.push_back(paragraphDirectionAt(pos + 1));
             continue;
@@ -1108,13 +1123,14 @@ StyledTextPath buildStyledTextPath(const QString& source,
         const bool small = style.smallCaps && !style.allCaps && ch.isLower();
         QString glyph = source.mid(pos, units);
         if (style.allCaps || style.smallCaps) glyph = glyph.toUpper();
-        append(glyph, std::move(style), small, ch.isSpace());
+        append(glyph, std::move(style), small, ch.isSpace(), pos, units);
         pos += units - 1;
     }
 
     std::vector<std::vector<StyledGlyphUnit>> unitLines;
     std::vector<int> lineAlignments;
     std::vector<bool> lineDirections;
+    std::vector<int> lineStarts;
     const bool wrap = layer.useParagraphBox() && layer.boxWidth() > 1.0f;
     const qreal maxWidth = static_cast<qreal>(layer.boxWidth());
     auto widthOf = [](const std::vector<StyledGlyphUnit>& units) {
@@ -1133,6 +1149,7 @@ StyledTextPath buildStyledTextPath(const QString& source,
             unitLines.push_back(paragraph);
             lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
             lineDirections.push_back(paragraphDirections[paragraphIndex]);
+            lineStarts.push_back(paragraphStarts[paragraphIndex]);
             continue;
         }
 
@@ -1161,6 +1178,7 @@ StyledTextPath buildStyledTextPath(const QString& source,
             }
             while (!line.empty() && line.back().whitespace) line.pop_back();
             if (!line.empty()) {
+                lineStarts.push_back(line.front().sourceStart);
                 unitLines.push_back(std::move(line));
                 lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
                 lineDirections.push_back(paragraphDirections[paragraphIndex]);
@@ -1169,6 +1187,8 @@ StyledTextPath buildStyledTextPath(const QString& source,
                 overflow.erase(overflow.begin());
             line = std::move(overflow);
         }
+        lineStarts.push_back(line.empty() ? paragraphStarts[paragraphIndex]
+                                          : line.front().sourceStart);
         unitLines.push_back(std::move(line));
         lineAlignments.push_back(paragraphAlignments[paragraphIndex]);
         lineDirections.push_back(paragraphDirections[paragraphIndex]);
@@ -1184,12 +1204,16 @@ StyledTextPath buildStyledTextPath(const QString& source,
                 && line.back().leading == unit.leading
                 && line.back().advanceOverride < 0.0
                 && unit.advanceOverride < 0.0
-                && line.back().style == unit.style)
+                && line.back().style == unit.style
+                && line.back().sourceStart + line.back().sourceLength
+                    == unit.sourceStart) {
                 line.back().text += unit.text;
-            else
+                line.back().sourceLength += unit.sourceLength;
+            } else
                 line.push_back(
                     {unit.text, unit.font, unit.baselineShift, unit.leading,
-                     unit.advanceOverride, unit.style});
+                     unit.advanceOverride, unit.style,
+                     unit.sourceStart, unit.sourceLength});
         }
         lines.push_back(std::move(line));
     }
@@ -1235,6 +1259,7 @@ StyledTextPath buildStyledTextPath(const QString& source,
     else if (vAlign == Qt::AlignBottom) blockTop = cy - totalHeight;
 
     StyledTextPath result;
+    result.carets.resize(static_cast<size_t>(source.size()) + 1);
     qreal lineTop = blockTop;
     for (size_t i = 0; i < lines.size(); ++i) {
         const auto& lm = metrics[i];
@@ -1250,10 +1275,48 @@ StyledTextPath buildStyledTextPath(const QString& source,
             result.hasLayoutRect = true;
         }
         const qreal baseline = lineTop + lm.ascent;
+        if (i < lineStarts.size()) {
+            const int lineStart = std::clamp(lineStarts[i], 0,
+                static_cast<int>(source.size()));
+            result.carets[static_cast<size_t>(lineStart)] =
+                {penX, lineTop, lineTop + lm.height, true};
+        }
         auto addRun = [&](const StyledGlyphRun& run) {
             const qreal runWidth = run.advanceOverride >= 0.0
                 ? run.advanceOverride
                 : QFontMetricsF(run.font).horizontalAdvance(run.text);
+            if (run.sourceLength > 0 && run.sourceStart >= 0) {
+                QTextLayout shaped(run.text, run.font);
+                shaped.beginLayout();
+                QTextLine shapedLine = shaped.createLine();
+                if (shapedLine.isValid())
+                    shapedLine.setLineWidth(1.0e9);
+                shaped.endLayout();
+                for (int offset = 0; offset <= run.sourceLength; ++offset) {
+                    const int sourcePosition = run.sourceStart + offset;
+                    if (sourcePosition < 0 || sourcePosition > source.size())
+                        continue;
+                    qreal advance = 0.0;
+                    if (run.advanceOverride >= 0.0) {
+                        advance = runWidth * offset / run.sourceLength;
+                    } else if (shapedLine.isValid()) {
+                        const int textPosition = std::clamp(
+                            static_cast<int>(std::lround(
+                                static_cast<double>(run.text.size()) * offset
+                                / run.sourceLength)), 0,
+                            static_cast<int>(run.text.size()));
+                        advance = shapedLine.cursorToX(textPosition);
+                    } else {
+                        const int textPosition = std::clamp(offset, 0,
+                            static_cast<int>(run.text.size()));
+                        advance = QFontMetricsF(run.font).horizontalAdvance(
+                            run.text.left(textPosition));
+                    }
+                    result.carets[static_cast<size_t>(sourcePosition)] =
+                        {penX + advance, lineTop,
+                         lineTop + lm.height, true};
+                }
+            }
             QPainterPath piece;
             if (run.advanceOverride < 0.0 && !run.text.isEmpty()) {
                 const QPointF origin(penX, baseline - run.baselineShift);
@@ -1321,6 +1384,15 @@ GraphicTextLayoutBounds measureGraphicTextLayout(
     bounds.right = rect.right();
     bounds.bottom = rect.bottom();
     bounds.valid = rect.isValid() && !rect.isEmpty();
+    if (layout.hasLayoutRect) {
+        const QRectF logical = layout.layoutRect;
+        bounds.layoutLeft = logical.left();
+        bounds.layoutTop = logical.top();
+        bounds.layoutRight = logical.right();
+        bounds.layoutBottom = logical.bottom();
+        bounds.layoutValid = logical.isValid() && !logical.isEmpty();
+    }
+    bounds.carets = layout.carets;
     return bounds;
 }
 
@@ -1344,6 +1416,15 @@ static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
     auto mixF = [&](float f)    { mixBytes(&f, sizeof(f)); };
 
     mixU(clip->id()); mixU(outW); mixU(outH); mixU(renderW); mixU(renderH);
+    if (graphicClipBakesOuterTransform(clip, localTick)) {
+        mixF(clip->positionX().evaluate(localTick));
+        mixF(clip->positionY().evaluate(localTick));
+        mixF(clip->scaleX().evaluate(localTick));
+        mixF(clip->scaleY().evaluate(localTick));
+        mixF(clip->rotation().evaluate(localTick));
+        mixF(clip->anchorX().evaluate(localTick));
+        mixF(clip->anchorY().evaluate(localTick));
+    }
     mixU(clip->layerCount());
     for (size_t li = 0; li < clip->layerCount(); ++li) {
         const auto* layer = clip->layer(li);
@@ -1429,6 +1510,17 @@ static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
 // GraphicClip CPU rendering - multi-layer text/shape container
 // =========================================================================
 
+bool graphicClipBakesOuterTransform(GraphicClip* clip, int64_t localTick)
+{
+    if (!clip || clip->maskCount() != 0 || clip->effects().hasActiveEffects())
+        return false;
+
+    // A multi-sample GPU transform is still required for motion blur.  Static
+    // and normally animated graphics are rendered at the current tick and can
+    // safely bake their outer transform into the bitmap.
+    return std::abs(clip->shutterAngle().evaluate(localTick)) < 0.001f;
+}
+
 std::shared_ptr<CachedFrame> renderGraphicClip(
     GraphicClip* clip, int64_t tick, uint32_t outW, uint32_t outH,
     uint32_t refW, uint32_t refH)
@@ -1480,6 +1572,35 @@ std::shared_ptr<CachedFrame> renderGraphicClip(
     QPainter painter(&canvas);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // A GraphicClip used to be drawn into an already-clipped project-sized
+    // bitmap and only then moved/scaled by the GPU.  Text below the bitmap's
+    // bottom edge was therefore discarded even when the outer clip transform
+    // placed that text well inside the final Program frame.  Fold the safe
+    // clip-level transform into this painter first so clipping happens only at
+    // the final output boundary.
+    if (graphicClipBakesOuterTransform(clip, localTick)) {
+        constexpr double kReferenceWidth = 1920.0;
+        constexpr double kReferenceHeight = 1080.0;
+        const double posX = clip->positionX().evaluate(localTick)
+            * static_cast<double>(renderW) / kReferenceWidth;
+        const double posY = clip->positionY().evaluate(localTick)
+            * static_cast<double>(renderH) / kReferenceHeight;
+        const double anchorX = clip->anchorX().evaluate(localTick)
+            * static_cast<double>(renderW) / kReferenceWidth;
+        const double anchorY = clip->anchorY().evaluate(localTick)
+            * static_cast<double>(renderH) / kReferenceHeight;
+        const double centerX = static_cast<double>(renderW) * 0.5;
+        const double centerY = static_cast<double>(renderH) * 0.5;
+
+        painter.translate(centerX + posX, centerY + posY);
+        painter.translate(anchorX, anchorY);
+        painter.rotate(clip->rotation().evaluate(localTick));
+        painter.scale(clip->scaleX().evaluate(localTick),
+                      clip->scaleY().evaluate(localTick));
+        painter.translate(-anchorX, -anchorY);
+        painter.translate(-centerX, -centerY);
+    }
 
     for (size_t li = 0; li < clip->layerCount(); ++li) {
         const auto* layer = clip->layer(li);

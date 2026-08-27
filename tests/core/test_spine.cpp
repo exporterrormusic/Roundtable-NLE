@@ -15,6 +15,8 @@
 #include "spine/ModelManager.h"
 #include "timeline/SpineClip.h"
 
+#include <spine/AnimationState.h>
+
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -389,6 +391,62 @@ TEST_F(SpineTest, AnimationSetBody)
 
     engine.animation().setBodyAnimation("idle", true);
     EXPECT_EQ(engine.animation().currentBodyAnimation(), "idle");
+}
+
+TEST_F(SpineTest, KiloUndoStateReplacementClearsStaleMixingTracks)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Kilo");
+    if (!files.valid()) GTEST_SKIP() << "Kilo not available";
+
+    rt::SpineEngine restored;
+    ASSERT_TRUE(restored.loadSkeleton(files.skel, files.atlas));
+
+    // Reproduce the timeline sequence: idle -> another expression -> undo
+    // back to idle while a face/talk overlay has also existed.
+    restored.animation().setBodyAnimation("idle", true);
+    restored.evaluateAtTime(0.75f, 0.75f);
+    restored.animation().setBodyAnimation("angry", true);
+    restored.animation().startTalking();
+    restored.evaluateAtTime(0.75f, 0.75f);
+
+    restored.animation().replacePlaybackState("idle", true, false);
+    restored.evaluateAtTime(0.75f, 0.75f);
+
+    auto* state = restored.animation().getAnimationState();
+    ASSERT_NE(state, nullptr);
+    auto* body = state->getCurrent(static_cast<size_t>(rt::AnimTrack::Body));
+    ASSERT_NE(body, nullptr);
+    EXPECT_EQ(body->getMixingFrom(), nullptr);
+    EXPECT_EQ(state->getCurrent(static_cast<size_t>(rt::AnimTrack::Talk)),
+              nullptr);
+    EXPECT_FALSE(restored.animation().isTalking());
+
+    // The restored pose must be byte-for-byte deterministic with an engine
+    // that entered idle directly. Any leftover face/bone state changes these
+    // mesh vertices, which is what separated Kilo's eye layers on screen.
+    rt::SpineEngine clean;
+    ASSERT_TRUE(clean.loadSkeleton(files.skel, files.atlas));
+    clean.animation().replacePlaybackState("idle", true, false);
+    clean.evaluateAtTime(0.75f, 0.75f);
+
+    const auto restoredMesh = restored.extractMeshes();
+    const auto cleanMesh = clean.extractMeshes();
+    ASSERT_EQ(restoredMesh.batches.size(), cleanMesh.batches.size());
+    for (size_t bi = 0; bi < cleanMesh.batches.size(); ++bi) {
+        const auto& actual = restoredMesh.batches[bi];
+        const auto& expected = cleanMesh.batches[bi];
+        ASSERT_EQ(actual.vertices.size(), expected.vertices.size())
+            << "batch " << bi;
+        ASSERT_EQ(actual.indices, expected.indices) << "batch " << bi;
+        for (size_t vi = 0; vi < expected.vertices.size(); ++vi) {
+            EXPECT_FLOAT_EQ(actual.vertices[vi].x, expected.vertices[vi].x)
+                << "batch " << bi << " vertex " << vi;
+            EXPECT_FLOAT_EQ(actual.vertices[vi].y, expected.vertices[vi].y)
+                << "batch " << bi << " vertex " << vi;
+        }
+    }
 }
 
 TEST_F(SpineTest, AnimationHasAnimation)

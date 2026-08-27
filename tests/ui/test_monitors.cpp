@@ -15,6 +15,7 @@
 
 #include <QApplication>
 #include <QEventLoop>
+#include <QFocusEvent>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QScrollBar>
@@ -22,6 +23,7 @@
 #include <QSignalSpy>
 #include <QThread>
 #include <QTest>
+#include <QTextLayout>
 
 // MiniTimeline and Viewport are Qt widgets, need headers
 #include "widgets/MiniTimeline.h"
@@ -263,6 +265,240 @@ TEST(TransformOverlayInput, ReplacingSelectedPlaceholderInheritsBaseAppearance)
     EXPECT_FALSE(overlay.isInlineTextEditing());
 }
 
+TEST(TransformOverlayInput, CompositorBackedEditHidesDuplicateGlyphsAndPreviewsLive)
+{
+    TransformOverlayWidget overlay(nullptr);
+    overlay.resize(640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+
+    QSignalSpy preview(&overlay,
+        &TransformOverlayWidget::inlineTextPreviewChanged);
+    overlay.beginInlineTextEdit(QStringLiteral("Impact title"),
+        QStringLiteral("impact"), 72.0f, 400, false, Qt::white);
+    QApplication::processEvents();
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+    EXPECT_EQ(editor->currentCharFormat().foreground().color().alpha(), 0);
+    EXPECT_TRUE(editor->styleSheet().contains(
+        QStringLiteral("color: transparent")));
+    EXPECT_TRUE(editor->styleSheet().contains(
+        QStringLiteral("selection-color: transparent")));
+
+    overlay.setInlineTextSelection(editor->toPlainText().size(), 0);
+    QTest::keyClicks(editor, QStringLiteral("!"));
+    QApplication::processEvents();
+    ASSERT_GE(preview.count(), 1);
+    EXPECT_EQ(preview.last().at(0).toString(),
+              QStringLiteral("Impact title!"));
+
+    // Appearance controls update compositor metadata without re-enabling the
+    // editor's differently hinted duplicate glyph rendering.
+    ASSERT_TRUE(overlay.applyInlineTextFill(true, 0xFFFF0000u));
+    EXPECT_EQ(editor->currentCharFormat().foreground().color().alpha(), 0);
+
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
+    EXPECT_FALSE(overlay.isInlineTextEditing());
+}
+
+TEST(TransformOverlayInput, MultilineCaretSurfaceAnchorsToRenderedTextTop)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(0, 0, 640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    info.contentL = 600.0f;
+    info.contentT = 300.0f;
+    info.contentR = 1320.0f;
+    info.contentB = 600.0f;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+
+    overlay.beginInlineTextEdit(
+        QStringLiteral("first line\nsecond line\nthird line"),
+        QStringLiteral("impact"), 72.0f, 400, false, Qt::white);
+    QApplication::processEvents();
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+
+    // Compare in global coordinates because this standalone test widget has
+    // a native window frame on Windows, while the production overlay is a
+    // frameless child. QWidget::geometry() and mapFromGlobal() otherwise
+    // differ by that non-client frame.
+    const int renderedInkTopGlobal =
+        overlay.mapToGlobal(QPoint(0, 100)).y(); // 300 mapped by 640/1920
+    EXPECT_LE(std::abs(editor->geometry().top()
+                       - renderedInkTopGlobal), 2);
+
+    const int anchoredTop = editor->geometry().top();
+    overlay.setInlineTextSelection(editor->toPlainText().size(), 0);
+    QTest::keyClick(editor, Qt::Key_Return);
+    QTest::keyClicks(editor, QStringLiteral("fourth line"));
+    QApplication::processEvents();
+    EXPECT_EQ(editor->geometry().top(), anchoredTop);
+
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
+}
+
+TEST(TransformOverlayInput, InlineEditorUsesLogicalTextRectNotPaddedHandleRect)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(0, 0, 640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    // Transform handles intentionally include generous breathing room.
+    info.contentL = 480.0f;
+    info.contentT = 240.0f;
+    info.contentR = 1440.0f;
+    info.contentB = 660.0f;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    // The renderer's actual pen/line-metric rectangle is narrower and lower.
+    info.useTextLayoutRect = true;
+    info.textLayoutL = 690.0f;
+    info.textLayoutT = 300.0f;
+    info.textLayoutR = 1230.0f;
+    info.textLayoutB = 570.0f;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+
+    overlay.beginInlineTextEdit(
+        QStringLiteral("first line\nsecond line\nthird line"),
+        QStringLiteral("Arial"), 72.0f, 400, false, Qt::white,
+        1.0f, Qt::AlignLeft);
+    QApplication::processEvents();
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+
+    const QPoint expectedGlobal = overlay.mapToGlobal(QPoint(230, 100));
+    EXPECT_LE(std::abs(editor->geometry().left() - expectedGlobal.x()), 2);
+    EXPECT_LE(std::abs(editor->geometry().top() - expectedGlobal.y()), 2);
+
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
+}
+
+TEST(TransformOverlayInput, InlineCaretUsesFullResolutionRendererAdvances)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(0, 0, 640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+
+    const QString value = QStringLiteral("WIDE lettering test");
+    QFont rendererFont(QStringLiteral("Arial"));
+    rendererFont.setPointSizeF(73.0);
+    const QFontMetricsF metrics(rendererFont);
+    const double lineWidth = metrics.horizontalAdvance(value);
+    const double lineHeight = metrics.lineSpacing();
+
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    info.useTextLayoutRect = true;
+    info.textLayoutL = static_cast<float>(960.0 - lineWidth * 0.5);
+    info.textLayoutR = static_cast<float>(960.0 + lineWidth * 0.5);
+    info.textLayoutT = static_cast<float>(540.0 - lineHeight * 0.5);
+    info.textLayoutB = static_cast<float>(540.0 + lineHeight * 0.5);
+    info.contentL = info.textLayoutL - 40.0f;
+    info.contentR = info.textLayoutR + 40.0f;
+    info.contentT = info.textLayoutT - 30.0f;
+    info.contentB = info.textLayoutB + 30.0f;
+    QTextLayout shaped(value, rendererFont);
+    shaped.beginLayout();
+    QTextLine shapedLine = shaped.createLine();
+    ASSERT_TRUE(shapedLine.isValid());
+    shapedLine.setLineWidth(1.0e9);
+    shaped.endLayout();
+    info.textCarets.resize(static_cast<size_t>(value.size()) + 1);
+    for (int position = 0; position <= static_cast<int>(value.size()); ++position) {
+        info.textCarets[static_cast<size_t>(position)] = {
+            static_cast<float>(960.0 - lineWidth * 0.5
+                               + shapedLine.cursorToX(position)),
+            info.textLayoutT, info.textLayoutB, true};
+    }
+    overlay.setTransformOverlay(info);
+    overlay.show();
+
+    overlay.beginInlineTextEdit(value, QStringLiteral("Arial"), 73.0f,
+        400, false, Qt::white, 1.0f, Qt::AlignHCenter);
+    QApplication::processEvents();
+    constexpr int caretPosition = 13;
+    overlay.setInlineTextSelection(caretPosition, 0);
+
+    const double prefix = metrics.horizontalAdvance(value.left(caretPosition));
+    const double expectedX = 320.0 + (prefix - lineWidth * 0.5) / 3.0;
+    const QLineF caret = overlay.inlineTextCaretLine();
+    EXPECT_FALSE(caret.isNull());
+    EXPECT_NEAR(caret.p1().x(), expectedX, 1.0);
+    const QPoint clickGlobal = overlay.mapToGlobal(
+        caret.pointAt(0.5).toPoint());
+    EXPECT_EQ(overlay.inlineTextPositionAtGlobal(clickGlobal), caretPosition);
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+    EXPECT_EQ(editor->cursorWidth(), 0);
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
+}
+
 TEST(TransformOverlayInput, ParagraphFormattingTargetsSelectedParagraphs)
 {
     TransformOverlayWidget overlay(nullptr);
@@ -301,6 +537,48 @@ TEST(TransformOverlayInput, ParagraphFormattingTargetsSelectedParagraphs)
     QApplication::sendEvent(editor, &cancelPress);
 }
 
+TEST(TransformOverlayInput, ActivationFocusOutDoesNotImmediatelyCommit)
+{
+    TransformOverlayWidget overlay(nullptr);
+    overlay.resize(640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+
+    QSignalSpy committed(&overlay,
+        &TransformOverlayWidget::inlineTextCommitted);
+    overlay.beginInlineTextEdit(QStringLiteral("focus race"),
+        QStringLiteral("Arial"), 72.0f, 400, false, Qt::white);
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+
+    // Windows can send this while the newly-created editor and the embedded
+    // Vulkan HWND are still exchanging activation during the double-click.
+    QFocusEvent activationHandoff(QEvent::FocusOut,
+                                  Qt::ActiveWindowFocusReason);
+    QApplication::sendEvent(editor, &activationHandoff);
+    QTest::qWait(160);
+    QApplication::processEvents();
+
+    EXPECT_TRUE(overlay.isInlineTextEditing());
+    EXPECT_EQ(committed.count(), 0);
+
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QApplication::processEvents();
+}
+
 TEST(TransformOverlayInput, ReturnInsertsNewlineAndControlReturnCommits)
 {
     TransformOverlayWidget overlay(nullptr);
@@ -330,17 +608,25 @@ TEST(TransformOverlayInput, ReturnInsertsNewlineAndControlReturnCommits)
     }
     ASSERT_NE(editor, nullptr);
     const int firstLineTop = editor->geometry().top();
+    const int singleLineHeight = editor->height();
     QKeyEvent newlinePress(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QApplication::sendEvent(editor, &newlinePress);
+    QTest::keyClicks(editor, QStringLiteral("beta"));
+    QApplication::sendEvent(editor, &newlinePress);
+    QTest::keyClicks(editor, QStringLiteral("gamma"));
+    QApplication::processEvents();
     EXPECT_TRUE(overlay.isInlineTextEditing());
     EXPECT_EQ(committed.count(), 0);
     EXPECT_EQ(editor->geometry().top(), firstLineTop);
+    EXPECT_GT(editor->height(), singleLineHeight * 2);
+    EXPECT_EQ(editor->verticalScrollBar()->maximum(), 0);
 
     QKeyEvent commitPress(QEvent::KeyPress, Qt::Key_Return,
                           Qt::ControlModifier);
     QApplication::sendEvent(editor, &commitPress);
     ASSERT_EQ(committed.count(), 1);
-    EXPECT_EQ(committed.at(0).at(0).toString(), QStringLiteral("alpha\n"));
+    EXPECT_EQ(committed.at(0).at(0).toString(),
+              QStringLiteral("alpha\nbeta\ngamma"));
     EXPECT_FALSE(overlay.isInlineTextEditing());
 }
 
@@ -438,6 +724,68 @@ TEST(TransformOverlayInput, InlineEditorTransparentAreaRemainsMouseInteractive)
     EXPECT_FALSE(overlay.isInlineTextEditing());
 }
 
+TEST(TransformOverlayInput, FallthroughClickInsideEditorRepositionsCaret)
+{
+    TransformOverlayWidget overlay(nullptr);
+    overlay.resize(640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    info.contentL = 600.0f;
+    info.contentT = 480.0f;
+    info.contentR = 1320.0f;
+    info.contentB = 600.0f;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+    overlay.beginInlineTextEdit(QStringLiteral("alpha beta gamma"),
+        QStringLiteral("Arial"), 72.0f, 400, false, Qt::white);
+    QApplication::processEvents();
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+    overlay.setInlineTextSelection(editor->toPlainText().size(), 0);
+
+    const QPoint viewportPoint(editor->viewport()->width() / 3,
+                               editor->viewport()->height() / 2);
+    const QPoint globalPoint =
+        editor->viewport()->mapToGlobal(viewportPoint);
+    const int expectedPosition =
+        overlay.inlineTextPositionAtGlobal(globalPoint);
+
+    // Mimic Windows assigning a transparent editor pixel to the native
+    // surface below it. The application-level overlay filter must reclaim
+    // the event and perform the same caret move as QPlainTextEdit.
+    QWidget underlyingSurface;
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(1, 1),
+                      QPointF(globalPoint), Qt::LeftButton, Qt::LeftButton,
+                      Qt::NoModifier);
+    QApplication::sendEvent(&underlyingSurface, &press);
+    EXPECT_TRUE(press.isAccepted());
+    EXPECT_TRUE(overlay.isInlineTextEditing());
+    EXPECT_EQ(overlay.inlineTextSelection(),
+              std::make_pair(expectedPosition, 0));
+
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(1, 1),
+                        QPointF(globalPoint), Qt::LeftButton, Qt::NoButton,
+                        Qt::NoModifier);
+    QApplication::sendEvent(&underlyingSurface, &release);
+
+    QKeyEvent cancelPress(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(editor, &cancelPress);
+}
+
 TEST(TransformOverlayInput, InlineEditorUsesLatestMovedTextPosition)
 {
     VulkanViewport viewport;
@@ -486,6 +834,94 @@ TEST(TransformOverlayInput, InlineEditorUsesLatestMovedTextPosition)
 
     QKeyEvent cancelPress(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QApplication::sendEvent(editor, &cancelPress);
+}
+
+TEST(TransformOverlayInput, DoubleClickUsesSequenceSpaceBeforePreviewArrives)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    viewport.show();
+    QApplication::processEvents();
+
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(viewport.rect());
+    overlay.setSequenceResolution(3840, 2160);
+    overlay.show();
+    QApplication::processEvents();
+
+    QSignalSpy editRequested(&overlay,
+        &TransformOverlayWidget::textEditRequested);
+    QTest::mouseDClick(&overlay, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(320, 180));
+
+    ASSERT_EQ(editRequested.count(), 1);
+    const QList<QVariant> args = editRequested.takeFirst();
+    EXPECT_NEAR(args.at(0).toFloat(), 1920.0f, 2.0f);
+    EXPECT_NEAR(args.at(1).toFloat(), 1080.0f, 2.0f);
+}
+
+TEST(TransformOverlayInput, NativeSurfaceDoubleClickReachesTextEditorRequest)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    viewport.show();
+    QApplication::processEvents();
+
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(viewport.rect());
+    overlay.setSequenceResolution(1920, 1080);
+    overlay.show();
+    QApplication::processEvents();
+
+    QSignalSpy editRequested(&overlay,
+        &TransformOverlayWidget::textEditRequested);
+    emit viewport.nativeLeftDoubleClicked(
+        overlay.mapToGlobal(QPoint(320, 180)), Qt::NoModifier);
+    QApplication::processEvents();
+
+    ASSERT_EQ(editRequested.count(), 1);
+    const QList<QVariant> args = editRequested.takeFirst();
+    EXPECT_NEAR(args.at(0).toFloat(), 960.0f, 2.0f);
+    EXPECT_NEAR(args.at(1).toFloat(), 540.0f, 2.0f);
+}
+
+TEST(TransformOverlayInput, ApplicationRouteHandlesOverlayOwnedDoubleClick)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    viewport.show();
+    QApplication::processEvents();
+
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(QRect(viewport.mapToGlobal(QPoint(0, 0)),
+                              viewport.size()));
+    overlay.setSequenceResolution(1920, 1080);
+    overlay.show();
+    QApplication::processEvents();
+
+    QSignalSpy editRequested(&overlay,
+        &TransformOverlayWidget::textEditRequested);
+    const QPoint globalPoint = overlay.mapToGlobal(QPoint(320, 180));
+    QMouseEvent event(QEvent::MouseButtonDblClick,
+                      QPointF(320, 180), QPointF(globalPoint),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+
+    // Deliver to the overlay rather than the native Vulkan QWindow. The
+    // application-level route must still start the same monitor edit gesture.
+    QApplication::sendEvent(&overlay, &event);
+    QApplication::processEvents();
+
+    ASSERT_EQ(editRequested.count(), 1);
+    const QList<QVariant> args = editRequested.takeFirst();
+    EXPECT_NEAR(args.at(0).toFloat(), 960.0f, 2.0f);
+    EXPECT_NEAR(args.at(1).toFloat(), 540.0f, 2.0f);
+}
+
+TEST(TransformOverlayInput, NativeViewportOwnsTextAndResetDoubleClicks)
+{
+    EXPECT_TRUE(VulkanViewport::ownsNativeDoubleClick(Qt::MiddleButton));
+    EXPECT_TRUE(VulkanViewport::ownsNativeDoubleClick(Qt::LeftButton));
+    EXPECT_FALSE(VulkanViewport::ownsNativeDoubleClick(Qt::RightButton));
 }
 
 TEST(TransformOverlayInput, PartialFontGrowthExpandsEditorWithoutScrollingFirstLine)
@@ -537,6 +973,51 @@ TEST(TransformOverlayInput, PartialFontGrowthExpandsEditorWithoutScrollingFirstL
     QApplication::sendEvent(editor, &cancelPress);
 }
 
+TEST(TransformOverlayInput, PointTextExpandsPastOriginalBoxWithoutWrapping)
+{
+    TransformOverlayWidget overlay(nullptr);
+    overlay.resize(640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    info.contentL = 900.0f;
+    info.contentT = 500.0f;
+    info.contentR = 1020.0f;
+    info.contentB = 580.0f;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+    overlay.beginInlineTextEdit(QStringLiteral("short"),
+        QStringLiteral("Arial"), 72.0f, 400, false, Qt::white);
+    QApplication::processEvents();
+
+    QPlainTextEdit* editor = nullptr;
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible()) {
+            editor = qobject_cast<QPlainTextEdit*>(widget);
+            break;
+        }
+    }
+    ASSERT_NE(editor, nullptr);
+    const int originalWidth = editor->width();
+    EXPECT_EQ(editor->lineWrapMode(), QPlainTextEdit::NoWrap);
+
+    editor->selectAll();
+    editor->insertPlainText(QStringLiteral(
+        "This title is deliberately much wider than its original text box"));
+    QApplication::processEvents();
+    EXPECT_GT(editor->width(), originalWidth);
+    EXPECT_EQ(editor->horizontalScrollBar()->maximum(), 0);
+
+    QKeyEvent cancelPress(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(editor, &cancelPress);
+}
+
 TEST(GraphicTextRendering, CharacterStyleRunChangesCompositePixels)
 {
     GraphicClip clip;
@@ -570,6 +1051,11 @@ TEST(GraphicTextRendering, StyledMeasurementTracksPartialFontGrowth)
     const auto base = measureGraphicTextLayout(
         text, 0, 960.0, 540.0, Qt::AlignHCenter, Qt::AlignVCenter);
     ASSERT_TRUE(base.valid);
+    ASSERT_TRUE(base.layoutValid);
+    ASSERT_EQ(base.carets.size(), QStringLiteral("alpha beta").size() + 1);
+    for (const auto& caret : base.carets) EXPECT_TRUE(caret.valid);
+    EXPECT_LT(base.layoutLeft, base.layoutRight);
+    EXPECT_LT(base.layoutTop, base.layoutBottom);
 
     TextStyleRun run;
     run.start = 6;
@@ -581,8 +1067,11 @@ TEST(GraphicTextRendering, StyledMeasurementTracksPartialFontGrowth)
     const auto grown = measureGraphicTextLayout(
         text, 0, 960.0, 540.0, Qt::AlignHCenter, Qt::AlignVCenter);
     ASSERT_TRUE(grown.valid);
+    ASSERT_TRUE(grown.layoutValid);
     EXPECT_GT(grown.right - grown.left, base.right - base.left);
     EXPECT_GT(grown.bottom - grown.top, base.bottom - base.top);
+    EXPECT_GT(grown.layoutRight - grown.layoutLeft,
+              base.layoutRight - base.layoutLeft);
 }
 
 TEST(GraphicTextRendering, RangeAppearanceAndDecorationChangeCompositePixels)
@@ -770,6 +1259,77 @@ TEST(GraphicTextRendering, PointTextAddsNewLinesBelowTheFirstLine)
                           single->pixels[offset + channel]);
         }
     }
+}
+
+TEST(GraphicTextRendering, AugustTitleOuterTransformKeepsAddedLinesUnclipped)
+{
+    GraphicClip clip;
+    auto* text = clip.addTextLayer(
+        "I like to count the\nnumber of times\n\"...\" appears.\nFOURTH LINE\nFIFTH LINE");
+    clip.positionX().setDefaultValue(-192.0f);
+    clip.positionY().setDefaultValue(-554.182f);
+    clip.scaleX().setDefaultValue(0.782339f);
+    clip.scaleY().setDefaultValue(0.782339f);
+    text->setFontFamily("impact");
+    text->setFontSize(72.0f);
+    text->transform().posX.setDefaultValue(-633.506f);
+    text->transform().posY.setDefaultValue(207.795f);
+    text->transform().scaleX.setDefaultValue(0.876575f);
+    text->transform().scaleY.setDefaultValue(0.876575f);
+
+    const auto frame = renderGraphicClip(&clip, 0, 1920, 1080, 1920, 1080);
+    ASSERT_NE(frame, nullptr);
+
+    // Count separated horizontal ink bands. This exact nested layer/clip
+    // transform from the August sequence must retain lines added below the
+    // original title. Before the outer transform was baked, lines four and
+    // five fell below the intermediate 1080p canvas and were discarded even
+    // though the clip transform moved them into the final visible frame.
+    int bands = 0;
+    bool inBand = false;
+    for (int y = 0; y < static_cast<int>(frame->height); ++y) {
+        bool rowHasInk = false;
+        for (int x = 0; x < static_cast<int>(frame->width); ++x) {
+            const size_t offset = static_cast<size_t>(y) * frame->stride
+                + static_cast<size_t>(x) * 4;
+            if (frame->pixels[offset + 3] != 0) {
+                rowHasInk = true;
+                break;
+            }
+        }
+        if (rowHasInk && !inBand) ++bands;
+        inBand = rowHasInk;
+    }
+    EXPECT_EQ(bands, 5);
+}
+
+TEST(GraphicTextRendering, AugustTitleCaretMatchesRenderedImpactPrefix)
+{
+    GraphicClip clip;
+    const QString value = QStringLiteral(
+        "I like to count the\nnumber of times\n\"...\" appears.");
+    auto* text = clip.addTextLayer(value.toStdString());
+    text->setFontFamily("impact");
+    text->setFontSize(72.0f);
+
+    const auto measured = measureGraphicTextLayout(
+        text, 0, 960.0, 540.0, Qt::AlignHCenter, Qt::AlignVCenter);
+    const int position = value.indexOf(QStringLiteral("times")) + 3;
+    ASSERT_GE(position, 3);
+    ASSERT_LT(position, static_cast<int>(measured.carets.size()));
+    ASSERT_TRUE(measured.carets[static_cast<size_t>(position)].valid);
+
+    const QString line = QStringLiteral("number of times");
+    const QString prefix = QStringLiteral("number of tim");
+    QFont rendererFont(QStringLiteral("impact"), 72);
+    rendererFont.setWeight(static_cast<QFont::Weight>(text->fontWeight()));
+    rendererFont.setItalic(text->isItalic());
+    rendererFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.0);
+    const QFontMetricsF metrics(rendererFont);
+    const double expected = 960.0 - metrics.horizontalAdvance(line) * 0.5
+        + metrics.horizontalAdvance(prefix);
+    EXPECT_NEAR(measured.carets[static_cast<size_t>(position)].x,
+                expected, 0.25);
 }
 
 TEST(GraphicTextRendering, ParagraphBoxHeightControlsVerticalAlignment)

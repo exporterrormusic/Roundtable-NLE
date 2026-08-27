@@ -400,6 +400,12 @@ void ProjectBin::setupUI()
                 });
             }
             {
+                auto* act = newItemMenu->addAction("Bars and Tone...");
+                QObject::connect(act, &QAction::triggered, this, [this]() {
+                    createBarsAndTone();
+                });
+            }
+            {
                 auto* act = newItemMenu->addAction("Color Matte...");
                 QObject::connect(act, &QAction::triggered, this, [this]() {
                     createColorMatte();
@@ -799,6 +805,12 @@ void ProjectBin::setupUI()
             auto* act = newItemMenu->addAction("Sequence");
             QObject::connect(act, &QAction::triggered, this, [this]() {
                 createNewSequence();
+            });
+        }
+        {
+            auto* act = newItemMenu->addAction("Bars and Tone...");
+            QObject::connect(act, &QAction::triggered, this, [this]() {
+                createBarsAndTone();
             });
         }
         {

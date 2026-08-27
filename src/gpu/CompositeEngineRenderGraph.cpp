@@ -813,6 +813,19 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
     }
 
+    // Adjustment dissolves are evaluated inside the final Composite pass,
+    // after the layers below each marker have been flattened and processed.
+    // Reserve dense TransitionRenderer targets for partial-strength markers;
+    // strength 0 and 1 are handled without an extra blend dispatch.
+    for (size_t li = 0; li < layers.size(); ++li) {
+        if (!layers[li].isAdjustmentLayer)
+            continue;
+        if (layers[li].opacity <= 0.000001f ||
+            layers[li].opacity >= 0.999999f)
+            continue;
+        layerInfo[li].transitionTargetSlot = transitionTargetCount++;
+    }
+
     // ── Collect final layer texture IDs for composite pass ─────────
     std::vector<ResourceId> compositeInputs;
     compositeInputs.reserve(layers.size());
@@ -1663,6 +1676,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 
                 if (layer.effects.empty() || workingLayers.empty())
                     continue;
+                const float adjustmentStrength =
+                    std::clamp(layer.opacity, 0.0f, 1.0f);
+                if (adjustmentStrength <= 0.000001f)
+                    continue;
                 if (!adjustmentReady) {
                     static std::atomic<bool> s_warned{false};
                     if (!s_warned.exchange(true))
@@ -1732,8 +1749,50 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     continue;
                 }
 
+                VkDescriptorImageInfo adjustmentResult = snapshot.descriptorInfo();
+                if (adjustmentStrength < 0.999999f && transitionRenderer &&
+                    layerInfo[li].transitionTargetSlot != UINT32_MAX) {
+                    TransitionSourceInfo originalSource{};
+                    originalSource.textureInfo = adjustmentSource;
+                    TransitionSourceInfo effectedSource{};
+                    effectedSource.textureInfo = snapshot.descriptorInfo();
+                    const uint32_t targetSlot =
+                        layerInfo[li].transitionTargetSlot;
+
+                    if (transitionRenderer->render(
+                            cmd, originalSource, effectedSource,
+                            GpuTransitionType::Dissolve, adjustmentStrength,
+                            -1, 0.0f, -1.0f,
+                            static_cast<uint32_t>(timingSlot), targetSlot)) {
+                        // The next adjustment stack or the final compositor
+                        // samples this transition output in the same command
+                        // buffer. Make the compute write visible immediately.
+                        VkMemoryBarrier adjustmentBlendBarrier{};
+                        adjustmentBlendBarrier.sType =
+                            VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                        adjustmentBlendBarrier.srcAccessMask =
+                            VK_ACCESS_SHADER_WRITE_BIT;
+                        adjustmentBlendBarrier.dstAccessMask =
+                            VK_ACCESS_SHADER_READ_BIT;
+                        vkCmdPipelineBarrier(
+                            cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            0, 1, &adjustmentBlendBarrier,
+                            0, nullptr, 0, nullptr);
+                        adjustmentResult =
+                            transitionRenderer->outputDescriptorInfo(
+                                static_cast<uint32_t>(timingSlot), targetSlot);
+                        ++transitionCount;
+                    } else {
+                        spdlog::warn(
+                            "Adjustment-layer dissolve failed for clip {}; "
+                            "using the fully processed frame",
+                            layer.clipId);
+                    }
+                }
+
                 workingLayers.clear();
-                workingLayers.push_back(fullFrameLayer(snapshot.descriptorInfo()));
+                workingLayers.push_back(fullFrameLayer(adjustmentResult));
                 workingIsSingleFlattenedFrame = true;
             }
 

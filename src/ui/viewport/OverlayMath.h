@@ -16,8 +16,17 @@
 
 #include <cmath>
 #include <functional>
+#include <vector>
 
 namespace rt {
+
+struct OverlayTextCaretGeometry
+{
+    float x{0.0f};
+    float top{0.0f};
+    float bottom{0.0f};
+    bool valid{false};
+};
 
 /// Transform overlay information for a selected clip.
 /// Positions are pixel offsets from center at reference resolution (1920×1080).
@@ -42,6 +51,14 @@ struct TransformOverlayInfo
     bool  useContentRect{false};
     float contentL{0}, contentT{0}, contentR{0}, contentB{0};
     float contentCanvasW{1920}, contentCanvasH{1080}; ///< Canvas dims used for content bounds
+
+    /// Renderer-owned logical text layout rectangle (pen origin + line
+    /// metrics), before the same transforms as contentL/T/R/B. The regular
+    /// content rectangle is intentionally padded for transform handles and
+    /// therefore must never be used as the inline editor/caret origin.
+    bool  useTextLayoutRect{false};
+    float textLayoutL{0}, textLayoutT{0}, textLayoutR{0}, textLayoutB{0};
+    std::vector<OverlayTextCaretGeometry> textCarets;
 
     /// Clip-level (outer) transform for GraphicClip layers.
     float clipPosX{0.0f}, clipPosY{0.0f};

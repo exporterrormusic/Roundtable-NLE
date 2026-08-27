@@ -20,6 +20,7 @@ namespace rt {
 void TimelineWorkspace::arrangeDockLayout()
 {
     auto* dockProjectBin      = m_dockWidgets.value("Project Bin");
+    auto* dockVoiceGenerator  = m_dockWidgets.value("Voice Generator");
     auto* dockSourceMonitor   = m_dockWidgets.value("Source Monitor");
     auto* dockProgramMonitor  = m_dockWidgets.value("Program Monitor");
     auto* dockEffectControls  = m_dockWidgets.value("Effect Controls");
@@ -46,6 +47,10 @@ void TimelineWorkspace::arrangeDockLayout()
     // =====================================================================
 
     m_innerMainWindow->addDockWidget(Qt::TopDockWidgetArea, dockProjectBin);
+    if (dockVoiceGenerator) {
+        m_innerMainWindow->tabifyDockWidget(dockProjectBin, dockVoiceGenerator);
+        dockProjectBin->raise();
+    }
     m_innerMainWindow->splitDockWidget(dockProjectBin, dockSourceMonitor, Qt::Horizontal);
     m_innerMainWindow->splitDockWidget(dockSourceMonitor, dockProgramMonitor, Qt::Horizontal);
     m_innerMainWindow->splitDockWidget(dockProgramMonitor, dockEffectControls, Qt::Horizontal);

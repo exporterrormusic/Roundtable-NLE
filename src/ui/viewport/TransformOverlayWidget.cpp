@@ -24,6 +24,7 @@
 #include <QPolygonF>
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QApplication>
 
 #include <algorithm>
 #include <cmath>
@@ -54,6 +55,12 @@ TransformOverlayWidget::TransformOverlayWidget(VulkanViewport* viewport,
     setMouseTracking(true);
     setAttribute(Qt::WA_SetCursor, true); // enable per-tool cursor changes
 
+    // A click in the visible Program Monitor can be delivered either to the
+    // embedded native Vulkan QWindow or to this top-level translucent overlay,
+    // depending on the alpha at that exact pixel. Observe application mouse
+    // events so one owner handles double-click-to-edit in both cases.
+    qApp->installEventFilter(this);
+
     // The VulkanViewport uses createWindowContainer() which embeds a native
     // QWindow that sits on top of all regular Qt widgets in the Z-order.
     // ProgramMonitor::syncOverlayGeometry() calls SetWindowPos(HWND_TOP)
@@ -61,14 +68,29 @@ TransformOverlayWidget::TransformOverlayWidget(VulkanViewport* viewport,
     // events still need an event filter because the transparent areas
     // (WA_TranslucentBackground with alpha=0) pass input through to the
     // native QWindow underneath.
-    if (m_vulkanVp && m_vulkanVp->nativeWindow()) {
-        m_vulkanVp->nativeWindow()->installEventFilter(this);
+    if (m_vulkanVp) {
+        connect(m_vulkanVp, &VulkanViewport::nativeLeftDoubleClicked,
+                this, [this](const QPointF& globalPosition,
+                             Qt::KeyboardModifiers modifiers) {
+            const QPointF overlayPosition = QPointF(
+                mapFromGlobal(globalPosition.toPoint()));
+            spdlog::warn("[INLINE-TEXT] routed native double-click global=({}, {}) overlay=({}, {})",
+                         globalPosition.x(), globalPosition.y(),
+                         overlayPosition.x(), overlayPosition.y());
+            QMouseEvent mapped(QEvent::MouseButtonDblClick,
+                               overlayPosition, globalPosition,
+                               Qt::LeftButton, Qt::LeftButton, modifiers);
+            mouseDoubleClickEvent(&mapped);
+        });
+        if (m_vulkanVp->nativeWindow())
+            m_vulkanVp->nativeWindow()->installEventFilter(this);
     }
 
 }
 
 TransformOverlayWidget::~TransformOverlayWidget()
 {
+    qApp->removeEventFilter(this);
     clearCursorOverride();  // never leave a dangling app override cursor
     // m_inlineTextEdit is a parent-less top-level widget — delete it
     // explicitly so it doesn't leak when the overlay is destroyed.
@@ -131,17 +153,13 @@ void TransformOverlayWidget::enterEvent(QEnterEvent* /*event*/)
 
 void TransformOverlayWidget::setTransformOverlay(const TransformOverlayInfo& info)
 {
-    // While the in-place text editor is open, the layer's text has been
-    // temporarily cleared so the renderer doesn't draw it behind the
-    // editor. That clear collapses the content rect to a tiny degenerate
-    // area — and any workspace updateTransformOverlay() call would here
-    // overwrite our hidden-overlay state, drawing a tiny rogue transform
-    // box right on top of the editing text. Save the new info for
-    // restoration on commit but DON'T touch m_overlay's visible flag
-    // until inline editing ends.
+    // While inline editing, keep the latest compositor-measured content
+    // geometry for the edit indicators but leave the normal transform gizmo
+    // hidden until the session ends.
     if (m_inlineTextEdit && m_inlineTextEdit->isVisible()) {
         m_savedOverlayBeforeEdit = info;
         m_savedOverlayBeforeEdit.visible = true;
+        update();
         return;
     }
     m_overlay = info;
@@ -557,6 +575,20 @@ QPointF TransformOverlayWidget::frameToWidget(const QPointF& fp) const
 void TransformOverlayWidget::computeOverlayCorners(QPointF corners[4]) const
 {
     computeOverlayCornersFor(m_overlay, corners);
+}
+
+TransformOverlayInfo TransformOverlayWidget::inlineTextLayoutOverlay() const
+{
+    TransformOverlayInfo layout = m_savedOverlayBeforeEdit;
+    if (layout.useContentRect && layout.useTextLayoutRect
+        && layout.textLayoutR > layout.textLayoutL
+        && layout.textLayoutB > layout.textLayoutT) {
+        layout.contentL = layout.textLayoutL;
+        layout.contentT = layout.textLayoutT;
+        layout.contentR = layout.textLayoutR;
+        layout.contentB = layout.textLayoutB;
+    }
+    return layout;
 }
 
 void TransformOverlayWidget::computeOverlayCornersFor(

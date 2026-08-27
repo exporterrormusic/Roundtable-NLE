@@ -77,6 +77,18 @@ cmake --build build --config Release
 ctest --test-dir build -C Release -L core --output-on-failure
 ```
 
+### Optional Local Voice Generation
+
+Fish S2 Pro and OmniVoice are installed into separate ignored Python runtimes:
+
+```powershell
+.\tools\install_voice_models.ps1
+```
+
+See [VOICE_GENERATION.md](VOICE_GENERATION.md) for GPU, workflow,
+quality, and licensing details. Fish can be excluded from a public/commercial
+build with `-DROUNDTABLE_ENABLE_FISH_S2_PERSONAL=OFF` while retaining OmniVoice.
+
 ### Portable / Move to Another Machine
 1. Copy the entire folder (delete `build/` to save space)
 2. Install VS2022, Git, Python 3

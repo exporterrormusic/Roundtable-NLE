@@ -152,6 +152,7 @@ void AudioSync::switchToScript(const std::string& sessionKey)
             .arg(m_script->characters.size()));
     }
     populateScriptSessionList();
+    emit voiceContextChanged();
 }
 
 void AudioSync::resetForNewProject()
@@ -188,6 +189,7 @@ void AudioSync::resetForNewProject()
     updateSmartBar();
 
     spdlog::info("AudioSync: Reset for new project");
+    emit voiceContextChanged();
 }
 
 void AudioSync::populateScriptSessionList()

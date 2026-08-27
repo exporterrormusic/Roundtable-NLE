@@ -127,6 +127,35 @@ struct AudioSampleData {
     uint32_t sampleRate{44100};
 };
 
+/// Read-only script projection used by the voice-generation panels.
+struct VoiceScriptLine {
+    int lineNumber{-1};
+    QString character;
+    QString dialogue;
+    QString segment;
+};
+
+/// A previously imported/matched line that can serve as cloning reference.
+struct VoiceReferenceCandidate {
+    int clipId{-1};
+    int lineNumber{-1};
+    QString character;
+    QString transcript;
+    QString sourceFile;
+    QString segment;
+    double start{0.0};
+    double end{0.0};
+    float confidence{0.0f};
+};
+
+/// An audio file already present on Audio Sync's IMPORT page.
+struct VoiceImportedAudioTrack {
+    QString sourceFile;
+    QString displayName;
+    double duration{0.0};
+    int approvedClipCount{0};
+};
+
 // ─── Script session data ─────────────────────────────────────────────────────
 
 /// A stored session corresponds to one loaded script and all data attached to it.
@@ -233,6 +262,53 @@ public:
     /// Get character names from the loaded script.
     [[nodiscard]] QStringList scriptCharacters() const;
 
+    /// Host the Audio page's compact TTS controls in the same left workflow
+    /// rail as SCRIPT / IMPORT / TRANSCRIBE / MATCH / SETTINGS.
+    void setVoiceGenerationPanel(QWidget* panel);
+    void showVoiceGenerationPanel();
+
+    /// Snapshot script dialogue and usable imported line references for TTS.
+    [[nodiscard]] QVector<VoiceScriptLine> voiceScriptLines() const;
+    [[nodiscard]] QVector<VoiceImportedAudioTrack> voiceImportedAudioTracks() const;
+    [[nodiscard]] QVector<VoiceReferenceCandidate> voiceReferenceCandidates() const;
+    [[nodiscard]] const AudioSampleData* voiceAudioSamples(const QString& path) const;
+
+    /// Pure projections used by the panel and by headless validation without
+    /// constructing the full Audio Sync workspace.
+    [[nodiscard]] static QVector<VoiceReferenceCandidate>
+        approvedVoiceReferenceCandidates(const std::vector<SyncClip>& clips);
+    static bool saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& clips,
+                                                const QString& character,
+                                                QString* savedPath,
+                                                QString* error);
+
+    /// Consolidate all confirmed clips for one character into the application
+    /// reference library as an MP3 plus transcript metadata sidecar.
+    bool saveApprovedVoiceReference(const QString& character,
+                                    QString* savedPath,
+                                    QString* error) const;
+
+    /// Register generated audio in AudioSync. A non-negative line number marks
+    /// it confirmed; -1 leaves it unmatched for later manual/automatic work.
+    void attachGeneratedAudio(const QString& path, const QString& character,
+                              const QString& dialogue, int scriptLineNumber,
+                              const QString& segment, double durationSeconds);
+
+    /// Match approved generated dialogue against script lines belonging to the
+    /// selected character, preferring the explicitly selected script line.
+    /// The clip is still imported as unmatched when no suitable line exists.
+    [[nodiscard]] bool syncGeneratedAudio(const QString& path,
+                                          const QString& character,
+                                          const QString& dialogue,
+                                          int preferredScriptLine,
+                                          const QString& preferredSegment,
+                                          double durationSeconds);
+
+    /// In-app audition for an unapproved generated draft. This never imports or
+    /// mutates the project/AudioSync model.
+    [[nodiscard]] bool auditionVoiceDraft(const QString& path);
+    void stopVoiceDraftAudition();
+
     /// Return the subset of script characters that have no default shot configured.
     /// Characters are checked via ShotPresetManager::resolveDefaultShot.
     [[nodiscard]] QStringList missingDefaultShots() const;
@@ -257,10 +333,13 @@ public:
     [[nodiscard]] QPushButton* transcribeButton() const { return m_transcribeBtn; }
     [[nodiscard]] QPushButton* autoSyncButton() const { return m_autoSyncBtn; }
     [[nodiscard]] QPushButton* exportButton() const { return m_exportBtn; }
+    [[nodiscard]] QPushButton* voiceGenerationButton() const { return m_voiceRailBtn; }
+    [[nodiscard]] int audioSidePanelMode() const noexcept { return m_audioSidePanelMode; }
     [[nodiscard]] QProgressBar* progressBar() const { return m_progressBar; }
 
 signals:
     void scriptLoaded(int lineCount);
+    void voiceContextChanged();
     void audioImported(const QString& path);
     void transcriptionStarted();
     void transcriptionProgress(float percent, const QString& status);
@@ -330,7 +409,7 @@ private:
     void downloadWhisperModel(const std::string& modelName, std::function<void(bool)> onComplete);
     void toggleSetupPanel();           // disclosure expand/collapse (legacy)
     void updateSmartBar();             // refresh smart bar label/actions
-    void showAudioSidePanel(int mode);  // 0=Script, 1=Import, 2=Transcribe, 3=Settings
+    void showAudioSidePanel(int mode);  // 0=Script, 1=Import, 2=Transcribe, 3=Match, 4=Settings, 5=TTS
     void hideAudioSidePanel();
     void toggleAudioSidePanel(int mode);
     void scrollToCard(int scriptLineNumber);  // sync left→right
@@ -425,6 +504,10 @@ private:
     // Each entry is {bufferFrameOffset, originalTimeSeconds} marking the start of a contiguous segment
     std::vector<std::pair<int64_t, double>> m_playbackTimeMap;
 
+    // Unapproved TTS draft audition (never added to m_audioPaths/m_clips).
+    std::vector<float> m_voiceDraftSamples;
+    bool m_voiceDraftAuditionActive{false};
+
     // File preview playback (Import / Transcribe lists)
     int     m_previewFileIdx{-1};   // index into m_audioPaths, -1 = none
     QTimer* m_previewTimer{nullptr};
@@ -482,8 +565,9 @@ private:
     QPushButton*  m_importRailBtn{nullptr};
     QPushButton*  m_transcribeRailBtn{nullptr};
     QPushButton*  m_matchRailBtn{nullptr};
+    QPushButton*  m_voiceRailBtn{nullptr};
     QPushButton*  m_audioSettingsRailBtn{nullptr};
-    int           m_audioSidePanelMode{-1};  // -1=None, 0=Script, 1=Import, 2=Transcribe, 3=Match, 4=Settings
+    int           m_audioSidePanelMode{-1};  // -1=None, 0=Script, 1=Import, 2=Transcribe, 3=Match, 4=Settings, 5=TTS
 
     // Side Panel (inline expanding column)
     QWidget*        m_audioSidePanel{nullptr};
@@ -494,6 +578,7 @@ private:
     QWidget*        m_matchPage{nullptr};
     QListWidget*    m_charFilterList{nullptr};
     QWidget*        m_audioSettingsPage{nullptr};
+    QWidget*        m_voiceGenerationPage{nullptr};
 
     // Content area (match workspace + action bar)
     QWidget*      m_audioContentArea{nullptr};

@@ -73,7 +73,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 42;  // v42 = caption transcription confidence
+    static constexpr uint32_t FORMAT_VERSION = 43;  // v43 = open sequence-tab workspace state
+                                                    // v42 = caption transcription confidence
                                                     // v40 = complete rich-text appearance, typography, and paragraph runs
                                                     // v39 = leading overrides in rich-text runs
                                                     // v38 = caps/tracking/baseline overrides in rich-text runs
@@ -117,6 +118,7 @@ public:
         Section_BinState    = 0x0B,   ///< Project bin media files + folders
         Section_AudioSync   = 0x0C,   ///< AudioSync panel state (v13+)
         Section_ProjectMeta = 0x0D,   ///< Project-level metadata: show assignment (v23+)
+        Section_WorkspaceState = 0x0E, ///< Open sequence tabs (v43+)
     };
 };
 

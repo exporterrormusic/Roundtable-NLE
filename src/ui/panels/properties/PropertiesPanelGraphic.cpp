@@ -22,7 +22,9 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QComboBox>
+#include <QCompleter>
 #include <QCheckBox>
+#include <QFontDatabase>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QColorDialog>
@@ -72,8 +74,14 @@ void PropertiesPanel::applyGfxFontFamily()
     if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = firstTextLayer(static_cast<GraphicClip*>(m_clip));
     if (!tl) return;
-    std::string val = m_gfxFontFamilyEdit->text().toStdString();
+    const QString requested = m_gfxFontFamilyCombo->currentText().trimmed();
+    const int index = m_gfxFontFamilyCombo->findText(
+        requested, Qt::MatchFixedString);
+    if (index < 0) return;
+    const QString family = m_gfxFontFamilyCombo->itemText(index);
+    std::string val = family.toStdString();
     if (val == tl->fontFamily()) return;
+    m_gfxFontFamilyCombo->setCurrentIndex(index);
     tl->setFontFamily(val);
     emit propertyChanged();
 }
@@ -249,10 +257,29 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     connect(m_gfxTextEdit, &QLineEdit::editingFinished, this, &PropertiesPanel::applyGfxText);
     form->addRow("Text:", m_gfxTextEdit);
 
-    m_gfxFontFamilyEdit = new QLineEdit(m_graphicSection);
-    m_gfxFontFamilyEdit->setToolTip(tr("Font family for graphic text"));
-    connect(m_gfxFontFamilyEdit, &QLineEdit::editingFinished, this, &PropertiesPanel::applyGfxFontFamily);
-    form->addRow("Font:", m_gfxFontFamilyEdit);
+    m_gfxFontFamilyCombo = new QComboBox(m_graphicSection);
+    m_gfxFontFamilyCombo->setObjectName(
+        QStringLiteral("propertiesGraphicFontFamilyCombo"));
+    m_gfxFontFamilyCombo->setToolTip(tr(
+        "Choose an installed font family, or type to search"));
+    m_gfxFontFamilyCombo->addItems(QFontDatabase::families());
+    m_gfxFontFamilyCombo->setEditable(true);
+    m_gfxFontFamilyCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_gfxFontFamilyCombo->setMaxVisibleItems(20);
+    auto* fontCompleter = new QCompleter(
+        m_gfxFontFamilyCombo->model(), m_gfxFontFamilyCombo);
+    fontCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    fontCompleter->setFilterMode(Qt::MatchContains);
+    fontCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_gfxFontFamilyCombo->setCompleter(fontCompleter);
+    m_gfxFontFamilyCombo->lineEdit()->setClearButtonEnabled(true);
+    m_gfxFontFamilyCombo->lineEdit()->setPlaceholderText(
+        tr("Type to find a font"));
+    connect(m_gfxFontFamilyCombo, &QComboBox::textActivated,
+            this, [this](const QString&) { applyGfxFontFamily(); });
+    connect(m_gfxFontFamilyCombo->lineEdit(), &QLineEdit::editingFinished,
+            this, &PropertiesPanel::applyGfxFontFamily);
+    form->addRow("Font:", m_gfxFontFamilyCombo);
 
     m_gfxFontSizeSpin = createScrubby(1.0, 1000.0, 1.0, 1, " pt");
     m_gfxFontSizeSpin->setToolTip(tr("Font size for graphic text"));

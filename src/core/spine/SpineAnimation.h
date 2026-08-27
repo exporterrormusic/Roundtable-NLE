@@ -84,6 +84,15 @@ public:
     /// @param loop  Whether the animation loops
     void setBodyAnimation(const std::string& name, bool loop = true);
 
+    /// Atomically replace the timeline-driven animation state. Unlike
+    /// setBodyAnimation()/stopTalking(), this removes every previous track
+    /// entry and mixing chain before installing the requested body/talk
+    /// tracks. Absolute-time timeline evaluation does not advance Spine's
+    /// crossfade clock, so undo/redo and other state restoration must use
+    /// this path to avoid stale pose fragments surviving in the new state.
+    void replacePlaybackState(const std::string& bodyAnimation,
+                              bool loop, bool talking);
+
     /// Get the current body animation name
     [[nodiscard]] std::string currentBodyAnimation() const;
 

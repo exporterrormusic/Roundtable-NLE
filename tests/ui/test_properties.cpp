@@ -97,6 +97,113 @@ TEST(GraphicsEditorPanel, TextRowsAreMultilineAndFontFamilyIsSearchable)
     EXPECT_TRUE(rt::widgetConsumesTextKeys(fontCombo->lineEdit()));
 }
 
+TEST(PropertiesPanel, GraphicFontFamilyIsSearchableDropdown)
+{
+    rt::Track track(rt::TrackType::Video, "V1");
+    auto ownedClip = std::make_unique<rt::GraphicClip>();
+    ownedClip->setDuration(48000);
+    auto* layer = ownedClip->addTextLayer("font search");
+    ASSERT_NE(layer, nullptr);
+    auto* clip = static_cast<rt::GraphicClip*>(
+        track.addClip(std::move(ownedClip)));
+    ASSERT_NE(clip, nullptr);
+
+    rt::PropertiesPanel panel;
+    panel.setClip(clip, &track);
+
+    auto* fontCombo = panel.findChild<QComboBox*>(
+        QStringLiteral("propertiesGraphicFontFamilyCombo"));
+    ASSERT_NE(fontCombo, nullptr);
+    EXPECT_TRUE(fontCombo->isEditable());
+    EXPECT_GT(fontCombo->count(), 0);
+    ASSERT_NE(fontCombo->lineEdit(), nullptr);
+    ASSERT_NE(fontCombo->completer(), nullptr);
+    EXPECT_EQ(fontCombo->completer()->caseSensitivity(),
+              Qt::CaseInsensitive);
+    EXPECT_EQ(fontCombo->completer()->filterMode(), Qt::MatchContains);
+    EXPECT_EQ(fontCombo->completer()->completionMode(),
+              QCompleter::PopupCompletion);
+
+    QString family;
+    for (int i = 0; i < fontCombo->count(); ++i) {
+        if (fontCombo->itemText(i).size() >= 5) {
+            family = fontCombo->itemText(i);
+            break;
+        }
+    }
+    ASSERT_FALSE(family.isEmpty());
+    const QString fragment = family.mid(1, 3).toLower();
+    fontCombo->completer()->setCompletionPrefix(fragment);
+    bool foundTypedMatch = false;
+    auto* matches = fontCombo->completer()->completionModel();
+    for (int row = 0; row < matches->rowCount(); ++row) {
+        if (matches->index(row, 0).data().toString().compare(
+                family, Qt::CaseInsensitive) == 0) {
+            foundTypedMatch = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(foundTypedMatch);
+
+    fontCombo->setCurrentText(family);
+    emit fontCombo->textActivated(family);
+    EXPECT_EQ(layer->fontFamily(), family.toStdString());
+}
+
+TEST(PropertiesPanel, MultiSelectionShotChangeSurvivesClearedBinding)
+{
+    rt::Timeline timeline;
+    rt::Track* videoTrack = timeline.addVideoTrack("V1");
+    ASSERT_NE(videoTrack, nullptr);
+
+    auto firstOwned = std::make_unique<rt::VideoClip>();
+    firstOwned->setDuration(48000);
+    firstOwned->setGroupId(42);
+    firstOwned->setShotName("Old Shot");
+    auto* first = static_cast<rt::VideoClip*>(
+        videoTrack->addClip(std::move(firstOwned)));
+    ASSERT_NE(first, nullptr);
+
+    auto secondOwned = std::make_unique<rt::VideoClip>();
+    secondOwned->setTimelineIn(48000);
+    secondOwned->setDuration(48000);
+    secondOwned->setGroupId(42);
+    secondOwned->setShotName("Old Shot");
+    auto* second = static_cast<rt::VideoClip*>(
+        videoTrack->addClip(std::move(secondOwned)));
+    ASSERT_NE(second, nullptr);
+
+    rt::PropertiesPanel panel;
+    panel.setTimeline(&timeline);
+    panel.clearClip(); // Reproduces marquee/select-all after an empty selection.
+    panel.setMultiSelection({first, second});
+
+    QComboBox* shotCombo = nullptr;
+    for (auto* combo : panel.findChildren<QComboBox*>()) {
+        if (combo->toolTip() == QStringLiteral("Select a camera shot preset")) {
+            shotCombo = combo;
+            break;
+        }
+    }
+    ASSERT_NE(shotCombo, nullptr);
+    shotCombo->addItem(QStringLiteral("New Shot"));
+    shotCombo->setCurrentIndex(shotCombo->count() - 1);
+
+    uint64_t requestedGroup = 0;
+    std::string requestedShot;
+    QObject::connect(&panel, &rt::PropertiesPanel::shotSwitchRequested,
+                     [&requestedGroup, &requestedShot](
+                         uint64_t groupId, const std::string& shotName) {
+        requestedGroup = groupId;
+        requestedShot = shotName;
+    });
+
+    emit shotCombo->activated(shotCombo->currentIndex());
+
+    EXPECT_EQ(requestedGroup, 42u);
+    EXPECT_EQ(requestedShot, "New Shot");
+}
+
 TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
 {
     rt::GraphicClip clip;

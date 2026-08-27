@@ -486,6 +486,19 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
         ++sectionCount;
     }
 
+    // ── Section: Per-project workspace state ─────────────────────────────
+    // Keep this separate from sequence content so future UI state can evolve
+    // without changing the timeline record layout.
+    {
+        BinaryWriter sec;
+        const auto& openIndices = project.openSequenceIndices();
+        sec.writeU32(static_cast<uint32_t>(openIndices.size()));
+        for (size_t index : openIndices)
+            sec.writeU32(static_cast<uint32_t>(index));
+        out.beginSection(Section_WorkspaceState, sec.data());
+        ++sectionCount;
+    }
+
     // ── Patch section count ─────────────────────────────────────────────
     auto& d = const_cast<std::vector<uint8_t>&>(out.data());
     d[sectionCountPos]     = static_cast<uint8_t>(sectionCount);
@@ -538,6 +551,8 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
 
     auto project = std::make_unique<Project>();
     bool hasSequencesSection = false;  // Track whether v4 multi-sequence section exists
+    bool hasWorkspaceStateSection = false;
+    std::vector<size_t> savedOpenSequenceIndices;
 
     // ── Read sections ───────────────────────────────────────────────────
     for (uint32_t s = 0; s < sectionCount; ++s)
@@ -984,6 +999,16 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
             break;
         }
 
+        case Section_WorkspaceState: {
+            const uint32_t openCount = sr.readCount(kMaxSequences, 4);
+            savedOpenSequenceIndices.clear();
+            savedOpenSequenceIndices.reserve(openCount);
+            for (uint32_t i = 0; i < openCount && sr.ok(); ++i)
+                savedOpenSequenceIndices.push_back(sr.readU32());
+            hasWorkspaceStateSection = true;
+            break;
+        }
+
         default:
             spdlog::warn("ProjectSerializer: unknown section tag 0x{:02X}, skipping", tag);
             break;
@@ -1011,6 +1036,20 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
         for (size_t si = 0; si < project->sequenceCount(); ++si)
             if (Timeline* tl = project->sequence(si))
                 tl->setSettings(project->defaultSettings());
+    }
+
+    // Projects written before v43 had no persisted tab state and historically
+    // opened every sequence. Preserve that behavior for old files; new files
+    // restore the exact saved subset. The setter also filters stale indices
+    // and guarantees at least the active sequence remains open.
+    if (hasWorkspaceStateSection) {
+        project->setOpenSequenceIndices(std::move(savedOpenSequenceIndices));
+    } else {
+        std::vector<size_t> allSequenceIndices;
+        allSequenceIndices.reserve(project->sequenceCount());
+        for (size_t i = 0; i < project->sequenceCount(); ++i)
+            allSequenceIndices.push_back(i);
+        project->setOpenSequenceIndices(std::move(allSequenceIndices));
     }
 
     const int migratedMaskCount = migrateLegacyMasks(*project);

@@ -853,7 +853,8 @@ void PropertiesPanel::populateFromGraphic()
     }
     if (tl) {
         m_gfxTextEdit->setText(QString::fromStdString(tl->text()));
-        m_gfxFontFamilyEdit->setText(QString::fromStdString(tl->fontFamily()));
+        m_gfxFontFamilyCombo->setCurrentText(
+            QString::fromStdString(tl->fontFamily()));
         m_gfxFontSizeSpin->setValue(static_cast<double>(tl->fontSize()));
         m_gfxFontWeightSpin->setValue(tl->fontWeight());
         m_gfxItalicCheck->setChecked(tl->isItalic());

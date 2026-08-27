@@ -30,6 +30,11 @@
 #include "spine/ModelManager.h"
 #include "spine/ShotPreset.h"
 #include "project/Project.h"
+#include "panels/audio/AudioSync.h"
+#include "panels/audio/VoiceGenerationPanel.h"
+#include "panels/audio/VoiceGenerationService.h"
+#include "panels/project/ProjectBin.h"
+#include "PathUtils.h"
 
 #include <QDockWidget>
 
@@ -126,11 +131,44 @@ void TimelineWorkspace::setShotPresetManager(ShotPresetManager* mgr) {
 
 void TimelineWorkspace::setProject(Project* project)
 {
+    const bool projectChanged = (m_project != project);
     m_project = project;
+    if (projectChanged) {
+        m_openSequenceTabs.clear();
+        m_tabToSeq.clear();
+        if (project) {
+            for (size_t index : project->openSequenceIndices())
+                m_openSequenceTabs.insert(index);
+        }
+    }
     if (m_compositeService) m_compositeService->setProject(project);
     if (m_audioPlayback) m_audioPlayback->setProject(project);
     if (m_sourceMonitor) m_sourceMonitor->setSequenceProject(project);
+    if (m_voiceGenerationService) m_voiceGenerationService->setProject(project);
     refreshSequenceTabs();
+}
+
+void TimelineWorkspace::setVoiceGenerationService(VoiceGenerationService* service) noexcept
+{
+    m_voiceGenerationService = service;
+    if (m_voiceGenerationService) m_voiceGenerationService->setProject(m_project);
+}
+
+void TimelineWorkspace::setVoiceScriptSource(AudioSync* audioSync) noexcept
+{
+    m_voiceScriptSource = audioSync;
+    if (m_voiceGenerationPanel) m_voiceGenerationPanel->setAudioSync(audioSync);
+}
+
+void TimelineWorkspace::importApprovedVoiceClip(const QString& outputPath)
+{
+    if (outputPath.isEmpty()) return;
+    if (m_projectBin) {
+        m_projectBin->addFilesToNamedBin(
+            {utf8ToPath(outputPath.toUtf8().toStdString())},
+            QStringLiteral("Generated VO"));
+    }
+    if (m_project) m_project->setModified(true);
 }
 
 void TimelineWorkspace::cancelPendingDefaultLayoutReset()

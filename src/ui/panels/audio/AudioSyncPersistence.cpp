@@ -476,6 +476,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
     }
     if (!m_clips.empty() && m_syncDone)
         showAudioSidePanel(3);
+    emit voiceContextChanged();
 }
 
 void AudioSync::restoreAudioPaths(const QString& projectName)
@@ -506,6 +507,7 @@ void AudioSync::restoreAudioPaths(const QString& projectName)
         }
         spdlog::info("AudioSync::restoreAudioPaths: supplemented {} paths from QSettings",
                      m_audioPaths.size());
+        emit voiceContextChanged();
     }
 }
 
@@ -896,6 +898,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
                 m_cardsDirty = true;
         }
         if (!m_clips.empty() && m_syncDone) showAudioSidePanel(3);
+        emit voiceContextChanged();
 
         return;
     }
@@ -1044,6 +1047,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
             m_cardsDirty = true;
     }
     if (!m_clips.empty() && m_syncDone) showAudioSidePanel(3);
+    emit voiceContextChanged();
 }
 
 } // namespace rt

@@ -867,6 +867,7 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
         spdlog::info("AudioSync: Loaded script session '{}' with {} lines",
                      session.displayName, m_script->lineCount());
         emit scriptLoaded(static_cast<int>(m_script->lineCount()));
+        emit voiceContextChanged();
         return true;
     } catch (const std::exception& e) {
         spdlog::error("AudioSync: Failed to load script: {}", e.what());
@@ -1093,6 +1094,13 @@ QStringList AudioSync::scriptCharacters() const
     if (m_script) {
         for (const auto& ch : m_script->characters)
             result.append(QString::fromStdString(ch));
+    }
+    // MATCH can retain valid character-tagged clips in restored/legacy
+    // projects even if the parsed Script character cache is incomplete.
+    for (const auto& clip : m_clips) {
+        const QString character = QString::fromUtf8(clip.character).trimmed();
+        if (!character.isEmpty() && !result.contains(character, Qt::CaseInsensitive))
+            result.append(character);
     }
     return result;
 }

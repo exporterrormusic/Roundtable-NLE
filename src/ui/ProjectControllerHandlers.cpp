@@ -834,6 +834,11 @@ void ProjectController::onSaveProject()
         return;
     }
 
+    // Snapshot live UI state at the save boundary. This also covers an
+    // immediate Ctrl+S before any queued tab-bar repaint/refresh runs.
+    if (m_mw->timelineWorkspace())
+        m_mw->timelineWorkspace()->syncSequenceTabStateToProject();
+
     auto path = m_mw->currentProject()->filePath();
     if (path.empty()) {
         onSaveProjectAs();
@@ -914,6 +919,9 @@ void ProjectController::onSaveProjectAs()
         m_mw->statusBar()->showMessage("No project to save", 3000);
         return;
     }
+
+    if (m_mw->timelineWorkspace())
+        m_mw->timelineWorkspace()->syncSequenceTabStateToProject();
 
     QString path = QFileDialog::getSaveFileName(
         m_mw, "Save Project As", projectsDirectory(),

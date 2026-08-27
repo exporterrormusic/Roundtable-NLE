@@ -39,6 +39,7 @@ Project::Project(Project&& o) noexcept
     , m_settings(std::move(o.m_settings))
     , m_sequences(std::move(o.m_sequences))
     , m_activeSequence(o.m_activeSequence)
+    , m_openSequenceIndices(std::move(o.m_openSequenceIndices))
     , m_assets(std::move(o.m_assets))
     , m_commands(std::move(o.m_commands))
     , m_binFiles(std::move(o.m_binFiles))
@@ -57,6 +58,7 @@ Project& Project::operator=(Project&& o) noexcept
         m_settings        = std::move(o.m_settings);
         m_sequences       = std::move(o.m_sequences);
         m_activeSequence  = o.m_activeSequence;
+        m_openSequenceIndices = std::move(o.m_openSequenceIndices);
         m_assets          = std::move(o.m_assets);
         m_commands        = std::move(o.m_commands);
         m_binFiles        = std::move(o.m_binFiles);
@@ -171,6 +173,7 @@ bool Project::removeSequence(size_t index)
         m_sequences[0] = std::make_unique<Timeline>();
         m_sequences[0]->setName(nextSequenceName());
         m_activeSequence = 0;
+        m_openSequenceIndices = {0};
         m_modified = true;
         spdlog::info("Project: replaced last sequence with new empty sequence");
         return true;
@@ -179,11 +182,22 @@ bool Project::removeSequence(size_t index)
     std::string name = m_sequences[index]->name();
     m_sequences.erase(m_sequences.begin() + static_cast<ptrdiff_t>(index));
 
+    std::vector<size_t> adjustedOpen;
+    adjustedOpen.reserve(m_openSequenceIndices.size());
+    for (size_t openIndex : m_openSequenceIndices) {
+        if (openIndex == index) continue;
+        adjustedOpen.push_back(openIndex > index ? openIndex - 1 : openIndex);
+    }
+
     // Adjust active index if needed
     if (m_activeSequence >= m_sequences.size())
         m_activeSequence = m_sequences.size() - 1;
     else if (m_activeSequence > index)
         --m_activeSequence;
+
+    if (adjustedOpen.empty())
+        adjustedOpen.push_back(m_activeSequence);
+    m_openSequenceIndices = std::move(adjustedOpen);
 
     m_modified = true;
     spdlog::info("Project: removed sequence '{}' (remaining: {})", name, m_sequences.size());
@@ -198,10 +212,21 @@ std::unique_ptr<Timeline> Project::extractSequence(size_t index)
     auto seq = std::move(m_sequences[index]);
     m_sequences.erase(m_sequences.begin() + static_cast<ptrdiff_t>(index));
 
+    std::vector<size_t> adjustedOpen;
+    adjustedOpen.reserve(m_openSequenceIndices.size());
+    for (size_t openIndex : m_openSequenceIndices) {
+        if (openIndex == index) continue;
+        adjustedOpen.push_back(openIndex > index ? openIndex - 1 : openIndex);
+    }
+
     if (m_activeSequence >= m_sequences.size())
         m_activeSequence = m_sequences.size() - 1;
     else if (m_activeSequence > index)
         --m_activeSequence;
+
+    if (adjustedOpen.empty())
+        adjustedOpen.push_back(m_activeSequence);
+    m_openSequenceIndices = std::move(adjustedOpen);
 
     m_modified = true;
     spdlog::info("Project: extracted sequence '{}' (remaining: {})", seq->name(), m_sequences.size());
@@ -214,11 +239,35 @@ void Project::insertSequence(size_t index, std::unique_ptr<Timeline> seq)
     if (index > m_sequences.size()) index = m_sequences.size();
     std::string name = seq->name();
     m_sequences.insert(m_sequences.begin() + static_cast<ptrdiff_t>(index), std::move(seq));
+    for (size_t& openIndex : m_openSequenceIndices) {
+        if (openIndex >= index)
+            ++openIndex;
+    }
     // Adjust active index if insertion is before/at it
     if (m_activeSequence >= index && m_sequences.size() > 1)
         ++m_activeSequence;
     m_modified = true;
     spdlog::info("Project: inserted sequence '{}' at index {} (total: {})", name, index, m_sequences.size());
+}
+
+void Project::setOpenSequenceIndices(std::vector<size_t> indices)
+{
+    std::erase_if(indices, [this](size_t index) {
+        return index >= m_sequences.size();
+    });
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+
+    if (indices.empty() && !m_sequences.empty()) {
+        const size_t fallback = m_activeSequence < m_sequences.size()
+                              ? m_activeSequence : 0;
+        indices.push_back(fallback);
+    }
+
+    if (indices != m_openSequenceIndices) {
+        m_openSequenceIndices = std::move(indices);
+        m_modified.store(true, std::memory_order_relaxed);
+    }
 }
 
 std::string Project::nextSequenceName() const

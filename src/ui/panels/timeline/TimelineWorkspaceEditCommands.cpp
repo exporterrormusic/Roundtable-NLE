@@ -97,6 +97,14 @@ void TimelineWorkspace::openSequenceTab(size_t index)
 {
     if (!m_project || index >= m_project->sequenceCount()) return;
     m_openSequenceTabs.insert(index);
+    syncSequenceTabStateToProject();
+}
+
+void TimelineWorkspace::syncSequenceTabStateToProject()
+{
+    if (!m_project) return;
+    m_project->setOpenSequenceIndices(
+        std::vector<size_t>(m_openSequenceTabs.begin(), m_openSequenceTabs.end()));
 }
 
 void TimelineWorkspace::refreshSequenceTabs()
@@ -114,7 +122,7 @@ void TimelineWorkspace::refreshSequenceTabs()
             ++it;
     }
 
-    // Seed the open set with all sequences on first use (project load)
+    // Defensive fallback for a new/legacy project with no usable saved state.
     if (m_openSequenceTabs.empty()) {
         for (size_t i = 0; i < m_project->sequenceCount(); ++i)
             m_openSequenceTabs.insert(i);
@@ -136,6 +144,11 @@ void TimelineWorkspace::refreshSequenceTabs()
             m_project->setActiveSequence(activeIdx);
         }
     }
+
+    // Keep the model in sync with tab open/close actions. ProjectSerializer
+    // persists this state, and Project marks a genuine change dirty so a
+    // normal save/autosave captures it.
+    syncSequenceTabStateToProject();
 
     int desiredActiveTab = -1;
     for (size_t t = 0; t < desired.size(); ++t) {

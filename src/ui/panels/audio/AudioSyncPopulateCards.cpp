@@ -691,6 +691,7 @@ void AudioSync::populateCards()
                         updateCardMatchStyle(clipIdx);
                         populateLeftList();
                         updateWorkflowState();
+                        emit voiceContextChanged();
                     };
                     if (m_commandStack) {
                         m_commandStack->execute(std::make_unique<LambdaCommand>(

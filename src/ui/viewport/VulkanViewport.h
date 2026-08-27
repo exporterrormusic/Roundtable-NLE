@@ -115,6 +115,14 @@ public:
     /// Access the underlying QWindow (for event filter installation).
     [[nodiscard]] QWindow* nativeWindow() const noexcept { return m_nativeWindow; }
 
+    /// The native viewport owns left-button (inline text routing) and
+    /// middle-button (reset view) double-clicks. Handling both in one native
+    /// event filter avoids platform-dependent filter-chain fall-through.
+    [[nodiscard]] static bool ownsNativeDoubleClick(
+        Qt::MouseButton button) noexcept {
+        return button == Qt::LeftButton || button == Qt::MiddleButton;
+    }
+
     /// Apply a cursor to the embedded Vulkan surface.  Setting it only on
     /// the wrapped QWindow is unreliable for a createWindowContainer'd
     /// native surface, so this also sets it on the container widget and
@@ -135,6 +143,12 @@ public:
 
 signals:
     void frameDisplayed();
+
+    /// Emitted when the embedded native surface receives a left double-click.
+    /// The transform overlay maps the global point into sequence space and
+    /// starts Premiere-style inline title editing.
+    void nativeLeftDoubleClicked(QPointF globalPosition,
+                                 Qt::KeyboardModifiers modifiers);
 
     /// Emitted when the viewport zoom level changes.
     void viewZoomChanged(float zoom);

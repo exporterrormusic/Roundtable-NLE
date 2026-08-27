@@ -750,6 +750,7 @@ void AudioSync::runAutoSync()
     spdlog::info("AudioSync: Auto-sync matched {}/{} segments{}",
                  matchCount, scopeTotal,
                  hasCharFilter ? " (filtered: " + filterCharQt.toStdString() + ")" : "");
+    emit voiceContextChanged();
     emit syncCompleted(matchCount, scopeTotal);
 }
 

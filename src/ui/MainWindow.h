@@ -60,6 +60,8 @@ namespace rt {
 // Forward declarations
 class UpdateChecker;
 class AudioSync;
+class VoiceGenerationPanel;
+class VoiceGenerationService;
 class CharacterBrowser;
 class CharacterShotPanel;
 class CommandStack;
@@ -176,6 +178,7 @@ public:
     // Top-level pages
     [[nodiscard]] ProjectPanel*         projectPanel()        const noexcept { return m_projectPanel; }
     [[nodiscard]] AudioSync*            audioSync()           const noexcept { return m_audioSync; }
+    [[nodiscard]] VoiceGenerationPanel* voiceGenerationPanel() const noexcept { return m_voiceGenerationPanel; }
     [[nodiscard]] CharacterShotPanel*   characterShotPanel()  const noexcept { return m_characterShotPanel; }
     [[nodiscard]] CharacterBrowser*     characterBrowser()    const noexcept;
     [[nodiscard]] ShotComposer*         shotComposer()        const noexcept;
@@ -358,6 +361,8 @@ private:
     // ── Pages (owned by QStackedWidget) ─────────────────────────────────
     ProjectPanel*        m_projectPanel{nullptr};
     AudioSync*           m_audioSync{nullptr};
+    VoiceGenerationPanel* m_voiceGenerationPanel{nullptr};
+    VoiceGenerationService* m_voiceGenerationService{nullptr};
     CharacterShotPanel*  m_characterShotPanel{nullptr};
     TimelineWorkspace*   m_timelineWorkspace{nullptr};
     ExportPanel*         m_exportPanel{nullptr};

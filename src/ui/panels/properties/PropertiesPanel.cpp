@@ -127,6 +127,30 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
     // single representative `m_clip` we pick below for the section bindings.
     m_multiSelection = clips;
 
+    // Keep the stable binding in sync with whichever clip represents the
+    // multi-selection.  Shot/caption edits call canMutateBoundClip(), which
+    // resolves m_clipId back through the timeline before making a change.  If
+    // this ID is left over from the previous single selection (or is zero
+    // after clearClip()), a valid multi-selection is incorrectly treated as
+    // stale and the edit is silently ignored.
+    auto bindRepresentative = [this](Clip* representative) {
+        m_clip = representative;
+        m_clipId = representative ? representative->id() : 0;
+        m_track = nullptr;
+
+        // Resolve the owning track now when possible.  resolveBoundClip()
+        // will repeat this validation immediately before an edit, so this is
+        // primarily useful for keeping the panel's current binding coherent.
+        if (m_timeline && m_clipId != 0) {
+            Track* resolvedTrack = nullptr;
+            if (Clip* resolved = rt::resolveClipById(
+                    m_timeline, m_clipId, &resolvedTrack)) {
+                m_clip = resolved;
+                m_track = resolvedTrack;
+            }
+        }
+    };
+
     // Check if all clips share the same non-zero groupId
     uint64_t commonGroup = clips.front()->groupId();
     bool allSameGroup = (commonGroup != 0);
@@ -156,8 +180,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
     for (auto* c : clips)
         if (!c || !c->isCaption()) { allCaptions = false; break; }
     if (allCaptions) {
-        m_clip = clips.front();
-        m_track = nullptr;
+        bindRepresentative(clips.front());
         m_spineClip = nullptr;
         if (m_captionSection) m_captionSection->setVisible(true);
         m_headerLabel->setText(QString("%1 captions selected").arg(clips.size()));
@@ -182,8 +205,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
 
     if (allSameGroup) {
         // Use the first clip as representative for shot name / group info
-        m_clip = clips.front();
-        m_track = nullptr;
+        bindRepresentative(clips.front());
         m_spineClip = nullptr;
 
         m_headerLabel->setText(QString("%1 clips selected")
@@ -213,7 +235,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
             if (c->clipType() == ClipType::Video) {
                 auto* vc = static_cast<VideoClip*>(c);
                 if (vc->isVideoCharacter()) {
-                    m_clip = c;
+                    bindRepresentative(c);
                     m_characterSection->setVisible(true);
                     m_animationSection->setVisible(true);
                     // Save group header — populateFromClip overwrites it
@@ -225,7 +247,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
                     break;
                 }
             } else if (c->clipType() == ClipType::Spine) {
-                m_clip = c;
+                bindRepresentative(c);
                 m_spineClip = static_cast<SpineClip*>(c);
                 m_characterSection->setVisible(true);
                 m_animationSection->setVisible(true);
@@ -249,8 +271,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
         for (auto* c : clips) {
             if (c && c->isVisual()) { visualRep = c; break; }
         }
-        m_clip = visualRep;
-        m_track = nullptr;
+        bindRepresentative(visualRep);
         m_spineClip = (visualRep && visualRep->clipType() == ClipType::Spine)
                           ? static_cast<SpineClip*>(visualRep)
                           : nullptr;

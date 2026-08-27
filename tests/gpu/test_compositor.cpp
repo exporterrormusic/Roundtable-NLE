@@ -265,8 +265,51 @@ TEST_F(CompositorTest, AdjustmentStackIsScheduledOnceAtBoundary)
     ASSERT_EQ(layers.size(), 3u);
     EXPECT_TRUE(layers[2].isAdjustmentLayer);
     EXPECT_EQ(layers[2].effects.size(), 2u);
+    EXPECT_FLOAT_EQ(layers[2].opacity, 1.0f);
     EXPECT_TRUE(layers[0].effects.empty());
     EXPECT_TRUE(layers[1].effects.empty());
+}
+
+TEST_F(CompositorTest, AdjustmentCrossDissolveEvaluatesEffectStrength)
+{
+    rt::AdjustmentClip adjustment;
+    adjustment.opacity().setDefaultValue(0.8f);
+
+    rt::Transition fadeIn;
+    fadeIn.type = rt::TransitionType::CrossDissolve;
+    fadeIn.duration = 100;
+    fadeIn.editPointTick = 1000;
+    fadeIn.leftClipId = 0;
+    fadeIn.rightClipId = adjustment.id();
+
+    const std::vector<rt::Transition> incoming{fadeIn};
+    EXPECT_FLOAT_EQ(rt::adjustmentLayerStrengthAtTick(
+                        adjustment, 0, 1000, incoming),
+                    0.0f);
+    EXPECT_NEAR(rt::adjustmentLayerStrengthAtTick(
+                    adjustment, 50, 1050, incoming),
+                0.4f, 0.0001f);
+    EXPECT_NEAR(rt::adjustmentLayerStrengthAtTick(
+                    adjustment, 100, 1100, incoming),
+                0.8f, 0.0001f);
+
+    rt::Transition fadeOut;
+    fadeOut.type = rt::TransitionType::CrossDissolve;
+    fadeOut.duration = 100;
+    fadeOut.editPointTick = 2000;
+    fadeOut.leftClipId = adjustment.id();
+    fadeOut.rightClipId = 0;
+
+    const std::vector<rt::Transition> outgoing{fadeOut};
+    EXPECT_NEAR(rt::adjustmentLayerStrengthAtTick(
+                    adjustment, 900, 1900, outgoing),
+                0.8f, 0.0001f);
+    EXPECT_NEAR(rt::adjustmentLayerStrengthAtTick(
+                    adjustment, 950, 1950, outgoing),
+                0.4f, 0.0001f);
+    EXPECT_FLOAT_EQ(rt::adjustmentLayerStrengthAtTick(
+                        adjustment, 1000, 2000, outgoing),
+                    0.0f);
 }
 
 // ── CompositorStats defaults ────────────────────────────────────────────────

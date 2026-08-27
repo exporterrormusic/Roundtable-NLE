@@ -146,3 +146,4 @@ add_roundtable_test(test_keyframe_editor LIBS roundtable_ui roundtable_core USES
 add_roundtable_test(test_main_window     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_history_panel   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_voice_generation LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)

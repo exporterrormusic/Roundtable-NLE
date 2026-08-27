@@ -12,6 +12,13 @@
 #include <filesystem>
 #include <fstream>
 
+#ifdef ROUNDTABLE_HAS_FFMPEG
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+}
+#endif
+
 #include "audio/AudioFile.h"
 #include "audio/AudioEngine.h"
 #include "playback/AVSyncClock.h"
@@ -84,6 +91,92 @@ bool writeWavFloat32(const std::filesystem::path& path,
 
     return file.good();
 }
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+// Matroska normally uses a 1 ms stream time base.  That deliberately makes
+// the PTS of 1024-sample audio packets coarse enough to exercise AudioFile's
+// region decoder without checking a binary fixture into the repository.
+bool writeCoarseTimestampPcmMatroska(const std::filesystem::path& path,
+                                     const std::vector<float>& samples,
+                                     uint16_t channels, uint32_t sampleRate)
+{
+    if (channels == 0 || sampleRate == 0 || samples.empty() ||
+        (samples.size() % channels) != 0) {
+        return false;
+    }
+
+    AVFormatContext* format = nullptr;
+    if (avformat_alloc_output_context2(
+            &format, nullptr, "matroska", path.string().c_str()) < 0 || !format) {
+        return false;
+    }
+
+    bool ioOpen = false;
+    bool ok = false;
+    AVStream* stream = avformat_new_stream(format, nullptr);
+    if (!stream) goto cleanup;
+
+    stream->time_base = AVRational{1, 1000};
+    stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    stream->codecpar->codec_id = AV_CODEC_ID_PCM_S16LE;
+    stream->codecpar->format = AV_SAMPLE_FMT_S16;
+    stream->codecpar->sample_rate = static_cast<int>(sampleRate);
+    stream->codecpar->bits_per_coded_sample = 16;
+    stream->codecpar->bits_per_raw_sample = 16;
+    stream->codecpar->block_align = static_cast<int>(channels * sizeof(int16_t));
+    stream->codecpar->bit_rate = static_cast<int64_t>(sampleRate) *
+                                 stream->codecpar->block_align * 8;
+    av_channel_layout_default(&stream->codecpar->ch_layout, channels);
+
+    if (!(format->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&format->pb, path.string().c_str(), AVIO_FLAG_WRITE) < 0)
+            goto cleanup;
+        ioOpen = true;
+    }
+    if (avformat_write_header(format, nullptr) < 0) goto cleanup;
+
+    {
+        constexpr int64_t kPacketFrames = 1024;
+        const int64_t totalFrames = static_cast<int64_t>(samples.size() / channels);
+        const AVRational sampleTimeBase{1, static_cast<int>(sampleRate)};
+        for (int64_t frameStart = 0; frameStart < totalFrames;
+             frameStart += kPacketFrames) {
+            const int64_t packetFrames =
+                std::min<int64_t>(kPacketFrames, totalFrames - frameStart);
+            AVPacket* packet = av_packet_alloc();
+            if (!packet || av_new_packet(
+                    packet, static_cast<int>(packetFrames * channels * sizeof(int16_t))) < 0) {
+                av_packet_free(&packet);
+                goto cleanup;
+            }
+
+            auto* dst = reinterpret_cast<int16_t*>(packet->data);
+            for (int64_t i = 0; i < packetFrames * channels; ++i) {
+                const float value = std::clamp(
+                    samples[static_cast<size_t>(frameStart * channels + i)],
+                    -1.0f, 1.0f);
+                dst[i] = static_cast<int16_t>(std::lrint(value * 32767.0f));
+            }
+
+            packet->stream_index = stream->index;
+            packet->pts = packet->dts = av_rescale_q(
+                frameStart, sampleTimeBase, stream->time_base);
+            packet->duration = av_rescale_q(
+                packetFrames, sampleTimeBase, stream->time_base);
+            const int writeResult = av_interleaved_write_frame(format, packet);
+            av_packet_free(&packet);
+            if (writeResult < 0) goto cleanup;
+        }
+    }
+
+    ok = av_write_trailer(format) >= 0;
+
+cleanup:
+    if (ioOpen) avio_closep(&format->pb);
+    avformat_free_context(format);
+    return ok;
+}
+#endif
 
 // Temp directory for test files
 std::filesystem::path testTempDir()
@@ -590,6 +683,42 @@ TEST(AudioFileTest, ReadRegion)
     file.close();
     std::filesystem::remove(path);
 }
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+TEST(AudioFileTest, ReadRegionResampledKeepsCoarseTimestampPcmContinuous)
+{
+    constexpr uint32_t sampleRate = 48000;
+    constexpr uint16_t channels = 2;
+    auto sine = generateSine(1000.0f, sampleRate, 1.0, channels);
+    auto path = testTempDir() / "test_coarse_timestamp_pcm.mka";
+    ASSERT_TRUE(writeCoarseTimestampPcmMatroska(
+        path, sine, channels, sampleRate));
+
+    AudioFile sequentialFile;
+    ASSERT_TRUE(sequentialFile.open(path));
+    ASSERT_EQ(sequentialFile.backend(), AudioBackend::FFmpeg);
+    const auto sequential = sequentialFile.readAll();
+
+    AudioFile regionFile;
+    ASSERT_TRUE(regionFile.open(path));
+    std::vector<float> region;
+    constexpr int64_t requestedFrames = 40000;
+    ASSERT_EQ(regionFile.readRegionResampled(
+        0, requestedFrames, sampleRate, region), requestedFrames);
+    ASSERT_GE(sequential.size(), region.size());
+
+    float maxDifference = 0.0f;
+    for (size_t i = 0; i < region.size(); ++i) {
+        maxDifference = std::max(
+            maxDifference, std::abs(region[i] - sequential[i]));
+    }
+    EXPECT_LT(maxDifference, 1.0e-6f);
+
+    sequentialFile.close();
+    regionFile.close();
+    std::filesystem::remove(path);
+}
+#endif
 
 TEST(AudioFileTest, ReadRegionClamp)
 {

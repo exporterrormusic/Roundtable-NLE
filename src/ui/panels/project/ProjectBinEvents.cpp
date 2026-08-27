@@ -157,7 +157,8 @@ ProjectBin::captureClipboardEntry(QTreeWidgetItem* item) const
     } else {
         e.displayName = item->text(0);
     }
-    e.generatedAsset = isColorMatte(e.filePath);
+    e.generatedAsset = isColorMatte(e.filePath)
+        || isBarsAndTone(e.filePath);
     return e;
 }
 

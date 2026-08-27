@@ -92,6 +92,15 @@ public:
     /// Generate a unique sequence name (e.g. "Sequence 2", "Sequence 3").
     [[nodiscard]] std::string nextSequenceName() const;
 
+    /// Sequence indices currently open as timeline tabs. This is project UI
+    /// state, persisted so reopening a project restores only the tabs the user
+    /// left open. The collection is always normalized and non-empty.
+    [[nodiscard]] const std::vector<size_t>& openSequenceIndices() const noexcept
+    {
+        return m_openSequenceIndices;
+    }
+    void setOpenSequenceIndices(std::vector<size_t> indices);
+
     // ── Assets ──────────────────────────────────────────────────────────
     [[nodiscard]] AssetDatabase* assets() noexcept { return m_assets.get(); }
     [[nodiscard]] const AssetDatabase* assets() const noexcept { return m_assets.get(); }
@@ -161,6 +170,7 @@ private:
     Settings                       m_settings;
     std::vector<std::unique_ptr<Timeline>> m_sequences;
     size_t                         m_activeSequence{0};
+    std::vector<size_t>            m_openSequenceIndices{0};
     std::unique_ptr<AssetDatabase> m_assets;
     std::unique_ptr<CommandStack>  m_commands;
     std::vector<std::filesystem::path> m_binFiles;

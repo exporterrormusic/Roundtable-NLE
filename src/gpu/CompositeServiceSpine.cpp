@@ -301,16 +301,13 @@ void CompositeService::resyncSpineClip(SpineClip* clip)
         st.appliedSpeed   != clip->animationSpeed();
     if (!needsApply) return;
 
-    // Re-apply settings (cheap: just retargets the AnimationState tracks,
-    // no skeleton/atlas reload). Mirrors SpineEngine::loadFromClip().
-    if (!clip->animationName().empty())
-        st.engine.animation().setBodyAnimation(clip->animationName(),
-                                                clip->isLooping());
+    // Replace the track graph atomically. A normal Spine setAnimation() keeps
+    // the outgoing entry as mixingFrom; absolute-time timeline evaluation
+    // does not advance that mix clock, so old bones/attachments can remain
+    // partially applied after undo (seen as Kilo's eye layers separating).
+    st.engine.animation().replacePlaybackState(
+        clip->animationName(), clip->isLooping(), clip->isTalking());
     st.engine.animation().setSpeed(clip->animationSpeed());
-    if (clip->isTalking())
-        st.engine.animation().startTalking();
-    else
-        st.engine.animation().stopTalking();
 
     st.appliedAnim    = clip->animationName();
     st.appliedLooping = clip->isLooping();

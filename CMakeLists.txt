@@ -178,6 +178,14 @@ option(ROUNDTABLE_DEV_BUILD "Isolate dev build settings from installed version" 
 option(ROUNDTABLE_ENABLE_CRISPERWHISPER_PERSONAL
        "Enable the personal-use CrisperWhisper adapter" ON)
 
+# Fish S2 Pro's weights use the Fish Audio Research License, so the personal
+# adapter is a build capability just like CrisperWhisper. Public/commercial
+# packages can hide it by configuring this OFF without removing OmniVoice.
+option(ROUNDTABLE_ENABLE_FISH_S2_PERSONAL
+       "Enable the personal-use Fish S2 Pro voice adapter" ON)
+option(ROUNDTABLE_ENABLE_OMNIVOICE
+       "Enable the Apache-2.0 OmniVoice voice adapter" ON)
+
 
 # Native .shotanim runtime — ABANDONED; spine-cpp is the permanent production
 # renderer (the parked tools/native_engine/ sources were removed 2026-07-01;
@@ -196,6 +204,15 @@ add_compile_definitions(
     $<$<BOOL:${ROUNDTABLE_ENABLE_CRISPERWHISPER_PERSONAL}>:ROUNDTABLE_HAS_CRISPERWHISPER>
     ROUNDTABLE_CRISPERWHISPER_WORKER_PATH="${CMAKE_SOURCE_DIR}/src/core/ai/crisperwhisper_worker.py"
     ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe"
+    $<$<BOOL:${ROUNDTABLE_ENABLE_FISH_S2_PERSONAL}>:ROUNDTABLE_HAS_FISH_S2>
+    $<$<BOOL:${ROUNDTABLE_ENABLE_OMNIVOICE}>:ROUNDTABLE_HAS_OMNIVOICE>
+    ROUNDTABLE_VOICE_WORKER_PATH="${CMAKE_SOURCE_DIR}/src/core/ai/voice_generation_worker.py"
+    ROUNDTABLE_FISH_S2_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/fish-speech/.venv/Scripts/python.exe"
+    ROUNDTABLE_FISH_S2_ROOT="${CMAKE_SOURCE_DIR}/.voice-runtime/fish-speech"
+    ROUNDTABLE_FISH_S2_MODEL_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/fish-speech/checkpoints/s2-pro"
+    ROUNDTABLE_OMNIVOICE_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/omnivoice-src/.venv/Scripts/python.exe"
+    ROUNDTABLE_OMNIVOICE_ROOT="${CMAKE_SOURCE_DIR}/.voice-runtime/omnivoice-src"
+    ROUNDTABLE_OMNIVOICE_MODEL_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/models/omnivoice"
     $<$<BOOL:${CUDAToolkit_FOUND}>:ROUNDTABLE_HAS_CUDA>
     $<$<BOOL:${FFMPEG_FOUND}>:ROUNDTABLE_HAS_FFMPEG>
 )
@@ -309,6 +326,19 @@ if(FFMPEG_FOUND)
             COMMENT "Copying ${DLL_NAME}"
         )
     endforeach()
+    # Bars and Tone is generated through FFmpeg's lavfi sources. Ship the
+    # small command-line frontend beside the same runtime DLLs the app already
+    # bundles so the feature also works outside a source checkout.
+    if(EXISTS "${FFMPEG_BIN_DIR}/ffmpeg.exe")
+        add_custom_command(TARGET copy_ffmpeg_dlls POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${FFMPEG_BIN_DIR}/ffmpeg.exe"
+                    ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/
+            COMMENT "Copying ffmpeg.exe for generated media"
+        )
+        install(PROGRAMS "${FFMPEG_BIN_DIR}/ffmpeg.exe" DESTINATION bin)
+    endif()
+    install(FILES ${FFMPEG_DLLS} DESTINATION bin)
     # Keep deployment inside the app's build graph.  Passing both targets to
     # `cmake --build` makes the Visual Studio generator launch back-to-back
     # parallel MSBuild sessions, whose reusable nodes can race over .tlog files.

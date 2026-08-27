@@ -241,9 +241,16 @@ public:
     /// Prompts for color and name, generates a PNG, and imports it.
     void createColorMatte();
 
+    /// Create sequence-matched SMPTE HD bars with a stereo 1 kHz,
+    /// -12 dBFS reference tone and import the lossless generated media.
+    void createBarsAndTone();
+
     /// Whether a bin item path is a generated Color Matte asset
     /// (lives in a "Mattes" directory).
     [[nodiscard]] static bool isColorMatte(const std::filesystem::path& path);
+
+    /// Whether a bin item is a generated Bars and Tone media asset.
+    [[nodiscard]] static bool isBarsAndTone(const std::filesystem::path& path);
 
     /// Whether a bin item path is a synthetic Adjustment Layer entry
     /// (sentinel "<adjustments>/<name>.adj" — never an on-disk file).

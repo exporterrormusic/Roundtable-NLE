@@ -2,7 +2,8 @@
  * ProjectBinSequence.cpp — Sequence creation for ProjectBin.
  * Extracted from ProjectBin.cpp (modularization phase).
  *
- * Contains: createNewSequence, createSequenceFromMedia, createColorMatte
+ * Contains: createNewSequence, createSequenceFromMedia, createColorMatte,
+ * createBarsAndTone
  */
 
 #include "QtHelpers.h"
@@ -26,12 +27,25 @@
 #include "command/LambdaCommand.h"
 
 #include <QColorDialog>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QImage>
+#include <QProcess>
+#include <QProgressDialog>
 #include <QRegularExpression>
+#include <QSpinBox>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <spdlog/spdlog.h>
 
@@ -66,6 +80,17 @@ bool ProjectBin::isColorMatte(const std::filesystem::path& path)
         std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c){ return std::tolower(c); });
         if (s == "mattes") return true;
+    }
+    return false;
+}
+
+bool ProjectBin::isBarsAndTone(const std::filesystem::path& path)
+{
+    for (const auto& part : path) {
+        std::string s = pathToUtf8(part);
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c){ return std::tolower(c); });
+        if (s == "bars and tone") return true;
     }
     return false;
 }
@@ -415,6 +440,221 @@ void ProjectBin::createColorMatte()
     addFiles({mattePath});
     spdlog::info("ProjectBin: created color matte '{}' at {}",
                  name.toStdString(), pathToUtf8(mattePath));
+}
+
+// -----------------------------------------------------------------------------
+//  Bars and Tone (Premiere Pro-style)
+// -----------------------------------------------------------------------------
+
+void ProjectBin::createBarsAndTone()
+{
+    const Settings defaults = m_project ? m_project->settings() : Settings{};
+    const Resolution defaultResolution = defaults.resolution();
+
+    auto nameTaken = [this](const QString& candidate) {
+        if (!m_grid) return false;
+        for (const auto& item : m_grid->items()) {
+            if (item.isFolder) continue;
+            const QString existing = item.displayName.isEmpty()
+                ? QString::fromStdString(pathToUtf8(item.filePath.stem()))
+                : item.displayName;
+            if (existing.compare(candidate, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+    QString defaultName = QStringLiteral("Bars and Tone");
+    for (int suffix = 2; nameTaken(defaultName); ++suffix)
+        defaultName = QStringLiteral("Bars and Tone %1").arg(suffix);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("New Bars and Tone"));
+    dialog.setModal(true);
+    auto* form = new QFormLayout(&dialog);
+
+    auto* nameEdit = new QLineEdit(defaultName, &dialog);
+    auto* widthSpin = new QSpinBox(&dialog);
+    widthSpin->setRange(16, 16384);
+    widthSpin->setValue(static_cast<int>(defaultResolution.width));
+    auto* heightSpin = new QSpinBox(&dialog);
+    heightSpin->setRange(16, 16384);
+    heightSpin->setValue(static_cast<int>(defaultResolution.height));
+    auto* fpsSpin = new QDoubleSpinBox(&dialog);
+    fpsSpin->setRange(1.0, 240.0);
+    fpsSpin->setDecimals(3);
+    fpsSpin->setValue(defaults.frameRate());
+    fpsSpin->setSuffix(tr(" fps"));
+    auto* durationSpin = new QDoubleSpinBox(&dialog);
+    durationSpin->setRange(0.1, 3600.0);
+    durationSpin->setDecimals(1);
+    durationSpin->setValue(10.0);
+    durationSpin->setSuffix(tr(" sec"));
+    auto* sampleRateSpin = new QSpinBox(&dialog);
+    sampleRateSpin->setRange(8000, 192000);
+    sampleRateSpin->setSingleStep(1000);
+    sampleRateSpin->setValue(static_cast<int>(defaults.sampleRate()));
+    sampleRateSpin->setSuffix(tr(" Hz"));
+    auto* toneLabel = new QLabel(tr("1,000 Hz stereo at -12 dBFS"), &dialog);
+
+    form->addRow(tr("Name:"), nameEdit);
+    form->addRow(tr("Width:"), widthSpin);
+    form->addRow(tr("Height:"), heightSpin);
+    form->addRow(tr("Frame rate:"), fpsSpin);
+    form->addRow(tr("Duration:"), durationSpin);
+    form->addRow(tr("Audio sample rate:"), sampleRateSpin);
+    form->addRow(tr("Reference tone:"), toneLabel);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    nameEdit->selectAll();
+    nameEdit->setFocus();
+
+    if (dialog.exec() != QDialog::Accepted) return;
+    QString name = nameEdit->text().trimmed();
+    if (name.isEmpty()) return;
+
+    QString ffmpegPath;
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        appDir + QStringLiteral("/ffmpeg.exe"),
+        appDir + QStringLiteral("/../../../third_party/ffmpeg/bin/ffmpeg.exe"),
+        QStringLiteral("third_party/ffmpeg/bin/ffmpeg.exe"),
+        QStringLiteral("tools/ffmpeg/ffmpeg.exe")
+    };
+    for (const QString& candidate : candidates) {
+        QFileInfo info(candidate);
+        if (info.exists() && info.isFile()) {
+            ffmpegPath = info.absoluteFilePath();
+            break;
+        }
+    }
+    if (ffmpegPath.isEmpty()) {
+        QMessageBox::warning(this, tr("Bars and Tone"),
+            tr("FFmpeg could not be found, so Bars and Tone could not be generated."));
+        return;
+    }
+
+    std::filesystem::path outputDir;
+    if (m_project && !m_project->filePath().empty())
+        outputDir = m_project->filePath().parent_path() / "Bars and Tone";
+    else
+        outputDir = utf8ToPath(userDataDir().toUtf8().toStdString())
+            / "Bars and Tone";
+    std::error_code directoryError;
+    std::filesystem::create_directories(outputDir, directoryError);
+    if (directoryError) {
+        QMessageBox::warning(this, tr("Bars and Tone"),
+            tr("The generated-media folder could not be created."));
+        return;
+    }
+
+    QString safeName = name;
+    safeName.replace(QRegularExpression(R"([<>:"/\\|?*])"),
+                     QStringLiteral("_"));
+    const std::string safeNameUtf8 = safeName.toUtf8().toStdString();
+    std::filesystem::path outputPath =
+        outputDir / utf8ToPath(safeNameUtf8 + ".mkv");
+    for (int suffix = 2; std::filesystem::exists(outputPath); ++suffix) {
+        outputPath = outputDir / utf8ToPath(
+            safeNameUtf8 + " " + std::to_string(suffix) + ".mkv");
+    }
+
+    const int width = widthSpin->value();
+    const int height = heightSpin->value();
+    const double fps = fpsSpin->value();
+    const double duration = durationSpin->value();
+    const int sampleRate = sampleRateSpin->value();
+    const QString videoSource = QStringLiteral(
+        "smptehdbars=size=%1x%2:rate=%3")
+        .arg(width).arg(height).arg(fps, 0, 'f', 3);
+    // aevalsrc gives an exact full-scale-relative amplitude. 0.2511886432 is
+    // 10^(-12/20), producing the standard -12 dBFS reference level.
+    const QString toneSource = QStringLiteral(
+        "aevalsrc=exprs=0.2511886432*sin(2*PI*1000*t)|"
+        "0.2511886432*sin(2*PI*1000*t):s=%1:d=%2:c=stereo")
+        .arg(sampleRate).arg(duration, 0, 'f', 3);
+    const QString output = QString::fromStdString(pathToUtf8(outputPath));
+    const QStringList args = {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"),
+        QStringLiteral("error"), QStringLiteral("-y"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), videoSource,
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), toneSource,
+        QStringLiteral("-map"), QStringLiteral("0:v:0"),
+        QStringLiteral("-map"), QStringLiteral("1:a:0"),
+        QStringLiteral("-t"), QString::number(duration, 'f', 3),
+        QStringLiteral("-c:v"), QStringLiteral("ffv1"),
+        QStringLiteral("-level"), QStringLiteral("3"),
+        QStringLiteral("-g"), QStringLiteral("1"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv444p10le"),
+        QStringLiteral("-color_primaries"), QStringLiteral("bt709"),
+        QStringLiteral("-color_trc"), QStringLiteral("bt709"),
+        QStringLiteral("-colorspace"), QStringLiteral("bt709"),
+        QStringLiteral("-c:a"), QStringLiteral("pcm_s24le"),
+        QStringLiteral("-ar"), QString::number(sampleRate),
+        QStringLiteral("-ac"), QStringLiteral("2"), output
+    };
+
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef _WIN32
+    process.setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments* processArgs) {
+            processArgs->flags |= CREATE_NO_WINDOW;
+        });
+#endif
+    QProgressDialog progress(tr("Generating Bars and Tone..."), tr("Cancel"),
+                             0, 0, this);
+    progress.setWindowTitle(tr("Bars and Tone"));
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+
+    connect(&progress, &QProgressDialog::canceled, &process, &QProcess::kill);
+    process.start(ffmpegPath, args);
+    if (!process.waitForStarted(5000)) {
+        QMessageBox::warning(this, tr("Bars and Tone"),
+            tr("FFmpeg failed to start: %1").arg(process.errorString()));
+        return;
+    }
+    progress.show();
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForFinished(50);
+        QCoreApplication::processEvents();
+    }
+    progress.close();
+
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0
+        || !std::filesystem::exists(outputPath)) {
+        const QString error = QString::fromUtf8(process.readAllStandardError());
+        std::error_code removeError;
+        std::filesystem::remove(outputPath, removeError);
+        spdlog::error("ProjectBin: Bars and Tone generation failed: {}",
+                      error.toStdString());
+        QMessageBox::warning(this, tr("Bars and Tone"),
+            error.isEmpty() ? tr("Bars and Tone generation was canceled or failed.")
+                            : tr("Bars and Tone generation failed:\n%1").arg(error));
+        return;
+    }
+
+    addFiles({outputPath});
+    if (m_grid) {
+        for (auto& item : m_grid->mutableItems()) {
+            if (!item.isFolder && item.filePath == outputPath) {
+                item.displayName = name;
+                break;
+            }
+        }
+        syncListView();
+        if (!m_listView) syncIconView();
+    }
+    spdlog::info(
+        "ProjectBin: created Bars and Tone '{}' ({}x{}, {:.3f} fps, {:.1f}s, {} Hz) at {}",
+        name.toStdString(), width, height, fps, duration, sampleRate,
+        pathToUtf8(outputPath));
 }
 
 // -----------------------------------------------------------------------------

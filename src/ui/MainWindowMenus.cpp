@@ -15,6 +15,7 @@
 #include "dialogs/ProjectSettingsDialog.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
+#include "panels/audio/AudioSync.h"
 #include "dialogs/KeyboardShortcutsDialog.h"
 #include "dialogs/AppPreferencesDialog.h"
 #include "dialogs/RelinkMediaDialog.h"
@@ -553,6 +554,11 @@ void MainWindow::buildAudioMenu(QMenuBar* menuBar)
         if (m_destroying.load(std::memory_order_acquire)) return;
         setCurrentPage(Page::Audio);
     });
+    menu->addAction("Go to TTS / Voice Cloning", this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        setCurrentPage(Page::Audio);
+        if (m_audioSync) m_audioSync->showVoiceGenerationPanel();
+    });
 }
 
 void MainWindow::buildWindowMenu(QMenuBar* menuBar)
@@ -594,8 +600,9 @@ void MainWindow::buildWindowMenu(QMenuBar* menuBar)
                "Effects", "Text Graphics"},
               "Effect Controls"},
             {"Audio",     QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_5),
-             {"Source Monitor", "Program Monitor", "Audio Meters"},
-             "Audio Meters"},
+             {"Source Monitor", "Program Monitor", "Audio Meters",
+              "Voice Generator"},
+             "Voice Generator"},
         };
         // clang-format on
 
@@ -765,6 +772,7 @@ void MainWindow::buildWindowMenu(QMenuBar* menuBar)
         // -- Audio panels --
         const PanelEntry audioPanels[] = {
             {"Audio Meters", "Audio Meters", {}},
+            {"Voice Generator", "Voice Generator", {}},
         };
         // clang-format on
 

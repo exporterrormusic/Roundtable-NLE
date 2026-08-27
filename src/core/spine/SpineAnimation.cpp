@@ -119,6 +119,39 @@ void SpineAnimation::setBodyAnimation(const std::string& name, bool loop)
     spdlog::debug("SpineAnimation: body → '{}' (loop={})", name, loop);
 }
 
+void SpineAnimation::replacePlaybackState(const std::string& bodyAnimation,
+                                          bool loop, bool talking)
+{
+    if (!m_animState || !m_skeleton) return;
+
+    // setAnimation() normally links the outgoing TrackEntry through
+    // mixingFrom. That is useful for a continuously-updated preview, but the
+    // timeline seeks with evaluateAtTime(): trackTime is assigned directly
+    // while mixTime is never advanced. The outgoing pose can therefore remain
+    // partially applied after an undo/state restore (most visibly on small
+    // face attachments such as Kilo's eyes). Remove the entire graph first.
+    m_animState->clearTracks();
+    m_talking = false;
+    m_skeleton->setToSetupPose();
+
+    if (!bodyAnimation.empty()) {
+        if (auto* body = findAnimation(bodyAnimation)) {
+            auto* entry = m_animState->setAnimation(
+                static_cast<size_t>(AnimTrack::Body), body, loop);
+            if (entry) entry->setMixDuration(0.0f);
+        } else {
+            spdlog::warn("SpineAnimation: animation '{}' not found",
+                         bodyAnimation);
+        }
+    }
+
+    if (talking) startTalking();
+    m_skeleton->updateWorldTransform();
+
+    spdlog::debug("SpineAnimation: playback state replaced body='{}' "
+                  "loop={} talking={}", bodyAnimation, loop, talking);
+}
+
 std::string SpineAnimation::currentBodyAnimation() const
 {
     if (!m_animState) return {};
