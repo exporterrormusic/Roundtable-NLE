@@ -13,6 +13,7 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "widgets/TimelineTrackWidget.h"
 
 #include "timeline/Clip.h"
 #include "timeline/SpineClip.h"
@@ -150,11 +151,167 @@ TEST(PropertiesPanel, GraphicFontFamilyIsSearchableDropdown)
     EXPECT_EQ(layer->fontFamily(), family.toStdString());
 }
 
+TEST(PropertiesPanel, GraphicClipCanAddAndDuplicateIndependentTextObjects)
+{
+    rt::Track track(rt::TrackType::Video, "V1");
+    auto ownedClip = std::make_unique<rt::GraphicClip>();
+    ownedClip->setDuration(48000);
+    auto* original = ownedClip->addTextLayer("Original");
+    ASSERT_NE(original, nullptr);
+    original->setFontSize(42.0f);
+    const uint64_t originalId = original->layerId();
+    auto* clip = static_cast<rt::GraphicClip*>(
+        track.addClip(std::move(ownedClip)));
+    ASSERT_NE(clip, nullptr);
+
+    rt::CommandStack stack;
+    rt::PropertiesPanel panel;
+    panel.setCommandStack(&stack);
+    panel.setClip(clip, &track);
+
+    auto* objects = panel.findChild<QComboBox*>(
+        QStringLiteral("propertiesGraphicTextObjectCombo"));
+    auto* add = panel.findChild<QPushButton*>(
+        QStringLiteral("propertiesGraphicAddTextButton"));
+    auto* duplicate = panel.findChild<QPushButton*>(
+        QStringLiteral("propertiesGraphicDuplicateTextButton"));
+    auto* text = panel.findChild<QLineEdit*>(
+        QStringLiteral("propertiesGraphicTextEdit"));
+    ASSERT_NE(objects, nullptr);
+    ASSERT_NE(add, nullptr);
+    ASSERT_NE(duplicate, nullptr);
+    ASSERT_NE(text, nullptr);
+    ASSERT_EQ(objects->count(), 1);
+
+    duplicate->click();
+    ASSERT_EQ(clip->layerCount(), 2u);
+    ASSERT_EQ(objects->count(), 2);
+    auto* copy = static_cast<rt::TextLayer*>(clip->layer(1));
+    ASSERT_NE(copy, nullptr);
+    EXPECT_NE(copy->layerId(), originalId);
+    EXPECT_EQ(copy->text(), "Original");
+    EXPECT_FLOAT_EQ(copy->fontSize(), 42.0f);
+    EXPECT_FLOAT_EQ(copy->transform().posX.evaluate(0), 20.0f);
+    EXPECT_EQ(panel.selectedGraphicTextObjectId(), copy->layerId());
+
+    // Editing the duplicate must not mutate the source text object.
+    text->setText(QStringLiteral("Independent copy"));
+    text->editingFinished();
+    EXPECT_EQ(original->text(), "Original");
+    EXPECT_EQ(copy->text(), "Independent copy");
+
+    add->click();
+    ASSERT_EQ(clip->layerCount(), 3u);
+    EXPECT_EQ(static_cast<rt::TextLayer*>(clip->layer(2))->text(), "Title");
+    ASSERT_EQ(stack.undoCount(), 2u);
+
+    ASSERT_TRUE(stack.undo()); // Add Text
+    EXPECT_EQ(clip->layerCount(), 2u);
+    ASSERT_TRUE(stack.undo()); // Duplicate
+    EXPECT_EQ(clip->layerCount(), 1u);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(clip->layerCount(), 2u);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(clip->layerCount(), 3u);
+}
+
+TEST(PropertiesPanel, GraphicFormattingTargetsObjectOrMonitorSelection)
+{
+    rt::Track track(rt::TrackType::Video, "V1");
+    auto ownedClip = std::make_unique<rt::GraphicClip>();
+    ownedClip->setDuration(48000);
+    auto* bottom = ownedClip->addTextLayer("Bottom");
+    auto* top = ownedClip->addTextLayer("Top selection text");
+    ASSERT_NE(bottom, nullptr);
+    ASSERT_NE(top, nullptr);
+    bottom->setFontSize(20.0f);
+    top->setFontSize(40.0f);
+    bottom->setLeadingForAll(6.0f);
+    top->setLeadingForAll(12.0f);
+    bottom->setKerningForAll(-2.0f);
+    top->setKerningForAll(3.0f);
+    auto* clip = static_cast<rt::GraphicClip*>(
+        track.addClip(std::move(ownedClip)));
+
+    rt::PropertiesPanel panel;
+    panel.setClip(clip, &track);
+    auto* objects = panel.findChild<QComboBox*>(
+        QStringLiteral("propertiesGraphicTextObjectCombo"));
+    auto* size = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("propertiesGraphicFontSizeSpin"));
+    auto* leading = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("propertiesGraphicLeadingSpin"));
+    auto* kerning = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("propertiesGraphicKerningSpin"));
+    ASSERT_NE(objects, nullptr);
+    ASSERT_NE(size, nullptr);
+    ASSERT_NE(leading, nullptr);
+    ASSERT_NE(kerning, nullptr);
+    ASSERT_EQ(objects->count(), 2);
+
+    // The topmost object is active by default; whole-object edits affect it
+    // without changing its sibling.
+    size->setValue(55.0);
+    size->editingFinished();
+    EXPECT_FLOAT_EQ(top->fontSize(), 55.0f);
+    EXPECT_FLOAT_EQ(bottom->fontSize(), 20.0f);
+    leading->setValue(24.0);
+    leading->editingFinished();
+    kerning->setValue(8.0);
+    kerning->editingFinished();
+    EXPECT_FLOAT_EQ(top->leading().evaluate(0), 24.0f);
+    EXPECT_FLOAT_EQ(top->kerning(), 8.0f);
+    EXPECT_FLOAT_EQ(bottom->leading().evaluate(0), 6.0f);
+    EXPECT_FLOAT_EQ(bottom->kerning(), -2.0f);
+
+    // During Program Monitor text editing, Properties emits a range-format
+    // request and leaves the TextLayer-wide default untouched.
+    QSignalSpy rangeRequest(&panel,
+        &rt::PropertiesPanel::inlineFontSizeRequested);
+    QSignalSpy leadingRequest(&panel,
+        &rt::PropertiesPanel::inlineLeadingRequested);
+    QSignalSpy kerningRequest(&panel,
+        &rt::PropertiesPanel::inlineKerningRequested);
+    panel.setMonitorTextEditing(true);
+    panel.setInlineTextSelectionFormat(
+        QStringLiteral("Arial"), 55.0f, 400, false, false, false,
+        0.0f, 0.0f, 31.0f, 0);
+    panel.setInlineTextAdvancedFormat(
+        QString(), -9.0f, 48.0f, 0.0f, false, false, false, false,
+        false, 0);
+    EXPECT_DOUBLE_EQ(leading->value(), 31.0);
+    EXPECT_DOUBLE_EQ(kerning->value(), -9.0);
+    size->setValue(88.0);
+    size->editingFinished();
+    EXPECT_GE(rangeRequest.count(), 1);
+    EXPECT_FLOAT_EQ(rangeRequest.last().at(0).toFloat(), 88.0f);
+    EXPECT_FLOAT_EQ(top->fontSize(), 55.0f);
+    leading->setValue(36.0);
+    leading->editingFinished();
+    kerning->setValue(-14.0);
+    kerning->editingFinished();
+    EXPECT_GE(leadingRequest.count(), 1);
+    EXPECT_GE(kerningRequest.count(), 1);
+    EXPECT_FLOAT_EQ(leadingRequest.last().at(0).toFloat(), 36.0f);
+    EXPECT_FLOAT_EQ(kerningRequest.last().at(0).toFloat(), -14.0f);
+    EXPECT_FLOAT_EQ(top->leading().evaluate(0), 24.0f);
+    EXPECT_FLOAT_EQ(top->kerning(), 8.0f);
+
+    panel.setMonitorTextEditing(false);
+    objects->setCurrentIndex(1); // bottom object (list is topmost-first)
+    size->setValue(66.0);
+    size->editingFinished();
+    EXPECT_FLOAT_EQ(bottom->fontSize(), 66.0f);
+    EXPECT_FLOAT_EQ(top->fontSize(), 55.0f);
+}
+
 TEST(PropertiesPanel, MultiSelectionShotChangeSurvivesClearedBinding)
 {
     rt::Timeline timeline;
     rt::Track* videoTrack = timeline.addVideoTrack("V1");
+    rt::Track* upperVideoTrack = timeline.addVideoTrack("V2");
     ASSERT_NE(videoTrack, nullptr);
+    ASSERT_NE(upperVideoTrack, nullptr);
 
     auto firstOwned = std::make_unique<rt::VideoClip>();
     firstOwned->setDuration(48000);
@@ -165,12 +322,11 @@ TEST(PropertiesPanel, MultiSelectionShotChangeSurvivesClearedBinding)
     ASSERT_NE(first, nullptr);
 
     auto secondOwned = std::make_unique<rt::VideoClip>();
-    secondOwned->setTimelineIn(48000);
     secondOwned->setDuration(48000);
     secondOwned->setGroupId(42);
     secondOwned->setShotName("Old Shot");
     auto* second = static_cast<rt::VideoClip*>(
-        videoTrack->addClip(std::move(secondOwned)));
+        upperVideoTrack->addClip(std::move(secondOwned)));
     ASSERT_NE(second, nullptr);
 
     rt::PropertiesPanel panel;
@@ -202,6 +358,123 @@ TEST(PropertiesPanel, MultiSelectionShotChangeSurvivesClearedBinding)
 
     EXPECT_EQ(requestedGroup, 42u);
     EXPECT_EQ(requestedShot, "New Shot");
+}
+
+TEST(PropertiesPanel, DiscontinuousShotSelectionRequestsIndependentSwitches)
+{
+    rt::Timeline timeline;
+    rt::Track* backTrack = timeline.addVideoTrack("V1");
+    rt::Track* frontTrack = timeline.addVideoTrack("V2");
+    ASSERT_NE(backTrack, nullptr);
+    ASSERT_NE(frontTrack, nullptr);
+
+    auto addShotLayer = [](rt::Track* track, int64_t start, uint64_t groupId) {
+        auto owned = std::make_unique<rt::VideoClip>();
+        owned->setTimelineIn(start);
+        owned->setDuration(48000);
+        owned->setGroupId(groupId);
+        owned->setShotName("Old Shot");
+        return static_cast<rt::VideoClip*>(track->addClip(std::move(owned)));
+    };
+
+    auto* firstBack  = addShotLayer(backTrack, 0, 11);
+    auto* firstFront = addShotLayer(frontTrack, 0, 11);
+    auto* middle     = addShotLayer(backTrack, 48000, 22);
+    auto* lastBack   = addShotLayer(backTrack, 96000, 33);
+    auto* lastFront  = addShotLayer(frontTrack, 96000, 33);
+    ASSERT_NE(firstBack, nullptr);
+    ASSERT_NE(firstFront, nullptr);
+    ASSERT_NE(middle, nullptr);
+    ASSERT_NE(lastBack, nullptr);
+    ASSERT_NE(lastFront, nullptr);
+
+    rt::PropertiesPanel panel;
+    panel.setTimeline(&timeline);
+    panel.setMultiSelection({firstBack, firstFront, lastBack, lastFront});
+
+    QComboBox* shotCombo = nullptr;
+    for (auto* combo : panel.findChildren<QComboBox*>()) {
+        if (combo->toolTip() == QStringLiteral("Select a camera shot preset")) {
+            shotCombo = combo;
+            break;
+        }
+    }
+    ASSERT_NE(shotCombo, nullptr);
+    shotCombo->addItem(QStringLiteral("New Shot"));
+    shotCombo->setCurrentIndex(shotCombo->count() - 1);
+
+    std::vector<uint64_t> requestedGroups;
+    QObject::connect(&panel, &rt::PropertiesPanel::shotSwitchRequested,
+                     [&requestedGroups](uint64_t groupId, const std::string&) {
+        requestedGroups.push_back(groupId);
+    });
+
+    emit shotCombo->activated(shotCombo->currentIndex());
+
+    ASSERT_EQ(requestedGroups.size(), 2u);
+    EXPECT_EQ(requestedGroups[0], 11u);
+    EXPECT_EQ(requestedGroups[1], 33u);
+    EXPECT_EQ(middle->groupId(), 22u);
+}
+
+TEST(PropertiesPanel, OverlappingSyncedShotInstancesRemainIndependent)
+{
+    rt::Timeline timeline;
+    rt::Track* backTrack = timeline.addVideoTrack("V1");
+    rt::Track* frontTrack = timeline.addVideoTrack("V2");
+    ASSERT_NE(backTrack, nullptr);
+    ASSERT_NE(frontTrack, nullptr);
+
+    auto addLayer = [](rt::Track* track, int64_t start, int32_t syncLine) {
+        auto owned = std::make_unique<rt::VideoClip>();
+        owned->setTimelineIn(start);
+        owned->setDuration(96000); // deliberately overlaps the next instance
+        owned->setGroupId(11);     // reproduces a legacy shared group ID
+        owned->setSyncLine(syncLine);
+        owned->setShotName("Only One (Close)");
+        return static_cast<rt::VideoClip*>(track->addClip(std::move(owned)));
+    };
+
+    auto* firstBack  = addLayer(backTrack, 0, 10);
+    auto* firstFront = addLayer(frontTrack, 0, 10);
+    auto* laterBack  = addLayer(backTrack, 48000, 30);
+    auto* laterFront = addLayer(frontTrack, 48000, 30);
+    ASSERT_NE(firstBack, nullptr);
+    ASSERT_NE(firstFront, nullptr);
+    ASSERT_NE(laterBack, nullptr);
+    ASSERT_NE(laterFront, nullptr);
+
+    rt::PropertiesPanel panel;
+    panel.setTimeline(&timeline);
+    panel.setMultiSelection({firstBack, firstFront, laterBack, laterFront});
+
+    QComboBox* shotCombo = nullptr;
+    for (auto* combo : panel.findChildren<QComboBox*>()) {
+        if (combo->toolTip() == QStringLiteral("Select a camera shot preset")) {
+            shotCombo = combo;
+            break;
+        }
+    }
+    ASSERT_NE(shotCombo, nullptr);
+    shotCombo->addItem(QStringLiteral("Only One (Forecast)"));
+    shotCombo->setCurrentIndex(shotCombo->count() - 1);
+
+    std::vector<uint64_t> requestedGroups;
+    QObject::connect(&panel, &rt::PropertiesPanel::shotSwitchRequested,
+                     [&requestedGroups](uint64_t groupId, const std::string&) {
+        requestedGroups.push_back(groupId);
+    });
+
+    emit shotCombo->activated(shotCombo->currentIndex());
+
+    ASSERT_EQ(requestedGroups.size(), 2u);
+    EXPECT_NE(requestedGroups[0], requestedGroups[1]);
+    EXPECT_NE(requestedGroups[0], 11u);
+    EXPECT_NE(requestedGroups[1], 11u);
+    EXPECT_EQ(firstBack->groupId(), requestedGroups[0]);
+    EXPECT_EQ(firstFront->groupId(), requestedGroups[0]);
+    EXPECT_EQ(laterBack->groupId(), requestedGroups[1]);
+    EXPECT_EQ(laterFront->groupId(), requestedGroups[1]);
 }
 
 TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
@@ -684,6 +957,57 @@ TEST(TimelinePanel, PasteAudioAttributesCopiesTracksAndUndoRestoresThem)
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(0).value, 0.25f);
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(1).value, 0.75f);
     EXPECT_FLOAT_EQ(targetPtr->pan().defaultValue(), -0.4f);
+}
+
+TEST(TimelinePanel, NarrowGapWinsOverAdjacentClipEdgeHalos)
+{
+    constexpr int64_t kTicksPerSecond = 48000;
+    constexpr int64_t kGapDuration = 1920; // 40 ms / 4 px at this zoom
+
+    rt::Timeline timeline;
+    rt::Track* videoTrack = timeline.addVideoTrack("V1");
+
+    auto left = std::make_unique<rt::VideoClip>();
+    left->setTimelineIn(0);
+    left->setDuration(kTicksPerSecond);
+    ASSERT_NE(videoTrack->addClip(std::move(left)), nullptr);
+
+    auto right = std::make_unique<rt::VideoClip>();
+    right->setTimelineIn(kTicksPerSecond + kGapDuration);
+    right->setDuration(kTicksPerSecond);
+    ASSERT_NE(videoTrack->addClip(std::move(right)), nullptr);
+
+    rt::TimelinePanel panel;
+    panel.resize(900, 400);
+    panel.setTimeline(&timeline);
+    panel.show();
+    QApplication::processEvents(); // allow setTimeline's deferred zoom/layout
+
+    panel.layoutEngine().setPixelsPerSecond(100.0);
+    panel.layoutEngine().setScrollX(0.0);
+    panel.notifyZoomChanged();
+    QApplication::processEvents();
+
+    rt::TimelineTrackWidget* videoWidget = nullptr;
+    for (auto* widget : panel.findChildren<rt::TimelineTrackWidget*>()) {
+        if (widget->trackIndex() == 0) {
+            videoWidget = widget;
+            break;
+        }
+    }
+    ASSERT_NE(videoWidget, nullptr);
+
+    const int64_t gapMidpoint = kTicksPerSecond + kGapDuration / 2;
+    const int clickX = qRound(panel.layoutEngine().timeToPixelX(gapMidpoint));
+    QTest::mouseClick(videoWidget, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(clickX, videoWidget->height() / 2));
+
+    const auto& gap = panel.gapSelection();
+    ASSERT_TRUE(gap.active);
+    EXPECT_EQ(gap.trackIndex, 0u);
+    EXPECT_EQ(gap.startTick, kTicksPerSecond);
+    EXPECT_EQ(gap.endTick, kTicksPerSecond + kGapDuration);
+    EXPECT_TRUE(panel.selection().empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

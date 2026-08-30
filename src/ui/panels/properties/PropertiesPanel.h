@@ -68,6 +68,8 @@ class VideoClip;
 class AudioClip;
 class TitleClip;
 class CaptionClip;
+class GraphicClip;
+class TextLayer;
 class ScrubbySpinBox;
 class AudioFxSection;
 class CommandStack;
@@ -105,6 +107,41 @@ public:
     /// immediately type to change a text layer's content (used by the
     /// double-click-to-edit-text flow). No-op if the field is hidden.
     void focusGraphicTextField();
+
+    /// Select which TextLayer inside the bound GraphicClip is edited by the
+    /// Properties controls.  A graphic clip can contain multiple independent
+    /// text objects, matching Premiere's single-graphic/multi-object model.
+    void selectGraphicTextObject(uint64_t layerId);
+    [[nodiscard]] uint64_t selectedGraphicTextObjectId() const noexcept {
+        return m_gfxSelectedTextLayerId;
+    }
+
+    /// While the Program Monitor owns the live text editor, character and
+    /// appearance controls must format its caret/selection rather than
+    /// flattening the whole TextLayer.
+    void setMonitorTextEditing(bool active) noexcept;
+    [[nodiscard]] QWidget* graphicTextFormattingWidget() const noexcept {
+        return m_graphicSection;
+    }
+    void setInlineTextSelectionFormat(const QString& family, float pointSize,
+                                      int weight, bool italic,
+                                      bool allCaps, bool smallCaps,
+                                      float tracking, float baselineShift,
+                                      float leading, uint32_t mixedFlags);
+    void setInlineTextAdvancedFormat(
+        const QString& fontStyle, float kerning, float tabWidth, float tsume,
+        bool fauxBold, bool fauxItalic, bool underline, bool superscript,
+        bool subscript, uint32_t mixedFlags);
+    void setInlineTextSelectionAppearance(
+        bool fillEnabled, uint32_t fillColor,
+        bool strokeEnabled, uint32_t strokeColor, float strokeWidth,
+        int strokePosition, bool shadowEnabled, uint32_t shadowColor,
+        float shadowDistance, float shadowAngle, float shadowSoftness,
+        float shadowOpacity, bool backgroundEnabled,
+        uint32_t backgroundColor, float backgroundPadding,
+        uint32_t mixedFlags);
+    void setInlineParagraphFormat(int alignment, bool rightToLeft,
+                                  uint32_t mixedFlags);
 
     /// Get the track containing the clip (for command creation).
     [[nodiscard]] Track* track() const noexcept { return m_track; }
@@ -221,6 +258,26 @@ signals:
     /// Emitted when a shot switch or rebuild is needed.
     void shotSwitchRequested(uint64_t groupId, const std::string& newShotName);
 
+    /// Keeps the Graphics Editor and Program Monitor focused on the same text
+    /// object selected in Properties.
+    void graphicTextObjectSelected(quint64 layerId);
+    /// Emitted after Add Text / Duplicate changes the GraphicClip layer stack.
+    void graphicLayerStackChanged(quint64 selectedLayerId);
+
+    void inlineFontFamilyRequested(const QString& family);
+    void inlineFontSizeRequested(float pointSize);
+    void inlineFontWeightRequested(int weight);
+    void inlineItalicRequested(bool italic);
+    void inlineCapitalizationRequested(bool allCaps, bool smallCaps);
+    void inlineLeadingRequested(float leading);
+    void inlineKerningRequested(float kerning);
+    void inlineFillRequested(bool enabled, uint32_t color);
+    void inlineStrokeRequested(bool enabled, uint32_t color, float width,
+                               int position);
+    void inlineShadowRequested(bool enabled, uint32_t color, float distance,
+                               float angle, float softness, float opacity);
+    void inlineParagraphAlignmentRequested(int alignment);
+
 private:
     [[nodiscard]] bool canMutateBoundClip() noexcept;
     [[nodiscard]] bool resolveBoundClip() noexcept;
@@ -323,6 +380,8 @@ private:
     void applyGfxFontFamily();
     void applyGfxFontSize();
     void applyGfxFontWeight();
+    void applyGfxLeading();
+    void applyGfxKerning();
     void applyGfxItalic();
     void applyGfxAllCaps();
     void applyGfxSmallCaps();
@@ -332,6 +391,10 @@ private:
     void applyGfxStrokeWidth();
     void applyGfxStrokeColor();
     void applyGfxShadowEnabled();
+    void addGfxTextObject();
+    void duplicateGfxTextObject();
+    void rebuildGfxTextObjectCombo();
+    [[nodiscard]] TextLayer* selectedGraphicTextLayer() const noexcept;
 
     // Caption styling — applies to ALL selected caption clips at once.
     void applyCaptionText();
@@ -377,6 +440,7 @@ private:
     Timeline*          m_timeline{nullptr};
     uint64_t           m_clipId{0};
     bool               m_updating{false};
+    bool               m_monitorTextEditing{false};
     AnimNamesProvider  m_animNamesProvider;
     VideoAnimNamesProvider m_videoAnimNamesProvider;
 
@@ -474,10 +538,16 @@ private:
 
     // Graphic section
     QWidget*        m_graphicSection{nullptr};
+    QComboBox*      m_gfxTextObjectCombo{nullptr};
+    QPushButton*    m_gfxAddTextObjectBtn{nullptr};
+    QPushButton*    m_gfxDuplicateTextObjectBtn{nullptr};
+    uint64_t        m_gfxSelectedTextLayerId{0};
     QLineEdit*      m_gfxTextEdit{nullptr};
     QComboBox*      m_gfxFontFamilyCombo{nullptr};
     ScrubbySpinBox* m_gfxFontSizeSpin{nullptr};
     ScrubbySpinBox* m_gfxFontWeightSpin{nullptr};
+    ScrubbySpinBox* m_gfxLeadingSpin{nullptr};
+    ScrubbySpinBox* m_gfxKerningSpin{nullptr};
     QCheckBox*      m_gfxItalicCheck{nullptr};
     QCheckBox*      m_gfxAllCapsCheck{nullptr};
     QCheckBox*      m_gfxSmallCapsCheck{nullptr};

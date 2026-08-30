@@ -370,6 +370,7 @@ private:
     void populateCards();
     void populateScriptList();   // delegates to populateLeftList + populateCards
     void populateClipList();     // delegates to populateCards (compat)
+    void runAutoSyncImpl();      // algorithm body; public runAutoSync adds undo history
     void createClipsFromTranscription();
     void createClipsFromAllTranscriptions();
     void appendClipsFromNewTranscriptions();

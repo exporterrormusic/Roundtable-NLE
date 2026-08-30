@@ -105,12 +105,10 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     // those same tracks instead of being re-routed elsewhere).
     //
     // Time span is computed as [min(timelineIn), max(timelineOut)] over
-    // every visual clip in the group. For a normal shot group all members
-    // are aligned, so this matches the first clip's range. For a freshly-
-    // grouped multi-clip selection (where the user picked unrelated clips
-    // at different times) it correctly covers the bounding span the user
-    // selected — the new shot fills the whole selection rather than just
-    // the first clip's slot.
+    // every visual clip in this one shot instance. For a normal shot group
+    // all members are aligned, so this matches the first clip's range.
+    // PropertiesPanel partitions discontinuous multi-selections before they
+    // arrive here, preventing the span from bridging unselected clips.
     int64_t groupStart = 0;
     int64_t groupEnd = 48000; // 1s fallback (used only if no group clips found)
     std::vector<size_t> groupVideoTracks; // ascending; front (top) -> back (bottom)

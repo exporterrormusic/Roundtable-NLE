@@ -760,12 +760,12 @@ void AudioSync::populateCards()
                     m_clips[clipIdx].scriptSegment,
                     m_clips[clipIdx].confidence};
                 Snap newSnap{0, -1, std::string{}, 0.0f};
-                auto apply = [this, clipIdx](Snap s) {
+                auto apply = [this, clipIdx](const Snap& s) {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     if (clipIdx >= m_clips.size()) return;
                     m_clips[clipIdx].matchState       = s.matchState;
                     m_clips[clipIdx].scriptLineNumber = s.scriptLineNumber;
-                    m_clips[clipIdx].scriptSegment    = std::move(s.scriptSegment);
+                    m_clips[clipIdx].scriptSegment    = s.scriptSegment;
                     m_clips[clipIdx].confidence       = s.confidence;
                     // Defer rebuild so the clicked widget isn't deleted during its own signal
                     QTimer::singleShot(0, this, [this]() {
@@ -776,10 +776,10 @@ void AudioSync::populateCards()
                 if (m_commandStack) {
                     m_commandStack->execute(std::make_unique<LambdaCommand>(
                         "Reject audio match",
-                        [apply, newSnap]() mutable { apply(std::move(newSnap)); },
-                        [apply, oldSnap]() mutable { apply(std::move(oldSnap)); }));
+                        [apply, newSnap]() { apply(newSnap); },
+                        [apply, oldSnap]() { apply(oldSnap); }));
                 } else {
-                    apply(std::move(newSnap));
+                    apply(newSnap);
                 }
             });
             rightLayout->addWidget(rejectBtn);

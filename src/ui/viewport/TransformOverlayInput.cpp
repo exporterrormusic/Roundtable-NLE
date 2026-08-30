@@ -21,6 +21,7 @@
 #include <QAction>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPolygonF>
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -1041,7 +1042,11 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
         // redraw or vertically position them from its rounded line boxes.
         "color: transparent; "
         "border: none; "
-        "selection-background-color: rgba(77,158,255,180); "
+        // The native selection uses this small, screen-hinted document's
+        // advances and can land a character away from the compositor glyphs.
+        // TransformOverlayWidget paints the selection from renderer-owned
+        // caret boundaries instead, just as it already does for the caret.
+        "selection-background-color: transparent; "
         "selection-color: transparent; "
         "padding: 0px; }")
         .arg(fontFamily)
@@ -2061,16 +2066,20 @@ bool TransformOverlayWidget::focusIsInInlineFormattingUi() const
 {
     QObject* focus = QApplication::focusWidget();
     if (focus == m_inlineTextEdit) return true;
-    if (!m_inlineTextFormattingWidget) return false;
-
-    for (QObject* object = focus; object; object = object->parent()) {
-        if (object == m_inlineTextFormattingWidget) return true;
-    }
-    if (QWidget* popup = QApplication::activePopupWidget()) {
-        for (QObject* object = popup; object; object = object->parent()) {
-            if (object == m_inlineTextFormattingWidget) return true;
-        }
-    }
+    auto belongsTo = [](QObject* object, QWidget* panel) {
+        if (!panel) return false;
+        for (; object; object = object->parent())
+            if (object == panel) return true;
+        return false;
+    };
+    auto isFormattingUi = [&](QObject* object) {
+        if (belongsTo(object, m_inlineTextFormattingWidget)) return true;
+        for (const auto& panel : m_inlineTextAdditionalFormattingWidgets)
+            if (belongsTo(object, panel)) return true;
+        return false;
+    };
+    if (isFormattingUi(focus)) return true;
+    if (isFormattingUi(QApplication::activePopupWidget())) return true;
     return false;
 }
 
@@ -2122,6 +2131,92 @@ std::pair<int, int> TransformOverlayWidget::inlineTextSelection() const
     const QTextCursor cursor = m_inlineTextEdit->textCursor();
     return {cursor.selectionStart(),
             cursor.selectionEnd() - cursor.selectionStart()};
+}
+
+QPainterPath TransformOverlayWidget::inlineTextSelectionPath() const
+{
+    QPainterPath path;
+    if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()) return path;
+
+    const QTextCursor selection = m_inlineTextEdit->textCursor();
+    if (!selection.hasSelection()) return path;
+
+    const QString source = m_inlineTextEdit->toPlainText();
+    const int sourceSize = static_cast<int>(source.size());
+    const int start = std::clamp(selection.selectionStart(), 0, sourceSize);
+    const int end = std::clamp(selection.selectionEnd(), start, sourceSize);
+    const TransformOverlayInfo layout = inlineTextLayoutOverlay();
+
+    // Preferred path: every rectangle comes directly from two adjacent
+    // renderer-owned insertion boundaries. These are the same coordinates
+    // used by inlineTextCaretLine() and inlineTextPositionAtGlobal().
+    if (layout.useContentRect
+        && layout.textCarets.size() >= static_cast<size_t>(source.size() + 1)) {
+        for (int position = start; position < end; ++position) {
+            if (source.at(position) == QChar('\n')
+                || source.at(position) == QChar('\r')) {
+                continue;
+            }
+            const auto& before = layout.textCarets[static_cast<size_t>(position)];
+            const auto& after = layout.textCarets[static_cast<size_t>(position + 1)];
+            if (!before.valid || !after.valid) continue;
+
+            // A wrapped-line boundary can put the two caret positions on
+            // different rows. Never bridge those rows with one giant quad.
+            const double beforeCenter = (before.top + before.bottom) * 0.5;
+            const double afterCenter = (after.top + after.bottom) * 0.5;
+            const double lineTolerance = std::max(1.0,
+                std::min(before.bottom - before.top,
+                         after.bottom - after.top) * 0.25);
+            if (std::abs(beforeCenter - afterCenter) > lineTolerance)
+                continue;
+
+            TransformOverlayInfo character = m_savedOverlayBeforeEdit;
+            character.contentL = std::min(before.x, after.x);
+            character.contentR = std::max(before.x, after.x);
+            character.contentT = std::min(before.top, after.top);
+            character.contentB = std::max(before.bottom, after.bottom);
+            QPointF corners[4];
+            computeOverlayCornersFor(character, corners);
+            QPolygonF polygon;
+            for (const QPointF& corner : corners) polygon << corner;
+            polygon << corners[0];
+            path.addPolygon(polygon);
+        }
+        return path;
+    }
+
+    // Captions and legacy overlays may not expose renderer carets yet. Keep
+    // their selection visible with Qt's own cursor rectangles, while still
+    // painting it in the shared overlay instead of allowing a second native
+    // highlight surface to drift independently.
+    QWidget* viewport = m_inlineTextEdit->viewport();
+    for (int position = start; position < end; ++position) {
+        if (source.at(position) == QChar('\n')
+            || source.at(position) == QChar('\r')) {
+            continue;
+        }
+        QTextCursor before(m_inlineTextEdit->document());
+        QTextCursor after(m_inlineTextEdit->document());
+        before.setPosition(position);
+        after.setPosition(position + 1);
+        const QRect beforeRect = m_inlineTextEdit->cursorRect(before);
+        const QRect afterRect = m_inlineTextEdit->cursorRect(after);
+        if (std::abs(beforeRect.center().y() - afterRect.center().y())
+            > std::max(beforeRect.height(), afterRect.height()) / 2) {
+            continue;
+        }
+        const QPoint globalTopLeft = viewport->mapToGlobal(QPoint(
+            std::min(beforeRect.left(), afterRect.left()),
+            std::min(beforeRect.top(), afterRect.top())));
+        const QPoint globalBottomRight = viewport->mapToGlobal(QPoint(
+            std::max(beforeRect.left(), afterRect.left()),
+            std::max(beforeRect.bottom(), afterRect.bottom())));
+        const QPoint localTopLeft = mapFromGlobal(globalTopLeft);
+        const QPoint localBottomRight = mapFromGlobal(globalBottomRight);
+        path.addRect(QRectF(localTopLeft, localBottomRight).normalized());
+    }
+    return path;
 }
 
 QLineF TransformOverlayWidget::inlineTextCaretLine() const

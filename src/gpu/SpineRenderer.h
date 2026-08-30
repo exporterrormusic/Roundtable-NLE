@@ -193,20 +193,20 @@ public:
 
     // ── Frame rendering ─────────────────────────────────────────────────
 
-    /// Begin a new frame. Advances the frame index for double-buffering.
-    void beginFrame();
+    /// Begin a new frame. Returns false when the GPU/FBO is not ready.
+    bool beginFrame();
 
     /// Render a single skeleton's mesh data to the offscreen framebuffer.
     /// May be called multiple times between beginFrame/endFrame for batch rendering.
     /// @param renderData  Mesh data from SpineEngine::extractMeshes()
     /// @param mvp         Model-View-Projection matrix for this skeleton
     /// @param opacity     Layer opacity [0,1]
-    void renderSkeleton(const SpineRenderData& renderData,
+    bool renderSkeleton(const SpineRenderData& renderData,
                         const glm::mat4& mvp,
                         float opacity = 1.0f);
 
-    /// End the frame. Submits all draw commands.
-    void endFrame();
+    /// End the frame and submit all draw commands. Returns false on failure.
+    bool endFrame();
 
     // ── Offscreen framebuffer ───────────────────────────────────────────
 
@@ -220,7 +220,7 @@ public:
 
     /// Wait for the most recent endFrame() submission to complete.
     /// Use this before sampling the framebuffer from another queue.
-    void waitForFrame() const;
+    bool waitForFrame() const;
 
     /// Read back the current FBO pixels to a CachedFrame.
     /// Call AFTER waitForFrame(). Returns nullptr on failure.

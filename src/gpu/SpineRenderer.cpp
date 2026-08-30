@@ -606,28 +606,34 @@ void SpineRenderer::releaseAllTextures()
 //  Frame rendering
 // ═════════════════════════════════════════════════════════════════════════════
 
-void SpineRenderer::beginFrame()
+bool SpineRenderer::beginFrame()
 {
-    if (!m_initialized) return;
+    auto& gpuCtx = GpuContext::get();
+    if (!m_initialized || m_activeCmdBuffer != VK_NULL_HANDLE ||
+        m_frameFence == VK_NULL_HANDLE || m_cmdPool == nullptr ||
+        (gpuCtx.isInitialized() && !gpuCtx.isOperational())) {
+        return false;
+    }
 
     m_stats = {};  // Reset frame stats
 
     // Wait for previous frame at this index to complete.
-    // A5: 100 ms bounded timeout instead of UINT64_MAX so a GPU hang
-    // surfaces as device-lost instead of freezing the producer thread
-    // forever.  On timeout we transition to Failed and let the
-    // fatal-failure modal explain the situation to the user.
+    // Use a bounded wait so a GPU hang cannot freeze the producer forever.
+    // Five seconds is deliberately generous for offline export: a busy GPU
+    // must not turn into a stale one-frame character image at an edit.
+    // A timeout is reported to the compositor, which can use its CPU path or
+    // retry the exact export tick without accepting the old framebuffer.
     {
-        VkResult r = vkWaitForFences(m_vkDevice, 1, &m_frameFence, VK_TRUE,
-                                      100'000'000ull);
-        if (r == VK_TIMEOUT) {
-            spdlog::error("[SPINE] frame fence timeout — marking GPU Failed");
-            // Don't reset fence; the next beginFrame on this index will
-            // observe device-lost and bail out before re-recording.
-            return;
+        const VkResult r = vkWaitForFences(m_vkDevice, 1, &m_frameFence, VK_TRUE,
+                                            5'000'000'000ull);
+        if (r != VK_SUCCESS) {
+            spdlog::error("[SPINE] beginFrame fence wait failed: VkResult={}",
+                          static_cast<int>(r));
+            if (r == VK_ERROR_DEVICE_LOST)
+                GpuContext::get().signalDeviceLost();
+            return false;
         }
     }
-    vkResetFences(m_vkDevice, 1, &m_frameFence);
 
     // Cross-queue sync: drain the compositor's compute queue before
     // re-recording the shared framebuffer.  On devices with a separate
@@ -645,11 +651,11 @@ void SpineRenderer::beginFrame()
     // the thread-model refactor exposes the compositor's submission
     // fence to SpineRenderer.
     if (m_computeQueue != VK_NULL_HANDLE) {
-        if (m_computeQueueMutex) {
-            std::lock_guard lock(*m_computeQueueMutex);
-            vkQueueWaitIdle(m_computeQueue);
-        } else {
-            vkQueueWaitIdle(m_computeQueue);
+        const VkResult r = gpuCtx.scheduler().queueWaitIdle(m_computeQueue);
+        if (r != VK_SUCCESS) {
+            if (r == VK_ERROR_DEVICE_LOST)
+                GpuContext::get().signalDeviceLost();
+            return false;
         }
     }
 
@@ -676,11 +682,22 @@ void SpineRenderer::beginFrame()
 
     // Allocate command buffer
     m_activeCmdBuffer = m_cmdPool->allocateBuffer();
+    if (m_activeCmdBuffer == VK_NULL_HANDLE)
+        return false;
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(m_activeCmdBuffer, &beginInfo);
+    const VkResult beginResult = vkBeginCommandBuffer(m_activeCmdBuffer, &beginInfo);
+    if (beginResult != VK_SUCCESS) {
+        spdlog::error("[SPINE] vkBeginCommandBuffer failed: VkResult={}",
+                      static_cast<int>(beginResult));
+        m_cmdPool->freeBuffer(m_activeCmdBuffer);
+        m_activeCmdBuffer = VK_NULL_HANDLE;
+        if (beginResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
 
     // Reset timestamp queries
     if (m_timestampPool != VK_NULL_HANDLE) {
@@ -717,6 +734,7 @@ void SpineRenderer::beginFrame()
         vkCmdBindPipeline(m_activeCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           m_pipelineNormal);
     }
+    return true;
 }
 
 void SpineRenderer::bindPipelineForBlendMode(VkCommandBuffer cmd, SpineBlendMode mode)
@@ -738,15 +756,30 @@ void SpineRenderer::bindPipelineForBlendMode(VkCommandBuffer cmd, SpineBlendMode
     }
 }
 
-void SpineRenderer::renderSkeleton(const SpineRenderData& renderData,
-                                    const glm::mat4& mvp,
-                                    float opacity)
+bool SpineRenderer::renderSkeleton(const SpineRenderData& renderData,
+                                   const glm::mat4& mvp,
+                                   float opacity)
 {
-    if (!m_initialized || m_activeCmdBuffer == VK_NULL_HANDLE) return;
-    if (renderData.batches.empty()) return;
+    if (!m_initialized || m_activeCmdBuffer == VK_NULL_HANDLE) return false;
+    if (renderData.batches.empty()) return true;
 
     // Check we have pipelines
-    if (m_pipelineNormal == VK_NULL_HANDLE) return;
+    if (m_pipelineNormal == VK_NULL_HANDLE) return false;
+
+    // Validate every referenced atlas page before recording any draws.  If a
+    // page from a newly activated character failed to upload, continuing here
+    // would reuse the prior descriptor and produce a one-frame wrong character.
+    for (const auto& batch : renderData.batches) {
+        if (batch.vertices.empty() || batch.indices.empty()) continue;
+        const auto it = m_atlasTextures.find(batch.texturePageIndex);
+        if (it == m_atlasTextures.end() ||
+            it->second.descriptorSet == VK_NULL_HANDLE ||
+            it->second.texture.image() == VK_NULL_HANDLE) {
+            spdlog::error("[SPINE] missing atlas page {} for render batch",
+                          batch.texturePageIndex);
+            return false;
+        }
+    }
 
     auto& frame = m_frameResources[m_currentFrame];
 
@@ -831,11 +864,12 @@ void SpineRenderer::renderSkeleton(const SpineRenderData& renderData,
     m_stats.vertexCount   += static_cast<uint32_t>(totalVerts);
     m_stats.indexCount    += static_cast<uint32_t>(totalIndices);
     m_stats.skeletonCount++;
+    return true;
 }
 
-void SpineRenderer::endFrame()
+bool SpineRenderer::endFrame()
 {
-    if (!m_initialized || m_activeCmdBuffer == VK_NULL_HANDLE) return;
+    if (!m_initialized || m_activeCmdBuffer == VK_NULL_HANDLE) return false;
 
     // End rendering
     m_framebuffer.endRendering(m_activeCmdBuffer);
@@ -850,7 +884,27 @@ void SpineRenderer::endFrame()
     // Transition framebuffer for shader read (compositing input)
     m_framebuffer.transitionToShaderRead(m_activeCmdBuffer);
 
-    vkEndCommandBuffer(m_activeCmdBuffer);
+    const VkResult endResult = vkEndCommandBuffer(m_activeCmdBuffer);
+    if (endResult != VK_SUCCESS) {
+        spdlog::error("[SPINE] vkEndCommandBuffer failed: VkResult={}",
+                      static_cast<int>(endResult));
+        m_cmdPool->freeBuffer(m_activeCmdBuffer);
+        m_activeCmdBuffer = VK_NULL_HANDLE;
+        if (endResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
+
+    const VkResult resetResult = vkResetFences(m_vkDevice, 1, &m_frameFence);
+    if (resetResult != VK_SUCCESS) {
+        spdlog::error("[SPINE] frame fence reset failed: VkResult={}",
+                      static_cast<int>(resetResult));
+        m_cmdPool->freeBuffer(m_activeCmdBuffer);
+        m_activeCmdBuffer = VK_NULL_HANDLE;
+        if (resetResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
 
     // P1: route through GpuScheduler.  The scheduler holds the graphics
     // queue + its mutex, so SpineRenderer no longer needs to know about
@@ -861,11 +915,32 @@ void SpineRenderer::endFrame()
     sub.queue           = GpuQueueKind::Graphics;
     sub.completionFence = m_frameFence;
     sub.tag             = "Spine::endFrame";
-    GpuContext::get().scheduler().submit(sub);
+    const VkResult submitResult = GpuContext::get().scheduler().submit(sub);
+    if (submitResult != VK_SUCCESS) {
+        if (submitResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+
+        // The failed submit left the fence unsignaled. Restore a signaled
+        // fence when the device is still usable so a later CPU-fallback frame
+        // cannot be followed by a permanent false timeout.
+        if (GpuContext::get().isOperational()) {
+            vkDestroyFence(m_vkDevice, m_frameFence, nullptr);
+            m_frameFence = VK_NULL_HANDLE;
+            VkFenceCreateInfo fenceInfo{};
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            if (vkCreateFence(m_vkDevice, &fenceInfo, nullptr, &m_frameFence) != VK_SUCCESS)
+                spdlog::error("[SPINE] failed to recreate fence after submit failure");
+        }
+        m_cmdPool->freeBuffer(m_activeCmdBuffer);
+        m_activeCmdBuffer = VK_NULL_HANDLE;
+        return false;
+    }
 
     // Advance frame index
     m_currentFrame = (m_currentFrame + 1) % m_config.framesInFlight;
     m_activeCmdBuffer = VK_NULL_HANDLE;
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -928,10 +1003,23 @@ VkDescriptorImageInfo SpineRenderer::outputDescriptorInfo() const
     return m_framebuffer.descriptorInfo(m_outputSampler);
 }
 
-void SpineRenderer::waitForFrame() const
+bool SpineRenderer::waitForFrame() const
 {
-    if (m_frameFence != VK_NULL_HANDLE)
-        vkWaitForFences(m_vkDevice, 1, &m_frameFence, VK_TRUE, UINT64_MAX);
+    auto& gpuCtx = GpuContext::get();
+    if (!m_initialized || m_frameFence == VK_NULL_HANDLE ||
+        (gpuCtx.isInitialized() && !gpuCtx.isOperational())) {
+        return false;
+    }
+    const VkResult r = vkWaitForFences(m_vkDevice, 1, &m_frameFence, VK_TRUE,
+                                        5'000'000'000ull);
+    if (r != VK_SUCCESS) {
+        spdlog::error("[SPINE] frame completion wait failed: VkResult={}",
+                      static_cast<int>(r));
+        if (r == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -940,7 +1028,9 @@ void SpineRenderer::waitForFrame() const
 
 std::shared_ptr<CachedFrame> SpineRenderer::readbackPixels()
 {
-    if (!m_initialized || !m_vmaAllocator) return nullptr;
+    auto& gpuCtx = GpuContext::get();
+    if (!m_initialized || !m_vmaAllocator ||
+        (gpuCtx.isInitialized() && !gpuCtx.isOperational())) return nullptr;
 
     const uint32_t fboW = m_framebuffer.width();
     const uint32_t fboH = m_framebuffer.height();
@@ -965,7 +1055,16 @@ std::shared_ptr<CachedFrame> SpineRenderer::readbackPixels()
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    const VkResult beginResult = vkBeginCommandBuffer(cmd, &beginInfo);
+    if (beginResult != VK_SUCCESS) {
+        spdlog::error("SpineRenderer::readbackPixels: begin failed: VkResult={}",
+                      static_cast<int>(beginResult));
+        m_cmdPool->freeBuffer(cmd);
+        stagingBuf.destroy();
+        if (beginResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return nullptr;
+    }
 
     // ── 3. Transition FBO: SHADER_READ_ONLY → TRANSFER_SRC ─────────
     VkImageMemoryBarrier barrier{};
@@ -1015,7 +1114,16 @@ std::shared_ptr<CachedFrame> SpineRenderer::readbackPixels()
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    vkEndCommandBuffer(cmd);
+    const VkResult endResult = vkEndCommandBuffer(cmd);
+    if (endResult != VK_SUCCESS) {
+        spdlog::error("SpineRenderer::readbackPixels: end failed: VkResult={}",
+                      static_cast<int>(endResult));
+        m_cmdPool->freeBuffer(cmd);
+        stagingBuf.destroy();
+        if (endResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return nullptr;
+    }
 
     // ── 6. Submit + wait (via GpuScheduler — P1 migration) ─────────
     VkFence fence = VK_NULL_HANDLE;
@@ -1032,32 +1140,58 @@ std::shared_ptr<CachedFrame> SpineRenderer::readbackPixels()
     sub.queue           = GpuQueueKind::Graphics;
     sub.completionFence = fence;
     sub.tag             = "Spine::readbackPixels";
-    GpuContext::get().scheduler().submit(sub);
+    const VkResult submitResult = GpuContext::get().scheduler().submit(sub);
+    if (submitResult != VK_SUCCESS) {
+        if (submitResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        vkDestroyFence(m_vkDevice, fence, nullptr);
+        m_cmdPool->freeBuffer(cmd);
+        stagingBuf.destroy();
+        return nullptr;
+    }
 
-    vkWaitForFences(m_vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
+    // This command owns local staging resources that cannot safely be
+    // destroyed while a timed-out copy is still in flight. Wait for a real
+    // completion/error here; the outer frame wait remains bounded.
+    const VkResult waitResult = vkWaitForFences(
+        m_vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (waitResult != VK_SUCCESS) {
+        spdlog::error("SpineRenderer::readbackPixels: fence wait failed: VkResult={}",
+                      static_cast<int>(waitResult));
+        if (waitResult == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        vkDestroyFence(m_vkDevice, fence, nullptr);
+        m_cmdPool->freeBuffer(cmd);
+        stagingBuf.destroy();
+        return nullptr;
+    }
     vkDestroyFence(m_vkDevice, fence, nullptr);
     m_cmdPool->freeBuffer(cmd);
 
     // ── 7. Map + copy to CachedFrame (swizzle RGBA→BGRA) ──────────
+    void* mapped = stagingBuf.map();
+    if (!mapped) {
+        spdlog::error("SpineRenderer::readbackPixels: failed to map staging buffer");
+        stagingBuf.destroy();
+        return nullptr;
+    }
+
     auto frame = std::make_shared<CachedFrame>();
     frame->width  = fboW;
     frame->height = fboH;
     frame->stride = fboW * 4;
     frame->pixels.resize(static_cast<size_t>(fboW) * fboH * 4);
 
-    void* mapped = stagingBuf.map();
-    if (mapped) {
-        const uint8_t* src = static_cast<const uint8_t*>(mapped);
-        uint8_t* dst = frame->pixels.data();
-        const size_t count = static_cast<size_t>(fboW) * fboH;
-        for (size_t i = 0; i < count; ++i) {
-            dst[i * 4 + 0] = src[i * 4 + 2]; // B ← R
-            dst[i * 4 + 1] = src[i * 4 + 1]; // G ← G
-            dst[i * 4 + 2] = src[i * 4 + 0]; // R ← B
-            dst[i * 4 + 3] = src[i * 4 + 3]; // A ← A
-        }
-        stagingBuf.unmap();
+    const uint8_t* src = static_cast<const uint8_t*>(mapped);
+    uint8_t* dst = frame->pixels.data();
+    const size_t count = static_cast<size_t>(fboW) * fboH;
+    for (size_t i = 0; i < count; ++i) {
+        dst[i * 4 + 0] = src[i * 4 + 2]; // B ← R
+        dst[i * 4 + 1] = src[i * 4 + 1]; // G ← G
+        dst[i * 4 + 2] = src[i * 4 + 0]; // R ← B
+        dst[i * 4 + 3] = src[i * 4 + 3]; // A ← A
     }
+    stagingBuf.unmap();
     stagingBuf.destroy();
 
     return frame;

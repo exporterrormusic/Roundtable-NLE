@@ -30,10 +30,32 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <set>
 
 namespace rt {
+
+namespace {
+
+std::string automaticImportPathKey(const std::filesystem::path& path)
+{
+    if (path.empty()) return {};
+    std::error_code ec;
+    auto normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+        normalized = path.lexically_normal();
+    std::string key = pathToUtf8(normalized);
+#ifdef _WIN32
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char ch) {
+                       return static_cast<char>(std::tolower(ch));
+                   });
+#endif
+    return key;
+}
+
+} // namespace
 
 // -----------------------------------------------------------------------------
 //  Import / manage items
@@ -347,9 +369,44 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
     if (!m_listView) syncIconView();
 }
 
+void ProjectBin::addMissingFilesToNamedBin(
+    const std::vector<std::filesystem::path>& files,
+    const QString& binName,
+    const QString& parentBinName)
+{
+    if (files.empty() || binName.isEmpty()) return;
+
+    // Automatic workflows (sync/export, generated VO approval) should be
+    // idempotent. Manual import still deliberately uses addFiles* directly,
+    // where duplicate master items remain supported.
+    std::set<std::string> represented;
+    if (m_grid) {
+        for (const auto& item : m_grid->items()) {
+            if (!item.isFolder && !item.filePath.empty())
+                represented.insert(automaticImportPathKey(item.filePath));
+        }
+    }
+
+    std::vector<std::filesystem::path> missing;
+    missing.reserve(files.size());
+    for (const auto& file : files) {
+        const std::string key = automaticImportPathKey(file);
+        if (!key.empty() && represented.insert(key).second)
+            missing.push_back(file);
+    }
+
+    if (!missing.empty())
+        addFilesToNamedBin(missing, binName, parentBinName);
+}
+
 bool ProjectBin::removeFile(const std::filesystem::path& filePath)
 {
     return m_grid->removeItem(filePath);
+}
+
+bool ProjectBin::removeItemById(uint64_t itemId)
+{
+    return itemId != 0 && m_grid && m_grid->removeItemById(itemId);
 }
 
 void ProjectBin::replaceMedia(QTreeWidgetItem* selected)

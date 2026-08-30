@@ -125,8 +125,19 @@ public:
                             const QString& binName,
                             const QString& parentBinName = {});
 
+    /// Ensure automatic imports are represented in the bin exactly once.
+    /// Unlike addFilesToNamedBin(), this does not create another master item
+    /// when an equivalent source path is already present anywhere in the bin.
+    void addMissingFilesToNamedBin(
+        const std::vector<std::filesystem::path>& files,
+        const QString& binName,
+        const QString& parentBinName = {});
+
     /// Remove a specific media file from the bin.
     bool removeFile(const std::filesystem::path& filePath);
+
+    /// Remove one exact bin item, even when other items use the same path.
+    bool removeItemById(uint64_t itemId);
 
     /// Prompt for a replacement file for a selected bin item. The actual
     /// project-wide change is routed through mediaRelinkRequested.
@@ -326,6 +337,7 @@ private slots:
 private:
     void promptRelinkMedia(const std::filesystem::path& oldPath,
                            const QString& displayName);
+    void requestDeleteItemById(uint64_t itemId);
 
     // ── Drag-and-drop (extracted to ProjectBinDragDrop.cpp) ─────────────
 

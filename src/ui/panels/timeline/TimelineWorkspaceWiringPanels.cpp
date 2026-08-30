@@ -327,8 +327,43 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             // the clip's transform (default for non-graphic clips).
             if (m_effectControlsPanel)
                 m_effectControlsPanel->setSelectedGraphicLayer(layer);
+            if (m_propertiesPanel && layer
+                && layer->layerType() == GraphicLayerType::Text) {
+                m_propertiesPanel->selectGraphicTextObject(layer->layerId());
+            }
             scheduleOverlayRefresh();
         });
+        if (m_propertiesPanel) {
+            connect(m_propertiesPanel,
+                    &PropertiesPanel::graphicTextObjectSelected,
+                    this, [this](quint64 layerId) {
+                if (!m_GraphicsEditorPanel || !m_propertiesPanel) return;
+                auto* clip = m_propertiesPanel->clip();
+                if (!clip || clip->clipType() != ClipType::Graphic) return;
+                auto* gc = static_cast<GraphicClip*>(clip);
+                const size_t index = gc->findLayerIndex(layerId);
+                if (index != SIZE_MAX)
+                    m_GraphicsEditorPanel->selectLayerByStackIndex(
+                        static_cast<int>(index));
+            });
+            connect(m_propertiesPanel,
+                    &PropertiesPanel::graphicLayerStackChanged,
+                    this, [this](quint64 layerId) {
+                if (!m_GraphicsEditorPanel || !m_propertiesPanel) return;
+                Clip* clip = m_propertiesPanel->clip();
+                Track* track = m_propertiesPanel->track();
+                if (!clip || clip->clipType() != ClipType::Graphic) return;
+                // setClip intentionally skips a same-pointer rebind. Clear it
+                // first so its layer list reflects Add Text / Duplicate.
+                m_GraphicsEditorPanel->clearClip();
+                m_GraphicsEditorPanel->setClip(clip, track);
+                auto* gc = static_cast<GraphicClip*>(clip);
+                const size_t index = gc->findLayerIndex(layerId);
+                if (index != SIZE_MAX)
+                    m_GraphicsEditorPanel->selectLayerByStackIndex(
+                        static_cast<int>(index));
+            });
+        }
         // Track the full multi-selection set from the Essential Graphics
         // layer list so a single body drag in the program monitor applies
         // the same delta to every selected layer.

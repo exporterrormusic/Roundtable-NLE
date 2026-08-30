@@ -36,6 +36,7 @@
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -46,6 +47,41 @@
 #include "panels/project/ProjectBinInternal.h"
 
 namespace rt {
+
+void ProjectBin::requestDeleteItemById(uint64_t itemId)
+{
+    if (!itemId || !m_grid) return;
+
+    // The tree row carries the same per-instance ID as the thumbnail. Select
+    // that exact row before using the unified delete handler, which supplies
+    // undo and timeline-reference propagation. A path lookup is ambiguous
+    // when the user intentionally imported the same source more than once.
+    QTreeWidgetItem* exactItem = nullptr;
+    if (m_listWidget) {
+        QTreeWidgetItemIterator it(m_listWidget);
+        while (*it) {
+            if ((*it)->data(0, kBinItemIdRole).toULongLong() == itemId) {
+                exactItem = *it;
+                break;
+            }
+            ++it;
+        }
+    }
+
+    if (exactItem && m_project) {
+        m_listWidget->clearSelection();
+        exactItem->setSelected(true);
+        m_listWidget->setCurrentItem(exactItem);
+        QKeyEvent ev(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+        eventFilter(m_listWidget, &ev);
+        return;
+    }
+
+    // Project-less bins are used by focused widget tests and lightweight
+    // embedding. They have no timeline state to propagate.
+    if (removeItemById(itemId))
+        syncListView();
+}
 
 // -----------------------------------------------------------------------------
 //  Custom delegate — Premiere Pro label color bar on left edge
@@ -614,6 +650,8 @@ void ProjectBin::setupUI()
                         // Route through the unified delete path so it is
                         // undoable and, for color mattes, also removes the
                         // file from disk (and restores it on undo).
+                        m_listWidget->clearSelection();
+                        selected->setSelected(true);
                         m_listWidget->setCurrentItem(selected);
                         QKeyEvent ev(QEvent::KeyPress, Qt::Key_Delete,
                                      Qt::NoModifier);
@@ -784,6 +822,7 @@ void ProjectBin::setupUI()
             this, [this](int index, const QPoint& globalPos) {
         if (index < 0 || index >= static_cast<int>(m_grid->items().size()))
             return;
+        const uint64_t contextItemId = m_grid->items()[index].itemId;
         QMenu menu(this);
         menu.setStyleSheet(QStringLiteral(
             "QMenu { background: %1; color: %2; border: 1px solid %3; }"
@@ -906,10 +945,8 @@ void ProjectBin::setupUI()
                 promptRelinkMedia(relinkPath, relinkName);
             });
             menu.addSeparator();
-            menu.addAction("Remove", this, [this, index]() {
-                const auto& item = m_grid->items()[index];
-                removeFile(item.filePath);
-                syncListView();
+            menu.addAction("Remove", this, [this, contextItemId]() {
+                requestDeleteItemById(contextItemId);
             });
         }
 
@@ -935,14 +972,17 @@ void ProjectBin::setupUI()
                 a->setIcon(QIcon(px));
             }
             uint32_t rgba = lc.rgba;
-            connect(a, &QAction::triggered, this, [this, index, rgba]() {
+            connect(a, &QAction::triggered, this,
+                    [this, contextItemId, rgba]() {
                 uint32_t finalColor = rgba;
                 if (rgba == 0x00000000) {
                     QColor picked = QColorDialog::getColor(Qt::white, this, "Label Color");
                     if (!picked.isValid()) return;
                     finalColor = picked.rgba();
                 }
-                m_grid->setItemLabelColor(index, finalColor);
+                const int itemIndex = m_grid->indexOfItemId(contextItemId);
+                if (itemIndex >= 0)
+                    m_grid->setItemLabelColor(itemIndex, finalColor);
                 syncListView();
             });
         }
@@ -1143,6 +1183,13 @@ void ProjectBin::setupUI()
     btnDelete->setFixedSize(22, 22);
     btnDelete->setStyleSheet(smallBtnStyle);
     connect(btnDelete, &QToolButton::clicked, this, [this]() {
+        if (!m_listView && m_grid) {
+            const auto* selected = m_grid->selectedItem();
+            if (selected && !selected->isFolder && selected->itemId) {
+                requestDeleteItemById(selected->itemId);
+                return;
+            }
+        }
         // Simulate Delete key on current selection
         QKeyEvent ev(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
         eventFilter(m_listWidget, &ev);

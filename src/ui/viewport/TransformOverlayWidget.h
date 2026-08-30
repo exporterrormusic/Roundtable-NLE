@@ -157,6 +157,16 @@ public:
     /// its children (the Graphics Editor's font/style controls).
     void setInlineTextFormattingWidget(QWidget* widget) noexcept {
         m_inlineTextFormattingWidget = widget;
+        m_inlineTextAdditionalFormattingWidgets.clear();
+    }
+    /// Register another panel whose controls are allowed to take focus while
+    /// inline text editing remains active (for example Properties alongside
+    /// the Graphics Editor).
+    void addInlineTextFormattingWidget(QWidget* widget) {
+        if (!widget || widget == m_inlineTextFormattingWidget) return;
+        for (const auto& existing : m_inlineTextAdditionalFormattingWidgets)
+            if (existing == widget) return;
+        m_inlineTextAdditionalFormattingWidgets.emplace_back(widget);
     }
 
     /// Apply character formatting to the active monitor selection. With only
@@ -195,6 +205,11 @@ public:
     /// editor's native caret is intentionally hidden because its monitor-size
     /// hinted advances do not match the full-resolution renderer.
     [[nodiscard]] QLineF inlineTextCaretLine() const;
+
+    /// Compositor-metric selection highlight in overlay/widget coordinates.
+    /// Uses the same renderer-owned UTF-16 insertion boundaries as the caret,
+    /// so the visible highlight covers exactly the selected characters.
+    [[nodiscard]] QPainterPath inlineTextSelectionPath() const;
 
     /// Resolve a screen click to a UTF-16 document position using the same
     /// full-resolution advances used by inlineTextCaretLine().
@@ -590,6 +605,7 @@ private:
     bool             m_inlineEditorFocusSettling{false};
     uint64_t         m_inlineEditSession{0};
     QPointer<QWidget> m_inlineTextFormattingWidget;
+    std::vector<QPointer<QWidget>> m_inlineTextAdditionalFormattingWidgets;
     std::vector<TextStyleRun> m_originalInlineTextStyles;
     std::vector<TextStyleRun> m_committedInlineTextStyles;
     std::vector<TextParagraphStyle> m_originalInlineParagraphStyles;

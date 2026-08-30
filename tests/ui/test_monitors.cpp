@@ -297,6 +297,8 @@ TEST(TransformOverlayInput, CompositorBackedEditHidesDuplicateGlyphsAndPreviewsL
         QStringLiteral("color: transparent")));
     EXPECT_TRUE(editor->styleSheet().contains(
         QStringLiteral("selection-color: transparent")));
+    EXPECT_TRUE(editor->styleSheet().contains(
+        QStringLiteral("selection-background-color: transparent")));
 
     overlay.setInlineTextSelection(editor->toPlainText().size(), 0);
     QTest::keyClicks(editor, QStringLiteral("!"));
@@ -484,6 +486,19 @@ TEST(TransformOverlayInput, InlineCaretUsesFullResolutionRendererAdvances)
     const QPoint clickGlobal = overlay.mapToGlobal(
         caret.pointAt(0.5).toPoint());
     EXPECT_EQ(overlay.inlineTextPositionAtGlobal(clickGlobal), caretPosition);
+
+    // Selection uses those same renderer boundaries, not QPlainTextEdit's
+    // independently hinted on-screen glyph positions.
+    constexpr int selectionStart = 5;
+    constexpr int selectionLength = 4;
+    overlay.setInlineTextSelection(selectionStart, selectionLength);
+    const QRectF selectionBounds = overlay.inlineTextSelectionPath().boundingRect();
+    const double expectedSelectionLeft = 320.0
+        + (info.textCarets[selectionStart].x - 960.0) / 3.0;
+    const double expectedSelectionRight = 320.0
+        + (info.textCarets[selectionStart + selectionLength].x - 960.0) / 3.0;
+    EXPECT_NEAR(selectionBounds.left(), expectedSelectionLeft, 1.0);
+    EXPECT_NEAR(selectionBounds.right(), expectedSelectionRight, 1.0);
 
     QPlainTextEdit* editor = nullptr;
     for (QWidget* widget : QApplication::topLevelWidgets()) {

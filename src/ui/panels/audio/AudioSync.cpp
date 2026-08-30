@@ -248,24 +248,31 @@ void AudioSync::runClipsMutationWithUndo(const std::string& description,
                                           std::function<void()> rebuild)
 {
     auto oldClips = m_clips;
+    const bool oldSyncDone = m_syncDone;
     if (mutate) mutate();
-    if (m_clips == oldClips) {
+    if (m_clips == oldClips && m_syncDone == oldSyncDone) {
         // No observable change — refresh UI but don't pollute undo history.
         if (rebuild) rebuild();
         return;
     }
     auto newClips = m_clips;
-    auto apply = [this, rebuild](std::vector<SyncClip> clips) {
+    const bool newSyncDone = m_syncDone;
+    auto apply = [this, rebuild](const std::vector<SyncClip>& clips, bool syncDone) {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        m_clips = std::move(clips);
+        m_clips = clips;
+        m_syncDone = syncDone;
         if (rebuild) rebuild();
     };
     if (rebuild) rebuild();
     if (m_commandStack) {
         m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
             description,
-            [apply, newClips]() mutable { apply(std::move(newClips)); },
-            [apply, oldClips]() mutable { apply(std::move(oldClips)); }));
+            [apply, newClips, newSyncDone]() {
+                apply(newClips, newSyncDone);
+            },
+            [apply, oldClips, oldSyncDone]() {
+                apply(oldClips, oldSyncDone);
+            }));
     }
 }
 

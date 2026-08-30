@@ -60,12 +60,25 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
 
     // ── Compositor-aligned inline-edit bounds and caret ─────────────────
     if (inlineEditing) {
+        const QTextCursor cursor = m_inlineTextEdit->textCursor();
+        const auto& tc = Theme::colors();
+
+        // The editor owns selection semantics, but its independently hinted
+        // highlight is hidden. Paint the visible selection from the same
+        // compositor insertion boundaries used by the custom caret.
+        if (cursor.hasSelection()) {
+            QColor selectionColor = tc.accent;
+            selectionColor.setAlpha(165);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(selectionColor);
+            painter.drawPath(inlineTextSelectionPath());
+        }
+
         // Use the compositor's measured glyph bounds. The invisible editor
         // rectangle contains caret slack and rounded line cells, so it cannot
         // be used as a visual transform/text box.
         QPointF corners[4];
         computeOverlayCornersFor(inlineTextLayoutOverlay(), corners);
-        const auto& tc = Theme::colors();
         QColor c = tc.accent; c.setAlpha(200);
         QPen pen(c, 1.5, Qt::DashLine);
         painter.setPen(pen);
@@ -75,7 +88,6 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
         bounds << corners[0];
         painter.drawPolyline(bounds);
 
-        const QTextCursor cursor = m_inlineTextEdit->textCursor();
         if (!cursor.hasSelection() && m_inlineTextEdit->hasFocus()
             && m_inlineCaretVisible) {
             const QLineF caret = inlineTextCaretLine();

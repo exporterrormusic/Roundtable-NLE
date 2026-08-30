@@ -435,17 +435,6 @@ void PropertiesPanel::setupCaptionSection(QWidget* container)
 //  Universal text appearance presets (Caption + Title + Graphic text)
 // ═════════════════════════════════════════════════════════════════════════════
 
-namespace {
-// First text layer of a GraphicClip, or nullptr.
-TextLayer* firstGfxTextLayer(GraphicClip* gc) {
-    if (!gc) return nullptr;
-    for (size_t i = 0; i < gc->layerCount(); ++i)
-        if (gc->layer(i)->layerType() == GraphicLayerType::Text)
-            return static_cast<TextLayer*>(gc->layer(i));
-    return nullptr;
-}
-} // namespace
-
 void PropertiesPanel::loadTextPresets()
 {
     m_textPresets.clear();
@@ -648,7 +637,7 @@ void PropertiesPanel::applyTextPreset(int index)
         else doIt();
     }
     else if (m_clip->clipType() == ClipType::Graphic) {
-        auto* tl = firstGfxTextLayer(static_cast<GraphicClip*>(m_clip));
+        auto* tl = selectedGraphicTextLayer();
         if (!tl) return;
         auto old = std::shared_ptr<GraphicLayer>(tl->clone().release());
         auto doIt = [tl, preset, self]() {
@@ -729,7 +718,7 @@ void PropertiesPanel::saveTextPresetAs()
         p.fontWeight = p.bold ? 700 : 400;
         p.alignment = static_cast<int>(tc->alignment());
     } else if (m_clip->clipType() == ClipType::Graphic) {
-        auto* tl = firstGfxTextLayer(static_cast<GraphicClip*>(m_clip));
+        auto* tl = selectedGraphicTextLayer();
         if (!tl) return;
         p.fontFamily = tl->fontFamily(); p.fontStyle = tl->fontStyle();
         p.fontSize = tl->fontSize(); p.fontWeight = tl->fontWeight();

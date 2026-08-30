@@ -318,10 +318,12 @@ TEST_F(SpineRendererTest, ShutdownWithoutInit)
 
 TEST_F(SpineRendererTest, BeginEndWithoutInit)
 {
-    // Calling beginFrame/endFrame on uninitialized renderer should not crash
+    // Uninitialized render operations must report failure instead of allowing
+    // callers to treat stale framebuffer contents as a completed frame.
     rt::SpineRenderer renderer;
-    renderer.beginFrame();
-    renderer.endFrame();
+    EXPECT_FALSE(renderer.beginFrame());
+    EXPECT_FALSE(renderer.endFrame());
+    EXPECT_FALSE(renderer.waitForFrame());
     EXPECT_FALSE(renderer.isInitialized());
 }
 
@@ -331,7 +333,7 @@ TEST_F(SpineRendererTest, RenderWithoutInit)
     rt::SpineRenderer renderer;
     rt::SpineRenderData data;
     data.batches.push_back({0, rt::SpineBlendMode::Normal, {}, {}});
-    renderer.renderSkeleton(data, glm::mat4(1.0f));
+    EXPECT_FALSE(renderer.renderSkeleton(data, glm::mat4(1.0f)));
     EXPECT_FALSE(renderer.isInitialized());
 }
 

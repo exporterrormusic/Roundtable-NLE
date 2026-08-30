@@ -520,50 +520,158 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
     }
     if (visualClips.empty()) return;
 
-    // Pick / assign a shared groupId so applyShotSwitch can find every clip
-    // that should be replaced. If the visual clips already share a non-zero
-    // groupId, reuse it (preserves an existing shot group).
-    uint64_t groupId = visualClips.front()->groupId();
-    bool allSameNonZero = (groupId != 0);
-    for (size_t i = 1; i < visualClips.size() && allSameNonZero; ++i) {
-        if (visualClips[i]->groupId() != groupId) allSameNonZero = false;
+    // Partition the selection into actual shot instances. Audio-Sync's line
+    // backlink is the strongest identity: layers from different script lines
+    // must stay independent even when their ranges overlap. For unsynced
+    // footage, a shared group plus a STRICT time overlap identifies layers of
+    // one instance. Merely adjacent clips are separate shots.
+    std::sort(visualClips.begin(), visualClips.end(),
+              [](const Clip* a, const Clip* b) {
+                  if (a->timelineIn() != b->timelineIn())
+                      return a->timelineIn() < b->timelineIn();
+                  return a->timelineOut() < b->timelineOut();
+              });
+
+    struct ShotSection {
+        int64_t start{0};
+        int64_t end{0};
+        int32_t syncLine{-1};
+        uint64_t originalGroupId{0};
+        std::vector<Clip*> clips;
+        uint64_t groupId{0};
+    };
+    std::vector<ShotSection> sections;
+    for (Clip* clip : visualClips) {
+        ShotSection* matching = nullptr;
+        for (auto& section : sections) {
+            if (clip->syncLine() >= 0) {
+                if (section.syncLine == clip->syncLine()) {
+                    matching = &section;
+                    break;
+                }
+                continue;
+            }
+            if (section.syncLine >= 0)
+                continue;
+
+            const bool groupsCompatible =
+                clip->groupId() == 0 || section.originalGroupId == 0
+                || clip->groupId() == section.originalGroupId;
+            const bool strictlyOverlaps =
+                clip->timelineIn() < section.end
+                && clip->timelineOut() > section.start;
+            if (groupsCompatible && strictlyOverlaps) {
+                matching = &section;
+                break;
+            }
+        }
+
+        if (!matching) {
+            sections.push_back({clip->timelineIn(), clip->timelineOut(),
+                                clip->syncLine(), clip->groupId(), {clip}, 0});
+        } else {
+            matching->start = std::min(matching->start, clip->timelineIn());
+            matching->end = std::max(matching->end, clip->timelineOut());
+            matching->clips.push_back(clip);
+        }
     }
-    if (!allSameNonZero) {
-        // Generate a groupId that is guaranteed not to collide with any
-        // existing clip id or groupId anywhere on the timeline. Using a
-        // clip's own id (the previous behaviour) can collide with a
-        // groupId already stamped on an unrelated clip — applyShotSwitch
-        // scans by groupId equality, so a collision sweeps that clip into
-        // the swap, replacing far more than the selection AND stretching
-        // the new shot's layers across the inflated span (whose duration
-        // exceeds the source media, painting black frames on the timeline
-        // scrub strip). Pick max(id, groupId)+1 across the whole timeline
-        // so the new id is strictly fresh.
-        uint64_t freshGid = 1;
+
+    // Preserve an existing group only when every layer in that section has
+    // the same non-zero ID. The same ID cannot be reused by disconnected
+    // sections because applyShotSwitch finds members globally by group ID.
+    std::vector<uint64_t> reusableIds(sections.size(), 0);
+    for (size_t si = 0; si < sections.size(); ++si) {
+        const uint64_t candidate = sections[si].clips.front()->groupId();
+        if (candidate == 0) continue;
+        const bool sameGroup = std::all_of(
+            sections[si].clips.begin(), sections[si].clips.end(),
+            [candidate](const Clip* clip) {
+                return clip->groupId() == candidate;
+            });
+        if (!sameGroup) continue;
+
+        // Legacy duplicate/paste operations could leave another shot
+        // instance elsewhere on the timeline with this same group ID. Do not
+        // hand that globally-aliased ID to applyShotSwitch(), which searches
+        // by group and would replace the bounding span of both instances.
+        bool aliasesAnotherInstance = false;
         if (m_timeline) {
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                const Track* trk = m_timeline->track(ti);
-                if (!trk) continue;
-                for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
-                    const Clip* c = trk->clip(ci);
-                    if (!c) continue;
-                    if (c->groupId() >= freshGid) freshGid = c->groupId() + 1;
-                    if (c->id()      >= freshGid) freshGid = c->id() + 1;
+            for (size_t ti = 0;
+                 ti < m_timeline->trackCount() && !aliasesAnotherInstance;
+                 ++ti) {
+                const Track* track = m_timeline->track(ti);
+                if (!track) continue;
+                for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                    const Clip* other = track->clip(ci);
+                    if (!other || !other->isVisual()
+                        || other->groupId() != candidate)
+                        continue;
+                    if (std::find(sections[si].clips.begin(),
+                                  sections[si].clips.end(), other)
+                        != sections[si].clips.end())
+                        continue;
+
+                    const bool sameInstance = sections[si].syncLine >= 0
+                        ? other->syncLine() == sections[si].syncLine
+                        : (other->timelineIn() < sections[si].end
+                           && other->timelineOut() > sections[si].start);
+                    if (!sameInstance) {
+                        aliasesAnotherInstance = true;
+                        break;
+                    }
                 }
             }
-        } else {
-            freshGid = visualClips.front()->id() + 1;
         }
-        groupId = freshGid;
-        for (auto* c : visualClips) c->setGroupId(groupId);
+        if (!aliasesAnotherInstance)
+            reusableIds[si] = candidate;
     }
 
-    // Let TimelineWorkspace handle the actual switch with undo support
-    emit shotSwitchRequested(groupId, newShotName);
+    // Generate IDs above every clip ID and group ID on the timeline so newly
+    // formed sections cannot accidentally include unrelated clips.
+    uint64_t nextFreshGroupId = 1;
+    if (m_timeline) {
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            const Track* track = m_timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                const Clip* clip = track->clip(ci);
+                if (!clip) continue;
+                nextFreshGroupId = std::max(nextFreshGroupId,
+                                            clip->groupId() + 1);
+                nextFreshGroupId = std::max(nextFreshGroupId,
+                                            clip->id() + 1);
+            }
+        }
+    } else {
+        for (const Clip* clip : visualClips)
+            nextFreshGroupId = std::max(nextFreshGroupId, clip->id() + 1);
+    }
+
+    for (size_t si = 0; si < sections.size(); ++si) {
+        const uint64_t candidate = reusableIds[si];
+        const bool candidateIsDisconnected = candidate != 0
+            && std::count(reusableIds.begin(), reusableIds.end(), candidate) > 1;
+        sections[si].groupId = (candidate != 0 && !candidateIsDisconnected)
+            ? candidate : nextFreshGroupId++;
+        if (sections[si].groupId != candidate) {
+            for (Clip* clip : sections[si].clips)
+                clip->setGroupId(sections[si].groupId);
+        }
+    }
+
+    // Each section is switched independently, but the one dropdown action
+    // remains a single Ctrl+Z operation.
+    const bool batch = m_commandStack && sections.size() > 1;
+    if (batch)
+        m_commandStack->beginMacro("Switch Selected Shots to " + newShotName);
+    for (const auto& section : sections)
+        emit shotSwitchRequested(section.groupId, newShotName);
+    if (batch)
+        m_commandStack->endMacro();
     emit propertyChanged();
 
-    spdlog::info("PropertiesPanel: shot switch requested for group {} ({} visual clip(s))",
-                 groupId, visualClips.size());
+    spdlog::info("PropertiesPanel: shot switch requested for {} section(s) ({} visual clip(s))",
+                 sections.size(), visualClips.size());
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -842,21 +950,33 @@ void PropertiesPanel::populateFromTitle()
 
 void PropertiesPanel::populateFromGraphic()
 {
-    auto* gc = static_cast<GraphicClip*>(m_clip);
-    // Populate from the first text layer (if any)
-    TextLayer* tl = nullptr;
-    for (size_t i = 0; i < gc->layerCount(); ++i) {
-        if (gc->layer(i)->layerType() == GraphicLayerType::Text) {
-            tl = static_cast<TextLayer*>(gc->layer(i));
-            break;
-        }
-    }
+    rebuildGfxTextObjectCombo();
+    TextLayer* tl = selectedGraphicTextLayer();
+    const bool hasText = tl != nullptr;
+    m_gfxTextEdit->setEnabled(hasText && !m_monitorTextEditing);
+    m_gfxFontFamilyCombo->setEnabled(hasText);
+    m_gfxFontSizeSpin->setEnabled(hasText);
+    m_gfxFontWeightSpin->setEnabled(hasText);
+    m_gfxLeadingSpin->setEnabled(hasText);
+    m_gfxKerningSpin->setEnabled(hasText);
+    m_gfxItalicCheck->setEnabled(hasText);
+    m_gfxAllCapsCheck->setEnabled(hasText);
+    m_gfxSmallCapsCheck->setEnabled(hasText);
+    m_gfxAlignCombo->setEnabled(hasText);
+    m_gfxFillColorBtn->setEnabled(hasText);
+    m_gfxStrokeCheck->setEnabled(hasText);
+    m_gfxStrokeWidthSpin->setEnabled(hasText);
+    m_gfxStrokeColorBtn->setEnabled(hasText);
+    m_gfxShadowCheck->setEnabled(hasText);
     if (tl) {
         m_gfxTextEdit->setText(QString::fromStdString(tl->text()));
         m_gfxFontFamilyCombo->setCurrentText(
             QString::fromStdString(tl->fontFamily()));
         m_gfxFontSizeSpin->setValue(static_cast<double>(tl->fontSize()));
         m_gfxFontWeightSpin->setValue(tl->fontWeight());
+        m_gfxLeadingSpin->setValue(
+            static_cast<double>(tl->leading().evaluate(0)));
+        m_gfxKerningSpin->setValue(static_cast<double>(tl->kerning()));
         m_gfxItalicCheck->setChecked(tl->isItalic());
         m_gfxAllCapsCheck->setChecked(tl->allCaps());
         m_gfxSmallCapsCheck->setChecked(tl->smallCaps());
@@ -1132,6 +1252,6 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 // -- Graphic methods are in PropertiesPanelGraphic.cpp --
-// (their firstTextLayer() helper lives there too)
+// (their selectedGraphicTextLayer() helper lives there too)
 
 } // namespace rt

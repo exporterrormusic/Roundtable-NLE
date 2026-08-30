@@ -375,12 +375,20 @@ PrerenderResult SpinePrerenderer::renderGPU(const PrerenderJob& job,
             spdlog::info("SpinePrerenderer: frame0 batches={} verts={} idx={}",
                          renderData.batches.size(), totalVerts, totalIdx);
         }
-        spineRenderer.beginFrame();
-        if (!renderData.batches.empty()) {
-            spineRenderer.renderSkeleton(renderData, mvp, 1.0f);
+        const bool began = spineRenderer.beginFrame();
+        const bool drew = began && (renderData.batches.empty() ||
+            spineRenderer.renderSkeleton(renderData, mvp, 1.0f));
+        const bool submitted = began && spineRenderer.endFrame();
+        const bool completed = submitted && spineRenderer.waitForFrame();
+        if (!drew || !submitted || !completed) {
+            result.error = "GPU Spine render failed at frame " + std::to_string(fi);
+            spdlog::error("SpinePrerenderer: {}", result.error);
+            finalizeEncoder();
+            readbackStaging.destroy();
+            spineRenderer.shutdown();
+            localCmdPool.destroy();
+            return result;
         }
-        spineRenderer.endFrame();
-        spineRenderer.waitForFrame();
 
         // Readback framebuffer → staging buffer → CPU
         {

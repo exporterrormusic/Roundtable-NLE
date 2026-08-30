@@ -44,6 +44,18 @@ namespace rt {
 
 void AudioSync::runAutoSync()
 {
+    runClipsMutationWithUndo(
+        "Auto-sync audio matches",
+        [this]() { runAutoSyncImpl(); },
+        [this]() {
+            populateClipList();
+            updateWorkflowState();
+            emit voiceContextChanged();
+        });
+}
+
+void AudioSync::runAutoSyncImpl()
+{
     if (!m_script || m_clips.empty()) return;
 
     // Optional character scope: when a specific character is selected in the
@@ -705,29 +717,17 @@ void AudioSync::runAutoSync()
             }
             a.end = boundary;
             b.start = boundary;
-    updateSyncProgress(90, "Confirming high-confidence matches...");
-
             ++gapsClosed;
         }
     }
     if (gapsClosed > 0)
         spdlog::info("AudioSync: Closed {} inter-clip gaps", gapsClosed);
 
-    updateSyncProgress(90, "Confirming high-confidence matches...");
-
-    updateSyncProgress(90, "Confirming high-confidence matches...");
-
-    // --- Step 6: Auto-confirm high-confidence matches ---
-    int autoConfirmed = 0;
-    for (auto& clip : m_clips) {
-        if (!clipInScope(clip)) continue;
-        if (clip.matchState == 1 && clip.confidence >= 0.90f) {
-            clip.matchState = 2;
-            ++autoConfirmed;
-        }
-    }
-    if (autoConfirmed > 0)
-        spdlog::info("AudioSync: Auto-confirmed {} high-confidence matches", autoConfirmed);
+    // Auto-Sync only proposes matches.  Confidence affects which line is
+    // proposed, never whether that proposal is approved; approval always
+    // requires an explicit user action.  Existing confirmed clips were
+    // excluded above and remain confirmed.
+    updateSyncProgress(90, "Finalizing tentative matches...");
 
     m_syncDone = true;
     populateClipList();

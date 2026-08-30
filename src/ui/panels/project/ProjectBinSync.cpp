@@ -398,8 +398,10 @@ void ProjectBin::syncIconView()
     int childCount = container ? container->childCount()
                                : m_listWidget->topLevelItemCount();
 
-    // Collect the set of file paths that are direct children here
-    std::set<std::string> visiblePaths;
+    // Track direct children by per-instance ID. Paths are not identities:
+    // two independent bin items may intentionally reference the same file.
+    std::set<uint64_t> visibleItemIds;
+    std::set<std::string> legacyVisiblePaths;
     // Collect bin names at this level
     std::vector<QString> binNames;
 
@@ -412,8 +414,14 @@ void ProjectBin::syncIconView()
         } else {
             // It's a media item or sequence
             QString fp = child->data(0, Qt::UserRole).toString();
-            if (!fp.isEmpty())
-                visiblePaths.insert(fp.toStdString());
+            if (!fp.isEmpty()) {
+                const uint64_t id =
+                    child->data(0, kBinItemIdRole).toULongLong();
+                if (id)
+                    visibleItemIds.insert(id);
+                else
+                    legacyVisiblePaths.insert(fp.toStdString());
+            }
         }
     }
 
@@ -462,8 +470,9 @@ void ProjectBin::syncIconView()
     // -- Set visibility on media items -----------------------------------
     for (auto& item : items) {
         if (item.isFolder) continue;
-        std::string key = pathToUtf8(item.filePath);
-        item.visible = visiblePaths.count(key) > 0;
+        item.visible = item.itemId
+            ? visibleItemIds.count(item.itemId) > 0
+            : legacyVisiblePaths.count(pathToUtf8(item.filePath)) > 0;
     }
 
     // Natural-sort the grid (folders, then sequences, then media — each

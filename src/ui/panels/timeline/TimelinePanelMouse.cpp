@@ -30,8 +30,62 @@
 #include <spdlog/spdlog.h>
 #include <cmath>
 #include <algorithm>
+#include <optional>
 
 namespace rt {
+
+namespace {
+
+// Return the real uncovered interval under the cursor, if it has a clip on
+// its right that can be rippled left.  Build this from merged clip coverage:
+// tracks can legally contain overlapping clips, and comparing only adjacent
+// clips can otherwise manufacture a false gap inside a longer clip.
+std::optional<TimelinePanel::GapSelection> selectableGapAt(
+    const Timeline& timeline, size_t trackIndex, int64_t tick)
+{
+    if (trackIndex >= timeline.trackCount() || tick < 0)
+        return std::nullopt;
+
+    const Track* track = timeline.track(trackIndex);
+    if (!track || track->isLocked() || track->clipCount() == 0)
+        return std::nullopt;
+
+    std::vector<const Clip*> sorted;
+    sorted.reserve(track->clipCount());
+    for (size_t clipIndex = 0; clipIndex < track->clipCount(); ++clipIndex) {
+        if (const Clip* clip = track->clip(clipIndex))
+            sorted.push_back(clip);
+    }
+    if (sorted.empty())
+        return std::nullopt;
+
+    std::sort(sorted.begin(), sorted.end(), [](const Clip* lhs, const Clip* rhs) {
+        if (lhs->timelineIn() != rhs->timelineIn())
+            return lhs->timelineIn() < rhs->timelineIn();
+        return lhs->timelineOut() < rhs->timelineOut();
+    });
+
+    const int64_t firstIn = sorted.front()->timelineIn();
+    if (firstIn > 0 && tick < firstIn)
+        return TimelinePanel::GapSelection{trackIndex, 0, firstIn, true};
+
+    int64_t coveredEnd = sorted.front()->timelineOut();
+    for (size_t clipIndex = 1; clipIndex < sorted.size(); ++clipIndex) {
+        const Clip* clip = sorted[clipIndex];
+        if (clip->timelineIn() > coveredEnd) {
+            if (tick >= coveredEnd && tick < clip->timelineIn()) {
+                return TimelinePanel::GapSelection{
+                    trackIndex, coveredEnd, clip->timelineIn(), true};
+            }
+        }
+        coveredEnd = std::max(coveredEnd, clip->timelineOut());
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
+
 void TimelinePanel::mousePressEvent(QMouseEvent* event)
 {
     // Reset any stale drag mode from a previous incomplete interaction
@@ -282,14 +336,21 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
         }
 
         auto hitRef = hitTestClip(pos);
+        const size_t pressedTrack = hitTestTrack(pos.y());
+        const int64_t pressedTick = m_layoutEngine.pixelXToTime(
+            pos.x() - headerWidth());
+        const auto clickedGap = selectableGapAt(
+            *m_timeline, pressedTrack, pressedTick);
 
         // Edge-halo fallback: when zoomed out, a clip can be only a few
         // pixels wide, so the press lands just outside the clip's tick
         // range (hitTestClip returns no match) yet still within the edge
         // grab zone. Scan the pressed track for any clip edge within
         // edgeGrabPx of the cursor so the user can still grab + trim it.
-        if (!hitRef) {
-            size_t tiScan = hitTestTrack(pos.y());
+        // A genuine gap wins over these invisible edge halos; otherwise a
+        // short gap (narrower than the two halos) is impossible to select.
+        if (!hitRef && !clickedGap) {
+            size_t tiScan = pressedTrack;
             if (tiScan < m_timeline->trackCount()) {
                 const Track* trkScan = m_timeline->track(tiScan);
                 double pxScan = pos.x() - headerWidth();
@@ -601,47 +662,9 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             // potential marquee; deselect only fires on release without
             // meaningful movement.
 
-            // Detect gap between clips on the clicked track
-            size_t ti = hitTestTrack(pos.y());
-            double px = pos.x() - headerWidth();
-            int64_t clickTick = m_layoutEngine.pixelXToTime(px);
-            bool gapFound = false;
-
-            if (ti < m_timeline->trackCount() && clickTick >= 0 &&
-                !m_timeline->track(ti)->isLocked()) {
-                Track* track = m_timeline->track(ti);
-
-                // Collect and sort clips by position
-                std::vector<const Clip*> sorted;
-                sorted.reserve(track->clipCount());
-                for (size_t ci = 0; ci < track->clipCount(); ++ci)
-                    sorted.push_back(track->clip(ci));
-                std::sort(sorted.begin(), sorted.end(),
-                    [](const Clip* a, const Clip* b) {
-                        return a->timelineIn() < b->timelineIn();
-                    });
-
-                // Check gap before first clip (from tick 0 to first clip start)
-                if (!sorted.empty() && clickTick < sorted.front()->timelineIn()
-                    && sorted.front()->timelineIn() > 0) {
-                    m_gapSelection = { ti, 0, sorted.front()->timelineIn(), true };
-                    gapFound = true;
-                }
-
-                // Check gaps between consecutive clips
-                if (!gapFound) {
-                    for (size_t i = 0; i + 1 < sorted.size(); ++i) {
-                        int64_t gapStart = sorted[i]->timelineOut();
-                        int64_t gapEnd   = sorted[i + 1]->timelineIn();
-                        if (gapEnd > gapStart &&
-                            clickTick >= gapStart && clickTick < gapEnd) {
-                            m_gapSelection = { ti, gapStart, gapEnd, true };
-                            gapFound = true;
-                            break;
-                        }
-                    }
-                }
-            }
+            const bool gapFound = clickedGap.has_value();
+            if (gapFound)
+                m_gapSelection = *clickedGap;
 
             if (gapFound) {
                 // Show gap highlight on the appropriate track widget

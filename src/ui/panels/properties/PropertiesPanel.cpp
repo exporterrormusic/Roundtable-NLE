@@ -48,8 +48,10 @@ namespace rt {
 void PropertiesPanel::setClip(Clip* clip, Track* track)
 {
     auto pp0 = std::chrono::steady_clock::now();
+    const uint64_t previousClipId = m_clipId;
     m_clip  = clip;
     m_clipId = clip ? clip->id() : 0;
+    if (m_clipId != previousClipId) m_gfxSelectedTextLayerId = 0;
     m_multiSelection.clear(); // single-clip path: no multi-selection in flight
     m_track = track;
     const bool editable = rt::canMutateClip(clip, track);
@@ -87,6 +89,8 @@ void PropertiesPanel::clearClip()
 {
     m_clip  = nullptr;
     m_clipId = 0;
+    m_gfxSelectedTextLayerId = 0;
+    m_monitorTextEditing = false;
     m_multiSelection.clear();
     m_spineClip = nullptr;
     m_puppetClip = nullptr;

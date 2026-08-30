@@ -407,7 +407,7 @@ void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
  rebuildLayerList();
  // Auto-select topmost layer
  if (m_graphicClip->layerCount() > 0) {
- m_layerList->setCurrentRow(static_cast<int>(m_graphicClip->layerCount()) - 1);
+ m_layerList->setCurrentRow(0); // list is reverse stack order
  }
  } else {
  m_clipNameLabel->setText(tr("Graphics Editor"));

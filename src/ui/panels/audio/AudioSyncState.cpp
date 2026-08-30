@@ -5,6 +5,7 @@
 #include "panels/audio/AudioSync.h"
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
 #include "audio/AudioEngine.h"
 #include "spine/ShotPreset.h"
 #include "widgets/MiniWaveformWidget.h"
@@ -590,11 +591,25 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                                 Theme::hex(_tc.successBtnBg), Theme::hex(_tc.textBright),
                                 Theme::hex(_tc.success), _radM, Theme::hex(_tc.successBtnHover)));
                         connect(confirmBtn, &QPushButton::clicked, this, [this, ci]() {
-                            if (ci < m_clips.size()) {
-                                m_clips[ci].matchState = 2;
+                            if (ci >= m_clips.size()) return;
+                            const int oldMatchState = m_clips[ci].matchState;
+                            auto apply = [this, ci](int matchState) {
+                                if (m_destroying.load(std::memory_order_acquire)) return;
+                                if (ci >= m_clips.size()) return;
+                                m_clips[ci].matchState = matchState;
                                 populateLeftList();
                                 updateCardMatchStyle(ci);
                                 updateSmartBar();
+                                updateWorkflowState();
+                                emit voiceContextChanged();
+                            };
+                            if (m_commandStack) {
+                                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                                    "Confirm audio match",
+                                    [apply]() { apply(2); },
+                                    [apply, oldMatchState]() { apply(oldMatchState); }));
+                            } else {
+                                apply(2);
                             }
                         });
                         rLay->insertWidget(1, confirmBtn);

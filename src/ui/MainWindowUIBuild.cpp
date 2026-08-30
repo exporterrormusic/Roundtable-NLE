@@ -260,7 +260,7 @@ void MainWindow::buildPanels()
             // Drop everything into a single root-level "VO" folder. Don't
             // call ensureDefaultBins() here — the user wants just one
             // folder created on export, not a full Premiere-style scaffold.
-            bin->addFilesToNamedBin(allAudioPaths,
+            bin->addMissingFilesToNamedBin(allAudioPaths,
                 QStringLiteral("VO"), QString());
             bin->refreshSequences();
         }

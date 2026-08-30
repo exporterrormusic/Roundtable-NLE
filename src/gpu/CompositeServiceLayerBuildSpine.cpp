@@ -88,9 +88,20 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 sr->releaseAllTextures();
                                 m_gpuSpineActiveCharKey.clear();
                                 int loaded = 0;
+                                const size_t atlasPageCount =
+                                    state.engine.atlas().pages().size();
+                                const size_t expectedPages = atlasPageCount > 0
+                                    ? atlasPageCount : shared.pagePixels.size();
                                 if (!shared.pagePixels.empty()) {
-                                    for (size_t pi = 0; pi < shared.pagePixels.size(); ++pi) {
-                                        if (shared.pagePixels[pi].empty()) continue;
+                                    for (size_t pi = 0; pi < expectedPages; ++pi) {
+                                        if (pi >= shared.pagePixels.size() ||
+                                            pi >= shared.pageWidths.size() ||
+                                            pi >= shared.pageHeights.size() ||
+                                            shared.pagePixels[pi].empty() ||
+                                            shared.pageWidths[pi] <= 0 ||
+                                            shared.pageHeights[pi] <= 0) {
+                                            continue;
+                                        }
                                         if (sr->uploadAtlasTexture(
                                                 static_cast<int>(pi),
                                                 shared.pagePixels[pi].data(),
@@ -103,14 +114,19 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 } else {
                                     loaded = sr->loadAtlasTextures(state.engine.atlas());
                                 }
-                                if (loaded > 0) {
+                                if (expectedPages > 0 &&
+                                    loaded == static_cast<int>(expectedPages)) {
                                     m_gpuSpineActiveCharKey = charKey;
-                                    spdlog::info("[SPINE-GPU] uploaded atlas for '{}': {} pages (was '{}')",
-                                                  spineClip->characterName(), loaded,
-                                                  m_gpuSpineActiveCharKey);
+                                    spdlog::info("[SPINE-GPU] uploaded complete atlas for '{}': {} pages",
+                                                 spineClip->characterName(), loaded);
                                 } else {
-                                    spdlog::warn("[SPINE-GPU] atlas upload FAILED for '{}' ({} pages)",
-                                                  spineClip->characterName(), shared.pagePixels.size());
+                                    // Never render a partly uploaded character. A
+                                    // missing page would otherwise sample a descriptor
+                                    // left over from the preceding shot.
+                                    sr->releaseAllTextures();
+                                    spdlog::warn("[SPINE-GPU] atlas upload incomplete for '{}': {}/{} pages",
+                                                 spineClip->characterName(), loaded,
+                                                 expectedPages);
                                 }
                             }
 
@@ -265,25 +281,40 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     // holds the previous character's pixels (from
                                     // its waitForFrame), so read them out now before
                                     // beginFrame() clears the FBO.
+                                    bool previousFramePreserved = true;
                                     if (m_gpuSpineCount > 0) {
-                                        sr->waitForFrame();
-                                        auto readback = sr->readbackPixels();
-                                        if (readback && m_gpuSpineInsertedLayer >= 0 &&
+                                        const bool priorComplete = sr->waitForFrame();
+                                        auto readback = priorComplete
+                                            ? sr->readbackPixels() : nullptr;
+                                        if (readback && !readback->pixels.empty() &&
+                                            m_gpuSpineInsertedLayer >= 0 &&
                                             static_cast<size_t>(m_gpuSpineInsertedLayer) < layers.size()) {
+                                            readback->premultipliedAlpha = true;
                                             auto& prevLayer = layers[m_gpuSpineInsertedLayer];
                                             prevLayer.frame = std::move(readback);
                                             prevLayer.gpuTextureReady = false;
+                                        } else {
+                                            // Keep the preceding character in the FBO
+                                            // and render this character on the CPU. If
+                                            // we cleared the FBO here, the prior layer's
+                                            // zero-copy descriptor would become stale.
+                                            previousFramePreserved = false;
+                                            spdlog::error("[SPINE-GPU] could not preserve previous character frame; using CPU for '{}'",
+                                                          spineClip->characterName());
                                         }
                                     }
 
-                                    sr->beginFrame();
-                                    sr->renderSkeleton(renderData, mvp, 1.0f);
-                                    sr->endFrame();
-
-                                    sr->waitForFrame();
-
-                                    gpuSpineDone = true;
-                                    gpuSpineUsedThisFrame = true;
+                                    bool renderComplete = false;
+                                    if (previousFramePreserved) {
+                                        const bool began = sr->beginFrame();
+                                        const bool drew = began &&
+                                            sr->renderSkeleton(renderData, mvp, 1.0f);
+                                        // Finish a begun command buffer even if atlas
+                                        // validation rejected its draw commands.
+                                        const bool submitted = began && sr->endFrame();
+                                        const bool completed = submitted && sr->waitForFrame();
+                                        renderComplete = drew && submitted && completed;
+                                    }
 
                                     // STATIC frame (parked playhead, e.g. a
                                     // transform-handle drag): read the freshly
@@ -300,7 +331,9 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     // During playback the tick advances so we
                                     // keep the fast zero-copy path.
                                     bool spineStableReadback = false;
-                                    if (staticRecomposite) {
+                                    const bool requireStableFrame =
+                                        staticRecomposite || m_forceFullResolution.load();
+                                    if (renderComplete && requireStableFrame) {
                                         auto stable = sr->readbackPixels();
                                         if (stable && !stable->pixels.empty()) {
                                             stable->premultipliedAlpha = true; // Spine FBO is PMA
@@ -310,13 +343,23 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                         }
                                     }
 
-                                    if (!spineStableReadback) {
+                                    if (renderComplete &&
+                                        (!requireStableFrame || spineStableReadback)) {
+                                        gpuSpineDone = true;
+                                        gpuSpineUsedThisFrame = true;
+                                    }
+
+                                    if (gpuSpineDone && !spineStableReadback) {
                                         gpuSpineZeroCopy = true;
                                         ++m_gpuSpineCount;
                                         m_gpuSpineJustRendered = true;
                                         gpuSpineDescriptor = sr->outputDescriptorInfo();
                                         gpuSpineW = outW;
                                         gpuSpineH = outH;
+                                    } else if (renderComplete && requireStableFrame &&
+                                               !spineStableReadback) {
+                                        spdlog::error("[SPINE-GPU] stable export readback failed for '{}'; using CPU fallback",
+                                                      spineClip->characterName());
                                     }
                                 }
                             }

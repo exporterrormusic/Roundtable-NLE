@@ -51,7 +51,10 @@ ManualMatchDialog::ManualMatchDialog(
     (void)confirmedRegions;
     (void)tentativeRegions;
 
-    setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    // Parent ownership and modality keep this dialog above Roundtable itself.
+    // Do not use WindowStaysOnTopHint: on Windows that makes the dialog a
+    // system-wide topmost window, covering unrelated applications too.
+    setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
     setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_DeleteOnClose, false);
     setFocusPolicy(Qt::StrongFocus);

@@ -30,50 +30,50 @@ inline std::string extractCharacterName(const std::string& filePath)
         }
     }
 
-    size_t separator = name.find_first_of(" _-");
-    if (separator != std::string::npos && separator >= 2) {
-        std::string rest = name.substr(separator + 1);
-        std::string restLower = rest;
-        for (auto& ch : restLower)
+    auto isSeparator = [](char ch) {
+        return ch == ' ' || ch == '_' || ch == '-';
+    };
+
+    // Prefix removal can leave a delimiter (for example "voice ONLY ONE").
+    while (!name.empty() && isSeparator(name.front()))
+        name.erase(name.begin());
+
+    static const std::vector<std::string> suffixes = {
+        "fix", "final", "new", "old", "alt", "v2", "v3", "redo",
+        "done", "fixed", "clean", "raw", "edit", "edited", "master",
+        "draft", "wip", "temp", "test", "copy", "backup"
+    };
+
+    // Strip recording metadata from the RIGHT edge one token at a time.
+    // The previous implementation inspected everything after the first
+    // separator and treated any <=2-character token as metadata.  That made
+    // "ONLY ONE FIX" collapse to "ONLY" because "ONE" followed the first
+    // space.  Right-to-left stripping removes only "FIX" and preserves the
+    // complete multi-word character name.
+    while (!name.empty()) {
+        while (!name.empty() && isSeparator(name.back()))
+            name.pop_back();
+        if (name.empty()) break;
+
+        size_t tokenStart = name.size();
+        while (tokenStart > 0 && !isSeparator(name[tokenStart - 1]))
+            --tokenStart;
+
+        std::string token = name.substr(tokenStart);
+        for (auto& ch : token)
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
 
-        static const std::vector<std::string> suffixes = {
-            "fix", "final", "new", "old", "alt", "v2", "v3", "redo",
-            "done", "fixed", "clean", "raw", "edit", "edited", "master",
-            "draft", "wip", "temp", "test", "copy", "backup"
-        };
+        const bool isNumber = !token.empty()
+            && std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+                   return std::isdigit(ch) != 0;
+               });
+        const bool isSuffix =
+            std::find(suffixes.begin(), suffixes.end(), token) != suffixes.end();
+        const bool isTake = token.rfind("take", 0) == 0;
+        if (!isNumber && !isSuffix && !isTake)
+            break;
 
-        bool allSuffix = true;
-        size_t pos = 0;
-        while (pos < restLower.size() && allSuffix) {
-            size_t next = restLower.find_first_of(" _-", pos);
-            if (next == std::string::npos) next = restLower.size();
-
-            std::string word = restLower.substr(pos, next - pos);
-            if (word.empty()) {
-                pos = next + 1;
-                continue;
-            }
-
-            bool isNum = true;
-            for (char ch : word) {
-                if (!std::isdigit(static_cast<unsigned char>(ch))) {
-                    isNum = false;
-                    break;
-                }
-            }
-
-            bool isSuffix = std::find(suffixes.begin(), suffixes.end(), word) != suffixes.end();
-            bool isTake = word.substr(0, 4) == "take";
-            bool isShort = word.size() <= 2;
-            if (!isNum && !isSuffix && !isTake && !isShort)
-                allSuffix = false;
-
-            pos = next + 1;
-        }
-
-        if (allSuffix)
-            name = name.substr(0, separator);
+        name.erase(tokenStart);
     }
 
     while (!name.empty()) {

@@ -668,6 +668,40 @@ TEST(ProjectBin, ExplicitReimportCreatesIndependentBinItems)
     EXPECT_NE(items[0].id, items[1].id);
 }
 
+TEST(ProjectBin, AutomaticNamedImportDoesNotDuplicateExistingSource)
+{
+    rt::ProjectBin bin;
+    const fs::path source("synced-voice.wav");
+    const fs::path alreadyImported("already-imported.wav");
+
+    bin.addFiles({alreadyImported});
+    bin.addMissingFilesToNamedBin(
+        {source, source, alreadyImported}, "VO");
+    bin.addMissingFilesToNamedBin({source}, "VO");
+
+    const auto items = bin.exportBinItems();
+    ASSERT_EQ(items.size(), 2u);
+    EXPECT_EQ(items[0].path, alreadyImported);
+    EXPECT_EQ(items[1].path, source);
+}
+
+TEST(ProjectBin, RemoveItemByIdTargetsSelectedDuplicate)
+{
+    rt::ProjectBin bin;
+    const fs::path source("same-source.wav");
+    bin.addFiles({source, source});
+
+    const auto before = bin.exportBinItems();
+    ASSERT_EQ(before.size(), 2u);
+    ASSERT_NE(before[0].id, before[1].id);
+
+    EXPECT_TRUE(bin.removeItemById(before[1].id));
+    const auto after = bin.exportBinItems();
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after.front().id, before[0].id);
+    EXPECT_FALSE(bin.removeItemById(before[1].id));
+}
+
 TEST(ProjectBin, FilesOfType)
 {
     rt::ProjectBin bin;

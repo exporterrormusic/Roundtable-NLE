@@ -2,15 +2,19 @@
 
 #include "AudioMixdown.h"
 #include "audio/AudioFile.h"
+#include "command/CommandStack.h"
 #include "panels/audio/AudioSync.h"
+#include "panels/audio/AudioSyncFileName.h"
 #include "panels/audio/VoiceGenerationPanel.h"
 #include "panels/audio/VoiceGenerationService.h"
+#include "widgets/ManualMatchDialog.h"
 
 #include <QApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QSettings>
+#include <QTest>
 #include <QTemporaryDir>
 #include <QRegularExpression>
 #include <QPushButton>
@@ -77,6 +81,26 @@ rt::SyncClip clip(int id, const QString& path, const char* character,
 }
 
 } // namespace
+
+TEST(AudioSyncFileNameTest, PreservesMultiWordCharacterBeforeFixSuffix)
+{
+    EXPECT_EQ(rt::extractCharacterName("C:/audio/ONLY ONE FIX.wav"), "Only one");
+    EXPECT_EQ(rt::extractCharacterName("C:/audio/ONLY ONE-fixed-v2.wav"), "Only one");
+    EXPECT_EQ(rt::extractCharacterName("C:/audio/ONLY ONE.wav"), "Only one");
+    EXPECT_EQ(rt::extractCharacterName("C:/audio/MR X FIX.wav"), "Mr x");
+    EXPECT_EQ(rt::extractCharacterName("C:/audio/ALICE TAKE 2.wav"), "Alice");
+}
+
+TEST_F(VoiceGenerationTest, ManualMatchDialogStaysAboveOnlyItsApplication)
+{
+    QWidget parent;
+    rt::ManualMatchDialog dialog(
+        "Alice", "Test dialogue", 1, {}, {}, {}, {}, {}, nullptr, &parent);
+
+    EXPECT_EQ(dialog.parentWidget(), &parent);
+    EXPECT_EQ(dialog.windowModality(), Qt::ApplicationModal);
+    EXPECT_FALSE(dialog.windowFlags().testFlag(Qt::WindowStaysOnTopHint));
+}
 
 TEST_F(VoiceGenerationTest, ExposesOnlyConfirmedClipsAsApprovedReferences)
 {
@@ -246,4 +270,118 @@ TEST_F(VoiceGenerationTest, ApprovedSyncMatchesOnlyTheSelectedCharacter)
               QStringLiteral("Chime"));
     EXPECT_EQ(audioSync.clip(0).matchState, 2);
     EXPECT_EQ(audioSync.clip(0).scriptLineNumber, 1);
+}
+
+TEST_F(VoiceGenerationTest, AutoSyncStaysTentativeAndMatchChangesAreUndoable)
+{
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    QCoreApplication::setOrganizationName(QStringLiteral("RoundtableTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("VoiceGenerationTests"));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(
+        QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    QSettings settings;
+    settings.setValue(
+        QStringLiteral("transcription/crisperWhisperPersonalAccepted"), true);
+    settings.sync();
+    ASSERT_EQ(settings.status(), QSettings::NoError);
+    const QString approved = makeTone(
+        temporary.path(), QStringLiteral("ALICE-approved.wav"), 0.5);
+    const QString fixed = makeTone(
+        temporary.path(), QStringLiteral("ALICE-fixed.wav"), 0.5);
+
+    rt::AudioSync audioSync;
+    rt::CommandStack history;
+    audioSync.setCommandStack(&history);
+    ASSERT_TRUE(audioSync.loadScript(
+        "ALICE: This line was already reviewed\n"
+        "ALICE: This replacement line is an exact match",
+        "memory://auto-sync-tentative-test"));
+    audioSync.attachGeneratedAudio(
+        approved, QStringLiteral("Alice"),
+        QStringLiteral("This line was already reviewed"),
+        1, QStringLiteral("Alice: This line was already reviewed"), 0.5);
+    audioSync.attachGeneratedAudio(
+        fixed, QStringLiteral("Alice"),
+        QStringLiteral("This replacement line is an exact match"),
+        -1, QString(), 0.5);
+
+    audioSync.runAutoSync();
+
+    ASSERT_EQ(audioSync.clipCount(), 2);
+    const rt::SyncClip* approvedClip = nullptr;
+    const rt::SyncClip* fixedClip = nullptr;
+    for (int i = 0; i < audioSync.clipCount(); ++i) {
+        const auto& candidate = audioSync.clip(i);
+        if (candidate.sourceFile == approved.toUtf8().toStdString())
+            approvedClip = &candidate;
+        if (candidate.sourceFile == fixed.toUtf8().toStdString())
+            fixedClip = &candidate;
+    }
+
+    ASSERT_NE(approvedClip, nullptr);
+    EXPECT_EQ(approvedClip->matchState, 2);
+    EXPECT_EQ(approvedClip->scriptLineNumber, 1);
+    ASSERT_NE(fixedClip, nullptr);
+    EXPECT_EQ(fixedClip->scriptLineNumber, 2);
+    EXPECT_FLOAT_EQ(fixedClip->confidence, 1.0f);
+    EXPECT_EQ(fixedClip->matchState, 1);
+
+    ASSERT_TRUE(history.canUndo());
+    EXPECT_EQ(history.undoDescription(), "Auto-sync audio matches");
+    QTest::keyClick(&audioSync, Qt::Key_Z, Qt::ControlModifier);
+
+    bool foundUnmatchedFixed = false;
+    for (int i = 0; i < audioSync.clipCount(); ++i) {
+        const auto& candidate = audioSync.clip(i);
+        if (candidate.sourceFile == fixed.toUtf8().toStdString()) {
+            foundUnmatchedFixed = true;
+            EXPECT_EQ(candidate.matchState, 0);
+            EXPECT_EQ(candidate.scriptLineNumber, -1);
+        }
+    }
+    EXPECT_TRUE(foundUnmatchedFixed);
+
+    QTest::keyClick(
+        &audioSync, Qt::Key_Z,
+        Qt::ControlModifier | Qt::ShiftModifier);
+
+    QPushButton* confirmFixed = nullptr;
+    for (auto* button : audioSync.findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("\u2713  CONFIRM")) {
+            confirmFixed = button;
+            break;
+        }
+    }
+    ASSERT_NE(confirmFixed, nullptr);
+    confirmFixed->click();
+    EXPECT_EQ(history.undoDescription(), "Confirm audio match");
+    QTest::keyClick(&audioSync, Qt::Key_Z, Qt::ControlModifier);
+
+    bool foundTentativeFixed = false;
+    for (int i = 0; i < audioSync.clipCount(); ++i) {
+        const auto& candidate = audioSync.clip(i);
+        if (candidate.sourceFile == fixed.toUtf8().toStdString()) {
+            foundTentativeFixed = true;
+            EXPECT_EQ(candidate.matchState, 1);
+            EXPECT_EQ(candidate.scriptLineNumber, 2);
+        }
+    }
+    EXPECT_TRUE(foundTentativeFixed);
+
+    // The history entries remain reusable across repeated redo/undo cycles.
+    QTest::keyClick(
+        &audioSync, Qt::Key_Z,
+        Qt::ControlModifier | Qt::ShiftModifier);
+    QTest::keyClick(&audioSync, Qt::Key_Z, Qt::ControlModifier);
+    QTest::keyClick(&audioSync, Qt::Key_Z, Qt::ControlModifier);
+    ASSERT_EQ(audioSync.clipCount(), 2);
+    for (int i = 0; i < audioSync.clipCount(); ++i) {
+        const auto& candidate = audioSync.clip(i);
+        if (candidate.sourceFile == fixed.toUtf8().toStdString()) {
+            EXPECT_EQ(candidate.matchState, 0);
+            EXPECT_EQ(candidate.scriptLineNumber, -1);
+        }
+    }
 }

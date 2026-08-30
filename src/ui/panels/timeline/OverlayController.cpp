@@ -1139,6 +1139,48 @@ void OverlayController::wireOverlayToolSignals()
                     &TransformOverlayWidget::inlineParagraphFormatChanged,
                     graphics, &GraphicsEditorPanel::setInlineParagraphFormat);
         }
+        if (m_ws->propertiesPanel()) {
+            auto* properties = m_ws->propertiesPanel();
+            connect(properties, &PropertiesPanel::inlineFontFamilyRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontFamily);
+            connect(properties, &PropertiesPanel::inlineFontSizeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontSize);
+            connect(properties, &PropertiesPanel::inlineFontWeightRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontWeight);
+            connect(properties, &PropertiesPanel::inlineItalicRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextItalic);
+            connect(properties,
+                    &PropertiesPanel::inlineCapitalizationRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextCapitalization);
+            connect(properties, &PropertiesPanel::inlineLeadingRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextLeading);
+            connect(properties, &PropertiesPanel::inlineKerningRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextKerning);
+            connect(properties, &PropertiesPanel::inlineFillRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFill);
+            connect(properties, &PropertiesPanel::inlineStrokeRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextStroke);
+            connect(properties, &PropertiesPanel::inlineShadowRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextShadow);
+            connect(properties,
+                    &PropertiesPanel::inlineParagraphAlignmentRequested,
+                    ov2, &TransformOverlayWidget::applyInlineParagraphAlignment);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextSelectionFormatChanged,
+                    properties,
+                    &PropertiesPanel::setInlineTextSelectionFormat);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextAdvancedFormatChanged,
+                    properties,
+                    &PropertiesPanel::setInlineTextAdvancedFormat);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineTextSelectionAppearanceChanged,
+                    properties,
+                    &PropertiesPanel::setInlineTextSelectionAppearance);
+            connect(ov2,
+                    &TransformOverlayWidget::inlineParagraphFormatChanged,
+                    properties, &PropertiesPanel::setInlineParagraphFormat);
+        }
         if (m_ws->captionsPanel()) {
             auto* captions = m_ws->captionsPanel();
             connect(captions, &CaptionsPanel::inlineFontFamilyRequested,
@@ -1286,6 +1328,10 @@ void OverlayController::wireOverlayToolSignals()
                 ov2->setInlineTextFormattingWidget(
                     m_ws->graphicsEditorPanel()->textFormattingWidget());
             }
+            if (m_ws->propertiesPanel()) {
+                ov2->addInlineTextFormattingWidget(
+                    m_ws->propertiesPanel()->graphicTextFormattingWidget());
+            }
 
             // Pick the first fill colour for the editor text colour.
             QColor textColor(Qt::white);
@@ -1308,6 +1354,8 @@ void OverlayController::wireOverlayToolSignals()
             m_inlineTextEditActive = true;
             if (m_ws->graphicsEditorPanel())
                 m_ws->graphicsEditorPanel()->setMonitorTextEditing(true);
+            if (m_ws->propertiesPanel())
+                m_ws->propertiesPanel()->setMonitorTextEditing(true);
 
             // Sync m_ws->selection().graphicLayerIdx to the layer we're about to
             // edit. updateTransformOverlay()'s per-layer branch is gated
@@ -1487,6 +1535,8 @@ void OverlayController::wireOverlayToolSignals()
                 m_ws->graphicsEditorPanel()->setMonitorTextEditing(false);
             if (m_ws->captionsPanel())
                 m_ws->captionsPanel()->setMonitorTextEditing(false);
+            if (m_ws->propertiesPanel())
+                m_ws->propertiesPanel()->setMonitorTextEditing(false);
 
             // The click that ends editing is also allowed to change the
             // timeline/panel selection. Resolve the edit target from the IDs

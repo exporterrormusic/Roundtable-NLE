@@ -164,7 +164,7 @@ void TimelineWorkspace::importApprovedVoiceClip(const QString& outputPath)
 {
     if (outputPath.isEmpty()) return;
     if (m_projectBin) {
-        m_projectBin->addFilesToNamedBin(
+        m_projectBin->addMissingFilesToNamedBin(
             {utf8ToPath(outputPath.toUtf8().toStdString())},
             QStringLiteral("Generated VO"));
     }
