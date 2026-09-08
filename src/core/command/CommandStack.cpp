@@ -30,6 +30,10 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
         return;
     }
 
+    // A new edit abandons the redo branch even when it merges into the most
+    // recent undo command. Clear it before mergeWith() can return early.
+    m_redoStack.clear();
+
     // Try to merge with the most recent command (absorb into existing)
     if (!m_undoStack.empty() && m_undoStack.back()->typeId() >= 0
         && m_undoStack.back()->typeId() == cmd->typeId()
@@ -41,9 +45,6 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
     }
 
     m_undoStack.push_back(std::move(cmd));
-
-    // Executing a new command clears the redo stack (branch is abandoned)
-    m_redoStack.clear();
 
     trimToMaxDepth();
     notifyChange();

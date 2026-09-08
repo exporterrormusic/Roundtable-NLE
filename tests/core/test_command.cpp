@@ -102,6 +102,37 @@ TEST(CommandStack, NewCommandClearsRedo)
     EXPECT_EQ(value, 30);
 }
 
+TEST(CommandStack, NewMergeableCommandClearsRedo)
+{
+    Track track(TrackType::Video, "V1");
+    auto clip = std::make_unique<SpineClip>("Hero", "default");
+    clip->setTimelineIn(0);
+    clip->setDuration(48000);
+    const uint64_t clipId = clip->id();
+    ASSERT_NE(track.addClip(std::move(clip)), nullptr);
+
+    int value = 0;
+    CommandStack stack;
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 1000));
+    stack.execute(std::make_unique<SetValueCommand>(value, 20));
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_TRUE(stack.canRedo());
+    EXPECT_EQ(value, 0);
+
+    // This merges with the earlier move command. It must still abandon the
+    // redo branch containing SetValueCommand.
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 2000));
+
+    EXPECT_EQ(track.clip(0)->timelineIn(), 2000);
+    EXPECT_FALSE(stack.canRedo());
+    EXPECT_FALSE(stack.redo());
+    EXPECT_EQ(value, 0);
+
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+}
+
 TEST(CommandStack, Descriptions)
 {
     int value = 0;
