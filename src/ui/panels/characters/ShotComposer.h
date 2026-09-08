@@ -384,6 +384,7 @@ private:
     // ── Default-shot persistence ────────────────────────────────────────
     void saveDefaults() const;
     void loadDefaults();
+    void showPresetSaveError(const QString& action);
 
     /// Return the active character filter value from the filter list.
     /// Returns empty string for ALL, a reserved group-filter token, or the

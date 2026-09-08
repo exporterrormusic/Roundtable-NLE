@@ -296,6 +296,8 @@ bool ShotComposer::eventFilter(QObject* obj, QEvent* event)
             if (saveCurrentShot())
                 QToolTip::showText(mapToGlobal(QPoint(width() / 2, 10)),
                                    "Shot saved", this, {}, 1500);
+            else
+                showPresetSaveError(tr("The shot could not be saved."));
             return true;
         }
         // Ctrl+Shift+C/V — transform copy-paste (check before plain Copy/Paste)

@@ -110,7 +110,10 @@ void ShotComposer::pasteLayer()
 
         ShotPreset pasted = *m_shotClipboard;
         pasted.setName(name.trimmed().toStdString());
-        m_presetManager.save(pasted);
+        if (!m_presetManager.save(pasted)) {
+            showPresetSaveError(tr("The pasted shot could not be saved."));
+            return;
+        }
         saveShotThumbnail(pasted);
         setCurrentShot(pasted);
         refreshShotList();

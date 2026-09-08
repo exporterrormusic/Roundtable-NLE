@@ -22,12 +22,24 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QMap>
+#include <QMessageBox>
 #include <QSet>
 
 #include <fstream>
 #include <spdlog/spdlog.h>
 
 namespace rt {
+
+void ShotComposer::showPresetSaveError(const QString& action)
+{
+    QString detail = QString::fromStdString(m_presetManager.lastError());
+    if (detail.isEmpty())
+        detail = tr("The storage operation failed.");
+    QMessageBox::warning(
+        this, tr("Shot Save Failed"),
+        tr("%1\n\nNo existing shot was removed because of this failure.\n\n%2")
+            .arg(action, detail));
+}
 
 // =====================================================================
 //  Configuration
@@ -201,19 +213,30 @@ void ShotComposer::onShotShowsChanged()
     if (newShowStd == m_currentShot.show())
         return; // no change
 
+    const std::string oldShow = m_currentShot.show();
     const std::string oldKey =
-        ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
+        ShotPresetManager::makeKey(oldShow, m_currentShot.name());
 
     m_currentShot.setShow(newShowStd);
-    if (!newShowStd.empty())
-        m_presetManager.addShow(newShowStd); // register so it persists
 
     // Write to the new namespace, then remove the old file.
-    m_presetManager.save(m_currentShot);
+    if (!m_presetManager.save(m_currentShot)) {
+        m_currentShot.setShow(oldShow);
+        m_updating = true;
+        m_showsEdit->setText(QString::fromStdString(oldShow));
+        m_updating = false;
+        showPresetSaveError(tr("The shot could not be moved to the selected show."));
+        return;
+    }
+
+    if (!newShowStd.empty())
+        m_presetManager.addShow(newShowStd); // register only after the shot is safe
     const std::string newKey =
         ShotPresetManager::makeKey(newShowStd, m_currentShot.name());
-    if (oldKey != newKey)
-        m_presetManager.remove(oldKey);
+    if (oldKey != newKey && !m_presetManager.remove(oldKey)) {
+        spdlog::warn("ShotComposer: saved moved shot but could not remove old preset '{}'",
+                     oldKey);
+    }
     m_lastSavedName = newKey;
 
     refreshShotList();
@@ -283,7 +306,8 @@ void ShotComposer::newShot(const QString& name)
         m_presetManager.addShow(m_currentShot.show());
 
     // Save the new shot immediately so it appears in the preset list
-    m_presetManager.save(m_currentShot);
+    if (!m_presetManager.save(m_currentShot))
+        showPresetSaveError(tr("The new shot could not be saved."));
 
     m_updating = true;
     m_shotNameEdit->setText(name);
@@ -457,12 +481,16 @@ bool ShotComposer::saveCurrentShot()
     // delete the old file so it doesn't linger on disk.
     const std::string currentKey =
         ShotPresetManager::makeKey(m_currentShot.show(), m_currentShot.name());
-    if (!m_lastSavedName.empty() && m_lastSavedName != currentKey) {
-        m_presetManager.remove(m_lastSavedName);
-    }
 
     bool ok = m_presetManager.save(m_currentShot);
     if (ok) {
+        // A rename/move becomes authoritative only after the replacement has
+        // been fully written and promoted. Until then, keep the old preset.
+        if (!m_lastSavedName.empty() && m_lastSavedName != currentKey &&
+            !m_presetManager.remove(m_lastSavedName)) {
+            spdlog::warn("ShotComposer: saved renamed shot but could not remove old preset '{}'",
+                         m_lastSavedName);
+        }
         m_lastSavedName = currentKey;
         // Generate & persist a thumbnail PNG next to the preset JSON
         saveShotThumbnail(m_currentShot);
@@ -497,7 +525,10 @@ void ShotComposer::duplicateCurrentShot()
 
     ShotPreset dupe = m_currentShot;   // keeps the same show
     dupe.setName(name.trimmed().toStdString());
-    m_presetManager.save(dupe);
+    if (!m_presetManager.save(dupe)) {
+        showPresetSaveError(tr("The duplicate shot could not be saved."));
+        return;
+    }
     setCurrentShot(dupe);
     refreshShotList();
 

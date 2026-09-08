@@ -347,7 +347,8 @@ QWidget* ShotComposer::createShotsColumn()
 
     connect(m_saveShotBtn, &QPushButton::clicked, this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        saveCurrentShot();
+        if (!saveCurrentShot())
+            showPresetSaveError(tr("The shot could not be saved."));
     });
 
     connect(m_deleteShotBtn, &QPushButton::clicked, this, [this]() {
@@ -455,8 +456,15 @@ QWidget* ShotComposer::createShotsColumn()
                     return;
                 }
                 preset->setShow(destShow.toStdString());
-                m_presetManager.save(*preset);
-                m_presetManager.remove(shotKey.toStdString());
+                if (!m_presetManager.save(*preset)) {
+                    showPresetSaveError(tr("The shot could not be moved to the selected show."));
+                    return;
+                }
+                if (!m_presetManager.remove(shotKey.toStdString())) {
+                    QMessageBox::warning(
+                        this, tr("Move Incomplete"),
+                        tr("The shot was saved in the new show, but its old copy could not be removed."));
+                }
                 if (curKey == shotKey.toStdString()) {
                     m_currentShot.setShow(destShow.toStdString());
                     m_lastSavedName = ShotPresetManager::makeKey(
@@ -486,7 +494,10 @@ QWidget* ShotComposer::createShotsColumn()
             if (!ok || dupeName.trimmed().isEmpty()) return;
             ShotPreset dupe = *preset;       // keeps the same show
             dupe.setName(dupeName.trimmed().toStdString());
-            m_presetManager.save(dupe);
+            if (!m_presetManager.save(dupe)) {
+                showPresetSaveError(tr("The duplicate shot could not be saved."));
+                return;
+            }
             setCurrentShot(dupe);
             refreshShotList();
             spdlog::info("ShotComposer: Duplicated shot '{}' as '{}'",
@@ -508,8 +519,15 @@ QWidget* ShotComposer::createShotsColumn()
             if (!preset) return;
             ShotPreset renamed = *preset;    // keeps the same show
             renamed.setName(newNameStd);
-            m_presetManager.save(renamed);
-            m_presetManager.remove(shotKey.toStdString());
+            if (!m_presetManager.save(renamed)) {
+                showPresetSaveError(tr("The renamed shot could not be saved."));
+                return;
+            }
+            if (!m_presetManager.remove(shotKey.toStdString())) {
+                QMessageBox::warning(
+                    this, tr("Rename Incomplete"),
+                    tr("The renamed shot was saved, but its old copy could not be removed."));
+            }
             setCurrentShot(renamed);
             refreshShotList();
             spdlog::info("ShotComposer: Renamed shot '{}' -> '{}'",

@@ -659,6 +659,24 @@ TEST_F(ShotPresetManagerTest, RemoveNonexistent)
     EXPECT_FALSE(mgr.remove("does not exist"));
 }
 
+TEST_F(ShotPresetManagerTest, FailedRemoveKeepsPresetRegistered)
+{
+    ShotPresetManager mgr;
+    mgr.scan(m_tmpDir.path());
+    ASSERT_TRUE(mgr.save(ShotPreset::createDefault("Rapi")));
+
+    const auto presetPath = m_tmpDir.path() / "Rapi - Default.json";
+    ASSERT_TRUE(std::filesystem::remove(presetPath));
+    ASSERT_TRUE(std::filesystem::create_directory(presetPath));
+    std::ofstream blocker(presetPath / "keep.txt");
+    blocker << "prevent directory removal";
+    blocker.close();
+
+    EXPECT_FALSE(mgr.remove("Rapi - Default"));
+    EXPECT_TRUE(mgr.hasPreset("Rapi - Default"));
+    EXPECT_FALSE(mgr.lastError().empty());
+}
+
 TEST_F(ShotPresetManagerTest, PresetNames)
 {
     ShotPresetManager mgr;
@@ -687,6 +705,45 @@ TEST_F(ShotPresetManagerTest, OverwritePreset)
     auto loaded = mgr.load("Rapi - Default");
     ASSERT_TRUE(loaded.has_value());
     EXPECT_NEAR(loaded->cameraZoom(), 2.0f, 0.001f);
+}
+
+TEST_F(ShotPresetManagerTest, FailedOverwritePreservesLastValidPreset)
+{
+    ShotPresetManager mgr;
+    mgr.scan(m_tmpDir.path());
+
+    auto original = ShotPreset::createDefault("Rapi");
+    original.setCameraZoom(1.25f);
+    ASSERT_TRUE(mgr.save(original));
+
+    auto presetPath = m_tmpDir.path() / "Rapi - Default.json";
+    std::ifstream beforeFile(presetPath, std::ios::binary);
+    const std::string before((std::istreambuf_iterator<char>(beforeFile)),
+                             std::istreambuf_iterator<char>());
+    ASSERT_FALSE(before.empty());
+
+    // A directory at the staging path simulates a temporary-file creation
+    // failure without altering the existing valid destination.
+    auto stagedPath = presetPath;
+    stagedPath += ".tmp";
+    ASSERT_TRUE(std::filesystem::create_directory(stagedPath));
+
+    auto replacement = original;
+    replacement.setCameraZoom(2.5f);
+    EXPECT_FALSE(mgr.save(replacement));
+    EXPECT_FALSE(mgr.lastError().empty());
+
+    auto inMemory = mgr.load("Rapi - Default");
+    ASSERT_TRUE(inMemory.has_value());
+    EXPECT_NEAR(inMemory->cameraZoom(), 1.25f, 0.001f);
+
+    std::ifstream afterFile(presetPath, std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(afterFile)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_EQ(after, before);
+    auto onDisk = ShotPreset::fromJson(after);
+    ASSERT_TRUE(onDisk.has_value());
+    EXPECT_NEAR(onDisk->cameraZoom(), 1.25f, 0.001f);
 }
 
 TEST_F(ShotPresetManagerTest, ScanNonexistentDir)
@@ -1197,4 +1254,29 @@ TEST_F(ShotComposerUITest, PresetManagerIntegration)
     // The shot lives in the No-Show namespace ("" show).
     EXPECT_TRUE(m_panel->presetManager().hasPreset("", "Rapi - Default"));
     EXPECT_EQ(m_panel->shotList()->count(), 1);   // shot strip stays in sync
+}
+
+TEST_F(ShotComposerUITest, FailedRenameSavePreservesPreviousPreset)
+{
+    TempDir tmpDir;
+    m_panel->setPresetsDirectory(tmpDir.path());
+
+    ShotPreset original("Original Shot");
+    m_panel->setCurrentShot(original);
+    ASSERT_TRUE(m_panel->saveCurrentShot());
+
+    m_panel->shotNameEdit()->setText("Renamed Shot");
+    ASSERT_EQ(m_panel->currentShot().name(), "Renamed Shot");
+
+    auto stagedPath = tmpDir.path() / "Renamed Shot.json.tmp";
+    ASSERT_TRUE(std::filesystem::create_directory(stagedPath));
+
+    EXPECT_FALSE(m_panel->saveCurrentShot());
+    EXPECT_TRUE(m_panel->presetManager().hasPreset("Original Shot"));
+    EXPECT_FALSE(m_panel->presetManager().hasPreset("Renamed Shot"));
+
+    ShotPresetManager reloaded;
+    EXPECT_EQ(reloaded.scan(tmpDir.path()), 1);
+    EXPECT_TRUE(reloaded.hasPreset("Original Shot"));
+    EXPECT_FALSE(reloaded.hasPreset("Renamed Shot"));
 }

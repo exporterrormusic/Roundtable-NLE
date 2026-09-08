@@ -656,8 +656,19 @@ QWidget* ShotComposer::createShowFilterColumn()
             auto preset = m_presetManager.load(oldKey);
             if (!preset) continue;
             preset->setShow(newStd);
-            m_presetManager.save(*preset);
-            m_presetManager.remove(oldKey);
+            if (!m_presetManager.save(*preset)) {
+                showPresetSaveError(tr("The show change stopped because a shot could not be saved."));
+                refreshShotList();
+                return;
+            }
+            if (!m_presetManager.remove(oldKey)) {
+                QMessageBox::warning(
+                    this, tr("Show Change Incomplete"),
+                    tr("A shot was saved in the new location, but its old copy could not be removed."
+                       " The remaining shots were not changed."));
+                refreshShotList();
+                return;
+            }
             if (m_currentShot.hasShow(show.toStdString()) &&
                 m_currentShot.name() == preset->name()) {
                 m_currentShot.setShow(newStd);

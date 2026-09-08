@@ -264,7 +264,8 @@ QWidget* ShotComposer::createPropertiesPanel()
     });
 
     connect(saveShotBtnProps, &QPushButton::clicked, this, [this]() {
-        saveCurrentShot();
+        if (!saveCurrentShot())
+            showPresetSaveError(tr("The shot could not be saved."));
     });
 
     topLayout->addWidget(shotNameGroup);

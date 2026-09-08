@@ -14,6 +14,10 @@
 #include <sstream>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // ─── Minimal JSON helpers ───────────────────────────────────────────────────
 // We use a lightweight approach: manual JSON writing + minimal parsing.
 // This avoids pulling in a JSON library dependency.  For reading, we use
@@ -170,6 +174,30 @@ void skipValue(JLexer& lex) {
         }
     }
     // else: already consumed the single token
+}
+
+void removeStagedPreset(const std::filesystem::path& path)
+{
+    std::error_code cleanupError;
+    std::filesystem::remove(path, cleanupError);
+}
+
+bool promoteStagedPreset(const std::filesystem::path& stagedPath,
+                         const std::filesystem::path& destinationPath,
+                         std::error_code& error)
+{
+#ifdef _WIN32
+    if (::MoveFileExW(stagedPath.c_str(), destinationPath.c_str(),
+                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error.clear();
+        return true;
+    }
+    error = {static_cast<int>(::GetLastError()), std::system_category()};
+    return false;
+#else
+    std::filesystem::rename(stagedPath, destinationPath, error);
+    return !error;
+#endif
 }
 
 } // anon
@@ -851,20 +879,67 @@ int ShotPresetManager::scan(const std::filesystem::path& presetsDir)
 
 bool ShotPresetManager::save(const ShotPreset& preset)
 {
-    if (preset.name().empty())
+    m_lastError.clear();
+    auto fail = [this](const std::string& message) {
+        m_lastError = message;
+        spdlog::error("ShotPresetManager: {}", message);
         return false;
+    };
+
+    if (preset.name().empty())
+        return fail("cannot save a preset without a name");
 
     auto path = pathForPreset(preset.show(), preset.name());
     if (!m_directory.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec)
+            return fail("cannot create the preset directory: " + ec.message());
     }
 
-    std::ofstream ofs(path, std::ios::binary);
-    if (!ofs)
-        return false;
+    const std::string json = preset.toJson();
+    auto stagedPath = path;
+    stagedPath += ".tmp";
 
-    ofs << preset.toJson();
+    std::ofstream ofs(stagedPath, std::ios::binary | std::ios::trunc);
+    if (!ofs)
+        return fail("cannot open the temporary preset file for writing");
+
+    ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
+    ofs.flush();
+    const bool writeSucceeded = ofs.good();
+    ofs.close();
+
+    if (!writeSucceeded || ofs.fail()) {
+        removeStagedPreset(stagedPath);
+        return fail("the temporary preset file could not be written completely");
+    }
+
+    std::error_code verifyError;
+    const auto stagedSize = std::filesystem::file_size(stagedPath, verifyError);
+    if (verifyError || stagedSize != json.size()) {
+        removeStagedPreset(stagedPath);
+        return fail(verifyError
+            ? "cannot verify the temporary preset file: " + verifyError.message()
+            : "the temporary preset file has an unexpected size");
+    }
+
+    std::ifstream verification(stagedPath, std::ios::binary);
+    std::string stagedJson((std::istreambuf_iterator<char>(verification)),
+                           std::istreambuf_iterator<char>());
+    const bool readSucceeded = verification.good() || verification.eof();
+    verification.close();
+    if (!readSucceeded || stagedJson != json ||
+        !ShotPreset::fromJson(stagedJson).has_value()) {
+        removeStagedPreset(stagedPath);
+        return fail("the temporary preset file failed validation");
+    }
+
+    std::error_code promotionError;
+    if (!promoteStagedPreset(stagedPath, path, promotionError)) {
+        removeStagedPreset(stagedPath);
+        return fail("cannot replace the saved preset: " + promotionError.message());
+    }
 
     const std::string key = makeKey(preset.show(), preset.name());
     for (auto& [n, p] : m_presets) {
@@ -909,6 +984,8 @@ bool ShotPresetManager::remove(const std::string& show, const std::string& name)
 
 bool ShotPresetManager::remove(const std::string& key)
 {
+    m_lastError.clear();
+
     // Resolve the actual stored key (handle bare-name back-compat).
     std::string actualKey = key;
     if (!std::any_of(m_presets.begin(), m_presets.end(),
@@ -921,9 +998,21 @@ bool ShotPresetManager::remove(const std::string& key)
     std::string show, name;
     splitKey(actualKey, show, name);
 
+    auto it = std::find_if(m_presets.begin(), m_presets.end(),
+                           [&](const auto& pair) { return pair.first == actualKey; });
+    if (it == m_presets.end()) {
+        m_lastError = "the preset does not exist";
+        return false;
+    }
+
     {
         std::error_code ec;
         std::filesystem::remove(pathForPreset(show, name), ec);
+        if (ec) {
+            m_lastError = "cannot remove the old preset file: " + ec.message();
+            spdlog::error("ShotPresetManager: {}", m_lastError);
+            return false;
+        }
 
         // Thumbnail keyed by the sanitized full key.
         auto thumbDir = m_directory / "thumbnails";
@@ -936,13 +1025,14 @@ bool ShotPresetManager::remove(const std::string& key)
             else
                 sanitized += c;
         }
+        ec.clear();
         std::filesystem::remove(thumbDir / (sanitized + ".png"), ec);
+        if (ec) {
+            spdlog::warn("ShotPresetManager: could not remove preset thumbnail: {}",
+                         ec.message());
+        }
     }
 
-    auto it = std::find_if(m_presets.begin(), m_presets.end(),
-                           [&](const auto& pair) { return pair.first == actualKey; });
-    if (it == m_presets.end())
-        return false;
     m_presets.erase(it);
     return true;
 }

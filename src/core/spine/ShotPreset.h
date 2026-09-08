@@ -308,6 +308,9 @@ public:
     /// Save a preset to disk (creates/overwrites the file for its show+name).
     bool save(const ShotPreset& preset);
 
+    /// Human-readable detail for the most recent persistence failure.
+    [[nodiscard]] const std::string& lastError() const noexcept { return m_lastError; }
+
     /// Load a preset by key ("show/name" or "name"). For a bare name with no
     /// show, falls back to searching every show (back-compat for old clip
     /// references / projects). Returns nullopt if not found.
@@ -452,6 +455,7 @@ private:
     void saveShowDefaults() const;
 
     std::filesystem::path                             m_directory;
+    std::string                                       m_lastError;
     std::vector<std::pair<std::string, ShotPreset>>   m_presets; ///< name → preset
     std::map<std::string, std::string>                m_aliases; ///< realName → displayName
     std::map<std::string, CharacterGroup>             m_characterGroups; ///< realName → non-normal group
