@@ -57,14 +57,12 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <condition_variable>
 #include <functional>
-#include <future>
 #include <memory>
-#include <mutex>
 
 class QToolButton;
 class QAction;
+class QSplitter;
 
 namespace rt {
 
@@ -72,6 +70,8 @@ class Project;
 class Timeline;
 class Compositor;
 class ExportMiniTimeline;
+class ExportRenderExecutor;
+class ExportRenderSession;
 class PlaybackController;
 class AudioEngine;
 class CommandStack;
@@ -91,6 +91,11 @@ public:
     /// Used by MainWindow::closeEvent to prompt before tearing down the
     /// app and silently cancelling the user's export.
     [[nodiscard]] bool isExporting() const noexcept;
+
+    /// Permanently stop the queue and release its isolated renderer before
+    /// application-owned media/GPU services are destroyed. Idempotent; the
+    /// destructor calls this as a fallback.
+    void shutdownExportRendering();
 
     // ── Configuration ───────────────────────────────────────────────────
 
@@ -113,6 +118,20 @@ public:
         const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
         int64_t tick, uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)>;
     void setExportFrameCallback(ExportFrameCallback cb);
+    using ExportResultCallback = std::function<RenderResult(
+        const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+        int64_t tick, uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)>;
+    void setExportResultCallback(ExportResultCallback cb);
+    using ExportPreflightCallback = std::function<RenderPreflightResult(
+        const std::shared_ptr<const ExportRenderSnapshot>& snapshot)>;
+    void setExportPreflightCallback(ExportPreflightCallback cb);
+
+    /// Production ownership boundary. A fresh session is created for each
+    /// queue run and retained until the worker is fully idle. Legacy callback
+    /// setters remain available for tests and nonstandard embedders.
+    using ExportRenderSessionFactory =
+        std::function<std::shared_ptr<ExportRenderSession>()>;
+    void setExportRenderSessionFactory(ExportRenderSessionFactory factory);
 
     /// Optional: receives each finished full-res export frame for segment-cache
     /// write-through (§4.6).  Wired through to RenderQueue::setFrameStoreCallback.
@@ -173,6 +192,7 @@ public:
     [[nodiscard]] QProgressBar* progressBar()   const { return m_progressBar; }
     [[nodiscard]] QLabel*      statusLabel()    const { return m_statusLabel; }
     [[nodiscard]] QListWidget* jobList()        const { return m_jobList; }
+    [[nodiscard]] QSplitter*   queueSplitter()  const { return m_queueSplitter; }
 
 signals:
     /// Emitted when an export job starts.
@@ -289,6 +309,7 @@ private:
     /// the worker, and flip the UI into its running state. Shared by
     /// onStartExport (after addJob) and onStartQueue.
     void armQueueAndRun();
+    [[nodiscard]] bool prepareExportRenderSession();
     /// Toggle the run row / cancel button / action buttons / render pip
     /// between running and idle.
     void setRunningUiState(bool running);
@@ -347,8 +368,12 @@ private:
     QLabel*       m_previewInfoLabel{nullptr};
     ExportMiniTimeline* m_miniTimeline{nullptr};
     PreviewCallback m_previewCallback;
-    ExportFrameCallback m_exportFrameCallback;
+    ExportPreflightCallback m_exportPreflightCallback;
+    ExportResultCallback m_exportFrameCallback;
     SnapshotFrameStoreFn m_frameStoreCallback;
+    ExportRenderSessionFactory m_exportRenderSessionFactory;
+    std::shared_ptr<ExportRenderSession> m_exportRenderSession;
+    ExportRenderExecutor* m_renderExecutor{nullptr};
 
     // Transport controls
     QPushButton*  m_skipToStartBtn{nullptr};
@@ -385,6 +410,7 @@ private:
     QProgressBar* m_progressBar{nullptr};
     QLabel*       m_statusLabel{nullptr};
     QLabel*       m_renderPip{nullptr};  // "RENDERING FRAME n / m" over the preview
+    QSplitter*    m_queueSplitter{nullptr};
     QListWidget*  m_jobList{nullptr};
 
     // Poll timer for progress
@@ -399,22 +425,6 @@ private:
     CommandStack* m_commandStack{nullptr};
     std::unique_ptr<RenderQueue> m_renderQueue;
     uint32_t      m_activeJobId{0};
-
-    // ── Async composite pipeline ────────────────────────────────────────
-    struct CompositeSlot {
-        std::shared_future<std::shared_ptr<CachedFrame>> future;
-        std::shared_ptr<const ExportRenderSnapshot> snapshot;
-        int64_t tick{-1};
-    };
-    CompositeSlot m_pipelineSlots[2];
-    int m_pipelineCurrentSlot{0};
-
-    /// Called from worker thread: pipeline composite for (tick, nextTick).
-    /// Submits nextTick's composite (non-blocking), waits for tick's result.
-    std::shared_ptr<CachedFrame> pipelineComposite(
-        const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
-        int64_t tick, int64_t nextTick,
-        uint32_t w, uint32_t h, bool scrub, bool preserveAlpha);
 
     /// Guards against recursive re-entry into refreshPreview() which can
     /// cause infinite paint recursion and stack overflow (crash pattern

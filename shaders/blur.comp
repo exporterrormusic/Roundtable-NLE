@@ -2,13 +2,15 @@
 // Gaussian blur compute shader.
 // Step 22: Effects System
 //
-// Single-pass blur (combined horizontal + vertical for simplicity).
-// For separable two-pass blur, this would be dispatched twice with
-// different direction parameters.
+// Separable Gaussian blur. EffectProcessor dispatches this shader twice:
+// horizontal first, then vertical. A Gaussian kernel is separable, reducing
+// radius-5 work from roughly 81 texture samples per pixel to 22 while keeping
+// the existing radius/sigma relationship and nearly identical appearance.
 //
 // Parameters (push constants):
 //   params[0] = radius  (0–100 pixels)
-//   params[1] = sigma   (0.1–50.0)
+//   params[1] = repeat edge pixels (0 = transparent outside, 1 = clamp)
+//   params[2] = internal mode (0 = horizontal, 1 = vertical, 2 = legacy 2D)
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -22,6 +24,22 @@ layout(push_constant) uniform PushConstants {
     int   _pad;
     float params[16];
 } pc;
+
+vec4 sampleBlurInput(vec2 samplePixel, bool repeatEdges)
+{
+    if (!repeatEdges &&
+        (samplePixel.x < 0.0 || samplePixel.y < 0.0 ||
+         samplePixel.x >= float(pc.width) ||
+         samplePixel.y >= float(pc.height))) {
+        return vec4(0.0);
+    }
+
+    // The source sampler is clamp-to-edge. That supplies repeated edge
+    // pixels when enabled; the explicit bounds check above supplies the
+    // transparent exterior required when the option is disabled.
+    vec2 uv = (samplePixel + 0.5) / vec2(pc.width, pc.height);
+    return texture(inputImage, uv);
+}
 
 void main()
 {
@@ -43,19 +61,38 @@ void main()
 
     int iRadius = int(min(radius, 50.0)); // cap for performance
     float sigmaSquared2 = 2.0 * sigma * sigma;
+    bool repeatEdges = pc.paramCount <= 1 || pc.params[1] >= 0.5;
+    float mode = pc.paramCount > 2 ? pc.params[2] : 0.0;
+    bool legacy2D = mode > 1.5;
+    bool vertical = mode > 0.5 && !legacy2D;
+    vec2 axis = vertical ? vec2(0.0, 1.0) : vec2(1.0, 0.0);
 
     vec4 sum = vec4(0.0);
     float weightSum = 0.0;
 
-    // 2D kernel sampling
-    for (int dy = -iRadius; dy <= iRadius; dy++) {
-        for (int dx = -iRadius; dx <= iRadius; dx++) {
-            float dist2 = float(dx * dx + dy * dy);
-            if (dist2 > radius * radius) continue;
-
-            float weight = exp(-dist2 / sigmaSquared2);
-            vec2 sampleUV = (vec2(pixel) + vec2(dx, dy) + 0.5) / vec2(pc.width, pc.height);
-            sum += texture(inputImage, sampleUV) * weight;
+    if (legacy2D) {
+        // Two storage images cannot preserve an internal source while also
+        // holding a two-pass result. Masked Blur after another effect uses the
+        // original circular kernel so its pre-effect image remains available
+        // to the mask-mix pass.
+        for (int dy = -iRadius; dy <= iRadius; ++dy) {
+            for (int dx = -iRadius; dx <= iRadius; ++dx) {
+                float dist2 = float(dx * dx + dy * dy);
+                if (dist2 > radius * radius) continue;
+                float weight = exp(-dist2 / sigmaSquared2);
+                vec2 samplePixel = vec2(pixel) + vec2(dx, dy);
+                sum += sampleBlurInput(samplePixel, repeatEdges) * weight;
+                weightSum += weight;
+            }
+        }
+    } else {
+        // One-dimensional pass. The following dispatch performs the
+        // orthogonal axis, producing a 2D Gaussian from both 1D kernels.
+        for (int offset = -iRadius; offset <= iRadius; ++offset) {
+            float distance = float(offset);
+            float weight = exp(-(distance * distance) / sigmaSquared2);
+            vec2 samplePixel = vec2(pixel) + axis * distance;
+            sum += sampleBlurInput(samplePixel, repeatEdges) * weight;
             weightSum += weight;
         }
     }

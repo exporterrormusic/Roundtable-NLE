@@ -1612,6 +1612,35 @@ TEST(EffectControlsPanel, TintUsesPremiereStyleColorAndAmountControls)
     EXPECT_FLOAT_EQ(tint.evalParam(rt::Tint::AmountToTint, 0), 100.0f);
 }
 
+TEST(EffectControlsPanel, BlurRepeatEdgePixelsIsCheckedAndUndoable)
+{
+    rt::VideoClip clip;
+    clip.effects().addEffect(std::make_unique<rt::Blur>());
+
+    rt::CommandStack stack;
+    rt::EffectControlsPanel panel;
+    panel.setCommandStack(&stack);
+    panel.setClip(&clip);
+
+    auto* check = panel.findChild<QCheckBox*>(
+        QStringLiteral("blurRepeatEdgePixelsCheck"));
+    ASSERT_NE(check, nullptr);
+    EXPECT_TRUE(check->isChecked());
+
+    check->click();
+    auto& blur = clip.effects().effect(0);
+    EXPECT_FLOAT_EQ(blur.evalParam(rt::Blur::RepeatEdgePixels, 0), 0.0f);
+    ASSERT_EQ(stack.undoCount(), 1u);
+
+    ASSERT_TRUE(stack.undo());
+    EXPECT_FLOAT_EQ(blur.evalParam(rt::Blur::RepeatEdgePixels, 0), 1.0f);
+    EXPECT_TRUE(check->isChecked());
+
+    ASSERT_TRUE(stack.redo());
+    EXPECT_FLOAT_EQ(blur.evalParam(rt::Blur::RepeatEdgePixels, 0), 0.0f);
+    EXPECT_FALSE(check->isChecked());
+}
+
 TEST(EffectControlsPanel, PenMaskButtonArmsToolWithoutCreatingPlaceholder)
 {
     rt::VideoClip clip;

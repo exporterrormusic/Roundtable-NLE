@@ -21,6 +21,10 @@ Blur::Blur()
     : Effect(EffectType::Blur)
 {
     addParam("Radius", 15.0f, 0.0f, 100.0f);
+    // Keep the historical clamp-to-edge appearance for existing projects.
+    // Older project files contain only Radius; deserialization leaves this
+    // newly-added parameter at its constructor default.
+    addParam("Repeat Edge Pixels", 1.0f, 0.0f, 1.0f);
 }
 
 std::unique_ptr<Effect> Blur::clone() const

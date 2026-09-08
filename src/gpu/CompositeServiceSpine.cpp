@@ -64,12 +64,16 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
 
     // Create new shared data Ã¢â‚¬â€ resolve paths and decode atlas PNGs once.
     auto shared = std::make_shared<SpineSharedData>();
+    shared->loadState = ResourceLoadState::Loading;
 
     // Resolve skeleton/atlas file paths
     auto paths = SpineEngine::resolvePaths(
         assetsDir, clip.characterName(), clip.outfit(), clip.stance());
     if (!paths.valid) {
         spdlog::warn("Spine shared: failed to resolve paths for '{}'", clip.characterName());
+        shared->loadState = ResourceLoadState::Missing;
+        shared->loadWarning = "Spine skeleton or atlas is missing for " +
+                              clip.characterName() + " / " + clip.outfit();
         m_spineSharedCache.emplace(key, shared); // cache the failure
         return shared;
     }
@@ -97,10 +101,25 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
         }
     }
 
+    if (shared->skelBytes.empty() || shared->atlasText.empty()) {
+        const bool missing =
+            !std::filesystem::exists(utf8ToPath(paths.skelPath)) ||
+            !std::filesystem::exists(utf8ToPath(paths.atlasPath));
+        shared->loadState = missing ? ResourceLoadState::Missing
+                                    : ResourceLoadState::Failed;
+        shared->loadWarning = missing
+            ? "Spine skeleton or atlas disappeared while loading: " + key
+            : "Spine skeleton or atlas could not be read: " + key;
+        m_spineSharedCache.emplace(key, shared);
+        return shared;
+    }
+
     // Load a temporary engine just to get atlas info + bounds
     SpineEngine tempEngine;
     if (!tempEngine.loadSkeleton(paths.skelPath, paths.atlasPath)) {
         spdlog::warn("Spine shared: failed to load skeleton for '{}'", clip.characterName());
+        shared->loadState = ResourceLoadState::Failed;
+        shared->loadWarning = "Spine skeleton or atlas is invalid: " + key;
         m_spineSharedCache.emplace(key, shared);
         return shared;
     }
@@ -113,6 +132,9 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
     shared->pageHeights.resize(pages.size(), 0);
     shared->pagePMA.resize(pages.size(), false);
 
+    bool atlasPageMissing = false;
+    bool atlasPageFailed = pages.empty();
+    std::string atlasPageError;
     for (size_t pi = 0; pi < pages.size(); ++pi) {
         std::string texPath = atlasDir + "/" + pages[pi].texturePath;
         shared->pagePMA[pi] = pages[pi].pma;
@@ -139,7 +161,23 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
             shared->pageWidths[pi] = w;
             shared->pageHeights[pi] = h;
             stbi_image_free(pixels);
+        } else {
+            atlasPageError = texPath;
+            if (!std::filesystem::exists(utf8ToPath(texPath)))
+                atlasPageMissing = true;
+            else
+                atlasPageFailed = true;
         }
+    }
+    if (atlasPageMissing || atlasPageFailed) {
+        shared->loadState = atlasPageMissing ? ResourceLoadState::Missing
+                                             : ResourceLoadState::Failed;
+        shared->loadWarning = atlasPageMissing
+            ? "Spine atlas texture is missing: " + atlasPageError
+            : "Spine atlas texture could not be decoded: " +
+                  (atlasPageError.empty() ? key : atlasPageError);
+        m_spineSharedCache.emplace(key, shared);
+        return shared;
     }
     // All pages are now PMA; the CPU path will un-premultiply on first use.
     shared->pagePixelsUnpremultiplied = false;
@@ -206,6 +244,8 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
                  key, pages.size(), shared->stableBoundsW, shared->stableBoundsH,
                  shared->animBounds.size());
 
+    shared->loadState = ResourceLoadState::Ready;
+    shared->loadWarning.clear();
     m_spineSharedCache.emplace(key, shared);
     return shared;
 }
@@ -224,6 +264,8 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
     if (m_modelManager) assetsDir = m_modelManager->assetsDir();
 
     auto shared = getOrCreateSharedSpineData(*clip, assetsDir);
+    if (!shared || shared->loadState != ResourceLoadState::Ready)
+        return nullptr;
 
     auto state = std::make_unique<SpineCPUState>();
     state->shared = shared;
@@ -231,16 +273,23 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
     // Each clip gets its own SpineEngine for independent animation state.
     // Use in-memory buffers from the shared cache when available to avoid
     // re-reading files from disk (eliminates split/clone freeze).
+    bool engineLoaded = false;
     if (!shared->skelPath.empty()) {
         if (!shared->skelBytes.empty() && !shared->atlasText.empty()) {
             // Fast path: load from cached buffers (no disk I/O)
-            state->engine.loadFromClipBuffered(*clip, shared->skelBytes,
-                                                shared->atlasText, shared->atlasDir,
-                                                shared->skelPath, shared->atlasPath);
+            engineLoaded = state->engine.loadFromClipBuffered(
+                *clip, shared->skelBytes, shared->atlasText, shared->atlasDir,
+                shared->skelPath, shared->atlasPath);
         } else {
             // Fallback: load from disk (first-time or cache miss)
-            state->engine.loadFromClip(*clip, assetsDir);
+            engineLoaded = state->engine.loadFromClip(*clip, assetsDir);
         }
+    }
+    if (!engineLoaded) {
+        shared->loadState = ResourceLoadState::Failed;
+        shared->loadWarning = "Spine engine could not initialize: " +
+                              spineCharKey(*clip);
+        return nullptr;
     }
 
     // Grave's default skeleton contains a multi-part blue eye effect that
@@ -338,8 +387,9 @@ CompositeService::tryGetSpineState(SpineClip* clip)
     // Check if shared data is already available for this character
     const std::string key = spineCharKey(*clip);
     auto sit = m_spineSharedCache.find(key);
-    if (sit != m_spineSharedCache.end() && sit->second
-        && !sit->second->skelBytes.empty()) {
+    if (sit != m_spineSharedCache.end() && sit->second &&
+        sit->second->loadState == ResourceLoadState::Ready &&
+        !sit->second->skelBytes.empty()) {
         // Shared data is cached with valid buffers Ã¢â‚¬â€ create per-clip engine
         // synchronously (fast path: only creates Skeleton + AnimationState
         // from in-memory buffers, ~3-7ms, no disk I/O).
@@ -353,6 +403,12 @@ CompositeService::tryGetSpineState(SpineClip* clip)
             return nullptr;
         }
     }
+    if (sit != m_spineSharedCache.end() && sit->second &&
+        (sit->second->loadState == ResourceLoadState::Loading ||
+         sit->second->loadState == ResourceLoadState::Missing ||
+         sit->second->loadState == ResourceLoadState::Failed)) {
+        return nullptr;
+    }
 
     // Shared data is NOT cached Ã¢â‚¬â€ need heavy loading.
     // Schedule it in the background instead of blocking.
@@ -362,6 +418,36 @@ CompositeService::tryGetSpineState(SpineClip* clip)
         m_spineLoadScheduler(clip->characterName(), clip->outfit(),
                               static_cast<int>(clip->stance()), assetsDir);
     return nullptr;
+}
+
+ResourceLoadState CompositeService::spineResourceState(
+    const SpineClip& clip) const
+{
+    auto stateIt = m_spineCache.find(clip.id());
+    if (stateIt != m_spineCache.end() && stateIt->second &&
+        stateIt->second->engine.isLoaded()) {
+        return ResourceLoadState::Ready;
+    }
+
+    const std::string key = spineCharKey(clip);
+    auto sharedIt = m_spineSharedCache.find(key);
+    if (sharedIt != m_spineSharedCache.end() && sharedIt->second)
+        return sharedIt->second->loadState;
+    if (isSpinePending(key))
+        return ResourceLoadState::Loading;
+    return ResourceLoadState::Unresolved;
+}
+
+std::string CompositeService::spineResourceWarning(
+    const SpineClip& clip) const
+{
+    const std::string key = spineCharKey(clip);
+    auto sharedIt = m_spineSharedCache.find(key);
+    if (sharedIt != m_spineSharedCache.end() && sharedIt->second)
+        return sharedIt->second->loadWarning;
+    if (isSpinePending(key))
+        return "Spine resource is still loading: " + key;
+    return {};
 }
 
 // their per-clip SpineEngine using already-cached shared data (fast path).

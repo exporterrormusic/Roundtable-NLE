@@ -134,7 +134,16 @@ std::shared_ptr<CachedFrame> SegmentRenderCache::get(int64_t tick,
 
     std::lock_guard lk(m_mtx);
     if (!frame) {
-        m_diskIndex.erase(dk);  // corrupt / vanished — forget it
+        if (m_diskIndex.erase(dk) != 0) {
+            const Key candidateKey{dk.tick, dk.tier};
+            auto countIt = m_diskCandidateCounts.find(candidateKey);
+            if (countIt != m_diskCandidateCounts.end()) {
+                if (countIt->second <= 1)
+                    m_diskCandidateCounts.erase(countIt);
+                else
+                    --countIt->second;
+            }
+        }
         return nullptr;
     }
     insertMemory_locked(key, configHash, frame);
@@ -152,6 +161,14 @@ bool SegmentRenderCache::hasFresh(int64_t tick, ResolutionTier tier,
     return m_diskEnabled
         && m_diskIndex.find(DiskKey{tick, static_cast<uint8_t>(tier), configHash})
                != m_diskIndex.end();
+}
+
+bool SegmentRenderCache::hasCandidate(int64_t tick, ResolutionTier tier) const
+{
+    const Key key{tick, static_cast<uint8_t>(tier)};
+    std::lock_guard lk(m_mtx);
+    return m_entries.find(key) != m_entries.end()
+        || m_diskCandidateCounts.find(key) != m_diskCandidateCounts.end();
 }
 
 void SegmentRenderCache::clear()
@@ -370,7 +387,10 @@ void SegmentRenderCache::diskWriterLoop()
         const auto fsz = std::filesystem::file_size(path, ec);
         {
             std::lock_guard lk(m_mtx);
-            m_diskIndex.insert(job.key);
+            if (m_diskIndex.insert(job.key).second) {
+                const Key key{job.key.tick, job.key.tier};
+                ++m_diskCandidateCounts[key];
+            }
         }
         if (!ec) m_diskUsed.fetch_add(static_cast<size_t>(fsz));
         enforceDiskBudget();
@@ -383,13 +403,17 @@ void SegmentRenderCache::scanDiskCache()
     size_t used = 0;
     std::lock_guard lk(m_mtx);
     m_diskIndex.clear();
+    m_diskCandidateCounts.clear();
     for (std::filesystem::directory_iterator it(m_diskDir, ec), end;
          it != end && !ec; it.increment(ec)) {
         if (!it->is_regular_file(ec)) continue;
         if (it->path().extension() != ".rtsc") continue;
         DiskKey k;
         if (!parseDiskName(it->path().filename().string(), k)) continue;
-        m_diskIndex.insert(k);
+        if (m_diskIndex.insert(k).second) {
+            const Key key{k.tick, k.tier};
+            ++m_diskCandidateCounts[key];
+        }
         std::error_code sec;
         used += static_cast<size_t>(it->file_size(sec));
     }
@@ -424,7 +448,16 @@ void SegmentRenderCache::enforceDiskBudget()
         if (std::filesystem::remove(f.path, rec)) {
             used -= std::min<size_t>(used, static_cast<size_t>(f.size));
             std::lock_guard lk(m_mtx);
-            m_diskIndex.erase(f.key);
+            if (m_diskIndex.erase(f.key) != 0) {
+                const Key key{f.key.tick, f.key.tier};
+                auto countIt = m_diskCandidateCounts.find(key);
+                if (countIt != m_diskCandidateCounts.end()) {
+                    if (countIt->second <= 1)
+                        m_diskCandidateCounts.erase(countIt);
+                    else
+                        --countIt->second;
+                }
+            }
         }
     }
     m_diskUsed.store(used);

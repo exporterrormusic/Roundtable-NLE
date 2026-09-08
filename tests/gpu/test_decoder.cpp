@@ -25,8 +25,11 @@
 #include <decode/VideoDecoder.h>
 #endif
 
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -34,6 +37,64 @@
 #endif
 
 using namespace rt;
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+TEST(MediaPool, ConcurrentExactRequestsSerializeScrubDecoderAndSwsContext)
+{
+    // A self-contained RGB source forces the same production sws_scale path
+    // that crashed when export and preview entered one handle concurrently.
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path() /
+        ("roundtable_concurrent_exact_" + std::to_string(stamp) + ".ppm");
+    {
+        std::ofstream file(path, std::ios::binary);
+        ASSERT_TRUE(file.is_open());
+        file << "P6\n256 128\n255\n";
+        std::vector<uint8_t> rgb(256u * 128u * 3u);
+        for (size_t i = 0; i < rgb.size(); i += 3) {
+            rgb[i] = static_cast<uint8_t>((i / 3) & 0xff);
+            rgb[i + 1] = 96;
+            rgb[i + 2] = 192;
+        }
+        file.write(reinterpret_cast<const char*>(rgb.data()),
+                   static_cast<std::streamsize>(rgb.size()));
+        ASSERT_TRUE(file.good());
+    }
+
+    {
+        MediaPool pool;
+        const MediaHandle handle = pool.open(path);
+        ASSERT_NE(handle, InvalidMedia);
+
+        std::atomic<bool> start{false};
+        std::atomic<int> failures{0};
+        auto decodeExact = [&] {
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            for (int i = 0; i < 12; ++i) {
+                auto frame = pool.getFrame(
+                    handle, 0, ResolutionTier::Full,
+                    /*scrubMode=*/true, /*forceExact=*/true);
+                if (!frame || frame->width != 256 || frame->height != 128 ||
+                    frame->stride != 256u * 4u || frame->pixels.empty()) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        };
+
+        std::thread preview(decodeExact);
+        std::thread exportRender(decodeExact);
+        start.store(true, std::memory_order_release);
+        preview.join();
+        exportRender.join();
+        EXPECT_EQ(failures.load(std::memory_order_relaxed), 0);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    EXPECT_FALSE(ec) << ec.message();
+}
+#endif
 
 // ─── Helper ─────────────────────────────────────────────────────────────────
 
@@ -300,6 +361,15 @@ TEST(MediaPool, OpenNonexistentFile)
     auto handle = pool.open(std::string("nonexistent_test_file.mp4"));
     EXPECT_EQ(handle, InvalidMedia);
     EXPECT_EQ(pool.openCount(), 0u);
+}
+
+TEST(MediaPool, RejectsVirtualSourceUrisWithoutOpeningAFile)
+{
+    MediaPool pool;
+
+    EXPECT_EQ(pool.open(std::string("spine:character/outfit/idle")), InvalidMedia);
+    EXPECT_EQ(pool.open(std::string("puppet:character/pose")), InvalidMedia);
+    EXPECT_TRUE(pool.openMediaPaths().empty());
 }
 
 TEST(MediaPool, IsValidInvalidHandle)
@@ -576,6 +646,9 @@ TEST_F(VideoDecoderFileTest, MediaPoolFullTierPreservesStillDimensions)
     const VideoStreamInfo expected = probe.info();
     probe.close();
 
+    if (expected.duration > 0.0 && expected.frameCount > 1)
+        GTEST_SKIP() << "Test requires a single-frame media source";
+
     auto cache = std::make_shared<FrameCache>(128ULL * 1024 * 1024);
     MediaPool pool(cache);
     const MediaHandle handle = pool.open(videoPath);
@@ -592,6 +665,15 @@ TEST_F(VideoDecoderFileTest, MediaPoolFullTierPreservesStillDimensions)
     EXPECT_EQ(frame->stride, expected.width * 4u);
     EXPECT_GE(frame->pixels.size(),
               static_cast<size_t>(expected.width) * expected.height * 4u);
+
+    // The blocking request already produced frame 0; it must not also queue
+    // a prefetch worker to decode the same PNG concurrently.
+    EXPECT_EQ(pool.m_perf.prefetchScheduled.load(std::memory_order_relaxed), 0u);
+    EXPECT_TRUE(pool.isFrameCached(handle, 0, ResolutionTier::Full));
+
+    auto cached = pool.tryGetExactFrame(handle, 0, ResolutionTier::Full);
+    ASSERT_NE(cached, nullptr);
+    EXPECT_EQ(cached.get(), frame.get());
 }
 
 TEST_F(VideoDecoderFileTest, SeekAndDecode)

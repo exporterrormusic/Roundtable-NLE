@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include "GpuTeardownMode.h"
+
 #include "vulkan/Allocator.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/CommandPool.h"
@@ -140,7 +142,7 @@ public:
               const SpineRendererConfig& config = {});
 
     /// Shut down and release all GPU resources.
-    void shutdown();
+    void shutdown(GpuTeardownMode mode = GpuTeardownMode::DeviceWide);
 
     /// @return true if initialized
     [[nodiscard]] bool isInitialized() const noexcept { return m_initialized; }
@@ -149,18 +151,6 @@ public:
     /// Required when SpineRenderer is used from a background thread that
     /// shares the graphics queue with the main thread.
     void setQueueMutex(std::mutex* mtx) noexcept { m_queueMutex = mtx; }
-
-    /// Register the compositor's compute queue so beginFrame() can drain
-    /// any in-flight compute work that may still be sampling the shared
-    /// framebuffer.  Required when the device exposes a separate
-    /// async-compute queue family (e.g. NVIDIA family 2): the compositor
-    /// samples m_framebuffer from the compute queue while Spine writes to
-    /// it from the graphics queue, and the two are otherwise unordered.
-    /// Pass VK_NULL_HANDLE / nullptr to disable.
-    void setComputeQueue(VkQueue q, std::mutex* mtx) noexcept {
-        m_computeQueue = q;
-        m_computeQueueMutex = mtx;
-    }
 
     // ── Texture management ──────────────────────────────────────────────
 
@@ -284,12 +274,6 @@ private:
     CommandPool*  m_cmdPool{nullptr};
     std::mutex*   m_queueMutex{nullptr};  ///< Optional: lock around vkQueueSubmit
 
-    // Compositor's compute queue.  Used by beginFrame() to drain in-flight
-    // compute work before transitioning the shared framebuffer back to
-    // COLOR_ATTACHMENT — see setComputeQueue() doc.
-    VkQueue       m_computeQueue{VK_NULL_HANDLE};
-    std::mutex*   m_computeQueueMutex{nullptr};
-
     // Pipelines (one per blend mode)
     PipelineManager     m_pipelineMgr;
     VkPipelineLayout    m_pipelineLayout{VK_NULL_HANDLE};
@@ -320,9 +304,13 @@ private:
     // Timestamp queries
     VkQueryPool m_timestampPool{VK_NULL_HANDLE};
     float       m_timestampPeriod{0.0f};
+    bool        m_timestampResultsAvailable{false};
 
     // Render state (valid between beginFrame/endFrame)
     VkCommandBuffer  m_activeCmdBuffer{VK_NULL_HANDLE};
+    // Most recently submitted buffer. Reclaimed after m_frameFence signals;
+    // retaining the handle avoids leaking one primary command buffer per frame.
+    VkCommandBuffer  m_submittedCmdBuffer{VK_NULL_HANDLE};
     VkFence          m_frameFence{VK_NULL_HANDLE};
     SpineBlendMode   m_currentBlendMode{SpineBlendMode::Normal};
     int              m_currentTexturePageIndex{-1};

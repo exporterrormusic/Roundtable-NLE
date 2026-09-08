@@ -126,6 +126,8 @@ add_library(roundtable_ui STATIC
     panels/audio/VoiceGenerationService.cpp
     panels/audio/VoiceGenerationPanel.cpp
     panels/export/ExportPanel.cpp
+    panels/export/ExportRenderExecutor.cpp
+    panels/export/ExportRenderSession.cpp
     panels/export/ExportPanelPresets.cpp
     panels/export/ExportPanelRun.cpp
     panels/export/ExportPanelTransport.cpp
@@ -180,6 +182,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/DropControllerEffectDrop.cpp
     panels/timeline/TimelineWorkspaceWiringTrack.cpp
     panels/timeline/TimelineWorkspaceComposite.cpp
+    panels/timeline/TimelineWorkspaceExport.cpp
     panels/timeline/TimelineWorkspaceShotSwitch.cpp
     panels/timeline/TimelineWorkspaceSpine.cpp
     panels/timeline/TimelineWorkspaceAudio.cpp
@@ -243,6 +246,7 @@ set_source_files_properties(
     panels/timeline/TimelinePanelTracks.cpp
     panels/timeline/TimelinePanelZoomScroll.cpp
     panels/timeline/TimelinePanelPaintEvents.cpp
+    panels/export/ExportRenderExecutor.cpp
     panels/timeline/TimelinePanelHitTest.cpp
     panels/timeline/TimelinePanelCommands.cpp
     panels/timeline/DropControllerMediaDrop.cpp
@@ -294,17 +298,26 @@ set_source_files_properties(
 #  catch(...) masked is now prevented at the root via TimelineObserver::
 #  onTimelineDestroyed() nulling the pointer before the timeline is freed. #20)
 
-# /EHa for ExportPanel.cpp — INTENTIONALLY KEPT (#20). Unlike AudioMixer's
+# /EHa for ExportRenderExecutor.cpp — INTENTIONALLY KEPT (#20). Unlike AudioMixer's
 # (now-removed) lifetime band-aid, this guards an EXTERNAL SEH, not a dangling
 # pointer, so there is no lifetime fix to make:
-# the main-thread composite lambda in
-# pipelineComposite runs under Qt::QueuedConnection during export.  A
+# the executor's composite lambda runs under Qt::QueuedConnection during
+# export. A
 # raised SEH there (e.g. 0x000006BA from an injected hook DLL while the
 # Vulkan ICD is mid-TDR) would otherwise propagate out of the lambda,
 # escape Qt's event-loop dispatcher, and kill the process while the
 # worker thread is blocked on the promise.  /EHa lets catch(...) inside
-# the lambda swallow the SEH and set the promise to null — the worker
-# then skips that one frame instead of deadlocking forever.
+# the lambda swallow the SEH and resolve the promise — the worker then returns
+# an explicit failure instead of deadlocking forever.
+
+if(MSVC)
+    set_source_files_properties(
+        panels/export/ExportRenderExecutor.cpp
+        PROPERTIES
+            COMPILE_OPTIONS "/EHa"
+            SKIP_PRECOMPILE_HEADERS ON
+    )
+endif()
 
 target_include_directories(roundtable_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

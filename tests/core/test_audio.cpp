@@ -22,6 +22,7 @@ extern "C" {
 #include "audio/AudioFile.h"
 #include "audio/AudioEngine.h"
 #include "playback/AVSyncClock.h"
+#include "playback/FrameClock.h"
 #include "audio/WaveformCache.h"
 
 namespace rt {
@@ -237,14 +238,40 @@ TEST(AVSyncClockTest, MultipleAdvances)
 TEST(AVSyncClockTest, Reset)
 {
     AVSyncClock clock;
+    const auto initialGeneration = clock.resetGeneration();
     clock.advance(48000, 48000);
     EXPECT_EQ(clock.currentTick(), 48000);
 
     clock.reset(0);
     EXPECT_EQ(clock.currentTick(), 0);
+    EXPECT_EQ(clock.resetGeneration(), initialGeneration + 1);
 
     clock.reset(24000);  // 0.5 seconds
     EXPECT_EQ(clock.currentTick(), 24000);
+    EXPECT_EQ(clock.resetGeneration(), initialGeneration + 2);
+}
+
+TEST(FrameClockJumpDetectorTest, ClassifiesSpeedDirectionAndExplicitResets)
+{
+    frame_clock_detail::JumpDetector detector;
+
+    EXPECT_FALSE(detector.observe(100, 1.0, 0).unexpectedJump);
+    EXPECT_FALSE(detector.observe(102, 1.0, 0).unexpectedJump);
+    EXPECT_TRUE(detector.observe(106, 1.0, 0).unexpectedJump);
+
+    detector.reset();
+    EXPECT_FALSE(detector.observe(100, 4.0, 0).unexpectedJump);
+    EXPECT_FALSE(detector.observe(104, 4.0, 0).unexpectedJump);
+    EXPECT_TRUE(detector.observe(111, 4.0, 0).unexpectedJump);
+
+    detector.reset();
+    EXPECT_FALSE(detector.observe(100, -4.0, 0).unexpectedJump);
+    EXPECT_FALSE(detector.observe(96, -4.0, 0).unexpectedJump);
+    EXPECT_TRUE(detector.observe(97, -4.0, 0).unexpectedJump);
+
+    const auto reset = detector.observe(20, 1.0, 1);
+    EXPECT_TRUE(reset.intentionalReset);
+    EXPECT_FALSE(reset.unexpectedJump);
 }
 
 TEST(AVSyncClockTest, Speed2x)

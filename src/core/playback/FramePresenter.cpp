@@ -90,12 +90,23 @@ void FramePresenter::presentLoop()
     SteadyClock::time_point nextDeadline{};
     bool pacingActive = false;
 
+    // Playback-only presentation telemetry. Keep this local to the presenter
+    // thread so gathering it requires no locks or cross-thread coordination.
+    constexpr uint64_t kPresentTelemetryWindow = 120;
+    uint64_t presentSamples = 0;
+    uint64_t freshPresents = 0;
+    uint64_t heldPresents = 0;
+    uint64_t failedPresents = 0;
+    double presentTotalMs = 0.0;
+    double presentMaxMs = 0.0;
+
     while (m_running.load(std::memory_order_relaxed) && !m_destroying.load(std::memory_order_acquire)) {
 
         const bool playing = m_controller && m_controller->isPlaying();
 
         std::shared_ptr<CachedFrame> frame;
         int64_t tick = 0;
+        bool consumedNew = false;
 
         if (playing) {
             // ── DEADLINE-DRIVEN (playback) ───────────────────────────
@@ -118,7 +129,7 @@ void FramePresenter::presentLoop()
             }
 
             if (m_producer) {
-                m_producer->consumeFrame(frame, tick);
+                consumedNew = m_producer->consumeFrame(frame, tick);
             }
 
             nextDeadline += frameDur;
@@ -142,7 +153,7 @@ void FramePresenter::presentLoop()
             if (!m_running.load(std::memory_order_relaxed)) break;
 
             if (m_producer) {
-                m_producer->consumeFrame(frame, tick);
+                consumedNew = m_producer->consumeFrame(frame, tick);
             }
         }
 
@@ -170,26 +181,34 @@ void FramePresenter::presentLoop()
         auto presentEnd = SteadyClock::now();
         double presentMs = std::chrono::duration<double, std::milli>(presentEnd - presentStart).count();
 
-        // DIAG: log every 5th presented frame with timing
-        {
-            static SteadyClock::time_point s_lastPresent{};
-            static int64_t s_lastPresentTick = 0;
-            static int s_diagCount = 0;
-            double sinceLastMs = 0.0;
-            if (s_lastPresent != SteadyClock::time_point{}) {
-                sinceLastMs = std::chrono::duration<double, std::milli>(presentEnd - s_lastPresent).count();
+        if (playing) {
+            ++presentSamples;
+            if (consumedNew) ++freshPresents;
+            else ++heldPresents;
+            if (!presented) ++failedPresents;
+            presentTotalMs += presentMs;
+            presentMaxMs = std::max(presentMaxMs, presentMs);
+
+            if (presentSamples >= kPresentTelemetryWindow) {
+                const double avgMs = presentTotalMs /
+                    static_cast<double>(presentSamples);
+                const double fps = m_controller ? m_controller->frameRate() : 30.0;
+                const double budgetMs = 1000.0 / std::max(fps, 1.0);
+                const bool unhealthy = failedPresents != 0 ||
+                    heldPresents > presentSamples / 20 || avgMs > budgetMs;
+                spdlog::log(
+                    unhealthy ? spdlog::level::warn : spdlog::level::info,
+                    "[PLAYBACK-PRESENT] n={} fresh={} held={} failed={} "
+                    "presentMs[avg={:.2f} max={:.2f}] budget={:.2f}",
+                    presentSamples, freshPresents, heldPresents,
+                    failedPresents, avgMs, presentMaxMs, budgetMs);
+                presentSamples = 0;
+                freshPresents = 0;
+                heldPresents = 0;
+                failedPresents = 0;
+                presentTotalMs = 0.0;
+                presentMaxMs = 0.0;
             }
-            if (++s_diagCount % 5 == 0) {
-                spdlog::info("[DIAG-PRESENTER] tick={} presented={} presentMs={:.1f} "
-                             "sinceLastPresent={:.1f}ms tickDelta={} "
-                             "gpuReady={} gpuView=0x{:X} hold={}",
-                             tick, presented, presentMs, sinceLastMs,
-                             tick - s_lastPresentTick,
-                             frame->gpuReady, frame->gpuImageView,
-                             isNewFrame ? "NEW" : "HELD");
-            }
-            s_lastPresent = presentEnd;
-            s_lastPresentTick = tick;
         }
 
         if (presented) {

@@ -102,6 +102,7 @@ add_roundtable_test(test_frame_time LIBS roundtable_core)
 add_roundtable_test(test_segment_render_cache LIBS roundtable_core)
 add_roundtable_test(test_command       LIBS roundtable_core)
 add_roundtable_test(test_project       LIBS roundtable_core)
+add_roundtable_test(test_performance_profile LIBS roundtable_gpu roundtable_core)
 add_roundtable_test(test_audio         LIBS roundtable_core)
 add_roundtable_test(test_spine         LIBS roundtable_core)
 add_roundtable_test(test_timeline_ui   LIBS roundtable_core)
@@ -131,6 +132,7 @@ add_roundtable_test(test_compositor    LIBS roundtable_gpu roundtable_core GROUP
 add_roundtable_test(test_viewport      LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_text          LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_gpu_resource_manager LIBS roundtable_gpu roundtable_core GROUP gpu)
+add_roundtable_test(test_render_soak   LIBS roundtable_gpu roundtable_core GROUP gpu)
 
 # Export tests
 add_roundtable_test(test_export        LIBS roundtable_export roundtable_core GROUP export)
@@ -144,6 +146,7 @@ add_roundtable_test(test_shot_composer   LIBS roundtable_ui roundtable_core USES
 add_roundtable_test(test_waveform        LIBS roundtable_ui roundtable_gpu roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_keyframe_editor LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_main_window     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_render_policy   LIBS roundtable_ui roundtable_gpu roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_history_panel   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_voice_generation LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)

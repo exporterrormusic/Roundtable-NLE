@@ -122,7 +122,7 @@ public:
     [[nodiscard]] size_t recommendedFrameCacheBudget() const noexcept;
 
     /// Recommended VRAM budget for GpuTextureCache (bytes).
-    /// 60% of device-local VRAM.
+    /// Bounded recent-frame working set (at most 1 GB by default).
     /// @param deviceVramBytes  Device-local VRAM reported by VMA.
     [[nodiscard]] size_t recommendedGpuTexCacheBudget(
         size_t deviceVramBytes) const noexcept;

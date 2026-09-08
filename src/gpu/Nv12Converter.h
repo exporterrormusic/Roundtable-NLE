@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "GpuTeardownMode.h"
+
 #include "vulkan/Device.h"
 #include "vulkan/Allocator.h"
 #include "vulkan/CommandPool.h"
@@ -31,8 +33,13 @@ namespace rt {
 
 struct Nv12ConverterConfig
 {
+    // Input-plane dimensions. Output defaults to the same size, but callers
+    // that scale can declare a stable destination generation separately so
+    // the first conversion never has to resize GPU resources in place.
     uint32_t width{1920};
     uint32_t height{1080};
+    uint32_t outputWidth{0};
+    uint32_t outputHeight{0};
 };
 
 class Nv12Converter
@@ -48,7 +55,7 @@ public:
 
     bool init(Device& device, Allocator& allocator, CommandPool& cmdPool,
               VkQueue computeQueue, const Nv12ConverterConfig& config = {});
-    void shutdown();
+    void shutdown(GpuTeardownMode mode = GpuTeardownMode::DeviceWide);
 
     [[nodiscard]] bool isInitialized() const noexcept { return m_initialized; }
 
@@ -280,8 +287,12 @@ public:
 
     // ── Output access ───────────────────────────────────────────────────
 
-    [[nodiscard]] uint32_t outputWidth()  const noexcept { return m_config.width; }
-    [[nodiscard]] uint32_t outputHeight() const noexcept { return m_config.height; }
+    [[nodiscard]] uint32_t outputWidth() const noexcept {
+        return m_config.outputWidth != 0 ? m_config.outputWidth : m_config.width;
+    }
+    [[nodiscard]] uint32_t outputHeight() const noexcept {
+        return m_config.outputHeight != 0 ? m_config.outputHeight : m_config.height;
+    }
     [[nodiscard]] VkDescriptorImageInfo outputDescriptorInfo() const;
 
     /// Raw output texture — needed for GPU→GPU image copy when producing

@@ -40,6 +40,7 @@ PlaybackScheduler::PlaybackScheduler()
             return;
         if (m_producer.isBacklogged()) {
             m_backpressureSkippedFrames.fetch_add(1, std::memory_order_relaxed);
+            m_producer.noteBackpressureSkip();
             return; // skip — compositor can't keep up
         }
         m_producer.requestFrame(tick);
@@ -72,6 +73,11 @@ void PlaybackScheduler::setController(PlaybackController* c)
 void PlaybackScheduler::setCompositeCallback(CompositeCallback cb)
 {
     m_producer.setCompositeCallback(std::move(cb));
+}
+
+void PlaybackScheduler::setCompositeResultCallback(CompositeResultCallback cb)
+{
+    m_producer.setCompositeResultCallback(std::move(cb));
 }
 
 void PlaybackScheduler::setPresentCallback(PresentCallback cb)
@@ -172,6 +178,12 @@ void PlaybackScheduler::requestFrame(int64_t tick, uint32_t w, uint32_t h, bool 
     m_presenter.wake();
 }
 
+void PlaybackScheduler::requestPlaybackFrame(int64_t tick)
+{
+    m_producer.requestFrame(tick);
+    m_presenter.wake();
+}
+
 void PlaybackScheduler::notifyStateChange()
 {
     m_clock.wake();
@@ -217,6 +229,8 @@ ScheduledFrameRequest PlaybackScheduler::schedulePlaybackFrame(
         height,
         now + playbackDeadlineFor(fps),
         "PlaybackScheduler::schedulePlaybackFrame");
+    scheduled.request.scrubMode = false;
+    scheduled.request.stillFrame = false;
 
     if (m_lastPlaybackTick >= 0 && tick == m_lastPlaybackTick) {
         scheduled.action = ScheduledFrameAction::DropLate;
@@ -250,6 +264,8 @@ ScheduledFrameRequest PlaybackScheduler::scheduleStillFrame(
         height,
         now + std::chrono::milliseconds(scrub ? 150 : 500),
         "PlaybackScheduler::scheduleStillFrame");
+    scheduled.request.scrubMode = scrub;
+    scheduled.request.stillFrame = true;
 
     if (scrub) {
         if (m_latestScrubRequestId != 0 && m_latestScrubRequestId != scheduled.request.requestId) {
@@ -289,6 +305,11 @@ void PlaybackScheduler::noteDroppedFrame(uint64_t requestId) noexcept
 
 void PlaybackScheduler::cancelPendingScrub() noexcept
 {
+    // This is the operational cancellation. The scheduler request metadata
+    // below is diagnostic only and may be empty because ProgramMonitor sends
+    // paused frames directly to the producer.
+    m_producer.cancelPendingScrub();
+
     if (m_latestScrubRequestId == 0) {
         return;
     }

@@ -46,7 +46,7 @@ GpuWorkSubmission::~GpuWorkSubmission()
 GpuWorkSubmission::GpuWorkSubmission(GpuWorkSubmission&& other) noexcept
     : m_device(other.m_device)
     , m_cmdPool(other.m_cmdPool)
-    , m_slots(other.m_slots)
+    , m_slots(std::move(other.m_slots))
     , m_globalSubmissionIndex(other.m_globalSubmissionIndex)
     , m_currentSlot(other.m_currentSlot)
     , m_recording(other.m_recording)
@@ -65,7 +65,7 @@ GpuWorkSubmission& GpuWorkSubmission::operator=(GpuWorkSubmission&& other) noexc
         destroy();
         m_device    = other.m_device;
         m_cmdPool   = other.m_cmdPool;
-        m_slots     = other.m_slots;
+        m_slots     = std::move(other.m_slots);
         m_globalSubmissionIndex = other.m_globalSubmissionIndex;
         m_currentSlot = other.m_currentSlot;
         m_recording = other.m_recording;
@@ -146,13 +146,22 @@ void GpuWorkSubmission::destroy()
         // A lost device may never signal its outstanding fences. Normal
         // teardown drains every slot; fatal teardown destroys handles without
         // an unbounded wait because the process cannot resume GPU work.
-        if (GpuContext::get().gpuState() == GpuState::Healthy)
-            waitForAll();
-        else
+        if (GpuContext::get().gpuState() == GpuState::Healthy) {
+            if (!waitForAll()) {
+                spdlog::error("GpuWorkSubmission: scoped fence drain failed; "
+                              "falling back to device-wide idle");
+                if (GpuContext::get().gpuState() == GpuState::Healthy)
+                    GpuContext::get().scheduler().deviceWaitIdle();
+            }
+        } else {
             spdlog::warn("GpuWorkSubmission: skipping fence drain after device loss");
+        }
 
         for (int i = 0; i < kRingSize; ++i) {
             auto& s = m_slots[i];
+            // waitForAll() above established the exact destruction boundary
+            // for every resource referenced by this slot.
+            s.keepAlive.clear();
             if (s.fence != VK_NULL_HANDLE) {
                 vkDestroyFence(m_device, s.fence, nullptr);
                 s.fence = VK_NULL_HANDLE;
@@ -221,6 +230,10 @@ bool GpuWorkSubmission::beginRecording()
         s.inFlight = false;
     }
 
+    // The previous user of this slot is now complete (or this is the first
+    // use). Drop its leases before recording a new command buffer.
+    s.keepAlive.clear();
+
     vkResetCommandBuffer(s.cmdBuffer, 0);
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -232,6 +245,12 @@ bool GpuWorkSubmission::beginRecording()
 
     m_recording = true;
     return true;
+}
+
+void GpuWorkSubmission::retainForCurrentSlot(std::shared_ptr<void> resource)
+{
+    if (resource)
+        slot().keepAlive.push_back(std::move(resource));
 }
 
 // ── endRecording ────────────────────────────────────────────────────────────
@@ -444,10 +463,10 @@ bool GpuWorkSubmission::waitForCompletion(uint64_t timeoutNs)
 
 // ── waitForAll ──────────────────────────────────────────────────────────────
 
-void GpuWorkSubmission::waitForAll()
+bool GpuWorkSubmission::waitForAll(uint64_t timeoutNs)
 {
     if (m_device == VK_NULL_HANDLE)
-        return;
+        return true;
 
     // Collect all fences that are in-flight
     VkFence fences[kRingSize];
@@ -455,11 +474,24 @@ void GpuWorkSubmission::waitForAll()
     for (int i = 0; i < kRingSize; ++i) {
         if (m_slots[i].inFlight && m_slots[i].fence != VK_NULL_HANDLE) {
             fences[count++] = m_slots[i].fence;
-            m_slots[i].inFlight = false;
         }
     }
-    if (count > 0)
-        vkWaitForFences(m_device, count, fences, VK_TRUE, UINT64_MAX);
+    if (count == 0)
+        return true;
+
+    const VkResult result = vkWaitForFences(
+        m_device, count, fences, VK_TRUE, timeoutNs);
+    if (result != VK_SUCCESS) {
+        spdlog::error("GpuWorkSubmission: waitForAll failed: VkResult={} slots={}",
+                      static_cast<int>(result), count);
+        if (result == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
+
+    for (auto& slot : m_slots)
+        slot.inFlight = false;
+    return true;
 }
 
 // ── isComplete ──────────────────────────────────────────────────────────────

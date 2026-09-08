@@ -31,29 +31,54 @@
 
 namespace rt {
 
+namespace {
+
+std::string legacyCharacterCachePath(const std::string& fileName)
+{
+    return std::string("assets/cache/") + kCharacterThumbCacheDir + "/" + fileName;
+}
+
+QImage loadCharacterCacheImage(const std::string& preferredPath,
+                               const std::string& legacyPath)
+{
+    QImage image(QString::fromStdString(preferredPath));
+    if (image.isNull())
+        image.load(QString::fromStdString(legacyPath));
+    return image;
+}
+
+} // namespace
+
 std::string cachedCharacterThumbnailPath(const std::string& charName)
 {
-    return std::string("assets/cache/")
-        + kCharacterThumbCacheDir + "/"
-        + charName + ".png";
+    return QDir(rt::userDataDir())
+        .filePath(QString("cache/%1/%2.png")
+                      .arg(QString::fromLatin1(kCharacterThumbCacheDir),
+                           QString::fromStdString(charName)))
+        .toStdString();
 }
 
 std::string cachedCharacterFullBodyPath(const std::string& charName)
 {
-    return std::string("assets/cache/")
-        + kCharacterThumbCacheDir + "/"
-        + charName + "_full.png";
+    return QDir(rt::userDataDir())
+        .filePath(QString("cache/%1/%2_full.png")
+                      .arg(QString::fromLatin1(kCharacterThumbCacheDir),
+                           QString::fromStdString(charName)))
+        .toStdString();
 }
 
 bool hasCachedCharacterThumbnail(const std::string& charName)
 {
-    return std::filesystem::exists(cachedCharacterThumbnailPath(charName));
+    return std::filesystem::exists(cachedCharacterThumbnailPath(charName)) ||
+           std::filesystem::exists(
+               legacyCharacterCachePath(charName + ".png"));
 }
 
 QPixmap loadCachedCharacterThumbnail(const std::string& charName, int sz)
 {
-    std::string path = cachedCharacterThumbnailPath(charName);
-    QImage img(path.c_str());
+    QImage img = loadCharacterCacheImage(
+        cachedCharacterThumbnailPath(charName),
+        legacyCharacterCachePath(charName + ".png"));
     if (img.isNull()) return {};
 
     // Scale to the requested size (square, keep aspect ratio)
@@ -79,8 +104,9 @@ QPixmap loadCachedCharacterThumbnail(const std::string& charName, int sz)
 
 QPixmap loadCachedCharacterFullBody(const std::string& charName)
 {
-    std::string path = cachedCharacterFullBodyPath(charName);
-    QImage img(path.c_str());
+    QImage img = loadCharacterCacheImage(
+        cachedCharacterFullBodyPath(charName),
+        legacyCharacterCachePath(charName + "_full.png"));
     if (img.isNull()) return {};
     return QPixmap::fromImage(img);
 }
@@ -89,8 +115,10 @@ QPixmap loadCachedCharacterOutfitFullBody(const std::string& charName,
                                            const std::string& outfit)
 {
     // Try outfit-specific path first
-    std::string outfitPath = cachedCharacterOutfitFullBodyPath(charName, outfit);
-    QImage img(outfitPath.c_str());
+    std::string fileName = charName + "_" + outfit + "_full.png";
+    QImage img = loadCharacterCacheImage(
+        cachedCharacterOutfitFullBodyPath(charName, outfit),
+        legacyCharacterCachePath(fileName));
     if (!img.isNull())
         return QPixmap::fromImage(img);
     // Fall back to generic full-body
@@ -102,9 +130,12 @@ std::string cachedCharacterOutfitFullBodyPath(const std::string& charName,
 {
     if (outfit.empty() || outfit == "default")
         return cachedCharacterFullBodyPath(charName);
-    return std::string("assets/cache/")
-        + kCharacterThumbCacheDir + "/"
-        + charName + "_" + outfit + "_full.png";
+    return QDir(rt::userDataDir())
+        .filePath(QString("cache/%1/%2_%3_full.png")
+                      .arg(QString::fromLatin1(kCharacterThumbCacheDir),
+                           QString::fromStdString(charName),
+                           QString::fromStdString(outfit)))
+        .toStdString();
 }
 
 // ── Shared thumbnail framing helpers (see header) ───────────────────────
@@ -208,13 +239,13 @@ bool renderAndCacheCharacterThumbnail(const std::string& charName,
                                       const std::string& outfit)
 {
     // Resolve file paths for this character
-    auto paths = SpineEngine::resolvePaths("assets", charName,
-                                            outfit, CharacterStance::Default);
+    auto paths = SpineEngine::resolvePaths(
+        rt::bundledAssetsDir().toStdString(), charName,
+        outfit, CharacterStance::Default);
     if (!paths.valid) {
-        // Try user data dir
-        // All characters are now in assets/characters/ (not AppData)
         paths = SpineEngine::resolvePaths(
-            "assets", charName, outfit, CharacterStance::Default);
+            rt::downloadedCharacterAssetsDir().toStdString(), charName,
+            outfit, CharacterStance::Default);
     }
     if (!paths.valid) {
         spdlog::warn("ThumbnailCache: cannot resolve paths for '{}'", charName);

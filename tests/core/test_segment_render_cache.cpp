@@ -102,6 +102,16 @@ TEST(SegmentRenderCache, HasFreshProbeDoesNotPromoteOrFetch)
     EXPECT_EQ(cache.count(), 1u);
 }
 
+TEST(SegmentRenderCache, CandidateProbeRejectsAbsentTickAndTier)
+{
+    SegmentRenderCache cache;
+    cache.put(1000, ResolutionTier::Full, 0x1, makeFrame(1024));
+
+    EXPECT_TRUE(cache.hasCandidate(1000, ResolutionTier::Full));
+    EXPECT_FALSE(cache.hasCandidate(1000, ResolutionTier::Half));
+    EXPECT_FALSE(cache.hasCandidate(2000, ResolutionTier::Full));
+}
+
 TEST(SegmentRenderCache, InvalidateRangeDropsOnlyInRange)
 {
     SegmentRenderCache cache;
@@ -160,6 +170,9 @@ TEST(SegmentRenderCache, DiskPersistsAcrossRestart)
     // "Restart": a fresh cache over the same dir rebuilds its index from disk.
     SegmentRenderCache cache2;
     cache2.enableDiskCache(dir, 64ull * 1024 * 1024);
+    EXPECT_TRUE(cache2.hasCandidate(1000, ResolutionTier::Full));
+    EXPECT_FALSE(cache2.hasCandidate(1000, ResolutionTier::Half));
+    EXPECT_FALSE(cache2.hasCandidate(2000, ResolutionTier::Full));
     EXPECT_TRUE(cache2.hasFresh(1000, ResolutionTier::Full, 0xABCD));
 
     auto f = cache2.get(1000, ResolutionTier::Full, 0xABCD);

@@ -125,7 +125,7 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
 
     auto& gpu = GpuContext::get();
     if (gpu.isInitialized()) {
-        auto* comp = gpu.compositor(outW, outH);
+        auto comp = gpu.compositor(outW, outH);
         if (comp && comp->isInitialized()) {
             m_compositorReady.store(true);
             static std::atomic<int> s_prewarmLog{0};
@@ -258,11 +258,11 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                         fxW = std::max<uint32_t>(2u, static_cast<uint32_t>(fxW * scale) & ~1u);
                         fxH = std::max<uint32_t>(2u, static_cast<uint32_t>(fxH * scale) & ~1u);
                     }
-                    auto* fx = gpu.effectProcessor(fxW, fxH);
+                    auto fx = gpu.effectProcessor(fxW, fxH);
                     warmedEffectProcessor = fx && fx->isInitialized();
                 }
             } else if (!warmedEffectProcessor && gpu.isInitialized() && clip->effects().hasActiveEffects()) {
-                auto* fx = gpu.effectProcessor(outW, outH);
+                auto fx = gpu.effectProcessor(outW, outH);
                 warmedEffectProcessor = fx && fx->isInitialized();
             }
             // SpineClips render via GPU live Spine (the H264 pre-rendered
@@ -429,11 +429,14 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
 // single continuous stream; we stitch many files, so we must prewarm.
 // Throttled to ~100ms (10 scans/sec) to avoid redundant work at 60fps.
 // ─────────────────────────────────────────────────────────────────────
-void CompositeService::prewarmUpcomingShots(int64_t tick)
+void CompositeService::prewarmUpcomingShots(
+    int64_t tick, std::optional<bool> forceFullResolutionOverride,
+    Timeline* timelineOverride)
 {
     if (m_shutdown.load(std::memory_order_acquire))
         return;
-    if (!m_timeline || !m_mediaPool) return;
+    auto* const renderTimeline = timelineOverride ? timelineOverride : m_timeline;
+    if (!renderTimeline || !m_mediaPool) return;
 
     // Serialize against the OTHER caller: compositeFrame() (composite
     // thread) and doPrewarmPlaybackResources() (prewarm thread) both call
@@ -482,8 +485,8 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
     int prewarmedThisScan = 0;
     int openedThisScan = 0;
 
-    for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-        auto* track = m_timeline->track(ti - 1);
+    for (size_t ti = renderTimeline->trackCount(); ti > 0; --ti) {
+        auto* track = renderTimeline->track(ti - 1);
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
 
@@ -620,7 +623,9 @@ void CompositeService::prewarmUpcomingShots(int64_t tick)
             // characters to Half here used to miss the cache whenever the
             // user selected Full in the playback-resolution dropdown — the
             // live path would request Full and find nothing prewarmed.
-            const auto warmTier = m_forceFullResolution.load()
+            const bool forceFullResolution = forceFullResolutionOverride.value_or(
+                m_forceFullResolution.load(std::memory_order_relaxed));
+            const auto warmTier = forceFullResolution
                 ? ResolutionTier::Full
                 : playbackTier();
 

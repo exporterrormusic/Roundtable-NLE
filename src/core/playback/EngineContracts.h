@@ -3,10 +3,16 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace rt {
+
+class Project;
+class Timeline;
+struct CachedFrame;
 
 enum class RenderRequestType : uint8_t
 {
@@ -52,11 +58,25 @@ enum class RenderNodeKind : uint8_t
 enum class RenderResultStatus : uint8_t
 {
     Ready,
+    Blank,
     Pending,
     HeldPrevious,
     Failed,
     MissingMedia,
     Canceled
+};
+
+/// Authoritative state of an external resource owned by a loader. Renderers
+/// must not infer permanence from a null payload: Unresolved/Loading are
+/// retryable, Missing is a confirmed absent dependency, and Failed means the
+/// dependency was found but could not be parsed or rendered.
+enum class ResourceLoadState : uint8_t
+{
+    Unresolved,
+    Loading,
+    Ready,
+    Missing,
+    Failed
 };
 
 enum class RenderResourceKind : uint8_t
@@ -82,6 +102,30 @@ struct CharacterSourceHandle
     uint64_t id{0};
 };
 
+/// Immutable model graph selected for a render request.
+///
+/// Live preview requests may leave this null and use the render service's
+/// explicitly-bound live project. Export and other asynchronous consumers
+/// should provide a snapshot so a request cannot silently render a different
+/// project after the editor switches sequences.
+struct RenderSnapshot
+{
+    std::shared_ptr<const Project>  project;
+    std::shared_ptr<const Timeline> timeline;
+    size_t                          sequenceIndex{0};
+    uint64_t                        editVersion{0};
+    /// Optional half-open timeline interval required by the consumer. Export
+    /// fills this from its captured frame range so preflight does not reject
+    /// an offline clip that lies wholly outside the requested output.
+    std::optional<int64_t>          rangeStartTick;
+    std::optional<int64_t>          rangeEndTick;
+
+    [[nodiscard]] bool hasTimeline() const noexcept { return timeline != nullptr; }
+    [[nodiscard]] bool isFullProject() const noexcept {
+        return project != nullptr && timeline != nullptr;
+    }
+};
+
 struct RenderRequest
 {
     using Clock = std::chrono::steady_clock;
@@ -94,7 +138,30 @@ struct RenderRequest
     uint32_t outputWidth{0};
     uint32_t outputHeight{0};
     Clock::time_point deadline{};
+    std::shared_ptr<const RenderSnapshot> snapshot;
+    /// Optional live-project sequence selection. Snapshot-backed requests use
+    /// snapshot->timeline instead; ordinary Program Monitor requests leave
+    /// this unset and use the service's bound timeline.
+    std::optional<size_t> targetSequenceIndex;
+
+    // Per-request render policy. These replace call-site mode toggles while
+    // the legacy compositor API is migrated incrementally.
+    bool scrubMode{false};
+    bool stillFrame{false};
+    bool preferGpuOutput{false};
+    bool forceFullResolution{false};
+    bool preserveAlpha{false};
+
     std::string caller;
+
+    /// True only for a normal clock-driven Program Monitor pass. Paused
+    /// exact frames, scrub, export, and forced-quality work have different
+    /// latency contracts and must not train real-time playback diagnostics.
+    [[nodiscard]] bool isRealtimePlaybackPass() const noexcept
+    {
+        return type == RenderRequestType::Playback &&
+               !scrubMode && !stillFrame && !forceFullResolution;
+    }
 };
 
 struct RenderNode
@@ -205,15 +272,80 @@ struct FrameDiagnostics
 {
     uint64_t requestId{0};
     RenderResultStatus status{RenderResultStatus::Pending};
+    // CPU wall-clock stages for one real-time preview request.
+    double cacheLookupMs{0.0};
+    double prewarmMs{0.0};
+    double shotBoundaryMs{0.0};
     double timelineEvalMs{0.0};
     double mediaResolveMs{0.0};
+    double gpuRecordSubmitMs{0.0};
+    double readbackMs{0.0};
     double renderMs{0.0};
     double presentMs{0.0};
+    double producerMs{0.0};
+    // Resolved Vulkan timestamps lag the current request by the submission
+    // ring depth, but their aggregate accurately identifies GPU saturation.
+    double gpuFrameMs{0.0};
+    double gpuUploadMs{0.0};
+    double gpuEffectMs{0.0};
+    double gpuCompositeMs{0.0};
     uint64_t uploadBytes{0};
+    uint32_t layerCount{0};
     bool cacheHit{false};
+    bool compositeCacheHit{false};
+    bool segmentCacheHit{false};
+    bool gpuTimingsValid{false};
     bool heldFrame{false};
     bool droppedFrame{false};
     std::string warning;
+};
+
+/// The outcome of one render request.  A frame pointer alone cannot express
+/// whether a renderer intentionally produced an empty timeline, temporarily
+/// missed a resource, held an older preview frame, or failed permanently.
+/// Keeping that state beside the payload also gives asynchronous boundaries a
+/// stable place to carry request provenance and diagnostics.
+struct RenderResult
+{
+    RenderResultStatus status{RenderResultStatus::Pending};
+    std::shared_ptr<CachedFrame> frame;
+    FrameDiagnostics diagnostics;
+    int64_t timelineTick{0};
+
+    [[nodiscard]] bool isComplete() const noexcept
+    {
+        return status == RenderResultStatus::Ready ||
+               status == RenderResultStatus::Blank ||
+               status == RenderResultStatus::HeldPrevious;
+    }
+
+    [[nodiscard]] bool isRetryable() const noexcept
+    {
+        return status == RenderResultStatus::Pending;
+    }
+};
+
+/// Aggregate readiness of the external visual resources required by an
+/// immutable render snapshot.  Export uses this before opening an encoder so
+/// cold asynchronous loaders can finish (or report a terminal problem)
+/// without turning the first few frame requests into timing-dependent retries.
+struct RenderPreflightResult
+{
+    RenderResultStatus status{RenderResultStatus::Pending};
+    size_t totalResources{0};
+    size_t readyResources{0};
+    size_t pendingResources{0};
+    std::string warning;
+
+    [[nodiscard]] bool isReady() const noexcept
+    {
+        return status == RenderResultStatus::Ready;
+    }
+
+    [[nodiscard]] bool isRetryable() const noexcept
+    {
+        return status == RenderResultStatus::Pending;
+    }
 };
 
 [[nodiscard]] inline const char* toString(RenderRequestType type) noexcept
@@ -255,6 +387,7 @@ struct FrameDiagnostics
 {
     switch (status) {
     case RenderResultStatus::Ready:        return "Ready";
+    case RenderResultStatus::Blank:        return "Blank";
     case RenderResultStatus::Pending:      return "Pending";
     case RenderResultStatus::HeldPrevious: return "HeldPrevious";
     case RenderResultStatus::Failed:       return "Failed";

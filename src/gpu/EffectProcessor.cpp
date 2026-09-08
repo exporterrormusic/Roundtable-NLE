@@ -119,12 +119,13 @@ bool EffectProcessor::init(Device& device,
     return true;
 }
 
-void EffectProcessor::shutdown()
+void EffectProcessor::shutdown(GpuTeardownMode mode)
 {
     if (!m_device) return;
 
     VkDevice dev = m_device->handle();
-    if (dev && GpuContext::get().gpuState() == GpuState::Healthy)
+    if (mode == GpuTeardownMode::DeviceWide && dev &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 
     // Query pool
@@ -201,6 +202,26 @@ void EffectProcessor::shutdown()
     m_cmdPool     = nullptr;
     m_queue       = VK_NULL_HANDLE;
     spdlog::info("EffectProcessor shut down");
+}
+
+bool EffectProcessor::waitForOwnedWork(uint64_t timeoutNs) const
+{
+    if (!m_device || m_syncFence == VK_NULL_HANDLE)
+        return true;
+
+    const VkResult status = vkGetFenceStatus(m_device->handle(), m_syncFence);
+    if (status == VK_SUCCESS)
+        return true;
+    if (status != VK_NOT_READY) {
+        if (status == VK_ERROR_DEVICE_LOST)
+            GpuContext::get().signalDeviceLost();
+        return false;
+    }
+    const VkResult waited = vkWaitForFences(
+        m_device->handle(), 1, &m_syncFence, VK_TRUE, timeoutNs);
+    if (waited == VK_ERROR_DEVICE_LOST)
+        GpuContext::get().signalDeviceLost();
+    return waited == VK_SUCCESS;
 }
 
 // =============================================================================
@@ -315,6 +336,19 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
                 maskInfo = nullptr;  // passthrough — mix would be a no-op
             } else {
                 int finalTarget = dispatchUltraKey(cmd, snap.params, sourceIdx, targetIdx);
+                resultIdx = finalTarget;
+                sourceIdx = finalTarget;
+                targetIdx = 1 - finalTarget;
+            }
+        }
+        else if (snap.type == EffectType::Blur) {
+            const int finalTarget = dispatchGaussianBlur(
+                cmd, snap.params, sourceIdx, targetIdx,
+                maskInfo != nullptr && sourceIdx >= 0);
+            if (finalTarget < 0) {
+                spdlog::warn("EffectProcessor: failed to dispatch Gaussian blur");
+                maskInfo = nullptr;
+            } else {
                 resultIdx = finalTarget;
                 sourceIdx = finalTarget;
                 targetIdx = 1 - finalTarget;
@@ -1228,6 +1262,49 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
                          0, 1, &barrier, 0, nullptr, 0, nullptr);
 
     return true;
+}
+
+int EffectProcessor::dispatchGaussianBlur(
+    VkCommandBuffer cmd, const std::vector<float>& params,
+    int sourceIdx, int targetIdx, bool preserveInternalSource)
+{
+    // Radius below the shader threshold is a pass-through. Keep that case to
+    // one dispatch so a disabled Blur does not add redundant GPU work.
+    const float radius = params.empty() ? 0.0f : params[0];
+    std::vector<float> passParams = params;
+    // Snapshots created before Repeat Edge Pixels was added contain only
+    // Radius. Treat those exactly like the historical clamp-to-edge blur.
+    if (passParams.empty())
+        passParams.push_back(0.0f);
+    if (passParams.size() < 2)
+        passParams.resize(2, 1.0f);
+    // Slot 2 is renderer-internal and is never serialized as an effect param.
+    if (passParams.size() < 3)
+        passParams.resize(3, 0.0f);
+
+    if (preserveInternalSource) {
+        passParams[2] = 2.0f; // exact legacy circular 2D kernel
+        return dispatchEffect(cmd, EffectType::Blur, passParams,
+                              sourceIdx, targetIdx)
+            ? targetIdx : -1;
+    }
+
+    passParams[2] = 0.0f; // horizontal
+    if (!dispatchEffect(cmd, EffectType::Blur, passParams,
+                        sourceIdx, targetIdx)) {
+        return -1;
+    }
+    if (radius < 0.5f)
+        return targetIdx;
+
+    const int horizontalOutput = targetIdx;
+    const int verticalOutput = 1 - horizontalOutput;
+    passParams[2] = 1.0f; // vertical
+    if (!dispatchEffect(cmd, EffectType::Blur, passParams,
+                        horizontalOutput, verticalOutput)) {
+        return -1;
+    }
+    return verticalOutput;
 }
 
 VkPipeline EffectProcessor::getPipeline(EffectType type) const

@@ -339,6 +339,35 @@ if(ROUNDTABLE_ENABLE_WHISPER)
         set_target_properties(ggml-cuda PROPERTIES UNITY_BUILD OFF)
     endif()
 
+    # MSBuild derives object filenames from the source basename. ggml-cpu
+    # deliberately contains both generic and x86-specific repack.cpp and
+    # quants.c translation units, so the default mapping sends each pair to
+    # the same $(IntDir)/repack.obj or quants.obj. Give all four items stable,
+    # distinct names in the directory scope where ggml-cpu was created. This
+    # avoids MSB8027 and, more importantly, prevents one implementation from
+    # replacing the other in a non-unity or partially rebuilt static library.
+    if(MSVC AND TARGET ggml-cpu)
+        set(_roundtable_ggml_cpu_source_dir
+            "${whisper_SOURCE_DIR}/ggml/src/ggml-cpu")
+        set_property(SOURCE
+            "${_roundtable_ggml_cpu_source_dir}/repack.cpp"
+            TARGET_DIRECTORY ggml-cpu APPEND PROPERTY VS_SETTINGS
+            "ObjectFileName=$(IntDir)ggml_cpu_repack.obj")
+        set_property(SOURCE
+            "${_roundtable_ggml_cpu_source_dir}/arch/x86/repack.cpp"
+            TARGET_DIRECTORY ggml-cpu APPEND PROPERTY VS_SETTINGS
+            "ObjectFileName=$(IntDir)ggml_cpu_x86_repack.obj")
+        set_property(SOURCE
+            "${_roundtable_ggml_cpu_source_dir}/quants.c"
+            TARGET_DIRECTORY ggml-cpu APPEND PROPERTY VS_SETTINGS
+            "ObjectFileName=$(IntDir)ggml_cpu_quants.obj")
+        set_property(SOURCE
+            "${_roundtable_ggml_cpu_source_dir}/arch/x86/quants.c"
+            TARGET_DIRECTORY ggml-cpu APPEND PROPERTY VS_SETTINGS
+            "ObjectFileName=$(IntDir)ggml_cpu_x86_quants.obj")
+        unset(_roundtable_ggml_cpu_source_dir)
+    endif()
+
     # The static Roundtable/whisper link still imports the CUDA runtime and
     # cuBLAS DLLs on Windows. Record the two direct runtime seeds here; the
     # deploy helper walks their PE dependency closure so transitive libraries

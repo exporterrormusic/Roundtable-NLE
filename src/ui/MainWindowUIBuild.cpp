@@ -14,6 +14,7 @@
 
 // Composite service (for modal-dialog compositor suppression)
 #include "CompositeService.h"
+#include "playback/EngineContracts.h"
 
 // Pages / panels
 #include "panels/audio/AudioSync.h"
@@ -22,6 +23,7 @@
 #include "panels/characters/CharacterBrowser.h"
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/export/ExportPanel.h"
+#include "panels/export/ExportRenderSession.h"
 #include "panels/project/ProjectPanel.h"
 #include "panels/characters/ShotComposer.h"
 #include "panels/timeline/TimelineWorkspace.h"
@@ -783,60 +785,43 @@ void MainWindow::buildPanels()
                 if (auto pf = m_timelineWorkspace->compositeFrame16f(tick, w, h))
                     return pf;   // single-clip passthrough already preserves source alpha
 
-                // Alpha export (Phase 4.2): straight-alpha (transparent) composite
-                // when the user ticked "Export with alpha" on an alpha-capable
-                // target (ProRes 4444 / PNG).  Set only around the composite and
-                // reset after, so nothing else sees the straight-alpha mode.
+                // Alpha and full-resolution behavior travel with this preview
+                // request; the Program and Source monitors keep their policy.
                 const bool wantAlpha = m_exportPanel && m_exportPanel->exportAlphaRequested();
 
-                // Force Full resolution for export preview (characters too).
-                // This is always reset on the next call, and the Program/Source
-                // Monitors never go through this callback.  (forceFull also lets
-                // compositeFrame's consult REUSE pre-rendered Full-tier segments
-                // during export — §4.6 slice 3 read side.)
-                m_timelineWorkspace->setForceFullResolution(true);
-                m_timelineWorkspace->setExportAlpha(wantAlpha);
+                RenderRequest request;
+                request.type = RenderRequestType::Export;
+                request.quality = RenderQuality::Full;
+                request.exactness = RenderExactness::ExactRequired;
+                request.timelineTick = tick;
+                request.outputWidth = w;
+                request.outputHeight = h;
+                request.scrubMode = scrub;
+                request.stillFrame = true;
+                request.preferGpuOutput = false;
+                request.forceFullResolution = true;
+                request.preserveAlpha = wantAlpha;
+                request.caller = "MainWindow::exportPreview";
                 // Export preview/render is an exact-frame request.  Passing
                 // stillMode prevents the compositor from satisfying a failed
                 // tick with m_lastGoodComposite; RenderQueue can then retry the
                 // same tick or fail cleanly instead of encoding a stale frame.
-                auto result = m_timelineWorkspace->compositeFrame(
-                    tick, w, h, scrub, /*stillMode=*/true);
+                auto result = m_timelineWorkspace->compositeFrame(request);
                 if (result) result->preservesAlpha = wantAlpha;
-                m_timelineWorkspace->setExportAlpha(false);
-                m_timelineWorkspace->setForceFullResolution(false);
                 return result;
             }
             return nullptr;
         });
-    // Queue/running exports use a separate callback that is permanently bound
-    // to the job's immutable project graph. ProjectController may replace the
-    // live preview callback on a project switch; it cannot affect this path.
-    m_exportPanel->setExportFrameCallback(
-        [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
-               int64_t tick, uint32_t w, uint32_t h, bool scrub,
-               bool preserveAlpha) -> std::shared_ptr<CachedFrame> {
+    // Each queue run gets one isolated owner for preflight, snapshot-bound
+    // compositing, and segment-cache write-through. Project switches can
+    // replace the live preview graph without rebinding an in-flight export.
+    m_exportPanel->setExportRenderSessionFactory(
+        [this]() -> std::shared_ptr<ExportRenderSession> {
             if (m_destroying.load(std::memory_order_acquire) ||
-                !m_timelineWorkspace || !snapshot ||
-                !snapshot->project || !snapshot->timeline) {
-                return nullptr;
+                !m_timelineWorkspace) {
+                return {};
             }
-            return m_timelineWorkspace->compositeExportFrame(
-                snapshot->project, snapshot->timeline,
-                tick, w, h, scrub, preserveAlpha);
-        });
-    // §4.6 export write-through: RenderQueue hands each finished full-res frame
-    // here (worker thread, pixels ready) → store it in the segment cache so a
-    // re-export reuses it and the render bar shows it green.
-    m_exportPanel->setSnapshotFrameStoreCallback(
-        [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
-               int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
-            if (m_destroying.load(std::memory_order_acquire)) return;
-            if (m_timelineWorkspace && snapshot &&
-                snapshot->project && snapshot->timeline) {
-                m_timelineWorkspace->cacheSnapshotExportFrame(
-                    snapshot->project, snapshot->timeline, tick, frame);
-            }
+            return m_timelineWorkspace->createExportRenderSession();
         });
     m_pageStack->addWidget(m_exportPanel);
 

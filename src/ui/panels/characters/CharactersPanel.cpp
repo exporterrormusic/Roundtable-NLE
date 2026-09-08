@@ -246,15 +246,9 @@ void CharactersPanel::refresh()
             charItem->setFlags(charItem->flags() | Qt::ItemIsDragEnabled);
         }
 
-        // Scan the skeleton directories for each outfit+stance combination.
-        // We look for .skel files in:
-        //   assets/characters/<charName>/<outfit>/          (Default stance)
-        //   assets/characters/<charName>/<outfit>/aim/      (Aim stance)
-        //   assets/characters/<charName>/<outfit>/cover/    (Cover stance)
+        // Use the absolute model paths recorded by ModelManager so bundled
+        // and per-user characters behave identically.
         for (const auto& outfit : entry->outfits) {
-            // Determine the base directory for this outfit
-            std::string baseDir = "assets/characters/" + charName + "/" + outfit.name;
-
             // Collect stances that have skeleton files
             struct StanceInfo {
                 std::string displayName;
@@ -265,7 +259,6 @@ void CharactersPanel::refresh()
 
             // Check Default stance (files directly in outfit dir)
             {
-                std::string defPath = baseDir;
                 for (const auto& variant : outfit.variants) {
                     if (!variant.skelPath.empty()) {
                         int si = static_cast<int>(variant.stance);

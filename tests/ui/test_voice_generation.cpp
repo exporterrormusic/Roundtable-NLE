@@ -19,6 +19,8 @@
 #include <QRegularExpression>
 #include <QPushButton>
 #include <QGroupBox>
+#include <QMessageBox>
+#include <QTimer>
 
 #include <cmath>
 #include <memory>
@@ -37,6 +39,11 @@ protected:
         QStandardPaths::setTestModeEnabled(true);
         if (!QApplication::instance())
             app = std::make_unique<QApplication>(g_argc, g_argv);
+        settingsDirectory = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(settingsDirectory->isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                           settingsDirectory->path());
     }
 
     static QString makeTone(const QString& directory, const QString& name,
@@ -59,9 +66,11 @@ protected:
     }
 
     static std::unique_ptr<QApplication> app;
+    static std::unique_ptr<QTemporaryDir> settingsDirectory;
 };
 
 std::unique_ptr<QApplication> VoiceGenerationTest::app;
+std::unique_ptr<QTemporaryDir> VoiceGenerationTest::settingsDirectory;
 
 rt::SyncClip clip(int id, const QString& path, const char* character,
                   double start, double end, int matchState, const char* text)
@@ -79,6 +88,52 @@ rt::SyncClip clip(int id, const QString& path, const char* character,
     value.scriptLineNumber = matchState == 0 ? -1 : id;
     return value;
 }
+
+class ScopedCrisperConsentSettings
+{
+public:
+    ScopedCrisperConsentSettings()
+        : oldOrganization(QCoreApplication::organizationName())
+        , oldApplication(QCoreApplication::applicationName())
+    {
+        QCoreApplication::setOrganizationName(QStringLiteral("RoundtableTests"));
+        QCoreApplication::setApplicationName(QStringLiteral("CrisperConsentTests"));
+        settings = std::make_unique<QSettings>();
+        hadConsent = settings->contains(consentKey);
+        oldConsent = settings->value(consentKey);
+        hadLegacy = settings->contains(legacyKey);
+        oldLegacy = settings->value(legacyKey);
+        settings->remove(consentKey);
+        settings->remove(legacyKey);
+        settings->sync();
+    }
+
+    ~ScopedCrisperConsentSettings()
+    {
+        if (hadConsent) settings->setValue(consentKey, oldConsent);
+        else settings->remove(consentKey);
+        if (hadLegacy) settings->setValue(legacyKey, oldLegacy);
+        else settings->remove(legacyKey);
+        settings->sync();
+        settings.reset();
+        QCoreApplication::setOrganizationName(oldOrganization);
+        QCoreApplication::setApplicationName(oldApplication);
+    }
+
+    const QString consentKey{
+        QStringLiteral("transcription/crisperWhisperPersonalConsent")};
+    const QString legacyKey{
+        QStringLiteral("transcription/crisperWhisperPersonalAccepted")};
+    std::unique_ptr<QSettings> settings;
+
+private:
+    QString oldOrganization;
+    QString oldApplication;
+    bool hadConsent{false};
+    QVariant oldConsent;
+    bool hadLegacy{false};
+    QVariant oldLegacy;
+};
 
 } // namespace
 
@@ -122,6 +177,71 @@ TEST_F(VoiceGenerationTest, ExposesOnlyConfirmedClipsAsApprovedReferences)
     EXPECT_EQ(references.front().transcript, QStringLiteral("approved words"));
     EXPECT_FLOAT_EQ(references.front().confidence, 1.0f);
 }
+
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+TEST_F(VoiceGenerationTest, UnknownCrisperConsentDoesNotPromptAtConstruction)
+{
+    ScopedCrisperConsentSettings consent;
+    bool promptShown = false;
+    QTimer modalGuard;
+    modalGuard.setSingleShot(true);
+    QObject::connect(&modalGuard, &QTimer::timeout, [&promptShown]() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget)) {
+                promptShown = true;
+                messageBox->reject();
+            }
+        }
+    });
+    modalGuard.start(0);
+
+    rt::AudioSync audioSync;
+    modalGuard.stop();
+
+    ASSERT_NE(audioSync.transcriptionModelCombo(), nullptr);
+    EXPECT_EQ(audioSync.transcriptionModelCombo()->currentText(),
+              QStringLiteral("small"));
+    EXPECT_FALSE(promptShown);
+}
+
+TEST_F(VoiceGenerationTest, DecliningCrisperSelectionPersistsAndFallsBack)
+{
+    ScopedCrisperConsentSettings consent;
+    rt::AudioSync audioSync;
+    auto* combo = audioSync.transcriptionModelCombo();
+    ASSERT_NE(combo, nullptr);
+    const int crisperIndex = combo->findData(
+        QStringLiteral("crisperwhisper-2-large-personal"));
+    ASSERT_GE(crisperIndex, 0);
+
+    QTimer::singleShot(0, []() {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            if (auto* messageBox = qobject_cast<QMessageBox*>(widget))
+                messageBox->reject();
+        }
+    });
+    combo->setCurrentIndex(crisperIndex);
+
+    EXPECT_EQ(combo->currentText(), QStringLiteral("small"));
+    consent.settings->sync();
+    EXPECT_EQ(consent.settings->value(consent.consentKey).toString(),
+              QStringLiteral("declined"));
+    EXPECT_FALSE(consent.settings->value(consent.legacyKey).toBool());
+}
+
+TEST_F(VoiceGenerationTest, AcceptedCrisperConsentRestoresItsDefault)
+{
+    ScopedCrisperConsentSettings consent;
+    consent.settings->setValue(consent.consentKey, QStringLiteral("accepted"));
+    consent.settings->sync();
+
+    rt::AudioSync audioSync;
+
+    ASSERT_NE(audioSync.transcriptionModelCombo(), nullptr);
+    EXPECT_EQ(audioSync.transcriptionModelCombo()->currentData().toString(),
+              QStringLiteral("crisperwhisper-2-large-personal"));
+}
+#endif
 
 TEST_F(VoiceGenerationTest, SavesCombinedApprovedClipsAsReusableMp3)
 {

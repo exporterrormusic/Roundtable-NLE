@@ -75,18 +75,6 @@ void VulkanViewport::displayGpuImage(VkImageView imageView, VkSampler sampler,
     m_pendingValid     = true;
     m_pendingTextureOwner = std::move(textureOwner);  // keep texture alive
 
-    // DIAG: log viewport present attempts
-    {
-        static int s_vpLog = 0;
-        if (++s_vpLog % 5 == 0) {
-            spdlog::info("[DIAG-VIEWPORT] displayGpuImage: view=0x{:X} "
-                         "sampler=0x{:X} pending=true {}x{}",
-                         reinterpret_cast<uint64_t>(imageView),
-                         reinterpret_cast<uint64_t>(sampler),
-                         imgWidth, imgHeight);
-        }
-    }
-
     presentFrame(waitSemaphore);
 }
 
@@ -131,7 +119,6 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
 
     // Wait for previous frame — bounded timeout.
     {
-        auto fenceStart = std::chrono::steady_clock::now();
         VkResult fenceRes;
 
 #ifdef _WIN32
@@ -158,12 +145,6 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
         if (fenceRes == VK_TIMEOUT) {
             spdlog::warn("[DIAG-VIEWPORT] presentFrame: fence TIMEOUT (16ms)");
             return;
-        }
-        auto fenceEnd = std::chrono::steady_clock::now();
-        double fenceMs = std::chrono::duration<double, std::milli>(fenceEnd - fenceStart).count();
-        static int s_fenceLog = 0;
-        if (fenceMs > 2.0 || ++s_fenceLog % 30 == 0) {
-            spdlog::info("[DIAG-VIEWPORT] presentFrame: fenceWait={:.1f}ms", fenceMs);
         }
     }
 

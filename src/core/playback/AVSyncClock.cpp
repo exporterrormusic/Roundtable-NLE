@@ -51,18 +51,8 @@ void AVSyncClock::advance(int64_t frames, uint32_t sampleRate) noexcept
 
 void AVSyncClock::reset(int64_t tick) noexcept
 {
-    // Diagnostic: log every backwards reset, whether or not the clock
-    // is currently flagged as "running".  Earlier the gate required
-    // m_running=true, but observation (2026-05-23) showed that some
-    // reset() callers fire during play/shuttle transitions when
-    // m_running is briefly false, AND the resulting backward tick is
-    // still visible to the FrameClock once running resumes — producing
-    // a DIAG-CLOCK JUMP delta=-N without a matching DIAG-CLOCK BACK.
-    // The relaxed condition catches every reset that LOWERS the tick.
-    // The `caller` field still pins down which of play / shuttleForward
-    // / shuttleReverse / seekInternal / AudioEngine::stop did it.
-    // We additionally suppress logs where prevTick == 0 (legitimate
-    // initial reset on startup / seek-to-zero) to avoid spam.
+    // Retain backwards-reset trace context without treating an explicit
+    // transport operation as a spontaneous clock jump.
     const int64_t prevTick = m_tick.load(std::memory_order_acquire);
     if (prevTick > 0 && tick < prevTick) {
 #if defined(_MSC_VER)
@@ -72,20 +62,10 @@ void AVSyncClock::reset(int64_t tick) noexcept
 #else
         void* caller = nullptr;
 #endif
-        // Backwards while RUNNING is a genuine sync anomaly — keep it at
-        // warn so it survives the warn+ filter.  Backwards while paused is
-        // just the user scrubbing left; debug-level so it doesn't flood
-        // perf_log.txt (it produced dozens of lines per scrub session).
-        // Single-line to stay parseable next to [DIAG-CLOCK] JUMP entries.
-        if (m_running.load(std::memory_order_relaxed)) {
-            spdlog::warn("[DIAG-CLOCK BACK] prev={} new={} delta={} running=1 caller=0x{:X}",
-                         prevTick, tick, tick - prevTick,
-                         reinterpret_cast<uintptr_t>(caller));
-        } else {
-            spdlog::debug("[DIAG-CLOCK BACK] prev={} new={} delta={} running=0 caller=0x{:X}",
-                          prevTick, tick, tick - prevTick,
-                          reinterpret_cast<uintptr_t>(caller));
-        }
+        spdlog::debug("[DIAG-CLOCK RESET] prev={} new={} delta={} running={} caller=0x{:X}",
+                      prevTick, tick, tick - prevTick,
+                      m_running.load(std::memory_order_relaxed),
+                      reinterpret_cast<uintptr_t>(caller));
     }
 
     m_tick.store(tick, std::memory_order_release);
@@ -99,6 +79,7 @@ void AVSyncClock::reset(int64_t tick) noexcept
     m_anchorTick.store(tick, std::memory_order_relaxed);
     m_anchorNs.store(ns, std::memory_order_relaxed);
     m_anchorSeq.fetch_add(1, std::memory_order_release);   // even → done
+    m_resetGeneration.fetch_add(1, std::memory_order_release);
 }
 
 // ── Query interface ─────────────────────────────────────────────────────
@@ -209,4 +190,3 @@ double AVSyncClock::msSinceLastAdvance() const noexcept
 }
 
 } // namespace rt
-

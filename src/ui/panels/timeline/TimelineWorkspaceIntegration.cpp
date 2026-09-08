@@ -133,11 +133,9 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
         m_compositeService->setMediaPool(m_mediaPool);
         m_compositeService->setModelManager(m_modelManager);
         m_compositeService->clearMediaHandles();
-        // The composite LRU is keyed by (tick, w, h) only — it has no notion
-        // of which sequence produced a frame. Swapping the active timeline
-        // (e.g. opening a nested sequence) would otherwise let checkLru()
-        // return the previous sequence's cached frame at the same tick, so
-        // the Program Monitor shows the old sequence's content. Flush it.
+        // Reset live service state when the active editor sequence changes.
+        // The composite LRU now carries graph identity, but last-good, sticky
+        // media, and static-composite state still belong to the live binding.
         m_compositeService->requestCacheInvalidation();
 #ifdef ROUNDTABLE_HAS_SPINE
         m_compositeService->setSpineLoadScheduler(
@@ -181,11 +179,11 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
             // Re-wire the composite callback — setCurrentProject() in
             // MainWindow calls setCompositeCallback(nullptr) during cleanup,
             // so we must re-establish it when a new timeline is set.
-            m_programMonitor->setCompositeCallback(
+            m_programMonitor->setCompositeResultCallback(
                 [this](int64_t tick, uint32_t w, uint32_t h,
                        bool scrubMode, bool stillMode)
-                    -> std::shared_ptr<CachedFrame> {
-                    return compositeFrame(tick, w, h, scrubMode, stillMode);
+                    -> RenderResult {
+                    return renderFrame(tick, w, h, scrubMode, stillMode);
                 });
 
             // Re-start polling so the Program Monitor updates on every tick.

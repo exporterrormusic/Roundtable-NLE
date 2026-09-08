@@ -10,6 +10,7 @@
 
 #include "Theme.h"
 #include "Settings.h"
+#include "QtHelpers.h"
 #include "timeline/MediaRelinker.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -472,7 +473,7 @@ QWidget* ShotComposer::createLeftPanel()
                 ? canonicalCharacterName(charFolder.toStdString())
                 : storedRealName.toStdString();
             const std::string displayName = m_presetManager.displayNameFor(realName);
-            const QString charDir = QStringLiteral("assets/characters/") + charFolder;
+            const QString charDir = rt::findCharacterDirectory(charFolder);
 
             QAction* showAct = menu.addAction(tr("Show in Explorer"));
             QAction* renameAct = menu.addAction(tr("Rename in Compose..."));
@@ -487,7 +488,7 @@ QWidget* ShotComposer::createLeftPanel()
             if (!chosen) return;
 
             if (chosen == showAct) {
-                if (QDir(charDir).exists()) {
+                if (!charDir.isEmpty() && QDir(charDir).exists()) {
 #ifdef _WIN32
                     QProcess::startDetached("explorer.exe",
                         {QDir::toNativeSeparators(QDir(charDir).absolutePath())});
@@ -509,13 +510,11 @@ QWidget* ShotComposer::createLeftPanel()
                 if (reply != QMessageBox::Yes) return;
                 // Recursively remove the character directory
                 QDir dir(charDir);
-                if (dir.exists()) {
+                if (!charDir.isEmpty() && dir.exists()) {
                     dir.removeRecursively();
                 }
                 // Rescan the model manager so the character disappears
-                if (m_modelManager) {
-                    m_modelManager->scan("assets");
-                }
+                rt::rescanCharacterModels(m_modelManager);
                 refreshCharacterLibrary();
             }
         }

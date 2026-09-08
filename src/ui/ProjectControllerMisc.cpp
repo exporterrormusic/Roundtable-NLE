@@ -14,6 +14,7 @@
 
 #include "cache/FrameCache.h"
 #include "playback/PlaybackController.h"
+#include "playback/EngineContracts.h"
 #include "timeline/Timeline.h"
 
 #include "project/Project.h"
@@ -131,20 +132,25 @@ void ProjectController::captureProjectThumbnail()
 
     // Force CPU readback — GPU display mode skips pixel readback entirely,
     // leaving CachedFrame::pixels empty and ensurePixels() failing.
-    const bool wasGpuMode = m_mw->timelineWorkspace()->gpuDisplayMode();
-    if (wasGpuMode)
-        m_mw->timelineWorkspace()->setGpuDisplayMode(false);
-
-    auto frame = m_mw->timelineWorkspace()->compositeFrame(tick, thumbW, thumbH, true);
-
-    if (wasGpuMode)
-        m_mw->timelineWorkspace()->setGpuDisplayMode(true);
+    RenderRequest request;
+    request.type = RenderRequestType::Thumbnail;
+    request.quality = RenderQuality::Auto;
+    request.exactness = RenderExactness::ExactRequired;
+    request.timelineTick = tick;
+    request.outputWidth = thumbW;
+    request.outputHeight = thumbH;
+    request.scrubMode = true;
+    request.stillFrame = true;
+    request.preferGpuOutput = false;
+    request.caller = "ProjectController::captureProjectThumbnail";
+    auto frame = m_mw->timelineWorkspace()->compositeFrame(request);
     if (!frame) {
         spdlog::warn("captureProjectThumbnail: compositeFrame returned null");
         return;
     }
 
-    if (!frame->ensurePixels()) {
+    const bool pixelsReady = frame->ensurePixels();
+    if (!pixelsReady) {
         spdlog::warn("captureProjectThumbnail: ensurePixels failed");
         return;
     }

@@ -442,7 +442,6 @@ bool Nv12Converter::convertAndReadbackP010Scaled(
 {
     if (!m_initialized) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
     if (!convertP010SyncScaled(yData, yLinesize, uvData, uvLinesize,
                                 srcW, srcH, dstW, dstH))
         return false;
@@ -458,7 +457,6 @@ bool Nv12Converter::convertAndReadbackP010Scaled16F(
 {
     if (!m_initialized || !m_cmdPool) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
 
     VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
     std::vector<Texture::StagingCleanup> staging;

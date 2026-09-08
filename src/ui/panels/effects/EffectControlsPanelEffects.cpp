@@ -22,6 +22,7 @@
 #include "command/commands/KeyframeCmds.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "effects/Blur.h"
 #include "effects/ChromaKey.h"
 #include "effects/LUT.h"
 #include "effects/Letterbox.h"
@@ -43,6 +44,8 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QFileInfo>
+#include <QPointer>
+#include <QSignalBlocker>
 
 #include <spdlog/spdlog.h>
 
@@ -143,6 +146,65 @@ void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
 
     for (size_t p = 0; p < fx.paramCount(); ++p) {
         auto& param = fx.param(p);
+
+        if (fx.effectType() == EffectType::Blur &&
+            p == Blur::RepeatEdgePixels) {
+            const auto& tc = Theme::colors();
+            auto* check = new QCheckBox(tr("Repeat Edge Pixels"),
+                                        m_propContainer);
+            check->setObjectName(QStringLiteral("blurRepeatEdgePixelsCheck"));
+            check->setChecked(param.track.evaluate(clipRelativeTick()) >= 0.5f);
+            check->setFixedHeight(28);
+            check->setStyleSheet(QStringLiteral(
+                "QCheckBox { color: %1; font-size: %2px; padding-left: 36px; background: transparent; }"
+                "QCheckBox::indicator { width: 14px; height: 14px; }")
+                .arg(Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXs));
+            m_propLayout->addWidget(check);
+
+            const uint64_t effectId = fx.id();
+            connect(check, &QCheckBox::toggled, this,
+                    [this, effectId, check](bool checked) {
+                if (!m_clip || m_updating) return;
+                auto& stack = m_clip->effects();
+                auto* effect = stack.effectById(effectId);
+                if (!effect || Blur::RepeatEdgePixels >= effect->paramCount())
+                    return;
+
+                const int64_t time = clipRelativeTick();
+                auto& track = effect->param(Blur::RepeatEdgePixels).track;
+                const float oldValue = track.evaluate(time);
+                const float newValue = checked ? 1.0f : 0.0f;
+                if ((oldValue >= 0.5f) == checked) return;
+
+                track.writeValue(time, newValue);
+                emit propertyChanged();
+
+                if (m_commandStack) {
+                    auto* effectStack = &stack;
+                    QPointer<QCheckBox> guardedCheck(check);
+                    auto apply = [effectStack, effectId, time, guardedCheck](
+                                     float value) {
+                        if (auto* current = effectStack->effectById(effectId)) {
+                            if (Blur::RepeatEdgePixels < current->paramCount())
+                                current->param(Blur::RepeatEdgePixels)
+                                    .track.writeValue(time, value);
+                        }
+                        if (guardedCheck) {
+                            const QSignalBlocker blocker(guardedCheck);
+                            guardedCheck->setChecked(value >= 0.5f);
+                        }
+                    };
+                    m_commandStack->pushWithoutExecute(
+                        std::make_unique<LambdaCommand>(
+                            "Set Repeat Edge Pixels",
+                            [apply, newValue]() { apply(newValue); },
+                            [apply, oldValue]() { apply(oldValue); }));
+                }
+            });
+            continue;
+        }
+
         auto* fxRow = makeRow(QString::fromStdString(param.name), &param.track);
         auto* fxSpin = createScrubby(param.minVal, param.maxVal, 0.01, 2);
         fxSpin->setValue(static_cast<double>(param.track.evaluate(clipRelativeTick())));

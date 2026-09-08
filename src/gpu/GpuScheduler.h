@@ -156,6 +156,19 @@ public:
 
     [[nodiscard]] uint64_t submissionsOn(GpuQueueKind kind) const noexcept;
 
+    /// Diagnostic count of scheduler-mediated device-wide waits. Session
+    /// teardown tests use this to ensure scoped fence drains do not silently
+    /// regress to the global stall path.
+    [[nodiscard]] uint64_t deviceWaitIdleCalls() const noexcept {
+        return m_deviceWaitIdleCalls.load(std::memory_order_relaxed);
+    }
+
+    /// Diagnostic count of scheduler-mediated single-queue drains. Render
+    /// path tests use this to prevent hidden per-frame queue-idle regressions.
+    [[nodiscard]] uint64_t queueWaitIdleCalls() const noexcept {
+        return m_queueWaitIdleCalls.load(std::memory_order_relaxed);
+    }
+
 private:
     struct QueueSlot {
         VkQueue              queue = VK_NULL_HANDLE;
@@ -168,6 +181,8 @@ private:
     QueueSlot           m_compute;
     QueueSlot           m_transfer;
     std::atomic<uint64_t> m_totalSubmissions{0};
+    std::atomic<uint64_t> m_deviceWaitIdleCalls{0};
+    std::atomic<uint64_t> m_queueWaitIdleCalls{0};
 
     QueueSlot& slotFor(GpuQueueKind kind) noexcept;
     const QueueSlot& slotFor(GpuQueueKind kind) const noexcept;

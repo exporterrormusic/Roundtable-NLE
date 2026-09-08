@@ -26,6 +26,35 @@
 
 namespace rt {
 
+struct GpuContext::Nv12ConverterGeneration
+{
+    // Shared decode can reach different generations from different worker
+    // threads. Each generation owns its command pool; queue submission itself
+    // remains serialized centrally by GpuScheduler.
+    CommandPool commandPool;
+    std::unique_ptr<Nv12Converter> converter;
+
+    ~Nv12ConverterGeneration()
+    {
+        if (converter)
+            converter->shutdown(GpuTeardownMode::SessionScoped);
+    }
+};
+
+namespace {
+
+template <typename T>
+std::shared_ptr<T> makeScopedHelper()
+{
+    return std::shared_ptr<T>(new T(), [](T* helper) {
+        if (!helper) return;
+        helper->shutdown(GpuTeardownMode::SessionScoped);
+        delete helper;
+    });
+}
+
+} // namespace
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Singleton
 // ═════════════════════════════════════════════════════════════════════════════
@@ -161,10 +190,9 @@ bool GpuContext::init(VkSurfaceKHR surface)
     m_resourceManager = std::make_unique<GpuResourceManager>();
     m_resourceManager->initStagingRing(m_allocator.handle(), 64u * 1024u * 1024u);
 
-    // Eager-init TransitionRenderer at the default resolution so the
-    // ~800 ms shader-compile stall happens here during startup instead
-    // of on the first transition during playback.  Any later resize
-    // request at a different resolution is handled via resize().
+    // Eager-init the default transition generation so the first shader
+    // compilation happens during startup. Other resolutions get independent
+    // generations rather than mutating descriptors in place.
     transitionRenderer(1920, 1080);
 
     return true;
@@ -208,6 +236,30 @@ void GpuContext::shutdown()
         m_binarySemaphorePool.clear();
     }
 
+    // The global wait above is the single synchronization boundary for every
+    // cached resolution generation. Explicit scoped shutdown prevents each
+    // helper destructor from issuing another device-wide wait.
+    m_nv12Converters.forEach([](uint64_t, const auto& generation) {
+        if (generation && generation->converter)
+            generation->converter->shutdown(GpuTeardownMode::SessionScoped);
+    });
+    m_transitionRenderers.forEach([](uint64_t, const auto& renderer) {
+        if (renderer)
+            renderer->shutdown(GpuTeardownMode::SessionScoped);
+    });
+    m_spineRenderers.forEach([](const auto&, const auto& renderer) {
+        if (renderer)
+            renderer->shutdown(GpuTeardownMode::SessionScoped);
+    });
+    m_effectProcessors.forEach([](uint64_t, const auto& processor) {
+        if (processor)
+            processor->shutdown(GpuTeardownMode::SessionScoped);
+    });
+    m_compositors.forEach([](uint64_t, const auto& compositor) {
+        if (compositor)
+            compositor->shutdown(GpuTeardownMode::SessionScoped);
+    });
+
     // Tear down the scheduler.  Just drops queue/mutex pointers — the
     // actual VkQueues live in Device and are destroyed below.  No GPU
     // work is drained here because normal shutdown waited above; fatal
@@ -221,11 +273,11 @@ void GpuContext::shutdown()
     // the VMA allocator is already freed → ACCESS_VIOLATION in nvoglv64.dll.
     m_resourceManager.reset();
     m_cudaVulkanInterop.reset();
-    m_nv12Converters.clear();
-    m_transitionRenderer.reset();
-    m_spineRenderer.reset();
-    m_effectProcessors.clear();
-    m_compositor.reset();
+    (void)m_nv12Converters.clear();
+    (void)m_transitionRenderers.clear();
+    (void)m_spineRenderers.clear();
+    (void)m_effectProcessors.clear();
+    (void)m_compositors.clear();
     m_graphicsCmdPool.destroy();
     m_cmdPool.destroy();
     m_allocator.destroy();
@@ -325,55 +377,59 @@ void GpuContext::releaseBinarySemaphore(VkSemaphore sem)
 //  Shared Compositor
 // ═════════════════════════════════════════════════════════════════════════════
 
-ICompositor* GpuContext::compositor(uint32_t width, uint32_t height)
+std::shared_ptr<Compositor> GpuContext::compositor(
+    uint32_t width, uint32_t height)
 {
     if (!m_initialized) return nullptr;
 
-    std::lock_guard lock(m_subsystemMutex);
+    std::unique_lock lock(m_subsystemMutex);
+    const uint64_t key = (static_cast<uint64_t>(width) << 32)
+                       | static_cast<uint64_t>(height);
+    if (auto cached = m_compositors.find(key))
+        return cached;
 
-    if (!m_compositor) {
-        auto* vkComp = new Compositor();
-        m_compositor.reset(vkComp);
+    auto compositor = makeScopedHelper<Compositor>();
 
-        CompositorConfig cfg;
-        cfg.outputWidth  = width;
-        cfg.outputHeight = height;
+    CompositorConfig cfg;
+    cfg.outputWidth  = width;
+    cfg.outputHeight = height;
 
-        VkQueue queue = m_device.computeQueue()
-                            ? m_device.computeQueue()
-                            : m_device.graphicsQueue();
+    VkQueue queue = m_device.computeQueue()
+                        ? m_device.computeQueue()
+                        : m_device.graphicsQueue();
 
-        if (!vkComp->init(m_device, m_allocator, m_cmdPool, queue, cfg)) {
-            spdlog::error("GpuContext: Failed to init shared Compositor");
-            m_compositor.reset();
-            return nullptr;
-        }
-
-        spdlog::info("GpuContext: Shared Compositor created ({}x{})", width, height);
-    }
-    else if (static_cast<Compositor*>(m_compositor.get())->outputWidth() != width ||
-             static_cast<Compositor*>(m_compositor.get())->outputHeight() != height) {
-        m_compositor->resize(width, height);
+    if (!compositor->init(m_device, m_allocator, m_cmdPool, queue, cfg)) {
+        spdlog::error("GpuContext: Failed to init shared Compositor");
+        return nullptr;
     }
 
-    return m_compositor.get();
+    auto result = compositor;
+    auto retired = m_compositors.insert(
+        key, std::move(compositor), estimatedGpuImageBytes(width, height, 4, 6));
+    const size_t resident = m_compositors.size();
+    lock.unlock();
+    spdlog::info("GpuContext: Shared Compositor generation created "
+                 "({}x{}, resident={}, retired={})", width, height,
+                 resident, retired.size());
+    return result;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Shared EffectProcessor
 // ═════════════════════════════════════════════════════════════════════════════
 
-EffectProcessor* GpuContext::effectProcessor(uint32_t width, uint32_t height)
+std::shared_ptr<EffectProcessor> GpuContext::effectProcessor(
+    uint32_t width, uint32_t height)
 {
     if (!m_initialized) return nullptr;
 
-    std::lock_guard lock(m_subsystemMutex);
+    std::unique_lock lock(m_subsystemMutex);
     ++m_effectProcessorRequests;
 
     const uint64_t key = (static_cast<uint64_t>(width) << 32)
                        | static_cast<uint64_t>(height);
-    auto it = m_effectProcessors.find(key);
-    if (it != m_effectProcessors.end()) {
+    auto cached = m_effectProcessors.find(key);
+    if (cached) {
         ++m_effectProcessorCacheHits;
         if (m_effectProcessorRequests % 120 == 0) {
             const uint64_t misses = m_effectProcessorRequests - m_effectProcessorCacheHits;
@@ -385,10 +441,10 @@ EffectProcessor* GpuContext::effectProcessor(uint32_t width, uint32_t height)
                          m_effectProcessorRequests, m_effectProcessorCacheHits,
                          misses, hitRate, m_effectProcessors.size());
         }
-        return it->second.get();
+        return cached;
     }
 
-    auto processor = std::make_unique<EffectProcessor>();
+    auto processor = makeScopedHelper<EffectProcessor>();
 
     EffectProcessorConfig cfg;
     cfg.width  = width;
@@ -405,13 +461,19 @@ EffectProcessor* GpuContext::effectProcessor(uint32_t width, uint32_t height)
     }
 
     spdlog::info("GpuContext: Shared EffectProcessor created ({}x{})", width, height);
-    auto* result = processor.get();
-    m_effectProcessors.emplace(key, std::move(processor));
+    auto result = processor;
+    auto retired = m_effectProcessors.insert(
+        key, std::move(processor), estimatedGpuImageBytes(width, height, 8, 3));
     ++m_effectProcessorCreations;
-    spdlog::info("[PERF] GpuContext EffectProcessor cache MISS: {}x{} -> created entry {} (requests={}, hits={}, creations={})",
-                 width, height, m_effectProcessors.size(),
-                 m_effectProcessorRequests, m_effectProcessorCacheHits,
-                 m_effectProcessorCreations);
+    const size_t resident = m_effectProcessors.size();
+    const uint64_t requests = m_effectProcessorRequests;
+    const uint64_t hits = m_effectProcessorCacheHits;
+    const uint64_t creations = m_effectProcessorCreations;
+    lock.unlock();
+    spdlog::info("[PERF] GpuContext EffectProcessor cache MISS: {}x{} -> "
+                 "created entry {} (requests={}, hits={}, creations={}, retired={})",
+                 width, height, resident, requests, hits, creations,
+                 retired.size());
 
     return result;
 }
@@ -420,121 +482,133 @@ EffectProcessor* GpuContext::effectProcessor(uint32_t width, uint32_t height)
 //  Shared SpineRenderer
 // ═════════════════════════════════════════════════════════════════════════════
 
-SpineRenderer* GpuContext::spineRenderer(uint32_t width, uint32_t height)
+std::shared_ptr<SpineRenderer> GpuContext::spineRenderer(
+    uint32_t width, uint32_t height, const std::string& contentKey)
 {
     if (!m_initialized) return nullptr;
 
-    std::lock_guard lock(m_subsystemMutex);
+    std::unique_lock lock(m_subsystemMutex);
+    const SpineRendererCacheKey key{width, height, contentKey};
+    if (auto cached = m_spineRenderers.find(key))
+        return cached;
 
-    if (!m_spineRenderer) {
-        m_spineRenderer = std::make_unique<SpineRenderer>();
+    auto renderer = makeScopedHelper<SpineRenderer>();
 
-        SpineRendererConfig cfg;
-        cfg.renderWidth  = width;
-        cfg.renderHeight = height;
+    SpineRendererConfig cfg;
+    cfg.renderWidth  = width;
+    cfg.renderHeight = height;
 
-        // When using async compute for the compositor, the spine FBO must be
-        // accessible from both the graphics and compute queue families.
-        auto& qf = m_device.queueFamilies();
-        if (qf.graphics.has_value() && qf.compute.has_value() &&
-            qf.graphics.value() != qf.compute.value()) {
-            cfg.concurrentQueueFamilies = {qf.graphics.value(),
-                                           qf.compute.value()};
-        }
+    // SpineRenderer needs a graphics queue for vertex/fragment shaders.
+    VkQueue queue = m_device.graphicsQueue()
+                        ? m_device.graphicsQueue()
+                        : m_device.computeQueue();
 
-        // SpineRenderer needs a graphics queue for vertex/fragment shaders
-        VkQueue queue = m_device.graphicsQueue()
-                            ? m_device.graphicsQueue()
-                            : m_device.computeQueue();
-
-        // Must use the graphics-family command pool so command buffers can
-        // be submitted to the graphics queue (queue family must match).
-        if (!m_spineRenderer->init(m_device, m_allocator, graphicsCmdPool(), queue, cfg)) {
-            spdlog::error("GpuContext: Failed to init shared SpineRenderer");
-            m_spineRenderer.reset();
-            return nullptr;
-        }
-
-        // Plumb the graphics-queue mutex so Spine's submit serializes with
-        // other graphics-queue users (VulkanViewport, EffectProcessor).
-        m_spineRenderer->setQueueMutex(&graphicsQueueMutex());
-
-        // When graphics and compute queue families differ, register the
-        // compute queue so SpineRenderer's beginFrame() can drain any
-        // in-flight compositor sampling of the shared framebuffer before
-        // re-transitioning it to COLOR_ATTACHMENT.  See SpineRenderer.cpp
-        // beginFrame() for the full hazard description.
-        if (qf.graphics.has_value() && qf.compute.has_value() &&
-            qf.graphics.value() != qf.compute.value()) {
-            m_spineRenderer->setComputeQueue(m_device.computeQueue(),
-                                             &computeQueueMutex());
-            spdlog::info("GpuContext: Spine cross-queue sync enabled "
-                         "(graphics family {} → compute family {})",
-                         qf.graphics.value(), qf.compute.value());
-        }
-
-        spdlog::info("GpuContext: Shared SpineRenderer created ({}x{})", width, height);
-    }
-    else if (m_spineRenderer->framebuffer().width() != width ||
-             m_spineRenderer->framebuffer().height() != height) {
-        m_spineRenderer->resize(width, height);
+    // Must use the graphics-family command pool so command buffers can be
+    // submitted to the graphics queue (queue family must match).
+    if (!renderer->init(m_device, m_allocator, graphicsCmdPool(), queue, cfg)) {
+        spdlog::error("GpuContext: Failed to init shared SpineRenderer");
+        return nullptr;
     }
 
-    return m_spineRenderer.get();
+    // Plumb the graphics-queue mutex so Spine's submit serializes with
+    // other graphics-queue users (VulkanViewport, EffectProcessor).
+    renderer->setQueueMutex(&graphicsQueueMutex());
+
+    auto result = renderer;
+    auto retired = m_spineRenderers.insert(
+        key, std::move(renderer), estimatedGpuImageBytes(width, height, 4, 3));
+    const size_t resident = m_spineRenderers.size();
+    lock.unlock();
+    spdlog::info("GpuContext: Shared SpineRenderer generation created "
+                 "({}x{}, key='{}', resident={}, retired={})", width, height,
+                 contentKey, resident, retired.size());
+    return result;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Shared TransitionRenderer
 // ═════════════════════════════════════════════════════════════════════════════
 
-TransitionRenderer* GpuContext::transitionRenderer(uint32_t width, uint32_t height)
+std::shared_ptr<TransitionRenderer> GpuContext::transitionRenderer(
+    uint32_t width, uint32_t height)
 {
     if (!m_initialized) return nullptr;
 
-    std::lock_guard lock(m_subsystemMutex);
+    std::unique_lock lock(m_subsystemMutex);
+    const uint64_t key = (static_cast<uint64_t>(width) << 32)
+                       | static_cast<uint64_t>(height);
+    if (auto cached = m_transitionRenderers.find(key))
+        return cached;
 
-    if (!m_transitionRenderer) {
-        m_transitionRenderer = std::make_unique<TransitionRenderer>();
+    auto renderer = makeScopedHelper<TransitionRenderer>();
 
-        TransitionConfig cfg;
-        cfg.outputWidth  = width;
-        cfg.outputHeight = height;
+    TransitionConfig cfg;
+    cfg.outputWidth  = width;
+    cfg.outputHeight = height;
 
-        VkQueue queue = m_device.computeQueue()
-                            ? m_device.computeQueue()
-                            : m_device.graphicsQueue();
+    VkQueue queue = m_device.computeQueue()
+                        ? m_device.computeQueue()
+                        : m_device.graphicsQueue();
 
-        if (!m_transitionRenderer->init(m_device, m_allocator, m_cmdPool, queue, cfg)) {
-            spdlog::error("GpuContext: Failed to init shared TransitionRenderer");
-            m_transitionRenderer.reset();
-            return nullptr;
-        }
-
-        spdlog::info("GpuContext: Shared TransitionRenderer created ({}x{})", width, height);
-    }
-    else if (m_transitionRenderer->outputWidth() != width ||
-             m_transitionRenderer->outputHeight() != height) {
-        m_transitionRenderer->resize(width, height);
+    if (!renderer->init(m_device, m_allocator, m_cmdPool, queue, cfg)) {
+        spdlog::error("GpuContext: Failed to init shared TransitionRenderer");
+        return nullptr;
     }
 
-    return m_transitionRenderer.get();
+    auto result = renderer;
+    auto retired = m_transitionRenderers.insert(
+        key, std::move(renderer), estimatedGpuImageBytes(width, height, 4, 3));
+    const size_t resident = m_transitionRenderers.size();
+    lock.unlock();
+    spdlog::info("GpuContext: Shared TransitionRenderer generation created "
+                 "({}x{}, resident={}, retired={})", width, height,
+                 resident, retired.size());
+    return result;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Shared Nv12Converter
 // ═════════════════════════════════════════════════════════════════════════════
 
-Nv12Converter* GpuContext::nv12Converter(uint32_t width, uint32_t height)
+std::shared_ptr<Nv12Converter> GpuContext::nv12Converter(
+    uint32_t width, uint32_t height)
+{
+    return nv12Converter(width, height, width, height);
+}
+
+GpuGenerationWorkingSetStats GpuContext::generationCacheStats() const
+{
+    std::lock_guard lock(m_subsystemMutex);
+    return {
+        m_compositors.stats(),
+        m_effectProcessors.stats(),
+        m_spineRenderers.stats(),
+        m_transitionRenderers.stats(),
+        m_nv12Converters.stats()
+    };
+}
+
+std::shared_ptr<Nv12Converter> GpuContext::nv12Converter(
+    uint32_t srcWidth, uint32_t srcHeight,
+    uint32_t dstWidth, uint32_t dstHeight)
 {
     if (!m_initialized) return nullptr;
 
-    std::lock_guard lock(m_subsystemMutex);
+    std::unique_lock lock(m_subsystemMutex);
     ++m_nv12ConverterRequests;
 
-    const uint64_t key = (static_cast<uint64_t>(width) << 32)
-                       | static_cast<uint64_t>(height);
-    auto it = m_nv12Converters.find(key);
-    if (it != m_nv12Converters.end()) {
+    // Vulkan image dimensions are at most 16 bits on the supported devices,
+    // so all four generation dimensions fit losslessly in one 64-bit key.
+    if (srcWidth > 0xffffu || srcHeight > 0xffffu ||
+        dstWidth > 0xffffu || dstHeight > 0xffffu) {
+        return nullptr;
+    }
+    const uint64_t key = (static_cast<uint64_t>(srcWidth) << 48)
+                       | (static_cast<uint64_t>(srcHeight) << 32)
+                       | (static_cast<uint64_t>(dstWidth) << 16)
+                       | static_cast<uint64_t>(dstHeight);
+    auto cached = m_nv12Converters.find(key);
+    if (cached) {
         ++m_nv12ConverterCacheHits;
         if (m_nv12ConverterRequests % 120 == 0) {
             const uint64_t misses = m_nv12ConverterRequests - m_nv12ConverterCacheHits;
@@ -546,33 +620,60 @@ Nv12Converter* GpuContext::nv12Converter(uint32_t width, uint32_t height)
                          m_nv12ConverterRequests, m_nv12ConverterCacheHits,
                          misses, hitRate, m_nv12Converters.size());
         }
-        return it->second.get();
+        return cached->converter
+            ? std::shared_ptr<Nv12Converter>(cached, cached->converter.get())
+            : std::shared_ptr<Nv12Converter>{};
     }
 
-    auto converter = std::make_unique<Nv12Converter>();
+    auto generation = std::make_shared<Nv12ConverterGeneration>();
 
     Nv12ConverterConfig cfg;
-    cfg.width  = width;
-    cfg.height = height;
+    cfg.width        = srcWidth;
+    cfg.height       = srcHeight;
+    cfg.outputWidth  = dstWidth;
+    cfg.outputHeight = dstHeight;
 
     VkQueue queue = m_device.computeQueue()
                         ? m_device.computeQueue()
                         : m_device.graphicsQueue();
 
-    if (!converter->init(m_device, m_allocator, m_cmdPool, queue, cfg)) {
-        spdlog::warn("GpuContext: Nv12Converter init failed for {}x{} — falling back to CPU sws_scale",
-                     width, height);
+    const auto& families = m_device.queueFamilies();
+    const uint32_t queueFamily = m_device.computeQueue()
+        ? families.compute.value_or(families.graphics.value_or(0))
+        : families.graphics.value_or(0);
+    if (!generation->commandPool.create(m_device.handle(), queueFamily)) {
+        spdlog::warn("GpuContext: private Nv12Converter command pool failed");
         return nullptr;
     }
 
-    spdlog::info("GpuContext: Shared Nv12Converter created ({}x{})", width, height);
-    auto* result = converter.get();
-    m_nv12Converters.emplace(key, std::move(converter));
+    generation->converter = std::make_unique<Nv12Converter>();
+    if (!generation->converter->init(
+            m_device, m_allocator, generation->commandPool, queue, cfg)) {
+        spdlog::warn("GpuContext: Nv12Converter init failed for {}x{} -> "
+                     "{}x{} — falling back to CPU sws_scale",
+                     srcWidth, srcHeight, dstWidth, dstHeight);
+        return nullptr;
+    }
+
+    spdlog::info("GpuContext: Shared Nv12Converter generation created "
+                 "({}x{} -> {}x{})",
+                 srcWidth, srcHeight, dstWidth, dstHeight);
+    auto result = std::shared_ptr<Nv12Converter>(generation,
+                                                 generation->converter.get());
+    const size_t srcBytes = estimatedGpuImageBytes(srcWidth, srcHeight, 2, 2);
+    const size_t dstBytes = estimatedGpuImageBytes(dstWidth, dstHeight, 4, 2);
+    auto retired = m_nv12Converters.insert(
+        key, std::move(generation), srcBytes + dstBytes);
     ++m_nv12ConverterCreations;
-    spdlog::info("[PERF] GpuContext Nv12Converter cache MISS: {}x{} -> created entry {} (requests={}, hits={}, creations={})",
-                 width, height, m_nv12Converters.size(),
-                 m_nv12ConverterRequests, m_nv12ConverterCacheHits,
-                 m_nv12ConverterCreations);
+    const size_t resident = m_nv12Converters.size();
+    const uint64_t requests = m_nv12ConverterRequests;
+    const uint64_t hits = m_nv12ConverterCacheHits;
+    const uint64_t creations = m_nv12ConverterCreations;
+    lock.unlock();
+    spdlog::info("[PERF] GpuContext Nv12Converter cache MISS: {}x{} -> "
+                 "{}x{} created entry {} (requests={}, hits={}, creations={}, retired={})",
+                 srcWidth, srcHeight, dstWidth, dstHeight,
+                 resident, requests, hits, creations, retired.size());
 
     return result;
 }

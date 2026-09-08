@@ -13,6 +13,8 @@
 #include "Encoder.h"
 #include "Muxer.h"
 #include "RenderQueue.h"
+#include "ExportRenderExecutor.h"
+#include "ExportRenderSession.h"
 #include "FrameTime.h"
 
 #include <QDir>
@@ -324,7 +326,7 @@ void ExportPanel::onStartExport()
     // Video-export pre-flight (skipped entirely for audio-only exports, which
     // need neither the compositor nor a hardware video encoder).
     if (!config.audioOnly) {
-        if (!m_exportFrameCallback) {
+        if (!m_exportRenderSessionFactory && !m_exportFrameCallback) {
             QMessageBox::warning(this, tr("Export"), tr("No renderer available — cannot export."));
             return;
         }
@@ -378,6 +380,12 @@ void ExportPanel::onStartExport()
         }
     }
 
+    if (!config.audioOnly && !prepareExportRenderSession()) {
+        QMessageBox::warning(this, tr("Export"),
+                             tr("The export renderer could not be created."));
+        return;
+    }
+
     rememberExportDir(pathToUtf8(config.outputPath));
     // Capture one complete project graph now.  Both video and audio retain it,
     // so edits/project switches after this point cannot alter the job.
@@ -403,9 +411,14 @@ void ExportPanel::onStartQueue()
         if (j && j->status.load() == JobStatus::Queued && !j->config.audioOnly)
             anyVideo = true;
     if (anyVideo) {
-        if (!m_exportFrameCallback) {
+        if (!m_exportRenderSessionFactory && !m_exportFrameCallback) {
             QMessageBox::warning(this, tr("Export"),
                                  tr("No renderer available \u2014 cannot export."));
+            return;
+        }
+        if (!prepareExportRenderSession()) {
+            QMessageBox::warning(this, tr("Export"),
+                                 tr("The export renderer could not be created."));
             return;
         }
     }
@@ -422,8 +435,29 @@ void ExportPanel::onStartQueue()
     emit exportStarted(m_activeJobId);
 }
 
+bool ExportPanel::prepareExportRenderSession()
+{
+    if (m_exportRenderSession)
+        return true;
+    if (!m_exportRenderSessionFactory)
+        return static_cast<bool>(m_exportFrameCallback);
+    m_exportRenderSession = m_exportRenderSessionFactory();
+    return static_cast<bool>(m_exportRenderSession);
+}
+
 void ExportPanel::armQueueAndRun()
 {
+    ExportPreflightCallback preflightCallback = m_exportPreflightCallback;
+    ExportResultCallback renderCallback = m_exportFrameCallback;
+    SnapshotFrameStoreFn frameStoreCallback = m_frameStoreCallback;
+    const bool hasSession = static_cast<bool>(m_exportRenderSession);
+
+    // Start the serialized render owner before RenderQueue launches its worker.
+    // The session is constructed cheaply on the UI thread, but creates and
+    // destroys all mutable compositor/GPU state on this dedicated thread.
+    if (!m_renderQueue->isRunning())
+        m_renderExecutor->beginRun(m_exportRenderSession);
+
     // Set up callbacks
     m_renderQueue->setProgressCallback(
         [this](uint32_t id, const JobProgress& /*prog*/) {
@@ -513,46 +547,75 @@ void ExportPanel::armQueueAndRun()
             });
         });
 
+    // Resolve cold visual dependencies before RenderQueue opens an encoder.
+    // The executor marshals each scan/load pass through its render-thread event
+    // target while the queue worker polls the result.
+    m_renderQueue->setSnapshotResourcePreflightCallback(
+        (hasSession || preflightCallback)
+            ? SnapshotResourcePreflightFn{
+                  [this, preflightCallback](
+                      const std::shared_ptr<const ExportRenderSnapshot>& snapshot) {
+                      if (m_destroying.load(std::memory_order_acquire)) {
+                          RenderPreflightResult canceled;
+                          canceled.status = RenderResultStatus::Canceled;
+                          canceled.warning = "export panel is shutting down";
+                          return canceled;
+                      }
+                      return m_renderExecutor->preflight(
+                          snapshot, preflightCallback);
+                  }}
+            : SnapshotResourcePreflightFn{});
+
     // Wire the frame render callback so export uses real compositing
     // with a composite/encode PIPELINE.  The worker thread encodes the
-    // PREVIOUS frame while the main thread composites the CURRENT frame,
+    // PREVIOUS frame while the render thread composites the CURRENT frame,
     // overlapping ~2ms of encode time with ~10ms of composite time.
     //
-    // Each call to pipelineComposite:
-    //   1) Submits THIS frame's composite to the main thread (QueuedConnection
+    // Each call to ExportRenderExecutor::render:
+    //   1) Submits THIS frame's composite to the render thread (queued,
     //      — non-blocking, returns immediately)
     //   2) Waits for the PREVIOUS frame's composite to finish (already
-    //      started when pipelineComposite was last called)
+    //      started when render was last called)
     //   3) Returns the previous frame's pixels for encoding
     //
     // The first call composites synchronously since there's no previous frame.
-    if (m_exportFrameCallback) {
-        m_renderQueue->setSnapshotFrameRenderCallback(
-            [this](const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+    m_renderQueue->setSnapshotFrameRenderResultCallback({});
+    if (hasSession || renderCallback) {
+        m_renderQueue->setSnapshotFrameRenderResultCallback(
+            [this, renderCallback](
+                   const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
                    int64_t tick, int64_t nextTick,
                    uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)
-                -> std::shared_ptr<CachedFrame> {
-                if (m_destroying.load(std::memory_order_acquire)) return nullptr;
-                return pipelineComposite(snapshot, tick, nextTick, w, h,
-                                         scrub, preserveAlpha);
+                -> RenderResult {
+                if (m_destroying.load(std::memory_order_acquire)) {
+                    RenderResult canceled;
+                    canceled.timelineTick = tick;
+                    canceled.status = RenderResultStatus::Canceled;
+                    canceled.diagnostics.status = canceled.status;
+                    return canceled;
+                }
+                return m_renderExecutor->render(
+                    snapshot, tick, nextTick, w, h,
+                    scrub, preserveAlpha, renderCallback);
             });
     }
-    // §4.6 export write-through: store each finished full-res frame into the
-    // segment cache so a re-export reuses it (called on the worker thread with
-    // pixels already present).
-    if (m_frameStoreCallback)
-        m_renderQueue->setSnapshotFrameStoreCallback(m_frameStoreCallback);
-
-    // Reset the composite pipeline between exports: the slots still hold the
-    // previous export's last tick + shared_future, which broke first-call
-    // detection on the second export (frame 0 reused the previous export's
-    // last composited frame).  Only touch the slots when no worker is
-    // running — while a worker drains the queue they belong to its thread
-    // (pipelineComposite's tick-match check covers that case).
-    if (!m_renderQueue->isRunning()) {
-        m_pipelineSlots[0] = CompositeSlot{};
-        m_pipelineSlots[1] = CompositeSlot{};
-        m_pipelineCurrentSlot = 0;
+    // A production ExportRenderSession owns a temporary segment cache that is
+    // destroyed at the end of this queue run. Synchronously sending every
+    // completed frame back to the same render thread made that thread finish
+    // the already-submitted N+1 composite, copy frame N into the temporary
+    // cache, and only then let the worker encode N. That serialized the
+    // composite/encode pipeline and copied a full BGRA canvas per frame for no
+    // persistent benefit. Keep legacy externally-owned stores available, but
+    // do not install session-local write-through in the production hot loop.
+    m_renderQueue->setSnapshotFrameStoreCallback({});
+    if (!hasSession && frameStoreCallback) {
+        m_renderQueue->setSnapshotFrameStoreCallback(
+            [this, frameStoreCallback](
+                const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+                int64_t tick, const std::shared_ptr<CachedFrame>& frame) {
+                (void)m_renderExecutor->storeFrame(
+                    snapshot, tick, frame, frameStoreCallback);
+            });
     }
 
     // Production jobs are self-contained. Do not retain/pass the live timeline
@@ -572,6 +635,15 @@ void ExportPanel::setRunningUiState(bool running)
     if (m_cancelButton)   m_cancelButton->setEnabled(running);
     if (m_runRow)         m_runRow->setVisible(running);
     if (m_renderPip && !running) m_renderPip->setVisible(false);
+    if (!running && m_renderQueue && !m_renderQueue->isRunning()) {
+        m_renderQueue->setSnapshotResourcePreflightCallback({});
+        m_renderQueue->setSnapshotFrameRenderResultCallback({});
+        m_renderQueue->setSnapshotFrameStoreCallback({});
+        // Drop the UI's session reference first; executor cleanup then destroys
+        // the final owner on the render thread before joining it.
+        m_exportRenderSession.reset();
+        if (m_renderExecutor) m_renderExecutor->discardPendingWork();
+    }
     updateStartQueueEnabled();
 }
 
@@ -581,6 +653,7 @@ void ExportPanel::onCancelExport()
     // timer's queue-idle check) take the UI out of the running state once
     // the worker actually stops — an instant reset here would lie while
     // the current frame batch drains.
+    if (m_renderExecutor) m_renderExecutor->requestStop();
     m_renderQueue->cancelAll();
     m_statusLabel->setText(tr("Cancelling…"));
     m_cancelButton->setEnabled(false);

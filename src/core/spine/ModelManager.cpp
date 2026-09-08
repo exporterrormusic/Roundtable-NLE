@@ -326,7 +326,10 @@ int ModelManager::scan(const std::string& assetsDir)
 
     auto charsDir = utf8ToPath(assetsDir) / "characters";
     if (!fs::exists(charsDir) || !fs::is_directory(charsDir)) {
-        spdlog::warn("ModelManager: characters directory not found: {}", pathToUtf8(charsDir));
+        // Release packages intentionally contain no character models;
+        // user-downloaded characters are merged from the user root afterward.
+        m_scanned = true;
+        spdlog::info("ModelManager: no characters directory at {}", pathToUtf8(charsDir));
         return 0;
     }
 
@@ -362,6 +365,7 @@ int ModelManager::scanAdditional(const std::string& assetsDir)
 {
     auto charsDir = utf8ToPath(assetsDir) / "characters";
     if (!fs::exists(charsDir) || !fs::is_directory(charsDir)) {
+        m_scanned = true;
         spdlog::debug("ModelManager: additional characters directory not found: {}", pathToUtf8(charsDir));
         return 0;
     }
@@ -392,6 +396,8 @@ int ModelManager::scanAdditional(const std::string& assetsDir)
               [](const ModelEntry& a, const ModelEntry& b) { return a.name < b.name; });
 
     int added = static_cast<int>(m_entries.size()) - before;
+
+    m_scanned = true;
 
     spdlog::info("ModelManager: scanned {} additional characters from {}",
                  added, pathToUtf8(charsDir));
@@ -539,4 +545,3 @@ const ModelManager::CharMetadata* ModelManager::findMetadata(const std::string& 
 } // namespace rt
 
 #endif // ROUNDTABLE_HAS_SPINE
-

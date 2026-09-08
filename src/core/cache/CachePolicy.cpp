@@ -147,29 +147,28 @@ size_t CachePolicy::recommendedGpuTexCacheBudget(
     // depth lower bound — useful for very-low-VRAM machines where
     // even the small entry cap would exceed available headroom.
     //
-    // Defaults: 1 GB on any device with > 4 GB VRAM, scaling down
-    // proportionally below that.  An 8 GB card only needs to dedicate
-    // ~12% of VRAM to the GPU texture cache; everything else lives
+    // Defaults: at most 1 GB, scaling down proportionally on smaller
+    // devices. Everything else lives
     // in DiskFrameCache or gets re-decoded on demand.
     constexpr size_t kMiB = 1024ull * 1024ull;
     constexpr size_t kGiB = 1024ull * kMiB;
     constexpr size_t kMin = 256 * kMiB;
-    constexpr size_t kMax = 2 * kGiB;
+    constexpr size_t kMax = 1 * kGiB;
 
-    // Boost override: profile already clamped to <=45% of VRAM.
+    // Explicit override for specialized deployments.
     if (const size_t o = perfProfile().gpuTexCacheBudgetBytes; o != 0)
         return o;
 
     if (deviceVramBytes == 0) return 1 * kGiB;
 
-    // 12% of device VRAM, clamped [256 MB, 2 GB].
-    //   24 GB → 2 GB (cap)
-    //   12 GB → 1.44 GB → clamped to 2 GB only if >> 12
-    //    8 GB → 960 MB
-    //    6 GB → 720 MB
-    //    4 GB → 480 MB
+    // 10% of device VRAM, clamped [256 MB, 1 GB].
+    //   24 GB → 1 GB (cap)
+    //   12 GB → 1 GB (cap)
+    //    8 GB → 819 MB
+    //    6 GB → 614 MB
+    //    4 GB → 409 MB
     //    2 GB → 256 MB (floor)
-    size_t budget = deviceVramBytes * 12 / 100;
+    size_t budget = deviceVramBytes / 10;
     return std::clamp(budget, kMin, kMax);
 }
 
@@ -187,20 +186,20 @@ size_t CachePolicy::recommendedGpuTexCacheMaxEntries(
     //
     // Scaled by VRAM only mildly because the working set is what
     // matters, not the GPU's capacity to hoard:
-    //   24 GB → 180 entries (~1.4 GB working set)
-    //   12 GB → 150 entries
-    //    8 GB → 120 entries (~960 MB)
-    //    6 GB →  90 entries
+    //   24 GB → 120 entries (~960 MB working set)
+    //   12 GB → 100 entries
+    //    8 GB →  80 entries (~640 MB)
+    //    6 GB →  70 entries
     //    4 GB →  60 entries
-    //    2 GB →  40 entries
+    //    2 GB →  50 entries
     constexpr size_t kFloor = 40;
-    constexpr size_t kCeil  = 180;
-    // Boost override: the profile raises this ceiling per tier (safe —
-    // eviction is fence-gated; pressure relief stays armed).
+    constexpr size_t kCeil  = 120;
+    // Explicit override for specialized deployments.
     if (const size_t o = perfProfile().gpuTexMaxEntries; o != 0)
         return o;
     if (deviceVramBytes == 0) return 120;
-    const size_t entries = deviceVramBytes / (160ull * 1024 * 1024); // ~160 MB / entry of VRAM headroom
+    constexpr size_t kGiB = 1024ull * 1024ull * 1024ull;
+    const size_t entries = kFloor + (deviceVramBytes / kGiB) * 5;
     return std::clamp(entries, kFloor, kCeil);
 }
 
@@ -214,21 +213,20 @@ size_t CachePolicy::recommendedFrameCacheMaxEntries(
     // GpuTextureCache cap (separate, smaller) bounds the consumed-
     // texture working set.
     //
-    // Sized to roughly 2× the GpuTextureCache max entries — enough
-    // room for the prefetch lookahead window (12 frames) + follow-up
-    // batch (30 frames) per active clip + small slack, with most
+    // Sized to the consumed GPU working set plus 48 entries — enough
+    // room for the prefetch lookahead window plus small slack, with most
     // entries being consumed/transferred shortly after insertion.
     //
-    //   24 GB VRAM → ~360 entries (~2.8 GB orphan-texture VRAM)
-    //    8 GB VRAM → ~240 entries (~1.9 GB)
-    //    4 GB VRAM → ~120 entries (~960 MB)
-    constexpr size_t kFloor = 100;
-    constexpr size_t kCeil  = 400;
-    // Boost override: raised ceiling to match the larger GPU working set.
+    //   24 GB VRAM → 168 entries (~1.3 GB worst-case pending VRAM)
+    //    8 GB VRAM → 128 entries (~1.0 GB)
+    //    4 GB VRAM → 108 entries (~864 MB)
+    constexpr size_t kFloor = 96;
+    constexpr size_t kCeil  = 180;
+    // Explicit override for specialized deployments.
     if (const size_t o = perfProfile().frameCacheMaxEntries; o != 0)
         return o;
     const size_t gpuTexEntries = recommendedGpuTexCacheMaxEntries(deviceVramBytes);
-    const size_t entries = gpuTexEntries * 2;
+    const size_t entries = gpuTexEntries + 48;
     return std::clamp(entries, kFloor, kCeil);
 }
 

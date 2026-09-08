@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <set>
 #include <stdexcept>
 #include <cstring>
@@ -154,15 +155,36 @@ bool Device::create(const Instance& instance, VkSurfaceKHR surface)
     if (m_queueFamilies.transfer.has_value())
         uniqueFamilies.insert(m_queueFamilies.transfer.value());
 
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        m_physicalDevice, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueFamilyProperties(
+        queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(
+        m_physicalDevice, &queueFamilyCount, queueFamilyProperties.data());
+
+    const uint32_t graphicsFamily = m_queueFamilies.graphics.value();
+    const uint32_t presentFamily =
+        m_queueFamilies.present.value_or(graphicsFamily);
+    const bool canSeparatePresent = graphicsFamily == presentFamily &&
+        graphicsFamily < queueFamilyProperties.size() &&
+        queueFamilyProperties[graphicsFamily].queueCount >= 2;
+
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    float queuePriority = 1.0f;
+    std::array<float, 2> queuePriorities{1.0f, 1.0f};
     for (uint32_t family : uniqueFamilies)
     {
         VkDeviceQueueCreateInfo queueInfo{};
         queueInfo.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueInfo.queueFamilyIndex = family;
-        queueInfo.queueCount       = 1;
-        queueInfo.pQueuePriorities = &queuePriority;
+        // When presentation and rendering share a family, request a second
+        // queue handle if the device exposes one. vkQueuePresentKHR may block
+        // for display cadence; using queue 1 for graphics submissions keeps
+        // that wait from stalling the compositor's externally-synchronized
+        // queue mutex.
+        queueInfo.queueCount       =
+            (family == graphicsFamily && canSeparatePresent) ? 2u : 1u;
+        queueInfo.pQueuePriorities = queuePriorities.data();
         queueCreateInfos.push_back(queueInfo);
     }
 
@@ -216,15 +238,24 @@ bool Device::create(const Instance& instance, VkSurfaceKHR surface)
     volkLoadDevice(m_device);
 
     // ── Retrieve queue handles ──────────────────────────────────────────
-    vkGetDeviceQueue(m_device, m_queueFamilies.graphics.value(), 0, &m_graphicsQueue);
+    // Queue 0 remains the presentation queue. Queue 1, when available in the
+    // same family, is the graphics/render queue used by the scheduler.
+    const uint32_t graphicsQueueIndex = canSeparatePresent ? 1u : 0u;
+    vkGetDeviceQueue(m_device, graphicsFamily,
+                     graphicsQueueIndex, &m_graphicsQueue);
 
     if (m_queueFamilies.present.has_value())
-        vkGetDeviceQueue(m_device, m_queueFamilies.present.value(), 0, &m_presentQueue);
+        vkGetDeviceQueue(m_device, presentFamily, 0, &m_presentQueue);
     else
         m_presentQueue = m_graphicsQueue;
 
-    if (m_queueFamilies.compute.has_value())
-        vkGetDeviceQueue(m_device, m_queueFamilies.compute.value(), 0, &m_computeQueue);
+    if (m_queueFamilies.compute.has_value()) {
+        const uint32_t computeFamily = m_queueFamilies.compute.value();
+        const uint32_t computeQueueIndex =
+            (computeFamily == graphicsFamily && canSeparatePresent) ? 1u : 0u;
+        vkGetDeviceQueue(m_device, computeFamily,
+                         computeQueueIndex, &m_computeQueue);
+    }
     else
         m_computeQueue = m_graphicsQueue;
 
@@ -238,6 +269,8 @@ bool Device::create(const Instance& instance, VkSurfaceKHR surface)
                  m_queueFamilies.compute.value_or(m_queueFamilies.graphics.value()),
                  m_queueFamilies.transfer.value_or(m_queueFamilies.graphics.value()),
                  m_queueFamilies.present.value_or(m_queueFamilies.graphics.value()));
+    spdlog::warn("[HW-DIAG] Vulkan render/present queues: {}",
+                 m_graphicsQueue != m_presentQueue ? "separated" : "shared");
 
     if (m_queueFamilies.hasAsyncCompute())
         spdlog::info("  Async compute queue available (family {})", m_queueFamilies.compute.value());

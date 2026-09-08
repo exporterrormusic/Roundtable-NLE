@@ -71,6 +71,12 @@ public:
     [[nodiscard]] bool hasFresh(int64_t tick, ResolutionTier tier,
                                 uint64_t configHash) const;
 
+    /// Cheap first-stage probe used before calculating configHash. Returns
+    /// true when memory or disk contains at least one entry for (tick, tier),
+    /// regardless of which render-state hash produced it. A true result still
+    /// requires get()/hasFresh() to validate the full hash.
+    [[nodiscard]] bool hasCandidate(int64_t tick, ResolutionTier tier) const;
+
     /// Drop everything (project/sequence switch).
     void clear();
 
@@ -165,6 +171,9 @@ private:
     std::filesystem::path m_diskDir;
     size_t                m_diskBudget{0};
     std::unordered_set<DiskKey, DiskKeyHash> m_diskIndex; // guarded by m_mtx
+    // Secondary (tick,tier) index. This lets live playback reject the common
+    // "nothing was pre-rendered here" case without serializing timeline state.
+    std::unordered_map<Key, size_t, KeyHash> m_diskCandidateCounts;
     std::atomic<size_t>   m_diskUsed{0};
 
     std::thread             m_writer;

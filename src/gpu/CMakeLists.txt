@@ -15,6 +15,7 @@ add_library(roundtable_gpu STATIC
     # Context
     GpuContext.cpp
     GpuScheduler.cpp
+    RenderGpuResources.cpp
 
     # Renderers
     SpineRenderer.cpp

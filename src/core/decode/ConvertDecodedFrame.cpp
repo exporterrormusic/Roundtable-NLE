@@ -23,6 +23,27 @@ extern "C" {
 
 namespace rt {
 
+bool isGreenScreenMediaPath(const std::filesystem::path& sourceFile)
+{
+    auto uppercase = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       });
+        return value;
+    };
+
+    const std::string filename = uppercase(pathToUtf8(sourceFile.filename()));
+    if (filename.find("GREEN") != std::string::npos)
+        return true;
+
+    for (const auto& component : sourceFile) {
+        if (uppercase(pathToUtf8(component)) == "H264_GREEN")
+            return true;
+    }
+    return false;
+}
+
 #ifdef ROUNDTABLE_HAS_FFMPEG
 
 int resolveDecodedAvFormat(const DecodedFrame& decoded)
@@ -156,17 +177,10 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
     }
 
     // ── Chroma-key green-screen media (#18FF00) ──────────────────────────
-    // GREEN-suffixed files are H.264 renders of originally-alpha content on
-    // a chroma green background; key them here so the rest of the pipeline
-    // (compositor, thumbnails, library) never sees the green.
-    if (!cached.pixels.empty()) {
-        std::string fn = pathToUtf8(sourceFile.filename());
-        std::transform(fn.begin(), fn.end(), fn.begin(),
-                       [](unsigned char c) { return std::toupper(c); });
-        if (fn.find("GREEN") != std::string::npos) {
-            chromaKeyInPlace(cached.pixels.data(), cached.pixels.size() / 4);
-        }
-    }
+    // AnimationVideoCache identifies generated green-screen media by its
+    // H264_Green directory; legacy imports used a GREEN filename suffix.
+    if (!cached.pixels.empty() && isGreenScreenMediaPath(sourceFile))
+        chromaKeyInPlace(cached.pixels.data(), cached.pixels.size() / 4);
 
     return true;
 }

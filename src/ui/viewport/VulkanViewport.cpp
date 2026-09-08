@@ -618,7 +618,7 @@ bool VulkanViewport::eventFilter(QObject* watched, QEvent* event)
                 // Route explicitly instead of relying on the native event to
                 // fall through to another event filter. On Windows, embedded
                 // QWindow filter ordering can otherwise swallow the gesture.
-                spdlog::warn("[INLINE-TEXT] Vulkan native left double-click local=({}, {}) global=({}, {})",
+                spdlog::debug("[INLINE-TEXT] Vulkan native left double-click local=({}, {}) global=({}, {})",
                              mouseEvent->position().x(), mouseEvent->position().y(),
                              mouseEvent->globalPosition().x(),
                              mouseEvent->globalPosition().y());

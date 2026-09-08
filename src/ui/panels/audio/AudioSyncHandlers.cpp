@@ -31,6 +31,8 @@
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QMessageBox>
+#include <QSignalBlocker>
 
 #include "Settings.h"
 
@@ -387,6 +389,74 @@ void AudioSync::onImportAudioClicked()
 void AudioSync::onTranscribeClicked()
 {
     startTranscription();
+}
+
+bool AudioSync::isCrisperWhisperSelected() const
+{
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    if (!m_modelCombo) return false;
+    const QString modelId = m_modelCombo->currentData().isValid()
+        ? m_modelCombo->currentData().toString()
+        : m_modelCombo->currentText();
+    return modelId == QStringLiteral("crisperwhisper-2-large-personal");
+#else
+    return false;
+#endif
+}
+
+void AudioSync::selectDefaultWhisperModel()
+{
+    if (!m_modelCombo) return;
+    const QSignalBlocker blocker(m_modelCombo);
+    const QString modelId = QString::fromUtf8(whisperModelName(kDefaultWhisperModel));
+    const int index = m_modelCombo->findData(modelId);
+    if (index >= 0)
+        m_modelCombo->setCurrentIndex(index);
+    else
+        m_modelCombo->setCurrentText(modelId);
+}
+
+bool AudioSync::ensureCrisperWhisperConsent()
+{
+#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
+    if (!isCrisperWhisperSelected()) return true;
+
+    QSettings settings;
+    const QString consentKey =
+        QStringLiteral("transcription/crisperWhisperPersonalConsent");
+    const QString consent = settings.value(consentKey).toString();
+    const bool legacyAccepted = settings.value(
+        QStringLiteral("transcription/crisperWhisperPersonalAccepted"), false).toBool();
+    if (consent == QStringLiteral("accepted") || legacyAccepted) {
+        if (consent != QStringLiteral("accepted"))
+            settings.setValue(consentKey, QStringLiteral("accepted"));
+        return true;
+    }
+
+    QMessageBox notice(this);
+    notice.setIcon(QMessageBox::Information);
+    notice.setWindowTitle(QStringLiteral("Enable CrisperWhisper for personal use?"));
+    notice.setText(QStringLiteral("CrisperWhisper 2 model weights and their outputs are "
+                                  "licensed for non-commercial use only."));
+    notice.setInformativeText(QStringLiteral(
+        "Roundtable does not include the model. The first transcription will download it "
+        "to your local Hugging Face cache. Enable this option only for personal, "
+        "non-commercial use."));
+    auto* enable = notice.addButton(QStringLiteral("Enable for Personal Use"),
+                                    QMessageBox::AcceptRole);
+    notice.addButton(QMessageBox::Cancel);
+    notice.exec();
+
+    const bool accepted = notice.clickedButton() == enable;
+    settings.setValue(consentKey, accepted
+        ? QStringLiteral("accepted") : QStringLiteral("declined"));
+    settings.setValue(
+        QStringLiteral("transcription/crisperWhisperPersonalAccepted"), accepted);
+    settings.sync();
+    return accepted;
+#else
+    return true;
+#endif
 }
 
 void AudioSync::onCancelTranscriptionClicked()

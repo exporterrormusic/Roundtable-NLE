@@ -252,8 +252,13 @@ void CharacterBrowser::populateCharacterList()
     }
 #endif
 
-    QDir charDir("assets/characters");
-    if (charDir.exists()) {
+    const QStringList characterRoots = {
+        QDir(rt::bundledAssetsDir()).filePath(QStringLiteral("characters")),
+        QDir(rt::downloadedCharacterAssetsDir()).filePath(QStringLiteral("characters"))
+    };
+    for (const QString& root : characterRoots) {
+        QDir charDir(root);
+        if (!charDir.exists()) continue;
         for (const auto& entry : charDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             m_localCharNames.insert(entry);
     }
@@ -776,9 +781,7 @@ void CharacterBrowser::onRefreshClicked()
     m_metadataLoaded = false;
 
 #ifdef ROUNDTABLE_HAS_SPINE
-    if (m_modelManager) {
-        m_modelManager->scan("assets");
-    }
+    rt::rescanCharacterModels(m_modelManager);
 #endif
     // Fetch remote character list from Nikke DB (async — will call populateCharacterList when done)
     fetchRemoteCharacterList();
@@ -895,9 +898,7 @@ void CharacterBrowser::onDownloadClicked()
 
                         // Rescan and refresh
 #ifdef ROUNDTABLE_HAS_SPINE
-                        if (m_modelManager) {
-                            m_modelManager->scan("assets");
-                        }
+                        rt::rescanCharacterModels(m_modelManager);
 #endif
                         populateCharacterList();
                         populateControls();
@@ -932,12 +933,10 @@ void CharacterBrowser::onDeleteClicked()
     if (result != QMessageBox::Yes) return;
 
     int deleted = 0;
-    QString projectRoot = rt::findProjectRoot();
     for (const auto& name : names) {
-        QString charDir = QDir::toNativeSeparators(
-            projectRoot + "/assets/characters/" + name);
+        QString charDir = rt::findCharacterDirectory(name);
         QDir dir(charDir);
-        if (dir.exists()) {
+        if (!charDir.isEmpty() && dir.exists()) {
             if (dir.removeRecursively()) {
                 spdlog::info("CharacterBrowser: Deleted {}", charDir.toStdString());
                 ++deleted;
@@ -957,8 +956,7 @@ void CharacterBrowser::onDeleteClicked()
 
     // Rescan ModelManager BEFORE emitting signals so listeners see updated data
 #ifdef ROUNDTABLE_HAS_SPINE
-    if (m_modelManager) m_modelManager->scan(
-        QDir::toNativeSeparators(projectRoot + "/assets").toStdString());
+    rt::rescanCharacterModels(m_modelManager);
 #endif
     populateCharacterList();
     populateControls();
@@ -1124,13 +1122,9 @@ void CharacterBrowser::onContextMenu(const QPoint& pos)
         });
         menu.addSeparator();
         menu.addAction(QStringLiteral("\xF0\x9F\x93\x82  Reveal in Explorer"), this, [name]() {
-            QString charDir = QDir::currentPath() + "/assets/characters/" + name;
+            QString charDir = rt::findCharacterDirectory(name);
             QDir dir(charDir);
-            if (!dir.exists()) {
-                charDir = rt::findProjectRoot() + "/assets/characters/" + name;
-                dir.setPath(charDir);
-            }
-            if (dir.exists()) {
+            if (!charDir.isEmpty() && dir.exists()) {
                 QStringList patterns = {"*.skel", "*.atlas", "*.png",
                                         "*.model3.json", "*.moc3", "*.json"};
                 QDirIterator it(charDir, patterns, QDir::Files,
@@ -1144,7 +1138,11 @@ void CharacterBrowser::onContextMenu(const QPoint& pos)
                 QProcess::startDetached("explorer.exe",
                     {"/select,", selectPath});
             } else {
-                QString baseDir = QDir::currentPath() + "/assets/characters";
+                QString baseDir = QDir(rt::downloadedCharacterAssetsDir())
+                                      .filePath(QStringLiteral("characters"));
+                if (!QDir(baseDir).exists())
+                    baseDir = QDir(rt::bundledAssetsDir())
+                                  .filePath(QStringLiteral("characters"));
                 if (QDir(baseDir).exists())
                     QProcess::startDetached("explorer.exe",
                         {QDir::toNativeSeparators(baseDir)});

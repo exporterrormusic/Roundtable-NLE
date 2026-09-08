@@ -135,12 +135,12 @@ bool TransitionRenderer::init(Device& device,
 
 // ── shutdown ────────────────────────────────────────────────────────────────
 
-void TransitionRenderer::shutdown()
+void TransitionRenderer::shutdown(GpuTeardownMode mode)
 {
     if (!m_device) return;
 
     VkDevice dev = m_device->handle();
-    if (dev != VK_NULL_HANDLE &&
+    if (mode == GpuTeardownMode::DeviceWide && dev != VK_NULL_HANDLE &&
         GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 

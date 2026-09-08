@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDialog>
 #include <QEventLoop>
 #include <QFocusEvent>
 #include <QMouseEvent>
@@ -90,6 +91,18 @@ TEST(TransformOverlayInput, PenToolUsesCrosshairCursor)
     EXPECT_EQ(QGuiApplication::overrideCursor()->shape(), Qt::CrossCursor);
 
     overlay.setEditTool(0);
+    EXPECT_EQ(QGuiApplication::overrideCursor(), nullptr);
+}
+
+TEST(TransformOverlayInput, DeactivationClearsApplicationCursorOverride)
+{
+    TransformOverlayWidget overlay(nullptr);
+    overlay.setEditTool(9);
+    ASSERT_NE(QGuiApplication::overrideCursor(), nullptr);
+
+    QEvent deactivate(QEvent::ApplicationDeactivate);
+    QApplication::sendEvent(qApp, &deactivate);
+
     EXPECT_EQ(QGuiApplication::overrideCursor(), nullptr);
 }
 
@@ -900,7 +913,7 @@ TEST(TransformOverlayInput, NativeSurfaceDoubleClickReachesTextEditorRequest)
     EXPECT_NEAR(args.at(1).toFloat(), 540.0f, 2.0f);
 }
 
-TEST(TransformOverlayInput, ApplicationRouteHandlesOverlayOwnedDoubleClick)
+TEST(TransformOverlayInput, OverlayHandlesDirectDoubleClick)
 {
     VulkanViewport viewport;
     viewport.resize(640, 360);
@@ -921,8 +934,7 @@ TEST(TransformOverlayInput, ApplicationRouteHandlesOverlayOwnedDoubleClick)
                       QPointF(320, 180), QPointF(globalPoint),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
 
-    // Deliver to the overlay rather than the native Vulkan QWindow. The
-    // application-level route must still start the same monitor edit gesture.
+    // Deliver directly to the overlay rather than the native Vulkan QWindow.
     QApplication::sendEvent(&overlay, &event);
     QApplication::processEvents();
 
@@ -930,6 +942,38 @@ TEST(TransformOverlayInput, ApplicationRouteHandlesOverlayOwnedDoubleClick)
     const QList<QVariant> args = editRequested.takeFirst();
     EXPECT_NEAR(args.at(0).toFloat(), 960.0f, 2.0f);
     EXPECT_NEAR(args.at(1).toFloat(), 540.0f, 2.0f);
+}
+
+TEST(TransformOverlayInput, DoesNotClaimDoubleClickFromOverlappingWindow)
+{
+    VulkanViewport viewport;
+    viewport.resize(640, 360);
+    viewport.show();
+    QApplication::processEvents();
+
+    TransformOverlayWidget overlay(&viewport);
+    overlay.setGeometry(QRect(viewport.mapToGlobal(QPoint(0, 0)),
+                              viewport.size()));
+    overlay.setSequenceResolution(1920, 1080);
+    overlay.show();
+
+    QWidget unrelatedWindow;
+    unrelatedWindow.setGeometry(overlay.geometry());
+    unrelatedWindow.show();
+    QApplication::processEvents();
+
+    QSignalSpy editRequested(&overlay,
+        &TransformOverlayWidget::textEditRequested);
+    const QPoint localPoint(320, 180);
+    const QPoint globalPoint = unrelatedWindow.mapToGlobal(localPoint);
+    QMouseEvent event(QEvent::MouseButtonDblClick,
+                      QPointF(localPoint), QPointF(globalPoint),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&unrelatedWindow, &event);
+    QApplication::processEvents();
+
+    EXPECT_EQ(editRequested.count(), 0)
+        << "the monitor overlay claimed another top-level window's gesture";
 }
 
 TEST(TransformOverlayInput, NativeViewportOwnsTextAndResetDoubleClicks)
@@ -2450,6 +2494,51 @@ TEST_F(ProgramMonitorTest, RefreshWithFrameData)
         << "frame never reached the viewport through the async pipeline";
     EXPECT_EQ(pm->viewport()->frameWidth(), 320u);
     EXPECT_EQ(pm->viewport()->frameHeight(), 240u);
+}
+
+TEST_F(ProgramMonitorTest, PausedFrameWaitsForModalDialogToClose)
+{
+    PlaybackController ctrl;
+    pm->setController(&ctrl);
+
+    auto testFrame = std::make_shared<CachedFrame>();
+    testFrame->width  = 320;
+    testFrame->height = 240;
+    testFrame->stride = 320 * 4;
+    testFrame->pixels.resize(320 * 240 * 4, 128);
+
+    std::atomic<bool> compositeReady{false};
+    std::atomic<bool> releaseComposite{false};
+    pm->setCompositeCallback(
+        [&](int64_t, uint32_t, uint32_t, bool, bool)
+            -> std::shared_ptr<CachedFrame> {
+            compositeReady.store(true);
+            while (!releaseComposite.load())
+                QThread::msleep(1);
+            return testFrame;
+        });
+
+    QDialog dialog;
+    dialog.setModal(true);
+    pm->refresh();
+    ASSERT_TRUE(pollUntil([&] { return compositeReady.load(); }));
+
+    dialog.show();
+    QApplication::processEvents();
+    const bool dialogIsActiveModal =
+        QApplication::activeModalWidget() == &dialog;
+
+    // The producer returns the completed frame while the dialog owns the
+    // modal event loop. Its queued GUI-thread presentation must wait.
+    releaseComposite.store(true);
+    ASSERT_TRUE(dialogIsActiveModal);
+    QTest::qWait(150);
+    EXPECT_FALSE(pm->viewport()->hasFrame());
+
+    dialog.close();
+    QApplication::processEvents();
+    ASSERT_TRUE(pollUntil([&] { return pm->viewport()->hasFrame(); }))
+        << "paused frame was discarded while the modal dialog was active";
 }
 
 // Explicit refresh() FORCES a re-render even at an unchanged tick (it

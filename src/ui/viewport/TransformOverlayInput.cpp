@@ -703,7 +703,7 @@ void TransformOverlayWidget::mouseDoubleClickEvent(QMouseEvent* event)
                 ? static_cast<float>(m_seqH)
                 : static_cast<float>(m_vulkanVp->srcHeight());
             const QPointF wPos = event->position();
-            spdlog::warn("[INLINE-TEXT] overlay double-click pos=({}, {}) frame=({}, {}, {}, {}) canvas={}x{} inside={}",
+            spdlog::debug("[INLINE-TEXT] overlay double-click pos=({}, {}) frame=({}, {}, {}, {}) canvas={}x{} inside={}",
                          wPos.x(), wPos.y(), frameRect.x(), frameRect.y(),
                          frameRect.width(), frameRect.height(), canvasW, canvasH,
                          frameRect.contains(wPos));
@@ -717,7 +717,7 @@ void TransformOverlayWidget::mouseDoubleClickEvent(QMouseEvent* event)
                 m_hasPendingInlineCaret = true;
                 m_doubleClickStartedOnSelectedBody =
                     m_lastLeftPressHitSelectedBody;
-                spdlog::warn("[INLINE-TEXT] requesting layer edit canvas=({}, {}) selectedBody={}",
+                spdlog::debug("[INLINE-TEXT] requesting layer edit canvas=({}, {}) selectedBody={}",
                              frameX, frameY, m_doubleClickStartedOnSelectedBody);
                 emit textEditRequested(frameX, frameY);
                 // Direct UI connections consume this synchronously in
@@ -772,7 +772,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineEditorHasFocused = false;
     m_inlineEditorFocusSettling = true;
     m_inlinePointerRerouted = false;
-    spdlog::warn("[INLINE-TEXT] begin session={} textLength={} font='{}'",
+    spdlog::debug("[INLINE-TEXT] begin session={} textLength={} font='{}'",
                  editSession, initial.size(), fontFamily.toStdString());
 
     // AABB of the selected layer's transform box (widget coords). We use
@@ -1019,7 +1019,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineFontPointScale = m_inlinePixelScale * dpiCorrection;
     double fontPt = std::max(1.0,
                              double(fontSizeRef) * m_inlineFontPointScale);
-    spdlog::warn("[INLINE-TEXT] font sizing ref={} pointScale={} pixelScale={} editorPt={} renderDpi={} editorDpi={}",
+    spdlog::debug("[INLINE-TEXT] font sizing ref={} pointScale={} pixelScale={} editorPt={} renderDpi={} editorDpi={}",
                  fontSizeRef, m_inlineFontPointScale, m_inlinePixelScale,
                  fontPt, renderDpi, editorDpi);
 
@@ -1420,7 +1420,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
                                  m_inlinePixelScale);
     m_initializingInlineText = false;
     resizeInlineTextEditorToDocument();
-    spdlog::warn("[INLINE-TEXT] show session={} geometry=({}, {}, {}, {})",
+    spdlog::debug("[INLINE-TEXT] show session={} geometry=({}, {}, {}, {})",
                  editSession, m_inlineTextEdit->geometry().x(),
                  m_inlineTextEdit->geometry().y(),
                  m_inlineTextEdit->geometry().width(),
@@ -1461,7 +1461,7 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             edit->selectAll();
         }
         overlay->notifyInlineTextSelectionFormat();
-        spdlog::warn("[INLINE-TEXT] activation session={} focus={} activeWindow={}",
+        spdlog::debug("[INLINE-TEXT] activation session={} focus={} activeWindow={}",
                      editSession, edit->hasFocus(), edit->isActiveWindow());
     });
 
@@ -1476,14 +1476,14 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
             edit->raise();
             edit->activateWindow();
             edit->setFocus(Qt::MouseFocusReason);
-            spdlog::warn("[INLINE-TEXT] focus retry session={} focus={} activeWindow={}",
+            spdlog::debug("[INLINE-TEXT] focus retry session={} focus={} activeWindow={}",
                          editSession, edit->hasFocus(), edit->isActiveWindow());
         }
     });
     QTimer::singleShot(250, this, [this, editSession]() {
         if (m_inlineEditSession != editSession) return;
         m_inlineEditorFocusSettling = false;
-        spdlog::warn("[INLINE-TEXT] focus settled session={} focused={} formattingUi={}",
+        spdlog::debug("[INLINE-TEXT] focus settled session={} focused={} formattingUi={}",
                      editSession, m_inlineTextEdit && m_inlineTextEdit->hasFocus(),
                      focusIsInInlineFormattingUi());
     });
@@ -2091,7 +2091,7 @@ void TransformOverlayWidget::finishInlineTextEdit(bool cancel)
     m_committingInlineText = true;
     m_inlineEditorFocusSettling = false;
     m_inlinePointerRerouted = false;
-    spdlog::warn("[INLINE-TEXT] finish session={} cancel={} focused={}",
+    spdlog::debug("[INLINE-TEXT] finish session={} cancel={} focused={}",
                  m_inlineEditSession, cancel, m_inlineTextEdit->hasFocus());
     const QString text = cancel
         ? QString::fromStdString(m_preEditOriginalText)
@@ -3734,6 +3734,29 @@ void TransformOverlayWidget::wheelEvent(QWheelEvent* event)
 
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    // A release can be lost when Windows deactivates or tears down the native
+    // viewport's mouse grab. Finish through the normal release path so undo
+    // bookkeeping is retained, then drop application-wide cursor state.
+    if (event->type() == QEvent::ApplicationDeactivate
+        || event->type() == QEvent::WindowDeactivate
+        || event->type() == QEvent::UngrabMouse) {
+        if (m_dragMode != DragMode::None) {
+            const QPoint global = QCursor::pos();
+            QMouseEvent release(QEvent::MouseButtonRelease,
+                                QPointF(mapFromGlobal(global)), QPointF(global),
+                                Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            mouseReleaseEvent(&release);
+        }
+        m_dragMode = DragMode::None;
+        m_dragHandle = -1;
+        m_cropHandle = -1;
+        m_dragMaskIndex = -1;
+        m_dragMaskHandle = -1;
+        m_dragMotionKfIdx = -1;
+        m_inlinePointerRerouted = false;
+        clearCursorOverride();
+    }
+
     // The editor is a translucent top-level window above a native Vulkan
     // QWindow. Windows occasionally gives transparent pixels between glyphs
     // to that underlying HWND even though the point is inside the editor's
@@ -3777,7 +3800,7 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
                 m_inlineTextEdit->activateWindow();
                 m_inlineTextEdit->setFocus(Qt::MouseFocusReason);
                 notifyInlineTextSelectionFormat();
-                spdlog::warn("[INLINE-TEXT] reclaimed pointer event type={} global=({}, {}) cursor={}",
+                spdlog::debug("[INLINE-TEXT] reclaimed pointer event type={} global=({}, {}) cursor={}",
                              static_cast<int>(type), global.x(), global.y(),
                              cursor.position());
                 event->accept();
@@ -3811,7 +3834,7 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
     if (m_inlineTextEdit && watched == m_inlineTextEdit) {
         if (event->type() == QEvent::FocusIn) {
             m_inlineEditorHasFocused = true;
-            spdlog::warn("[INLINE-TEXT] FocusIn session={}", m_inlineEditSession);
+            spdlog::debug("[INLINE-TEXT] FocusIn session={}", m_inlineEditSession);
         }
         if (event->type() == QEvent::ShortcutOverride) {
             auto* ke = static_cast<QKeyEvent*>(event);
@@ -3880,7 +3903,7 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
         if (event->type() == QEvent::FocusOut && !m_committingInlineText
             && m_inlineTextEdit->isVisible()) {
             const uint64_t editSession = m_inlineEditSession;
-            spdlog::warn("[INLINE-TEXT] FocusOut session={} hadFocus={} settling={}",
+            spdlog::debug("[INLINE-TEXT] FocusOut session={} hadFocus={} settling={}",
                          editSession, m_inlineEditorHasFocused,
                          m_inlineEditorFocusSettling);
             QTimer::singleShot(0, this, [this, editSession]() {
@@ -3893,7 +3916,7 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
                     m_inlineTextEdit->raise();
                     m_inlineTextEdit->activateWindow();
                     m_inlineTextEdit->setFocus(Qt::MouseFocusReason);
-                    spdlog::warn("[INLINE-TEXT] ignored activation FocusOut session={} focus={}",
+                    spdlog::debug("[INLINE-TEXT] ignored activation FocusOut session={} focus={}",
                                  editSession, m_inlineTextEdit->hasFocus());
                     return;
                 }
@@ -3902,39 +3925,6 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
             });
         }
         return QWidget::eventFilter(watched, event);
-    }
-
-    // Program-Monitor-wide double-click routing. The displayed image is split
-    // across two top-level/native windows: opaque overlay pixels receive the
-    // event here, while transparent pixels receive it in the embedded Vulkan
-    // QWindow. An application event filter observes both before either target
-    // can consume the gesture, so editing no longer depends on per-pixel HWND
-    // ownership or QObject event-filter ordering.
-    if (event->type() == QEvent::MouseButtonDblClick
-        && !isInlineTextEditing()) {
-        auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton && isVisible()) {
-            const QPoint globalPoint = mouseEvent->globalPosition().toPoint();
-            const QRect globalOverlayRect(mapToGlobal(QPoint(0, 0)), size());
-            if (globalOverlayRect.contains(globalPoint)) {
-                const QPointF overlayPosition = QPointF(
-                    mapFromGlobal(globalPoint));
-                spdlog::warn("[INLINE-TEXT] application route target='{}' global=({}, {}) overlay=({}, {})",
-                             watched ? watched->metaObject()->className() : "null",
-                             globalPoint.x(), globalPoint.y(),
-                             overlayPosition.x(), overlayPosition.y());
-                QMouseEvent mapped(QEvent::MouseButtonDblClick,
-                                   overlayPosition,
-                                   mouseEvent->globalPosition(),
-                                   Qt::LeftButton, Qt::LeftButton,
-                                   mouseEvent->modifiers());
-                mouseDoubleClickEvent(&mapped);
-                if (mapped.isAccepted()) {
-                    event->accept();
-                    return true;
-                }
-            }
-        }
     }
 
     // Only intercept events from the VulkanViewport's native QWindow.

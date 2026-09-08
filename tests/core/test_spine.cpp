@@ -23,6 +23,38 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+
+class ScopedCharacterAssets
+{
+public:
+    explicit ScopedCharacterAssets(const std::string& name)
+        : root(fs::temp_directory_path() / ("roundtable_" + name))
+    {
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        fs::create_directories(root);
+    }
+
+    ~ScopedCharacterAssets()
+    {
+        std::error_code ec;
+        fs::remove_all(root, ec);
+    }
+
+    void addCharacter(const std::string& name)
+    {
+        const fs::path outfit = root / "characters" / name / "default";
+        fs::create_directories(outfit);
+        std::ofstream(outfit / "model.skel", std::ios::binary).put('\0');
+        std::ofstream(outfit / "model.atlas") << "test";
+    }
+
+    fs::path root;
+};
+
+} // namespace
+
 // ─── Test fixture ───────────────────────────────────────────────────────────
 // Locates the assets directory relative to the build output
 class SpineTest : public ::testing::Test {
@@ -937,6 +969,37 @@ TEST_F(SpineTest, ModelManagerScanInvalidDir)
     rt::ModelManager mgr;
     int count = mgr.scan("nonexistent_directory");
     EXPECT_EQ(count, 0);
+    EXPECT_TRUE(mgr.isScanned());
+}
+
+TEST_F(SpineTest, ModelManagerMergesBundledAndUserCharacters)
+{
+    ScopedCharacterAssets bundled("model_manager_bundled");
+    ScopedCharacterAssets user("model_manager_user");
+    bundled.addCharacter("Bundled Character");
+    user.addCharacter("Downloaded Character");
+
+    rt::ModelManager mgr;
+    EXPECT_EQ(mgr.scan(bundled.root.string()), 1);
+    EXPECT_EQ(mgr.scanAdditional(user.root.string()), 1);
+
+    EXPECT_TRUE(mgr.isScanned());
+    EXPECT_NE(mgr.findByName("Bundled Character"), nullptr);
+    EXPECT_NE(mgr.findByName("Downloaded Character"), nullptr);
+    EXPECT_EQ(mgr.entries().size(), 2u);
+}
+
+TEST_F(SpineTest, ModelManagerLoadsUserCharactersWhenBundledDirectoryIsAbsent)
+{
+    ScopedCharacterAssets bundled("model_manager_empty_bundled");
+    ScopedCharacterAssets user("model_manager_download_only");
+    user.addCharacter("Yan");
+
+    rt::ModelManager mgr;
+    EXPECT_EQ(mgr.scan(bundled.root.string()), 0);
+    EXPECT_TRUE(mgr.isScanned());
+    EXPECT_EQ(mgr.scanAdditional(user.root.string()), 1);
+    EXPECT_NE(mgr.findByName("Yan"), nullptr);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -13,6 +13,7 @@
 #include <vulkan/vulkan_core.h>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -29,6 +30,11 @@ public:
         VkFence         fence{VK_NULL_HANDLE};
         uint64_t        submissionIndex{0};
         bool            inFlight{false};
+
+        // Opaque leases for mutable helper generations and external source
+        // images referenced by this command buffer. Released only after this
+        // slot's fence has signaled and the slot is about to be reused.
+        std::vector<std::shared_ptr<void>> keepAlive;
 
         /// Per-slot binary semaphore signaled when this slot's GPU work
         /// completes.  Used for inter-queue sync (compute→graphics).
@@ -91,11 +97,16 @@ public:
     /// Wait for the most recently submitted slot's fence.
     bool waitForCompletion(uint64_t timeoutNs = UINT64_MAX);
 
-    /// Wait for ALL in-flight slots across the ring.
-    void waitForAll();
+    /// Wait for ALL in-flight slots across the ring. Returns false on timeout
+    /// or device failure and leaves unsuccessful slots marked in-flight.
+    [[nodiscard]] bool waitForAll(uint64_t timeoutNs = UINT64_MAX);
 
     /// Check if the most recently submitted slot has signaled.
     [[nodiscard]] bool isComplete() const;
+
+    /// Pin a resource to the slot currently being recorded. The resource is
+    /// released at the next safe slot-reuse boundary, after its fence signals.
+    void retainForCurrentSlot(std::shared_ptr<void> resource);
 
     /// Add a pipeline barrier to the current slot's command buffer.
     void addBarrier(VkPipelineStageFlags srcStage,

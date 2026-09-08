@@ -365,12 +365,12 @@ bool OverlayController::selectTextLayerAt(float frameX, float frameY)
         }
     }
     if (!hit.clip) {
-        spdlog::warn("[INLINE-TEXT] hit-test miss canvas=({}, {}) tick={} size={}x{}",
+        spdlog::debug("[INLINE-TEXT] hit-test miss canvas=({}, {}) tick={} size={}x{}",
                      hitX, hitY, playheadTick, canvasW, canvasH);
         return false;
     }
 
-    spdlog::warn("[INLINE-TEXT] hit-test selected clip={} layerIndex={} track={} canvas=({}, {})",
+    spdlog::debug("[INLINE-TEXT] hit-test selected clip={} layerIndex={} track={} canvas=({}, {})",
                  hit.clip->id(), hit.layerIndex, hit.trackIndex, hitX, hitY);
 
     m_ws->selection().clip = hit.clip;
@@ -1212,7 +1212,7 @@ void OverlayController::wireOverlayToolSignals()
         connect(ov2, &TransformOverlayWidget::textEditRequested,
                 this, [this, ov2, currentTextLayer](float frameX, float frameY) {
             if (m_ws->isDestroying()) return;
-            spdlog::warn("[INLINE-TEXT] controller request canvas=({}, {})",
+            spdlog::debug("[INLINE-TEXT] controller request canvas=({}, {})",
                          frameX, frameY);
 
             // Caption clip selected → edit the caption's text in place,
@@ -1322,7 +1322,7 @@ void OverlayController::wireOverlayToolSignals()
                 spdlog::warn("[INLINE-TEXT] controller stopped: no editable TextLayer");
                 return;
             }
-            spdlog::warn("[INLINE-TEXT] controller starting editor layer={} textLength={}",
+            spdlog::debug("[INLINE-TEXT] controller starting editor layer={} textLength={}",
                          tl->layerId(), tl->text().size());
             if (m_ws->graphicsEditorPanel()) {
                 ov2->setInlineTextFormattingWidget(
@@ -1410,7 +1410,7 @@ void OverlayController::wireOverlayToolSignals()
                 if (!std::isfinite(scaleX) || scaleX <= 0.0f) scaleX = 1.0f;
                 if (!std::isfinite(scaleY) || scaleY <= 0.0f) scaleY = 1.0f;
             }
-            spdlog::warn("[INLINE-TEXT] effective scale layer+clip=({}, {})",
+            spdlog::debug("[INLINE-TEXT] effective scale layer+clip=({}, {})",
                          scaleX, scaleY);
             // Translate the text layer's GTextAlign into a Qt::Alignment
             // flag so the inline editor anchors and aligns its glyphs the

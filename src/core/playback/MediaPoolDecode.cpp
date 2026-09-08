@@ -319,7 +319,8 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             }
             auto& gpu = GpuContext::get();
             if (gpu.isInitialized()) {
-                Nv12Converter* conv = gpu.nv12Converter(
+                auto conv = gpu.nv12Converter(
+                    static_cast<uint32_t>(w), static_cast<uint32_t>(h),
                     static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH));
                 // convertAndReadback* (NOT convertSyncScaled+readbackOutput):
                 // the converter is SHARED per (dstW,dstH) and only the
@@ -357,7 +358,8 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             }
             auto& gpu = GpuContext::get();
             if (gpu.isInitialized()) {
-                Nv12Converter* conv = gpu.nv12Converter(
+                auto conv = gpu.nv12Converter(
+                    static_cast<uint32_t>(w), static_cast<uint32_t>(h),
                     static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH));
                 // See NV12 branch above: must use the locked
                 // convert-and-readback wrapper on the shared converter.

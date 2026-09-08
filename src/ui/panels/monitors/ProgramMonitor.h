@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include "playback/EngineContracts.h"
+
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -181,6 +183,9 @@ public:
     using CompositeCallback = std::function<std::shared_ptr<CachedFrame>(
         int64_t tick, uint32_t w, uint32_t h, bool scrubMode, bool stillMode)>;
     void setCompositeCallback(CompositeCallback cb);
+    using CompositeResultCallback = std::function<RenderResult(
+        int64_t tick, uint32_t w, uint32_t h, bool scrubMode, bool stillMode)>;
+    void setCompositeResultCallback(CompositeResultCallback cb);
 
     /// Set a callback invoked whenever the playback-resolution dropdown
     /// changes.  Divisor: 1=Full, 2=1/2, 4=1/4, 8=1/8.  The compositor
@@ -281,6 +286,7 @@ private:
 
     // Composite
     CompositeCallback   m_compositeCallback;
+    CompositeResultCallback m_compositeResultCallback;
     PlaybackTierCallback m_playbackTierCallback;
 
     // Output resolution

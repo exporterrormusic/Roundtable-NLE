@@ -7,6 +7,7 @@
 #include "CompositeServiceLayerBuild.h"
 #include "ClipRenderers.h"
 #include "CompositeServiceBlend.h"
+#include "PathUtils.h"
 
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
@@ -51,6 +52,7 @@
 #include <mutex>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 
 namespace rt {
 
@@ -59,10 +61,15 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
     int64_t tick, uint32_t outW, uint32_t outH,
     bool scrubMode, bool playbackNonBlocking,
     ResolutionTier requestTier, bool stillMode,
+    const RenderExecutionContext& context,
     int& clipsAtTick, int& resolvedClipsAtTick, bool perfLog,
-    std::unique_lock<std::recursive_mutex>& lock,
     bool& gpuSpineUsedThisFrame)
 {
+    auto* const renderTimeline = context.timeline;
+    const auto& policy = context.policy;
+    if (!renderTimeline)
+        return {};
+
     // Track reentrancy so the sticky-cache prune at the end only fires for
     // the top-level frame (nested SequenceClips re-enter via compositeFrame).
     struct DepthGuard {
@@ -86,27 +93,18 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         m_frameActiveCharKeys.clear();
     }
 
-    // Static-recomposite detection (top level only): when this build repeats
-    // the previous build's tick, the playhead is parked and we're refreshing a
-    // paused frame (e.g. a transform-handle drag fires a burst of same-tick
-    // composites). On these frames the GPU Spine path reads its FBO back into a
-    // stable frame so a later same-tick composite that briefly misses the live
-    // render still shows the character via the sticky cache. During playback
-    // the tick advances each frame, so this stays false and zero-copy is kept.
-    const bool staticRecomposite =
-        (m_buildLayersDepth == 1) && (tick == m_lastBuiltTick);
-
     clipsAtTick = 0;
     resolvedClipsAtTick = 0;
-    m_gpuSpineCount = 0;
-    m_gpuSpineInsertedLayer = -1;
-    m_gpuSpinePrevLayer = -1;
-    m_gpuSpineJustRendered = false;
-
-    const size_t trackCnt = m_timeline->trackCount();
+    const size_t trackCnt = renderTimeline->trackCount();
+#ifdef ROUNDTABLE_HAS_SPINE
+    // Per-asset occurrence numbering is stable because tracks are traversed
+    // deterministically. Most shots use instance zero; a duplicate character
+    // on another active track gets its own framebuffer for this frame.
+    std::unordered_map<std::string, uint32_t> spineAssetOccurrences;
+#endif
 
     for (size_t ti_rev = trackCnt; ti_rev > 0; --ti_rev) {
-        auto* track = m_timeline->track(ti_rev - 1);
+        auto* track = renderTimeline->track(ti_rev - 1);
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
 
@@ -261,7 +259,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             } catch (...) {
                 shutterAngle = 0.0f;
             }
-            const double sequenceFps = m_timeline->settings().frameRate();
+            const double sequenceFps = renderTimeline->settings().frameRate();
             if (shutterAngle > 0.01f && sequenceFps > 0.0 && clip->duration() > 1) {
                 const double frameTicks =
                     static_cast<double>(kTicksPerSecond) / sequenceFps;
@@ -483,6 +481,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             bool isPreRenderedSpine = false;  // set when using cached spine video
             bool cpuSpineRendered  = false;   // set when CPU Spine fallback succeeds
             VkDescriptorImageInfo gpuSpineDescriptor{};
+            std::shared_ptr<void> gpuSpineOwner;
             uint32_t gpuSpineW{0}, gpuSpineH{0};
 
             // (Each clip-type branch below computes its own decode tier —
@@ -497,8 +496,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // A 0 handle WITHOUT skipClip means the async open is still
                 // pending - proceed so the sticky-frame fallback can run.
                 bool skipClip = false;
-                uint64_t handle =
-                    resolveVideoClipHandle(videoClip, playbackNonBlocking, skipClip);
+                uint64_t handle = resolveVideoClipHandle(
+                    videoClip, playbackNonBlocking,
+                    policy.forceFullResolution, skipClip, context.outcome);
                 if (skipClip) continue;
 
                 // Tick → source-frame mapping: ONE shared authority
@@ -554,11 +554,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // 2× lower.  When the user stops scrubbing, the next frame
                 // request at the normal tier restores full quality.
                 // Premiere Pro does the same — scrubs are lower quality.
-                auto baseVideoTier = m_forceFullResolution.load()
+                auto baseVideoTier = policy.forceFullResolution
                     ? ResolutionTier::Full
                     : requestTier;
                 ResolutionTier charVideoTier;
-                if (scrubMode && !m_forceFullResolution.load()) {
+                if (scrubMode && !policy.forceFullResolution) {
                     // Always drop at least one tier during scrub/4x playback
                     if (baseVideoTier == ResolutionTier::Full)
                         charVideoTier = ResolutionTier::Half;
@@ -708,6 +708,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     auto rmfT0 = std::chrono::high_resolution_clock::now();
                     frame = resolveMediaFrame(handle, frameNum, charVideoTier,
                                               scrubMode,
+                                              policy.forceFullResolution,
                                               /*exactCacheOnly=*/wantsTemporal,
                                               stillMode);
                     // MediaPool may return a nearby/last-good frame to keep
@@ -722,9 +723,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         rmfT1 - rmfT0).count();
                     if (rmfMs > 30.0) {
                         spdlog::warn("[RESOLVE-SLOW] handle={} frame={} tier={} "
-                                     "scrub={} -> {:.1f}ms",
+                                     "scrub={} still={} -> {:.1f}ms",
                                      handle, frameNum, static_cast<int>(charVideoTier),
-                                     scrubMode, rmfMs);
+                                     scrubMode, stillMode, rmfMs);
                     }
                 }
 
@@ -735,6 +736,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 if (wantsTemporal) {
                     temporalFrame = resolveMediaFrame(
                         handle, temporalSecondFrameNum, charVideoTier, scrubMode,
+                        policy.forceFullResolution,
                         /*exactCacheOnly=*/true, stillMode);
                     const bool exactEndpointsReady =
                         frame && frame->frameNumber == temporalPrimaryFrameNum &&
@@ -760,6 +762,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (!nearest) {
                             nearest = resolveMediaFrame(handle, mapped.frame,
                                                         charVideoTier, scrubMode,
+                                                        policy.forceFullResolution,
                                                         /*exactCacheOnly=*/false,
                                                         stillMode);
                         }
@@ -780,15 +783,39 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // decoded frame is pinned, and the final-composite state cache can
             // then reuse an unchanged stack of images across timeline ticks.
             else if (auto* imageClip = dynamic_cast<ImageClip*>(clip)) {
-                if (!m_mediaPool || imageClip->mediaPath().empty()) continue;
+                if (!m_mediaPool) {
+                    if (context.outcome) {
+                        context.outcome->report(
+                            RenderResultStatus::Failed,
+                            "image source cannot be resolved without a media pool");
+                    }
+                    continue;
+                }
+                if (imageClip->mediaPath().empty()) {
+                    if (context.outcome) {
+                        context.outcome->report(
+                            RenderResultStatus::MissingMedia,
+                            "image clip has no source path");
+                    }
+                    continue;
+                }
                 const std::string& mediaPath = imageClip->mediaPath();
                 uint64_t handle = findMediaHandle(mediaPath);
                 if (handle == 0) {
-                    if (playbackNonBlocking && !m_forceFullResolution.load()) {
+                    if (playbackNonBlocking && !policy.forceFullResolution) {
                         if (m_mediaPool->isPathOpen(mediaPath)) {
                             handle = m_mediaPool->open(mediaPath);
                             if (handle != 0) registerMediaHandle(mediaPath, handle);
                         } else {
+                            if (m_mediaPool->pathState(mediaPath) ==
+                                ResourceLoadState::Missing) {
+                                if (context.outcome) {
+                                    context.outcome->report(
+                                        RenderResultStatus::MissingMedia,
+                                        "image source is offline: " + mediaPath);
+                                }
+                                continue;
+                            }
                             m_mediaPool->openAsync(mediaPath);
                             continue;
                         }
@@ -797,9 +824,18 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         if (handle != 0) registerMediaHandle(mediaPath, handle);
                     }
                 }
-                if (handle == 0) continue;
+                if (handle == 0) {
+                    if (m_mediaPool->pathState(mediaPath) ==
+                            ResourceLoadState::Missing && context.outcome) {
+                        context.outcome->report(
+                            RenderResultStatus::MissingMedia,
+                            "image source is offline: " + mediaPath);
+                    }
+                    continue;
+                }
                 contentStableForStateCache = true;
                 frame = resolveMediaFrame(handle, 0, requestTier, scrubMode,
+                                          policy.forceFullResolution,
                                           /*exactCacheOnly=*/false, stillMode);
             }
             // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ TitleClip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
@@ -808,24 +844,20 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             }
             // Ã¢â€â‚¬Ã¢â€â‚¬ GraphicClip (multi-layer) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
             else if (auto* graphicClip = dynamic_cast<GraphicClip*>(clip)) {
-                // Pass project output resolution as reference so text scales
+                // Pass this sequence's output resolution so text scales
                 // proportionally at reduced render resolutions (scrub).
-                uint32_t refW = 0, refH = 0;
-                if (m_project) {
-                    refW = m_project->settings().resolution().width;
-                    refH = m_project->settings().resolution().height;
-                }
+                const auto& refResolution = renderTimeline->settings().resolution();
+                const uint32_t refW = refResolution.width;
+                const uint32_t refH = refResolution.height;
                 frame = rt::renderGraphicClip(graphicClip, tick, outW, outH, refW, refH);
             }
             // ── CaptionClip (burned-in subtitle overlay) ────────────────────
             else if (auto* captionClip = dynamic_cast<CaptionClip*>(clip)) {
-                // Pass project resolution as reference so caption font metrics
+                // Pass this sequence's resolution so caption font metrics
                 // stay proportional at reduced render resolutions (scrub).
-                uint32_t refW = 0, refH = 0;
-                if (m_project) {
-                    refW = m_project->settings().resolution().width;
-                    refH = m_project->settings().resolution().height;
-                }
+                const auto& refResolution = renderTimeline->settings().resolution();
+                const uint32_t refW = refResolution.width;
+                const uint32_t refH = refResolution.height;
                 frame = rt::renderCaptionClip(captionClip, tick, outW, outH, refW, refH);
             }
             // â”€â”€ SequenceClip (nested sequence) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -834,34 +866,61 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // BGRA frame (see CompositeServiceLayerBuildNested.cpp).
                 frame = buildSequenceClipFrame(seqClip, localTick, outW, outH,
                                                scrubMode, requestTier, stillMode,
-                                               lock);
+                                               context);
             }
             // ── PngPuppetClip (Veadotube-style 4-image character) ───────────
             // Use GLOBAL tick so talk/blink phase carries across cuts between
             // same-character clips (kept in sync via a character-derived seed).
             else if (auto* puppetClip = dynamic_cast<PngPuppetClip*>(clip)) {
                 frame = renderPngPuppetClip(puppetClip, tick, outW, outH);
+                if (!frame && context.outcome) {
+                    const int face = puppetClip->selectFace(ticksToSeconds(tick));
+                    const std::string selected = puppetClip->facePath(face);
+                    const std::string idle = puppetClip->facePath(
+                        PngPuppetClip::MouthClosedEyesOpen);
+                    const bool hasCandidate = !selected.empty() || !idle.empty();
+                    const bool candidateExists =
+                        (!selected.empty() &&
+                         std::filesystem::exists(utf8ToPath(selected))) ||
+                        (!idle.empty() &&
+                         std::filesystem::exists(utf8ToPath(idle)));
+                    const std::string resource = !selected.empty() ? selected : idle;
+                    if (!hasCandidate || !candidateExists) {
+                        context.outcome->report(
+                            RenderResultStatus::MissingMedia,
+                            resource.empty()
+                                ? "PNG puppet has no configured face image: " +
+                                      puppetClip->characterName()
+                                : "PNG puppet image is offline: " + resource);
+                    } else {
+                        context.outcome->report(
+                            RenderResultStatus::Failed,
+                            "PNG puppet image could not be decoded: " + resource);
+                    }
+                }
             }
             // ── TierListClip (ranking board) ────────────────────────────────
             else if (auto* tierClip = dynamic_cast<TierListClip*>(clip)) {
                 contentStableForStateCache = true;
-                uint32_t refW = 0, refH = 0;
-                if (m_project) {
-                    refW = m_project->settings().resolution().width;
-                    refH = m_project->settings().resolution().height;
-                }
+                const auto& refResolution = renderTimeline->settings().resolution();
+                const uint32_t refW = refResolution.width;
+                const uint32_t refH = refResolution.height;
                 frame = rt::renderTierListClip(tierClip, tick, outW, outH, refW, refH);
             }
 #ifdef ROUNDTABLE_HAS_SPINE
             // ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ SpineClip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
             else if (auto* spineClip = dynamic_cast<SpineClip*>(clip)) {
+                const std::string spineAssetKey = spineCharKey(*spineClip);
+                const uint32_t simultaneousAssetInstance =
+                    spineAssetOccurrences[spineAssetKey]++;
                 auto spineRes = buildSpineClipLayer(
-                    spineClip, tick, localTick, outW, outH, scrubMode,
-                    playbackNonBlocking, staticRecomposite,
-                    gpuSpineUsedThisFrame, layers, sx);
+                    spineClip, tick, localTick, outW, outH,
+                    simultaneousAssetInstance,
+                    gpuSpineUsedThisFrame, sx, context.outcome);
                 frame              = spineRes.frame;
                 gpuSpineZeroCopy   = spineRes.gpuSpineZeroCopy;
                 gpuSpineDescriptor = spineRes.gpuSpineDescriptor;
+                gpuSpineOwner      = std::move(spineRes.gpuSpineOwner);
                 gpuSpineW          = spineRes.gpuSpineW;
                 gpuSpineH          = spineRes.gpuSpineH;
                 cpuSpineRendered   = spineRes.cpuSpineRendered;
@@ -874,10 +933,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // GPU zero-copy spine layers bypass the CachedFrame requirement.
             // GPU-resident decoded frames (gpuReady) may have empty pixels.
             if (!gpuSpineZeroCopy && (!frame || (frame->pixels.empty() && !frame->gpuReady))) {
-                // Exact still/export requests must never borrow a sticky
-                // last-good source picture. Leave this clip unresolved so
-                // the caller retries this tick or fails the export cleanly.
-                if (stillMode)
+                // Export must never borrow a sticky last-good source picture.
+                // Interactive still/scrub requests are progressive: showing
+                // the available source now keeps seeks and Play responsive,
+                // and settle retries replace it when the exact frame arrives.
+                if (stillMode && policy.forceFullResolution)
                     continue;
                 // Build a character/media-level sticky key — same string
                 // across all clip IDs that reference the same video file.
@@ -968,10 +1028,11 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     m_stickyLastCharFrame[charKey] = frame;
             }
 
-            // Temporal interpolation may use nearest sampling while its second
-            // endpoint warms during interactive playback. That is not a
-            // complete export frame: exact requests wait for both endpoints.
-            if (stillMode && sourceFallbackPending)
+            // A provisional source is valid for Program Monitor feedback but
+            // never for export. sourceFallbackPending prevents this composite
+            // entering the LRU, so a settle retry can replace it with exact
+            // media rather than pinning the temporary picture to this tick.
+            if (stillMode && policy.forceFullResolution && sourceFallbackPending)
                 continue;
 
             LayerInfo layer;
@@ -981,6 +1042,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // No CachedFrame needed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the spine FBO is already on the GPU
                 layer.gpuTextureReady = true;
                 layer.gpuDescriptor   = gpuSpineDescriptor;
+                layer.gpuResourceOwner = std::move(gpuSpineOwner);
                 layer.frameWidth      = gpuSpineW;
                 layer.frameHeight     = gpuSpineH;
                 layer.isPMA           = true;  // Spine FBO uses PMA blending
@@ -1348,8 +1410,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // existing info-level timing).
             if (clipMs > 50.0) {
                 spdlog::warn("[LAYER-SLOW] clip '{}' type={} tick={} -> {:.1f}ms "
-                             "(layer {}x{} backing {}x{} gpuTex={} requestedTier={})",
+                             "(scrub={} still={} layer {}x{} backing {}x{} "
+                             "gpuTex={} requestedTier={})",
                              clip->label(), clipType, tick, clipMs,
+                             scrubMode, stillMode,
                              layer.frameWidth, layer.frameHeight,
                              frame ? frame->width : 0,
                              frame ? frame->height : 0,
@@ -1369,13 +1433,6 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             // Mark loop content so GPU tex cache path is used for character anims
             if (auto* vc = dynamic_cast<VideoClip*>(clip))
                 layer.isLoopContent = vc->isVideoCharacter();
-
-            // Track layer index of GPU Spine renders for multi-char readback
-            if (m_gpuSpineJustRendered) {
-                m_gpuSpinePrevLayer = m_gpuSpineInsertedLayer;
-                m_gpuSpineInsertedLayer = static_cast<int>(layers.size());
-                m_gpuSpineJustRendered = false;
-            }
 
             layers.push_back(std::move(layer));
             ++resolvedClipsAtTick;
@@ -1405,9 +1462,6 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             else
                 ++it;
         }
-        // Record the tick so the NEXT top-level build can detect a parked
-        // playhead (same tick = static recomposite). See staticRecomposite.
-        m_lastBuiltTick = tick;
     }
 
     return layers;

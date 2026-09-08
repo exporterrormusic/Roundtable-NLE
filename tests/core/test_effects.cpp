@@ -43,7 +43,7 @@ TEST(EffectTest, BlurConstruction)
     Blur fx;
     EXPECT_EQ(fx.effectType(), EffectType::Blur);
     EXPECT_STREQ(fx.name(), "Gaussian Blur");
-    EXPECT_EQ(fx.paramCount(), 1u); // radius only (sigma derived in shader as radius/3)
+    EXPECT_EQ(fx.paramCount(), Blur::ParamCount);
 }
 
 TEST(EffectTest, SharpenConstruction)
@@ -137,6 +137,7 @@ TEST(EffectTest, ParamName)
 {
     Blur fx;
     EXPECT_EQ(fx.param(Blur::Radius).name, "Radius");
+    EXPECT_EQ(fx.param(Blur::RepeatEdgePixels).name, "Repeat Edge Pixels");
     // Sigma is derived inside the shader as radius / 3.0 — no longer a param.
 }
 
@@ -163,8 +164,9 @@ TEST(EffectTest, EvalAllParams)
 {
     Blur fx;
     auto vals = fx.evalAllParams(0);
-    ASSERT_EQ(vals.size(), 1u);
+    ASSERT_EQ(vals.size(), Blur::ParamCount);
     EXPECT_FLOAT_EQ(vals[0], 15.0f);  // radius default
+    EXPECT_FLOAT_EQ(vals[1], 1.0f);   // repeat edge pixels default
 }
 
 TEST(EffectTest, KeyframeableParam)
@@ -476,7 +478,7 @@ TEST(EffectStackTest, Evaluate)
     auto snapshots = stack.evaluate(0);
     ASSERT_EQ(snapshots.size(), 2u);
     EXPECT_EQ(snapshots[0].type, EffectType::Blur);
-    EXPECT_EQ(snapshots[0].params.size(), 1u);
+    EXPECT_EQ(snapshots[0].params.size(), Blur::ParamCount);
     EXPECT_EQ(snapshots[1].type, EffectType::Glow);
     EXPECT_EQ(snapshots[1].params.size(), 3u);
 }
@@ -670,9 +672,12 @@ TEST(EffectParamsTest, BlurDefaults)
 {
     Blur fx;
     EXPECT_FLOAT_EQ(fx.evalParam(Blur::Radius, 0), 15.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(Blur::RepeatEdgePixels, 0), 1.0f);
     // Sigma is derived as radius/3.0 — not a user-facing param.
     EXPECT_FLOAT_EQ(fx.param(Blur::Radius).minVal, 0.0f);
     EXPECT_FLOAT_EQ(fx.param(Blur::Radius).maxVal, 100.0f);
+    EXPECT_FLOAT_EQ(fx.param(Blur::RepeatEdgePixels).minVal, 0.0f);
+    EXPECT_FLOAT_EQ(fx.param(Blur::RepeatEdgePixels).maxVal, 1.0f);
 }
 
 TEST(EffectParamsTest, SharpenDefaults)

@@ -58,11 +58,12 @@ bool Nv12Converter::init(Device& device, Allocator& allocator,
     return true;
 }
 
-void Nv12Converter::shutdown()
+void Nv12Converter::shutdown(GpuTeardownMode mode)
 {
     if (!m_device) return;
     VkDevice dev = m_device->handle();
-    if (dev && GpuContext::get().gpuState() == GpuState::Healthy)
+    if (mode == GpuTeardownMode::DeviceWide && dev &&
+        GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 
     if (m_pipeline != VK_NULL_HANDLE) {
@@ -206,8 +207,10 @@ bool Nv12Converter::createTextures()
 {
     // Output BGRA storage image
     TextureConfig outCfg;
-    outCfg.width  = m_config.width;
-    outCfg.height = m_config.height;
+    outCfg.width  = m_config.outputWidth != 0
+        ? m_config.outputWidth : m_config.width;
+    outCfg.height = m_config.outputHeight != 0
+        ? m_config.outputHeight : m_config.height;
     outCfg.format = VK_FORMAT_R8G8B8A8_UNORM;
     outCfg.usage  = VK_IMAGE_USAGE_STORAGE_BIT
                   | VK_IMAGE_USAGE_SAMPLED_BIT
@@ -239,18 +242,31 @@ bool Nv12Converter::resize(uint32_t width, uint32_t height)
 {
     if (width == m_config.width && height == m_config.height) return true;
 
-    m_config.width  = width;
-    m_config.height = height;
-
     if (m_initialized) {
-        GpuContext::get().scheduler().deviceWaitIdle();
+        // Input planes are private to converter dispatches on m_queue. Wait
+        // only that queue before replacing them; the output generation is
+        // independent and remains alive at its declared destination size.
+        const bool hasInputTextures =
+            m_yTexture.image() != VK_NULL_HANDLE ||
+            m_uvTexture.image() != VK_NULL_HANDLE ||
+            m_uTexture.image() != VK_NULL_HANDLE ||
+            m_vTexture.image() != VK_NULL_HANDLE;
+        if (hasInputTextures) {
+            const VkResult idle =
+                GpuContext::get().scheduler().queueWaitIdle(m_queue);
+            if (idle != VK_SUCCESS) {
+                if (idle == VK_ERROR_DEVICE_LOST)
+                    GpuContext::get().signalDeviceLost();
+                return false;
+            }
+        }
         m_yTexture.destroy();
         m_uvTexture.destroy();
         m_uTexture.destroy();
         m_vTexture.destroy();
-        m_outputTexture.destroy();
-        if (!createTextures()) return false;
     }
+    m_config.width  = width;
+    m_config.height = height;
     return true;
 }
 
@@ -272,7 +288,6 @@ bool Nv12Converter::convertAndReadbackNV12Scaled(
 {
     if (!m_initialized) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
     if (!convertSyncScaled(yData, yLinesize, uvData, uvLinesize,
                            srcW, srcH, dstW, dstH))
         return false;
@@ -289,7 +304,6 @@ bool Nv12Converter::convertAndReadbackYuv420pScaled(
 {
     if (!m_initialized) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
     if (!convertYuv420pSyncScaled(yData, yLinesize, uData, uLinesize,
                                    vData, vLinesize, srcW, srcH, dstW, dstH))
         return false;
@@ -300,8 +314,11 @@ bool Nv12Converter::readbackOutput(std::vector<uint8_t>& outPixels)
 {
     if (!m_initialized || !m_cmdPool || !m_allocator) return false;
 
-    const uint32_t w = m_config.width;
-    const uint32_t h = m_config.height;
+    // Input and destination dimensions are independent for scaled converter
+    // generations. The image being copied is the authoritative readback size.
+    const uint32_t w = m_outputTexture.width();
+    const uint32_t h = m_outputTexture.height();
+    if (w == 0 || h == 0) return false;
     const VkDeviceSize bufSize = static_cast<VkDeviceSize>(w) * h * 4;
 
     // Create staging buffer

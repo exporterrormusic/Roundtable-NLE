@@ -24,25 +24,38 @@ static constexpr const char* VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
 
 // Static flag used by debugCallback (Vulkan's userData slot isn't plumbed).
 bool Instance::s_errorsFatal = true;
+std::atomic<uint64_t> Instance::s_validationErrorCount{0};
 
 // ── Debug callback ──────────────────────────────────────────────────────────
 VKAPI_ATTR VkBool32 VKAPI_CALL Instance::debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT      severity,
-    VkDebugUtilsMessageTypeFlagsEXT             /*type*/,
+    VkDebugUtilsMessageTypeFlagsEXT             type,
     const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
     void*                                       /*userData*/)
 {
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
     {
-        // Use critical so the message shows even when the log level is
-        // turned up; validation errors are real bugs that we don't want
-        // buried under perf-log spam.
-        spdlog::critical("[Vulkan VALIDATION ERROR] {}", callbackData->pMessage);
+        // Implicit overlay/capture layers can emit loader GENERAL errors
+        // through this callback before our instance exists. Keep logging
+        // those, but the renderer-health counter tracks validation-layer
+        // findings only so machine-level overlay faults do not masquerade as
+        // application synchronization/resource errors.
+        const bool isValidationError =
+            (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0;
+        if (isValidationError)
+            s_validationErrorCount.fetch_add(1, std::memory_order_acq_rel);
+        // Use critical so errors show even when the log level is turned up.
+        // Keep loader/overlay failures visibly distinct from validation-layer
+        // findings produced by the application's Vulkan usage.
+        if (isValidationError)
+            spdlog::critical("[Vulkan VALIDATION ERROR] {}", callbackData->pMessage);
+        else
+            spdlog::critical("[Vulkan ERROR] {}", callbackData->pMessage);
 
         // If a debugger is attached, break here so the developer lands
         // exactly on the offending API call.  Stack trace shows which
         // Roundtable code triggered the validation error.
-        if (s_errorsFatal) {
+        if (s_errorsFatal && isValidationError) {
 #ifdef _WIN32
             if (IsDebuggerPresent()) {
                 __debugbreak();
@@ -120,6 +133,8 @@ bool Instance::create(const InstanceConfig& config)
                       static_cast<int>(volkResult));
         return false;
     }
+
+    s_validationErrorCount.store(0, std::memory_order_release);
 
     // Check validation layer support
     m_validationEnabled = config.enableValidation && checkValidationLayerSupport();

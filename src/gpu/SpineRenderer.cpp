@@ -134,16 +134,34 @@ bool SpineRenderer::init(Device& device,
     return true;
 }
 
-void SpineRenderer::shutdown()
+void SpineRenderer::shutdown(GpuTeardownMode mode)
 {
     if (!m_initialized) return;
 
-    if (m_vkDevice != VK_NULL_HANDLE &&
+    bool submittedBufferSafeToFree =
+        mode == GpuTeardownMode::DeviceWide ||
+        GpuContext::get().gpuState() != GpuState::Healthy;
+    if (mode == GpuTeardownMode::DeviceWide &&
+        m_vkDevice != VK_NULL_HANDLE &&
         GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(m_vkDevice);
+    else if (m_submittedCmdBuffer != VK_NULL_HANDLE)
+        submittedBufferSafeToFree = waitForFrame();
 
     // Release textures
     releaseAllTextures();
+
+    // A command buffer may be recording but never submitted when a layer
+    // fails midway through a frame. A submitted buffer is reclaimed only
+    // after its fence (or a device-wide teardown wait) establishes completion.
+    if (m_cmdPool != nullptr && m_activeCmdBuffer != VK_NULL_HANDLE)
+        m_cmdPool->freeBuffer(m_activeCmdBuffer);
+    m_activeCmdBuffer = VK_NULL_HANDLE;
+    if (m_cmdPool != nullptr && m_submittedCmdBuffer != VK_NULL_HANDLE &&
+        submittedBufferSafeToFree) {
+        m_cmdPool->freeBuffer(m_submittedCmdBuffer);
+    }
+    m_submittedCmdBuffer = VK_NULL_HANDLE;
 
     // Frame resources
     for (auto& fr : m_frameResources) {
@@ -172,6 +190,7 @@ void SpineRenderer::shutdown()
         vkDestroyQueryPool(m_vkDevice, m_timestampPool, nullptr);
         m_timestampPool = VK_NULL_HANDLE;
     }
+    m_timestampResultsAvailable = false;
 
     // Descriptor pool
     if (m_descriptorPool != VK_NULL_HANDLE) {
@@ -578,8 +597,15 @@ void SpineRenderer::releaseTexture(int pageIndex)
     auto it = m_atlasTextures.find(pageIndex);
     if (it == m_atlasTextures.end()) return;
 
-    if (m_vkDevice != VK_NULL_HANDLE)
+    // Atlas pages are referenced only by this renderer's graphics submission.
+    // Its frame fence is therefore the complete lifetime boundary; unrelated
+    // preview/export queues do not need to be drained.
+    if (m_vkDevice != VK_NULL_HANDLE && !waitForFrame() &&
+        GpuContext::get().gpuState() == GpuState::Healthy) {
+        spdlog::warn("SpineRenderer: texture fence drain failed; "
+                     "falling back to device-wide idle");
         GpuContext::get().scheduler().deviceWaitIdle();
+    }
 
     if (it->second.descriptorSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(m_vkDevice, m_descriptorPool, 1, &it->second.descriptorSet);
@@ -590,8 +616,13 @@ void SpineRenderer::releaseTexture(int pageIndex)
 
 void SpineRenderer::releaseAllTextures()
 {
-    if (m_vkDevice != VK_NULL_HANDLE && !m_atlasTextures.empty())
+    if (m_vkDevice != VK_NULL_HANDLE && !m_atlasTextures.empty() &&
+        !waitForFrame() &&
+        GpuContext::get().gpuState() == GpuState::Healthy) {
+        spdlog::warn("SpineRenderer: atlas fence drain failed; "
+                     "falling back to device-wide idle");
         GpuContext::get().scheduler().deviceWaitIdle();
+    }
 
     for (auto& [idx, slot] : m_atlasTextures) {
         if (slot.descriptorSet != VK_NULL_HANDLE) {
@@ -635,32 +666,25 @@ bool SpineRenderer::beginFrame()
         }
     }
 
-    // Cross-queue sync: drain the compositor's compute queue before
-    // re-recording the shared framebuffer.  On devices with a separate
-    // async-compute queue family (NVIDIA family 2 here), CompositeEngine
-    // samples m_framebuffer from the compute queue while SpineRenderer
-    // writes to it from the graphics queue.  Submission order is
-    // preserved within a queue but NOT across queues, so the previous
-    // composite's still-in-flight sampling can race the
-    // SHADER_READ→COLOR_ATTACHMENT transition we are about to record.
-    // The hazard accumulates during heavy scrubbing and trips WDDM TDR
-    // (VkResult=-4 / VK_ERROR_DEVICE_LOST) after ~150-200 submissions —
-    // observed in logs/perf_log.txt:2035.  vkQueueWaitIdle is heavy but
-    // the compute queue is dominated by the compositor and pending work
-    // is typically <2 ms.  Replace with a per-slot semaphore wait once
-    // the thread-model refactor exposes the compositor's submission
-    // fence to SpineRenderer.
-    if (m_computeQueue != VK_NULL_HANDLE) {
-        const VkResult r = gpuCtx.scheduler().queueWaitIdle(m_computeQueue);
-        if (r != VK_SUCCESS) {
-            if (r == VK_ERROR_DEVICE_LOST)
-                GpuContext::get().signalDeviceLost();
-            return false;
-        }
+    // Spine production and compositor consumption are both submitted through
+    // GpuScheduler to the graphics queue. Queue submission order is therefore
+    // the exact GPU-side lifetime chain for this single shared framebuffer:
+    // previous Spine write -> compositor sample -> next Spine write. Recording
+    // the next transition may overlap the preceding GPU work; execution cannot.
+    // Do not reintroduce a host queue-idle wait here. If compositing ever moves
+    // to another queue, that migration must add an explicit semaphore edge.
+
+    // The fence above proves the prior Spine command buffer itself is no
+    // longer executing. Reclaim it before allocating the next one; previously
+    // every successful frame permanently consumed another primary buffer from
+    // the command pool.
+    if (m_submittedCmdBuffer != VK_NULL_HANDLE) {
+        m_cmdPool->freeBuffer(m_submittedCmdBuffer);
+        m_submittedCmdBuffer = VK_NULL_HANDLE;
     }
 
     // Read timestamp results from previous frame
-    if (m_timestampPool != VK_NULL_HANDLE) {
+    if (m_timestampPool != VK_NULL_HANDLE && m_timestampResultsAvailable) {
         uint64_t timestamps[2]{};
         VkResult result = vkGetQueryPoolResults(
             m_vkDevice, m_timestampPool, 0, 2,
@@ -936,6 +960,9 @@ bool SpineRenderer::endFrame()
         m_activeCmdBuffer = VK_NULL_HANDLE;
         return false;
     }
+
+    m_submittedCmdBuffer = m_activeCmdBuffer;
+    m_timestampResultsAvailable = m_timestampPool != VK_NULL_HANDLE;
 
     // Advance frame index
     m_currentFrame = (m_currentFrame + 1) % m_config.framesInFlight;

@@ -100,10 +100,7 @@ WorkerGpuState::~WorkerGpuState()
     // alive.  Must happen before the unique_ptr would otherwise unwind
     // (declaration order would still put it last, but explicit reset
     // documents intent and orders cleanup deterministically).
-    if (nv12Converter) {
-        nv12Converter->shutdown();
-        nv12Converter.reset();
-    }
+    (void)nv12Converters.clear();
 
     if (signalSem != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
         vkDestroySemaphore(device, signalSem, nullptr);
@@ -169,37 +166,53 @@ void WorkerGpuState::pollAndCleanup()
 // pipeline submissions on the compute queue without contending on a
 // shared apiMutex.
 // ─────────────────────────────────────────────────────────────────────────
-Nv12Converter* WorkerGpuState::ensureNv12Converter(uint32_t w, uint32_t h)
+std::shared_ptr<Nv12Converter> WorkerGpuState::ensureNv12Converter(
+    uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH)
 {
-    if (nv12Converter && nv12Converter->isInitialized()) {
-        // Already constructed.  Internal ensureOutputSize() inside
-        // recordConvertScaled / recordConvertFromBufferScaled will
-        // resize the output texture if (w, h) changed.
-        nv12ConverterW = w;
-        nv12ConverterH = h;
-        return nv12Converter.get();
-    }
+    if (srcW > 0xffffu || srcH > 0xffffu ||
+        dstW > 0xffffu || dstH > 0xffffu)
+        return nullptr;
+
+    const uint64_t key = (static_cast<uint64_t>(srcW) << 48)
+                       | (static_cast<uint64_t>(srcH) << 32)
+                       | (static_cast<uint64_t>(dstW) << 16)
+                       | static_cast<uint64_t>(dstH);
+    if (auto cached = nv12Converters.find(key))
+        return cached;
 
     auto& ctx = GpuContext::get();
     if (!ctx.isInitialized()) return nullptr;
     if (cmdPool.handle() == VK_NULL_HANDLE) return nullptr;
 
-    nv12Converter = std::make_unique<Nv12Converter>();
+    auto converter = std::shared_ptr<Nv12Converter>(
+        new Nv12Converter(), [](Nv12Converter* item) {
+            if (!item) return;
+            item->shutdown(GpuTeardownMode::SessionScoped);
+            delete item;
+        });
     Nv12ConverterConfig cfg;
-    cfg.width  = w;
-    cfg.height = h;
-    if (!nv12Converter->init(ctx.device(), ctx.allocator(),
-                              cmdPool, ctx.computeQueue(), cfg)) {
+    cfg.width        = srcW;
+    cfg.height       = srcH;
+    cfg.outputWidth  = dstW;
+    cfg.outputHeight = dstH;
+    if (!converter->init(ctx.device(), ctx.allocator(),
+                         cmdPool, ctx.computeQueue(), cfg)) {
         spdlog::warn("WorkerGpuState::ensureNv12Converter: init failed for "
-                     "{}x{} — falling back to CPU path", w, h);
-        nv12Converter.reset();
+                     "{}x{} -> {}x{} — falling back to CPU path",
+                     srcW, srcH, dstW, dstH);
         return nullptr;
     }
-    nv12ConverterW = w;
-    nv12ConverterH = h;
-    spdlog::debug("WorkerGpuState: per-worker Nv12Converter created {}x{}",
-                 w, h);
-    return nv12Converter.get();
+
+    auto result = converter;
+    const size_t srcBytes = estimatedGpuImageBytes(srcW, srcH, 2, 2);
+    const size_t dstBytes = estimatedGpuImageBytes(dstW, dstH, 4, 2);
+    auto retired = nv12Converters.insert(
+        key, std::move(converter), srcBytes + dstBytes);
+    spdlog::debug("WorkerGpuState: converter generation created "
+                  "{}x{} -> {}x{} (resident={}, retired={})",
+                  srcW, srcH, dstW, dstH, nv12Converters.size(),
+                  retired.size());
+    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -564,7 +577,8 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     //    no inline wait, no cross-worker serialisation.  Multiple
     //    workers pipeline freely on the compute queue. ──────────────────
     gWorkerStep("convertDecodedToCacheGpu/ensure-converter");
-    Nv12Converter* conv = wgs.ensureNv12Converter(
+    auto conv = wgs.ensureNv12Converter(
+        static_cast<uint32_t>(srcW), static_cast<uint32_t>(srcH),
         static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH));
     if (!conv || !conv->isInitialized()) return nullptr;
 
@@ -891,6 +905,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     p.sharedAlloc = std::move(zeroCopyAlloc);
     p.interop     = interop;
     p.dstHold     = dstTex;  // keep the dst texture alive until fence signals
+    p.converterHold = conv;  // descriptor/images live through fence completion
     wgs.pending.push_back(std::move(p));
 
     // Increment telemetry based on which path won.  zeroCopyAlloc has

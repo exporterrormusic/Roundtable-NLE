@@ -202,10 +202,10 @@ void TimelineWorkspace::wirePlaybackSignals()
     };
 
     // Set composite callback
-    m_programMonitor->setCompositeCallback(
+    m_programMonitor->setCompositeResultCallback(
         [this](int64_t tick, uint32_t w, uint32_t h,
-               bool scrubMode, bool stillMode) -> std::shared_ptr<CachedFrame> {
-            return compositeFrame(tick, w, h, scrubMode, stillMode);
+               bool scrubMode, bool stillMode) -> RenderResult {
+            return renderFrame(tick, w, h, scrubMode, stillMode);
         });
 
     // Wire playback-resolution dropdown

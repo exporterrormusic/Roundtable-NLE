@@ -90,6 +90,7 @@ add_library(roundtable_core STATIC
     playback/AVSyncClock.cpp
     playback/PlaybackController.cpp
     playback/PlaybackScheduler.cpp
+    playback/PlaybackTelemetry.cpp
     playback/FrameClock.cpp
     playback/FrameProducer.cpp
     playback/FramePresenter.cpp

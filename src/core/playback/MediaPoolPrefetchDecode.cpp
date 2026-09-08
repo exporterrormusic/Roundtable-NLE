@@ -10,6 +10,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "MediaPoolPrefetchGpu.h"     // tryConvertDecodedToCacheGpu
 #include "cache/FrameCache.h"
+#include "decode/ConvertDecodedFrame.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
@@ -54,16 +55,16 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     // GREEN-suffixed chroma-key files MUST go through the CPU path
     // so chromaKeyInPlace() is applied; the GPU-resident path has no
     // chroma-key shader and would leave the green background visible.
-    bool chromaKeyFile = false;
-    {
-        std::string fn = pathToUtf8(task.filePath.filename());
-        std::transform(fn.begin(), fn.end(), fn.begin(),
-                       [](unsigned char c) { return std::toupper(c); });
-        chromaKeyFile = (fn.find("GREEN") != std::string::npos);
-    }
+    const bool chromaKeyFile = isGreenScreenMediaPath(task.filePath);
 
     // Sequential fast path: delta==1 or delta<=150 → advance decoder instead of seeking.
-    bool needSeek = true;
+    // A fresh still decoder is already positioned at its only frame. Seeking
+    // to timestamp zero makes FFmpeg's image demuxer reopen and re-probe the
+    // PNG before decoding it, adding another cold open to every miss.
+    const bool freshSingleFrame =
+        state.lastDecodedFrame < 0 && task.frameNumber == 0 &&
+        (task.info.duration <= 0.0 || task.info.frameCount <= 1);
+    bool needSeek = !freshSingleFrame;
     if (state.lastDecodedFrame >= 0) {
         int64_t delta = task.frameNumber - state.lastDecodedFrame;
         if (delta == 1) {

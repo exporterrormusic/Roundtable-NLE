@@ -73,10 +73,16 @@ bool GpuScheduler::init(
     // available.  Submissions still go through this scheduler so the
     // queue mutex is honored — they just land on the graphics queue.
     m_compute.queue  = (computeQueue != VK_NULL_HANDLE) ? computeQueue : graphicsQueue;
-    m_compute.mutex  = (computeQueue != VK_NULL_HANDLE) ? computeQueueMutex : graphicsQueueMutex;
+    m_compute.mutex  = (m_compute.queue == graphicsQueue)
+        ? graphicsQueueMutex : computeQueueMutex;
 
     m_transfer.queue = (transferQueue != VK_NULL_HANDLE) ? transferQueue : graphicsQueue;
-    m_transfer.mutex = (transferQueue != VK_NULL_HANDLE) ? transferQueueMutex : graphicsQueueMutex;
+    if (m_transfer.queue == graphicsQueue)
+        m_transfer.mutex = graphicsQueueMutex;
+    else if (m_transfer.queue == m_compute.queue)
+        m_transfer.mutex = m_compute.mutex;
+    else
+        m_transfer.mutex = transferQueueMutex;
 
     spdlog::info("GpuScheduler: initialized (graphics, compute={}, transfer={})",
                  (computeQueue != VK_NULL_HANDLE  && computeQueue  != graphicsQueue) ? "dedicated" : "shared",
@@ -104,6 +110,8 @@ void GpuScheduler::shutdown()
     clearSlot(m_compute);
     clearSlot(m_transfer);
     m_totalSubmissions.store(0, std::memory_order_relaxed);
+    m_deviceWaitIdleCalls.store(0, std::memory_order_relaxed);
+    m_queueWaitIdleCalls.store(0, std::memory_order_relaxed);
 }
 
 GpuScheduler::QueueSlot& GpuScheduler::slotFor(GpuQueueKind kind) noexcept
@@ -216,6 +224,7 @@ VkResult GpuScheduler::submit(const GpuSubmission& sub)
 void GpuScheduler::deviceWaitIdle()
 {
     if (m_device == VK_NULL_HANDLE) return;
+    m_deviceWaitIdleCalls.fetch_add(1, std::memory_order_relaxed);
 
     // Dedupe mutex pointers — when a queue family is missing the slot
     // falls back to the graphics mutex (see init()), so the same mutex
@@ -268,6 +277,7 @@ VkResult GpuScheduler::queueWaitIdle(VkQueue queue)
 {
     if (queue == VK_NULL_HANDLE)
         return VK_ERROR_INITIALIZATION_FAILED;
+    m_queueWaitIdleCalls.fetch_add(1, std::memory_order_relaxed);
 
     std::mutex* mtx = nullptr;
     if (queue == m_graphics.queue)      mtx = m_graphics.mutex;

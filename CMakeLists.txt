@@ -346,4 +346,10 @@ if(FFMPEG_FOUND)
         add_dependencies(roundtable copy_ffmpeg_dlls)
     endif()
 endif()
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION assets)
+# Character models are user-downloaded content and must never be shipped from
+# a developer's gitignored working tree. Runtime caches are likewise local.
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION assets
+    PATTERN "characters" EXCLUDE
+    PATTERN "cache" EXCLUDE
+    PATTERN "temp" EXCLUDE
+)

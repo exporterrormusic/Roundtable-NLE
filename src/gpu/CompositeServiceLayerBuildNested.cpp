@@ -23,15 +23,16 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     SequenceClip* seqClip, int64_t localTick,
     uint32_t outW, uint32_t outH, bool scrubMode,
     ResolutionTier requestTier, bool stillMode,
-    std::unique_lock<std::recursive_mutex>& lock)
+    const RenderExecutionContext& context)
 {
     std::shared_ptr<CachedFrame> frame;
 
-    if (!(m_project && seqClip->sequenceIndex() < m_project->sequenceCount()))
+    if (!(context.project && context.timeline &&
+          seqClip->sequenceIndex() < context.project->sequenceCount()))
         return frame;
 
-    auto* innerTimeline = m_project->sequence(seqClip->sequenceIndex());
-    if (!innerTimeline || innerTimeline == m_timeline)
+    auto* innerTimeline = context.project->sequence(seqClip->sequenceIndex());
+    if (!innerTimeline || innerTimeline == context.timeline)
         return frame;
 
     // Map the local tick into the inner timeline, honoring
@@ -41,21 +42,15 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     int64_t innerTick = localTick + seqClip->sourceIn();
     if (innerTick < 0) innerTick = 0;
 
-    // Force CPU display mode for the recursive composite
-    // so it does the GPU→CPU readback INLINE while we
-    // still hold the composite mutex. In GPU display mode
+    // Force CPU output in the nested request so it does the GPU-to-CPU
+    // readback inline. In GPU display mode
     // the inner composite returns a GPU-resident frame
     // backed by the SHARED composite output image; the
     // outer composite then immediately reuses that image,
     // racing the inner's deferred readback.
-    const bool wasGpuMode = m_gpuDisplayMode;
-    m_gpuDisplayMode = false;
-
-    // Temporarily swap to the inner timeline and release
-    // the lock so the recursive compositeFrame can acquire it.
-    Timeline* outerTimeline = m_timeline;
-    m_timeline = innerTimeline;
-    lock.unlock();
+    auto nestedContext = context;
+    nestedContext.timeline = innerTimeline;
+    nestedContext.policy.preferGpuOutput = false;
 
     // Render the inner at the project's master
     // resolution rather than the (possibly scrubbed)
@@ -67,7 +62,7 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     // SequenceClip's transform produces stable geometry
     // every frame instead of subtly jittering as the
     // canvas shrinks/grows.  Falls back to outW/outH
-    // when m_project is somehow null.
+    // when the project is somehow null.
     uint32_t innerW = outW;
     uint32_t innerH = outH;
     if (innerTimeline) {
@@ -86,9 +81,9 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     // overwrites the cached frame the presenter reads,
     // producing the "nested sequence glitches to its
     // own first frame every other display tick" bug.
-    auto innerFrame = compositeFrame(innerTick, innerW, innerH, scrubMode,
-                                      /*isNestedRecursion=*/true,
-                                      stillMode, requestTier);
+    auto innerFrame = compositeFrameImpl(
+        innerTick, innerW, innerH, scrubMode,
+        /*isNestedRecursion=*/true, stillMode, requestTier, nestedContext);
 
     // Snapshot into a clean CPU-only BGRA frame. The
     // inner composite returns its shared m_lastGoodComposite,
@@ -124,11 +119,6 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     // NOTE: deliberately NOT setting fromNestedSequence —
     // the snapshot is plain BGRA, identical to any other
     // CPU video layer, so no R/B swap is needed.
-
-    // Restore outer timeline and reacquire the lock
-    lock.lock();
-    m_timeline = outerTimeline;
-    m_gpuDisplayMode = wasGpuMode;
 
     return frame;
 }

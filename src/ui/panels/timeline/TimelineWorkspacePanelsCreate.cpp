@@ -25,6 +25,7 @@
 #include "panels/monitors/ScopesPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "playback/PlaybackScheduler.h"
+#include "playback/EngineContracts.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VoiceGenerationPanel.h"
@@ -450,24 +451,33 @@ void TimelineWorkspace::createPanelWidgets()
             const uint32_t outW = std::max(w, 64u);
             const uint32_t outH = std::max(h, 36u);
 
-            // Bind the composite service to the inner sequence for this
-            // frame, composite, then restore. Force CPU display mode so
+            // Target the inner sequence through this request without rebinding
+            // the program monitor's compositor. Force CPU display mode so
             // compositeFrame does the GPU→CPU readback INLINE while the
             // composite mutex is still held — otherwise the lazyReadback
             // path races with the FrameProducer's next composite (which
             // can resize/recycle the readback staging buffer and the
             // deferred map returns false, leaving the source monitor black).
-            //
-            // KNOWN LIMITATION: shares the program monitor's CompositeService,
-            // so m_lastGoodComposite is briefly overwritten. Clean per-
-            // monitor compositing is a bigger refactor.
-            const bool wasGpuMode = m_compositeService->gpuDisplayMode();
-            m_compositeService->setGpuDisplayMode(false);
-            m_compositeService->setTimeline(innerTimeline);
-            auto frame = compositeFrameAtTier(tick, outW, outH, scrub,
-                                              still, tier);
-            m_compositeService->setTimeline(m_timeline);
-            m_compositeService->setGpuDisplayMode(wasGpuMode);
+            RenderRequest request;
+            request.type = RenderRequestType::SourceMonitor;
+            switch (tier) {
+            case ResolutionTier::Full: request.quality = RenderQuality::Full; break;
+            case ResolutionTier::Half: request.quality = RenderQuality::Half; break;
+            case ResolutionTier::Quarter: request.quality = RenderQuality::Quarter; break;
+            }
+            request.exactness = defaultExactnessFor(request.type);
+            request.timelineTick = tick;
+            request.outputWidth = outW;
+            request.outputHeight = outH;
+            request.scrubMode = scrub;
+            request.stillFrame = still;
+            request.preferGpuOutput = false;
+            request.targetSequenceIndex = seqIdx;
+            request.caller = "TimelineWorkspace::sequenceSourceMonitor";
+            // Use the isolated recursive path so this secondary consumer does
+            // not populate the program monitor's LRU or last-good frame.
+            auto frame = m_compositeService->compositeFrame(
+                request, /*isNestedRecursion=*/true);
             if (frame) frame->ensurePixels();  // belt + suspenders
             return frame;
         };
@@ -508,11 +518,19 @@ void TimelineWorkspace::createPanelWidgets()
     // -- Program Monitor --------------------------------------------------
     m_programMonitor = new ProgramMonitor(this);
     m_programMonitor->setMinimumWidth(200);
+    m_programMonitor->setMinimumHeight(190);
     if (m_timeline) m_programMonitor->setTimeline(m_timeline);
     if (m_playbackController) m_programMonitor->setController(m_playbackController);
     connect(m_programMonitor, &ProgramMonitor::exportFrameRequested,
             this, &TimelineWorkspace::exportCurrentFrame);
-    makeDock("Program Monitor", m_programMonitor);
+    auto* programMonitorDock = makeDock("Program Monitor", m_programMonitor);
+    connect(programMonitorDock, &QDockWidget::topLevelChanged,
+            m_programMonitor, [monitor = m_programMonitor](bool) {
+        // Native viewport geometry settles after Qt completes the dock move.
+        QTimer::singleShot(0, monitor, [monitor]() {
+            monitor->resetViewState();
+        });
+    });
 
     // -- Properties -------------------------------------------------------
     m_propertiesPanel = new PropertiesPanel(this);

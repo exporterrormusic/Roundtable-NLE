@@ -533,13 +533,20 @@ void ExportPanel::setupUI()
     splitter->addWidget(previewWidget);
 
     splitter->setSizes({380, 620});
-    mainLayout->addWidget(splitter, 1);
+
+    // Upper pane of the vertical content/queue splitter. This makes the
+    // queue's top edge draggable instead of fixing it to a short strip.
+    auto* upperPane = new QWidget(this);
+    auto* upperLayout = new QVBoxLayout(upperPane);
+    upperLayout->setContentsMargins(0, 0, 0, 0);
+    upperLayout->setSpacing(m.spacingLg);
+    upperLayout->addWidget(splitter, 1);
 
     // ════════════════════════════════════════════════════════════════════
     // BOTTOM: run row (bar · stats · Cancel, shown while running) + queue
     // ════════════════════════════════════════════════════════════════════
 
-    m_runRow = new QWidget(this);
+    m_runRow = new QWidget(upperPane);
     {
         auto* runLay = new QHBoxLayout(m_runRow);
         runLay->setContentsMargins(0, 0, 0, 0);
@@ -563,20 +570,20 @@ void ExportPanel::setupUI()
         runLay->addWidget(m_cancelButton);
     }
     m_runRow->setVisible(false);
-    mainLayout->addWidget(m_runRow);
+    upperLayout->addWidget(m_runRow);
 
     // Action buttons row
     auto* actionLayout = new QHBoxLayout();
     actionLayout->setSpacing(10);
     actionLayout->addStretch();
 
-    m_addQueueButton = new QPushButton(tr("Add to Queue"), this);
+    m_addQueueButton = new QPushButton(tr("Add to Queue"), upperPane);
     m_addQueueButton->setToolTip(tr("Add current settings to the export queue"));
     m_addQueueButton->setObjectName(QStringLiteral("AddQueueBtn"));
     connect(m_addQueueButton, &QPushButton::clicked, this, &ExportPanel::onAddToQueue);
     actionLayout->addWidget(m_addQueueButton);
 
-    m_startQueueButton = new QPushButton(tr("Start Queue"), this);
+    m_startQueueButton = new QPushButton(tr("Start Queue"), upperPane);
     m_startQueueButton->setToolTip(
         tr("Render the queued jobs in order (Export renders only the current settings)"));
     m_startQueueButton->setObjectName(QStringLiteral("StartQueueBtn"));
@@ -584,20 +591,27 @@ void ExportPanel::setupUI()
     connect(m_startQueueButton, &QPushButton::clicked, this, &ExportPanel::onStartQueue);
     actionLayout->addWidget(m_startQueueButton);
 
-    m_startButton = new QPushButton(tr("Export"), this);
+    m_startButton = new QPushButton(tr("Export"), upperPane);
     m_startButton->setToolTip(tr("Start exporting"));
     m_startButton->setObjectName(QStringLiteral("ExportBtn"));
     connect(m_startButton, &QPushButton::clicked, this, &ExportPanel::onStartExport);
     actionLayout->addWidget(m_startButton);
 
-    mainLayout->addLayout(actionLayout);
+    upperLayout->addLayout(actionLayout);
 
     // ── Job Queue ───────────────────────────────────────────────────────
-    m_jobList = new QListWidget(this);
+    m_queueSplitter = new QSplitter(Qt::Vertical, this);
+    m_queueSplitter->setObjectName(QStringLiteral("ExportQueueSplitter"));
+    m_queueSplitter->setChildrenCollapsible(false);
+    m_queueSplitter->setHandleWidth(qMax(6, m.spacingSm));
+    m_queueSplitter->addWidget(upperPane);
+
+    m_jobList = new QListWidget;
     m_jobList->setToolTip(tr("Export job queue (right-click for options)"));
     m_jobList->setObjectName(QStringLiteral("JobList"));
-    m_jobList->setMaximumHeight(120);
-    m_jobList->setVisible(false); // Show when jobs are added
+    m_jobList->setMinimumHeight(64);
+    m_jobList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_jobList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_jobList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_jobList, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         auto* item = m_jobList->itemAt(pos);
@@ -628,8 +642,6 @@ void ExportPanel::setupUI()
             if (erased) {
                 int row = m_jobList->row(item);
                 delete m_jobList->takeItem(row);
-                if (m_jobList->count() == 0)
-                    m_jobList->setVisible(false);
             } else if (ok) {
                 setJobRowState(jobId, JobRowState::Cancelling);
             }
@@ -646,7 +658,13 @@ void ExportPanel::setupUI()
             }
         }
     });
-    mainLayout->addWidget(m_jobList);
+    m_queueSplitter->addWidget(m_jobList);
+    m_queueSplitter->setStretchFactor(0, 1);
+    m_queueSplitter->setStretchFactor(1, 0);
+    m_queueSplitter->setCollapsible(0, false);
+    m_queueSplitter->setCollapsible(1, false);
+    m_queueSplitter->setSizes({700, 160});
+    mainLayout->addWidget(m_queueSplitter, 1);
 
     // ── Wire up estimate updates ──────────────────────────────────────────
     auto updateEstimate = [this]() { updateFileEstimate(); };
@@ -673,6 +691,25 @@ void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
                                  const QString& detail)
 {
     if (!m_jobList) return;
+
+    // A custom QListWidget row does not automatically get a new item height
+    // when one of its children becomes visible. In particular, the Reveal
+    // button appears only after completion and used to extend into the next
+    // job. Reserve a compact-control-height row and resync on every update.
+    const auto syncRowHeight = [](QListWidgetItem* rowItem, QWidget* rowWidget) {
+        if (!rowItem || !rowWidget) return;
+        rowWidget->ensurePolished();
+        if (auto* rowLayout = rowWidget->layout()) {
+            rowLayout->invalidate();
+            rowLayout->activate();
+        }
+        const auto& metrics = Theme::metrics();
+        const int contentFloor = metrics.controlHeightSm + 2 * metrics.spacingSm;
+        const int rowHeight = qMax(contentFloor, rowWidget->sizeHint().height());
+        rowWidget->setMinimumHeight(rowHeight);
+        rowItem->setSizeHint(QSize(0, rowHeight));
+        rowWidget->updateGeometry();
+    };
 
     // Find (or create) the row for this job.
     QListWidgetItem* item = nullptr;
@@ -719,6 +756,7 @@ void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
             if (!detail.isEmpty()) extra->setText(detail);
         if (auto* reveal = w->findChild<QPushButton*>(QStringLiteral("JobReveal")))
             reveal->setVisible(st == JobRowState::Done);
+        syncRowHeight(item, w);
         return;
     }
 
@@ -761,6 +799,7 @@ void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
     reveal->setFlat(true);
     reveal->setCursor(Qt::PointingHandCursor);
     reveal->setToolTip(tr("Reveal the exported file in Explorer"));
+    reveal->setFixedHeight(Theme::metrics().controlHeightSm);
     reveal->setStyleSheet(QStringLiteral(
         "QPushButton#JobReveal { color: %1; border: none; padding: 1px 6px;"
         " font-size: 11px; }"
@@ -784,8 +823,8 @@ void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
         .arg(Theme::colors().textSecondary.name()));
     lay->addWidget(extra);
 
-    item->setSizeHint(QSize(0, w->sizeHint().height()));
     m_jobList->setItemWidget(item, w);
+    syncRowHeight(item, w);
 }
 
 } // namespace rt

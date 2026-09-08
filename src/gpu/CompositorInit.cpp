@@ -120,12 +120,17 @@ bool Compositor::init(Device& device,
 
 void Compositor::shutdown()
 {
+    shutdown(GpuTeardownMode::DeviceWide);
+}
+
+void Compositor::shutdown(GpuTeardownMode mode)
+{
     if (!m_device) return;
 
     VkDevice dev = m_device->handle();
 
     // A lost device may never report idle; no GPU work resumes after failure.
-    if (dev != VK_NULL_HANDLE &&
+    if (mode == GpuTeardownMode::DeviceWide && dev != VK_NULL_HANDLE &&
         GpuContext::get().gpuState() == GpuState::Healthy)
         vkDeviceWaitIdle(dev);
 

@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include "playback/EngineContracts.h"
+#include "playback/PlaybackTelemetry.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -39,6 +42,9 @@ public:
     using CompositeCallback = std::function<
         std::shared_ptr<CachedFrame>(int64_t tick, uint32_t w, uint32_t h,
                                      bool scrub, bool still)>;
+    using CompositeResultCallback = std::function<
+        RenderResult(int64_t tick, uint32_t w, uint32_t h,
+                     bool scrub, bool still)>;
 
     FrameProducer();
     ~FrameProducer();
@@ -48,7 +54,11 @@ public:
 
     // ── Configuration ────────────────────────────────────────────────
 
-    void setCompositeCallback(CompositeCallback cb) { m_compositeCB = std::move(cb); }
+    /// Frame-only compatibility adapter. New callers should provide an
+    /// explicit RenderResult so pending/blank/failure are not conflated.
+    void setCompositeCallback(CompositeCallback cb);
+    void setCompositeResultCallback(CompositeResultCallback cb)
+    { m_compositeResultCB = std::move(cb); }
     void setController(PlaybackController* c) { m_controller = c; }
 
     /// Thread-safe resolution update.
@@ -75,6 +85,11 @@ public:
     /// immediately.  The producer thread picks it up and runs the
     /// compositor off the UI thread.
     void requestScrubFrame(int64_t tick, uint32_t w, uint32_t h, bool scrub);
+
+    /// Invalidate queued and in-flight paused/scrub work. An in-flight
+    /// composite cannot be interrupted safely, but its result will be dropped
+    /// instead of being published after playback has started.
+    void cancelPendingScrub() noexcept;
 
     // ── Frame exchange (consumed by FramePresenter) ──────────────────
 
@@ -106,6 +121,12 @@ public:
     /// keeping the compositor focused on the latest frame.
     [[nodiscard]] bool isBacklogged() const noexcept {
         return m_backpressure.load(std::memory_order_acquire);
+    }
+
+    /// Count a clock tick suppressed by producer backpressure. The producer
+    /// folds this into its next aggregate telemetry report.
+    void noteBackpressureSkip() noexcept {
+        m_backpressureSkippedTelemetry.fetch_add(1, std::memory_order_relaxed);
     }
 
     /// Maximum pending frames before backpressure engages.
@@ -153,6 +174,7 @@ private:
         int64_t  tick;
         uint32_t w, h;
         bool     scrub;
+        uint64_t generation;
     };
 
     void producerLoop();
@@ -160,7 +182,7 @@ private:
     void produceScrubFrameImpl(const ScrubRequest& req);
     void publishFrame(std::shared_ptr<CachedFrame> frame, int64_t tick);
 
-    CompositeCallback m_compositeCB;
+    CompositeResultCallback m_compositeResultCB;
     PlaybackController* m_controller{nullptr};
 
     // Resolution (atomics for lock-free cross-thread access)
@@ -177,6 +199,7 @@ private:
     std::condition_variable m_reqCV;
     std::deque<int64_t>     m_pendingTicks;
     std::optional<ScrubRequest> m_pendingScrub;  // latest scrub request (replaces prior)
+    std::atomic<uint64_t> m_scrubGeneration{0};
 
     // Frame exchange slot (producer → presenter)
     mutable std::mutex       m_exchangeMtx;
@@ -227,6 +250,10 @@ private:
     [[nodiscard]] double currentFrameBudgetMs() const noexcept;
     void maybeAdjustTier(double frameBudgetMs);
     void applyAdaptiveDivisor(int newDivisor);
+    void recordPlaybackTelemetry(const RenderResult& result);
+
+    PlaybackTelemetryAccumulator m_playbackTelemetry;
+    std::atomic<uint64_t> m_backpressureSkippedTelemetry{0};
 
     static std::atomic<FrameProducer*> s_active;
 

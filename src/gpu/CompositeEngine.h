@@ -25,6 +25,7 @@
 #include "TemporalInterpolator.h"        // rt::TemporalInterpolator
 #include "EffectProcessor.h"             // rt::EffectProcessor, rt::EffectType
 #include "GpuTextureCache.h"             // rt::GpuTextureCache
+#include "GpuTeardownMode.h"
 #include "GpuWorkSubmission.h"           // rt::GpuWorkSubmission
 #include "GpuUploadManager.h"            // rt::GpuUploadManager
 #include "StagingRing.h"                 // rt::StagingRing
@@ -34,19 +35,39 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
-namespace rt { class CachePolicy; }
+namespace rt { class CachePolicy; class CommandPool; }
 
 // ── Composite result LRU entry ──────────────────────────────────────────────
 
-struct CompositeCacheEntry
+/// Complete identity of a CPU composite cached by CompositeEngine. Graph and
+/// policy identity are explicit so callers do not depend on clearing a global
+/// tick-only cache whenever the active sequence or render mode changes.
+struct CompositeCacheKey
 {
+    const void* graph{nullptr};
+    uint64_t editVersion{0};
     int64_t  tick{-1};
     uint32_t w{0}, h{0};
+    rt::ResolutionTier tier{rt::ResolutionTier::Full};
+    bool preservesAlpha{false};
+
+    [[nodiscard]] bool operator==(const CompositeCacheKey& other) const noexcept
+    {
+        return graph == other.graph && editVersion == other.editVersion &&
+               tick == other.tick && w == other.w && h == other.h &&
+               tier == other.tier && preservesAlpha == other.preservesAlpha;
+    }
+};
+
+struct CompositeCacheEntry
+{
+    CompositeCacheKey key{};
     std::shared_ptr<rt::CachedFrame> frame;
 };
 
@@ -62,22 +83,42 @@ public:
     CompositeEngine& operator=(const CompositeEngine&) = delete;
 
     // ── Lifecycle ───────────────────────────────────────────────────────
-    void init(VkDevice device);
-    void shutdown();
+    void init(VkDevice device,
+              rt::CommandPool* renderCommandPool = nullptr,
+              VkQueue renderQueue = VK_NULL_HANDLE);
+    void shutdown(
+        rt::GpuTeardownMode mode = rt::GpuTeardownMode::DeviceWide);
+
+    /// Resolve source-sized effect processors without reaching through the
+    /// process-wide GpuContext. Export sessions install a resolver backed by
+    /// their private, resolution-keyed resource bundle.
+    void setEffectProcessorResolver(
+        std::function<std::shared_ptr<rt::EffectProcessor>(uint32_t, uint32_t)> resolver)
+    {
+        m_effectProcessorResolver = std::move(resolver);
+    }
+
+    /// Offline export advances monotonically and does not need the editor's
+    /// scrub-back texture history. Set before the first composite call.
+    void setSequentialRenderMode(bool enabled) noexcept
+    {
+        m_sequentialRenderMode = enabled;
+    }
+    [[nodiscard]] bool sequentialRenderMode() const noexcept
+    {
+        return m_sequentialRenderMode;
+    }
 
     // ── LRU cache ───────────────────────────────────────────────────────
     [[nodiscard]] std::shared_ptr<rt::CachedFrame> checkLru(
-        int64_t tick, uint32_t w, uint32_t h) const;
-    void insertLru(int64_t tick, uint32_t w, uint32_t h,
+        const CompositeCacheKey& key) const;
+    void insertLru(const CompositeCacheKey& key,
                    std::shared_ptr<rt::CachedFrame> frame);
-    void flushLruOnResize(uint32_t w, uint32_t h);
     void clearLru();
-    /// A3: drop only composite-LRU entries whose tick falls inside the
-    /// inclusive range [fromTick, toTick].  Edits that affect a known
-    /// time slice (trim, split, ripple of a single clip) should call
-    /// this instead of clearLru() to preserve cached frames outside the
-    /// affected range.
-    void invalidateLruRange(int64_t fromTick, int64_t toTick);
+    /// Drop only entries for `graph` whose tick falls inside the inclusive
+    /// range [fromTick, toTick]. Edits that affect a known time slice should
+    /// preserve cached frames from other ranges and sequences.
+    void invalidateLruRange(const void* graph, int64_t fromTick, int64_t toTick);
 
     // ── Main GPU compositing entry point ────────────────────────────────
     [[nodiscard]] std::shared_ptr<rt::CachedFrame> composite(
@@ -85,9 +126,9 @@ public:
         uint32_t outW, uint32_t outH,
         int64_t tick, bool scrubMode,
         bool gpuDisplayMode,
-        rt::Compositor* compositor,
-        rt::EffectProcessor* effectProcessor,
-        rt::TransitionRenderer* transitionRenderer,
+        const std::shared_ptr<rt::Compositor>& compositor,
+        const std::shared_ptr<rt::EffectProcessor>& effectProcessor,
+        const std::shared_ptr<rt::TransitionRenderer>& transitionRenderer,
         bool perfLog,
         std::chrono::high_resolution_clock::time_point perfT0,
         std::chrono::high_resolution_clock::time_point& perfTlayers,
@@ -95,6 +136,7 @@ public:
         std::chrono::high_resolution_clock::time_point& perfTcomp,
         int& effectLayerCount, int& effectPassCount,
         int& transitionCount,
+        const CompositeCacheKey& cacheKey,
         bool allowLruInsert = true,
         bool forceSyncReadback = false);
 
@@ -171,6 +213,7 @@ private:
     std::unique_ptr<rt::StagingRing> m_stagingRing;
     std::unique_ptr<rt::GpuTextureCache> m_gpuTexCache;
     std::unique_ptr<rt::GpuUploadManager> m_uploadManager;
+    bool m_sequentialRenderMode{false};
 
     // Layer texture pool
     //
@@ -235,6 +278,8 @@ private:
     // to composite(): resizing or reusing one processor while earlier clip
     // commands are still unsubmitted invalidates those recorded descriptors.
     std::unique_ptr<rt::EffectProcessor> m_adjustmentEffectProcessor;
+    std::function<std::shared_ptr<rt::EffectProcessor>(uint32_t, uint32_t)>
+        m_effectProcessorResolver;
 
     // Time-interpolation resources are triple-buffered by submission slot.
     // The second decoded frame needs its own upload pool and every synthesized
@@ -267,6 +312,7 @@ private:
     // VulkanViewport presenter (GUI thread) can return consumed semaphores
     // to the same pool the FrameProducer thread acquires from.
     VkDevice                 m_device{nullptr};
+    VkCommandPool            m_renderCommandPool{VK_NULL_HANDLE};
 
     // Exponential backoff state removed in P2 of CLAUDE_IMPROVEMENT_PLAN.
 
@@ -283,9 +329,9 @@ private:
         uint32_t outW, uint32_t outH,
         int64_t tick, bool scrubMode,
         bool gpuDisplayMode,
-        rt::Compositor* compositor,
-        rt::EffectProcessor* effectProcessor,
-        rt::TransitionRenderer* transitionRenderer,
+        const std::shared_ptr<rt::Compositor>& compositor,
+        const std::shared_ptr<rt::EffectProcessor>& effectProcessor,
+        const std::shared_ptr<rt::TransitionRenderer>& transitionRenderer,
         bool perfLog,
         std::chrono::high_resolution_clock::time_point perfT0,
         std::chrono::high_resolution_clock::time_point& perfTlayers,
@@ -293,6 +339,7 @@ private:
         std::chrono::high_resolution_clock::time_point& perfTcomp,
         int& effectLayerCount, int& effectPassCount,
         int& transitionCount,
+        const CompositeCacheKey& cacheKey,
         bool allowLruInsert = true,
         bool forceSyncReadback = false);
 

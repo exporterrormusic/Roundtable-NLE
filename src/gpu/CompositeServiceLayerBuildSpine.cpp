@@ -33,14 +33,15 @@ namespace rt {
 
 CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     SpineClip* spineClip, int64_t tick, int64_t localTick,
-    uint32_t outW, uint32_t outH, bool scrubMode, bool playbackNonBlocking,
-    bool staticRecomposite, bool& gpuSpineUsedThisFrame,
-    std::vector<LayerInfo>& layers, float sx)
+    uint32_t outW, uint32_t outH, uint32_t simultaneousAssetInstance,
+    bool& gpuSpineUsedThisFrame, float sx,
+    RenderExecutionOutcome* outcome)
 {
     SpineLayerResult R;
     auto&     frame              = R.frame;
     bool&     gpuSpineZeroCopy   = R.gpuSpineZeroCopy;
     auto&     gpuSpineDescriptor = R.gpuSpineDescriptor;
+    auto&     gpuSpineOwner      = R.gpuSpineOwner;
     uint32_t& gpuSpineW          = R.gpuSpineW;
     uint32_t& gpuSpineH          = R.gpuSpineH;
     bool&     cpuSpineRendered   = R.cpuSpineRendered;
@@ -48,17 +49,24 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     try {
                 // Try GPU Spine rendering first (faster + better quality)
                 bool gpuSpineDone = false;
-                auto& gpuCtx = GpuContext::get();
-                if (gpuCtx.isInitialized()) {
-                    auto* sr = gpuCtx.spineRenderer(outW, outH);
+                if (GpuContext::get().isInitialized()) {
+                    const std::string charKey = spineCharKey(*spineClip);
+                    // Reuse one persistent renderer across edits of the same
+                    // immutable character asset. Only simultaneous duplicate
+                    // instances require separate mutable framebuffers.
+                    const std::string rendererContentKey =
+                        spineRendererContentKey(charKey,
+                                                simultaneousAssetInstance);
+                    const SpineRendererCacheKey rendererKey{
+                        outW, outH, rendererContentKey};
+                    auto sr = renderSpineRenderer(
+                        outW, outH, rendererContentKey);
                     if (sr && sr->isInitialized()) {
-                        // Multi-character GPU Spine: each character renders on
-                        // GPU.  The first character stays as GPU zero-copy (fast,
-                        // no readback).  When a SECOND character arrives, we
-                        // readback the FBO (which holds the FIRST character's
-                        // pixels) before the next beginFrame() clears it, and
-                        // assign that readback to the first character's layer.
-                        // Subsequent characters follow the same pattern.
+                        // Each active character clip owns a persistent renderer,
+                        // FBO, and atlas set. Multiple on-screen characters (or
+                        // duplicate instances of one character) can therefore
+                        // remain GPU-resident together instead of repeatedly
+                        // reading one shared FBO back to the CPU.
                         // Non-blocking: get cached state or schedule background load
                         const uint64_t cid = spineClip->id();
                         auto sit = m_spineCache.find(cid);
@@ -74,19 +82,17 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                             auto& state = *sit->second;
                             auto& shared = *state.shared;
 
-                            // Upload atlas textures to GPU only when the
-                            // active character set changes.  Consecutive
-                            // clips of the same character skip the upload.
-                            // MUST release old textures first: different
-                            // characters have different atlas page counts.
-                            // Without a full release, extra pages from the
-                            // previous character leak and the wrong texture
-                            // gets sampled for pages beyond the current
-                            // character's atlas size.
-                            const std::string charKey = spineCharKey(*spineClip);
-                            if (m_gpuSpineActiveCharKey != charKey) {
+                            // Upload once per exact renderer generation. reset()
+                            // clears the weak preparation map, forcing a refresh
+                            // after asset invalidation without sacrificing normal
+                            // frame-to-frame atlas residency.
+                            auto preparedIt = m_gpuSpinePreparedRenderers.find(
+                                rendererKey);
+                            const bool atlasPrepared =
+                                preparedIt != m_gpuSpinePreparedRenderers.end() &&
+                                preparedIt->second.lock() == sr;
+                            if (!atlasPrepared) {
                                 sr->releaseAllTextures();
-                                m_gpuSpineActiveCharKey.clear();
                                 int loaded = 0;
                                 const size_t atlasPageCount =
                                     state.engine.atlas().pages().size();
@@ -116,7 +122,7 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 }
                                 if (expectedPages > 0 &&
                                     loaded == static_cast<int>(expectedPages)) {
-                                    m_gpuSpineActiveCharKey = charKey;
+                                    m_gpuSpinePreparedRenderers[rendererKey] = sr;
                                     spdlog::info("[SPINE-GPU] uploaded complete atlas for '{}': {} pages",
                                                  spineClip->characterName(), loaded);
                                 } else {
@@ -124,13 +130,17 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     // missing page would otherwise sample a descriptor
                                     // left over from the preceding shot.
                                     sr->releaseAllTextures();
+                                    m_gpuSpinePreparedRenderers.erase(rendererKey);
                                     spdlog::warn("[SPINE-GPU] atlas upload incomplete for '{}': {}/{} pages",
                                                  spineClip->characterName(), loaded,
                                                  expectedPages);
                                 }
                             }
 
-                            if (m_gpuSpineActiveCharKey == charKey) {
+                            if (auto readyIt =
+                                    m_gpuSpinePreparedRenderers.find(rendererKey);
+                                readyIt != m_gpuSpinePreparedRenderers.end() &&
+                                readyIt->second.lock() == sr) {
                                 // Evaluate animation
                                 const int64_t animTick = spineClip->useGlobalTime()
                                                              ? tick : localTick;
@@ -276,90 +286,28 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     glm::mat4 model = SpineRenderer::modelMatrix(0.0f, 0.0f);
                                     glm::mat4 mvp = proj * model;
 
-                                    // Readback the PREVIOUS character's FBO content
-                                    // BEFORE rendering the next one.  The FBO still
-                                    // holds the previous character's pixels (from
-                                    // its waitForFrame), so read them out now before
-                                    // beginFrame() clears the FBO.
-                                    bool previousFramePreserved = true;
-                                    if (m_gpuSpineCount > 0) {
-                                        const bool priorComplete = sr->waitForFrame();
-                                        auto readback = priorComplete
-                                            ? sr->readbackPixels() : nullptr;
-                                        if (readback && !readback->pixels.empty() &&
-                                            m_gpuSpineInsertedLayer >= 0 &&
-                                            static_cast<size_t>(m_gpuSpineInsertedLayer) < layers.size()) {
-                                            readback->premultipliedAlpha = true;
-                                            auto& prevLayer = layers[m_gpuSpineInsertedLayer];
-                                            prevLayer.frame = std::move(readback);
-                                            prevLayer.gpuTextureReady = false;
-                                        } else {
-                                            // Keep the preceding character in the FBO
-                                            // and render this character on the CPU. If
-                                            // we cleared the FBO here, the prior layer's
-                                            // zero-copy descriptor would become stale.
-                                            previousFramePreserved = false;
-                                            spdlog::error("[SPINE-GPU] could not preserve previous character frame; using CPU for '{}'",
-                                                          spineClip->characterName());
-                                        }
-                                    }
+                                    const bool began = sr->beginFrame();
+                                    const bool drew = began &&
+                                        sr->renderSkeleton(renderData, mvp, 1.0f);
+                                    // Finish a begun command buffer even if atlas
+                                    // validation rejected its draw commands.
+                                    const bool submitted = began && sr->endFrame();
+                                    // Spine production and compositor sampling
+                                    // use the same scheduled graphics queue.
+                                    // Submission order is the dependency; a
+                                    // host fence wait here only drains the GPU
+                                    // between every character. Export's final
+                                    // composite readback remains synchronized.
+                                    const bool renderComplete = drew && submitted;
 
-                                    bool renderComplete = false;
-                                    if (previousFramePreserved) {
-                                        const bool began = sr->beginFrame();
-                                        const bool drew = began &&
-                                            sr->renderSkeleton(renderData, mvp, 1.0f);
-                                        // Finish a begun command buffer even if atlas
-                                        // validation rejected its draw commands.
-                                        const bool submitted = began && sr->endFrame();
-                                        const bool completed = submitted && sr->waitForFrame();
-                                        renderComplete = drew && submitted && completed;
-                                    }
-
-                                    // STATIC frame (parked playhead, e.g. a
-                                    // transform-handle drag): read the freshly
-                                    // rendered FBO back into a stable CPU frame.
-                                    // This (a) stops the layer aliasing the
-                                    // shared FBO that the next same-tick
-                                    // composite will clear, and (b) populates
-                                    // the sticky last-good cache below, so a
-                                    // subsequent same-tick composite that
-                                    // momentarily fails to re-render the live
-                                    // Spine still shows the character instead of
-                                    // dropping the layer. Fixes the
-                                    // "vanishes when resizing, back on play" bug.
-                                    // During playback the tick advances so we
-                                    // keep the fast zero-copy path.
-                                    bool spineStableReadback = false;
-                                    const bool requireStableFrame =
-                                        staticRecomposite || m_forceFullResolution.load();
-                                    if (renderComplete && requireStableFrame) {
-                                        auto stable = sr->readbackPixels();
-                                        if (stable && !stable->pixels.empty()) {
-                                            stable->premultipliedAlpha = true; // Spine FBO is PMA
-                                            frame = std::move(stable);
-                                            cpuSpineRendered = true;  // route through contain-fit + 0.85
-                                            spineStableReadback = true;
-                                        }
-                                    }
-
-                                    if (renderComplete &&
-                                        (!requireStableFrame || spineStableReadback)) {
+                                    if (renderComplete) {
                                         gpuSpineDone = true;
                                         gpuSpineUsedThisFrame = true;
-                                    }
-
-                                    if (gpuSpineDone && !spineStableReadback) {
                                         gpuSpineZeroCopy = true;
-                                        ++m_gpuSpineCount;
-                                        m_gpuSpineJustRendered = true;
                                         gpuSpineDescriptor = sr->outputDescriptorInfo();
+                                        gpuSpineOwner = sr;
                                         gpuSpineW = outW;
                                         gpuSpineH = outH;
-                                    } else if (renderComplete && requireStableFrame &&
-                                               !spineStableReadback) {
-                                        spdlog::error("[SPINE-GPU] stable export readback failed for '{}'; using CPU fallback",
-                                                      spineClip->characterName());
                                     }
                                 }
                             }
@@ -412,6 +360,21 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     catch (...) {
         spdlog::error("compositeFrame: SpineClip '{}' unknown exception",
                       spineClip->characterName());
+    }
+    if (!gpuSpineZeroCopy && !frame) {
+        const auto state = spineResourceState(*spineClip);
+        std::string warning = spineResourceWarning(*spineClip);
+        if (warning.empty()) {
+            warning = "Spine resource unavailable: " +
+                      spineClip->characterName() + " / " + spineClip->outfit();
+        }
+        if (outcome && state == ResourceLoadState::Missing) {
+            outcome->report(RenderResultStatus::MissingMedia, std::move(warning));
+        } else if (outcome && state == ResourceLoadState::Failed) {
+            outcome->report(RenderResultStatus::Failed, std::move(warning));
+        } else if (outcome) {
+            outcome->report(RenderResultStatus::Pending, std::move(warning));
+        }
     }
     return R;
 }

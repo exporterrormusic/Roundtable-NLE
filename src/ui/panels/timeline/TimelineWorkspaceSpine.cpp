@@ -63,6 +63,7 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
     auto future = std::async(std::launch::async,
         [this, key, charName, outfit, stance, assetsDir]() {
             auto shared = std::make_shared<CompositeService::SpineSharedData>();
+            shared->loadState = ResourceLoadState::Loading;
 
             // Resolve skeleton/atlas file paths
             auto paths = SpineEngine::resolvePaths(
@@ -70,6 +71,8 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
                 static_cast<CharacterStance>(stance));
             if (!paths.valid) {
                 spdlog::warn("scheduleSpineSharedLoad: failed to resolve '{}'", key);
+                shared->loadState = ResourceLoadState::Missing;
+                shared->loadWarning = "Spine skeleton or atlas is missing: " + key;
                 QMetaObject::invokeMethod(this, [this, key, shared]() {
                     m_compositeService->integrateSpineSharedData(key, shared);
                     m_compositeService->removeSpinePendingKey(key);
@@ -98,10 +101,28 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
                 }
             }
 
+            if (shared->skelBytes.empty() || shared->atlasText.empty()) {
+                const bool missing =
+                    !std::filesystem::exists(utf8ToPath(paths.skelPath)) ||
+                    !std::filesystem::exists(utf8ToPath(paths.atlasPath));
+                shared->loadState = missing ? ResourceLoadState::Missing
+                                            : ResourceLoadState::Failed;
+                shared->loadWarning = missing
+                    ? "Spine skeleton or atlas disappeared while loading: " + key
+                    : "Spine skeleton or atlas could not be read: " + key;
+                QMetaObject::invokeMethod(this, [this, key, shared]() {
+                    m_compositeService->integrateSpineSharedData(key, shared);
+                    m_compositeService->removeSpinePendingKey(key);
+                });
+                return;
+            }
+
             // Load temporary engine for atlas info + bounds
             SpineEngine tempEngine;
             if (!tempEngine.loadSkeleton(paths.skelPath, paths.atlasPath)) {
                 spdlog::warn("scheduleSpineSharedLoad: skeleton load failed for '{}'", key);
+                shared->loadState = ResourceLoadState::Failed;
+                shared->loadWarning = "Spine skeleton or atlas is invalid: " + key;
                 QMetaObject::invokeMethod(this, [this, key, shared]() {
                     m_compositeService->integrateSpineSharedData(key, shared);
                     m_compositeService->removeSpinePendingKey(key);
@@ -117,6 +138,9 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
             shared->pageHeights.resize(pages.size(), 0);
             shared->pagePMA.resize(pages.size(), false);
 
+            bool atlasPageMissing = false;
+            bool atlasPageFailed = pages.empty();
+            std::string atlasPageError;
             for (size_t pi = 0; pi < pages.size(); ++pi) {
                 std::string texPath = atlasDir + "/" + pages[pi].texturePath;
                 shared->pagePMA[pi] = pages[pi].pma;
@@ -127,7 +151,26 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
                     shared->pageWidths[pi] = w;
                     shared->pageHeights[pi] = h;
                     stbi_image_free(pixels);
+                } else {
+                    atlasPageError = texPath;
+                    if (!std::filesystem::exists(utf8ToPath(texPath)))
+                        atlasPageMissing = true;
+                    else
+                        atlasPageFailed = true;
                 }
+            }
+            if (atlasPageMissing || atlasPageFailed) {
+                shared->loadState = atlasPageMissing ? ResourceLoadState::Missing
+                                                     : ResourceLoadState::Failed;
+                shared->loadWarning = atlasPageMissing
+                    ? "Spine atlas texture is missing: " + atlasPageError
+                    : "Spine atlas texture could not be decoded: " +
+                          (atlasPageError.empty() ? key : atlasPageError);
+                QMetaObject::invokeMethod(this, [this, key, shared]() {
+                    m_compositeService->integrateSpineSharedData(key, shared);
+                    m_compositeService->removeSpinePendingKey(key);
+                });
+                return;
             }
             shared->pagePixelsUnpremultiplied = false;
 
@@ -136,6 +179,8 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
                 shared->stableBoundsX, shared->stableBoundsY,
                 shared->stableBoundsW, shared->stableBoundsH);
             shared->boundsCached = true;
+            shared->loadState = ResourceLoadState::Ready;
+            shared->loadWarning.clear();
 
             spdlog::info("scheduleSpineSharedLoad: loaded '{}' ({} atlas pages)",
                          key, pages.size());

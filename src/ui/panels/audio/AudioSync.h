@@ -331,6 +331,7 @@ public:
     [[nodiscard]] QListWidget* clipListWidget() const { return m_clipList; }
     [[nodiscard]] QListWidget* scriptListWidget() const { return m_leftScriptList; }
     [[nodiscard]] QPushButton* transcribeButton() const { return m_transcribeBtn; }
+    [[nodiscard]] QComboBox* transcriptionModelCombo() const { return m_modelCombo; }
     [[nodiscard]] QPushButton* autoSyncButton() const { return m_autoSyncBtn; }
     [[nodiscard]] QPushButton* exportButton() const { return m_exportBtn; }
     [[nodiscard]] QPushButton* voiceGenerationButton() const { return m_voiceRailBtn; }
@@ -387,6 +388,9 @@ private:
                                            const QPointer<QThread>& thread);
     void finishTranscriptionRun(bool cancelled);
     void updateTranscriptionControls();
+    [[nodiscard]] bool ensureCrisperWhisperConsent();
+    [[nodiscard]] bool isCrisperWhisperSelected() const;
+    void selectDefaultWhisperModel();
     void fetchScriptFromUrl(const QString& url);
     void loadScriptHistory();
     void addToScriptHistory(const QString& url);

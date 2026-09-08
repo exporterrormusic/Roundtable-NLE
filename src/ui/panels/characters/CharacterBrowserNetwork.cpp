@@ -324,9 +324,11 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
     while (displayName.endsWith('.') || displayName.endsWith(' '))
         displayName.chop(1);
 
-    // Target directory: assets/characters/<charName>/<outfitName>/
-    // (in the project folder, not AppData — gitignored so it stays local)
-    QString targetDir = QString("assets/characters/%1/%2").arg(displayName, outfitName);
+    // Downloads must remain writable in installed builds (for example under
+    // Program Files), so models live in the per-user asset root.
+    QString targetDir = QDir(rt::downloadedCharacterAssetsDir())
+                            .filePath(QString("characters/%1/%2")
+                                          .arg(displayName, outfitName));
 
     spdlog::info("CharacterBrowser: Fetching file list from: l2d/{}", repoPath.toStdString());
 

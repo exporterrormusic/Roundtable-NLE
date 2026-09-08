@@ -31,21 +31,23 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
     std::chrono::high_resolution_clock::time_point& perfTlayers,
     int& effectLayerCount, int& effectPassCount,
     int& transitionCount,
+    const RenderExecutionContext& context,
+    const ::CompositeCacheKey& cacheKey,
     bool isNestedRecursion)
 {
     if (!m_engine)
         return nullptr;
 
-    auto& ctx = GpuContext::get();
-    auto* compositor = static_cast<Compositor*>(ctx.compositor(outW, outH));
-    auto* effectProcessor = ctx.effectProcessor(outW, outH);
-    auto* transitionRenderer = ctx.transitionRenderer(outW, outH);
+    auto compositor = renderCompositor(outW, outH);
+    auto effectProcessor = renderEffectProcessor(outW, outH);
+    auto transitionRenderer = renderTransitionRenderer(outW, outH);
+    const auto& policy = context.policy;
 
-    // Alpha export: tell the (shared, per-size) compositor whether to keep a
+    // Alpha export: tell this service's compositor whether to keep a
     // straight-alpha transparent background.  Set every composite so it can't
     // leak into a later non-alpha composite on the same cached instance.
     if (compositor)
-        compositor->setPreserveAlpha(m_exportAlpha.load(std::memory_order_relaxed));
+        compositor->setPreserveAlpha(policy.preserveAlpha);
 
     auto perfTgpuUp = perfT0;
     auto perfTcomp = perfT0;
@@ -60,12 +62,34 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
     // frame reuses it (otherwise overlapping export frames corrupt each
     // other's effect output — the "blur flickers after a few seconds" bug).
     auto result = m_engine->composite(
-        layers, outW, outH, tick, scrubMode, m_gpuDisplayMode,
+        layers, outW, outH, tick, scrubMode, policy.preferGpuOutput,
         compositor, effectProcessor, transitionRenderer,
         perfLog, perfT0, perfTlayers, perfTgpuUp, perfTcomp,
         effectLayerCount, effectPassCount, transitionCount,
+        cacheKey,
         /*allowLruInsert=*/!isNestedRecursion,
-        /*forceSyncReadback=*/m_forceFullResolution.load());
+        /*forceSyncReadback=*/policy.forceFullResolution);
+
+    if (context.diagnostics && policy.measureRealtimeCost &&
+        !isNestedRecursion && result) {
+        const auto ms = [](auto start, auto end) {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        };
+        context.diagnostics->gpuRecordSubmitMs = ms(perfTlayers, perfTgpuUp);
+        context.diagnostics->readbackMs = ms(perfTgpuUp, perfTcomp);
+
+        // Timestamp results lag by the submission ring depth. They are not
+        // attributed to this exact tick, but averaging them over the same
+        // playback window cleanly separates GPU saturation from CPU stalls.
+        const auto gpu = m_engine->lastGpuTimings();
+        if (gpu.valid) {
+            context.diagnostics->gpuTimingsValid = true;
+            context.diagnostics->gpuFrameMs = gpu.frameMs;
+            context.diagnostics->gpuUploadMs = gpu.uploadMs;
+            context.diagnostics->gpuEffectMs = gpu.effectMs;
+            context.diagnostics->gpuCompositeMs = gpu.composeMs;
+        }
+    }
 
     return result;
 }

@@ -361,9 +361,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     uint32_t outW, uint32_t outH,
     int64_t tick, bool scrubMode,
     bool gpuDisplayMode,
-    Compositor* compositor,
-    EffectProcessor* effectProcessor,
-    TransitionRenderer* transitionRenderer,
+    const std::shared_ptr<Compositor>& compositor,
+    const std::shared_ptr<EffectProcessor>& effectProcessor,
+    const std::shared_ptr<TransitionRenderer>& transitionRenderer,
     bool perfLog,
     std::chrono::high_resolution_clock::time_point perfT0,
     std::chrono::high_resolution_clock::time_point& perfTlayers,
@@ -371,6 +371,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     std::chrono::high_resolution_clock::time_point& perfTcomp,
     int& effectLayerCount, int& effectPassCount,
     int& transitionCount,
+    const CompositeCacheKey& cacheKey,
     bool allowLruInsert,
     bool forceSyncReadback)
 {
@@ -417,7 +418,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // are paired.  graphicsCmdPool() falls back to cmdPool() when
         // graphics and compute share a family, preserving the
         // single-queue path on simpler devices.
-        m_gpuSubmission->init(ctx.vkDevice(), ctx.graphicsCmdPool().handle());
+        const VkCommandPool commandPool = m_renderCommandPool != VK_NULL_HANDLE
+            ? m_renderCommandPool : ctx.graphicsCmdPool().handle();
+        m_gpuSubmission->init(ctx.vkDevice(), commandPool);
     }
     auto& slot = *m_gpuSubmission;
     if (!slot.beginRecording()) {
@@ -434,6 +437,11 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         return nullptr;
     }
     VkCommandBuffer cmd = slot.cmdBuffer();
+    slot.retainForCurrentSlot(compositor);
+    slot.retainForCurrentSlot(effectProcessor);
+    slot.retainForCurrentSlot(transitionRenderer);
+    for (const auto& layer : layers)
+        slot.retainForCurrentSlot(layer.gpuResourceOwner);
     const int timingSlot = slot.currentSlot();
     auto& gpuLayerTextures =
         m_gpuLayerTextures[static_cast<size_t>(timingSlot)];
@@ -476,6 +484,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             budget = std::clamp<size_t>(
                 gpuVram / 4, 512ull * 1024 * 1024, 8ull * 1024 * 1024 * 1024);
         }
+        if (m_sequentialRenderMode) {
+            constexpr size_t kSequentialBudget = 256ull * 1024ull * 1024ull;
+            budget = std::min(budget, kSequentialBudget);
+        }
         m_gpuTexCache = std::make_unique<GpuTextureCache>(budget);
         // UPGRADE_PLAN 2026-05-22 v3 — Premiere-style bounded working
         // set.  Cap the entry count to a small absolute number, not a
@@ -489,10 +501,13 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         if (m_cachePolicy) {
             const size_t maxEntries =
                 m_cachePolicy->recommendedGpuTexCacheMaxEntries(gpuVram);
-            m_gpuTexCache->setMaxEntries(maxEntries);
+            const size_t appliedMaxEntries = m_sequentialRenderMode
+                ? std::min<size_t>(maxEntries, 32u)
+                : maxEntries;
+            m_gpuTexCache->setMaxEntries(appliedMaxEntries);
             spdlog::info("[PERF] GpuTexCache max entries: {} "
-                         "(Premiere-style bounded working set)",
-                         maxEntries);
+                         "(Premiere-style bounded working set, sequential={})",
+                         appliedMaxEntries, m_sequentialRenderMode);
         }
         m_uploadManager->setTextureCache(m_gpuTexCache.get());
         // Register for diagnostic visibility from MediaPool's perf-dump
@@ -1350,14 +1365,18 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 if (layer.isPacked && srcH > 1) srcH /= 2;
                 const uint32_t effectW = ots ? outW : srcW;
                 const uint32_t effectH = ots ? outH : srcH;
-                EffectProcessor* activeEffectProcessor =
+                std::shared_ptr<EffectProcessor> activeEffectLease =
                     (effectProcessor &&
                      effectProcessor->outputWidth() == effectW &&
                      effectProcessor->outputHeight() == effectH)
                         ? effectProcessor
-                        : ctx.effectProcessor(effectW, effectH);
+                        : (m_effectProcessorResolver
+                            ? m_effectProcessorResolver(effectW, effectH)
+                            : ctx.effectProcessor(effectW, effectH));
+                EffectProcessor* activeEffectProcessor = activeEffectLease.get();
                 if (!activeEffectProcessor || !activeEffectProcessor->isInitialized())
                     break;
+                slot.retainForCurrentSlot(activeEffectLease);
 
                 for (const auto& snap : layer.effects) {
                     if (snap.type == EffectType::LUT && layer.clipPtr) {
@@ -2042,7 +2061,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // shared (tick,w,h)-keyed LRU, flickering the nested clip every
         // other frame.
         if (allowLruInsert && !hasPendingSourceFallback && !result->gpuReady) {
-            insertLru(tick, outW, outH, result);
+            insertLru(cacheKey, result);
         }
 
         perfTcomp = std::chrono::high_resolution_clock::now();
@@ -2067,13 +2086,26 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // user runs warn+ filtered logging, and a >33 ms frame during
         // active playback is a real perf event worth surfacing every time.
         if (totalMs > 33.0) {
-            spdlog::warn("[COMPOSITE-SLOW] tick={} TOTAL={:.1f}ms "
-                         "layers={:.1f}ms submit={:.1f}ms readback={:.1f}ms "
-                         "| layerCount={} effectLayers={} effectPasses={} "
-                         "transitions={} gpuDisplay={}",
-                         tick, totalMs, layersMs, submitMs, readbackMs,
-                         layers.size(), effectLayerCount, effectPassCount,
-                         transitionCount, gpuDisplayMode);
+            // Preserve an attributable outlier without turning sustained
+            // overload into synchronous warning-level file I/O every frame.
+            // PLAYBACK-PERF carries the complete aggregate once per window.
+            static std::atomic<int64_t> s_lastSlowLogNs{0};
+            const int64_t nowNs = std::chrono::duration_cast<
+                std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            int64_t lastNs = s_lastSlowLogNs.load(std::memory_order_relaxed);
+            if (nowNs - lastNs >= 1'000'000'000ll &&
+                s_lastSlowLogNs.compare_exchange_strong(
+                    lastNs, nowNs, std::memory_order_relaxed)) {
+                spdlog::warn("[COMPOSITE-SLOW] tick={} TOTAL={:.1f}ms "
+                             "layers={:.1f}ms submit={:.1f}ms readback={:.1f}ms "
+                             "| scrub={} layerCount={} effectLayers={} effectPasses={} "
+                             "transitions={} gpuDisplay={}",
+                             tick, totalMs, layersMs, submitMs, readbackMs,
+                             scrubMode, layers.size(),
+                             effectLayerCount, effectPassCount,
+                             transitionCount, gpuDisplayMode);
+            }
         } else if (perfLog) {
             spdlog::info("[RENDER_GRAPH] compositeFrame (DAG): layers={} | "
                          "gpu={:.1f}ms  TOTAL={:.1f}ms  "

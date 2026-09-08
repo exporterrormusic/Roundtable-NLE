@@ -61,6 +61,7 @@ public:
 
     /// Compositor function signature.
     using CompositeCallback = FrameProducer::CompositeCallback;
+    using CompositeResultCallback = FrameProducer::CompositeResultCallback;
 
     /// Present callback (provided by UI layer).
     using PresentCallback = FramePresenter::PresentCallback;
@@ -78,6 +79,7 @@ public:
 
     void setController(PlaybackController* c);
     void setCompositeCallback(CompositeCallback cb);
+    void setCompositeResultCallback(CompositeResultCallback cb);
     void setPresentCallback(PresentCallback cb);
     void setPresentNotify(PresentNotify cb);
 
@@ -111,6 +113,8 @@ public:
     // ── Scrub / seek (paused mode) ───────────────────────────────────
 
     void requestFrame(int64_t tick, uint32_t w, uint32_t h, bool scrub);
+    /// Queue a best-effort playback frame, bypassing the exact still slot.
+    void requestPlaybackFrame(int64_t tick);
     void notifyStateChange();
 
     // ── Queries ──────────────────────────────────────────────────────

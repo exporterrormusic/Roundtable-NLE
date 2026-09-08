@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include "GpuTeardownMode.h"
+
 #include "vulkan/Allocator.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/CommandPool.h"
@@ -82,7 +84,12 @@ public:
               VkQueue computeQueue,
               const EffectProcessorConfig& config = {});
 
-    void shutdown();
+    void shutdown(GpuTeardownMode mode = GpuTeardownMode::DeviceWide);
+
+    /// Wait for the reusable fence used by synchronous helper operations.
+    /// Render-graph operations are covered by CompositeEngine's submission
+    /// ring and do not signal this fence.
+    [[nodiscard]] bool waitForOwnedWork(uint64_t timeoutNs) const;
 
     [[nodiscard]] bool isInitialized() const noexcept { return m_initialized; }
 
@@ -151,6 +158,14 @@ private:
                         EffectType type,
                         const std::vector<float>& params,
                         int sourceIdx, int targetIdx);
+
+    /// Dispatch horizontal + vertical Gaussian passes. Direction is an
+    /// internal shader parameter; Blur remains a single-radius public effect.
+    /// Returns the storage index containing the completed blur, or -1.
+    int dispatchGaussianBlur(VkCommandBuffer cmd,
+                             const std::vector<float>& params,
+                             int sourceIdx, int targetIdx,
+                             bool preserveInternalSource);
 
     /// Ultra Key single-pass dispatch (combined matte + cleanup + finalize).
     /// Falls back to legacy 3-pass if the combined shader is unavailable.

@@ -235,7 +235,6 @@ bool Nv12Converter::convertAndReadbackYuva444p12Scaled(
 {
     if (!m_initialized) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
     if (!convertYuva444p12SyncScaled(yData, yLinesize, uData, uLinesize,
                                      vData, vLinesize, aData, aLinesize,
                                      srcW, srcH, dstW, dstH))
@@ -254,7 +253,6 @@ bool Nv12Converter::convertAndReadbackYuva444p12Scaled16F(
 {
     if (!m_initialized || !m_cmdPool) return false;
     std::lock_guard<std::mutex> apiLock(m_apiMutex);
-    std::lock_guard<std::mutex> qLock(GpuContext::get().computeQueueMutex());
 
     VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
     std::vector<Texture::StagingCleanup> staging;

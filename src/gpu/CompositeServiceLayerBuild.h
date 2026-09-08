@@ -133,6 +133,9 @@ struct LayerInfo
     // directly instead of uploading from frame->pixels.
     bool gpuTextureReady{false};
     VkDescriptorImageInfo gpuDescriptor{};
+    /// Lease for an external mutable GPU producer (currently Spine). The
+    /// composite submission slot retains it through fence completion.
+    std::shared_ptr<void> gpuResourceOwner;
     // Cache identity for descriptors resolved before uploadLayer().  The
     // render phase uses it to pin the exact cache entry for the duration of
     // the in-flight submission.

@@ -25,6 +25,7 @@
 #include "playback/MediaPool.h"
 #include "playback/PlaybackController.h"
 #include "playback/PlaybackScheduler.h"
+#include "playback/EngineContracts.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
@@ -160,10 +161,19 @@ void ProjectController::setCurrentProject(std::unique_ptr<Project> project)
                         -> std::shared_ptr<CachedFrame> {
                         if (m_mw->isDestroying()) return nullptr;
                         if (m_mw->timelineWorkspace()) {
-                            m_mw->timelineWorkspace()->setForceFullResolution(true);
-                            auto result = m_mw->timelineWorkspace()->compositeFrame(tick, w, h, scrub);
-                            m_mw->timelineWorkspace()->setForceFullResolution(false);
-                            return result;
+                            RenderRequest request;
+                            request.type = RenderRequestType::Still;
+                            request.quality = RenderQuality::Full;
+                            request.exactness = RenderExactness::ExactRequired;
+                            request.timelineTick = tick;
+                            request.outputWidth = w;
+                            request.outputHeight = h;
+                            request.scrubMode = scrub;
+                            request.stillFrame = true;
+                            request.preferGpuOutput = false;
+                            request.forceFullResolution = true;
+                            request.caller = "ProjectController::exportPreview";
+                            return m_mw->timelineWorkspace()->compositeFrame(request);
                         }
                         return nullptr;
                     });

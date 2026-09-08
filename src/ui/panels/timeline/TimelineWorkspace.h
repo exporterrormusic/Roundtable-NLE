@@ -59,7 +59,8 @@ class QToolButton;
 
 namespace rt {
 
-enum class ResolutionTier : uint8_t;
+struct RenderRequest;
+struct RenderResult;
 
 enum class TimelineRefresh : uint8_t { None, Contents, Rebuild };
 
@@ -102,7 +103,7 @@ class AudioPlaybackService;
 class AnimationVideoCache;
 class Clip;
 class CompositeService;
-class CachePolicy;
+class ExportRenderSession;
 struct OpacityMask;
 class DockLayoutManager;
 class DropController;
@@ -289,23 +290,27 @@ public:
                                                        bool scrubMode = false,
                                                        bool stillMode = false);
 
-    /// Composite against an immutable queue-time project graph using a
-    /// dedicated service.  Live setProject/setTimeline calls never rebind this
-    /// path, so an edit or project switch cannot alter an in-flight export.
-    std::shared_ptr<struct CachedFrame> compositeExportFrame(
-        const std::shared_ptr<const Project>& projectSnapshot,
-        const std::shared_ptr<const Timeline>& timelineSnapshot,
-        int64_t tick, uint32_t outW, uint32_t outH,
-        bool scrubMode, bool preserveAlpha);
+    /// Result-aware Program Monitor render path.
+    [[nodiscard]] RenderResult renderFrame(int64_t tick, uint32_t outW,
+                                           uint32_t outH,
+                                           bool scrubMode = false,
+                                           bool stillMode = false);
+
+    /// Request-based entry point used by new render consumers. The positional
+    /// overload remains while older UI callbacks are migrated.
+    std::shared_ptr<struct CachedFrame> compositeFrame(
+        const RenderRequest& request);
+    [[nodiscard]] RenderResult renderFrame(const RenderRequest& request);
+
+    /// Create one isolated renderer/preflight/cache owner for an export queue
+    /// run. TimelineWorkspace itself keeps only the live Program Monitor
+    /// service; the returned session retains each immutable job graph it binds.
+    [[nodiscard]] std::shared_ptr<ExportRenderSession>
+        createExportRenderSession();
 
     /// Prompt for a destination and export the Program Monitor's current
     /// playhead frame at the active sequence's full resolution.
     void exportCurrentFrame();
-
-    /// Composite using an explicit monitor-specific decode tier.
-    std::shared_ptr<struct CachedFrame> compositeFrameAtTier(
-        int64_t tick, uint32_t outW, uint32_t outH, bool scrubMode,
-        bool stillMode, ResolutionTier tier);
 
     /// Phase 4.2 — export 16F passthrough (see CompositeService::tryBuild16f-
     /// Passthrough).  Returns a dual-payload (RGBA16F + 8-bit BGRA) frame when
@@ -325,14 +330,6 @@ public:
     void cacheExportFrame(int64_t tick,
                           const std::shared_ptr<struct CachedFrame>& frame);
 
-    /// Snapshot-aware export write-through.  Hashes/stores the frame against
-    /// the same project graph that produced it, never whichever live project
-    /// happens to be open when the worker reaches the encoder.
-    void cacheSnapshotExportFrame(
-        const std::shared_ptr<const Project>& projectSnapshot,
-        const std::shared_ptr<const Timeline>& timelineSnapshot,
-        int64_t tick, const std::shared_ptr<struct CachedFrame>& frame);
-
     /// §4.6 2d: "Render In to Out" — pre-render the marked in/out range into
     /// the segment cache at the current playback composite size, then enable
     /// the cache-read consult so playback replays the green segment.  Stops
@@ -340,13 +337,6 @@ public:
     /// Returns: >=0 frames newly rendered; -1 no valid in/out range; -2 no
     /// composite service / zero output size.  Caller shows the user feedback.
     int renderInToOut();
-
-    /// Force Full resolution for ExportPanel preview/export frames (wraps CompositeService).
-    void setForceFullResolution(bool force);
-
-    /// Alpha export (Phase 4.2): straight-alpha transparent composite output for
-    /// ProRes-4444 / PNG export.  Forwards to CompositeService::setExportAlpha.
-    void setExportAlpha(bool keep);
 
     /// Set in/out point at current playhead (called from Timeline menu).
     void setInPoint();
@@ -422,13 +412,6 @@ private:
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
-    // Dedicated compositor plus strong ownership of the immutable graph it is
-    // currently bound to.  The service's legacy setter API is non-const, but
-    // export rendering treats this model as read-only.
-    std::shared_ptr<const Project>  m_exportProjectSnapshot;
-    std::shared_ptr<const Timeline> m_exportTimelineSnapshot;
-    std::unique_ptr<CachePolicy> m_exportCachePolicy;
-    std::unique_ptr<CompositeService> m_exportCompositeService;
     // Guards re-entrant renderInToOut() (its processEvents pump could redispatch
     // the Ctrl+Shift+R action mid-render).
     bool m_renderingInToOut{false};

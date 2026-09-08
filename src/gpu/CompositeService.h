@@ -60,7 +60,9 @@ struct VkDescriptorImageInfo_T;
 struct VkDescriptorImageInfo;
 
 #include "CompositeServiceLayerBuild.h"
+#include "SpineRendererCacheKey.h"
 #include "cache/FrameCache.h"
+#include "playback/EngineContracts.h"
 #include "playback/MediaSourceService.h"  // ResolutionTier
 #include "decode/VideoDecoder.h"          // 4.2 passthrough decoder (header is libav-free)
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -70,6 +72,7 @@ struct VkDescriptorImageInfo;
 // CompositeEngine is in global scope (not rt::) to work around a C2888
 // compiler issue with volk's Vulkan type redefinitions.
 class CompositeEngine;
+struct CompositeCacheKey;
 
 namespace rt {
 
@@ -78,22 +81,33 @@ class AnimationVideoCache;
 class AudioEngine;
 class CachePolicy;
 class Clip;
+class Compositor;
+class EffectProcessor;
 class GraphicClip;
 class MediaPool;
 class ModelManager;
+class Nv12Converter;
+class SpineRenderer;
 class SpineClip;
 class VideoClip;
 class Project;
+class RenderGpuResources;
 class SegmentRenderCache;
 class SequenceClip;
 class ShotPresetManager;
 class Timeline;
 class TitleClip;
+class TransitionRenderer;
 struct CachedFrame;
 
 class CompositeService {
 public:
-    CompositeService();
+    enum class GpuResourceMode {
+        Shared,
+        Isolated,
+    };
+
+    explicit CompositeService(GpuResourceMode gpuResourceMode = GpuResourceMode::Shared);
     ~CompositeService();
 
     /// Suppress all GPU compositing while a modal dialog is active.
@@ -150,6 +164,22 @@ public:
     }
 
 private:
+    struct RenderExecutionOutcome {
+        RenderResultStatus status{RenderResultStatus::Pending};
+        std::string warning;
+
+        void report(RenderResultStatus newStatus, std::string message)
+        {
+            if (status == RenderResultStatus::Failed)
+                return;
+            if (newStatus == RenderResultStatus::Failed ||
+                status == RenderResultStatus::Pending) {
+                status = newStatus;
+                warning = std::move(message);
+            }
+        }
+    };
+
     static std::atomic<bool> s_modalDialogActive;
     static std::atomic<bool> s_gpuResidentDecode;
 
@@ -184,6 +214,23 @@ public:
                                                  bool stillMode = false,
                                                  std::optional<ResolutionTier> tierOverride = std::nullopt);
 
+    /// Request-based compositing entry point. New preview/export callers use
+    /// this overload so render intent, quality, output policy, and immutable
+    /// snapshot ownership travel together across thread boundaries.
+    ///
+    /// The positional overload above remains as a compatibility adapter for
+    /// older callers and captures the service defaults once at entry.
+    std::shared_ptr<CachedFrame> compositeFrame(
+        const RenderRequest& request,
+        bool isNestedRecursion = false);
+
+    /// Result-aware request entry point.  This is the canonical API for new
+    /// scheduler/export code; compositeFrame(RenderRequest) is its legacy
+    /// frame-only adapter.
+    [[nodiscard]] RenderResult renderFrame(
+        const RenderRequest& request,
+        bool isNestedRecursion = false);
+
     /// Phase 4.2 — export 16-bit-float passthrough.  If the composite at
     /// `tick` is a single full-frame opaque >8-bit BT.709-limited-SDR video
     /// clip rendered 1:1 to (outW,outH), decode that one source frame, GPU-
@@ -194,9 +241,9 @@ public:
     /// so the caller falls back to the normal 8-bit compositeFrame — a bug here
     /// only degrades export to 8-bit, it never corrupts output.
     ///
-    /// MUST be called on the compositor (main) thread: it uses the shared
-    /// GpuContext Nv12Converter + GpuContext command pool, single-threaded
-    /// alongside compositeFrame.
+    /// MUST be serialized on the calling CompositeService's compositor thread.
+    /// Isolated export services use their private converter and command pool;
+    /// legacy live services retain the shared GpuContext path.
     std::shared_ptr<CachedFrame> tryBuild16fPassthrough(int64_t tick,
                                                         uint32_t outW, uint32_t outH);
 
@@ -210,7 +257,10 @@ public:
     /// This eliminates the 150-200ms "cold decoder open" stall at every shot
     /// boundary during playback — the decoder is already warm by the time
     /// the playhead reaches the clip.
-    void prewarmUpcomingShots(int64_t tick);
+    void prewarmUpcomingShots(
+        int64_t tick,
+        std::optional<bool> forceFullResolutionOverride = std::nullopt,
+        Timeline* timelineOverride = nullptr);
 
     // ── Shutdown ─────────────────────────────────────────────────────────
     /// Gracefully shut down GPU work.  Waits for all in-flight submissions,
@@ -241,6 +291,9 @@ public:
     /// m_compositeMutex (the FrameProducer thread is the sole
     /// compositor, so the flag is always picked up promptly).
     void requestCacheInvalidation() {
+        // Advance immediately so a render racing the deferred clear cannot
+        // retrieve an entry produced before this edit.
+        m_liveCacheGeneration.fetch_add(1, std::memory_order_acq_rel);
         m_cacheInvalidateRequested.store(true, std::memory_order_release);
         {
             std::lock_guard lg(m_lastCompositeMtx);
@@ -267,6 +320,12 @@ public:
 
     /// Try to invalidate immediately (used when caller holds no lock).
     void invalidateCacheDirect();
+
+    /// Monotonic identity used by the live composite LRU. Exposed for
+    /// diagnostics/tests; callers advance it through the invalidation API.
+    [[nodiscard]] uint64_t liveCacheGeneration() const noexcept {
+        return m_liveCacheGeneration.load(std::memory_order_acquire);
+    }
 
     // ── GPU display mode ────────────────────────────────────────────────
     void setGpuDisplayMode(bool on) { m_gpuDisplayMode = on; }
@@ -306,7 +365,8 @@ public:
     int renderRangeToCache(int64_t fromTick, int64_t toTick,
                            uint32_t outW, uint32_t outH,
                            const std::function<bool()>& shouldCancel = {},
-                           const std::function<void(int, int)>& onProgress = {});
+                           const std::function<void(int, int)>& onProgress = {},
+                           bool forceFullResolution = false);
 
     /// Measured wall-time (ms) the compositor last spent producing a FRESH
     /// frame at `tick` during real-time playback, or -1 if never measured.
@@ -414,18 +474,16 @@ public:
 
     // ── Composite engine access ─────────────────────────────────────────
     [[nodiscard]] CompositeEngine* engine() const noexcept { return m_engine.get(); }
+    [[nodiscard]] bool usesIsolatedGpuResources() const noexcept
+        { return m_renderGpuResources != nullptr; }
 
     /// VRAM usage percentage (0-100) from GPU texture cache, or 0 if none.
     [[nodiscard]] int vramUsagePercent() const;
 
     // ── Composite mutex ──────────────────────────────────────────────────
-    // Protects compositeFrame() execution.  Recursive because the A2
-    // change (WIP commit, RENDER_GRAPH_PLAN) allows nested SequenceClip
-    // recursion: an outer compositeFrame call temporarily unlocks before
-    // recursing, but if any inner path forgets to unlock the same thread
-    // re-acquires this mutex and MSVC's std::mutex throws EDEADLK.
-    // Using recursive_mutex makes the locking discipline forgiving while
-    // we finish migrating to a properly hierarchical lock model.
+    // Protects compositeFrame() execution. Recursive because a nested
+    // SequenceClip evaluates a child graph context synchronously while the
+    // outer frame still owns the compositor and its GPU resources.
     std::recursive_mutex& compositeMutex() { return m_compositeMutex; }
 
     // ── Last good composite ─────────────────────────────────────────────
@@ -439,6 +497,8 @@ public:
 #ifdef ROUNDTABLE_HAS_SPINE
     // ── Spine shared data ───────────────────────────────────────────────
     struct SpineSharedData {
+        ResourceLoadState loadState{ResourceLoadState::Unresolved};
+        std::string loadWarning;
         std::vector<std::vector<uint8_t>> pagePixels;
         std::vector<int> pageWidths;
         std::vector<int> pageHeights;
@@ -488,6 +548,10 @@ public:
         const SpineClip& clip, const std::string& assetsDir);
     SpineCPUState* getOrCreateSpineState(SpineClip* clip);
     SpineCPUState* tryGetSpineState(SpineClip* clip);
+    [[nodiscard]] ResourceLoadState spineResourceState(
+        const SpineClip& clip) const;
+    [[nodiscard]] std::string spineResourceWarning(
+        const SpineClip& clip) const;
     std::shared_ptr<CachedFrame> renderSpineClip(SpineClip* clip, int64_t tick,
                                                   uint32_t outW, uint32_t outH);
     void preloadSpineAssets();
@@ -549,35 +613,67 @@ public:
     void reset();
 
 private:
+    /// Request-local settings consumed while evaluating one composite.  The
+    /// public setters remain legacy defaults, but an in-flight request never
+    /// rereads them after this value has been captured.
+    struct RenderExecutionPolicy {
+        bool preferGpuOutput{false};
+        bool forceFullResolution{false};
+        bool preserveAlpha{false};
+        bool measureRealtimeCost{false};
+    };
+
+    /// Model graph and policy captured once for a render. Child sequence
+    /// evaluation copies this value and replaces only `timeline`.
+    struct RenderExecutionContext {
+        Timeline* timeline{nullptr};
+        Project* project{nullptr};
+        RenderExecutionPolicy policy{};
+        uint64_t editVersion{0};
+        bool immutableSnapshot{false};
+        RenderExecutionOutcome* outcome{nullptr};
+        FrameDiagnostics* diagnostics{nullptr};
+    };
+
+    std::shared_ptr<CachedFrame> compositeFrameImpl(
+        int64_t tick, uint32_t outW, uint32_t outH,
+        bool scrubMode, bool isNestedRecursion, bool stillMode,
+        std::optional<ResolutionTier> tierOverride,
+        const RenderExecutionContext& context,
+        RenderResultStatus* exceptionStatus = nullptr);
+
     // Layer building (extracted to CompositeServiceLayerBuild.cpp)
     std::vector<LayerInfo> buildLayersForFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                 bool scrubMode, bool playbackNonBlocking,
                                                 ResolutionTier requestTier, bool stillMode,
+                                                const RenderExecutionContext& context,
                                                 int& clipsAtTick,
                                                 int& resolvedClipsAtTick,
                                                 bool perfLog,
-                                                std::unique_lock<std::recursive_mutex>& lock,
                                                 bool& gpuSpineUsedThisFrame);
 
     // Per-clip-type layer builders (extracted to reduce CompositeServiceLayerBuild.cpp)
     std::shared_ptr<CachedFrame> resolveMediaFrame(MediaHandle handle, int64_t frameNumber,
                                                     ResolutionTier tier, bool scrubMode,
+                                                    bool forceFullResolution,
                                                     bool exactCacheOnly = false,
                                                     bool stillMode = false) const;
     // Lazily opens / search-resolves a VideoClip's media handle. skipClip=true
     // means the caller should skip the clip; a 0 return with skipClip=false
     // means an async open is still pending (proceed to sticky-frame fallback).
     uint64_t resolveVideoClipHandle(VideoClip* videoClip, bool playbackNonBlocking,
-                                    bool& skipClip);
+                                    bool forceFullResolution,
+                                    bool& skipClip,
+                                    RenderExecutionOutcome* outcome = nullptr);
     // Renders a nested SequenceClip to a clean CPU BGRA frame via a recursive
     // composite of its inner timeline. Returns null when the clip references no
-    // valid inner sequence. Temporarily swaps m_timeline and releases `lock`
-    // for the recursion, restoring both before returning.
+    // valid inner sequence. Recursion uses a child execution context and does
+    // not alter the service's bound timeline.
     std::shared_ptr<CachedFrame> buildSequenceClipFrame(
         SequenceClip* seqClip, int64_t localTick,
         uint32_t outW, uint32_t outH, bool scrubMode,
         ResolutionTier requestTier, bool stillMode,
-        std::unique_lock<std::recursive_mutex>& lock);
+        const RenderExecutionContext& context);
 #ifdef ROUNDTABLE_HAS_SPINE
     // Result of building a live SpineClip layer: either a CPU `frame` or a GPU
     // zero-copy descriptor (when gpuSpineZeroCopy is set).
@@ -585,19 +681,21 @@ private:
         std::shared_ptr<CachedFrame> frame;
         bool                  gpuSpineZeroCopy = false;
         VkDescriptorImageInfo gpuSpineDescriptor{};
+        std::shared_ptr<void> gpuSpineOwner;
         uint32_t              gpuSpineW = 0;
         uint32_t              gpuSpineH = 0;
         bool                  cpuSpineRendered = false;
     };
     // Live Spine evaluation (GPU-first, CPU fallback) for one SpineClip.
-    // Renders into the returned frame / zero-copy descriptor, may read a prior
-    // GPU-spine render back into layers[m_gpuSpineInsertedLayer] (multi-char),
-    // and sets gpuSpineUsedThisFrame. `sx` feeds a diagnostic log only.
+    // Renders into the returned frame / zero-copy descriptor and sets
+    // gpuSpineUsedThisFrame. Each character identity owns a persistent GPU
+    // surface, so multiple layers never alias one mutable framebuffer.
     SpineLayerResult buildSpineClipLayer(
         SpineClip* spineClip, int64_t tick, int64_t localTick,
-        uint32_t outW, uint32_t outH, bool scrubMode, bool playbackNonBlocking,
-        bool staticRecomposite, bool& gpuSpineUsedThisFrame,
-        std::vector<LayerInfo>& layers, float sx);
+        uint32_t outW, uint32_t outH,
+        uint32_t simultaneousAssetInstance,
+        bool& gpuSpineUsedThisFrame, float sx,
+        RenderExecutionOutcome* outcome);
 #endif
 
     // GPU compositing path (delegates to CompositeEngine)
@@ -609,7 +707,17 @@ private:
                                                      std::chrono::high_resolution_clock::time_point& perfTlayers,
                                                      int& effectLayerCount, int& effectPassCount,
                                                      int& transitionCount,
+                                                     const RenderExecutionContext& context,
+                                                     const ::CompositeCacheKey& cacheKey,
                                                      bool isNestedRecursion = false);
+
+    [[nodiscard]] std::shared_ptr<Compositor> renderCompositor(uint32_t width, uint32_t height);
+    [[nodiscard]] std::shared_ptr<EffectProcessor> renderEffectProcessor(uint32_t width, uint32_t height);
+    [[nodiscard]] std::shared_ptr<TransitionRenderer> renderTransitionRenderer(uint32_t width, uint32_t height);
+    [[nodiscard]] std::shared_ptr<SpineRenderer> renderSpineRenderer(
+        uint32_t width, uint32_t height,
+        const std::string& contentKey = std::string{});
+    [[nodiscard]] std::shared_ptr<Nv12Converter> renderNv12Converter(uint32_t width, uint32_t height);
 
     // Phase 4.2 — dedicated decoder for the export 16F passthrough, reused
     // across frames of the same source (reopened on path change).  Separate
@@ -626,6 +734,11 @@ private:
     ModelManager* m_modelManager{nullptr};
     Project* m_project{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
+
+    // Optional per-consumer mutable GPU helpers. Declared before m_engine so
+    // the engine is destroyed first and cannot retain resolver pointers into
+    // an already-destroyed resource bundle.
+    std::unique_ptr<RenderGpuResources> m_renderGpuResources;
 
     // Composite engine (owns GPU compositing pipeline)
     std::unique_ptr<CompositeEngine> m_engine;
@@ -702,6 +815,10 @@ private:
     CachePolicy* m_cachePolicy{nullptr};
 
     std::atomic<bool> m_cacheInvalidateRequested{false};
+    // Live preview cache identity. Pixel-affecting editor mutations flow
+    // through requestCacheInvalidation(); immutable export snapshots use their
+    // captured editVersion instead. This keeps the per-frame LRU key O(1).
+    std::atomic<uint64_t> m_liveCacheGeneration{1};
 
     // Track active clip IDs for shot-boundary detection.
     // Mutated from BOTH the FrameProducer thread (compositeFrame /
@@ -855,22 +972,12 @@ private:
 #ifdef ROUNDTABLE_HAS_SPINE
     std::unordered_map<std::string, std::shared_ptr<SpineSharedData>> m_spineSharedCache;
     std::unordered_map<std::string, std::vector<std::string>> m_animNameCache;
-    std::string m_gpuSpineActiveCharKey;
-    /// Per-frame readbacks from GPU Spine rendering, one per character.
-    std::vector<std::shared_ptr<struct CachedFrame>> m_gpuSpineReadbacks;
-    /// Number of Spine clips rendered on GPU this frame.
-    int m_gpuSpineCount{0};
-    /// Index into layers[] of the most recently inserted Spine layer.
-    int m_gpuSpineInsertedLayer{-1};
-    /// Stored spine render state for the single-char zero-copy optimization.
-    VkDescriptorImageInfo m_gpuSpineDesc{};
-    uint32_t m_gpuSpineW{0};
-    uint32_t m_gpuSpineH{0};
-    /// Set to true when a Spine clip is GPU-rendered, reset after layer tracking.
-    bool m_gpuSpineJustRendered{false};
-    /// Layer index of the PREVIOUS Spine character (for updating its layer
-    /// when the next character's readback captures its FBO content).
-    int m_gpuSpinePrevLayer{-1};
+    /// Renderers whose atlas set has been prepared by this service. The exact
+    /// key includes output size and character identity; the weak lease also
+    /// guards against an LRU-evicted renderer later reusing an address.
+    std::unordered_map<SpineRendererCacheKey, std::weak_ptr<SpineRenderer>,
+                       SpineRendererCacheKeyHash>
+        m_gpuSpinePreparedRenderers;
     /// Tick of the previous top-level buildLayersForFrame. When the current
     /// build repeats this tick, the playhead is parked (paused) and we are
     /// re-compositing a STATIC frame — e.g. during a transform-handle drag.
@@ -879,7 +986,6 @@ private:
     /// last-good cache (fixes "character vanishes when resizing, returns on
     /// play"). During playback the tick advances every frame, so zero-copy is
     /// preserved.
-    int64_t m_lastBuiltTick{-1};
     std::unordered_map<uint64_t, std::unique_ptr<SpineCPUState>> m_spineCache;
     // Sticky last-good pre-rendered frame per Spine clip.
     // Prevents source switching (pre-rendered video <-> live Spine) when

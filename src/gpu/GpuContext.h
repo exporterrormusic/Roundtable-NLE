@@ -22,6 +22,9 @@
 
 #pragma once
 
+#include "GpuGenerationCache.h"
+#include "SpineRendererCacheKey.h"
+
 #include "GpuScheduler.h"
 #include "ICompositor.h"
 #include "vulkan/Instance.h"
@@ -33,6 +36,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -192,31 +196,44 @@ public:
 
     /// Get or lazily create the shared compositor.
     /// The compositor is configured for the given output resolution.
-    ICompositor* compositor(uint32_t width = 1920, uint32_t height = 1080);
+    std::shared_ptr<Compositor> compositor(uint32_t width = 1920, uint32_t height = 1080);
 
     // ── Shared EffectProcessor ──────────────────────────────────────────
 
     /// Get or lazily create the shared effect processor.
     /// Sized to match the given output resolution.
-    EffectProcessor* effectProcessor(uint32_t width = 1920, uint32_t height = 1080);
+    std::shared_ptr<EffectProcessor> effectProcessor(uint32_t width = 1920, uint32_t height = 1080);
 
     // ── Shared SpineRenderer ────────────────────────────────────────────
 
     /// Get or lazily create the shared Spine renderer.
     /// Sized to match the given output resolution.
-    SpineRenderer* spineRenderer(uint32_t width = 1920, uint32_t height = 1080);
+    std::shared_ptr<SpineRenderer> spineRenderer(
+        uint32_t width = 1920, uint32_t height = 1080,
+        const std::string& contentKey = std::string{});
 
     // ── Shared TransitionRenderer ───────────────────────────────────────
 
     /// Get or lazily create the shared transition renderer.
     /// Sized to match the given output resolution.
-    TransitionRenderer* transitionRenderer(uint32_t width = 1920, uint32_t height = 1080);
+    std::shared_ptr<TransitionRenderer> transitionRenderer(uint32_t width = 1920, uint32_t height = 1080);
 
     // ── Shared Nv12Converter ────────────────────────────────────────────
 
     /// Get or lazily create the shared NV12 → BGRA GPU converter.
     /// Sized to match the given frame resolution.
-    Nv12Converter* nv12Converter(uint32_t width = 1920, uint32_t height = 1080);
+    std::shared_ptr<Nv12Converter> nv12Converter(uint32_t width = 1920, uint32_t height = 1080);
+
+    /// Source/destination-specific converter generation for scaled decode.
+    /// Keeping both dimensions in the key prevents input or output textures
+    /// from being resized while an earlier conversion is still in flight.
+    std::shared_ptr<Nv12Converter> nv12Converter(
+        uint32_t srcWidth, uint32_t srcHeight,
+        uint32_t dstWidth, uint32_t dstHeight);
+
+    /// Read-only snapshot for diagnostics and renderer soak tests.
+    /// Cache access is serialized with lazy generation creation.
+    [[nodiscard]] GpuGenerationWorkingSetStats generationCacheStats() const;
 
     // ── Shared CudaVulkanInterop ────────────────────────────────────────
 
@@ -285,6 +302,8 @@ public:
         { return m_gpuTextureCacheDiag.load(std::memory_order_acquire); }
 
 private:
+    struct Nv12ConverterGeneration;
+
     GpuContext() = default;
     ~GpuContext();
 
@@ -294,11 +313,16 @@ private:
     CommandPool m_cmdPool;          ///< compute queue family
     CommandPool m_graphicsCmdPool;    ///< graphics queue family (if different)
 
-    std::unique_ptr<ICompositor>        m_compositor;
-    std::unordered_map<uint64_t, std::unique_ptr<EffectProcessor>> m_effectProcessors;
-    std::unique_ptr<SpineRenderer>      m_spineRenderer;
-    std::unique_ptr<TransitionRenderer> m_transitionRenderer;
-    std::unordered_map<uint64_t, std::unique_ptr<Nv12Converter>> m_nv12Converters;
+    // Bounded resolution working sets. In-flight work retains independent
+    // shared leases, so an LRU retirement never invalidates recorded Vulkan
+    // descriptors or delayed readbacks.
+    GpuGenerationCache<Compositor> m_compositors{{3, 192ull * 1024ull * 1024ull}};
+    GpuGenerationCache<EffectProcessor> m_effectProcessors{{4, 192ull * 1024ull * 1024ull}};
+    GpuGenerationCache<SpineRenderer, SpineRendererCacheKey,
+                       SpineRendererCacheKeyHash>
+        m_spineRenderers{{6, 768ull * 1024ull * 1024ull}};
+    GpuGenerationCache<TransitionRenderer> m_transitionRenderers{{3, 128ull * 1024ull * 1024ull}};
+    GpuGenerationCache<Nv12ConverterGeneration> m_nv12Converters{{8, 384ull * 1024ull * 1024ull}};
     std::unique_ptr<CudaVulkanInterop>   m_cudaVulkanInterop;
     std::unique_ptr<GpuResourceManager>  m_resourceManager;
 

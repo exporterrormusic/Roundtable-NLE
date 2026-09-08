@@ -15,7 +15,7 @@
  *     honoured verbatim;
  *   - native-alpha (non-packed) sources get transparent-pixel RGB cleared;
  *     packed-alpha sources are left alone (their alpha lives in a tile);
- *   - GREEN-suffixed filenames are chroma-keyed (#18FF00), others never;
+ *   - GREEN-suffixed filenames and H264_Green cache paths are chroma-keyed;
  *   - the caller-owned SwsContext cache is reused for identical geometry
  *     and rebuilt when it changes; sws failure returns false with empty
  *     pixels.
@@ -556,6 +556,30 @@ TEST(ConvertDecodedFrame, GreenMatchIsCaseInsensitive)
     CachedFrame out;
     ASSERT_TRUE(convert(f, makeInfo(4, 4), "shot_green.mp4", 4, 4, sws, out));
     EXPECT_TRUE(uniformNear(out, 0, 0, 0, 0, 0));
+}
+
+TEST(ConvertDecodedFrame, H264GreenCacheDirectoryIsChromaKeyed)
+{
+    const uint32_t green = 0xFF18FF00u;
+    const auto f = makeBgra(4, 4, [&](int, int) { return green; });
+    SwsCache sws;
+    CachedFrame out;
+    ASSERT_TRUE(convert(f, makeInfo(4, 4),
+                        "converted/H264_Green/Yan/default/idle.mp4",
+                        4, 4, sws, out));
+    EXPECT_TRUE(uniformNear(out, 0, 0, 0, 0, 0));
+}
+
+TEST(ConvertDecodedFrame, UnrelatedGreenDirectoryIsNotChromaKeyed)
+{
+    const uint32_t green = 0xFF18FF00u;
+    const auto f = makeBgra(4, 4, [&](int, int) { return green; });
+    SwsCache sws;
+    CachedFrame out;
+    ASSERT_TRUE(convert(f, makeInfo(4, 4),
+                        "converted/green_room/idle.mp4",
+                        4, 4, sws, out));
+    EXPECT_EQ(pixelAt(out, 0, 0), green);
 }
 
 TEST(ConvertDecodedFrame, GreenKeySparesNonGreenPixels)

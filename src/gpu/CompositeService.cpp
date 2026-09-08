@@ -52,6 +52,7 @@
 
 // GPU compositing
 #include "CompositeEngine.h"
+#include "RenderGpuResources.h"
 #include "GpuContext.h"
 #include "Compositor.h"
 #include "EffectProcessor.h"
@@ -116,19 +117,47 @@ void initGpuResidentDecodeFromEnv()
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-CompositeService::CompositeService()
+CompositeService::CompositeService(GpuResourceMode gpuResourceMode)
 {
     initGpuResidentDecodeFromEnv();
 
     // §4.6 slice 2c: composited-output cache for "Render In to Out".
     m_segmentRenderCache = std::make_unique<SegmentRenderCache>();
 
+    // Export rendering owns private mutable helpers and per-thread command
+    // pools. The device, allocator, scheduler, and queues remain shared.
+    if (gpuResourceMode == GpuResourceMode::Isolated) {
+        m_renderGpuResources = std::make_unique<RenderGpuResources>();
+        if (GpuContext::get().isInitialized() &&
+            !m_renderGpuResources->init()) {
+            spdlog::error("CompositeService: isolated GPU resources unavailable; "
+                          "GPU compositing will remain disabled for this session");
+        }
+    }
+
     // Create the composite engine (owns GPU compositing pipeline).
     m_engine = std::make_unique<CompositeEngine>();
+    if (m_renderGpuResources) {
+        m_engine->setSequentialRenderMode(true);
+        m_engine->setEffectProcessorResolver(
+            [this](uint32_t width, uint32_t height) {
+                return m_renderGpuResources
+                    ? m_renderGpuResources->effectProcessor(width, height)
+                    : nullptr;
+            });
+    }
     if (GpuContext::get().isInitialized()) {
         VkDevice device = GpuContext::get().vkDevice();
-        if (device != VK_NULL_HANDLE)
-            m_engine->init(device);
+        if (device != VK_NULL_HANDLE &&
+            (!m_renderGpuResources || m_renderGpuResources->isInitialized())) {
+            if (m_renderGpuResources) {
+                m_engine->init(device,
+                    &m_renderGpuResources->graphicsCommandPool(),
+                    m_renderGpuResources->graphicsQueue());
+            } else {
+                m_engine->init(device);
+            }
+        }
     }
 
     // ── Start the background prewarm thread ───────────────────────────
@@ -150,6 +179,47 @@ CompositeService::~CompositeService()
     // Destroy the composite engine — it drains GPU queues and frees all
     // GPU resources (submission, staging ring, texture cache, layers).
     m_engine.reset();
+    m_renderGpuResources.reset();
+}
+
+std::shared_ptr<Compositor> CompositeService::renderCompositor(
+    uint32_t width, uint32_t height)
+{
+    if (m_renderGpuResources)
+        return m_renderGpuResources->compositor(width, height);
+    return GpuContext::get().compositor(width, height);
+}
+
+std::shared_ptr<EffectProcessor> CompositeService::renderEffectProcessor(
+    uint32_t width, uint32_t height)
+{
+    if (m_renderGpuResources)
+        return m_renderGpuResources->effectProcessor(width, height);
+    return GpuContext::get().effectProcessor(width, height);
+}
+
+std::shared_ptr<TransitionRenderer> CompositeService::renderTransitionRenderer(
+    uint32_t width, uint32_t height)
+{
+    if (m_renderGpuResources)
+        return m_renderGpuResources->transitionRenderer(width, height);
+    return GpuContext::get().transitionRenderer(width, height);
+}
+
+std::shared_ptr<SpineRenderer> CompositeService::renderSpineRenderer(
+    uint32_t width, uint32_t height, const std::string& contentKey)
+{
+    if (m_renderGpuResources)
+        return m_renderGpuResources->spineRenderer(width, height, contentKey);
+    return GpuContext::get().spineRenderer(width, height, contentKey);
+}
+
+std::shared_ptr<Nv12Converter> CompositeService::renderNv12Converter(
+    uint32_t width, uint32_t height)
+{
+    if (m_renderGpuResources)
+        return m_renderGpuResources->nv12Converter(width, height);
+    return GpuContext::get().nv12Converter(width, height);
 }
 
 void CompositeService::reset()
@@ -177,7 +247,7 @@ void CompositeService::reset()
 #ifdef ROUNDTABLE_HAS_SPINE
     m_spineSharedCache.clear();
     m_animNameCache.clear();
-    m_gpuSpineActiveCharKey.clear();
+    m_gpuSpinePreparedRenderers.clear();
     m_spineCache.clear();
     m_lastPreRenderedSpineFrame.clear();
     {
@@ -262,6 +332,7 @@ void CompositeService::purgeDeadSpineStates(const std::unordered_set<uint64_t>& 
 
 void CompositeService::invalidateCacheDirect()
 {
+    m_liveCacheGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (m_engine) {
         m_engine->clearLru();
     }
@@ -317,7 +388,7 @@ void CompositeService::requestCacheInvalidationRange(int64_t fromTick, int64_t t
         return;
     }
     if (m_engine)
-        m_engine->invalidateLruRange(fromTick, toTick);
+        m_engine->invalidateLruRange(m_timeline, fromTick, toTick);
     {
         std::lock_guard lg(m_lastCompositeMtx);
         m_lastStaticComposite.reset();
@@ -403,8 +474,17 @@ void CompositeService::shutdown()
     //    its destructor (running from ~CompositeService later) is
     //    a safe no-op because everything is already torn down.
     if (m_engine) {
-        m_engine->shutdown();
+        m_engine->shutdown(m_renderGpuResources
+            ? GpuTeardownMode::SessionScoped
+            : GpuTeardownMode::DeviceWide);
     }
+
+    // Private helpers and their command pools depend on the shared Vulkan
+    // device. Release them as part of shutdown (not merely destruction) so
+    // phased application teardown cannot destroy GpuContext first.
+    if (m_renderGpuResources)
+        m_renderGpuResources->shutdown(GpuTeardownMode::SessionScoped);
+    m_renderGpuResources.reset();
 
     spdlog::info("CompositeService::shutdown() — complete");
 }

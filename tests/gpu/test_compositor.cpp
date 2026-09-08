@@ -13,9 +13,13 @@
 
 #include <volk.h>
 #include "Compositor.h"
+#include "CompositeEngine.h"
 #include "CompositeServiceLayerBuild.h"
 #include "EffectProcessor.h"
 #include "GpuContext.h"
+#include "GpuGenerationCache.h"
+#include "SpineRendererCacheKey.h"
+#include "GpuWorkSubmission.h"
 #include "TemporalInterpolator.h"
 #include "TransitionRenderer.h"
 #include "vulkan/Instance.h"
@@ -103,6 +107,83 @@ struct TestVulkanContext
 
 static TestVulkanContext* g_vk = nullptr;
 
+TEST(CompositeEnginePolicyTest, SequentialModeIsExplicit)
+{
+    CompositeEngine engine;
+    EXPECT_FALSE(engine.sequentialRenderMode());
+    engine.setSequentialRenderMode(true);
+    EXPECT_TRUE(engine.sequentialRenderMode());
+}
+
+TEST(GpuGenerationCacheTest, BoundsResidentSetAndDefersLeasedDestruction)
+{
+    rt::GpuGenerationCache<int> cache({2, 100});
+    auto first = std::make_shared<int>(1);
+    std::weak_ptr<int> firstWeak = first;
+
+    EXPECT_TRUE(cache.insert(1, first, 40).empty());
+    EXPECT_TRUE(cache.insert(2, std::make_shared<int>(2), 40).empty());
+    auto retired = cache.insert(3, std::make_shared<int>(3), 40);
+
+    ASSERT_EQ(retired.size(), 1u);
+    EXPECT_EQ(cache.size(), 2u);
+    EXPECT_EQ(cache.estimatedBytes(), 80u);
+    EXPECT_EQ(*retired.front(), 1);
+    retired.clear();
+    EXPECT_FALSE(firstWeak.expired());
+    first.reset();
+    EXPECT_TRUE(firstWeak.expired());
+}
+
+TEST(GpuGenerationCacheTest, ByteBudgetEvictsBeforeEntryLimit)
+{
+    rt::GpuGenerationCache<int> cache({8, 100});
+    EXPECT_TRUE(cache.insert(1, std::make_shared<int>(1), 60).empty());
+    auto retired = cache.insert(2, std::make_shared<int>(2), 60);
+    ASSERT_EQ(retired.size(), 1u);
+    EXPECT_EQ(cache.size(), 1u);
+    EXPECT_EQ(cache.estimatedBytes(), 60u);
+
+    retired = cache.insert(3, std::make_shared<int>(3), 140);
+    EXPECT_EQ(cache.size(), 1u);
+    EXPECT_EQ(cache.estimatedBytes(), 140u);
+}
+
+TEST(GpuGenerationCacheTest, CacheHitRefreshesLruOrder)
+{
+    rt::GpuGenerationCache<int> cache({2, 1000});
+    EXPECT_TRUE(cache.insert(1, std::make_shared<int>(1), 10).empty());
+    EXPECT_TRUE(cache.insert(2, std::make_shared<int>(2), 10).empty());
+    ASSERT_NE(cache.find(1), nullptr); // key 2 is now least-recently used
+
+    auto retired = cache.insert(3, std::make_shared<int>(3), 10);
+    ASSERT_EQ(retired.size(), 1u);
+    EXPECT_EQ(*retired.front(), 2);
+    EXPECT_NE(cache.find(1), nullptr);
+    EXPECT_NE(cache.find(3), nullptr);
+}
+
+TEST(GpuGenerationCacheTest, CompositeSpineIdentityUsesFullKeyEquality)
+{
+    using Cache = rt::GpuGenerationCache<
+        int, rt::SpineRendererCacheKey, rt::SpineRendererCacheKeyHash>;
+    Cache cache({6, 1000});
+    const rt::SpineRendererCacheKey alice1080{1920, 1080, "Alice|Default|0"};
+    const rt::SpineRendererCacheKey bob1080{1920, 1080, "Bob|Default|0"};
+    const rt::SpineRendererCacheKey alice720{1280, 720, "Alice|Default|0"};
+
+    EXPECT_TRUE(cache.insert(alice1080, std::make_shared<int>(1), 10).empty());
+    EXPECT_TRUE(cache.insert(bob1080, std::make_shared<int>(2), 10).empty());
+    EXPECT_TRUE(cache.insert(alice720, std::make_shared<int>(3), 10).empty());
+
+    ASSERT_NE(cache.find(alice1080), nullptr);
+    ASSERT_NE(cache.find(bob1080), nullptr);
+    ASSERT_NE(cache.find(alice720), nullptr);
+    EXPECT_EQ(*cache.find(alice1080), 1);
+    EXPECT_EQ(*cache.find(bob1080), 2);
+    EXPECT_EQ(*cache.find(alice720), 3);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  TEST FIXTURE
 // ═════════════════════════════════════════════════════════════════════════════
@@ -127,6 +208,29 @@ protected:
 
     bool hasGPU() const { return g_vk != nullptr && g_vk->valid; }
 };
+
+TEST_F(CompositorTest, GPU_SubmissionSlotRetainsLeaseThroughFenceBoundary)
+{
+    if (!hasGPU()) GTEST_SKIP() << "Vulkan not available";
+
+    std::weak_ptr<int> leaseWeak;
+    {
+        rt::GpuWorkSubmission submission;
+        ASSERT_TRUE(submission.init(g_vk->device.handle(),
+                                    g_vk->cmdPool.handle()));
+        ASSERT_TRUE(submission.beginRecording());
+        auto lease = std::make_shared<int>(42);
+        leaseWeak = lease;
+        submission.retainForCurrentSlot(lease);
+        lease.reset();
+        EXPECT_FALSE(leaseWeak.expired());
+        ASSERT_TRUE(submission.endRecording());
+        ASSERT_TRUE(submission.submit(g_vk->device.graphicsQueue()));
+        ASSERT_TRUE(submission.waitForAll(5'000'000'000ull));
+        EXPECT_FALSE(leaseWeak.expired());
+    }
+    EXPECT_TRUE(leaseWeak.expired());
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  STRUCTURAL TESTS (no GPU required)
@@ -478,6 +582,49 @@ static rt::Texture createRgbaTexture(uint32_t width, uint32_t height,
     return tex;
 }
 
+static std::vector<uint8_t> legacyCircularGaussianBlur(
+    const std::vector<uint8_t>& source, uint32_t width, uint32_t height,
+    float radius)
+{
+    std::vector<uint8_t> output(source.size(), 0);
+    const int iRadius = static_cast<int>(std::min(radius, 50.0f));
+    const float sigma = std::max(radius / 3.0f, 0.5f);
+    const float sigmaSquared2 = 2.0f * sigma * sigma;
+
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            float sums[4]{};
+            float weightSum = 0.0f;
+            for (int dy = -iRadius; dy <= iRadius; ++dy) {
+                for (int dx = -iRadius; dx <= iRadius; ++dx) {
+                    const float dist2 = static_cast<float>(dx * dx + dy * dy);
+                    if (dist2 > radius * radius) continue;
+                    const float weight = std::exp(-dist2 / sigmaSquared2);
+                    const uint32_t sx = static_cast<uint32_t>(std::clamp(
+                        static_cast<int>(x) + dx, 0,
+                        static_cast<int>(width) - 1));
+                    const uint32_t sy = static_cast<uint32_t>(std::clamp(
+                        static_cast<int>(y) + dy, 0,
+                        static_cast<int>(height) - 1));
+                    const size_t sourceIndex =
+                        (static_cast<size_t>(sy) * width + sx) * 4;
+                    for (int channel = 0; channel < 4; ++channel)
+                        sums[channel] += source[sourceIndex + channel] * weight;
+                    weightSum += weight;
+                }
+            }
+            const size_t outputIndex =
+                (static_cast<size_t>(y) * width + x) * 4;
+            for (int channel = 0; channel < 4; ++channel) {
+                output[outputIndex + channel] = static_cast<uint8_t>(
+                    std::clamp(std::lround(sums[channel] / weightSum),
+                               0l, 255l));
+            }
+        }
+    }
+    return output;
+}
+
 static bool renderTemporalPixels(rt::TemporalInterpolator& interpolator,
                                  rt::Compositor& compositor,
                                  const rt::Texture& sourceA,
@@ -574,6 +721,10 @@ TEST_F(CompositorTest, GPU_Compositor_EmptyComposite)
 
     ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
                                 g_vk->device.graphicsQueue(), cfg));
+    // This test validates native compositing semantics, not the production
+    // display contract (BGRA with alpha flattened over black).
+    compositor.setOutputSwizzleRB(false);
+    compositor.setPreserveAlpha(true);
 
     // Composite with no layers
     ASSERT_TRUE(compositor.compositeSync());
@@ -644,6 +795,8 @@ TEST_F(CompositorTest, GPU_Compositor_SingleSolidLayer)
 
     ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
                                 g_vk->device.graphicsQueue(), cfg));
+    compositor.setOutputSwizzleRB(false);
+    compositor.setPreserveAlpha(true);
 
     // Create a solid red texture
     auto redTex = createSolidTexture(16, 16, 255, 0, 0, 255);
@@ -793,6 +946,167 @@ TEST_F(CompositorTest, GPU_EffectProcessor_ResizeThenTwoEffects)
     EXPECT_EQ(outputPixels, sourcePixels);
 
     source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_EffectProcessor_SeparableBlurMatchesLegacyAppearance)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kWidth = 33;
+    constexpr uint32_t kHeight = 33;
+    constexpr float kRadius = 5.0f;
+
+    // An opaque impulse exposes every kernel weight and makes the comparison
+    // more sensitive than a naturally smooth photographic background.
+    std::vector<uint8_t> sourcePixels(kWidth * kHeight * 4, 0);
+    for (size_t i = 0; i < static_cast<size_t>(kWidth) * kHeight; ++i)
+        sourcePixels[i * 4 + 3] = 255;
+    const size_t center =
+        (static_cast<size_t>(kHeight / 2) * kWidth + kWidth / 2) * 4;
+    sourcePixels[center + 0] = 255;
+    sourcePixels[center + 1] = 255;
+    sourcePixels[center + 2] = 255;
+
+    auto source = createRgbaTexture(kWidth, kHeight, sourcePixels);
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = kWidth;
+    cfg.height = kHeight;
+    ASSERT_TRUE(processor.init(
+        g_vk->device, g_vk->allocator, g_vk->cmdPool,
+        g_vk->device.graphicsQueue(), cfg));
+
+    std::vector<rt::EffectStack::EffectSnapshot> effects(1);
+    effects[0].type = rt::EffectType::Blur;
+    effects[0].params = {kRadius};
+    ASSERT_TRUE(processor.processSync(source.descriptorInfo(), effects));
+
+    std::vector<uint8_t> actual;
+    ASSERT_TRUE(processor.readbackOutput(actual));
+    const auto legacy = legacyCircularGaussianBlur(
+        sourcePixels, kWidth, kHeight, kRadius);
+    ASSERT_EQ(actual.size(), legacy.size());
+
+    int maxRgbDelta = 0;
+    double meanRgbDelta = 0.0;
+    size_t rgbSamples = 0;
+    for (size_t i = 0; i < actual.size(); i += 4) {
+        for (size_t channel = 0; channel < 3; ++channel) {
+            const int delta = std::abs(
+                static_cast<int>(actual[i + channel]) -
+                static_cast<int>(legacy[i + channel]));
+            maxRgbDelta = std::max(maxRgbDelta, delta);
+            meanRgbDelta += delta;
+            ++rgbSamples;
+        }
+        EXPECT_EQ(actual[i + 3], 255u);
+    }
+    meanRgbDelta /= static_cast<double>(rgbSamples);
+    EXPECT_LE(maxRgbDelta, 2);
+    EXPECT_LT(meanRgbDelta, 0.05);
+
+    source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_EffectProcessor_BlurCanRepeatOrFadeEdges)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kSize = 24;
+    constexpr float kRadius = 5.0f;
+    std::vector<uint8_t> sourcePixels(kSize * kSize * 4, 255);
+    auto source = createRgbaTexture(kSize, kSize, sourcePixels);
+
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = kSize;
+    cfg.height = kSize;
+    ASSERT_TRUE(processor.init(
+        g_vk->device, g_vk->allocator, g_vk->cmdPool,
+        g_vk->device.graphicsQueue(), cfg));
+
+    std::vector<rt::EffectStack::EffectSnapshot> effects(1);
+    effects[0].type = rt::EffectType::Blur;
+    effects[0].params = {kRadius, 1.0f};
+    ASSERT_TRUE(processor.processSync(source.descriptorInfo(), effects));
+    std::vector<uint8_t> repeated;
+    ASSERT_TRUE(processor.readbackOutput(repeated));
+
+    effects[0].params[rt::Blur::RepeatEdgePixels] = 0.0f;
+    ASSERT_TRUE(processor.processSync(source.descriptorInfo(), effects));
+    std::vector<uint8_t> faded;
+    ASSERT_TRUE(processor.readbackOutput(faded));
+
+    const auto channel = [](const std::vector<uint8_t>& pixels,
+                            uint32_t x, uint32_t y, uint32_t c) {
+        return pixels[(static_cast<size_t>(y) * kSize + x) * 4 + c];
+    };
+    for (uint32_t c = 0; c < 4; ++c) {
+        EXPECT_GE(channel(repeated, 0, 0, c), 253u);
+        EXPECT_LT(channel(faded, 0, 0, c), 160u);
+        EXPECT_GE(channel(faded, kSize / 2, kSize / 2, c), 253u);
+    }
+
+    source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_EffectProcessor_MaskedBlurAfterEffectPreservesInput)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kWidth = 32;
+    constexpr uint32_t kHeight = 16;
+    std::vector<uint8_t> sourcePixels(kWidth * kHeight * 4, 255);
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 0; x < kWidth; ++x) {
+            const size_t i = (static_cast<size_t>(y) * kWidth + x) * 4;
+            sourcePixels[i + 0] = x < kWidth / 2 ? 255 : 0;
+            sourcePixels[i + 1] = 0;
+            sourcePixels[i + 2] = x < kWidth / 2 ? 0 : 255;
+        }
+    }
+
+    auto source = createRgbaTexture(kWidth, kHeight, sourcePixels);
+    auto mask = createLeftHalfMaskTexture(kWidth, kHeight);
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = kWidth;
+    cfg.height = kHeight;
+    ASSERT_TRUE(processor.init(
+        g_vk->device, g_vk->allocator, g_vk->cmdPool,
+        g_vk->device.graphicsQueue(), cfg));
+
+    const std::vector<float> neutralColorCorrect = {
+        0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+    std::vector<rt::EffectStack::EffectSnapshot> effects(2);
+    effects[0].type = rt::EffectType::ColorCorrect;
+    effects[0].params = neutralColorCorrect;
+    effects[1].type = rt::EffectType::Blur;
+    effects[1].params = {5.0f};
+    std::vector<VkDescriptorImageInfo> masks(2);
+    masks[1] = mask.descriptorInfo();
+
+    VkCommandBuffer cmd = g_vk->cmdPool.beginSingleTime();
+    ASSERT_NE(cmd, VK_NULL_HANDLE);
+    ASSERT_TRUE(processor.process(cmd, source.descriptorInfo(), effects, &masks));
+    g_vk->cmdPool.endSingleTime(cmd, g_vk->device.graphicsQueue());
+
+    std::vector<uint8_t> actual;
+    ASSERT_TRUE(processor.readbackOutput(actual));
+    const auto pixel = [&](uint32_t x, uint32_t channel) {
+        return actual[(static_cast<size_t>(kHeight / 2) * kWidth + x) * 4 +
+                      channel];
+    };
+    EXPECT_EQ(pixel(24, 0), 0u);
+    EXPECT_EQ(pixel(24, 2), 255u); // masked-out half remains the prior effect output
+    EXPECT_LT(pixel(15, 0), 255u);
+    EXPECT_GT(pixel(15, 2), 0u);   // blur crosses the boundary on enabled half
+
+    source.destroy();
+    mask.destroy();
     processor.shutdown();
 }
 
@@ -1088,6 +1402,8 @@ TEST_F(CompositorTest, GPU_Compositor_HalfOpacity)
 
     ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
                                 g_vk->device.graphicsQueue(), cfg));
+    compositor.setOutputSwizzleRB(false);
+    compositor.setPreserveAlpha(true);
 
     auto whiteTex = createSolidTexture(16, 16, 255, 255, 255, 255);
 
@@ -1175,6 +1491,8 @@ TEST_F(CompositorTest, GPU_Compositor_DisabledLayer)
 
     ASSERT_TRUE(compositor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
                                 g_vk->device.graphicsQueue(), cfg));
+    compositor.setOutputSwizzleRB(false);
+    compositor.setPreserveAlpha(true);
 
     auto redTex = createSolidTexture(16, 16, 255, 0, 0, 255);
 
@@ -1362,6 +1680,7 @@ TEST_F(CompositorTest, GPU_Compositor_OutputDescriptor)
     auto info = compositor.outputDescriptorInfo();
     EXPECT_NE(info.imageView, VK_NULL_HANDLE);
     EXPECT_NE(info.sampler, VK_NULL_HANDLE);
+    EXPECT_EQ(info.imageLayout, VK_IMAGE_LAYOUT_GENERAL);
 
     compositor.shutdown();
 }

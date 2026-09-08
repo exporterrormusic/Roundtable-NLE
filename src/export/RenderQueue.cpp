@@ -31,6 +31,52 @@
 
 namespace rt {
 
+namespace {
+
+// Every immutable capture receives a non-zero generation. The composite
+// cache additionally hashes pixel-affecting timeline state, but this value
+// keeps capture provenance explicit and prevents two independently captured
+// graphs from masquerading as the same revision if an address is ever reused.
+std::atomic<uint64_t> g_nextRenderSnapshotVersion{1};
+
+[[nodiscard]] uint64_t nextRenderSnapshotVersion() noexcept
+{
+    uint64_t version = g_nextRenderSnapshotVersion.fetch_add(
+        1, std::memory_order_relaxed);
+    // Wraparound is practically unreachable, but zero is reserved for live
+    // graphs with no explicit immutable-capture generation.
+    if (version == 0) {
+        version = g_nextRenderSnapshotVersion.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+    return version;
+}
+
+void setSnapshotExportRange(ExportRenderSnapshot& snapshot,
+                            const ExportJobConfig& config,
+                            const Timeline& timeline)
+{
+    const uint32_t fpsNum = config.encoderConfig.fpsNum > 0
+        ? static_cast<uint32_t>(config.encoderConfig.fpsNum) : 1u;
+    const uint32_t fpsDen = config.encoderConfig.fpsDen > 0
+        ? static_cast<uint32_t>(config.encoderConfig.fpsDen) : 1u;
+    int64_t startFrame = config.startFrame;
+    int64_t endFrame = config.endFrame;
+    if (endFrame <= startFrame) {
+        const double duration = ticksToSeconds(timeline.duration());
+        endFrame = static_cast<int64_t>(
+            duration * fpsNum / fpsDen);
+    }
+    if (endFrame <= startFrame)
+        endFrame = startFrame + 1;
+    snapshot.rangeStartTick = frameIndexToTick(
+        startFrame, fpsNum, fpsDen);
+    snapshot.rangeEndTick = frameIndexToTick(
+        endFrame, fpsNum, fpsDen);
+}
+
+} // namespace
+
 const char* exportPresetName(ExportPreset preset) noexcept
 {
     switch (preset) {
@@ -139,11 +185,14 @@ uint32_t RenderQueue::addJob(const ExportJobConfig& config,
     if (timeline) {
         try {
             auto captured = std::make_shared<ExportRenderSnapshot>();
+            captured->editVersion = nextRenderSnapshotVersion();
             captured->timeline = timeline->clone();
             if (!captured->timeline)
                 captureError = "Failed to clone export timeline";
-            else
+            else {
+                setSnapshotExportRange(*captured, config, *captured->timeline);
                 snapshot = std::move(captured);
+            }
         } catch (const std::exception& e) {
             captureError = std::string("Failed to clone export timeline: ") + e.what();
         } catch (...) {
@@ -216,12 +265,15 @@ uint32_t RenderQueue::addJob(const ExportJobConfig& config,
                         capturedProject->setActiveSequence(selectedIndex);
 
                         auto renderSnapshot = std::make_shared<ExportRenderSnapshot>();
+                        renderSnapshot->editVersion = nextRenderSnapshotVersion();
                         renderSnapshot->sequenceIndex = selectedIndex;
                         renderSnapshot->project =
                             std::shared_ptr<const Project>(std::move(capturedProject));
                         renderSnapshot->timeline = std::shared_ptr<const Timeline>(
                             renderSnapshot->project,
                             renderSnapshot->project->sequence(selectedIndex));
+                        setSnapshotExportRange(
+                            *renderSnapshot, config, *renderSnapshot->timeline);
                         snapshot = std::move(renderSnapshot);
                     }
                 }
@@ -490,8 +542,6 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         return;
     }
 
-    auto startTime = std::chrono::steady_clock::now();
-
     // ── Step 1: Frame renderer setup ────────────────────────────────
     // The live export composites each frame through m_frameRenderCb
     // (ExportPanel -> the preview compositor with forceFullResolution). The
@@ -514,6 +564,58 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         job.error = "RenderQueue: no frame-render callback set";
         return;
     }
+
+    // Resolve every typed visual dependency before creating the encoder.
+    // MediaPool and Spine loading remain asynchronous: the callback schedules
+    // work on their owning UI-side services and this worker polls until the
+    // snapshot is Ready, terminal, canceled, or the bounded wait expires.
+    if (m_resourcePreflightCb && job.renderSnapshot) {
+        constexpr auto kPreflightTimeout = std::chrono::minutes(2);
+        const auto deadline = std::chrono::steady_clock::now() + kPreflightTimeout;
+        for (;;) {
+            if (m_cancelAll.load() || job.cancelRequested.load()) {
+                job.status = JobStatus::Cancelled;
+                return;
+            }
+
+            const RenderPreflightResult preflight =
+                m_resourcePreflightCb(job.renderSnapshot);
+            if (preflight.isReady())
+                break;
+            if (preflight.status == RenderResultStatus::Canceled) {
+                job.status = JobStatus::Cancelled;
+                return;
+            }
+            if (!preflight.isRetryable()) {
+                job.status = JobStatus::Failed;
+                job.error = preflight.warning.empty()
+                    ? "Export resource preflight failed"
+                    : preflight.warning;
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                job.status = JobStatus::Failed;
+                job.error = "Timed out preparing export resources (" +
+                    std::to_string(preflight.readyResources) + "/" +
+                    std::to_string(preflight.totalResources) + " ready)";
+                if (!preflight.warning.empty())
+                    job.error += ": " + preflight.warning;
+                return;
+            }
+
+            {
+                std::lock_guard lock(m_mutex);
+                job.progress.statusText = "Preparing media " +
+                    std::to_string(preflight.readyResources) + "/" +
+                    std::to_string(preflight.totalResources);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        std::lock_guard lock(m_mutex);
+        job.progress.statusText = "Starting encoder...";
+    }
+
+    auto startTime = std::chrono::steady_clock::now();
 
     // ── Step 2: Encoder creation ────────────────────────────────────
     // The encoder is owned by ctx (workerThread's frame), NOT a local:
@@ -824,22 +926,49 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // the SAME timeline tick.  Never advance progress or touch the encoder
         // until a complete frame payload has been returned.
         constexpr int kMaxCompositeAttempts = 3;
+        RenderResult renderResult;
+        int compositeAttempts = 0;
         for (int attempt = 1; attempt <= kMaxCompositeAttempts; ++attempt) {
+            compositeAttempts = attempt;
             if (m_cancelAll.load() || job.cancelRequested.load()) {
                 cancelled = true;
                 break;
             }
-            cframe = m_frameRenderCb(job.renderSnapshot,
-                                     tick, nextTick, outW, outH, true,
-                                     job.config.preserveAlpha);
-            frameValidation = validateExportFrame(
-                cframe.get(), outW, outH, encoder->is10BitTarget());
+            renderResult = m_frameRenderCb(job.renderSnapshot,
+                                           tick, nextTick, outW, outH, true,
+                                           job.config.preserveAlpha);
+            cframe = renderResult.frame;
+
+            if (renderResult.status == RenderResultStatus::Canceled) {
+                cancelled = true;
+                break;
+            }
+            if (renderResult.status == RenderResultStatus::Failed ||
+                renderResult.status == RenderResultStatus::MissingMedia) {
+                frameValidation.valid = false;
+                frameValidation.error = std::string(toString(renderResult.status));
+                if (!renderResult.diagnostics.warning.empty())
+                    frameValidation.error += ": " + renderResult.diagnostics.warning;
+                break;
+            }
+
+            if (renderResult.status == RenderResultStatus::Pending ||
+                renderResult.status == RenderResultStatus::HeldPrevious) {
+                frameValidation.valid = false;
+                frameValidation.error = renderResult.status == RenderResultStatus::Pending
+                    ? "render is not complete yet"
+                    : "renderer returned a held preview frame";
+            } else {
+                frameValidation = validateExportFrame(
+                    cframe.get(), outW, outH, encoder->is10BitTarget());
+            }
             if (frameValidation.valid)
                 break;
 
-            spdlog::warn("RndQ[{}]: invalid composite for frame {} "
+            spdlog::warn("RndQ[{}]: {} composite for frame {} "
                          "(attempt {}/{}): {}",
-                         job.id, f, attempt, kMaxCompositeAttempts,
+                         job.id, toString(renderResult.status), f,
+                         attempt, kMaxCompositeAttempts,
                          frameValidation.error);
             if (attempt < kMaxCompositeAttempts)
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -849,7 +978,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         if (!frameValidation.valid) {
             job.status = JobStatus::Failed;
             job.error = "Rendering failed at frame " + std::to_string(f) +
-                        " after " + std::to_string(kMaxCompositeAttempts) +
+                        " after " + std::to_string(compositeAttempts) +
                         " attempts: " + frameValidation.error;
             encoder->shutdown();
             return;

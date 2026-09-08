@@ -71,6 +71,7 @@ void FrameClock::clockLoop()
             if (playing) {
                 // Reset deadline on play start — first frame fires immediately
                 nextDeadline = clock::now();
+                m_diagJumpDetector.reset();
             }
             if (m_stateCB) m_stateCB(playing);
         }
@@ -98,6 +99,12 @@ void FrameClock::clockLoop()
                 m_droppedFrames.fetch_add(1, std::memory_order_relaxed);
             }
 
+            auto* sync = m_controller ? m_controller->syncClock() : nullptr;
+            const uint64_t resetGeneration = sync
+                ? sync->resetGeneration() : 0;
+            const double speedNow = sync
+                ? sync->speed() : m_controller->shuttleSpeed();
+
             // Read current audio clock position
             const int64_t tick = m_controller->currentTick();
 
@@ -111,13 +118,14 @@ void FrameClock::clockLoop()
             if (m_frameCB) {
                 // DIAG: log clock ticks to verify audio clock stability
                 {
-                    static int s_clockLog = 0;
-                    static int64_t s_lastFrame = -1;
-                    int64_t frameDelta = (s_lastFrame >= 0) ? (frameNum - s_lastFrame) : 0;
-                    if (++s_clockLog % 15 == 0) {
-                        spdlog::info("[DIAG-CLOCK] tick={} frame={} delta={} fps={:.1f}",
-                                     snappedTick, frameNum, frameDelta, fps);
-                    } else if (frameDelta > 2 || frameDelta < 0) {
+                    const auto observation = m_diagJumpDetector.observe(
+                        frameNum, speedNow, resetGeneration);
+                    if (observation.intentionalReset) {
+                        spdlog::debug("[DIAG-CLOCK] RESET tick={} frame={} "
+                                      "speed={:.2f} resetGen={}",
+                                      snappedTick, frameNum, speedNow,
+                                      resetGeneration);
+                    } else if (observation.unexpectedJump) {
                         // Attach sync-clock state so we can tell apart the
                         // three known causes of a JUMP:
                         //   (a) speed != 1.0          → speed field shows it
@@ -127,25 +135,23 @@ void FrameClock::clockLoop()
                         //                                 jumped by ~delta
                         //                                 frames AND extrap-
                         //                                 olation matches.
-                        auto* sync = m_controller ? m_controller->syncClock() : nullptr;
                         if (sync) {
                             const int64_t master = sync->masterTick();
                             const int64_t extrapGap = sync->currentTick() - master;
                             const double  msSinceAdv = sync->msSinceLastAdvance();
-                            const double  speedNow = sync->speed();
                             spdlog::warn("[DIAG-CLOCK] JUMP tick={} frame={} "
                                          "delta={} fps={:.1f} speed={:.2f} "
                                          "masterTick={} extrapGap={} "
                                          "msSinceAdvance={:.1f}",
-                                         snappedTick, frameNum, frameDelta, fps,
+                                         snappedTick, frameNum, observation.delta, fps,
                                          speedNow, master, extrapGap, msSinceAdv);
                         } else {
                             spdlog::warn("[DIAG-CLOCK] JUMP tick={} frame={} "
                                          "delta={} fps={:.1f} (no syncClock)",
-                                         snappedTick, frameNum, frameDelta, fps);
+                                         snappedTick, frameNum,
+                                         observation.delta, fps);
                         }
                     }
-                    s_lastFrame = frameNum;
                 }
                 m_frameCB(snappedTick, frameNum);
             }

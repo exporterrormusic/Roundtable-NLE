@@ -14,10 +14,12 @@
 
 #include "vulkan/CommandPool.h"
 #include "vulkan/Texture.h"   // Texture::StagingCleanup
+#include "GpuGenerationCache.h"
 
 #include <vulkan/vulkan_core.h>
 #include <deque>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace rt {
@@ -58,9 +60,11 @@ struct WorkerGpuState {
     /// single shared converter.  Lazy-created the first time the
     /// worker takes the GPU-resident decode path (so a worker that
     /// only ever sees CPU-fallback frames never allocates one).
-    std::unique_ptr<Nv12Converter> nv12Converter;
-    uint32_t                       nv12ConverterW{0};
-    uint32_t                       nv12ConverterH{0};
+    // Source/destination generations. A worker may submit the next frame
+    // before the previous fence signals, so changing dimensions must select a
+    // different converter instead of resizing textures/descriptors in place.
+    GpuGenerationCache<Nv12Converter> nv12Converters{
+        {6, 256ull * 1024ull * 1024ull}};
 
     // ── Chroma-key pass (2026-05-27) ─────────────────────────────────
     // Inline compute dispatch for GREEN-suffixed chroma-key media.
@@ -106,6 +110,7 @@ struct WorkerGpuState {
         // fence signals) could drop the texture's refcount to 0 and
         // free its VkImage while the convert+copy is still pending.
         std::shared_ptr<Texture>             dstHold;
+        std::shared_ptr<Nv12Converter>       converterHold;
     };
     std::deque<PendingSubmit> pending;
 
@@ -134,13 +139,9 @@ struct WorkerGpuState {
     /// order = signal order).
     void pollAndCleanup();
 
-    /// Lazy-create (or reuse) this worker's Nv12Converter, sized so
-    /// that the convert shader writes (w, h) BGRA into the output
-    /// texture.  Returns nullptr on init failure (GpuContext not up,
-    /// queue family unavailable, etc.).  Internal calls into
-    /// ensureOutputSize within the converter will resize the output
-    /// texture if the dst dimensions change.
-    Nv12Converter* ensureNv12Converter(uint32_t w, uint32_t h);
+    /// Lazy-create or reuse a source/destination-specific converter generation.
+    std::shared_ptr<Nv12Converter> ensureNv12Converter(
+        uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH);
 
     /// Lazy-create (or reuse) the chroma-key compute pass.  Called once
     /// per worker the first time a GREEN file is encountered.  Borrows

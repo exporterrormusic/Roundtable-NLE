@@ -8,6 +8,8 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -75,6 +77,13 @@ public:
     /// Whether validation layers are active.
     [[nodiscard]] bool validationEnabled() const noexcept { return m_validationEnabled; }
 
+    /// Number of ERROR-severity validation messages received since the most
+    /// recent Instance::create(). Useful for unattended stress verification.
+    [[nodiscard]] uint64_t validationErrorCount() const noexcept
+    {
+        return s_validationErrorCount.load(std::memory_order_acquire);
+    }
+
     /// Implicit conversion to VkInstance.
     operator VkInstance() const noexcept { return m_instance; }
 
@@ -90,6 +99,7 @@ private:
     /// instance pointer (Vulkan validation provides a userData slot
     /// but we don't currently plumb it).
     static bool              s_errorsFatal;
+    static std::atomic<uint64_t> s_validationErrorCount;
 
     bool checkValidationLayerSupport() const;
     void setupDebugMessenger();

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "GpuTeardownMode.h"
+
 #include "vulkan/Allocator.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/CommandPool.h"
@@ -146,7 +148,7 @@ public:
               VkQueue computeQueue,
               const TransitionConfig& config = {});
 
-    void shutdown();
+    void shutdown(GpuTeardownMode mode = GpuTeardownMode::DeviceWide);
 
     [[nodiscard]] bool isInitialized() const noexcept { return m_initialized; }
 

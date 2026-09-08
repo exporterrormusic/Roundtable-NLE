@@ -701,6 +701,10 @@ TEST(ExportRenderQueue, FullSnapshotSurvivesEditsAndProjectSwitch)
     ASSERT_TRUE(job->renderSnapshot->isFullProject());
 
     const auto snapshot = job->renderSnapshot;
+    EXPECT_NE(snapshot->editVersion, 0u);
+    ASSERT_TRUE(snapshot->rangeStartTick.has_value());
+    ASSERT_TRUE(snapshot->rangeEndTick.has_value());
+    EXPECT_LT(*snapshot->rangeStartTick, *snapshot->rangeEndTick);
     EXPECT_EQ(snapshot->sequenceIndex, 1u);
     ASSERT_EQ(snapshot->project->sequenceCount(), 2u);
     EXPECT_EQ(snapshot->project->activeSequenceIndex(), 1u);
@@ -972,6 +976,144 @@ std::shared_ptr<CachedFrame> makeIntegrityFrame(uint32_t width,
     return frame;
 }
 
+TEST(ExportPreflight, TerminalDependencyFailurePreventsFrameRenderAndPublication)
+{
+    const auto output = uniqueExportTestPath("_preflight.mov");
+    {
+        std::ofstream prior(output, std::ios::binary);
+        prior << "prior destination";
+    }
+
+    auto project = Project::createNew("Preflight Failure");
+    ASSERT_NE(project, nullptr);
+    ASSERT_NE(project->timeline(), nullptr);
+
+    RenderQueue queue;
+    std::atomic<int> frameCalls{0};
+    std::atomic<int> preflightCalls{0};
+    queue.setSnapshotResourcePreflightCallback(
+        [&](const std::shared_ptr<const ExportRenderSnapshot>&) {
+            ++preflightCalls;
+            RenderPreflightResult result;
+            result.status = RenderResultStatus::MissingMedia;
+            result.totalResources = 1;
+            result.warning = "Media is offline: missing.mov";
+            return result;
+        });
+    queue.setFrameRenderCallback(
+        [&](int64_t, int64_t, uint32_t, uint32_t, bool) {
+            ++frameCalls;
+            return makeIntegrityFrame(128, 128);
+        });
+
+    const uint32_t id = queue.addJob(
+        proResIntegrityJob(output), project.get(), project->timeline());
+    queue.start(nullptr);
+    ASSERT_TRUE(waitForRenderQueue(queue));
+
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->status.load(), JobStatus::Failed);
+    EXPECT_EQ(job->error, "Media is offline: missing.mov");
+    EXPECT_EQ(preflightCalls.load(), 1);
+    EXPECT_EQ(frameCalls.load(), 0);
+    EXPECT_EQ(readTestFile(output), "prior destination");
+    std::filesystem::remove(output);
+}
+
+TEST(ExportPreflight, PendingDependencyCanBeCanceledBeforeFrameRender)
+{
+    const auto output = uniqueExportTestPath("_preflight_cancel.mov");
+    auto project = Project::createNew("Preflight Cancel");
+    ASSERT_NE(project, nullptr);
+    ASSERT_NE(project->timeline(), nullptr);
+
+    RenderQueue queue;
+    std::atomic<int> frameCalls{0};
+    std::atomic<int> preflightCalls{0};
+    queue.setSnapshotResourcePreflightCallback(
+        [&](const std::shared_ptr<const ExportRenderSnapshot>&) {
+            ++preflightCalls;
+            RenderPreflightResult result;
+            result.status = RenderResultStatus::Pending;
+            result.totalResources = 1;
+            result.pendingResources = 1;
+            result.warning = "Opening media";
+            return result;
+        });
+    queue.setFrameRenderCallback(
+        [&](int64_t, int64_t, uint32_t, uint32_t, bool) {
+            ++frameCalls;
+            return makeIntegrityFrame(128, 128);
+        });
+
+    const uint32_t id = queue.addJob(
+        proResIntegrityJob(output), project.get(), project->timeline());
+    queue.start(nullptr);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(2);
+    while (preflightCalls.load() == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GT(preflightCalls.load(), 0);
+    queue.cancelJob(id);
+    ASSERT_TRUE(waitForRenderQueue(queue));
+
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->status.load(), JobStatus::Cancelled);
+    EXPECT_EQ(frameCalls.load(), 0);
+    EXPECT_FALSE(std::filesystem::exists(output));
+}
+
+TEST(ExportPreflight, PendingDependencyBecomesReadyBeforeSuccessfulRender)
+{
+    if (!hasProResEncoderForIntegrityTest())
+        GTEST_SKIP() << "ProRes encoder unavailable in this FFmpeg build";
+
+    const auto output = uniqueExportTestPath("_preflight_ready.mov");
+    auto project = Project::createNew("Preflight Ready");
+    ASSERT_NE(project, nullptr);
+    ASSERT_NE(project->timeline(), nullptr);
+
+    RenderQueue queue;
+    std::atomic<int> frameCalls{0};
+    std::atomic<int> preflightCalls{0};
+    queue.setSnapshotResourcePreflightCallback(
+        [&](const std::shared_ptr<const ExportRenderSnapshot>&) {
+            RenderPreflightResult result;
+            result.totalResources = 1;
+            const int call = ++preflightCalls;
+            if (call == 1) {
+                result.status = RenderResultStatus::Pending;
+                result.pendingResources = 1;
+            } else {
+                result.status = RenderResultStatus::Ready;
+                result.readyResources = 1;
+            }
+            return result;
+        });
+    queue.setFrameRenderCallback(
+        [&](int64_t, int64_t, uint32_t, uint32_t, bool) {
+            ++frameCalls;
+            return makeIntegrityFrame(128, 128);
+        });
+
+    const uint32_t id = queue.addJob(
+        proResIntegrityJob(output), project.get(), project->timeline());
+    queue.start(nullptr);
+    ASSERT_TRUE(waitForRenderQueue(queue));
+
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->status.load(), JobStatus::Completed) << job->error;
+    EXPECT_GE(preflightCalls.load(), 2);
+    EXPECT_EQ(frameCalls.load(), 1);
+    EXPECT_TRUE(std::filesystem::exists(output));
+    std::filesystem::remove(output);
+}
+
 } // namespace
 
 TEST(ExportIntegrity, RejectsIncompleteFramePayloadsAndAcceptsPaddedRows)
@@ -1063,6 +1205,45 @@ TEST(ExportIntegrity, PersistentCompositeFailureRetriesAndPreservesPriorOutput)
     EXPECT_EQ(attempts.load(), 3);
     EXPECT_EQ(wrongTickAttempts.load(), 0);
     EXPECT_EQ(job->progress.currentFrame.load(), 0);
+    EXPECT_EQ(readTestFile(destination), "known-prior-output");
+
+    std::filesystem::remove(destination);
+}
+
+TEST(ExportIntegrity, ExplicitCompositeFailureDoesNotRetry)
+{
+    if (!hasProResEncoderForIntegrityTest())
+        GTEST_SKIP() << "ProRes encoder unavailable in this FFmpeg build";
+
+    const auto destination = uniqueExportTestPath(".mov");
+    {
+        std::ofstream out(destination, std::ios::binary);
+        out << "known-prior-output";
+    }
+
+    RenderQueue queue;
+    std::atomic<int> attempts{0};
+    queue.setSnapshotFrameRenderResultCallback(
+        [&](const std::shared_ptr<const ExportRenderSnapshot>&,
+            int64_t tick, int64_t, uint32_t, uint32_t, bool, bool) {
+            ++attempts;
+            RenderResult result;
+            result.timelineTick = tick;
+            result.status = RenderResultStatus::MissingMedia;
+            result.diagnostics.status = result.status;
+            result.diagnostics.warning = "source file is offline";
+            return result;
+        });
+    const uint32_t id = queue.addJob(proResIntegrityJob(destination));
+    queue.start(nullptr, nullptr);
+
+    ASSERT_TRUE(waitForRenderQueue(queue));
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    EXPECT_EQ(job->status.load(), JobStatus::Failed);
+    EXPECT_EQ(attempts.load(), 1);
+    EXPECT_NE(job->error.find("MissingMedia: source file is offline"),
+              std::string::npos);
     EXPECT_EQ(readTestFile(destination), "known-prior-output");
 
     std::filesystem::remove(destination);

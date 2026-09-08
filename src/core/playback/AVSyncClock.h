@@ -98,6 +98,11 @@ public:
     /// active playback typically indicates the audio thread is blocked.
     [[nodiscard]] double msSinceLastAdvance() const noexcept;
 
+    /// Monotonic counter incremented after every explicit reset/seek.
+    [[nodiscard]] uint64_t resetGeneration() const noexcept {
+        return m_resetGeneration.load(std::memory_order_acquire);
+    }
+
 private:
     std::atomic<int64_t>  m_tick{0};           // Master position in ticks
     std::atomic<int64_t>  m_lastVideoTick{0};  // Last displayed video PTS
@@ -115,6 +120,7 @@ private:
     std::atomic<unsigned> m_anchorSeq{0};      // seqlock version counter
     std::atomic<int64_t>  m_anchorTick{0};
     std::atomic<int64_t>  m_anchorNs{0};
+    std::atomic<uint64_t> m_resetGeneration{0};
 };
 
 } // namespace rt

@@ -228,8 +228,16 @@ bool Nv12Converter::ensureOutputSize(uint32_t w, uint32_t h)
         m_outputTexture.width() == w && m_outputTexture.height() == h)
         return true;
 
-    GpuContext::get().scheduler().deviceWaitIdle();
-    m_outputTexture.destroy();
+    if (m_outputTexture.image() != VK_NULL_HANDLE) {
+        const VkResult idle =
+            GpuContext::get().scheduler().queueWaitIdle(m_queue);
+        if (idle != VK_SUCCESS) {
+            if (idle == VK_ERROR_DEVICE_LOST)
+                GpuContext::get().signalDeviceLost();
+            return false;
+        }
+        m_outputTexture.destroy();
+    }
 
     TextureConfig outCfg;
     outCfg.width  = w;
@@ -246,18 +254,14 @@ bool Nv12Converter::ensureOutputSize(uint32_t w, uint32_t h)
         cmd, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     m_cmdPool->endSingleTime(cmd, m_queue);
 
-    // Update config to reflect output dimensions (for readbackOutput)
-    m_config.width  = w;
-    m_config.height = h;
     return true;
 }
 
 //══════════════════════════════════════════════════════════════════════════
 //  Phase 4.2 — ensureOutputSize16F: the RGBA16F output texture.
-//  Tracks its OWN dimensions (m_output16W/H) and MUST NOT touch m_config —
-//  the 8-bit readbackOutput reads m_config, so stomping it here would corrupt
-//  an interleaved 8-bit readback (the export uses a dedicated converter, but
-//  keeping them independent is the safe invariant).
+//  Tracks its OWN dimensions (m_output16W/H) and MUST NOT touch the input
+//  dimensions in m_config. The 8-bit output likewise derives its extent from
+//  its own texture, keeping input and both output generations independent.
 //══════════════════════════════════════════════════════════════════════════
 
 bool Nv12Converter::ensureOutputSize16F(uint32_t w, uint32_t h)
@@ -266,8 +270,16 @@ bool Nv12Converter::ensureOutputSize16F(uint32_t w, uint32_t h)
         m_output16W == w && m_output16H == h)
         return true;
 
-    GpuContext::get().scheduler().deviceWaitIdle();
-    m_output16FTexture.destroy();
+    if (m_output16FTexture.image() != VK_NULL_HANDLE) {
+        const VkResult idle =
+            GpuContext::get().scheduler().queueWaitIdle(m_queue);
+        if (idle != VK_SUCCESS) {
+            if (idle == VK_ERROR_DEVICE_LOST)
+                GpuContext::get().signalDeviceLost();
+            return false;
+        }
+        m_output16FTexture.destroy();
+    }
 
     TextureConfig outCfg;
     outCfg.width  = w;

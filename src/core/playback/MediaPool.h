@@ -18,6 +18,7 @@
 
 #include "cache/FrameCache.h"
 #include "cache/DiskFrameCache.h"
+#include "EngineContracts.h"
 #include "FrameScheduler.h"
 #include "decode/VideoDecoder.h"
 #include "PerformanceProfile.h"
@@ -39,6 +40,13 @@
 #include <vector>
 
 namespace rt {
+
+/// Observable source-open state. `Missing` is deliberately narrow: it means
+/// MediaPool confirmed that neither the requested path nor a supported
+/// fallback exists. Existing-but-undecodable sources stay `Unresolved`.
+// Compatibility name retained for media-pool callers. The state itself is
+// shared by every external render resource via EngineContracts.h.
+using MediaPathState = ResourceLoadState;
 
 // Forward declaration: PrefetchTexturePool drags in Vulkan headers, and
 // MediaPool.h is included widely. The unique_ptr<PrefetchTexturePool>
@@ -189,6 +197,18 @@ struct PrefetchDecoderState
     int                            consecutiveSlowHwFrames{0};
 };
 
+/// One serialized on-demand decoder for a media handle. Exact export and
+/// interactive scrub requests can arrive from different render consumers;
+/// both the VideoDecoder and its cached SwsContext are strictly single-user.
+/// Shared ownership keeps the state alive while invalidation removes it from
+/// the handle map, and `retired` prevents a late holder from reopening it.
+struct ScrubDecoderSlot
+{
+    std::mutex           mutex;
+    PrefetchDecoderState state;
+    bool                 retired{false};
+};
+
 class MediaPool
 {
 public:
@@ -226,6 +246,10 @@ public:
 
     /// Non-blocking query: is this path currently open in the pool?
     [[nodiscard]] bool isPathOpen(const std::filesystem::path& filePath) const;
+
+    /// Return the current non-blocking state for a media path.
+    [[nodiscard]] MediaPathState pathState(
+        const std::filesystem::path& filePath) const;
 
     /// Release a handle. Decrements refcount. When refcount reaches 0,
     /// the decoder is closed and all cached frames for that media are evicted.
@@ -627,7 +651,7 @@ private:
     void startOpenWorker();
     void stopOpenWorker();
     std::thread                                      m_openWorker;
-    std::mutex                                       m_openWorkerMutex;
+    mutable std::mutex                               m_openWorkerMutex;
     std::condition_variable                           m_openWorkerCv;
     std::deque<std::filesystem::path>                m_openWorkerQueue;
     std::unordered_set<std::string>                  m_openWorkerInFlight; // canonical paths currently queued/opening
@@ -687,12 +711,17 @@ private:
     std::unordered_map<MediaHandle, std::shared_ptr<CachedFrame>> m_lastGoodFrame;
 
     // ── Dedicated scrub decoder ─────────────────────────────────────────
-    // Separate decoder instances for scrub mode, avoiding m_mutex contention.
-    // Only used from the UI thread (single-threaded scrub path).
-    std::unordered_map<MediaHandle, PrefetchDecoderState> m_scrubDecoders;
-    PrefetchDecoderState& getScrubDecoder(MediaHandle handle,
-                                          const std::filesystem::path& path,
-                                          const VideoStreamInfo& info);
+    // FrameProducer, Source Monitor, and export may all request these from
+    // different threads. Serialize per handle so unrelated media still decode
+    // in parallel while one decoder/SwsContext is never entered concurrently.
+    mutable std::mutex m_scrubDecodersMutex;
+    std::unordered_map<MediaHandle, std::shared_ptr<ScrubDecoderSlot>>
+        m_scrubDecoders;
+    std::shared_ptr<ScrubDecoderSlot> getScrubDecoder(
+        MediaHandle handle, const std::filesystem::path& path,
+        const VideoStreamInfo& info);
+    void retireScrubDecoder(MediaHandle handle);
+    void retireAllScrubDecoders();
 
     // Real-time preview requests extend this deadline so opportunistic
     // background work can back off during cold playback startup.

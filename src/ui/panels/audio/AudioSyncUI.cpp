@@ -472,45 +472,19 @@ void AudioSync::setupUi()
     transcribePageLayout->addWidget(m_modelCombo);
 
 #ifdef ROUNDTABLE_HAS_CRISPERWHISPER
-    connect(m_modelCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
-        if (m_modelCombo->itemData(index).toString()
-            != QStringLiteral("crisperwhisper-2-large-personal")) {
-            return;
-        }
-
-        QSettings settings;
-        if (settings.value(QStringLiteral("transcription/crisperWhisperPersonalAccepted"),
-                           false).toBool()) {
-            return;
-        }
-
-        QMessageBox notice(this);
-        notice.setIcon(QMessageBox::Information);
-        notice.setWindowTitle(QStringLiteral("Enable CrisperWhisper for personal use?"));
-        notice.setText(QStringLiteral("CrisperWhisper 2 model weights and their outputs are "
-                                      "licensed for non-commercial use only."));
-        notice.setInformativeText(QStringLiteral(
-            "Roundtable does not include the model. The first transcription will download it "
-            "to your local Hugging Face cache. Enable this option only for personal, "
-            "non-commercial use."));
-        auto* enable = notice.addButton(QStringLiteral("Enable for Personal Use"),
-                                        QMessageBox::AcceptRole);
-        notice.addButton(QMessageBox::Cancel);
-        notice.exec();
-        if (notice.clickedButton() == enable) {
-            settings.setValue(QStringLiteral("transcription/crisperWhisperPersonalAccepted"), true);
-        } else {
-            m_modelCombo->setCurrentText(QStringLiteral("small"));
-        }
+    connect(m_modelCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (isCrisperWhisperSelected() && !ensureCrisperWhisperConsent())
+            selectDefaultWhisperModel();
     });
-#endif
 
-    // CrisperWhisper has a friendly display label and a separate internal ID,
-    // so select defaults by item data first and visible text second.  Do this
-    // after wiring the personal-use notice so a first-time default selection
-    // still requires the same acknowledgement as a manual selection.
-#ifdef ROUNDTABLE_HAS_CRISPERWHISPER
-    const QString defaultModelId = QStringLiteral("crisperwhisper-2-large-personal");
+    QSettings consentSettings;
+    const QString consent = consentSettings.value(
+        QStringLiteral("transcription/crisperWhisperPersonalConsent")).toString();
+    const bool legacyAccepted = consentSettings.value(
+        QStringLiteral("transcription/crisperWhisperPersonalAccepted"), false).toBool();
+    const QString defaultModelId = (consent == QStringLiteral("accepted") || legacyAccepted)
+        ? QStringLiteral("crisperwhisper-2-large-personal")
+        : QString::fromUtf8(whisperModelName(kDefaultWhisperModel));
 #else
     const QString defaultModelId =
         QString::fromUtf8(whisperModelName(kDefaultWhisperModel));

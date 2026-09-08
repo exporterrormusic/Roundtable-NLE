@@ -246,16 +246,15 @@ void TimelineWorkspace::preOpenVideoMedia()
 
     // Collect (path, isCharacter) for every clip on the timeline that
     // references a media file:
-    //   - VideoClip (video tracks) + SpineClip pre-rendered mp4/webm
-    //     ("character" clips).  Cold first-frame on a character clip
+    //   - VideoClip (video tracks). Cold first-frame on a video character
     //     paid 100-170ms of NVDEC init on the UI thread historically.
     //   - ImageClip (still graphics on video tracks).  PNG opens via
     //     FFmpeg's image2 demuxer are quick individually but stack at
     //     clip boundaries when multiple stills enter the active region
     //     simultaneously.
-    //   - AudioClip (audio tracks).  Cold AudioFile open + sndfile/
-    //     ffmpeg probe at a clip boundary is the trigger for the
-    //     FrameClock JUMP we tracked down in 2026-05-21.
+    // Audio is deliberately absent: warmAudioCacheAsync owns a bounded
+    // playhead window. Whole-sequence probing made long projects wait for
+    // hundreds of distant dialogue files before becoming interactive.
     struct Entry {
         bool isCharacter{false};
         bool predecode{true};
@@ -288,75 +287,24 @@ void TimelineWorkspace::preOpenVideoMedia()
                 paths[path];   // insert with default Entry (isVideoFile=false)
                 continue;
             }
-            if (auto* audioClip = dynamic_cast<AudioClip*>(clip)) {
-                const auto& path = audioClip->mediaPath();
-                if (path.empty()) continue;
-                paths[path];   // open warms the AudioFile/sndfile probe
-                continue;
-            }
-#ifdef ROUNDTABLE_HAS_SPINE
-            if (auto* spineClip = dynamic_cast<SpineClip*>(clip)) {
-                const auto* cache = m_compositeService->animVideoCache();
-                if (!cache) continue;
-                const std::string& chr    = spineClip->characterName();
-                const std::string& outfit = spineClip->outfit();
-                const std::string& anim   = spineClip->animationName();
-
-                // Open BOTH mute and talk variants so the first
-                // isTalking() toggle during playback doesn't pay a
-                // synchronous MediaPool::open on the UI thread.
-                //
-                // But only full-loop pre-decode the variant this clip
-                // is actually configured to use.  Pre-decoding every
-                // talk variant as well doubles the cache footprint and,
-                // once the cache is full, forces LRU to evict loop
-                // frames of currently-playing clips — producing the
-                // "previously-smooth animations now stutter" symptom.
-                // The unused variant just sits at opened state; it'll
-                // be prefetched on demand if talk is toggled mid-
-                // playback (one-time ~80ms hit).
-                const bool wantsTalk = spineClip->isTalking();
-                const bool animIsAlreadyTalk =
-                    (anim.size() >= 5 &&
-                     anim.compare(anim.size() - 5, 5, "_talk") == 0);
-                const std::string muteName = animIsAlreadyTalk
-                    ? anim.substr(0, anim.size() - 5) : anim;
-                const std::string talkName = animIsAlreadyTalk
-                    ? anim : (anim + "_talk");
-                auto setFor = [&](const std::string& animName, bool pred) {
-                    const auto* entry = cache->getEntry(chr, outfit, animName);
-                    if (!entry) return;
-                    const std::string p = pathToUtf8(entry->videoPath);
-                    if (p.empty()) return;
-                    auto it = paths.find(p);
-                    if (it == paths.end()) {
-                        paths[p] = Entry{/*isCharacter=*/true, /*predecode=*/pred};
-                    } else {
-                        it->second.isCharacter = true;
-                        // OR semantics: predecode if any referencing
-                        // clip wants the warm cache.
-                        if (pred) it->second.predecode = true;
-                    }
-                };
-                setFor(muteName, /*pred=*/!wantsTalk);
-                setFor(talkName, /*pred=*/ wantsTalk);
-            }
-#endif
+            // Audio owns a playhead-window warmup path (warmAudioCacheAsync).
+            // Opening every distinct audio file in a long sequence here kept
+            // the project-loading overlay up for archival media far from the
+            // current playhead and duplicated that subsystem's work.
         }
     }
 
     if (paths.empty()) return;
 
     // warn so the user can confirm the pre-open ran (their logger
-    // filter is warn+).  Counts include audio + image clips since
-    // the 2026-05-21 extension covered the clip-boundary lag cause.
-    int videoCount = 0, audioImageCount = 0;
+    // filter is warn+).
+    int videoCount = 0, imageCount = 0;
     for (const auto& [p, e] : paths) {
-        if (e.isVideoFile) ++videoCount; else ++audioImageCount;
+        if (e.isVideoFile) ++videoCount; else ++imageCount;
     }
     spdlog::warn("preOpenVideoMedia: pre-opening {} handle(s) ({} video, "
-                 "{} audio/image) on background thread",
-                 paths.size(), videoCount, audioImageCount);
+                 "{} image) on background thread",
+                 paths.size(), videoCount, imageCount);
 
     // Dispatch the actual open()+loop-pre-decode work to owned workers so the
     // UI thread (and any pending compositeFrame

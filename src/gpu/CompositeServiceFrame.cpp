@@ -210,18 +210,208 @@ std::shared_ptr<CachedFrame> makeExactBlankFrame(
     return frame;
 }
 
+std::optional<ResolutionTier> resolutionTierFor(RenderQuality quality)
+{
+    switch (quality) {
+    case RenderQuality::Full:
+    case RenderQuality::Native:
+        return ResolutionTier::Full;
+    case RenderQuality::Half:
+        return ResolutionTier::Half;
+    case RenderQuality::Quarter:
+    case RenderQuality::Proxy:
+        return ResolutionTier::Quarter;
+    case RenderQuality::Auto:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 } // namespace
+
+std::shared_ptr<CachedFrame> CompositeService::compositeFrame(
+    const RenderRequest& request, bool isNestedRecursion)
+{
+    return renderFrame(request, isNestedRecursion).frame;
+}
+
+RenderResult CompositeService::renderFrame(
+    const RenderRequest& request, bool isNestedRecursion)
+{
+    RenderResult result;
+    result.timelineTick = request.timelineTick;
+    result.diagnostics.requestId = request.requestId;
+
+    const auto fail = [&](RenderResultStatus status, std::string warning) {
+        result.status = status;
+        result.diagnostics.status = status;
+        result.diagnostics.warning = std::move(warning);
+        return result;
+    };
+
+    if (m_shutdown.load(std::memory_order_acquire))
+        return fail(RenderResultStatus::Canceled,
+                    "compositor is shutting down");
+    if (request.outputWidth == 0 || request.outputHeight == 0)
+        return fail(RenderResultStatus::Failed,
+                    "render output dimensions must be non-zero");
+
+    RenderExecutionOutcome executionOutcome;
+    RenderExecutionContext context;
+    context.timeline = m_timeline;
+    context.project = m_project;
+    context.outcome = &executionOutcome;
+    context.diagnostics = &result.diagnostics;
+    context.policy = {
+        request.preferGpuOutput,
+        request.forceFullResolution,
+        request.preserveAlpha,
+        request.isRealtimePlaybackPass(),
+    };
+
+    if (request.snapshot && request.targetSequenceIndex) {
+        spdlog::error("CompositeService: render request cannot select both a "
+                      "snapshot and a live sequence index");
+        return fail(RenderResultStatus::Failed,
+                    "render request selected both snapshot and live sequence");
+    }
+
+    // Snapshot services stay bound to one immutable graph so their service-
+    // owned caches cannot mix projects. The graph is still captured in the
+    // execution context rather than reread during evaluation.
+    if (request.snapshot) {
+        if (!request.snapshot->timeline ||
+            request.snapshot->timeline.get() != m_timeline) {
+            spdlog::error("CompositeService: render request timeline snapshot "
+                          "does not match the bound timeline");
+            return fail(RenderResultStatus::Failed,
+                        "render snapshot timeline does not match compositor");
+        }
+        if (!request.snapshot->project ||
+            request.snapshot->project.get() != m_project) {
+            spdlog::error("CompositeService: render request project snapshot "
+                          "does not match the bound project");
+            return fail(RenderResultStatus::Failed,
+                        "render snapshot project does not match compositor");
+        }
+        context.timeline = const_cast<Timeline*>(request.snapshot->timeline.get());
+        context.project = const_cast<Project*>(request.snapshot->project.get());
+        context.editVersion = request.snapshot->editVersion;
+        context.immutableSnapshot = true;
+    } else if (request.targetSequenceIndex) {
+        if (!m_project || *request.targetSequenceIndex >= m_project->sequenceCount()) {
+            spdlog::error("CompositeService: live sequence target {} is invalid",
+                          *request.targetSequenceIndex);
+            return fail(RenderResultStatus::Failed,
+                        "render request selected an invalid live sequence");
+        }
+        context.timeline = m_project->sequence(*request.targetSequenceIndex);
+        if (!context.timeline)
+            return fail(RenderResultStatus::Failed,
+                        "render request selected an unavailable live sequence");
+    }
+
+    if (!context.timeline)
+        return fail(RenderResultStatus::Failed,
+                    "no timeline is bound to the compositor");
+
+    RenderResultStatus exceptionStatus = RenderResultStatus::Pending;
+    const auto renderStart = std::chrono::steady_clock::now();
+    result.frame = compositeFrameImpl(request.timelineTick,
+                                      request.outputWidth,
+                                      request.outputHeight,
+                                      request.scrubMode,
+                                      isNestedRecursion,
+                                      request.stillFrame,
+                                      resolutionTierFor(request.quality),
+                                      context,
+                                      &exceptionStatus);
+    result.diagnostics.renderMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - renderStart).count();
+    if (exceptionStatus == RenderResultStatus::Failed) {
+        result.frame.reset();
+        return fail(RenderResultStatus::Failed,
+                    "exception while compositing the requested frame");
+    }
+    if (executionOutcome.status == RenderResultStatus::Failed ||
+        executionOutcome.status == RenderResultStatus::MissingMedia) {
+        result.status = executionOutcome.status;
+        result.diagnostics.status = result.status;
+        result.diagnostics.warning = executionOutcome.warning;
+        return result;
+    }
+    if (!result.frame) {
+        // A null produced by an otherwise valid request is transient in the
+        // existing compositor (decoder/GPU resource not ready).  Export may
+        // retry the same tick; preview may explicitly hold its prior frame.
+        result.status = RenderResultStatus::Pending;
+    } else if (result.frame->width == 0 || result.frame->height == 0) {
+        result.status = RenderResultStatus::Blank;
+    } else {
+        result.status = RenderResultStatus::Ready;
+        result.diagnostics.segmentCacheHit |= result.frame->segmentCacheHit;
+        result.diagnostics.cacheHit |= result.frame->segmentCacheHit;
+
+        // Best-effort playback is allowed to receive the compositor's
+        // previous good frame while a new source arrives.  Surface that fact
+        // instead of making the scheduler infer it from pointer identity.
+        if (request.exactness == RenderExactness::BestEffortAllowed &&
+            !isNestedRecursion) {
+            std::lock_guard lock(m_lastCompositeMtx);
+            if (result.frame == m_lastGoodComposite &&
+                m_lastGoodCompositeTick >= 0 &&
+                m_lastGoodCompositeTick != request.timelineTick) {
+                result.status = RenderResultStatus::HeldPrevious;
+                result.diagnostics.heldFrame = true;
+            }
+        }
+    }
+    result.diagnostics.status = result.status;
+    return result;
+}
 
 std::shared_ptr<CachedFrame> CompositeService::compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                                 bool scrubMode,
                                                                 bool isNestedRecursion,
                                                                 bool stillMode,
                                                                 std::optional<ResolutionTier> tierOverride)
+{
+    const RenderExecutionContext context{
+        m_timeline,
+        m_project,
+        {
+            m_gpuDisplayMode,
+            m_forceFullResolution.load(std::memory_order_relaxed),
+            m_exportAlpha.load(std::memory_order_relaxed),
+            !scrubMode && !stillMode &&
+                !m_forceFullResolution.load(std::memory_order_relaxed),
+        },
+    };
+    return compositeFrameImpl(tick, outW, outH, scrubMode,
+                              isNestedRecursion, stillMode, tierOverride,
+                              context);
+}
+
+std::shared_ptr<CachedFrame> CompositeService::compositeFrameImpl(
+    int64_t tick, uint32_t outW, uint32_t outH,
+    bool scrubMode, bool isNestedRecursion, bool stillMode,
+    std::optional<ResolutionTier> tierOverride,
+    const RenderExecutionContext& context,
+    RenderResultStatus* exceptionStatus)
 try
 {
     if (m_shutdown.load(std::memory_order_acquire))
         return nullptr;
-    if (!m_timeline) return nullptr;
+    auto* const renderTimeline = context.timeline;
+    auto* const renderProject = context.project;
+    const auto& policy = context.policy;
+    if (!renderTimeline) return nullptr;
+    FrameDiagnostics* const realtimeDiagnostics =
+        policy.measureRealtimeCost && !isNestedRecursion
+            ? context.diagnostics : nullptr;
+    const auto wallMs = [](auto start, auto end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
 
     // Suppress GPU compositing when a modal dialog is active (QDialog::exec
     // nested event loop).  Paint events still fire for widgets behind the
@@ -249,8 +439,8 @@ try
     // signal re-entrancy or callback chains.
     //
     // A2: Allow exactly ONE level of legitimate recursion (nested
-    // SequenceClip composition).  The buildLayersForFrame path swaps
-    // m_timeline to the inner sequence and recursively calls
+    // SequenceClip composition). The child context selects the inner sequence
+    // and recursively calls
     // compositeFrame to render the inner timeline.  Without this
     // allowance, the previous depth>0 → return-lastGood logic caused
     // nested sequences to silently show stale frames.  Two levels of
@@ -275,11 +465,11 @@ try
     // The old try_to_lock pattern (which returned stale m_lastGoodComposite
     // on contention) is removed.  compositeFrame() now ALWAYS produces the
     // correct frame for the requested tick.  Never returns stale frames.
-    // Uses unique_lock (not lock_guard) because buildLayersForFrame()
-    // temporarily unlocks to allow async media opens.
-    std::unique_lock lock(m_compositeMutex);
+    // A recursive mutex keeps synchronous child-sequence evaluation inside
+    // the same exclusive GPU transaction without releasing service state.
+    std::lock_guard lock(m_compositeMutex);
 
-    const ResolutionTier requestTier = m_forceFullResolution.load()
+    const ResolutionTier requestTier = policy.forceFullResolution
         ? ResolutionTier::Full
         : tierOverride.value_or(playbackTier());
     // stillMode is also used by the export callback.  Export requests use
@@ -293,7 +483,7 @@ try
     // — eviction is gated by a 3s throttle, rebalance is gated by a
     // 30-frame throttle — but having the call site here ensures every
     // composite tick contributes to its LRU view.
-    if (m_cachePolicy) {
+    if (!isNestedRecursion && m_cachePolicy) {
         m_cachePolicy->onFrameStart();
         m_cachePolicy->runEvictionPass();
         m_cachePolicy->rebalanceBudgets();
@@ -333,21 +523,23 @@ try
     // match the cached render.  configHash gates correctness: any edit changes
     // the hash, so a stale entry silently misses.  The cached frame is a CPU
     // snapshot (gpuReady=false) — a presentation path the modal fallback above
-    // already exercises.  Default ON now that it's verified; the count()==0
-    // fast-out makes it free (no per-frame hashing) until something is cached.
+    // already exercises. Default ON now that it's verified. The candidate
+    // probe is an O(1) (tick,tier) lookup, so an unrelated cached range does
+    // not force full render-state hashing on every live playback frame.
     // The consult also fires during export (forceFullResolution): export reuses
     // pre-rendered FULL-tier segments, and effectiveCacheTier() keeps export
     // (Full) and reduced playback (Half/…) keyed apart.
+    const ResolutionTier segmentTier = requestTier;
+    const auto segmentLookupStart = std::chrono::steady_clock::now();
     if ((m_segmentCacheReadEnabled.load(std::memory_order_relaxed)
-             || m_forceFullResolution.load(std::memory_order_relaxed))
+             || policy.forceFullResolution)
             && !isNestedRecursion && m_segmentRenderCache
-            && m_segmentRenderCache->count() > 0) {
-        const ResolutionTier tier = requestTier;
-        const uint32_t renderFlags =
-            m_exportAlpha.load(std::memory_order_relaxed)
-                ? RenderStatePreserveAlpha : RenderStateNone;
+            && m_segmentRenderCache->hasCandidate(tick, segmentTier)) {
+        const ResolutionTier tier = segmentTier;
+        const uint32_t renderFlags = policy.preserveAlpha
+            ? RenderStatePreserveAlpha : RenderStateNone;
         const uint64_t cfgHash = hashCompositeConfigAt(
-            *m_timeline, tick, m_project, renderFlags);
+            *renderTimeline, tick, renderProject, renderFlags);
         auto cached = m_segmentRenderCache->get(tick, tier, cfgHash);
         if (!cached) {
             // The (tick,tier,hash) key isn't present — the common, expected
@@ -373,6 +565,12 @@ try
                     spdlog::debug("[SEGCACHE] served {} frame(s) from cache "
                                   "(tick={} {}x{} tier={})",
                                   n, tick, outW, outH, static_cast<int>(tier));
+                if (realtimeDiagnostics) {
+                    realtimeDiagnostics->cacheLookupMs += wallMs(
+                        segmentLookupStart, std::chrono::steady_clock::now());
+                    realtimeDiagnostics->cacheHit = true;
+                    realtimeDiagnostics->segmentCacheHit = true;
+                }
                 return cached;
             } else {
                 // Entry exists but the size differs — a real misconfiguration
@@ -387,6 +585,11 @@ try
                                  n, cached->width, cached->height, outW, outH);
             }
         }
+    }
+
+    if (realtimeDiagnostics) {
+        realtimeDiagnostics->cacheLookupMs += wallMs(
+            segmentLookupStart, std::chrono::steady_clock::now());
     }
 
     // All composites use non-blocking tryGetFrame — the old blocking inline
@@ -414,8 +617,9 @@ try
     // wasted.  Worse, the scan can stall on MediaPool m_mutex (see
     // PRE-LAYER-SLOW > 6s on backward scrub across clip boundaries).
     auto preLayerT0 = std::chrono::high_resolution_clock::now();
-    if (!scrubMode || m_forceFullResolution.load()) {
-        prewarmUpcomingShots(tick);
+    if (!isNestedRecursion && (!scrubMode || policy.forceFullResolution)) {
+        prewarmUpcomingShots(
+            tick, policy.forceFullResolution, renderTimeline);
     }
     auto prewarmT1 = std::chrono::high_resolution_clock::now();
 
@@ -430,10 +634,10 @@ try
     // m_lastActiveClipIds is deliberately left untouched when skipped
     // so the first non-scrub composite after the user stops treats every
     // visible clip as "new" and fires the prefetch once, in the right place.
-    if (!scrubMode || m_forceFullResolution.load()) {
+    if (!isNestedRecursion && (!scrubMode || policy.forceFullResolution)) {
         std::unordered_set<uint64_t> currentClipIds;
-        for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-            auto* track = m_timeline->track(ti - 1);
+        for (size_t ti = renderTimeline->trackCount(); ti > 0; --ti) {
+            auto* track = renderTimeline->track(ti - 1);
             if (!track || track->type() != TrackType::Video || track->isMuted())
                 continue;
             for (auto* clip : track->clipsAtTime(tick)) {
@@ -459,8 +663,8 @@ try
         if (hasNewClips) {
             int unopenedCount = 0;
             int uncachedCount = 0;
-            for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-                auto* track = m_timeline->track(ti - 1);
+            for (size_t ti = renderTimeline->trackCount(); ti > 0; --ti) {
+                auto* track = renderTimeline->track(ti - 1);
                 if (!track || track->type() != TrackType::Video || track->isMuted())
                     continue;
                 for (auto* clip : track->clipsAtTime(tick)) {
@@ -498,7 +702,7 @@ try
                         // composited Half-tier characters at full viewport
                         // resolution, producing blurry output.
                         const auto warmTier = videoClip->isVideoCharacter()
-                            ? (m_forceFullResolution.load()
+                            ? (policy.forceFullResolution
                                ? ResolutionTier::Full
                                : requestTier)
                             : requestTier;
@@ -554,11 +758,18 @@ try
     #endif
     }
 
-    if (m_mediaPool) {
+    if (!isNestedRecursion && m_mediaPool) {
         m_mediaPool->scheduler().setPlayhead(tick);
     }
 
     auto shotBoundaryT1 = std::chrono::high_resolution_clock::now();
+    if (realtimeDiagnostics) {
+        realtimeDiagnostics->prewarmMs = wallMs(preLayerT0, prewarmT1);
+        realtimeDiagnostics->shotBoundaryMs = wallMs(prewarmT1, shotBoundaryT1);
+        realtimeDiagnostics->timelineEvalMs =
+            realtimeDiagnostics->prewarmMs +
+            realtimeDiagnostics->shotBoundaryMs;
+    }
 
     // Warn-level breakdown of the pre-layer-build phase so we can tell
     // apart prewarmUpcomingShots vs the shot-boundary detection block
@@ -593,7 +804,7 @@ try
             s_startupLogged = true;
             auto& gpu = GpuContext::get();
             spdlog::info("========== COMPOSITE PIPELINE CONFIG ==========");
-            spdlog::info("  gpuDisplayMode = {}", m_gpuDisplayMode);
+            spdlog::info("  gpuDisplayMode = {}", policy.preferGpuOutput);
             spdlog::info("  GpuContext initialized = {}", gpu.isInitialized());
             spdlog::info("  CudaVulkanInterop = {}", gpu.cudaVulkanInterop() ? "YES" : "NO");
             spdlog::info("  outW={} outH={}", outW, outH);
@@ -625,7 +836,7 @@ try
     // Skip entirely during nested-sequence recursion.  The LRU is keyed
     // only by (tick, w, h) and is SHARED between the outer program
     // composite and the inner nested-sequence composite (same engine,
-    // m_timeline swapped).  The inner composite runs in forced CPU mode
+    // child graph context). The inner composite runs in forced CPU mode
     // and writes its result (the inner timeline WITHOUT the SequenceClip
     // transform) into this same LRU.  When innerTick collides with the
     // outer tick, the outer's checkLru would return that inner-only frame
@@ -639,14 +850,39 @@ try
     // Exact paused stills deliberately bypass it because the key has no
     // decode-tier component: an older same-size composite may contain a
     // lower-tier fallback stretched to the requested canvas.
+    // Live preview uses the editor's monotonic invalidation generation. This
+    // makes the per-frame LRU key O(1); serializing every clip on every video
+    // track here made playback cost grow with total project size. Immutable
+    // render snapshots retain their captured editVersion. Persistent segment
+    // cache entries still use the complete render-state hash above.
+    const uint64_t compositeVersion = context.immutableSnapshot
+        ? context.editVersion
+        : m_liveCacheGeneration.load(std::memory_order_acquire);
+    const CompositeCacheKey compositeCacheKey{
+        renderTimeline,
+        compositeVersion,
+        tick,
+        outW,
+        outH,
+        requestTier,
+        policy.preserveAlpha,
+    };
+    const auto compositeCacheStart = std::chrono::steady_clock::now();
     if (m_engine && !isNestedRecursion && !exactStillMode) {
-        auto cached = m_engine->checkLru(tick, outW, outH);
-        if (cached)
+        auto cached = m_engine->checkLru(compositeCacheKey);
+        if (cached) {
+            if (realtimeDiagnostics) {
+                realtimeDiagnostics->cacheLookupMs += wallMs(
+                    compositeCacheStart, std::chrono::steady_clock::now());
+                realtimeDiagnostics->cacheHit = true;
+                realtimeDiagnostics->compositeCacheHit = true;
+            }
             return cached;
+        }
     }
-
-    if (m_engine) {
-        m_engine->flushLruOnResize(outW, outH);
+    if (realtimeDiagnostics) {
+        realtimeDiagnostics->cacheLookupMs += wallMs(
+            compositeCacheStart, std::chrono::steady_clock::now());
     }
 
     if (outW < 64) outW = 64;
@@ -656,10 +892,11 @@ try
 
     int clipsAtTick = 0;
     int resolvedClipsAtTick = 0;
+    const auto mediaResolveStart = std::chrono::steady_clock::now();
     layers = buildLayersForFrame(tick, outW, outH, scrubMode, playbackNonBlocking,
-                                 requestTier, exactStillMode,
+                                 requestTier, exactStillMode, context,
                                  clipsAtTick, resolvedClipsAtTick, perfLog,
-                                 lock, gpuSpineUsedThisFrame);
+                                 gpuSpineUsedThisFrame);
 
     // ── Phase 4: boundary block-on-arrival ──────────────────────────────
     // When layers.empty() while clipsAtTick > 0, the prewarm prefetches
@@ -734,25 +971,25 @@ try
         };
 
         // Outer timeline.
-        collectPending(m_timeline, tick);
+        collectPending(renderTimeline, tick);
 
         // Inner timelines reachable through one level of SequenceClip
         // (matches the depth=2 cap on compositeFrame recursion).  Without
         // this the nested sequence's first frame on a fresh shot shows
         // black instead of waiting up to 16 ms for inner decoders.
-        if (m_project) {
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                auto* trk = m_timeline->track(ti);
+        if (renderProject) {
+            for (size_t ti = 0; ti < renderTimeline->trackCount(); ++ti) {
+                auto* trk = renderTimeline->track(ti);
                 if (!trk || trk->type() != TrackType::Video || trk->isMuted())
                     continue;
                 for (auto* c : trk->clipsAtTime(tick)) {
                     if (!c || !c->isEnabled()) continue;
                     auto* seqClip = dynamic_cast<SequenceClip*>(c);
                     if (!seqClip) continue;
-                    if (seqClip->sequenceIndex() >= m_project->sequenceCount())
+                    if (seqClip->sequenceIndex() >= renderProject->sequenceCount())
                         continue;
-                    auto* innerTl = m_project->sequence(seqClip->sequenceIndex());
-                    if (!innerTl || innerTl == m_timeline) continue;
+                    auto* innerTl = renderProject->sequence(seqClip->sequenceIndex());
+                    if (!innerTl || innerTl == renderTimeline) continue;
                     // Mirror the render path's innerTick mapping
                     // (localTick + sourceIn, clamped non-negative).
                     int64_t innerTick = (tick - c->timelineIn()) + c->sourceIn();
@@ -782,9 +1019,9 @@ try
                 gpuSpineUsedThisFrame = false;
                 layers = buildLayersForFrame(
                     tick, outW, outH, scrubMode, playbackNonBlocking,
-                    requestTier, exactStillMode,
+                    requestTier, exactStillMode, context,
                     clipsAtTick, resolvedClipsAtTick, perfLog,
-                    lock, gpuSpineUsedThisFrame);
+                    gpuSpineUsedThisFrame);
                 spdlog::info("[BLOCK-ON-ARRIVAL] tick={}: retry yielded "
                              "{}/{} clips", tick, resolvedClipsAtTick,
                              clipsAtTick);
@@ -799,6 +1036,12 @@ try
                 }
             }
         }
+    }
+
+    if (realtimeDiagnostics) {
+        realtimeDiagnostics->mediaResolveMs = wallMs(
+            mediaResolveStart, std::chrono::steady_clock::now());
+        realtimeDiagnostics->layerCount = static_cast<uint32_t>(layers.size());
     }
 
     // ── Nested-sequence recursion isolation ─────────────────────────────
@@ -816,8 +1059,7 @@ try
     // a failed source/composite and must be represented by a complete payload
     // so export can encode the gap without substituting a failure frame.
     if (exactStillMode && clipsAtTick == 0 && layers.empty()) {
-        return makeExactBlankFrame(
-            outW, outH, m_exportAlpha.load(std::memory_order_relaxed));
+        return makeExactBlankFrame(outW, outH, policy.preserveAlpha);
     }
 
     // LayerInfo also contains adjustment boundaries, so layers.size() cannot
@@ -879,7 +1121,7 @@ try
                 // not produce pixels of their own.
                 bool sameShot = true;
                 if (m_lastGoodComposite && !m_lastGoodCompositeClipIds.empty()) {
-                    const auto currentIds = activeVisualClipIds(*m_timeline, tick);
+                    const auto currentIds = activeVisualClipIds(*renderTimeline, tick);
                     sameShot = sameVisualClipSet(
                                    currentIds, m_lastGoodCompositeClipIds) &&
                                m_lastGoodCompositeTick >= 0 &&
@@ -923,7 +1165,7 @@ try
             // warm-up. A persistent overlay must not make two different clip
             // sets count as the same shot, and a distant seek within one long
             // clip must not borrow the old source position.
-            const auto currentClipIds = activeVisualClipIds(*m_timeline, tick);
+            const auto currentClipIds = activeVisualClipIds(*renderTimeline, tick);
 
             std::lock_guard lg(m_lastCompositeMtx);
             if (m_lastGoodComposite && m_lastGoodCompositeTick >= 0) {
@@ -1022,8 +1264,7 @@ try
     // reading back the same full-frame blend again is pure duplicate work.
     const auto staticStateKey = !isNestedRecursion
         ? staticCompositeStateKey(
-              layers, outW, outH, requestTier,
-              m_exportAlpha.load(std::memory_order_relaxed))
+              layers, outW, outH, requestTier, policy.preserveAlpha)
         : std::optional<uint64_t>{};
     if (staticStateKey) {
         std::shared_ptr<CachedFrame> staticHit;
@@ -1056,7 +1297,7 @@ try
 
 
     // Single layer fast path
-    if (!m_gpuDisplayMode && layers.size() == 1) {
+    if (!policy.preferGpuOutput && layers.size() == 1) {
         const auto& L = layers[0];
         bool isIdentity = !L.isAdjustmentLayer &&
                           L.opacity >= 0.999f &&
@@ -1083,7 +1324,9 @@ try
         auto gpuResult = tryCompositeOnGpu(layers, outW, outH, tick, scrubMode,
                                             perfLog, perfT0, perfTlayers,
                                             effectLayerCount, effectPassCount,
-                                            transitionCount, isNestedRecursion);
+                                            transitionCount, context,
+                                            compositeCacheKey,
+                                            isNestedRecursion);
         if (gpuResult) {
             // Skip the cache write entirely when this call is a recursive
             // descent into a nested SequenceClip's inner timeline. The
@@ -1104,11 +1347,11 @@ try
                     m_lastStaticComposite.reset();
                     m_lastStaticCompositeKey = 0;
                 }
-                // Measured-cost render bar: remember how long this FRESH
-                // real-time composite took (perfT0 = start of composite work).
-                // Skip scrub/render passes — those aren't representative of the
-                // playback budget and use a different tick grid.
-                if (!scrubMode) {
+                // Measured-cost render bar: remember only clock-driven live
+                // playback. Paused exact frames, scrub, export, and pre-render
+                // have different quality/readback contracts and otherwise make
+                // ordinary spans appear falsely over budget.
+                if (policy.measureRealtimeCost) {
                     const double ms = std::chrono::duration<double, std::milli>(
                         std::chrono::high_resolution_clock::now() - perfT0).count();
                     recordFrameCost(tick, static_cast<float>(ms));
@@ -1177,6 +1420,7 @@ try
 catch (const std::exception& ex)
 {
     spdlog::error("compositeFrame: exception: {}", ex.what());
+    if (exceptionStatus) *exceptionStatus = RenderResultStatus::Failed;
     if (isNestedRecursion || stillMode) return nullptr;
     std::lock_guard lg(m_lastCompositeMtx);
     return m_lastGoodComposite;
@@ -1184,6 +1428,7 @@ catch (const std::exception& ex)
 catch (...)
 {
     spdlog::error("compositeFrame: unknown exception");
+    if (exceptionStatus) *exceptionStatus = RenderResultStatus::Failed;
     if (isNestedRecursion || stillMode) return nullptr;
     std::lock_guard lg(m_lastCompositeMtx);
     return m_lastGoodComposite;
@@ -1287,7 +1532,8 @@ bool CompositeService::isTickCached(int64_t tick) const
 int CompositeService::renderRangeToCache(
     int64_t fromTick, int64_t toTick, uint32_t outW, uint32_t outH,
     const std::function<bool()>& shouldCancel,
-    const std::function<void(int, int)>& onProgress)
+    const std::function<void(int, int)>& onProgress,
+    bool forceFullResolution)
 {
     if (!m_timeline || !m_segmentRenderCache || outW == 0 || outH == 0)
         return 0;
@@ -1309,14 +1555,23 @@ int CompositeService::renderRangeToCache(
         std::floor(static_cast<double>(toTick) / ticksPerFrame));
     if (lastFrame < firstFrame) return 0;
 
-    const ResolutionTier tier  = effectiveCacheTier();
+    const ResolutionTier tier = forceFullResolution
+        ? ResolutionTier::Full : playbackTier();
     const int            total = static_cast<int>(lastFrame - firstFrame + 1);
 
     // Force CPU readback so the composited pixels are materialised before we
     // snapshot them — GPU display mode leaves CachedFrame::pixels empty (the
     // same convention as the thumbnail grab in ProjectControllerMisc).
-    const bool wasGpuMode = m_gpuDisplayMode;
-    m_gpuDisplayMode = false;
+    const RenderExecutionContext rangeContext{
+        m_timeline,
+        m_project,
+        {
+            /*preferGpuOutput=*/false,
+            forceFullResolution,
+            /*preserveAlpha=*/false,
+            /*measureRealtimeCost=*/false,
+        },
+    };
 
     int rendered  = 0;
     int processed = 0;
@@ -1329,7 +1584,10 @@ int CompositeService::renderRangeToCache(
         // Skip frames already cached under the current config (idempotent /
         // resumable — re-running over an unchanged range is nearly free).
         if (!m_segmentRenderCache->hasFresh(tick, tier, cfgHash)) {
-            auto frame = compositeFrame(tick, outW, outH, /*scrubMode=*/true);
+            auto frame = compositeFrameImpl(
+                tick, outW, outH, /*scrubMode=*/true,
+                /*isNestedRecursion=*/false, /*stillMode=*/false,
+                tier, rangeContext);
             if (frame && frame->ensurePixels() && !frame->pixels.empty()) {
                 m_segmentRenderCache->put(tick, tier, cfgHash,
                                           snapshotForCache(*frame, tier));
@@ -1340,8 +1598,6 @@ int CompositeService::renderRangeToCache(
         ++processed;
         if (onProgress) onProgress(processed, total);
     }
-
-    m_gpuDisplayMode = wasGpuMode;
 
     spdlog::debug("renderRangeToCache: [{}, {}] tier={} -> {} of {} frames "
                   "rendered ({} MB cached)",

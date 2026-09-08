@@ -199,12 +199,8 @@ TimelineWorkspace::~TimelineWorkspace()
         m_audioPlayback->waitForWarm();
     }
 
-    // Destroy both compositors while their model snapshots/dependencies are
-    // still alive (the export service is created lazily).
-    m_exportCompositeService.reset();
-    m_exportCachePolicy.reset();
-    m_exportTimelineSnapshot.reset();
-    m_exportProjectSnapshot.reset();
+    // Destroy the live compositor while its dependencies are still alive.
+    // Export compositors are owned and torn down by ExportRenderSession.
     m_compositeService.reset();
 }
 

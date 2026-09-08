@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "ShortcutManager.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "panels/export/ExportPanel.h"
 #include "panels/timeline/TimelineWorkspace.h"
 #include "CompositeService.h"
 #include "Theme.h"
@@ -43,6 +44,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDesktopServices>
+#include <QDir>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
@@ -150,6 +152,12 @@ App::~App()
     // destructor late in Phase 3.
     sm.advanceTo(ShutdownPhase::Phase1_StopThreads);
     if (m_mainWindow) {
+        // Export owns an isolated CompositeService but borrows MediaPool,
+        // model, and GPU dependencies. Join its worker and destroy that
+        // session before shutting down the live compositor or those owners.
+        if (auto* ep = m_mainWindow->exportPanel())
+            ep->shutdownExportRendering();
+
         if (auto* tw = m_mainWindow->timelineWorkspace()) {
             if (auto* pm = tw->programMonitor())
                 pm->stopPlaybackPipeline();
@@ -285,9 +293,13 @@ bool App::init()
 #ifdef ROUNDTABLE_HAS_SPINE
     m_modelManager = std::make_unique<ModelManager>();
     // Start scan in background thread — UI can show while scanning proceeds
-    // All characters are now in assets/characters/ (downloaded in-program, not AppData)
-    m_scanThread = std::thread([this]() {
-        m_modelManager->scan("assets");
+    const std::string bundledAssets =
+        QDir::toNativeSeparators(rt::bundledAssetsDir()).toStdString();
+    const std::string downloadedAssets =
+        QDir::toNativeSeparators(rt::downloadedCharacterAssetsDir()).toStdString();
+    m_scanThread = std::thread([this, bundledAssets, downloadedAssets]() {
+        m_modelManager->scan(bundledAssets);
+        m_modelManager->scanAdditional(downloadedAssets);
     });
 #endif
     // ── GPU Context (Vulkan) ─────────────────────────────────────────────

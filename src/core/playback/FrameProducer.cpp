@@ -25,6 +25,31 @@ FrameProducer::~FrameProducer()
     stop();
 }
 
+void FrameProducer::setCompositeCallback(CompositeCallback cb)
+{
+    if (!cb) {
+        m_compositeResultCB = nullptr;
+        return;
+    }
+
+    m_compositeResultCB = [cb = std::move(cb)](
+        int64_t tick, uint32_t w, uint32_t h, bool scrub, bool still) {
+        RenderResult result;
+        result.timelineTick = tick;
+        result.frame = cb(tick, w, h, scrub, still);
+        if (!result.frame) {
+            result.status = RenderResultStatus::Pending;
+        } else if (result.frame->width == 0 || result.frame->height == 0) {
+            result.status = RenderResultStatus::Blank;
+        } else {
+            result.status = RenderResultStatus::Ready;
+            result.diagnostics.cacheHit = result.frame->segmentCacheHit;
+        }
+        result.diagnostics.status = result.status;
+        return result;
+    };
+}
+
 void FrameProducer::setOutputResolution(uint32_t w, uint32_t h, int divisor)
 {
     m_outputW.store(w, std::memory_order_relaxed);
@@ -104,6 +129,8 @@ void FrameProducer::reset() noexcept
     m_latencyCount = 0;
     m_promoteStreak = 0;
     m_changeCooldown = 0;
+    m_playbackTelemetry.reset();
+    m_backpressureSkippedTelemetry.store(0, std::memory_order_relaxed);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -142,8 +169,21 @@ void FrameProducer::requestScrubFrame(int64_t tick, uint32_t w, uint32_t h, bool
 {
     {
         std::lock_guard lock(m_reqMtx);
-        // Replace any pending scrub request — only the latest matters.
-        m_pendingScrub = ScrubRequest{tick, w, h, scrub};
+        // Replace any pending scrub request and invalidate an older request
+        // that may already be compositing. Only the latest seek matters.
+        const uint64_t generation =
+            m_scrubGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        m_pendingScrub = ScrubRequest{tick, w, h, scrub, generation};
+    }
+    m_reqCV.notify_one();
+}
+
+void FrameProducer::cancelPendingScrub() noexcept
+{
+    {
+        std::lock_guard lock(m_reqMtx);
+        m_scrubGeneration.fetch_add(1, std::memory_order_acq_rel);
+        m_pendingScrub.reset();
     }
     m_reqCV.notify_one();
 }
@@ -179,8 +219,14 @@ void FrameProducer::producerLoop()
             m_backpressure.store(false, std::memory_order_release);
             m_consecutiveReplacements = 0;
 
-            // Scrub requests have priority over clock ticks
-            if (m_pendingScrub.has_value()) {
+            // Once transport is playing, a clock tick must win over a late
+            // paused request. Otherwise exact seek work can hold the viewport
+            // on the seek frame while the playback clock advances.
+            const bool playing = m_controller && m_controller->isPlaying();
+            if (playing && !m_pendingTicks.empty()) {
+                tick = m_pendingTicks.front();
+                m_pendingTicks.pop_front();
+            } else if (m_pendingScrub.has_value()) {
                 scrubReq = *m_pendingScrub;
                 m_pendingScrub.reset();
             } else if (!m_pendingTicks.empty()) {
@@ -236,7 +282,7 @@ void FrameProducer::producerLoop()
 void FrameProducer::produceFrameImpl(int64_t tick)
 {
     if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_compositeCB) return;
+    if (!m_compositeResultCB) return;
 
     const int div = m_resDivisor.load(std::memory_order_relaxed);
     uint32_t w = m_outputW.load(std::memory_order_relaxed) / static_cast<uint32_t>(div);
@@ -253,16 +299,24 @@ void FrameProducer::produceFrameImpl(int64_t tick)
     if (m_dropNextComposite && m_lastGoodFrame) {
         m_dropNextComposite = false;
         m_lastGoodFrame->gpuSemaphore = 0;
+        RenderResult dropped;
+        dropped.status = RenderResultStatus::HeldPrevious;
+        dropped.diagnostics.heldFrame = true;
+        dropped.diagnostics.droppedFrame = true;
+        recordPlaybackTelemetry(dropped);
         publishFrame(m_lastGoodFrame, tick);
         return;
     }
     m_dropNextComposite = false;
 
     auto compStart = std::chrono::steady_clock::now();
-    auto frame = m_compositeCB(tick, w, h,
-                               /*scrub=*/false, /*still=*/false);
+    auto renderResult = m_compositeResultCB(
+        tick, w, h, /*scrub=*/false, /*still=*/false);
+    auto frame = renderResult.frame;
     auto compEnd = std::chrono::steady_clock::now();
     double compMs = std::chrono::duration<double, std::milli>(compEnd - compStart).count();
+    renderResult.diagnostics.producerMs = compMs;
+    recordPlaybackTelemetry(renderResult);
 
     // ── Adaptive tier feedback (UPGRADE_PLAN item 1 STEP 1) ───────────
     // Sample composite latency and let the controller bump the tier
@@ -277,32 +331,37 @@ void FrameProducer::produceFrameImpl(int64_t tick)
         maybeAdjustTier(budget);
     }
 
-    // If compositor returned a valid frame, use it.
-    // If it returned nullptr or empty (width==0), re-publish the last
-    // good frame so the presenter never shows a blank.
-    if (frame && frame->width > 0) {
+    // Result-aware handling keeps an intentional blank distinct from a
+    // temporary miss and prevents a held preview frame from being mistaken
+    // for freshly-rendered output.
+    if (renderResult.status == RenderResultStatus::Ready &&
+        frame && frame->width > 0 && frame->height > 0) {
         m_lastGoodFrame = frame;
-        // DIAG: log every produced frame
-        {
-            static std::atomic<int> s_prodLog{0};
-            if (++s_prodLog % 5 == 0) {
-                spdlog::info("[DIAG-PRODUCER] tick={} composite={:.1f}ms frame={}x{} "
-                             "gpuReady={} gpuView=0x{:X}",
-                             tick, compMs, frame->width, frame->height,
-                             frame->gpuReady, frame->gpuImageView);
-            }
-        }
         publishFrame(std::move(frame), tick);
-    } else if (frame && frame->width == 0) {
+    } else if (renderResult.status == RenderResultStatus::Blank) {
         // Empty sentinel: timeline has no content at this tick.
         // Clear the hold-frame and publish the empty sentinel so the
         // presenter clears the viewport instead of showing stale content.
         m_lastGoodFrame.reset();
         publishFrame(std::move(frame), tick);
+    } else if ((renderResult.status == RenderResultStatus::MissingMedia ||
+                renderResult.status == RenderResultStatus::Failed) &&
+               frame && frame->width > 0 && frame->height > 0) {
+        // Resource-specific failures may still carry a valid composite of the
+        // unaffected layers. Preview that honest partial result instead of
+        // holding an unrelated shot. Export still rejects the Failed status.
+        m_lastGoodFrame = frame;
+        publishFrame(std::move(frame), tick);
+    } else if (renderResult.status == RenderResultStatus::MissingMedia) {
+        // A confirmed offline source will not become ready on the next clock
+        // tick. With no partial composite, clear the viewport instead of
+        // holding an unrelated prior shot.
+        m_lastGoodFrame.reset();
+        publishFrame(std::make_shared<CachedFrame>(), tick);
+    } else if (renderResult.status == RenderResultStatus::HeldPrevious && frame) {
+        frame->gpuSemaphore = 0;
+        publishFrame(std::move(frame), tick);
     } else if (m_lastGoodFrame) {
-        spdlog::info("[DIAG-PRODUCER] tick={} composite={:.1f}ms -> NULL, re-publish lastGood "
-                     "gpuView=0x{:X}",
-                     tick, compMs, m_lastGoodFrame->gpuImageView);
         // Clear the inter-queue semaphore on the cached frame — the old
         // gpuSemaphore was already consumed (waited on) when this frame
         // was first presented.  Re-using it as a wait semaphore would be
@@ -332,7 +391,7 @@ void FrameProducer::produceFrameImpl(int64_t tick)
 void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
 {
     if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_compositeCB) return;
+    if (!m_compositeResultCB) return;
 
     // User scrubs are intentional — never skip the composite for a scrub
     // even if the previous frame tripped the over-budget drop.
@@ -342,11 +401,26 @@ void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
     // compositor uses this bit to require the exact selected decode tier once
     // active scrubbing has stopped, instead of leaving a lower-tier fallback
     // stretched across a full-size output canvas.
-    auto frame = m_compositeCB(req.tick, req.w, req.h,
-                               req.scrub, /*still=*/true);
-    if (frame && frame->width > 0) {
+    auto renderResult = m_compositeResultCB(
+        req.tick, req.w, req.h, req.scrub, /*still=*/true);
+
+    // A newer seek or a Paused->Playing transition invalidated this exact
+    // request while it was rendering. Never publish its stale result over the
+    // playback frame that follows it.
+    if (req.generation != m_scrubGeneration.load(std::memory_order_acquire))
+        return;
+
+    auto frame = renderResult.frame;
+    if (renderResult.status == RenderResultStatus::Ready &&
+        frame && frame->width > 0 && frame->height > 0) {
         m_lastGoodFrame = frame;
-    } else if (frame && frame->width == 0) {
+    } else if ((renderResult.status == RenderResultStatus::MissingMedia ||
+                renderResult.status == RenderResultStatus::Failed) &&
+               frame && frame->width > 0 && frame->height > 0) {
+        m_lastGoodFrame = frame;
+    } else if (renderResult.status == RenderResultStatus::MissingMedia) {
+        m_lastGoodFrame.reset();
+    } else if (renderResult.status == RenderResultStatus::Blank) {
         // Empty sentinel: timeline has no content at this tick (e.g., clip
         // was deleted).  Clear the hold-frame so we don't keep re-publishing
         // a stale composite from before the edit.
@@ -356,9 +430,18 @@ void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
     // presenter shows the correct state for that tick.
     // If falling back to m_lastGoodFrame, clear its stale semaphore
     // (already consumed by the previous present — re-use is Vulkan UB).
-    if (!frame && m_lastGoodFrame)
+    if ((renderResult.status == RenderResultStatus::Pending ||
+         renderResult.status == RenderResultStatus::Failed ||
+         renderResult.status == RenderResultStatus::MissingMedia ||
+         renderResult.status == RenderResultStatus::Canceled) &&
+        !frame && m_lastGoodFrame)
         m_lastGoodFrame->gpuSemaphore = 0;
-    publishFrame(frame ? frame : m_lastGoodFrame, req.tick);
+    if (renderResult.status == RenderResultStatus::Blank)
+        publishFrame(std::move(frame), req.tick);
+    else if (renderResult.status == RenderResultStatus::MissingMedia && !frame)
+        publishFrame(std::make_shared<CachedFrame>(), req.tick);
+    else
+        publishFrame(frame ? std::move(frame) : m_lastGoodFrame, req.tick);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -398,6 +481,41 @@ std::shared_ptr<CachedFrame> FrameProducer::lastProducedFrame() const
 {
     std::lock_guard lock(m_exchangeMtx);
     return m_exchange.frame;
+}
+
+void FrameProducer::recordPlaybackTelemetry(const RenderResult& result)
+{
+    m_playbackTelemetry.addDropped(
+        m_backpressureSkippedTelemetry.exchange(0, std::memory_order_relaxed));
+    m_playbackTelemetry.add(result.diagnostics, result.status);
+    if (!m_playbackTelemetry.ready())
+        return;
+
+    const auto summary = m_playbackTelemetry.take();
+    const double budgetMs = currentFrameBudgetMs();
+    const bool unhealthy = summary.avgProducerMs > budgetMs ||
+        summary.held + summary.pending + summary.dropped > summary.samples / 20;
+    const auto level = unhealthy ? spdlog::level::warn : spdlog::level::info;
+
+    spdlog::log(
+        level,
+        "[PLAYBACK-PERF] n={} status[ready={} held={} pending={} blank={} "
+        "failed={} dropped={}] cache[any={} lru={} segment={}] "
+        "cpuAvgMs[producer={:.2f} render={:.2f} cache={:.2f} prewarm={:.2f} "
+        "shot={:.2f} media={:.2f} recordSubmit={:.2f} readback={:.2f}] "
+        "gpuAvgMs[n={} frame={:.2f} upload={:.2f} fx={:.2f} composite={:.2f}] "
+        "maxMs[producer={:.2f} render={:.2f}] budget={:.2f} divisor={}",
+        summary.samples, summary.ready, summary.held, summary.pending,
+        summary.blank, summary.failed, summary.dropped, summary.cacheHits,
+        summary.compositeCacheHits, summary.segmentCacheHits,
+        summary.avgProducerMs, summary.avgRenderMs, summary.avgCacheLookupMs,
+        summary.avgPrewarmMs, summary.avgShotBoundaryMs,
+        summary.avgMediaResolveMs, summary.avgGpuRecordSubmitMs,
+        summary.avgReadbackMs, summary.gpuSamples, summary.avgGpuFrameMs,
+        summary.avgGpuUploadMs, summary.avgGpuEffectMs,
+        summary.avgGpuCompositeMs, summary.maxProducerMs,
+        summary.maxRenderMs, budgetMs,
+        m_resDivisor.load(std::memory_order_relaxed));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

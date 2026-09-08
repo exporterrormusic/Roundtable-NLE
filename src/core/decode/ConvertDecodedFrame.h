@@ -18,7 +18,7 @@
  *      colorspaces and playback flickers in brightness/saturation.
  *   3. Clears transparent-pixel RGB for native-alpha (non-packed) sources
  *      so GPU linear filtering can't bleed stale color into visible edges.
- *   4. Chroma-keys GREEN-suffixed media (#18FF00 green-screen renders).
+ *   4. Chroma-keys GREEN-suffixed media and H264_Green cache entries.
  *
  * What stays at the call sites (deliberately):
  *   - Resolution-tier clamping (already unified via
@@ -56,6 +56,11 @@ struct SwsCacheRef {
     int&   dstW;
     int&   dstH;
 };
+
+/// True for green-screen media identified either by the legacy GREEN filename
+/// suffix or by AnimationVideoCache's H264_Green format directory.
+[[nodiscard]] bool isGreenScreenMediaPath(
+    const std::filesystem::path& sourceFile);
 
 /// Convert a CPU DecodedFrame to BGRA into `cached` (fills pixels, width,
 /// height, stride — nothing else).  `srcFmt` from resolveDecodedAvFormat().

@@ -5,6 +5,10 @@
 #include <QStandardPaths>
 #include <spdlog/spdlog.h>
 
+#ifdef ROUNDTABLE_HAS_SPINE
+#include "spine/ModelManager.h"
+#endif
+
 static void qtMessageFilter(QtMsgType type, const QMessageLogContext& /*ctx*/, const QString& msg)
 {
     if (type == QtWarningMsg && msg.contains("setHighDpiScaleFactorRoundingPolicy"))
@@ -68,4 +72,42 @@ QString rt::userDataDir()
     }
 
     return path;
+}
+
+QString rt::bundledAssetsDir()
+{
+    return QDir(findProjectRoot()).filePath(QStringLiteral("assets"));
+}
+
+QString rt::downloadedCharacterAssetsDir()
+{
+    return userDataDir();
+}
+
+QString rt::findCharacterDirectory(const QString& characterName)
+{
+    const QString relativePath = QStringLiteral("characters/") + characterName;
+
+    const QString userPath = QDir(downloadedCharacterAssetsDir()).filePath(relativePath);
+    if (QDir(userPath).exists())
+        return QDir(userPath).absolutePath();
+
+    const QString bundledPath = QDir(bundledAssetsDir()).filePath(relativePath);
+    if (QDir(bundledPath).exists())
+        return QDir(bundledPath).absolutePath();
+
+    return {};
+}
+
+void rt::rescanCharacterModels(ModelManager* modelManager)
+{
+#ifdef ROUNDTABLE_HAS_SPINE
+    if (!modelManager) return;
+
+    modelManager->scan(QDir::toNativeSeparators(bundledAssetsDir()).toStdString());
+    modelManager->scanAdditional(
+        QDir::toNativeSeparators(downloadedCharacterAssetsDir()).toStdString());
+#else
+    Q_UNUSED(modelManager);
+#endif
 }

@@ -17,6 +17,7 @@
 #endif
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
+#include "decode/ConvertDecodedFrame.h"
 #include "decode/VideoDecoder.h"
 #include "cache/FrameCache.h"
 #include "decode/PixelOps.h"
@@ -272,14 +273,11 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
     QImage frame(tempPath);
     if (!frame.isNull()) {
         frame = frame.convertToFormat(QImage::Format_ARGB32);
-        // Chroma-key GREEN-suffixed media so thumbnails never show green
-        {
-            std::string fn = QFileInfo(videoPath).fileName().toUpper().toStdString();
-            if (fn.find("GREEN") != std::string::npos) {
-                chromaKeyInPlace(frame.bits(),
-                                 static_cast<size_t>(frame.width()) * frame.height());
-            }
-        }
+        // Chroma-key generated H264_Green cache entries and legacy
+        // GREEN-suffixed media so thumbnails never expose the key colour.
+        if (isGreenScreenMediaPath(utf8ToPath(path)))
+            chromaKeyInPlace(frame.bits(),
+                             static_cast<size_t>(frame.width()) * frame.height());
         m_videoFrameCache[path] = frame;
         spdlog::info("ShotComposer: extracted video thumbnail {}x{} from '{}'",
             frame.width(), frame.height(), path);
@@ -353,13 +351,7 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
         return nullptr;
     }
 
-    // Detect GREEN-suffixed chroma-key files
-    {
-        std::string fn = pathToUtf8(resolvedPath.filename());
-        std::transform(fn.begin(), fn.end(), fn.begin(),
-                       [](unsigned char c) { return std::toupper(c); });
-        state->needsChromaKey = (fn.find("GREEN") != std::string::npos);
-    }
+    state->needsChromaKey = isGreenScreenMediaPath(resolvedPath);
 
     const auto& info = state->decoder->info();
     state->duration = info.duration;

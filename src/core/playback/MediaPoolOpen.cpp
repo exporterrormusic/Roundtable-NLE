@@ -39,6 +39,12 @@ static bool isProResCodec(const std::string& codecName)
     return codecName.find("prores") != std::string::npos;
 }
 
+static bool isVirtualMediaUri(const std::filesystem::path& path)
+{
+    const std::string value = pathToUtf8(path);
+    return value.rfind("spine:", 0) == 0 || value.rfind("puppet:", 0) == 0;
+}
+
 // ─── Open ───────────────────────────────────────────────────────────────────
 
 MediaHandle MediaPool::open(const std::string& utf8Path)
@@ -48,6 +54,14 @@ MediaHandle MediaPool::open(const std::string& utf8Path)
 
 MediaHandle MediaPool::open(const std::filesystem::path& filePath)
 {
+    // Timeline-only sources are resolved by their owning renderer. They are
+    // identifiers, not filesystem paths, and must never enter decoder state.
+    if (isVirtualMediaUri(filePath)) {
+        spdlog::debug("MediaPool: ignoring virtual source URI '{}'",
+                      pathToUtf8(filePath));
+        return InvalidMedia;
+    }
+
     auto openT0 = std::chrono::steady_clock::now();
 
     // Canonicalize the path for dedup (filesystem I/O — outside lock)
@@ -335,6 +349,60 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
 
 // ─── Release / Close ───────────────────────────────────────────────────────
 
+void MediaPool::retireScrubDecoder(MediaHandle handle)
+{
+    std::shared_ptr<ScrubDecoderSlot> slot;
+    {
+        std::lock_guard mapLock(m_scrubDecodersMutex);
+        auto it = m_scrubDecoders.find(handle);
+        if (it == m_scrubDecoders.end())
+            return;
+        slot = std::move(it->second);
+        m_scrubDecoders.erase(it);
+    }
+
+    // A concurrent caller may already hold this slot. Wait for its complete
+    // decode/convert operation before releasing the decoder or SwsContext.
+    std::lock_guard stateLock(slot->mutex);
+    slot->retired = true;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    if (slot->state.swsCtx) {
+        sws_freeContext(static_cast<SwsContext*>(slot->state.swsCtx));
+        slot->state.swsCtx = nullptr;
+    }
+#endif
+    slot->state.decoder.reset();
+    slot->state.lastDecodedFrame = -1;
+}
+
+void MediaPool::retireAllScrubDecoders()
+{
+    std::vector<std::shared_ptr<ScrubDecoderSlot>> slots;
+    {
+        std::lock_guard mapLock(m_scrubDecodersMutex);
+        slots.reserve(m_scrubDecoders.size());
+        for (auto& [handle, slot] : m_scrubDecoders) {
+            (void)handle;
+            slots.push_back(std::move(slot));
+        }
+        m_scrubDecoders.clear();
+    }
+
+    for (auto& slot : slots) {
+        if (!slot) continue;
+        std::lock_guard stateLock(slot->mutex);
+        slot->retired = true;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+        if (slot->state.swsCtx) {
+            sws_freeContext(static_cast<SwsContext*>(slot->state.swsCtx));
+            slot->state.swsCtx = nullptr;
+        }
+#endif
+        slot->state.decoder.reset();
+        slot->state.lastDecodedFrame = -1;
+    }
+}
+
 void MediaPool::release(MediaHandle handle)
 {
     std::lock_guard lock(m_mutex);
@@ -375,15 +443,9 @@ void MediaPool::release(MediaHandle handle)
         // Cancel any pending scheduler work for this handle.
         m_scheduler.cancel(handle);
 
-        // Clean up dedicated scrub decoder for this handle
-        auto scrubIt = m_scrubDecoders.find(handle);
-        if (scrubIt != m_scrubDecoders.end()) {
-#ifdef ROUNDTABLE_HAS_FFMPEG
-            if (scrubIt->second.swsCtx)
-                sws_freeContext(static_cast<SwsContext*>(scrubIt->second.swsCtx));
-#endif
-            m_scrubDecoders.erase(scrubIt);
-        }
+        // Clean up the dedicated scrub/export decoder only after any
+        // in-flight decode+conversion using it has completed.
+        retireScrubDecoder(handle);
     }
 }
 
@@ -407,15 +469,7 @@ void MediaPool::closeAll()
     m_entries.clear();
     m_pathToHandle.clear();
     m_cache->clear();
-    // Clean up scrub decoders
-#ifdef ROUNDTABLE_HAS_FFMPEG
-    for (auto& [h, s] : m_scrubDecoders) {
-        if (s.swsCtx)
-            sws_freeContext(static_cast<SwsContext*>(s.swsCtx));
-        s.swsCtx = nullptr;
-    }
-#endif
-    m_scrubDecoders.clear();
+    retireAllScrubDecoders();
 }
 
 MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
@@ -535,14 +589,8 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
     }
 
     // Drop the dedicated scrub decoder so it reopens against the new file.
-    auto scrubIt = m_scrubDecoders.find(handle);
-    if (scrubIt != m_scrubDecoders.end()) {
-#ifdef ROUNDTABLE_HAS_FFMPEG
-        if (scrubIt->second.swsCtx)
-            sws_freeContext(static_cast<SwsContext*>(scrubIt->second.swsCtx));
-#endif
-        m_scrubDecoders.erase(scrubIt);
-    }
+    // Retirement waits for an in-flight conversion before freeing swscale.
+    retireScrubDecoder(handle);
     // m_pathToHandle intentionally left intact — handle stays valid.
     return handle;  // caller evicts this media's GPU textures (keyed by
                     // mediaId): since the handle is preserved, the GPU
@@ -607,15 +655,8 @@ void MediaPool::closePath(const std::filesystem::path& filePath)
         }
     }
 
-    // Close the dedicated scrub decoder too.
-    auto scrubIt = m_scrubDecoders.find(handle);
-    if (scrubIt != m_scrubDecoders.end()) {
-#ifdef ROUNDTABLE_HAS_FFMPEG
-        if (scrubIt->second.swsCtx)
-            sws_freeContext(static_cast<SwsContext*>(scrubIt->second.swsCtx));
-#endif
-        m_scrubDecoders.erase(scrubIt);
-    }
+    // Close the dedicated scrub decoder too, after any active conversion.
+    retireScrubDecoder(handle);
 }
 
 bool MediaPool::isPathOpen(const std::filesystem::path& filePath) const
@@ -625,6 +666,31 @@ bool MediaPool::isPathOpen(const std::filesystem::path& filePath) const
     std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
     std::lock_guard lock(m_mutex);
     return m_pathToHandle.find(key) != m_pathToHandle.end();
+}
+
+MediaPathState MediaPool::pathState(
+    const std::filesystem::path& filePath) const
+{
+    if (filePath.empty())
+        return MediaPathState::Missing;
+
+    std::error_code ec;
+    auto canonical = std::filesystem::canonical(filePath, ec);
+    const std::string key = ec ? pathToUtf8(filePath) : pathToUtf8(canonical);
+
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_pathToHandle.find(key) != m_pathToHandle.end())
+            return MediaPathState::Ready;
+        if (m_failedPaths.count(key))
+            return MediaPathState::Missing;
+    }
+    {
+        std::lock_guard lock(m_openWorkerMutex);
+        if (m_openWorkerInFlight.count(key))
+            return MediaPathState::Loading;
+    }
+    return MediaPathState::Unresolved;
 }
 
 std::vector<std::filesystem::path> MediaPool::openMediaPaths() const

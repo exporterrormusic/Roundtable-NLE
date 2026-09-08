@@ -63,7 +63,7 @@ public:
 
     // ── Configuration ───────────────────────────────────────────────────
 
-    /// Set the model manager (scans assets/characters/).
+    /// Set the model manager containing bundled and per-user characters.
     void setModelManager(ModelManager* mgr);
 
     /// Set the animation video cache for showing conversion status.

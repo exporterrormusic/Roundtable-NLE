@@ -9,9 +9,9 @@
  * the normal 8-bit compositeFrame, so a bug here only ever degrades export to
  * 8-bit; it cannot corrupt output.  See the header for the full contract.
  *
- * Runs on the compositor (main) thread alongside compositeFrame — it uses the
- * shared GpuContext Nv12Converter (internally locked) and the GpuContext
- * command pool, which are single-threaded on this thread.
+ * Runs on the owning CompositeService's serialized compositor thread alongside
+ * compositeFrame. Export services use their isolated converter and command
+ * pool; legacy live services retain the shared GpuContext path.
  */
 
 #include "CompositeService.h"
@@ -103,7 +103,9 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
 
     // ── 2. Resolve source handle + stream info ──────────────────────────────
     bool skip = false;
-    const uint64_t handle = resolveVideoClipHandle(clip, /*playbackNonBlocking=*/false, skip);
+    const uint64_t handle = resolveVideoClipHandle(
+        clip, /*playbackNonBlocking=*/false,
+        /*forceFullResolution=*/true, skip);
     if (skip || handle == 0) return nullptr;
     const VideoStreamInfo* info = m_mediaPool->getInfo(handle);
     if (!info) return nullptr;
@@ -185,7 +187,7 @@ std::shared_ptr<CachedFrame> CompositeService::tryBuild16fPassthrough(
     if (decoded.width != outW || decoded.height != outH) return nullptr;  // unexpected; bail safely
 
     // ── 6. GPU convert native planes → RGBA16F, read back to CPU ────────────
-    Nv12Converter* conv = GpuContext::get().nv12Converter(outW, outH);
+    auto conv = renderNv12Converter(outW, outH);
     if (!conv) return nullptr;
 
     std::vector<uint8_t> rgba16f;

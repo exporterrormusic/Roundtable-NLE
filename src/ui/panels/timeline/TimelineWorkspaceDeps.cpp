@@ -80,14 +80,11 @@ void TimelineWorkspace::setMediaPool(MediaPool* pool) {
     }
     m_mediaPool = pool;
     if (m_compositeService) m_compositeService->setMediaPool(pool);
-    if (m_exportCompositeService) m_exportCompositeService->setMediaPool(pool);
     if (m_sourceMonitor)
         m_sourceMonitor->setMediaPool(pool);
 #ifdef ROUNDTABLE_HAS_SPINE
     if (pool && m_compositeService)
         m_compositeService->initAnimVideoCache(pool);
-    if (pool && m_exportCompositeService)
-        m_exportCompositeService->initAnimVideoCache(pool);
 #endif
 
     // Drive the live file-swap watcher from MediaPool itself: whenever the
@@ -104,13 +101,11 @@ void TimelineWorkspace::setMediaPool(MediaPool* pool) {
 void TimelineWorkspace::setMediaSourceService(MediaSourceService* service) {
     m_mediaSourceService = service;
     if (m_compositeService) m_compositeService->setMediaSourceService(service);
-    if (m_exportCompositeService) m_exportCompositeService->setMediaSourceService(service);
 }
 
 void TimelineWorkspace::setModelManager(ModelManager* mgr) {
     m_modelManager = mgr;
     if (m_compositeService) m_compositeService->setModelManager(mgr);
-    if (m_exportCompositeService) m_exportCompositeService->setModelManager(mgr);
     spdlog::info("TimelineWorkspace::setModelManager — mgr={}, scanned={}, "
                  "charsPanel={}",
                  static_cast<const void*>(mgr),
@@ -125,7 +120,6 @@ void TimelineWorkspace::setModelManager(ModelManager* mgr) {
 void TimelineWorkspace::setShotPresetManager(ShotPresetManager* mgr) {
     m_shotPresetManager = mgr;
     if (m_compositeService) m_compositeService->setShotPresetManager(mgr);
-    if (m_exportCompositeService) m_exportCompositeService->setShotPresetManager(mgr);
     if (m_propertiesPanel) m_propertiesPanel->setShotPresetManager(mgr);
 }
 

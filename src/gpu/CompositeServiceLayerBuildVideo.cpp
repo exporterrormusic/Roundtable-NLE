@@ -41,7 +41,8 @@ namespace rt {
 // ─────────────────────────────────────────────────────────────────────────────
 std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
-    bool scrubMode, bool exactCacheOnly, bool stillMode) const
+    bool scrubMode, bool forceFullResolution,
+    bool exactCacheOnly, bool stillMode) const
 {
     if (!m_mediaPool)
         return nullptr;
@@ -59,6 +60,24 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
                                           tier);
         m_cachePolicy->markAccess({handle, frameNumber, tier});
     }
+
+    // Frame 0 is exact by definition for single-frame media. Export may use
+    // the blocking cache path because every source must be present before an
+    // output frame is committed. Interactive still requests must remain
+    // non-blocking: a cold image decode must not occupy FrameProducer while a
+    // subsequent Play request is waiting behind it.
+    const auto* mediaInfo = m_mediaPool->getInfo(handle);
+    const bool singleFrameMedia = mediaInfo &&
+        (mediaInfo->duration <= 0.0 || mediaInfo->frameCount <= 1);
+    if (singleFrameMedia && forceFullResolution) {
+        auto frame = m_mediaPool->getFrame(
+            handle, /*frameNumber=*/0, tier,
+            /*scrubMode=*/true, /*forceExact=*/false);
+        if (frame && frame->frameNumber == 0 && frame->tier == tier)
+            return frame;
+        return nullptr;
+    }
+
     // During export (forceFullRes), first try the cache via tryGetFrame
     // — this sets the playhead + extends the interactive playback window
     // (unlike getFrame with scrubMode=true which skips both).  If the
@@ -70,7 +89,7 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // decoder.  The playhead is already set by tryGetFrame, so the cache
     // won't thrash-evict.  Also reject alternate-tier fallback frames
     // (e.g. Half when Full was requested) — export always wants full quality.
-    if (m_forceFullResolution.load()) {
+    if (forceFullResolution) {
         auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
         // Reject loop-pre-decoded cache entries during export.  The loop
         // pre-decoder (MediaPoolPrefetchLoop) seeks with SeekMode::Precise
@@ -107,27 +126,19 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         return frame;
     }
 
-    // A paused monitor or export frame is a quality request, not a latency
-    // request. Require the exact frame at the selected tier and do
-    // the blocking decode on FrameProducer's worker thread.  In particular,
-    // never accept MediaPool's alternate-tier/last-good fallback here: that
-    // was how a Half decode remained stretched over a Full 1080p composite
-    // after the playhead stopped.
-    // stillMode is the exact paused/export contract.  Export also passes
-    // scrubMode=true to avoid interactive settle delays, so scrub must not
-    // weaken exact source-frame resolution here.
+    // Program Monitor still/scrub requests are progressive quality requests,
+    // not export barriers. Queue the exact selected-tier frame, then return a
+    // cached nearby/last-good frame if one is available. The monitor's settle
+    // passes retry this tick and replace the provisional source as soon as the
+    // prefetch worker publishes the exact frame. Crucially, no decoder call is
+    // made inline on FrameProducer, so a newer seek or Play can run promptly.
+    // Export was handled above and remains exact + blocking.
     if (stillMode) {
         auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
         if (frame && frame->frameNumber == frameNumber && frame->tier == tier) {
             return frame;
         }
-        frame = m_mediaPool->getFrame(handle, frameNumber, tier,
-                                      /*scrubMode=*/true,
-                                      /*forceExact=*/true);
-        if (frame && frame->frameNumber == frameNumber && frame->tier == tier) {
-            return frame;
-        }
-        return nullptr;
+        return m_mediaPool->tryGetFrame(handle, frameNumber, tier);
     }
 
     // Optical-flow/frame-blend endpoint acquisition must be exact but must
@@ -217,17 +228,33 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
 //   • skipClip=false, returns !=0 → resolved handle (cached in m_openMediaHandles).
 // ─────────────────────────────────────────────────────────────────────────────
 uint64_t CompositeService::resolveVideoClipHandle(
-    VideoClip* videoClip, bool playbackNonBlocking, bool& skipClip)
+    VideoClip* videoClip, bool playbackNonBlocking,
+    bool forceFullResolution, bool& skipClip,
+    RenderExecutionOutcome* outcome)
 {
     skipClip = false;
-    if (!m_mediaPool) { skipClip = true; return 0; }  // VideoClip needs MediaPool
+    if (!m_mediaPool) {
+        if (outcome) {
+            outcome->report(RenderResultStatus::Failed,
+                            "video source cannot resolve without a media pool");
+        }
+        skipClip = true;
+        return 0;
+    }
     const auto& mediaPath = videoClip->mediaPath();
-    if (mediaPath.empty()) { skipClip = true; return 0; }
+    if (mediaPath.empty()) {
+        if (outcome) {
+            outcome->report(RenderResultStatus::MissingMedia,
+                            "video clip has no media path");
+        }
+        skipClip = true;
+        return 0;
+    }
 
     // Lazy-open media handle (cached by path)
     uint64_t handle = findMediaHandle(mediaPath);
     if (handle != 0) {
-    } else if (playbackNonBlocking && !m_forceFullResolution.load()) {
+    } else if (playbackNonBlocking && !forceFullResolution) {
         // Check if MediaPool finished opening this path in the background.
         if (m_mediaPool->isPathOpen(mediaPath)) {
             handle = m_mediaPool->open(mediaPath);
@@ -235,6 +262,14 @@ uint64_t CompositeService::resolveVideoClipHandle(
                 registerMediaHandle(mediaPath, handle);
         } else {
             // Not open yet — start or continue async open.
+            if (m_mediaPool->pathState(mediaPath) == MediaPathState::Missing) {
+                if (outcome) {
+                    outcome->report(RenderResultStatus::MissingMedia,
+                                    "media is offline: " + mediaPath);
+                }
+                skipClip = true;
+                return 0;
+            }
             m_mediaPool->openAsync(mediaPath);
             handle = 0;
         }
@@ -312,6 +347,11 @@ uint64_t CompositeService::resolveVideoClipHandle(
         }
         if (handle == 0) {
             spdlog::warn("compositeFrame: could not resolve media '{}'", mediaPath);
+            if (outcome &&
+                m_mediaPool->pathState(mediaPath) == MediaPathState::Missing) {
+                outcome->report(RenderResultStatus::MissingMedia,
+                                "media is offline: " + mediaPath);
+            }
             skipClip = true;
             return 0;
         }

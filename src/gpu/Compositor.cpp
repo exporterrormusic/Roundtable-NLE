@@ -375,7 +375,13 @@ bool Compositor::resize(uint32_t width, uint32_t height)
 
 VkDescriptorImageInfo Compositor::outputDescriptorInfo() const
 {
-    return m_outputTexture->descriptorInfo();
+    VkDescriptorImageInfo info = m_outputTexture->descriptorInfo();
+    // Compositor outputs remain GENERAL because the same ring images are
+    // storage targets on their next turn. Consumers may sample GENERAL
+    // directly; advertising SHADER_READ_ONLY_OPTIMAL here disagrees with the
+    // tracked layout and triggers VUID-vkCmdDraw-None-09600.
+    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    return info;
 }
 
 // ── readbackOutput ──────────────────────────────────────────────────────────

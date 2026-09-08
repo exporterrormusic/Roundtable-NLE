@@ -13,6 +13,8 @@
 #include "Encoder.h"
 #include "Muxer.h"
 #include "RenderQueue.h"
+#include "ExportRenderExecutor.h"
+#include "ExportRenderSession.h"
 
 #include <QDir>
 #include <QFileDialog>
@@ -54,6 +56,7 @@ ExportPanel::ExportPanel(QWidget* parent)
     : QWidget(parent)
     , m_renderQueue(std::make_unique<RenderQueue>())
 {
+    m_renderExecutor = new ExportRenderExecutor(this);
     setupUI();
     setFocusPolicy(Qt::StrongFocus);
 
@@ -69,20 +72,39 @@ bool ExportPanel::isExporting() const noexcept
 
 ExportPanel::~ExportPanel()
 {
-    m_destroying.store(true, std::memory_order_release);
-    if (m_pollTimer) m_pollTimer->stop();
-    if (m_playbackTimer) m_playbackTimer->stop();
-    m_exportFrameCallback = {};
-    m_previewCallback = {};
-
-    // Stop the render queue and join the worker thread so the process
-    // can exit cleanly when the main window is closed during an export.
-    m_renderQueue->cancelAll();
-    m_renderQueue->waitForAll();
+    shutdownExportRendering();
 
     // Unregister from timeline observer
     if (m_timeline)
         m_timeline->removeObserver(this);
+}
+
+void ExportPanel::shutdownExportRendering()
+{
+    m_destroying.store(true, std::memory_order_release);
+    if (m_renderExecutor) m_renderExecutor->requestStop();
+    if (m_pollTimer) m_pollTimer->stop();
+    if (m_playbackTimer) m_playbackTimer->stop();
+
+    // Stop the render queue and join the worker thread so the process
+    // can release the session before shared media/GPU dependencies disappear.
+    if (m_renderQueue) {
+        m_renderQueue->cancelAll();
+        m_renderQueue->waitForAll();
+        m_renderQueue->setProgressCallback({});
+        m_renderQueue->setCompleteCallback({});
+        m_renderQueue->setSnapshotResourcePreflightCallback({});
+        m_renderQueue->setSnapshotFrameRenderResultCallback({});
+        m_renderQueue->setSnapshotFrameStoreCallback({});
+    }
+
+    m_exportFrameCallback = {};
+    m_previewCallback = {};
+    m_exportPreflightCallback = {};
+    m_frameStoreCallback = {};
+    m_exportRenderSession.reset();
+    if (m_renderExecutor) m_renderExecutor->discardPendingWork();
+    m_exportRenderSessionFactory = {};
 }
 
 void ExportPanel::onTimelineDestroyed(Timeline* tl)
@@ -221,7 +243,41 @@ void ExportPanel::setPreviewCallback(PreviewCallback cb)
 
 void ExportPanel::setExportFrameCallback(ExportFrameCallback cb)
 {
+    if (!cb) {
+        m_exportFrameCallback = nullptr;
+        return;
+    }
+    m_exportFrameCallback = [cb = std::move(cb)](
+        const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+        int64_t tick, uint32_t w, uint32_t h, bool scrub, bool preserveAlpha) {
+        RenderResult result;
+        result.timelineTick = tick;
+        result.frame = cb(snapshot, tick, w, h, scrub, preserveAlpha);
+        if (!result.frame)
+            result.status = RenderResultStatus::Pending;
+        else if (result.frame->width == 0 || result.frame->height == 0)
+            result.status = RenderResultStatus::Blank;
+        else
+            result.status = RenderResultStatus::Ready;
+        result.diagnostics.status = result.status;
+        return result;
+    };
+}
+
+void ExportPanel::setExportResultCallback(ExportResultCallback cb)
+{
     m_exportFrameCallback = std::move(cb);
+}
+
+void ExportPanel::setExportPreflightCallback(ExportPreflightCallback cb)
+{
+    m_exportPreflightCallback = std::move(cb);
+}
+
+void ExportPanel::setExportRenderSessionFactory(
+    ExportRenderSessionFactory factory)
+{
+    m_exportRenderSessionFactory = std::move(factory);
 }
 
 void ExportPanel::applyInOutPointEdit(const std::string& description,
@@ -272,137 +328,6 @@ void ExportPanel::applyInOutPointEdit(const std::string& description,
                 apply(oldInPoint, oldOutPoint, oldRangeIdx);
             }));
     }
-}
-
-std::shared_ptr<CachedFrame> ExportPanel::pipelineComposite(
-    const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
-    int64_t tick, int64_t nextTick,
-    uint32_t w, uint32_t h, bool scrub, bool preserveAlpha)
-{
-    auto waitForComposite = [this](
-        const std::shared_future<std::shared_ptr<CachedFrame>>& future)
-        -> std::shared_ptr<CachedFrame> {
-        while (future.valid() &&
-               future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
-            if (m_destroying.load(std::memory_order_acquire))
-                return nullptr;
-        }
-        return future.valid() ? future.get() : nullptr;
-    };
-    // ═══════════════════════════════════════════════════════════════════
-    // PIPELINE using nextTick from RenderQueue:
-    //
-    //   Call 0 (first):  submit frame 0 (QueuedConn) → WAIT → return 0
-    //                     submit frame 1 (QueuedConn) → store for next call
-    //
-    //   Call N (N>0):    wait for stored frame N (from prev Phase C) → return N
-    //                     submit frame N+1 (QueuedConn) → store for next call
-    //
-    // Main thread processes frame N's event concurrently with the worker
-    // encoding frame N, because frame N was already queued during the
-    // PREVIOUS call's Phase C (right before returning).
-    // ═══════════════════════════════════════════════════════════════════
-
-    auto trySubmit = [&](int64_t targetTick, int slotIdx) {
-        auto promise = std::make_shared<std::promise<std::shared_ptr<CachedFrame>>>();
-        auto sf = promise->get_future().share();
-        m_pipelineSlots[slotIdx].snapshot = snapshot;
-        m_pipelineSlots[slotIdx].tick = targetTick;
-        m_pipelineSlots[slotIdx].future = sf;
-        if (m_exportFrameCallback && snapshot) {
-            auto cb = m_exportFrameCallback;
-            QMetaObject::invokeMethod(this,
-                [promise, cb, snapshot, targetTick, w, h, scrub, preserveAlpha]() {
-                    // /EHa is set on this TU (see ui/CMakeLists.txt) so
-                    // catch(...) covers SEH access violations and the
-                    // 0x000006BA hook-DLL exception that fires while the
-                    // Vulkan ICD is mid-TDR.  Without this catch, an SEH
-                    // raised on the main thread during the composite
-                    // would (a) kill the process and (b) leave the
-                    // worker thread blocked forever on promise.get_future().
-                    // On failure we set the promise to nullptr; the worker
-                    // retries this exact tick and fails the export if the
-                    // bounded retry budget is exhausted.
-                    try {
-                        auto frame = cb(snapshot, targetTick, w, h, scrub,
-                                        preserveAlpha);
-                        if (frame) frame->ensurePixels();
-                        promise->set_value(std::move(frame));
-                    } catch (...) {
-                        spdlog::error("ExportPanel: SEH/exception during main-thread "
-                                      "composite at tick={} — returning failure", targetTick);
-                        try { promise->set_value(nullptr); } catch (...) {}
-                    }
-                },
-                Qt::QueuedConnection);
-        } else {
-            promise->set_value(nullptr);
-        }
-        return sf;
-    };
-
-    // ── Phase A: Wait for previously stored result ───────────────────────
-    // Invariant while a job streams frames: the PREV slot holds the future
-    // that was pre-submitted for exactly THIS tick (last call's nextTick).
-    // If the stored tick doesn't match — first frame ever (tick -1), a new
-    // export after onStartExport's reset, or the next job in a multi-job
-    // queue run — treat this as a first call and composite synchronously.
-    // The old `tick < 0` test alone let the second export's frame 0 reuse
-    // the previous export's last composited frame via the stale future.
-    int cur = m_pipelineCurrentSlot;
-    int prev = (cur + 1) % 2;
-    bool firstCall = (m_pipelineSlots[prev].snapshot.get() != snapshot.get())
-                     || (m_pipelineSlots[prev].tick != tick)
-                     || !m_pipelineSlots[prev].future.valid();
-    std::shared_ptr<CachedFrame> result;
-
-    if (!firstCall && m_pipelineSlots[prev].future.valid()) {
-        try {
-            result = waitForComposite(m_pipelineSlots[prev].future);
-        } catch (const std::exception& e) {
-            spdlog::error("ExportPanel: pipeline wait exception: {}", e.what());
-        }
-        // A shared_future can be read repeatedly.  Retaining it here made a
-        // retry of the final frame return the same failed result forever
-        // instead of asking the compositor to render that tick again.
-        m_pipelineSlots[prev] = CompositeSlot{};
-    }
-
-    // ── Phase B: Submit this frame (first call only) / Submit next frame ─
-    if (firstCall) {
-        // First call: submit frame 0 and wait for it.
-        auto sf0 = trySubmit(tick, cur);
-        m_pipelineCurrentSlot = (cur + 1) % 2;
-        try {
-            result = waitForComposite(sf0);
-        } catch (const std::exception& e) {
-            spdlog::error("ExportPanel: pipeline first-frame wait exception: {}",
-                          e.what());
-        }
-        // Mark the result consumed so a bounded retry of this same tick
-        // always invokes the compositor again.
-        m_pipelineSlots[cur] = CompositeSlot{};
-
-        // Also submit frame 1 for the next call.
-        if (nextTick >= 0) {
-            trySubmit(nextTick, m_pipelineCurrentSlot);
-            m_pipelineCurrentSlot = (m_pipelineCurrentSlot + 1) % 2;
-        }
-    } else {
-        // Subsequent calls: pre-submit next frame (overlap with encode).
-        if (nextTick >= 0) {
-            trySubmit(nextTick, cur);
-            m_pipelineCurrentSlot = (cur + 1) % 2;
-        } else {
-            // Last frame: no next, leave slot as-is.
-            m_pipelineCurrentSlot = cur;
-        }
-    }
-
-    if (!result || result->pixels.empty()) {
-        spdlog::warn("ExportPanel: pipeline empty pixels at tick={}", tick);
-    }
-    return result;
 }
 
 void ExportPanel::showEvent(QShowEvent* event)

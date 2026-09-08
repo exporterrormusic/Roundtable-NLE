@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "GpuTeardownMode.h"
+
 #include "ICompositor.h"
 #include "vulkan/Allocator.h"
 #include "vulkan/Buffer.h"
@@ -222,6 +224,7 @@ public:
 
     /// Shut down and release all GPU resources.
     void shutdown() override;
+    void shutdown(GpuTeardownMode mode);
 
     [[nodiscard]] bool isInitialized() const noexcept override { return m_initialized; }
 

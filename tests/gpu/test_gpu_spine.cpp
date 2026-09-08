@@ -14,6 +14,8 @@
 
 #include <volk.h>          // Must come before any vulkan.h include
 #include "SpineRenderer.h"
+#include "SpineRendererCacheKey.h"
+#include "GpuContext.h"
 #include "vulkan/Instance.h"
 #include "vulkan/Device.h"
 #include "vulkan/Allocator.h"
@@ -32,8 +34,20 @@
 #include <cmath>
 #include <thread>
 #include <future>
+#include <mutex>
 
 namespace fs = std::filesystem;
+
+TEST(SpineRendererIdentityTest, ReusesAssetAcrossClipEditsButSeparatesDuplicates)
+{
+    const std::string asset = "Modernia|outfit_02|0";
+    EXPECT_EQ(rt::spineRendererContentKey(asset, 0),
+              "Modernia|outfit_02|0|instance=0");
+    EXPECT_EQ(rt::spineRendererContentKey(asset, 0),
+              rt::spineRendererContentKey(asset, 0));
+    EXPECT_NE(rt::spineRendererContentKey(asset, 0),
+              rt::spineRendererContentKey(asset, 1));
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -61,6 +75,9 @@ struct TestVulkanContext
     rt::Device      device;
     rt::Allocator   allocator;
     rt::CommandPool cmdPool;
+    std::mutex      graphicsQueueMutex;
+    std::mutex      computeQueueMutex;
+    std::mutex      transferQueueMutex;
     bool            valid{false};
 
     bool init()
@@ -89,6 +106,13 @@ struct TestVulkanContext
                             device.queueFamilies().graphics.value()))
             return false;
 
+        if (!rt::GpuContext::get().scheduler().init(
+                device.handle(),
+                device.graphicsQueue(), &graphicsQueueMutex,
+                device.computeQueue(), &computeQueueMutex,
+                device.transferQueue(), &transferQueueMutex))
+            return false;
+
         valid = true;
         return true;
     }
@@ -97,6 +121,7 @@ struct TestVulkanContext
     {
         if (!valid) return;
         cmdPool.destroy();
+        rt::GpuContext::get().scheduler().shutdown();
         allocator.destroy();
         device.destroy();
         instance.destroy();

@@ -135,7 +135,7 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
     ThumbCropAdj cropAdj = thumbCropAdjustmentFor(charName);
 
     // -- Persistent disk cache (PRIORITY) --------------------------------------
-    // Pre-rendered PNG thumbs in assets/cache/character_thumbs/{charName}.png
+    // Pre-rendered PNG thumbs in the per-user character cache.
     // are produced by renderAndCacheCharacterThumbnail() with the correct
     // bbox crop and an extracted background color.  Check these BEFORE any
     // video path: the H264_Green converted videos below have a literal green

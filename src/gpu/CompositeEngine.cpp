@@ -57,7 +57,9 @@ CompositeEngine::~CompositeEngine()
     shutdown();
 }
 
-void CompositeEngine::init(VkDevice device)
+void CompositeEngine::init(VkDevice device,
+                           CommandPool* renderCommandPool,
+                           VkQueue renderQueue)
 {
     m_device = device;
 
@@ -80,10 +82,14 @@ void CompositeEngine::init(VkDevice device)
 
     m_adjustmentEffectProcessor = std::make_unique<EffectProcessor>();
     EffectProcessorConfig adjustmentConfig{};
+    CommandPool& effectCommandPool = renderCommandPool
+        ? *renderCommandPool : GpuContext::get().graphicsCmdPool();
+    m_renderCommandPool = effectCommandPool.handle();
+    const VkQueue effectQueue = renderQueue != VK_NULL_HANDLE
+        ? renderQueue : GpuContext::get().graphicsQueue();
     if (!m_adjustmentEffectProcessor->init(
             GpuContext::get().device(), GpuContext::get().allocator(),
-            GpuContext::get().graphicsCmdPool(),
-            GpuContext::get().graphicsQueue(), adjustmentConfig)) {
+            effectCommandPool, effectQueue, adjustmentConfig)) {
         // Adjustment clips degrade to a clean passthrough if their dedicated
         // processor cannot initialize; ordinary clip effects remain usable.
         spdlog::warn("Adjustment-layer GPU effects are unavailable");
@@ -178,12 +184,6 @@ void CompositeEngine::resolveTimingsForSlot(int slotIdx)
         m_lastTimings = t;
     }
 
-    static int s_logCounter = 0;
-    if (++s_logCounter % 30 == 0) {
-        spdlog::info("[GPU-TIMING] upload={:.2f}ms effect={:.2f}ms "
-                     "compose={:.2f}ms frame={:.2f}ms",
-                     t.uploadMs, t.effectMs, t.composeMs, t.frameMs);
-    }
 }
 
 VkSemaphore CompositeEngine::acquireFrameSemaphore()
@@ -203,13 +203,30 @@ void CompositeEngine::releaseFrameSemaphore(VkSemaphore sem)
     GpuContext::get().releaseBinarySemaphore(sem);
 }
 
-void CompositeEngine::shutdown()
+void CompositeEngine::shutdown(GpuTeardownMode mode)
 {
     const bool deviceLost = GpuContext::get().gpuState() != GpuState::Healthy;
-    if (m_device != VK_NULL_HANDLE && !deviceLost)
-        vkDeviceWaitIdle(m_device);
-    else if (m_device != VK_NULL_HANDLE)
+    if (m_device != VK_NULL_HANDLE && !deviceLost) {
+        if (mode == GpuTeardownMode::DeviceWide) {
+            vkDeviceWaitIdle(m_device);
+        } else {
+            constexpr uint64_t kSessionDrainTimeoutNs = 5'000'000'000ull;
+            bool drained = !m_gpuSubmission ||
+                m_gpuSubmission->waitForAll(kSessionDrainTimeoutNs);
+            if (m_adjustmentEffectProcessor) {
+                drained = m_adjustmentEffectProcessor->waitForOwnedWork(
+                    kSessionDrainTimeoutNs) && drained;
+            }
+            if (!drained &&
+                GpuContext::get().gpuState() == GpuState::Healthy) {
+                spdlog::warn("CompositeEngine: session fence drain failed; "
+                             "falling back to device-wide idle");
+                GpuContext::get().scheduler().deviceWaitIdle();
+            }
+        }
+    } else if (m_device != VK_NULL_HANDLE) {
         spdlog::warn("CompositeEngine: skipping device-idle wait after device loss");
+    }
 
     // Inter-queue semaphores are owned by GpuContext now and destroyed
     // from GpuContext::shutdown after device waitIdle — see the matching
@@ -237,10 +254,17 @@ void CompositeEngine::shutdown()
     for (auto& v : m_gpuTemporalSourceTextures) v.clear();
     for (auto& v : m_gpuTemporalSourceTexKeys) v.clear();
     for (auto& v : m_layerTemporalOutputs) v.clear();
-    m_adjustmentEffectProcessor.reset();
+    if (m_adjustmentEffectProcessor) {
+        // The synchronization boundary above covers this engine-owned helper.
+        // Avoid a redundant device-wide wait in its destructor.
+        m_adjustmentEffectProcessor->shutdown(GpuTeardownMode::SessionScoped);
+        m_adjustmentEffectProcessor.reset();
+    }
     m_temporalInterpolator.reset();
     m_compositeLru.clear();
     m_stagingRing.reset();
+    m_renderCommandPool = VK_NULL_HANDLE;
+    m_device = VK_NULL_HANDLE;
 }
 
 // ============================================================================
@@ -248,35 +272,24 @@ void CompositeEngine::shutdown()
 // ============================================================================
 
 std::shared_ptr<CachedFrame> CompositeEngine::checkLru(
-    int64_t tick, uint32_t w, uint32_t h) const
+    const CompositeCacheKey& key) const
 {
     for (const auto& ce : m_compositeLru) {
         if (ce.frame && ce.frame->gpuReady) continue;
-        if (ce.tick == tick && ce.w == w && ce.h == h && ce.frame)
+        if (ce.key == key && ce.frame)
             return ce.frame;
     }
     return nullptr;
 }
 
-void CompositeEngine::insertLru(int64_t tick, uint32_t w, uint32_t h,
+void CompositeEngine::insertLru(const CompositeCacheKey& key,
                                 std::shared_ptr<CachedFrame> frame)
 {
     if (m_compositeLru.size() < kCacheSize)
-        m_compositeLru.push_back({tick, w, h, std::move(frame)});
+        m_compositeLru.push_back({key, std::move(frame)});
     else {
-        m_compositeLru[m_compositeLruIdx] = {tick, w, h, std::move(frame)};
+        m_compositeLru[m_compositeLruIdx] = {key, std::move(frame)};
         m_compositeLruIdx = (m_compositeLruIdx + 1) % kCacheSize;
-    }
-}
-
-void CompositeEngine::flushLruOnResize(uint32_t w, uint32_t h)
-{
-    if (!m_compositeLru.empty() &&
-        (m_compositeLru.front().w != w || m_compositeLru.front().h != h))
-    {
-        m_compositeLru.clear();
-        m_compositeLru.resize(kCacheSize);
-        m_compositeLruIdx = 0;
     }
 }
 
@@ -287,19 +300,17 @@ void CompositeEngine::clearLru()
     m_compositeLruIdx = 0;
 }
 
-// A3: Only invalidate composite entries whose tick falls inside [fromTick, toTick].
-// Used by edit commands that mutate a known time range — keeps cached
-// frames from the rest of the timeline alive so seeking elsewhere doesn't
-// trigger a full re-composite chain.
-void CompositeEngine::invalidateLruRange(int64_t fromTick, int64_t toTick)
+// Invalidate only this graph's entries inside [fromTick, toTick]. Other
+// sequences and unaffected ranges retain their reusable composite results.
+void CompositeEngine::invalidateLruRange(
+    const void* graph, int64_t fromTick, int64_t toTick)
 {
     if (fromTick > toTick) std::swap(fromTick, toTick);
     for (auto& ce : m_compositeLru) {
-        if (ce.frame && ce.tick >= fromTick && ce.tick <= toTick) {
+        if (ce.frame && ce.key.graph == graph &&
+            ce.key.tick >= fromTick && ce.key.tick <= toTick) {
             ce.frame.reset();
-            ce.tick = -1;
-            ce.w = 0;
-            ce.h = 0;
+            ce.key = {};
         }
     }
 }
@@ -389,9 +400,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
     uint32_t outW, uint32_t outH,
     int64_t tick, bool scrubMode,
     bool gpuDisplayMode,
-    Compositor* compositor,
-    EffectProcessor* effectProcessor,
-    TransitionRenderer* transitionRenderer,
+    const std::shared_ptr<Compositor>& compositor,
+    const std::shared_ptr<EffectProcessor>& effectProcessor,
+    const std::shared_ptr<TransitionRenderer>& transitionRenderer,
     bool perfLog,
     std::chrono::high_resolution_clock::time_point perfT0,
     std::chrono::high_resolution_clock::time_point& perfTlayers,
@@ -399,6 +410,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
     std::chrono::high_resolution_clock::time_point& perfTcomp,
     int& effectLayerCount, int& effectPassCount,
     int& transitionCount,
+    const CompositeCacheKey& cacheKey,
     bool allowLruInsert,
     bool forceSyncReadback)
 {
@@ -442,5 +454,5 @@ std::shared_ptr<CachedFrame> CompositeEngine::composite(
         compositor, effectProcessor, transitionRenderer,
         perfLog, perfT0, perfTlayers, perfTgpuUp, perfTcomp,
         effectLayerCount, effectPassCount, transitionCount,
-        allowLruInsert, forceSyncReadback);
+        cacheKey, allowLruInsert, forceSyncReadback);
 }

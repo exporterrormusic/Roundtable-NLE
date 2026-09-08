@@ -51,10 +51,21 @@ namespace rt {
 
 // ─── Scrub decoder management ───────────────────────────────────────────────
 
-PrefetchDecoderState& MediaPool::getScrubDecoder(
+std::shared_ptr<ScrubDecoderSlot> MediaPool::getScrubDecoder(
     MediaHandle handle, const std::filesystem::path& path, const VideoStreamInfo& /*info*/)
 {
-    auto& state = m_scrubDecoders[handle];
+    std::shared_ptr<ScrubDecoderSlot> slot;
+    {
+        std::lock_guard mapLock(m_scrubDecodersMutex);
+        auto& stored = m_scrubDecoders[handle];
+        if (!stored)
+            stored = std::make_shared<ScrubDecoderSlot>();
+        slot = stored;
+    }
+    std::unique_lock stateLock(slot->mutex);
+    if (slot->retired)
+        return nullptr;
+    auto& state = slot->state;
     if (!state.decoder) {
         state.decoder = std::make_unique<VideoDecoder>();
         // forceSoftware=false (use NVDEC if available): on H.264 NVDEC decodes
@@ -73,7 +84,7 @@ PrefetchDecoderState& MediaPool::getScrubDecoder(
         }
         state.lastDecodedFrame = -1;
     }
-    return state;
+    return slot;
 }
 
 // ─── getFrame (blocking + scrub path) ───────────────────────────────────────
@@ -100,11 +111,17 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // Callers should do this, but a stale or miscalculated frame number
     // beyond the video's frame count causes a guaranteed decode failure
     // (grey/static output) and wastes 50-100ms on a futile seek.
+    bool singleFrameMedia = false;
     {
         std::lock_guard lock(m_mutex);
         auto* entry = findEntry(handle);
-        if (entry && entry->info.frameCount > 1 && frameNumber >= entry->info.frameCount) {
-            frameNumber = entry->info.frameCount - 1;
+        if (entry) {
+            singleFrameMedia =
+                entry->info.duration <= 0.0 || entry->info.frameCount <= 1;
+            if (entry->info.frameCount > 1 &&
+                frameNumber >= entry->info.frameCount) {
+                frameNumber = entry->info.frameCount - 1;
+            }
         }
     }
     if (frameNumber < 0) frameNumber = 0;
@@ -193,7 +210,10 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // previous frame for a missed exact frame is precisely the
     // duplication/stutter bug.  Skip straight to the blocking, frame-
     // accurate inline decode below.
-    if (!forceExact) {
+    // A single-frame source has no legitimate nearby-frame fallback. It also
+    // must not borrow a different tier while the monitor is settling: produce
+    // and cache the requested still once instead.
+    if (!forceExact && !singleFrameMedia) {
         const int64_t searchRadius = scrubMode ? 15 : 5;
         for (int64_t delta = 1; delta <= searchRadius; ++delta) {
             cached = m_cache->getNoPromote(handle, frameNumber - delta, tier);
@@ -319,7 +339,9 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // contend with this exact decode for NVDEC sessions (the source of stale
     // surfaces) and would pollute the shared cache with frames export must
     // not read.  Export decodes purely sequentially via the scrub decoder.
-    if (!forceExact)
+    // The inline path below is already decoding the only frame a still has.
+    // Queueing frame 0 here launches a second decoder for the same PNG.
+    if (!forceExact && !singleFrameMedia)
         schedulePrefetch(handle, frameNumber, perfProfile().prefetchAheadFrames, /*urgent=*/true, tier);
 
     m_perf.inlineDecodes.fetch_add(1, std::memory_order_relaxed);
@@ -338,7 +360,18 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
     // m_mutex released — decode is now lock-free.
 
-    auto& scrubState = getScrubDecoder(handle, filePath, info);
+    auto scrubSlot = getScrubDecoder(handle, filePath, info);
+    if (!scrubSlot)
+        return nullptr;
+
+    // DecodedFrame plane pointers remain owned by VideoDecoder until its next
+    // decode/seek. Keep this lock across decoding, hardware transfer, and
+    // sws_scale so another render consumer cannot invalidate those planes or
+    // concurrently enter the same cached SwsContext.
+    std::unique_lock scrubLock(scrubSlot->mutex);
+    if (scrubSlot->retired || !scrubSlot->state.decoder)
+        return nullptr;
+    auto& scrubState = scrubSlot->state;
 
     // Build a PrefetchTask so we can reuse decodePrefetchFrame/convertDecodedToCache
     PrefetchTask scrubTask;

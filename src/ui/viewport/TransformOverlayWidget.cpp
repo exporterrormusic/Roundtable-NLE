@@ -55,10 +55,10 @@ TransformOverlayWidget::TransformOverlayWidget(VulkanViewport* viewport,
     setMouseTracking(true);
     setAttribute(Qt::WA_SetCursor, true); // enable per-tool cursor changes
 
-    // A click in the visible Program Monitor can be delivered either to the
-    // embedded native Vulkan QWindow or to this top-level translucent overlay,
-    // depending on the alpha at that exact pixel. Observe application mouse
-    // events so one owner handles double-click-to-edit in both cases.
+    // Observe application events for lost mouse releases/deactivation and for
+    // pointer events that fall through transparent pixels of the inline text
+    // editor. Double-click routing itself stays with the overlay and Vulkan
+    // viewport owners so unrelated overlapping windows are never intercepted.
     qApp->installEventFilter(this);
 
     // The VulkanViewport uses createWindowContainer() which embeds a native
@@ -74,7 +74,7 @@ TransformOverlayWidget::TransformOverlayWidget(VulkanViewport* viewport,
                              Qt::KeyboardModifiers modifiers) {
             const QPointF overlayPosition = QPointF(
                 mapFromGlobal(globalPosition.toPoint()));
-            spdlog::warn("[INLINE-TEXT] routed native double-click global=({}, {}) overlay=({}, {})",
+            spdlog::debug("[INLINE-TEXT] routed native double-click global=({}, {}) overlay=({}, {})",
                          globalPosition.x(), globalPosition.y(),
                          overlayPosition.x(), overlayPosition.y());
             QMouseEvent mapped(QEvent::MouseButtonDblClick,

@@ -998,6 +998,12 @@ void AudioSync::beginTranscriptionRun(std::vector<size_t> indices)
 {
     if (m_transcriptionState != TranscriptionState::Idle || m_workerThread || indices.empty())
         return;
+    if (!ensureCrisperWhisperConsent()) {
+        selectDefaultWhisperModel();
+        if (m_transcribeStatus)
+            m_transcribeStatus->setText(QStringLiteral("CrisperWhisper was not enabled"));
+        return;
+    }
 
     indices.erase(std::remove_if(indices.begin(), indices.end(), [this](size_t index) {
         return index >= m_audioPaths.size();

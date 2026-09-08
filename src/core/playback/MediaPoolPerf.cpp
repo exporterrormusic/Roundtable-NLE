@@ -45,7 +45,10 @@ MediaPool::PrefetchStats MediaPool::prefetchStats() const
     // runs on the FrameProducer thread; a stale read here is acceptable
     // — the count is purely diagnostic and we don't want to add UI-thread
     // contention to a logging path.
-    out.scrubDecoders = m_scrubDecoders.size();
+    out.scrubDecoders = [this] {
+        std::lock_guard lock(m_scrubDecodersMutex);
+        return m_scrubDecoders.size();
+    }();
     return out;
 }
 

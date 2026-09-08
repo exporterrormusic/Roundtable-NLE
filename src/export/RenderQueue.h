@@ -10,6 +10,7 @@
 
 #include "Encoder.h"
 #include "AudioMixdown.h"
+#include "playback/EngineContracts.h"
 
 #include <atomic>
 #include <cstddef>
@@ -37,17 +38,8 @@ struct CachedFrame;
 /// project may be null only for the legacy timeline-only addJob overload used
 /// by low-level tests/callers.  Video and audio must consume this same object;
 /// no queued job is allowed to re-snapshot later.
-struct ExportRenderSnapshot
-{
-    std::shared_ptr<const Project>  project;
-    std::shared_ptr<const Timeline> timeline;
-    size_t                          sequenceIndex{0};
-
-    [[nodiscard]] bool hasTimeline() const noexcept { return timeline != nullptr; }
-    [[nodiscard]] bool isFullProject() const noexcept {
-        return project != nullptr && timeline != nullptr;
-    }
-};
+struct ExportRenderSnapshot final : RenderSnapshot
+{};
 
 /// Callback that composites a single frame at a given tick.
 /// Returns a CachedFrame (BGRA) or nullptr on failure.
@@ -63,6 +55,19 @@ using SnapshotFrameRenderFn = std::function<std::shared_ptr<CachedFrame>(
     const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
     int64_t tick, int64_t nextTick,
     uint32_t width, uint32_t height, bool scrubMode, bool preserveAlpha)>;
+
+/// Result-aware export callback. This is the canonical queue boundary; the
+/// frame-only setters below adapt legacy callbacks to Pending/Ready results.
+using SnapshotFrameRenderResultFn = std::function<RenderResult(
+    const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+    int64_t tick, int64_t nextTick,
+    uint32_t width, uint32_t height, bool scrubMode, bool preserveAlpha)>;
+
+/// Snapshot-wide resource readiness check. Called on the export worker before
+/// encoder creation; UI integrations may marshal the actual check to the main
+/// thread and return Pending while asynchronous loaders are still running.
+using SnapshotResourcePreflightFn = std::function<RenderPreflightResult(
+    const std::shared_ptr<const ExportRenderSnapshot>& snapshot)>;
 
 /// Optional: receives each finished export frame (full-res, CPU pixels ready)
 /// right before it is encoded, so it can be written into the segment render
@@ -272,13 +277,37 @@ public:
         m_frameRenderCb = [fn = std::move(fn)](
             const std::shared_ptr<const ExportRenderSnapshot>&,
             int64_t tick, int64_t nextTick, uint32_t width, uint32_t height,
-            bool scrubMode, bool) -> std::shared_ptr<CachedFrame> {
-                if (!fn) return nullptr;
-                return fn(tick, nextTick, width, height, scrubMode);
+            bool scrubMode, bool) -> RenderResult {
+                RenderResult result;
+                result.timelineTick = tick;
+                result.frame = fn
+                    ? fn(tick, nextTick, width, height, scrubMode) : nullptr;
+                result.status = result.frame ? RenderResultStatus::Ready
+                                             : RenderResultStatus::Pending;
+                result.diagnostics.status = result.status;
+                return result;
             };
     }
     void setSnapshotFrameRenderCallback(SnapshotFrameRenderFn fn) {
+        m_frameRenderCb = [fn = std::move(fn)](
+            const std::shared_ptr<const ExportRenderSnapshot>& snapshot,
+            int64_t tick, int64_t nextTick, uint32_t width, uint32_t height,
+            bool scrubMode, bool preserveAlpha) -> RenderResult {
+                RenderResult result;
+                result.timelineTick = tick;
+                result.frame = fn ? fn(snapshot, tick, nextTick, width, height,
+                                       scrubMode, preserveAlpha) : nullptr;
+                result.status = result.frame ? RenderResultStatus::Ready
+                                             : RenderResultStatus::Pending;
+                result.diagnostics.status = result.status;
+                return result;
+            };
+    }
+    void setSnapshotFrameRenderResultCallback(SnapshotFrameRenderResultFn fn) {
         m_frameRenderCb = std::move(fn);
+    }
+    void setSnapshotResourcePreflightCallback(SnapshotResourcePreflightFn fn) {
+        m_resourcePreflightCb = std::move(fn);
     }
 
     /// Optional segment-cache write-through (§4.6): called with each finished
@@ -326,7 +355,8 @@ private:
 
     JobProgressFn               m_progressCb;
     JobCompleteFn               m_completeCb;
-    SnapshotFrameRenderFn       m_frameRenderCb;
+    SnapshotFrameRenderResultFn m_frameRenderCb;
+    SnapshotResourcePreflightFn m_resourcePreflightCb;
     SnapshotFrameStoreFn        m_frameStoreCb;
 };
 

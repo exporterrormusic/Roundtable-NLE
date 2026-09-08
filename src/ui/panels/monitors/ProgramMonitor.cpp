@@ -125,7 +125,7 @@ void ProgramMonitor::stopPlaybackPipeline()
         // can't re-enter this widget while MainWindow is being torn down.
         m_pipeline->setPresentCallback(nullptr);
         m_pipeline->setPresentNotify(nullptr);
-        m_pipeline->setCompositeCallback(nullptr);
+        m_pipeline->setCompositeResultCallback(nullptr);
     }
     spdlog::info("[PM-TRACE] stopPlaybackPipeline() called");
 }
@@ -246,8 +246,16 @@ void ProgramMonitor::requestPlaybackPreroll(int64_t tick)
     if (!m_pipeline)
         return;
 
-    m_pipeline->requestFrame(tick, compositeWidth(), compositeHeight(),
-                             /*scrub=*/false);
+    // Crossing Paused->Playing ends the paused-quality settle contract. Drop
+    // queued/in-flight exact requests and prevent the poller from scheduling
+    // more settle frames. The preroll itself must use the playback queue;
+    // requestFrame() is the exact still slot even when scrub=false.
+    m_scrubPending = false;
+    m_scrubSettleCounter = 0;
+    m_editSettleCounter = 0;
+    m_isScrubbing = false;
+    m_pipeline->cancelPendingScrub();
+    m_pipeline->requestPlaybackFrame(tick);
 }
 
 void ProgramMonitor::setOutputResolution(uint32_t w, uint32_t h)
@@ -265,9 +273,19 @@ void ProgramMonitor::setOutputResolution(uint32_t w, uint32_t h)
 void ProgramMonitor::setCompositeCallback(CompositeCallback cb)
 {
     m_compositeCallback = std::move(cb);
+    m_compositeResultCallback = nullptr;
 
     if (m_pipeline)
         m_pipeline->setCompositeCallback(m_compositeCallback);
+}
+
+void ProgramMonitor::setCompositeResultCallback(CompositeResultCallback cb)
+{
+    m_compositeResultCallback = std::move(cb);
+    m_compositeCallback = nullptr;
+
+    if (m_pipeline)
+        m_pipeline->setCompositeResultCallback(m_compositeResultCallback);
 }
 
 void ProgramMonitor::setPlaybackTierCallback(PlaybackTierCallback cb)
@@ -325,7 +343,8 @@ bool ProgramMonitor::usesAsyncPipelinePath() const noexcept
 
 void ProgramMonitor::ensurePipelineStarted()
 {
-    if (!usesAsyncPipelinePath() || !m_controller || !m_compositeCallback)
+    if (!usesAsyncPipelinePath() || !m_controller ||
+        (!m_compositeResultCallback && !m_compositeCallback))
         return;
 
     if (!m_pipeline)
@@ -341,7 +360,10 @@ void ProgramMonitor::initPipeline()
 
     m_pipeline = std::make_unique<PlaybackScheduler>();
     m_pipeline->setController(m_controller);
-    m_pipeline->setCompositeCallback(m_compositeCallback);
+    if (m_compositeResultCallback)
+        m_pipeline->setCompositeResultCallback(m_compositeResultCallback);
+    else
+        m_pipeline->setCompositeCallback(m_compositeCallback);
     m_pipeline->setOutputResolution(m_outputWidth, m_outputHeight,
                                     m_playbackResDivisor);
 
@@ -525,14 +547,16 @@ void ProgramMonitor::flushQueuedPresent()
     // Present the latest frame from the presenter thread and clear the
     // pending flag so the next presenter frame can queue a new invocation.
 
-    // Skip GPU display when a modal dialog is active (QDialog::exec event
-    // loop).  During modal dialogs, paint events still fire for widgets
-    // behind the dialog, and invoking Vulkan viewport operations from a
-    // paint event cascade can overflow the NVIDIA driver stack.
+    // Defer GPU display while a modal dialog is active (QDialog::exec event
+    // loop). During modal dialogs, invoking Vulkan viewport operations from a
+    // paint cascade can overflow the NVIDIA driver stack. Do not discard the
+    // frame: paused presentation is one-shot, so dropping it here leaves the
+    // monitor blank until another action forces a render.
     if (QApplication::activeModalWidget() != nullptr) {
-        std::lock_guard lock(m_queuedPresentMtx);
-        m_queuedPresentPending.store(false, std::memory_order_release);
-        m_queuedPresentFrame.reset();
+        QTimer::singleShot(50, this, [this]() {
+            if (!m_destroying.load(std::memory_order_acquire))
+                flushQueuedPresent();
+        });
         return;
     }
 
