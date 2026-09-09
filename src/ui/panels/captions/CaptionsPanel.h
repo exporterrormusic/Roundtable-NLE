@@ -98,6 +98,10 @@ public:
                                    float leading,
                                    uint32_t mixedFlags);
 
+ /// Request cancellation of the active transcription worker. This returns
+ /// immediately; the worker reports completion through transcriptionFinished.
+ void requestTranscriptionCancel() noexcept;
+
 signals:
  /// Emitted when the user clicks "Transcribe" (selected clip or sequence).
  void transcribeRequested();
@@ -110,6 +114,9 @@ signals:
 
  /// Emitted when caption content changes.
  void captionEdited();
+ void transcriptionStarted();
+ void transcriptionProgress(int percent, const QString& status);
+ void transcriptionFinished(bool success, bool cancelled, const QString& message);
  void inlineFontFamilyRequested(const QString& family);
  void inlineFontSizeRequested(float pointSize);
 
@@ -154,10 +161,6 @@ private:
  /// Add prepared caption cues (from all sources, merged) to the caption
  /// track as one undoable batch.
  void applyPreparedCues(const std::vector<PreparedCaptionCue>& cues);
-
- /// Cancel the active worker without waiting on the UI thread. Destruction
- /// follows this with a join before the panel's dependencies are released.
- void requestTranscriptionCancel() noexcept;
 
  [[nodiscard]] bool captionTrackLocked() const noexcept;
 

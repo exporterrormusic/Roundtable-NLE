@@ -16,18 +16,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <vector>
 
 namespace rt {
 
 TimeStretch::TimeStretch(uint32_t channels, uint32_t sampleRate)
-    : m_channels(channels)
+    : m_channels(std::max(1u, channels))
     , m_sampleRate(sampleRate)
+    , m_feedBuffer(static_cast<size_t>(kBlockSize) * m_channels, 0.0f)
+    , m_receiveBuffer(static_cast<size_t>(kBlockSize) * m_channels, 0.0f)
 {
 #ifdef ROUNDTABLE_HAS_SOUNDTOUCH
     m_st = std::make_unique<soundtouch::SoundTouch>();
     m_st->setSampleRate(sampleRate);
-    m_st->setChannels(channels);
+    m_st->setChannels(m_channels);
     m_st->setTempo(1.0);
     m_st->setPitch(1.0);
     m_st->setRate(1.0);
@@ -37,6 +38,10 @@ TimeStretch::TimeStretch(uint32_t channels, uint32_t sampleRate)
     m_st->setSetting(SETTING_SEQUENCE_MS, 40);
     m_st->setSetting(SETTING_SEEKWINDOW_MS, 15);
     m_st->setSetting(SETTING_OVERLAP_MS, 8);
+    // Prime SoundTouch's internal FIFO capacity while still on the publisher
+    // thread. clear() resets positions while retaining allocated storage.
+    m_st->putSamples(m_feedBuffer.data(), kBlockSize);
+    m_st->clear();
 #endif
 }
 
@@ -77,7 +82,7 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
                               const std::function<float(float)>& fadeEnvelope,
                               int64_t totalSrcFrames)
 {
-    if (!src || srcFrames <= 0 || outFrames == 0)
+    if (!src || srcFrames <= 0 || outFrames == 0 || srcChannels != m_channels)
         return 0;
 
 #ifndef ROUNDTABLE_HAS_SOUNDTOUCH
@@ -132,9 +137,6 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
         if (srcStart < 0 || srcStart >= srcFrames)
             return 0;
         m_readPos = static_cast<double>(srcStart);
-        m_st->clear();
-        m_st->setChannels(srcChannels);
-        m_st->setTempo(absSpeed > 0.01 ? absSpeed : 0.01);
         m_initialized = true;
     }
 
@@ -146,20 +148,8 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
         ? std::sin((pan + 1.0f) * 0.25f * 3.14159265f)
         : std::min(1.0f, 1.0f + pan);
 
-    // Scratch buffers (stack-allocated for small blocks)
-    float feedBuf[kBlockSize * 2];   // max 2 channels for stack alloc
-    float recvBuf[kBlockSize * 2];
-    const bool useStackBuf = (srcChannels <= 2);
-
-    // Heap fallback for >2 channels
-    std::vector<float> heapFeed, heapRecv;
-    if (!useStackBuf) {
-        heapFeed.resize(static_cast<size_t>(kBlockSize * srcChannels));
-        heapRecv.resize(static_cast<size_t>(kBlockSize * srcChannels));
-    }
-
-    float* feed = useStackBuf ? feedBuf : heapFeed.data();
-    float* recv = useStackBuf ? recvBuf : heapRecv.data();
+    float* feed = m_feedBuffer.data();
+    float* recv = m_receiveBuffer.data();
 
     unsigned long outWritten = 0;
 

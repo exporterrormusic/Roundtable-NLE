@@ -311,13 +311,12 @@ bool ExportPanel::checkOfflineMedia(const Timeline* timeline)
 void ExportPanel::onStartExport()
 {
     if (m_outputPath->text().isEmpty()) {
-        QMessageBox::warning(this, tr("Export"), tr("Please select an output file."));
+        notifyExportProblem(tr("Select an output file before starting the export."));
         return;
     }
 
     if (!m_project || !m_timeline) {
-        QMessageBox::warning(this, tr("Export"),
-                             tr("No project sequence is loaded — nothing to export."));
+        notifyExportProblem(tr("Open a project sequence before starting the export."));
         return;
     }
 
@@ -327,7 +326,7 @@ void ExportPanel::onStartExport()
     // need neither the compositor nor a hardware video encoder).
     if (!config.audioOnly) {
         if (!m_exportRenderSessionFactory && !m_exportFrameCallback) {
-            QMessageBox::warning(this, tr("Export"), tr("No renderer available — cannot export."));
+            notifyExportProblem(tr("The video renderer is unavailable. Reopen the project and try again."));
             return;
         }
 
@@ -381,8 +380,7 @@ void ExportPanel::onStartExport()
     }
 
     if (!config.audioOnly && !prepareExportRenderSession()) {
-        QMessageBox::warning(this, tr("Export"),
-                             tr("The export renderer could not be created."));
+        notifyExportProblem(tr("The export renderer could not start. Try the export again."));
         return;
     }
 
@@ -412,13 +410,11 @@ void ExportPanel::onStartQueue()
             anyVideo = true;
     if (anyVideo) {
         if (!m_exportRenderSessionFactory && !m_exportFrameCallback) {
-            QMessageBox::warning(this, tr("Export"),
-                                 tr("No renderer available \u2014 cannot export."));
+            notifyExportProblem(tr("The video renderer is unavailable. Reopen the project and try again."));
             return;
         }
         if (!prepareExportRenderSession()) {
-            QMessageBox::warning(this, tr("Export"),
-                                 tr("The export renderer could not be created."));
+            notifyExportProblem(tr("The export renderer could not start. Try the export again."));
             return;
         }
     }

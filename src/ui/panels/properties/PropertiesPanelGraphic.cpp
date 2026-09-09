@@ -601,6 +601,7 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
 
     auto* objectButtons = new QHBoxLayout;
     m_gfxAddTextObjectBtn = new QPushButton(tr("+ Text"), m_graphicSection);
+    m_gfxAddTextObjectBtn->setProperty("buttonRole", "subtle");
     m_gfxAddTextObjectBtn->setObjectName(
         QStringLiteral("propertiesGraphicAddTextButton"));
     m_gfxAddTextObjectBtn->setToolTip(tr(
@@ -610,6 +611,7 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     objectButtons->addWidget(m_gfxAddTextObjectBtn);
     m_gfxDuplicateTextObjectBtn = new QPushButton(
         tr("Duplicate"), m_graphicSection);
+    m_gfxDuplicateTextObjectBtn->setProperty("buttonRole", "subtle");
     m_gfxDuplicateTextObjectBtn->setObjectName(
         QStringLiteral("propertiesGraphicDuplicateTextButton"));
     m_gfxDuplicateTextObjectBtn->setToolTip(tr(
@@ -759,6 +761,7 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     form->addRow("Preset:", m_gfxPresetCombo);
 
     m_gfxSavePresetBtn = new QPushButton(tr("Save Preset\xE2\x80\xA6"), m_graphicSection);
+    m_gfxSavePresetBtn->setProperty("buttonRole", "secondary");
     m_gfxSavePresetBtn->setToolTip(tr("Save the current appearance as a reusable text preset"));
     connect(m_gfxSavePresetBtn, &QPushButton::clicked,
             this, &PropertiesPanel::saveTextPresetAs);

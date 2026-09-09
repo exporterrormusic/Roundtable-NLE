@@ -7,6 +7,7 @@
 #include "PathUtils.h"
 
 #include "Theme.h"
+#include "NotificationCenter.h"
 
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
@@ -68,6 +69,15 @@ ExportPanel::ExportPanel(QWidget* parent)
 bool ExportPanel::isExporting() const noexcept
 {
     return m_renderQueue && m_renderQueue->isRunning();
+}
+
+void ExportPanel::notifyExportProblem(const QString& message) const
+{
+    if (auto* center = NotificationCenter::current()) {
+        center->postWarning(tr("Export unavailable"), message);
+        return;
+    }
+    QMessageBox::warning(const_cast<ExportPanel*>(this), tr("Export"), message);
 }
 
 ExportPanel::~ExportPanel()

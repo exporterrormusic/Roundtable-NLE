@@ -79,6 +79,11 @@ struct CachedAudioRegionView {
 /// Lock-free windowed sample provider — one per active audio clip.
 class TimelineAudioWindowProvider final : public AudioSampleProvider {
 public:
+    struct FadeMapping {
+        int64_t clipSourceOffsetFrames{0};
+        int64_t windowFrames{0};
+    };
+
     [[nodiscard]] AudioSourceView currentView() const override
     {
         AudioSourceView view;
@@ -117,12 +122,12 @@ public:
         m_state.store(std::shared_ptr<const TimelineAudioProviderState>{}, std::memory_order_release);
     }
 
-    [[nodiscard]] float clipFrameForNormalizedPosition(float pos) const
+    [[nodiscard]] FadeMapping fadeMapping() const
     {
         auto state = m_state.load(std::memory_order_acquire);
-        if (!state || state->totalFrames <= 0) return -1.0f;
-        return static_cast<float>(state->clipSourceOffsetFrames) +
-               std::clamp(pos, 0.0f, 1.0f) * static_cast<float>(state->totalFrames);
+        return state
+            ? FadeMapping{state->clipSourceOffsetFrames, state->totalFrames}
+            : FadeMapping{};
     }
 
 private:
@@ -718,27 +723,29 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                 provider->clearWindow();
             }
 
-            if (rebuildSourceList) {
+            {
+                const AudioSourceView publishedView = provider->currentView();
+                const auto fadeMapping = provider->fadeMapping();
+                const float windowClipOffset =
+                    static_cast<float>(fadeMapping.clipSourceOffsetFrames);
+                const float windowFrames =
+                    static_cast<float>(fadeMapping.windowFrames);
+
                 AudioTrackSource src;
                 src.trackId         = clipId;
-                src.sampleProvider  = provider;
-                src.startFrame      = audioClip->timelineIn();
-                src.channels        = ch > 0 ? ch : 2;
-                src.sampleRate      = 48000;
+                src.sampleBuffer    = publishedView.buffer;
+                src.samples         = publishedView.samples;
+                src.totalFrames     = publishedView.totalFrames;
+                src.startFrame      = publishedView.startFrame;
+                src.channels        = publishedView.channels > 0
+                    ? publishedView.channels : (ch > 0 ? ch : 2);
+                src.sampleRate      = publishedView.sampleRate;
                 src.volume          = track->volume() * audioClip->volume().evaluate(0);
                 src.pan             = std::clamp(track->pan() + audioClip->pan().evaluate(0), -1.0f, 1.0f);
                 src.muted           = track->isMuted();
                 src.solo            = track->isSoloed();
                 src.maintainPitch   = audioClip->maintainPitch();
                 src.clipSpeed       = audioClip->speed();
-
-                // Copy active audio effects for real-time playback
-                const auto& fxStack = audioClip->effects();
-                for (size_t ei = 0; ei < fxStack.effectCount(); ++ei) {
-                    const auto& fx = fxStack.effect(ei);
-                    if (fx.isEnabled() && isAudioEffect(fx.effectType()))
-                        src.audioEffects.push_back(fx.effectType());
-                }
 
                 const int64_t tlIn = audioClip->timelineIn();
                 const int64_t fullClipSourceFrames = std::max<int64_t>(1, requestedClipSourceFrames(*audioClip));
@@ -779,9 +786,11 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                         const float fadeStartFrame = static_cast<float>(tStart - tlIn);
                         const float fadeEndFrame   = static_cast<float>(tEnd   - tlIn);
                         auto prevEnv = src.fadeEnvelope;
-                        src.fadeEnvelope = [prevEnv, fadeStartFrame, fadeEndFrame, provider](float pos) {
+                        src.fadeEnvelope = [prevEnv, fadeStartFrame, fadeEndFrame,
+                                            windowClipOffset, windowFrames](float pos) {
                             float v = 1.0f;
-                            const float clipFrame = provider->clipFrameForNormalizedPosition(pos);
+                            const float clipFrame = windowClipOffset
+                                + std::clamp(pos, 0.0f, 1.0f) * windowFrames;
                             if (clipFrame >= fadeStartFrame && fadeEndFrame > fadeStartFrame) {
                                 const float t = (clipFrame - fadeStartFrame) / (fadeEndFrame - fadeStartFrame);
                                 v = 1.0f - std::clamp(t, 0.0f, 1.0f);
@@ -793,9 +802,11 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                         const float fadeStartFrame = static_cast<float>(tStart - tlIn);
                         const float fadeEndFrame   = static_cast<float>(tEnd   - tlIn);
                         auto prevEnv = src.fadeEnvelope;
-                        src.fadeEnvelope = [prevEnv, fadeStartFrame, fadeEndFrame, provider](float pos) {
+                        src.fadeEnvelope = [prevEnv, fadeStartFrame, fadeEndFrame,
+                                            windowClipOffset, windowFrames](float pos) {
                             float v = 1.0f;
-                            const float clipFrame = provider->clipFrameForNormalizedPosition(pos);
+                            const float clipFrame = windowClipOffset
+                                + std::clamp(pos, 0.0f, 1.0f) * windowFrames;
                             if (clipFrame <= fadeEndFrame && fadeEndFrame > fadeStartFrame) {
                                 const float t = (clipFrame - fadeStartFrame) / (fadeEndFrame - fadeStartFrame);
                                 v = std::clamp(t, 0.0f, 1.0f);
@@ -821,10 +832,11 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                     if (fadeInF > 0.0f || fadeOutF > 0.0f) {
                         auto prevEnv = src.fadeEnvelope;
                         src.fadeEnvelope =
-                            [prevEnv, fadeInF, fadeOutF, clipLenF, provider](float pos) {
+                            [prevEnv, fadeInF, fadeOutF, clipLenF,
+                             windowClipOffset, windowFrames](float pos) {
                             float v = 1.0f;
-                            const float cf =
-                                provider->clipFrameForNormalizedPosition(pos);
+                            const float cf = windowClipOffset
+                                + std::clamp(pos, 0.0f, 1.0f) * windowFrames;
                             if (cf >= 0.0f) {
                                 if (fadeInF > 0.0f && cf < fadeInF)
                                     v *= std::clamp(cf / fadeInF, 0.0f, 1.0f);
@@ -847,19 +859,20 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
         }
     }
 
-    if (rebuildSourceList) {
-        for (auto it = m_clipProviders.begin(); it != m_clipProviders.end(); ) {
-            if (activeClipIds.find(it->first) == activeClipIds.end())
-                it = m_clipProviders.erase(it);
-            else
-                ++it;
-        }
-        spdlog::info("loadAudioSources: rebuilt {} audio track source(s)", sources.size());
-        m_audioEngine->setTrackSources(std::move(sources));
-        m_topologyDirty = false;
-    } else {
-        spdlog::info("loadAudioSources: refreshed audio window for {} provider(s)", activeClipIds.size());
+    for (auto it = m_clipProviders.begin(); it != m_clipProviders.end(); ) {
+        if (activeClipIds.find(it->first) == activeClipIds.end())
+            it = m_clipProviders.erase(it);
+        else
+            ++it;
     }
+
+    if (rebuildSourceList) {
+        spdlog::info("loadAudioSources: rebuilt {} audio track source(s)", sources.size());
+    } else {
+        spdlog::info("loadAudioSources: refreshed {} audio track source(s)", sources.size());
+    }
+    m_audioEngine->setTrackSources(std::move(sources));
+    m_topologyDirty = false;
 
     if (!allowBlockingMisses && deferredCacheMisses > 0) {
         spdlog::info("loadAudioSources: deferred {} cache miss(es) to background audio prefetch",
@@ -867,7 +880,6 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
         logPerfSnapshot("deferred-miss");
     }
 
-    m_audioEngine->resetStretchers();
     m_audioBuffers = std::move(newBuffers);
     m_sourcesLoaded          = true;
 

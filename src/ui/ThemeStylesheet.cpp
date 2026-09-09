@@ -266,6 +266,37 @@ QTabBar::tab:hover:!selected {
     background: %7;
     color: %4;
 }
+/* Dock tabs share the exact height, type, and separator treatment of the
+   standalone DockTitleBar. Only the panel group containing keyboard focus
+   receives the accent, so several visible tab groups do not all look active. */
+QTabBar[roundtableDockTabBar="true"] {
+    background: %8;
+    border: none;
+}
+QTabBar[roundtableDockTabBar="true"]::tab {
+    min-height: %9px;
+    max-height: %9px;
+    padding: 0 10px;
+    margin: 0 1px 0 0;
+    background: %8;
+    color: %10;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: %5px;
+    font-weight: 600;
+}
+QTabBar[roundtableDockTabBar="true"]::tab:selected {
+    background: %3;
+    color: %4;
+    border-bottom-color: transparent;
+}
+QTabBar[roundtableDockTabBar="true"][panelBarActive="true"]::tab:selected {
+    border-bottom-color: %6;
+}
+QTabBar[roundtableDockTabBar="true"]::tab:hover:!selected {
+    background: %7;
+    color: %4;
+}
 QTabWidget::pane {
     border: none;
     background: %3;
@@ -276,7 +307,10 @@ QTabWidget::pane {
    .arg(rgb(c.textPrimary))    // 4: selected text
    .arg(t.sizeCaption)         // 5: font size
    .arg(rgb(c.accent))         // 6: top accent line
-   .arg(rgb(c.controlBgHover)); // 7: hover bg
+   .arg(rgb(c.controlBgHover))  // 7: hover bg
+   .arg(rgb(c.dockTitleBg))     // 8: dock header bg
+   .arg(m.panelHeaderHeight)    // 9: shared header height
+   .arg(rgb(c.dockTitleText));  // 10: dock header text
 
     // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //  SPLITTERS

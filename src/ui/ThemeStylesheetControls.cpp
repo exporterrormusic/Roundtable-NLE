@@ -25,58 +25,58 @@ QString themeStyleControls()
     qss += QStringLiteral(R"(
 
 /* â”€â”€ Primary Button (blue accent â€” main actions) â”€â”€ */
-QPushButton#rt-btn-primary {
+QPushButton#rt-btn-primary, QPushButton[buttonRole="primary"], QPushButton:default {
     background: %1;
     color: white;
     border: none;
     font-weight: bold;
 }
-QPushButton#rt-btn-primary:hover {
+QPushButton#rt-btn-primary:hover, QPushButton[buttonRole="primary"]:hover, QPushButton:default:hover {
     background: %2;
 }
-QPushButton#rt-btn-primary:pressed {
+QPushButton#rt-btn-primary:pressed, QPushButton[buttonRole="primary"]:pressed, QPushButton:default:pressed {
     background: %3;
 }
 
 /* â”€â”€ Success Button (green â€” confirm, export) â”€â”€ */
-QPushButton#rt-btn-success {
+QPushButton#rt-btn-success, QPushButton[buttonRole="success"] {
     background: %4;
     color: white;
     border: none;
     font-weight: bold;
 }
-QPushButton#rt-btn-success:hover {
+QPushButton#rt-btn-success:hover, QPushButton[buttonRole="success"]:hover {
     background: %5;
 }
 
 /* â”€â”€ Danger Button (red â€” delete, remove) â”€â”€ */
-QPushButton#rt-btn-danger {
+QPushButton#rt-btn-danger, QPushButton[buttonRole="danger"] {
     background: %6;
     color: %7;
     border: none;
 }
-QPushButton#rt-btn-danger:hover {
+QPushButton#rt-btn-danger:hover, QPushButton[buttonRole="danger"]:hover {
     background: %8;
 }
 
 /* â”€â”€ Ghost Button (transparent â€” toolbar-style) â”€â”€ */
-QPushButton#rt-btn-ghost {
+QPushButton#rt-btn-ghost, QPushButton[buttonRole="secondary"] {
     background: transparent;
     border: none;
     color: %9;
 }
-QPushButton#rt-btn-ghost:hover {
+QPushButton#rt-btn-ghost:hover, QPushButton[buttonRole="secondary"]:hover {
     background: %10;
     color: %11;
 }
 
 /* â”€â”€ Subtle Button (very faint bg â€” inline actions) â”€â”€ */
-QPushButton#rt-btn-subtle {
+QPushButton#rt-btn-subtle, QPushButton[buttonRole="subtle"] {
     background: %12;
     border: 1px solid %13;
     color: %14;
 }
-QPushButton#rt-btn-subtle:hover {
+QPushButton#rt-btn-subtle:hover, QPushButton[buttonRole="subtle"]:hover {
     background: %15;
     border-color: %16;
 }
@@ -98,15 +98,57 @@ QPushButton#rt-btn-subtle:hover {
    .arg(rgb(c.surface3))          // 15
    .arg(rgb(c.borderLight));      // 16
 
+    qss += QStringLiteral(R"(
+
+/* Every semantic variant has the same pressed and disabled feedback. */
+QPushButton[buttonRole="success"]:pressed { background: %1; }
+QPushButton[buttonRole="danger"]:pressed { background: %2; }
+QPushButton[buttonRole="secondary"]:pressed,
+QPushButton[buttonRole="subtle"]:pressed { background: %3; }
+
+QPushButton#rt-btn-primary:disabled, QPushButton#rt-btn-success:disabled,
+QPushButton#rt-btn-danger:disabled, QPushButton#rt-btn-ghost:disabled,
+QPushButton#rt-btn-subtle:disabled,
+QPushButton[buttonRole="primary"]:disabled,
+QPushButton[buttonRole="success"]:disabled,
+QPushButton[buttonRole="danger"]:disabled,
+QPushButton[buttonRole="secondary"]:disabled,
+QPushButton[buttonRole="subtle"]:disabled,
+QPushButton:default:disabled {
+    background: %4;
+    color: %5;
+    border: 1px solid %6;
+}
+
+QToolButton:disabled {
+    background: transparent;
+    color: %5;
+    border-color: transparent;
+}
+QToolButton[buttonRole="danger"] { color: %7; }
+QToolButton[buttonRole="danger"]:hover {
+    background: %8;
+    border-color: %2;
+}
+
+)").arg(rgb(c.successBtnBg.darker(115)))
+   .arg(rgb(c.error))
+   .arg(rgb(c.controlBgActive))
+   .arg(rgb(c.surface1))
+   .arg(rgb(c.textDisabled))
+   .arg(rgb(c.border))
+   .arg(rgb(c.dangerText))
+   .arg(rgb(c.dangerBg));
+
     // â”€â”€ Aliases for panel-specific objectNames â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Panels use PrimaryBtn/DangerBtn/GhostBtn etc. â€” same styles as rt-*
     qss += QStringLiteral(R"(
 
 /* Panel button aliases (legacy objectNames â†’ same style as rt-btn-*) */
-QPushButton#PrimaryBtn, QPushButton#CreateBtn, QPushButton#ExportBtn, QPushButton#AddQueueBtn {
+QPushButton#PrimaryBtn, QPushButton#CreateBtn, QPushButton#ExportBtn {
     background: %1; color: white; border: none; font-weight: bold;
 }
-QPushButton#PrimaryBtn:hover, QPushButton#CreateBtn:hover, QPushButton#ExportBtn:hover, QPushButton#AddQueueBtn:hover {
+QPushButton#PrimaryBtn:hover, QPushButton#CreateBtn:hover, QPushButton#ExportBtn:hover {
     background: %2;
 }
 QPushButton#SaveBtn {
@@ -118,10 +160,12 @@ QPushButton#DangerBtn, QPushButton#CancelBtn {
 }
 QPushButton#DangerBtn:hover, QPushButton#CancelBtn:hover { background: %7; }
 QPushButton#GhostBtn, QPushButton#SecondaryBtn, QPushButton#BrowseBtn, QPushButton#TransportBtn,
+QPushButton#AddQueueBtn, QPushButton#StartQueueBtn,
 QPushButton#ResetViewBtn, QPushButton#LayerToolBtn {
     background: transparent; border: 1px solid %8; color: %9;
 }
 QPushButton#GhostBtn:hover, QPushButton#SecondaryBtn:hover, QPushButton#BrowseBtn:hover, QPushButton#TransportBtn:hover,
+QPushButton#AddQueueBtn:hover, QPushButton#StartQueueBtn:hover,
 QPushButton#ResetViewBtn:hover, QPushButton#LayerToolBtn:hover {
     background: %10; border-color: %11; color: %12;
 }
@@ -188,6 +232,41 @@ QListWidget#ShotList, QListWidget#LibraryList, QListWidget#LayerList, QListWidge
    .arg(rgb(c.surface2))          // %18
    .arg(m.radiusMd)               // %19
    .arg(rgb(c.surface0));         // %20
+
+    qss += QStringLiteral(R"(
+
+QPushButton#PrimaryBtn:pressed, QPushButton#CreateBtn:pressed,
+QPushButton#ExportBtn:pressed { background: %1; }
+QPushButton#SaveBtn:pressed { background: %2; }
+QPushButton#DangerBtn:pressed, QPushButton#CancelBtn:pressed,
+QPushButton#LayerToolBtnDanger:pressed { background: %3; }
+QPushButton#GhostBtn:pressed, QPushButton#SecondaryBtn:pressed,
+QPushButton#BrowseBtn:pressed, QPushButton#TransportBtn:pressed,
+QPushButton#AddQueueBtn:pressed, QPushButton#StartQueueBtn:pressed,
+QPushButton#ResetViewBtn:pressed, QPushButton#LayerToolBtn:pressed {
+    background: %4;
+}
+
+QPushButton#PrimaryBtn:disabled, QPushButton#CreateBtn:disabled,
+QPushButton#ExportBtn:disabled, QPushButton#SaveBtn:disabled,
+QPushButton#DangerBtn:disabled, QPushButton#CancelBtn:disabled,
+QPushButton#GhostBtn:disabled, QPushButton#SecondaryBtn:disabled,
+QPushButton#BrowseBtn:disabled, QPushButton#TransportBtn:disabled,
+QPushButton#AddQueueBtn:disabled, QPushButton#StartQueueBtn:disabled,
+QPushButton#ResetViewBtn:disabled, QPushButton#LayerToolBtn:disabled,
+QPushButton#LayerToolBtnDanger:disabled {
+    background: %5;
+    color: %6;
+    border: 1px solid %7;
+}
+
+)").arg(rgb(c.accentDim))
+   .arg(rgb(c.successBtnBg.darker(115)))
+   .arg(rgb(c.error))
+   .arg(rgb(c.controlBgActive))
+   .arg(rgb(c.surface1))
+   .arg(rgb(c.textDisabled))
+   .arg(rgb(c.border));
 
     // â”€â”€ Unique panel-specific objectName rules â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     qss += QStringLiteral(R"(

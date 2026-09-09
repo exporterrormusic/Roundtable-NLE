@@ -5,6 +5,7 @@
 
 #include "audio/AudioPlaybackService.h"
 
+#include "audio/AudioEngine.h"
 #include "audio/AudioFile.h"
 #include "playback/PlaybackController.h"
 
@@ -158,14 +159,20 @@ void AudioPlaybackService::logPerfSnapshot(const char* reason)
     const double hitRate = requests > 0
         ? (100.0 * static_cast<double>(hits) / static_cast<double>(requests))
         : 0.0;
+    const AudioCallbackStats callbackStats = m_audioEngine
+        ? m_audioEngine->callbackStats() : AudioCallbackStats{};
 
     spdlog::info("[PERF] Timeline audio cache [{}]: req={} hit={} miss={} blockingMiss={} deferredMiss={} "
                  "hitRate={:.1f}% entries={} residentMiB={:.1f} prefetchReq={} prefetchBusy={} "
-                 "prefetchDone={} prefetchInsert={} window=[{}..{})",
+                 "prefetchDone={} prefetchInsert={} window=[{}..{}) callbacks={} underflows={} "
+                 "overflows={} overBudget={} maxCallbackUs={}",
                  reason, requests, hits, misses, blkMisses, defMisses, hitRate,
                  entryCount, static_cast<double>(residentBytes) / (1024.0 * 1024.0),
                  pfReqs, pfBusy, pfDone, pfInserts,
-                 m_loadedWindowStartFrame, m_loadedWindowEndFrame);
+                 m_loadedWindowStartFrame, m_loadedWindowEndFrame,
+                 callbackStats.callbackCount, callbackStats.outputUnderflows,
+                 callbackStats.outputOverflows, callbackStats.callbacksOverBudget,
+                 callbackStats.maxCallbackMicros);
 }
 
 // ─── Cache pruning ──────────────────────────────────────────────────────────

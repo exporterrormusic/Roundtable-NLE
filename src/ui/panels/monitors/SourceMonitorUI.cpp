@@ -7,6 +7,7 @@
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/MonitorUiKit.h"
 #include "panels/monitors/WaveformDisplayWidget.h"
+#include "MediaTaskQueue.h"
 
 #include "Theme.h"
 #include "UiScale.h"
@@ -57,6 +58,8 @@ SourceMonitor::SourceMonitor(QWidget* parent)
     , m_controller(std::make_unique<PlaybackController>())
     , m_seqAudioPlayback(std::make_unique<AudioPlaybackService>())
 {
+    m_audioTaskOwner = MediaTaskQueue::instance().createOwner();
+    m_waveformTaskOwner = MediaTaskQueue::instance().createOwner();
     setAutoFillBackground(true);
     {
         QPalette p = palette();
@@ -126,6 +129,9 @@ SourceMonitor::SourceMonitor(QWidget* parent)
 SourceMonitor::~SourceMonitor()
 {
     m_destroying.store(true, std::memory_order_release);
+    auto& tasks = MediaTaskQueue::instance();
+    tasks.cancelOwner(m_audioTaskOwner);
+    tasks.cancelOwner(m_waveformTaskOwner);
 
     // Stop the poll timer — prevents it firing during destruction
     if (m_pollTimer) {

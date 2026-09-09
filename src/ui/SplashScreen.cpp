@@ -8,6 +8,7 @@
 #include <QGuiApplication>
 #include <QPainter>
 #include <QScreen>
+#include <QVBoxLayout>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -59,9 +60,16 @@ SplashScreen::SplashScreen(const QString &iconPath, const QString &version,
         "  background-color: #4a90d9;"
         "}"
     );
-    // Position exactly flush against the bottom of the icon area
-    int pbTop = kBorderStroke + ih;
-    m_progressBar->setGeometry(kBorderStroke, pbTop, innerW, kStatusBarHeight);
+    // Keep the bar attached to the image through Qt's layout system.  Manual
+    // child geometry can briefly use the wrong coordinate space when Windows
+    // moves a new top-level window onto a monitor with different DPI scaling.
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(kBorderStroke, kBorderStroke,
+                               kBorderStroke, kBorderStroke);
+    layout->setSpacing(0);
+    layout->addSpacing(ih);
+    m_progressBar->setFixedHeight(kStatusBarHeight);
+    layout->addWidget(m_progressBar);
 
     // Center on primary screen
     if (auto *screen = QGuiApplication::primaryScreen()) {

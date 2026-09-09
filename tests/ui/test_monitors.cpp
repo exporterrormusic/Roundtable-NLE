@@ -34,6 +34,7 @@
 #include "viewport/TransformOverlayWidget.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "panels/monitors/ScopesPanel.h"
 #include "playback/PlaybackController.h"
 #include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
@@ -46,6 +47,7 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using namespace rt;
@@ -1749,6 +1751,50 @@ public:
 };
 
 static auto* g_env = ::testing::AddGlobalTestEnvironment(new MonitorTestEnv);
+
+TEST(ScopesPanelTest, BackgroundFeedUsesCapturedModeAndRenderSize)
+{
+    ScopesPanel panel;
+    panel.resize(480, 300);
+    panel.setScopeMode(ScopesPanel::Histogram);
+
+    QSignalSpy imageSpy(&panel, &ScopesPanel::scopeImageReady);
+    std::vector<uint8_t> pixels(64 * 48 * 4, 128);
+    std::thread feeder([&] {
+        panel.feedFrame(pixels.data(), 64, 48);
+    });
+    feeder.join();
+
+    ASSERT_TRUE(imageSpy.wait(3000));
+    const QList<QVariant> arguments = imageSpy.takeFirst();
+    ASSERT_EQ(arguments.size(), 2);
+    const QImage image = qvariant_cast<QImage>(arguments.at(0));
+    EXPECT_EQ(image.size(), QSize(480, 300));
+    EXPECT_GT(arguments.at(1).toULongLong(), 0u);
+    EXPECT_EQ(panel.scopeMode(), ScopesPanel::Histogram);
+}
+
+TEST(ScopesPanelTest, ConcurrentFeedsAndConfigurationChangesRemainUsable)
+{
+    ScopesPanel panel;
+    QSignalSpy imageSpy(&panel, &ScopesPanel::scopeImageReady);
+    std::vector<uint8_t> pixels(96 * 54 * 4, 96);
+
+    std::thread first([&] { panel.feedFrame(pixels.data(), 96, 54); });
+    std::thread second([&] { panel.feedFrame(pixels.data(), 96, 54); });
+    panel.resize(640, 360);
+    panel.setScopeMode(ScopesPanel::Vectorscope);
+    first.join();
+    second.join();
+
+    QTest::qWait(75);
+    imageSpy.clear();
+    panel.feedFrame(pixels.data(), 96, 54);
+    ASSERT_TRUE(imageSpy.wait(3000));
+    const QImage image = qvariant_cast<QImage>(imageSpy.takeFirst().at(0));
+    EXPECT_EQ(image.size(), QSize(640, 360));
+    EXPECT_EQ(panel.scopeMode(), ScopesPanel::Vectorscope);
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  MiniTimeline tests

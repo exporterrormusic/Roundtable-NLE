@@ -13,6 +13,7 @@
 
 #include "panels/timeline/PlayheadLineWidget.h"
 #include "panels/timeline/TimelinePanelInternal.h"
+#include "MediaTaskQueue.h"
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -34,6 +35,8 @@ namespace rt {
 TimelinePanel::TimelinePanel(QWidget* parent)
     : QWidget(parent)
 {
+    m_waveformTaskOwner = MediaTaskQueue::instance().createOwner();
+    m_thumbnailTaskOwner = MediaTaskQueue::instance().createOwner();
     setAcceptDrops(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setupLayout();
@@ -42,6 +45,9 @@ TimelinePanel::TimelinePanel(QWidget* parent)
 TimelinePanel::~TimelinePanel()
 {
     m_destroying.store(true);
+    auto& tasks = MediaTaskQueue::instance();
+    tasks.cancelOwner(m_waveformTaskOwner);
+    tasks.cancelOwner(m_thumbnailTaskOwner);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

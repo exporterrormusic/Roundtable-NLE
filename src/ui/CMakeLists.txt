@@ -25,6 +25,8 @@ add_library(roundtable_ui STATIC
     UiScale.cpp
     UpdateChecker.cpp
     QtHelpers.cpp
+    MediaTaskQueue.cpp
+    NotificationCenter.cpp
 
     # Panels
     panels/timeline/TrackHeader.cpp

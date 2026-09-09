@@ -454,21 +454,19 @@ void ExportPanel::onClearInOut()
 void ExportPanel::onAddToQueue()
 {
     if (m_outputPath->text().isEmpty()) {
-        QMessageBox::warning(this, tr("Export"), tr("Please select an output file first."));
+        notifyExportProblem(tr("Select an output file before adding the export to the queue."));
         return;
     }
 
     if (!m_project || !m_timeline) {
-        QMessageBox::warning(this, tr("Export"),
-                             tr("No project sequence is loaded — nothing to queue."));
+        notifyExportProblem(tr("Open a project sequence before adding an export to the queue."));
         return;
     }
 
     auto config = buildJobConfig();
     if (!config.audioOnly) {
         if (!m_exportFrameCallback) {
-            QMessageBox::warning(this, tr("Export"),
-                                 tr("No renderer available — cannot queue export."));
+            notifyExportProblem(tr("The video renderer is unavailable. Reopen the project and try again."));
             return;
         }
         if (!checkOfflineMedia(m_timeline))

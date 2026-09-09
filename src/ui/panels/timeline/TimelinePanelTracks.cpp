@@ -20,6 +20,7 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/TrackCommands.h"
+#include "MediaTaskQueue.h"
 
 #include <QScrollArea>
 #include <QScrollBar>
@@ -40,6 +41,10 @@ namespace rt {
 
 void TimelinePanel::setTimeline(Timeline* timeline)
 {
+    auto& mediaTasks = MediaTaskQueue::instance();
+    mediaTasks.cancelOwner(m_waveformTaskOwner);
+    mediaTasks.cancelOwner(m_thumbnailTaskOwner);
+
     ++m_waveformLoadGeneration;
     m_pendingWaveformPaths.clear();
     m_failedWaveformPaths.clear();

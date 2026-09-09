@@ -337,6 +337,8 @@ private:
     bool              m_audioLoadInFlight{false};
     uint64_t          m_audioLoadGeneration{0};
     uint64_t          m_waveformLoadGeneration{0};
+    uint64_t          m_audioTaskOwner{0};
+    uint64_t          m_waveformTaskOwner{0};
 
     std::shared_ptr<std::vector<float>> m_scrubAudioSamples;
     uint32_t          m_scrubAudioChannels{0};

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace soundtouch { class SoundTouch; }
 
@@ -54,8 +55,11 @@ private:
     double   m_readPos{0.0};
     bool     m_initialized{false};
 
-    // Scratch buffer for feeding SoundTouch and receiving output
     static constexpr int kBlockSize = 512;
+    // Allocated and warmed when the mixer snapshot is prepared, never from
+    // the real-time callback.
+    std::vector<float> m_feedBuffer;
+    std::vector<float> m_receiveBuffer;
 };
 
 } // namespace rt

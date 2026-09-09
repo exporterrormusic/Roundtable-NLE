@@ -22,12 +22,12 @@
 #include "effects/Effect.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "audio/TimeStretch.h"
@@ -83,6 +83,7 @@ struct AudioTrackSource
 {
     uint64_t            trackId{0};
     std::shared_ptr<AudioSampleProvider> sampleProvider;
+    std::shared_ptr<const std::vector<float>> sampleBuffer;
     const float*        samples{nullptr};   // Interleaved float samples
     int64_t             totalFrames{0};     // Total frames in the buffer
     int64_t             startFrame{0};      // Frame offset into the timeline
@@ -95,7 +96,7 @@ struct AudioTrackSource
     bool                maintainPitch{true};  ///< Preserve pitch at non-1x speed
     double              clipSpeed{1.0};       ///< Per-clip speed multiplier (from Speed/Duration)
 
-    /// Active audio effects (channel fill, etc.) — copied from clip EffectStack.
+    /// Channel-routing effects applied once when the source snapshot is published.
     std::vector<EffectType> audioEffects;
 
     /// Fade envelope (optional). Called with normalized position [0, 1].
@@ -109,6 +110,16 @@ struct AudioMeter
     float peakR{0.0f};
     float rmsL{0.0f};
     float rmsR{0.0f};
+};
+
+/// Diagnostics collected without logging from the real-time callback.
+struct AudioCallbackStats
+{
+    uint64_t callbackCount{0};
+    uint64_t outputUnderflows{0};
+    uint64_t outputOverflows{0};
+    uint64_t callbacksOverBudget{0};
+    uint64_t maxCallbackMicros{0};
 };
 
 /// Transport state
@@ -172,8 +183,8 @@ public:
 
     // ── Mixer sources ───────────────────────────────────────────────────
 
-    /// Set the list of active audio track sources for mixing.
-    /// Called from the main thread when timeline playback begins or composition changes.
+    /// Prepare and publish the active audio sources as one immutable mixer snapshot.
+    /// Called from the main thread when playback begins or composition changes.
     void setTrackSources(std::vector<AudioTrackSource> sources);
 
     /// Clear all track sources.
@@ -201,11 +212,15 @@ public:
     /// Get current peak meter values (updated every callback).
     [[nodiscard]] AudioMeter meter() const noexcept;
 
+    /// Get/reset real-time callback timing and device-underrun diagnostics.
+    [[nodiscard]] AudioCallbackStats callbackStats() const noexcept;
+    void resetCallbackStats() noexcept;
+
     // ── Sync clock ──────────────────────────────────────────────────────
 
     /// Set playback speed for the audio mixer (negative = reverse).
     /// Uses WSOLA time-stretch to preserve pitch at any speed.
-    void setPlaybackSpeed(double speed) noexcept;
+    void setPlaybackSpeed(double speed);
 
     /// Get current playback speed.
     [[nodiscard]] double playbackSpeed() const noexcept;
@@ -228,6 +243,8 @@ public:
     [[nodiscard]] const std::string& lastError() const noexcept;
 
 private:
+    friend struct AudioEngineTestAccess;
+
     /// PortAudio stream callback (static → member)
     static int paCallback(const void* input, void* output,
                           unsigned long frameCount,
@@ -236,12 +253,22 @@ private:
                           void* userData);
 
     /// Instance callback
-    int onAudioCallback(float* output, unsigned long frameCount);
+    int onAudioCallback(float* output, unsigned long frameCount,
+                        unsigned long statusFlags);
 
     /// Mix one source into the output buffer (speed-aware: handles reverse + fast)
-    void mixSource(const AudioTrackSource& src, float* output,
+    void mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
+                   float* output,
                    unsigned long frameCount, int64_t playPos,
-                   double speed, bool hasSolo);
+                   double speed, bool hasSolo,
+                   float volume, float pan, bool muted);
+
+    struct MixerSnapshot;
+    void publishTrackSourcesLocked(std::vector<AudioTrackSource> sources);
+    [[nodiscard]] std::vector<AudioTrackSource> copyTrackSourcesLocked() const;
+    void recordCallbackStats(std::chrono::steady_clock::time_point started,
+                             unsigned long frameCount,
+                             unsigned long statusFlags) noexcept;
 
     struct Impl;
     std::unique_ptr<Impl>     m_impl;
@@ -261,17 +288,22 @@ private:
     std::atomic<float>          m_peakR{0.0f};
     std::atomic<float>          m_rmsL{0.0f};
     std::atomic<float>          m_rmsR{0.0f};
+    std::atomic<uint64_t>       m_callbackCount{0};
+    std::atomic<uint64_t>       m_outputUnderflows{0};
+    std::atomic<uint64_t>       m_outputOverflows{0};
+    std::atomic<uint64_t>       m_callbacksOverBudget{0};
+    std::atomic<uint64_t>       m_maxCallbackMicros{0};
 
     // Sync clock (set from main thread, read by audio thread)
     std::atomic<AVSyncClock*>   m_syncClock{nullptr};
 
-    // Track sources — protected by mutex (swapped atomically)
-    mutable std::mutex                m_sourcesMutex;
-    std::vector<AudioTrackSource>     m_sources;
-
-    // Per-track WSOLA time-stretchers (audio thread only after init)
-    std::unordered_map<uint64_t, TimeStretch> m_stretchers;
-    std::atomic<bool> m_resetStretchers{false};  // UI thread signals audio thread to reset
+    // Prepared mixer state is swapped atomically.
+    // Publishers use this mutex; the audio callback never takes it.
+    mutable std::mutex m_snapshotUpdateMutex;
+    std::shared_ptr<MixerSnapshot> m_activeMixerSnapshot;
+    std::atomic<MixerSnapshot*> m_callbackMixerSnapshot{nullptr};
+    std::atomic<uint32_t> m_callbackReaders{0};
+    std::vector<std::shared_ptr<MixerSnapshot>> m_retiredSnapshots;
 };
 
 } // namespace rt

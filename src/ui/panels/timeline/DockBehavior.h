@@ -13,6 +13,7 @@
 #include <QAbstractNativeEventFilter>
 #include <QWidget>
 #include <QPointer>
+#include <QList>
 #include <QSet>
 
 class QMainWindow;
@@ -31,8 +32,8 @@ class DockTabBarWatcher : public QObject
     Q_OBJECT
 public:
     explicit DockTabBarWatcher(QMainWindow* host, QObject* parent = nullptr);
-    void setWorkspace(rt::TimelineWorkspace* ws) { m_workspace = ws; }
-    void setDragFilter(QObject* df) { m_dragFilter = df; }
+    void setWorkspace(rt::TimelineWorkspace* ws);
+    void setDragFilter(QObject* df);
     void watchTabBar(QTabBar* tabBar);
 
 protected:
@@ -42,10 +43,17 @@ private:
     void forceSettings(QTabBar* tabBar);
     void setupTabBar(QTabBar* tabBar);
     void showTabContextMenu(QTabBar* tabBar, int tabIdx, const QPoint& globalPos);
+    void updateFocusedPanel(QWidget* focusedWidget);
+    void setActiveDock(QDockWidget* dock);
+    bool isDockTabBar(QTabBar* tabBar) const;
+    QDockWidget* dockForTab(QTabBar* tabBar, int tabIdx) const;
+    QList<QDockWidget*> registeredDocks() const;
+    void refreshTabBarState(QTabBar* tabBar);
 
     QMainWindow*              m_host{nullptr};
     rt::TimelineWorkspace*    m_workspace{nullptr};
     QObject*                  m_dragFilter{nullptr};
+    QPointer<QDockWidget>      m_activeDock;
     bool                      m_configuring{false};
 };
 

@@ -28,6 +28,8 @@
 #include <thread>
 #include <vector>
 
+class QResizeEvent;
+
 namespace rt {
 
 class ScopesPanel : public QWidget
@@ -61,10 +63,11 @@ signals:
 
     /// Internal signal: worker thread delivers a rendered scope image.
     /// Connected via QueuedConnection so the UI thread just blits it.
-    void scopeImageReady(QImage image);
+    void scopeImageReady(QImage image, quint64 revision);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     // ── Worker thread (all heavy work runs here, never on UI thread) ────
@@ -83,7 +86,8 @@ private:
     QImage renderHistogram(int imgW, int imgH);
 
     // UI thread slot
-    void onScopeImageReady(QImage image);
+    void onScopeImageReady(QImage image, quint64 revision);
+    void updateWorkerConfiguration(ScopeMode mode, const QSize& renderSize);
 
     ScopeMode m_mode{Waveform};
     QComboBox* m_modeCombo{nullptr};
@@ -102,7 +106,18 @@ private:
     std::vector<uint8_t>    m_pendingPixels;
     int                     m_pendingWidth{0};
     int                     m_pendingHeight{0};
+    ScopeMode               m_pendingMode{Waveform};
+    int                     m_pendingRenderWidth{200};
+    int                     m_pendingRenderHeight{160};
+    quint64                 m_pendingRevision{0};
     bool                    m_hasPending{false};
+
+    // Written by the UI thread and captured with each pending frame. The
+    // worker reads these fields only while holding m_workerMtx.
+    ScopeMode               m_requestedMode{Waveform};
+    int                     m_requestedRenderWidth{200};
+    int                     m_requestedRenderHeight{160};
+    quint64                 m_configRevision{0};
 
     // ── Analysis data (owned by worker thread) ──────────────────────────
     static constexpr int kWaveformCols = 256;

@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class QAction;
@@ -77,6 +78,7 @@ class ShotComposer;
 class TimelineWorkspace;
 class AudioEngine;
 class ModelManager;
+class NotificationCenter;
 class Timeline;
 
 // Panel forward declarations (delegated through TimelineWorkspace)
@@ -184,6 +186,7 @@ public:
     [[nodiscard]] ShotComposer*         shotComposer()        const noexcept;
     [[nodiscard]] TimelineWorkspace*    timelineWorkspace()   const noexcept { return m_timelineWorkspace; }
     [[nodiscard]] ExportPanel*          exportPanel()         const noexcept { return m_exportPanel; }
+    [[nodiscard]] NotificationCenter*   notificationCenter()  const noexcept { return m_notificationCenter; }
 
     // ── Core-service accessors ───────────────────────────────────────────
     // The explicit surface ProjectController works through — replaces the
@@ -391,6 +394,9 @@ private:
     // ── Status bar busy spinner ────────────────────────────────────────
     QProgressBar* m_busySpinner{nullptr};
     QLabel*       m_busyLabel{nullptr};
+    NotificationCenter* m_notificationCenter{nullptr};
+    std::unordered_map<uint32_t, uint64_t> m_exportActivityTasks;
+    uint64_t m_captionActivityTask{0};
 
     // ── Project-open input lock ─────────────────────────────────────────
     // serializer.load() runs on a worker thread; the heavy parse no longer

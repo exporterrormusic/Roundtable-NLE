@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #ifdef ROUNDTABLE_HAS_PORTAUDIO
 #include <portaudio.h>
@@ -37,7 +38,8 @@ AudioSourceView resolveAudioSourceView(const AudioTrackSource& src)
     }
 
     AudioSourceView view;
-    view.samples = src.samples;
+    view.buffer = src.sampleBuffer;
+    view.samples = src.sampleBuffer ? src.sampleBuffer->data() : src.samples;
     view.totalFrames = src.totalFrames;
     view.startFrame = src.startFrame;
     view.channels = src.channels;
@@ -57,11 +59,34 @@ struct AudioEngine::Impl
     bool paInitialized{false};
 };
 
+struct AudioEngine::MixerSnapshot
+{
+    struct RealtimeLevels
+    {
+        std::atomic<float> volume{1.0f};
+        std::atomic<float> pan{0.0f};
+        std::atomic<bool> muted{false};
+    };
+
+    struct PreparedSource
+    {
+        AudioTrackSource source;
+        std::unique_ptr<RealtimeLevels> levels;
+        std::unique_ptr<TimeStretch> stretcher;
+    };
+
+    std::vector<PreparedSource> sources;
+    double playbackSpeed{1.0};
+};
+
 // ─── Constructor / Destructor ───────────────────────────────────────────────
 
 AudioEngine::AudioEngine()
     : m_impl(std::make_unique<Impl>())
 {
+    m_activeMixerSnapshot = std::make_shared<MixerSnapshot>();
+    m_callbackMixerSnapshot.store(m_activeMixerSnapshot.get(),
+                                  std::memory_order_release);
 }
 
 AudioEngine::~AudioEngine()
@@ -87,6 +112,8 @@ bool AudioEngine::initialize(const AudioEngineConfig& config)
     }
     m_impl->paInitialized = true;
     m_config = config;
+    resetCallbackStats();
+    resetStretchers();
 
     // Resolve device
     int deviceIdx = config.deviceIndex;
@@ -173,6 +200,10 @@ void AudioEngine::shutdown()
 #endif
     m_state.store(TransportState::Stopped);
     m_playPosition.store(0);
+    {
+        std::lock_guard lock(m_snapshotUpdateMutex);
+        m_retiredSnapshots.clear();
+    }
     spdlog::info("AudioEngine: shutdown");
 }
 
@@ -284,8 +315,7 @@ void AudioEngine::stop()
 
     m_playPosition.store(0);
 
-    // Reset all time-stretchers
-    m_stretchers.clear();
+    resetStretchers();
 
     auto* clock = m_syncClock.load();
     if (clock) {
@@ -300,8 +330,7 @@ void AudioEngine::seekToFrame(int64_t frame)
     m_playPosition.store(frame);
     m_seekGeneration.fetch_add(1, std::memory_order_release);
 
-    // Signal audio thread to reset stretchers (thread-safe)
-    m_resetStretchers.store(true, std::memory_order_release);
+    resetStretchers();
 
     auto* clock = m_syncClock.load();
     if (clock) {
@@ -315,6 +344,7 @@ void AudioEngine::seekToFrame(int64_t frame)
 
 void AudioEngine::scrub(int64_t frame, int64_t durationFrames)
 {
+    resetStretchers();
     m_playPosition.store(frame);
     m_scrubEnd.store(frame + durationFrames);
     m_seekGeneration.fetch_add(1, std::memory_order_release);
@@ -348,37 +378,132 @@ double AudioEngine::currentTimeSeconds() const noexcept
 
 void AudioEngine::setTrackSources(std::vector<AudioTrackSource> sources)
 {
-    std::lock_guard lock(m_sourcesMutex);
-    m_sources = std::move(sources);
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    publishTrackSourcesLocked(std::move(sources));
 }
 
 void AudioEngine::clearTrackSources()
 {
-    std::lock_guard lock(m_sourcesMutex);
-    m_sources.clear();
+    setTrackSources({});
 }
 
 void AudioEngine::updateSourceLevels(uint64_t trackId, float volume, float pan, bool muted)
 {
-    std::lock_guard lock(m_sourcesMutex);
-    for (auto& src : m_sources) {
-        if (src.trackId == trackId) {
-            src.volume = volume;
-            src.pan    = pan;
-            src.muted  = muted;
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    const auto& snapshot = m_activeMixerSnapshot;
+    if (!snapshot) return;
+
+    for (auto& prepared : snapshot->sources) {
+        if (prepared.source.trackId == trackId && prepared.levels) {
+            prepared.levels->volume.store(volume, std::memory_order_relaxed);
+            prepared.levels->pan.store(pan, std::memory_order_relaxed);
+            prepared.levels->muted.store(muted, std::memory_order_release);
         }
     }
 }
 
 bool AudioEngine::hasTrackSources() const
 {
-    std::lock_guard lock(m_sourcesMutex);
-    return !m_sources.empty();
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    const auto& snapshot = m_activeMixerSnapshot;
+    return snapshot && !snapshot->sources.empty();
 }
 
 void AudioEngine::resetStretchers()
 {
-    m_resetStretchers.store(true, std::memory_order_release);
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    publishTrackSourcesLocked(copyTrackSourcesLocked());
+}
+
+std::vector<AudioTrackSource> AudioEngine::copyTrackSourcesLocked() const
+{
+    std::vector<AudioTrackSource> sources;
+    const auto& snapshot = m_activeMixerSnapshot;
+    if (!snapshot) return sources;
+
+    sources.reserve(snapshot->sources.size());
+    for (const auto& prepared : snapshot->sources) {
+        auto source = prepared.source;
+        if (prepared.levels) {
+            source.volume = prepared.levels->volume.load(std::memory_order_relaxed);
+            source.pan = prepared.levels->pan.load(std::memory_order_relaxed);
+            source.muted = prepared.levels->muted.load(std::memory_order_acquire);
+        }
+        sources.push_back(std::move(source));
+    }
+    return sources;
+}
+
+void AudioEngine::publishTrackSourcesLocked(std::vector<AudioTrackSource> sources)
+{
+    auto next = std::make_shared<MixerSnapshot>();
+    next->sources.reserve(sources.size());
+    const double playbackSpeed = static_cast<double>(
+        m_playbackSpeedFixed.load(std::memory_order_relaxed)) / 1000.0;
+    next->playbackSpeed = playbackSpeed;
+
+    for (auto& source : sources) {
+        AudioSourceView view = resolveAudioSourceView(source);
+        if (view.samples && view.totalFrames > 0 && view.channels > 0) {
+            source.sampleBuffer = std::move(view.buffer);
+            source.samples = view.samples;
+            source.totalFrames = view.totalFrames;
+            source.startFrame = view.startFrame;
+            source.channels = view.channels;
+            source.sampleRate = view.sampleRate;
+        }
+        source.sampleProvider.reset();
+
+        const bool validStereoSize = source.totalFrames > 0
+            && static_cast<uint64_t>(source.totalFrames)
+                <= std::numeric_limits<size_t>::max() / 2;
+        if (!source.audioEffects.empty() && source.samples
+            && validStereoSize && source.channels == 2) {
+            const size_t sampleCount = static_cast<size_t>(source.totalFrames) * 2;
+            auto processed = std::make_shared<std::vector<float>>(
+                source.samples, source.samples + sampleCount);
+            for (const auto effect : source.audioEffects) {
+                if (effect == EffectType::FillLeftWithRight) {
+                    for (size_t i = 0; i < sampleCount; i += 2)
+                        (*processed)[i] = (*processed)[i + 1];
+                } else if (effect == EffectType::FillRightWithLeft) {
+                    for (size_t i = 0; i < sampleCount; i += 2)
+                        (*processed)[i + 1] = (*processed)[i];
+                }
+            }
+            source.sampleBuffer = std::move(processed);
+            source.samples = source.sampleBuffer->data();
+        }
+        source.audioEffects.clear();
+
+        MixerSnapshot::PreparedSource prepared;
+        prepared.source = std::move(source);
+        prepared.levels = std::make_unique<MixerSnapshot::RealtimeLevels>();
+        prepared.levels->volume.store(prepared.source.volume, std::memory_order_relaxed);
+        prepared.levels->pan.store(prepared.source.pan, std::memory_order_relaxed);
+        prepared.levels->muted.store(prepared.source.muted, std::memory_order_relaxed);
+        const double effectiveSpeed =
+            playbackSpeed * prepared.source.clipSpeed;
+        const bool needsStretcher = effectiveSpeed <= 0.0
+            || std::abs(effectiveSpeed - 1.0) >= 0.001;
+        if (prepared.source.maintainPitch && prepared.source.channels > 0
+            && needsStretcher) {
+            prepared.stretcher = std::make_unique<TimeStretch>(
+                prepared.source.channels, m_config.sampleRate);
+            prepared.stretcher->setSpeed(effectiveSpeed);
+        }
+        next->sources.push_back(std::move(prepared));
+    }
+
+    auto previous = std::move(m_activeMixerSnapshot);
+    m_activeMixerSnapshot = std::move(next);
+    m_callbackMixerSnapshot.store(m_activeMixerSnapshot.get(),
+                                  std::memory_order_seq_cst);
+    if (previous)
+        m_retiredSnapshots.push_back(std::move(previous));
+
+    if (m_callbackReaders.load(std::memory_order_seq_cst) == 0)
+        m_retiredSnapshots.clear();
 }
 
 void AudioEngine::setMasterVolume(float vol) noexcept
@@ -401,6 +526,26 @@ AudioMeter AudioEngine::meter() const noexcept
     };
 }
 
+AudioCallbackStats AudioEngine::callbackStats() const noexcept
+{
+    return {
+        m_callbackCount.load(std::memory_order_relaxed),
+        m_outputUnderflows.load(std::memory_order_relaxed),
+        m_outputOverflows.load(std::memory_order_relaxed),
+        m_callbacksOverBudget.load(std::memory_order_relaxed),
+        m_maxCallbackMicros.load(std::memory_order_relaxed)
+    };
+}
+
+void AudioEngine::resetCallbackStats() noexcept
+{
+    m_callbackCount.store(0, std::memory_order_relaxed);
+    m_outputUnderflows.store(0, std::memory_order_relaxed);
+    m_outputOverflows.store(0, std::memory_order_relaxed);
+    m_callbacksOverBudget.store(0, std::memory_order_relaxed);
+    m_maxCallbackMicros.store(0, std::memory_order_relaxed);
+}
+
 // ─── Sync clock ─────────────────────────────────────────────────────────────
 
 void AudioEngine::setSyncClock(AVSyncClock* clock) noexcept
@@ -408,11 +553,12 @@ void AudioEngine::setSyncClock(AVSyncClock* clock) noexcept
     m_syncClock.store(clock);
 }
 
-void AudioEngine::setPlaybackSpeed(double speed) noexcept
+void AudioEngine::setPlaybackSpeed(double speed)
 {
-    m_playbackSpeedFixed.store(static_cast<int64_t>(speed * 1000.0));
-    // Signal audio thread to reset stretchers (thread-safe)
-    m_resetStretchers.store(true, std::memory_order_release);
+    const int64_t fixedSpeed = static_cast<int64_t>(speed * 1000.0);
+    if (m_playbackSpeedFixed.exchange(fixedSpeed) == fixedSpeed)
+        return;
+    resetStretchers();
 }
 
 double AudioEngine::playbackSpeed() const noexcept
@@ -437,23 +583,57 @@ const std::string& AudioEngine::lastError() const noexcept
     return m_lastError;
 }
 
+void AudioEngine::recordCallbackStats(
+    std::chrono::steady_clock::time_point started,
+    unsigned long frameCount,
+    unsigned long statusFlags) noexcept
+{
+    const auto elapsed = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count());
+
+    m_callbackCount.fetch_add(1, std::memory_order_relaxed);
+#ifdef ROUNDTABLE_HAS_PORTAUDIO
+    if ((statusFlags & paOutputUnderflow) != 0)
+        m_outputUnderflows.fetch_add(1, std::memory_order_relaxed);
+    if ((statusFlags & paOutputOverflow) != 0)
+        m_outputOverflows.fetch_add(1, std::memory_order_relaxed);
+#else
+    (void)statusFlags;
+#endif
+
+    const uint64_t budgetMicros = m_config.sampleRate > 0
+        ? (static_cast<uint64_t>(frameCount) * 1000000ull) / m_config.sampleRate
+        : 0;
+    if (budgetMicros > 0 && elapsed > budgetMicros)
+        m_callbacksOverBudget.fetch_add(1, std::memory_order_relaxed);
+
+    uint64_t previousMax = m_maxCallbackMicros.load(std::memory_order_relaxed);
+    while (elapsed > previousMax
+           && !m_maxCallbackMicros.compare_exchange_weak(
+               previousMax, elapsed, std::memory_order_relaxed)) {
+    }
+}
+
 // ─── PortAudio callback (static) ────────────────────────────────────────────
 
 int AudioEngine::paCallback(const void* /*input*/, void* output,
                              unsigned long frameCount,
                              const ::PaStreamCallbackTimeInfo* /*timeInfo*/,
-                             unsigned long /*statusFlags*/,
+                             unsigned long statusFlags,
                              void* userData)
 {
     auto* engine = static_cast<AudioEngine*>(userData);
     auto* out    = static_cast<float*>(output);
-    return engine->onAudioCallback(out, frameCount);
+    return engine->onAudioCallback(out, frameCount, statusFlags);
 }
 
 // ─── Audio callback (instance) ──────────────────────────────────────────────
 
-int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
+int AudioEngine::onAudioCallback(float* output, unsigned long frameCount,
+                                 unsigned long statusFlags)
 {
+    const auto callbackStarted = std::chrono::steady_clock::now();
     const auto channels = m_config.channels;
     const auto totalSamples = frameCount * channels;
 
@@ -470,8 +650,10 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
         // permanently deactivate the stream, preventing Pa_StartStream
         // from working on the next play().
 #ifdef ROUNDTABLE_HAS_PORTAUDIO
+        recordCallbackStats(callbackStarted, frameCount, statusFlags);
         return paContinue;
 #else
+        recordCallbackStats(callbackStarted, frameCount, statusFlags);
         return 0;
 #endif
     }
@@ -485,39 +667,53 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
             m_state.store(TransportState::Paused);
             // Return paContinue so the stream stays alive for the next scrub.
 #ifdef ROUNDTABLE_HAS_PORTAUDIO
+            recordCallbackStats(callbackStarted, frameCount, statusFlags);
             return paContinue;
 #else
+            recordCallbackStats(callbackStarted, frameCount, statusFlags);
             return 0;
 #endif
         }
     }
 
-    // Lock-free copy of sources (we hold the lock briefly)
-    std::vector<AudioTrackSource> sources;
-    {
-        std::lock_guard lock(m_sourcesMutex);
-        sources = m_sources;
-    }
+    m_callbackReaders.fetch_add(1, std::memory_order_seq_cst);
+    struct SnapshotReadGuard {
+        std::atomic<uint32_t>& readers;
+        ~SnapshotReadGuard()
+        {
+            readers.fetch_sub(1, std::memory_order_seq_cst);
+        }
+    } snapshotReadGuard{m_callbackReaders};
+    MixerSnapshot* snapshot =
+        m_callbackMixerSnapshot.load(std::memory_order_seq_cst);
 
     // Check for solo tracks
     bool hasSolo = false;
-    for (const auto& src : sources) {
-        if (src.solo) { hasSolo = true; break; }
+    if (snapshot) {
+        for (const auto& prepared : snapshot->sources) {
+            if (prepared.source.solo) { hasSolo = true; break; }
+        }
     }
 
-    // Read current playback speed (fixed-point * 1000 for lock-free)
-    const double speed = static_cast<double>(
-        m_playbackSpeedFixed.load(std::memory_order_relaxed)) / 1000.0;
-
-    // Reset stretchers if signaled by UI thread (thread-safe: done on audio thread)
-    if (m_resetStretchers.exchange(false, std::memory_order_acquire)) {
-        for (auto& [id, ts] : m_stretchers)
-            ts.reset();
-    }
+    // Mode and speed belong to the same immutable mixer snapshot.
+    const double speed = snapshot ? snapshot->playbackSpeed : 1.0;
 
     // Mix all active sources.
-    for (const auto& src : sources) {
-        mixSource(src, output, frameCount, playPos, speed, hasSolo);
+    if (snapshot) {
+        for (const auto& prepared : snapshot->sources) {
+            const float volume = prepared.levels
+                ? prepared.levels->volume.load(std::memory_order_relaxed)
+                : prepared.source.volume;
+            const float pan = prepared.levels
+                ? prepared.levels->pan.load(std::memory_order_relaxed)
+                : prepared.source.pan;
+            const bool muted = prepared.levels
+                ? prepared.levels->muted.load(std::memory_order_acquire)
+                : prepared.source.muted;
+            mixSource(prepared.source, prepared.stretcher.get(), output,
+                      frameCount, playPos, speed, hasSolo,
+                      volume, pan, muted);
+        }
     }
 
     // Apply master volume
@@ -553,7 +749,7 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
     // Guard with seek generation: if a seek/scrub happened during this
     // callback, discard our advance so the new seek position is preserved.
     if (m_seekGeneration.load(std::memory_order_acquire) == seekGen) {
-        const int64_t speedAdv = m_playbackSpeedFixed.load(std::memory_order_relaxed);
+        const int64_t speedAdv = static_cast<int64_t>(std::llround(speed * 1000.0));
         const int64_t advanceDelta = (static_cast<int64_t>(frameCount) * speedAdv) / 1000;
         const int64_t newPos = playPos + advanceDelta;
         m_playPosition.store(std::max<int64_t>(0, newPos));
@@ -573,6 +769,8 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
         }
     }
 
+    recordCallbackStats(callbackStarted, frameCount, statusFlags);
+
 #ifdef ROUNDTABLE_HAS_PORTAUDIO
     return paContinue;
 #else
@@ -582,38 +780,25 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount)
 
 // ─── Mix one source ─────────────────────────────────────────────────────────
 
-void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
+void AudioEngine::mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
+                             float* output,
                              unsigned long frameCount, int64_t playPos,
-                             double speed, bool hasSolo)
+                             double speed, bool hasSolo,
+                             float volume, float pan, bool muted)
 {
     // Mute/solo logic
-    if (src.muted) return;
+    if (muted) return;
     if (hasSolo && !src.solo) return;
 
-    const AudioSourceView view = resolveAudioSourceView(src);
+    AudioSourceView view;
+    view.samples = src.samples;
+    view.totalFrames = src.totalFrames;
+    view.startFrame = src.startFrame;
+    view.channels = src.channels;
+    view.sampleRate = src.sampleRate;
     if (!view.samples || view.totalFrames <= 0) return;
 
-    // Apply audio effects (channel fill) to a local copy if needed
-    std::vector<float> fxBuf;
-    const float* mixSamples = view.samples;
-    if (!src.audioEffects.empty() && view.channels == 2) {
-        const size_t totalSamples = static_cast<size_t>(view.totalFrames) * view.channels;
-        fxBuf.assign(view.samples, view.samples + totalSamples);
-        for (auto fxType : src.audioEffects) {
-            if (fxType == EffectType::FillLeftWithRight) {
-                for (size_t s = 0; s < totalSamples; s += 2)
-                    fxBuf[s] = fxBuf[s + 1];
-            } else if (fxType == EffectType::FillRightWithLeft) {
-                for (size_t s = 0; s < totalSamples; s += 2)
-                    fxBuf[s + 1] = fxBuf[s];
-            }
-        }
-        mixSamples = fxBuf.data();
-    }
-
-    // Create a modified view pointing to the (possibly effect-processed) samples
-    AudioSourceView effView = view;
-    effView.samples = mixSamples;
+    const AudioSourceView& effView = view;
 
     const auto outCh = m_config.channels;
 
@@ -632,7 +817,7 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
 
             if (srcFrame < 0 || srcFrame >= effView.totalFrames) continue;
 
-            float vol = src.volume;
+            float vol = volume;
             if (src.fadeEnvelope && effView.totalFrames > 0) {
                 const float normalizedPos = static_cast<float>(srcFrame)
                                           / static_cast<float>(effView.totalFrames);
@@ -644,14 +829,14 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
             if (effView.channels == 1) {
                 const float sample = effView.samples[srcIdx] * vol;
                 float panL, panR;
-                computePan(src.pan, 1, panL, panR);
+                computePan(pan, 1, panL, panR);
                 if (outCh >= 1) output[f * outCh]     += sample * panL;
                 if (outCh >= 2) output[f * outCh + 1] += sample * panR;
             } else if (effView.channels == 2) {
                 const float sL = effView.samples[srcIdx]     * vol;
                 const float sR = effView.samples[srcIdx + 1] * vol;
                 float panL, panR;
-                computePan(src.pan, 2, panL, panR);
+                computePan(pan, 2, panL, panR);
                 if (outCh >= 1) output[f * outCh]     += sL * panL;
                 if (outCh >= 2) output[f * outCh + 1] += sR * panR;
             } else {
@@ -665,24 +850,14 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
     // Non-1x effective speed: use SoundTouch for pitch-preserved playback,
     // or simple sample-skipping if maintainPitch is false.
     if (src.maintainPitch) {
-        // Compute source offset before creating a stretcher.
-        // Skip clips that are completely out of range to avoid
-        // initializing a SoundTouch instance with a bad read position.
+        // Skip clips outside the prepared stretcher's playable range.
         const int64_t srcStart = playPos - effView.startFrame;
         if (srcStart >= effView.totalFrames)
             return;  // clip is fully past
 
-        // Get or create a per-track TimeStretch instance.
-        auto it = m_stretchers.find(src.trackId);
-        if (it == m_stretchers.end()) {
-            // Don't allocate a stretcher for a clip that hasn't started yet
-            if (srcStart < 0)
-                return;
-            it = m_stretchers.emplace(src.trackId,
-                TimeStretch(effView.channels, m_config.sampleRate)).first;
-        }
-        auto& ts = it->second;
-        ts.setSpeed(effSpeed);
+        if (!stretcher || srcStart < 0)
+            return;
+        auto& ts = *stretcher;
 
         // Source start is just the linear offset into the source buffer.
         // SoundTouch handles consuming source samples at the correct rate
@@ -690,12 +865,12 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
         // or the audio gets double-sped.
         ts.process(effView.samples, effView.totalFrames, srcStart,
                    output, frameCount,
-                   src.volume, src.pan, outCh, effView.channels,
+                   volume, pan, outCh, effView.channels,
                    src.fadeEnvelope, effView.totalFrames);
     } else {
         // No pitch compensation — simple sample-skipping (pitch shifts naturally)
         float panL, panR;
-        computePan(src.pan, effView.channels, panL, panR);
+        computePan(pan, effView.channels, panL, panR);
 
         for (unsigned long f = 0; f < frameCount; ++f) {
             const int64_t timelineFrame = playPos + static_cast<int64_t>(f);
@@ -705,7 +880,7 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
 
             if (srcFrame < 0 || srcFrame >= effView.totalFrames) continue;
 
-            float vol = src.volume;
+            float vol = volume;
             if (src.fadeEnvelope && effView.totalFrames > 0) {
                 const float normPos = static_cast<float>(srcFrame)
                                     / static_cast<float>(effView.totalFrames);
@@ -731,4 +906,3 @@ void AudioEngine::mixSource(const AudioTrackSource& src, float* output,
 }
 
 } // namespace rt
-

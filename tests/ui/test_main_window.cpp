@@ -33,6 +33,7 @@
 #include "panels/project/ProjectPanel.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/project/ProjectBin.h"
+#include "panels/timeline/DockBehavior.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelineWorkspace.h"
 #include "cache/FrameCache.h"
@@ -47,11 +48,14 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QEventLoop>
+#include <QLineEdit>
+#include <QMainWindow>
 #include <QMenuBar>
 #include <QSettings>
 #include <QSplitter>
 #include <QTabBar>
 #include <QThread>
+#include <QTimer>
 
 #include <atomic>
 #include <chrono>
@@ -169,6 +173,124 @@ TEST(ThemeTest, AccentColorExists)
     EXPECT_TRUE(c.accent.isValid());
     // Accent should be blueish
     EXPECT_GT(c.accent.blue(), c.accent.red());
+}
+
+TEST_F(MainWindowTest, DockPanelChromeTracksOneActivePanel)
+{
+    qApp->setStyleSheet(Theme::stylesheet());
+
+    QMainWindow host;
+    host.setDocumentMode(true); // Matches the production MainWindow setting.
+
+    QWidget nestedTabsHost(&host);
+    auto* unrelatedTabs = new QTabBar(&nestedTabsHost);
+    unrelatedTabs->setDocumentMode(true);
+    unrelatedTabs->addTab(QStringLiteral("Unrelated"));
+
+    auto* firstDock = new QDockWidget(QStringLiteral("First"), &host);
+    auto* firstEditor = new QLineEdit(firstDock);
+    firstDock->setWidget(firstEditor);
+    host.addDockWidget(Qt::LeftDockWidgetArea, firstDock);
+
+    auto* secondDock = new QDockWidget(QStringLiteral("Second"), &host);
+    auto* secondEditor = new QLineEdit(secondDock);
+    secondDock->setWidget(secondEditor);
+    host.addDockWidget(Qt::LeftDockWidgetArea, secondDock);
+    host.tabifyDockWidget(firstDock, secondDock);
+
+    auto* thirdDock = new QDockWidget(QStringLiteral("Third"), &host);
+    auto* thirdEditor = new QLineEdit(thirdDock);
+    thirdDock->setWidget(thirdEditor);
+    host.addDockWidget(Qt::RightDockWidgetArea, thirdDock);
+
+    DockTabBarWatcher watcher(&host, &host);
+    host.installEventFilter(&watcher);
+
+    host.resize(720, 420);
+    host.show();
+    secondDock->raise();
+    secondEditor->setFocus(Qt::OtherFocusReason);
+    {
+        QEventLoop loop;
+        QTimer::singleShot(10, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+
+    QTabBar* dockTabs = nullptr;
+    for (auto* tabs : host.findChildren<QTabBar*>()) {
+        if (tabs->property("roundtableDockTabBar").toBool()) {
+            dockTabs = tabs;
+            break;
+        }
+    }
+    ASSERT_NE(dockTabs, nullptr);
+    EXPECT_FALSE(unrelatedTabs->property("roundtableDockTabBar").toBool());
+    EXPECT_EQ(dockTabs->height(), Theme::metrics().panelHeaderHeight);
+    EXPECT_TRUE(secondDock->property("panelFocused").toBool());
+    EXPECT_FALSE(firstDock->property("panelFocused").toBool());
+    EXPECT_FALSE(thirdDock->property("panelFocused").toBool());
+    EXPECT_TRUE(dockTabs->property("panelBarActive").toBool());
+
+    thirdEditor->setFocus(Qt::OtherFocusReason);
+    {
+        QEventLoop loop;
+        QTimer::singleShot(10, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+
+    EXPECT_TRUE(thirdDock->property("panelFocused").toBool());
+    EXPECT_FALSE(firstDock->property("panelFocused").toBool());
+    EXPECT_FALSE(secondDock->property("panelFocused").toBool());
+    EXPECT_FALSE(dockTabs->property("panelBarActive").toBool());
+}
+
+TEST_F(MainWindowTest, ProductionTimelineUsesOneActiveDockTabGroup)
+{
+    qApp->setStyleSheet(Theme::stylesheet());
+
+    TimelineWorkspace workspace;
+    workspace.buildPanels();
+
+    // Saved layouts can move Captions out of the right-side group and tab it
+    // with Source Monitor after the watcher has already been constructed.
+    auto* sourceDock = workspace.dockForPanel(QStringLiteral("Source Monitor"));
+    auto* captionsDock = workspace.dockForPanel(QStringLiteral("Captions"));
+    ASSERT_NE(sourceDock, nullptr);
+    ASSERT_NE(captionsDock, nullptr);
+    auto* dockHost = qobject_cast<QMainWindow*>(sourceDock->parentWidget());
+    ASSERT_NE(dockHost, nullptr);
+    dockHost->tabifyDockWidget(sourceDock, captionsDock);
+
+    workspace.resize(1600, 900);
+    workspace.show();
+
+    sourceDock->raise();
+    sourceDock->setFocusPolicy(Qt::StrongFocus);
+    sourceDock->setFocus(Qt::OtherFocusReason);
+    {
+        QEventLoop loop;
+        QTimer::singleShot(20, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+
+    QTabBar* sourceTabs = nullptr;
+    int activeGroups = 0;
+    int dockTabBars = 0;
+    for (auto* tabs : workspace.findChildren<QTabBar*>()) {
+        if (!tabs->property("roundtableDockTabBar").toBool()) continue;
+        ++dockTabBars;
+        if (tabs->property("panelBarActive").toBool()) ++activeGroups;
+        for (int index = 0; index < tabs->count(); ++index) {
+            if (tabs->tabText(index) == QStringLiteral("Source Monitor"))
+                sourceTabs = tabs;
+        }
+    }
+
+    EXPECT_GE(dockTabBars, 2);
+    ASSERT_NE(sourceTabs, nullptr);
+    EXPECT_EQ(sourceTabs->height(), Theme::metrics().panelHeaderHeight);
+    EXPECT_TRUE(sourceTabs->property("panelBarActive").toBool());
+    EXPECT_EQ(activeGroups, 1);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1013,7 +1135,7 @@ TEST_F(MainWindowTest, AppFullIntegration)
 
     auto* mw = app.mainWindow();
     ASSERT_NE(mw, nullptr);
-    EXPECT_EQ(mw->dockCount(), 15);
+    EXPECT_EQ(mw->dockCount(), 16);
     EXPECT_NE(mw->timelinePanel(), nullptr);
     EXPECT_NE(mw->exportPanel(), nullptr);
     EXPECT_NE(mw->projectPanel(), nullptr);

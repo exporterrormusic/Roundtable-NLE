@@ -5,7 +5,6 @@
 #include "widgets/DockTitleBar.h"
 #include "Theme.h"
 
-#include <QApplication>
 #include <QContextMenuEvent>
 #include <QDockWidget>
 #include <QEvent>
@@ -30,19 +29,6 @@ DockTitleBar::DockTitleBar(QDockWidget* dock, const QString& title,
     buildUI();
     setTitle(title);
     applyTheme();
-
-    // Repaint title bar accent when focus moves between panels
-    connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* now) {
-        if (!m_dock) return;
-        bool focused = now && m_dock->isAncestorOf(now);
-        bool prev = m_dock->property("panelFocused").toBool();
-        if (focused != prev) {
-            m_dock->setProperty("panelFocused", focused);
-            m_dock->style()->unpolish(m_dock);
-            m_dock->style()->polish(m_dock);
-            update();
-        }
-    });
 
     // Re-check tabbed state when dock floats/docks
     connect(m_dock, &QDockWidget::topLevelChanged,
@@ -187,7 +173,7 @@ void DockTitleBar::paintEvent(QPaintEvent* event)
     p.setPen(tc.border);
     p.drawLine(0, height() - 1, width(), height() - 1);
 
-    // Top accent line when dock contains focus
+    // Active-panel accent, aligned with the underline used by dock tabs.
     if (m_dock && m_dock->property("panelFocused").toBool()) {
         p.setPen(Qt::NoPen);
         p.setBrush(tc.accent);

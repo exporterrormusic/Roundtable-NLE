@@ -6,6 +6,7 @@
 #include "panels/timeline/TimelinePanel.h"
 #include "PathUtils.h"
 #include "panels/timeline/TimelinePanelInternal.h"
+#include "MediaTaskQueue.h"
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -24,9 +25,26 @@
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
-#include <thread>
 
 namespace rt {
+
+namespace {
+
+struct WaveformTaskOutput {
+    std::vector<float> peaks;
+};
+
+struct ThumbnailTaskOutput {
+    QImage image;
+};
+
+std::string mediaTaskPath(const std::filesystem::path& path)
+{
+    const auto generic = path.lexically_normal().generic_u8string();
+    return std::string(reinterpret_cast<const char*>(generic.data()), generic.size());
+}
+
+} // namespace
 
 // Waveform cache key = (media path, audio-stream ordinal). Two clips on
 // different audio streams of the same file must NOT share one waveform, so
@@ -121,7 +139,8 @@ void TimelinePanel::loadWaveforms()
             }
 
             if (!m_failedWaveformPaths.count(key)) {
-                queueWaveformLoad(path, ord);
+                queueWaveformLoad(path, ord,
+                    m_layoutEngine.isRangeVisible(clip->timelineIn(), clip->timelineOut()));
             }
         }
     }
@@ -150,6 +169,7 @@ void TimelinePanel::refreshMediaWaveform(const std::filesystem::path& changedPat
     // loadWaveforms() immediately requeue any unrelated retired work.
     ++m_waveformLoadGeneration;
     m_pendingWaveformPaths.clear();
+    MediaTaskQueue::instance().cancelOwner(m_waveformTaskOwner);
 
     for (auto it = m_waveformByPath.begin(); it != m_waveformByPath.end(); ) {
         if (waveformKeyMatchesPath(it->first, changedKey))
@@ -181,11 +201,22 @@ void TimelinePanel::refreshMediaWaveform(const std::filesystem::path& changedPat
         if (tw) tw->update();
 }
 
-void TimelinePanel::queueWaveformLoad(const std::string& path, int audioStreamOrdinal)
+void TimelinePanel::queueWaveformLoad(const std::string& path,
+                                      int audioStreamOrdinal,
+                                      bool visible)
 {
     const std::string key = waveformCacheKey(path, audioStreamOrdinal);
     if (path.empty() || m_waveformByPath.count(key) ||
-        m_pendingWaveformPaths.count(key) || m_failedWaveformPaths.count(key)) {
+        m_failedWaveformPaths.count(key)) {
+        return;
+    }
+
+    const std::string taskKey = "waveform:48000:480:" +
+        normalizedWaveformPath(path) + "|" + std::to_string(audioStreamOrdinal);
+    const auto priority = visible ? MediaTaskQueue::Priority::Visible
+                                  : MediaTaskQueue::Priority::Background;
+    if (m_pendingWaveformPaths.count(key)) {
+        MediaTaskQueue::instance().promote(taskKey, priority);
         return;
     }
 
@@ -193,54 +224,40 @@ void TimelinePanel::queueWaveformLoad(const std::string& path, int audioStreamOr
     QPointer<TimelinePanel> self(this);
     const uint64_t generation = m_waveformLoadGeneration;
 
-    std::thread([self, path, key, audioStreamOrdinal, generation]() {
-        constexpr int64_t kPeakWindowFrames = 480; // 10ms at 48 kHz
+    const bool accepted = MediaTaskQueue::instance().submit<WaveformTaskOutput>(
+        m_waveformTaskOwner, taskKey, priority,
+        [path, audioStreamOrdinal](std::stop_token stop) {
+            constexpr int64_t kPeakWindowFrames = 480;
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<WaveformTaskOutput>::failure("canceled");
 
-        AudioFile file;
-        if (!file.open(path, audioStreamOrdinal)) {
-            if (!self) {
-                return;
+            AudioFile file;
+            if (!file.open(path, audioStreamOrdinal))
+                return MediaTaskQueue::Result<WaveformTaskOutput>::failure(
+                    "could not open audio source");
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<WaveformTaskOutput>::failure("canceled");
+
+            WaveformTaskOutput output;
+            if (file.buildPeakEnvelopeResampled(48000, kPeakWindowFrames,
+                                                output.peaks) == 0 ||
+                output.peaks.empty()) {
+                return MediaTaskQueue::Result<WaveformTaskOutput>::failure(
+                    "audio source produced no waveform peaks");
             }
-            QMetaObject::invokeMethod(self, [self, path, key, generation]() {
-                if (!self || self->m_waveformLoadGeneration != generation) {
-                    return;
-                }
-                self->m_pendingWaveformPaths.erase(key);
-                self->m_failedWaveformPaths.insert(key);
-                spdlog::warn("loadWaveforms: failed to open '{}'", path);
+            return MediaTaskQueue::Result<WaveformTaskOutput>::success(std::move(output));
+        },
+        [self, generation, key](MediaTaskQueue::Result<WaveformTaskOutput> result) mutable {
+            if (!self) return;
+            QMetaObject::invokeMethod(self, [self, generation, key,
+                                             result = std::move(result)]() mutable {
+                if (!self || self->m_waveformLoadGeneration != generation) return;
+                std::vector<float> peaks;
+                if (result.succeeded()) peaks = result.value->peaks;
+                self->applyWaveformPeaks(generation, key, std::move(peaks));
             }, Qt::QueuedConnection);
-            return;
-        }
-
-        std::vector<float> peaks;
-        const size_t numPeaks = file.buildPeakEnvelopeResampled(
-            48000, kPeakWindowFrames, peaks);
-        if (numPeaks == 0 || peaks.empty()) {
-            if (!self) {
-                return;
-            }
-            QMetaObject::invokeMethod(self, [self, key, generation]() {
-                if (!self || self->m_waveformLoadGeneration != generation) {
-                    return;
-                }
-                self->m_pendingWaveformPaths.erase(key);
-                self->m_failedWaveformPaths.insert(key);
-            }, Qt::QueuedConnection);
-            return;
-        }
-
-        if (!self) {
-            return;
-        }
-
-        QMetaObject::invokeMethod(self, [self, generation, key,
-                                         peaks = std::move(peaks)]() mutable {
-            if (!self) {
-                return;
-            }
-            self->applyWaveformPeaks(generation, key, std::move(peaks));
-        }, Qt::QueuedConnection);
-    }).detach();
+        });
+    if (!accepted) m_pendingWaveformPaths.erase(key);
 }
 
 void TimelinePanel::applyWaveformPeaks(uint64_t generation,
@@ -328,7 +345,8 @@ void TimelinePanel::loadThumbnails()
             // (VideoDecoder open + decode) and froze the UI thread for many
             // seconds when opening a project with dozens of video clips.
             if (!m_failedThumbnailPaths.count(path))
-                queueThumbnailLoad(path);
+                queueThumbnailLoad(path,
+                    m_layoutEngine.isRangeVisible(clip->timelineIn(), clip->timelineOut()));
         }
     }
 }
@@ -349,6 +367,7 @@ void TimelinePanel::refreshMediaThumbnail(const std::filesystem::path& changedPa
     // swap cannot put the old thumbnail back after this method returns.
     ++m_thumbnailLoadGeneration;
     m_pendingThumbnailPaths.clear();
+    MediaTaskQueue::instance().cancelOwner(m_thumbnailTaskOwner);
 
     for (auto it = m_thumbnailByPath.begin(); it != m_thumbnailByPath.end(); ) {
         if (pathKey(it->first) == changedKey)
@@ -380,10 +399,19 @@ void TimelinePanel::refreshMediaThumbnail(const std::filesystem::path& changedPa
         if (tw) tw->update();
 }
 
-void TimelinePanel::queueThumbnailLoad(const std::string& path)
+void TimelinePanel::queueThumbnailLoad(const std::string& path, bool visible)
 {
     if (path.empty() || m_thumbnailByPath.count(path) ||
-        m_pendingThumbnailPaths.count(path) || m_failedThumbnailPaths.count(path)) {
+        m_failedThumbnailPaths.count(path)) {
+        return;
+    }
+
+    const std::filesystem::path resolved = resolveThumbnailPath(path);
+    const std::string taskKey = "thumbnail:first:" + mediaTaskPath(resolved);
+    const auto priority = visible ? MediaTaskQueue::Priority::Visible
+                                  : MediaTaskQueue::Priority::Background;
+    if (m_pendingThumbnailPaths.count(path)) {
+        MediaTaskQueue::instance().promote(taskKey, priority);
         return;
     }
 
@@ -391,38 +419,44 @@ void TimelinePanel::queueThumbnailLoad(const std::string& path)
     QPointer<TimelinePanel> self(this);
     const uint64_t generation = m_thumbnailLoadGeneration;
 
-    std::thread([self, path, generation]() {
-        // Resolve the path the same way MediaPool does (bare filenames ->
-        // asset search dirs).  Pure filesystem + decode work, no GUI calls.
-        const std::filesystem::path resolved =
-            resolveThumbnailPath(path);
+    const bool accepted = MediaTaskQueue::instance().submit<ThumbnailTaskOutput>(
+        m_thumbnailTaskOwner, taskKey, priority,
+        [resolved](std::stop_token stop) {
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<ThumbnailTaskOutput>::failure("canceled");
 
-        QImage img;  // built off-thread; QPixmap conversion happens on UI thread
-        {
+            ThumbnailTaskOutput output;
             VideoDecoder decoder;
             DecodedFrame frame;
             if (decoder.open(resolved) &&
+                !stop.stop_requested() &&
                 decoder.decodeAt(0.0, frame) &&
                 frame.width > 0 && frame.height > 0) {
                 const int bytesPerRow = frame.linesize[0];
                 if (frame.format == PixelFormat::BGRA) {
-                    img = QImage(frame.data[0], frame.width, frame.height,
-                                 bytesPerRow, QImage::Format_RGBA8888_Premultiplied).copy();
+                    output.image = QImage(frame.data[0], frame.width, frame.height,
+                                          bytesPerRow,
+                                          QImage::Format_RGBA8888_Premultiplied).copy();
                 } else if (frame.format == PixelFormat::RGBA) {
-                    img = QImage(frame.data[0], frame.width, frame.height,
-                                 bytesPerRow, QImage::Format_RGBA8888).copy();
+                    output.image = QImage(frame.data[0], frame.width, frame.height,
+                                          bytesPerRow, QImage::Format_RGBA8888).copy();
                 }
-                // YUV-only formats are left null -> treated as failed below.
             }
-        }
-
-        if (!self) return;
-        QMetaObject::invokeMethod(self, [self, generation, path,
-                                         img = std::move(img)]() mutable {
+            if (output.image.isNull())
+                return MediaTaskQueue::Result<ThumbnailTaskOutput>::failure(
+                    "could not decode a supported first frame");
+            return MediaTaskQueue::Result<ThumbnailTaskOutput>::success(std::move(output));
+        },
+        [self, generation, path](MediaTaskQueue::Result<ThumbnailTaskOutput> result) mutable {
             if (!self) return;
-            self->applyThumbnail(generation, path, img);
-        }, Qt::QueuedConnection);
-    }).detach();
+            QMetaObject::invokeMethod(self, [self, generation, path,
+                                             result = std::move(result)]() mutable {
+                if (!self || self->m_thumbnailLoadGeneration != generation) return;
+                const QImage image = result.succeeded() ? result.value->image : QImage{};
+                self->applyThumbnail(generation, path, image);
+            }, Qt::QueuedConnection);
+        });
+    if (!accepted) m_pendingThumbnailPaths.erase(path);
 }
 
 void TimelinePanel::applyThumbnail(uint64_t generation, const std::string& path,

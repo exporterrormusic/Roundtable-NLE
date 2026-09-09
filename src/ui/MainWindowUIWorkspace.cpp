@@ -10,6 +10,7 @@
  */
 
 #include "MainWindow.h"
+#include "NotificationCenter.h"
 
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/timeline/TimelineWorkspace.h"
@@ -102,6 +103,7 @@ void MainWindow::saveWorkspace(const QString& name)
 {
     auto settings = rt::appSettings();
     settings.beginGroup("workspace/" + name);
+    settings.setValue("version", 1);
     settings.setValue("geometry", saveGeometry());
     settings.setValue("activePage", static_cast<int>(currentPage()));
     settings.setValue("navCollapsed", m_navCollapsed);
@@ -111,6 +113,9 @@ void MainWindow::saveWorkspace(const QString& name)
         m_timelineWorkspace->saveDockLayout(settings);
 
     settings.endGroup();
+    // Make named presets immediately visible to a subsequent restore, even
+    // when the platform backend buffers QSettings writes.
+    settings.sync();
     spdlog::info("Workspace '{}' saved", name.toStdString());
 }
 
@@ -120,14 +125,16 @@ bool MainWindow::restoreWorkspace(const QString& name)
     settings.beginGroup("workspace/" + name);
 
     QByteArray geo = settings.value("geometry").toByteArray();
+    const bool exists = settings.contains("version") ||
+                        settings.contains("activePage") || !geo.isEmpty();
 
-    if (geo.isEmpty()) {
+    if (!exists) {
         settings.endGroup();
         spdlog::warn("No saved workspace '{}'", name.toStdString());
         return false;
     }
 
-    restoreGeometry(geo);
+    if (!geo.isEmpty()) restoreGeometry(geo);
     // Restore the last active page so the user returns to where they left off.
     int savedPage = settings.value("activePage",
                                     static_cast<int>(Page::Projects)).toInt();
@@ -284,6 +291,7 @@ void MainWindow::setupStatusBar()
 
     sb->addPermanentWidget(m_busyLabel);
     sb->addPermanentWidget(m_busySpinner);
+    m_notificationCenter = new NotificationCenter(this, sb);
 }
 
 void MainWindow::showBusyIndicator(const QString& message)

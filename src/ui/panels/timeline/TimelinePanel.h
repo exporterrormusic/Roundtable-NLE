@@ -488,6 +488,7 @@ private:
     std::unordered_set<std::string> m_pendingWaveformPaths;
     std::unordered_set<std::string> m_failedWaveformPaths;
     uint64_t m_waveformLoadGeneration{0};
+    uint64_t m_waveformTaskOwner{0};
 
     // Video thumbnail cache: clipId → first-frame thumbnail (QPixmap)
     std::unordered_map<uint64_t, QPixmap> m_thumbnailCache;
@@ -502,6 +503,7 @@ private:
     // opening a project with many video clips doesn't freeze the UI thread.
     std::unordered_set<std::string> m_pendingThumbnailPaths;
     uint64_t m_thumbnailLoadGeneration{0};
+    uint64_t m_thumbnailTaskOwner{0};
 
     // Animation video cache (for Spine clip cached-vs-live color override)
     const AnimationVideoCache* m_animVideoCache{nullptr};
@@ -680,7 +682,8 @@ private:
 
     /// Load waveform peaks for all audio clips.
     void loadWaveforms();
-    void queueWaveformLoad(const std::string& path, int audioStreamOrdinal);
+    void queueWaveformLoad(const std::string& path, int audioStreamOrdinal,
+                           bool visible);
     void applyWaveformPeaks(uint64_t generation,
                             const std::string& key,
                             std::vector<float> peaks);
@@ -688,7 +691,7 @@ private:
     /// Load video thumbnails for all video clips (decode runs on a background
     /// thread; the resulting image is applied on the UI thread).
     void loadThumbnails();
-    void queueThumbnailLoad(const std::string& path);
+    void queueThumbnailLoad(const std::string& path, bool visible);
     void applyThumbnail(uint64_t generation, const std::string& path,
                         const QImage& image);
 

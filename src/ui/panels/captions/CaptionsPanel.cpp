@@ -5,6 +5,7 @@
 #include "panels/captions/CaptionsPanel.h"
 #include "Theme.h"
 #include "Constants.h"
+#include "NotificationCenter.h"
 
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -36,6 +37,15 @@
 #include <unordered_map>
 
 namespace rt {
+
+static void notifyCaptionInfo(QWidget* parent, const QString& message)
+{
+ if (auto* center = NotificationCenter::current()) {
+ center->postInfo(QObject::tr("Replace captions"), message);
+ return;
+ }
+ QMessageBox::information(parent, QObject::tr("Replace captions"), message);
+}
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
@@ -130,6 +140,7 @@ void CaptionsPanel::buildUI()
 
  m_addTrackBtn = new QPushButton("\xE2\x9E\x95 Add Captions to Timeline", this);
  m_addTrackBtn->setObjectName("addTrackBtn");
+ m_addTrackBtn->setProperty("buttonRole", "secondary");
  m_addTrackBtn->setFixedHeight(30);
  m_addTrackBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
  m_addTrackBtn->setToolTip("Create the Captions track at the top of the timeline");
@@ -137,6 +148,7 @@ void CaptionsPanel::buildUI()
 
  m_transcribeBtn = new QPushButton("\xF0\x9F\x8E\x99 Transcribe", this);
  m_transcribeBtn->setObjectName("transcribeBtn");
+ m_transcribeBtn->setProperty("buttonRole", "primary");
  m_transcribeBtn->setFixedHeight(30);
  m_transcribeBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
  m_transcribeBtn->setToolTip("Transcribe all spoken audio on the timeline into caption clips");
@@ -150,6 +162,7 @@ void CaptionsPanel::buildUI()
 
  m_clearAllBtn = new QPushButton("\xF0\x9F\x97\x91 Clear All", this);
  m_clearAllBtn->setObjectName("clearAllBtn");
+ m_clearAllBtn->setProperty("buttonRole", "danger");
  m_clearAllBtn->setFixedHeight(30);
  m_clearAllBtn->setToolTip("Remove all caption clips from the timeline");
  actionRow2->addWidget(m_clearAllBtn);
@@ -162,11 +175,13 @@ void CaptionsPanel::buildUI()
  actionRow2->addStretch();
 
  m_addBtn = new QPushButton("+", this);
+ m_addBtn->setProperty("buttonRole", "subtle");
  m_addBtn->setFixedSize(30, 30);
  m_addBtn->setToolTip("Add empty caption at playhead");
  actionRow2->addWidget(m_addBtn);
 
  m_deleteBtn = new QPushButton("\xE2\x9C\x95", this);
+ m_deleteBtn->setProperty("buttonRole", "danger");
  m_deleteBtn->setFixedSize(30, 30);
  m_deleteBtn->setToolTip("Delete selected caption");
  actionRow2->addWidget(m_deleteBtn);
@@ -1052,8 +1067,7 @@ void CaptionsPanel::onReplaceAll()
  if (captionTrackLocked()) return;
  const QString needle = m_filterEdit ? m_filterEdit->text() : QString();
  if (needle.trimmed().isEmpty()) {
- QMessageBox::information(this, "Replace All",
- "Type the text to find into the filter box first.");
+ notifyCaptionInfo(this, tr("Type the text to find into the filter box first."));
  return;
  }
  const QString replacement = m_replaceEdit ? m_replaceEdit->text() : QString();
@@ -1082,8 +1096,7 @@ void CaptionsPanel::onReplaceAll()
  }
  }
  if (changes->empty()) {
- QMessageBox::information(this, "Replace All",
- QString("No caption text contains \"%1\".").arg(needle));
+ notifyCaptionInfo(this, tr("No caption text contains \"%1\".").arg(needle));
  return;
  }
 
@@ -1375,9 +1388,9 @@ void CaptionsPanel::onTranscribe()
 
  std::vector<CaptionTranscribeSource> sources = findTranscriptionSources();
  if (sources.empty()) {
- QMessageBox::information(this, "Transcribe",
- "No audio found on the timeline to transcribe.\n"
- "Add an audio clip (or a video clip with audio) first.");
+ emit transcriptionFinished(false, false,
+ "No audio found on the timeline to transcribe. Add an audio clip "
+ "or a video clip with audio first.");
  return;
  }
 
@@ -1393,6 +1406,7 @@ void CaptionsPanel::onTranscribe()
  m_progressBar->setRange(0, 0);            // busy until the model is ready
  m_progressBar->setFormat("Loading model\xE2\x80\xA6");
  m_progressBar->setVisible(true);
+ emit transcriptionStarted();
 
  const uint64_t taskId = ++m_transcriptionTaskId;
  const uint64_t timelineRevision =
@@ -1411,6 +1425,7 @@ void CaptionsPanel::onTranscribe()
  m_progressBar->setValue(pct);
  }
  m_progressBar->setFormat(status);
+ emit transcriptionProgress(pct, status);
  }, Qt::QueuedConnection);
  };
 
@@ -1574,17 +1589,23 @@ void CaptionsPanel::onTranscribe()
  updateButtonStates();
  if (cancelled
  || timelineRevision != m_timelineRevision.load(std::memory_order_acquire)
- || captionTrackLocked()) return;
+ || captionTrackLocked()) {
+ emit transcriptionFinished(false, true, "Caption transcription cancelled");
+ return;
+ }
  if (!transcriptionError.isEmpty()) {
- QMessageBox::warning(this, "Transcribe", transcriptionError);
+ emit transcriptionFinished(false, false, transcriptionError);
  return;
  }
  if (deduped.empty()) {
- QMessageBox::warning(this, "Transcribe",
- "No speech was detected.");
+ emit transcriptionFinished(false, false, "No speech was detected.");
  return;
  }
+ const int captionCount = static_cast<int>(deduped.size());
  applyPreparedCues(deduped);
+ emit transcriptionFinished(true, false,
+ QString("Created %1 caption%2")
+ .arg(captionCount).arg(captionCount == 1 ? QString() : QStringLiteral("s")));
  }, Qt::QueuedConnection);
  });
 }

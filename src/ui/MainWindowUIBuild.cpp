@@ -8,6 +8,7 @@
  */
 
 #include "MainWindow.h"
+#include "NotificationCenter.h"
 #include "PathUtils.h"
 #include "ProjectController.h"
 #include "ShortcutManager.h"
@@ -48,6 +49,7 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/captions/CaptionsPanel.h"
 
 // Core
 #include "command/CommandStack.h"
@@ -80,6 +82,7 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QProgressBar>
+#include <QPointer>
 #include <QTemporaryDir>
 #include <QWindow>
 #include <QScreen>
@@ -824,6 +827,89 @@ void MainWindow::buildPanels()
             return m_timelineWorkspace->createExportRenderSession();
         });
     m_pageStack->addWidget(m_exportPanel);
+
+    // Feed long-running work into the application-wide activity center.
+    connect(m_exportPanel, &ExportPanel::exportStarted, this,
+            [this](uint32_t jobId) {
+        if (!m_notificationCenter || m_exportActivityTasks.contains(jobId)) return;
+        QPointer<ExportPanel> panel(m_exportPanel);
+        const auto taskId = m_notificationCenter->beginTask(
+            tr("Exporting video"), tr("Preparing export job %1").arg(jobId), 0,
+            [panel]() {
+                if (panel && panel->cancelButton()) panel->cancelButton()->click();
+            },
+            [panel]() {
+                if (panel && panel->startButton()) panel->startButton()->click();
+            });
+        m_exportActivityTasks.emplace(jobId, taskId);
+    });
+    connect(m_exportPanel, &ExportPanel::exportProgress, this,
+            [this](uint32_t jobId, float percent) {
+        if (!m_notificationCenter) return;
+        const auto found = m_exportActivityTasks.find(jobId);
+        if (found == m_exportActivityTasks.end()) return;
+        m_notificationCenter->updateTask(
+            found->second, static_cast<int>(std::lround(percent)),
+            tr("Rendering export job %1").arg(jobId));
+    });
+    connect(m_exportPanel, &ExportPanel::exportFinished, this,
+            [this](uint32_t jobId, bool success, const QString& message) {
+        if (!m_notificationCenter) return;
+        const auto found = m_exportActivityTasks.find(jobId);
+        if (found == m_exportActivityTasks.end()) {
+            if (success) m_notificationCenter->postSuccess(tr("Export complete"), message);
+            else m_notificationCenter->postError(tr("Export failed"), message);
+            return;
+        }
+        const auto taskId = found->second;
+        m_exportActivityTasks.erase(found);
+        const bool cancelled = message.contains(QStringLiteral("cancel"),
+                                                Qt::CaseInsensitive);
+        if (cancelled) {
+            m_notificationCenter->finishTask(taskId, false, {}, false);
+            m_notificationCenter->postInfo(tr("Export cancelled"), message);
+        } else {
+            m_notificationCenter->finishTask(taskId, success, message);
+        }
+    });
+
+    if (auto* captions = m_timelineWorkspace->captionsPanel()) {
+        connect(captions, &CaptionsPanel::transcriptionStarted, this,
+                [this, captions]() {
+            if (!m_notificationCenter) return;
+            QPointer<CaptionsPanel> panel(captions);
+            m_captionActivityTask = m_notificationCenter->beginTask(
+                tr("Transcribing captions"), tr("Loading speech model..."), -1,
+                [panel]() { if (panel) panel->requestTranscriptionCancel(); },
+                [panel]() {
+                    if (panel) QMetaObject::invokeMethod(
+                        panel, "onTranscribe", Qt::QueuedConnection);
+                });
+        });
+        connect(captions, &CaptionsPanel::transcriptionProgress, this,
+                [this](int percent, const QString& status) {
+            if (m_notificationCenter && m_captionActivityTask != 0)
+                m_notificationCenter->updateTask(m_captionActivityTask, percent, status);
+        });
+        connect(captions, &CaptionsPanel::transcriptionFinished, this,
+                [this](bool success, bool cancelled, const QString& message) {
+            if (!m_notificationCenter) return;
+            if (m_captionActivityTask != 0) {
+                const auto taskId = m_captionActivityTask;
+                m_captionActivityTask = 0;
+                if (cancelled) {
+                    m_notificationCenter->finishTask(taskId, false, {}, false);
+                    m_notificationCenter->postInfo(tr("Transcription cancelled"), message);
+                } else {
+                    m_notificationCenter->finishTask(taskId, success, message);
+                }
+            } else if (success) {
+                m_notificationCenter->postSuccess(tr("Captions ready"), message);
+            } else {
+                m_notificationCenter->postWarning(tr("Transcription"), message);
+            }
+        });
+    }
 
     // Suspend the Program Monitor's playback pipeline while the Export
     // panel is driving its own UI-thread preview render loop.  Without

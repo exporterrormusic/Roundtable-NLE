@@ -7,10 +7,12 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <cmath>
 #include <vector>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -26,6 +28,21 @@ extern "C" {
 #include "audio/WaveformCache.h"
 
 namespace rt {
+
+struct AudioEngineTestAccess
+{
+    static void setPlaying(AudioEngine& engine)
+    {
+        engine.m_state.store(TransportState::Playing);
+    }
+
+    static int process(AudioEngine& engine, float* output,
+                       unsigned long frameCount, unsigned long statusFlags = 0)
+    {
+        return engine.onAudioCallback(output, frameCount, statusFlags);
+    }
+};
+
 namespace {
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -461,6 +478,80 @@ TEST(AudioEngineTest, SetTrackSourcesWithProvider)
     engine.setTrackSources({src});
     EXPECT_TRUE(engine.hasTrackSources());
     engine.clearTrackSources();
+}
+
+TEST(AudioEngineTest, ChannelFillIsPreparedBeforeCallbackMixing)
+{
+    AudioEngine engine;
+    auto samples = std::make_shared<std::vector<float>>();
+    for (int i = 0; i < 32; ++i) {
+        samples->push_back(0.25f);
+        samples->push_back(0.75f);
+    }
+
+    AudioTrackSource src;
+    src.trackId = 3;
+    src.sampleBuffer = samples;
+    src.samples = samples->data();
+    src.totalFrames = 32;
+    src.channels = 2;
+    src.maintainPitch = false;
+    src.audioEffects.push_back(EffectType::FillLeftWithRight);
+    engine.setTrackSources({src});
+    AudioEngineTestAccess::setPlaying(engine);
+
+    std::vector<float> output(16 * 2);
+    AudioEngineTestAccess::process(engine, output.data(), 16);
+    for (size_t i = 0; i < output.size(); i += 2) {
+        EXPECT_FLOAT_EQ(output[i], 0.75f);
+        EXPECT_FLOAT_EQ(output[i + 1], 0.75f);
+    }
+
+    const auto stats = engine.callbackStats();
+    EXPECT_EQ(stats.callbackCount, 1u);
+    EXPECT_EQ(stats.outputUnderflows, 0u);
+    EXPECT_EQ(stats.outputOverflows, 0u);
+    engine.resetCallbackStats();
+    EXPECT_EQ(engine.callbackStats().callbackCount, 0u);
+}
+
+TEST(AudioEngineTest, SourceSnapshotsRemainValidDuringLivePublication)
+{
+    AudioEngine engine;
+    auto samples = std::make_shared<std::vector<float>>(20000, 0.5f);
+
+    AudioTrackSource src;
+    src.trackId = 4;
+    src.sampleBuffer = samples;
+    src.samples = samples->data();
+    src.totalFrames = static_cast<int64_t>(samples->size());
+    src.channels = 1;
+    src.maintainPitch = false;
+    engine.setTrackSources({src});
+    AudioEngineTestAccess::setPlaying(engine);
+
+    std::atomic<bool> start{false};
+    std::thread publisher([&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        for (int i = 0; i < 200; ++i) {
+            const float volume = (i % 2 == 0) ? 0.5f : 1.0f;
+            if (i % 10 == 0)
+                engine.setTrackSources({src});
+            else
+                engine.updateSourceLevels(4, volume, 0.0f, false);
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    std::vector<float> output(64 * 2);
+    for (int i = 0; i < 200; ++i)
+        AudioEngineTestAccess::process(engine, output.data(), 64);
+    publisher.join();
+
+    EXPECT_TRUE(engine.hasTrackSources());
+    EXPECT_EQ(engine.callbackStats().callbackCount, 200u);
 }
 
 TEST(AudioEngineTest, SyncClockAttach)

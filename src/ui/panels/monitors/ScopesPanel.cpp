@@ -16,6 +16,7 @@
 
 #include <QPainter>
 #include <QPainterPath>
+#include <QResizeEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace rt {
 
@@ -88,6 +90,7 @@ ScopesPanel::ScopesPanel(QWidget* parent)
     connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx) {
         m_mode = static_cast<ScopeMode>(idx);
+        updateWorkerConfiguration(m_mode, size());
         emit scopeModeChanged(idx);
         if (m_statusLabel)
             m_statusLabel->setText(m_modeCombo->currentText());
@@ -116,6 +119,7 @@ ScopesPanel::ScopesPanel(QWidget* parent)
     mainLayout->addWidget(statusBar);
 
     setMinimumSize(200, 160);
+    updateWorkerConfiguration(m_mode, size());
 
     // Connect the worker's output signal to the UI thread via QueuedConnection.
     // This is the core of the MLT pattern: heavy work on background thread,
@@ -136,10 +140,8 @@ ScopesPanel::~ScopesPanel()
 
 void ScopesPanel::setScopeMode(ScopeMode mode)
 {
-    if (mode == m_mode) return;
-    m_mode = mode;
+    if (mode < Waveform || mode >= ModeCount || mode == m_mode) return;
     m_modeCombo->setCurrentIndex(static_cast<int>(mode));
-    update();
 }
 
 QSize ScopesPanel::sizeHint() const { return {320, 260}; }
@@ -150,22 +152,29 @@ void ScopesPanel::feedFrame(const uint8_t* pixels, int width, int height)
 {
     if (!pixels || width <= 0 || height <= 0) return;
 
-    // Throttle: skip frames arriving faster than ~15fps
-    auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - m_lastFeedTime).count() < kMinFeedIntervalMs) {
-        return;
-    }
-    m_lastFeedTime = now;
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (pixelCount > std::numeric_limits<size_t>::max() / 4) return;
+    const size_t dataSize = pixelCount * 4;
 
-    // Copy pixel data to the pending buffer (lock held briefly)
-    const size_t dataSize = static_cast<size_t>(width) * height * 4;
+    // The throttle timestamp shares the worker lock because callers may feed
+    // frames concurrently. Capture the complete render request with the frame.
     {
         std::lock_guard lock(m_workerMtx);
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - m_lastFeedTime).count() < kMinFeedIntervalMs) {
+            return;
+        }
+        m_lastFeedTime = now;
+
         m_pendingPixels.resize(dataSize);
         std::memcpy(m_pendingPixels.data(), pixels, dataSize);
         m_pendingWidth  = width;
         m_pendingHeight = height;
+        m_pendingMode = m_requestedMode;
+        m_pendingRenderWidth = m_requestedRenderWidth;
+        m_pendingRenderHeight = m_requestedRenderHeight;
+        m_pendingRevision = m_configRevision;
         m_hasPending    = true;
     }
     m_workerCv.notify_one();
@@ -196,6 +205,9 @@ void ScopesPanel::workerLoop()
     // Local buffer to avoid holding the lock during analysis
     std::vector<uint8_t> localPixels;
     int localW = 0, localH = 0;
+    ScopeMode localMode = Waveform;
+    int localRenderW = 200, localRenderH = 160;
+    quint64 localRevision = 0;
 
     while (m_workerRunning.load()) {
         // Wait for new frame data
@@ -210,17 +222,18 @@ void ScopesPanel::workerLoop()
             localPixels.swap(m_pendingPixels);
             localW = m_pendingWidth;
             localH = m_pendingHeight;
+            localMode = m_pendingMode;
+            localRenderW = m_pendingRenderWidth;
+            localRenderH = m_pendingRenderHeight;
+            localRevision = m_pendingRevision;
             m_hasPending = false;
         }
 
         if (localPixels.empty() || localW <= 0 || localH <= 0)
             continue;
 
-        // Read the current mode (atomic-safe since ScopeMode is int-sized)
-        ScopeMode mode = m_mode;
-
         // ── Phase 1: Analyze pixels (O(w×h) — runs on worker thread) ────
-        switch (mode) {
+        switch (localMode) {
         case Waveform:    analyzeWaveform(localPixels.data(), localW, localH);    break;
         case Vectorscope: analyzeVectorscope(localPixels.data(), localW, localH); break;
         case Histogram:   analyzeHistogram(localPixels.data(), localW, localH);   break;
@@ -231,11 +244,11 @@ void ScopesPanel::workerLoop()
         // This replaces the per-pixel QPainter::drawPoint() calls that were
         // taking 10-20ms on the UI thread.  We render to a QImage here on
         // the worker thread, then the UI thread's paintEvent() just blits it.
-        const int imgW = std::max(200, std::min(width(), 1024));
-        const int imgH = std::max(160, std::min(height(), 800));
+        const int imgW = std::clamp(localRenderW, 200, 1024);
+        const int imgH = std::clamp(localRenderH, 160, 800);
 
         QImage scopeImg;
-        switch (mode) {
+        switch (localMode) {
         case Waveform:    scopeImg = renderWaveform(imgW, imgH);    break;
         case Vectorscope: scopeImg = renderVectorscope(imgW, imgH); break;
         case Histogram:   scopeImg = renderHistogram(imgW, imgH);   break;
@@ -244,7 +257,7 @@ void ScopesPanel::workerLoop()
 
         if (!scopeImg.isNull()) {
             // Deliver to UI thread via QueuedConnection (< 0.1ms)
-            emit scopeImageReady(std::move(scopeImg));
+            emit scopeImageReady(std::move(scopeImg), localRevision);
         }
     }
 
@@ -253,10 +266,34 @@ void ScopesPanel::workerLoop()
 
 // ─── UI thread: receive pre-rendered image ───────────────────────────────────
 
-void ScopesPanel::onScopeImageReady(QImage image)
+void ScopesPanel::onScopeImageReady(QImage image, quint64 revision)
 {
+    {
+        std::lock_guard lock(m_workerMtx);
+        if (revision != m_configRevision)
+            return;
+    }
     m_renderedScope = std::move(image);
     update(); // schedule repaint — paintEvent will just blit
+}
+
+void ScopesPanel::updateWorkerConfiguration(ScopeMode mode, const QSize& renderSize)
+{
+    const int renderWidth = std::max(1, renderSize.width());
+    const int renderHeight = std::max(1, renderSize.height());
+
+    std::lock_guard lock(m_workerMtx);
+    if (m_requestedMode == mode
+        && m_requestedRenderWidth == renderWidth
+        && m_requestedRenderHeight == renderHeight) {
+        return;
+    }
+
+    m_requestedMode = mode;
+    m_requestedRenderWidth = renderWidth;
+    m_requestedRenderHeight = renderHeight;
+    ++m_configRevision;
+    m_renderedScope = {};
 }
 
 // ─── paintEvent (UI thread — just blits the pre-rendered image, < 1ms) ──────
@@ -288,6 +325,12 @@ void ScopesPanel::paintEvent(QPaintEvent* event)
     p.drawImage(area, m_renderedScope);
 
     --s_paintDepth;
+}
+
+void ScopesPanel::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    updateWorkerConfiguration(m_mode, event->size());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

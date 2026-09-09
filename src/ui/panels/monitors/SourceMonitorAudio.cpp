@@ -5,6 +5,7 @@
 
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/WaveformDisplayWidget.h"
+#include "MediaTaskQueue.h"
 
 #include "Theme.h"
 #include "cache/FrameCache.h"
@@ -49,7 +50,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
 
 namespace rt {
 
@@ -57,6 +57,22 @@ namespace {
 constexpr int64_t kSourceScrubPreRollFrames  = 4096;
 constexpr int64_t kSourceScrubPostRollFrames = 8192;
 constexpr int64_t kSourceScrubMinFrames      = 4096;
+
+struct SourceWaveformResult {
+    std::vector<float> peaks;
+    uint16_t channels{1};
+};
+
+struct SourceAudioResult {
+    std::vector<float> samples;
+    uint16_t channels{1};
+};
+
+std::string sourceTaskPath(const std::filesystem::path& path)
+{
+    const auto generic = path.lexically_normal().generic_u8string();
+    return std::string(reinterpret_cast<const char*>(generic.data()), generic.size());
+}
 
 bool loadResampledAudioFile(const std::filesystem::path& filePath,
                             std::vector<float>& samples,
@@ -93,42 +109,49 @@ void SourceMonitor::loadWaveformAsync()
         : m_pool->getPath(m_mediaHandle);
     if (filePath.empty()) return;
 
-    auto pathStr = filePath;
+    const auto pathStr = filePath;
     QPointer<SourceMonitor> self(this);
     QPointer<WaveformDisplayWidget> widget(m_waveformWidget);
-    bool audioOnly = m_audioOnly;
+    const bool audioOnly = m_audioOnly;
     const uint64_t generation = m_waveformLoadGeneration;
 
-    // Load on a background thread and stream a peak envelope so opening a
-    // source clip does not require a full decoded playback buffer.
-    std::thread([self, widget, pathStr, audioOnly, generation]() {
-        AudioFile file;
-        if (!file.open(pathStr)) return;
+    const std::string taskKey = "waveform:48000:256:" +
+        sourceTaskPath(pathStr) + "|-1";
+    MediaTaskQueue::instance().submit<SourceWaveformResult>(
+        m_waveformTaskOwner, taskKey, MediaTaskQueue::Priority::Interactive,
+        [pathStr](std::stop_token stop) {
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<SourceWaveformResult>::failure("canceled");
 
-        const auto& info = file.info();
-        uint16_t ch = info.channels;
-        if (ch == 0) ch = 1;
-        constexpr int kPeakWindow = 256;
-        std::vector<float> peaks;
-        if (file.buildPeakEnvelopeResampled(48000, kPeakWindow, peaks) == 0 ||
-            peaks.empty()) {
-            return;
-        }
+            AudioFile file;
+            if (!file.open(pathStr))
+                return MediaTaskQueue::Result<SourceWaveformResult>::failure(
+                    "could not open source-monitor audio");
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<SourceWaveformResult>::failure("canceled");
 
-        // Deliver to main thread
-        if (!self || !widget) {
-            return;
-        }
-
-        QMetaObject::invokeMethod(self, [self, widget, ch, audioOnly, generation,
-                                         peaks = std::move(peaks)]() mutable {
-            if (!self || !widget || self->m_waveformLoadGeneration != generation) {
-                return;
+            SourceWaveformResult output;
+            output.channels = std::max<uint16_t>(1, file.info().channels);
+            constexpr int kPeakWindow = 256;
+            if (file.buildPeakEnvelopeResampled(48000, kPeakWindow, output.peaks) == 0 ||
+                output.peaks.empty()) {
+                return MediaTaskQueue::Result<SourceWaveformResult>::failure(
+                    "source-monitor audio produced no waveform peaks");
             }
-            if (audioOnly)
-                widget->setPeaks(std::move(const_cast<std::vector<float>&>(peaks)), ch);
-        }, Qt::QueuedConnection);
-    }).detach();
+            return MediaTaskQueue::Result<SourceWaveformResult>::success(std::move(output));
+        },
+        [self, widget, audioOnly, generation](
+            MediaTaskQueue::Result<SourceWaveformResult> result) mutable {
+            if (!self || !widget || !result.succeeded()) return;
+            QMetaObject::invokeMethod(self, [self, widget, audioOnly, generation,
+                                             result = std::move(result)]() mutable {
+                if (!self || !widget ||
+                    self->m_waveformLoadGeneration != generation) return;
+                if (audioOnly)
+                    widget->setPeaks(result.value->peaks,
+                                     result.value->channels);
+            }, Qt::QueuedConnection);
+        });
 }
 
 bool SourceMonitor::ensureSourceAudioLoaded()
@@ -162,37 +185,49 @@ void SourceMonitor::requestSourceAudioLoadAsync()
     const uint64_t generation = m_audioLoadGeneration;
     QPointer<SourceMonitor> self(this);
 
-    std::thread([self, generation, filePath]() {
-        std::vector<float> samples;
-        uint16_t channels = 0;
-        const bool ok = loadResampledAudioFile(filePath, samples, channels);
+    const std::string taskKey = "audio:48000:all:" +
+        sourceTaskPath(filePath) + "|-1";
+    const bool accepted = MediaTaskQueue::instance().submit<SourceAudioResult>(
+        m_audioTaskOwner, taskKey, MediaTaskQueue::Priority::Interactive,
+        [filePath](std::stop_token stop) {
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<SourceAudioResult>::failure("canceled");
 
-        if (!self) {
-            return;
-        }
+            SourceAudioResult output;
+            if (!loadResampledAudioFile(filePath, output.samples, output.channels))
+                return MediaTaskQueue::Result<SourceAudioResult>::failure(
+                    "could not decode source-monitor audio");
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<SourceAudioResult>::failure("canceled");
+            return MediaTaskQueue::Result<SourceAudioResult>::success(std::move(output));
+        },
+        [self, generation](MediaTaskQueue::Result<SourceAudioResult> result) mutable {
+            if (!self) return;
+            QMetaObject::invokeMethod(self, [self, generation,
+                                             result = std::move(result)]() mutable {
+                if (!self || self->m_audioLoadGeneration != generation) {
+                    return;
+                }
 
-        QMetaObject::invokeMethod(self, [self, generation, ok, channels,
-                                         samples = std::move(samples)]() mutable {
-            if (!self || self->m_audioLoadGeneration != generation) {
-                return;
-            }
+                self->m_audioLoadInFlight = false;
+                if (!result.succeeded() || result.value->samples.empty() ||
+                    result.value->channels == 0) {
+                    self->m_audioLoadFailed = true;
+                    return;
+                }
 
-            self->m_audioLoadInFlight = false;
-            if (!ok || samples.empty() || channels == 0) {
-                self->m_audioLoadFailed = true;
-                return;
-            }
+                self->m_audioSamples = std::make_shared<std::vector<float>>(
+                    result.value->samples);
+                self->m_audioChannels = result.value->channels;
+                self->m_audioLoadFailed = false;
 
-            self->m_audioSamples = std::make_shared<std::vector<float>>(std::move(samples));
-            self->m_audioChannels = channels;
-            self->m_audioLoadFailed = false;
-
-            if (self->m_controller && self->m_controller->isPlaying() &&
-                self->m_audioEngine && !self->m_sourceAudioActive) {
-                self->startSourceAudio();
-            }
-        }, Qt::QueuedConnection);
-    }).detach();
+                if (self->m_controller && self->m_controller->isPlaying() &&
+                    self->m_audioEngine && !self->m_sourceAudioActive) {
+                    self->startSourceAudio();
+                }
+            }, Qt::QueuedConnection);
+        });
+    if (!accepted) m_audioLoadInFlight = false;
 }
 
 bool SourceMonitor::ensureScrubAudioLoaded(int64_t frame, int64_t durationFrames)

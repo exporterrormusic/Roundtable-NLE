@@ -294,6 +294,7 @@ private:
     /// header fields in sync with each other.
     void syncOutputPathFromParts();
     void syncPartsFromOutputPath();
+    void notifyExportProblem(const QString& message) const;
     /// Enable the "Export with alpha" checkbox only for alpha-capable targets
     /// (ProRes 4444 / 4444 XQ, or Image Sequence/PNG); uncheck it otherwise.
     void updateAlphaAvailability();

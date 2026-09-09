@@ -67,12 +67,15 @@ void KeyboardShortcutsDialog::buildUI()
     auto* btnLayout = new QHBoxLayout();
     m_resetBtn = new QPushButton("Reset Selected", this);
     m_resetAllBtn = new QPushButton("Reset All", this);
+    m_resetBtn->setProperty("buttonRole", "secondary");
+    m_resetAllBtn->setProperty("buttonRole", "danger");
     connect(m_resetBtn, &QPushButton::clicked, this, &KeyboardShortcutsDialog::resetSelected);
     connect(m_resetAllBtn, &QPushButton::clicked, this, &KeyboardShortcutsDialog::resetAll);
     btnLayout->addWidget(m_resetBtn);
     btnLayout->addWidget(m_resetAllBtn);
 
     auto* importBtn = new QPushButton("Import...", this);
+    importBtn->setProperty("buttonRole", "secondary");
     importBtn->setToolTip("Import shortcut presets from a JSON file");
     connect(importBtn, &QPushButton::clicked, this, [this]() {
         auto settings = rt::appSettings();
@@ -101,6 +104,7 @@ void KeyboardShortcutsDialog::buildUI()
     btnLayout->addWidget(importBtn);
 
     auto* exportBtn = new QPushButton("Export...", this);
+    exportBtn->setProperty("buttonRole", "secondary");
     exportBtn->setToolTip("Export current shortcuts to a JSON file");
     connect(exportBtn, &QPushButton::clicked, this, [this]() {
         QString path = QFileDialog::getSaveFileName(

@@ -7,6 +7,7 @@
 
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/WaveformDisplayWidget.h"
+#include "MediaTaskQueue.h"
 
 #include "Theme.h"
 #include "cache/FrameCache.h"
@@ -147,8 +148,6 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
     // anything — and on the first press startSourceAudio bailed without
     // actually playing.
     m_audioSamples.reset();
-    if (m_audioEngine && !m_audioOnly && info && info->audioStreamIndex >= 0)
-        requestSourceAudioLoadAsync();
     m_audioChannels = 0;
     m_audioLoadFailed = false;
     m_audioLoadInFlight = false;
@@ -157,6 +156,8 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
     m_scrubAudioChannels = 0;
     m_scrubAudioStartFrame = 0;
     ++m_waveformLoadGeneration;
+    if (m_audioEngine && !m_audioOnly && info && info->audioStreamIndex >= 0)
+        requestSourceAudioLoadAsync();
     if (m_audioOnly) {
         loadWaveformAsync();
     }
@@ -289,6 +290,10 @@ void SourceMonitor::loadSpineClip(SpineClip* spineClip, CompositeService* compos
 void SourceMonitor::clearClip()
 {
     m_pollTimer->stop();
+
+    auto& mediaTasks = MediaTaskQueue::instance();
+    mediaTasks.cancelOwner(m_audioTaskOwner);
+    mediaTasks.cancelOwner(m_waveformTaskOwner);
 
     // Stop audio before stopping the controller (stopSourceAudio
     // restores the timeline's sync clock ownership of the AudioEngine).

@@ -48,8 +48,10 @@ RelinkMediaDialog::RelinkMediaDialog(AssetDatabase* assetDb,
 
     auto* buttonRow = new QHBoxLayout;
     m_relinkBtn = new QPushButton(tr("Locate..."), this);
+    m_relinkBtn->setProperty("buttonRole", "primary");
     m_relinkBtn->setToolTip(tr("Browse for the selected file"));
     m_relinkAllBtn = new QPushButton(tr("Relink All..."), this);
+    m_relinkAllBtn->setProperty("buttonRole", "secondary");
     m_relinkAllBtn->setToolTip(tr("Search a folder for all offline files by name"));
     buttonRow->addWidget(m_relinkBtn);
     buttonRow->addWidget(m_relinkAllBtn);

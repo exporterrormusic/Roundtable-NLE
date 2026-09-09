@@ -423,6 +423,7 @@ void PropertiesPanel::setupCaptionSection(QWidget* container)
     form->addRow("Preset:", m_capPresetCombo);
 
     m_capSavePresetBtn = new QPushButton(tr("Save Preset\xE2\x80\xA6"), m_captionSection);
+    m_capSavePresetBtn->setProperty("buttonRole", "secondary");
     m_capSavePresetBtn->setToolTip(tr("Save the current appearance as a reusable text preset"));
     connect(m_capSavePresetBtn, &QPushButton::clicked,
             this, &PropertiesPanel::saveTextPresetAs);

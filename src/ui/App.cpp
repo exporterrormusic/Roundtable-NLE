@@ -38,6 +38,7 @@
 #include "CrashHandler.h"
 
 #include "QtHelpers.h"
+#include "MediaTaskQueue.h"
 
 #include "Settings.h"
 #include <QCheckBox>
@@ -151,6 +152,7 @@ App::~App()
     // join would happen as a side-effect of ProgramMonitor's
     // destructor late in Phase 3.
     sm.advanceTo(ShutdownPhase::Phase1_StopThreads);
+    MediaTaskQueue::instance().shutdown();
     if (m_mainWindow) {
         // Export owns an isolated CompositeService but borrows MediaPool,
         // model, and GPU dependencies. Join its worker and destroy that

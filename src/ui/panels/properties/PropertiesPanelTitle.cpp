@@ -219,6 +219,7 @@ void PropertiesPanel::setupTitleSection(QWidget* container)
     form->addRow("Preset:", m_titlePresetCombo);
 
     m_titleSavePresetBtn = new QPushButton(tr("Save Preset\xE2\x80\xA6"), m_titleSection);
+    m_titleSavePresetBtn->setProperty("buttonRole", "secondary");
     m_titleSavePresetBtn->setToolTip(tr("Save the current appearance as a reusable text preset"));
     connect(m_titleSavePresetBtn, &QPushButton::clicked,
             this, &PropertiesPanel::saveTextPresetAs);

@@ -140,6 +140,8 @@ add_roundtable_test(test_rgba16f_pack  LIBS roundtable_export roundtable_core GR
 
 # UI tests (Qt required)
 add_roundtable_test(test_monitors        LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_media_task_queue LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_notification_center LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_project_bin     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_properties      LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_shot_composer   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
