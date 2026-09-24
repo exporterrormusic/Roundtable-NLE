@@ -46,7 +46,11 @@ static AppGuard s_guard;
 class TempDir {
 public:
     TempDir() {
-        m_path = std::filesystem::temp_directory_path() / "rt_test_presets";
+        // Per-process folder: ctest runs each test as its own process, and a
+        // shared folder lets parallel runs wipe each other's presets.
+        m_path = std::filesystem::temp_directory_path() /
+                 ("rt_test_presets_" +
+                  std::to_string(QCoreApplication::applicationPid()));
         std::filesystem::create_directories(m_path);
     }
     ~TempDir() {
@@ -536,7 +540,8 @@ TEST_F(ShotPresetSerializationTest, ShowNamespaceUnique)
 {
     // The same name in two shows are distinct shots (per-show namespace).
     namespace fs = std::filesystem;
-    fs::path dir = fs::temp_directory_path() / "rt_show_ns_test";
+    fs::path dir = fs::temp_directory_path() /
+        ("rt_show_ns_test_" + std::to_string(QCoreApplication::applicationPid()));
     fs::remove_all(dir);
     fs::create_directories(dir);
 
@@ -1037,7 +1042,11 @@ TEST_F(ShotComposerUITest, EditCharacterProperties)
 
 TEST_F(ShotComposerUITest, CharacterGroupFilterIsDropdown)
 {
-    auto* combo = m_panel->findChild<QComboBox*>("CharacterGroupFilter");
+    // The filter column is built standalone and reparented into
+    // CharacterShotPanel, so it is not a child of the composer itself.
+    ASSERT_NE(m_panel->charFilterColumn(), nullptr);
+    auto* combo = m_panel->charFilterColumn()->findChild<QComboBox*>(
+        "CharacterGroupFilter");
     ASSERT_NE(combo, nullptr);
     ASSERT_EQ(combo->count(), 4);
     EXPECT_EQ(combo->itemText(0), "ALL");

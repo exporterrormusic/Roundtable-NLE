@@ -45,6 +45,17 @@
 #include <algorithm>
 #include <memory>
 
+// Panels only edit a clip that is bound together with its owning, unlocked
+// track (rt::canMutateClip), so edit tests put the clip on a real track.
+template <class ClipT>
+static ClipT& addToTrack(rt::Track& track)
+{
+    auto owned = std::make_unique<ClipT>();
+    ClipT& ref = *owned;
+    track.addClip(std::move(owned));
+    return ref;
+}
+
 TEST(GraphicsEditorPanel, TextRowsAreMultilineAndFontFamilyIsSearchable)
 {
     rt::GraphicClip clip;
@@ -479,13 +490,14 @@ TEST(PropertiesPanel, OverlappingSyncedShotInstancesRemainIndependent)
 
 TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
 {
-    rt::GraphicClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::GraphicClip>(track);
     clip.setDuration(48000);
     auto* layer = clip.addTextLayer("appearance");
     ASSERT_NE(layer, nullptr);
 
     rt::GraphicsEditorPanel panel;
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     auto* shadow = panel.findChild<QCheckBox*>(
         QStringLiteral("graphicsShadowCheck"));
@@ -510,21 +522,30 @@ TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
     EXPECT_TRUE(layer->backgroundEnabled());
     EXPECT_GT(layer->backgroundPadding(), 0.0f);
     EXPECT_GT((layer->backgroundColor() >> 24) & 0xFFu, 0u);
-    ASSERT_FALSE(layer->styleRuns().empty());
-    EXPECT_TRUE(layer->styleRuns().front().appearance.strokeEnabled);
-    EXPECT_TRUE(layer->styleRuns().front().appearance.backgroundEnabled);
-    EXPECT_FALSE(layer->styleRuns().front().appearance.shadowEnabled);
+    // Whole-layer edits land on the layer appearance; style runs exist only
+    // for character-range overrides, and the renderer falls back to the
+    // layer appearance for unstyled text (ClipRenderers resolved fallback).
+    const auto& app = layer->appearance();
+    ASSERT_FALSE(app.strokes.empty());
+    EXPECT_TRUE(app.strokes.front().enabled);
+    EXPECT_TRUE(app.shadows.empty() || !app.shadows.front().enabled);
+    for (const auto& run : layer->styleRuns()) {
+        EXPECT_TRUE(run.appearance.strokeEnabled);
+        EXPECT_TRUE(run.appearance.backgroundEnabled);
+        EXPECT_FALSE(run.appearance.shadowEnabled);
+    }
 }
 
 TEST(GraphicsEditorPanel, TextLayerEyeTogglesRenderedVisibility)
 {
-    rt::GraphicClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::GraphicClip>(track);
     clip.setDuration(48000);
     auto* layer = clip.addTextLayer("toggle me");
     ASSERT_NE(layer, nullptr);
 
     rt::GraphicsEditorPanel panel;
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     auto* eye = panel.findChild<QToolButton*>(
         QStringLiteral("graphicsLayerVisibilityButton"));
     ASSERT_NE(eye, nullptr);
@@ -541,13 +562,14 @@ TEST(GraphicsEditorPanel, TextLayerEyeTogglesRenderedVisibility)
 
 TEST(GraphicsEditorPanel, StaticTextEditsDoNotCreateHiddenKeyframes)
 {
-    rt::GraphicClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::GraphicClip>(track);
     clip.setDuration(48000);
     auto* layer = clip.addTextLayer("static");
     ASSERT_NE(layer, nullptr);
 
     rt::GraphicsEditorPanel panel;
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     auto* tracking = panel.findChild<rt::ScrubbySpinBox*>(
         QStringLiteral("graphicsTrackingSpin"));
     auto* positionX = panel.findChild<rt::ScrubbySpinBox*>(
@@ -768,10 +790,11 @@ TEST(PropertiesPanel, BindSpineClip)
 TEST(PropertiesPanel, SpinePropertyChanges)
 {
     rt::PropertiesPanel panel;
-    rt::SpineClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::SpineClip>(track);
     clip.setCharacterName("Crown");
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     QSignalSpy spy(&panel, &rt::PropertiesPanel::propertyChanged);
 
     // Change character name via the combo box
@@ -822,10 +845,11 @@ TEST(PropertiesPanel, BindVideoClip)
 TEST(PropertiesPanel, VideoVolumeChange)
 {
     rt::PropertiesPanel panel;
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
     clip.setVolume(1.0f);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     QSignalSpy spy(&panel, &rt::PropertiesPanel::propertyChanged);
 
     panel.volumeSpin()->setValue(0.5);
@@ -859,11 +883,12 @@ TEST(PropertiesPanel, BindAudioClip)
 TEST(PropertiesPanel, AudioFadeChanges)
 {
     rt::PropertiesPanel panel;
-    rt::AudioClip clip;
+    rt::Track track(rt::TrackType::Audio, "T1");
+    auto& clip = addToTrack<rt::AudioClip>(track);
     clip.setFadeInDuration(0);
     clip.setFadeOutDuration(0);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.fadeInSpin()->setValue(2400);
     panel.fadeInSpin()->editingFinished();
@@ -1040,10 +1065,11 @@ TEST(PropertiesPanel, BindTitleClip)
 TEST(PropertiesPanel, TitleTextChange)
 {
     rt::PropertiesPanel panel;
-    rt::TitleClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::TitleClip>(track);
     clip.setText("Old Text");
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     QSignalSpy spy(&panel, &rt::PropertiesPanel::propertyChanged);
 
     panel.textEdit()->setText("New Text");
@@ -1056,9 +1082,10 @@ TEST(PropertiesPanel, TitleTextChange)
 TEST(PropertiesPanel, TitleFontChange)
 {
     rt::PropertiesPanel panel;
-    rt::TitleClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::TitleClip>(track);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.fontFamilyEdit()->setText("Comic Sans MS");
     panel.fontFamilyEdit()->editingFinished();
@@ -1072,11 +1099,12 @@ TEST(PropertiesPanel, TitleFontChange)
 TEST(PropertiesPanel, TitleBoldItalicChange)
 {
     rt::PropertiesPanel panel;
-    rt::TitleClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::TitleClip>(track);
     clip.setBold(false);
     clip.setItalic(false);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.boldCheck()->setChecked(true);
     EXPECT_TRUE(clip.isBold());
@@ -1088,10 +1116,11 @@ TEST(PropertiesPanel, TitleBoldItalicChange)
 TEST(PropertiesPanel, TitleAlignChange)
 {
     rt::PropertiesPanel panel;
-    rt::TitleClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::TitleClip>(track);
     clip.setAlignment(rt::TextAlign::Left);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.alignCombo()->setCurrentIndex(1); // Center
     EXPECT_EQ(clip.alignment(), rt::TextAlign::Center);
@@ -1107,10 +1136,11 @@ TEST(PropertiesPanel, TitleAlignChange)
 TEST(PropertiesPanel, LabelChange)
 {
     rt::PropertiesPanel panel;
-    rt::SpineClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::SpineClip>(track);
     clip.setLabel("Original");
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     QSignalSpy spy(&panel, &rt::PropertiesPanel::propertyChanged);
 
     panel.labelEdit()->setText("Renamed");
@@ -1123,10 +1153,11 @@ TEST(PropertiesPanel, LabelChange)
 TEST(PropertiesPanel, EnabledChange)
 {
     rt::PropertiesPanel panel;
-    rt::SpineClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::SpineClip>(track);
     clip.setEnabled(true);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.enabledCheck()->setChecked(false);
     EXPECT_FALSE(clip.isEnabled());
@@ -1138,10 +1169,11 @@ TEST(PropertiesPanel, EnabledChange)
 TEST(PropertiesPanel, SpeedChange)
 {
     rt::PropertiesPanel panel;
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
     clip.setSpeed(1.0);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     panel.speedSpin()->setValue(250.0);
     panel.speedSpin()->editingFinished();
@@ -1152,9 +1184,10 @@ TEST(PropertiesPanel, SpeedChange)
 TEST(PropertiesPanel, TransformChange)
 {
     rt::PropertiesPanel panel;
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
 
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     auto scrubCommit = [](rt::ScrubbySpinBox* spin,
                           double oldValue, double newValue) {
@@ -1183,10 +1216,11 @@ TEST(PropertiesPanel, FlipThenScaleUndoIsSeparate)
 {
     rt::CommandStack stack;
     rt::PropertiesPanel panel;
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
 
     panel.setCommandStack(&stack);
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
 
     // 1) Flip horizontal via the checkbox.
     panel.flipHCheck()->setChecked(true);
@@ -1689,7 +1723,8 @@ TEST(EffectControlsPanel, InPlaceCreatedPenMaskAppearsAndCanBeSelected)
 
 TEST(EffectControlsPanel, DeleteOnSelectedClipMaskHeaderIsUndoable)
 {
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
     rt::OpacityMask mask;
     mask.name = "Clip Mask";
     clip.addMask(mask);
@@ -1700,7 +1735,7 @@ TEST(EffectControlsPanel, DeleteOnSelectedClipMaskHeaderIsUndoable)
     rt::EffectControlsPanel panel(&workspace);
     panel.setCommandStack(&stack);
     panel.resize(900, 600);
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     workspace.resize(900, 600);
     workspace.show();
     panel.show();
@@ -1722,7 +1757,11 @@ TEST(EffectControlsPanel, DeleteOnSelectedClipMaskHeaderIsUndoable)
     ASSERT_NE(titleLabel, nullptr);
     const QPoint titleCenterGlobal =
         titleLabel->mapToGlobal(titleLabel->rect().center());
-    QWidget* labelHitTarget = QApplication::widgetAt(titleCenterGlobal);
+    // Resolve the hit through the header itself (childAt skips mouse-
+    // transparent children) rather than QApplication::widgetAt, which
+    // depends on which windows happen to cover that screen point.
+    QWidget* labelHitTarget = header->childAt(header->mapFromGlobal(titleCenterGlobal));
+    if (!labelHitTarget) labelHitTarget = header;
     ASSERT_EQ(labelHitTarget, header);
     QTest::mouseClick(labelHitTarget, Qt::LeftButton, Qt::NoModifier,
                       labelHitTarget->mapFromGlobal(titleCenterGlobal));
@@ -1745,7 +1784,8 @@ TEST(EffectControlsPanel, DeleteOnSelectedClipMaskHeaderIsUndoable)
 
 TEST(EffectControlsPanel, DeleteOnSelectedEffectMaskRowKeepsEffect)
 {
-    rt::VideoClip clip;
+    rt::Track track(rt::TrackType::Video, "T1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
     auto blur = std::make_unique<rt::Blur>();
     rt::OpacityMask mask;
     mask.name = "Effect Mask";
@@ -1758,7 +1798,7 @@ TEST(EffectControlsPanel, DeleteOnSelectedEffectMaskRowKeepsEffect)
     rt::EffectControlsPanel panel;
     panel.setCommandStack(&stack);
     panel.resize(900, 600);
-    panel.setClip(&clip);
+    panel.setClip(&clip, &track);
     panel.show();
     QApplication::processEvents();
 
@@ -1778,7 +1818,9 @@ TEST(EffectControlsPanel, DeleteOnSelectedEffectMaskRowKeepsEffect)
     ASSERT_NE(pathLabel, nullptr);
     const QPoint pathCenterGlobal =
         pathLabel->mapToGlobal(pathLabel->rect().center());
-    QWidget* labelHitTarget = QApplication::widgetAt(pathCenterGlobal);
+    // See DeleteOnSelectedClipMaskHeaderIsUndoable: hit-test via the row.
+    QWidget* labelHitTarget = maskRow->childAt(maskRow->mapFromGlobal(pathCenterGlobal));
+    if (!labelHitTarget) labelHitTarget = maskRow;
     ASSERT_EQ(labelHitTarget, maskRow);
     QTest::mouseClick(labelHitTarget, Qt::LeftButton, Qt::NoModifier,
                       labelHitTarget->mapFromGlobal(pathCenterGlobal));

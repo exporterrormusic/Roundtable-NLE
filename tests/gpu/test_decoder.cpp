@@ -721,8 +721,15 @@ class DiskFrameCacheTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        // Use a temp directory per test
-        m_cacheDir = std::filesystem::temp_directory_path() / "rt_disk_cache_test";
+        // Use a temp directory per test process: ctest runs each test as its
+        // own process, and a shared folder lets parallel runs wipe each other.
+#ifdef _WIN32
+        const auto pid = static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+        const auto pid = static_cast<unsigned long>(::getpid());
+#endif
+        m_cacheDir = std::filesystem::temp_directory_path() /
+                     ("rt_disk_cache_test_" + std::to_string(pid));
         std::error_code ec;
         std::filesystem::remove_all(m_cacheDir, ec);
         std::filesystem::create_directories(m_cacheDir, ec);

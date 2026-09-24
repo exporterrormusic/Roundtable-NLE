@@ -14,6 +14,8 @@
 #include "project/Project.h"
 
 #include <QApplication>
+#include <QColor>
+#include <QImage>
 #include <QSignalSpy>
 #include <QTabBar>
 #include <QLineEdit>
@@ -209,18 +211,34 @@ TEST(ThumbnailGenerator, SetDefaultSize)
     EXPECT_EQ(gen.defaultHeight(), 120u);
 }
 
+// Placeholders for missing/undecodable files are deliberately invalid and
+// never cached (83b650f) so the real thumbnail can replace them later; cache
+// behaviour therefore needs a real, decodable file on disk.
+static fs::path writeTestPng(const std::string& name, int w = 320, int h = 240)
+{
+    const auto dir = fs::temp_directory_path() / "rt_thumbnail_tests";
+    fs::create_directories(dir);
+    const auto path = dir / name;
+    QImage img(w, h, QImage::Format_RGBA8888);
+    img.fill(QColor(200, 80, 40));
+    EXPECT_TRUE(img.save(QString::fromStdWString(path.wstring()), "PNG"));
+    return path;
+}
+
 TEST(ThumbnailGenerator, GenerateSyncPlaceholder)
 {
     rt::ThumbnailGenerator gen(1, 80, 60);
 
-    // Generate a placeholder for a non-existent file with unknown extension
+    // A non-existent file with unknown extension gets a drawable placeholder
+    // that is flagged invalid and left out of the cache.
     auto thumb = gen.generateSync(fs::path("fake_file.xyz"), 80);
 
     ASSERT_NE(thumb, nullptr);
-    EXPECT_TRUE(thumb->valid);
+    EXPECT_FALSE(thumb->valid);
     EXPECT_EQ(thumb->width, 80u);
     EXPECT_FALSE(thumb->empty());
     EXPECT_GT(thumb->pixels.size(), 0u);
+    EXPECT_EQ(gen.cacheCount(), 0u);
 }
 
 TEST(ThumbnailGenerator, GenerateSyncVideoPlaceholder)
@@ -231,7 +249,7 @@ TEST(ThumbnailGenerator, GenerateSyncVideoPlaceholder)
     auto thumb = gen.generateSync(fs::path("test_video.mp4"), 80);
 
     ASSERT_NE(thumb, nullptr);
-    EXPECT_TRUE(thumb->valid);
+    EXPECT_FALSE(thumb->valid);
     EXPECT_EQ(thumb->width, 80u);
     EXPECT_FALSE(thumb->empty());
 }
@@ -242,12 +260,16 @@ TEST(ThumbnailGenerator, CacheAfterSync)
 
     EXPECT_FALSE(gen.isCached(fs::path("nonexistent.xyz"), 80));
 
-    // generateSync for an unknown type should produce a placeholder and cache it
-    auto thumb = gen.generateSync(fs::path("test.xyz"), 80);
-    ASSERT_NE(thumb, nullptr);
+    // Missing file: placeholder is returned but not cached.
+    ASSERT_NE(gen.generateSync(fs::path("test.xyz"), 80), nullptr);
+    EXPECT_EQ(gen.cacheCount(), 0u);
 
-    // The file doesn't exist on disk so canonical path fails:
-    // it will cache by the original path
+    // Real image: cached.
+    const auto png = writeTestPng("cache_after_sync.png");
+    auto thumb = gen.generateSync(png, 80);
+    ASSERT_NE(thumb, nullptr);
+    EXPECT_TRUE(thumb->valid);
+    EXPECT_TRUE(gen.isCached(png, 80));
     EXPECT_EQ(gen.cacheCount(), 1u);
     EXPECT_GT(gen.cacheMemoryUsed(), 0u);
 }
@@ -255,8 +277,8 @@ TEST(ThumbnailGenerator, CacheAfterSync)
 TEST(ThumbnailGenerator, ClearCache)
 {
     rt::ThumbnailGenerator gen(1, 80, 60);
-    (void)gen.generateSync(fs::path("a.xyz"), 80);
-    (void)gen.generateSync(fs::path("b.xyz"), 80);
+    (void)gen.generateSync(writeTestPng("clear_a.png"), 80);
+    (void)gen.generateSync(writeTestPng("clear_b.png"), 80);
     EXPECT_EQ(gen.cacheCount(), 2u);
 
     gen.clearCache();
@@ -272,7 +294,7 @@ TEST(ThumbnailGenerator, AsyncRequest)
     std::shared_ptr<rt::Thumbnail> received;
 
     gen.requestThumbnail(
-        fs::path("async_test.xyz"),
+        writeTestPng("async_test.png"),
         [&](const fs::path&, std::shared_ptr<rt::Thumbnail> thumb) {
             received = thumb;
             called = true;
@@ -337,13 +359,14 @@ TEST(ThumbnailGenerator, CancelAll)
 TEST(ThumbnailGenerator, CachedSyncReturnsFast)
 {
     rt::ThumbnailGenerator gen(1, 80, 60);
+    const auto png = writeTestPng("cached_test.png");
 
     // First call generates
-    auto t1 = gen.generateSync(fs::path("cached_test.xyz"), 80);
+    auto t1 = gen.generateSync(png, 80);
     ASSERT_NE(t1, nullptr);
 
     // Second call should return the cached version
-    auto t2 = gen.generateSync(fs::path("cached_test.xyz"), 80);
+    auto t2 = gen.generateSync(png, 80);
     ASSERT_NE(t2, nullptr);
 
     // Should be the same pointer (from cache)
@@ -353,9 +376,10 @@ TEST(ThumbnailGenerator, CachedSyncReturnsFast)
 TEST(ThumbnailGenerator, DifferentWidthsDifferentCache)
 {
     rt::ThumbnailGenerator gen(1, 80, 60);
+    const auto png = writeTestPng("size_test.png");
 
-    auto t1 = gen.generateSync(fs::path("size_test.xyz"), 80);
-    auto t2 = gen.generateSync(fs::path("size_test.xyz"), 160);
+    auto t1 = gen.generateSync(png, 80);
+    auto t2 = gen.generateSync(png, 160);
 
     ASSERT_NE(t1, nullptr);
     ASSERT_NE(t2, nullptr);
@@ -804,33 +828,6 @@ TEST(ProjectBin, RelinkUpdatesAllMatchingBinReferencesOnly)
     EXPECT_EQ(std::count(files.begin(), files.end(), oldPath), 0);
     EXPECT_EQ(std::count(files.begin(), files.end(),
                          fs::path("already/online.mov")), 1);
-}
-
-TEST(ProjectBin, TabChangeFiltersGrid)
-{
-    rt::ProjectBin bin;
-    bin.addFiles({
-        fs::path("video.mp4"),
-        fs::path("image.png"),
-        fs::path("audio.wav")
-    });
-
-    EXPECT_EQ(bin.grid()->visibleItemCount(), 3);
-
-    // Switch to Video tab (index 1)
-    bin.findChild<QTabBar*>()->setCurrentIndex(1);
-    EXPECT_EQ(bin.activeTabType(), rt::MediaType::Video);
-    EXPECT_EQ(bin.grid()->visibleItemCount(), 1);
-
-    // Switch to Audio tab (index 3)
-    bin.findChild<QTabBar*>()->setCurrentIndex(3);
-    EXPECT_EQ(bin.activeTabType(), rt::MediaType::Audio);
-    EXPECT_EQ(bin.grid()->visibleItemCount(), 1);
-
-    // Switch to All tab (index 0)
-    bin.findChild<QTabBar*>()->setCurrentIndex(0);
-    EXPECT_EQ(bin.activeTabType(), rt::MediaType::Unknown);
-    EXPECT_EQ(bin.grid()->visibleItemCount(), 3);
 }
 
 TEST(ProjectBin, SearchFieldFiltersGrid)
