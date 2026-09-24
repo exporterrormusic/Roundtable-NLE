@@ -85,7 +85,9 @@ class Clip;
 class Compositor;
 class EffectProcessor;
 class GraphicClip;
+class ImageClip;
 class MediaPool;
+class PngPuppetClip;
 class ModelManager;
 class Nv12Converter;
 class SpineRenderer;
@@ -666,6 +668,31 @@ private:
                                     bool forceFullResolution,
                                     bool& skipClip,
                                     RenderExecutionOutcome* outcome = nullptr);
+    // buildLayersForFrame helpers (CompositeServiceLayerBuild.cpp).
+    // Lazily opens a still ImageClip's media handle; 0 = skip the clip
+    // (offline, missing pool, or an async open still pending).
+    uint64_t resolveImageClipHandle(ImageClip* imageClip, bool playbackNonBlocking,
+                                    bool forceFullResolution,
+                                    RenderExecutionOutcome* outcome);
+    static void reportPngPuppetFailure(PngPuppetClip* puppetClip, int64_t tick,
+                                       RenderExecutionOutcome& outcome);
+    // No usable frame this tick: substitute the clip's (or its character's)
+    // last good frame. Returns false when the layer must be skipped.
+    bool applyStickyFrameFallback(Clip* clip, int64_t tick,
+                                  int64_t temporalPrimaryFrameNum,
+                                  std::shared_ptr<CachedFrame>& frame,
+                                  bool& sourceFallbackPending);
+    void recordStickyFrame(Clip* clip, const std::shared_ptr<CachedFrame>& frame);
+    // Drop sticky frames for clips/characters absent from this frame.
+    void pruneStickyFrameCaches();
+    // Point `layer` at a GPU-resident decoded frame and register CUDA
+    // zero-copy textures in the GPU texture cache for dirty-tracking.
+    void bindGpuResidentFrame(LayerInfo& layer,
+                              const std::shared_ptr<CachedFrame>& frame);
+    void applyClipCropAndRotation(LayerInfo& layer, Clip* clip,
+                                  bool isPreRenderedSpine,
+                                  uint32_t outW, uint32_t outH);
+
     // Renders a nested SequenceClip to a clean CPU BGRA frame via a recursive
     // composite of its inner timeline. Returns null when the clip references no
     // valid inner sequence. Recursion uses a child execution context and does
