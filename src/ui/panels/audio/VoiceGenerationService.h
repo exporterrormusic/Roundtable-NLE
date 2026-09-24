@@ -21,7 +21,7 @@ struct VoiceReferenceSegment
 struct VoiceGenerationRequest
 {
     QString requestId;         // Identifies the panel that owns the audition draft.
-    QString provider;          // "omnivoice" or "fish-s2"
+    QString provider;          // "breeze", "omnivoice", or "fish-s2"
     QString text;
     QString character;
     QString referenceAudio;
@@ -37,7 +37,7 @@ struct VoiceGenerationRequest
 };
 
 /// Owns the persistent local TTS worker.  At most one provider process is
-/// alive, which prevents Fish and OmniVoice from occupying VRAM together.
+/// alive, which prevents multiple large voice models from occupying VRAM together.
 class VoiceGenerationService final : public QObject
 {
     Q_OBJECT
@@ -53,6 +53,9 @@ public:
     [[nodiscard]] static bool providerBuilt(const QString& provider);
     [[nodiscard]] static bool providerInstalled(const QString& provider);
     [[nodiscard]] static QString providerInstallHint(const QString& provider);
+    [[nodiscard]] static QString breezeInstallationRoot();
+    [[nodiscard]] static bool configureBreezeInstallation(
+        const QString& root, QString* error = nullptr);
 
     void enqueue(const VoiceGenerationRequest& request);
     void cancel();

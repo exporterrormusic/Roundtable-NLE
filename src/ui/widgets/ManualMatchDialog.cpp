@@ -4,6 +4,7 @@
 
 #include "widgets/ManualMatchDialog.h"
 #include "widgets/FullWaveformWidget.h"
+#include "widgets/ScriptTextCopy.h"
 #include "Theme.h"
 
 #include <QVBoxLayout>
@@ -167,6 +168,7 @@ ManualMatchDialog::ManualMatchDialog(
 
     m_scriptLabel = new QLabel(QString::fromStdString(dialogue));
     m_scriptLabel->setWordWrap(true);
+    enableScriptTextCopy(m_scriptLabel, m_scriptLabel->text());
     m_scriptLabel->setStyleSheet(
         "QLabel { color: " + t1 + "; font-size: " + fsSmall + "px; padding-left: 8px; }");
     headerLayout->addWidget(m_scriptLabel, 1);

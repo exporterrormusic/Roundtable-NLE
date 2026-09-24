@@ -9,6 +9,7 @@
 #include "command/LambdaCommand.h"
 #include "audio/AudioEngine.h"
 #include "widgets/MiniWaveformWidget.h"
+#include "widgets/ScriptTextCopy.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -295,6 +296,7 @@ void AudioSync::populateCards()
 
         auto* dialogueLabel = new QLabel(QString::fromStdString(line.dialogue));
         dialogueLabel->setWordWrap(true);
+        enableScriptTextCopy(dialogueLabel, dialogueLabel->text());
         dialogueLabel->setStyleSheet(
             QString("QLabel { color: %1; font-size: 13px; border: none; }").arg(Theme::hex(_tc.textPrimary)));
         dialogueLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);

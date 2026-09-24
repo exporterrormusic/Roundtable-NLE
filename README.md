@@ -79,7 +79,7 @@ ctest --test-dir build -C Release -L core --output-on-failure
 
 ### Optional Local Voice Generation
 
-Fish S2 Pro and OmniVoice are installed into separate ignored Python runtimes:
+Breeze-TTS-2, Fish S2 Pro, and OmniVoice are installed into separate ignored runtimes:
 
 ```powershell
 .\tools\install_voice_models.ps1

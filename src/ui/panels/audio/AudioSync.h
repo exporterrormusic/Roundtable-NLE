@@ -272,6 +272,11 @@ public:
     [[nodiscard]] QVector<VoiceImportedAudioTrack> voiceImportedAudioTracks() const;
     [[nodiscard]] QVector<VoiceReferenceCandidate> voiceReferenceCandidates() const;
     [[nodiscard]] const AudioSampleData* voiceAudioSamples(const QString& path) const;
+    /// Return the existing automatic transcript that overlaps a manually
+    /// selected source range. This avoids asking for text the ASR already made.
+    [[nodiscard]] QString voiceTranscriptForRange(const QString& path,
+                                                  double start,
+                                                  double end) const;
 
     /// Pure projections used by the panel and by headless validation without
     /// constructing the full Audio Sync workspace.

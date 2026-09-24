@@ -1,6 +1,7 @@
 #include "panels/audio/VoiceGenerationService.h"
 
 #include "PathUtils.h"
+#include "Settings.h"
 #include "project/Project.h"
 
 #include <QCoreApplication>
@@ -33,8 +34,85 @@ QString cleanPathPart(QString value)
     return value.left(80);
 }
 
+struct BreezeInstallation
+{
+    QString root;
+    QString python;
+    QString model;
+    QString server;
+
+    [[nodiscard]] bool complete() const
+    {
+        return QFileInfo::exists(python)
+            && QFileInfo::exists(model)
+            && QFileInfo::exists(server);
+    }
+};
+
+QString firstExistingFile(const QStringList& candidates)
+{
+    for (const auto& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) return QDir::cleanPath(candidate);
+    }
+    return {};
+}
+
+BreezeInstallation breezeInstallationAt(const QString& selectedRoot)
+{
+    const QString root = QDir::cleanPath(selectedRoot.trimmed());
+    if (root.isEmpty()) return {};
+    const QDir directory(root);
+    return {
+        root,
+        firstExistingFile({
+            directory.filePath(QStringLiteral("runtime/python/python.exe")),
+            directory.filePath(QStringLiteral(".venv/Scripts/python.exe"))
+        }),
+        firstExistingFile({
+            directory.filePath(QStringLiteral("models/tts/breeze-tts-2-q8_0.gguf")),
+            directory.filePath(QStringLiteral("models/breeze-tts-2-q8_0.gguf"))
+        }),
+        firstExistingFile({
+            directory.filePath(QStringLiteral("runtime/audio-cpp/audiocpp_server.exe")),
+            directory.filePath(QStringLiteral("audio-cpp/audiocpp_server.exe"))
+        })
+    };
+}
+
+BreezeInstallation findBreezeInstallation()
+{
+    BreezeInstallation packaged{
+        QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT),
+        QString::fromUtf8(ROUNDTABLE_BREEZE_PYTHON_PATH),
+        QString::fromUtf8(ROUNDTABLE_BREEZE_MODEL_PATH),
+        QString::fromUtf8(ROUNDTABLE_BREEZE_SERVER_PATH)
+    };
+    if (packaged.complete()) return packaged;
+
+    QStringList roots;
+    auto settings = appSettings();
+    roots << settings.value(QStringLiteral("voice/breezeInstallationRoot")).toString();
+    roots << qEnvironmentVariable("ROUNDTABLE_BREEZE_ROOT");
+    for (const auto& drive : QDir::drives()) {
+        const QDir root(drive.absoluteFilePath());
+        roots << root.filePath(QStringLiteral(
+            "1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH"));
+        roots << root.filePath(QStringLiteral(
+            "1/_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH"));
+    }
+    roots.removeAll(QString());
+    roots.removeDuplicates();
+    for (const auto& root : roots) {
+        auto installation = breezeInstallationAt(root);
+        if (installation.complete()) return installation;
+    }
+    return packaged;
+}
+
 QString pythonPathFor(const QString& provider)
 {
+    if (provider == QStringLiteral("breeze"))
+        return findBreezeInstallation().python;
     if (provider == QStringLiteral("fish-s2"))
         return QString::fromUtf8(ROUNDTABLE_FISH_S2_PYTHON_PATH);
     return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_PYTHON_PATH);
@@ -42,6 +120,8 @@ QString pythonPathFor(const QString& provider)
 
 QString rootPathFor(const QString& provider)
 {
+    if (provider == QStringLiteral("breeze"))
+        return QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT);
     if (provider == QStringLiteral("fish-s2"))
         return QString::fromUtf8(ROUNDTABLE_FISH_S2_ROOT);
     return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_ROOT);
@@ -49,9 +129,25 @@ QString rootPathFor(const QString& provider)
 
 QString modelPathFor(const QString& provider)
 {
+    if (provider == QStringLiteral("breeze"))
+        return findBreezeInstallation().model;
     if (provider == QStringLiteral("fish-s2"))
         return QString::fromUtf8(ROUNDTABLE_FISH_S2_MODEL_PATH);
     return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_MODEL_PATH);
+}
+
+QString providerDisplayName(const QString& provider)
+{
+    if (provider == QStringLiteral("breeze")) return QStringLiteral("Breeze-TTS-2");
+    if (provider == QStringLiteral("fish-s2")) return QStringLiteral("Fish S2 Pro");
+    return QStringLiteral("OmniVoice");
+}
+
+QString serverPathFor(const QString& provider)
+{
+    if (provider == QStringLiteral("breeze"))
+        return findBreezeInstallation().server;
+    return {};
 }
 
 } // namespace
@@ -78,6 +174,13 @@ bool VoiceGenerationService::isBusy() const noexcept
 
 bool VoiceGenerationService::providerBuilt(const QString& provider)
 {
+    if (provider == QStringLiteral("breeze")) {
+#ifdef ROUNDTABLE_HAS_BREEZE
+        return true;
+#else
+        return false;
+#endif
+    }
     if (provider == QStringLiteral("fish-s2")) {
 #ifdef ROUNDTABLE_HAS_FISH_S2
         return true;
@@ -101,6 +204,11 @@ bool VoiceGenerationService::providerInstalled(const QString& provider)
     const QString python = pythonPathFor(provider);
     const QString model = modelPathFor(provider);
     if (!QFileInfo::exists(python)) return false;
+    if (provider == QStringLiteral("breeze")) {
+        return QFileInfo::exists(model)
+            && QFileInfo::exists(serverPathFor(provider))
+            && QFileInfo::exists(QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH));
+    }
     const QDir modelDir(model);
     if (provider == QStringLiteral("fish-s2")) {
         return QFileInfo::exists(modelDir.filePath(QStringLiteral("codec.pth")))
@@ -118,7 +226,37 @@ QString VoiceGenerationService::providerInstallHint(const QString& provider)
     if (!providerBuilt(provider))
         return QStringLiteral("This engine is disabled in this build.");
     if (providerInstalled(provider)) return {};
+    if (provider == QStringLiteral("breeze")) {
+        return QStringLiteral(
+            "Breeze-TTS-2 is not connected. Choose Locate Existing Breeze, or run "
+            "tools\\install_voice_models.ps1 from the project root.");
+    }
     return QStringLiteral("Run tools\\install_voice_models.ps1 from the project root.");
+}
+
+QString VoiceGenerationService::breezeInstallationRoot()
+{
+    const auto installation = findBreezeInstallation();
+    return installation.complete() ? installation.root : QString{};
+}
+
+bool VoiceGenerationService::configureBreezeInstallation(
+    const QString& root, QString* error)
+{
+    const auto installation = breezeInstallationAt(root);
+    if (!installation.complete()) {
+        if (error) {
+            *error = QStringLiteral(
+                "That folder does not contain the Breeze Python runtime, Q8 model, and "
+                "audio.cpp server. Select the SPEECH-TEXT-SPEECH root folder.");
+        }
+        return false;
+    }
+    auto settings = appSettings();
+    settings.setValue(QStringLiteral("voice/breezeInstallationRoot"),
+                      installation.root);
+    settings.sync();
+    return true;
 }
 
 void VoiceGenerationService::enqueue(const VoiceGenerationRequest& request)
@@ -222,6 +360,11 @@ void VoiceGenerationService::processNext()
 
 void VoiceGenerationService::startWorker(const QString& provider)
 {
+    const QString runtimeRoot = rootPathFor(provider);
+    if (!QDir().mkpath(runtimeRoot)) {
+        failCurrent(QStringLiteral("Could not create the voice runtime folder."));
+        return;
+    }
     m_process = new QProcess(this);
     m_activeProvider = provider;
     m_workerReady = false;
@@ -248,18 +391,26 @@ void VoiceGenerationService::startWorker(const QString& provider)
     QStringList args{
         QString::fromUtf8(ROUNDTABLE_VOICE_WORKER_PATH),
         QStringLiteral("--provider"), provider,
-        QStringLiteral("--runtime-root"), rootPathFor(provider),
+        QStringLiteral("--runtime-root"), runtimeRoot,
         QStringLiteral("--model"), modelPathFor(provider)
     };
+    if (provider == QStringLiteral("breeze")) {
+        args << QStringLiteral("--server")
+             << serverPathFor(provider)
+             << QStringLiteral("--ffmpeg")
+             << QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH);
+    }
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("HF_HOME"),
-               QDir(rootPathFor(provider)).absoluteFilePath(QStringLiteral("../huggingface")));
+               QDir(runtimeRoot).absoluteFilePath(QStringLiteral("../huggingface")));
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
     m_process->setProcessEnvironment(env);
-    m_process->setWorkingDirectory(rootPathFor(provider));
+    m_process->setWorkingDirectory(runtimeRoot);
     emit statusChanged(provider == QStringLiteral("fish-s2")
         ? QStringLiteral("Loading Fish S2 Pro (this can take a few minutes)...")
-        : QStringLiteral("Loading OmniVoice..."));
+        : provider == QStringLiteral("breeze")
+            ? QStringLiteral("Loading Breeze-TTS-2 Q8 on CUDA...")
+            : QStringLiteral("Loading OmniVoice..."));
     m_process->start(pythonPathFor(provider), args, QIODevice::ReadWrite);
     emit modelResidentChanged(true);
 
@@ -341,8 +492,7 @@ void VoiceGenerationService::handleStdout()
         if (event == QStringLiteral("ready")) {
             m_workerReady = true;
             emit statusChanged(QStringLiteral("%1 ready").arg(
-                m_activeProvider == QStringLiteral("fish-s2")
-                    ? QStringLiteral("Fish S2 Pro") : QStringLiteral("OmniVoice")));
+                providerDisplayName(m_activeProvider)));
             sendCurrentRequest();
         } else if (event == QStringLiteral("status")) {
             emit statusChanged(obj.value(QStringLiteral("message")).toString());

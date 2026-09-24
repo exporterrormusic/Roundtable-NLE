@@ -50,8 +50,10 @@ signals:
 private:
     void buildUi(bool compact);
     void refreshProviderState();
+    void refreshGenerateAvailability();
     void refreshReferencePlan();
     void refreshManualTrack();
+    void refreshManualTranscript();
     void chooseScriptLine();
     void generate();
     void listenToDraft();
@@ -74,6 +76,7 @@ private:
     QGroupBox* m_manualReference{nullptr};
     QWidget* m_manualReferenceContent{nullptr};
     QLabel* m_autoReferenceSummary{nullptr};
+    QLabel* m_engineStatus{nullptr};
     MiniWaveformWidget* m_referenceWaveform{nullptr};
     QLineEdit* m_referenceText{nullptr};
     QDoubleSpinBox* m_referenceStart{nullptr};
@@ -90,6 +93,7 @@ private:
     QPushButton* m_discard{nullptr};
     QPushButton* m_unloadModel{nullptr};
     QPushButton* m_saveReference{nullptr};
+    QPushButton* m_locateBreeze{nullptr};
     QLabel* m_status{nullptr};
     QTreeWidget* m_scriptLines{nullptr};
     QListWidget* m_recent{nullptr};

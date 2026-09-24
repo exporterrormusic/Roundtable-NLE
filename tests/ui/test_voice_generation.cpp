@@ -10,6 +10,7 @@
 #include "widgets/ManualMatchDialog.h"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -19,6 +20,7 @@
 #include <QRegularExpression>
 #include <QPushButton>
 #include <QGroupBox>
+#include <QLabel>
 #include <QMessageBox>
 #include <QTimer>
 
@@ -176,6 +178,56 @@ TEST_F(VoiceGenerationTest, ExposesOnlyConfirmedClipsAsApprovedReferences)
     ASSERT_EQ(references.size(), 1);
     EXPECT_EQ(references.front().transcript, QStringLiteral("approved words"));
     EXPECT_FLOAT_EQ(references.front().confidence, 1.0f);
+}
+
+TEST_F(VoiceGenerationTest, ScriptDialogueCanBeSelectedAndCopied)
+{
+    rt::AudioSync audioSync;
+    ASSERT_TRUE(audioSync.loadScript(
+        R"({"lines":[{"character":"Alice","dialogue":"Paste this into TTS."}]})"));
+
+    auto* list = audioSync.scriptListWidget();
+    ASSERT_NE(list, nullptr);
+    ASSERT_EQ(list->count(), 1);
+    auto* card = list->itemWidget(list->item(0));
+    ASSERT_NE(card, nullptr);
+
+    QLabel* dialogue = nullptr;
+    for (auto* label : card->findChildren<QLabel*>()) {
+        if (label->property("scriptTextCopyEnabled").toBool()) {
+            dialogue = label;
+            break;
+        }
+    }
+    ASSERT_NE(dialogue, nullptr);
+    EXPECT_TRUE(dialogue->textInteractionFlags().testFlag(Qt::TextSelectableByMouse));
+    EXPECT_TRUE(dialogue->textInteractionFlags().testFlag(Qt::TextSelectableByKeyboard));
+
+    auto* copyAction = dialogue->findChild<QAction*>(
+        QStringLiteral("copyScriptLineTextAction"));
+    ASSERT_NE(copyAction, nullptr);
+    QGuiApplication::clipboard()->clear();
+    copyAction->trigger();
+    EXPECT_EQ(QGuiApplication::clipboard()->text(),
+              QStringLiteral("Paste this into TTS."));
+}
+
+TEST_F(VoiceGenerationTest, ReusesAutomaticTranscriptForManualReferenceRange)
+{
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const QString source = makeTone(
+        temporary.path(), QStringLiteral("manual-reference.wav"), 2.0);
+
+    rt::AudioSync audioSync;
+    audioSync.attachGeneratedAudio(
+        source, QStringLiteral("Alice"),
+        QStringLiteral("words produced by automatic transcription"),
+        -1, QString(), 2.0);
+
+    EXPECT_EQ(audioSync.voiceTranscriptForRange(source, 0.0, 1.5),
+              QStringLiteral("words produced by automatic transcription"));
+    EXPECT_TRUE(audioSync.voiceTranscriptForRange(source, 2.1, 3.0).isEmpty());
 }
 
 #ifdef ROUNDTABLE_HAS_CRISPERWHISPER

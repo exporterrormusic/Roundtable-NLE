@@ -185,6 +185,8 @@ option(ROUNDTABLE_ENABLE_FISH_S2_PERSONAL
        "Enable the personal-use Fish S2 Pro voice adapter" ON)
 option(ROUNDTABLE_ENABLE_OMNIVOICE
        "Enable the Apache-2.0 OmniVoice voice adapter" ON)
+option(ROUNDTABLE_ENABLE_BREEZE
+       "Enable the Breeze-TTS-2 audio.cpp voice adapter" ON)
 
 
 # Native .shotanim runtime — ABANDONED; spine-cpp is the permanent production
@@ -206,6 +208,7 @@ add_compile_definitions(
     ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.venv/Scripts/python.exe"
     $<$<BOOL:${ROUNDTABLE_ENABLE_FISH_S2_PERSONAL}>:ROUNDTABLE_HAS_FISH_S2>
     $<$<BOOL:${ROUNDTABLE_ENABLE_OMNIVOICE}>:ROUNDTABLE_HAS_OMNIVOICE>
+    $<$<BOOL:${ROUNDTABLE_ENABLE_BREEZE}>:ROUNDTABLE_HAS_BREEZE>
     ROUNDTABLE_VOICE_WORKER_PATH="${CMAKE_SOURCE_DIR}/src/core/ai/voice_generation_worker.py"
     ROUNDTABLE_FISH_S2_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/fish-speech/.venv/Scripts/python.exe"
     ROUNDTABLE_FISH_S2_ROOT="${CMAKE_SOURCE_DIR}/.voice-runtime/fish-speech"
@@ -213,6 +216,11 @@ add_compile_definitions(
     ROUNDTABLE_OMNIVOICE_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/omnivoice-src/.venv/Scripts/python.exe"
     ROUNDTABLE_OMNIVOICE_ROOT="${CMAKE_SOURCE_DIR}/.voice-runtime/omnivoice-src"
     ROUNDTABLE_OMNIVOICE_MODEL_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/models/omnivoice"
+    ROUNDTABLE_BREEZE_PYTHON_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/breeze/.venv/Scripts/python.exe"
+    ROUNDTABLE_BREEZE_ROOT="${CMAKE_SOURCE_DIR}/.voice-runtime/breeze"
+    ROUNDTABLE_BREEZE_MODEL_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/models/breeze-tts-2-q8_0.gguf"
+    ROUNDTABLE_BREEZE_SERVER_PATH="${CMAKE_SOURCE_DIR}/.voice-runtime/breeze/audio-cpp/audiocpp_server.exe"
+    ROUNDTABLE_FFMPEG_EXE_PATH="${FFMPEG_BIN_DIR}/ffmpeg.exe"
     $<$<BOOL:${CUDAToolkit_FOUND}>:ROUNDTABLE_HAS_CUDA>
     $<$<BOOL:${FFMPEG_FOUND}>:ROUNDTABLE_HAS_FFMPEG>
 )

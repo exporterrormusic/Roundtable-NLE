@@ -11,6 +11,7 @@
 #include <QDoubleSpinBox>
 #include <QDrag>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -112,7 +113,7 @@ std::optional<SavedReference> savedReferenceForCharacter(const QString& characte
 
 double desiredReferenceDuration(const QString& provider)
 {
-    return provider == QStringLiteral("fish-s2") ? 20.0 : 8.0;
+    return provider == QStringLiteral("omnivoice") ? 8.0 : 20.0;
 }
 
 QList<VoiceReferenceSegment> automaticReferenceSegments(
@@ -168,7 +169,7 @@ VoiceGenerationPanel::VoiceGenerationPanel(VoiceGenerationService* service,
                 m_status, &QLabel::setText);
         connect(m_service, &VoiceGenerationService::busyChanged,
                 this, [this](bool busy) {
-            m_generate->setEnabled(!busy);
+            refreshGenerateAvailability();
             m_cancel->setEnabled(busy);
         });
         connect(m_service, &VoiceGenerationService::modelResidentChanged,
@@ -203,6 +204,9 @@ void VoiceGenerationPanel::buildUi(bool compact)
     auto* form = new QFormLayout;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_provider = new QComboBox(controls);
+#ifdef ROUNDTABLE_HAS_BREEZE
+    m_provider->addItem(tr("Breeze-TTS-2 (Q8 / CUDA)"), QStringLiteral("breeze"));
+#endif
 #ifdef ROUNDTABLE_HAS_OMNIVOICE
     m_provider->addItem(tr("OmniVoice (Apache-2.0)"), QStringLiteral("omnivoice"));
 #endif
@@ -210,6 +214,19 @@ void VoiceGenerationPanel::buildUi(bool compact)
     m_provider->addItem(tr("Fish S2 Pro (personal / non-commercial)"), QStringLiteral("fish-s2"));
 #endif
     form->addRow(tr("Engine"), m_provider);
+
+    auto* engineState = new QWidget(controls);
+    auto* engineStateLayout = new QHBoxLayout(engineState);
+    engineStateLayout->setContentsMargins(0, 0, 0, 0);
+    engineStateLayout->setSpacing(8);
+    m_engineStatus = new QLabel(engineState);
+    m_engineStatus->setWordWrap(true);
+    m_locateBreeze = new QPushButton(tr("Locate Existing Breeze..."), engineState);
+    m_locateBreeze->setToolTip(tr(
+        "Select the SPEECH-TEXT-SPEECH folder that already contains Breeze-TTS-2."));
+    engineStateLayout->addWidget(m_engineStatus, 1);
+    engineStateLayout->addWidget(m_locateBreeze);
+    form->addRow(QString(), engineState);
 
     m_character = new QComboBox(controls);
     m_character->setEditable(true);
@@ -230,7 +247,8 @@ void VoiceGenerationPanel::buildUi(bool compact)
     form->addRow(tr("Reference"), automaticReference);
     controlsLayout->addLayout(form);
 
-    m_manualReference = new QGroupBox(tr("Manual reference override"), controls);
+    m_manualReference = new QGroupBox(
+        tr("Use a different voice reference (advanced)"), controls);
     m_manualReference->setCheckable(true);
     m_manualReference->setChecked(false);
     m_manualReference->setToolTip(
@@ -249,7 +267,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
     manualForm->addRow(tr("Imported track"), m_reference);
     m_referenceText = new QLineEdit(m_manualReference);
     m_referenceText->setPlaceholderText(
-        tr("Exact words spoken in the selected range"));
+        tr("Auto-filled from transcription; correct it here if needed"));
     manualForm->addRow(tr("Transcript"), m_referenceText);
     auto* range = new QWidget(m_manualReference);
     auto* rangeLayout = new QHBoxLayout(range);
@@ -272,12 +290,21 @@ void VoiceGenerationPanel::buildUi(bool compact)
     manualContentLayout->addWidget(m_referenceWaveform);
     manualLayout->addWidget(m_manualReferenceContent);
     m_manualReferenceContent->setVisible(false);
+    m_manualReference->setFlat(true);
+    m_manualReference->setMaximumHeight(
+        m_manualReference->fontMetrics().height() + 14);
     controlsLayout->addWidget(m_manualReference);
 
+    auto* promptTitle = new QLabel(tr("Text to generate"), controls);
+    QFont promptFont = promptTitle->font();
+    promptFont.setBold(true);
+    promptTitle->setFont(promptFont);
+    controlsLayout->addWidget(promptTitle);
     m_text = new QTextEdit(controls);
     m_text->setPlaceholderText(tr("Type what the character should say..."));
     m_text->setAcceptRichText(false);
     m_text->setMinimumHeight(compact ? 88 : 125);
+    m_text->setMaximumHeight(compact ? 110 : 170);
     controlsLayout->addWidget(m_text);
 
     auto* options = new QHBoxLayout;
@@ -350,8 +377,9 @@ void VoiceGenerationPanel::buildUi(bool compact)
     m_recent->setDragEnabled(true);
     m_recent->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_recent->setMinimumHeight(compact ? 90 : 120);
+    if (compact) m_recent->setMaximumHeight(140);
     recentLayout->addWidget(m_recent);
-    controlsLayout->addWidget(recentGroup, 1);
+    controlsLayout->addWidget(recentGroup, compact ? 0 : 1);
 
     m_unloadModel = new QPushButton(tr("Unload Model / Free VRAM"), controls);
     m_unloadModel->setToolTip(tr(
@@ -360,6 +388,25 @@ void VoiceGenerationPanel::buildUi(bool compact)
     controlsLayout->addWidget(m_unloadModel);
 
     connect(m_generate, &QPushButton::clicked, this, &VoiceGenerationPanel::generate);
+    connect(m_text, &QTextEdit::textChanged,
+            this, &VoiceGenerationPanel::refreshGenerateAvailability);
+    connect(m_locateBreeze, &QPushButton::clicked, this, [this]() {
+        QString initial = VoiceGenerationService::breezeInstallationRoot();
+        if (initial.isEmpty()) {
+            const QString known = QStringLiteral(
+                "F:/1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH");
+            if (QDir(known).exists()) initial = known;
+        }
+        const QString root = QFileDialog::getExistingDirectory(
+            this, tr("Locate Breeze-TTS-2 Installation"), initial);
+        if (root.isEmpty()) return;
+        QString error;
+        if (!VoiceGenerationService::configureBreezeInstallation(root, &error)) {
+            QMessageBox::warning(this, tr("Breeze-TTS-2 Not Found"), error);
+            return;
+        }
+        refreshProviderState();
+    });
     connect(m_unloadModel, &QPushButton::clicked, this, [this]() {
         if (m_draftAuditionTimer) m_draftAuditionTimer->stop();
         if (m_audioSync) m_audioSync->stopVoiceDraftAudition();
@@ -390,8 +437,14 @@ void VoiceGenerationPanel::buildUi(bool compact)
     connect(m_reference, &QComboBox::currentIndexChanged,
             this, &VoiceGenerationPanel::refreshManualTrack);
     connect(m_manualReference, &QGroupBox::toggled, this, [this](bool checked) {
-        if (m_manualReferenceContent)
+        if (m_manualReferenceContent) {
             m_manualReferenceContent->setVisible(checked);
+            m_manualReference->setFlat(!checked);
+            m_manualReference->setMaximumHeight(checked
+                ? QWIDGETSIZE_MAX
+                : m_manualReference->fontMetrics().height() + 14);
+            m_manualReference->updateGeometry();
+        }
         refreshReferencePlan();
     });
     connect(m_referenceStart, &QDoubleSpinBox::valueChanged, this, [this](double start) {
@@ -401,6 +454,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
         }
         if (m_referenceWaveform)
             m_referenceWaveform->setTrimRange(start, m_referenceEnd->value());
+        refreshManualTranscript();
     });
     connect(m_referenceEnd, &QDoubleSpinBox::valueChanged, this, [this](double end) {
         if (end <= m_referenceStart->value()) {
@@ -409,6 +463,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
         }
         if (m_referenceWaveform)
             m_referenceWaveform->setTrimRange(m_referenceStart->value(), end);
+        refreshManualTranscript();
     });
     connect(m_referenceWaveform, &MiniWaveformWidget::trimChanging,
             this, [this](double start, double end) {
@@ -416,6 +471,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
         const QSignalBlocker endBlocker(m_referenceEnd);
         m_referenceStart->setValue(start);
         m_referenceEnd->setValue(end);
+        refreshManualTranscript();
     });
     connect(m_referenceWaveform, &MiniWaveformWidget::trimChanged,
             this, [this](double start, double end) {
@@ -560,16 +616,54 @@ void VoiceGenerationPanel::refreshProviderState()
     const QString provider = m_provider->currentData().toString();
     const bool installed = VoiceGenerationService::providerInstalled(provider);
     const bool omni = provider == QStringLiteral("omnivoice");
+    const bool breeze = provider == QStringLiteral("breeze");
     m_duration->setEnabled(omni);
-    m_speed->setEnabled(omni);
-    m_generate->setEnabled(installed && (!m_service || !m_service->isBusy()));
-    if (!installed) m_status->setText(VoiceGenerationService::providerInstallHint(provider));
+    m_speed->setEnabled(omni || breeze);
+    if (m_engineStatus) {
+        if (installed && breeze) {
+            const QString root = VoiceGenerationService::breezeInstallationRoot();
+            m_engineStatus->setText(tr("Ready — using Breeze from %1").arg(
+                QDir::toNativeSeparators(root)));
+            m_engineStatus->setStyleSheet(QStringLiteral("color: #77c98d;"));
+        } else if (installed) {
+            m_engineStatus->setText(tr("Engine ready."));
+            m_engineStatus->setStyleSheet(QStringLiteral("color: #77c98d;"));
+        } else {
+            m_engineStatus->setText(VoiceGenerationService::providerInstallHint(provider));
+            m_engineStatus->setStyleSheet(QStringLiteral("color: #e0ad63;"));
+        }
+    }
+    if (m_locateBreeze)
+        m_locateBreeze->setVisible(breeze && !installed);
+    refreshGenerateAvailability();
+    if (!installed) m_status->setText(tr(
+        "Your text is ready, but the selected voice engine must be connected first."));
     else if (!m_service || !m_service->isBusy())
-        m_status->setText(omni
-            ? tr("OmniVoice ready. For the strongest clone, use a clean 3–10 second "
-                 "reference and its exact transcript. Duration targeting is available.")
-            : tr("Fish S2 Pro ready. For the strongest clone, use a clean 10–30 second "
+        m_status->setText(breeze
+            ? tr("Breeze-TTS-2 ready. Approved clips and their automatic transcripts will be "
+                 "combined exactly and converted to a 24 kHz reference.")
+            : omni
+                ? tr("OmniVoice ready. For the strongest clone, use a clean 3–10 second "
+                     "reference and its exact transcript. Duration targeting is available.")
+                : tr("Fish S2 Pro ready. For the strongest clone, use a clean 10–30 second "
                  "reference and its exact transcript. Close other GPU-heavy apps before loading."));
+}
+
+void VoiceGenerationPanel::refreshGenerateAvailability()
+{
+    if (!m_generate || !m_provider || !m_text) return;
+    const QString provider = m_provider->currentData().toString();
+    const bool installed = VoiceGenerationService::providerInstalled(provider);
+    const bool hasText = !m_text->toPlainText().trimmed().isEmpty();
+    const bool busy = m_service && m_service->isBusy();
+    m_generate->setEnabled(installed && hasText && !busy);
+    if (!installed) {
+        m_generate->setToolTip(VoiceGenerationService::providerInstallHint(provider));
+    } else if (!hasText) {
+        m_generate->setToolTip(tr("Type the words you want the character to say."));
+    } else {
+        m_generate->setToolTip(tr("Generate an audition draft using the selected voice."));
+    }
 }
 
 void VoiceGenerationPanel::refreshReferencePlan()
@@ -649,6 +743,20 @@ void VoiceGenerationPanel::refreshManualTrack()
         m_referenceStart->setEnabled(!library);
         m_referenceEnd->setEnabled(!library);
     }
+    refreshManualTranscript();
+}
+
+void VoiceGenerationPanel::refreshManualTranscript()
+{
+    if (!m_audioSync || !m_reference || m_reference->currentIndex() < 0)
+        return;
+    const auto details = m_reference->currentData().toMap();
+    if (details.value(QStringLiteral("library")).toBool())
+        return;
+    const QString transcript = m_audioSync->voiceTranscriptForRange(
+        details.value(QStringLiteral("path")).toString(),
+        m_referenceStart->value(), m_referenceEnd->value());
+    m_referenceText->setText(transcript);
 }
 
 void VoiceGenerationPanel::chooseScriptLine()

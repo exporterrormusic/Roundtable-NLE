@@ -1,7 +1,15 @@
 # Local Voice Generation
 
-ROUNDTABLE supports two local voice engines through one persistent worker
+ROUNDTABLE supports three local voice engines through one persistent worker
 service. Only one engine is kept in GPU memory at a time.
+
+Breeze-TTS-2 Q8 through audio.cpp is the default. OmniVoice and Fish S2 Pro
+remain available as fallback engines.
+
+On Windows, the app can reuse an existing `SPEECH-TEXT-SPEECH` installation.
+It discovers the standard `1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH` layout
+automatically, or you can choose **Locate Existing Breeze** in the voice panel.
+This avoids downloading or copying the Q8 model twice.
 
 ## Install
 
@@ -23,7 +31,9 @@ ignored by Git and the models are not included in normal application packages.
 - By default, ROUNDTABLE automatically selects confirmed (approved) Audio Sync
   matches for that character. It can combine clips from several imported
   tracks and takes the highest-confidence material until it reaches about 8
-  seconds for OmniVoice or 20 seconds for Fish S2 Pro.
+  seconds for OmniVoice or 20 seconds for Breeze/Fish S2 Pro. Breeze reuses the
+  automatic Whisper/CrisperWhisper transcript attached to each selected clip and
+  converts the approved cuts to mono 24 kHz without changing their content.
 - The automatic plan never samples unmatched or merely tentative clips. If no
   approved clips exist in the current project, it can use the newest saved
   reference for that character.
@@ -54,6 +64,10 @@ ignored by Git and the models are not included in normal application packages.
   reference is a useful target. It also supports fixed-duration generation.
 - Fish S2 Pro runs the official BF16 weights at 44.1 kHz. Use a clean 10–30
   second reference and an exact transcript when possible.
+- Breeze-TTS-2 runs its Q8_0 GGUF weights through audio.cpp's native CUDA
+  backend and produces 24 kHz audio. Approved clip transcripts are supplied
+  automatically; a manual range also auto-fills from overlapping transcribed
+  clips and remains editable for corrections.
 - The Fish worker caps its KV cache at 4,096 tokens. This reduces working VRAM
   without quantizing weights or lowering output quality and still permits
   several minutes of speech in one request.

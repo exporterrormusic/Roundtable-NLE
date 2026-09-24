@@ -111,6 +111,35 @@ const AudioSampleData* AudioSync::voiceAudioSamples(const QString& path) const
     return found == m_audioSamples.end() ? nullptr : &found->second;
 }
 
+QString AudioSync::voiceTranscriptForRange(const QString& path,
+                                           double start,
+                                           double end) const
+{
+    struct Match {
+        double start;
+        QString text;
+    };
+    std::vector<Match> matches;
+    const std::string source = path.toUtf8().toStdString();
+    for (const auto& clip : m_clips) {
+        if (clip.sourceFile != source || clip.end <= start || clip.start >= end)
+            continue;
+        const double overlap = std::min(end, clip.end) - std::max(start, clip.start);
+        const double duration = clip.end - clip.start;
+        if (overlap <= 0.0 || (duration > 0.0 && overlap / duration < 0.5))
+            continue;
+        const QString text = QString::fromStdString(
+            clip.editedText.empty() ? clip.transcript : clip.editedText).trimmed();
+        if (!text.isEmpty()) matches.push_back({clip.start, text});
+    }
+    std::stable_sort(matches.begin(), matches.end(),
+        [](const Match& left, const Match& right) { return left.start < right.start; });
+    QStringList transcript;
+    transcript.reserve(static_cast<qsizetype>(matches.size()));
+    for (const auto& match : matches) transcript.push_back(match.text);
+    return transcript.join(QStringLiteral(" "));
+}
+
 bool AudioSync::saveApprovedVoiceReference(const QString& character,
                                            QString* savedPath,
                                            QString* error) const

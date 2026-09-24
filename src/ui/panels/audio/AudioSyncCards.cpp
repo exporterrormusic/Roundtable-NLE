@@ -10,6 +10,7 @@
 #include "command/LambdaCommand.h"
 #include "audio/AudioEngine.h"
 #include "widgets/MiniWaveformWidget.h"
+#include "widgets/ScriptTextCopy.h"
 #include "Theme.h"
 
 #include <QComboBox>
@@ -158,6 +159,7 @@ void AudioSync::populateLeftList()
         // Script dialogue text
         auto* textLabel = new QLabel(dialogueText);
         textLabel->setWordWrap(true);
+        enableScriptTextCopy(textLabel, dialogueText);
         textLabel->setStyleSheet(
             QString("QLabel { color: %1; font-size: %2px; "
                     "background: transparent; border: none; "
