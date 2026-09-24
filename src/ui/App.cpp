@@ -200,6 +200,16 @@ App::~App()
     sm.advanceTo(ShutdownPhase::Phase2_Disconnect);
     m_playbackController.reset();
     m_syncClock.reset();
+    // The widget tree (destroyed in Phase 3) holds non-owning MediaPool
+    // pointers, and ~TimelineWorkspace clears its media-opened callback
+    // through its pointer — a use-after-free once the pool is gone (the
+    // recurring exit AV in MediaPool::setOnMediaOpened). Detach while the
+    // pool is still alive; setMediaPool also joins the workspace's warmups.
+    if (m_mainWindow) {
+        if (auto* tw = m_mainWindow->timelineWorkspace())
+            tw->setMediaPool(nullptr);
+        m_mainWindow->setMediaPool(nullptr);
+    }
     m_mediaPool.reset();
 
     // Drop the shared NVDEC/CUDA hw_device_ctx
