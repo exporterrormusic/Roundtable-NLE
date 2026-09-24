@@ -236,6 +236,7 @@ add_library(roundtable_ui STATIC
     viewport/TransformOverlayDraw.cpp
     viewport/TransformOverlayMask.cpp
     viewport/TransformOverlayInput.cpp
+    viewport/TransformOverlayInlineText.cpp
 )
 
 # Newly-extracted TUs — skip unity batch to avoid MSVC heap exhaustion
