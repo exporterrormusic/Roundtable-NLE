@@ -16,6 +16,7 @@ add_library(roundtable_core STATIC
 
     # Crash handler
     CrashHandler.cpp
+    HangWatchdog.cpp
     WorkerBreadcrumb.cpp
 
     # Hardware diagnostics (overlay-hook detection + GPU classification)

@@ -36,6 +36,7 @@
 #include "HardwareDiagnostics.h"
 #include "PerformanceProfile.h"
 #include "CrashHandler.h"
+#include "HangWatchdog.h"
 
 #include "QtHelpers.h"
 #include "MediaTaskQueue.h"
@@ -141,6 +142,8 @@ App::~App()
     // next launch does not pop a spurious "last session crashed"
     // recovery dialog at the user.  See CrashHandler::notifyShutdownStarted.
     CrashHandler::notifyShutdownStarted();
+    // Teardown blocks the UI thread for long stretches by design.
+    HangWatchdog::stop();
     spdlog::info("App::~App() — Phase 1: stopping threads");
 
     // Phase 1: Stop all background threads.

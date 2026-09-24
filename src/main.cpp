@@ -31,6 +31,7 @@
 #include "ui/NoElideTabStyle.h"
 #include "ui/QtHelpers.h"
 #include "CrashHandler.h"
+#include "HangWatchdog.h"
 
 // FFmpeg log suppression
 #ifdef ROUNDTABLE_HAS_FFMPEG
@@ -352,6 +353,15 @@ int main(int argc, char* argv[])
 
     // Check for updates (deferred to avoid slowing startup)
     QTimer::singleShot(3000, app.mainWindow(), &rt::MainWindow::onCheckForUpdatesSilent);
+
+    // UI hang watchdog: a stalled event loop gets its stack logged to
+    // crash_log.txt.  Armed by the first heartbeat, i.e. once the event loop
+    // runs, so the blocking startup above never reads as a hang.
+    rt::HangWatchdog::start();
+    QTimer hangHeartbeat;
+    QObject::connect(&hangHeartbeat, &QTimer::timeout,
+                     [] { rt::HangWatchdog::heartbeat(); });
+    hangHeartbeat.start(250);
 
     spdlog::info("ROUNDTABLE NLE ready — entering event loop");
 

@@ -124,6 +124,8 @@ add_roundtable_test(test_media_source_service LIBS roundtable_gpu roundtable_cor
 add_roundtable_test(test_playback_scheduler   LIBS roundtable_gpu roundtable_core)
 # CPU-only mask rasterizer (effects/CpuComposite in core)
 add_roundtable_test(test_mask_raster          LIBS roundtable_core)
+# UI hang watchdog (Windows x64; ~7 s — it waits out the stall threshold)
+add_roundtable_test(test_hang_watchdog        LIBS roundtable_core)
 
 # GPU tests — need a real Vulkan device, so NOT in the headless CI "core" run.
 add_roundtable_test(test_decoder       LIBS roundtable_gpu roundtable_core GROUP gpu)
