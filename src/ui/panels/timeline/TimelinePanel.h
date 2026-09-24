@@ -460,6 +460,14 @@ private:
     void continuePendingClipClick(QPointF pos);
     void continueTransitionTrimDrag(QPointF pos);
 
+    // dragMoveEvent, one handler per dragged payload type
+    // (TimelinePanelDragDrop.cpp).
+    void transitionDragMove(QDragMoveEvent* event);
+    void effectDragMove(QDragMoveEvent* event);
+    void adjustmentDragMove(QDragMoveEvent* event);
+    void sequenceDragMove(QDragMoveEvent* event);
+    void mediaDragMove(QDragMoveEvent* event);
+
     Timeline*             m_timeline{nullptr};
     TimelineLayoutEngine  m_layoutEngine;
     CommandStack*         m_commandStack{nullptr};
