@@ -1,5 +1,5 @@
 /*
- * CaptionsPanel â€” captions/subtitle editor panel.
+ * CaptionsPanel — captions/subtitle editor panel.
  *
  * Displays caption clips from the active sequence's caption tracks,
  * allows editing text/speaker/style, and provides a Transcribe button.

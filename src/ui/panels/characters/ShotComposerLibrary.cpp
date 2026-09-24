@@ -325,7 +325,7 @@ void ShotComposer::refreshVideoLibrary()
         std::string fullPath = entry.absoluteFilePath().toStdString();
         auto it = videoCharacterFiles().find(lower);
         if (it != videoCharacterFiles().end()) {
-            // This file belongs to a video character â€” add as character entry
+            // This file belongs to a video character — add as character entry
             const auto& [charName, mutePath, talkPath] = it->second;
             if (addedVideoChars.count(charName)) continue;
             if (!searchText.isEmpty() &&
@@ -349,7 +349,7 @@ void ShotComposer::refreshVideoLibrary()
             item->setForeground(Theme::colors().accent);
             m_videoLibrary->addItem(item);
         } else {
-            // Regular video â€” apply search filter on the file base name
+            // Regular video — apply search filter on the file base name
             if (!searchText.isEmpty() &&
                 !entry.baseName().toLower().contains(searchText))
                 continue;
@@ -449,7 +449,7 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
         m_propsStack->setCurrentIndex(1);
     m_charPropsGroup->setVisible(true);
 
-    // Convert normalized 0â€“1 storage â†’ percentage display
+    // Convert normalized 0–1 storage → percentage display
     m_posXSpin->setValue(static_cast<double>(ch.posX) * 100.0);
     m_posYSpin->setValue(static_cast<double>(ch.posY) * 100.0);
     m_scaleSpin->setValue(static_cast<double>(ch.scale) * 100.0);
@@ -457,7 +457,7 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     m_opacitySpin->setValue(static_cast<double>(ch.opacity) * 100.0);
     m_blurSpin->setValue(static_cast<double>(ch.blur));
 
-    // Populate outfit combo â€” ensure "default" always appears first
+    // Populate outfit combo — ensure "default" always appears first
     m_outfitCombo->clear();
     bool isVideoChar = ch.isVideoCharacter();
     bool isPuppetChar = ch.isPuppet();
@@ -591,7 +591,7 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
         m_layerPropsTabs->setTabVisible(charTabIdx, spineLike);
     }
 
-    // Crop values are already 0â€“100
+    // Crop values are already 0–100
     m_cropLeftSpin->setValue(static_cast<double>(ch.cropLeft));
     m_cropRightSpin->setValue(static_cast<double>(ch.cropRight));
     m_cropTopSpin->setValue(static_cast<double>(ch.cropTop));
@@ -628,9 +628,9 @@ void ShotComposer::showBackgroundProperties(const BackgroundState& bg)
     m_updating = false;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Slots
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void ShotComposer::onShotListSelectionChanged()
 {
@@ -701,7 +701,7 @@ void ShotComposer::onCharacterPropertyChanged()
     auto* ch = m_currentShot.character(ref.index);
     if (!ch) return;
 
-    // Convert percentage display â†’ normalized 0â€“1 storage
+    // Convert percentage display → normalized 0–1 storage
     ch->posX      = static_cast<float>(m_posXSpin->value() / 100.0);
     ch->posY      = static_cast<float>(m_posYSpin->value() / 100.0);
     ch->scale     = static_cast<float>(m_scaleSpin->value() / 100.0);

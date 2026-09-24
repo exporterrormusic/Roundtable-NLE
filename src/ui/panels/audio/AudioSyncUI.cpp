@@ -106,9 +106,9 @@ void AudioSync::setupUi()
     const auto rad   = QString::number(m.radiusSm);
     const auto radM  = QString::number(m.radiusMd);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     //  ICON RAIL  (left sidebar, matching ProjectPanel style)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     m_audioIconRail = new QWidget;
     m_audioIconRail->setObjectName("AudioIconRail");
     m_audioIconRail->setFixedWidth(150);
@@ -218,9 +218,9 @@ void AudioSync::setupUi()
     railLayout->addStretch();
     rootLayout->addWidget(m_audioIconRail);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     //  SIDE PANEL  (inline expanding column, like ProjectPanel)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     m_audioSidePanel = new QWidget;
     m_audioSidePanel->setObjectName("AudioSidePanel");
     m_audioSidePanel->setMinimumWidth(0);
@@ -630,7 +630,7 @@ void AudioSync::setupUi()
 
     m_audioSidePanelStack->addWidget(m_transcribePage);   // index 2
 
-    // --- MATCH page (index 3) â€” character filter list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // --- MATCH page (index 3) — character filter list ────────────────────
     m_matchPage = new QWidget;
     auto* matchPageLayout = new QVBoxLayout(m_matchPage);
     matchPageLayout->setContentsMargins(m.spacingMd, m.spacingLg,
@@ -756,15 +756,15 @@ void AudioSync::setupUi()
 
     rootLayout->addWidget(m_audioSidePanel);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     //  CONTENT AREA  (match workspace + action bar)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═════════════════════════════════════════════════════════════════════
     m_audioContentArea = new QWidget;
     auto* contentLayout = new QVBoxLayout(m_audioContentArea);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(0);
 
-    // â”€â”€ Status bar (compact, at top of content) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Status bar (compact, at top of content) ─────────────────────────
     auto* statusBar = new QWidget;
     statusBar->setFixedHeight(36);
     statusBar->setStyleSheet(
@@ -791,20 +791,20 @@ void AudioSync::setupUi()
 
     contentLayout->addWidget(statusBar);
 
-    // â”€â”€ MAIN SPLIT PANE  (Left: tabs+list | Right: card scroll) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── MAIN SPLIT PANE  (Left: tabs+list | Right: card scroll) ─────────
     m_splitter = new QSplitter(Qt::Horizontal);
     m_splitter->setStyleSheet(
         QString("QSplitter { background: %1; }"
         "QSplitter::handle { background: %2; width: 3px; }").arg(surf0, brd));
 
-    // â”€â”€ LEFT PANE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── LEFT PANE ───────────────────────────────────────────────────────
     auto* leftPane = new QWidget;
     leftPane->setStyleSheet(QString("QWidget { background: %1; }").arg(surf1));
     auto* leftLayout = new QVBoxLayout(leftPane);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(0);
 
-    // Character tabs removed â€” filter now in MATCH side panel (m_charFilterList)
+    // Character tabs removed — filter now in MATCH side panel (m_charFilterList)
 
     // Script line list
     m_leftScriptList = new QListWidget;
@@ -866,7 +866,7 @@ void AudioSync::setupUi()
 
     m_splitter->addWidget(leftPane);
 
-    // â”€â”€ RIGHT PANE  (continuous scroll of cards) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── RIGHT PANE  (continuous scroll of cards) ────────────────────────
     m_rightScrollArea = new QScrollArea;
     m_rightScrollArea->setWidgetResizable(true);
     m_rightScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -886,7 +886,7 @@ void AudioSync::setupUi()
 
     m_rightScrollArea->setWidget(m_rightScrollContent);
 
-    // Sync right scroll â†’ left list selection
+    // Sync right scroll → left list selection
     connect(m_rightScrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
             this, [this]() { syncLeftListFromScroll(); });
 
@@ -895,7 +895,7 @@ void AudioSync::setupUi()
 
     contentLayout->addWidget(m_splitter, 1);
 
-    // â”€â”€ BOTTOM ACTION BAR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── BOTTOM ACTION BAR ───────────────────────────────────────────────
     m_audioActionBar = new QWidget;
     m_audioActionBar->setFixedHeight(56);
     m_audioActionBar->setStyleSheet(

@@ -90,7 +90,7 @@ bool reopenMediaEntryAsSoftware(MediaEntry& entry)
 } // namespace
 
 
-// â”€â”€â”€ FFmpeg CLI helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── FFmpeg CLI helpers ─────────────────────────────────────────────────────
 
 
 std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
@@ -110,20 +110,20 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
     // SLOW DECODE warnings for the same handle at frame=0, 20, 31, etc).
     if (isStillImage) frameNumber = 0;
 
-    // â”€â”€ Sequential-playback fast path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // During forward playback the frames come in order (N, N+1, N+2â€¦).
+    // ── Sequential-playback fast path ───────────────────────────────────
+    // During forward playback the frames come in order (N, N+1, N+2…).
     // Seeking for each one is catastrophically slow: for ProRes the seek
     // goes back to a keyframe then decode-forwards through every frame in
-    // between â†’ 5-12Ã— the work.  Instead, if the requested frame is the
+    // between → 5-12× the work.  Instead, if the requested frame is the
     // next sequential one, just call decodeNext() directly.
     bool needSeek = true;
     if (!isStillImage && entry.lastDecodedFrame >= 0) {
         int64_t delta = frameNumber - entry.lastDecodedFrame;
         if (delta == 1) {
-            needSeek = false;  // next frame â€” just decode
+            needSeek = false;  // next frame — just decode
         } else if (delta == 0) {
             // Same frame requested again (shouldn't happen, cache
-            // should have caught it) â€” seek as fallback
+            // should have caught it) — seek as fallback
             needSeek = true;
         } else if (delta > 1 && delta <= 180) {
             // Forward skip within a reasonable window.  For HEVC / H.264
@@ -141,12 +141,12 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
             DecodedFrame skip;
             for (int64_t i = 0; i < delta - 1; ++i) {
                 if (!decoder.decodeNext(skip)) {
-                    needSeek = true;  // ran out of packets â€” fall back to seek
+                    needSeek = true;  // ran out of packets — fall back to seek
                     break;
                 }
             }
         }
-        // delta < 0 or > 30 â†’ need full seek
+        // delta < 0 or > 30 → need full seek
     }
 
     if (isStillImage) {
@@ -160,10 +160,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         }
     } else if (needSeek) {
         // Video: seek to the target frame.
-        // During scrubbing use Keyframe mode â€” seeks to the nearest keyframe
+        // During scrubbing use Keyframe mode — seeks to the nearest keyframe
         // and decodes ONE frame.  Precise mode decodes forward from the
         // keyframe to the exact target, which can mean 60-128 frames of
-        // decode work per seek â€” catastrophically slow for scrubbing.
+        // decode work per seek — catastrophically slow for scrubbing.
         const SeekMode mode = scrubMode ? SeekMode::Keyframe : SeekMode::Precise;
         if (!decoder.seek(targetTime, mode)) {
             spdlog::warn("MediaPool: seek failed for handle {} frame {}",
@@ -194,7 +194,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
 
     entry.lastDecodedFrame = frameNumber;
 
-    // â”€â”€ Diagnostic: log decode path selection (once per handle) â”€â”€â”€â”€â”€â”€
+    // ── Diagnostic: log decode path selection (once per handle) ──────
     if (entry.decodePathLogged == 0) {
         spdlog::info("[PERF] MediaPool: handle={} first decode: {}x{} hw={} packedAlpha={} "
                      "fmt={} rawFmt={} data[0]={} data[1]={}",
@@ -209,15 +209,15 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
     auto perfAfterDecode = std::chrono::high_resolution_clock::now();
     double decodeOnlyMs = std::chrono::duration<double, std::milli>(perfAfterDecode - perfDecodeT0).count();
 
-    // â”€â”€ CUDAâ†’Vulkan zero-copy path â€” DISABLED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // The CUDAâ†”Vulkan interop path allocated a full-resolution GPU texture
+    // ── CUDA→Vulkan zero-copy path — DISABLED ─────────────────────────
+    // The CUDA↔Vulkan interop path allocated a full-resolution GPU texture
     // per frame and called vkWaitForFences(UINT64_MAX) inline, blocking
     // the render thread for 72-300ms/frame.  Real NLEs (Kdenlive, Shotcut,
-    // Olive, DaVinci Resolve) use the simple path: NVDEC â†’ CPU transfer â†’
-    // sws_scale downscale â†’ compositor batch-uploads small textures.
+    // Olive, DaVinci Resolve) use the simple path: NVDEC → CPU transfer →
+    // sws_scale downscale → compositor batch-uploads small textures.
     //
-    // The CPU path below respects ResolutionTier (downscales 1080Ã—3776 â†’
-    // ~274Ã—960 for Half tier), so the FrameCache stores tiny frames (~1MB
+    // The CPU path below respects ResolutionTier (downscales 1080×3776 →
+    // ~274×960 for Half tier), so the FrameCache stores tiny frames (~1MB
     // vs 16MB), prefetch workers produce compatible frames, and the
     // GpuTexCache compositor upload is trivially fast.
     //
@@ -284,7 +284,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
         const int h = static_cast<int>(decoded.height);
 
 
-        // â”€â”€ Preview downscale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Preview downscale ───────────────────────────────────────
         // Full preserves native dimensions even for unusually tall/wide
         // artwork. Half and Quarter are true source-relative preview tiers.
         const auto tierSize = resolutionTierDimensions(w, h, tier);
@@ -406,7 +406,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodeFrame(
 nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
         (void)0;
 #else
-        // No FFmpeg â€” copy raw plane data as-is (fallback)
+        // No FFmpeg — copy raw plane data as-is (fallback)
         int planeCount = 0;
         switch (decoded.format) {
             case PixelFormat::YUV420P: planeCount = 3; break;
@@ -514,6 +514,6 @@ nv12_done:  // GPU NV12 fast-path jumps here after successful conversion
     return cached;
 }
 
-// â”€â”€â”€ Prefetch background worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Prefetch background worker ─────────────────────────────────────────────
 
 } // namespace rt

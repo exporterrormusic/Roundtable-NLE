@@ -125,7 +125,7 @@ QPixmap makeFilterDividerIcon(int width)
 
 QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz)
 {
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Check in-memory thumbnail cache first Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Check in-memory thumbnail cache first ────────────────────────────
     std::string cacheKey = charName + ":" + std::to_string(sz);
     if (auto it = m_charThumbCache.find(cacheKey); it != m_charThumbCache.end())
         return it->second;
@@ -238,7 +238,7 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
     //  before the video paths, so green-screen converted videos no longer
     //  hijack Spine characters that have a pre-rendered PNG thumb.)
 
-    //Ã¢â€â‚¬Ã¢â€â‚¬ Fallback: colored placeholder with initial letter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    //── Fallback: colored placeholder with initial letter ───────────────
 
     QPixmap pix(sz, sz);
     pix.fill(Qt::transparent);
@@ -276,7 +276,7 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
     QPainter p(&pix);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Composite layers in z-order (back-to-front) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Composite layers in z-order (back-to-front) ─────────────────────
     // layerOrder[0] = front, layerOrder[last] = back
     for (int li = shot.layerCount() - 1; li >= 0; --li) {
         const auto& ref = shot.layerOrder()[static_cast<size_t>(li)];
@@ -285,7 +285,7 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
             const auto* bg = shot.background(ref.index);
             if (!bg || bg->path.empty() || !bg->visible) continue;
 
-            // Ã¢â€â‚¬Ã¢â€â‚¬ Video background layer Ã¢â‚¬â€ extract a frame for the thumbnail Ã¢â€â‚¬Ã¢â€â‚¬
+            // ── Video background layer — extract a frame for the thumbnail ──
             if (bg->isVideo()) {
                 QImage frame = extractVideoThumbnail(bg->path);
                 if (!frame.isNull()) {
@@ -356,7 +356,7 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
             continue;
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Character layer Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // ── Character layer ─────────────────────────────────────────────
         const auto* ch = shot.character(ref.index);
         if (!ch || !ch->visible) continue;
 
@@ -478,10 +478,10 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
             auto player = getOrCreateVideoPlayer(videoPath);
             if (player && !player->lastFrame.isNull()) {
                 thumb = player->lastFrame;
-                spdlog::debug("  Ã¢â€ â€™ got frame from video player {}x{}",
+                spdlog::debug("  → got frame from video player {}x{}",
                               thumb.width(), thumb.height());
             } else {
-                spdlog::debug("  Ã¢â€ â€™ video player {} lastFrame {}",
+                spdlog::debug("  → video player {} lastFrame {}",
                               player ? "ok" : "null",
                               player ? (player->lastFrame.isNull() ? "null" : "ok") : "n/a");
             }
@@ -489,12 +489,12 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
             // Fallback to ffmpeg extraction
             if (thumb.isNull()) {
                 thumb = extractVideoThumbnail(videoPath);
-                spdlog::debug("  Ã¢â€ â€™ extractVideoThumbnail result: {}",
+                spdlog::debug("  → extractVideoThumbnail result: {}",
                               thumb.isNull() ? "null" : "ok");
             }
 
             if (!thumb.isNull()) {
-                // If this is a packed-alpha frame (2Ãƒâ€” height), unpack it
+                // If this is a packed-alpha frame (2× height), unpack it
                 if (thumb.height() > thumb.width() && (thumb.height() % 2 == 0) &&
                     thumb.height() >= thumb.width() * 1.8) {
                     thumb = unpackPackedAlpha(thumb.bits(),
@@ -565,7 +565,7 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
             }
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Fallback: draw a colored silhouette placeholder Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // ── Fallback: draw a colored silhouette placeholder ─────────────
         if (!charRendered) {
             // Hash character name for a consistent hue
             uint32_t hash = 0;
@@ -598,7 +598,7 @@ QPixmap ShotComposer::makeShotThumbnail(const ShotPreset& shot, int thumbW, int 
         }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Character count badge Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Character count badge ───────────────────────────────────────────
     if (shot.characterCount() > 0) {
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0, 0, 0, 120));
@@ -691,9 +691,9 @@ void ShotComposer::saveShotThumbnail(const ShotPreset& shot)
 }
 
 
-// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-// Video thumbnail extraction Ã¢â‚¬â€ uses ffmpeg to grab first frame
-// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+// ═════════════════════════════════════════════════════════════════════════════
+// Video thumbnail extraction — uses ffmpeg to grab first frame
+// ═════════════════════════════════════════════════════════════════════════════
 
 
 } // namespace rt

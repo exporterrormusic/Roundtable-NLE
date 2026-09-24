@@ -1,5 +1,5 @@
 /*
- * CaptionsPanel.cpp â€” captions/subtitle editor panel.
+ * CaptionsPanel.cpp — captions/subtitle editor panel.
  */
 
 #include "panels/captions/CaptionsPanel.h"
@@ -47,9 +47,9 @@ static void notifyCaptionInfo(QWidget* parent, const QString& message)
  QMessageBox::information(parent, QObject::tr("Replace captions"), message);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Compact MM:SS.mmm timecode (minutes:seconds.milliseconds). Hours are only
 // shown when the value is actually >= 1 hour, so short projects aren't padded
 // with an excessive "HH:" / ":FF" frame field.
@@ -112,9 +112,9 @@ static QString reflowCaptionText(QString text, int maxChars, int maxLines,
  return lines.join('\n');
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Construction
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 CaptionsPanel::CaptionsPanel(QWidget* parent)
  : QWidget(parent)
 {
@@ -133,7 +133,7 @@ void CaptionsPanel::buildUI()
  mainLayout->setContentsMargins(4, 4, 4, 4);
  mainLayout->setSpacing(4);
 
- // â”€â”€ Top action bar (two rows so it stays compact when narrow) â”€â”€â”€â”€â”€
+ // ── Top action bar (two rows so it stays compact when narrow) ─────
  // Row 1: primary actions
  auto* actionRow1 = new QHBoxLayout;
  actionRow1->setSpacing(6);
@@ -188,7 +188,7 @@ void CaptionsPanel::buildUI()
 
  mainLayout->addLayout(actionRow2);
 
- // â”€â”€ Transcription progress bar (hidden unless transcribing) â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Transcription progress bar (hidden unless transcribing) ────────
  m_progressBar = new QProgressBar(this);
  m_progressBar->setObjectName("captionProgress");
  m_progressBar->setFixedHeight(16);
@@ -196,7 +196,7 @@ void CaptionsPanel::buildUI()
  m_progressBar->setVisible(false);
  mainLayout->addWidget(m_progressBar);
 
- // â”€â”€ Caption count + info bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Caption count + info bar ────────────────────────────────────────
  m_countLabel = new QLabel("No captions", this);
  m_countLabel->setObjectName("captionCountLabel");
  mainLayout->addWidget(m_countLabel);
@@ -245,7 +245,7 @@ void CaptionsPanel::buildUI()
  qualityActions->addWidget(m_reflowBtn);
  mainLayout->addLayout(qualityActions);
 
- // â”€â”€ Filter box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Filter box ──────────────────────────────────────────────────────
  m_filterEdit = new QLineEdit(this);
  m_filterEdit->setPlaceholderText("Filter captions (text or speaker)...");
  m_filterEdit->setClearButtonEnabled(true);
@@ -253,7 +253,7 @@ void CaptionsPanel::buildUI()
  connect(m_filterEdit, &QLineEdit::textChanged,
  this, [this](const QString&) { applyCaptionFilter(); });
 
- // Replace row â€” replaces the filter text inside every caption's text.
+ // Replace row — replaces the filter text inside every caption's text.
  auto* replaceRow = new QHBoxLayout();
  m_replaceEdit = new QLineEdit(this);
  m_replaceEdit->setPlaceholderText("Replace with...");
@@ -265,13 +265,13 @@ void CaptionsPanel::buildUI()
  replaceRow->addWidget(m_replaceAllBtn);
  mainLayout->addLayout(replaceRow);
 
- // â”€â”€ Caption list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Caption list ────────────────────────────────────────────────────
  m_captionList = new QListWidget(this);
  m_captionList->setSelectionMode(QAbstractItemView::SingleSelection);
  m_captionList->setMinimumHeight(100);
  mainLayout->addWidget(m_captionList, 1);
 
- // â”€â”€ Editor section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Editor section ──────────────────────────────────────────────────
  m_editorSection = new QWidget(this);
  auto* editorFrame = new QFrame(m_editorSection);
  editorFrame->setObjectName("captionEditorFrame");
@@ -338,7 +338,7 @@ void CaptionsPanel::buildUI()
 
  mainLayout->addWidget(m_editorSection);
 
- // â”€â”€ Connections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Connections ─────────────────────────────────────────────────────
  connect(m_captionList, &QListWidget::currentRowChanged,
  this, &CaptionsPanel::onListSelectionChanged);
  connect(m_textEdit, &QTextEdit::textChanged,
@@ -414,9 +414,9 @@ void CaptionsPanel::applyTheme()
  .arg(Theme::typography().sizeXxs)); // 15
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Timeline binding
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 CaptionsPanel::~CaptionsPanel()
 {
  m_destroying.store(true, std::memory_order_release);
@@ -496,9 +496,9 @@ CaptionClip* CaptionsPanel::entryClip(int row) const
  return findCaptionClipById(m_entries[row].clipId);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Refresh â€” rebuild caption list from timeline
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
+// Refresh — rebuild caption list from timeline
+// ─────────────────────────────────────────────────────────────────────────────
 void CaptionsPanel::refresh()
 {
  m_updatingUI = true;
@@ -622,9 +622,9 @@ void CaptionsPanel::applyCaptionFilter()
  }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Select a specific caption
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 void CaptionsPanel::selectCaption(size_t trackIndex, size_t clipIndex)
 {
  for (int i = 0; i < static_cast<int>(m_entries.size()); ++i) {
@@ -636,9 +636,9 @@ void CaptionsPanel::selectCaption(size_t trackIndex, size_t clipIndex)
  }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Slots
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 void CaptionsPanel::onListSelectionChanged()
 {
  if (m_updatingUI) return;
@@ -681,7 +681,7 @@ void CaptionsPanel::onTextChanged()
  if (newText == oldText) return;
  const auto oldStyles = cc->styleRuns();
 
- // Apply directly (don't call refresh â€” it destroys cursor position)
+ // Apply directly (don't call refresh — it destroys cursor position)
  cc->replaceTextPreservingStyles(newText);
  const auto newStyles = cc->styleRuns();
 
@@ -891,7 +891,7 @@ void CaptionsPanel::onAddCaption()
  clip->setText("New caption");
  uint64_t clipId = clip->id();
 
- // Capture for lambda â€” we need shared ownership of the clip for undo
+ // Capture for lambda — we need shared ownership of the clip for undo
  auto clipShared = std::make_shared<std::unique_ptr<CaptionClip>>(std::move(clip));
  CaptionsPanel* self = this;
 
@@ -1073,7 +1073,7 @@ void CaptionsPanel::onReplaceAll()
  const QString replacement = m_replaceEdit ? m_replaceEdit->text() : QString();
 
  // Precompute per-clip old/new text; only clips whose text actually changes
- // participate (filter also matches speaker â€” don't rewrite those).
+ // participate (filter also matches speaker — don't rewrite those).
  struct Change {
  uint64_t id;
  std::string oldText;

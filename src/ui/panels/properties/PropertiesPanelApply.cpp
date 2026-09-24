@@ -58,7 +58,7 @@ void PropertiesPanel::refreshEffects()
     if (!m_fxParamsLayout) return;
     const auto& m = Theme::metrics();
 
-    // â”€â”€ Clear previous parameter widgets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Clear previous parameter widgets ────────────────────────────────
     while (QLayoutItem* item = m_fxParamsLayout->takeAt(0)) {
         if (item->widget()) {
             item->widget()->deleteLater();
@@ -87,8 +87,8 @@ void PropertiesPanel::refreshEffects()
         return;
     }
 
-    // â”€â”€ Premiere Proâ€“style collapsible header + parameter rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Style constants â€” derived from universal Theme
+    // ── Premiere Pro–style collapsible header + parameter rows ───────────
+    // Style constants — derived from universal Theme
     const auto& tc = Theme::colors();
     const QString kFxHeaderStyle = QStringLiteral(
         "QWidget {"
@@ -135,13 +135,13 @@ void PropertiesPanel::refreshEffects()
             m_fxList->addItem(text);
         }
 
-        // â”€â”€ Container for this effect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Container for this effect ───────────────────────────────────
         auto* fxGroup = new QWidget(m_effectsSection);
         auto* fxGroupLayout = new QVBoxLayout(fxGroup);
         fxGroupLayout->setContentsMargins(0, 0, 0, 0);
         fxGroupLayout->setSpacing(0);
 
-        // â”€â”€ Header row: [â–¸] [Enable] [Effect Name] â”€â”€â”€â”€â”€â”€â”€ [âœ•] â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Header row: [▸] [Enable] [Effect Name] ─────── [✕] ─────────
         auto* header = new QWidget(fxGroup);
         header->setFixedHeight(24);
         header->setStyleSheet(kFxHeaderStyle);
@@ -149,7 +149,7 @@ void PropertiesPanel::refreshEffects()
         headerLayout->setContentsMargins(m.spacingSm, 0, m.spacingXs, 0);
         headerLayout->setSpacing(m.spacingXs);
 
-        // Expand/collapse toggle (â–¸ / â–¾)
+        // Expand/collapse toggle (▸ / ▾)
         auto* toggleBtn = new QPushButton(QStringLiteral("\u25B8"), header);
         toggleBtn->setFixedSize(14, 14);
         toggleBtn->setFlat(true);
@@ -173,7 +173,7 @@ void PropertiesPanel::refreshEffects()
         nameLabel->setStyleSheet(kFxNameStyle);
         headerLayout->addWidget(nameLabel, 1);
 
-        // Remove button (âœ•)
+        // Remove button (✕)
         auto* removeBtn = new QPushButton(QStringLiteral("\u2715"), header);
         removeBtn->setFixedSize(16, 16);
         removeBtn->setToolTip(tr("Remove Effect"));
@@ -182,7 +182,7 @@ void PropertiesPanel::refreshEffects()
 
         fxGroupLayout->addWidget(header);
 
-        // â”€â”€ Parameter rows container (collapsible) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Parameter rows container (collapsible) ──────────────────────
         auto* paramsContainer = new QWidget(fxGroup);
         auto* paramsLayout = new QVBoxLayout(paramsContainer);
         paramsLayout->setContentsMargins(18, m.spacingXs, m.spacingSm, m.spacingSm);
@@ -266,16 +266,16 @@ void PropertiesPanel::refreshEffects()
 
         fxGroupLayout->addWidget(paramsContainer);
 
-        // â”€â”€ Toggle collapse â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Toggle collapse ─────────────────────────────────────────────
         connect(toggleBtn, &QPushButton::clicked, this,
                 [toggleBtn, paramsContainer]() {
             bool visible = paramsContainer->isVisible();
             paramsContainer->setVisible(!visible);
-            toggleBtn->setText(visible ? QStringLiteral("\u25B8")    // â–¸
-                                       : QStringLiteral("\u25BE")); // â–¾
+            toggleBtn->setText(visible ? QStringLiteral("\u25B8")    // ▸
+                                       : QStringLiteral("\u25BE")); // ▾
         });
 
-        // â”€â”€ Enable/disable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Enable/disable ──────────────────────────────────────────────
         size_t effectIdx = i;
         connect(enableCheck, &QCheckBox::toggled, this,
                 [this, effectIdx, nameLabel](bool checked) {
@@ -298,7 +298,7 @@ void PropertiesPanel::refreshEffects()
             emit propertyChanged();
         });
 
-        // â”€â”€ Remove effect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Remove effect ───────────────────────────────────────────────
         connect(removeBtn, &QPushButton::clicked, this,
                 [this, effectIdx]() {
             if (!m_clip) return;
@@ -674,9 +674,9 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
                  sections.size(), visualClips.size());
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Clip binding
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 
 void PropertiesPanel::populateFromClip()
@@ -1012,9 +1012,9 @@ void PropertiesPanel::populateFromGraphic()
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Apply property changes
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void PropertiesPanel::applyLabel()
 {
@@ -1215,13 +1215,13 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 
 // ── Spine methods are in PropertiesPanelSpine.cpp ───────────────────────────
 
-// â”€â”€ Video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Video ───────────────────────────────────────────────────────────────────
 
 // -- Video methods are in PropertiesPanelVideo.cpp --
 // -- Audio methods are in PropertiesPanelAudio.cpp --
 
 
-// â”€â”€ Audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Audio ───────────────────────────────────────────────────────────────────
 
 
 // -- Audio methods are in PropertiesPanelAudio.cpp --
@@ -1232,7 +1232,7 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 
 
 
-// â”€â”€ Title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Title ───────────────────────────────────────────────────────────────────
 
 
 // -- Title methods are in PropertiesPanelTitle.cpp --
@@ -1247,9 +1247,9 @@ void PropertiesPanel::applyTransform(ScrubbySpinBox* src, double oldUi, double n
 
 
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Graphic property changes
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 // -- Graphic methods are in PropertiesPanelGraphic.cpp --
 // (their selectedGraphicTextLayer() helper lives there too)

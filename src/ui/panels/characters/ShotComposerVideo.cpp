@@ -76,11 +76,11 @@ extern "C" {
 
 namespace rt {
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// AVFrame â†’ QImage conversion helper  (YUV420P / NV12 / HW â†’ BGRA)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+// AVFrame → QImage conversion helper  (YUV420P / NV12 / HW → BGRA)
+// ═════════════════════════════════════════════════════════════════════════════
 #ifdef ROUNDTABLE_HAS_FFMPEG
-// Thread-local cached SwsContext â€” safe with async video decode threads
+// Thread-local cached SwsContext — safe with async video decode threads
 static thread_local SwsContext* s_swsCtx    = nullptr;
 static thread_local int         s_swsSrcW   = 0;
 static thread_local int         s_swsSrcH   = 0;
@@ -93,8 +93,8 @@ static thread_local AVPixelFormat s_swsFmt  = AV_PIX_FMT_NONE;
 /// 4444 resolution (~8 MP) just for preview.  Cap each axis independently at
 /// 1920 to support both landscape AND portrait content without aggressive
 /// downscaling.  The WebM transcodes are already 1080px wide, so portrait
-/// content (e.g. 1080Ã—1888) passes through at full quality instead of being
-/// squashed to ~411Ã—720 by the old 1280Ã—720 cap.
+/// content (e.g. 1080×1888) passes through at full quality instead of being
+/// squashed to ~411×720 by the old 1280×720 cap.
 static constexpr int PREVIEW_MAX_WIDTH  = 1920;
 static constexpr int PREVIEW_MAX_HEIGHT = 1920;
 
@@ -118,7 +118,7 @@ static QImage decodeFrameToQImage(DecodedFrame& df, VideoDecoder* decoder)
     if (w <= 0 || h <= 0)
         return {};
 
-    // Use the AVFrame's actual pixel format â€” handles all formats correctly
+    // Use the AVFrame's actual pixel format — handles all formats correctly
     AVPixelFormat srcFmt = static_cast<AVPixelFormat>(avf->format);
 
     // If already BGRA at a reasonable size, create QImage directly
@@ -129,8 +129,8 @@ static QImage decodeFrameToQImage(DecodedFrame& df, VideoDecoder* decoder)
     }
 
     // Downscale to preview dimensions during sws_scale.
-    // This is the key optimisation for ProRes 4444 (YUVA444P10LE â†’ BGRA):
-    // converting+scaling at 640Ã—360 is ~9Ã— less work than at 1920Ã—1080.
+    // This is the key optimisation for ProRes 4444 (YUVA444P10LE → BGRA):
+    // converting+scaling at 640×360 is ~9× less work than at 1920×1080.
     int dstW = w, dstH = h;
     if (dstW > PREVIEW_MAX_WIDTH || dstH > PREVIEW_MAX_HEIGHT) {
         float scaleX = static_cast<float>(PREVIEW_MAX_WIDTH)  / static_cast<float>(w);
@@ -167,7 +167,7 @@ static QImage decodeFrameToQImage(DecodedFrame& df, VideoDecoder* decoder)
 }
 #endif
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Construction
 
 
@@ -180,7 +180,7 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
 
     spdlog::info("ShotComposer: extractVideoThumbnail called for '{}'", path);
 
-    // Find ffmpeg executable â€” check multiple locations
+    // Find ffmpeg executable — check multiple locations
     QString ffmpegPath;
     QStringList searchPaths = {
         QStringLiteral("third_party/ffmpeg/bin/ffmpeg.exe"),
@@ -297,9 +297,9 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
     return frame;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// Video looping playback â€” uses VideoDecoder to decode frames in real-time
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+// Video looping playback — uses VideoDecoder to decode frames in real-time
+// ═════════════════════════════════════════════════════════════════════════════
 
 ShotComposer::VideoPlaybackState::~VideoPlaybackState()
 {
@@ -380,7 +380,7 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
         state->lastFrame = std::move(firstFrame);
     }
 
-    spdlog::info("ShotComposer: opened video player for '{}' â€” {:.1f}s @ {:.1f}fps",
+    spdlog::info("ShotComposer: opened video player for '{}' — {:.1f}s @ {:.1f}fps",
                  path, state->duration, state->fps);
 
     // Launch a persistent worker thread for this video player.
@@ -412,7 +412,7 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
             DecodedFrame df;
             bool ok = sp->decoder->decodeNext(df);
             if (!ok) {
-                // EOF â€” loop
+                // EOF — loop
                 sp->decoder->seek(0.0, SeekMode::Keyframe);
                 ok = sp->decoder->decodeNext(df);
             }
@@ -495,9 +495,9 @@ QImage ShotComposer::advanceVideoPlayer(
 #endif
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// Preview â€” composite ALL visible character layers into SpinePreviewWidget
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+// Preview — composite ALL visible character layers into SpinePreviewWidget
+// ═════════════════════════════════════════════════════════════════════════════
 
 
 } // namespace rt

@@ -1,5 +1,5 @@
 ﻿/*
- * ExportPanel.cpp â€” Export settings and render queue UI implementation.
+ * ExportPanel.cpp — Export settings and render queue UI implementation.
  */
 
 #include "ExportPanel.h"

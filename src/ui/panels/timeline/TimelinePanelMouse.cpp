@@ -202,7 +202,7 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     }
     case EditTool::Selection:
     {
-        // â”€â”€ Check for transition-edge drag FIRST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Check for transition-edge drag FIRST ───────────────────────
         {
             double px = pos.x() - headerWidth();
             size_t ti = hitTestTrack(pos.y());
@@ -273,7 +273,7 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
             }
         }
 
-        // â”€â”€ Check for transition body click (select transition) â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Check for transition body click (select transition) ────────
         // SKIP when the click is within the edge-grab zone of any clip's
         // head or tail on this track: otherwise a clip with a transition
         // on its edge becomes un-trimmable — the transition body covers

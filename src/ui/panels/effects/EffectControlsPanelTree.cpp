@@ -190,7 +190,7 @@ void EffectControlsPanel::buildPropertyTree()
     const auto& tc = Theme::colors();
     int rowIdx = 0;
 
-    // â”€â”€ Section header helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Section header helper ───────────────────────────────────────────
     auto makeSectionHeader = [&](const QString& title,
                                  bool hasFxToggle = true) -> QWidget* {
         auto* header = new QWidget(m_propContainer);
@@ -205,7 +205,7 @@ void EffectControlsPanel::buildPropertyTree()
         hl->setSpacing(6);
 
         auto* arrow = new QToolButton(header);
-        arrow->setText(QStringLiteral("\u25BC"));  // â–¼
+        arrow->setText(QStringLiteral("\u25BC"));  // ▼
         arrow->setFixedSize(16, 20);
         arrow->setStyleSheet(QStringLiteral(
             "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
@@ -251,7 +251,7 @@ void EffectControlsPanel::buildPropertyTree()
         return header;
     };
 
-    // â”€â”€ Row builder helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Row builder helper ──────────────────────────────────────────────
     auto makeRow = [&](const QString& name,
                        KeyframeTrack<float>* track) -> PropertyRow* {
         auto* row = new PropertyRow(name, track, m_propContainer);
@@ -387,12 +387,12 @@ void EffectControlsPanel::buildPropertyTree()
         return row;
     };
 
-    // Audio clips only show Speed â€” no visual transform
+    // Audio clips only show Speed — no visual transform
     bool isAudio = (m_clip->isAudio());
 
-    // â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // â•‘  VIDEO / VISUAL PROPERTIES â€” Motion, Crop, Opacity
-    // â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ╔════════════════════════════════════════════════════════════════════
+    // ║  VIDEO / VISUAL PROPERTIES — Motion, Crop, Opacity
+    // ╚════════════════════════════════════════════════════════════════════
 
     if (!isAudio) {
         // "Video" header label
@@ -406,7 +406,7 @@ void EffectControlsPanel::buildPropertyTree()
             .arg(Theme::typography().sizeXxs));
         m_propLayout->addWidget(videoLabel);
 
-        // â”€â”€ Motion section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Motion section ──────────────────────────────────────────────
         m_motionSection = makeSectionHeader("Motion");
         m_propLayout->addWidget(m_motionSection);
 
@@ -439,7 +439,7 @@ void EffectControlsPanel::buildPropertyTree()
         m_propLayout->addWidget(m_scaleWRow);
         m_scaleWRow->setVisible(false);
 
-        // Uniform Scale checkbox (no keyframe track â€” just a toggle)
+        // Uniform Scale checkbox (no keyframe track — just a toggle)
         m_uniformScaleCheck = new QCheckBox("Uniform Scale", m_propContainer);
         m_uniformScaleCheck->setChecked(true);
         m_uniformScaleCheck->setFixedHeight(28);
@@ -497,7 +497,7 @@ void EffectControlsPanel::buildPropertyTree()
         antiFlickerRow->addValueWidget(m_antiFlickerSpin);
         m_propLayout->addWidget(antiFlickerRow);
 
-        // â”€â”€ Crop section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Crop section ────────────────────────────────────────────────
         m_cropSection = makeSectionHeader("Crop", false);
         m_propLayout->addWidget(m_cropSection);
 
@@ -521,7 +521,7 @@ void EffectControlsPanel::buildPropertyTree()
         cropBRow->addValueWidget(m_cropBottomSpin);
         m_propLayout->addWidget(cropBRow);
 
-        // â”€â”€ Opacity section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Opacity section ─────────────────────────────────────────────
         m_opacitySection = makeSectionHeader("Opacity");
         // Add mask shape buttons inline with the Opacity header
         {
@@ -621,13 +621,13 @@ void EffectControlsPanel::buildPropertyTree()
             }
         });
 
-        // â”€â”€ Mask sub-sections (below blend mode, still in Opacity section) â”€â”€
+        // ── Mask sub-sections (below blend mode, still in Opacity section) ──
         buildMaskUI(m_clip->masks(), 0, rowIdx);
     }
 
-    // â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // â•‘  AUDIO PROPERTIES â€” Volume, Pan
-    // â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ╔════════════════════════════════════════════════════════════════════
+    // ║  AUDIO PROPERTIES — Volume, Pan
+    // ╚════════════════════════════════════════════════════════════════════
 
     if (isAudio) {
         auto* audioClip = dynamic_cast<AudioClip*>(m_clip);
@@ -643,14 +643,14 @@ void EffectControlsPanel::buildPropertyTree()
         m_propLayout->addWidget(audioLabel);
 
         if (audioClip) {
-            // â”€â”€ Volume â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Volume ──────────────────────────────────────────────────
             auto* volRow = makeRow("Volume", &audioClip->volume());
             // Volume displayed in dB (range -60..+12), stored as linear gain.
             m_audioVolumeSpin = createScrubby(-60.0, 12.0, 0.1, 1, " dB");
             volRow->addValueWidget(m_audioVolumeSpin);
             m_propLayout->addWidget(volRow);
 
-            // â”€â”€ Pan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Pan ─────────────────────────────────────────────────────
             auto* panRow = makeRow("Pan", &audioClip->pan());
             m_panSpin = createScrubby(-100, 100, 1.0, 1);
             panRow->addValueWidget(m_panSpin);
@@ -658,7 +658,7 @@ void EffectControlsPanel::buildPropertyTree()
         }
     }
 
-    // â”€â”€ Time Remapping section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Time Remapping section ──────────────────────────────────────────
     m_timeRemapSection = makeSectionHeader("Time Remapping");
     m_propLayout->addWidget(m_timeRemapSection);
 
@@ -667,7 +667,7 @@ void EffectControlsPanel::buildPropertyTree()
     speedRow->addValueWidget(m_speedSpin);
     m_propLayout->addWidget(speedRow);
 
-    // â”€â”€ Applied Effects section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Applied Effects section ─────────────────────────────────────────
     if (m_clip->effects().effectCount() > 0) {
         for (size_t i = 0; i < m_clip->effects().effectCount(); ++i) {
             auto& fx = m_clip->effects().effect(i);
@@ -767,7 +767,7 @@ void EffectControlsPanel::buildPropertyTree()
 
             // Delete button
             auto* deleteBtn = new QToolButton(fxHeader);
-            deleteBtn->setText(QStringLiteral("\u2715")); // âœ•
+            deleteBtn->setText(QStringLiteral("\u2715")); // ✕
             deleteBtn->setFixedSize(20, 20);
             deleteBtn->setStyleSheet(QStringLiteral(
                 "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
@@ -829,7 +829,7 @@ void EffectControlsPanel::buildPropertyTree()
             // Left-click on header selects the effect
             fxHeader->installEventFilter(this);
 
-            // â”€â”€ Ultra Key gets grouped sub-sections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Ultra Key gets grouped sub-sections ─────────────────────
             if (fx.effectType() == EffectType::ChromaKey) {
                 buildUltraKeyUI(fx, effectIdx, rowIdx);
             } else if (fx.effectType() == EffectType::LUT) {
@@ -868,7 +868,7 @@ void EffectControlsPanel::buildPropertyTree()
     if (m_sectionCollapsed.find(QStringLiteral("Time Remapping")) == m_sectionCollapsed.end())
         m_sectionCollapsed[QStringLiteral("Time Remapping")] = true;
 
-    // â”€â”€ Wire up collapsible section arrows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Wire up collapsible section arrows ──────────────────────────────
     // Walk the layout to find which children belong to each section header.
     // Each section runs from the header to just before the next header or end.
     {
@@ -946,8 +946,8 @@ void EffectControlsPanel::buildPropertyTree()
                     }
                     child->setVisible(show);
                 }
-                sec.arrow->setText(collapsed ? QStringLiteral("\u25B6")   // â–¶ collapsed
-                                             : QStringLiteral("\u25BC")); // â–¼ expanded
+                sec.arrow->setText(collapsed ? QStringLiteral("\u25B6")   // ▶ collapsed
+                                             : QStringLiteral("\u25BC")); // ▼ expanded
             });
 
             // Wire reset button to reset all scrubby spinboxes in this section
@@ -977,7 +977,7 @@ void EffectControlsPanel::buildPropertyTree()
         }
     }
 
-    // Connect transform spins â€” live preview during scrub, undo on commit
+    // Connect transform spins — live preview during scrub, undo on commit
     auto connectTransform = [this](ScrubbySpinBox* spin) {
         if (!spin) return;
         connect(spin, &ScrubbySpinBox::valueScrubbed,
@@ -988,8 +988,8 @@ void EffectControlsPanel::buildPropertyTree()
         connect(spin, &ScrubbySpinBox::valueCommitted,
                 this, &EffectControlsPanel::commitTransform);
         // Note: editingFinished is NOT connected here. Both scrub and
-        // typed entry go through valueScrubbed â†’ applyTransformLive
-        // then valueCommitted â†’ commitTransform for undo.
+        // typed entry go through valueScrubbed → applyTransformLive
+        // then valueCommitted → commitTransform for undo.
     };
     connectTransform(m_posXSpin);
     connectTransform(m_posYSpin);
@@ -1082,7 +1082,7 @@ void EffectControlsPanel::populateFromClip()
     // Speed (percentage)
     if (m_speedSpin) m_speedSpin->setValue(m_clip->speed() * 100.0);
 
-    // Audio â€” Pan and Volume (via AudioClip)
+    // Audio — Pan and Volume (via AudioClip)
     if (m_panSpin || m_audioVolumeSpin) {
         auto* audioClip = dynamic_cast<AudioClip*>(m_clip);
         if (audioClip) {
@@ -1094,7 +1094,7 @@ void EffectControlsPanel::populateFromClip()
     m_updating = false;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  wireEffectParam â€” connect a ScrubbySpinBox to an effect parameter
+// ═════════════════════════════════════════════════════════════════════════════
+//  wireEffectParam — connect a ScrubbySpinBox to an effect parameter
 
 } // namespace rt

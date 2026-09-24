@@ -1,5 +1,5 @@
 ﻿/*
- * CharacterBrowser.cpp â€” Character download and preview panel.
+ * CharacterBrowser.cpp — Character download and preview panel.
  *
  * Ported from the original Python CharacterPanel.
  */
@@ -51,9 +51,9 @@
 
 namespace rt {
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Construction
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 CharacterBrowser::CharacterBrowser(QWidget* parent)
     : QWidget(parent)
@@ -133,9 +133,9 @@ CharacterBrowser::CharacterBrowser(QWidget* parent)
 
 CharacterBrowser::~CharacterBrowser() = default;
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Configuration
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void CharacterBrowser::setModelManager(ModelManager* mgr)
 {
@@ -151,9 +151,9 @@ void CharacterBrowser::setAnimVideoCache(AnimationVideoCache* cache)
         populateCharacterList();
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Actions
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void CharacterBrowser::refreshList()
 {
@@ -175,9 +175,9 @@ QStringList CharacterBrowser::selectedCharacters() const
     return names;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // UI Setup
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 
 void CharacterBrowser::discoverVideoCharacters()
@@ -483,7 +483,7 @@ void CharacterBrowser::populateControls()
 
     const auto* entry = m_modelManager->findByName(charName.toStdString());
 
-    // Populate outfits â€” prefer metadata list (includes undownloaded), fall back to disk
+    // Populate outfits — prefer metadata list (includes undownloaded), fall back to disk
     m_outfitCombo->blockSignals(true);
     m_outfitCombo->clear();
 
@@ -503,7 +503,7 @@ void CharacterBrowser::populateControls()
             if (mo.key == "default" && metaOutfits.size() > 1)
                 label += QStringLiteral("  (Default)");
             if (!onDisk)
-                label += QString::fromUtf8("  \u2B07");  // â¬‡ not downloaded
+                label += QString::fromUtf8("  \u2B07");  // ⬇ not downloaded
             m_outfitCombo->addItem(label, QString::fromStdString(mo.key));
         }
     } else if (entry) {
@@ -629,7 +629,7 @@ void CharacterBrowser::loadPreviewModel()
         return;
     }
 
-    // Populate animation dropdown â€” each character has unique animation names.
+    // Populate animation dropdown — each character has unique animation names.
     // Filter out internal talk bookend animations.
     auto anims = m_spineEngine->animation().listAnimations();
     m_animationCombo->blockSignals(true);
@@ -681,9 +681,9 @@ void CharacterBrowser::loadPreviewModel()
 #endif
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Letter navigation
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void CharacterBrowser::scrollToLetter(QChar letter)
 {
@@ -714,9 +714,9 @@ void CharacterBrowser::scrollToLetter(QChar letter)
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Slots
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void CharacterBrowser::onSearchChanged(const QString& text)
 {
@@ -968,7 +968,7 @@ void CharacterBrowser::onDeleteClicked()
 
 void CharacterBrowser::onOutfitChanged(int /*index*/)
 {
-    // Don't call populateControls() â€” it resets the outfit combo.
+    // Don't call populateControls() — it resets the outfit combo.
     // Re-populate stances for the new outfit and reload the model.
 #ifdef ROUNDTABLE_HAS_SPINE
     if (!m_modelManager) return;

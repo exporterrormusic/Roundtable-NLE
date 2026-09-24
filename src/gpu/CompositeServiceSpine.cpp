@@ -31,7 +31,7 @@ namespace rt {
 
 #ifdef ROUNDTABLE_HAS_SPINE
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Shared spine data helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ── Shared spine data helpers ───────────────────────────────────────────
 
 std::string CompositeService::spineCharKey(const SpineClip& clip)
 {
@@ -62,7 +62,7 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
     if (it != m_spineSharedCache.end())
         return it->second;
 
-    // Create new shared data Ã¢â‚¬â€ resolve paths and decode atlas PNGs once.
+    // Create new shared data — resolve paths and decode atlas PNGs once.
     auto shared = std::make_shared<SpineSharedData>();
     shared->loadState = ResourceLoadState::Loading;
 
@@ -124,7 +124,7 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
         return shared;
     }
 
-    // Decode atlas page PNGs into CPU memory (the expensive part Ã¢â‚¬â€ done once)
+    // Decode atlas page PNGs into CPU memory (the expensive part — done once)
     const auto& pages = tempEngine.atlas().pages();
     const auto& atlasDir = tempEngine.atlas().directory();
     shared->pagePixels.resize(pages.size());
@@ -370,7 +370,7 @@ void CompositeService::resyncSpineClip(SpineClip* clip)
     st.cachedTick = -1;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Non-blocking spine state accessor Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ── Non-blocking spine state accessor ───────────────────────────────────
 // Returns the cached SpineCPUState if available, or nullptr if it needs
 // to be loaded. When nullptr is returned, background loading is scheduled
 // so the next refresh will find the cache warm.
@@ -390,7 +390,7 @@ CompositeService::tryGetSpineState(SpineClip* clip)
     if (sit != m_spineSharedCache.end() && sit->second &&
         sit->second->loadState == ResourceLoadState::Ready &&
         !sit->second->skelBytes.empty()) {
-        // Shared data is cached with valid buffers Ã¢â‚¬â€ create per-clip engine
+        // Shared data is cached with valid buffers — create per-clip engine
         // synchronously (fast path: only creates Skeleton + AnimationState
         // from in-memory buffers, ~3-7ms, no disk I/O).
         try {
@@ -410,7 +410,7 @@ CompositeService::tryGetSpineState(SpineClip* clip)
         return nullptr;
     }
 
-    // Shared data is NOT cached Ã¢â‚¬â€ need heavy loading.
+    // Shared data is NOT cached — need heavy loading.
     // Schedule it in the background instead of blocking.
     std::string assetsDir = "assets";
     if (m_modelManager) assetsDir = m_modelManager->assetsDir();
@@ -489,13 +489,13 @@ void CompositeService::warmNewSpineClips()
     }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Pre-warm spine cache at project-open time Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ── Pre-warm spine cache at project-open time ───────────────────────────
 // Scans all tracks for SpineClips and eagerly loads their skeleton +
 // atlas PNG data so the first compositeFrame finds the cache warm and
 // doesn't block on disk I/O (~100-200ms per clip eliminated).
 //
 // OPTIMIZATION: Skip skeleton loading for clips whose animation is
-// already pre-rendered to video Ã¢â‚¬â€ the compositor will use the cached
+// already pre-rendered to video — the compositor will use the cached
 // video and never touch the live Spine engine. This avoids loading
 // hundreds of skeletons + atlas PNGs (50+ seconds, ~2 GB RAM) when all
 // animations are fully cached.
@@ -522,7 +522,7 @@ void CompositeService::preloadSpineAssets()
             // Pre-rendered video existence is irrelevant — the GPU path needs
             // atlas textures regardless.
 
-            // Use shared helpers Ã¢â‚¬â€ atlas data is loaded once per character
+            // Use shared helpers — atlas data is loaded once per character
             // Schedule the heavy skeleton+atlas decode on a background thread
             // (scheduleSpineSharedLoad) instead of loading it synchronously on
             // the UI thread, which cost ~10s when opening projects with many

@@ -65,13 +65,13 @@ protected:
 };
 } // anon
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 QWidget* ShotComposer::createPropertiesPanel()
 {
     const auto& m = Theme::metrics();
     const auto& c = Theme::colors();
-    // Right panel: vertical splitter â€” top = Shot Name + Properties, bottom = Layers
+    // Right panel: vertical splitter — top = Shot Name + Properties, bottom = Layers
     auto* rightSplitter = new QSplitter(Qt::Vertical);
     m_rightSplitter = rightSplitter;
     rightSplitter->setObjectName("ComposeRightSplitter");
@@ -83,17 +83,17 @@ QWidget* ShotComposer::createPropertiesPanel()
         .arg(Theme::hex(c.border))
         .arg(Theme::hex(c.accent)));
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // TOP SECTION: Shot Name + Layer Properties + Camera
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     auto* topSection = new QWidget;
     auto* topLayout = new QVBoxLayout(topSection);
     topLayout->setContentsMargins(m.spacingMd, m.spacingMd, m.spacingMd, m.spacingMd);
     topLayout->setSpacing(m.spacingSm);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // Shot Name â€” compact row at the very top
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
+    // Shot Name — compact row at the very top
+    // ═══════════════════════════════════════════
     auto* shotNameGroup = new QGroupBox(QStringLiteral("SHOT"));
     // QGroupBox styling inherited from panel stylesheet
     auto* shotNameLayout = new QVBoxLayout(shotNameGroup);
@@ -203,7 +203,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     m_defaultShotCheck->setEnabled(false);
     m_defaultShotCheck->setVisible(false);
 
-    // Default character row â€” compact toggle
+    // Default character row — compact toggle
     auto* defaultLayout = new QHBoxLayout;
     defaultLayout->setContentsMargins(0, 0, 0, 0);
     defaultLayout->setSpacing(3);
@@ -273,9 +273,9 @@ QWidget* ShotComposer::createPropertiesPanel()
     connect(m_shotNameEdit, &QLineEdit::textChanged,
             this, &ShotComposer::onShotNameChanged);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // Layers section (added to splitter bottom later)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     auto* layersGroup = new QGroupBox(QStringLiteral("LAYERS"));
     // Group box styling inherited from panel stylesheet
     auto* layersVbox = new QVBoxLayout(layersGroup);
@@ -350,7 +350,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     });
     layersVbox->addWidget(m_layerList, 1);
 
-    // Layer action buttons â€” compact Photoshop-style toolbar
+    // Layer action buttons — compact Photoshop-style toolbar
     auto* layerBtns = new QHBoxLayout;
     layerBtns->setSpacing(m.spacingXxs);
     layerBtns->setContentsMargins(0, m.spacingXxs, 0, 0);
@@ -391,25 +391,25 @@ QWidget* ShotComposer::createPropertiesPanel()
     m_propsStack = new QStackedWidget;
     m_propsStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // â”€â”€ Page 0: Empty placeholder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Page 0: Empty placeholder ───────────────────────────────────────
     m_emptyPropsLabel = new QLabel("Select a layer to edit properties");
     m_emptyPropsLabel->setAlignment(Qt::AlignCenter);
     m_emptyPropsLabel->setObjectName("EmptyLabel");
     m_propsStack->addWidget(m_emptyPropsLabel);  // index 0
 
-    // â”€â”€ Page 1: Character properties (side-by-side columns) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Page 1: Character properties (side-by-side columns) ────────────
     m_charPropsGroup = new QGroupBox;
     m_charPropsGroup->setFlat(true);
     auto* charColumnsLayout = new QHBoxLayout(m_charPropsGroup);
     charColumnsLayout->setContentsMargins(0, 0, 0, 0);
     charColumnsLayout->setSpacing(m.spacingSm);
 
-    // Keep m_layerPropsTabs as nullptr â€” no longer used as a tab widget
+    // Keep m_layerPropsTabs as nullptr — no longer used as a tab widget
     m_layerPropsTabs = nullptr;
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ══════════════════════════════════════════════════════════
     // LEFT COLUMN: Transform + Crop
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ══════════════════════════════════════════════════════════
     auto* transformColumn = new QWidget;
     transformColumn->setObjectName("TransformTabBg");
     auto* transformGrid = new QGridLayout(transformColumn);
@@ -443,7 +443,7 @@ QWidget* ShotComposer::createPropertiesPanel()
         return lbl;
     };
 
-    // â”€â”€ Position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Position ────────────────────────────────────────────────
     m_posXSpin = new ScrubbySpinBox;
     m_posXSpin->setRange(-200.0, 200.0);
     m_posXSpin->setScrubStep(0.1);
@@ -467,7 +467,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->addWidget(makeShotSep(), tRow, 0, 1, 5);
     ++tRow;
 
-    // â”€â”€ Scale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Scale ───────────────────────────────────────────────────
     m_scaleSpin = new ScrubbySpinBox;
     m_scaleSpin->setRange(10.0, 1000.0);
     m_scaleSpin->setValue(100.0);
@@ -483,7 +483,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->addWidget(makeShotSep(), tRow, 0, 1, 5);
     ++tRow;
 
-    // â”€â”€ Rotation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Rotation ────────────────────────────────────────────────
     m_rotationSpin = new ScrubbySpinBox;
     m_rotationSpin->setRange(-180.0, 180.0);
     m_rotationSpin->setValue(0.0);
@@ -499,7 +499,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->addWidget(makeShotSep(), tRow, 0, 1, 5);
     ++tRow;
 
-    // â”€â”€ Opacity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Opacity ─────────────────────────────────────────────────
     m_opacitySpin = new ScrubbySpinBox;
     m_opacitySpin->setRange(0.0, 100.0);
     m_opacitySpin->setValue(100.0);
@@ -515,7 +515,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->addWidget(makeShotSep(), tRow, 0, 1, 5);
     ++tRow;
 
-    // â”€â”€ Blur â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Blur ────────────────────────────────────────────────────
     m_blurSpin = new ScrubbySpinBox;
     m_blurSpin->setRange(0.0, 100.0);
     m_blurSpin->setValue(0.0);
@@ -531,7 +531,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->addWidget(makeShotSep(), tRow, 0, 1, 5);
     ++tRow;
 
-    // â”€â”€ Options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Options ─────────────────────────────────────────────────
     m_flipXCheck = new QCheckBox("Flip Horizontal");
     // Checkbox styling inherited from panel stylesheet
     transformGrid->addWidget(m_flipXCheck, tRow, 0, 1, 5);
@@ -554,7 +554,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     transformGrid->setColumnStretch(3, 0);
     transformGrid->setColumnStretch(4, 1);
 
-    // â”€â”€ Crop section (below transform with spacing) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Crop section (below transform with spacing) ─────────────────────
     // Add spacing between transform controls and crop
     transformGrid->setRowMinimumHeight(tRow, m.spacingLg);
     ++tRow;
@@ -623,7 +623,7 @@ QWidget* ShotComposer::createPropertiesPanel()
 
     charColumnsLayout->addWidget(transformColumn, 1);
 
-    // â”€â”€ Vertical divider between columns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Vertical divider between columns ─────────────────────
     auto* columnDivider = new QFrame;
     columnDivider->setFrameShape(QFrame::VLine);
     columnDivider->setFrameShadow(QFrame::Plain);
@@ -633,9 +633,9 @@ QWidget* ShotComposer::createPropertiesPanel()
         .arg(Theme::hex(c.borderLight)));
     charColumnsLayout->addWidget(columnDivider);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ══════════════════════════════════════════════════════════
     // RIGHT COLUMN: Character settings (Live2D / Spine)
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ══════════════════════════════════════════════════════════
     auto* charSettingsColumn = new QWidget;
     auto* charSettingsLayout = new QVBoxLayout(charSettingsColumn);
     charSettingsLayout->setContentsMargins(m.spacingLg, m.spacingXl, m.spacingLg, m.spacingLg);
@@ -675,7 +675,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     m_charPropsGroup->setVisible(false);
     m_propsStack->addWidget(m_charPropsGroup);   // index 1
 
-    // â”€â”€ Connect character property changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Connect character property changes ──────────────────────────────
     auto charChanged = [this]() { onCharacterPropertyChanged(); };
     connect(m_posXSpin,      QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
     connect(m_posYSpin,      QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, charChanged);
@@ -705,7 +705,7 @@ QWidget* ShotComposer::createPropertiesPanel()
         onCharacterCropChanged();
     });
 
-    // â”€â”€ Page 2: Background properties (tabbed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Page 2: Background properties (tabbed) ─────────────────────────
     m_bgPropsGroup = new QGroupBox;
     m_bgPropsGroup->setFlat(true);
     auto* bgTabsLayout = new QVBoxLayout(m_bgPropsGroup);
@@ -740,7 +740,7 @@ QWidget* ShotComposer::createPropertiesPanel()
 
     int bgRow = 0;
 
-    // â”€â”€ Position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Position ────────────────────────────────────────────────
     m_bgPosXSpin = new ScrubbySpinBox;
     m_bgPosXSpin->setRange(-200.0, 200.0);
     m_bgPosXSpin->setScrubStep(1.0);
@@ -764,7 +764,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     bgGrid->addWidget(makeBgSep(), bgRow, 0, 1, 5);
     ++bgRow;
 
-    // â”€â”€ Scale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Scale ───────────────────────────────────────────────────
     m_bgScaleSpin = new ScrubbySpinBox;
     m_bgScaleSpin->setRange(10.0, 1000.0);
     m_bgScaleSpin->setScrubStep(1.0);
@@ -779,7 +779,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     bgGrid->addWidget(makeBgSep(), bgRow, 0, 1, 5);
     ++bgRow;
 
-    // â”€â”€ Opacity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Opacity ─────────────────────────────────────────────────
     m_bgOpacitySpin = new ScrubbySpinBox;
     m_bgOpacitySpin->setRange(0.0, 100.0);
     m_bgOpacitySpin->setValue(100.0);
@@ -795,7 +795,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     bgGrid->addWidget(makeBgSep(), bgRow, 0, 1, 5);
     ++bgRow;
 
-    // â”€â”€ Blur â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Blur ─────────────────────────────────────────────────────
     m_bgBlurSpin = new ScrubbySpinBox;
     m_bgBlurSpin->setRange(0.0, 100.0);
     m_bgBlurSpin->setValue(0.0);
@@ -856,7 +856,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     m_bgPropsGroup->setVisible(false);
     m_propsStack->addWidget(m_bgPropsGroup);     // index 2
 
-    // â”€â”€ Connect BG / video property changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Connect BG / video property changes ─────────────────────────────
     connect(m_videoInSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this]() { onVideoTimingChanged(); });
     connect(m_videoOutSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -878,9 +878,9 @@ QWidget* ShotComposer::createPropertiesPanel()
 
     topLayout->addWidget(m_propsStack, 1);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    // Camera spins â€” hidden, kept for preset load/save compatibility
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
+    // Camera spins — hidden, kept for preset load/save compatibility
+    // ═══════════════════════════════════════════
     m_cameraZoomSpin = new ScrubbySpinBox;
     m_cameraZoomSpin->setRange(10.0, 1000.0);
     m_cameraZoomSpin->setValue(100.0);
@@ -899,9 +899,9 @@ QWidget* ShotComposer::createPropertiesPanel()
     // Add top section (Shot Name + Properties) to the splitter
     rightSplitter->addWidget(topSection);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // BOTTOM SECTION: Layers
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     rightSplitter->addWidget(layersGroup);
 
     // Give properties section ~60% and layers ~40% initial split
@@ -915,7 +915,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     connect(m_cameraPanYSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &ShotComposer::onCameraPropertyChanged);
 
-    // â”€â”€ Layer list connections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Layer list connections ───────────────────────────────────────────
     connect(m_layerList, &QListWidget::currentRowChanged,
             this, &ShotComposer::onLayerListSelectionChanged);
 
@@ -1005,7 +1005,7 @@ QWidget* ShotComposer::createPropertiesPanel()
         }
     });
 
-    // Delete key shortcut â€” supports multi-selection
+    // Delete key shortcut — supports multi-selection
     auto* deleteShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
     deleteShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(deleteShortcut, &QShortcut::activated, this, [this]() {
@@ -1028,7 +1028,7 @@ QWidget* ShotComposer::createPropertiesPanel()
         }
     });
 
-    // â”€â”€ Keyboard shortcuts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Keyboard shortcuts ──────────────────────────────────────────────
     // NOTE: Undo/Redo shortcuts are handled by MainWindow::onUndo/onRedo
     // which delegates to ShotComposer::undo()/redo() when on the COMPOSE page.
     // Adding local shortcuts here causes Qt ambiguous-shortcut conflicts with
@@ -1108,7 +1108,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     moveDownShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(moveDownShortcut, &QShortcut::activated, this, &ShotComposer::moveSelectedLayerDown);
 
-    // Home key â€” reset viewport zoom/pan
+    // Home key — reset viewport zoom/pan
     auto* homeShortcut = new QShortcut(QKeySequence(Qt::Key_Home), this);
     homeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(homeShortcut, &QShortcut::activated, this, [this]() {
@@ -1142,9 +1142,9 @@ QWidget* ShotComposer::createPropertiesPanel()
     return rightSplitter;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Refresh helpers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 
 } // namespace rt

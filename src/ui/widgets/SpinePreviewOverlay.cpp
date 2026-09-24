@@ -54,7 +54,7 @@ QRect SpinePreviewWidget::layerScreenRect(const PreviewCharLayer& layer) const
     float canvasOriginX, canvasOriginY, canvasW, canvasH;
     computeCanvasTransform(canvasOriginX, canvasOriginY, canvasW, canvasH);
 
-    // â”€â”€ Background / video image layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Background / video image layer ──────────────────────────────────
     if (layer.isBackground) {
         if (layer.backgroundImage.isNull())
             return QRect(0, 0, 0, 0);
@@ -85,7 +85,7 @@ QRect SpinePreviewWidget::layerScreenRect(const PreviewCharLayer& layer) const
         );
     }
 
-    // â”€â”€ Character (Spine) layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Character (Spine) layer ─────────────────────────────────────────
     float bw = layer.boundsW;
     float bh = layer.boundsH;
     if (bw < 1.0f) bw = 400.0f;
@@ -97,7 +97,7 @@ QRect SpinePreviewWidget::layerScreenRect(const PreviewCharLayer& layer) const
     float screenW = bw * charScale;
     float screenH = bh * charScale;
 
-    // Visual center on screen â€” same as renderMultiLayer
+    // Visual center on screen — same as renderMultiLayer
     float screenCenterX = canvasOriginX + layer.posX * canvasW;
     float screenCenterY = canvasOriginY + layer.posY * canvasH;
 
@@ -111,7 +111,7 @@ QRect SpinePreviewWidget::layerScreenRect(const PreviewCharLayer& layer) const
 
 int SpinePreviewWidget::hitTestLayer(const QPoint& pos) const
 {
-    // Prefer the currently selected layer â€” if the click is within its bounds,
+    // Prefer the currently selected layer — if the click is within its bounds,
     // keep it selected rather than switching to whichever layer is on top.
     for (size_t i = 0; i < m_layers.size(); ++i) {
         if (m_layers[i].layerIndex == m_selectedLayerIdx && m_layers[i].visible) {
@@ -189,7 +189,7 @@ void SpinePreviewWidget::drawTransformOverlay(QPainter& painter)
 {
     painter.setRenderHint(QPainter::Antialiasing);
 
-    // â”€â”€ Draw 16:9 canvas border â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Draw 16:9 canvas border ─────────────────────────────────────────
     {
         float canvasOriginX, canvasOriginY, canvasW, canvasH;
         computeCanvasTransform(canvasOriginX, canvasOriginY, canvasW, canvasH);
@@ -218,13 +218,13 @@ void SpinePreviewWidget::drawTransformOverlay(QPainter& painter)
             painter.setPen(safePen);
             painter.setBrush(Qt::NoBrush);
 
-            // Action safe (90% â€” 5% inset on each side)
+            // Action safe (90% — 5% inset on each side)
             QRectF actionSafe = canvasRect;
             actionSafe.adjust(canvasRect.width() * 0.05, canvasRect.height() * 0.05,
                              -canvasRect.width() * 0.05, -canvasRect.height() * 0.05);
             painter.drawRect(actionSafe);
 
-            // Title safe (80% â€” 10% inset on each side)
+            // Title safe (80% — 10% inset on each side)
             QRectF titleSafe = canvasRect;
             titleSafe.adjust(canvasRect.width() * 0.1, canvasRect.height() * 0.1,
                             -canvasRect.width() * 0.1, -canvasRect.height() * 0.1);
@@ -267,7 +267,7 @@ void SpinePreviewWidget::drawTransformOverlay(QPainter& painter)
                     painter.drawRect(h);
             }
 
-            // â”€â”€ Green crop overlay lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Green crop overlay lines ──────────────────────────────────
             bool hasCrop = (layer.cropLeft > 0.01f || layer.cropRight > 0.01f ||
                             layer.cropTop > 0.01f || layer.cropBottom > 0.01f);
             if (hasCrop) {
@@ -337,9 +337,9 @@ void SpinePreviewWidget::drawTransformOverlay(QPainter& painter)
     }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // Mouse wheel zoom
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 void SpinePreviewWidget::wheelEvent(QWheelEvent* event)
 {
@@ -353,7 +353,7 @@ void SpinePreviewWidget::wheelEvent(QWheelEvent* event)
     float newZoom = m_viewZoom * factor;
     newZoom = std::clamp(newZoom, 0.1f, 10.0f);
 
-    // Zoom toward mouse position â€” pan is relative to widget center
+    // Zoom toward mouse position — pan is relative to widget center
     // (computeCanvasTransform uses center-based origin: canvasOriginX = (ww - canvasW)/2 + panX)
     QPointF mousePos = event->position();
     float mx = static_cast<float>(mousePos.x()) - width()  * 0.5f;
@@ -369,9 +369,9 @@ void SpinePreviewWidget::wheelEvent(QWheelEvent* event)
     update();
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Mouse press / move / release â€” drag to move, corner to scale, middle to pan
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
+// Mouse press / move / release — drag to move, corner to scale, middle to pan
+// ─────────────────────────────────────────────────────────────────────────────
 
 void SpinePreviewWidget::mousePressEvent(QMouseEvent* event)
 {
@@ -382,7 +382,7 @@ void SpinePreviewWidget::mousePressEvent(QMouseEvent* event)
 
     QPoint pos = event->pos();
 
-    // Middle button â†’ pan
+    // Middle button → pan
     if (event->button() == Qt::MiddleButton) {
         m_panning = true;
         m_dragStartPos = pos;

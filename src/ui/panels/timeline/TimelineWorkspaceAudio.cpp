@@ -1,5 +1,5 @@
 /*
- * TimelineWorkspaceAudio.cpp â€” Thin delegation to AudioPlaybackService +
+ * TimelineWorkspaceAudio.cpp — Thin delegation to AudioPlaybackService +
  * Qt-specific scheduling + video media pre-opening.
  *
  * The heavy audio decode/cache/prefetch logic now lives in
@@ -85,7 +85,7 @@ void TimelineWorkspace::reapFinishedBackgroundMediaWarmups()
     });
 }
 
-// â”€â”€ Thin delegation wrappers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Thin delegation wrappers ────────────────────────────────────────────────
 
 void TimelineWorkspace::invalidateAudioSources()
 {
@@ -112,7 +112,7 @@ void TimelineWorkspace::logTimelineAudioPerfSnapshot(const char* reason)
     if (m_audioPlayback) m_audioPlayback->logPerfSnapshot(reason);
 }
 
-// â”€â”€ Qt-dependent scheduling (cannot live in core/) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Qt-dependent scheduling (cannot live in core/) ──────────────────────────
 
 void TimelineWorkspace::scheduleAudioPlaybackWindowRefresh()
 {
@@ -165,7 +165,7 @@ void TimelineWorkspace::schedulePostEditWork()
     });
 }
 
-// â”€â”€ Video media pre-opening (shared with composite pipeline) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Video media pre-opening (shared with composite pipeline) ────────────────
 
 int TimelineWorkspace::migrateDeferredLegacyMediaMasks()
 {

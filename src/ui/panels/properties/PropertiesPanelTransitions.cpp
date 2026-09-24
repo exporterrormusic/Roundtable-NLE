@@ -16,7 +16,7 @@
 #include <cmath>
 
 namespace rt {
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 static const char* transitionTypeName(TransitionType t)
 {
@@ -86,13 +86,13 @@ void PropertiesPanel::populateFromTransition()
     double frames = static_cast<double>(tr->duration) / kTicksPerFrame;
     m_transDurationSpin->setValue(frames);
 
-    // Softness (param1: 0.0 â€“ 1.0 â†’ display as 0 â€“ 100%)
+    // Softness (param1: 0.0 – 1.0 → display as 0 – 100%)
     m_transSoftnessSpin->setValue(static_cast<double>(tr->param1) * 100.0);
 
     // Alignment: determine from offset relative to duration
-    // offset == 0                   â†’ Center on Cut (default)
-    // offset == -duration/2         â†’ Start at Cut (transition starts at edit point)
-    // offset == +duration/2         â†’ End at Cut (transition ends at edit point)
+    // offset == 0                   → Center on Cut (default)
+    // offset == -duration/2         → Start at Cut (transition starts at edit point)
+    // offset == +duration/2         → End at Cut (transition ends at edit point)
     if (tr->leftClipId == 0 || tr->rightClipId == 0) {
         m_transAlignCombo->setCurrentIndex(1); // fades are always edge-aligned
     } else {
@@ -114,7 +114,7 @@ void PropertiesPanel::populateFromTransition()
     m_updating = false;
 }
 
-// â”€â”€ Transition apply methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Transition apply methods ────────────────────────────────────────────────
 
 void PropertiesPanel::applyTransitionType()
 {

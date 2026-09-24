@@ -1,5 +1,5 @@
 /*
- * MediaPool.cpp â€” manages decoders and shared frame cache
+ * MediaPool.cpp — manages decoders and shared frame cache
  */
 
 #include "MediaPool.h"
@@ -59,7 +59,7 @@ void extendInteractivePlaybackWindow(std::atomic<int64_t>& untilMs)
 
 } // namespace
 
-// â”€â”€â”€ Packed-alpha unpack helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Packed-alpha unpack helper ─────────────────────────────────────────────
 
 /// Unpack a packed-alpha frame in-place.  Packed layout: top half = RGB
 /// (A=255), bottom half = alpha as greyscale.  After unpack, the frame
@@ -69,7 +69,7 @@ static bool isProResCodec(const std::string& codecName)
     return codecName.find("prores") != std::string::npos;
 }
 
-// â”€â”€â”€ Construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Construction ───────────────────────────────────────────────────────────
 
 MediaPool::MediaPool(std::shared_ptr<FrameCache> cache)
     : m_cache(cache ? std::move(cache) : std::make_shared<FrameCache>())

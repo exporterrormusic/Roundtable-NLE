@@ -487,7 +487,7 @@ void ExportPanel::onCodecChanged(int /*index*/)
         m_profileCombo->setVisible(isProRes || isDNxHR);
     }
 
-    // ProRes, DNxHR and Image Sequence don't use CRF â€” disable the quality slider
+    // ProRes, DNxHR and Image Sequence don't use CRF — disable the quality slider
     bool usesCrf = (codec != EncoderCodec::ProRes &&
                     codec != EncoderCodec::DNxHR &&
                     codec != EncoderCodec::ImageSequence);
@@ -502,7 +502,7 @@ void ExportPanel::onCodecChanged(int /*index*/)
 
     // Auto-switch container to match codec
     if (codec == EncoderCodec::ProRes || codec == EncoderCodec::DNxHR) {
-        // ProRes/DNxHR â†’ MOV
+        // ProRes/DNxHR → MOV
         for (int i = 0; i < m_containerCombo->count(); ++i) {
             if (m_containerCombo->itemData(i).toInt() == static_cast<int>(ContainerFormat::MOV)) {
                 m_containerCombo->setCurrentIndex(i);
@@ -510,7 +510,7 @@ void ExportPanel::onCodecChanged(int /*index*/)
             }
         }
     } else if (codec == EncoderCodec::AV1) {
-        // AV1 â†’ WebM (modern) or MKV
+        // AV1 → WebM (modern) or MKV
         for (int i = 0; i < m_containerCombo->count(); ++i) {
             if (m_containerCombo->itemData(i).toInt() == static_cast<int>(ContainerFormat::WebM)) {
                 m_containerCombo->setCurrentIndex(i);

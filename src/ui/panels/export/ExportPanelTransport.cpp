@@ -82,10 +82,10 @@ void ExportPanel::onInOutChanged()
     }
 }
 
-// â”€â”€ Transport control slots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Transport control slots ─────────────────────────────────────────────────
 
 /// Helper: render one preview frame at the given tick and display it.
-/// \p halfRes â€” if true, renders at Â½ resolution for faster playback preview.
+/// \p halfRes — if true, renders at ½ resolution for faster playback preview.
 static void renderPreviewFrame(ExportPanel* /*self*/,
                                QLabel* label,
                                const ExportPanel::PreviewCallback& cb,
@@ -115,10 +115,10 @@ void ExportPanel::onPlayPause()
     if (!m_miniTimeline || !m_timeline) return;
 
     if (m_playing) {
-        // â”€â”€ Pause â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Pause ───────────────────────────────────────────────────
         m_playing = false;
         m_playbackTimer->stop();
-        m_playPauseBtn->setText(QStringLiteral("\u25B6")); // â–¶
+        m_playPauseBtn->setText(QStringLiteral("\u25B6")); // ▶
 
         if (m_playbackController) {
             m_playbackController->pause();
@@ -212,7 +212,7 @@ void ExportPanel::onPlaybackTick()
     }
 
     if (tick >= endTick) {
-        // Reached the end â€” stop playback
+        // Reached the end — stop playback
         m_miniTimeline->setPlayhead(endTick);
         renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
                            m_widthSpin, m_heightSpin, endTick);
@@ -312,7 +312,7 @@ void ExportPanel::onSkipToEnd()
                        m_widthSpin, m_heightSpin, endTick);
 }
 
-// â”€â”€ File size estimation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── File size estimation ────────────────────────────────────────────────────
 
 void ExportPanel::updateFileEstimate()
 {
@@ -421,7 +421,7 @@ void ExportPanel::updateFileEstimate()
             .arg(QString::number(durSec, 'f', 1)));
 }
 
-// â”€â”€ Add to Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Add to Queue ────────────────────────────────────────────────────────────
 
 void ExportPanel::onSetInPoint()
 {

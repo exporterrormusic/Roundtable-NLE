@@ -1,5 +1,5 @@
 ﻿/*
- * EffectStack.cpp â€” implements EffectStack + Effect base class.
+ * EffectStack.cpp — implements EffectStack + Effect base class.
  *
  * Step 22: Effects System
  */

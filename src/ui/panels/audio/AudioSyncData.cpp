@@ -173,22 +173,22 @@ void AudioSync::runAutoSyncImpl()
     // Pre-pass: merge short segments that match script lines better combined
     mergeSegmentsToMatchScript();
 
-    // Pre-pass 2: script-guided re-segmentation Ã¢â‚¬â€ re-cut clips so boundaries
+    // Pre-pass 2: script-guided re-segmentation — re-cut clips so boundaries
     // better align with script lines (fixes whisper's arbitrary segmentation)
     updateSyncProgress(15, "Re-segmenting by script lines...");
 
     resegmentByScript();
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─────────────────────────────────────────────────────────────────────
     // GLOBAL OPTIMAL MATCHING
     //
     // Instead of greedy sequential matching with a small window, we build
-    // an NxM cost matrix (clips Ãƒâ€” lines) per character and find the best
+    // an NxM cost matrix (clips × lines) per character and find the best
     // global assignment.  A sequential-order bonus is included so that
     // in-order recordings are preferred, but out-of-order clips can still
     // match correctly.
-    // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ─────────────────────────────────────────────────────────────────────
 
     // --- Helpers ---
     auto normalizeChar = [](const std::string& name) -> std::string {
@@ -354,7 +354,7 @@ void AudioSync::runAutoSyncImpl()
 
                 // Sequential order bonus: clips and lines that are in the same
                 // relative position get a bonus.  The closer to the "expected"
-                // sequential mapping (ci/N Ã¢â€°Ë† li/M), the larger the bonus.
+                // sequential mapping (ci/N ≈ li/M), the larger the bonus.
                 float expectedLinePos = (N > 1)
                     ? static_cast<float>(ci) / static_cast<float>(N - 1)
                     : 0.5f;
@@ -394,7 +394,7 @@ void AudioSync::runAutoSyncImpl()
             }
         }
 
-        // Sort by score descending Ã¢â‚¬â€ best assignments first
+        // Sort by score descending — best assignments first
         std::sort(allPairs.begin(), allPairs.end(),
                   [](const ScoreEntry& a, const ScoreEntry& b) {
                       return a.score > b.score;
@@ -434,7 +434,7 @@ void AudioSync::runAutoSyncImpl()
             if (!allowRetakes)
                 assignedLines.insert(entry.lineIdx);
 
-            spdlog::debug("AudioSync: Matched clip {} Ã¢â€ â€™ line {} (score={:.2f} text={:.2f}) '{}'",
+            spdlog::debug("AudioSync: Matched clip {} → line {} (score={:.2f} text={:.2f}) '{}'",
                           clipGlobalIdx, line.lineNumber, entry.score, entry.textScore,
                           line.dialogue.substr(0, 40));
         }
@@ -786,11 +786,11 @@ std::vector<std::pair<double,double>> AudioSync::getEffectiveRanges(const SyncCl
     return ranges;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Export to Timeline (ported from Python _export_timeline) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// ─── Export to Timeline (ported from Python _export_timeline) ────────────────
 
 void AudioSync::createClipsFromTranscription()
 {
-    // Legacy single-file version Ã¢â‚¬â€ delegates to multi-file
+    // Legacy single-file version — delegates to multi-file
     createClipsFromAllTranscriptions();
 }
 

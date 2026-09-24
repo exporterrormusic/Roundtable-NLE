@@ -1,5 +1,5 @@
 /*
- * CaptionClip.cpp â€” Subtitle / closed-caption clip implementation.
+ * CaptionClip.cpp — Subtitle / closed-caption clip implementation.
  */
 
 #include "timeline/CaptionClip.h"

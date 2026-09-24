@@ -353,7 +353,7 @@ void ProjectBin::setupUI()
     connect(m_listWidget, &QTreeWidget::itemDoubleClicked,
             this, &ProjectBin::onListItemDoubleClicked);
 
-    // Handle rename completion � update underlying data when Name column is edited
+    // Handle rename completion — update underlying data when Name column is edited
     connect(m_listWidget, &QTreeWidget::itemChanged,
             this, [this](QTreeWidgetItem* item, int column) {
         if (column != 0) return;
@@ -371,7 +371,7 @@ void ProjectBin::setupUI()
             return;
         }
 
-        // Bin rename � just the tree item text (already updated)
+        // Bin rename — just the tree item text (already updated)
         if (item->data(0, Qt::UserRole + 2).toBool())
             return;
 

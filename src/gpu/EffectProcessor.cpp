@@ -1,5 +1,5 @@
 ﻿/*
- * EffectProcessor.cpp â€” GPU compute-shader effects pipeline.
+ * EffectProcessor.cpp — GPU compute-shader effects pipeline.
  *
  * Step 22: Effects System
  *
@@ -441,7 +441,7 @@ bool EffectProcessor::processSync(const VkDescriptorImageInfo& sourceImage,
     return ok;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 
 // =============================================================================
 //  Snapshot output
@@ -543,7 +543,7 @@ bool EffectProcessor::resize(uint32_t width, uint32_t height)
 
     if (m_initialized) {
         // Wait only on our compute queue rather than draining the entire
-        // device â€” avoids stalling the graphics queue when processing
+        // device — avoids stalling the graphics queue when processing
         // mixed-resolution clips back-to-back.
         vkQueueWaitIdle(m_queue);
         m_storageTextures[0].destroy();
@@ -572,7 +572,7 @@ bool EffectProcessor::uploadLUT3D(const std::vector<float>& lutData, int lutSize
     // Destroy previous LUT texture if any
     m_lutTexture3D.destroy();
 
-    // LUT data is size^3 Ã— 3 floats (RGB). We need to convert to RGBA8.
+    // LUT data is size^3 × 3 floats (RGB). We need to convert to RGBA8.
     const size_t numVoxels = static_cast<size_t>(lutSize) * lutSize * lutSize;
     const size_t dataSize  = numVoxels * 4; // RGBA8 = 4 bytes per voxel
     std::vector<uint8_t> rgbaData(dataSize);
@@ -665,7 +665,7 @@ bool EffectProcessor::readbackOutput(std::vector<uint8_t>& outPixels)
                         &stagingBuf, &stagingAlloc, nullptr) != VK_SUCCESS)
         return false;
 
-    // Copy image â†’ buffer
+    // Copy image → buffer
     VkCommandBuffer cmd = m_cmdPool->beginSingleTime();
 
     m_storageTextures[m_currentOutput].transitionLayout(
@@ -902,19 +902,19 @@ bool EffectProcessor::createDescriptorResources()
     }
     m_maskMixRingCursor = 0;
 
-    // â”€â”€ Initialize descriptor sets for the ping-pong pair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Initialize descriptor sets for the ping-pong pair ───────────────
     // Each set has:
-    //   binding 0 â†’ storageTexture[i]  (output)
-    //   binding 1 â†’ storageTexture[1-i] (input, from previous ping-pong)
+    //   binding 0 → storageTexture[i]  (output)
+    //   binding 1 → storageTexture[1-i] (input, from previous ping-pong)
     //
     // The source descriptor set (sets[2]) has:
-    //   binding 0 â†’ storageTexture[0] (output for first effect)
-    //   binding 1 â†’ external source (will be updated per-call)
+    //   binding 0 → storageTexture[0] (output for first effect)
+    //   binding 1 → external source (will be updated per-call)
 
     updatePingPongDescriptorBindings();
 
-    // Source + LUT rings: binding 0 â†’ storageTexture[0], binding 1 (input) â†’
-    // placeholder, LUT binding 2 â†’ placeholder.  Per-call bindings (the
+    // Source + LUT rings: binding 0 → storageTexture[0], binding 1 (input) →
+    // placeholder, LUT binding 2 → placeholder.  Per-call bindings (the
     // external source, and the live 3D LUT) are written in process() /
     // dispatchEffect on the slot that call claims.
     initDescriptorRingBindings();
@@ -1052,12 +1052,12 @@ bool EffectProcessor::createPipelines()
         return false;
     }
 
-    // Helper lambda â€” load shader + create pipeline.  Non-fatal if not found
+    // Helper lambda — load shader + create pipeline.  Non-fatal if not found
     // (we just leave that pipeline null and skip it at dispatch time).
     auto loadPipeline = [&](const char* spvName) -> VkPipeline {
         fs::path path = findShader(spvName);
         if (path.empty()) {
-            spdlog::warn("EffectProcessor: shader {} not found â€” skipping", spvName);
+            spdlog::warn("EffectProcessor: shader {} not found — skipping", spvName);
             return VK_NULL_HANDLE;
         }
         VkShaderModule mod = m_pipelineManager.loadShader(path);
@@ -1160,8 +1160,8 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
     if (pipeline == VK_NULL_HANDLE) return false;
 
     // Select descriptor set:
-    //   sourceIdx == -1 â†’ use m_curSourceSet (external source image)
-    //   sourceIdx ==  0 or 1 â†’ use m_descriptorSets[targetIdx]
+    //   sourceIdx == -1 → use m_curSourceSet (external source image)
+    //   sourceIdx ==  0 or 1 → use m_descriptorSets[targetIdx]
     //     (descriptorSets[targetIdx] has binding0 = storage[targetIdx],
     //      binding1 = storage[1-targetIdx] which is the source)
     //
@@ -1169,7 +1169,7 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
     // binding 2 pointing to the 3D LUT texture.
     VkDescriptorSet ds;
     if (type == EffectType::LUT) {
-        // Use LUT descriptor set â€“ update bindings 0+1 for current ping-pong state
+        // Use LUT descriptor set – update bindings 0+1 for current ping-pong state
         VkDescriptorImageInfo outInfo{};
         outInfo.imageView   = m_storageTextures[targetIdx].imageView();
         outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1246,12 +1246,12 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, dispatchLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
 
-    // Dispatch: 16Ã—16 workgroups
+    // Dispatch: 16×16 workgroups
     uint32_t gx = (m_config.width  + 15) / 16;
     uint32_t gy = (m_config.height + 15) / 16;
     vkCmdDispatch(cmd, gx, gy, 1);
 
-    // Pipeline barrier: compute write â†’ compute read for next effect
+    // Pipeline barrier: compute write → compute read for next effect
     VkMemoryBarrier barrier{};
     barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1343,9 +1343,9 @@ VkPipeline EffectProcessor::getPipeline(EffectType type) const
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  Ultra Key â€” 3-pass dispatch
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════
+//  Ultra Key — 3-pass dispatch
+// ═════════════════════════════════════════════════════════════════════════
 
 void EffectProcessor::dispatchPass(VkCommandBuffer cmd, VkPipeline pipeline,
                                    VkDescriptorSet ds,

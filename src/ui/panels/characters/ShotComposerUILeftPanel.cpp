@@ -134,9 +134,9 @@ QWidget* ShotComposer::createLeftPanel()
         .arg(Theme::hex(c.border))
         .arg(Theme::hex(c.accent)));
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // TOP: Shot Header + Preview Viewport
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     auto* topSection = new QWidget;
     topSection->setObjectName("ShotTopSection");
     topSection->setStyleSheet(QStringLiteral(
@@ -146,7 +146,7 @@ QWidget* ShotComposer::createLeftPanel()
     topLayout->setContentsMargins(0, 0, 0, 0);
     topLayout->setSpacing(0);
 
-    // â”€â”€ Shot Header Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Shot Header Bar ─────────────────────────────────────────────────
     auto* shotHeader = new QWidget;
     shotHeader->setObjectName("PreviewHeader");
     auto* shotHeaderLayout = new QHBoxLayout(shotHeader);
@@ -167,7 +167,7 @@ QWidget* ShotComposer::createLeftPanel()
 
     topLayout->addWidget(shotHeader);
 
-    // â”€â”€ Preview Viewport â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Preview Viewport ────────────────────────────────────────────────
     m_previewArea = new QWidget;
     m_previewArea->setObjectName("PreviewArea");
 
@@ -279,7 +279,7 @@ QWidget* ShotComposer::createLeftPanel()
 
     topLayout->addWidget(arContainer, 1);
 
-    // â”€â”€ Preview Toolbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Preview Toolbar ─────────────────────────────────────────────────
     auto* previewToolbar = new QWidget;
     previewToolbar->setObjectName("PreviewToolbar");
     auto* tbLayout = new QHBoxLayout(previewToolbar);
@@ -336,15 +336,15 @@ QWidget* ShotComposer::createLeftPanel()
 
     leftSplitter->addWidget(topSection);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // BOTTOM: Asset Library Tabs
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     auto* librarySection = new QWidget;
     auto* libraryLayout = new QVBoxLayout(librarySection);
     libraryLayout->setContentsMargins(m.spacingSm, 0, m.spacingSm, m.spacingSm);
     libraryLayout->setSpacing(m.spacingXs);
 
-    // â”€â”€ Zoom slider row (controls thumbnail size) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Zoom slider row (controls thumbnail size) ───────────────────────
     auto* zoomRow = new QHBoxLayout;
     zoomRow->setSpacing(4);
 
@@ -406,7 +406,7 @@ QWidget* ShotComposer::createLeftPanel()
 
     m_libraryTabs = new QTabWidget;
 
-    // â”€â”€ Characters tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Characters tab ──────────────────────────────────────────────────
     auto* charTab = new QWidget;
     auto* charLayout = new QVBoxLayout(charTab);
     charLayout->setContentsMargins(5, 5, 5, 5);
@@ -551,7 +551,7 @@ QWidget* ShotComposer::createLeftPanel()
 
     m_libraryTabs->addTab(puppetTab, "Custom");
 
-    // â”€â”€ Backgrounds tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Backgrounds tab ─────────────────────────────────────────────────
     auto* bgTab = new QWidget;
     auto* bgLayout = new QVBoxLayout(bgTab);
     bgLayout->setContentsMargins(5, 5, 5, 5);
@@ -720,7 +720,7 @@ QWidget* ShotComposer::createLeftPanel()
     }
 
 
-    // â”€â”€ Videos tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Videos tab ───────────────────────────────────────────────────────
     auto* videoTab = new QWidget;
     auto* videoLayout = new QVBoxLayout(videoTab);
     videoLayout->setContentsMargins(5, 5, 5, 5);
@@ -854,7 +854,7 @@ QWidget* ShotComposer::createLeftPanel()
 
     libraryLayout->addWidget(m_libraryTabs, 1);
 
-    // â”€â”€ Zoom slider â†’ icon size â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Zoom slider → icon size ─────────────────────────────────────────
     connect(m_iconZoomSlider, &QSlider::valueChanged,
             this, &ShotComposer::setLibraryIconSize);
 
@@ -864,9 +864,9 @@ QWidget* ShotComposer::createLeftPanel()
     leftSplitter->setStretchFactor(0, 3);
     leftSplitter->setStretchFactor(1, 2);
 
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
     // Connections
-    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // ═══════════════════════════════════════════
 
     // Character library
     connect(m_charSearchEdit, &QLineEdit::textChanged,

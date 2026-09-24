@@ -52,7 +52,7 @@ void AudioSync::populateLeftList()
         }
     }
 
-    // Build match state map: lineNumber â†’ best match state
+    // Build match state map: lineNumber → best match state
     std::unordered_map<int, int> lineMatchState;
     for (const auto& clip : m_clips) {
         if (clip.scriptLineNumber > 0) {
@@ -70,7 +70,7 @@ void AudioSync::populateLeftList()
                 continue;
         }
 
-        // Apply unmatched filter â€” show only lines without a matched clip
+        // Apply unmatched filter — show only lines without a matched clip
         if (filterUnmatched) {
             if (lineMatchState.count(line.lineNumber) > 0)
                 continue;
@@ -96,7 +96,7 @@ void AudioSync::populateLeftList()
         QString charName = QString::fromStdString(line.character);
         QString dialogueText = QString::fromStdString(line.dialogue);
 
-        // â”€â”€ Build custom card widget: [ #N | CHAR | dialogue text ] â”€â”€â”€
+        // ── Build custom card widget: [ #N | CHAR | dialogue text ] ───
         // Number box colored by match state
         QString numBg;
         switch (matchState) {
@@ -133,7 +133,7 @@ void AudioSync::populateLeftList()
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(0);
 
-        // Number badge â€” colored by match state
+        // Number badge — colored by match state
         auto* numLabel = new QLabel(QString::number(displayIdx));
         numLabel->setFixedWidth(36);
         numLabel->setAlignment(Qt::AlignCenter);
@@ -146,7 +146,7 @@ void AudioSync::populateLeftList()
                 .arg(Theme::typography().sizeSmall));
         rowLayout->addWidget(numLabel);
 
-        // Character name tag â€” neutral bg, colored text
+        // Character name tag — neutral bg, colored text
         auto* charLabel = new QLabel(charName);
         charLabel->setFixedWidth(80);
         charLabel->setAlignment(Qt::AlignCenter);
@@ -170,7 +170,7 @@ void AudioSync::populateLeftList()
         textLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         rowLayout->addWidget(textLabel, 1);
 
-        // â”€â”€ Insert into list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Insert into list ────────────────────────────────────────
         auto* item = new QListWidgetItem(m_leftScriptList);
         item->setData(Qt::UserRole, line.lineNumber);
         item->setSizeHint(QSize(0, std::max(cardWidget->sizeHint().height(), 42) + 6));
@@ -179,7 +179,7 @@ void AudioSync::populateLeftList()
         m_cardScriptLineNums.push_back(line.lineNumber);
     }
 
-    // Orphan clips hidden â€” manual matching is the preferred workflow.
+    // Orphan clips hidden — manual matching is the preferred workflow.
     if (m_leftOrphanLabel) m_leftOrphanLabel->setVisible(false);
     if (m_leftOrphanList) {
         m_leftOrphanList->clear();
@@ -190,9 +190,9 @@ void AudioSync::populateLeftList()
     updateSmartBar();
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  Right pane â€” continuous scroll of script-line cards
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════
+//  Right pane — continuous scroll of script-line cards
+// ═════════════════════════════════════════════════════════════════════════
 
 
 } // namespace rt

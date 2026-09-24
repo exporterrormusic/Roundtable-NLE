@@ -1,5 +1,5 @@
 /*
- * CaptionClip â€” a subtitle / closed-caption entry on the timeline.
+ * CaptionClip — a subtitle / closed-caption entry on the timeline.
  *
  * Lives on a TrackType::Caption track. Each clip represents one
  * subtitle cue with text, optional speaker label, and style overrides.
@@ -58,7 +58,7 @@ public:
  CaptionClip();
  ~CaptionClip() override = default;
 
- // â”€â”€ Text â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Text ────────────────────────────────────────────────────────────
  [[nodiscard]] const std::string& text() const noexcept { return m_text; }
  [[nodiscard]] const std::string& speaker() const noexcept { return m_speaker; }
  [[nodiscard]] float confidence() const noexcept { return m_confidence; }
@@ -76,7 +76,7 @@ public:
  void setSpeaker(const std::string& s) { m_speaker = s; }
  void setConfidence(float value) noexcept { m_confidence = value; }
 
- // â”€â”€ Style â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Style ───────────────────────────────────────────────────────────
  [[nodiscard]] const std::string& fontFamily() const noexcept { return m_fontFamily; }
  [[nodiscard]] const std::string& fontStyle() const noexcept { return m_fontStyle; }
  [[nodiscard]] float fontSize() const noexcept { return m_fontSize; }
@@ -203,7 +203,7 @@ public:
      m_paragraphStyles = std::move(styles);
  }
 
- // â”€â”€ Clone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ // ── Clone ───────────────────────────────────────────────────────────
  [[nodiscard]] std::unique_ptr<Clip> clone() const override;
 
 private:

@@ -152,7 +152,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
         auto* treeItem = new NaturalTreeWidgetItem();
 
-        // Name column ï¿½ use displayName if set, otherwise filename
+        // Name column — use displayName if set, otherwise filename
         QString name = item.displayName.isEmpty()
             ? QString::fromStdString(pathToUtf8(item.filePath.filename()))
             : item.displayName;
@@ -294,7 +294,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             else
                 treeItem->setText(4, "");
 
-            // Sample rate (audio files ï¿½ use project audio sample rate)
+            // Sample rate (audio files — use project audio sample rate)
             if (item.type == MediaType::Audio && info->hasAudio && m_project)
                 treeItem->setText(5, QString("%1 Hz")
                     .arg(m_project->settings().audioFormat().sampleRate));

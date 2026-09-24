@@ -51,10 +51,10 @@
 #include <filesystem>
 namespace rt {
 
-// â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
-// applyShotSwitch â€” shared undo-aware shot switch used by both
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// applyShotSwitch — shared undo-aware shot switch used by both
 // PropertiesPanel and ShotPanel signal handlers.
-// â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& newShotName)
 {
@@ -92,7 +92,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     const auto& preset = *presetOpt;
     spdlog::info("TimelineWorkspace: applying shot '{}' to group {}", newShotName, groupId);
 
-    // â”€â”€ Snapshot old clips for undo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Snapshot old clips for undo ──────────────────────────────
     struct ClipSnapshot {
         size_t trackIndex;
         std::unique_ptr<Clip> clip;
@@ -165,12 +165,12 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         }
     }
 
-    // â”€â”€ Build list of new clips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Build list of new clips ─────────────────────────────────
     auto newClips = std::make_shared<std::vector<ClipSnapshot>>();
 
     const auto& order = preset.layerOrder();
 
-    // â”€â”€ Ensure enough video tracks exist â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Ensure enough video tracks exist ────────────────────────
     // Count visible layers to determine the required track count.
     size_t neededTracks = 0;
     for (size_t li = 0; li < order.size(); ++li) {
@@ -358,13 +358,13 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             layerTracks[k] = finalVideo[finalVideo.size() - 1 - k];
     }
 
-    // â”€â”€ Map layers to tracks by position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // layerOrder[0] = FRONT (top of UI â†’ lowest index â†’ V3)
-    // layerOrder[last] = BACK  (bottom of UI â†’ highest index â†’ V1)
-    // Iterate back-to-front (oi from lastâ†’0), assign track positions
+    // ── Map layers to tracks by position ────────────────────────
+    // layerOrder[0] = FRONT (top of UI → lowest index → V3)
+    // layerOrder[last] = BACK  (bottom of UI → highest index → V1)
+    // Iterate back-to-front (oi from last→0), assign track positions
     // so that:
-    //   back layer (BG)    â†’ highest video index â†’ V1 (bottom)
-    //   front layer (char) â†’ lowest video index  â†’ VN (top)
+    //   back layer (BG)    → highest video index → V1 (bottom)
+    //   front layer (char) → lowest video index  → VN (top)
 
     int layerIdx = 0;
     for (int oi = static_cast<int>(order.size()) - 1; oi >= 0; --oi) {

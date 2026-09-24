@@ -37,7 +37,7 @@
 namespace rt {
 
 //  Helpers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 static std::vector<uint32_t> loadSpirv(const std::string& path)
 {
@@ -63,10 +63,10 @@ static VkShaderModule createShaderModule(VkDevice device,
     return mod;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Construction / Destruction
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool VulkanViewport::initGpu()
 {
@@ -75,7 +75,7 @@ bool VulkanViewport::initGpu()
     if (!gpu.isInitialized()) return false;
 
 
-    // 1. Create a native QWindow â†’ get HWND â†’ create VkSurfaceKHR
+    // 1. Create a native QWindow → get HWND → create VkSurfaceKHR
     m_nativeWindow = new QWindow();
     m_nativeWindow->setSurfaceType(QSurface::VulkanSurface);
     m_nativeWindow->create();
@@ -195,9 +195,9 @@ void VulkanViewport::shutdownGpu()
     m_gpuInitialized = false;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Swapchain + Pipeline Resources
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 bool VulkanViewport::createSwapchainResources()
 {
@@ -211,7 +211,7 @@ bool VulkanViewport::createSwapchainResources()
     scCfg.height          = std::max(1u, static_cast<uint32_t>(height()));
     scCfg.vsync           = false; // low-latency mailbox preferred
     scCfg.preferredFormat = VK_FORMAT_B8G8R8A8_UNORM; // match compositor BGRA
-    scCfg.imageCount      = 3; // triple buffer â€” prevents vkAcquireNextImageKHR blocking UI thread
+    scCfg.imageCount      = 3; // triple buffer — prevents vkAcquireNextImageKHR blocking UI thread
 
     if (!m_swapchain->create(gpu.device(), scCfg)) {
         spdlog::error("VulkanViewport: Failed to create swapchain");
@@ -331,7 +331,7 @@ bool VulkanViewport::createDescriptorResources()
 {
     VkDevice device = GpuContext::get().vkDevice();
 
-    // Sampler â€” use CLAMP_TO_BORDER with opaque-black border so that
+    // Sampler — use CLAMP_TO_BORDER with opaque-black border so that
     // when the viewport is zoomed in and the fullscreen triangle extends
     // beyond the image boundary, out-of-range samples return black instead
     // of stretching the edge pixels (which creates ghost image artifacts).

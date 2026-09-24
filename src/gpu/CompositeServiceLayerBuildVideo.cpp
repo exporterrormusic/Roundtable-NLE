@@ -296,7 +296,7 @@ uint64_t CompositeService::resolveVideoClipHandle(
 
         // If that fails, try resolving common search paths
         if (handle == 0) {
-            // Try alternate video extensions Ã¢â‚¬â€ prefer .mp4 packed-alpha
+            // Try alternate video extensions — prefer .mp4 packed-alpha
             // (NVDEC hardware decode) over .webm (software VP9).
             std::vector<fs::path> altExts;
             if (p.extension() == ".webm") {

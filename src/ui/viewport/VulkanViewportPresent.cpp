@@ -39,7 +39,7 @@
 namespace rt {
 
 //  GPU Display
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void VulkanViewport::displayGpuImage(VkImageView imageView, VkSampler sampler,
                                       uint32_t imgWidth, uint32_t imgHeight,
@@ -452,9 +452,9 @@ void VulkanViewport::presentFrame(VkSemaphore waitSemaphore)
     emit frameDisplayed();
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  Deferred semaphore recycling
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void VulkanViewport::recycleSemaphores()
 {
@@ -482,9 +482,9 @@ void VulkanViewport::recycleSemaphores()
     m_recycledSemaphores.clear();
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 //  CPU Fallback Display
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void VulkanViewport::displayFrame(std::shared_ptr<CachedFrame> frame)
 {
@@ -503,7 +503,7 @@ void VulkanViewport::displayFrame(std::shared_ptr<CachedFrame> frame)
         // GPU-active mode: upload CPU pixels to a private texture and display
         // via the normal GPU path.  This is used during async playback where
         // the compositor output texture is not safe to sample directly (the
-        // render thread may overwrite it).  Cost: ~1ms for 960Ã—540 BGRA.
+        // render thread may overwrite it).  Cost: ~1ms for 960×540 BGRA.
         //
         // THREAD SAFETY: We use VulkanViewport's own m_commandPool (graphics
         // queue family) for the upload instead of GpuContext::cmdPool() which
@@ -558,7 +558,7 @@ void VulkanViewport::displayFrame(std::shared_ptr<CachedFrame> frame)
         bool uploadOk = false;
         if (needCreate) {
             // Use R8G8B8A8 (not B8G8R8A8) so the sampler sees the same
-            // byteâ†’component mapping as the compositor output image.
+            // byte→component mapping as the compositor output image.
             // quad.frag's .bgra swizzle then corrects both paths identically.
             uploadOk = slot.texture->createFromDataBatched(
                 ctx.allocator().handle(), device,

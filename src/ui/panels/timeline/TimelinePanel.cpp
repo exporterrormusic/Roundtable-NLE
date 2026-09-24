@@ -1,23 +1,23 @@
 /*
- * TimelinePanel.cpp � Main timeline container � coordinator TU.
- * Step 12: Timeline Panel � Core UI
+ * TimelinePanel.cpp — Main timeline container — coordinator TU.
+ * Step 12: Timeline Panel — Core UI
  *
  * All member function definitions have been moved to the extracted
  * sub-files below. This file retains the includes for build system
  * compatibility.
  *
  * Extracted files:
- *   TimelinePanelLayout.cpp      � setupLayout, ctor/dtor, resizeEvent
- *   TimelinePanelTracks.cpp      � rebuildTracks, ensureDefaultTracks, refreshTrackContents
- *   TimelinePanelZoomScroll.cpp  � zoom, wheel, scroll, playhead, ruler
- *   TimelinePanelPaintEvents.cpp � paintEvent, eventFilter, keyPressEvent
- *   TimelinePanelHitTest.cpp     � hitTestClip/Track/Edge, reorder helpers
- *   TimelinePanelCommands.cpp    � setCommandStack, setActiveTool, executeCommand
- *   TimelinePanelMenus.cpp       � context menus (previously extracted)
- *   TimelinePanelMedia.cpp       � waveform/thumbnail loading (previously extracted)
- *   TimelinePanelMouse.cpp       � mousePressEvent (previously extracted)
- *   TimelinePanelMouseDrag.cpp   � mouseMove/Release/DoubleClick (previously extracted)
- *   TimelinePanelDragDrop.cpp    � drag-and-drop (previously extracted) â€” Core UI
+ *   TimelinePanelLayout.cpp      — setupLayout, ctor/dtor, resizeEvent
+ *   TimelinePanelTracks.cpp      — rebuildTracks, ensureDefaultTracks, refreshTrackContents
+ *   TimelinePanelZoomScroll.cpp  — zoom, wheel, scroll, playhead, ruler
+ *   TimelinePanelPaintEvents.cpp — paintEvent, eventFilter, keyPressEvent
+ *   TimelinePanelHitTest.cpp     — hitTestClip/Track/Edge, reorder helpers
+ *   TimelinePanelCommands.cpp    — setCommandStack, setActiveTool, executeCommand
+ *   TimelinePanelMenus.cpp       — context menus (previously extracted)
+ *   TimelinePanelMedia.cpp       — waveform/thumbnail loading (previously extracted)
+ *   TimelinePanelMouse.cpp       — mousePressEvent (previously extracted)
+ *   TimelinePanelMouseDrag.cpp   — mouseMove/Release/DoubleClick (previously extracted)
+ *   TimelinePanelDragDrop.cpp    — drag-and-drop (previously extracted) — Core UI
  */
 
 #include "panels/timeline/TimelinePanel.h"

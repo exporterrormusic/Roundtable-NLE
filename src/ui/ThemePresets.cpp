@@ -15,7 +15,7 @@ void Theme::applyDarkPreset()
     auto& m = s_metrics;
     auto& t = s_typography;
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Surfaces: warm neutral dark grays (Premiere Pro reference) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Surfaces: warm neutral dark grays (Premiere Pro reference) ───
     c.surface0 = QColor(23, 23, 23);
     c.surface1 = QColor(30, 30, 30);
     c.surface2 = QColor(37, 37, 37);

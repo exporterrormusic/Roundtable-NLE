@@ -23,11 +23,11 @@
 
 namespace rt {
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 //  Audio sample loading
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 
-// â”€â”€â”€ Waveform sample cache (binary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Waveform sample cache (binary) ─────────────────────────────────────
 // Saves decoded mono samples to a binary file so project re-opens skip
 // the expensive audio-decode step.  Cache is invalidated when the source
 // file's size or modification time changes.
@@ -178,9 +178,9 @@ void AudioSync::loadAudioSamples()
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 //  Playback
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 
 void AudioSync::playClip(size_t clipIdx)
 {
@@ -221,7 +221,7 @@ void AudioSync::playClip(size_t clipIdx)
 
     // Build buffer skipping deleted regions, and build a time-mapping
     m_playbackBuffer.clear();
-    m_playbackTimeMap.clear();  // maps buffer frame offset â†’ original time
+    m_playbackTimeMap.clear();  // maps buffer frame offset → original time
     double sr = audioData.sampleRate;
 
     double cursor = clip.start;
@@ -230,7 +230,7 @@ void AudioSync::playClip(size_t clipIdx)
         double regionStart = std::max(delStart, clip.start);
         double regionEnd   = std::min(delEnd, clip.end);
         if (regionStart <= cursor && regionEnd > cursor) {
-            // Cursor is inside this deleted region â€” skip ahead
+            // Cursor is inside this deleted region — skip ahead
             cursor = regionEnd;
             continue;
         }
@@ -262,7 +262,7 @@ void AudioSync::playClip(size_t clipIdx)
         }
     }
 
-    // â”€â”€ Resample buffer to engine output rate if rates differ â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Resample buffer to engine output rate if rates differ ─────────
     // The AudioEngine callback advances m_playPosition at the engine
     // sample rate and reads source samples by index. If the buffer is at
     // a different rate, playback speed and duration will be wrong.
@@ -372,7 +372,7 @@ void AudioSync::playClip(size_t clipIdx)
             // Use the effective playback rate (engine rate after resampling)
             double sr = m_playbackSourceRate;
 
-            // Convert buffer frame â†’ original source time using the time map
+            // Convert buffer frame → original source time using the time map
             double currentTime = pClip.end;  // default: end
             for (size_t i = 0; i < m_playbackTimeMap.size(); ++i) {
                 auto [segStart, segTime] = m_playbackTimeMap[i];
@@ -505,9 +505,9 @@ void AudioSync::seekPlayingClip(double timeSec)
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 //  Scrub audio at a position (for non-playing clips)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 
 void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
 {
@@ -549,9 +549,9 @@ void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
     m_audioEngine->setSyncClock(savedClock);
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 //  Auto-trim silence
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════
 
 void AudioSync::autoTrimClip(size_t clipIdx)
 {
@@ -589,7 +589,7 @@ void AudioSync::autoTrimClip(size_t clipIdx)
     float noiseFloor = sorted[sorted.size() / 10];
     float threshold = std::max(0.005f, noiseFloor * 3.0f);
 
-    // Scan forward â€” require 2 consecutive windows above threshold
+    // Scan forward — require 2 consecutive windows above threshold
     int speechStart = startSample;
     int aboveCount = 0;
     for (int pos = startSample; pos + windowSize <= endSample; pos += windowSize) {
@@ -610,7 +610,7 @@ void AudioSync::autoTrimClip(size_t clipIdx)
         }
     }
 
-    // Scan backward â€” full windows only (no partial window RMS)
+    // Scan backward — full windows only (no partial window RMS)
     int speechEnd = endSample;
     aboveCount = 0;
     int backStart = endSample - windowSize;

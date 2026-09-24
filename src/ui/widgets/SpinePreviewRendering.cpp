@@ -92,7 +92,7 @@ static void applyBoxBlur(QImage& img, int radius)
     auto* srcPx = reinterpret_cast<uint32_t*>(img.bits());
     auto* tmpPx = reinterpret_cast<uint32_t*>(tmp.bits());
 
-    // Three passes: srcâ†’tmp (H), tmpâ†’src (V), repeat
+    // Three passes: src→tmp (H), tmp→src (V), repeat
     for (int pass = 0; pass < 3; ++pass) {
         boxBlurH(srcPx, tmpPx, w, h, radius);
         boxBlurV(tmpPx, srcPx, w, h, radius);
@@ -252,7 +252,7 @@ void rasteriseBatches(const SpineRenderData& meshData,
             float vG = v0.g * vA;
             float vB = v0.b * vA;
 
-            // â”€â”€ Incremental barycentric + UV interpolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Incremental barycentric + UV interpolation ──────────
             // Precompute per-pixel x/y increments for w0, w1
             float w0_dx = (sy1 - sy2) * invDenom;
             float w1_dx = (sy2 - sy0) * invDenom;
@@ -388,9 +388,9 @@ void SpinePreviewWidget::renderSingleEngine(QPainter& painter)
     painter.drawImage(0, 0, m_backBuffer);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Multi-layer rendering (ShotComposer â€” composites all characters)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-layer rendering (ShotComposer — composites all characters)
+// ─────────────────────────────────────────────────────────────────────────────
 
 void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
 {
@@ -423,7 +423,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
     uint32_t* bufPixels = reinterpret_cast<uint32_t*>(m_backBuffer.bits());
     int bufStride = m_backBuffer.bytesPerLine() / 4;
 
-    // â”€â”€ Collect layers and extract mesh data on the main thread â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Collect layers and extract mesh data on the main thread ────────
     // SpineEngine::extractMeshes() is NOT thread-safe, so we call it here.
     // Then we dispatch the actual rasterization to worker threads.
 
@@ -444,12 +444,12 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
     std::vector<CharRasterJob> charJobs;
     int layerZOrder = 0;
 
-    // Render each layer (bottom to top) â€” backgrounds + characters interleaved
+    // Render each layer (bottom to top) — backgrounds + characters interleaved
     for (auto& layer : m_layers) {
         if (!layer.visible) { ++layerZOrder; continue; }
         if (layer.opacity < 0.004f) { ++layerZOrder; continue; }
 
-        // â”€â”€ Background / video image layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Background / video image layer ──────────────────────────────
         if (layer.isBackground) {
             // Flush any pending character jobs BEFORE this background
             // (characters below this BG must be composited first)
@@ -463,7 +463,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
                 }
 
                 if (charJobs.size() == 1 && !anyCrop && !anyBlur) {
-                    // Single job, no crop, no blur â€” rasterise directly onto the back buffer
+                    // Single job, no crop, no blur — rasterise directly onto the back buffer
                     auto& job = charJobs[0];
                     rasteriseBatches(job.meshData, *job.textures, bufPixels, bufStride,
                                      ww, wh, job.offsetX, job.offsetY, job.charScale,
@@ -500,7 +500,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
                         }
                     }
 
-                    // Composite layer buffers onto back buffer â€” with crop clip per job
+                    // Composite layer buffers onto back buffer — with crop clip per job
                     QPainter comp(&m_backBuffer);
                     comp.setCompositionMode(QPainter::CompositionMode_SourceOver);
                     for (size_t ji = 0; ji < charJobs.size(); ++ji) {
@@ -669,7 +669,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
             continue;
         }
 
-        // â”€â”€ Character (Spine) layer â€” queue for parallel rasterization â”€â”€
+        // ── Character (Spine) layer — queue for parallel rasterization ──
         if (!layer.engine || !layer.engine->isLoaded()) {
             ++layerZOrder;
             continue;
@@ -698,7 +698,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
         float spCenterX = layer.boundsX + layer.boundsW * 0.5f;
         float spCenterY = layer.boundsY + layer.boundsH * 0.5f;
 
-        // posX/posY are normalized 0â€“1 (0.5 = center of canvas)
+        // posX/posY are normalized 0–1 (0.5 = center of canvas)
         float xMul = layer.flipX ? -charScale : charScale;
         float yMul = layer.flipY ? -charScale : charScale;
         float screenCenterX = canvasOriginX + layer.posX * canvasW;
@@ -734,7 +734,7 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
         ++layerZOrder;
     }
 
-    // â”€â”€ Flush remaining character jobs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Flush remaining character jobs ──────────────────────────────────
     if (!charJobs.empty()) {
         bool anyCrop = false;
         bool anyBlur = false;
@@ -801,9 +801,9 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
     drawTransformOverlay(painter);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Transform overlay â€” Photoshop-style bounding box + corner handles
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
+// Transform overlay — Photoshop-style bounding box + corner handles
+// ─────────────────────────────────────────────────────────────────────────────
 
 } // namespace rt
 

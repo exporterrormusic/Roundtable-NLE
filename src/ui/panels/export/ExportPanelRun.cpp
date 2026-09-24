@@ -195,12 +195,12 @@ ExportJobConfig ExportPanel::buildJobConfig() const
         cfg.encoderConfig.hwAccel = static_cast<HardwareAccel>(
             m_accelCombo->currentData().toInt());
     }
-    // Map quality slider (0-100) â†’ CRF value
+    // Map quality slider (0-100) → CRF value
     // 100 = Best (CRF 14), 75 = High (CRF 18), 50 = Medium (CRF 23),
     // 25 = Low (CRF 28), 0 = Lowest (CRF 35)
     {
         int q = m_crfSlider->value();
-        // Linear interpolation: quality 0â†’CRF 35, quality 100â†’CRF 14
+        // Linear interpolation: quality 0→CRF 35, quality 100→CRF 14
         int crf = 35 - (q * 21) / 100;  // 35..14
         cfg.encoderConfig.crf = crf;
     }
@@ -683,7 +683,7 @@ void ExportPanel::onPollProgress()
     int pct = static_cast<int>(j->progress.percent.load());
     m_progressBar->setValue(pct);
     setJobRowState(m_activeJobId, JobRowState::Running, pct);
-    // Build a rich status string: "Rendering â€” 245/800 frames Â· 14.2 fps Â· ETA 0:39"
+    // Build a rich status string: "Rendering — 245/800 frames · 14.2 fps · ETA 0:39"
     int64_t curFrame   = j->progress.currentFrame.load();
     int64_t totalFrame = j->progress.totalFrames.load();
     double  elapsed    = j->progress.elapsedSeconds.load();

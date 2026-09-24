@@ -655,8 +655,8 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                                  "Continuing this export with CPU encoding (slower).";
         }
         // WARNING: CPU encoding is very slow. This is a TEMPORARY LAST RESORT
-        // only Ã¢â‚¬â€ fix the HW encoder path instead.
-        spdlog::error("RndQ[{}]: HW encoder failed Ã¢â‚¬â€ falling back to SLOW CPU encoding", job.id);
+        // only — fix the HW encoder path instead.
+        spdlog::error("RndQ[{}]: HW encoder failed — falling back to SLOW CPU encoding", job.id);
         job.config.encoderConfig.hwAccel = HardwareAccel::None;
         encoder = Encoder::create(job.config.encoderConfig.codec, HardwareAccel::None);
         if (!encoder || !encoder->init(job.config.encoderConfig)) {

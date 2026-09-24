@@ -1,5 +1,5 @@
 /*
- * EffectProcessor â€” GPU compute-shader effects pipeline.
+ * EffectProcessor — GPU compute-shader effects pipeline.
  *
  * Step 22: Processes effects on clip images using Vulkan compute shaders.
  *
@@ -36,7 +36,7 @@
 
 namespace rt {
 
-// â”€â”€ Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Configuration ───────────────────────────────────────────────────────────
 
 struct EffectProcessorConfig
 {
@@ -45,7 +45,7 @@ struct EffectProcessorConfig
     VkFormat format{VK_FORMAT_R8G8B8A8_UNORM};
 };
 
-// â”€â”€ Push constants for effect shaders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Push constants for effect shaders ───────────────────────────────────────
 
 struct EffectPushConstants
 {
@@ -57,7 +57,7 @@ struct EffectPushConstants
 };
 static_assert(sizeof(EffectPushConstants) == 128);
 
-// â”€â”€ Statistics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Statistics ──────────────────────────────────────────────────────────────
 
 struct EffectProcessorStats
 {
@@ -65,7 +65,7 @@ struct EffectProcessorStats
     float gpuTimeMs{0.0f};
 };
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 class EffectProcessor
 {
@@ -76,7 +76,7 @@ public:
     EffectProcessor(const EffectProcessor&) = delete;
     EffectProcessor& operator=(const EffectProcessor&) = delete;
 
-    // â”€â”€ Lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Lifecycle ───────────────────────────────────────────────────────
 
     bool init(Device& device,
               Allocator& allocator,
@@ -93,7 +93,7 @@ public:
 
     [[nodiscard]] bool isInitialized() const noexcept { return m_initialized; }
 
-    // â”€â”€ Processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Processing ──────────────────────────────────────────────────────
 
     /// Apply effects from a snapshot (evaluated EffectStack) to a source image.
     /// Records commands into the provided command buffer.
@@ -107,18 +107,18 @@ public:
                  const std::vector<EffectStack::EffectSnapshot>& effects,
                  const std::vector<VkDescriptorImageInfo>* effectMasks = nullptr);
 
-    /// Synchronous version â€” creates its own command buffer.
+    /// Synchronous version — creates its own command buffer.
     bool processSync(const VkDescriptorImageInfo& sourceImage,
                      const std::vector<EffectStack::EffectSnapshot>& effects);
     /// Copy current output to caller-owned Texture. Synchronous.
     bool snapshotOutputSync(Texture& dst);
 
 
-    // â”€â”€ Resize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Resize ──────────────────────────────────────────────────────────
 
     bool resize(uint32_t width, uint32_t height);
 
-    // â”€â”€ Output access â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Output access ───────────────────────────────────────────────────
 
     [[nodiscard]] VkImage       outputImage()     const noexcept;
     [[nodiscard]] VkImageView   outputImageView() const noexcept;
@@ -130,7 +130,7 @@ public:
     /// Read back output pixels (for testing).
     bool readbackOutput(std::vector<uint8_t>& outPixels);
 
-    // â”€â”€ Statistics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Statistics ──────────────────────────────────────────────────────
 
     [[nodiscard]] const EffectProcessorStats& stats() const noexcept { return m_stats; }
 
@@ -153,7 +153,7 @@ private:
     /// process()/dispatchEffect.  Called after allocation and after resize().
     void initDescriptorRingBindings();
 
-    /// Dispatch a single effect â€” writes to pingPong[targetIdx].
+    /// Dispatch a single effect — writes to pingPong[targetIdx].
     bool dispatchEffect(VkCommandBuffer cmd,
                         EffectType type,
                         const std::vector<float>& params,
@@ -192,7 +192,7 @@ private:
 
     VkPipeline getPipeline(EffectType type) const;
 
-    // â”€â”€ Vulkan handles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Vulkan handles ──────────────────────────────────────────────────
 
     Device*       m_device{nullptr};
     Allocator*    m_allocator{nullptr};

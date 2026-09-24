@@ -13,7 +13,7 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
-// ShotPanel removed � character/shot controls merged into PropertiesPanel
+// ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -103,7 +103,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 // layerSelected signal triggers updateTransformOverlay()
                 // which reads m_selection.clip.
                 // Only reset m_selection.graphicLayerIdx when the clip
-                // actually changes â€” if same clip, setClip returns early
+                // actually changes — if same clip, setClip returns early
                 // and layerSelected won't fire to re-establish the index.
                 if (clip != m_selection.clip)
                     m_selection.graphicLayerIdx = -1;
@@ -116,7 +116,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                         m_effectControlsPanel->setClip(clip, track);
                 }
                 if (m_GraphicsEditorPanel) {
-                    // Always call setClip for Graphic clips � the layerSelected
+                    // Always call setClip for Graphic clips — the layerSelected
                     // signal is required to set m_selection.graphicLayerIdx for
                     // per-layer transform overlay mode.
                     bool isGraphic = (clip->clipType() == ClipType::Graphic);
@@ -299,7 +299,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 if (m_programMonitor && m_programMonitor->transformOverlay())
                     m_programMonitor->transformOverlay()->clearTransformOverlay();
             } else if (sel.count() == 1) {
-                // Single clip selected (e.g. via drag/marquee) â€” populate
+                // Single clip selected (e.g. via drag/marquee) — populate
                 // all panels the same way clipSelected does.
                 const auto& ref = sel.clips().front();
                 auto* trk = m_timeline->track(ref.trackIndex);

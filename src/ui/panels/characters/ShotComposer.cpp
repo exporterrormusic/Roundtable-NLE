@@ -1,6 +1,6 @@
 /*
- * ShotComposer.cpp â€” character shot composition panel.
- * Step 18: Shot Composer â€” matched to Python ShotPanel layout.
+ * ShotComposer.cpp — character shot composition panel.
+ * Step 18: Shot Composer — matched to Python ShotPanel layout.
  */
 
 #include "panels/characters/ShotComposer.h"
@@ -55,12 +55,12 @@ extern "C" {
 #include <tuple>
 
 namespace rt {
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 ShotComposer::ShotComposer(QWidget* parent)
     : QWidget(parent)
 {
-    // Undo coalesce timer â€” resets after 600ms of no property changes
+    // Undo coalesce timer — resets after 600ms of no property changes
     m_undoCoalesceTimer = new QTimer(this);
     m_undoCoalesceTimer->setSingleShot(true);
     m_undoCoalesceTimer->setInterval(600);

@@ -65,7 +65,7 @@ QWidget* CharacterBrowser::createLeftPanel()
     layout->setContentsMargins(14, 14, 14, 14);
     layout->setSpacing(m.spacingMd);
 
-    // â”€â”€ Title with character count â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Title with character count ──────────────────────────────────────
     m_titleLabel = new QLabel(QStringLiteral("\xF0\x9F\x91\xA5  Characters"));
     m_titleLabel->setObjectName("PanelTitle");
     m_titleLabel->setStyleSheet(QStringLiteral(
@@ -73,7 +73,7 @@ QWidget* CharacterBrowser::createLeftPanel()
         .arg(Theme::rgb(c.accent)));
     layout->addWidget(m_titleLabel);
 
-    // â”€â”€ Search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Search ──────────────────────────────────────────────────────────
     m_searchField = new QLineEdit;
     m_searchField->setPlaceholderText(QStringLiteral("\xF0\x9F\x94\x8D  Search by name..."));
     m_searchField->setClearButtonEnabled(true);
@@ -92,7 +92,7 @@ QWidget* CharacterBrowser::createLeftPanel()
             this, &CharacterBrowser::onSearchChanged);
     layout->addWidget(m_searchField);
 
-    // â”€â”€ Category filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Category filter ─────────────────────────────────────────────────
     auto* filterRow = new QHBoxLayout;
     filterRow->setSpacing(m.spacingMd);
     m_categoryLabel = new QLabel("Category:");
@@ -115,7 +115,7 @@ QWidget* CharacterBrowser::createLeftPanel()
     filterRow->addWidget(m_categoryFilter);
     layout->addLayout(filterRow);
 
-    // â”€â”€ Downloaded Only checkbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Downloaded Only checkbox ────────────────────────────────────────
     m_downloadedOnly = new QCheckBox(QStringLiteral("\xE2\x9C\x94  Downloaded Only"));
     m_downloadedOnly->setObjectName("FilterCheck");
     m_downloadedOnly->setChecked(false);
@@ -126,7 +126,7 @@ QWidget* CharacterBrowser::createLeftPanel()
             this, &CharacterBrowser::onDownloadedOnlyToggled);
     layout->addWidget(m_downloadedOnly);
 
-    // â”€â”€ Show Hidden checkbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Show Hidden checkbox ────────────────────────────────────────
     m_showHidden = new QCheckBox(QStringLiteral("\xF0\x9F\x91\x81  Show Hidden"));
     m_showHidden->setObjectName("FilterCheck");
     m_showHidden->setChecked(false);
@@ -137,7 +137,7 @@ QWidget* CharacterBrowser::createLeftPanel()
             this, &CharacterBrowser::onShowHiddenToggled);
     layout->addWidget(m_showHidden);
 
-    // â”€â”€ Character list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Character list ──────────────────────────────────────────────────
     m_characterList = new QListWidget;
     m_characterList->setObjectName("CharacterList");
     m_characterList->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -163,7 +163,7 @@ QWidget* CharacterBrowser::createLeftPanel()
             this, [this](QListWidgetItem*) { populateControls(); });
     layout->addWidget(m_characterList, 1);
 
-    // â”€â”€ Action buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Action buttons ──────────────────────────────────────────────────
     auto* btnRow = new QHBoxLayout;
     btnRow->setSpacing(m.spacingSm);
     m_refreshBtn = new QPushButton(QStringLiteral("\xF0\x9F\x94\x84  Refresh"));
@@ -203,7 +203,7 @@ QWidget* CharacterBrowser::createLeftPanel()
 
     layout->addLayout(btnRow);
 
-    // â”€â”€ Download progress â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Download progress ───────────────────────────────────────────────
     m_downloadProgress = new QProgressBar;
     m_downloadProgress->setObjectName("DownloadProgress");
     m_downloadProgress->setRange(0, 100);
@@ -224,7 +224,7 @@ QWidget* CharacterBrowser::createRightPanel()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    // â”€â”€ Preview area (stretch=1, fills most of right panel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Preview area (stretch=1, fills most of right panel) ─────────────
     m_previewArea = new QWidget;
     m_previewArea->setObjectName("PreviewArea");
     m_previewArea->setMinimumSize(400, 300);
@@ -245,7 +245,7 @@ QWidget* CharacterBrowser::createRightPanel()
 
     layout->addWidget(m_previewArea, 1);
 
-    // â”€â”€ Controls bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Controls bar ────────────────────────────────────────────────────
     auto* controls = new QFrame;
     controls->setObjectName("ControlsBar");
     auto* controlsLayout = new QHBoxLayout(controls);
@@ -320,7 +320,7 @@ QWidget* CharacterBrowser::createRightPanel()
 
     controlsLayout->addStretch();
 
-    // â”€â”€ Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Status ──────────────────────────────────────────────────────────
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setObjectName("StatusLabel");
     m_statusLabel->setStyleSheet(QStringLiteral("font-size: %1px;")
@@ -332,8 +332,8 @@ QWidget* CharacterBrowser::createRightPanel()
     return panel;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 // Population helpers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 } // namespace rt

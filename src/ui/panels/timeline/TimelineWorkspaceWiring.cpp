@@ -12,7 +12,7 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
-// ShotPanel removed � character/shot controls merged into PropertiesPanel
+// ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -95,7 +95,7 @@ void TimelineWorkspace::wirePanelSignals()
             float curL = m_timelineVUMeter->level(0);
             float curR = m_timelineVUMeter->level(1);
             if (curL < 0.001f && curR < 0.001f) {
-                // Fully decayed � stop polling until next play/scrub
+                // Fully decayed — stop polling until next play/scrub
                 m_timelineVUMeter->setLevel(0, 0.0f);
                 m_timelineVUMeter->setLevel(1, 0.0f);
                 m_meterTimer->stop();
@@ -110,7 +110,7 @@ void TimelineWorkspace::wirePanelSignals()
         m_timelineVUMeter->setLevel(0, m.peakL);
         m_timelineVUMeter->setLevel(1, m.peakR);
     });
-    // Don't start yet � started on play/scrub via onStateChanged
+    // Don't start yet — started on play/scrub via onStateChanged
 
     // =====================================================================
     wireClipSelectionSignals();

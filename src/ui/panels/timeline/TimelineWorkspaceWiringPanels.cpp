@@ -14,7 +14,7 @@
 #include "spine/AnimationVideoCache.h"
 #include "Theme.h"
 
-// ShotPanel removed � character/shot controls merged into PropertiesPanel
+// ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"

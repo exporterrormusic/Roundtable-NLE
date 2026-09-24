@@ -98,7 +98,7 @@ void AudioSync::populateCards()
         m_rightScrollContent->setUpdatesEnabled(false);
 
     if (!m_script) {
-        // No script loaded â€” show placeholder
+        // No script loaded — show placeholder
         if (m_rightLayout) {
             auto* placeholder = new QLabel("Load a script and import audio to begin.");
             placeholder->setAlignment(Qt::AlignCenter);
@@ -126,14 +126,14 @@ void AudioSync::populateCards()
         }
     }
 
-    // Build maps: scriptLineNumber â†’ clip indices
+    // Build maps: scriptLineNumber → clip indices
     std::unordered_map<int, std::vector<size_t>> lineToClips;
     for (size_t i = 0; i < m_clips.size(); ++i) {
         if (m_clips[i].scriptLineNumber > 0)
             lineToClips[m_clips[i].scriptLineNumber].push_back(i);
     }
 
-    // Build display-index â†’ script line mapping for dropdown
+    // Build display-index → script line mapping for dropdown
     struct ScriptLineDisplay {
         int displayNum;
         int lineNumber;
@@ -163,7 +163,7 @@ void AudioSync::populateCards()
                 continue;
         }
 
-        // Apply unmatched filter â€” show only lines without a matched clip
+        // Apply unmatched filter — show only lines without a matched clip
         if (filterUnmatched) {
             bool hasMatch = lineToClips.count(line.lineNumber) > 0;
             if (hasMatch) continue;
@@ -192,7 +192,7 @@ void AudioSync::populateCards()
             }
         }
 
-        // â”€â”€ Card frame â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Card frame ─────────────────────────────────────────────────
         QString borderColor, bgColor;
         switch (matchState) {
         case 2:  bgColor = Theme::hex(_tc.successBg); borderColor = Theme::hex(_tc.success); break;
@@ -244,7 +244,7 @@ void AudioSync::populateCards()
                 .arg(bgColor, borderColor).arg(line.lineNumber)
                 .arg(hoverBg, hoverBorder).arg(_radM));
 
-        // â”€â”€ Outer: left (script + waveform) | separator | right (controls) â”€â”€
+        // ── Outer: left (script + waveform) | separator | right (controls) ──
         auto* cardOuterLayout = new QHBoxLayout(card);
         cardOuterLayout->setContentsMargins(14, 10, 10, 10);
         cardOuterLayout->setSpacing(0);
@@ -270,7 +270,7 @@ void AudioSync::populateCards()
         rightLayout->setSpacing(4);
         cardOuterLayout->addWidget(rightWidget);
 
-        // â”€â”€ Header (left panel): # | Character | Script Text â”€â”€â”€â”€â”€â”€
+        // ── Header (left panel): # | Character | Script Text ──────
         auto* headerRow = new QHBoxLayout;
         headerRow->setSpacing(8);
 
@@ -307,7 +307,7 @@ void AudioSync::populateCards()
         headerRow->addWidget(dialogueLabel, 1);
         leftLayout->addLayout(headerRow);
 
-        // â”€â”€ Status icon (right panel top) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Status icon (right panel top) ──────────────────────────
         auto* statusIcon = new QLabel;
         statusIcon->setFixedHeight(20);
         statusIcon->setAlignment(Qt::AlignCenter);
@@ -327,7 +327,7 @@ void AudioSync::populateCards()
         }
         rightLayout->addWidget(statusIcon);
 
-        // â”€â”€ Audio content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Audio content ──────────────────────────────────────────────
         MiniWaveformWidget* waveform = nullptr;
 
         if (hasClip) {
@@ -633,7 +633,7 @@ void AudioSync::populateCards()
 
             leftLayout->addWidget(waveform);
 
-            // â”€â”€ Right-panel controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Right-panel controls ────────────────────────────────────
             // CONFIRM / CONFIRMED is a toggle: clicking when tentative
             // (matchState=1) sets matchState=2; clicking when confirmed
             // sets it back to 1.  We update the button in place rather
@@ -891,7 +891,7 @@ void AudioSync::populateCards()
             rightLayout->addWidget(lineCombo);
 
         } else {
-            // â”€â”€ Unmatched: left (text) | right (manual match) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Unmatched: left (text) | right (manual match) ──────────
             auto* noAudioLabel = new QLabel("No audio assigned");
             noAudioLabel->setAlignment(Qt::AlignCenter);
             noAudioLabel->setStyleSheet(
@@ -901,7 +901,7 @@ void AudioSync::populateCards()
 
             int lineNum = line.lineNumber;
 
-            // Audio file selector â€” lets the user pick which imported
+            // Audio file selector — lets the user pick which imported
             // audio file this line should match against.
             if (m_audioPaths.size() > 1) {
                 auto* audioFileCombo = new QComboBox;

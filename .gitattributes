@@ -1,0 +1,9 @@
+# Text files are stored and checked out with LF endings on every machine,
+# regardless of core.autocrlf, so editors, scripts and AI tools never leave
+# files with mixed line endings. Git detects binary files automatically.
+* text=auto eol=lf
+
+# Windows command scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

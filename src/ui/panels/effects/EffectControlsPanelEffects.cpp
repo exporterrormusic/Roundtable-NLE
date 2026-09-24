@@ -54,7 +54,7 @@
 
 namespace rt {
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
 
 void EffectControlsPanel::wireEffectParam(ScrubbySpinBox* spin,
                                           size_t effectIdx, size_t paramIdx)
@@ -119,9 +119,9 @@ void EffectControlsPanel::wireEffectParam(ScrubbySpinBox* spin,
     });
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  buildGenericEffectUI â€” flat parameter rows for non-Ultra Key effects
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+//  buildGenericEffectUI — flat parameter rows for non-Ultra Key effects
+// ═════════════════════════════════════════════════════════════════════════════
 
 void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
                                                int& rowIdx)
@@ -214,9 +214,9 @@ void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  buildUltraKeyUI â€” grouped sections for Ultra Key effect
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+//  buildUltraKeyUI — grouped sections for Ultra Key effect
+// ═════════════════════════════════════════════════════════════════════════════
 
 void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
                                           int& rowIdx)
@@ -254,7 +254,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         hl->setSpacing(6);
 
         auto* arrow = new QToolButton(header);
-        arrow->setText(QStringLiteral("\u25B6"));  // â–¶ collapsed by default
+        arrow->setText(QStringLiteral("\u25B6"));  // ▶ collapsed by default
         arrow->setFixedSize(16, 20);
         arrow->setStyleSheet(QStringLiteral(
             "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
@@ -287,7 +287,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         wireEffectParam(spin, effectIdx, paramIdx);
     };
 
-    // â”€â”€ Key Color row with eyedropper button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Key Color row with eyedropper button ────────────────────────────
     {
         auto* keyColorWidget = new QWidget(m_propContainer);
         keyColorWidget->setFixedHeight(32);
@@ -315,7 +315,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
             "QPushButton:hover { border: 1px solid %3; }")
             .arg(keyCol.name(), Theme::hex(tc.border), Theme::hex(tc.accent)));
 
-        // Click swatch â†’ open color dialog
+        // Click swatch → open color dialog
         connect(swatch, &QPushButton::clicked, this, [this, effectIdx, swatch]() {
             if (!m_clip) return;
             auto& st = m_clip->effects();
@@ -341,7 +341,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
 
         // Eyedropper button
         auto* eyedropBtn = new QToolButton(keyColorWidget);
-        eyedropBtn->setText(QStringLiteral("\U0001F4A7")); // ðŸ’§ (droplet)
+        eyedropBtn->setText(QStringLiteral("\U0001F4A7")); // 💧 (droplet)
         eyedropBtn->setToolTip(tr("Pick color from Program Monitor"));
         eyedropBtn->setFixedSize(24, 22);
         eyedropBtn->setStyleSheet(QStringLiteral(
@@ -360,7 +360,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         m_propLayout->addWidget(keyColorWidget);
     }
 
-    // â”€â”€ Output Mode dropdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Output Mode dropdown ────────────────────────────────────────────
     {
         auto* outputWidget = new QWidget(m_propContainer);
         outputWidget->setFixedHeight(28);
@@ -394,7 +394,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         m_propLayout->addWidget(outputWidget);
     }
 
-    // â”€â”€ Setting dropdown (Default / Relaxed / Aggressive / Custom) â”€â”€â”€â”€â”€â”€
+    // ── Setting dropdown (Default / Relaxed / Aggressive / Custom) ──────
     {
         auto* settingWidget = new QWidget(m_propContainer);
         settingWidget->setFixedHeight(28);
@@ -432,7 +432,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         m_propLayout->addWidget(settingWidget);
     }
 
-    // â”€â”€ Matte Generation section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Matte Generation section ────────────────────────────────────────
     auto* matteHeader = makeSubHeader("Matte Generation");
     m_propLayout->addWidget(matteHeader);
     addParamRow(ChromaKey::Transparency);
@@ -441,7 +441,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
     addParamRow(ChromaKey::Tolerance);
     addParamRow(ChromaKey::Pedestal);
 
-    // â”€â”€ Matte Cleanup section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Matte Cleanup section ───────────────────────────────────────────
     auto* cleanupHeader = makeSubHeader("Matte Cleanup");
     m_propLayout->addWidget(cleanupHeader);
     addParamRow(ChromaKey::Choke);
@@ -449,7 +449,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
     addParamRow(ChromaKey::Contrast);
     addParamRow(ChromaKey::MidPoint);
 
-    // â”€â”€ Spill Suppression section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Spill Suppression section ───────────────────────────────────────
     auto* spillHeader = makeSubHeader("Spill Suppression");
     m_propLayout->addWidget(spillHeader);
     addParamRow(ChromaKey::Desaturate, 1.0, 1);
@@ -457,17 +457,17 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
     addParamRow(ChromaKey::Spill);
     addParamRow(ChromaKey::Luma);
 
-    // â”€â”€ Color Correction section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Color Correction section ────────────────────────────────────────
     auto* ccHeader = makeSubHeader("Color Correction");
     m_propLayout->addWidget(ccHeader);
     addParamRow(ChromaKey::Saturation);
-    addParamRow(ChromaKey::Hue, 1.0, 1, QStringLiteral("\u00B0")); // Â° symbol
+    addParamRow(ChromaKey::Hue, 1.0, 1, QStringLiteral("\u00B0")); // ° symbol
     addParamRow(ChromaKey::Luminance);
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  addMask â€” create a new mask and rebuild UI
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+//  addMask — create a new mask and rebuild UI
+// ═════════════════════════════════════════════════════════════════════════════
 
 std::vector<OpacityMask>* EffectControlsPanel::maskListFor(quint64 effectId) const
 {
@@ -809,9 +809,9 @@ void EffectControlsPanel::trackMask(quint64 effectId, size_t maskIdx,
                  keys, forward ? "forward" : "backward");
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  buildMaskUI â€” build parameter rows for each mask on the current clip
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═════════════════════════════════════════════════════════════════════════════
+//  buildMaskUI — build parameter rows for each mask on the current clip
+// ═════════════════════════════════════════════════════════════════════════════
 
 void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                                       quint64 effectId, int& rowIdx)
@@ -1007,7 +1007,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
         auto& mask = maskList[mi];
         const uint64_t stableMaskId = mask.maskId;
 
-        // â”€â”€ Mask sub-section header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Mask sub-section header ─────────────────────────────────────
         auto* header = new QWidget(m_propContainer);
         header->setObjectName(QStringLiteral("maskHeader"));
         header->setFixedHeight(26);
@@ -1058,7 +1058,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
         m_sectionArrows.push_back({header, arrow, {}, QString::fromStdString(mask.name)});
         m_propLayout->addWidget(header);
 
-        // Click on mask header â†’ select this mask for editing in Program Monitor
+        // Click on mask header → select this mask for editing in Program Monitor
         header->setProperty("maskIndex", static_cast<int>(mi));
         header->setProperty("maskEffectId", QVariant::fromValue<qulonglong>(effectId));
         header->setProperty("maskId",

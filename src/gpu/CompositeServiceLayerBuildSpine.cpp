@@ -317,12 +317,12 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
 
                 // CPU fallback if GPU Spine didn't produce a frame
                 // WARNING: CPU Spine rendering is very slow. This is a TEMPORARY
-                // LAST RESORT only Ã¢â‚¬â€ fix the GPU Spine path instead.
+                // LAST RESORT only — fix the GPU Spine path instead.
                 if (!gpuSpineDone) {
                     frame = renderSpineClip(spineClip, tick, outW, outH);
                     if (frame) {
                         cpuSpineRendered = true;
-                        spdlog::warn("[SPINE-RENDER] '{}' GPU unavailable Ã¢â‚¬â€ SLOW CPU raster: {}x{}",
+                        spdlog::warn("[SPINE-RENDER] '{}' GPU unavailable — SLOW CPU raster: {}x{}",
                                      spineClip->characterName(),
                                      frame->width, frame->height);
                     } else {

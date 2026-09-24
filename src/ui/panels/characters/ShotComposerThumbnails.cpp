@@ -646,8 +646,8 @@ void ShotComposer::refreshLayerList()
             if (bg) {
                 auto fname = pathToUtf8(utf8ToPath(bg->path).filename());
                 typeIcon = bg->isVideo()
-                    ? QStringLiteral("\xF0\x9F\x8E\xAC")   // Ã°Å¸Å½Â¬
-                    : QStringLiteral("\xF0\x9F\x96\xBC");   // Ã°Å¸â€“Â¼
+                    ? QStringLiteral("\xF0\x9F\x8E\xAC")   // 🎬
+                    : QStringLiteral("\xF0\x9F\x96\xBC");   // 🖼
                 label = QString::fromStdString(fname.empty() ? bg->path : fname);
                 isVisible = bg->visible;
                 opacity = bg->opacity;
@@ -671,7 +671,7 @@ void ShotComposer::refreshLayerList()
 
         int depth = (li < groupDepth.size()) ? groupDepth[li] : 0;
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Photoshop-style layer row Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // ── Photoshop-style layer row ───────────────────────────────────
         auto* item = new QListWidgetItem(m_layerList);
         item->setSizeHint(QSize(0, 44));
         item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -686,8 +686,8 @@ void ShotComposer::refreshLayerList()
 
         // Eye toggle button
         auto* eyeBtn = new QPushButton(
-            isVisible ? QStringLiteral("\xF0\x9F\x91\x81")    // Ã°Å¸â€˜Â
-                      : QStringLiteral("\xE2\x80\x94"));       // Ã¢â‚¬â€
+            isVisible ? QStringLiteral("\xF0\x9F\x91\x81")    // 👁
+                      : QStringLiteral("\xE2\x80\x94"));       // —
         eyeBtn->setFixedSize(32, 32);
         eyeBtn->setFocusPolicy(Qt::NoFocus);
         eyeBtn->setToolTip("Toggle visibility");
@@ -775,7 +775,7 @@ void ShotComposer::refreshLayerList()
         m_layerList->setCurrentRow(m_selectedLayer);
     m_layerList->blockSignals(false);
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Refresh default-shot character dropdown Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Refresh default-shot character dropdown ─────────────────────────
     refreshDefaultCharacterCombo();
 }
 
@@ -809,9 +809,9 @@ void ShotComposer::refreshDefaultCharacterCombo()
         m_setDefaultBtn->setEnabled(hasCharacters && !m_currentShot.name().empty());
 }
 
-// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+// ═════════════════════════════════════════════════════════════════════════════
 // Thumbnail helpers
-// Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+// ═════════════════════════════════════════════════════════════════════════════
 
 void ShotComposer::setLibraryIconSize(int sz)
 {

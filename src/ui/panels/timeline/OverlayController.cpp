@@ -596,7 +596,7 @@ void OverlayController::updateTransformOverlay()
     }
 
     // Determine source dimensions for the bounding box.
-    // For VideoClip / SpineClipÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢video fallback, look up the media info.
+    // For VideoClip / SpineClip→video fallback, look up the media info.
     // For GraphicClip, use the output resolution (graphics fill the canvas).
     // For GraphicClip without per-layer bounding box, use output resolution
     if (m_ws->selection().clip->clipType() == ClipType::Graphic && info.srcW == 0 && info.srcH == 0) {
@@ -637,11 +637,11 @@ void OverlayController::updateTransformOverlay()
             // Try cached handle first
             uint64_t handle = m_ws->compositeService()->findMediaHandle(videoClip->mediaPath());
             if (handle == 0) {
-                // Media not opened yet ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â open it now so we get correct dimensions.
+                // Media not opened yet — open it now so we get correct dimensions.
                 // compositeFrame() will find this handle on its next pass.
                 handle = m_ws->mediaPool()->open(videoClip->mediaPath());
                 if (handle == 0) {
-                    // Try alternate extension (.webm ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â .mov)
+                    // Try alternate extension (.webm ↔ .mov)
                     namespace fs = std::filesystem;
                     fs::path vidPath(videoClip->mediaPath());
                     fs::path alt = vidPath;
