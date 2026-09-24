@@ -22,12 +22,17 @@ From the repository root:
 The script creates separate environments under `.voice-runtime/` because Fish
 and OmniVoice require incompatible Transformers versions. That directory is
 ignored by Git and the models are not included in normal application packages.
+Upstream code and model revisions are pinned in the script to the versions the
+worker was tested against; update the pins deliberately when upgrading.
 
 ## Workflow
 
 - The **TTS** item in AUDIO's left workflow rail opens generation controls
-  beside the existing script and matched-line workspace. Select a script line
-  to populate its character and dialogue.
+  beside the existing script and matched-line workspace. Right-click a script
+  line's dialogue and choose **Generate voice for this line**: the panel fills
+  in the character and text and links the draft to that exact line, so
+  **Approve & Sync** attaches it there rather than guessing by text
+  similarity. **Unlink** (or choosing another character) removes the link.
 - By default, ROUNDTABLE automatically selects confirmed (approved) Audio Sync
   matches for that character. It can combine clips from several imported
   tracks and takes the highest-confidence material until it reaches about 8
@@ -42,11 +47,13 @@ ignored by Git and the models are not included in normal application packages.
   handles and exact start/end controls. Enter the exact transcript for a
   manually selected range.
 - **Save Approved...** concatenates every confirmed clip for the selected
-  character (with short gaps) into a 192 kbps MP3. The MP3 and a transcript
+  character (with short gaps) into a lossless FLAC. The FLAC and a transcript
   metadata sidecar are stored in the application's **Voice References**
-  library, so they are available in other projects.
+  library, so they are available in other projects. References saved as MP3
+  by earlier versions are still listed and used.
 - **Generate Draft** creates an unapproved temporary WAV. Use **Listen** to
-  audition it; drafts do not enter Audio Sync or Project Bin.
+  audition it; drafts do not enter Audio Sync or Project Bin. Drafts left
+  unapproved are deleted automatically after 24 hours.
 - **Approve & Sync to Script** saves the WAV beside the imported reference
   source with a unique `CHARACTER-yyyyMMdd-HHmmss-zzz.wav` name, imports it
   into **Generated VO**, and matches its dialogue only against script lines for
@@ -54,11 +61,22 @@ ignored by Git and the models are not included in normal application packages.
 - **Approve & Import Only** saves and imports the same way without changing
   Audio Sync matches. Only approved results appear in the draggable generated
   clips list.
-- **Unload Model / Free VRAM** stops the shared local worker immediately. The
-  same shutdown runs automatically when ROUNDTABLE exits so Fish or OmniVoice
-  cannot remain resident after a normal application close.
+- **Unload Model / Free VRAM** stops the shared local worker without freezing
+  the UI; the button disables once the process has exited. Switching engines
+  waits for the previous worker to exit before the next model loads, so two
+  models never share VRAM. The same shutdown runs automatically when
+  ROUNDTABLE exits so no model remains resident after a normal close.
+- Worker diagnostics (model loading, audio.cpp logs, Python tracebacks) are
+  written to the application log with a `[voice]` prefix. If the worker dies
+  mid-request, its last message is included in the error shown in the panel.
 
 ## Quality and performance
+
+- Reference audio is prepared with FFmpeg, which seeks straight to each
+  approved range instead of decoding whole source recordings. Prepared
+  references are cached on disk (keyed by source file, size, modification
+  time and range), so repeat generations for the same character skip this
+  step; Fish also keeps its encoded prompts in memory.
 
 - OmniVoice runs FP16 at 24 kHz with 32 decoding steps. A clean 3–10 second
   reference is a useful target. It also supports fixed-duration generation.

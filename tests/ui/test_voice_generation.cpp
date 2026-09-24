@@ -7,6 +7,7 @@
 #include "panels/audio/AudioSyncFileName.h"
 #include "panels/audio/VoiceGenerationPanel.h"
 #include "panels/audio/VoiceGenerationService.h"
+#include "panels/audio/VoiceReferenceLibrary.h"
 #include "widgets/ManualMatchDialog.h"
 
 #include <QApplication>
@@ -18,13 +19,20 @@
 #include <QTest>
 #include <QTemporaryDir>
 #include <QRegularExpression>
+#include <QSignalSpy>
+#include <QTextEdit>
+#include <QComboBox>
+#include <QElapsedTimer>
+#include <QAction>
 #include <QPushButton>
 #include <QGroupBox>
 #include <QLabel>
 #include <QMessageBox>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <memory>
 
 namespace {
@@ -295,7 +303,7 @@ TEST_F(VoiceGenerationTest, AcceptedCrisperConsentRestoresItsDefault)
 }
 #endif
 
-TEST_F(VoiceGenerationTest, SavesCombinedApprovedClipsAsReusableMp3)
+TEST_F(VoiceGenerationTest, SavesCombinedApprovedClipsAsReusableFlac)
 {
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
@@ -317,7 +325,7 @@ TEST_F(VoiceGenerationTest, SavesCombinedApprovedClipsAsReusableMp3)
     ASSERT_TRUE(rt::AudioSync::saveApprovedVoiceReferenceClips(
         clips, QStringLiteral("Alice"), &saved, &error)) << error.toStdString();
     EXPECT_TRUE(QFileInfo::exists(saved));
-    EXPECT_EQ(QFileInfo(saved).suffix().toLower(), QStringLiteral("mp3"));
+    EXPECT_EQ(QFileInfo(saved).suffix().toLower(), QStringLiteral("flac"));
     EXPECT_GT(QFileInfo(saved).size(), 1000);
 
     const QString metadata = QFileInfo(saved).absolutePath() + QStringLiteral("/")
@@ -333,9 +341,16 @@ TEST_F(VoiceGenerationTest, SavesCombinedApprovedClipsAsReusableMp3)
     rt::AudioFile encoded;
     ASSERT_TRUE(encoded.open(saved.toUtf8().toStdString()));
     EXPECT_GT(encoded.info().duration, 1.5);
+    encoded.close();
+
+    const auto savedReference = rt::VoiceReferenceLibrary::newestFor(QStringLiteral("alice"));
+    ASSERT_TRUE(savedReference.has_value());
+    EXPECT_EQ(savedReference->path, saved);
+    EXPECT_TRUE(savedReference->transcript.contains(QStringLiteral("second approved line")));
 
     QFile::remove(saved);
     QFile::remove(metadata);
+    rt::VoiceReferenceLibrary::invalidate();
 }
 
 TEST_F(VoiceGenerationTest, TtsRailRefreshesCharactersAfterProjectRestore)
@@ -361,7 +376,7 @@ TEST_F(VoiceGenerationTest, TtsRailRefreshesCharactersAfterProjectRestore)
 
     rt::VoiceGenerationService service;
     rt::AudioSync restored;
-    auto* panel = new rt::VoiceGenerationPanel(&service, true);
+    auto* panel = new rt::VoiceGenerationPanel(&service);
     panel->setAudioSync(&restored);
     restored.setVoiceGenerationPanel(panel);
     restored.deserializeFromBlob(savedState);
@@ -556,4 +571,246 @@ TEST_F(VoiceGenerationTest, AutoSyncStaysTentativeAndMatchChangesAreUndoable)
             EXPECT_EQ(candidate.scriptLineNumber, -1);
         }
     }
+}
+
+// ─── Service lifecycle (fake worker) ─────────────────────────────────────────
+
+namespace {
+
+QString fakeWorkerPython()
+{
+    return QString::fromUtf8(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH);
+}
+
+/// Launch the protocol-compatible fake worker for any engine key.
+rt::VoiceGenerationService::LaunchOverride fakeLauncher(
+    std::function<QStringList(const QString&)> extraArguments)
+{
+    return [extraArguments](const QString& provider) {
+        QStringList arguments{QString::fromUtf8(ROUNDTABLE_FAKE_VOICE_WORKER),
+                              QStringLiteral("--name"), provider};
+        arguments += extraArguments(provider);
+        return rt::VoiceGenerationService::WorkerLaunch{
+            fakeWorkerPython(), arguments, QString()};
+    };
+}
+
+rt::VoiceGenerationRequest fakeRequest(const QString& provider, const QString& id)
+{
+    rt::VoiceGenerationRequest request;
+    request.requestId = id;
+    request.provider = provider;
+    request.text = QStringLiteral("Hello from the fake worker");
+    request.character = QStringLiteral("Alice");
+    return request;
+}
+
+/// "<event> <name> <monotonic seconds>" lines written by the fake worker.
+double loggedTime(const QString& logPath, const QString& event, const QString& name)
+{
+    QFile file(logPath);
+    if (!file.open(QIODevice::ReadOnly)) return -1.0;
+    for (const auto& line : QString::fromUtf8(file.readAll()).split('\n')) {
+        const auto parts = line.trimmed().split(' ');
+        if (parts.size() == 3 && parts[0] == event && parts[1] == name)
+            return parts[2].toDouble();
+    }
+    return -1.0;
+}
+
+int loggedCount(const QString& logPath, const QString& event)
+{
+    QFile file(logPath);
+    if (!file.open(QIODevice::ReadOnly)) return 0;
+    int count = 0;
+    for (const auto& line : QString::fromUtf8(file.readAll()).split('\n')) {
+        if (line.startsWith(event + QLatin1Char(' '))) ++count;
+    }
+    return count;
+}
+
+/// Records service outcomes by request id / error text.
+struct ServiceOutcomes
+{
+    explicit ServiceOutcomes(rt::VoiceGenerationService& service)
+    {
+        QObject::connect(&service, &rt::VoiceGenerationService::generationFinished,
+            [this](const rt::VoiceGenerationRequest& request, const QString& path, double) {
+                finished << request.requestId;
+                QFile::remove(path);
+            });
+        QObject::connect(&service, &rt::VoiceGenerationService::generationFailed,
+            [this](const rt::VoiceGenerationRequest&, const QString& error) {
+                failures << error;
+            });
+    }
+    QStringList finished;
+    QStringList failures;
+};
+
+} // namespace
+
+class VoiceServiceLifecycleTest : public VoiceGenerationTest
+{
+protected:
+    void SetUp() override
+    {
+        if (!QFileInfo::exists(fakeWorkerPython()))
+            GTEST_SKIP() << "Python runtime for the fake voice worker is not installed";
+    }
+};
+
+TEST_F(VoiceServiceLifecycleTest, PersistentWorkerServesQueuedRequestsThenUnloads)
+{
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const QString log = temporary.filePath(QStringLiteral("worker.log"));
+    rt::VoiceGenerationService service;
+    service.setLaunchOverrideForTesting(fakeLauncher([&log](const QString&) {
+        return QStringList{QStringLiteral("--log"), log};
+    }));
+    ServiceOutcomes outcomes(service);
+
+    service.enqueue(fakeRequest(QStringLiteral("breeze"), QStringLiteral("first")));
+    service.enqueue(fakeRequest(QStringLiteral("breeze"), QStringLiteral("second")));
+    EXPECT_TRUE(service.isBusy());
+    ASSERT_TRUE(QTest::qWaitFor([&] { return outcomes.finished.size() == 2; }, 20000))
+        << outcomes.failures.join(QStringLiteral("; ")).toStdString();
+    EXPECT_EQ(outcomes.finished, (QStringList{QStringLiteral("first"), QStringLiteral("second")}));
+    EXPECT_TRUE(outcomes.failures.isEmpty());
+    EXPECT_FALSE(service.isBusy());
+    EXPECT_TRUE(service.isModelResident());
+    EXPECT_EQ(loggedCount(log, QStringLiteral("start")), 1);  // one model load for both
+
+    service.unloadModel();
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !service.isModelResident(); }, 10000));
+    // The idle worker received the shutdown request and exited on its own.
+    EXPECT_EQ(loggedCount(log, QStringLiteral("exit")), 1);
+}
+
+TEST_F(VoiceServiceLifecycleTest, LoadTimeoutOfUnloadedWorkerDoesNotKillItsReplacement)
+{
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const QString flag = temporary.filePath(QStringLiteral("ready.flag"));
+    rt::VoiceGenerationService service;
+    service.setLoadTimeoutForTesting(2000);
+    service.setLaunchOverrideForTesting(fakeLauncher([&flag](const QString&) {
+        return QStringList{QStringLiteral("--ready-flag"), flag};
+    }));
+    ServiceOutcomes outcomes(service);
+
+    QElapsedTimer clock;
+    clock.start();
+    service.enqueue(fakeRequest(QStringLiteral("breeze"), QStringLiteral("abandoned")));
+    QTest::qWait(800);
+    service.unloadModel();  // the first worker's load timer is still pending
+    service.enqueue(fakeRequest(QStringLiteral("breeze"), QStringLiteral("kept")));
+
+    // Past the first worker's deadline, before the replacement's.
+    QTest::qWait(static_cast<int>(std::max<qint64>(0, 2300 - clock.elapsed())));
+    EXPECT_TRUE(service.isBusy());
+    EXPECT_TRUE(service.isModelResident());
+
+    QFile ready(flag);
+    ASSERT_TRUE(ready.open(QIODevice::WriteOnly));
+    ready.close();
+    ASSERT_TRUE(QTest::qWaitFor([&] {
+        return outcomes.finished.contains(QStringLiteral("kept")); }, 10000))
+        << outcomes.failures.join(QStringLiteral("; ")).toStdString();
+    EXPECT_FALSE(outcomes.failures.join(QStringLiteral(" "))
+                     .contains(QStringLiteral("did not finish loading")));
+    service.shutdown();
+}
+
+TEST_F(VoiceServiceLifecycleTest, WorkerCrashFailsTheRequestWithItsLastMessage)
+{
+    rt::VoiceGenerationService service;
+    service.setLaunchOverrideForTesting(fakeLauncher([](const QString&) {
+        return QStringList{QStringLiteral("--crash-on-generate")};
+    }));
+    ServiceOutcomes outcomes(service);
+
+    service.enqueue(fakeRequest(QStringLiteral("breeze"), QStringLiteral("crash")));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return !outcomes.failures.isEmpty(); }, 20000));
+    EXPECT_TRUE(outcomes.failures.front().contains(QStringLiteral("exited unexpectedly (code 3)")))
+        << outcomes.failures.front().toStdString();
+    EXPECT_TRUE(outcomes.failures.front().contains(QStringLiteral("fake worker failure detail")));
+    EXPECT_FALSE(service.isBusy());
+    EXPECT_TRUE(QTest::qWaitFor([&] { return !service.isModelResident(); }, 5000));
+}
+
+TEST_F(VoiceServiceLifecycleTest, SwitchingEnginesStartsNewWorkerOnlyAfterOldOneExits)
+{
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const QString log = temporary.filePath(QStringLiteral("worker.log"));
+    rt::VoiceGenerationService service;
+    service.setLaunchOverrideForTesting(fakeLauncher([&log](const QString&) {
+        return QStringList{QStringLiteral("--log"), log,
+                           QStringLiteral("--shutdown-delay"), QStringLiteral("0.6")};
+    }));
+    ServiceOutcomes outcomes(service);
+
+    service.enqueue(fakeRequest(QStringLiteral("omnivoice"), QStringLiteral("a")));
+    ASSERT_TRUE(QTest::qWaitFor([&] { return outcomes.finished.size() == 1; }, 20000));
+
+    QElapsedTimer blocking;
+    blocking.start();
+    service.enqueue(fakeRequest(QStringLiteral("fish-s2"), QStringLiteral("b")));
+    // The old worker takes 0.6 s to exit; the UI thread must not wait for it.
+    EXPECT_LT(blocking.elapsed(), 300);
+    ASSERT_TRUE(QTest::qWaitFor([&] { return outcomes.finished.size() == 2; }, 20000))
+        << outcomes.failures.join(QStringLiteral("; ")).toStdString();
+
+    const double oldExit = loggedTime(log, QStringLiteral("exit"), QStringLiteral("omnivoice"));
+    const double newStart = loggedTime(log, QStringLiteral("start"), QStringLiteral("fish-s2"));
+    ASSERT_GT(oldExit, 0.0);
+    ASSERT_GT(newStart, 0.0);
+    EXPECT_LE(oldExit, newStart);  // never two models resident at once
+    service.shutdown();
+}
+
+// ─── Script line → TTS panel ─────────────────────────────────────────────────
+
+TEST_F(VoiceGenerationTest, ScriptLineActionLinksTheDraftToThatLine)
+{
+    rt::VoiceGenerationService service;
+    rt::AudioSync audioSync;
+    ASSERT_TRUE(audioSync.loadScript(
+        "ALICE: First line\nBOB: Second line", "memory://voice-line-link-test"));
+    auto* panel = new rt::VoiceGenerationPanel(&service);
+    panel->setAudioSync(&audioSync);
+    audioSync.setVoiceGenerationPanel(panel);  // AudioSync owns the panel
+
+    auto* list = audioSync.scriptListWidget();
+    ASSERT_NE(list, nullptr);
+    ASSERT_EQ(list->count(), 2);
+    QAction* generateVoice = nullptr;
+    for (auto* label : list->itemWidget(list->item(1))->findChildren<QLabel*>()) {
+        if (auto* action = label->findChild<QAction*>(
+                QStringLiteral("generateVoiceForLineAction"))) {
+            generateVoice = action;
+            break;
+        }
+    }
+    ASSERT_NE(generateVoice, nullptr);
+
+    QSignalSpy requested(&audioSync, &rt::AudioSync::voiceLineRequested);
+    generateVoice->trigger();
+    ASSERT_EQ(requested.count(), 1);
+    EXPECT_EQ(audioSync.audioSidePanelMode(), 5);
+    EXPECT_EQ(panel->linkedScriptLine(), requested.at(0).at(0).toInt());
+    EXPECT_GE(panel->linkedScriptLine(), 0);
+    EXPECT_EQ(panel->currentText(), QStringLiteral("Second line"));
+    EXPECT_EQ(panel->currentCharacter().compare(QStringLiteral("Bob"), Qt::CaseInsensitive), 0);
+
+    // A line belongs to one character: picking another one unlinks it.
+    QComboBox* character = nullptr;
+    for (auto* combo : panel->findChildren<QComboBox*>()) {
+        if (combo->isEditable()) character = combo;
+    }
+    ASSERT_NE(character, nullptr);
+    character->setCurrentText(QStringLiteral("Alice"));
+    EXPECT_EQ(panel->linkedScriptLine(), -1);
 }

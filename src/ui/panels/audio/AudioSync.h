@@ -127,14 +127,6 @@ struct AudioSampleData {
     uint32_t sampleRate{44100};
 };
 
-/// Read-only script projection used by the voice-generation panels.
-struct VoiceScriptLine {
-    int lineNumber{-1};
-    QString character;
-    QString dialogue;
-    QString segment;
-};
-
 /// A previously imported/matched line that can serve as cloning reference.
 struct VoiceReferenceCandidate {
     int clipId{-1};
@@ -266,9 +258,13 @@ public:
     /// rail as SCRIPT / IMPORT / TRANSCRIBE / MATCH / SETTINGS.
     void setVoiceGenerationPanel(QWidget* panel);
     void showVoiceGenerationPanel();
+    /// Add "Generate voice for this line" to a script dialogue label's
+    /// context menu. Triggering it opens the TTS rail and emits
+    /// voiceLineRequested so the panel links the draft to that exact line.
+    void addGenerateVoiceAction(QLabel* label, int lineNumber, const QString& character,
+                                const QString& dialogue, const QString& segment);
 
-    /// Snapshot script dialogue and usable imported line references for TTS.
-    [[nodiscard]] QVector<VoiceScriptLine> voiceScriptLines() const;
+    /// Usable imported line references for TTS.
     [[nodiscard]] QVector<VoiceImportedAudioTrack> voiceImportedAudioTracks() const;
     [[nodiscard]] QVector<VoiceReferenceCandidate> voiceReferenceCandidates() const;
     [[nodiscard]] const AudioSampleData* voiceAudioSamples(const QString& path) const;
@@ -288,7 +284,7 @@ public:
                                                 QString* error);
 
     /// Consolidate all confirmed clips for one character into the application
-    /// reference library as an MP3 plus transcript metadata sidecar.
+    /// reference library as lossless FLAC plus a transcript metadata sidecar.
     bool saveApprovedVoiceReference(const QString& character,
                                     QString* savedPath,
                                     QString* error) const;
@@ -346,6 +342,8 @@ public:
 signals:
     void scriptLoaded(int lineCount);
     void voiceContextChanged();
+    void voiceLineRequested(int lineNumber, const QString& character,
+                            const QString& dialogue, const QString& segment);
     void audioImported(const QString& path);
     void transcriptionStarted();
     void transcriptionProgress(float percent, const QString& status);

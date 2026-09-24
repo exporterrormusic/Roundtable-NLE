@@ -326,7 +326,7 @@ void TimelineWorkspace::createPanelWidgets()
     // drafts are imported into Project Bin and become draggable from the list.
     if (m_voiceGenerationService) {
         m_voiceGenerationPanel = new VoiceGenerationPanel(
-            m_voiceGenerationService, true, this);
+            m_voiceGenerationService, this);
         m_voiceGenerationPanel->setAudioSync(m_voiceScriptSource);
         m_voiceGenerationPanel->setMinimumWidth(240);
         makeDock("Voice Generator", m_voiceGenerationPanel);

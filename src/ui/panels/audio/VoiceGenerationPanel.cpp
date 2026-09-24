@@ -2,6 +2,9 @@
 
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VoiceGenerationService.h"
+#include "panels/audio/VoiceProviders.h"
+#include "panels/audio/VoiceReferenceLibrary.h"
+#include "Theme.h"
 #include "widgets/MiniWaveformWidget.h"
 
 #include <QAbstractItemView>
@@ -16,33 +19,30 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMimeData>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QPushButton>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QSplitter>
-#include <QStandardPaths>
 #include <QTextEdit>
 #include <QTimer>
-#include <QTreeWidget>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <optional>
 
 namespace rt {
 
 namespace {
+
+// AudioSync emits change signals on every clip confirm; they are coalesced
+// into one rebuild per burst.
+constexpr int kRefreshCoalesceMs = 60;
 
 class GeneratedAudioList final : public QListWidget
 {
@@ -68,102 +68,73 @@ protected:
     }
 };
 
-struct SavedReference
+double referenceTargetSeconds(const QString& provider)
 {
-    QString path;
-    QString character;
-    QString transcript;
+    const auto* info = findVoiceProvider(provider);
+    return info ? info->referenceSeconds : 20.0;
+}
+
+struct AutomaticReferencePlan
+{
+    QList<VoiceReferenceSegment> segments;
     double duration{0.0};
+    int trackCount{0};
+    bool fromSavedLibrary{false};
 };
 
-QVector<SavedReference> savedReferences()
+/// Highest-confidence approved clips for `character` until the engine's
+/// reference target is reached; otherwise the newest saved reference.
+AutomaticReferencePlan planAutomaticReference(
+    QVector<VoiceReferenceCandidate> candidates,
+    const QString& character, const QString& provider)
 {
-    QVector<SavedReference> result;
-    const QDir directory(QDir(QStandardPaths::writableLocation(
-        QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("Voice References")));
-    const auto metadataFiles = directory.entryInfoList(
-        {QStringLiteral("*.json")}, QDir::Files, QDir::Time);
-    for (const auto& info : metadataFiles) {
-        QFile file(info.absoluteFilePath());
-        if (!file.open(QIODevice::ReadOnly)) continue;
-        const auto document = QJsonDocument::fromJson(file.readAll());
-        if (!document.isObject()) continue;
-        const auto metadata = document.object();
-        const QString mp3 = directory.filePath(info.completeBaseName()
-                                               + QStringLiteral(".mp3"));
-        if (!QFileInfo::exists(mp3)) continue;
-        result.push_back({
-            mp3,
-            metadata.value(QStringLiteral("character")).toString(),
-            metadata.value(QStringLiteral("transcript")).toString(),
-            metadata.value(QStringLiteral("duration")).toDouble()
+    AutomaticReferencePlan plan;
+    if (character.trimmed().isEmpty()) return plan;
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+        [](const auto& left, const auto& right) {
+            if (left.confidence != right.confidence)
+                return left.confidence > right.confidence;
+            return (left.end - left.start) > (right.end - right.start);
         });
-    }
-    return result;
-}
-
-std::optional<SavedReference> savedReferenceForCharacter(const QString& character)
-{
-    for (const auto& reference : savedReferences()) {
-        if (reference.character.compare(character, Qt::CaseInsensitive) == 0)
-            return reference;
-    }
-    return std::nullopt;
-}
-
-double desiredReferenceDuration(const QString& provider)
-{
-    return provider == QStringLiteral("omnivoice") ? 8.0 : 20.0;
-}
-
-QList<VoiceReferenceSegment> automaticReferenceSegments(
-    const AudioSync* audioSync, const QString& character, const QString& provider,
-    double* durationOut = nullptr, int* trackCountOut = nullptr)
-{
-    QList<VoiceReferenceSegment> result;
-    double duration = 0.0;
+    const double target = referenceTargetSeconds(provider);
     QSet<QString> tracks;
-    if (audioSync && !character.trimmed().isEmpty()) {
-        auto candidates = audioSync->voiceReferenceCandidates();
-        std::stable_sort(candidates.begin(), candidates.end(),
-            [](const auto& left, const auto& right) {
-                if (left.confidence != right.confidence)
-                    return left.confidence > right.confidence;
-                return (left.end - left.start) > (right.end - right.start);
-            });
-        const double target = desiredReferenceDuration(provider);
-        for (const auto& candidate : candidates) {
-            if (candidate.character.compare(character, Qt::CaseInsensitive) != 0)
-                continue;
-            const double clipDuration = candidate.end - candidate.start;
-            if (clipDuration < 0.35 || candidate.transcript.trimmed().isEmpty()) continue;
-            result.push_back({candidate.sourceFile, candidate.transcript,
-                              candidate.start, candidate.end});
-            duration += clipDuration;
-            tracks.insert(candidate.sourceFile);
-            if (duration >= target) break;
-        }
+    for (const auto& candidate : candidates) {
+        if (candidate.character.compare(character, Qt::CaseInsensitive) != 0)
+            continue;
+        const double clipDuration = candidate.end - candidate.start;
+        if (clipDuration < 0.35 || candidate.transcript.trimmed().isEmpty()) continue;
+        plan.segments.push_back({candidate.sourceFile, candidate.transcript,
+                                 candidate.start, candidate.end});
+        plan.duration += clipDuration;
+        tracks.insert(candidate.sourceFile);
+        if (plan.duration >= target) break;
     }
-    if (result.isEmpty()) {
-        if (const auto saved = savedReferenceForCharacter(character)) {
-            result.push_back({saved->path, saved->transcript, 0.0, 0.0});
-            duration = saved->duration;
+    if (plan.segments.isEmpty()) {
+        if (const auto saved = VoiceReferenceLibrary::newestFor(character)) {
+            plan.segments.push_back({saved->path, saved->transcript, 0.0, 0.0});
+            plan.duration = saved->duration;
+            plan.fromSavedLibrary = true;
             tracks.insert(saved->path);
         }
     }
-    if (durationOut) *durationOut = duration;
-    if (trackCountOut) *trackCountOut = tracks.size();
-    return result;
+    plan.trackCount = static_cast<int>(tracks.size());
+    return plan;
 }
 
 } // namespace
 
 VoiceGenerationPanel::VoiceGenerationPanel(VoiceGenerationService* service,
-                                           bool compact,
                                            QWidget* parent)
-    : QWidget(parent), m_service(service), m_compact(compact)
+    : QWidget(parent), m_service(service)
 {
-    buildUi(compact);
+    buildUi();
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(kRefreshCoalesceMs);
+    connect(m_refreshTimer, &QTimer::timeout,
+            this, &VoiceGenerationPanel::refreshFromAudioSync);
+
     if (m_service) {
         connect(m_service, &VoiceGenerationService::statusChanged,
                 m_status, &QLabel::setText);
@@ -183,39 +154,31 @@ VoiceGenerationPanel::VoiceGenerationPanel(VoiceGenerationService* service,
     refreshProviderState();
 }
 
-void VoiceGenerationPanel::buildUi(bool compact)
+void VoiceGenerationPanel::buildUi()
 {
-    auto* controls = new QWidget(this);
-    auto* controlsLayout = new QVBoxLayout(controls);
-    controlsLayout->setContentsMargins(10, 10, 10, 10);
-    controlsLayout->setSpacing(12);
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(10, 10, 10, 10);
+    root->setSpacing(12);
 
     const QString sectionStyle = QStringLiteral(
         "QGroupBox { margin-top: 12px; padding-top: 8px; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }");
 
-    auto* title = new QLabel(compact ? tr("Generate Voice Clip") : tr("Voice Generation"), controls);
+    auto* title = new QLabel(tr("Generate Voice Clip"), this);
     QFont titleFont = title->font();
     titleFont.setPointSize(titleFont.pointSize() + 2);
     titleFont.setBold(true);
     title->setFont(titleFont);
-    controlsLayout->addWidget(title);
+    root->addWidget(title);
 
     auto* form = new QFormLayout;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    m_provider = new QComboBox(controls);
-#ifdef ROUNDTABLE_HAS_BREEZE
-    m_provider->addItem(tr("Breeze-TTS-2 (Q8 / CUDA)"), QStringLiteral("breeze"));
-#endif
-#ifdef ROUNDTABLE_HAS_OMNIVOICE
-    m_provider->addItem(tr("OmniVoice (Apache-2.0)"), QStringLiteral("omnivoice"));
-#endif
-#ifdef ROUNDTABLE_HAS_FISH_S2
-    m_provider->addItem(tr("Fish S2 Pro (personal / non-commercial)"), QStringLiteral("fish-s2"));
-#endif
+    m_provider = new QComboBox(this);
+    for (const auto& provider : voiceProviders())
+        m_provider->addItem(provider.menuLabel, provider.key);
     form->addRow(tr("Engine"), m_provider);
 
-    auto* engineState = new QWidget(controls);
+    auto* engineState = new QWidget(this);
     auto* engineStateLayout = new QHBoxLayout(engineState);
     engineStateLayout->setContentsMargins(0, 0, 0, 0);
     engineStateLayout->setSpacing(8);
@@ -228,11 +191,11 @@ void VoiceGenerationPanel::buildUi(bool compact)
     engineStateLayout->addWidget(m_locateBreeze);
     form->addRow(QString(), engineState);
 
-    m_character = new QComboBox(controls);
+    m_character = new QComboBox(this);
     m_character->setEditable(true);
     form->addRow(tr("Character"), m_character);
 
-    auto* automaticReference = new QWidget(controls);
+    auto* automaticReference = new QWidget(this);
     auto* automaticLayout = new QHBoxLayout(automaticReference);
     automaticLayout->setContentsMargins(0, 0, 0, 0);
     automaticLayout->setSpacing(6);
@@ -240,15 +203,16 @@ void VoiceGenerationPanel::buildUi(bool compact)
         tr("Approved clips will be selected automatically."), automaticReference);
     m_autoReferenceSummary->setWordWrap(true);
     m_saveReference = new QPushButton(tr("Save Approved..."), automaticReference);
-    m_saveReference->setToolTip(
-        tr("Combine every confirmed clip for this character into a reusable MP3 reference."));
+    m_saveReference->setToolTip(tr(
+        "Combine every confirmed clip for this character into a reusable reference "
+        "(lossless FLAC) available in every project."));
     automaticLayout->addWidget(m_autoReferenceSummary, 1);
     automaticLayout->addWidget(m_saveReference);
     form->addRow(tr("Reference"), automaticReference);
-    controlsLayout->addLayout(form);
+    root->addLayout(form);
 
     m_manualReference = new QGroupBox(
-        tr("Use a different voice reference (advanced)"), controls);
+        tr("Use a different voice reference (advanced)"), this);
     m_manualReference->setCheckable(true);
     m_manualReference->setChecked(false);
     m_manualReference->setToolTip(
@@ -293,51 +257,73 @@ void VoiceGenerationPanel::buildUi(bool compact)
     m_manualReference->setFlat(true);
     m_manualReference->setMaximumHeight(
         m_manualReference->fontMetrics().height() + 14);
-    controlsLayout->addWidget(m_manualReference);
+    root->addWidget(m_manualReference);
 
-    auto* promptTitle = new QLabel(tr("Text to generate"), controls);
+    auto* promptTitle = new QLabel(tr("Text to generate"), this);
     QFont promptFont = promptTitle->font();
     promptFont.setBold(true);
     promptTitle->setFont(promptFont);
-    controlsLayout->addWidget(promptTitle);
-    m_text = new QTextEdit(controls);
-    m_text->setPlaceholderText(tr("Type what the character should say..."));
+    root->addWidget(promptTitle);
+
+    // Shows which script line the text came from; approval attaches the
+    // clip to exactly that line instead of guessing by text similarity.
+    m_scriptLink = new QWidget(this);
+    auto* scriptLinkLayout = new QHBoxLayout(m_scriptLink);
+    scriptLinkLayout->setContentsMargins(0, 0, 0, 0);
+    scriptLinkLayout->setSpacing(6);
+    m_scriptLinkLabel = new QLabel(m_scriptLink);
+    m_scriptLinkLabel->setWordWrap(true);
+    auto* unlink = new QPushButton(tr("Unlink"), m_scriptLink);
+    unlink->setToolTip(tr("Stop tying this clip to the script line; approval will "
+                          "match it by text instead."));
+    scriptLinkLayout->addWidget(m_scriptLinkLabel, 1);
+    scriptLinkLayout->addWidget(unlink);
+    m_scriptLink->setVisible(false);
+    root->addWidget(m_scriptLink);
+    connect(unlink, &QPushButton::clicked, this, &VoiceGenerationPanel::clearScriptLine);
+
+    m_text = new QTextEdit(this);
+    m_text->setPlaceholderText(tr(
+        "Type what the character should say, or right-click a script line "
+        "and choose \"Generate voice for this line\"."));
     m_text->setAcceptRichText(false);
-    m_text->setMinimumHeight(compact ? 88 : 125);
-    m_text->setMaximumHeight(compact ? 110 : 170);
-    controlsLayout->addWidget(m_text);
+    m_text->setMinimumHeight(88);
+    m_text->setMaximumHeight(110);
+    root->addWidget(m_text);
 
     auto* options = new QHBoxLayout;
-    m_speed = new QDoubleSpinBox(controls);
+    m_speed = new QDoubleSpinBox(this);
     m_speed->setRange(0.5, 2.0);
     m_speed->setSingleStep(0.05);
     m_speed->setValue(1.0);
     m_speed->setSuffix(QStringLiteral("x"));
-    m_duration = new QDoubleSpinBox(controls);
+    m_duration = new QDoubleSpinBox(this);
     m_duration->setRange(0.0, 120.0);
     m_duration->setSpecialValueText(tr("Auto"));
     m_duration->setSuffix(tr(" sec"));
-    m_seed = new QSpinBox(controls);
+    m_seed = new QSpinBox(this);
     m_seed->setRange(0, 999999999);
     m_seed->setValue(42);
-    options->addWidget(new QLabel(tr("Speed"), controls));
+    m_seed->setToolTip(tr("Same seed + same inputs gives the same take. Change it "
+                          "for a different delivery."));
+    options->addWidget(new QLabel(tr("Speed"), this));
     options->addWidget(m_speed);
-    options->addWidget(new QLabel(tr("Duration"), controls));
+    options->addWidget(new QLabel(tr("Duration"), this));
     options->addWidget(m_duration);
-    options->addWidget(new QLabel(tr("Seed"), controls));
+    options->addWidget(new QLabel(tr("Seed"), this));
     options->addWidget(m_seed);
-    controlsLayout->addLayout(options);
+    root->addLayout(options);
 
     auto* actions = new QHBoxLayout;
-    m_generate = new QPushButton(tr("Generate Draft"), controls);
+    m_generate = new QPushButton(tr("Generate Draft"), this);
     m_generate->setDefault(true);
-    m_cancel = new QPushButton(tr("Cancel"), controls);
+    m_cancel = new QPushButton(tr("Cancel"), this);
     m_cancel->setEnabled(false);
     actions->addWidget(m_generate, 1);
     actions->addWidget(m_cancel);
-    controlsLayout->addLayout(actions);
+    root->addLayout(actions);
 
-    auto* approval = new QGroupBox(tr("Audition && Approve"), controls);
+    auto* approval = new QGroupBox(tr("Audition && Approve"), this);
     approval->setStyleSheet(sectionStyle);
     auto* approvalLayout = new QVBoxLayout(approval);
     approvalLayout->setContentsMargins(12, 20, 12, 12);
@@ -362,13 +348,13 @@ void VoiceGenerationPanel::buildUi(bool compact)
     approveActions->addWidget(m_approveSync, 1);
     approveActions->addWidget(m_approveImport, 1);
     approvalLayout->addLayout(approveActions);
-    controlsLayout->addWidget(approval);
+    root->addWidget(approval);
 
-    m_status = new QLabel(tr("Select a voice reference or use an automatic voice."), controls);
+    m_status = new QLabel(tr("Select a voice reference or use an automatic voice."), this);
     m_status->setWordWrap(true);
-    controlsLayout->addWidget(m_status);
+    root->addWidget(m_status);
 
-    auto* recentGroup = new QGroupBox(tr("Approved Generated Clips"), controls);
+    auto* recentGroup = new QGroupBox(tr("Approved Generated Clips"), this);
     recentGroup->setStyleSheet(sectionStyle);
     auto* recentLayout = new QVBoxLayout(recentGroup);
     recentLayout->setContentsMargins(12, 20, 12, 12);
@@ -376,32 +362,28 @@ void VoiceGenerationPanel::buildUi(bool compact)
     m_recent = new GeneratedAudioList(recentGroup);
     m_recent->setDragEnabled(true);
     m_recent->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_recent->setMinimumHeight(compact ? 90 : 120);
-    if (compact) m_recent->setMaximumHeight(140);
+    m_recent->setMinimumHeight(90);
+    m_recent->setMaximumHeight(140);
     recentLayout->addWidget(m_recent);
-    controlsLayout->addWidget(recentGroup, compact ? 0 : 1);
+    root->addWidget(recentGroup);
 
-    m_unloadModel = new QPushButton(tr("Unload Model / Free VRAM"), controls);
+    m_unloadModel = new QPushButton(tr("Unload Model / Free VRAM"), this);
     m_unloadModel->setToolTip(tr(
         "Stop the local voice worker and release the model's GPU memory."));
     m_unloadModel->setEnabled(false);
-    controlsLayout->addWidget(m_unloadModel);
+    root->addWidget(m_unloadModel);
 
     connect(m_generate, &QPushButton::clicked, this, &VoiceGenerationPanel::generate);
     connect(m_text, &QTextEdit::textChanged,
             this, &VoiceGenerationPanel::refreshGenerateAvailability);
     connect(m_locateBreeze, &QPushButton::clicked, this, [this]() {
         QString initial = VoiceGenerationService::breezeInstallationRoot();
-        if (initial.isEmpty()) {
-            const QString known = QStringLiteral(
-                "F:/1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH");
-            if (QDir(known).exists()) initial = known;
-        }
-        const QString root = QFileDialog::getExistingDirectory(
+        if (initial.isEmpty()) initial = QDir::homePath();
+        const QString folder = QFileDialog::getExistingDirectory(
             this, tr("Locate Breeze-TTS-2 Installation"), initial);
-        if (root.isEmpty()) return;
+        if (folder.isEmpty()) return;
         QString error;
-        if (!VoiceGenerationService::configureBreezeInstallation(root, &error)) {
+        if (!VoiceGenerationService::configureBreezeInstallation(folder, &error)) {
             QMessageBox::warning(this, tr("Breeze-TTS-2 Not Found"), error);
             return;
         }
@@ -432,19 +414,22 @@ void VoiceGenerationPanel::buildUi(bool compact)
                 refreshManualTrack();
                 refreshReferencePlan();
             });
-    connect(m_character, &QComboBox::currentTextChanged,
-            this, &VoiceGenerationPanel::refreshReferencePlan);
+    connect(m_character, &QComboBox::currentTextChanged, this, [this](const QString& text) {
+        // A line belongs to one character; picking someone else unlinks it.
+        if (m_selectedScriptLine >= 0
+            && text.trimmed().compare(m_selectedScriptCharacter, Qt::CaseInsensitive) != 0)
+            clearScriptLine();
+        refreshReferencePlan();
+    });
     connect(m_reference, &QComboBox::currentIndexChanged,
             this, &VoiceGenerationPanel::refreshManualTrack);
     connect(m_manualReference, &QGroupBox::toggled, this, [this](bool checked) {
-        if (m_manualReferenceContent) {
-            m_manualReferenceContent->setVisible(checked);
-            m_manualReference->setFlat(!checked);
-            m_manualReference->setMaximumHeight(checked
-                ? QWIDGETSIZE_MAX
-                : m_manualReference->fontMetrics().height() + 14);
-            m_manualReference->updateGeometry();
-        }
+        m_manualReferenceContent->setVisible(checked);
+        m_manualReference->setFlat(!checked);
+        m_manualReference->setMaximumHeight(checked
+            ? QWIDGETSIZE_MAX
+            : m_manualReference->fontMetrics().height() + 14);
+        m_manualReference->updateGeometry();
         refreshReferencePlan();
     });
     connect(m_referenceStart, &QDoubleSpinBox::valueChanged, this, [this](double start) {
@@ -452,8 +437,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
             QSignalBlocker blocker(m_referenceEnd);
             m_referenceEnd->setValue(start + 0.1);
         }
-        if (m_referenceWaveform)
-            m_referenceWaveform->setTrimRange(start, m_referenceEnd->value());
+        m_referenceWaveform->setTrimRange(start, m_referenceEnd->value());
         refreshManualTranscript();
     });
     connect(m_referenceEnd, &QDoubleSpinBox::valueChanged, this, [this](double end) {
@@ -461,8 +445,7 @@ void VoiceGenerationPanel::buildUi(bool compact)
             QSignalBlocker blocker(m_referenceStart);
             m_referenceStart->setValue(std::max(0.0, end - 0.1));
         }
-        if (m_referenceWaveform)
-            m_referenceWaveform->setTrimRange(m_referenceStart->value(), end);
+        m_referenceWaveform->setTrimRange(m_referenceStart->value(), end);
         refreshManualTranscript();
     });
     connect(m_referenceWaveform, &MiniWaveformWidget::trimChanging,
@@ -485,40 +468,6 @@ void VoiceGenerationPanel::buildUi(bool compact)
         QDesktopServices::openUrl(QUrl::fromLocalFile(
             QFileInfo(item->data(Qt::UserRole).toString()).absolutePath()));
     });
-
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(0, 0, 0, 0);
-    if (compact) {
-        root->addWidget(controls);
-        return;
-    }
-
-    auto* scriptPanel = new QWidget(this);
-    auto* scriptLayout = new QVBoxLayout(scriptPanel);
-    scriptLayout->setContentsMargins(8, 10, 10, 10);
-    auto* scriptTitle = new QLabel(tr("Script — double-click a line to generate it"), scriptPanel);
-    scriptLayout->addWidget(scriptTitle);
-    m_scriptLines = new QTreeWidget(scriptPanel);
-    m_scriptLines->setColumnCount(3);
-    m_scriptLines->setHeaderLabels({tr("#"), tr("Character"), tr("Dialogue")});
-    m_scriptLines->setRootIsDecorated(false);
-    m_scriptLines->setAlternatingRowColors(true);
-    m_scriptLines->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_scriptLines->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_scriptLines->header()->setSectionResizeMode(2, QHeaderView::Stretch);
-    scriptLayout->addWidget(m_scriptLines, 1);
-    connect(m_scriptLines, &QTreeWidget::itemDoubleClicked,
-            this, [this](QTreeWidgetItem*, int) { chooseScriptLine(); });
-    connect(m_scriptLines, &QTreeWidget::itemSelectionChanged,
-            this, &VoiceGenerationPanel::chooseScriptLine);
-
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->addWidget(controls);
-    splitter->addWidget(scriptPanel);
-    splitter->setStretchFactor(0, 2);
-    splitter->setStretchFactor(1, 3);
-    splitter->setSizes({520, 760});
-    root->addWidget(splitter);
 }
 
 void VoiceGenerationPanel::setAudioSync(AudioSync* audioSync)
@@ -528,137 +477,209 @@ void VoiceGenerationPanel::setAudioSync(AudioSync* audioSync)
     m_audioSync = audioSync;
     if (m_audioSync) {
         connect(m_audioSync, &AudioSync::voiceContextChanged,
-                this, &VoiceGenerationPanel::refreshFromAudioSync);
+                this, &VoiceGenerationPanel::scheduleRefresh);
         connect(m_audioSync, &AudioSync::scriptLoaded,
-                this, [this](int) { refreshFromAudioSync(); });
+                this, &VoiceGenerationPanel::scheduleRefresh);
         connect(m_audioSync, &AudioSync::audioImported,
-                this, [this](const QString&) { refreshFromAudioSync(); });
+                this, &VoiceGenerationPanel::scheduleRefresh);
         connect(m_audioSync, &AudioSync::syncCompleted,
-                this, [this](int, int) { refreshFromAudioSync(); });
+                this, &VoiceGenerationPanel::scheduleRefresh);
+        connect(m_audioSync, &AudioSync::voiceLineRequested,
+                this, &VoiceGenerationPanel::setScriptLine);
     }
     refreshFromAudioSync();
 }
 
-QStringList VoiceGenerationPanel::availableCharacters() const
+void VoiceGenerationPanel::scheduleRefresh()
 {
+    m_refreshPending = true;
+    // A hidden panel (inactive rail page, closed dock) catches up when shown.
+    if (isVisible()) m_refreshTimer->start();
+}
+
+void VoiceGenerationPanel::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (m_refreshPending) refreshFromAudioSync();
+}
+
+QStringList VoiceGenerationPanel::availableCharacters()
+{
+    if (m_refreshPending) refreshFromAudioSync();
     QStringList result;
-    if (!m_character) return result;
     for (int index = 0; index < m_character->count(); ++index)
         result.append(m_character->itemText(index));
     return result;
 }
 
+QString VoiceGenerationPanel::currentText() const
+{
+    return m_text->toPlainText();
+}
+
+QString VoiceGenerationPanel::currentCharacter() const
+{
+    return m_character->currentText();
+}
+
+QString VoiceGenerationPanel::currentProvider() const
+{
+    return m_provider->currentData().toString();
+}
+
+QVector<VoiceReferenceCandidate> VoiceGenerationPanel::approvedCandidates() const
+{
+    return m_audioSync ? m_audioSync->voiceReferenceCandidates()
+                       : QVector<VoiceReferenceCandidate>{};
+}
+
 void VoiceGenerationPanel::refreshFromAudioSync()
 {
-    const QString currentCharacter = m_character->currentText();
+    m_refreshPending = false;
+    m_refreshTimer->stop();
+
+    const QString currentCharacterText = m_character->currentText();
     const QString currentReference = m_reference->currentData().toMap()
                                          .value(QStringLiteral("path")).toString();
-    m_character->clear();
-    m_reference->clear();
+    {
+        // Rebuild silently; the dependent refreshes run once below instead
+        // of once per inserted item.
+        const QSignalBlocker characterBlocker(m_character);
+        const QSignalBlocker referenceBlocker(m_reference);
+        m_character->clear();
+        m_reference->clear();
 
-    if (m_scriptLines) m_scriptLines->clear();
-    if (m_audioSync) {
-        m_character->addItems(m_audioSync->scriptCharacters());
-        for (const auto& track : m_audioSync->voiceImportedAudioTracks()) {
-            const QString label = tr("%1  ·  %2s  ·  %3 approved")
-                .arg(track.displayName).arg(track.duration, 0, 'f', 1)
-                .arg(track.approvedClipCount);
-            m_reference->addItem(label, QVariantMap{
-                {QStringLiteral("path"), track.sourceFile},
-                {QStringLiteral("duration"), track.duration},
-                {QStringLiteral("library"), false}
-            });
+        if (m_audioSync) {
+            m_character->addItems(m_audioSync->scriptCharacters());
+            for (const auto& track : m_audioSync->voiceImportedAudioTracks()) {
+                const QString label = tr("%1  ·  %2s  ·  %3 approved")
+                    .arg(track.displayName).arg(track.duration, 0, 'f', 1)
+                    .arg(track.approvedClipCount);
+                m_reference->addItem(label, QVariantMap{
+                    {QStringLiteral("path"), track.sourceFile},
+                    {QStringLiteral("duration"), track.duration},
+                    {QStringLiteral("library"), false}
+                });
+            }
         }
-    }
 
-    const auto libraryReferences = savedReferences();
-    if (!libraryReferences.isEmpty() && m_reference->count() > 0)
-        m_reference->insertSeparator(m_reference->count());
-    for (const auto& reference : libraryReferences) {
-        m_reference->addItem(tr("Saved: %1 — %2")
-            .arg(reference.character, QFileInfo(reference.path).fileName()), QVariantMap{
-                {QStringLiteral("path"), reference.path},
-                {QStringLiteral("text"), reference.transcript},
-                {QStringLiteral("character"), reference.character},
-                {QStringLiteral("duration"), reference.duration},
-                {QStringLiteral("library"), true}
-            });
-    }
-
-    const int previousCharacter = m_character->findText(
-        currentCharacter, Qt::MatchFixedString);
-    if (previousCharacter >= 0)
-        m_character->setCurrentIndex(previousCharacter);
-    else if (m_character->count() > 0)
-        m_character->setCurrentIndex(0);
-    for (int index = 0; index < m_reference->count(); ++index) {
-        if (m_reference->itemData(index).toMap().value(QStringLiteral("path")).toString()
-                == currentReference) {
-            m_reference->setCurrentIndex(index);
-            break;
+        const auto libraryReferences = VoiceReferenceLibrary::list();
+        if (!libraryReferences.isEmpty() && m_reference->count() > 0)
+            m_reference->insertSeparator(m_reference->count());
+        for (const auto& reference : libraryReferences) {
+            m_reference->addItem(tr("Saved: %1 — %2")
+                .arg(reference.character, QFileInfo(reference.path).fileName()), QVariantMap{
+                    {QStringLiteral("path"), reference.path},
+                    {QStringLiteral("text"), reference.transcript},
+                    {QStringLiteral("character"), reference.character},
+                    {QStringLiteral("duration"), reference.duration},
+                    {QStringLiteral("library"), true}
+                });
         }
-    }
 
-    if (m_scriptLines && m_audioSync) {
-        for (const auto& line : m_audioSync->voiceScriptLines()) {
-            auto* item = new QTreeWidgetItem(m_scriptLines,
-                {QString::number(line.lineNumber), line.character, line.dialogue});
-            item->setData(0, Qt::UserRole, line.lineNumber);
-            item->setData(0, Qt::UserRole + 1, line.segment);
+        const int previousCharacter = m_character->findText(
+            currentCharacterText, Qt::MatchFixedString);
+        if (previousCharacter >= 0)
+            m_character->setCurrentIndex(previousCharacter);
+        else if (!currentCharacterText.isEmpty())
+            m_character->setCurrentText(currentCharacterText);
+        else if (m_character->count() > 0)
+            m_character->setCurrentIndex(0);
+        for (int index = 0; index < m_reference->count(); ++index) {
+            if (m_reference->itemData(index).toMap().value(QStringLiteral("path")).toString()
+                    == currentReference) {
+                m_reference->setCurrentIndex(index);
+                break;
+            }
         }
     }
     refreshManualTrack();
     refreshReferencePlan();
 }
 
+void VoiceGenerationPanel::setScriptLine(int lineNumber, const QString& character,
+                                         const QString& dialogue, const QString& segment)
+{
+    {
+        const QSignalBlocker blocker(m_character);
+        m_character->setCurrentText(character);
+    }
+    m_text->setPlainText(dialogue);
+    m_selectedScriptLine = lineNumber;
+    m_selectedScriptCharacter = character.trimmed();
+    m_selectedScriptSegment = segment;
+    refreshScriptLink();
+    refreshReferencePlan();
+    m_text->setFocus();
+}
+
+void VoiceGenerationPanel::clearScriptLine()
+{
+    m_selectedScriptLine = -1;
+    m_selectedScriptCharacter.clear();
+    m_selectedScriptSegment.clear();
+    refreshScriptLink();
+}
+
+void VoiceGenerationPanel::refreshScriptLink()
+{
+    m_scriptLink->setVisible(m_selectedScriptLine >= 0);
+    if (m_selectedScriptLine >= 0) {
+        m_scriptLinkLabel->setText(tr("Voicing script line %1 (%2).")
+            .arg(m_selectedScriptLine).arg(m_selectedScriptCharacter));
+    }
+}
+
 void VoiceGenerationPanel::refreshProviderState()
 {
-    const QString provider = m_provider->currentData().toString();
-    const bool installed = VoiceGenerationService::providerInstalled(provider);
-    const bool omni = provider == QStringLiteral("omnivoice");
+    const QString provider = currentProvider();
+    const auto* info = findVoiceProvider(provider);
     const bool breeze = provider == QStringLiteral("breeze");
-    m_duration->setEnabled(omni);
-    m_speed->setEnabled(omni || breeze);
-    if (m_engineStatus) {
-        if (installed && breeze) {
-            const QString root = VoiceGenerationService::breezeInstallationRoot();
-            m_engineStatus->setText(tr("Ready — using Breeze from %1").arg(
-                QDir::toNativeSeparators(root)));
-            m_engineStatus->setStyleSheet(QStringLiteral("color: #77c98d;"));
-        } else if (installed) {
-            m_engineStatus->setText(tr("Engine ready."));
-            m_engineStatus->setStyleSheet(QStringLiteral("color: #77c98d;"));
-        } else {
-            m_engineStatus->setText(VoiceGenerationService::providerInstallHint(provider));
-            m_engineStatus->setStyleSheet(QStringLiteral("color: #e0ad63;"));
-        }
+    // Installation checks stat several files (and Breeze may probe drives
+    // once), so they run on engine changes, not on every keystroke.
+    m_providerInstalled = VoiceGenerationService::providerInstalled(provider);
+
+    const QString engineName = info ? info->displayName : tr("This engine");
+    const bool speed = info && info->supportsSpeed;
+    const bool duration = info && info->supportsDuration;
+    m_speed->setEnabled(speed);
+    m_speed->setToolTip(speed ? tr("Speaking pace.")
+                              : tr("%1 does not support speed control.").arg(engineName));
+    m_duration->setEnabled(duration);
+    m_duration->setToolTip(duration
+        ? tr("Fit the line to an exact length. Auto lets the model decide.")
+        : tr("%1 does not support a target duration.").arg(engineName));
+
+    const auto& colors = Theme::colors();
+    if (m_providerInstalled) {
+        m_engineStatus->setText(breeze
+            ? tr("Ready — using Breeze from %1").arg(QDir::toNativeSeparators(
+                  VoiceGenerationService::breezeInstallationRoot()))
+            : tr("Engine ready."));
+        m_engineStatus->setStyleSheet(
+            QStringLiteral("color: %1;").arg(Theme::hex(colors.success)));
+    } else {
+        m_engineStatus->setText(VoiceGenerationService::providerInstallHint(provider));
+        m_engineStatus->setStyleSheet(
+            QStringLiteral("color: %1;").arg(Theme::hex(colors.warning)));
     }
-    if (m_locateBreeze)
-        m_locateBreeze->setVisible(breeze && !installed);
+    m_locateBreeze->setVisible(breeze && !m_providerInstalled);
     refreshGenerateAvailability();
-    if (!installed) m_status->setText(tr(
-        "Your text is ready, but the selected voice engine must be connected first."));
-    else if (!m_service || !m_service->isBusy())
-        m_status->setText(breeze
-            ? tr("Breeze-TTS-2 ready. Approved clips and their automatic transcripts will be "
-                 "combined exactly and converted to a 24 kHz reference.")
-            : omni
-                ? tr("OmniVoice ready. For the strongest clone, use a clean 3–10 second "
-                     "reference and its exact transcript. Duration targeting is available.")
-                : tr("Fish S2 Pro ready. For the strongest clone, use a clean 10–30 second "
-                 "reference and its exact transcript. Close other GPU-heavy apps before loading."));
+    if (!m_providerInstalled) {
+        m_status->setText(tr(
+            "Your text is ready, but the selected voice engine must be connected first."));
+    } else if ((!m_service || !m_service->isBusy()) && info) {
+        m_status->setText(info->readyHint);
+    }
 }
 
 void VoiceGenerationPanel::refreshGenerateAvailability()
 {
-    if (!m_generate || !m_provider || !m_text) return;
-    const QString provider = m_provider->currentData().toString();
-    const bool installed = VoiceGenerationService::providerInstalled(provider);
     const bool hasText = !m_text->toPlainText().trimmed().isEmpty();
     const bool busy = m_service && m_service->isBusy();
-    m_generate->setEnabled(installed && hasText && !busy);
-    if (!installed) {
-        m_generate->setToolTip(VoiceGenerationService::providerInstallHint(provider));
+    m_generate->setEnabled(m_providerInstalled && hasText && !busy);
+    if (!m_providerInstalled) {
+        m_generate->setToolTip(VoiceGenerationService::providerInstallHint(currentProvider()));
     } else if (!hasText) {
         m_generate->setToolTip(tr("Type the words you want the character to say."));
     } else {
@@ -669,43 +690,37 @@ void VoiceGenerationPanel::refreshGenerateAvailability()
 void VoiceGenerationPanel::refreshReferencePlan()
 {
     const QString character = m_character->currentText().trimmed();
-    double duration = 0.0;
-    int trackCount = 0;
-    const auto references = automaticReferenceSegments(
-        m_audioSync, character, m_provider->currentData().toString(),
-        &duration, &trackCount);
-    const auto approvedCandidates = m_audioSync
-        ? m_audioSync->voiceReferenceCandidates()
-        : QVector<VoiceReferenceCandidate>{};
-    const bool hasCurrentApproved = std::any_of(
-        approvedCandidates.cbegin(), approvedCandidates.cend(),
+    const auto candidates = approvedCandidates();
+    const bool hasApproved = std::any_of(
+        candidates.cbegin(), candidates.cend(),
         [&character](const auto& candidate) {
             return candidate.character.compare(character, Qt::CaseInsensitive) == 0;
         });
-    m_saveReference->setEnabled(hasCurrentApproved);
+    m_saveReference->setEnabled(hasApproved);
 
     if (m_manualReference->isChecked()) {
         m_autoReferenceSummary->setText(tr("Manual override is active."));
         return;
     }
-    if (references.isEmpty()) {
+    const auto plan = planAutomaticReference(candidates, character, currentProvider());
+    if (plan.segments.isEmpty()) {
         m_autoReferenceSummary->setText(tr(
             "No approved clips are available for %1. Confirm matched clips, "
             "or enable Manual reference override.").arg(
                 character.isEmpty() ? tr("this character") : character));
         return;
     }
-    const bool usingSaved = !hasCurrentApproved;
-    m_autoReferenceSummary->setText(usingSaved
+    m_autoReferenceSummary->setText(plan.fromSavedLibrary
         ? tr("Using a saved %1 reference (%2s).")
-              .arg(character).arg(duration, 0, 'f', 1)
+              .arg(character).arg(plan.duration, 0, 'f', 1)
         : tr("Auto-selected %1 approved clip(s), %2s from %3 imported track(s).")
-              .arg(references.size()).arg(duration, 0, 'f', 1).arg(trackCount));
+              .arg(plan.segments.size()).arg(plan.duration, 0, 'f', 1)
+              .arg(plan.trackCount));
 }
 
 void VoiceGenerationPanel::refreshManualTrack()
 {
-    if (!m_reference || m_reference->currentIndex() < 0) {
+    if (m_reference->currentIndex() < 0) {
         m_referenceWaveform->hide();
         m_referenceText->clear();
         return;
@@ -722,7 +737,7 @@ void VoiceGenerationPanel::refreshManualTrack()
         const QSignalBlocker endBlocker(m_referenceEnd);
         m_referenceStart->setValue(0.0);
         m_referenceEnd->setValue(duration > 0.0
-            ? std::min(duration, desiredReferenceDuration(m_provider->currentData().toString()))
+            ? std::min(duration, referenceTargetSeconds(currentProvider()))
             : 0.0);
     }
     const auto* samples = (!library && m_audioSync)
@@ -748,27 +763,13 @@ void VoiceGenerationPanel::refreshManualTrack()
 
 void VoiceGenerationPanel::refreshManualTranscript()
 {
-    if (!m_audioSync || !m_reference || m_reference->currentIndex() < 0)
-        return;
+    if (!m_audioSync || m_reference->currentIndex() < 0) return;
     const auto details = m_reference->currentData().toMap();
-    if (details.value(QStringLiteral("library")).toBool())
-        return;
+    if (details.value(QStringLiteral("library")).toBool()) return;
     const QString transcript = m_audioSync->voiceTranscriptForRange(
         details.value(QStringLiteral("path")).toString(),
         m_referenceStart->value(), m_referenceEnd->value());
     m_referenceText->setText(transcript);
-}
-
-void VoiceGenerationPanel::chooseScriptLine()
-{
-    if (!m_scriptLines) return;
-    auto* item = m_scriptLines->currentItem();
-    if (!item) return;
-    m_selectedScriptLine = item->data(0, Qt::UserRole).toInt();
-    m_selectedScriptSegment = item->data(0, Qt::UserRole + 1).toString();
-    m_character->setCurrentText(item->text(1));
-    m_text->setPlainText(item->text(2));
-    refreshReferencePlan();
 }
 
 void VoiceGenerationPanel::generate()
@@ -777,7 +778,7 @@ void VoiceGenerationPanel::generate()
     clearDraft(true);
     VoiceGenerationRequest request;
     request.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    request.provider = m_provider->currentData().toString();
+    request.provider = currentProvider();
     request.text = m_text->toPlainText().trimmed();
     request.character = m_character->currentText().trimmed();
     if (request.character.isEmpty()) request.character = tr("Unassigned");
@@ -791,18 +792,11 @@ void VoiceGenerationPanel::generate()
         segment.end = library ? 0.0 : m_referenceEnd->value();
         if (!segment.audioFile.isEmpty()) request.references.push_back(segment);
     } else {
-        request.references = automaticReferenceSegments(
-            m_audioSync, request.character, request.provider);
-    }
-    if (!request.references.isEmpty()) {
-        const auto& first = request.references.front();
-        request.referenceAudio = first.audioFile;
-        request.referenceText = first.transcript;
-        request.referenceStart = first.start;
-        request.referenceEnd = first.end;
+        request.references = planAutomaticReference(
+            approvedCandidates(), request.character, request.provider).segments;
     }
     request.speed = m_speed->value();
-    request.targetDuration = m_duration->value();
+    request.targetDuration = m_duration->isEnabled() ? m_duration->value() : 0.0;
     request.seed = m_seed->value();
     request.scriptLineNumber = m_selectedScriptLine;
     request.scriptSegment = m_selectedScriptSegment;
@@ -839,7 +833,7 @@ void VoiceGenerationPanel::listenToDraft()
         m_draftAuditionTimer->setSingleShot(true);
         connect(m_draftAuditionTimer, &QTimer::timeout, this, [this]() {
             if (m_audioSync) m_audioSync->stopVoiceDraftAudition();
-            if (m_listen) m_listen->setText(tr("▶ Listen"));
+            m_listen->setText(tr("▶ Listen"));
         });
     }
     m_draftAuditionTimer->start(std::max(250, static_cast<int>(
@@ -905,11 +899,11 @@ void VoiceGenerationPanel::addApprovedClipToList(
         tr("%1  ·  %2s  ·  %3")
             .arg(request.character)
             .arg(duration, 0, 'f', 1)
-            .arg(QFileInfo(path).fileName()), m_recent);
+            .arg(QFileInfo(path).fileName()));
     item->setData(Qt::UserRole, path);
     item->setToolTip(path + tr("\nDrag this approved clip to the timeline or use it from Project Bin."));
     item->setFlags(item->flags() | Qt::ItemIsDragEnabled);
-    m_recent->insertItem(0, m_recent->takeItem(m_recent->row(item)));
+    m_recent->insertItem(0, item);
 }
 
 void VoiceGenerationPanel::saveApprovedReference()

@@ -1,11 +1,13 @@
 #include "panels/audio/AudioSync.h"
 
+#include "panels/audio/VoiceReferenceLibrary.h"
 #include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "audio/AudioEngine.h"
 #include "audio/AudioFile.h"
 #include "AudioMixdown.h"
 
+#include <QAction>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -16,6 +18,8 @@
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <memory>
+#include <unordered_map>
 
 namespace rt {
 
@@ -35,20 +39,21 @@ void AudioSync::showVoiceGenerationPanel()
     showAudioSidePanel(5);
 }
 
-QVector<VoiceScriptLine> AudioSync::voiceScriptLines() const
+void AudioSync::addGenerateVoiceAction(QLabel* label, int lineNumber,
+                                       const QString& character,
+                                       const QString& dialogue,
+                                       const QString& segment)
 {
-    QVector<VoiceScriptLine> result;
-    if (!m_script) return result;
-    result.reserve(static_cast<qsizetype>(m_script->lines.size()));
-    for (const auto& line : m_script->lines) {
-        result.push_back({
-            line.lineNumber,
-            QString::fromStdString(line.character),
-            QString::fromStdString(line.dialogue),
-            QString::fromStdString(line.segment)
-        });
-    }
-    return result;
+    if (!label) return;
+    auto* generate = new QAction(tr("Generate voice for this line"), label);
+    generate->setObjectName(QStringLiteral("generateVoiceForLineAction"));
+    connect(generate, &QAction::triggered, this,
+            [this, lineNumber, character, dialogue, segment]() {
+        showVoiceGenerationPanel();
+        emit voiceLineRequested(lineNumber, character, dialogue, segment);
+    });
+    label->addAction(generate);
+    label->setContextMenuPolicy(Qt::ActionsContextMenu);
 }
 
 QVector<VoiceReferenceCandidate> AudioSync::voiceReferenceCandidates() const
@@ -61,10 +66,15 @@ QVector<VoiceReferenceCandidate> AudioSync::approvedVoiceReferenceCandidates(
 {
     QVector<VoiceReferenceCandidate> result;
     result.reserve(static_cast<qsizetype>(clips.size()));
+    // Many clips share a few long source recordings; stat each file once.
+    std::unordered_map<std::string, bool> sourceExists;
     for (const auto& clip : clips) {
         if (clip.matchState != 2 || clip.scriptLineNumber < 0) continue;
         if (clip.sourceFile.empty() || clip.end <= clip.start) continue;
-        if (!QFileInfo::exists(QString::fromStdString(clip.sourceFile))) continue;
+        auto [known, inserted] = sourceExists.try_emplace(clip.sourceFile, false);
+        if (inserted)
+            known->second = QFileInfo::exists(QString::fromStdString(clip.sourceFile));
+        if (!known->second) continue;
         QString text = QString::fromStdString(
             clip.editedText.empty() ? clip.transcript : clip.editedText);
         result.push_back({
@@ -157,6 +167,8 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
     std::vector<float> combined;
     QStringList transcripts;
     int used = 0;
+    // Clips usually come from a few long recordings; open each one once.
+    std::unordered_map<std::string, std::unique_ptr<AudioFile>> openFiles;
 
     for (const auto& clip : clips) {
         if (clip.matchState != 2 || clip.scriptLineNumber < 0
@@ -164,8 +176,13 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
         if (QString::fromUtf8(clip.character).compare(character, Qt::CaseInsensitive) != 0)
             continue;
 
-        AudioFile file;
-        if (!file.open(clip.sourceFile)) continue;
+        auto& opened = openFiles[clip.sourceFile];
+        if (!opened) {
+            opened = std::make_unique<AudioFile>();
+            opened->open(clip.sourceFile);
+        }
+        if (!opened->isOpen()) continue;
+        AudioFile& file = *opened;
         const auto channels = std::max<uint16_t>(1, file.info().channels);
         const auto startFrame = static_cast<int64_t>(clip.start * kSampleRate);
         const auto frameCount = static_cast<int64_t>((clip.end - clip.start) * kSampleRate);
@@ -199,8 +216,7 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
     safeCharacter.replace(QRegularExpression(QStringLiteral(R"([^\p{L}\p{N}_-]+)")),
                           QStringLiteral("_"));
     if (safeCharacter.isEmpty()) safeCharacter = QStringLiteral("Voice");
-    const QString library = QDir(QStandardPaths::writableLocation(
-        QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("Voice References"));
+    const QString library = VoiceReferenceLibrary::directory();
     if (!QDir().mkpath(library)) {
         if (error) *error = QObject::tr(
             "Could not create the Voice References library.");
@@ -210,17 +226,19 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
     const QString base = QStringLiteral("%1_%2").arg(
         safeCharacter,
         QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss")));
-    const QString mp3Path = QDir(library).filePath(base + QStringLiteral(".mp3"));
+    // Lossless: the reference feeds voice cloning, so re-compressing the
+    // (often already lossy) source audio would only add artifacts.
+    const QString audioPath = QDir(library).filePath(base + QStringLiteral(".flac"));
     MixdownResult mix;
     mix.samples = std::move(combined);
     mix.sampleRate = kSampleRate;
     mix.channels = 1;
     mix.totalFrames = static_cast<int64_t>(mix.samples.size());
     mix.duration = static_cast<double>(mix.totalFrames) / kSampleRate;
-    if (!AudioMixdown::writeAudioFile(mix, utf8ToPath(mp3Path.toUtf8().toStdString()),
-                                      AudioCodec::MP3, 192000)) {
+    if (!AudioMixdown::writeAudioFile(mix, utf8ToPath(audioPath.toUtf8().toStdString()),
+                                      AudioCodec::FLAC)) {
         if (error) *error = QObject::tr(
-            "The approved reference MP3 could not be encoded.");
+            "The approved reference could not be encoded.");
         return false;
     }
 
@@ -234,8 +252,9 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
     QFile metadataFile(QDir(library).filePath(base + QStringLiteral(".json")));
     if (metadataFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
         metadataFile.write(QJsonDocument(metadata).toJson(QJsonDocument::Indented));
+    VoiceReferenceLibrary::invalidate();
 
-    if (savedPath) *savedPath = mp3Path;
+    if (savedPath) *savedPath = audioPath;
     return true;
 }
 

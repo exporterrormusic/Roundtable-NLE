@@ -297,6 +297,10 @@ void AudioSync::populateCards()
         auto* dialogueLabel = new QLabel(QString::fromStdString(line.dialogue));
         dialogueLabel->setWordWrap(true);
         enableScriptTextCopy(dialogueLabel, dialogueLabel->text());
+        addGenerateVoiceAction(dialogueLabel, line.lineNumber,
+                               QString::fromStdString(line.character),
+                               dialogueLabel->text(),
+                               QString::fromStdString(line.segment));
         dialogueLabel->setStyleSheet(
             QString("QLabel { color: %1; font-size: 13px; border: none; }").arg(Theme::hex(_tc.textPrimary)));
         dialogueLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);

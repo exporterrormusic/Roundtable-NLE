@@ -25,6 +25,28 @@ function Download-File {
     Move-Item -LiteralPath $partial -Destination $Destination -Force
 }
 
+# Upstream revisions this app was tested against. The worker imports Fish
+# internals, so an unpinned clone can break on any upstream refactor.
+$fishRevision = 'befe4001745417f8c42131739d862b8a6fdbd15a'
+$omniRevision = '08be0b4ccbac3e13e374e86fbfead4b4cac343e2'
+$fishModelRevision = '1de9996b6be38b745688de084d87a5633f714e4e'
+$omniModelRevision = 'c5fdb5ccb189668d56333f77ba2629f4cd7535f4'
+
+function Sync-PinnedRepository {
+    param([string]$Url, [string]$Destination, [string]$Revision)
+    if (-not (Test-Path -LiteralPath (Join-Path $Destination '.git'))) {
+        git init --quiet $Destination
+        if ($LASTEXITCODE -ne 0) { throw "git init failed: $Destination" }
+        git -C $Destination remote add origin $Url
+    }
+    $current = git -C $Destination rev-parse HEAD 2>$null
+    if ($current -eq $Revision) { return }
+    git -C $Destination fetch --depth 1 origin $Revision
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch $Url at $Revision" }
+    git -C $Destination checkout --quiet --force FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Could not check out $Revision in $Destination" }
+}
+
 function Get-ReleaseAsset {
     param([string]$Repository, [string]$Tag, [string]$Pattern)
     $headers = @{
@@ -96,28 +118,24 @@ if (-not $SkipBreeze) {
 }
 
 if (-not $SkipFish) {
-    if (-not (Test-Path -LiteralPath (Join-Path $fishRoot '.git'))) {
-        git clone --depth 1 https://github.com/fishaudio/fish-speech.git $fishRoot
-    }
+    Sync-PinnedRepository 'https://github.com/fishaudio/fish-speech.git' $fishRoot $fishRevision
     Write-Host 'Installing Fish S2 Pro CUDA runtime...'
     uv sync --project $fishRoot --extra cu128 --python $bootstrapPython
     if (-not $SkipModels) {
         $fishPython = Join-Path $fishRoot '.venv\Scripts\python.exe'
         $fishModel = Join-Path $fishRoot 'checkpoints\s2-pro'
-        & $fishPython -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/s2-pro', local_dir=r'$fishModel')"
+        & $fishPython -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/s2-pro', revision='$fishModelRevision', local_dir=r'$fishModel')"
     }
 }
 
 if (-not $SkipOmniVoice) {
-    if (-not (Test-Path -LiteralPath (Join-Path $omniRoot '.git'))) {
-        git clone --depth 1 https://github.com/k2-fsa/OmniVoice.git $omniRoot
-    }
+    Sync-PinnedRepository 'https://github.com/k2-fsa/OmniVoice.git' $omniRoot $omniRevision
     Write-Host 'Installing OmniVoice CUDA runtime...'
     uv sync --project $omniRoot --python $bootstrapPython
     if (-not $SkipModels) {
         $omniPython = Join-Path $omniRoot '.venv\Scripts\python.exe'
         $omniModel = Join-Path $modelsRoot 'omnivoice'
-        & $omniPython -c "from huggingface_hub import snapshot_download; snapshot_download('k2-fsa/OmniVoice', local_dir=r'$omniModel')"
+        & $omniPython -c "from huggingface_hub import snapshot_download; snapshot_download('k2-fsa/OmniVoice', revision='$omniModelRevision', local_dir=r'$omniModel')"
     }
 }
 

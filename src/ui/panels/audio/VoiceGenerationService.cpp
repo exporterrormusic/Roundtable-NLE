@@ -1,8 +1,12 @@
 #include "panels/audio/VoiceGenerationService.h"
 
+#include "panels/audio/VoiceProviders.h"
+
 #include "PathUtils.h"
 #include "Settings.h"
 #include "project/Project.h"
+
+#include <spdlog/spdlog.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -12,19 +16,22 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QTimer>
-
-#include <algorithm>
 
 namespace rt {
 
 namespace {
 
-QString cleanPathPart(QString value)
+constexpr auto kBreezeRootSetting = "voice/breezeInstallationRoot";
+constexpr qint64 kDraftMaxAgeSeconds = 24 * 60 * 60;
+
+QString voiceSafePathPart(QString value)
 {
     value = value.trimmed();
     if (value.isEmpty()) value = QStringLiteral("Unassigned");
@@ -33,6 +40,35 @@ QString cleanPathPart(QString value)
     while (value.endsWith('.') || value.endsWith(' ')) value.chop(1);
     return value.left(80);
 }
+
+QString voiceDraftDirectory()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+        .filePath(QStringLiteral("Roundtable Voice Drafts"));
+}
+
+QString voiceReferenceCacheDirectory()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+        .filePath(QStringLiteral("voice-reference-cache"));
+}
+
+QString ffmpegExecutable()
+{
+    return QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH);
+}
+
+QString describeDuration(int milliseconds)
+{
+    return milliseconds >= 60000
+        ? QStringLiteral("%1 minutes").arg(milliseconds / 60000)
+        : QStringLiteral("%1 seconds").arg(milliseconds / 1000);
+}
+
+// ── Breeze installation discovery ───────────────────────────────────────
+// Breeze may live in an existing SPEECH-TEXT-SPEECH install on any drive.
+// Probing drives is slow (and can stall on disconnected network drives), so
+// the result is computed once and reused until the user picks a new folder.
 
 struct BreezeInstallation
 {
@@ -49,7 +85,7 @@ struct BreezeInstallation
     }
 };
 
-QString firstExistingFile(const QStringList& candidates)
+QString firstExistingVoiceFile(const QStringList& candidates)
 {
     for (const auto& candidate : candidates) {
         if (QFileInfo::exists(candidate)) return QDir::cleanPath(candidate);
@@ -64,24 +100,24 @@ BreezeInstallation breezeInstallationAt(const QString& selectedRoot)
     const QDir directory(root);
     return {
         root,
-        firstExistingFile({
+        firstExistingVoiceFile({
             directory.filePath(QStringLiteral("runtime/python/python.exe")),
             directory.filePath(QStringLiteral(".venv/Scripts/python.exe"))
         }),
-        firstExistingFile({
+        firstExistingVoiceFile({
             directory.filePath(QStringLiteral("models/tts/breeze-tts-2-q8_0.gguf")),
             directory.filePath(QStringLiteral("models/breeze-tts-2-q8_0.gguf"))
         }),
-        firstExistingFile({
+        firstExistingVoiceFile({
             directory.filePath(QStringLiteral("runtime/audio-cpp/audiocpp_server.exe")),
             directory.filePath(QStringLiteral("audio-cpp/audiocpp_server.exe"))
         })
     };
 }
 
-BreezeInstallation findBreezeInstallation()
+BreezeInstallation scanForBreezeInstallation()
 {
-    BreezeInstallation packaged{
+    const BreezeInstallation packaged{
         QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT),
         QString::fromUtf8(ROUNDTABLE_BREEZE_PYTHON_PATH),
         QString::fromUtf8(ROUNDTABLE_BREEZE_MODEL_PATH),
@@ -90,15 +126,12 @@ BreezeInstallation findBreezeInstallation()
     if (packaged.complete()) return packaged;
 
     QStringList roots;
-    auto settings = appSettings();
-    roots << settings.value(QStringLiteral("voice/breezeInstallationRoot")).toString();
+    roots << appSettings().value(QLatin1String(kBreezeRootSetting)).toString();
     roots << qEnvironmentVariable("ROUNDTABLE_BREEZE_ROOT");
-    for (const auto& drive : QDir::drives()) {
-        const QDir root(drive.absoluteFilePath());
-        roots << root.filePath(QStringLiteral(
-            "1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH"));
-        roots << root.filePath(QStringLiteral(
-            "1/_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH"));
+    for (const auto& volume : QStorageInfo::mountedVolumes()) {
+        if (!volume.isValid() || !volume.isReady()) continue;
+        roots << QDir(volume.rootPath()).filePath(
+            QStringLiteral("1_PROGRAMS/AUDIO/SPEECH-TEXT-SPEECH"));
     }
     roots.removeAll(QString());
     roots.removeDuplicates();
@@ -109,45 +142,64 @@ BreezeInstallation findBreezeInstallation()
     return packaged;
 }
 
-QString pythonPathFor(const QString& provider)
+struct BreezeInstallationCache
 {
-    if (provider == QStringLiteral("breeze"))
-        return findBreezeInstallation().python;
-    if (provider == QStringLiteral("fish-s2"))
-        return QString::fromUtf8(ROUNDTABLE_FISH_S2_PYTHON_PATH);
-    return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_PYTHON_PATH);
+    bool valid{false};
+    BreezeInstallation installation;
+};
+
+BreezeInstallationCache& breezeInstallationCache()
+{
+    static BreezeInstallationCache cache;
+    return cache;
 }
 
-QString rootPathFor(const QString& provider)
+const BreezeInstallation& breezeInstallation()
 {
-    if (provider == QStringLiteral("breeze"))
-        return QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT);
-    if (provider == QStringLiteral("fish-s2"))
-        return QString::fromUtf8(ROUNDTABLE_FISH_S2_ROOT);
-    return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_ROOT);
+    auto& cache = breezeInstallationCache();
+    if (!cache.valid) {
+        cache.installation = scanForBreezeInstallation();
+        cache.valid = true;
+    }
+    return cache.installation;
 }
 
-QString modelPathFor(const QString& provider)
+// ── Per-provider runtime locations ──────────────────────────────────────
+
+struct ProviderRuntime
 {
-    if (provider == QStringLiteral("breeze"))
-        return findBreezeInstallation().model;
-    if (provider == QStringLiteral("fish-s2"))
-        return QString::fromUtf8(ROUNDTABLE_FISH_S2_MODEL_PATH);
-    return QString::fromUtf8(ROUNDTABLE_OMNIVOICE_MODEL_PATH);
+    QString python;
+    QString root;     // worker scratch/working directory
+    QString model;
+    QString server;   // Breeze only
+};
+
+ProviderRuntime providerRuntime(const QString& provider)
+{
+    if (provider == QStringLiteral("breeze")) {
+        const auto& breeze = breezeInstallation();
+        return {breeze.python, QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT),
+                breeze.model, breeze.server};
+    }
+    if (provider == QStringLiteral("fish-s2")) {
+        return {QString::fromUtf8(ROUNDTABLE_FISH_S2_PYTHON_PATH),
+                QString::fromUtf8(ROUNDTABLE_FISH_S2_ROOT),
+                QString::fromUtf8(ROUNDTABLE_FISH_S2_MODEL_PATH), {}};
+    }
+    return {QString::fromUtf8(ROUNDTABLE_OMNIVOICE_PYTHON_PATH),
+            QString::fromUtf8(ROUNDTABLE_OMNIVOICE_ROOT),
+            QString::fromUtf8(ROUNDTABLE_OMNIVOICE_MODEL_PATH), {}};
 }
 
-QString providerDisplayName(const QString& provider)
+void removeStaleDrafts()
 {
-    if (provider == QStringLiteral("breeze")) return QStringLiteral("Breeze-TTS-2");
-    if (provider == QStringLiteral("fish-s2")) return QStringLiteral("Fish S2 Pro");
-    return QStringLiteral("OmniVoice");
-}
-
-QString serverPathFor(const QString& provider)
-{
-    if (provider == QStringLiteral("breeze"))
-        return findBreezeInstallation().server;
-    return {};
+    const QDir drafts(voiceDraftDirectory());
+    if (!drafts.exists()) return;
+    const QDateTime cutoff = QDateTime::currentDateTime().addSecs(-kDraftMaxAgeSeconds);
+    for (const auto& draft : drafts.entryInfoList(
+             {QStringLiteral("DRAFT_*.wav")}, QDir::Files)) {
+        if (draft.lastModified() < cutoff) QFile::remove(draft.absoluteFilePath());
+    }
 }
 
 } // namespace
@@ -157,14 +209,17 @@ VoiceGenerationService::VoiceGenerationService(QObject* parent)
 {
     if (auto* app = QCoreApplication::instance()) {
         connect(app, &QCoreApplication::aboutToQuit,
-                this, &VoiceGenerationService::unloadModel,
+                this, &VoiceGenerationService::shutdown,
                 Qt::DirectConnection);
     }
+    // Drafts that were never approved or discarded (e.g. the app closed with
+    // one pending) would otherwise accumulate in the temp folder.
+    removeStaleDrafts();
 }
 
 VoiceGenerationService::~VoiceGenerationService()
 {
-    unloadModel();
+    shutdown();
 }
 
 bool VoiceGenerationService::isBusy() const noexcept
@@ -172,60 +227,41 @@ bool VoiceGenerationService::isBusy() const noexcept
     return m_hasCurrent || !m_queue.isEmpty();
 }
 
-bool VoiceGenerationService::providerBuilt(const QString& provider)
+bool VoiceGenerationService::isModelResident() const noexcept
 {
-    if (provider == QStringLiteral("breeze")) {
-#ifdef ROUNDTABLE_HAS_BREEZE
-        return true;
-#else
-        return false;
-#endif
-    }
-    if (provider == QStringLiteral("fish-s2")) {
-#ifdef ROUNDTABLE_HAS_FISH_S2
-        return true;
-#else
-        return false;
-#endif
-    }
-    if (provider == QStringLiteral("omnivoice")) {
-#ifdef ROUNDTABLE_HAS_OMNIVOICE
-        return true;
-#else
-        return false;
-#endif
-    }
-    return false;
+    return m_process != nullptr || m_retiring != nullptr;
 }
 
 bool VoiceGenerationService::providerInstalled(const QString& provider)
 {
-    if (!providerBuilt(provider)) return false;
-    const QString python = pythonPathFor(provider);
-    const QString model = modelPathFor(provider);
-    if (!QFileInfo::exists(python)) return false;
-    if (provider == QStringLiteral("breeze")) {
-        return QFileInfo::exists(model)
-            && QFileInfo::exists(serverPathFor(provider))
-            && QFileInfo::exists(QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH));
+    const auto* info = findVoiceProvider(provider);
+    if (!info) return false;
+    if (!QFileInfo::exists(ffmpegExecutable())) return false;
+    const auto runtime = providerRuntime(provider);
+    if (!QFileInfo::exists(runtime.python)) return false;
+    if (info->modelIsFile) {
+        if (!QFileInfo(runtime.model).isFile()) return false;
+    } else {
+        const QDir modelDir(runtime.model);
+        for (const auto& required : info->requiredModelFiles) {
+            if (!QFileInfo::exists(modelDir.filePath(required))) return false;
+        }
     }
-    const QDir modelDir(model);
-    if (provider == QStringLiteral("fish-s2")) {
-        return QFileInfo::exists(modelDir.filePath(QStringLiteral("codec.pth")))
-            && QFileInfo::exists(modelDir.filePath(QStringLiteral("config.json")))
-            && QFileInfo::exists(modelDir.filePath(
-                QStringLiteral("model.safetensors.index.json")));
-    }
-    return QFileInfo::exists(modelDir.filePath(QStringLiteral("model.safetensors")))
-        && QFileInfo::exists(modelDir.filePath(QStringLiteral("config.json")))
-        && QDir(modelDir.filePath(QStringLiteral("audio_tokenizer"))).exists();
+    if (provider == QStringLiteral("breeze") && !QFileInfo::exists(runtime.server))
+        return false;
+    return true;
 }
 
 QString VoiceGenerationService::providerInstallHint(const QString& provider)
 {
-    if (!providerBuilt(provider))
+    if (!findVoiceProvider(provider))
         return QStringLiteral("This engine is disabled in this build.");
     if (providerInstalled(provider)) return {};
+    if (!QFileInfo::exists(ffmpegExecutable())) {
+        return QStringLiteral("FFmpeg was not found at %1. Voice references are "
+                              "prepared with ffmpeg.exe.")
+            .arg(QDir::toNativeSeparators(ffmpegExecutable()));
+    }
     if (provider == QStringLiteral("breeze")) {
         return QStringLiteral(
             "Breeze-TTS-2 is not connected. Choose Locate Existing Breeze, or run "
@@ -236,7 +272,7 @@ QString VoiceGenerationService::providerInstallHint(const QString& provider)
 
 QString VoiceGenerationService::breezeInstallationRoot()
 {
-    const auto installation = findBreezeInstallation();
+    const auto& installation = breezeInstallation();
     return installation.complete() ? installation.root : QString{};
 }
 
@@ -253,9 +289,11 @@ bool VoiceGenerationService::configureBreezeInstallation(
         return false;
     }
     auto settings = appSettings();
-    settings.setValue(QStringLiteral("voice/breezeInstallationRoot"),
-                      installation.root);
+    settings.setValue(QLatin1String(kBreezeRootSetting), installation.root);
     settings.sync();
+    auto& cache = breezeInstallationCache();
+    cache.installation = installation;
+    cache.valid = true;
     return true;
 }
 
@@ -265,7 +303,7 @@ void VoiceGenerationService::enqueue(const VoiceGenerationRequest& request)
         emit generationFailed(request, QStringLiteral("Enter text to generate."));
         return;
     }
-    if (!providerInstalled(request.provider)) {
+    if (!m_launchOverride && !providerInstalled(request.provider)) {
         emit generationFailed(request, providerInstallHint(request.provider));
         return;
     }
@@ -276,33 +314,71 @@ void VoiceGenerationService::enqueue(const VoiceGenerationRequest& request)
     processNext();
 }
 
-void VoiceGenerationService::cancel()
+void VoiceGenerationService::abortRequests(const QString& reason)
 {
-    m_cancelled = true;
+    const bool wasBusy = isBusy();
     m_queue.clear();
     if (m_hasCurrent) {
-        const auto cancelled = m_current;
-        stopWorker();
+        const auto aborted = m_current;
         m_hasCurrent = false;
-        emit generationFailed(cancelled, QStringLiteral("Generation cancelled."));
+        m_currentOutput.clear();
+        emit generationFailed(aborted, reason);
     }
+    if (wasBusy) emit busyChanged(false);
+}
+
+void VoiceGenerationService::cancel()
+{
+    const bool inFlight = m_hasCurrent;
+    abortRequests(QStringLiteral("Generation cancelled."));
+    // The worker only reads stdin between requests, so an in-flight
+    // generation (or a model still loading for it) can only be stopped by
+    // ending the process.
+    if (inFlight) retireWorker(true);
     emit statusChanged(QStringLiteral("Cancelled"));
-    emit busyChanged(false);
 }
 
 void VoiceGenerationService::unloadModel()
 {
-    m_cancelled = true;
-    m_queue.clear();
-    if (m_hasCurrent) {
-        const auto cancelled = m_current;
-        m_hasCurrent = false;
-        m_currentOutput.clear();
-        emit generationFailed(cancelled, QStringLiteral("Generation cancelled: model unloaded."));
+    const bool inFlight = m_hasCurrent;
+    abortRequests(QStringLiteral("Generation cancelled: model unloaded."));
+    if (!isModelResident()) {
+        emit statusChanged(QStringLiteral("No voice model is loaded."));
+        return;
     }
-    stopWorker();
-    emit busyChanged(false);
-    emit statusChanged(QStringLiteral("Voice model unloaded. GPU memory released."));
+    m_announceUnload = true;
+    retireWorker(inFlight);
+    if (isModelResident()) {
+        emit statusChanged(QStringLiteral("Unloading voice model..."));
+    } else {
+        m_announceUnload = false;
+        emit statusChanged(QStringLiteral("Voice model unloaded. GPU memory released."));
+    }
+}
+
+void VoiceGenerationService::shutdown()
+{
+    m_queue.clear();
+    m_hasCurrent = false;
+    m_currentOutput.clear();
+    for (QProcess* process : {m_process, m_retiring}) {
+        if (!process) continue;
+        disconnect(process, nullptr, this, nullptr);
+        if (process->state() != QProcess::NotRunning) {
+            process->write("{\"op\":\"shutdown\"}\n");
+            process->closeWriteChannel();
+            if (!process->waitForFinished(3000)) {
+                process->kill();
+                process->waitForFinished(2000);
+            }
+        }
+        delete process;
+    }
+    m_process = nullptr;
+    m_retiring = nullptr;
+    m_workerReady = false;
+    m_activeProvider.clear();
+    m_residentReported = false;
 }
 
 QString VoiceGenerationService::approveDraft(const VoiceGenerationRequest& request,
@@ -325,9 +401,11 @@ QString VoiceGenerationService::approveDraft(const VoiceGenerationRequest& reque
     if (QFileInfo(draftPath).absoluteFilePath() == QFileInfo(approvedPath).absoluteFilePath())
         return approvedPath;
 
-    // QFile::rename cannot move between volumes (the draft is normally in the
-    // system temp directory while imported media may be on another drive).
-    // Copy first, then remove the draft only after the approved file is safe.
+    // A rename is instant on the same volume. It fails across volumes (the
+    // draft normally sits in the system temp folder while imported media may
+    // be on another drive), so fall back to copy, then remove the draft only
+    // after the approved file is safe.
+    if (QFile::rename(draftPath, approvedPath)) return approvedPath;
     if (!QFile::copy(draftPath, approvedPath)) {
         if (error) *error = QStringLiteral("Could not save the approved voice clip to %1")
                                 .arg(approvedPath);
@@ -341,27 +419,52 @@ void VoiceGenerationService::processNext()
 {
     if (m_hasCurrent || m_queue.isEmpty()) return;
 
-    m_cancelled = false;
     m_current = m_queue.takeFirst();
     m_hasCurrent = true;
+    m_announceUnload = false;
     m_currentOutput = buildOutputPath(m_current);
     if (m_currentOutput.isEmpty()) {
         failCurrent(QStringLiteral("Could not create the voice audition draft folder."));
         return;
     }
 
-    if (!m_process || m_activeProvider != m_current.provider) {
-        stopWorker();
-        startWorker(m_current.provider);
-    } else if (m_workerReady) {
-        sendCurrentRequest();
+    if (m_process && m_activeProvider == m_current.provider) {
+        if (m_workerReady) sendCurrentRequest();
+        return;   // still loading: "ready" sends the request
     }
+    // Different engine: the old model must leave VRAM before the new one
+    // loads. The retired worker's exit starts the new one.
+    if (m_process) retireWorker(false);
+    if (m_retiring) {
+        emit statusChanged(QStringLiteral("Releasing the previous voice model..."));
+        return;
+    }
+    startWorker(m_current.provider);
+}
+
+VoiceGenerationService::WorkerLaunch VoiceGenerationService::launchFor(
+    const QString& provider) const
+{
+    if (m_launchOverride) return m_launchOverride(provider);
+
+    const auto runtime = providerRuntime(provider);
+    QStringList arguments{
+        QString::fromUtf8(ROUNDTABLE_VOICE_WORKER_PATH),
+        QStringLiteral("--provider"), provider,
+        QStringLiteral("--runtime-root"), runtime.root,
+        QStringLiteral("--model"), runtime.model,
+        QStringLiteral("--ffmpeg"), ffmpegExecutable(),
+        QStringLiteral("--reference-cache"), voiceReferenceCacheDirectory()
+    };
+    if (!runtime.server.isEmpty())
+        arguments << QStringLiteral("--server") << runtime.server;
+    return {runtime.python, arguments, runtime.root};
 }
 
 void VoiceGenerationService::startWorker(const QString& provider)
 {
-    const QString runtimeRoot = rootPathFor(provider);
-    if (!QDir().mkpath(runtimeRoot)) {
+    const WorkerLaunch launch = launchFor(provider);
+    if (!launch.workingDirectory.isEmpty() && !QDir().mkpath(launch.workingDirectory)) {
         failCurrent(QStringLiteral("Could not create the voice runtime folder."));
         return;
     }
@@ -369,77 +472,119 @@ void VoiceGenerationService::startWorker(const QString& provider)
     m_activeProvider = provider;
     m_workerReady = false;
     m_stdoutBuffer.clear();
+    m_stderrBuffer.clear();
+    m_lastWorkerError.clear();
 
     connect(m_process, &QProcess::readyReadStandardOutput,
             this, &VoiceGenerationService::handleStdout);
-    connect(m_process, &QProcess::readyReadStandardError, this, [this]() {
-        if (!m_process) return;
-        const QString detail = QString::fromUtf8(m_process->readAllStandardError()).trimmed();
-        if (!detail.isEmpty()) emit statusChanged(detail.section('\n', -1).trimmed());
-    });
+    connect(m_process, &QProcess::readyReadStandardError,
+            this, &VoiceGenerationService::handleStderr);
     connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { handleWorkerExit(code); });
     connect(m_process, &QProcess::errorOccurred, this,
             [this](QProcess::ProcessError error) {
-        if (error != QProcess::FailedToStart || !m_hasCurrent) return;
-        const QString detail = m_process ? m_process->errorString()
-                                         : QStringLiteral("unknown process error");
-        stopWorker();
+        if (error != QProcess::FailedToStart || !m_process) return;
+        const QString detail = m_process->errorString();
+        m_process->deleteLater();
+        m_process = nullptr;
+        m_activeProvider.clear();
+        ++m_loadGeneration;
+        updateResidency();
         failCurrent(QStringLiteral("Could not start the voice worker: %1").arg(detail));
     });
 
-    QStringList args{
-        QString::fromUtf8(ROUNDTABLE_VOICE_WORKER_PATH),
-        QStringLiteral("--provider"), provider,
-        QStringLiteral("--runtime-root"), runtimeRoot,
-        QStringLiteral("--model"), modelPathFor(provider)
-    };
-    if (provider == QStringLiteral("breeze")) {
-        args << QStringLiteral("--server")
-             << serverPathFor(provider)
-             << QStringLiteral("--ffmpeg")
-             << QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH);
-    }
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("HF_HOME"),
-               QDir(runtimeRoot).absoluteFilePath(QStringLiteral("../huggingface")));
+    if (!launch.workingDirectory.isEmpty()) {
+        env.insert(QStringLiteral("HF_HOME"), QDir(launch.workingDirectory)
+                       .absoluteFilePath(QStringLiteral("../huggingface")));
+        m_process->setWorkingDirectory(launch.workingDirectory);
+    }
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
+    env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
     m_process->setProcessEnvironment(env);
-    m_process->setWorkingDirectory(runtimeRoot);
-    emit statusChanged(provider == QStringLiteral("fish-s2")
-        ? QStringLiteral("Loading Fish S2 Pro (this can take a few minutes)...")
-        : provider == QStringLiteral("breeze")
-            ? QStringLiteral("Loading Breeze-TTS-2 Q8 on CUDA...")
-            : QStringLiteral("Loading OmniVoice..."));
-    m_process->start(pythonPathFor(provider), args, QIODevice::ReadWrite);
-    emit modelResidentChanged(true);
 
-    QTimer::singleShot(10 * 60 * 1000, this, [this, provider]() {
-        if (m_hasCurrent && m_activeProvider == provider && !m_workerReady) {
-            stopWorker();
-            failCurrent(QStringLiteral("The voice model did not finish loading within 10 minutes."));
-        }
+    const auto* info = findVoiceProvider(provider);
+    emit statusChanged(info ? info->loadingStatus
+                            : QStringLiteral("Loading voice model..."));
+    spdlog::info("[voice] starting {} worker", provider.toStdString());
+    m_process->start(launch.program, launch.arguments, QIODevice::ReadWrite);
+    updateResidency();
+
+    // The generation id makes a timer from an earlier (unloaded) worker
+    // harmless to a newer worker of the same engine that is still loading.
+    const quint64 generation = ++m_loadGeneration;
+    const int timeout = m_loadTimeoutMs;
+    QTimer::singleShot(timeout, this, [this, generation, timeout]() {
+        if (generation != m_loadGeneration || !m_process || m_workerReady) return;
+        retireWorker(true);
+        failCurrent(QStringLiteral("The voice model did not finish loading within %1.")
+                        .arg(describeDuration(timeout)));
     });
 }
 
-void VoiceGenerationService::stopWorker()
+void VoiceGenerationService::retireWorker(bool immediate)
 {
     if (!m_process) return;
-    disconnect(m_process, nullptr, this, nullptr);
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->write("{\"op\":\"shutdown\"}\n");
-        m_process->waitForBytesWritten(500);
-        m_process->terminate();
-        if (!m_process->waitForFinished(2500)) {
-            m_process->kill();
-            m_process->waitForFinished(1000);
-        }
-    }
-    m_process->deleteLater();
+    QProcess* process = m_process;
+    const bool graceful = !immediate && m_workerReady;
     m_process = nullptr;
     m_workerReady = false;
     m_activeProvider.clear();
-    emit modelResidentChanged(false);
+    ++m_loadGeneration;
+    disconnect(process, nullptr, this, nullptr);
+
+    if (m_retiring) {
+        // Only one worker may be exiting at a time; end the older one now.
+        disconnect(m_retiring, nullptr, this, nullptr);
+        m_retiring->kill();
+        m_retiring->deleteLater();
+        m_retiring = nullptr;
+    }
+    if (process->state() == QProcess::NotRunning) {
+        process->deleteLater();
+        updateResidency();
+        return;
+    }
+
+    m_retiring = process;
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, &VoiceGenerationService::onRetiredWorkerFinished);
+    if (graceful) {
+        // An idle worker reads this immediately and closes its model/server.
+        process->write("{\"op\":\"shutdown\"}\n");
+        process->closeWriteChannel();
+        QPointer<QProcess> guard(process);
+        QTimer::singleShot(m_retireTimeoutMs, this, [guard]() {
+            if (guard && guard->state() != QProcess::NotRunning) guard->kill();
+        });
+    } else {
+        // Loading or mid-generation: the worker is not reading stdin.
+        process->kill();
+    }
+    updateResidency();
+}
+
+void VoiceGenerationService::onRetiredWorkerFinished()
+{
+    if (m_retiring) {
+        m_retiring->deleteLater();
+        m_retiring = nullptr;
+    }
+    updateResidency();
+    if (m_hasCurrent && !m_process) {
+        startWorker(m_current.provider);
+    } else if (m_announceUnload && !isModelResident()) {
+        m_announceUnload = false;
+        emit statusChanged(QStringLiteral("Voice model unloaded. GPU memory released."));
+    }
+}
+
+void VoiceGenerationService::updateResidency()
+{
+    const bool resident = isModelResident();
+    if (resident == m_residentReported) return;
+    m_residentReported = resident;
+    emit modelResidentChanged(resident);
 }
 
 void VoiceGenerationService::sendCurrentRequest()
@@ -456,20 +601,16 @@ void VoiceGenerationService::sendCurrentRequest()
         });
     }
 
-    QJsonObject obj{
+    const QJsonObject request{
         {QStringLiteral("op"), QStringLiteral("generate")},
         {QStringLiteral("text"), m_current.text},
-        {QStringLiteral("reference_audio"), m_current.referenceAudio},
-        {QStringLiteral("reference_text"), m_current.referenceText},
-        {QStringLiteral("reference_start"), m_current.referenceStart},
-        {QStringLiteral("reference_end"), m_current.referenceEnd},
         {QStringLiteral("reference_segments"), references},
         {QStringLiteral("speed"), m_current.speed},
         {QStringLiteral("duration"), m_current.targetDuration},
         {QStringLiteral("seed"), m_current.seed},
         {QStringLiteral("output"), m_currentOutput}
     };
-    m_process->write(QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n');
+    m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
     emit statusChanged(QStringLiteral("Generating %1...").arg(m_current.character));
 }
 
@@ -491,8 +632,9 @@ void VoiceGenerationService::handleStdout()
         const QString event = obj.value(QStringLiteral("event")).toString();
         if (event == QStringLiteral("ready")) {
             m_workerReady = true;
+            const auto* info = findVoiceProvider(m_activeProvider);
             emit statusChanged(QStringLiteral("%1 ready").arg(
-                providerDisplayName(m_activeProvider)));
+                info ? info->displayName : m_activeProvider));
             sendCurrentRequest();
         } else if (event == QStringLiteral("status")) {
             emit statusChanged(obj.value(QStringLiteral("message")).toString());
@@ -514,15 +656,43 @@ void VoiceGenerationService::handleStdout()
     }
 }
 
+void VoiceGenerationService::handleStderr()
+{
+    // Worker diagnostics (model loading, audio.cpp logs, tracebacks) go to the
+    // application log rather than the status line, where they used to flicker
+    // past unreadably and were then lost.
+    if (!m_process) return;
+    m_stderrBuffer += m_process->readAllStandardError();
+    while (true) {
+        const auto newline = m_stderrBuffer.indexOf('\n');
+        if (newline < 0) break;
+        const QString line = QString::fromUtf8(m_stderrBuffer.left(newline)).trimmed();
+        m_stderrBuffer.remove(0, newline + 1);
+        if (line.isEmpty()) continue;
+        spdlog::info("[voice] {}", line.toStdString());
+        m_lastWorkerError = line;
+    }
+}
+
 void VoiceGenerationService::handleWorkerExit(int exitCode)
 {
-    if (m_process) m_process->deleteLater();
+    if (m_process) {
+        handleStderr();
+        m_process->deleteLater();
+    }
     m_process = nullptr;
     m_workerReady = false;
     m_activeProvider.clear();
-    emit modelResidentChanged(false);
-    if (m_hasCurrent && !m_cancelled)
-        failCurrent(QStringLiteral("Voice worker exited unexpectedly (code %1).").arg(exitCode));
+    ++m_loadGeneration;
+    updateResidency();
+    spdlog::warn("[voice] worker exited with code {}", exitCode);
+    if (m_hasCurrent) {
+        QString error = QStringLiteral("Voice worker exited unexpectedly (code %1).")
+                            .arg(exitCode);
+        if (!m_lastWorkerError.isEmpty())
+            error += QStringLiteral(" Last message: %1").arg(m_lastWorkerError);
+        failCurrent(error);
+    }
 }
 
 void VoiceGenerationService::failCurrent(const QString& error)
@@ -539,8 +709,7 @@ void VoiceGenerationService::failCurrent(const QString& error)
 
 QString VoiceGenerationService::buildOutputPath(const VoiceGenerationRequest& request) const
 {
-    QDir dir(QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-                 .filePath(QStringLiteral("Roundtable Voice Drafts")));
+    QDir dir(voiceDraftDirectory());
     if (!dir.mkpath(QStringLiteral("."))) return {};
 
     QString words = request.text.simplified().left(42);
@@ -549,7 +718,7 @@ QString VoiceGenerationService::buildOutputPath(const VoiceGenerationRequest& re
     if (words.isEmpty()) words = QStringLiteral("line");
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"));
     return dir.filePath(QStringLiteral("DRAFT_%1_%2_%3.wav")
-        .arg(cleanPathPart(request.character), stamp, words));
+        .arg(voiceSafePathPart(request.character), stamp, words));
 }
 
 QString VoiceGenerationService::buildApprovedOutputPath(
@@ -566,10 +735,6 @@ QString VoiceGenerationService::buildApprovedOutputPath(
             break;
         }
     }
-    if (destinationDirectory.isEmpty() && !request.referenceAudio.isEmpty()) {
-        const QFileInfo source(request.referenceAudio);
-        if (source.exists() && source.isFile()) destinationDirectory = source.absolutePath();
-    }
     if (destinationDirectory.isEmpty() && m_project && !m_project->filePath().empty()) {
         const QString projectFile = QString::fromStdString(pathToUtf8(m_project->filePath()));
         destinationDirectory = QDir(QFileInfo(projectFile).absolutePath())
@@ -582,7 +747,7 @@ QString VoiceGenerationService::buildApprovedOutputPath(
     QDir dir(destinationDirectory);
     if (!dir.mkpath(QStringLiteral("."))) return {};
 
-    const QString character = cleanPathPart(request.character).toUpper();
+    const QString character = voiceSafePathPart(request.character).toUpper();
     const QString stamp = QDateTime::currentDateTime().toString(
         QStringLiteral("yyyyMMdd-HHmmss-zzz"));
     QString candidate = dir.filePath(QStringLiteral("%1-%2.%3")

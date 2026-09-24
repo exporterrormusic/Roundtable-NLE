@@ -4,6 +4,7 @@
 
 #include <QWidget>
 #include <QStringList>
+#include <QVector>
 
 class QComboBox;
 class QDoubleSpinBox;
@@ -14,13 +15,14 @@ class QListWidget;
 class QPushButton;
 class QSpinBox;
 class QTextEdit;
-class QTreeWidget;
 class QTimer;
 
 namespace rt {
 
 class AudioSync;
 class MiniWaveformWidget;
+struct VoiceReferenceCandidate;
+
 /// Reusable TTS surface used by both the Audio page and Timeline dock.
 class VoiceGenerationPanel final : public QWidget
 {
@@ -28,12 +30,20 @@ class VoiceGenerationPanel final : public QWidget
 
 public:
     explicit VoiceGenerationPanel(VoiceGenerationService* service,
-                                  bool compact,
                                   QWidget* parent = nullptr);
 
     void setAudioSync(AudioSync* audioSync);
+    /// Rebuild character/reference lists now.  AudioSync change signals only
+    /// schedule this (coalesced, and deferred while the panel is hidden).
     void refreshFromAudioSync();
-    [[nodiscard]] QStringList availableCharacters() const;
+    /// Load a script line: character, dialogue, and the line link that
+    /// "Approve & Sync" uses to attach the result to exactly that line.
+    void setScriptLine(int lineNumber, const QString& character,
+                       const QString& dialogue, const QString& segment);
+    [[nodiscard]] int linkedScriptLine() const noexcept { return m_selectedScriptLine; }
+    [[nodiscard]] QStringList availableCharacters();
+    [[nodiscard]] QString currentText() const;
+    [[nodiscard]] QString currentCharacter() const;
     [[nodiscard]] QPushButton* generateButton() const noexcept { return m_generate; }
     [[nodiscard]] QPushButton* listenButton() const noexcept { return m_listen; }
     [[nodiscard]] QPushButton* approveSyncButton() const noexcept { return m_approveSync; }
@@ -47,14 +57,19 @@ signals:
     /// imports the finalized source-adjacent file into Project Bin.
     void approvedForProject(const QString& path);
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private:
-    void buildUi(bool compact);
+    void buildUi();
+    void scheduleRefresh();
     void refreshProviderState();
     void refreshGenerateAvailability();
     void refreshReferencePlan();
     void refreshManualTrack();
     void refreshManualTranscript();
-    void chooseScriptLine();
+    void refreshScriptLink();
+    void clearScriptLine();
     void generate();
     void listenToDraft();
     void approveDraft(bool syncToScript);
@@ -65,10 +80,11 @@ private:
     void onFinished(const VoiceGenerationRequest& request,
                     const QString& path, double duration);
     void onFailed(const VoiceGenerationRequest& request, const QString& error);
+    [[nodiscard]] QString currentProvider() const;
+    [[nodiscard]] QVector<VoiceReferenceCandidate> approvedCandidates() const;
 
     VoiceGenerationService* m_service{nullptr};
     AudioSync* m_audioSync{nullptr};
-    bool m_compact{false};
 
     QComboBox* m_provider{nullptr};
     QComboBox* m_reference{nullptr};
@@ -81,6 +97,8 @@ private:
     QLineEdit* m_referenceText{nullptr};
     QDoubleSpinBox* m_referenceStart{nullptr};
     QDoubleSpinBox* m_referenceEnd{nullptr};
+    QWidget* m_scriptLink{nullptr};
+    QLabel* m_scriptLinkLabel{nullptr};
     QTextEdit* m_text{nullptr};
     QDoubleSpinBox* m_speed{nullptr};
     QDoubleSpinBox* m_duration{nullptr};
@@ -95,9 +113,12 @@ private:
     QPushButton* m_saveReference{nullptr};
     QPushButton* m_locateBreeze{nullptr};
     QLabel* m_status{nullptr};
-    QTreeWidget* m_scriptLines{nullptr};
     QListWidget* m_recent{nullptr};
     QTimer* m_draftAuditionTimer{nullptr};
+    QTimer* m_refreshTimer{nullptr};
+
+    bool m_providerInstalled{false};
+    bool m_refreshPending{false};
 
     VoiceGenerationRequest m_draftRequest;
     QString m_activeRequestId;
@@ -105,6 +126,7 @@ private:
     double m_draftDuration{0.0};
 
     int m_selectedScriptLine{-1};
+    QString m_selectedScriptCharacter;
     QString m_selectedScriptSegment;
 };
 

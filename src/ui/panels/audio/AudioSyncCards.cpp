@@ -160,6 +160,8 @@ void AudioSync::populateLeftList()
         auto* textLabel = new QLabel(dialogueText);
         textLabel->setWordWrap(true);
         enableScriptTextCopy(textLabel, dialogueText);
+        addGenerateVoiceAction(textLabel, line.lineNumber, charName, dialogueText,
+                               QString::fromStdString(line.segment));
         textLabel->setStyleSheet(
             QString("QLabel { color: %1; font-size: %2px; "
                     "background: transparent; border: none; "

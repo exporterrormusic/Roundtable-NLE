@@ -156,7 +156,7 @@ void MainWindow::buildPanels()
     if (m_commandStack) m_audioSync->setCommandStack(m_commandStack);
     if (m_audioEngine) m_audioSync->setAudioEngine(m_audioEngine);
     m_voiceGenerationPanel = new VoiceGenerationPanel(
-        m_voiceGenerationService, true, this);
+        m_voiceGenerationService, this);
     m_voiceGenerationPanel->setAudioSync(m_audioSync);
     m_audioSync->setVoiceGenerationPanel(m_voiceGenerationPanel);
     m_pageStack->addWidget(m_audioSync);

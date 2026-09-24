@@ -127,6 +127,8 @@ add_library(roundtable_ui STATIC
     panels/audio/AudioSyncVoice.cpp
     panels/audio/VoiceGenerationService.cpp
     panels/audio/VoiceGenerationPanel.cpp
+    panels/audio/VoiceProviders.cpp
+    panels/audio/VoiceReferenceLibrary.cpp
     panels/export/ExportPanel.cpp
     panels/export/ExportRenderExecutor.cpp
     panels/export/ExportRenderSession.cpp
