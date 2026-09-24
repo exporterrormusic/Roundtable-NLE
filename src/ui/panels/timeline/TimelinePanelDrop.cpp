@@ -1,6 +1,7 @@
 /*
  * TimelinePanelDrop.cpp - dropEvent: commit a Project-Bin drag onto the timeline.
  * Extracted from TimelinePanelDragDrop.cpp (behavior-preserving).
+ * dropEvent dispatches on the MIME payload to one *Drop handler per type.
  */
 
 #include "panels/timeline/TimelinePanel.h"
@@ -39,13 +40,102 @@ constexpr size_t kGhostDropTrackAudioBelow = SIZE_MAX - 2;
 // audio track at the bottom. Distinct from kGhostDropTrackAudioBelow which
 // targets the whole drop at a new audio track (used for audio-only files).
 constexpr size_t kGhostDropTrackAudioCompanionBelow = SIZE_MAX - 3;
+
+bool isAudioFileSuffix(const QString& path)
+{
+    static const QStringList audioExts = {
+        "wav", "mp3", "ogg", "flac", "aac", "m4a", "wma", "aiff", "opus"
+    };
+    return audioExts.contains(QFileInfo(path).suffix().toLower());
 }
+
+// If a folder dropped from Explorer looks like a character outfit folder
+// (contains .skel files, directly, in a stance subdir, or one level down),
+// returns the spine: URI for its idle animation; otherwise an empty string.
+QString characterSpineUriForFolder(const QString& firstPath)
+{
+    static const QStringList kStanceSubdirs =
+        {"Default", "default", "aim", "cover"};
+
+    QString skelFile;
+    QString outfitFolder = firstPath;
+
+    // Step 1: look for .skel directly in the dropped folder
+    {
+        QDir dir(firstPath);
+        for (const QString& f : dir.entryList({"*.skel"}, QDir::Files)) {
+            skelFile = dir.absoluteFilePath(f);
+            break;
+        }
+    }
+
+    // Step 2: look in known stance subdirectories
+    if (skelFile.isEmpty()) {
+        for (const QString& sd : kStanceSubdirs) {
+            QDir subDir(firstPath + "/" + sd);
+            for (const QString& f : subDir.entryList({"*.skel"}, QDir::Files)) {
+                skelFile = subDir.absoluteFilePath(f);
+                break;
+            }
+            if (!skelFile.isEmpty()) {
+                outfitFolder = firstPath;
+                break;
+            }
+        }
+    }
+
+    // Step 3: check all child directories (user may have dragged
+    // the character root folder, e.g. assets/characters/2B/)
+    if (skelFile.isEmpty()) {
+        QDir parentDir(firstPath);
+        for (const QString& childDir : parentDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            QString childPath = firstPath + "/" + childDir;
+            for (const QString& sd : kStanceSubdirs) {
+                QDir subDir(childPath + "/" + sd);
+                for (const QString& f : subDir.entryList({"*.skel"}, QDir::Files)) {
+                    skelFile = subDir.absoluteFilePath(f);
+                    break;
+                }
+                if (!skelFile.isEmpty()) {
+                    outfitFolder = childPath;
+                    break;
+                }
+            }
+            if (!skelFile.isEmpty()) break;
+            // Also check directly
+            QDir child(childPath);
+            for (const QString& f : child.entryList({"*.skel"}, QDir::Files)) {
+                skelFile = child.absoluteFilePath(f);
+                outfitFolder = childPath;
+                break;
+            }
+            if (!skelFile.isEmpty()) break;
+        }
+    }
+
+    if (skelFile.isEmpty()) return {};
+
+    // Extract character and outfit names from the folder path.
+    // Expected structure: .../assets/characters/<charName>/<outfit>/
+    // or .../assets/characters/<charName>/<outfit>/aim|cover
+    QFileInfo fi(outfitFolder);
+    QString folderName = fi.fileName();                 // outfit name (e.g. "default")
+    QString parentPath = fi.absolutePath();
+    QFileInfo parentFi(parentPath);
+    QString grandparentName = parentFi.fileName();      // should be "characters"
+    QString charFolderName = parentFi.absolutePath();
+
+    // Sanity check: folder should be under "characters"
+    if (grandparentName.toLower() != "characters" || charFolderName.isEmpty())
+        return {};
+    return QStringLiteral("spine:") + charFolderName + "|" + folderName + "|0|idle";
+}
+} // namespace
 
 void TimelinePanel::dropEvent(QDropEvent* event)
 {
-    const bool ghostWasVisible = m_ghostTrackVisible;
-    const bool ghostWasAbove = m_ghostTrackIsAbove;
-    const bool ghostWasOnExisting = m_ghostTrackOnExisting;
+    const GhostDropState ghost{m_ghostTrackVisible, m_ghostTrackIsAbove,
+                               m_ghostTrackOnExisting};
 
     m_ghostTrackVisible = false;
     m_ghostTrackOnExisting = false;
@@ -61,648 +151,607 @@ void TimelinePanel::dropEvent(QDropEvent* event)
     // Clear all drag previews
     for (auto tw : m_trackWidgets) tw->clearMediaDragPreview();
 
-    // Compute drop-time ghost zones directly from cursor Y and current track geometry,
-    // so routing does not depend on whether a prior dragMove state was preserved.
-    auto computeGhostDropZones = [this](const QPointF& pos, bool& aboveTopVideo, bool& belowBottomAudio) {
-        aboveTopVideo = false;
-        belowBottomAudio = false;
-        if (!m_timeline || m_trackWidgets.empty()) return;
-
-        size_t firstVideoIdx = SIZE_MAX;
-        size_t lastAudioIdx = SIZE_MAX;
-        for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
-            auto* tr = m_timeline->track(i);
-            // skip dividers and the pinned caption track (TrackType::Video but
-            // can't host media — it must not anchor the above-top-video zone)
-            if (!tr || tr->isDivider() || tr->isCaptionTrack()) continue;
-            if (tr->type() == TrackType::Video) {
-                if (firstVideoIdx == SIZE_MAX) firstVideoIdx = i;
-            } else {
-                lastAudioIdx = i;
-            }
-        }
-
-        if (firstVideoIdx < m_trackWidgets.size()) {
-            auto w = m_trackWidgets[firstVideoIdx];
-            QPoint top = w->mapTo(this, QPoint(0, 0));
-            aboveTopVideo = (pos.y() < top.y());
-        }
-        if (lastAudioIdx < m_trackWidgets.size()) {
-            auto w = m_trackWidgets[lastAudioIdx];
-            QPoint bot = w->mapTo(this, QPoint(0, w->height()));
-            belowBottomAudio = (pos.y() > bot.y());
-        }
-    };
+    const QMimeData* mime = event->mimeData();
 
     // ── Transition drop (custom MIME type) ──────────────────────────────
-    if (event->mimeData()->hasFormat(kTransitionMimeType)) {
-        // Clear highlights
-        for (auto tw : m_trackWidgets) tw->clearTransitionDropEdge();
-
-        if (!m_transitionDropTarget || !m_timeline) {
-            m_transitionDropTarget.reset();
-            event->ignore();
-            return;
-        }
-
-        QByteArray transData = event->mimeData()->data(kTransitionMimeType);
-        bool ok = false;
-        int transType = transData.toInt(&ok);
-        if (!ok) { m_transitionDropTarget.reset(); event->ignore(); return; }
-
-        auto target = *m_transitionDropTarget;
-        m_transitionDropTarget.reset();
-
-        // Must have at least one clip
-        if (target.leftClipId == 0 && target.rightClipId == 0) {
-            event->ignore();
-            return;
-        }
-
-        emit transitionDroppedAtEdge(target.trackIndex, target.leftClipId,
-                                     target.rightClipId, target.editPointTick,
-                                     transType);
-        event->acceptProposedAction();
+    if (mime->hasFormat(kTransitionMimeType)) {
+        transitionDrop(event);
         return;
     }
 
     // ── Effect drop (custom MIME type) ──────────────────────────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-effect")) {
-        m_effectDropTarget.reset();
-        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
-
-        QByteArray effectData = event->mimeData()->data("application/x-roundtable-effect");
-        bool ok = false;
-        int effectType = effectData.toInt(&ok);
-        if (!ok) { event->ignore(); return; }
-
-        // Hit-test to find which clip was dropped on
-        QPointF pos = event->position();
-        auto hitRef = hitTestClip(pos);
-        if (!hitRef || !m_timeline) { event->ignore(); return; }
-
-        auto* track = m_timeline->track(hitRef->trackIndex);
-        if (!track) { event->ignore(); return; }
-
-        size_t clipIdx = track->findClipIndexById(hitRef->clipId);
-        if (clipIdx == SIZE_MAX) { event->ignore(); return; }
-
-        emit effectDroppedOnClip(hitRef->trackIndex, hitRef->clipId, effectType);
-        event->acceptProposedAction();
+    if (mime->hasFormat("application/x-roundtable-effect")) {
+        effectDrop(event);
         return;
     }
 
     // ── Glitch preset drop (curated multi-effect macro) ─────────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-glitch-preset")) {
-        m_effectDropTarget.reset();
-        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
-
-        bool ok = false;
-        int presetId = event->mimeData()
-            ->data("application/x-roundtable-glitch-preset").toInt(&ok);
-        if (!ok) { event->ignore(); return; }
-
-        QPointF pos = event->position();
-        auto hitRef = hitTestClip(pos);
-        if (!hitRef || !m_timeline) { event->ignore(); return; }
-
-        auto* track = m_timeline->track(hitRef->trackIndex);
-        if (!track) { event->ignore(); return; }
-        size_t clipIdx = track->findClipIndexById(hitRef->clipId);
-        if (clipIdx == SIZE_MAX) { event->ignore(); return; }
-
-        emit glitchPresetDroppedOnClip(hitRef->trackIndex, hitRef->clipId, presetId);
-        event->acceptProposedAction();
+    if (mime->hasFormat("application/x-roundtable-glitch-preset")) {
+        glitchPresetDrop(event);
         return;
     }
 
     // ── Audio FX drop (EQ / Dynamics → clip FxChain) ────────────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-audiofx")) {
-        m_effectDropTarget.reset();
-        for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
-
-        QByteArray fxData = event->mimeData()->data("application/x-roundtable-audiofx");
-        bool ok = false;
-        int kind = fxData.toInt(&ok);
-        if (!ok) { event->ignore(); return; }
-
-        QPointF pos = event->position();
-        auto hitRef = hitTestClip(pos);
-        if (!hitRef || !m_timeline) { event->ignore(); return; }
-
-        auto* track = m_timeline->track(hitRef->trackIndex);
-        if (!track) { event->ignore(); return; }
-        size_t clipIdx = track->findClipIndexById(hitRef->clipId);
-        if (clipIdx == SIZE_MAX) { event->ignore(); return; }
-
-        // Audio DSP applies only to audio clips. For a mixed multi-selection,
-        // however, the clip under the mouse may be visual while another
-        // selected clip is audio; let the controller broadcast to those
-        // compatible selected clips.
-        const Clip* clip = track->clip(clipIdx);
-        bool hasAudioTarget = clip && clip->isAudio();
-        const auto& selected = selection();
-        if (!hasAudioTarget && selected.count() > 1 && selected.isSelected(*hitRef)) {
-            for (const auto& ref : selected.clips()) {
-                auto* selectedTrack = m_timeline->track(ref.trackIndex);
-                if (!selectedTrack) continue;
-                const size_t selectedIdx = selectedTrack->findClipIndexById(ref.clipId);
-                if (selectedIdx == SIZE_MAX) continue;
-                const auto* selectedClip = selectedTrack->clip(selectedIdx);
-                if (selectedClip && selectedClip->isAudio()) {
-                    hasAudioTarget = true;
-                    break;
-                }
-            }
-        }
-        if (!hasAudioTarget) { event->ignore(); return; }
-
-        emit audioFxDroppedOnClip(hitRef->trackIndex, hitRef->clipId, kind);
-        event->acceptProposedAction();
+    if (mime->hasFormat("application/x-roundtable-audiofx")) {
+        audioFxDrop(event);
         return;
     }
 
     // ── Adjustment-layer drop (from project bin) ───────────────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-adjustment")) {
-        QPointF pos = event->position();
-        double px = pos.x() - headerWidth();
-        int64_t tick = m_layoutEngine.pixelXToTime(px);
-        if (tick < 0) tick = 0;
-        size_t trackIdx = hitTestTrack(pos.y());
-
-        bool aboveTopVideo = false;
-        bool belowBottomAudio = false;
-        computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
-        if (!ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
-            trackIdx = kGhostDropTrackVideoAbove;
-
-        int64_t dur = static_cast<int64_t>(5.0 * 48000.0);
-        auto snapRes = m_snapEngine.snapPair(tick, tick + dur);
-        if (snapRes.didSnap) tick = snapRes.snappedTick;
-
-        QString name = QString::fromUtf8(
-            event->mimeData()->data("application/x-roundtable-adjustment"));
-        if (name.isEmpty()) name = QStringLiteral("Adjustment Layer");
-
-        emit adjustmentDropped(name, tick, trackIdx);
-        event->acceptProposedAction();
+    if (mime->hasFormat("application/x-roundtable-adjustment")) {
+        adjustmentDrop(event, ghost);
         return;
     }
 
     // ── Sequence drop (from project bin or Source Monitor) ─────────────
-    if (event->mimeData()->hasFormat("application/x-roundtable-sequence")) {
-        QPointF pos = event->position();
-        double px = pos.x() - headerWidth();
-        int64_t tick = m_layoutEngine.pixelXToTime(px);
-        if (tick < 0) tick = 0;
-        size_t trackIdx = hitTestTrack(pos.y());
-        bool aboveTopVideo = false;
-        bool belowBottomAudio = false;
-        computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
-        if (!ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
-            trackIdx = kGhostDropTrackVideoAbove;
-
-        bool ok = false;
-        size_t seqIndex = event->mimeData()->data("application/x-roundtable-sequence")
-                              .toULongLong(&ok);
-
-        if (ok) {
-            // Read source in/out if present (from Source Monitor drag-out)
-            int64_t sourceIn  = -1;
-            int64_t sourceOut = -1;
-            if (event->mimeData()->hasFormat("application/x-roundtable-source-in"))
-                sourceIn = event->mimeData()->data("application/x-roundtable-source-in").toLongLong();
-            if (event->mimeData()->hasFormat("application/x-roundtable-source-out"))
-                sourceOut = event->mimeData()->data("application/x-roundtable-source-out").toLongLong();
-
-            // Snap
-            int64_t dropDur = 0;
-            if (sourceIn >= 0 && sourceOut > sourceIn) {
-                dropDur = sourceOut - sourceIn;
-            } else if (event->mimeData()->hasFormat("application/x-roundtable-sequence-duration")) {
-                bool durOk = false;
-                dropDur = event->mimeData()->data("application/x-roundtable-sequence-duration")
-                              .toLongLong(&durOk);
-                if (!durOk) dropDur = 0;
-            }
-            if (dropDur > 0) {
-                auto snapRes = m_snapEngine.snapPair(tick, tick + dropDur);
-                if (snapRes.didSnap) tick = snapRes.snappedTick;
-            } else {
-                auto snapRes = m_snapEngine.snap(tick);
-                if (snapRes.didSnap) tick = snapRes.snappedTick;
-            }
-
-            int dragMode = TimelinePanel::DragBoth;
-            if (event->mimeData()->hasFormat("application/x-roundtable-drag-mode")) {
-                const QByteArray m = event->mimeData()->data(
-                    "application/x-roundtable-drag-mode");
-                if (m == "video") dragMode = TimelinePanel::DragVideoOnly;
-                else if (m == "audio") dragMode = TimelinePanel::DragAudioOnly;
-            }
-
-            emit sequenceDropped(seqIndex, tick, trackIdx, sourceIn, sourceOut,
-                                 dragMode);
-        }
-        event->acceptProposedAction();
+    if (mime->hasFormat("application/x-roundtable-sequence")) {
+        sequenceDrop(event, ghost);
         return;
     }
 
     // ── Media drop (custom MIME from MediaDragTreeWidget / ThumbnailGrid) ──
-    if (event->mimeData()->hasFormat("application/x-roundtable-media")) {
-        QPointF pos = event->position();
-        double px = pos.x() - headerWidth();
-        int64_t tick = m_layoutEngine.pixelXToTime(px);
-        if (tick < 0) tick = 0;
-        size_t trackIdx = hitTestTrack(pos.y());
+    if (mime->hasFormat("application/x-roundtable-media")) {
+        mediaDrop(event, ghost);
+        return;
+    }
 
-        // Parse all media handles (comma-separated for multi-item drag)
-        QByteArray mediaData = event->mimeData()->data("application/x-roundtable-media");
-        QList<QByteArray> handleTokens = mediaData.split(',');
-        QList<QUrl> urls = event->mimeData()->urls();
+    // ── External file drop (from Windows Explorer) ───────────────────────
+    if (mime->hasUrls() && !qobject_cast<QTreeWidget*>(event->source())) {
+        externalFileDrop(event, ghost);
+        return;
+    }
 
-        // Determine audio/video type from first valid handle for ghost-zone routing
-        bool isAudioDrop = false;
-        bool dropMediaHasAudio = false;
-        if (!handleTokens.isEmpty()) {
-            bool firstOk = false;
-            uint64_t firstHandle = handleTokens.first().toULongLong(&firstOk);
-            QString firstPath;
-            if (!urls.isEmpty())
-                firstPath = urls.first().toLocalFile();
-            // Resolve media info the SAME way the ghost preview does: open() the
-            // path so a file whose stream info was cached stale (e.g. a
-            // re-rendered "_H264" that gained an audio track) self-heals.  Using
-            // getInfo(handle) alone left dropMediaHasAudio=false even when the
-            // ghost showed an audio lane — silently dropping the audio companion
-            // and its below-the-stack new track (the single-track drop bug).
-            bool resolved = false;
-            if (m_mediaPool && !firstPath.isEmpty()) {
-                uint64_t h = m_mediaPool->open(firstPath.toStdString());
-                if (h != 0) {
-                    if (const auto* info = m_mediaPool->getInfo(h)) {
-                        isAudioDrop = (info->videoStreamIndex < 0);
-                        dropMediaHasAudio = info->hasAudio;
-                        resolved = true;
-                    }
-                    m_mediaPool->release(h);
-                }
-            }
-            if (!resolved && firstOk && firstHandle != 0 && m_mediaPool) {
-                if (const auto* info = m_mediaPool->getInfo(firstHandle)) {
-                    isAudioDrop = (info->videoStreamIndex < 0);
-                    dropMediaHasAudio = info->hasAudio;
-                }
-            }
-            if (!isAudioDrop && !firstPath.isEmpty()) {
-                QString ext = QFileInfo(firstPath).suffix().toLower();
-                static const QStringList audioExts = {
-                    "wav", "mp3", "ogg", "flac", "aac", "m4a", "wma", "aiff", "opus"
-                };
-                isAudioDrop = audioExts.contains(ext);
+    // ── Media drop fallback (QTreeWidget default drag) ──────────────────
+    treeWidgetDrop(event, ghost);
+}
+
+// Compute drop-time ghost zones directly from cursor Y and current track geometry,
+// so routing does not depend on whether a prior dragMove state was preserved.
+void TimelinePanel::computeGhostDropZones(const QPointF& pos, bool& aboveTopVideo,
+                                          bool& belowBottomAudio) const
+{
+    aboveTopVideo = false;
+    belowBottomAudio = false;
+    if (!m_timeline || m_trackWidgets.empty()) return;
+
+    size_t firstVideoIdx = SIZE_MAX;
+    size_t lastAudioIdx = SIZE_MAX;
+    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
+        auto* tr = m_timeline->track(i);
+        // skip dividers and the pinned caption track (TrackType::Video but
+        // can't host media — it must not anchor the above-top-video zone)
+        if (!tr || tr->isDivider() || tr->isCaptionTrack()) continue;
+        if (tr->type() == TrackType::Video) {
+            if (firstVideoIdx == SIZE_MAX) firstVideoIdx = i;
+        } else {
+            lastAudioIdx = i;
+        }
+    }
+
+    if (firstVideoIdx < m_trackWidgets.size()) {
+        auto w = m_trackWidgets[firstVideoIdx];
+        QPoint top = w->mapTo(this, QPoint(0, 0));
+        aboveTopVideo = (pos.y() < top.y());
+    }
+    if (lastAudioIdx < m_trackWidgets.size()) {
+        auto w = m_trackWidgets[lastAudioIdx];
+        QPoint bot = w->mapTo(this, QPoint(0, w->height()));
+        belowBottomAudio = (pos.y() > bot.y());
+    }
+}
+
+void TimelinePanel::transitionDrop(QDropEvent* event)
+{
+    // Clear highlights
+    for (auto tw : m_trackWidgets) tw->clearTransitionDropEdge();
+
+    if (!m_transitionDropTarget || !m_timeline) {
+        m_transitionDropTarget.reset();
+        event->ignore();
+        return;
+    }
+
+    QByteArray transData = event->mimeData()->data(kTransitionMimeType);
+    bool ok = false;
+    int transType = transData.toInt(&ok);
+    if (!ok) { m_transitionDropTarget.reset(); event->ignore(); return; }
+
+    auto target = *m_transitionDropTarget;
+    m_transitionDropTarget.reset();
+
+    // Must have at least one clip
+    if (target.leftClipId == 0 && target.rightClipId == 0) {
+        event->ignore();
+        return;
+    }
+
+    emit transitionDroppedAtEdge(target.trackIndex, target.leftClipId,
+                                 target.rightClipId, target.editPointTick,
+                                 transType);
+    event->acceptProposedAction();
+}
+
+void TimelinePanel::effectDrop(QDropEvent* event)
+{
+    m_effectDropTarget.reset();
+    for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
+    QByteArray effectData = event->mimeData()->data("application/x-roundtable-effect");
+    bool ok = false;
+    int effectType = effectData.toInt(&ok);
+    if (!ok) { event->ignore(); return; }
+
+    // Hit-test to find which clip was dropped on
+    QPointF pos = event->position();
+    auto hitRef = hitTestClip(pos);
+    if (!hitRef || !m_timeline) { event->ignore(); return; }
+
+    auto* track = m_timeline->track(hitRef->trackIndex);
+    if (!track) { event->ignore(); return; }
+
+    size_t clipIdx = track->findClipIndexById(hitRef->clipId);
+    if (clipIdx == SIZE_MAX) { event->ignore(); return; }
+
+    emit effectDroppedOnClip(hitRef->trackIndex, hitRef->clipId, effectType);
+    event->acceptProposedAction();
+}
+
+void TimelinePanel::glitchPresetDrop(QDropEvent* event)
+{
+    m_effectDropTarget.reset();
+    for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
+    bool ok = false;
+    int presetId = event->mimeData()
+        ->data("application/x-roundtable-glitch-preset").toInt(&ok);
+    if (!ok) { event->ignore(); return; }
+
+    QPointF pos = event->position();
+    auto hitRef = hitTestClip(pos);
+    if (!hitRef || !m_timeline) { event->ignore(); return; }
+
+    auto* track = m_timeline->track(hitRef->trackIndex);
+    if (!track) { event->ignore(); return; }
+    size_t clipIdx = track->findClipIndexById(hitRef->clipId);
+    if (clipIdx == SIZE_MAX) { event->ignore(); return; }
+
+    emit glitchPresetDroppedOnClip(hitRef->trackIndex, hitRef->clipId, presetId);
+    event->acceptProposedAction();
+}
+
+void TimelinePanel::audioFxDrop(QDropEvent* event)
+{
+    m_effectDropTarget.reset();
+    for (auto tw : m_trackWidgets) tw->clearEffectHighlight();
+
+    QByteArray fxData = event->mimeData()->data("application/x-roundtable-audiofx");
+    bool ok = false;
+    int kind = fxData.toInt(&ok);
+    if (!ok) { event->ignore(); return; }
+
+    QPointF pos = event->position();
+    auto hitRef = hitTestClip(pos);
+    if (!hitRef || !m_timeline) { event->ignore(); return; }
+
+    auto* track = m_timeline->track(hitRef->trackIndex);
+    if (!track) { event->ignore(); return; }
+    size_t clipIdx = track->findClipIndexById(hitRef->clipId);
+    if (clipIdx == SIZE_MAX) { event->ignore(); return; }
+
+    // Audio DSP applies only to audio clips. For a mixed multi-selection,
+    // however, the clip under the mouse may be visual while another
+    // selected clip is audio; let the controller broadcast to those
+    // compatible selected clips.
+    const Clip* clip = track->clip(clipIdx);
+    bool hasAudioTarget = clip && clip->isAudio();
+    const auto& selected = selection();
+    if (!hasAudioTarget && selected.count() > 1 && selected.isSelected(*hitRef)) {
+        for (const auto& ref : selected.clips()) {
+            auto* selectedTrack = m_timeline->track(ref.trackIndex);
+            if (!selectedTrack) continue;
+            const size_t selectedIdx = selectedTrack->findClipIndexById(ref.clipId);
+            if (selectedIdx == SIZE_MAX) continue;
+            const auto* selectedClip = selectedTrack->clip(selectedIdx);
+            if (selectedClip && selectedClip->isAudio()) {
+                hasAudioTarget = true;
+                break;
             }
         }
-        // Source-monitor "drag audio only" → route to an audio track even
-        // for video media (the handler creates just an AudioClip).
-        if (event->mimeData()->hasFormat("application/x-roundtable-drag-mode")
-            && event->mimeData()->data("application/x-roundtable-drag-mode") == "audio")
-            isAudioDrop = true;
-        // Video-only drag forces no companion audio.
-        const bool forceVideoOnly =
-            event->mimeData()->hasFormat("application/x-roundtable-drag-mode")
-            && event->mimeData()->data("application/x-roundtable-drag-mode") == "video";
-        if (forceVideoOnly) dropMediaHasAudio = false;
+    }
+    if (!hasAudioTarget) { event->ignore(); return; }
 
-        bool aboveTopVideo = false;
-        bool belowBottomAudio = false;
-        computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+    emit audioFxDroppedOnClip(hitRef->trackIndex, hitRef->clipId, kind);
+    event->acceptProposedAction();
+}
 
-        // The audio routing is driven by the anchor dragMove already resolved
-        // for this drag (m_ghostDropAudioAnchor) — that guarantees the drop
-        // lands exactly where the ghost previewed it.  The coarse below-zone
-        // geometry is only a fallback for the rare drop with no preceding
-        // dragMove.  Anchor points PAST the last existing audio track ⇒ the
-        // user dragged into new-track space ⇒ create a fresh track block.
-        const size_t audioAnchor = m_ghostDropAudioAnchor;
-        const bool haveAnchor = (audioAnchor != SIZE_MAX);
-        const bool anchorExisting =
-            haveAnchor && m_timeline && audioAnchor < m_timeline->trackCount()
-            && m_timeline->track(audioAnchor)->type() == TrackType::Audio
-            && !m_timeline->track(audioAnchor)->isDivider();
-        const bool audioGoesBelow =
-            haveAnchor ? !anchorExisting
-                       : ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio);
+void TimelinePanel::adjustmentDrop(QDropEvent* event, const GhostDropState& ghost)
+{
+    QPointF pos = event->position();
+    double px = pos.x() - headerWidth();
+    int64_t tick = m_layoutEngine.pixelXToTime(px);
+    if (tick < 0) tick = 0;
+    size_t trackIdx = hitTestTrack(pos.y());
 
-        if (!isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
-            trackIdx = kGhostDropTrackVideoAbove;
-        else if (isAudioDrop && audioGoesBelow && !ghostWasOnExisting)
-            trackIdx = kGhostDropTrackAudioBelow;
-        // Video+audio file dragged below the audio stack: the video takes its
-        // normal target (bottom existing video), but the audio companion (and,
-        // for a multi-stream source, every stream) needs a brand-new track.
-        // Distinct sentinel so the handler routes the two halves separately.
-        // When NOT below, the sentinel is intentionally NOT set: the handler
-        // then reuses the cursor's audio track (multi-stream extends downward,
-        // creating tracks only as needed) — matching the ghost preview.
-        else if (!isAudioDrop && dropMediaHasAudio && audioGoesBelow && !ghostWasOnExisting)
-            trackIdx = kGhostDropTrackAudioCompanionBelow;
+    bool aboveTopVideo = false;
+    bool belowBottomAudio = false;
+    computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+    if (!ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
+        trackIdx = kGhostDropTrackVideoAbove;
 
-        // Check for source in/out points (from Source Monitor drag)
-        int64_t sourceIn = -1;
+    int64_t dur = static_cast<int64_t>(5.0 * 48000.0);
+    auto snapRes = m_snapEngine.snapPair(tick, tick + dur);
+    if (snapRes.didSnap) tick = snapRes.snappedTick;
+
+    QString name = QString::fromUtf8(
+        event->mimeData()->data("application/x-roundtable-adjustment"));
+    if (name.isEmpty()) name = QStringLiteral("Adjustment Layer");
+
+    emit adjustmentDropped(name, tick, trackIdx);
+    event->acceptProposedAction();
+}
+
+void TimelinePanel::sequenceDrop(QDropEvent* event, const GhostDropState& ghost)
+{
+    QPointF pos = event->position();
+    double px = pos.x() - headerWidth();
+    int64_t tick = m_layoutEngine.pixelXToTime(px);
+    if (tick < 0) tick = 0;
+    size_t trackIdx = hitTestTrack(pos.y());
+    bool aboveTopVideo = false;
+    bool belowBottomAudio = false;
+    computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+    if (!ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
+        trackIdx = kGhostDropTrackVideoAbove;
+
+    bool ok = false;
+    size_t seqIndex = event->mimeData()->data("application/x-roundtable-sequence")
+                          .toULongLong(&ok);
+
+    if (ok) {
+        // Read source in/out if present (from Source Monitor drag-out)
+        int64_t sourceIn  = -1;
         int64_t sourceOut = -1;
         if (event->mimeData()->hasFormat("application/x-roundtable-source-in"))
             sourceIn = event->mimeData()->data("application/x-roundtable-source-in").toLongLong();
         if (event->mimeData()->hasFormat("application/x-roundtable-source-out"))
             sourceOut = event->mimeData()->data("application/x-roundtable-source-out").toLongLong();
 
-        int mediaDragMode = TimelinePanel::DragBoth;
+        // Snap
+        int64_t dropDur = 0;
+        if (sourceIn >= 0 && sourceOut > sourceIn) {
+            dropDur = sourceOut - sourceIn;
+        } else if (event->mimeData()->hasFormat("application/x-roundtable-sequence-duration")) {
+            bool durOk = false;
+            dropDur = event->mimeData()->data("application/x-roundtable-sequence-duration")
+                          .toLongLong(&durOk);
+            if (!durOk) dropDur = 0;
+        }
+        if (dropDur > 0) {
+            auto snapRes = m_snapEngine.snapPair(tick, tick + dropDur);
+            if (snapRes.didSnap) tick = snapRes.snappedTick;
+        } else {
+            auto snapRes = m_snapEngine.snap(tick);
+            if (snapRes.didSnap) tick = snapRes.snappedTick;
+        }
+
+        int dragMode = TimelinePanel::DragBoth;
         if (event->mimeData()->hasFormat("application/x-roundtable-drag-mode")) {
             const QByteArray m = event->mimeData()->data(
                 "application/x-roundtable-drag-mode");
-            if (m == "video") mediaDragMode = TimelinePanel::DragVideoOnly;
-            else if (m == "audio") mediaDragMode = TimelinePanel::DragAudioOnly;
+            if (m == "video") dragMode = TimelinePanel::DragVideoOnly;
+            else if (m == "audio") dragMode = TimelinePanel::DragAudioOnly;
         }
 
-        // Emit mediaDropped for each handle, placing clips sequentially.
-        // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
-        if (m_commandStack && handleTokens.size() > 1)
-            m_commandStack->beginMacro("Import Files");
+        emit sequenceDropped(seqIndex, tick, trackIdx, sourceIn, sourceOut,
+                             dragMode);
+    }
+    event->acceptProposedAction();
+}
 
-        int64_t currentTick = tick;
-        for (int i = 0; i < handleTokens.size(); ++i) {
-            bool ok = false;
-            uint64_t handle = handleTokens[i].toULongLong(&ok);
-            if (!ok) continue;
+void TimelinePanel::mediaDrop(QDropEvent* event, const GhostDropState& ghost)
+{
+    QPointF pos = event->position();
+    double px = pos.x() - headerWidth();
+    int64_t tick = m_layoutEngine.pixelXToTime(px);
+    if (tick < 0) tick = 0;
+    size_t trackIdx = hitTestTrack(pos.y());
 
-            // Get file path from URLs (one per item, in order)
-            QString filePath;
-            if (i < urls.size())
-                filePath = urls[i].toLocalFile();
-            else if (!urls.isEmpty())
-                filePath = urls.first().toLocalFile();
+    // Parse all media handles (comma-separated for multi-item drag)
+    QByteArray mediaData = event->mimeData()->data("application/x-roundtable-media");
+    QList<QByteArray> handleTokens = mediaData.split(',');
+    QList<QUrl> urls = event->mimeData()->urls();
 
-            // Skip only if we have neither a valid handle nor a file path.
-            // Images may have handle==0 but a valid URL — allow them through
-            // so they resolve via the file-path fallback below.
-            if (handle == 0 && filePath.isEmpty()) continue;
+    // Determine audio/video type from first valid handle for ghost-zone routing
+    bool isAudioDrop = false;
+    bool dropMediaHasAudio = false;
+    if (!handleTokens.isEmpty()) {
+        bool firstOk = false;
+        uint64_t firstHandle = handleTokens.first().toULongLong(&firstOk);
+        QString firstPath;
+        if (!urls.isEmpty())
+            firstPath = urls.first().toLocalFile();
+        // Resolve media info the SAME way the ghost preview does: open() the
+        // path so a file whose stream info was cached stale (e.g. a
+        // re-rendered "_H264" that gained an audio track) self-heals.  Using
+        // getInfo(handle) alone left dropMediaHasAudio=false even when the
+        // ghost showed an audio lane — silently dropping the audio companion
+        // and its below-the-stack new track (the single-track drop bug).
+        bool resolved = false;
+        if (m_mediaPool && !firstPath.isEmpty()) {
+            uint64_t h = m_mediaPool->open(firstPath.toStdString());
+            if (h != 0) {
+                if (const auto* info = m_mediaPool->getInfo(h)) {
+                    isAudioDrop = (info->videoStreamIndex < 0);
+                    dropMediaHasAudio = info->hasAudio;
+                    resolved = true;
+                }
+                m_mediaPool->release(h);
+            }
+        }
+        if (!resolved && firstOk && firstHandle != 0 && m_mediaPool) {
+            if (const auto* info = m_mediaPool->getInfo(firstHandle)) {
+                isAudioDrop = (info->videoStreamIndex < 0);
+                dropMediaHasAudio = info->hasAudio;
+            }
+        }
+        if (!isAudioDrop && !firstPath.isEmpty())
+            isAudioDrop = isAudioFileSuffix(firstPath);
+    }
+    // Source-monitor "drag audio only" → route to an audio track even
+    // for video media (the handler creates just an AudioClip).
+    if (event->mimeData()->hasFormat("application/x-roundtable-drag-mode")
+        && event->mimeData()->data("application/x-roundtable-drag-mode") == "audio")
+        isAudioDrop = true;
+    // Video-only drag forces no companion audio.
+    const bool forceVideoOnly =
+        event->mimeData()->hasFormat("application/x-roundtable-drag-mode")
+        && event->mimeData()->data("application/x-roundtable-drag-mode") == "video";
+    if (forceVideoOnly) dropMediaHasAudio = false;
 
-            // Compute duration for this clip
-            int64_t clipDur = 0;
-            if (sourceIn >= 0 && sourceOut > sourceIn) {
-                clipDur = sourceOut - sourceIn;
-            } else if (m_mediaPool && handle != 0) {
-                const auto* info = m_mediaPool->getInfo(handle);
+    bool aboveTopVideo = false;
+    bool belowBottomAudio = false;
+    computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+
+    // The audio routing is driven by the anchor dragMove already resolved
+    // for this drag (m_ghostDropAudioAnchor) — that guarantees the drop
+    // lands exactly where the ghost previewed it.  The coarse below-zone
+    // geometry is only a fallback for the rare drop with no preceding
+    // dragMove.  Anchor points PAST the last existing audio track ⇒ the
+    // user dragged into new-track space ⇒ create a fresh track block.
+    const size_t audioAnchor = m_ghostDropAudioAnchor;
+    const bool haveAnchor = (audioAnchor != SIZE_MAX);
+    const bool anchorExisting =
+        haveAnchor && m_timeline && audioAnchor < m_timeline->trackCount()
+        && m_timeline->track(audioAnchor)->type() == TrackType::Audio
+        && !m_timeline->track(audioAnchor)->isDivider();
+    const bool audioGoesBelow =
+        haveAnchor ? !anchorExisting
+                   : ((ghost.wasVisible && !ghost.wasAbove) || belowBottomAudio);
+
+    if (!isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
+        trackIdx = kGhostDropTrackVideoAbove;
+    else if (isAudioDrop && audioGoesBelow && !ghost.wasOnExisting)
+        trackIdx = kGhostDropTrackAudioBelow;
+    // Video+audio file dragged below the audio stack: the video takes its
+    // normal target (bottom existing video), but the audio companion (and,
+    // for a multi-stream source, every stream) needs a brand-new track.
+    // Distinct sentinel so the handler routes the two halves separately.
+    // When NOT below, the sentinel is intentionally NOT set: the handler
+    // then reuses the cursor's audio track (multi-stream extends downward,
+    // creating tracks only as needed) — matching the ghost preview.
+    else if (!isAudioDrop && dropMediaHasAudio && audioGoesBelow && !ghost.wasOnExisting)
+        trackIdx = kGhostDropTrackAudioCompanionBelow;
+
+    // Check for source in/out points (from Source Monitor drag)
+    int64_t sourceIn = -1;
+    int64_t sourceOut = -1;
+    if (event->mimeData()->hasFormat("application/x-roundtable-source-in"))
+        sourceIn = event->mimeData()->data("application/x-roundtable-source-in").toLongLong();
+    if (event->mimeData()->hasFormat("application/x-roundtable-source-out"))
+        sourceOut = event->mimeData()->data("application/x-roundtable-source-out").toLongLong();
+
+    int mediaDragMode = TimelinePanel::DragBoth;
+    if (event->mimeData()->hasFormat("application/x-roundtable-drag-mode")) {
+        const QByteArray m = event->mimeData()->data(
+            "application/x-roundtable-drag-mode");
+        if (m == "video") mediaDragMode = TimelinePanel::DragVideoOnly;
+        else if (m == "audio") mediaDragMode = TimelinePanel::DragAudioOnly;
+    }
+
+    // Emit mediaDropped for each handle, placing clips sequentially.
+    // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
+    if (m_commandStack && handleTokens.size() > 1)
+        m_commandStack->beginMacro("Import Files");
+
+    int64_t currentTick = tick;
+    for (int i = 0; i < handleTokens.size(); ++i) {
+        bool ok = false;
+        uint64_t handle = handleTokens[i].toULongLong(&ok);
+        if (!ok) continue;
+
+        // Get file path from URLs (one per item, in order)
+        QString filePath;
+        if (i < urls.size())
+            filePath = urls[i].toLocalFile();
+        else if (!urls.isEmpty())
+            filePath = urls.first().toLocalFile();
+
+        // Skip only if we have neither a valid handle nor a file path.
+        // Images may have handle==0 but a valid URL — allow them through
+        // so they resolve via the file-path fallback below.
+        if (handle == 0 && filePath.isEmpty()) continue;
+
+        // Compute duration for this clip
+        int64_t clipDur = 0;
+        if (sourceIn >= 0 && sourceOut > sourceIn) {
+            clipDur = sourceOut - sourceIn;
+        } else if (m_mediaPool && handle != 0) {
+            const auto* info = m_mediaPool->getInfo(handle);
+            if (info && info->duration > 0.0)
+                clipDur = static_cast<int64_t>(info->duration * 48000.0);
+        }
+        // Resolve via file path if handle had no info (covers handle==0)
+        if (clipDur <= 0 && m_mediaPool && !filePath.isEmpty()) {
+            auto h = m_mediaPool->open(filePath.toStdString());
+            if (h != 0) {
+                const auto* info = m_mediaPool->getInfo(h);
                 if (info && info->duration > 0.0)
                     clipDur = static_cast<int64_t>(info->duration * 48000.0);
+                // Promote handle from 0 to the newly opened handle so the
+                // downstream handler can use it for metadata lookup.
+                if (handle == 0) handle = h;
             }
-            // Resolve via file path if handle had no info (covers handle==0)
-            if (clipDur <= 0 && m_mediaPool && !filePath.isEmpty()) {
-                auto h = m_mediaPool->open(filePath.toStdString());
-                if (h != 0) {
-                    const auto* info = m_mediaPool->getInfo(h);
-                    if (info && info->duration > 0.0)
-                        clipDur = static_cast<int64_t>(info->duration * 48000.0);
-                    // Promote handle from 0 to the newly opened handle so the
-                    // downstream handler can use it for metadata lookup.
-                    if (handle == 0) handle = h;
-                }
-            }
+        }
 
-            // Snap this clip's position
-            int64_t snapTick = currentTick;
-            if (clipDur > 0) {
-                auto snapRes = m_snapEngine.snapPair(snapTick, snapTick + clipDur);
-                if (snapRes.didSnap) snapTick = snapRes.snappedTick;
-            } else {
-                auto snapRes = m_snapEngine.snap(snapTick);
-                if (snapRes.didSnap) snapTick = snapRes.snappedTick;
-            }
+        // Snap this clip's position
+        int64_t snapTick = currentTick;
+        if (clipDur > 0) {
+            auto snapRes = m_snapEngine.snapPair(snapTick, snapTick + clipDur);
+            if (snapRes.didSnap) snapTick = snapRes.snappedTick;
+        } else {
+            auto snapRes = m_snapEngine.snap(snapTick);
+            if (snapRes.didSnap) snapTick = snapRes.snappedTick;
+        }
 
-            if (!filePath.isEmpty()) {
-                if (sourceIn >= 0 && sourceOut > sourceIn)
-                    emit mediaDroppedWithRegion(filePath, handle, snapTick, trackIdx,
-                                                sourceIn, sourceOut, mediaDragMode);
-                else
-                    emit mediaDropped(filePath, handle, snapTick, trackIdx,
-                                      mediaDragMode);
-            }
-
-            // Ghost-sentinel rewrite: the first emit triggered the handler
-            // to CREATE a new track. Subsequent emits must target THAT same
-            // new track by index, otherwise each handle would spawn its own
-            // fresh track (Premiere drops the whole group onto one new row).
-            // The handler creates the video-above track as the topmost REAL
-            // video track (just below the pinned caption track, if any) and
-            // audio at the end.
-            if (m_timeline) {
-                if (trackIdx == kGhostDropTrackVideoAbove) {
-                    trackIdx = 0;
-                    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                        Track* tr = m_timeline->track(ti);
-                        if (tr && tr->type() == TrackType::Video &&
-                            !tr->isDivider() && !tr->isCaptionTrack()) {
-                            trackIdx = ti;
-                            break;
-                        }
-                    }
-                } else if (trackIdx == kGhostDropTrackAudioBelow ||
-                           trackIdx == kGhostDropTrackAudioCompanionBelow) {
-                    trackIdx = m_timeline->trackCount() - 1;
-                }
-            }
-
-            // Advance tick for next clip (sequential placement like Premiere).
-            // Use 5-second default for stills/images/unknown media with 0 duration.
-            if (clipDur > 0)
-                currentTick = snapTick + clipDur;
+        if (!filePath.isEmpty()) {
+            if (sourceIn >= 0 && sourceOut > sourceIn)
+                emit mediaDroppedWithRegion(filePath, handle, snapTick, trackIdx,
+                                            sourceIn, sourceOut, mediaDragMode);
             else
-                currentTick = snapTick + static_cast<int64_t>(5.0 * 48000.0);
+                emit mediaDropped(filePath, handle, snapTick, trackIdx,
+                                  mediaDragMode);
         }
 
-        if (m_commandStack && handleTokens.size() > 1)
-            m_commandStack->endMacro();
+        // Ghost-sentinel rewrite: the first emit triggered the handler
+        // to CREATE a new track. Subsequent emits must target THAT same
+        // new track by index, otherwise each handle would spawn its own
+        // fresh track (Premiere drops the whole group onto one new row).
+        // The handler creates the video-above track as the topmost REAL
+        // video track (just below the pinned caption track, if any) and
+        // audio at the end.
+        if (m_timeline) {
+            if (trackIdx == kGhostDropTrackVideoAbove) {
+                trackIdx = 0;
+                for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+                    Track* tr = m_timeline->track(ti);
+                    if (tr && tr->type() == TrackType::Video &&
+                        !tr->isDivider() && !tr->isCaptionTrack()) {
+                        trackIdx = ti;
+                        break;
+                    }
+                }
+            } else if (trackIdx == kGhostDropTrackAudioBelow ||
+                       trackIdx == kGhostDropTrackAudioCompanionBelow) {
+                trackIdx = m_timeline->trackCount() - 1;
+            }
+        }
 
-        event->acceptProposedAction();
-        return;
+        // Advance tick for next clip (sequential placement like Premiere).
+        // Use 5-second default for stills/images/unknown media with 0 duration.
+        if (clipDur > 0)
+            currentTick = snapTick + clipDur;
+        else
+            currentTick = snapTick + static_cast<int64_t>(5.0 * 48000.0);
     }
 
-    // ── External file drop (from Windows Explorer) ───────────────────────
-    if (event->mimeData()->hasUrls() &&
-        !event->mimeData()->hasFormat("application/x-roundtable-media") &&
-        !qobject_cast<QTreeWidget*>(event->source())) {
-        QPointF pos = event->position();
-        double px = pos.x() - headerWidth();
-        int64_t tick = m_layoutEngine.pixelXToTime(px);
-        if (tick < 0) tick = 0;
-        size_t trackIdx = hitTestTrack(pos.y());
+    if (m_commandStack && handleTokens.size() > 1)
+        m_commandStack->endMacro();
 
-        bool isAudioDrop = false;
-        bool isDirectoryDrop = false;
-        QString firstPath;
-        if (!event->mimeData()->urls().isEmpty()) {
-            firstPath = event->mimeData()->urls().first().toLocalFile();
-            QFileInfo fi(firstPath);
-            isDirectoryDrop = fi.isDir();
-            if (!isDirectoryDrop) {
-                QString ext = fi.suffix().toLower();
-                static const QStringList audioExts = {
-                    "wav", "mp3", "ogg", "flac", "aac", "m4a", "wma", "aiff", "opus"
-                };
-                isAudioDrop = audioExts.contains(ext);
-            }
-        }
+    event->acceptProposedAction();
+}
 
-        // ── Character folder drop (from Explorer) ────────────────────
-        // If a folder is dropped, check if it looks like a character
-        // outfit folder (contains .skel files) and create a Spine clip
-        // defaulting to "default-idle".
-        static const QStringList kStanceSubdirs =
-            {"Default", "default", "aim", "cover"};
+void TimelinePanel::externalFileDrop(QDropEvent* event, const GhostDropState& ghost)
+{
+    QPointF pos = event->position();
+    double px = pos.x() - headerWidth();
+    int64_t tick = m_layoutEngine.pixelXToTime(px);
+    if (tick < 0) tick = 0;
+    size_t trackIdx = hitTestTrack(pos.y());
 
-        if (isDirectoryDrop && !firstPath.isEmpty()) {
-            QString skelFile;
-            QString outfitFolder = firstPath;
-
-            // Step 1: look for .skel directly in the dropped folder
-            {
-                QDir dir(firstPath);
-                for (const QString& f : dir.entryList({"*.skel"}, QDir::Files)) {
-                    skelFile = dir.absoluteFilePath(f);
-                    break;
-                }
-            }
-
-            // Step 2: look in known stance subdirectories
-            if (skelFile.isEmpty()) {
-                for (const QString& sd : kStanceSubdirs) {
-                    QDir subDir(firstPath + "/" + sd);
-                    for (const QString& f : subDir.entryList({"*.skel"}, QDir::Files)) {
-                        skelFile = subDir.absoluteFilePath(f);
-                        break;
-                    }
-                    if (!skelFile.isEmpty()) {
-                        outfitFolder = firstPath;
-                        break;
-                    }
-                }
-            }
-
-            // Step 3: check all child directories (user may have dragged
-            // the character root folder, e.g. assets/characters/2B/)
-            if (skelFile.isEmpty()) {
-                QDir parentDir(firstPath);
-                for (const QString& childDir : parentDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-                    QString childPath = firstPath + "/" + childDir;
-                    for (const QString& sd : kStanceSubdirs) {
-                        QDir subDir(childPath + "/" + sd);
-                        for (const QString& f : subDir.entryList({"*.skel"}, QDir::Files)) {
-                            skelFile = subDir.absoluteFilePath(f);
-                            break;
-                        }
-                        if (!skelFile.isEmpty()) {
-                            outfitFolder = childPath;
-                            break;
-                        }
-                    }
-                    if (!skelFile.isEmpty()) break;
-                    // Also check directly
-                    QDir child(childPath);
-                    for (const QString& f : child.entryList({"*.skel"}, QDir::Files)) {
-                        skelFile = child.absoluteFilePath(f);
-                        outfitFolder = childPath;
-                        break;
-                    }
-                    if (!skelFile.isEmpty()) break;
-                }
-            }
-
-            if (!skelFile.isEmpty()) {
-                // Extract character and outfit names from the folder path.
-                // Expected structure: .../assets/characters/<charName>/<outfit>/
-                // or .../assets/characters/<charName>/<outfit>/aim|cover
-                QFileInfo fi(outfitFolder);
-                QString folderName = fi.fileName();                 // outfit name (e.g. "default")
-                QString parentPath = fi.absolutePath();
-                QFileInfo parentFi(parentPath);
-                QString grandparentName = parentFi.fileName();      // should be "characters"
-                QString charFolderName = parentFi.absolutePath();
-                QFileInfo charFi(charFolderName);
-                QString charName = charFi.fileName();               // character name (e.g. "2B")
-
-                // Sanity check: folder should be under "characters"
-                if (grandparentName.toLower() == "characters" && !charFolderName.isEmpty()) {
-                    QString spineUri = QStringLiteral("spine:") + charFolderName
-                        + "|" + folderName + "|0|idle";
-                    spdlog::info("Character folder drop: {} -> {}",
-                                 firstPath.toStdString(), spineUri.toStdString());
-                    emit mediaDropped(spineUri, 0, tick, trackIdx);
-                    event->acceptProposedAction();
-                    return;
-                }
-            }
-
-            // If we couldn't parse it as a character folder, fall through
-            // to the normal external file handler which will just add it
-            // to the project bin (doing nothing for a directory).
-        }
-
-        bool aboveTopVideo = false;
-        bool belowBottomAudio = false;
-        computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
-        if (!isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
-            trackIdx = kGhostDropTrackVideoAbove;
-        else if (isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio))
-            trackIdx = kGhostDropTrackAudioBelow;
-
-        auto snapRes = m_snapEngine.snap(tick);
-        if (snapRes.didSnap) tick = snapRes.snappedTick;
-
-        // Place files sequentially (Premiere Pro-style), advancing tick
-        // by each file's duration so they don't stack on top of each other.
-        // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
-        const auto& dropUrls = event->mimeData()->urls();
-        if (m_commandStack && dropUrls.size() > 1)
-            m_commandStack->beginMacro("Import Files");
-
-        int64_t currentTick = tick;
-        for (const QUrl& url : dropUrls) {
-            QString localPath = url.toLocalFile();
-            if (localPath.isEmpty()) continue;
-
-            // Compute duration for sequential advance
-            int64_t advance = static_cast<int64_t>(5.0 * 48000.0); // 5-second default
-            if (m_mediaPool) {
-                auto h = m_mediaPool->open(localPath.toStdString());
-                if (h != 0) {
-                    const auto* info = m_mediaPool->getInfo(h);
-                    if (info && info->duration > 0.0)
-                        advance = static_cast<int64_t>(info->duration * 48000.0);
-                }
-            }
-
-            emit externalFileDropped(localPath, currentTick, trackIdx);
-            // Rewrite the sentinel to the just-created track's real index
-            // so subsequent files in the same drop go into the SAME new
-            // track instead of each spawning their own.
-            if (m_timeline) {
-                if (trackIdx == kGhostDropTrackVideoAbove) {
-                    trackIdx = 0;
-                } else if (trackIdx == kGhostDropTrackAudioBelow ||
-                           trackIdx == kGhostDropTrackAudioCompanionBelow) {
-                    trackIdx = m_timeline->trackCount() - 1;
-                }
-            }
-            currentTick += advance;
-        }
-
-        if (m_commandStack && dropUrls.size() > 1)
-            m_commandStack->endMacro();
-
-        event->acceptProposedAction();
-        return;
+    bool isAudioDrop = false;
+    bool isDirectoryDrop = false;
+    QString firstPath;
+    if (!event->mimeData()->urls().isEmpty()) {
+        firstPath = event->mimeData()->urls().first().toLocalFile();
+        isDirectoryDrop = QFileInfo(firstPath).isDir();
+        if (!isDirectoryDrop)
+            isAudioDrop = isAudioFileSuffix(firstPath);
     }
 
-    // ── Media drop fallback (QTreeWidget default drag) ──────────────────
+    // ── Character folder drop (from Explorer) ────────────────────
+    // If a folder is dropped, check if it looks like a character
+    // outfit folder (contains .skel files) and create a Spine clip
+    // defaulting to "default-idle". If it doesn't parse as one, fall
+    // through to the normal external file handler which will just add
+    // it to the project bin (doing nothing for a directory).
+    if (isDirectoryDrop && !firstPath.isEmpty()) {
+        const QString spineUri = characterSpineUriForFolder(firstPath);
+        if (!spineUri.isEmpty()) {
+            spdlog::info("Character folder drop: {} -> {}",
+                         firstPath.toStdString(), spineUri.toStdString());
+            emit mediaDropped(spineUri, 0, tick, trackIdx);
+            event->acceptProposedAction();
+            return;
+        }
+    }
+
+    bool aboveTopVideo = false;
+    bool belowBottomAudio = false;
+    computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
+    if (!isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
+        trackIdx = kGhostDropTrackVideoAbove;
+    else if (isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && !ghost.wasAbove) || belowBottomAudio))
+        trackIdx = kGhostDropTrackAudioBelow;
+
+    auto snapRes = m_snapEngine.snap(tick);
+    if (snapRes.didSnap) tick = snapRes.snappedTick;
+
+    // Place files sequentially (Premiere Pro-style), advancing tick
+    // by each file's duration so they don't stack on top of each other.
+    // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
+    const auto& dropUrls = event->mimeData()->urls();
+    if (m_commandStack && dropUrls.size() > 1)
+        m_commandStack->beginMacro("Import Files");
+
+    int64_t currentTick = tick;
+    for (const QUrl& url : dropUrls) {
+        QString localPath = url.toLocalFile();
+        if (localPath.isEmpty()) continue;
+
+        // Compute duration for sequential advance
+        int64_t advance = static_cast<int64_t>(5.0 * 48000.0); // 5-second default
+        if (m_mediaPool) {
+            auto h = m_mediaPool->open(localPath.toStdString());
+            if (h != 0) {
+                const auto* info = m_mediaPool->getInfo(h);
+                if (info && info->duration > 0.0)
+                    advance = static_cast<int64_t>(info->duration * 48000.0);
+            }
+        }
+
+        emit externalFileDropped(localPath, currentTick, trackIdx);
+        // Rewrite the sentinel to the just-created track's real index
+        // so subsequent files in the same drop go into the SAME new
+        // track instead of each spawning their own.
+        if (m_timeline) {
+            if (trackIdx == kGhostDropTrackVideoAbove) {
+                trackIdx = 0;
+            } else if (trackIdx == kGhostDropTrackAudioBelow ||
+                       trackIdx == kGhostDropTrackAudioCompanionBelow) {
+                trackIdx = m_timeline->trackCount() - 1;
+            }
+        }
+        currentTick += advance;
+    }
+
+    if (m_commandStack && dropUrls.size() > 1)
+        m_commandStack->endMacro();
+
+    event->acceptProposedAction();
+}
+
+void TimelinePanel::treeWidgetDrop(QDropEvent* event, const GhostDropState& ghost)
+{
     auto* srcTree = qobject_cast<QTreeWidget*>(event->source());
     if (!srcTree) { event->ignore(); return; }
 
@@ -738,7 +787,7 @@ void TimelinePanel::dropEvent(QDropEvent* event)
         if (item->data(0, Qt::UserRole + 3).toBool()) {
             size_t seqIndex = item->data(0, Qt::UserRole + 4).toULongLong();
             size_t seqTrack = trackIdx;
-            if (!ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
+            if (!ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
                 seqTrack = kGhostDropTrackVideoAbove;
             emit sequenceDropped(seqIndex, currentTick, seqTrack);
             // Advance by 5-second default for sequences (duration unknown here)
@@ -748,15 +797,11 @@ void TimelinePanel::dropEvent(QDropEvent* event)
 
         QString filePath = item->data(0, Qt::UserRole).toString();
         uint64_t handle  = item->data(0, Qt::UserRole + 1).toULongLong();
-        if ((ghostWasVisible || aboveTopVideo || belowBottomAudio) && !filePath.isEmpty()) {
-            QString ext = QFileInfo(filePath).suffix().toLower();
-            static const QStringList audioExts = {
-                "wav", "mp3", "ogg", "flac", "aac", "m4a", "wma", "aiff", "opus"
-            };
-            const bool isAudioDrop = audioExts.contains(ext);
-            if (!isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && ghostWasAbove) || aboveTopVideo))
+        if ((ghost.wasVisible || aboveTopVideo || belowBottomAudio) && !filePath.isEmpty()) {
+            const bool isAudioDrop = isAudioFileSuffix(filePath);
+            if (!isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
                 trackIdx = kGhostDropTrackVideoAbove;
-            else if (isAudioDrop && !ghostWasOnExisting && ((ghostWasVisible && !ghostWasAbove) || belowBottomAudio))
+            else if (isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && !ghost.wasAbove) || belowBottomAudio))
                 trackIdx = kGhostDropTrackAudioBelow;
         }
         if (!filePath.isEmpty()) {

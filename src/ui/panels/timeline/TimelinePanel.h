@@ -468,6 +468,26 @@ private:
     void sequenceDragMove(QDragMoveEvent* event);
     void mediaDragMove(QDragMoveEvent* event);
 
+    // dropEvent, one handler per dropped payload type (TimelinePanelDrop.cpp).
+    // GhostDropState is the ghost-track state dragMove left behind, captured
+    // before dropEvent resets it.
+    struct GhostDropState {
+        bool wasVisible;
+        bool wasAbove;
+        bool wasOnExisting;
+    };
+    void computeGhostDropZones(const QPointF& pos, bool& aboveTopVideo,
+                               bool& belowBottomAudio) const;
+    void transitionDrop(QDropEvent* event);
+    void effectDrop(QDropEvent* event);
+    void glitchPresetDrop(QDropEvent* event);
+    void audioFxDrop(QDropEvent* event);
+    void adjustmentDrop(QDropEvent* event, const GhostDropState& ghost);
+    void sequenceDrop(QDropEvent* event, const GhostDropState& ghost);
+    void mediaDrop(QDropEvent* event, const GhostDropState& ghost);
+    void externalFileDrop(QDropEvent* event, const GhostDropState& ghost);
+    void treeWidgetDrop(QDropEvent* event, const GhostDropState& ghost);
+
     Timeline*             m_timeline{nullptr};
     TimelineLayoutEngine  m_layoutEngine;
     CommandStack*         m_commandStack{nullptr};
