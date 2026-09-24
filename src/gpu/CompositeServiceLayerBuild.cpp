@@ -6,7 +6,7 @@
 #include "CompositeService.h"
 #include "CompositeServiceLayerBuild.h"
 #include "ClipRenderers.h"
-#include "CompositeServiceBlend.h"
+#include "effects/CpuComposite.h"
 #include "PathUtils.h"
 
 #include "cache/FrameCache.h"

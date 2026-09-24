@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include "CompositeServiceBlend.h"
+#include "effects/CpuComposite.h"
 #include "timeline/OpacityMask.h"
 
 #include <cmath>

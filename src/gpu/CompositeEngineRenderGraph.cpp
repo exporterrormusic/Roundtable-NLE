@@ -13,7 +13,7 @@
 #include "cache/CachePolicy.h"
 #include "StagingRing.h"
 #include "CompositeServiceLayerBuild.h"  // rt::LayerInfo
-#include "CompositeServiceBlend.h"       // rasterizeMasks
+#include "effects/CpuComposite.h"       // rasterizeMasks
 #include "Compositor.h"
 #include "diag/FrameSignatureLog.h"
 #include "GpuContext.h"

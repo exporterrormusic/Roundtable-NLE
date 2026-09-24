@@ -63,6 +63,7 @@ struct VkDescriptorImageInfo;
 #include "SpineRendererCacheKey.h"
 #include "cache/FrameCache.h"
 #include "playback/EngineContracts.h"
+#include "playback/GpuResidentDecode.h"
 #include "playback/MediaSourceService.h"  // ResolutionTier
 #include "decode/VideoDecoder.h"          // 4.2 passthrough decoder (header is libav-free)
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -156,11 +157,12 @@ public:
     //     2026-05-21; compositor uploads as before.  Used to diagnose
     //     regressions or to compare cold-start latency against the
     //     new path.
+    // The flag itself lives in core (playback/GpuResidentDecode.h).
     static void setGpuResidentDecode(bool on) noexcept {
-        s_gpuResidentDecode.store(on, std::memory_order_release);
+        GpuResidentDecode::setEnabled(on);
     }
     [[nodiscard]] static bool gpuResidentDecodeEnabled() noexcept {
-        return s_gpuResidentDecode.load(std::memory_order_acquire);
+        return GpuResidentDecode::enabled();
     }
 
 private:
@@ -181,7 +183,6 @@ private:
     };
 
     static std::atomic<bool> s_modalDialogActive;
-    static std::atomic<bool> s_gpuResidentDecode;
 
 public:
     // Non-copyable

@@ -12,7 +12,7 @@
 #include "CompositeService.h"
 #include "PathUtils.h"
 #include "ClipRenderers.h"
-#include "CompositeServiceBlend.h"
+#include "effects/CpuComposite.h"
 #include "CompositeServiceLayerBuild.h"
 
 // Media / timeline

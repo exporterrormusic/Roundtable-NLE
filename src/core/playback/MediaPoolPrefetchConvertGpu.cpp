@@ -10,7 +10,7 @@
  * Also defines WorkerGpuState's destructor (the only spot that needs
  * vkDestroySemaphore).
  *
- * Gated by CompositeService::gpuResidentDecodeEnabled() at the call
+ * Gated by GpuResidentDecode::enabled() at the call
  * site (MediaPoolPrefetchDecode.cpp); this file does not check the
  * flag itself — callers that reach in are committing to the GPU path.
  */
@@ -21,8 +21,8 @@
 #include "cache/PrefetchTexturePool.h"
 #include "WorkerBreadcrumb.h"
 
-#include "CompositeService.h"     // feature flag (gpuResidentDecodeEnabled)
 #include "GpuContext.h"
+#include "playback/GpuResidentDecode.h"
 #include "GpuScheduler.h"
 #include "Nv12Converter.h"
 #include "cuda/CudaVulkanInterop.h"
@@ -1247,7 +1247,7 @@ std::shared_ptr<CachedFrame> tryConvertDecodedToCacheGpu(
     WorkerGpuState*       wgs)
 {
     if (!wgs || !wgs->ready())                          return nullptr;
-    if (!CompositeService::gpuResidentDecodeEnabled())  return nullptr;
+    if (!GpuResidentDecode::enabled())  return nullptr;
     return pool.convertDecodedToCacheGpu(state, task, decoded, frameNumber, *wgs);
 }
 

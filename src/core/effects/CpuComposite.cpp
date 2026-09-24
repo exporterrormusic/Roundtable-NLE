@@ -1,12 +1,11 @@
 /*
- * CompositeServiceBlend.cpp - CPU pixel blending helpers.
- * Extracted from CompositeServiceFrame.cpp.
+ * CpuComposite.cpp - CPU pixel blending helpers.
  *
  * Contains blitLayerWithTransform (affine transform + alpha blend)
  * and rasterizeMasks (CPU mask rasterizer for opacity masks).
  */
 
-#include "CompositeServiceBlend.h"
+#include "effects/CpuComposite.h"
 #include "timeline/OpacityMask.h"
 
 #include <algorithm>

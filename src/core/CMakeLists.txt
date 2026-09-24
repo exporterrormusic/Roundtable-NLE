@@ -127,6 +127,7 @@ add_library(roundtable_core STATIC
 
     # Effects
     effects/EffectStack.cpp
+    effects/CpuComposite.cpp
     effects/ColorCorrect.cpp
     effects/ChromaKey.cpp
     effects/Transform2D.cpp
@@ -158,8 +159,18 @@ target_include_directories(roundtable_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # PCH — enabled May 3, 2026. Re-testing LNK2011 with current MSVC/CMake.
 target_precompile_headers(roundtable_core PRIVATE pch_core.h)
 
-# GPU include path for SpinePrerenderer (uses GPU SpineRenderer for offscreen rendering)
-# No link dependency — symbols resolve at final executable link time since both are static libs.
+# KNOWN CYCLE: core -> gpu.  roundtable_gpu links roundtable_core, but these
+# core files also call into roundtable_gpu:
+#   playback/MediaPoolPrefetchConvertGpu.cpp  GPU-resident decode (NV12 convert,
+#                                             texture upload) — the bulk of it
+#   playback/MediaPool*.cpp, FrameProducer.cpp GpuContext / texture-cache queries
+#   cache/CachePolicy.cpp, PrefetchTexturePool.cpp  GPU texture pool
+#   spine/SpinePrerenderer.cpp                offscreen SpineRenderer
+# There is deliberately no target_link_libraries(roundtable_core roundtable_gpu):
+# the symbols resolve when the exe (or a test) links both static libraries.
+# Consequence: anything linking roundtable_core that reaches those files must
+# also link roundtable_gpu (see tests/CMakeLists.txt).  Pure-CPU code belongs
+# here without GPU includes (e.g. effects/CpuComposite, GpuResidentDecode.h).
 target_include_directories(roundtable_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../gpu)
 
 # WIN32_LEAN_AND_MEAN for our code only (not applied globally to avoid breaking PortAudio)

@@ -70,8 +70,8 @@ std::atomic<bool> CompositeService::s_modalDialogActive{false};
 // UPGRADE_PLAN: GPU-resident decode + CUDA↔Vulkan zero-copy default-on.
 // Set ROUNDTABLE_GPU_RESIDENT_DECODE=0 (or "false"/"off"/"no") in the
 // environment to force the legacy CPU upload path — the env var is
-// now a kill switch, not an opt-in.
-std::atomic<bool> CompositeService::s_gpuResidentDecode{true};
+// now a kill switch, not an opt-in.  The flag lives in
+// playback/GpuResidentDecode.h (core) so the decode path can read it.
 
 namespace {
 // Env-var kill switch.  Read once at first CompositeService construction.

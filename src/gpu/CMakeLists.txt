@@ -51,7 +51,6 @@ add_library(roundtable_gpu STATIC
     CompositeServiceFrame.cpp
     CompositeService16f.cpp
     CompositeServiceFramePrewarm.cpp
-    CompositeServiceBlend.cpp
     CompositeServiceSpine.cpp
     CompositeServiceAdjustmentLayer.cpp
     CompositeServiceLayerBuild.cpp

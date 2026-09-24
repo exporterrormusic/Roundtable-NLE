@@ -1,6 +1,7 @@
 /*
- * CompositeServiceBlend.h - CPU pixel blending declarations.
- * Extracted from CompositeServiceFrame.cpp.
+ * CpuComposite.h - CPU pixel blending and mask rasterization.
+ * Pure CPU code (no Vulkan) used by the GPU compositor's CPU paths and by
+ * the mask engine; lives in core so it can be built and tested alone.
  */
 #pragma once
 
