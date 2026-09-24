@@ -451,6 +451,15 @@ private:
     void pressWithZoomTool(QMouseEvent* event, QPointF pos);
     void pressWithTextTool(QMouseEvent* event, QPointF pos);
 
+    // mouseMoveEvent, one handler per long-running drag mode
+    // (TimelinePanelMouseDragMove.cpp).
+    void continueClipMoveDrag(QPointF pos, int64_t tickDelta);
+    void continueClipTrimHeadDrag(QPointF pos, int64_t tickDelta);
+    void continueClipTrimTailDrag(QPointF pos, int64_t tickDelta);
+    void continueRollingEditDrag(int64_t tickDelta);
+    void continuePendingClipClick(QPointF pos);
+    void continueTransitionTrimDrag(QPointF pos);
+
     Timeline*             m_timeline{nullptr};
     TimelineLayoutEngine  m_layoutEngine;
     CommandStack*         m_commandStack{nullptr};
