@@ -12,9 +12,9 @@
  * through this context.
  *
  * Lifecycle:
- *   1. App::init() calls GpuContext::instance().init()
- *   2. Subsystems grab handles via GpuContext::instance()
- *   3. App destructor calls GpuContext::instance().shutdown()
+ *   1. App::init() calls GpuContext::get().init()
+ *   2. Subsystems grab handles via GpuContext::get()
+ *   3. App destructor calls GpuContext::get().shutdown()
  *
  * Thread safety: init/shutdown must be called from the main thread.
  * After init, read-only accessors are safe from any thread.
