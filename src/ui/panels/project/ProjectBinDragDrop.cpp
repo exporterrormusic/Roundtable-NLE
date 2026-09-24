@@ -7,6 +7,7 @@
 #include "panels/project/ProjectBinInternal.h"
 #include "PathUtils.h"
 #include "widgets/MediaDragTreeWidget.h"
+#include "widgets/ThumbnailGrid.h"
 #include "Theme.h"
 #include "project/Project.h"
 #include "playback/MediaPool.h"
@@ -22,6 +23,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <unordered_map>
+
 namespace rt {
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -31,19 +34,46 @@ namespace rt {
 ProjectBin::BinSnapshot ProjectBin::captureBinSnapshot()
 {
     BinSnapshot s;
-    s.files = allFiles();
+    s.items = exportBinItems();
     s.folders = binFolderState();
     return s;
 }
 
 void ProjectBin::applyBinSnapshot(const BinSnapshot& s)
 {
+    // Media already open in the bin keeps its handle across the rebuild.
+    // Anything else is restored with handle 0 and opened lazily, like
+    // restoreBinModel(): re-opening on the UI thread froze undo for as long
+    // as FFmpeg's probe took (11 s for one broadcast .mxf).
+    std::unordered_map<std::string, uint64_t> openHandles;
+    for (const auto& item : m_grid->items())
+        if (!item.isFolder && item.mediaHandle != 0)
+            openHandles.emplace(pathToUtf8(item.filePath), item.mediaHandle);
+
     m_dropHighlightItem = nullptr;  // tree will be cleared
     clearAll();
     m_listWidget->clear();
 
-    if (!s.files.empty()) {
-        addFiles(s.files);
+    if (!s.items.empty()) {
+        const bool restoreFocusedBin = m_listView && m_listViewFocused
+            && !m_iconBinPath.isEmpty();
+        for (const auto& bi : s.items) {
+            if (bi.path.empty()) continue;
+            uint64_t handle = 0;
+            if (!projectBinIsAdjustmentPath(bi.path)) {
+                auto it = openHandles.find(pathToUtf8(bi.path));
+                if (it != openHandles.end()) handle = it->second;
+            }
+            m_grid->addRestoredItem(bi.path, MediaType::Unknown, handle, bi.id,
+                                    QString::fromStdString(bi.displayName),
+                                    bi.labelColor);
+        }
+        m_grid->loadVisibleThumbnails();
+        syncListView();
+        if (restoreFocusedBin)
+            focusListViewOnBin();
+        if (!m_listView)
+            syncIconView();
     } else {
         syncListView();
         if (!m_listView)

@@ -341,8 +341,11 @@ private:
 
     // ── Drag-and-drop (extracted to ProjectBinDragDrop.cpp) ─────────────
 
+    /// Undo state for bin edits. Items keep their identity (id, display
+    /// name, label colour) so a restore re-creates them exactly instead of
+    /// re-importing by path.
     struct BinSnapshot {
-        std::vector<std::filesystem::path> files;
+        std::vector<Project::BinItem> items;
         std::vector<BinFolderState> folders;
     };
 

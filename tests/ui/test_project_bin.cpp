@@ -9,6 +9,9 @@
 #include "decode/ThumbnailGenerator.h"
 #include "widgets/ThumbnailGrid.h"
 #include "panels/project/ProjectBin.h"
+#include "widgets/MediaDragTreeWidget.h"
+#include "command/CommandStack.h"
+#include "project/Project.h"
 
 #include <QApplication>
 #include <QSignalSpy>
@@ -700,6 +703,45 @@ TEST(ProjectBin, RemoveItemByIdTargetsSelectedDuplicate)
     ASSERT_EQ(after.size(), 1u);
     EXPECT_EQ(after.front().id, before[0].id);
     EXPECT_FALSE(bin.removeItemById(before[1].id));
+}
+
+// Undo of a snapshot-based bin edit must restore items exactly (same id,
+// name, label) without re-importing them by path: re-import re-opened every
+// file on the UI thread (an 11 s FFmpeg probe for one .mxf).
+TEST(ProjectBin, UndoDeleteRestoresItemIdentity)
+{
+    rt::Project project;
+    rt::CommandStack stack;
+    rt::ProjectBin bin;
+    bin.setProject(&project);
+    bin.setCommandStack(&stack);
+
+    std::vector<rt::Project::BinItem> items(3);
+    items[0] = {101, fs::path("a.mp4"), "Renamed A", 0xFF3366CC};
+    items[1] = {102, fs::path("b.png"), "Renamed B", 0xFF888888};
+    items[2] = {103, fs::path("a.mp4"), "Duplicate A", 0xFFCC3333};
+    bin.restoreBinModel(items, {});
+    ASSERT_EQ(bin.itemCount(), 3);
+
+    auto* tree = bin.findChild<rt::MediaDragTreeWidget*>();
+    ASSERT_NE(tree, nullptr);
+    tree->selectAll();
+    QTest::keyClick(tree, Qt::Key_Delete);
+    ASSERT_EQ(bin.itemCount(), 0);
+    ASSERT_TRUE(stack.canUndo());
+
+    stack.undo();
+    const auto restored = bin.exportBinItems();
+    ASSERT_EQ(restored.size(), items.size());
+    for (size_t i = 0; i < items.size(); ++i) {
+        EXPECT_EQ(restored[i].id, items[i].id);
+        EXPECT_EQ(restored[i].path, items[i].path);
+        EXPECT_EQ(restored[i].displayName, items[i].displayName);
+        EXPECT_EQ(restored[i].labelColor, items[i].labelColor);
+    }
+
+    stack.redo();
+    EXPECT_EQ(bin.itemCount(), 0);
 }
 
 TEST(ProjectBin, FilesOfType)

@@ -126,15 +126,13 @@ std::vector<BinFolderState> ProjectBin::binFolderState() const
                     childPath += child->text(0);
                     visitBin(child, childPath);
                 } else {
-                    // Prefer the file path over the per-instance "@<id>" key
-                    // here: applyBinSnapshot() does clearAll()+addFiles(),
-                    // which assigns FRESH ids to rebuilt items, so an id-key
-                    // captured pre-rebuild can never match anything after.
-                    // The path round-trips through addFiles → syncListView
-                    // (which writes the path back to Qt::UserRole), so
-                    // reparentByKey()'s pathKey-fallback matches it cleanly.
-                    // Without this, undo of an Explorer import (and any
-                    // applyBinSnapshot-based undo) flattens every bin to root.
+                    // Prefer the file path over the per-instance "@<id>" key:
+                    // the path round-trips through syncListView (which writes
+                    // it back to Qt::UserRole), so reparentByKey()'s
+                    // pathKey-fallback matches it on any rebuild. Without
+                    // this, undo of an Explorer import (and any
+                    // applyBinSnapshot-based undo) flattened every bin to
+                    // root back when snapshots re-imported with fresh ids.
                     QString k = child->data(0, Qt::UserRole).toString();
                     if (k.isEmpty()) k = projectBinItemKey(child);
                     folder.childKeys.push_back(k.toStdString());
