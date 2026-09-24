@@ -440,6 +440,17 @@ private slots:
     void updateMinHeaderWidth();
 
 private:
+    // mousePressEvent, one handler per edit tool (TimelinePanelMouse.cpp).
+    // Each fully handles the press; the caller returns afterwards.
+    void pressWithRazorTool(QMouseEvent* event, QPointF pos);
+    void pressWithSelectionTool(QMouseEvent* event, QPointF pos);
+    void pressWithSlipTool(QMouseEvent* event, QPointF pos);
+    void pressWithSlideTool(QMouseEvent* event, QPointF pos);
+    void pressWithRollingTool(QMouseEvent* event, QPointF pos);
+    void pressWithRippleTool(QMouseEvent* event, QPointF pos);
+    void pressWithZoomTool(QMouseEvent* event, QPointF pos);
+    void pressWithTextTool(QMouseEvent* event, QPointF pos);
+
     Timeline*             m_timeline{nullptr};
     TimelineLayoutEngine  m_layoutEngine;
     CommandStack*         m_commandStack{nullptr};
