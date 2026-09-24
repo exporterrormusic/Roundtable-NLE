@@ -18,6 +18,7 @@
 #include "timeline/Marker.h"
 #include "timeline/Transition.h"
 #include "timeline/VideoClip.h"
+#include "AppPaths.h"
 #include "PathUtils.h"
 
 #include <fstream>
@@ -902,9 +903,9 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                 // PORTABILITY: Re-resolve absolutePath from relativePath
                 // when the saved absolutePath no longer exists (folder moved
                 // to a different machine/drive). The relative path is always
-                // relative to assets/, so resolve from CWD/assets/.
+                // relative to assets/, so resolve it against this install.
                 if (!a.absolutePath.empty() && !std::filesystem::exists(a.absolutePath)) {
-                    auto resolved = std::filesystem::current_path() / "assets" / a.path;
+                    auto resolved = AppPaths::assets() / a.path;
                     if (std::filesystem::exists(resolved)) {
                         a.absolutePath = std::filesystem::absolute(resolved);
                         spdlog::info("AssetDatabase: re-resolved {} → {}",

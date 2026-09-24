@@ -138,12 +138,10 @@ void BackgroundDownloadPanel::startPopulateGrid()
     m_batchQueue.sort();
     m_batchTotal = m_batchQueue.size();
 
-    // Build the full path prefix once. Resolve to an ABSOLUTE path: the
-    // relative "assets/NikkeBKG/" form only works when the process CWD
-    // happens to be the project root, which silently breaks the Source
-    // Monitor drop (MediaSourceService/MediaPool canonicalise paths and
-    // reject ones that don't resolve). The Backgrounds folder tab in
-    // LibraryPanel already stores fi.absoluteFilePath(); match that.
+    // Build the full path prefix once, as an ABSOLUTE path: the Source
+    // Monitor drop hands it to MediaSourceService/MediaPool, which
+    // canonicalise paths. The Backgrounds folder tab in LibraryPanel
+    // already stores fi.absoluteFilePath(); match that.
     const QString dirPath = QDir(QString::fromLatin1(kTargetDir)).absolutePath()
                             + QStringLiteral("/");
 

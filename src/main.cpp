@@ -1,6 +1,7 @@
 // ROUNDTABLE NLE — entry point
 
 #include <QApplication>
+#include "AppPaths.h"
 #include "PathUtils.h"
 #include <QGuiApplication>
 #include <QScreen>
@@ -89,40 +90,21 @@ int main(int argc, char* argv[])
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 
-    // ── Unified log root ──────────────────────────────────────────────
-    // All crash logs, minidumps, and spdlog output go to a single location:
-    //   logs/  (alongside the executable)
-    //
-    // Detection logic: walk up from argv[0]'s parent directory looking for
-    // CMakeLists.txt (dev build with build subdirectory).  If found, use
-    // the project root as the log root.  Otherwise use the exe's own
-    // directory (installed build — installer creates a logs/ folder).
-    // NEVER use %LOCALAPPDATA% — logs must be easy to find.
-    std::filesystem::path logRoot;
-    {
-        auto exeDir = std::filesystem::path(argv[0]).parent_path();
-        auto probe = exeDir;
-        bool foundProjectRoot = false;
-        for (int i = 0; i < 5; ++i) {
-            if (std::filesystem::exists(probe / "CMakeLists.txt")) {
-                logRoot = probe / "logs";
-                foundProjectRoot = true;
-                break;
-            }
-            auto parent = probe.parent_path();
-            if (parent == probe) break;
-            probe = parent;
-        }
-        if (!foundProjectRoot) {
-            // Installed build — logs go next to the exe.
-            logRoot = exeDir / "logs";
-        }
-    }
+    // ── Application root ──────────────────────────────────────────────
+    // assets/ and logs/ live under one root: the repo root in dev builds,
+    // the install folder otherwise (see AppPaths.h).  Make it the working
+    // directory so the relative "assets/..." paths stored in projects and
+    // presets resolve the same however the app was launched.
+    // NEVER put logs in %LOCALAPPDATA% — they must be easy to find.
+    const bool rootIsCurrent = rt::AppPaths::makeRootCurrentDirectory();
+    const std::filesystem::path logRoot = rt::AppPaths::root() / "logs";
     std::filesystem::create_directories(logRoot);
 
     // Crash handler — install with unified log root as crash directory
     rt::CrashHandler::install(logRoot);
     spdlog::info("Crash logs → {}", rt::pathToUtf8(logRoot));
+    spdlog::info("Application root → {}{}", rt::pathToUtf8(rt::AppPaths::root()),
+                 rootIsCurrent ? "" : " (could not make it the working directory)");
 
     // Deduplicate the crash log from previous sessions so it doesn't
     // balloon during crash loops (e.g., paint recursion or TDR storms).

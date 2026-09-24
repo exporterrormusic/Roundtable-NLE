@@ -7,6 +7,7 @@
  */
 
 #include "effects/Ots.h"
+#include "AppPaths.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
@@ -31,14 +32,9 @@ std::filesystem::path defaultsPathFor(EffectType type)
     const char* leaf = (type == EffectType::OtsLeft)  ? "OTS_LEFT.json"
                      : (type == EffectType::OtsIntro) ? "OTS_INTRO.json"
                                                       : "OTS_RIGHT.json";
-    // Walk up from the current working dir until we find "assets/".
-    fs::path d = fs::current_path();
-    for (int i = 0; i < 6; ++i) {
-        if (fs::is_directory(d / "assets" / "presets" / "effects"))
-            return d / "assets" / "presets" / "effects" / leaf;
-        if (!d.has_parent_path()) break;
-        d = d.parent_path();
-    }
+    const fs::path presets = AppPaths::assets() / "presets" / "effects";
+    if (fs::is_directory(presets))
+        return presets / leaf;
     // Fall back to user data directory (always writable)
 #ifdef _WIN32
     {

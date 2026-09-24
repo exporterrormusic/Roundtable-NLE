@@ -1,6 +1,9 @@
 # ─── Core Engine Library (no UI dependency) ──────────────────────────────────
 
 add_library(roundtable_core STATIC
+    # Application root (assets/, logs/) resolution
+    AppPaths.cpp
+
     # Project
     project/Project.cpp
     project/ProjectSerializer.cpp

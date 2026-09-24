@@ -11,6 +11,7 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "PathUtils.h"
+#include "panels/characters/VideoCharacterPaths.h"
 #include "widgets/ScrubbySpinBox.h"
 
 #include "timeline/Clip.h"
@@ -65,30 +66,11 @@ void PropertiesPanel::applySpineOutfit()
         auto oldMute = vc->videoMutePath();
         auto oldTalk = vc->videoTalkPath();
         auto oldMedia = vc->mediaPath();
-        // Compute new paths based on the new outfit
-        namespace fs = std::filesystem;
-        std::string animName = vc->animationName().empty() ? "idle" : vc->animationName();
-        std::string ext = pathToUtf8(utf8ToPath(vc->mediaPath()).extension());
-        if (ext.empty()) ext = ".mov";
-        // Preserve the format subdirectory from the existing media path
-        std::string oldPath = vc->mediaPath();
-        std::string fmtDir = "H264_Green"; // default fallback
-        {
-            namespace fs = std::filesystem;
-            auto p = fs::path(oldPath);
-            // Walk up from the file to find the format directory
-            // Path: .../converted/{fmtDir}/{char}/{outfit}/{anim}.ext
-            if (p.parent_path().has_parent_path() && p.parent_path().parent_path().has_parent_path()) {
-                auto candidate = pathToUtf8(p.parent_path().parent_path().parent_path().filename());
-                if (candidate == "H264_Green" || candidate == "H264_Blue" ||
-                    candidate == "H264_Custom" || candidate == "ProRes")
-                    fmtDir = candidate;
-            }
-        }
-        std::string base = "assets/converted/" + fmtDir + "/"
-            + vc->characterName() + "/" + newOutfit + "/";
-        std::string newMute = base + animName + ext;
-        std::string newTalk = base + animName + "_talk" + ext;
+        const std::string animName = vc->animationName().empty() ? "idle" : vc->animationName();
+        const auto paths = convertedVideoPaths(
+            vc->mediaPath(), vc->characterName(), newOutfit, animName);
+        const std::string newMute = paths.mute;
+        const std::string newTalk = paths.talk;
         std::string newMedia = vc->isTalking() ? newTalk : newMute;
         if (m_commandStack) {
             m_commandStack->execute(std::make_unique<LambdaCommand>(
@@ -169,26 +151,11 @@ void PropertiesPanel::applySpineAnimation()
         auto oldMedia = vc->mediaPath();
         auto oldLabel = vc->label();
         auto newLabel = vc->characterName() + " - " + newAnim;
-        namespace fs = std::filesystem;
-        std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
-        std::string ext = pathToUtf8(utf8ToPath(vc->mediaPath()).extension());
-        if (ext.empty()) ext = ".mov";
-        // Preserve the format subdirectory from the existing media path
-        std::string fmtDir = "H264_Green";
-        {
-            namespace fs = std::filesystem;
-            auto p = fs::path(oldMedia);
-            if (p.parent_path().has_parent_path() && p.parent_path().parent_path().has_parent_path()) {
-                auto candidate = pathToUtf8(p.parent_path().parent_path().parent_path().filename());
-                if (candidate == "H264_Green" || candidate == "H264_Blue" ||
-                    candidate == "H264_Custom" || candidate == "ProRes")
-                    fmtDir = candidate;
-            }
-        }
-        std::string base = "assets/converted/" + fmtDir + "/"
-            + vc->characterName() + "/" + outfit + "/";
-        std::string newMute = base + newAnim + ext;
-        std::string newTalk = base + newAnim + "_talk" + ext;
+        const std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
+        const auto paths = convertedVideoPaths(
+            vc->mediaPath(), vc->characterName(), outfit, newAnim);
+        const std::string newMute = paths.mute;
+        const std::string newTalk = paths.talk;
         std::string newMedia = vc->isTalking() ? newTalk : newMute;
         if (m_commandStack) {
             m_commandStack->execute(std::make_unique<LambdaCommand>(

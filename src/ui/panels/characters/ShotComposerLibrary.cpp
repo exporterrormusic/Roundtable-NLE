@@ -95,7 +95,7 @@ void ShotComposer::refreshCharacterLibrary()
         // substitution, wellsExportSource, was removed with FrameRenderer.
         // The ProRes 4444 master shares the 1080x1888 nominal size, so
         // transforms/fit would be identical if it is ever re-wired.)
-        {"Wells", {"assets/videos/WELLS-CHRONO-MUTE_HEVC.mp4", "assets/videos/WELLS-CHRONO-TALK_HEVC.mp4"}}
+        {"Wells", {wells_videos::kChronoMute, wells_videos::kChronoTalk}}
     };
     // A custom PNG puppet supersedes the legacy video character of the same
     // name (e.g. Wells migrated to a 4-image puppet) — don't list the video

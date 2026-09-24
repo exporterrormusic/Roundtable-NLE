@@ -17,6 +17,7 @@
 #include <windows.h>
 #endif
 
+#include "AppPaths.h"
 #include "project/Project.h"
 #include "project/Settings.h"
 #include "project/AssetDatabase.h"
@@ -1899,4 +1900,17 @@ TEST_F(SerializerTest, LegacyRotatedVideoMaskDefersUntilMetadataIsKnown)
               MaskCoordinateSpace::SourceLocal);
     EXPECT_NEAR(loadedVideo->masks()[0].base.vertices[0].x, 0.3f, 1.0e-5f);
     EXPECT_NEAR(loadedVideo->masks()[0].base.vertices[0].y, 0.8f, 1.0e-5f);
+}
+
+// The test exe runs from build/bin/<Config>/, which (like the app's) can hold
+// a stray assets/ folder created by earlier runs with the wrong working
+// directory.  The application root must still resolve to the source checkout.
+TEST(AppPathsTest, DevBuildRootIsTheSourceCheckoutNotTheExeFolder)
+{
+    namespace fs = std::filesystem;
+    const fs::path root = rt::AppPaths::root();
+    EXPECT_TRUE(fs::is_regular_file(root / "CMakeLists.txt")) << root.string();
+    EXPECT_TRUE(fs::is_directory(rt::AppPaths::assets())) << root.string();
+    EXPECT_EQ(rt::AppPaths::assets(), root / "assets");
+    EXPECT_TRUE(fs::is_directory(root / "src" / "core")) << root.string();
 }
