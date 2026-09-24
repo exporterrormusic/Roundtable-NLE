@@ -643,20 +643,23 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         }
 
         Clip* picked = nullptr;
+        Track* pickedTrack = nullptr;
         for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
             Track* trk = m_timeline->track(ti);
             if (!trk) continue;
             for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                 Clip* c = trk->clip(ci);
                 if (c && c->groupId() == groupId && c->isVisual()) {
-                    picked = c; break;
+                    picked = c; pickedTrack = trk; break;
                 }
             }
             if (picked) break;
         }
         if (picked) {
             m_selection.clip = picked;
-            if (m_propertiesPanel) m_propertiesPanel->setClip(picked);
+            // The track is required: without it the panel's edit guard
+            // (canMutateClip) rejects every change to the reselected clip.
+            if (m_propertiesPanel) m_propertiesPanel->setClip(picked, pickedTrack);
         }
     };
 
