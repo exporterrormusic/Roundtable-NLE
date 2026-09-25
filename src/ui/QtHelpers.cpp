@@ -81,7 +81,11 @@ QString rt::bundledAssetsDir()
 
 QString rt::downloadedCharacterAssetsDir()
 {
-    return userDataDir();
+    // Downloaded characters live with the bundled ones in the program's own
+    // assets/ folder.  They used to go to %LOCALAPPDATA%, where COMPOSE found
+    // them but the timeline renderer (SpineEngine, bundled root only) did
+    // not, so their shots rendered black.
+    return bundledAssetsDir();
 }
 
 QString rt::findCharacterDirectory(const QString& characterName)

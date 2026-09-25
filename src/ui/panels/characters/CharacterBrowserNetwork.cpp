@@ -324,8 +324,7 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
     while (displayName.endsWith('.') || displayName.endsWith(' '))
         displayName.chop(1);
 
-    // Downloads must remain writable in installed builds (for example under
-    // Program Files), so models live in the per-user asset root.
+    // Models are stored in the program folder's assets/characters/.
     QString targetDir = QDir(rt::downloadedCharacterAssetsDir())
                             .filePath(QString("characters/%1/%2")
                                           .arg(displayName, outfitName));
