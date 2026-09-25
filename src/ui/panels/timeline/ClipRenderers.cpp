@@ -38,9 +38,12 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace rt {
 
@@ -2413,45 +2416,34 @@ namespace {
 // (22 MB for a 1824×3072 face) into a fresh frame and re-uploaded it (~100 ms
 // per frame measured on the timeline).  Consumers must treat the frame as
 // read-only; nothing downstream writes into a layer's pixels.
-std::shared_ptr<CachedFrame> loadPuppetFrame(const std::string& path)
-{
+//
+// Decoding a 1824×3072 face takes ~80 ms, so the first time a puppet shows,
+// its other faces are decoded on background threads (prewarmPuppetFaces) —
+// otherwise the first blink/talk frame stalls playback.  A decode already in
+// flight is never repeated: a render that needs that face waits for it.
+struct PuppetFaceCache {
     struct Entry {
         std::shared_ptr<CachedFrame> frame;   // null = file failed to decode
         std::filesystem::file_time_type mtime{};
         bool haveMtime{false};
         std::chrono::steady_clock::time_point checkedAt{};
     };
-    static std::mutex s_mtx;
-    static std::unordered_map<std::string, Entry> s_cache;
+    std::mutex mtx;
+    std::unordered_map<std::string, Entry> cache;
+    std::unordered_map<std::string, std::shared_future<std::shared_ptr<CachedFrame>>> inFlight;
     // High bits keep these ids clear of MediaPool's small sequential handles.
-    static std::atomic<uint64_t> s_nextPuppetMediaId{0};
-    // How long a cached face is trusted before re-checking the file on disk.
-    constexpr auto kRecheckInterval = std::chrono::seconds(1);
+    std::atomic<uint64_t> nextMediaId{0};
+};
 
-    const auto now = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> lock(s_mtx);
-        auto it = s_cache.find(path);
-        if (it != s_cache.end() && now - it->second.checkedAt < kRecheckInterval)
-            return it->second.frame;
-    }
+// Never destroyed: detached prewarm threads may still be decoding at exit.
+PuppetFaceCache& puppetFaceCache()
+{
+    static auto* s_cache = new PuppetFaceCache;
+    return *s_cache;
+}
 
-    std::error_code ec;
-    const auto mtime = std::filesystem::last_write_time(utf8ToPath(path), ec);
-    const bool haveMtime = !ec;
-
-    {
-        std::lock_guard<std::mutex> lock(s_mtx);
-        auto it = s_cache.find(path);
-        // Reuse the cached decode unless the file changed on disk. If the mtime
-        // is unreadable (e.g. offline), keep serving the cached copy.
-        if (it != s_cache.end() &&
-            (!haveMtime || (it->second.haveMtime && it->second.mtime == mtime))) {
-            it->second.checkedAt = now;
-            return it->second.frame;
-        }
-    }
-
+std::shared_ptr<CachedFrame> decodePuppetFrame(const std::string& path)
+{
     QImage img;
     // Paths are stored UTF-8; QString::fromStdString uses fromUtf8 so Unicode
     // (e.g. yt-dlp's fullwidth characters) survives on Windows.
@@ -2472,16 +2464,89 @@ std::shared_ptr<CachedFrame> loadPuppetFrame(const std::string& path)
         // A fresh id per decode, so a PNG swapped on disk can never be served
         // from the previous version's GPU texture.
         frame->mediaId = 0xC000000000000000ull |
-            s_nextPuppetMediaId.fetch_add(1, std::memory_order_relaxed);
+            puppetFaceCache().nextMediaId.fetch_add(1, std::memory_order_relaxed);
     }
-
-    std::lock_guard<std::mutex> lock(s_mtx);
-    // Cache even a failed decode to avoid retrying the disk every frame.
-    s_cache[path] = Entry{frame, mtime, haveMtime, now};
     return frame;
 }
 
+std::shared_ptr<CachedFrame> loadPuppetFrame(const std::string& path)
+{
+    // How long a cached face is trusted before re-checking the file on disk.
+    constexpr auto kRecheckInterval = std::chrono::seconds(1);
+    auto& fc = puppetFaceCache();
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(fc.mtx);
+        auto it = fc.cache.find(path);
+        if (it != fc.cache.end() && now - it->second.checkedAt < kRecheckInterval)
+            return it->second.frame;
+    }
+
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(utf8ToPath(path), ec);
+    const bool haveMtime = !ec;
+
+    std::promise<std::shared_ptr<CachedFrame>> promise;
+    {
+        std::unique_lock<std::mutex> lock(fc.mtx);
+        auto it = fc.cache.find(path);
+        // Reuse the cached decode unless the file changed on disk. If the mtime
+        // is unreadable (e.g. offline), keep serving the cached copy.
+        if (it != fc.cache.end() &&
+            (!haveMtime || (it->second.haveMtime && it->second.mtime == mtime))) {
+            it->second.checkedAt = now;
+            return it->second.frame;
+        }
+        // Another thread (usually a prewarm) is already decoding this face.
+        auto pending = fc.inFlight.find(path);
+        if (pending != fc.inFlight.end()) {
+            auto future = pending->second;
+            lock.unlock();
+            return future.get();
+        }
+        fc.inFlight.emplace(path, promise.get_future().share());
+    }
+
+    auto frame = decodePuppetFrame(path);
+
+    {
+        std::lock_guard<std::mutex> lock(fc.mtx);
+        // Cache even a failed decode to avoid retrying the disk every frame.
+        fc.cache[path] = PuppetFaceCache::Entry{frame, mtime, haveMtime, now};
+        fc.inFlight.erase(path);
+    }
+    promise.set_value(frame);
+    return frame;
+}
+
+// Decode every face of `clip` not yet cached or being decoded, each on its own
+// detached thread.  Cheap after warm-up: four map lookups under the lock.
+void prewarmPuppetFaces(const PngPuppetClip& clip)
+{
+    auto& fc = puppetFaceCache();
+    std::vector<std::string> missing;
+    {
+        std::lock_guard<std::mutex> lock(fc.mtx);
+        for (const auto& path : clip.facePaths()) {
+            if (path.empty() || fc.cache.count(path) || fc.inFlight.count(path))
+                continue;
+            if (std::find(missing.begin(), missing.end(), path) == missing.end())
+                missing.push_back(path);
+        }
+    }
+    for (auto& path : missing)
+        std::thread([path = std::move(path)] { loadPuppetFrame(path); }).detach();
+}
+
 } // namespace
+
+bool isPngPuppetFaceCached(const std::string& path)
+{
+    auto& fc = puppetFaceCache();
+    std::lock_guard<std::mutex> lock(fc.mtx);
+    return fc.cache.count(path) != 0;
+}
 
 std::shared_ptr<CachedFrame> renderPngPuppetClip(
     PngPuppetClip* clip, int64_t tick, uint32_t outW, uint32_t outH)
@@ -2501,6 +2566,7 @@ std::shared_ptr<CachedFrame> renderPngPuppetClip(
     if (path.empty())
         return nullptr;
 
+    prewarmPuppetFaces(*clip);
     auto frame = loadPuppetFrame(path);
     if (!frame) {
         // The chosen face failed to decode — fall back to the resting face so

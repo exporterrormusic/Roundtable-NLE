@@ -661,6 +661,7 @@ const char* clipTypeName(Clip* clip)
     if (dynamic_cast<VideoClip*>(clip)) return "Video";
     if (dynamic_cast<TitleClip*>(clip)) return "Title";
     if (dynamic_cast<GraphicClip*>(clip)) return "Graphic";
+    if (dynamic_cast<PngPuppetClip*>(clip)) return "PngPuppet";
 #ifdef ROUNDTABLE_HAS_SPINE
     if (dynamic_cast<SpineClip*>(clip)) return "Spine";
 #endif

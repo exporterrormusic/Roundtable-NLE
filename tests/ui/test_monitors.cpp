@@ -2775,3 +2775,47 @@ TEST(ClipRenderers, PngPuppetReusesPreparedFacesAcrossFrames)
         EXPECT_EQ(f->mediaId, first->mediaId);
     }
 }
+
+// The first render of a puppet decodes its other faces in the background, so
+// the first talk/blink frame doesn't stall playback on a PNG decode.
+TEST(ClipRenderers, PngPuppetPrewarmsOtherFacesOnFirstRender)
+{
+    namespace fs = std::filesystem;
+    // Fresh paths per run: the face cache is process-wide and keyed by path.
+    static int s_run = 0;
+    const auto dir = fs::temp_directory_path() /
+        ("rt_puppet_face_prewarm_test_" + std::to_string(++s_run));
+    fs::create_directories(dir);
+    auto writeFace = [&](const char* name, QColor color) {
+        const auto path = dir / name;
+        QImage img(64, 96, QImage::Format_ARGB32);
+        img.fill(color);
+        EXPECT_TRUE(img.save(QString::fromStdWString(path.wstring()), "PNG"));
+        return path.string();
+    };
+    const std::string closed = writeFace("closed.png", QColor(200, 40, 40));
+    const std::string blink  = writeFace("blink.png", QColor(40, 40, 200));
+    const std::string open   = writeFace("open.png", QColor(40, 200, 40));
+
+    rt::PngPuppetClip clip;
+    clip.setFacePath(rt::PngPuppetClip::MouthClosedEyesOpen, closed);
+    clip.setFacePath(rt::PngPuppetClip::MouthClosedEyesClosed, blink);
+    clip.setFacePath(rt::PngPuppetClip::MouthOpenEyesOpen, open);
+    clip.setFacePath(rt::PngPuppetClip::MouthOpenEyesClosed, open);
+    ASSERT_FALSE(rt::isPngPuppetFaceCached(open));
+
+    // Not talking, so this renders one face (resting, or blink if t=0 falls
+    // in a blink) — never the open-mouth face.
+    ASSERT_NE(rt::renderPngPuppetClip(&clip, 0, 1920, 1080), nullptr);
+
+    // The faces it didn't show become cached without ever being rendered.
+    auto allCached = [&] {
+        return rt::isPngPuppetFaceCached(closed) && rt::isPngPuppetFaceCached(blink) &&
+               rt::isPngPuppetFaceCached(open);
+    };
+    for (int i = 0; i < 500 && !allCached(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(rt::isPngPuppetFaceCached(closed));
+    EXPECT_TRUE(rt::isPngPuppetFaceCached(open));
+    EXPECT_TRUE(rt::isPngPuppetFaceCached(blink));
+}

@@ -66,6 +66,10 @@ GraphicTextLayoutBounds measureGraphicTextLayout(
 std::shared_ptr<CachedFrame> renderPngPuppetClip(PngPuppetClip* clip, int64_t tick,
                                                  uint32_t outW, uint32_t outH);
 
+/// True once the puppet face image at `path` has been decoded and cached, e.g.
+/// by the background prewarm the first render of its puppet starts.
+bool isPngPuppetFaceCached(const std::string& path);
+
 /// CPU-render a TierListClip (ranking board) to a full-frame BGRA CachedFrame.
 /// Replays the clip's timed events at `tick` (clip-local) to lay out the grid,
 /// placed entries, and the centred spotlight.  refW/refH unused (fractional layout).
