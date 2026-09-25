@@ -178,25 +178,11 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             // within the edge grab zone. Scan the hovered track for any
             // clip edge within edgeGrabPx of the cursor and treat that as
             // a hit so the trim cursor still appears.
-            if (!hitRef) {
-                size_t ti = hitTestTrack(event->position().y());
-                if (ti < m_timeline->trackCount()) {
-                    const Track* trk = m_timeline->track(ti);
-                    double pxScan = event->position().x() - headerWidth();
-                    for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
-                        const Clip* c = trk->clip(ci);
-                        if (!c) continue;
-                        double l = m_layoutEngine.timeToPixelX(c->timelineIn());
-                        double r = m_layoutEngine.timeToPixelX(c->timelineOut());
-                        double zone = edgeGrabPx(r - l);
-                        if (std::abs(pxScan - l) < zone
-                                || std::abs(pxScan - r) < zone) {
-                            hitRef = ClipRef{ ti, c->id() };
-                            break;
-                        }
-                    }
-                }
-            }
+            // Same rule as the press (hitTestEdgeHalo), so the trim
+            // cursor only shows where a press really grabs the edge.
+            if (!hitRef)
+                hitRef = hitTestEdgeHalo(hitTestTrack(event->position().y()),
+                                         event->position().x() - headerWidth());
 
             if (hitRef)
             {
@@ -967,47 +953,56 @@ void TimelinePanel::continueRollingEditDrag(int64_t tickDelta)
                                   m_rollMinEditPoint, m_rollMaxEditPoint);
     }
 
-    Track* rollTrack = m_timeline->track(m_rollTrackIndex);
-    if (rollTrack && !rollTrack->isLocked()) {
-        size_t li = rollTrack->findClipIndexById(m_rollLeftClipId);
-        size_t ri = rollTrack->findClipIndexById(m_rollRightClipId);
-        if (li < rollTrack->clipCount() && ri < rollTrack->clipCount()) {
-            const int64_t rightEnd = m_rollRightOrigIn + m_rollRightOrigDur;
-            int64_t leftNewDur = newEditPoint - m_rollLeftOrigIn;
-            int64_t rightNewDur = rightEnd - newEditPoint;
-            int64_t rightSrcDelta = newEditPoint - m_rollRightOrigIn;
+    RollSeam primary;
+    primary.trackIndex     = m_rollTrackIndex;
+    primary.leftClipId     = m_rollLeftClipId;
+    primary.rightClipId    = m_rollRightClipId;
+    primary.origEditPoint  = m_rollOriginalEditPoint;
+    primary.leftOrigIn     = m_rollLeftOrigIn;
+    primary.rightOrigIn    = m_rollRightOrigIn;
+    primary.rightOrigDur   = m_rollRightOrigDur;
+    primary.rightOrigSrcIn = m_rollRightOrigSrcIn;
+    applyRollSeamLive(primary, newEditPoint);
+    // Other selected tracks' seams move by the same delta (the press
+    // already narrowed the min/max so each stays within its own limits).
+    const int64_t delta = newEditPoint - m_rollOriginalEditPoint;
+    for (const auto& seam : m_rollExtraSeams)
+        applyRollSeamLive(seam, seam.origEditPoint + delta);
 
-            Clip* lc = rollTrack->clip(li);
-            Clip* rc = rollTrack->clip(ri);
-            lc->setDuration(leftNewDur);
-            rc->setTimelineIn(newEditPoint);
-            rc->setDuration(rightNewDur);
-            rc->setSourceIn(m_rollRightOrigSrcIn + rightSrcDelta);
-
-            // Live-update any transition anchored to this edit point
-            // (cross-dissolve between L/R, or single-sided fade on
-            // either side) so the user sees the transition slide
-            // along with the seam — not stay at the original tick
-            // until the drag is committed.
-            for (auto& t : rollTrack->transitions()) {
-                const bool touchesLeft  = (t.leftClipId  == m_rollLeftClipId);
-                const bool touchesRight = (t.rightClipId == m_rollRightClipId);
-                const bool leftFadeOut  = touchesLeft  && t.rightClipId == 0;
-                const bool rightFadeIn  = touchesRight && t.leftClipId  == 0;
-                const bool dissolve     = touchesLeft  && touchesRight;
-                if (dissolve || leftFadeOut || rightFadeIn)
-                    t.editPointTick = newEditPoint;
-            }
-
-            // Slide the edit-point brackets along with the seam so the
-            // user has a stable visual anchor for where the cut is
-            // landing. setEditPointTick has an internal early-out, so
-            // calling this every move tick is cheap.
-            setEditPointSelection(m_rollTrackIndex, newEditPoint,
-                                   EditPointSide::Both);
-        }
-    }
+    // Slide the edit-point brackets along with the seam so the user has a
+    // stable visual anchor for where the cut is landing.
+    setEditPointSelection(m_rollTrackIndex, newEditPoint, EditPointSide::Both);
     onScrollChanged();
+}
+
+void TimelinePanel::applyRollSeamLive(const RollSeam& seam, int64_t newEditPoint)
+{
+    Track* track = m_timeline->track(seam.trackIndex);
+    if (!track || track->isLocked()) return;
+    const size_t li = track->findClipIndexById(seam.leftClipId);
+    const size_t ri = track->findClipIndexById(seam.rightClipId);
+    if (li >= track->clipCount() || ri >= track->clipCount()) return;
+
+    const int64_t rightEnd = seam.rightOrigIn + seam.rightOrigDur;
+    Clip* lc = track->clip(li);
+    Clip* rc = track->clip(ri);
+    lc->setDuration(newEditPoint - seam.leftOrigIn);
+    rc->setTimelineIn(newEditPoint);
+    rc->setDuration(rightEnd - newEditPoint);
+    rc->setSourceIn(seam.rightOrigSrcIn + (newEditPoint - seam.rightOrigIn));
+
+    // Live-update any transition anchored to this edit point (cross-dissolve
+    // between L/R, or single-sided fade on either side) so the transition
+    // slides with the seam instead of waiting for the commit.
+    for (auto& t : track->transitions()) {
+        const bool touchesLeft  = (t.leftClipId  == seam.leftClipId);
+        const bool touchesRight = (t.rightClipId == seam.rightClipId);
+        const bool leftFadeOut  = touchesLeft  && t.rightClipId == 0;
+        const bool rightFadeIn  = touchesRight && t.leftClipId  == 0;
+        const bool dissolve     = touchesLeft  && touchesRight;
+        if (dissolve || leftFadeOut || rightFadeIn)
+            t.editPointTick = newEditPoint;
+    }
 }
 
 void TimelinePanel::continuePendingClipClick(QPointF pos)

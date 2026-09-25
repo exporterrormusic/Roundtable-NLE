@@ -31,10 +31,47 @@
 #include <cmath>
 #include <algorithm>
 #include <optional>
+#include <tuple>
+#include <utility>
 
 namespace rt {
 
 namespace {
+
+// Live-drag bounds for rolling the seam between `lc` and `rc` (which touch at
+// `origEditPoint`).  Mirrors the commit clamp in EditOperations::rollingEdit so
+// the seam stops at the tick it will land on.  Returns {minEP, maxEP}.
+std::pair<int64_t, int64_t> rollSeamBounds(const Clip* lc, const Clip* rc,
+                                           int64_t origEditPoint)
+{
+    int64_t minEP = lc->timelineIn();
+    int64_t maxEP = rc->timelineIn() + rc->duration();
+
+    // Right clip's head can't roll past its source's start (sourceIn must
+    // stay >= 0). Skip for video characters which have no finite source.
+    bool rightHasSrcLimit = false;
+    if (auto* vc = dynamic_cast<const VideoClip*>(rc))
+        rightHasSrcLimit = !vc->isVideoCharacter();
+    else if (dynamic_cast<const AudioClip*>(rc))
+        rightHasSrcLimit = true;
+    if (rightHasSrcLimit && rc->sourceIn() > 0)
+        minEP = std::max(minEP, rc->timelineIn() - rc->sourceIn());
+
+    // Left clip's tail can't extend past its source media.
+    int64_t leftSrcDur = 0;
+    if (auto* vc = dynamic_cast<const VideoClip*>(lc)) {
+        if (!vc->isVideoCharacter()) leftSrcDur = vc->sourceDuration();
+    } else if (auto* ac = dynamic_cast<const AudioClip*>(lc)) {
+        leftSrcDur = ac->sourceDuration();
+    }
+    if (leftSrcDur > 0)
+        maxEP = std::min(maxEP, lc->timelineIn() + leftSrcDur - lc->sourceIn());
+
+    // The seam may travel to the far edges of both clips — rollingEdit()
+    // removes a fully consumed clip.  Degenerate range: pin to the seam.
+    if (minEP > maxEP) minEP = maxEP = origEditPoint;
+    return {minEP, maxEP};
+}
 
 // Return the real uncovered interval under the cursor, if it has a clip on
 // its right that can be rippled left.  Build this from merged clip coverage:
@@ -374,32 +411,13 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
     const auto clickedGap = selectableGapAt(
         *m_timeline, pressedTrack, pressedTick);
 
-    // Edge-halo fallback: when zoomed out, a clip can be only a few
-    // pixels wide, so the press lands just outside the clip's tick
-    // range (hitTestClip returns no match) yet still within the edge
-    // grab zone. Scan the pressed track for any clip edge within
-    // edgeGrabPx of the cursor so the user can still grab + trim it.
-    // A genuine gap wins over these invisible edge halos; otherwise a
-    // short gap (narrower than the two halos) is impossible to select.
-    if (!hitRef && !clickedGap) {
-        size_t tiScan = pressedTrack;
-        if (tiScan < m_timeline->trackCount()) {
-            const Track* trkScan = m_timeline->track(tiScan);
-            double pxScan = pos.x() - headerWidth();
-            for (size_t ci = 0; ci < trkScan->clipCount(); ++ci) {
-                const Clip* c = trkScan->clip(ci);
-                if (!c) continue;
-                double l = m_layoutEngine.timeToPixelX(c->timelineIn());
-                double r = m_layoutEngine.timeToPixelX(c->timelineOut());
-                double zone = edgeGrabPx(r - l);
-                if (std::abs(pxScan - l) < zone
-                        || std::abs(pxScan - r) < zone) {
-                    hitRef = ClipRef{ tiScan, c->id() };
-                    break;
-                }
-            }
-        }
-    }
+    // Edge-halo: a press just outside a clip's edge (within its grab
+    // zone) grabs that edge — the same rule the hover trim cursor uses,
+    // so a press never selects the empty space the cursor promised to
+    // trim.  Beside a gap the halo shrinks to a third of the gap, so a
+    // short gap's middle is still selectable (hitTestEdgeHalo).
+    if (!hitRef)
+        hitRef = hitTestEdgeHalo(pressedTrack, pos.x() - headerWidth());
 
     if (hitRef)
     {
@@ -894,6 +912,7 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
             m_rollRightClipId = bestRight;
             m_rollTrackIndex = ti;
             m_rollOriginalEditPoint = bestEditPt;
+            m_rollExtraSeams.clear();
             // Capture original clip states for direct manipulation
             size_t li2 = track->findClipIndexById(bestLeft);
             size_t ri2 = track->findClipIndexById(bestRight);
@@ -906,48 +925,58 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
                 m_rollRightOrigIn    = rc->timelineIn();
                 m_rollRightOrigDur   = rc->duration();
                 m_rollRightOrigSrcIn = rc->sourceIn();
+                std::tie(m_rollMinEditPoint, m_rollMaxEditPoint) =
+                    rollSeamBounds(lc, rc, m_rollOriginalEditPoint);
 
-                // Precompute live-drag bounds that match the commit
-                // clamp — so the seam stops at exactly the tick it
-                // will land on, not somewhere past and snap back.
-                int64_t minEP = m_rollLeftOrigIn;
-                int64_t maxEP = m_rollRightOrigIn + m_rollRightOrigDur;
-
-                // Right clip's head can't roll past its source's
-                // start (sourceIn must stay >= 0). Skip for video
-                // characters which have no finite source media.
-                bool rightHasSrcLimit = false;
-                if (auto* vc = dynamic_cast<const VideoClip*>(rc))
-                    rightHasSrcLimit = !vc->isVideoCharacter();
-                else if (dynamic_cast<const AudioClip*>(rc))
-                    rightHasSrcLimit = true;
-                if (rightHasSrcLimit && m_rollRightOrigSrcIn > 0)
-                    minEP = std::max(minEP, m_rollRightOrigIn - m_rollRightOrigSrcIn);
-
-                // Left clip's tail can't extend past its source media.
-                int64_t leftSrcDur = 0;
-                if (auto* vc = dynamic_cast<const VideoClip*>(lc)) {
-                    if (!vc->isVideoCharacter()) leftSrcDur = vc->sourceDuration();
-                } else if (auto* ac = dynamic_cast<const AudioClip*>(lc)) {
-                    leftSrcDur = ac->sourceDuration();
+                // Multi-track roll (Premiere): grabbing a cut of a selected
+                // clip also rolls, on every other track holding a selected
+                // clip, the cut next to a selected clip that is nearest this
+                // one.  All seams move by the same delta, so the allowed
+                // delta is the intersection of every seam's range.
+                const bool grabbedSelected =
+                    m_selection.isSelected(ClipRef{ti, bestLeft}) ||
+                    m_selection.isSelected(ClipRef{ti, bestRight});
+                int64_t minDelta = m_rollMinEditPoint - m_rollOriginalEditPoint;
+                int64_t maxDelta = m_rollMaxEditPoint - m_rollOriginalEditPoint;
+                for (size_t t2 = 0; grabbedSelected && t2 < m_timeline->trackCount(); ++t2) {
+                    const Track* other = m_timeline->track(t2);
+                    if (t2 == ti || !other || other->isLocked()) continue;
+                    const Clip* bestL = nullptr;
+                    const Clip* bestR = nullptr;
+                    int64_t bestD = INT64_MAX;
+                    for (size_t a = 0; a < other->clipCount(); ++a) {
+                        const Clip* l = other->clip(a);
+                        for (size_t b = 0; b < other->clipCount(); ++b) {
+                            const Clip* r = other->clip(b);
+                            if (a == b || std::abs(r->timelineIn() - l->timelineOut()) > 1600)
+                                continue;
+                            if (!m_selection.isSelected(ClipRef{t2, l->id()}) &&
+                                !m_selection.isSelected(ClipRef{t2, r->id()}))
+                                continue;
+                            const int64_t d = std::abs(l->timelineOut() - bestEditPt);
+                            if (d < bestD) { bestD = d; bestL = l; bestR = r; }
+                        }
+                    }
+                    if (!bestL) continue;
+                    RollSeam seam;
+                    seam.trackIndex    = t2;
+                    seam.leftClipId    = bestL->id();
+                    seam.rightClipId   = bestR->id();
+                    seam.origEditPoint = bestL->timelineOut();
+                    seam.leftOrigIn    = bestL->timelineIn();
+                    seam.leftOrigDur   = bestL->duration();
+                    seam.leftOrigSrcIn = bestL->sourceIn();
+                    seam.rightOrigIn   = bestR->timelineIn();
+                    seam.rightOrigDur  = bestR->duration();
+                    seam.rightOrigSrcIn = bestR->sourceIn();
+                    const auto [lo, hi] = rollSeamBounds(bestL, bestR, seam.origEditPoint);
+                    minDelta = std::max(minDelta, lo - seam.origEditPoint);
+                    maxDelta = std::min(maxDelta, hi - seam.origEditPoint);
+                    m_rollExtraSeams.push_back(seam);
                 }
-                if (leftSrcDur > 0)
-                    maxEP = std::min(maxEP, m_rollLeftOrigIn + leftSrcDur - m_rollLeftOrigSrcIn);
-
-                // Allow the seam to travel all the way to the far edges
-                // of the adjacent clips — rollingEdit() handles full
-                // consumption of one clip by removing it and extending
-                // the other.  No kMinClipDuration floor here so the
-                // user can completely eliminate a clip they roll into.
-
-                // Degenerate (no valid roll range) shouldn't crash —
-                // collapse to the original seam.
-                if (minEP > maxEP) {
-                    minEP = m_rollOriginalEditPoint;
-                    maxEP = m_rollOriginalEditPoint;
-                }
-                m_rollMinEditPoint = minEP;
-                m_rollMaxEditPoint = maxEP;
+                if (minDelta > maxDelta) minDelta = maxDelta = 0;
+                m_rollMinEditPoint = m_rollOriginalEditPoint + minDelta;
+                m_rollMaxEditPoint = m_rollOriginalEditPoint + maxDelta;
             }
 
             // Show the edit-point brackets immediately at the seam so
@@ -956,10 +985,15 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
             setEditPointSelection(m_rollTrackIndex, m_rollOriginalEditPoint,
                                    EditPointSide::Both);
 
-            // Initialize snap engine for rolling edit
+            // Initialize snap engine for rolling edit (ignoring every
+            // clip being rolled, so no seam snaps to itself).
+            std::vector<uint64_t> rollIds{m_rollLeftClipId, m_rollRightClipId};
+            for (const auto& seam : m_rollExtraSeams) {
+                rollIds.push_back(seam.leftClipId);
+                rollIds.push_back(seam.rightClipId);
+            }
             m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
-            m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0,
-                                      {m_rollLeftClipId, m_rollRightClipId});
+            m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0, rollIds);
         }
     }
     if (m_dragMode != DragMode::RollingEdit) {

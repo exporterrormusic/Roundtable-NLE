@@ -1094,6 +1094,138 @@ TEST(TimelinePanel, NarrowGapWinsOverAdjacentClipEdgeHalos)
     EXPECT_TRUE(panel.selection().empty());
 }
 
+namespace {
+
+// Timeline drag helpers: press, move with the left button held, release —
+// all on a track widget, the way a real drag arrives.
+rt::TimelineTrackWidget* trackWidgetFor(rt::TimelinePanel& panel, size_t trackIndex)
+{
+    for (auto* widget : panel.findChildren<rt::TimelineTrackWidget*>())
+        if (widget->trackIndex() == trackIndex) return widget;
+    return nullptr;
+}
+
+void dragOnWidget(QWidget* widget, QPoint from, QPoint to)
+{
+    QTest::mousePress(widget, Qt::LeftButton, Qt::NoModifier, from);
+    for (int step = 1; step <= 4; ++step) {
+        const QPoint p = from + (to - from) * step / 4;
+        QMouseEvent move(QEvent::MouseMove, QPointF(p), QPointF(widget->mapToGlobal(p)),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(widget, &move);
+    }
+    QTest::mouseRelease(widget, Qt::LeftButton, Qt::NoModifier, to);
+}
+
+void showAtHundredPixelsPerSecond(rt::TimelinePanel& panel, rt::Timeline& timeline)
+{
+    panel.resize(900, 400);
+    panel.setTimeline(&timeline);
+    panel.show();
+    QApplication::processEvents();
+    panel.layoutEngine().setPixelsPerSecond(100.0);
+    panel.layoutEngine().setScrollX(0.0);
+    panel.notifyZoomChanged();
+    QApplication::processEvents();
+}
+
+} // namespace
+
+// Pressing just OUTSIDE a clip's tail, with empty space (not a neighbour)
+// after it, must grab the edge the trim cursor shows, not select the gap.
+TEST(TimelinePanel, PressBesideClipEdgeTrimsInsteadOfSelectingGap)
+{
+    constexpr int64_t kSec = 48000;
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    auto a = std::make_unique<rt::VideoClip>();
+    a->setTimelineIn(0);
+    a->setDuration(kSec);
+    auto* clipA = v1->addClip(std::move(a));
+    auto b = std::make_unique<rt::VideoClip>();
+    b->setTimelineIn(3 * kSec);   // 2 s (200 px) of empty space after A
+    b->setDuration(kSec);
+    ASSERT_NE(v1->addClip(std::move(b)), nullptr);
+    ASSERT_NE(clipA, nullptr);
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    showAtHundredPixelsPerSecond(panel, timeline);
+    auto* widget = trackWidgetFor(panel, 0);
+    ASSERT_NE(widget, nullptr);
+
+    const int tailX = qRound(panel.layoutEngine().timeToPixelX(kSec));
+    const int y = widget->height() / 2;
+    const uint64_t aId = clipA->id();
+    dragOnWidget(widget, QPoint(tailX + 3, y), QPoint(tailX - 37, y));
+
+    EXPECT_FALSE(panel.gapSelection().active);
+    const size_t ai = v1->findClipIndexById(aId);
+    ASSERT_LT(ai, v1->clipCount());
+    EXPECT_LT(v1->clip(ai)->duration(), kSec);   // tail trimmed left ~0.4 s
+}
+
+// Premiere: with clips selected on several tracks, the Rolling tool rolls
+// the matching cut on every one of those tracks together, as one undo step.
+TEST(TimelinePanel, RollingToolRollsSelectedCutsOnAllTracks)
+{
+    constexpr int64_t kSec = 48000;
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    rt::Track* v2 = timeline.addVideoTrack("V2");
+    auto addClip = [](rt::Track* t, int64_t in) {
+        auto c = std::make_unique<rt::VideoClip>();
+        c->setTimelineIn(in);
+        c->setDuration(kSec);
+        return t->addClip(std::move(c));
+    };
+    rt::Clip* a1 = addClip(v1, 0);
+    rt::Clip* b1 = addClip(v1, kSec);
+    rt::Clip* a2 = addClip(v2, 0);
+    rt::Clip* b2 = addClip(v2, kSec);
+    ASSERT_TRUE(a1 && b1 && a2 && b2);
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    showAtHundredPixelsPerSecond(panel, timeline);
+
+    size_t t1 = SIZE_MAX, t2 = SIZE_MAX;
+    for (size_t i = 0; i < timeline.trackCount(); ++i) {
+        if (timeline.track(i) == v1) t1 = i;
+        if (timeline.track(i) == v2) t2 = i;
+    }
+    ASSERT_NE(t1, SIZE_MAX);
+    ASSERT_NE(t2, SIZE_MAX);
+    panel.selection().selectClip({t1, a1->id()});
+    panel.selection().selectClip({t2, a2->id()}, true);
+    panel.setActiveTool(rt::EditTool::Rolling);
+
+    auto* widget = trackWidgetFor(panel, t1);
+    ASSERT_NE(widget, nullptr);
+    const int cutX = qRound(panel.layoutEngine().timeToPixelX(kSec));
+    const int y = widget->height() / 2;
+    const uint64_t a1Id = a1->id(), b1Id = b1->id(), a2Id = a2->id(), b2Id = b2->id();
+    dragOnWidget(widget, QPoint(cutX, y), QPoint(cutX + 30, y));
+
+    // Commands may replace clip objects: always look clips up by id.
+    auto clipOf = [](rt::Track* t, uint64_t id) -> const rt::Clip* {
+        const size_t i = t->findClipIndexById(id);
+        return i < t->clipCount() ? t->clip(i) : nullptr;
+    };
+    ASSERT_TRUE(clipOf(v1, a1Id) && clipOf(v1, b1Id) && clipOf(v2, a2Id) && clipOf(v2, b2Id));
+    const int64_t rolled = clipOf(v1, a1Id)->timelineOut();
+    EXPECT_GT(rolled, kSec);
+    EXPECT_EQ(clipOf(v2, a2Id)->timelineOut(), rolled);
+    EXPECT_EQ(clipOf(v1, b1Id)->timelineIn(), rolled);
+    EXPECT_EQ(clipOf(v2, b2Id)->timelineIn(), rolled);
+
+    ASSERT_TRUE(stack.undo());   // both tracks in ONE step
+    EXPECT_EQ(clipOf(v1, a1Id)->timelineOut(), kSec);
+    EXPECT_EQ(clipOf(v2, a2Id)->timelineOut(), kSec);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PropertiesPanel — TitleClip binding
 // ═══════════════════════════════════════════════════════════════════════════

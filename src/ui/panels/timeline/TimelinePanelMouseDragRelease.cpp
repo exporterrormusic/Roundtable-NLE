@@ -473,14 +473,44 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
                 rc->setDuration(m_rollRightOrigDur);
                 rc->setSourceIn(m_rollRightOrigSrcIn);
 
-                if (finalEditPoint != m_rollOriginalEditPoint) {
+                // Restore the other tracks' live-rolled seams too, so each
+                // rollingEdit below starts from the original model.
+                for (const auto& seam : m_rollExtraSeams) {
+                    Track* t = m_timeline->track(seam.trackIndex);
+                    if (!t) continue;
+                    const size_t sl = t->findClipIndexById(seam.leftClipId);
+                    const size_t sr = t->findClipIndexById(seam.rightClipId);
+                    if (sl >= t->clipCount() || sr >= t->clipCount()) continue;
+                    Clip* slc = t->clip(sl);
+                    Clip* src = t->clip(sr);
+                    slc->setTimelineIn(seam.leftOrigIn);
+                    slc->setDuration(seam.leftOrigDur);
+                    slc->setSourceIn(seam.leftOrigSrcIn);
+                    src->setTimelineIn(seam.rightOrigIn);
+                    src->setDuration(seam.rightOrigDur);
+                    src->setSourceIn(seam.rightOrigSrcIn);
+                }
+
+                const int64_t delta = finalEditPoint - m_rollOriginalEditPoint;
+                if (delta != 0) {
+                    // Every seam rolls by the same delta: one undo step.
+                    const bool multi = !m_rollExtraSeams.empty() && m_commandStack;
+                    if (multi) m_commandStack->beginMacro("Rolling edit");
                     auto cmd = EditOperations::rollingEdit(
                         *m_timeline, m_rollTrackIndex,
                         m_rollLeftClipId, m_rollRightClipId, finalEditPoint);
                     if (cmd) executeCommand(std::move(cmd));
+                    for (const auto& seam : m_rollExtraSeams) {
+                        auto extra = EditOperations::rollingEdit(
+                            *m_timeline, seam.trackIndex, seam.leftClipId,
+                            seam.rightClipId, seam.origEditPoint + delta);
+                        if (extra) executeCommand(std::move(extra));
+                    }
+                    if (multi) m_commandStack->endMacro();
                 }
             }
         }
+        m_rollExtraSeams.clear();
     }
 
     // ── PendingClipClick: user clicked an already-selected clip without dragging ──

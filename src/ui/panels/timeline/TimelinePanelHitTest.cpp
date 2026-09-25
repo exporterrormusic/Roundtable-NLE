@@ -18,6 +18,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <limits>
 
 namespace rt {
@@ -64,6 +65,47 @@ size_t TimelinePanel::hitTestTrack(double y) const
             return i;
     }
     return SIZE_MAX;
+}
+
+std::optional<ClipRef> TimelinePanel::hitTestEdgeHalo(size_t ti, double px) const
+{
+    if (!m_timeline || ti >= m_timeline->trackCount()) return std::nullopt;
+    const Track* track = m_timeline->track(ti);
+    if (!track) return std::nullopt;
+
+    std::optional<ClipRef> best;
+    double bestDist = std::numeric_limits<double>::max();
+    for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+        const Clip* c = track->clip(ci);
+        if (!c) continue;
+        const double l = m_layoutEngine.timeToPixelX(c->timelineIn());
+        const double r = m_layoutEngine.timeToPixelX(c->timelineOut());
+        const bool right = px >= r;          // outside, past the tail
+        if (!right && px > l) continue;      // inside the clip: not a halo
+        const double dist = right ? px - r : l - px;
+        double zone = edgeGrabPx(r - l);
+
+        // Width of the empty space on that side, up to the next clip.
+        double gapPx = std::numeric_limits<double>::max();
+        for (size_t cj = 0; cj < track->clipCount(); ++cj) {
+            const Clip* n = track->clip(cj);
+            if (!n || cj == ci) continue;
+            if (right) {
+                const double nl = m_layoutEngine.timeToPixelX(n->timelineIn());
+                if (nl >= r) gapPx = std::min(gapPx, nl - r);
+            } else {
+                const double nr = m_layoutEngine.timeToPixelX(n->timelineOut());
+                if (nr <= l) gapPx = std::min(gapPx, l - nr);
+            }
+        }
+        zone = std::min(zone, gapPx / 3.0);
+
+        if (dist < zone && dist < bestDist) {
+            bestDist = dist;
+            best = ClipRef{ti, c->id()};
+        }
+    }
+    return best;
 }
 
 ClipEdge TimelinePanel::hitTestClipEdge(const QPointF& pos, const ClipRef& ref) const

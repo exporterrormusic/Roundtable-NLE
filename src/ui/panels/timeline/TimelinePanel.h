@@ -628,6 +628,22 @@ private:
     // head limits and then snap back on release.
     int64_t   m_rollMinEditPoint{0};
     int64_t   m_rollMaxEditPoint{0};
+    // Premiere-style multi-track roll: when the grabbed cut involves a
+    // selected clip, the cut on every OTHER track with a selected clip
+    // (the one nearest the grabbed cut) rolls by the same delta.  The
+    // primary seam's min/max above are already narrowed so every extra
+    // seam stays within its own limits.
+    struct RollSeam {
+        size_t  trackIndex{0};
+        uint64_t leftClipId{0}, rightClipId{0};
+        int64_t origEditPoint{0};
+        int64_t leftOrigIn{0}, leftOrigDur{0}, leftOrigSrcIn{0};
+        int64_t rightOrigIn{0}, rightOrigDur{0}, rightOrigSrcIn{0};
+    };
+    std::vector<RollSeam> m_rollExtraSeams;
+    /// Live-apply a roll of one seam to `newEditPoint` (clip bounds plus any
+    /// transition anchored at the seam).  Shared by the primary and extra seams.
+    void applyRollSeamLive(const RollSeam& seam, int64_t newEditPoint);
 
     // Transition trim drag state
     size_t  m_transTrimTrackIndex{0};
@@ -753,6 +769,14 @@ private:
     /// track instead of snapping back. SIZE_MAX if no hostable track exists.
     size_t clampTrackToHostTrack(int desiredIdx, const Track* like) const;
     ClipEdge hitTestClipEdge(const QPointF& pos, const ClipRef& ref) const;
+    /// Edge "halo" hit just OUTSIDE a clip on track `ti` at panel-local x
+    /// `px` (header excluded): the clip whose nearest edge is within its
+    /// grab zone.  Where the outside is a gap before another clip, the halo
+    /// is capped at a third of that gap's width, so the gap's middle stays
+    /// selectable while its sides grab the edges.  Shared by hover (trim
+    /// cursor) and press so the cursor never promises a trim the click
+    /// then turns into a gap selection.
+    [[nodiscard]] std::optional<ClipRef> hitTestEdgeHalo(size_t ti, double px) const;
 
     /// Premiere-style adaptive trim-handle grab width, in pixels.
     /// Bigger than the old fixed 6px so edges are easy to grab, but
