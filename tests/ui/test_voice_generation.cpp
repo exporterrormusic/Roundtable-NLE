@@ -25,6 +25,7 @@
 #include <QElapsedTimer>
 #include <QAction>
 #include <QPushButton>
+#include <QFrame>
 #include <QGroupBox>
 #include <QLabel>
 #include <QMessageBox>
@@ -33,6 +34,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <set>
 #include <memory>
 
 namespace {
@@ -813,4 +815,39 @@ TEST_F(VoiceGenerationTest, ScriptLineActionLinksTheDraftToThatLine)
     ASSERT_NE(character, nullptr);
     character->setCurrentText(QStringLiteral("Alice"));
     EXPECT_EQ(panel->linkedScriptLine(), -1);
+}
+
+// The MATCH tab builds one card per script line, recycling card widgets from
+// a pool.  A freshly created card must count as in use; otherwise the next
+// line was handed that same card, which moved it in the layout and dropped
+// the earlier line from the list (every other line once the pool ran out).
+TEST_F(VoiceGenerationTest, MatchTabShowsOneCardPerScriptLine)
+{
+    std::string script = R"({"lines":[)";
+    constexpr int kLines = 9;
+    for (int i = 0; i < kLines; ++i) {
+        if (i) script += ',';
+        script += R"({"character":"Alice","dialogue":"Line )" + std::to_string(i) + R"("})";
+    }
+    script += "]}";
+
+    rt::AudioSync audioSync;
+    auto visibleCardNames = [&audioSync] {
+        std::set<QString> names;
+        for (auto* frame : audioSync.findChildren<QFrame*>()) {
+            if (frame->objectName().startsWith(QStringLiteral("scriptCard_")) &&
+                !frame->isHidden())
+                names.insert(frame->objectName());
+        }
+        return names;
+    };
+
+    // Build twice: the first pass fills an empty pool, the second reuses it.
+    for (int pass = 0; pass < 2; ++pass) {
+        audioSync.hide();
+        ASSERT_TRUE(audioSync.loadScript(script));
+        audioSync.show();
+        QApplication::processEvents();
+        EXPECT_EQ(visibleCardNames().size(), static_cast<size_t>(kLines)) << "pass " << pass;
+    }
 }

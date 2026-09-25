@@ -665,7 +665,15 @@ private:
         QFrame* acquire() {
             if (activeCount < pool.size())
                 return pool[activeCount++];
-            return nullptr;  // caller must allocate
+            return nullptr;  // caller must allocate, then adopt()
+        }
+
+        /// Add a card the caller just allocated, counted as IN USE.  (Pushing
+        /// it without counting it let the next acquire() hand the same card
+        /// to the next script line, dropping the earlier line's card.)
+        void adopt(QFrame* frame) {
+            pool.push_back(frame);
+            activeCount = pool.size();
         }
 
         void releaseAll() {

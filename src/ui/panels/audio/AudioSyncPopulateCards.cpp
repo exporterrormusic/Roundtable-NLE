@@ -212,7 +212,7 @@ void AudioSync::populateCards()
         auto* card = m_cardPool.acquire();
         if (!card) {
             card = new QFrame;
-            m_cardPool.pool.push_back(card);
+            m_cardPool.adopt(card);
         } else {
             // ── Clean up old layout and child widgets when reusing ─────
             // Qt will NOT replace a non-empty layout on an existing widget
