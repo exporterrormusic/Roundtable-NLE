@@ -586,6 +586,9 @@ private:
         double speed{1.0};
         KeyframeTrack<float> speedRamp{1.0f};
         TimeInterpolation timeInterpolation{TimeInterpolation::FrameSampling};
+        /// The source clip's effects (filters), frozen at copy time. Null or
+        /// empty = nothing to paste. Shared so the clipboard stays copyable.
+        std::shared_ptr<const EffectStack> effects;
     };
     std::optional<AttributesClipboard> m_attrClipboard;
 

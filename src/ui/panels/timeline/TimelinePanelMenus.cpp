@@ -17,6 +17,7 @@
 #include "command/LambdaCommand.h"
 #include "command/CompoundCommand.h"
 #include "command/CommandStack.h"
+#include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "audio/AudioFile.h"
 #include "AudioStreamLabels.h"
@@ -49,6 +50,7 @@
 #include <QTimer>
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <cmath>
 
 namespace rt {
@@ -938,10 +940,11 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
                 size_t si = st->findClipIndexById(sel.clipId);
                 if (si >= st->clipCount()) continue;
                 Clip* target = st->clip(si);
+                // Drain the clone.  (Counting up while removing from the
+                // front stopped halfway and pasted only half the effects.)
                 auto cloned = m_effectClipboard->clone();
-                for (size_t ei = 0; ei < cloned->effectCount(); ++ei) {
+                while (!cloned->isEmpty())
                     target->effects().addEffect(cloned->removeEffect(0));
-                }
             }
             onScrollChanged();
             emit contentChanged();
@@ -1132,6 +1135,24 @@ void TimelinePanel::showPasteAttributesDialog()
         }
     }
 
+    // Effects (filters): one checkbox per copied effect, like Premiere.  They
+    // are appended after each target's existing effects.  Not offered for an
+    // audio-only paste (video effects don't apply to audio).
+    std::vector<QCheckBox*> effectChecks;
+    const EffectStack* copiedEffects = m_attrClipboard->effects.get();
+    if (copiedEffects && !copiedEffects->isEmpty() && !(isAudio && !isVideo)) {
+        auto* effectsLabel = new QLabel("Effects:", &dlg);
+        layout->addWidget(effectsLabel);
+        for (size_t ei = 0; ei < copiedEffects->effectCount(); ++ei) {
+            auto* chk = new QCheckBox(
+                QString::fromUtf8(copiedEffects->effect(ei).name()), &dlg);
+            chk->setObjectName(QStringLiteral("pasteAttrEffect_%1").arg(ei));
+            chk->setChecked(true);
+            effectChecks.push_back(chk);
+            layout->addWidget(chk);
+        }
+    }
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     layout->addWidget(buttons);
@@ -1168,8 +1189,22 @@ void TimelinePanel::showPasteAttributesDialog()
             // Audio
             KeyframeTrack<float> oldVolume{1.0f};
             KeyframeTrack<float> oldPan{0.0f};
+            // Effects present before the paste; undo removes all others.
+            std::vector<uint64_t> oldEffectIds;
         };
         std::vector<AttrSnapshot> snapshots;
+
+        std::vector<bool> effectStates;
+        for (auto* ck : effectChecks) effectStates.push_back(ck->isChecked());
+        // Append the checked copied effects to `target` (fresh clones each
+        // time, so redo after undo works).  Visual clips only.
+        auto pasteEffectsInto = [](Clip* target, const AttributesClipboard& attrs,
+                                   const std::vector<bool>& states) {
+            if (!attrs.effects || target->isAudio()) return;
+            for (size_t ei = 0; ei < states.size() && ei < attrs.effects->effectCount(); ++ei)
+                if (states[ei])
+                    target->effects().addEffect(attrs.effects->effect(ei).cloneWithMasks());
+        };
 
         for (const auto& sel : m_selection.clips()) {
             Track* st = m_timeline->track(sel.trackIndex);
@@ -1181,6 +1216,8 @@ void TimelinePanel::showPasteAttributesDialog()
             AttrSnapshot snap;
             snap.trackIdx = sel.trackIndex;
             snap.clipId = sel.clipId;
+            for (size_t ei = 0; ei < target->effects().effectCount(); ++ei)
+                snap.oldEffectIds.push_back(target->effects().effect(ei).id());
 
             if (isAudio && !isVideo) {
                 if (auto* ac = dynamic_cast<AudioClip*>(target)) {
@@ -1227,6 +1264,14 @@ void TimelinePanel::showPasteAttributesDialog()
                 if (checks.size() > 7 && checks[7]->isChecked()) target->speedRamp() = pastedAttributes.speedRamp;
                 if (checks.size() > 8 && checks[8]->isChecked()) target->setTimeInterpolation(pastedAttributes.timeInterpolation);
             }
+            // Effects are appended (not assigned), so they go through the
+            // command's redo only — applying here too would paste them twice.
+            if (!m_commandStack)
+                pasteEffectsInto(target, pastedAttributes, effectStates);
+        }
+        if (!m_commandStack) {
+            onScrollChanged();
+            emit contentChanged();
         }
 
         // Wrap the entire operation in a LambdaCommand for undo/redo
@@ -1237,7 +1282,7 @@ void TimelinePanel::showPasteAttributesDialog()
                     std::vector<bool> states;
                     for (auto* ck : checks) states.push_back(ck->isChecked());
                     return states;
-                }(), isAudio, isVideo]() {
+                }(), isAudio, isVideo, effectStates, pasteEffectsInto]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     // Redo: re-apply the values captured by this command.
                     if (!m_timeline) return;
@@ -1271,6 +1316,7 @@ void TimelinePanel::showPasteAttributesDialog()
                             if (checks_states.size() > 7 && checks_states[7]) target->speedRamp() = pastedAttributes.speedRamp;
                             if (checks_states.size() > 8 && checks_states[8]) target->setTimeInterpolation(pastedAttributes.timeInterpolation);
                         }
+                        pasteEffectsInto(target, pastedAttributes, effectStates);
                     }
                     onScrollChanged();
                     emit contentChanged();
@@ -1301,6 +1347,13 @@ void TimelinePanel::showPasteAttributesDialog()
                             target->setSpeed(snap.oldSpeed);
                             target->speedRamp() = snap.oldSpeedRamp;
                             target->setTimeInterpolation(snap.oldTimeInterpolation);
+                        }
+                        auto& fx = target->effects();
+                        for (size_t ei = fx.effectCount(); ei-- > 0;) {
+                            const uint64_t id = fx.effect(ei).id();
+                            if (std::find(snap.oldEffectIds.begin(), snap.oldEffectIds.end(), id)
+                                == snap.oldEffectIds.end())
+                                (void)fx.removeEffect(ei);
                         }
                     }
                     onScrollChanged();
@@ -1343,6 +1396,8 @@ void TimelinePanel::copyAttributesFromSelection()
     ac.speed     = clip->speed();
     ac.speedRamp = clip->speedRamp();
     ac.timeInterpolation = clip->timeInterpolation();
+    if (!clip->effects().isEmpty())
+        ac.effects = std::shared_ptr<const EffectStack>(clip->effects().clone());
     m_attrClipboard = std::move(ac);
 }
 

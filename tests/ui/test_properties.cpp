@@ -25,6 +25,7 @@
 #include "timeline/Track.h"
 #include "command/CommandStack.h"
 #include "effects/Blur.h"
+#include "effects/Effect.h"
 #include "effects/Tint.h"
 
 #include <QApplication>
@@ -1041,6 +1042,63 @@ TEST(TimelinePanel, PasteAudioAttributesCopiesTracksAndUndoRestoresThem)
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(0).value, 0.25f);
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(1).value, 0.75f);
     EXPECT_FLOAT_EQ(targetPtr->pan().defaultValue(), -0.4f);
+}
+
+// Paste Attributes lists the copied clip's effects (filters) one per
+// checkbox; the checked ones are appended after the target's own effects,
+// and undo removes exactly those, leaving the target's originals intact.
+TEST(TimelinePanel, PasteAttributesPastesCheckedEffects)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    auto src = std::make_unique<rt::VideoClip>();
+    src->setTimelineIn(0);
+    src->setDuration(48000);
+    src->effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    src->effects().addEffect(rt::createEffect(rt::EffectType::Tint));
+    const uint64_t srcId = v1->addClip(std::move(src))->id();
+    auto dst = std::make_unique<rt::VideoClip>();
+    dst->setTimelineIn(96000);
+    dst->setDuration(48000);
+    dst->effects().addEffect(rt::createEffect(rt::EffectType::Vignette));
+    const uint64_t dstId = v1->addClip(std::move(dst))->id();
+    auto target = [&]() -> rt::Clip* { return v1->clip(v1->findClipIndexById(dstId)); };
+    const uint64_t vignetteId = target()->effects().effect(0).id();
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    panel.selection().selectClip({0, srcId});
+    panel.copyAttributesFromSelection();
+    panel.selection().selectClip({0, dstId});
+
+    int effectBoxes = 0;
+    QTimer::singleShot(0, [&effectBoxes]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        for (auto* box : dialog->findChildren<QCheckBox*>())
+            if (box->objectName().startsWith(QStringLiteral("pasteAttrEffect_"))) {
+                ++effectBoxes;
+                if (box->objectName().endsWith(QStringLiteral("_1")))
+                    box->setChecked(false);   // skip the Tint
+            }
+        dialog->accept();
+    });
+    panel.showPasteAttributesDialog();
+
+    EXPECT_EQ(effectBoxes, 2);
+    ASSERT_EQ(target()->effects().effectCount(), 2u);   // Vignette + Blur
+    EXPECT_EQ(target()->effects().effect(0).id(), vignetteId);
+    EXPECT_EQ(target()->effects().effect(1).effectType(), rt::EffectType::Blur);
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(target()->effects().effectCount(), 1u);
+    EXPECT_EQ(target()->effects().effect(0).id(), vignetteId);
+
+    ASSERT_TRUE(stack.redo());
+    ASSERT_EQ(target()->effects().effectCount(), 2u);
+    EXPECT_EQ(target()->effects().effect(1).effectType(), rt::EffectType::Blur);
 }
 
 TEST(TimelinePanel, NarrowGapWinsOverAdjacentClipEdgeHalos)
