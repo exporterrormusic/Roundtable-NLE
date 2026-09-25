@@ -352,6 +352,26 @@ private:
     void applySpineAnimSpeed();
     void applySpineContinuity();
 
+    /// Clips an Animation-section edit applies to: every clip in the
+    /// multi-selection showing the same character as the bound clip (same
+    /// Spine character, or same video character) on an unlocked track, else
+    /// just the bound clip.  Lets one expression change hit all selected
+    /// clips of that character.
+    std::vector<Clip*> characterTargets();
+    /// One per-clip change inside a multi-clip character edit.  The clip is
+    /// re-resolved by id when the command runs (undo/redo may have replaced
+    /// the Clip object); `clip` is only used when no timeline is attached.
+    struct CharacterEdit {
+        uint64_t id{0};
+        Clip* clip{nullptr};
+        std::function<void(Clip*)> redo;
+        std::function<void(Clip*)> undo;
+    };
+    /// Run `edits` as ONE undoable command, then re-sync the panel widgets
+    /// with `syncUi(true)` after redo and `syncUi(false)` after undo.
+    void executeCharacterEdits(const char* name, std::vector<CharacterEdit> edits,
+                               std::function<void(bool redo)> syncUi);
+
     // PNG puppet
     void populateFromPuppet();
     void applyPuppetTalking();

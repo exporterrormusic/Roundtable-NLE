@@ -17,12 +17,14 @@
 #include "timeline/Clip.h"
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
+#include "timeline/ClipMutation.h"
 #include "spine/ModelManager.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 
 #include <QComboBox>
 #include <QCheckBox>
+#include <algorithm>
 #include <filesystem>
 
 namespace rt {
@@ -135,228 +137,212 @@ void PropertiesPanel::applySpineStance()
     }
 }
 
+// ── Animation section: applies to every selected clip of the same character ──
+
+namespace {
+
+/// "S:<name>" for a Spine clip, "V:<name>" for a video character, "" otherwise.
+std::string characterKey(const Clip* clip)
+{
+    if (!clip) return {};
+    if (clip->clipType() == ClipType::Spine)
+        return "S:" + static_cast<const SpineClip*>(clip)->characterName();
+    if (clip->clipType() == ClipType::Video) {
+        const auto* vc = static_cast<const VideoClip*>(clip);
+        if (vc->isVideoCharacter()) return "V:" + vc->characterName();
+    }
+    return {};
+}
+
+} // namespace
+
+std::vector<Clip*> PropertiesPanel::characterTargets()
+{
+    std::vector<Clip*> out;
+    if (!m_clip) return out;
+    const std::string key = characterKey(m_clip);
+    if (m_multiSelection.size() > 1 && !key.empty()) {
+        for (Clip* c : m_multiSelection) {
+            if (!c || characterKey(c) != key) continue;
+            Track* track = nullptr;
+            Clip* live = m_timeline ? rt::resolveClipById(m_timeline, c->id(), &track) : c;
+            if (!live) continue;
+            if (m_timeline && !rt::canMutateClip(live, track)) continue;   // locked track
+            if (std::find(out.begin(), out.end(), live) == out.end())
+                out.push_back(live);
+        }
+    }
+    if (out.empty()) out.push_back(m_clip);
+    return out;
+}
+
+void PropertiesPanel::executeCharacterEdits(const char* name, std::vector<CharacterEdit> edits,
+                                            std::function<void(bool)> syncUi)
+{
+    if (edits.empty()) return;
+    auto run = [this, edits, syncUi](bool redo) {
+        for (const auto& e : edits) {
+            Clip* clip = m_timeline ? rt::resolveClipById(m_timeline, e.id) : e.clip;
+            if (!clip) continue;
+            (redo ? e.redo : e.undo)(clip);
+        }
+        m_updating = true;
+        if (syncUi) syncUi(redo);
+        m_updating = false;
+        emit propertyChanged();
+    };
+    if (m_commandStack) {
+        m_commandStack->execute(std::make_unique<LambdaCommand>(
+            name, [run]() { run(true); }, [run]() { run(false); }));
+    } else {
+        run(true);
+    }
+}
+
 void PropertiesPanel::applySpineAnimation()
 {
     if (m_updating || !canMutateBoundClip()) return;
+    if (characterKey(m_clip).empty()) return;
+    const std::string newAnim = m_animationCombo->currentText().toStdString();
+    const std::string repOld = m_clip->clipType() == ClipType::Spine
+        ? static_cast<SpineClip*>(m_clip)->animationName()
+        : static_cast<VideoClip*>(m_clip)->animationName();
 
-    // Handle VideoClip video characters
-    if (m_clip->clipType() == ClipType::Video) {
-        auto* vc = static_cast<VideoClip*>(m_clip);
-        if (!vc->isVideoCharacter()) return;
-        auto newAnim = m_animationCombo->currentText().toStdString();
-        if (newAnim == vc->animationName()) return;
-        auto oldAnim = vc->animationName();
-        auto oldMute = vc->videoMutePath();
-        auto oldTalk = vc->videoTalkPath();
-        auto oldMedia = vc->mediaPath();
-        auto oldLabel = vc->label();
-        auto newLabel = vc->characterName() + " - " + newAnim;
-        const std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
-        const auto paths = convertedVideoPaths(
-            vc->mediaPath(), vc->characterName(), outfit, newAnim);
-        const std::string newMute = paths.mute;
-        const std::string newTalk = paths.talk;
-        std::string newMedia = vc->isTalking() ? newTalk : newMute;
-        if (m_commandStack) {
-            m_commandStack->execute(std::make_unique<LambdaCommand>(
-                "Change animation",
-                [vc, newAnim, newMute, newTalk, newMedia, newLabel, this]() {
-                    vc->setAnimationName(newAnim);
-                    vc->setVideoMutePath(newMute);
-                    vc->setVideoTalkPath(newTalk);
-                    vc->setMediaPath(newMedia);
-                    vc->setLabel(newLabel);
-                    m_updating = true;
-                    m_animationCombo->setCurrentText(QString::fromStdString(newAnim));
-                    m_updating = false;
-                    emit propertyChanged();
+    std::vector<CharacterEdit> edits;
+    for (Clip* c : characterTargets()) {
+        if (c->clipType() == ClipType::Video) {
+            auto* vc = static_cast<VideoClip*>(c);
+            if (!vc->isVideoCharacter() || vc->animationName() == newAnim) continue;
+            const std::string outfit = vc->outfit().empty() ? "default" : vc->outfit();
+            const auto paths = convertedVideoPaths(
+                vc->mediaPath(), vc->characterName(), outfit, newAnim);
+            const std::string newMute = paths.mute;
+            const std::string newTalk = paths.talk;
+            const std::string newMedia = vc->isTalking() ? newTalk : newMute;
+            const std::string newLabel = vc->characterName() + " - " + newAnim;
+            const std::string oldAnim = vc->animationName(), oldMute = vc->videoMutePath(),
+                              oldTalk = vc->videoTalkPath(), oldMedia = vc->mediaPath(),
+                              oldLabel = vc->label();
+            edits.push_back({c->id(), c,
+                [newAnim, newMute, newTalk, newMedia, newLabel](Clip* x) {
+                    auto* v = static_cast<VideoClip*>(x);
+                    v->setAnimationName(newAnim);
+                    v->setVideoMutePath(newMute);
+                    v->setVideoTalkPath(newTalk);
+                    v->setMediaPath(newMedia);
+                    v->setLabel(newLabel);
                 },
-                [vc, oldAnim, oldMute, oldTalk, oldMedia, oldLabel, this]() {
-                    vc->setAnimationName(oldAnim);
-                    vc->setVideoMutePath(oldMute);
-                    vc->setVideoTalkPath(oldTalk);
-                    vc->setMediaPath(oldMedia);
-                    vc->setLabel(oldLabel);
-                    m_updating = true;
-                    m_animationCombo->setCurrentText(QString::fromStdString(oldAnim));
-                    m_updating = false;
-                    emit propertyChanged();
-                }));
-        } else {
-            vc->setAnimationName(newAnim);
-            vc->setVideoMutePath(newMute);
-            vc->setVideoTalkPath(newTalk);
-            vc->setMediaPath(newMedia);
-            vc->setLabel(newLabel);
-            emit propertyChanged();
+                [oldAnim, oldMute, oldTalk, oldMedia, oldLabel](Clip* x) {
+                    auto* v = static_cast<VideoClip*>(x);
+                    v->setAnimationName(oldAnim);
+                    v->setVideoMutePath(oldMute);
+                    v->setVideoTalkPath(oldTalk);
+                    v->setMediaPath(oldMedia);
+                    v->setLabel(oldLabel);
+                }});
+        } else if (c->clipType() == ClipType::Spine) {
+            auto* sc = static_cast<SpineClip*>(c);
+            if (sc->animationName() == newAnim) continue;
+            const std::string newLabel = sc->characterName() + " - " + newAnim;
+            const std::string oldAnim = sc->animationName(), oldLabel = sc->label();
+            edits.push_back({c->id(), c,
+                [newAnim, newLabel](Clip* x) {
+                    auto* s = static_cast<SpineClip*>(x);
+                    s->setAnimationName(newAnim);
+                    s->setLabel(newLabel);
+                },
+                [oldAnim, oldLabel](Clip* x) {
+                    auto* s = static_cast<SpineClip*>(x);
+                    s->setAnimationName(oldAnim);
+                    s->setLabel(oldLabel);
+                }});
         }
-        return;
     }
-
-    if (m_clip->clipType() != ClipType::Spine) return;
-    auto* sc = static_cast<SpineClip*>(m_clip);
-    auto newVal = m_animationCombo->currentText().toStdString();
-    if (newVal == sc->animationName()) return;
-    auto oldVal = sc->animationName();
-    auto oldLabel = sc->label();
-    auto newLabel = sc->characterName() + " - " + newVal;
-    if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
-            "Change animation",
-            [sc, newVal, newLabel, this]() {
-                sc->setAnimationName(newVal);
-                sc->setLabel(newLabel);
-                m_updating = true;
-                m_animationCombo->setCurrentText(QString::fromStdString(newVal));
-                m_updating = false;
-                emit propertyChanged();
-            },
-            [sc, oldVal, oldLabel, this]() {
-                sc->setAnimationName(oldVal);
-                sc->setLabel(oldLabel);
-                m_updating = true;
-                m_animationCombo->setCurrentText(QString::fromStdString(oldVal));
-                m_updating = false;
-                emit propertyChanged();
-            }));
-    } else {
-        sc->setAnimationName(newVal);
-        sc->setLabel(newLabel);
-        emit propertyChanged();
-    }
+    executeCharacterEdits("Change animation", std::move(edits),
+        [this, newAnim, repOld](bool redo) {
+            m_animationCombo->setCurrentText(QString::fromStdString(redo ? newAnim : repOld));
+        });
 }
 
 void PropertiesPanel::applySpineLooping()
 {
     if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
-    auto* sc = static_cast<SpineClip*>(m_clip);
-    bool newVal = m_loopingCheck->isChecked();
-    if (newVal == sc->isLooping()) return;
-    bool oldVal = sc->isLooping();
-    if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
-            "Toggle looping",
-            [sc, newVal, this]() {
-                sc->setLooping(newVal);
-                m_updating = true; m_loopingCheck->setChecked(newVal); m_updating = false;
-                emit propertyChanged();
-            },
-            [sc, oldVal, this]() {
-                sc->setLooping(oldVal);
-                m_updating = true; m_loopingCheck->setChecked(oldVal); m_updating = false;
-                emit propertyChanged();
-            }));
-    } else {
-        sc->setLooping(newVal);
-        emit propertyChanged();
+    const bool newVal = m_loopingCheck->isChecked();
+    const bool repOld = static_cast<SpineClip*>(m_clip)->isLooping();
+    std::vector<CharacterEdit> edits;
+    for (Clip* c : characterTargets()) {
+        if (c->clipType() != ClipType::Spine) continue;
+        const bool oldVal = static_cast<SpineClip*>(c)->isLooping();
+        if (oldVal == newVal) continue;
+        edits.push_back({c->id(), c,
+            [newVal](Clip* x) { static_cast<SpineClip*>(x)->setLooping(newVal); },
+            [oldVal](Clip* x) { static_cast<SpineClip*>(x)->setLooping(oldVal); }});
     }
+    executeCharacterEdits("Toggle looping", std::move(edits),
+        [this, newVal, repOld](bool redo) { m_loopingCheck->setChecked(redo ? newVal : repOld); });
 }
 
 void PropertiesPanel::applySpineTalking()
 {
     if (m_updating || !canMutateBoundClip()) return;
-
-    // Handle VideoClip video characters
-    if (m_clip->clipType() == ClipType::Video) {
-        auto* vc = static_cast<VideoClip*>(m_clip);
-        if (!vc->isVideoCharacter()) return;
-        bool newVal = m_talkingCheck->isChecked();
-        if (newVal == vc->isTalking()) return;
-        bool oldVal = vc->isTalking();
-        if (m_commandStack) {
-            m_commandStack->execute(std::make_unique<LambdaCommand>(
-                "Toggle talking",
-                [vc, newVal, this]() {
-                    vc->setTalking(newVal);
-                    m_updating = true; m_talkingCheck->setChecked(newVal); m_updating = false;
-                    emit propertyChanged();
-                },
-                [vc, oldVal, this]() {
-                    vc->setTalking(oldVal);
-                    m_updating = true; m_talkingCheck->setChecked(oldVal); m_updating = false;
-                    emit propertyChanged();
-                }));
-        } else {
-            vc->setTalking(newVal);
-            emit propertyChanged();
-        }
-        return;
+    if (characterKey(m_clip).empty()) return;
+    const bool newVal = m_talkingCheck->isChecked();
+    auto talkingOf = [](const Clip* c) {
+        return c->clipType() == ClipType::Spine
+            ? static_cast<const SpineClip*>(c)->isTalking()
+            : static_cast<const VideoClip*>(c)->isTalking();
+    };
+    auto setTalking = [](Clip* c, bool v) {
+        if (c->clipType() == ClipType::Spine) static_cast<SpineClip*>(c)->setTalking(v);
+        else static_cast<VideoClip*>(c)->setTalking(v);
+    };
+    const bool repOld = talkingOf(m_clip);
+    std::vector<CharacterEdit> edits;
+    for (Clip* c : characterTargets()) {
+        const bool oldVal = talkingOf(c);
+        if (oldVal == newVal) continue;
+        edits.push_back({c->id(), c,
+            [setTalking, newVal](Clip* x) { setTalking(x, newVal); },
+            [setTalking, oldVal](Clip* x) { setTalking(x, oldVal); }});
     }
-
-    if (m_clip->clipType() != ClipType::Spine) return;
-    auto* sc = static_cast<SpineClip*>(m_clip);
-    bool newVal = m_talkingCheck->isChecked();
-    if (newVal == sc->isTalking()) return;
-    bool oldVal = sc->isTalking();
-    if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
-            "Toggle talking",
-            [sc, newVal, this]() {
-                sc->setTalking(newVal);
-                m_updating = true; m_talkingCheck->setChecked(newVal); m_updating = false;
-                emit propertyChanged();
-            },
-            [sc, oldVal, this]() {
-                sc->setTalking(oldVal);
-                m_updating = true; m_talkingCheck->setChecked(oldVal); m_updating = false;
-                emit propertyChanged();
-            }));
-    } else {
-        sc->setTalking(newVal);
-        emit propertyChanged();
-    }
+    executeCharacterEdits("Toggle talking", std::move(edits),
+        [this, newVal, repOld](bool redo) { m_talkingCheck->setChecked(redo ? newVal : repOld); });
 }
 
 void PropertiesPanel::applySpineAnimSpeed()
 {
     if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
-    auto* sc = static_cast<SpineClip*>(m_clip);
-    float newVal = static_cast<float>(m_animSpeedSpin->value());
-    if (newVal == sc->animationSpeed()) return;
-    float oldVal = sc->animationSpeed();
-    if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
-            "Change animation speed",
-            [sc, newVal, this]() {
-                sc->setAnimationSpeed(newVal);
-                m_updating = true; m_animSpeedSpin->setValue(newVal); m_updating = false;
-                emit propertyChanged();
-            },
-            [sc, oldVal, this]() {
-                sc->setAnimationSpeed(oldVal);
-                m_updating = true; m_animSpeedSpin->setValue(oldVal); m_updating = false;
-                emit propertyChanged();
-            }));
-    } else {
-        sc->setAnimationSpeed(newVal);
-        emit propertyChanged();
+    const float newVal = static_cast<float>(m_animSpeedSpin->value());
+    const float repOld = static_cast<SpineClip*>(m_clip)->animationSpeed();
+    std::vector<CharacterEdit> edits;
+    for (Clip* c : characterTargets()) {
+        if (c->clipType() != ClipType::Spine) continue;
+        const float oldVal = static_cast<SpineClip*>(c)->animationSpeed();
+        if (oldVal == newVal) continue;
+        edits.push_back({c->id(), c,
+            [newVal](Clip* x) { static_cast<SpineClip*>(x)->setAnimationSpeed(newVal); },
+            [oldVal](Clip* x) { static_cast<SpineClip*>(x)->setAnimationSpeed(oldVal); }});
     }
+    executeCharacterEdits("Change animation speed", std::move(edits),
+        [this, newVal, repOld](bool redo) { m_animSpeedSpin->setValue(redo ? newVal : repOld); });
 }
 
 void PropertiesPanel::applySpineContinuity()
 {
     if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Spine) return;
-    auto* sc = static_cast<SpineClip*>(m_clip);
-    bool newVal = m_continuityCheck->isChecked();
-    if (newVal == sc->useGlobalTime()) return;
-    bool oldVal = sc->useGlobalTime();
-    if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
-            "Toggle continuity",
-            [sc, newVal, this]() {
-                sc->setUseGlobalTime(newVal);
-                m_updating = true; m_continuityCheck->setChecked(newVal); m_updating = false;
-                emit propertyChanged();
-            },
-            [sc, oldVal, this]() {
-                sc->setUseGlobalTime(oldVal);
-                m_updating = true; m_continuityCheck->setChecked(oldVal); m_updating = false;
-                emit propertyChanged();
-            }));
-    } else {
-        sc->setUseGlobalTime(newVal);
-        emit propertyChanged();
+    const bool newVal = m_continuityCheck->isChecked();
+    const bool repOld = static_cast<SpineClip*>(m_clip)->useGlobalTime();
+    std::vector<CharacterEdit> edits;
+    for (Clip* c : characterTargets()) {
+        if (c->clipType() != ClipType::Spine) continue;
+        const bool oldVal = static_cast<SpineClip*>(c)->useGlobalTime();
+        if (oldVal == newVal) continue;
+        edits.push_back({c->id(), c,
+            [newVal](Clip* x) { static_cast<SpineClip*>(x)->setUseGlobalTime(newVal); },
+            [oldVal](Clip* x) { static_cast<SpineClip*>(x)->setUseGlobalTime(oldVal); }});
     }
+    executeCharacterEdits("Toggle continuity", std::move(edits),
+        [this, newVal, repOld](bool redo) { m_continuityCheck->setChecked(redo ? newVal : repOld); });
 }
 
 // ── Spine dropdown population ───────────────────────────────────────────────

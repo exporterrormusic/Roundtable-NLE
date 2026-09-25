@@ -300,6 +300,50 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
         } else {
             m_shotSection->setVisible(false);
         }
+
+        // Several clips of ONE character (Spine or video character), e.g. the
+        // same person picked across shots: show the Animation section so an
+        // expression / talking change applies to all of them at once (see
+        // characterTargets()).  Other selected clips (backgrounds, audio)
+        // don't block this; two different characters do.
+        Clip* charRep = nullptr;
+        std::string charName;
+        ClipType charType = ClipType::Video;
+        int charCount = 0;
+        bool oneCharacter = true;
+        for (auto* c : clips) {
+            std::string name;
+            if (c && c->clipType() == ClipType::Spine)
+                name = static_cast<SpineClip*>(c)->characterName();
+            else if (c && c->clipType() == ClipType::Video &&
+                     static_cast<VideoClip*>(c)->isVideoCharacter())
+                name = static_cast<VideoClip*>(c)->characterName();
+            else
+                continue;
+            if (!charRep) {
+                charRep = c;
+                charName = name;
+                charType = c->clipType();
+            } else if (c->clipType() != charType || name != charName) {
+                oneCharacter = false;
+                break;
+            }
+            ++charCount;
+        }
+        if (charRep && oneCharacter && charCount > 1) {
+            bindRepresentative(charRep);
+            m_spineClip = charType == ClipType::Spine
+                ? static_cast<SpineClip*>(m_clip) : nullptr;
+            m_animationSection->setVisible(true);
+            const auto savedHeader = m_headerLabel->text();
+            populateFromClip();
+            m_headerLabel->setText(savedHeader);
+            m_typeLabel->setText(QString("%1 × %2").arg(charCount)
+                                     .arg(QString::fromStdString(charName)));
+            if (m_statusLabel && editable)
+                m_statusLabel->setText(
+                    QString("Animation edits apply to all %1").arg(charCount));
+        }
     }
 
     emit clipChanged(m_clip);

@@ -821,6 +821,65 @@ TEST(PropertiesPanel, SpinePropertyChanges)
     EXPECT_FALSE(clip.isTalking());
 }
 
+// Selecting several clips of the same character (e.g. across shots) shows the
+// Animation section, and one expression change applies to all of them as a
+// single undoable step.  Non-character clips in the selection don't block it.
+TEST(PropertiesPanel, MultiSelectSameCharacterChangesAllExpressions)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    rt::Track* v2 = timeline.addVideoTrack("V2");
+    ASSERT_NE(v1, nullptr);
+    ASSERT_NE(v2, nullptr);
+
+    auto addSpine = [](rt::Track* track, int64_t start, const char* character) {
+        auto owned = std::make_unique<rt::SpineClip>();
+        owned->setCharacterName(character);
+        owned->setAnimationName("idle");
+        owned->setTimelineIn(start);
+        owned->setDuration(48000);
+        return static_cast<rt::SpineClip*>(track->addClip(std::move(owned)));
+    };
+    rt::SpineClip* sinA = addSpine(v2, 0, "Sin");
+    rt::SpineClip* sinB = addSpine(v2, 96000, "Sin");
+    rt::SpineClip* sinC = addSpine(v2, 192000, "Sin");
+    auto bgOwned = std::make_unique<rt::VideoClip>();
+    bgOwned->setDuration(48000);
+    auto* background = v1->addClip(std::move(bgOwned));
+    ASSERT_TRUE(sinA && sinB && sinC && background);
+
+    rt::PropertiesPanel panel;
+    rt::CommandStack stack;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    panel.setMultiSelection({sinA, background, sinB, sinC});
+
+    ASSERT_TRUE(panel.animationCombo()->isVisibleTo(&panel));
+    panel.animationCombo()->addItem("angry");
+    panel.animationCombo()->setCurrentText("angry");
+    EXPECT_EQ(sinA->animationName(), "angry");
+    EXPECT_EQ(sinB->animationName(), "angry");
+    EXPECT_EQ(sinC->animationName(), "angry");
+    EXPECT_EQ(sinB->label(), "Sin - angry");
+
+    panel.talkingCheck()->setChecked(!sinA->isTalking());
+    EXPECT_EQ(sinB->isTalking(), sinA->isTalking());
+    EXPECT_EQ(sinC->isTalking(), sinA->isTalking());
+
+    ASSERT_TRUE(stack.undo());   // talking
+    ASSERT_TRUE(stack.undo());   // expression, all three in one step
+    EXPECT_EQ(sinA->animationName(), "idle");
+    EXPECT_EQ(sinB->animationName(), "idle");
+    EXPECT_EQ(sinC->animationName(), "idle");
+
+    // Two different characters: no shared expression to set.
+    rt::SpineClip* sugar = addSpine(v2, 288000, "Sugar");
+    ASSERT_NE(sugar, nullptr);
+    panel.clearClip();
+    panel.setMultiSelection({sinA, sugar});
+    EXPECT_FALSE(panel.animationCombo()->isVisibleTo(&panel));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PropertiesPanel — VideoClip binding
 // ═══════════════════════════════════════════════════════════════════════════
