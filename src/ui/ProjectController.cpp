@@ -147,7 +147,7 @@ void ProjectController::refreshProjectsList()
         flatFilters << "*.rtp";
         auto flatFiles = dir.entryInfoList(flatFilters, QDir::Files);
         for (const auto& fi : flatFiles) {
-            QString name = fi.baseName();
+            QString name = fi.completeBaseName();
             QString subFolder = projDir + "/" + name;
             QDir().mkpath(subFolder);
             QFile::rename(fi.absoluteFilePath(), subFolder + "/" + fi.fileName());
@@ -190,6 +190,8 @@ void ProjectController::refreshProjectsList()
     // Also include recent projects that live outside the default projects
     // directory (e.g. projects created on external drives).
     auto settings = rt::appSettings();
+    // "ExternalProjects" pins projects opened in place from outside the
+    // projects folder so they never age out of the 10-entry recent list.
     QStringList recent = settings.value("RecentFiles").toStringList();
     {
         QSet<QString> seen;
@@ -197,7 +199,9 @@ void ProjectController::refreshProjectsList()
             seen.insert(QFileInfo(fi.absoluteFilePath()).absoluteFilePath().toLower());
 
         const QString projDirPrefix = QDir::toNativeSeparators(projDir).toLower();
-        for (const auto& rp : recent) {
+        const QStringList candidates =
+            recent + settings.value("ExternalProjects").toStringList();
+        for (const auto& rp : candidates) {
             QFileInfo rfi(rp);
             QString normPath = rfi.absoluteFilePath().toLower();
             if (seen.contains(normPath)) continue;
@@ -231,7 +235,7 @@ void ProjectController::refreshProjectsList()
 
     for (const auto& entry : entries) {
         ProjectInfo info;
-        info.name         = entry.baseName();
+        info.name         = entry.completeBaseName();
         info.filePath     = entry.absoluteFilePath();
         info.fileSize     = entry.size();
         info.lastModified = entry.lastModified();

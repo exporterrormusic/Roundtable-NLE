@@ -288,8 +288,8 @@ void ProjectPanel::populateOpenList()
         thumbLabel->setFixedSize(kThumbW, kThumbH);
         thumbLabel->setAlignment(Qt::AlignCenter);
 
-        QString thumbPng = fi.absolutePath() + "/" + fi.baseName() + ".png";
-        QString thumbJpg = fi.absolutePath() + "/" + fi.baseName() + ".jpg";
+        QString thumbPng = fi.absolutePath() + "/" + fi.completeBaseName() + ".png";
+        QString thumbJpg = fi.absolutePath() + "/" + fi.completeBaseName() + ".jpg";
         QPixmap pix(thumbPng);
         if (pix.isNull()) pix.load(thumbJpg);
 
@@ -319,7 +319,7 @@ void ProjectPanel::populateOpenList()
         infoLayout->setSpacing(4);
         infoLayout->setContentsMargins(0, 4, 0, 4);
 
-        auto* nameLabel = new QLabel(fi.baseName());
+        auto* nameLabel = new QLabel(fi.completeBaseName());
         nameLabel->setStyleSheet(QStringLiteral(
             "font-size: %1px; font-weight: 600; color: %2; background: transparent;")
             .arg(Theme::typography().sizeCaption)

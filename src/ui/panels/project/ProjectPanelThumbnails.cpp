@@ -30,7 +30,7 @@ QString ProjectPanel::thumbnailPathForProject(const QString& projectName) const
     for (const auto& p : m_allProjects) {
         if (p.name == projectName && !p.filePath.isEmpty()) {
             QFileInfo fi(p.filePath);
-            return fi.absolutePath() + "/" + fi.baseName() + ".png";
+            return fi.absolutePath() + "/" + fi.completeBaseName() + ".png";
         }
     }
     if (m_projectsDir.isEmpty()) return {};

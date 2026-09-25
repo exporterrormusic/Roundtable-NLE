@@ -892,6 +892,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Laplace: Ultimate Hero Prototype Hero",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -917,6 +925,14 @@
             "outfits": {
                 "default": {
                     "display_name": "Maxwell",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Maxwell: Ordinary Mechanic Chief Researcher",
                     "variants": [
                         "default",
                         "aim",
@@ -1154,6 +1170,14 @@
                 },
                 "outfit_02": {
                     "display_name": "Sugar Wild Backyard",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_03": {
+                    "display_name": "Sugar Killer Rabbit",
                     "variants": [
                         "default",
                         "aim",
@@ -2481,6 +2505,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Mana Drunken Rabbit",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3296,6 +3328,36 @@
                 }
             }
         },
+        "c404": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Guilty: Mighty Bunny",
+            "outfits": {
+                "default": {
+                    "display_name": "Guilty: Mighty Bunny",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c405": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Sin: Swift Bunny",
+            "outfits": {
+                "default": {
+                    "display_name": "Sin: Swift Bunny",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c411": {
             "category": "Character",
             "has_mouth_animation": true,
@@ -3303,6 +3365,14 @@
             "outfits": {
                 "default": {
                     "display_name": "Flora",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Flora Fairy Rabbit",
                     "variants": [
                         "default",
                         "aim",
@@ -3549,6 +3619,36 @@
             "outfits": {
                 "default": {
                     "display_name": "Snow White: Heavy Arms",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c472": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Scarlet",
+            "outfits": {
+                "default": {
+                    "display_name": "Scarlet",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c473": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Rapunzel",
+            "outfits": {
+                "default": {
+                    "display_name": "Rapunzel",
                     "variants": [
                         "default",
                         "aim",
@@ -3843,6 +3943,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Crust Treat Chef",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -4065,6 +4173,14 @@
             "outfits": {
                 "default": {
                     "display_name": "Phantom",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Phantom Saint Thief",
                     "variants": [
                         "default",
                         "aim",
@@ -5009,6 +5125,83 @@
                 }
             }
         },
+        "c870": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Queen (Makoto)",
+            "outfits": {
+                "default": {
+                    "display_name": "Queen (Makoto)",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Queen (Makoto) Shujin Academy Student Council President",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_02": {
+                    "display_name": "Queen (Makoto) Queen's Pajamas (Ver. NIKKE Collabo)",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c871": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Yukiko",
+            "outfits": {
+                "default": {
+                    "display_name": "Yukiko",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Yukiko Amagi Inn Kimono",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_02": {
+                    "display_name": "Yukiko Winter Roomwear (Ver. NIKKE Collabo)",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c872": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Aigis",
+            "outfits": {
+                "default": {
+                    "display_name": "Aigis",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c900": {
             "category": "NPC",
             "has_mouth_animation": true,
@@ -5509,6 +5702,21 @@
                 }
             }
         },
+        "c9029": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Laplace",
+            "outfits": {
+                "default": {
+                    "display_name": "Laplace",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c903": {
             "category": "NPC",
             "has_mouth_animation": true,
@@ -5524,6 +5732,51 @@
                 },
                 "outfit_01": {
                     "display_name": "Andersen Soaked",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9030": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Enme",
+            "outfits": {
+                "default": {
+                    "display_name": "Enme",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9031": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Syuen",
+            "outfits": {
+                "default": {
+                    "display_name": "Syuen",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9032": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Jien",
+            "outfits": {
+                "default": {
+                    "display_name": "Jien",
                     "variants": [
                         "default",
                         "aim",
@@ -5592,6 +5845,36 @@
                 }
             }
         },
+        "c9038": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Teddie",
+            "outfits": {
+                "default": {
+                    "display_name": "Teddie",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9039": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Morgana",
+            "outfits": {
+                "default": {
+                    "display_name": "Morgana",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c904": {
             "category": "NPC",
             "has_mouth_animation": true,
@@ -5599,6 +5882,21 @@
             "outfits": {
                 "default": {
                     "display_name": "Enikk",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9040": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Morgana",
+            "outfits": {
+                "default": {
+                    "display_name": "Morgana",
                     "variants": [
                         "default",
                         "aim",

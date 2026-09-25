@@ -72,7 +72,8 @@ void ProjectPanel::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_O
         && (event->modifiers() & Qt::ControlModifier)) {
-        toggleSidePanel(SidePanelMode::Open);
+        hideSidePanel();
+        emit openFromFile();
         event->accept();
         return;
     }

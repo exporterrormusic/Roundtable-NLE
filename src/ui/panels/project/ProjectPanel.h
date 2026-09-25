@@ -148,7 +148,6 @@ signals:
     void saveRequested();
     void openRecentProject(const QString& filePath);
     void revealInExplorer(const QString& name);
-    void importProject(const QString& srcPath);
     void exportProject(const QString& name, const QString& dstPath);
     void projectsDirChanged(const QString& newDir);
     /// Assign (or clear, when show is empty) a project's show.
@@ -211,7 +210,6 @@ private:
     QPushButton* m_newBtn{nullptr};
     QPushButton* m_openFileBtn{nullptr};
     QPushButton* m_saveBtn{nullptr};
-    QPushButton* m_importBtn{nullptr};
     QPushButton* m_settingsBtn{nullptr};
 
     // ── Side Panel (inline expanding column) ────────────────────────────

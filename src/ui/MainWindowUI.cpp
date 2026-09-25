@@ -212,7 +212,6 @@ void MainWindow::onNewProjectForMedia(const QString& filePath, int64_t atTick, s
     m_projectController->onNewProjectForMedia(filePath, atTick, trackIndex);
 }
 void MainWindow::onOpenRecentProjectFromPanel(const QString& filePath) { m_projectController->onOpenRecentProjectFromPanel(filePath); }
-void MainWindow::onImportProject(const QString& srcPath)              { m_projectController->onImportProject(srcPath); }
 void MainWindow::onExportProject(const QString& name, const QString& dstPath)
 {
     m_projectController->onExportProject(name, dstPath);

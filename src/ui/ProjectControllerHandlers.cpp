@@ -6,7 +6,7 @@
  * onDeleteProjectFromPanel, onRenameProjectFromPanel,
  * onDuplicateProjectFromPanel, onRevealProjectInExplorer,
  * onNewProjectForMedia, onOpenRecentProjectFromPanel,
- * onImportProject, onExportProject, onNewProject,
+ * onExportProject, onNewProject,
  * onOpenProject, onSaveProject, onSaveProjectAs.
  */
 
@@ -326,6 +326,23 @@ void ProjectController::onOpenProjectFromPanel(const QString& name)
 
 void ProjectController::onDeleteProjectFromPanel(const QString& name, const QString& filePath)
 {
+    // Projects opened in place from elsewhere (external drive etc.) are only
+    // REFERENCED — never delete their files (the folder-wide removeRecursively
+    // below would wipe whatever folder the .rtp happens to sit in).
+    if (!filePath.isEmpty() && isExternalProjectPath(filePath)) {
+        auto reply = QMessageBox::question(m_mw, "Remove Project from List",
+            QString("Remove '%1' from the project list?\n\n"
+                    "The project file stays where it is:\n%2")
+                .arg(name, QDir::toNativeSeparators(filePath)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+        unpinExternalProject(filePath);
+        refreshProjectsList();
+        m_mw->statusBar()->showMessage(
+            QString("Removed '%1' from the list").arg(name), 3000);
+        return;
+    }
+
     auto reply = QMessageBox::question(m_mw, "Delete Project",
         QString("Delete project '%1'? This cannot be undone.").arg(name),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -455,43 +472,161 @@ void ProjectController::onRenameProjectFromPanel(const QString& oldName, const Q
 {
     spdlog::info("Renaming project '{}' -> '{}'", oldName.toStdString(), newName.toStdString());
 
-    QString projDir = projectsDirectory();
+    auto fail = [this](const QString& msg) {
+        QMessageBox::warning(m_mw, "Rename Project", msg);
+    };
 
-    if (QDir(projDir + "/" + newName).exists()) {
-        QMessageBox::warning(m_mw, "Error",
-            QString("A project named '%1' already exists.").arg(newName));
+    // The name becomes a file (and possibly folder) name.
+    static const QString kBadChars = QStringLiteral("\\/:*?\"<>|");
+    for (const QChar ch : newName) {
+        if (kBadChars.contains(ch) || ch.unicode() < 32) {
+            fail(QString("A project name can't contain any of these characters:\n%1")
+                     .arg(kBadChars));
+            return;
+        }
+    }
+    if (newName.endsWith('.') || newName.endsWith(' ')) {
+        fail("A project name can't end with a dot or a space.");
         return;
     }
 
-    QString oldFolder = projDir + "/" + oldName;
-    // Rename files inside, then rename the folder
-    QString oldRtp = oldFolder + "/" + oldName + ".rtp";
-    QString newRtp = oldFolder + "/" + newName + ".rtp";
-    QFile::rename(oldRtp, newRtp);
-    QFile::rename(oldRtp + ".bak", newRtp + ".bak");
-    QFile::rename(oldFolder + "/" + oldName + ".png", oldFolder + "/" + newName + ".png");
-    QFile::rename(oldFolder + "/" + oldName + ".jpg", oldFolder + "/" + newName + ".jpg");
-    QString newFolder = projDir + "/" + newName;
-    QString newFilePath = newFolder + "/" + newName + ".rtp";
-    bool renamed = QDir().rename(oldFolder, newFolder);
-
-    if (renamed) {
-        // If the renamed project is the currently loaded one, update it
-        if (m_mw->currentProject() &&
-            QString::fromStdString(m_mw->currentProject()->name()) == oldName) {
-            m_mw->currentProject()->setName(newName.toStdString());
-            m_mw->currentProject()->setFilePath(newFilePath.toStdWString());
-            if (m_mw->projectPanel()) m_mw->projectPanel()->setCurrentProjectName(newName);
-            if (auto* bin = m_mw->projectBin()) bin->setProjectName(newName);
-            m_mw->setWindowTitle(QString("ROUNDTABLE NLE %1 — %2").arg(ROUNDTABLE_VERSION).arg(newName));
-        }
-        refreshProjectsList();
-        m_mw->statusBar()->showMessage(
-            QString("Renamed '%1' to '%2'").arg(oldName, newName), 3000);
-    } else {
-        QMessageBox::warning(m_mw, "Error",
-            QString("Failed to rename '%1'").arg(oldName));
+    // Resolve the project's REAL location — it may be outside the projects
+    // folder (external drive) or in a folder that doesn't match its name.
+    QString oldRtp = m_mw->projectPanel()
+        ? m_mw->projectPanel()->projectFilePath(oldName) : QString();
+    if (oldRtp.isEmpty())
+        oldRtp = projectsDirectory() + "/" + oldName + "/" + oldName + ".rtp";
+    const QFileInfo oldFi(oldRtp);
+    if (!oldFi.exists()) {
+        fail(QString("Can't find the project file for '%1':\n%2")
+                 .arg(oldName, QDir::toNativeSeparators(oldRtp)));
+        return;
     }
+
+    // Everything (thumbnail lookup, workspace, AudioSync settings) is keyed by
+    // name, so names must be unique across the whole list — not just per folder.
+    // A case-only rename ("ep 1" -> "Ep 1") is the same project.
+    const bool caseOnly = oldName.compare(newName, Qt::CaseInsensitive) == 0;
+    if (!caseOnly && m_mw->projectPanel()
+        && !m_mw->projectPanel()->projectFilePath(newName).isEmpty()) {
+        fail(QString("A project named '%1' already exists.").arg(newName));
+        return;
+    }
+
+    const QString oldDir  = oldFi.absolutePath();
+    const QString oldBase = oldFi.completeBaseName();
+    const bool external   = isExternalProjectPath(oldRtp);
+
+    // Inside the projects folder the convention is <projects>/<name>/<name>.rtp,
+    // so the folder is renamed too.  An external project's folder belongs to
+    // the user (it may hold the media the project references) — only the
+    // project's own files are renamed there.
+    const bool renameFolder = !external
+        && QFileInfo(oldDir).fileName().compare(oldBase, Qt::CaseInsensitive) == 0;
+    const QString newDir = renameFolder
+        ? QFileInfo(oldDir).absolutePath() + "/" + newName : oldDir;
+    const QString newRtp = newDir + "/" + newName + ".rtp";
+
+    if (!caseOnly) {
+        if (renameFolder ? QFileInfo::exists(newDir)
+                         : QFileInfo::exists(oldDir + "/" + newName + ".rtp")) {
+            fail(QString("'%1' already exists in:\n%2")
+                     .arg(renameFolder ? newName : newName + ".rtp",
+                          QDir::toNativeSeparators(QFileInfo(newDir).absolutePath())));
+            return;
+        }
+    }
+
+    // Rename the project's own files in place (rolled back if anything fails).
+    // Windows' rename can't change only the case of a name directly, so go
+    // through a temporary name.
+    auto renamePath = [](const QString& from, const QString& to, bool isDir) {
+        auto doRename = [isDir](const QString& a, const QString& b) {
+            return isDir ? QDir().rename(a, b) : QFile::rename(a, b);
+        };
+        if (from.compare(to, Qt::CaseInsensitive) == 0 && from != to) {
+            const QString tmp = to + ".renaming";
+            if (!doRename(from, tmp)) return false;
+            if (doRename(tmp, to)) return true;
+            doRename(tmp, from);
+            return false;
+        }
+        return doRename(from, to);
+    };
+
+    QVector<QPair<QString, QString>> done;  // (from, to) for rollback
+    auto rollback = [&]() {
+        for (auto it = done.crbegin(); it != done.crend(); ++it)
+            renamePath(it->second, it->first, false);
+    };
+    const QStringList suffixes = {".rtp", ".rtp.bak", ".png", ".jpg"};
+    for (const QString& sfx : suffixes) {
+        const QString from = oldDir + "/" + oldBase + sfx;
+        if (!QFileInfo::exists(from)) continue;
+        const QString to = oldDir + "/" + newName + sfx;
+        if (!renamePath(from, to, false)) {
+            rollback();
+            fail(QString("Couldn't rename '%1'.\n\n"
+                         "Make sure it isn't open in another program and the "
+                         "drive is writable.").arg(QDir::toNativeSeparators(from)));
+            return;
+        }
+        done.append({from, to});
+    }
+    if (renameFolder && !renamePath(oldDir, newDir, true)) {
+        rollback();
+        fail(QString("Couldn't rename the project folder:\n%1\n\n"
+                     "A file inside it may be in use (close any program using "
+                     "it, or close the project first) and try again.")
+                 .arg(QDir::toNativeSeparators(oldDir)));
+        return;
+    }
+
+    // Carry the name-keyed settings (dock layout, AudioSync fallback state,
+    // last active page) over to the new name.
+    {
+        auto settings = rt::appSettings();
+        auto moveGroup = [&settings](const QString& from, const QString& to) {
+            settings.beginGroup(from);
+            const QStringList keys = settings.allKeys();
+            QVector<QPair<QString, QVariant>> values;
+            values.reserve(keys.size());
+            for (const QString& k : keys) values.append({k, settings.value(k)});
+            settings.endGroup();
+            if (values.isEmpty()) return;
+            settings.remove(from);
+            settings.beginGroup(to);
+            for (const auto& [k, v] : values) settings.setValue(k, v);
+            settings.endGroup();
+        };
+        moveGroup("workspace/project/" + oldName, "workspace/project/" + newName);
+        moveGroup("Project/" + oldName, "Project/" + newName);
+
+        // Keep recent / pinned-external entries pointing at the renamed file.
+        const QString oldAbs = oldFi.absoluteFilePath();
+        for (const char* key : {"RecentFiles", "ExternalProjects"}) {
+            QStringList list = settings.value(key).toStringList();
+            for (QString& p : list)
+                if (QFileInfo(p).absoluteFilePath().compare(oldAbs, Qt::CaseInsensitive) == 0)
+                    p = newRtp;
+            list.removeDuplicates();
+            settings.setValue(key, list);
+        }
+    }
+    updateRecentFilesMenu();
+
+    // If the renamed project is the currently loaded one, update it
+    if (m_mw->currentProject() &&
+        QString::fromStdString(m_mw->currentProject()->name()) == oldName) {
+        m_mw->currentProject()->setName(newName.toStdString());
+        m_mw->currentProject()->setFilePath(newRtp.toStdWString());
+        if (m_mw->projectPanel()) m_mw->projectPanel()->setCurrentProjectName(newName);
+        if (auto* bin = m_mw->projectBin()) bin->setProjectName(newName);
+        m_mw->setWindowTitle(QString("ROUNDTABLE NLE %1 — %2").arg(ROUNDTABLE_VERSION).arg(newName));
+    }
+    refreshProjectsList();
+    m_mw->statusBar()->showMessage(
+        QString("Renamed '%1' to '%2'").arg(oldName, newName), 3000);
 }
 
 void ProjectController::onDuplicateProjectFromPanel(const QString& name)
@@ -664,7 +799,7 @@ void ProjectController::onOpenRecentProjectFromPanel(const QString& filePath)
                 QMessageBox::warning(m_mw, "Error", "Failed to open " + filePath);
                 return;
             }
-            const QString loadedName = QFileInfo(filePath).baseName();
+            const QString loadedName = QFileInfo(filePath).completeBaseName();
             if (project->name() != loadedName.toStdString())
                 project->setName(loadedName.toStdString());
             project->setFilePath(path);
@@ -689,53 +824,6 @@ void ProjectController::onOpenRecentProjectFromPanel(const QString& filePath)
             m_mw->statusBar()->showMessage("Opened: " + QFileInfo(filePath).fileName(), 3000);
             releaseOpenLock();
         });
-}
-
-void ProjectController::onImportProject(const QString& srcPath)
-{
-    spdlog::info("Importing project from: {}", srcPath.toStdString());
-
-    QString projDir = projectsDirectory();
-    QDir().mkpath(projDir);
-    QString baseName = QFileInfo(srcPath).baseName();
-
-    // Find a unique project name
-    QString name = baseName;
-    int n = 2;
-    while (QDir(projDir + "/" + name).exists() ||
-           QFile::exists(projDir + "/" + name + ".rtp")) {
-        name = baseName + QString(" (%1)").arg(n++);
-    }
-
-    // Create project subfolder and copy into it
-    QString projectFolder = projDir + "/" + name;
-    QDir().mkpath(projectFolder);
-    QString dstPath = projectFolder + "/" + name + ".rtp";
-
-    if (QFile::copy(srcPath, dstPath)) {
-        // Normalize internal project metadata to the new imported name.
-        ProjectSerializer serializer;
-        if (auto imported = serializer.load(dstPath.toStdWString())) {
-            imported->setName(name.toStdString());
-            imported->setFilePath(dstPath.toStdWString());
-            imported->setModified(false);
-            if (!serializer.save(*imported, dstPath.toStdWString())) {
-                spdlog::warn("Import: copied project but failed to rewrite internal name for '{}'",
-                             name.toStdString());
-            }
-        } else {
-            spdlog::warn("Import: copied project but could not reload '{}' to normalize metadata",
-                         dstPath.toStdString());
-        }
-
-        refreshProjectsList();
-        m_mw->statusBar()->showMessage(
-            "Imported: " + name, 3000);
-    } else {
-        QDir(projectFolder).removeRecursively();
-        QMessageBox::warning(m_mw, "Error",
-            "Failed to import project from " + srcPath);
-    }
 }
 
 void ProjectController::onExportProject(const QString& name, const QString& dstPath)
@@ -780,11 +868,19 @@ void ProjectController::onOpenProject()
     if (!checkUnsavedChanges()) return;
 
     spdlog::info("File > Open Project");
+    // Opens the file IN PLACE (e.g. on an external drive) — never copies it
+    // into the projects folder.  addToRecentFiles() pins projects that live
+    // outside the projects folder so they stay in the Projects list.
+    auto settings = rt::appSettings();
+    QString startDir = settings.value("Project/lastOpenDir").toString();
+    if (startDir.isEmpty() || !QDir(startDir).exists())
+        startDir = projectsDirectory();
     QString path = QFileDialog::getOpenFileName(
-        m_mw, "Open Project", projectsDirectory(),
+        m_mw, "Open Project", startDir,
         "ROUNDTABLE Projects (*.rtp);;All Files (*)");
 
     if (path.isEmpty()) return;
+    settings.setValue("Project/lastOpenDir", QFileInfo(path).absolutePath());
 
     std::filesystem::path fsPath = path.toStdWString();
     beginAsyncProjectLoad(fsPath, tr("Opening project…"),
@@ -796,7 +892,7 @@ void ProjectController::onOpenProject()
                 return;
             }
             const QString loadedName =
-                QFileInfo(QString::fromStdWString(fsPath.wstring())).baseName();
+                QFileInfo(QString::fromStdWString(fsPath.wstring())).completeBaseName();
             if (project->name() != loadedName.toStdString())
                 project->setName(loadedName.toStdString());
             project->setFilePath(fsPath);
@@ -807,6 +903,7 @@ void ProjectController::onOpenProject()
                     m_mw->timelineWorkspace()->resetToDefaultDockLayout();
             }
             addToRecentFiles(QString::fromStdWString(fsPath.wstring()));
+            refreshProjectsList();  // show an externally-located project right away
             // Stay on the current tab (Projects) instead of switching to Timeline
             m_mw->setCurrentPage(Page::Projects);
 
@@ -934,7 +1031,7 @@ void ProjectController::onSaveProjectAs()
 
     // Place the file inside a project subfolder named after the project
     QFileInfo fi(path);
-    QString projectName = fi.baseName();
+    QString projectName = fi.completeBaseName();
     QString parentDir   = fi.absolutePath();
     QString projectFolder = parentDir + "/" + projectName;
     QDir().mkpath(projectFolder);
@@ -985,13 +1082,13 @@ void ProjectController::onSaveProjectAs()
 
         // Save audio sync state BEFORE moving the project (transcriptions, matches, clips)
         if (m_mw->audioSync())
-            m_mw->audioSync()->saveProjectState(QFileInfo(path).baseName());
+            m_mw->audioSync()->saveProjectState(QFileInfo(path).completeBaseName());
 
         setCurrentProject(m_mw->takeCurrentProject()); // refresh title
 
         // Save active page per project (use the new name from path)
         auto settings = rt::appSettings();
-        settings.setValue("Project/" + QFileInfo(path).baseName() + "/activePage",
+        settings.setValue("Project/" + QFileInfo(path).completeBaseName() + "/activePage",
                           static_cast<int>(m_mw->currentPage()));
 
         refreshProjectsList();

@@ -38,6 +38,8 @@
 #include <QStyle>
 #include <QPainter>
 #include <QStackedWidget>
+
+#include <iterator>
 #include <QTableWidget>
 #include <QTreeView>
 #include <QUrl>
@@ -149,14 +151,14 @@ void ProjectPanel::buildIconRail()
     struct RailEntry { const char* icon; const char* label; const char* tip; bool checkable; };
     RailEntry entries[] = {
         {"\U0001F195", "NEW",      "Create a new project (Ctrl+N)", true},
-        {"\U0001F4C2", "OPEN",     "Open project from file",        true},
+        {"\U0001F4C2", "OPEN",     "Open a project file from any location (Ctrl+O)", false},
         {"\U0001F4BE", "SAVE",     "Save current project (Ctrl+S)", false},
-        {"\U0001F4E5", "IMPORT",   "Import a project file",         false},
         {"\u2699",     "SETTINGS", "Project settings",              true},
     };
+    constexpr int kRailCount = static_cast<int>(std::size(entries));
 
-    QPushButton* railBtns[5]{};
-    for (int i = 0; i < 5; ++i) {
+    QPushButton* railBtns[kRailCount]{};
+    for (int i = 0; i < kRailCount; ++i) {
         auto* btn = new QPushButton(QString::fromUtf8(entries[i].icon));
         btn->setToolTip(QString::fromUtf8(entries[i].tip));
         btn->setFixedSize(128, 84);
@@ -176,7 +178,7 @@ void ProjectPanel::buildIconRail()
             .arg(Theme::rgb(c.textPrimary)));
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);
 
-        if (i < 4)
+        if (i < kRailCount - 1)
             addRailDivider();
         railBtns[i] = btn;
     }
@@ -184,32 +186,20 @@ void ProjectPanel::buildIconRail()
     m_newBtn      = railBtns[0];
     m_openFileBtn = railBtns[1];
     m_saveBtn     = railBtns[2];
-    m_importBtn   = railBtns[3];
-    m_settingsBtn = railBtns[4];
+    m_settingsBtn = railBtns[3];
 
     connect(m_newBtn, &QPushButton::clicked,
             this, [this]() { toggleSidePanel(SidePanelMode::New); });
-    connect(m_openFileBtn, &QPushButton::clicked,
-            this, [this]() { toggleSidePanel(SidePanelMode::Open); });
+    // OPEN browses for any .rtp and opens it IN PLACE (no copy into the
+    // projects folder) — Premiere-style.  The project table already lists
+    // everything inside the projects folder.
+    connect(m_openFileBtn, &QPushButton::clicked, this, [this]() {
+        hideSidePanel();
+        emit openFromFile();
+    });
     connect(m_saveBtn, &QPushButton::clicked, this, [this]() {
         hideSidePanel();
         emit saveRequested();
-    });
-    connect(m_importBtn, &QPushButton::clicked, this, [this]() {
-        hideSidePanel();
-        auto settings = rt::appSettings();
-        QString lastDir = settings.value("Import/lastDir", QString()).toString();
-        if (lastDir.isEmpty())
-            lastDir = QDir::homePath();
-        QString path = QFileDialog::getOpenFileName(
-            this, "Import Project", lastDir,
-            "ROUNDTABLE Projects (*.rtp);;All Files (*)");
-        if (!path.isEmpty()) {
-            QString dir = QFileInfo(path).absolutePath();
-            settings.setValue("Import/lastDir", dir);
-            settings.sync();
-            emit importProject(path);
-        }
     });
     connect(m_settingsBtn, &QPushButton::clicked,
             this, [this]() { toggleSidePanel(SidePanelMode::Settings); });

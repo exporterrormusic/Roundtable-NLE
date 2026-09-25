@@ -296,7 +296,6 @@ private slots:
     /// Refresh the UI after sequence settings change.
     void applySequenceSettingsRefresh(uint32_t resW, uint32_t resH, double fps);
     void onOpenRecentProjectFromPanel(const QString& filePath);
-    void onImportProject(const QString& srcPath);
     void onExportProject(const QString& name, const QString& dstPath);
     void onImportSrt();
     void onExportSrt();

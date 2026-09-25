@@ -5,6 +5,7 @@
 
 #include "panels/project/ProjectPanel.h"
 
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
@@ -87,7 +88,12 @@ void ProjectPanel::showContextMenu(const QPoint& pos)
             emit exportProject(name, dst);
     });
     menu.addSeparator();
-    menu.addAction("Delete", this,
+    // Projects outside the projects folder are only referenced — the handler
+    // removes them from the list without touching the file.
+    const bool external = !fpath.isEmpty() && !m_projectsDir.isEmpty()
+        && !QFileInfo(fpath).absoluteFilePath().startsWith(
+               QDir(m_projectsDir).absolutePath() + "/", Qt::CaseInsensitive);
+    menu.addAction(external ? "Remove from List" : "Delete", this,
                    [this, name, fpath]() { emit deleteProject(name, fpath); });
 
     menu.exec(m_projectTable->viewport()->mapToGlobal(pos));
@@ -115,9 +121,9 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
         bool ok = false;
         QString newName = QInputDialog::getText(
             this, "Rename Project File",
-            "New name:", QLineEdit::Normal, fi.baseName(), &ok);
+            "New name:", QLineEdit::Normal, fi.completeBaseName(), &ok);
         newName = newName.trimmed();
-        if (!ok || newName.isEmpty() || newName == fi.baseName()) return;
+        if (!ok || newName.isEmpty() || newName == fi.completeBaseName()) return;
         QString newPath = fi.absolutePath() + "/" + newName + "." + fi.suffix();
         if (QFile::exists(newPath)) {
             QMessageBox::warning(this, "Rename", "A file with that name already exists.");
@@ -126,14 +132,14 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
         QFile::rename(path, newPath);
         QString thumbDir = fi.absolutePath() + "/thumbs/";
         for (const auto& ext : {".png", ".jpg"}) {
-            QString oldThumb = thumbDir + fi.baseName() + ext;
+            QString oldThumb = thumbDir + fi.completeBaseName() + ext;
             if (QFile::exists(oldThumb))
                 QFile::rename(oldThumb, thumbDir + newName + ext);
         }
         populateOpenList();
     });
     menu.addAction("Duplicate", this, [this, path, fi]() {
-        QString baseName = fi.baseName() + " Copy";
+        QString baseName = fi.completeBaseName() + " Copy";
         QString newPath = fi.absolutePath() + "/" + baseName + "." + fi.suffix();
         int counter = 2;
         while (QFile::exists(newPath)) {

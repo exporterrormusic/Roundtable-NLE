@@ -626,6 +626,46 @@ void ProjectController::addToRecentFiles(const QString& filePath)
         recent.removeLast();
 
     settings.setValue("RecentFiles", recent);
+
+    // Projects living outside the projects folder (external drives etc.) are
+    // pinned separately so they don't fall off the Projects list once ten
+    // other projects have been opened.  Removed via Delete → "Remove from List".
+    if (filePath.endsWith(".rtp", Qt::CaseInsensitive) && isExternalProjectPath(filePath)) {
+        QStringList pinned = settings.value("ExternalProjects").toStringList();
+        const QString norm = QFileInfo(filePath).absoluteFilePath();
+        bool found = false;
+        for (const auto& p : pinned)
+            if (QFileInfo(p).absoluteFilePath().compare(norm, Qt::CaseInsensitive) == 0) { found = true; break; }
+        if (!found) {
+            pinned.append(norm);
+            settings.setValue("ExternalProjects", pinned);
+        }
+    }
+
+    updateRecentFilesMenu();
+}
+
+bool ProjectController::isExternalProjectPath(const QString& filePath) const
+{
+    const QString projDir = QDir(projectsDirectory()).absolutePath();
+    const QString abs = QFileInfo(filePath).absoluteFilePath();
+    return !abs.startsWith(projDir + "/", Qt::CaseInsensitive);
+}
+
+void ProjectController::unpinExternalProject(const QString& filePath)
+{
+    auto settings = rt::appSettings();
+    const QString norm = QFileInfo(filePath).absoluteFilePath();
+    auto dropMatches = [&norm](QStringList list) {
+        list.erase(std::remove_if(list.begin(), list.end(), [&norm](const QString& p) {
+            return QFileInfo(p).absoluteFilePath().compare(norm, Qt::CaseInsensitive) == 0;
+        }), list.end());
+        return list;
+    };
+    settings.setValue("ExternalProjects",
+                      dropMatches(settings.value("ExternalProjects").toStringList()));
+    settings.setValue("RecentFiles",
+                      dropMatches(settings.value("RecentFiles").toStringList()));
     updateRecentFilesMenu();
 }
 

@@ -941,8 +941,6 @@ void MainWindow::buildPanels()
             this, &MainWindow::onRevealProjectInExplorer);
     connect(m_projectPanel, &ProjectPanel::openRecentProject,
             this, &MainWindow::onOpenRecentProjectFromPanel);
-    connect(m_projectPanel, &ProjectPanel::importProject,
-            this, &MainWindow::onImportProject);
     connect(m_projectPanel, &ProjectPanel::exportProject,
             this, &MainWindow::onExportProject);
     connect(m_projectPanel, &ProjectPanel::projectsDirChanged,

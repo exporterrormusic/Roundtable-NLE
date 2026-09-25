@@ -66,7 +66,6 @@ public:
     void onRevealProjectInExplorer(const QString& name);
     void onNewProjectForMedia(const QString& filePath, int64_t atTick, size_t trackIndex);
     void onOpenRecentProjectFromPanel(const QString& filePath);
-    void onImportProject(const QString& srcPath);
     void onExportProject(const QString& name, const QString& dstPath);
     void onProjectsDirChanged(const QString& newDir);
 
@@ -90,6 +89,10 @@ public:
     // ── Recent files ────────────────────────────────────────────────────
     void addToRecentFiles(const QString& filePath);
     void updateRecentFilesMenu();
+    /// True when the .rtp lives outside projectsDirectory() (e.g. external drive).
+    [[nodiscard]] bool isExternalProjectPath(const QString& filePath) const;
+    /// Drop an external project from the Projects list (file is untouched).
+    void unpinExternalProject(const QString& filePath);
 
     // ── Auto-save / recovery ────────────────────────────────────────────
     void onAutoSave();

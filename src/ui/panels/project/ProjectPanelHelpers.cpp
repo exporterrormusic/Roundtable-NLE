@@ -77,8 +77,8 @@ QWidget* createProjectThumb(const ProjectInfo& info, QWidget* parent,
     // within the same wall-clock second that encode to the same byte size
     // return the previously cached pixmap — the thumbnail appears frozen.
     QFileInfo fi(info.filePath);
-    QString thumbPathPng = fi.absolutePath() + "/" + fi.baseName() + ".png";
-    QString thumbPathJpg = fi.absolutePath() + "/" + fi.baseName() + ".jpg";
+    QString thumbPathPng = fi.absolutePath() + "/" + fi.completeBaseName() + ".png";
+    QString thumbPathJpg = fi.absolutePath() + "/" + fi.completeBaseName() + ".jpg";
     QImage thumbImg(thumbPathPng);
     if (thumbImg.isNull()) thumbImg.load(thumbPathJpg);
     QPixmap pix = thumbImg.isNull() ? QPixmap()
