@@ -42,6 +42,7 @@ static void refineSpeechBounds(const std::vector<float>& samples, int sr,
                                double& clipStart, double& clipEnd,
                                double wordStart, double wordEnd,
                                double frontPaddingSec, double endPaddingSec,
+                               double padLoSec,
                                bool& refined)
 {
     if (sr <= 0) return;
@@ -144,10 +145,15 @@ static void refineSpeechBounds(const std::vector<float>& samples, int sr,
             if (env[static_cast<size_t>(k)] >= lvl) { bEnd = k; break; }
     }
 
-    const int ss = std::max(s0, pos[static_cast<size_t>(bStart)]
-                                - static_cast<int>(frontPaddingSec * sr));
-    // Apply the padding selected for this Auto-Sync run. The incoming clip
-    // window is already clamped to the source and adjacent aligned lines.
+    // Apply the padding selected for this Auto-Sync run.  Front padding is
+    // bounded by padLoSec (the previous line's last word, or the file start),
+    // NOT by the analysis window start s0: the speech often begins right at
+    // that edge, and clamping there silently ate most of the front padding.
+    // The end stays within the window, which is already clamped to the next
+    // line (whose word starts run late, so reaching further risks its onset).
+    const int speechS = pos[static_cast<size_t>(bStart)];
+    const int padLo = std::clamp(static_cast<int>(padLoSec * sr), 0, speechS);
+    const int ss = std::max(padLo, speechS - static_cast<int>(frontPaddingSec * sr));
     const int se = std::min(s1, pos[static_cast<size_t>(bEnd)] + win
                                 + static_cast<int>(endPaddingSec * sr));
     if (se > ss) {
@@ -385,25 +391,23 @@ bool AudioSync::alignClipsToScript()
             const double wSpanS = std::max(W[g.fa].start, clip.start);
             const double wSpanE = std::max(wSpanS, std::min(W[g.la].end, clip.end));
             // Snap the (loose) word-edge boundaries to the actual speech.
+            // Front padding may reach back to the previous line's last word,
+            // never into it.
+            const double padLo = gi > 0 ? W[groups[gi - 1].la].end : 0.0;
             bool refined = false;
             auto as = m_audioSamples.find(file);
             if (as != m_audioSamples.end())
                 refineSpeechBounds(as->second.samples,
                                    static_cast<int>(as->second.sampleRate),
                                    clip.start, clip.end, wSpanS, wSpanE,
-                                   frontPaddingSec, endPaddingSec, refined);
+                                   frontPaddingSec, endPaddingSec,
+                                   padLo, refined);
             if (!refined) {
                 // If energy analysis is unavailable or inconclusive, apply the
                 // selected padding directly to the aligned word timestamps.
                 clip.start = std::max(0.0, W[g.fa].start - frontPaddingSec);
                 clip.end = W[g.la].end + endPaddingSec;
-                if (gi > 0) {
-                    const double prevEnd = W[groups[gi - 1].la].end;
-                    double lim = std::min(prevEnd + 0.02,
-                                          0.5 * (prevEnd + W[g.fa].start));
-                    lim = std::min(lim, W[g.fa].start);
-                    clip.start = std::max(clip.start, lim);
-                }
+                clip.start = std::max(clip.start, std::min(padLo, W[g.fa].start));
                 if (gi + 1 < groups.size()) {
                     const double nextStart = W[groups[gi + 1].fa].start;
                     const double lim = std::max(

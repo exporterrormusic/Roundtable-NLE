@@ -436,7 +436,11 @@ void AudioSync::setupUi()
     transcribePageLayout->addWidget(modelLabel);
 
     m_modelCombo = new QComboBox;
-    m_modelCombo->addItems({"tiny", "base", "small", "medium", "large-v3-turbo", "large-v2", "large-v3"});
+    // Only the two models worth using: CrisperWhisper (verbatim, best word
+    // timing) and Whisper large-v3-turbo.  The smaller Whisper sizes remain
+    // in the engine (tests load "tiny") but aren't offered here.
+    m_modelCombo->addItem(QStringLiteral("Whisper Large v3 Turbo"),
+                          QStringLiteral("large-v3-turbo"));
 #ifdef ROUNDTABLE_HAS_CRISPERWHISPER
     m_modelCombo->addItem(QStringLiteral("CrisperWhisper 2 Large (Personal)"),
                           QStringLiteral("crisperwhisper-2-large-personal"));

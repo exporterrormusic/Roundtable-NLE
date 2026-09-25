@@ -259,8 +259,8 @@ TEST_F(VoiceGenerationTest, UnknownCrisperConsentDoesNotPromptAtConstruction)
     modalGuard.stop();
 
     ASSERT_NE(audioSync.transcriptionModelCombo(), nullptr);
-    EXPECT_EQ(audioSync.transcriptionModelCombo()->currentText(),
-              QStringLiteral("small"));
+    EXPECT_EQ(audioSync.transcriptionModelCombo()->currentData().toString(),
+              QStringLiteral("large-v3-turbo"));
     EXPECT_FALSE(promptShown);
 }
 
@@ -282,7 +282,7 @@ TEST_F(VoiceGenerationTest, DecliningCrisperSelectionPersistsAndFallsBack)
     });
     combo->setCurrentIndex(crisperIndex);
 
-    EXPECT_EQ(combo->currentText(), QStringLiteral("small"));
+    EXPECT_EQ(combo->currentData().toString(), QStringLiteral("large-v3-turbo"));
     consent.settings->sync();
     EXPECT_EQ(consent.settings->value(consent.consentKey).toString(),
               QStringLiteral("declined"));

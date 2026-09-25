@@ -104,7 +104,7 @@ enum class WhisperModelSize
     Count
 };
 
-inline constexpr WhisperModelSize kDefaultWhisperModel = WhisperModelSize::Small;
+inline constexpr WhisperModelSize kDefaultWhisperModel = WhisperModelSize::LargeV3Turbo;
 
 [[nodiscard]] const char* whisperModelName(WhisperModelSize size) noexcept;
 [[nodiscard]] WhisperModelSize whisperModelFromName(const std::string& name) noexcept;

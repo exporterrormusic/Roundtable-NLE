@@ -547,13 +547,18 @@ void AudioSync::runAutoSyncImpl()
         bool   hasWords    = false;
         double wFirstStart = 0.0, wLastEnd = 0.0;
         int    wordLo = s0, wordHi = s1;
+        // Front padding may reach back to the end of the previous word in the
+        // file (not part of this clip), not just to the clip's current start.
+        int    padLo = s0;
         if (auto wit = fileWords.find(clip.sourceFile);
             wit != fileWords.end() && !wit->second.empty()) {
             const WordSegment* first = nullptr;
             const WordSegment* last  = nullptr;
+            double prevWordEnd = 0.0;
             for (const WordSegment* w : wit->second) {
                 const double mid = 0.5 * (w->start + w->end);
-                if (mid < clip.start || mid > clip.end) continue;
+                if (mid < clip.start) { prevWordEnd = std::max(prevWordEnd, w->end); continue; }
+                if (mid > clip.end) continue;
                 if (!first) first = w;
                 last = w;
             }
@@ -563,6 +568,7 @@ void AudioSync::runAutoSyncImpl()
                 wLastEnd    = last->end;
                 wordLo = static_cast<int>((wFirstStart - kWordPadSec) * sr);
                 wordHi = static_cast<int>((wLastEnd   + kWordPadSec) * sr);
+                padLo  = std::min(s0, std::max(0, static_cast<int>(prevWordEnd * sr)));
             }
         }
 
@@ -621,8 +627,9 @@ void AudioSync::runAutoSyncImpl()
                 for (int n = 0; n < maxTrailWins && endK + 1 < static_cast<int>(env.size()) &&
                                 env[static_cast<size_t>(endK + 1)] >= edgeThresh; ++n)
                     ++endK;
-                int ss = std::max(s0, envPos[static_cast<size_t>(startK)]
-                                          - static_cast<int>(kPrePadSec * sr));
+                const int speechS = envPos[static_cast<size_t>(startK)];
+                int ss = std::max(std::min(padLo, speechS),
+                                  speechS - static_cast<int>(kPrePadSec * sr));
                 int se = std::min(s1, envPos[static_cast<size_t>(endK)] + win
                                           + static_cast<int>(kPostPadSec * sr));
                 vadStart = static_cast<double>(ss) / sr;
