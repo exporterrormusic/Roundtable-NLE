@@ -31,6 +31,8 @@
 #include <QTextLayout>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -2391,33 +2393,63 @@ std::shared_ptr<CachedFrame> renderCaptionClip(
 
 namespace {
 
-// Decoded-image cache keyed by file path.  PNGs are small and there are only a
-// handful per puppet, but decoding from disk every frame would be wasteful and
-// would hammer the file system during playback/export.  QImage is implicitly
-// shared, so handing out copies is cheap.
+// Prepared-frame cache keyed by file path.  There are only a handful of face
+// PNGs per puppet, but decoding from disk every frame would be wasteful and
+// would hammer the file system during playback/export.
 //
 // Self-heal on disk change: the cache stores each file's last-write-time and
-// re-decodes when it differs, so swapping a puppet PNG in Explorer shows up on
+// re-decodes when it differs (checked at most once per second per file, so the
+// stat isn't paid every frame), so swapping a puppet PNG in Explorer shows up on
 // the timeline (mirrors MediaPool's mtime re-probe). Without this the timeline
 // served the stale decode forever while the Puppets tab — which loads fresh —
 // already reflected the swap.
-QImage loadPuppetImage(const std::string& path)
+//
+// The cache holds the finished CachedFrame, not just the decode, and hands the
+// SAME frame out every time that face is shown.  Each prepared frame carries a
+// synthetic mediaId and is marked pinned, so GpuUploadManager uploads it into
+// the GPU texture cache once and every later composite is a cache hit.  A
+// puppet only ever shows its 4 face images, so after warm-up a face swap costs
+// nothing — previously every frame stat'ed the file, copied the full PNG
+// (22 MB for a 1824×3072 face) into a fresh frame and re-uploaded it (~100 ms
+// per frame measured on the timeline).  Consumers must treat the frame as
+// read-only; nothing downstream writes into a layer's pixels.
+std::shared_ptr<CachedFrame> loadPuppetFrame(const std::string& path)
 {
-    struct Entry { QImage img; std::filesystem::file_time_type mtime{}; bool haveMtime{false}; };
+    struct Entry {
+        std::shared_ptr<CachedFrame> frame;   // null = file failed to decode
+        std::filesystem::file_time_type mtime{};
+        bool haveMtime{false};
+        std::chrono::steady_clock::time_point checkedAt{};
+    };
     static std::mutex s_mtx;
     static std::unordered_map<std::string, Entry> s_cache;
+    // High bits keep these ids clear of MediaPool's small sequential handles.
+    static std::atomic<uint64_t> s_nextPuppetMediaId{0};
+    // How long a cached face is trusted before re-checking the file on disk.
+    constexpr auto kRecheckInterval = std::chrono::seconds(1);
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(s_mtx);
+        auto it = s_cache.find(path);
+        if (it != s_cache.end() && now - it->second.checkedAt < kRecheckInterval)
+            return it->second.frame;
+    }
 
     std::error_code ec;
     const auto mtime = std::filesystem::last_write_time(utf8ToPath(path), ec);
     const bool haveMtime = !ec;
 
-    std::lock_guard<std::mutex> lock(s_mtx);
-    auto it = s_cache.find(path);
-    if (it != s_cache.end()) {
+    {
+        std::lock_guard<std::mutex> lock(s_mtx);
+        auto it = s_cache.find(path);
         // Reuse the cached decode unless the file changed on disk. If the mtime
         // is unreadable (e.g. offline), keep serving the cached copy.
-        if (!haveMtime || (it->second.haveMtime && it->second.mtime == mtime))
-            return it->second.img;
+        if (it != s_cache.end() &&
+            (!haveMtime || (it->second.haveMtime && it->second.mtime == mtime))) {
+            it->second.checkedAt = now;
+            return it->second.frame;
+        }
     }
 
     QImage img;
@@ -2427,8 +2459,26 @@ QImage loadPuppetImage(const std::string& path)
     if (!img.isNull() && img.format() != QImage::Format_ARGB32)
         img = img.convertToFormat(QImage::Format_ARGB32);
 
-    s_cache[path] = Entry{img, mtime, haveMtime};   // cache even a null image to avoid retrying disk
-    return img;
+    std::shared_ptr<CachedFrame> frame;
+    if (!img.isNull()) {
+        frame = std::make_shared<CachedFrame>();
+        frame->width  = static_cast<uint32_t>(img.width());
+        frame->height = static_cast<uint32_t>(img.height());
+        frame->stride = static_cast<uint32_t>(img.bytesPerLine());
+        frame->pixels.resize(static_cast<size_t>(frame->stride) * frame->height);
+        std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
+        frame->unpackedAlpha = true;   // straight-alpha PNG; nothing to unpack
+        frame->pinned = true;          // still image: upload once, keep on GPU
+        // A fresh id per decode, so a PNG swapped on disk can never be served
+        // from the previous version's GPU texture.
+        frame->mediaId = 0xC000000000000000ull |
+            s_nextPuppetMediaId.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::lock_guard<std::mutex> lock(s_mtx);
+    // Cache even a failed decode to avoid retrying the disk every frame.
+    s_cache[path] = Entry{frame, mtime, haveMtime, now};
+    return frame;
 }
 
 } // namespace
@@ -2451,24 +2501,14 @@ std::shared_ptr<CachedFrame> renderPngPuppetClip(
     if (path.empty())
         return nullptr;
 
-    QImage img = loadPuppetImage(path);
-    if (img.isNull()) {
+    auto frame = loadPuppetFrame(path);
+    if (!frame) {
         // The chosen face failed to decode — fall back to the resting face so
         // a single bad/missing variant image doesn't drop the whole character.
         const std::string idle = clip->facePath(PngPuppetClip::MouthClosedEyesOpen);
         if (!idle.empty() && idle != path)
-            img = loadPuppetImage(idle);
+            frame = loadPuppetFrame(idle);
     }
-    if (img.isNull())
-        return nullptr;
-
-    auto frame = std::make_shared<CachedFrame>();
-    frame->width  = static_cast<uint32_t>(img.width());
-    frame->height = static_cast<uint32_t>(img.height());
-    frame->stride = static_cast<uint32_t>(img.bytesPerLine());
-    frame->pixels.resize(static_cast<size_t>(frame->stride) * frame->height);
-    std::memcpy(frame->pixels.data(), img.constBits(), frame->pixels.size());
-    frame->unpackedAlpha = true;   // straight-alpha PNG; nothing to unpack
     return frame;
 }
 

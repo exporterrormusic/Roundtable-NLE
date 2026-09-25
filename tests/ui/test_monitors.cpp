@@ -14,6 +14,8 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QColor>
+#include <QImage>
 #include <QDialog>
 #include <QEventLoop>
 #include <QFocusEvent>
@@ -40,9 +42,12 @@
 #include "timeline/Timeline.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/CaptionClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "ClipRenderers.h"
 
 #include <atomic>
+#include <filesystem>
+#include <set>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -2712,4 +2717,61 @@ TEST(MonitorIntegration, ProgramMonitorWithTimelineInOut)
     // The clamping is correct behavior.
     EXPECT_EQ(pm.miniTimeline()->inPoint(), pm.miniTimeline()->clampTick(10000));
     EXPECT_EQ(pm.miniTimeline()->outPoint(), pm.miniTimeline()->clampTick(40000));
+}
+
+
+// PNG puppets show one of only 4 face images, so each face must be prepared
+// once and handed out as the SAME frame, with a stable non-zero mediaId and
+// pinned, so the GPU uploader caches its texture instead of re-uploading the
+// full PNG every frame (~100 ms/frame for a 1824x3072 face before).
+TEST(ClipRenderers, PngPuppetReusesPreparedFacesAcrossFrames)
+{
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "rt_puppet_face_cache_test";
+    fs::create_directories(dir);
+    auto writeFace = [&](const char* name, QColor color) {
+        const auto path = dir / name;
+        QImage img(64, 96, QImage::Format_ARGB32);
+        img.fill(color);
+        EXPECT_TRUE(img.save(QString::fromStdWString(path.wstring()), "PNG"));
+        return path.string();
+    };
+    const std::string closed = writeFace("closed.png", QColor(200, 40, 40));
+    const std::string open   = writeFace("open.png", QColor(40, 200, 40));
+
+    rt::PngPuppetClip clip;
+    clip.setFacePath(rt::PngPuppetClip::MouthClosedEyesOpen, closed);
+    clip.setFacePath(rt::PngPuppetClip::MouthClosedEyesClosed, closed);
+    clip.setFacePath(rt::PngPuppetClip::MouthOpenEyesOpen, open);
+    clip.setFacePath(rt::PngPuppetClip::MouthOpenEyesClosed, open);
+    clip.setTalking(true);
+
+    // Idle face twice: identical frame object, cache-eligible identity.
+    const auto first = rt::renderPngPuppetClip(&clip, 0, 1920, 1080);
+    ASSERT_NE(first, nullptr);
+    EXPECT_NE(first->mediaId, 0u);
+    EXPECT_TRUE(first->pinned);
+    EXPECT_EQ(first->width, 64u);
+
+    // Across a second of talking the mouth flaps, yet only the two prepared
+    // face frames are ever returned.
+    std::set<const rt::CachedFrame*> distinct;
+    for (int64_t tick = 0; tick < 48000; tick += 1600) {
+        const auto f = rt::renderPngPuppetClip(&clip, tick, 1920, 1080);
+        ASSERT_NE(f, nullptr);
+        distinct.insert(f.get());
+    }
+    EXPECT_EQ(distinct.size(), 2u);
+
+    // A missing face falls back to the resting face's prepared frame.
+    rt::PngPuppetClip broken;
+    broken.setFacePath(rt::PngPuppetClip::MouthClosedEyesOpen, closed);
+    broken.setFacePath(rt::PngPuppetClip::MouthOpenEyesOpen,
+                       (dir / "missing.png").string());
+    broken.setTalking(true);
+    for (int64_t tick = 0; tick < 48000; tick += 1600) {
+        const auto f = rt::renderPngPuppetClip(&broken, tick, 1920, 1080);
+        ASSERT_NE(f, nullptr);
+        EXPECT_EQ(f->mediaId, first->mediaId);
+    }
 }
