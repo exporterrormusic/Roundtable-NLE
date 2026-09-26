@@ -81,6 +81,21 @@ static uint64_t nextSplitGroupId()
     return s_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Link id for the RIGHT half of a split linked clip. Deterministic in
+// (old link, cut tick) so every partner of an A/V pair cut at the same tick
+// lands in the same NEW link group — whether they were split together
+// (F / split-all) or one at a time (razor, menus) — while the left halves
+// keep the original link. High bit set: never collides with the clip-id
+// space that ordinary link ids live in.
+static uint64_t splitRightHalfLinkId(uint64_t oldLinkId, int64_t splitTime)
+{
+    uint64_t x = oldLinkId ^ (static_cast<uint64_t>(splitTime) * 0x9E3779B97F4A7C15ULL);
+    x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ULL;   // splitmix64 finaliser
+    x ^= x >> 27; x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return x | 0x8000'0000'0000'0000ULL;
+}
+
 std::unique_ptr<Command> EditOperations::splitClip(
     Timeline& timeline, size_t trackIndex, uint64_t clipId, int64_t splitTime)
 {
@@ -176,6 +191,11 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
         }
         rightClip->setGroupId(newGid);
     }
+
+    // clone() copied the linkId, which left BOTH halves (and both halves of
+    // the partner) in one link group: clicking any piece selected all four.
+    if (rightClip->linkId() != 0)
+        rightClip->setLinkId(splitRightHalfLinkId(rightClip->linkId(), splitTime));
 
     const uint64_t rightId = rightClip->id();
     compound->addCommand(std::make_unique<AddClipCommand>(track, std::move(rightClip)));

@@ -180,6 +180,22 @@ public:
     /// deletes, cuts, pastes within existing tracks, razor).
     void refreshTrackContents();
 
+    /// Point the clip panels (Properties, Effect Controls, …) at `ref`, the
+    /// same as clicking it — they show that one clip even when its link
+    /// partner is selected too. Does not change the selection.
+    void notifyClipFocused(const ClipRef& ref);
+
+    /// Premiere "Audio Gain" dialog options (TimelinePanelAudioGain.cpp).
+    enum AudioGainMode {
+        AudioGainSet = 0,
+        AudioGainAdjust,
+        AudioGainNormalizeMax,
+        AudioGainNormalizeAll,
+    };
+    /// Audio Gain dialog for the selected audio clips (or just `clicked` when
+    /// it isn't selected). `initialMode` < 0 reopens on the last-used option.
+    void showAudioGainDialog(Clip* clicked, int initialMode = -1);
+
     /// Recompute the Premiere-style render bar from the timeline's static
     /// compositing complexity (§4.6 slice 1) and push it to the ruler.
     /// Cheap; called from the track rebuild/refresh paths.

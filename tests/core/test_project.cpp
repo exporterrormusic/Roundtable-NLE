@@ -649,6 +649,51 @@ TEST_F(SerializerTest, VideoClipRoundTrip)
     EXPECT_EQ(vc->duration(), 48000);
 }
 
+// v44: the A/V link survives save/load — before v44 it was never written, so
+// linked video/audio came apart every time a project was reopened.
+TEST_F(SerializerTest, ClipLinkIdRoundTrip)
+{
+    auto original = makeTestProject();
+    auto findById = [](Timeline* tl, uint64_t id) -> Clip* {
+        for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
+            Track* tr = tl->track(ti);
+            const size_t idx = tr->findClipIndexById(id);
+            if (idx < tr->clipCount()) return tr->clip(idx);
+        }
+        return nullptr;
+    };
+    Clip* video = nullptr;
+    Clip* audio = nullptr;
+    Clip* spine = nullptr;
+    Clip* adjustment = nullptr;
+    for (size_t ti = 0; ti < original->timeline()->trackCount(); ++ti) {
+        Track* tr = original->timeline()->track(ti);
+        for (size_t ci = 0; ci < tr->clipCount(); ++ci) {
+            Clip* c = tr->clip(ci);
+            if (c->clipType() == ClipType::Video)      video = c;
+            if (c->clipType() == ClipType::Audio)      audio = c;
+            if (c->clipType() == ClipType::Spine)      spine = c;
+            if (c->clipType() == ClipType::Adjustment) adjustment = c;
+        }
+    }
+    ASSERT_TRUE(video && audio && spine && adjustment);
+    video->setLinkId(video->id());
+    audio->setLinkId(video->id());
+    // Split-derived link ids use the high bit.
+    spine->setLinkId(0x8123'4567'89AB'CDEFULL);
+
+    auto loaded = serializer.deserialize(serializer.serialize(*original));
+    ASSERT_NE(loaded, nullptr);
+    Timeline* ltl = loaded->timeline();
+    ASSERT_TRUE(findById(ltl, video->id()) && findById(ltl, audio->id())
+                && findById(ltl, spine->id()) && findById(ltl, adjustment->id()));
+    EXPECT_EQ(findById(ltl, video->id())->linkId(), video->id());
+    EXPECT_EQ(findById(ltl, audio->id())->linkId(), video->id());
+    EXPECT_EQ(findById(ltl, spine->id())->linkId(), 0x8123'4567'89AB'CDEFULL);
+    // Unlinked clips stay unlinked.
+    EXPECT_EQ(findById(ltl, adjustment->id())->linkId(), 0u);
+}
+
 TEST_F(SerializerTest, TitleClipMigratesToGraphicOnLoad)
 {
     // TitleClip is creation-orphaned; loading a legacy Title record MIGRATES

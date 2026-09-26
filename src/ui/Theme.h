@@ -27,6 +27,8 @@
 #include <QPalette>
 #include <QString>
 
+class QSplitter;
+
 namespace rt {
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -276,6 +278,20 @@ public:
 
     /// Format a QColor as "#rrggbb" hex for use in QSS strings.
     [[nodiscard]] static QString hex(const QColor& color);
+
+    // ── Splitters ───────────────────────────────────────────────────
+
+    /// Minimum splitter-handle grab width. Handles thinner than this are
+    /// hard to hit; styleThinSplitter keeps a thin LOOK with this hit area.
+    static constexpr int kSplitterGrabPx = 6;
+
+    /// Give `splitter` a divider line `visiblePx` wide (centred) inside a
+    /// handle of at least kSplitterGrabPx, so every divider is equally easy
+    /// to grab regardless of how thin it looks. The whole handle takes the
+    /// hover colour. `extraQss` is appended to the splitter's stylesheet.
+    static void styleThinSplitter(QSplitter* splitter, int visiblePx,
+                                  const QColor& line, const QColor& hover,
+                                  const QString& extraQss = {});
 
 private:
     static void applyDarkPreset();

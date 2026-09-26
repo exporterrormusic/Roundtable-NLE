@@ -797,9 +797,8 @@ void AudioSync::setupUi()
 
     // ── MAIN SPLIT PANE  (Left: tabs+list | Right: card scroll) ─────────
     m_splitter = new QSplitter(Qt::Horizontal);
-    m_splitter->setStyleSheet(
-        QString("QSplitter { background: %1; }"
-        "QSplitter::handle { background: %2; width: 3px; }").arg(surf0, brd));
+    Theme::styleThinSplitter(m_splitter, 3, QColor(brd), Theme::colors().accent,
+        QString("QSplitter { background: %1; }").arg(surf0));
 
     // ── LEFT PANE ───────────────────────────────────────────────────────
     auto* leftPane = new QWidget;

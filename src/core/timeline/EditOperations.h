@@ -158,6 +158,14 @@ public:
     /// Snap a pair of ticks (e.g. clip in + out) — returns the best snap.
     [[nodiscard]] SnapResult snapPair(int64_t tickA, int64_t tickB) const;
 
+    /// Sticky snap across any number of edges that move together (every
+    /// head + tail of a multi-clip drag). Once an edge locks onto a target
+    /// the lock holds while ANY edge stays inside the release zone, so a
+    /// linked A/V drag gets the same detent as a single clip.
+    /// Returns delta = offset to add to every edge; snappedTick = the
+    /// target tick that was hit (for the snap indicator).
+    [[nodiscard]] SnapResult snapEdges(const std::vector<int64_t>& edges) const;
+
     /// The current targets (for UI visualization of snap lines).
     [[nodiscard]] const std::vector<SnapTarget>& targets() const noexcept { return m_targets; }
 

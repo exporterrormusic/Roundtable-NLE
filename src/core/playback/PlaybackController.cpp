@@ -456,13 +456,17 @@ void PlaybackController::shuttleForward()
 
 // ── Navigation ──────────────────────────────────────────────────────────────
 
+// Premiere behaviour: Home/End (and the go-to-start/end buttons) stop
+// playback and park the playhead — they never keep playing from the new spot.
 void PlaybackController::goToStart()
 {
+    pause();
     seekTo(0);
 }
 
 void PlaybackController::goToEnd()
 {
+    pause();
     if (m_timeline)
         seekTo(m_timeline->duration());
     else if (m_standaloneDuration > 0)

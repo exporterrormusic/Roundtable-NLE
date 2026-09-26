@@ -6,7 +6,10 @@
  * A QDoubleSpinBox subclass that supports:
  *   - Click and drag left/right to scrub the value (cursor: ↔ on hover)
  *   - Shift+drag for fine adjust (10x slower)
- *   - Ctrl+drag for coarse adjust (10x faster)
+ *   - Ctrl+drag for coarse adjust (10x faster); modifiers change the rate
+ *     from the current point, mid-drag, without jumping the value
+ *   - Cursor hidden while scrubbing, unlimited travel (wraps at the screen
+ *     edge), reappears where the drag started — see ScrubGesture
  *   - Normal text editing when clicked without dragging
  *   - Emits valueCommitted when the user finishes a drag (for undo grouping)
  *   - Configurable step, range, precision, and suffix
@@ -20,8 +23,9 @@
 
 #pragma once
 
+#include "widgets/ScrubGesture.h"
+
 #include <QDoubleSpinBox>
-#include <QPoint>
 
 namespace rt {
 
@@ -90,12 +94,9 @@ private:
 
     bool   m_scrubbing{false};
     bool   m_potentialScrub{false};
-    QPoint m_pressPos;
-    QPoint m_lastGlobalPos;
+    ScrubGesture m_gesture;
     double m_startValue{0.0};
     double m_accumulator{0.0};
-
-    static constexpr int kDragThreshold = 3;
 };
 
 } // namespace rt

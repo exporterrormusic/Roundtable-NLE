@@ -432,63 +432,35 @@ void TimelinePanel::continueClipMoveDrag(QPointF pos, int64_t tickDelta)
     int64_t newIn = m_dragOriginalIn + tickDelta;
     if (newIn < 0) newIn = 0;
 
-    // Snap both edges of the dragged clip(s). For a single-clip drag
-    // the primary's head + tail are tested; for a multi-clip drag we
-    // walk EVERY dragged clip's head + tail and pick whichever yields
-    // the smallest snap delta — otherwise only the primary's edges
-    // could snap, so clips on other tracks would silently pass over
-    // target edges and never magnetise.
+    // Snap every head + tail of every dragged clip (the primary alone for
+    // a single-clip drag; all of them for a multi-clip / linked A/V drag,
+    // so clips on other tracks magnetise too). snapEdges is STICKY: once
+    // an edge seats against a target it holds until the nearest edge is
+    // dragged past the release zone, so the lock no longer drops the
+    // moment a tail edge (or a linked clip's edge) is the one that snapped.
     // Holding Ctrl suppresses magnetism entirely for precision moves.
     const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
     if (!ctrlHeld) {
-    const bool multiDrag = (m_dragSelectedClips.size() > 1);
-    if (!multiDrag) {
-        int64_t newOut = newIn + m_dragOriginalDuration;
-        auto result = m_snapEngine.snapPair(newIn, newOut);
+        const int64_t baseDelta = newIn - m_dragOriginalIn;
+        std::vector<int64_t> edges;
+        if (m_dragSelectedClips.size() > 1) {
+            edges.reserve(m_dragSelectedClips.size() * 2);
+            for (const auto& dcs : m_dragSelectedClips) {
+                const int64_t cIn = dcs.originalIn + baseDelta;
+                edges.push_back(cIn);
+                edges.push_back(cIn + dcs.originalDuration);
+            }
+        } else {
+            edges = { newIn, newIn + m_dragOriginalDuration };
+        }
+        auto result = m_snapEngine.snapEdges(edges);
         if (result.didSnap) {
-            newIn = result.snappedTick;
-            // Show indicator at whichever edge actually snapped
-            auto headCheck = m_snapEngine.snap(newIn);
-            if (headCheck.didSnap && headCheck.delta == 0)
-                setSnapIndicator(newIn);  // head edge snapped
-            else
-                setSnapIndicator(newIn + m_dragOriginalDuration);  // tail edge
-        } else {
-            setSnapIndicator(-1);
-        }
-    } else {
-        // findNearestAttract is the non-hysteretic primitive — using
-        // it here lets us probe every dragged edge independently
-        // without the snap engine's stuck-target state interfering
-        // across clips.
-        const int64_t attract = m_snapEngine.thresholdTicks();
-        int64_t bestAbs = std::numeric_limits<int64_t>::max();
-        int64_t bestDelta = 0;
-        int64_t bestEdgeTick = 0;
-        for (const auto& dcs : m_dragSelectedClips) {
-            const int64_t cIn  = dcs.originalIn + tickDelta;
-            const int64_t cOut = cIn + dcs.originalDuration;
-            auto hitIn  = m_snapEngine.findNearestAttract(cIn,  attract);
-            if (hitIn.found && hitIn.dist < bestAbs) {
-                bestAbs = hitIn.dist;
-                bestDelta = hitIn.tick - cIn;
-                bestEdgeTick = hitIn.tick;
-            }
-            auto hitOut = m_snapEngine.findNearestAttract(cOut, attract);
-            if (hitOut.found && hitOut.dist < bestAbs) {
-                bestAbs = hitOut.dist;
-                bestDelta = hitOut.tick - cOut;
-                bestEdgeTick = hitOut.tick;
-            }
-        }
-        if (bestAbs != std::numeric_limits<int64_t>::max()) {
-            newIn += bestDelta;
+            newIn += result.delta;
             if (newIn < 0) newIn = 0;
-            setSnapIndicator(bestEdgeTick);
+            setSnapIndicator(result.snappedTick);
         } else {
             setSnapIndicator(-1);
         }
-    }
     } else {
         // Ctrl held: suppress magnetism, reset sticky state so
         // releasing Ctrl doesn't cause a sudden jump to a stale target.

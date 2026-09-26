@@ -1325,6 +1325,11 @@ void writeClip(BinaryWriter& w, const Clip& clip)
     // the project format and defaults to Frame Sampling in older projects.
     w.writeU8(static_cast<uint8_t>(clip.timeInterpolation()));
 
+    // A/V link (v44+). Link ids live in the clip-id space (a clip's linkId
+    // is its partner's id, or a split-derived id), and clip ids are
+    // restored verbatim on load, so the value round-trips unchanged.
+    w.writeU64(clip.linkId());
+
     // Type-specific fields — dispatched through the per-type registry
     if (const TypeSerializer* ts = serializerFor(clip.clipType()))
         ts->writeFields(w, clip);
@@ -1511,6 +1516,11 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
         if (mode <= static_cast<uint8_t>(TimeInterpolation::OpticalFlow))
             clip->setTimeInterpolation(static_cast<TimeInterpolation>(mode));
     }
+
+    // A/V link (v44+). Pre-v44 projects never saved links, so their clips
+    // load unlinked (0), exactly as they always have.
+    if (version >= 44)
+        clip->setLinkId(r.readU64());
 
     // Type-specific fields — dispatched through the per-type registry
     ts->readFields(r, *clip, version);

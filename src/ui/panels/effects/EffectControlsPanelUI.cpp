@@ -175,11 +175,7 @@ void EffectControlsPanel::setupUI()
     // ── Splitter: left (property tree) | right (keyframe timeline) ──────
     m_splitter = new QSplitter(Qt::Horizontal, this);
     m_splitter->setChildrenCollapsible(false);
-    m_splitter->setHandleWidth(2);
-    m_splitter->setStyleSheet(QStringLiteral(
-        "QSplitter::handle { background: %1; }"
-        "QSplitter::handle:hover { background: %2; }")
-        .arg(Theme::hex(tc.border), Theme::hex(tc.accent)));
+    Theme::styleThinSplitter(m_splitter, 2, tc.border, tc.accent);
 
     // -- Left: scroll area with property sections ────────────────────────
     m_scrollArea = new QScrollArea;

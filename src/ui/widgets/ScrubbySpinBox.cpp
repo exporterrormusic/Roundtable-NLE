@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 
 namespace rt {
@@ -216,8 +217,7 @@ void ScrubbySpinBox::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton)
     {
-        m_pressPos       = event->globalPosition().toPoint();
-        m_lastGlobalPos  = m_pressPos;
+        m_gesture.press(event->globalPosition().toPoint());
         m_startValue     = value();
         m_accumulator    = 0.0;
         m_potentialScrub = true;
@@ -236,50 +236,34 @@ void ScrubbySpinBox::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    QPoint globalPos = event->globalPosition().toPoint();
+    const int dx = m_gesture.move(event->globalPosition().toPoint());
+    if (!m_gesture.isActive())
+        return; // Haven't moved far enough yet
 
-    // Detect if we've started scrubbing (drag threshold)
-    if (m_potentialScrub && !m_scrubbing)
+    m_scrubbing = true;
+    m_potentialScrub = false;
+
+    // Rate for the CURRENT modifiers applied to this move only, so
+    // pressing/releasing Shift or Ctrl mid-drag changes the speed from
+    // here on rather than re-scaling the whole drag (which jumped).
+    double step = m_scrubStep;
+    if (event->modifiers() & Qt::ShiftModifier)
+        step *= m_fineMultiplier;
+    else if (event->modifiers() & Qt::ControlModifier)
+        step *= m_coarseMultiplier;
+
+    m_accumulator += dx * step;
+    const double newVal = std::clamp(m_startValue + m_accumulator, minimum(), maximum());
+    // Pin at the limits so reversing direction responds immediately.
+    m_accumulator = newVal - m_startValue;
+
+    if (newVal != value())
     {
-        if (std::abs(globalPos.x() - m_pressPos.x()) >= kDragThreshold)
-        {
-            m_scrubbing = true;
-            m_potentialScrub = false;
-        }
-        else
-        {
-            return; // Haven't moved far enough yet
-        }
+        setValue(newVal);
+        emit valueScrubbed(newVal);
     }
 
-    if (m_scrubbing)
-    {
-        // Calculate step with modifiers
-        double step = m_scrubStep;
-
-        if (event->modifiers() & Qt::ShiftModifier)
-            step *= m_fineMultiplier;
-        else if (event->modifiers() & Qt::ControlModifier)
-            step *= m_coarseMultiplier;
-
-        // Use total horizontal displacement from press position rather than
-        // per-event deltas — avoids the inherent jitter of warping the cursor
-        // back on every mouse move (which causes OS cursor-position races).
-        int dx = globalPos.x() - m_pressPos.x();
-        m_accumulator = dx * step;
-        double newVal = std::clamp(m_startValue + m_accumulator, minimum(), maximum());
-
-        if (newVal != value())
-        {
-            setValue(newVal);
-            emit valueScrubbed(newVal);
-        }
-
-        event->accept();
-        return;
-    }
-
-    m_lastGlobalPos = globalPos;
+    event->accept();
 }
 
 void ScrubbySpinBox::mouseReleaseEvent(QMouseEvent* event)
@@ -288,7 +272,8 @@ void ScrubbySpinBox::mouseReleaseEvent(QMouseEvent* event)
     {
         if (m_scrubbing)
         {
-            // End scrub — restore cursor
+            // End scrub — unhide the cursor at the press point
+            m_gesture.release();
             setCursor(Qt::SizeHorCursor);
             if (lineEdit()) lineEdit()->setCursor(Qt::SizeHorCursor);
             double finalValue = value();
@@ -311,6 +296,7 @@ void ScrubbySpinBox::mouseReleaseEvent(QMouseEvent* event)
         if (m_potentialScrub)
         {
             // User clicked without dragging — enter edit mode
+            m_gesture.cancel();
             m_potentialScrub = false;
             setCursor(Qt::IBeamCursor);
             if (lineEdit()) {

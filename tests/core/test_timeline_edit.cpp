@@ -294,6 +294,49 @@ TEST(EditOperations, SnapPair)
     EXPECT_TRUE(result.didSnap);
 }
 
+// At 100 px/s the 10px attract zone is 4800 ticks and the release zone
+// (x1.3) is 6240.
+TEST(EditOperations, SnapEdgesTailLockIsSticky)
+{
+    rt::SnapEngine snap;
+    snap.setPixelsPerSecond(100.0);
+    snap.addTarget({5 * TPS, rt::SnapTarget::Type::ClipEdge});
+
+    // Tail comes within the attract zone → locks.
+    auto r1 = snap.snapEdges({2 * TPS, 5 * TPS - 3000});
+    ASSERT_TRUE(r1.didSnap);
+    EXPECT_EQ(r1.delta, 3000);
+    EXPECT_EQ(r1.snappedTick, 5 * TPS);
+
+    // Pulled back past the attract zone but inside the release zone →
+    // still seated (the old head-probe dropped this tail lock).
+    auto r2 = snap.snapEdges({2 * TPS - 2500, 5 * TPS - 5500});
+    ASSERT_TRUE(r2.didSnap);
+    EXPECT_EQ(r2.delta, 5500);
+
+    // Past the release zone → breaks free.
+    auto r3 = snap.snapEdges({2 * TPS - 4000, 5 * TPS - 7000});
+    EXPECT_FALSE(r3.didSnap);
+}
+
+TEST(EditOperations, SnapEdgesMultiClipLockHolds)
+{
+    rt::SnapEngine snap;
+    snap.setPixelsPerSecond(100.0);
+    snap.addTarget({10 * TPS, rt::SnapTarget::Type::ClipEdge});
+
+    // Linked pair: V clip [1s,4s], A clip [1s,9.96s]. The A tail locks.
+    auto r1 = snap.snapEdges({1 * TPS, 4 * TPS, 1 * TPS, 10 * TPS - 2000});
+    ASSERT_TRUE(r1.didSnap);
+    EXPECT_EQ(r1.delta, 2000);
+
+    // Keeps holding on the A tail while inside the release zone.
+    auto r2 = snap.snapEdges({1 * TPS - 3500, 4 * TPS - 3500,
+                              1 * TPS - 3500, 10 * TPS - 5500});
+    ASSERT_TRUE(r2.didSnap);
+    EXPECT_EQ(r2.delta, 5500);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Razor / Split
 // ═════════════════════════════════════════════════════════════════════════════
@@ -389,6 +432,83 @@ TEST(EditOperations, SplitAllAtPlayhead)
     EXPECT_EQ(tt.vTrack->clipCount(), 4u);
     // A1: clip split at 3s → 2 clips
     EXPECT_EQ(aTrack->clipCount(), 2u);
+}
+
+namespace {
+const rt::Clip* clipAt(rt::Track* track, double sec)
+{
+    const int64_t t = static_cast<int64_t>(sec * TPS);
+    for (size_t i = 0; i < track->clipCount(); ++i) {
+        const rt::Clip* c = track->clip(i);
+        if (t >= c->timelineIn() && t < c->timelineOut()) return c;
+    }
+    return nullptr;
+}
+
+// Linked A/V pair on V1 / A1, both 10–20s.
+struct LinkedPair {
+    rt::Timeline timeline;
+    rt::Track* v{nullptr};
+    rt::Track* a{nullptr};
+    uint64_t vId{0}, aId{0};
+    size_t indexOf(const rt::Track* t) const
+    {
+        for (size_t i = 0; i < timeline.trackCount(); ++i)
+            if (timeline.track(i) == t) return i;
+        return SIZE_MAX;
+    }
+    LinkedPair()
+    {
+        v = timeline.addVideoTrack("V1");
+        a = timeline.addAudioTrack("A1");
+        vId = addClip(v, 10.0, 10.0);
+        aId = addClip(a, 10.0, 10.0);
+        v->clip(0)->setLinkId(vId);
+        a->clip(0)->setLinkId(vId);
+    }
+};
+} // namespace
+
+TEST(EditOperations, SplitLinkedPairSeparatesHalves)
+{
+    LinkedPair lp;
+    rt::CommandStack stack;
+    // Split each side on its own (razor / per-clip path).
+    stack.execute(rt::EditOperations::splitClip(lp.timeline, lp.indexOf(lp.v), lp.vId, 15 * TPS));
+    stack.execute(rt::EditOperations::splitClip(lp.timeline, lp.indexOf(lp.a), lp.aId, 15 * TPS));
+
+    const uint64_t oldLink = lp.vId;
+    // Left halves keep the original link…
+    EXPECT_EQ(clipAt(lp.v, 12)->linkId(), oldLink);
+    EXPECT_EQ(clipAt(lp.a, 12)->linkId(), oldLink);
+    // …right halves are linked to each other, not to the left halves.
+    const uint64_t rightLink = clipAt(lp.v, 17)->linkId();
+    EXPECT_NE(rightLink, 0u);
+    EXPECT_NE(rightLink, oldLink);
+    EXPECT_EQ(clipAt(lp.a, 17)->linkId(), rightLink);
+}
+
+TEST(EditOperations, SplitAllLinkedPairMatchesPerClipSplit)
+{
+    LinkedPair lp;
+    rt::CommandStack stack;
+    stack.execute(rt::EditOperations::splitAllAtPlayhead(lp.timeline, 15 * TPS));
+    const uint64_t rightLink = clipAt(lp.v, 17)->linkId();
+    EXPECT_NE(rightLink, lp.vId);
+    EXPECT_EQ(clipAt(lp.a, 17)->linkId(), rightLink);
+    EXPECT_EQ(clipAt(lp.a, 12)->linkId(), lp.vId);
+}
+
+TEST(EditOperations, SplitLinkedRightHalfAgainGetsFreshLink)
+{
+    LinkedPair lp;
+    rt::CommandStack stack;
+    stack.execute(rt::EditOperations::splitAllAtPlayhead(lp.timeline, 15 * TPS));
+    const uint64_t midLink = clipAt(lp.v, 17)->linkId();
+    stack.execute(rt::EditOperations::splitAllAtPlayhead(lp.timeline, 18 * TPS));
+    EXPECT_EQ(clipAt(lp.v, 16)->linkId(), midLink);
+    EXPECT_NE(clipAt(lp.v, 19)->linkId(), midLink);
+    EXPECT_EQ(clipAt(lp.a, 19)->linkId(), clipAt(lp.v, 19)->linkId());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

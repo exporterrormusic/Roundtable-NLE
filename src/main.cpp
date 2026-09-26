@@ -29,6 +29,8 @@
 #include "ui/SplashScreen.h"
 #include "ui/UiScale.h"
 #include "ui/NoElideTabStyle.h"
+#include "ui/widgets/PressFeedback.h"
+#include "ui/widgets/SpinBoxScrubber.h"
 #include "ui/QtHelpers.h"
 #include "CrashHandler.h"
 #include "HangWatchdog.h"
@@ -184,6 +186,10 @@ int main(int argc, char* argv[])
     qtApp.installNativeEventFilter(&s_uiaBlocker);
 #endif
     qtApp.setStyle(new NoElideTabStyle(qtApp.style()->objectName()));
+    // App-wide interaction feel: drag-to-scrub on every numeric field and a
+    // visible pressed state on buttons whose local QSS lacks one.
+    rt::SpinBoxScrubber::install(&qtApp);
+    rt::PressFeedback::install(&qtApp);
     qtApp.setApplicationName("ROUNDTABLE NLE");
     qtApp.setApplicationVersion(ROUNDTABLE_VERSION);
     qtApp.setOrganizationName("Roundtable");

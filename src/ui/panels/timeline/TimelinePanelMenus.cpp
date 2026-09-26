@@ -759,92 +759,10 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
         }
     }
     else if (normalizeAction && chosen == normalizeAction) {
-        auto* ac = dynamic_cast<AudioClip*>(clip);
-        if (ac) {
-            AudioFile af;
-            if (af.open(ac->mediaPath())) {
-                auto samples = af.readAll();
-                if (!samples.empty()) {
-                    float peak = 0.0f;
-                    for (float s : samples)
-                        peak = std::max(peak, std::fabs(s));
-
-                    if (peak > 1e-6f) {
-                        float peakDb = 20.0f * std::log10(peak);
-                        bool ok = false;
-                        double targetDb = QInputDialog::getDouble(
-                            this, "Normalize Audio",
-                            QString("Current peak: %1 dB\n\nNormalize peak to (dB):")
-                                .arg(static_cast<double>(peakDb), 0, 'f', 1),
-                            0.0, -60.0, 0.0, 1, &ok);
-
-                        if (ok) {
-                            float targetLin = std::pow(10.0f, static_cast<float>(targetDb) / 20.0f);
-                            float gain = targetLin / peak;
-                            auto& vol = ac->volume();
-                            for (size_t k = 0; k < vol.keyframeCount(); ++k)
-                                vol.keyframe(k).value *= gain;
-                            onScrollChanged();
-                            emit contentChanged();
-                        }
-                    }
-                }
-            }
-        }
+        showAudioGainDialog(clip, AudioGainNormalizeMax);
     }
     else if (audioGainAction && chosen == audioGainAction) {
-        auto* ac = dynamic_cast<AudioClip*>(clip);
-        if (ac) {
-            // Current gain: read the first keyframe value, or the static
-            // track value when animation is disabled.
-            auto& vol = ac->volume();
-            float currentLin = (vol.keyframeCount() > 0)
-                ? vol.keyframe(0).value
-                : vol.defaultValue();
-            float currentDb = (currentLin > 1e-6f)
-                ? 20.0f * std::log10(currentLin)
-                : -96.0f;
-
-            QDialog dlg(this);
-            dlg.setWindowTitle("Audio Gain");
-            dlg.setMinimumWidth(300);
-
-            auto* layout = new QVBoxLayout(&dlg);
-            auto* form = new QFormLayout;
-
-            auto* gainSpin = new QDoubleSpinBox;
-            gainSpin->setRange(-96.0, 24.0);
-            gainSpin->setDecimals(1);
-            gainSpin->setSingleStep(0.5);
-            gainSpin->setSuffix(" dB");
-            gainSpin->setValue(static_cast<double>(currentDb));
-            form->addRow("Set Gain to:", gainSpin);
-
-            layout->addLayout(form);
-
-            auto* buttons = new QDialogButtonBox(
-                QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-            layout->addWidget(buttons);
-            connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-            connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-            if (dlg.exec() == QDialog::Accepted) {
-                float newLin = std::pow(10.0f, static_cast<float>(gainSpin->value()) / 20.0f);
-                if (vol.keyframeCount() == 0) {
-                    // A static track deliberately has no keyframes. Keep it
-                    // static and update its default instead of indexing an
-                    // empty keyframe vector.
-                    vol.writeValue(0, newLin);
-                } else {
-                    // Scale all keyframes relative to the change
-                    float ratio = (currentLin > 1e-6f) ? (newLin / currentLin) : newLin;
-                    for (size_t k = 0; k < vol.keyframeCount(); ++k)
-                        vol.keyframe(k).value *= ratio;
-                }
-                onScrollChanged();
-                emit contentChanged();
-            }
-        }
+        showAudioGainDialog(clip);
     }
     else if (audioStreamMenu && audioStreamMenu->actions().contains(chosen)) {
         auto* ac = dynamic_cast<AudioClip*>(clip);

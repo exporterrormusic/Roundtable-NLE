@@ -7,6 +7,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "Theme.h"
 #include "panels/timeline/DockBehavior.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -92,7 +93,7 @@ void TimelineWorkspace::arrangeDockLayout()
 
     // -- Full-height edge docking -----------------------------------------
     m_edgeSplitter = new QSplitter(Qt::Horizontal, this);
-    m_edgeSplitter->setHandleWidth(2);
+    Theme::styleThinSplitter(m_edgeSplitter, 2, Theme::colors().border, Theme::colors().accent);
     m_edgeSplitter->setChildrenCollapsible(false);
     m_edgeSplitter->addWidget(m_innerMainWindow);
     auto* edgeWatcher = new DockEdgeDragWatcher(m_innerMainWindow, m_edgeSplitter, m_edgeSplitter);

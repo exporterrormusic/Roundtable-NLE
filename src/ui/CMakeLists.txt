@@ -39,6 +39,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/PlayheadLineWidget.cpp
     panels/timeline/TimelinePanel.cpp
     panels/timeline/TimelinePanelMenus.cpp
+    panels/timeline/TimelinePanelAudioGain.cpp
     panels/timeline/TimelinePanelMedia.cpp
     panels/timeline/TimelinePanelMouse.cpp
     panels/timeline/TimelinePanelMouseDrag.cpp
@@ -207,6 +208,9 @@ add_library(roundtable_ui STATIC
     widgets/ColorWheelWidget.cpp
     widgets/CurveEditor.cpp
     widgets/ScrubbySpinBox.cpp
+    widgets/ScrubGesture.cpp
+    widgets/SpinBoxScrubber.cpp
+    widgets/PressFeedback.cpp
     widgets/AudioFxSection.cpp
     widgets/ThumbnailGrid.cpp
     widgets/MiniTimeline.cpp

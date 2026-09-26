@@ -11,7 +11,10 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QSplitter>
 #include <QStyleFactory>
+
+#include <algorithm>
 
 namespace rt {
 
@@ -39,6 +42,37 @@ QString Theme::rgba(const QColor& color, int alpha)
 QString Theme::hex(const QColor& color)
 {
     return color.name(QColor::HexRgb);
+}
+
+void Theme::styleThinSplitter(QSplitter* splitter, int visiblePx,
+                              const QColor& line, const QColor& hover,
+                              const QString& extraQss)
+{
+    if (!splitter) return;
+    visiblePx = std::max(1, visiblePx);
+    // Same parity as the line so it centres on whole pixels.
+    int grab = std::max(kSplitterGrabPx, visiblePx);
+    if ((grab - visiblePx) % 2) ++grab;
+    splitter->setHandleWidth(grab);
+
+    // Hard-stop gradient = a centred solid line on a transparent handle.
+    const double a  = (grab - visiblePx) / 2.0 / grab;
+    const double b  = 1.0 - a;
+    const double e  = 0.0001;
+    const QString stops = QStringLiteral(
+        "stop:0 transparent, stop:%1 transparent, stop:%2 %5, "
+        "stop:%3 %5, stop:%4 transparent, stop:1 transparent")
+        .arg(a).arg(a + e).arg(b).arg(b + e).arg(hex(line));
+
+    // Scoped by property so nested splitters keep the global handle style.
+    splitter->setProperty("rtThinSplitter", true);
+    splitter->setStyleSheet(QStringLiteral(
+        "QSplitter[rtThinSplitter=\"true\"]::handle:horizontal {"
+        " background: qlineargradient(x1:0, y1:0, x2:1, y2:0, %1); }"
+        "QSplitter[rtThinSplitter=\"true\"]::handle:vertical {"
+        " background: qlineargradient(x1:0, y1:0, x2:0, y2:1, %1); }"
+        "QSplitter[rtThinSplitter=\"true\"]::handle:hover { background: %2; }")
+        .arg(stops, hex(hover)) + extraQss);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

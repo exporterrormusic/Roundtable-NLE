@@ -430,6 +430,26 @@ TEST(Transport, GoToEnd)
     EXPECT_EQ(ts.controller.currentTick(), ts.timeline.duration());
 }
 
+TEST(Transport, GoToStartWhilePlayingPauses)
+{
+    TestSetup ts;
+    ts.controller.seekTo(5 * TPS);
+    ts.controller.play();
+    ts.controller.goToStart();
+    EXPECT_EQ(ts.controller.state(), rt::PlayState::Paused);
+    EXPECT_EQ(ts.controller.currentTick(), 0);
+}
+
+TEST(Transport, GoToEndWhileShuttlingPauses)
+{
+    TestSetup ts;
+    ts.controller.shuttleForward();
+    ts.controller.goToEnd();
+    EXPECT_EQ(ts.controller.state(), rt::PlayState::Paused);
+    EXPECT_DOUBLE_EQ(ts.controller.shuttleSpeed(), 0.0);
+    EXPECT_EQ(ts.controller.currentTick(), ts.timeline.duration());
+}
+
 TEST(Transport, GoToNextEditPoint)
 {
     TestSetup ts;

@@ -41,7 +41,7 @@ void CharacterBrowser::setupUI()
     layout->setSpacing(10);
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
-    m_splitter->setHandleWidth(3);
+    Theme::styleThinSplitter(m_splitter, 3, Theme::colors().border, Theme::colors().accent);
 
     auto* leftPanel = createLeftPanel();
     leftPanel->setMinimumWidth(280);

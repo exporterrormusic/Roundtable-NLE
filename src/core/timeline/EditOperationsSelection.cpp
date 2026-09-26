@@ -280,6 +280,50 @@ SnapResult SnapEngine::snapPair(int64_t tickA, int64_t tickB) const
     return {tickA + delta, true, delta, hitB.type};
 }
 
+SnapResult SnapEngine::snapEdges(const std::vector<int64_t>& edges) const
+{
+    if (!m_enabled || m_targets.empty() || edges.empty())
+        return {0, false, 0, SnapTarget::Type::GridLine};
+
+    const int64_t attract = thresholdTicks();
+    if (attract <= 0)
+        return {0, false, 0, SnapTarget::Type::GridLine};
+
+    // ── Hysteresis: hold the stuck target while the edge nearest to it is
+    //    still inside the release zone. The nearest edge is re-chosen each
+    //    call, so the lock survives whichever dragged edge made it.
+    if (m_stuckTick != INT64_MIN)
+    {
+        const int64_t release = static_cast<int64_t>(attract * kReleaseMultiplier);
+        int64_t bestAbs = std::numeric_limits<int64_t>::max();
+        int64_t bestDelta = 0;
+        for (int64_t e : edges) {
+            const int64_t d = m_stuckTick - e;
+            if (std::abs(d) < bestAbs) { bestAbs = std::abs(d); bestDelta = d; }
+        }
+        if (bestAbs <= release)
+            return {m_stuckTick, true, bestDelta, m_stuckType};
+        resetHysteresis();
+    }
+
+    // ── Fresh attract: nearest target to any edge within the attract zone.
+    AttractHit best;
+    int64_t bestDelta = 0;
+    for (int64_t e : edges) {
+        AttractHit hit = findNearestAttract(e, attract);
+        if (hit.found && hit.dist < best.dist) {
+            best = hit;
+            bestDelta = hit.tick - e;
+        }
+    }
+    if (!best.found)
+        return {0, false, 0, SnapTarget::Type::GridLine};
+
+    m_stuckTick = best.tick;
+    m_stuckType = best.type;
+    return {best.tick, true, bestDelta, best.type};
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 } // namespace rt

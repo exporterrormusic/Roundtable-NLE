@@ -17,6 +17,7 @@
 #include "ai/Transcriber.h"
 #include "QtHelpers.h"
 #include "viewport/TransformOverlayWidget.h"
+#include "widgets/SpinBoxScrubber.h"
 
 #include <spdlog/spdlog.h>
 
@@ -33,6 +34,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 #include <unordered_map>
 
@@ -351,6 +353,24 @@ void CaptionsPanel::buildUI()
  this, &CaptionsPanel::onFontChanged);
  connect(m_fontSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged),
  this, &CaptionsPanel::onFontSizeChanged);
+ // onFontSizeChanged pushes an undo step per value; a drag-scrub of the
+ // field (SpinBoxScrubber) is grouped into ONE step.
+ if (auto* scrubber = SpinBoxScrubber::instance()) {
+ auto macroStack = std::make_shared<CommandStack*>(nullptr);
+ connect(scrubber, &SpinBoxScrubber::scrubStarted, this,
+ [this, macroStack](QAbstractSpinBox* box) {
+ if (box != m_fontSizeSpin || !m_commandStack) return;
+ m_commandStack->beginMacro("Edit Caption Font Size");
+ *macroStack = m_commandStack;
+ });
+ connect(scrubber, &SpinBoxScrubber::scrubFinished, this,
+ [macroStack](QAbstractSpinBox*) {
+ if (auto* stack = *macroStack) {
+ stack->endMacro();
+ *macroStack = nullptr;
+ }
+ });
+ }
  connect(m_addTrackBtn, &QPushButton::clicked,
  this, &CaptionsPanel::onAddCaptionsToTimeline);
  connect(m_transcribeBtn, &QPushButton::clicked,

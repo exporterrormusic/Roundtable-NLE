@@ -229,6 +229,16 @@ void TimelinePanel::clearEditPointSelection()
             tw->setEditPointTick(-1);
 }
 
+void TimelinePanel::notifyClipFocused(const ClipRef& ref)
+{
+    if (!m_timeline) return;
+    Track* track = m_timeline->track(ref.trackIndex);
+    if (!track) return;
+    const size_t idx = track->findClipIndexById(ref.clipId);
+    if (idx < track->clipCount())
+        emit clipSelected(ref.trackIndex, idx);
+}
+
 void TimelinePanel::setLinkPartnersSelected(const ClipRef& seed, bool selected)
 {
     if (!m_linkedSelectionEnabled) return;

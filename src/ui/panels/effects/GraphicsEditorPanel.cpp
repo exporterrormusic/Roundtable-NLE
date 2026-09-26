@@ -313,11 +313,7 @@ void GraphicsEditorPanel::setupUI()
  // ── Splitter: layer list ↔ scroll area (user-draggable divider) ──
  m_splitter = new QSplitter(Qt::Vertical, this);
  m_splitter->setChildrenCollapsible(false);
- m_splitter->setHandleWidth(4);
- m_splitter->setStyleSheet(QStringLiteral(
- "QSplitter::handle { background: %1; }"
- "QSplitter::handle:hover { background: %2; }")
- .arg(Theme::hex(tc.border), Theme::hex(tc.accent)));
+ Theme::styleThinSplitter(m_splitter, 4, tc.border, tc.accent);
  m_splitter->addWidget(m_layerList);
  // The scroll area is added to the splitter below
  rootLayout->addWidget(m_splitter, 1);

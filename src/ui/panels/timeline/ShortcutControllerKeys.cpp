@@ -345,6 +345,13 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {
             int64_t tick = m_ws->playbackController()->currentTick();
             std::unique_ptr<Command> cmd;
+            // Clips actually cut. The left half keeps the original id and
+            // track, so these refs name the left halves after the split.
+            std::vector<ClipRef> splitRefs;
+            // The clip the panels were showing (the clicked one). Compared
+            // by address only — never dereferenced.
+            const Clip* focusedClip = m_ws->selection().clip;
+            uint64_t focusedId = 0;
 
             if (m_ws->timelinePanel()) {
                 const auto& sel = m_ws->timelinePanel()->selection();
@@ -364,6 +371,8 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                                 *m_ws->timeline(), ref.trackIndex, ref.clipId, tick);
                             if (sc) {
                                 compound->addCommand(std::move(sc));
+                                splitRefs.push_back(ref);
+                                if (c == focusedClip) focusedId = ref.clipId;
                                 anySplit = true;
                             }
                         }
@@ -373,8 +382,21 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 }
             }
 
-            // Fallback: split all clips at playhead
+            // Fallback: split all clips at playhead (same criteria as
+            // splitAllAtPlayhead, recorded before the cut).
             if (!cmd) {
+                splitRefs.clear();
+                for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
+                    Track* trk = m_ws->timeline()->track(ti);
+                    if (!trk || trk->isLocked()) continue;
+                    for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
+                        const Clip* c = trk->clip(ci);
+                        if (tick > c->timelineIn() && tick < c->timelineOut()) {
+                            splitRefs.push_back(ClipRef{ti, c->id()});
+                            if (c == focusedClip) focusedId = c->id();
+                        }
+                    }
+                }
                 cmd = EditOperations::splitAllAtPlayhead(*m_ws->timeline(), tick);
             }
 
@@ -383,27 +405,30 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // After a split, the original clip becomes the LEFT half (it
                 // now ENDS at the playhead) and a new clip is the RIGHT half
-                // (it starts at the playhead). Select the LEFT half(s) — the
-                // clip ending at the cut is what the user wants to keep working
-                // with next.
-                if (m_ws->timelinePanel() && m_ws->timeline()) {
+                // (it starts at the playhead). Select the LEFT halves of the
+                // clips that were CUT — not every clip that merely ends at
+                // the playhead on some other track.
+                if (m_ws->timelinePanel()) {
                     m_ws->timelinePanel()->selection().clear();
-                    for (size_t ti = 0; ti < m_ws->timeline()->trackCount(); ++ti) {
-                        Track* trk = m_ws->timeline()->track(ti);
-                        if (!trk || trk->isLocked()) continue;
-                        for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
-                            const Clip* c = trk->clip(ci);
-                            if (c && c->timelineOut() == tick) {
-                                m_ws->timelinePanel()->selection().selectClip(
-                                    ClipRef{ti, c->id()}, true);
-                            }
-                        }
-                    }
+                    for (const auto& ref : splitRefs)
+                        m_ws->timelinePanel()->selection().selectClip(ref, true);
                 }
                 EditImpact impact;
                 impact.timeline = TimelineRefresh::None; // refreshed before selection update
                 impact.selection = true;
                 m_ws->applyEditImpact(impact);
+
+                // A linked A/V pair leaves 2 clips selected, which the
+                // selection handler shows as a group. Re-point the panels at
+                // the one clip the user was working on, exactly like a click.
+                if (m_ws->timelinePanel() && focusedId != 0) {
+                    for (const auto& ref : splitRefs) {
+                        if (ref.clipId == focusedId) {
+                            m_ws->timelinePanel()->notifyClipFocused(ref);
+                            break;
+                        }
+                    }
+                }
             }
         }
         event->accept(); return;
