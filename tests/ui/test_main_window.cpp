@@ -23,6 +23,9 @@
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
 #include "timeline/Timeline.h"
+#include "timeline/Track.h"
+#include "timeline/VideoClip.h"
+#include "widgets/TimelineTrackWidget.h"
 
 // Panels (for type checking)
 #include "panels/characters/CharacterBrowser.h"
@@ -45,6 +48,7 @@
 #include "SpineRenderer.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QEventLoop>
@@ -54,6 +58,7 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QTabBar>
+#include <QTest>
 #include <QThread>
 #include <QTimer>
 
@@ -1140,6 +1145,96 @@ TEST_F(MainWindowTest, AppFullIntegration)
     EXPECT_NE(mw->exportPanel(), nullptr);
     EXPECT_NE(mw->projectPanel(), nullptr);
     EXPECT_EQ(mw->pageCount(), 5);
+}
+
+// Real app wiring: click the empty space between two V1 clips, press
+// Delete (and Backspace) — the gap must ripple closed, like Premiere. The
+// reported failure: a floating dock (Scopes) held window activation +
+// keyboard focus on its combo box, so clicking the timeline never moved
+// focus and every shortcut was swallowed as "typing in a combo".
+TEST_F(MainWindowTest, DeleteClosesSelectedGapWhenFloatingDockHeldFocus)
+{
+    for (const int key : {int(Qt::Key_Delete), int(Qt::Key_Backspace)}) {
+        App app;
+        ASSERT_TRUE(app.init());
+        ASSERT_TRUE(app.createMainWindow());
+        auto* mw = app.mainWindow();
+        ASSERT_NE(mw, nullptr);
+        auto* ws = mw->timelineWorkspace();
+        ASSERT_NE(ws, nullptr);
+        Timeline* tl = ws->timeline();
+        ASSERT_NE(tl, nullptr);
+        auto* panel = ws->timelinePanel();
+        ASSERT_NE(panel, nullptr);
+
+        size_t v1 = SIZE_MAX;
+        for (size_t i = 0; i < tl->trackCount(); ++i) {
+            const Track* t = tl->track(i);
+            if (t->type() == TrackType::Video && !t->isDivider() && !t->isCaptionTrack()) {
+                v1 = i;
+                break;
+            }
+        }
+        ASSERT_NE(v1, SIZE_MAX);
+        constexpr int64_t kSec = 48000;
+        auto a = std::make_unique<VideoClip>();
+        a->setTimelineIn(0);
+        a->setDuration(kSec);
+        tl->track(v1)->addClip(std::move(a));
+        auto b = std::make_unique<VideoClip>();
+        b->setTimelineIn(3 * kSec);
+        b->setDuration(kSec);
+        const uint64_t bId = tl->track(v1)->addClip(std::move(b))->id();
+
+        mw->resize(1600, 1000);
+        mw->show();
+        mw->setCurrentPage(Page::Timeline);
+        for (int i = 0; i < 5; ++i) QApplication::processEvents();
+        panel->refreshTrackContents();
+        panel->layoutEngine().setPixelsPerSecond(100.0);
+        panel->layoutEngine().setScrollX(0.0);
+        panel->notifyZoomChanged();
+        QApplication::processEvents();
+
+        // Another window owns activation + keyboard focus: floating Scopes
+        // with its combo box focused (restored workspaces leave floating
+        // docks — even hidden ones — holding activation like this).
+        auto* scopes = ws->dockForPanel(QStringLiteral("Scopes"));
+        ASSERT_NE(scopes, nullptr);
+        const bool wasFloating = scopes->isFloating();
+        scopes->setFloating(true);
+        scopes->show();
+        scopes->activateWindow();
+        ASSERT_TRUE(QTest::qWaitForWindowActive(scopes, 3000));
+        auto* combo = scopes->findChild<QComboBox*>();
+        ASSERT_NE(combo, nullptr);
+        combo->setFocus(Qt::OtherFocusReason);
+        QApplication::processEvents();
+        ASSERT_EQ(QApplication::focusWidget(), combo);
+
+        TimelineTrackWidget* w = nullptr;
+        for (auto* tw : panel->findChildren<TimelineTrackWidget*>())
+            if (tw->trackIndex() == v1) w = tw;
+        ASSERT_NE(w, nullptr);
+        const int x = qRound(panel->layoutEngine().timeToPixelX(2 * kSec));
+        QTest::mouseClick(w, Qt::LeftButton, Qt::NoModifier, QPoint(x, w->height() / 2));
+        QTest::qWaitForWindowActive(mw, 1000);
+        QApplication::processEvents();
+        ASSERT_TRUE(panel->gapSelection().active);
+
+        // Qt delivers keys to the focus widget — whatever it is now.
+        QWidget* target = QApplication::focusWidget() ? QApplication::focusWidget() : w;
+        QTest::keyClick(target, static_cast<Qt::Key>(key));
+        QApplication::processEvents();
+
+        const Track* t = tl->track(v1);
+        const size_t bi = t->findClipIndexById(bId);
+        ASSERT_LT(bi, t->clipCount());
+        EXPECT_EQ(t->clip(bi)->timelineIn(), kSec) << "key=" << key;
+
+        scopes->setFloating(wasFloating);
+        mw->hide();
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -150,7 +150,14 @@ bool TimelinePanel::eventFilter(QObject* watched, QEvent* event)
                 QWidget* w = parentWidget();
                 while (w && !qobject_cast<TimelineWorkspace*>(w))
                     w = w->parentWidget();
-                if (w) w->setFocus(Qt::MouseFocusReason);
+                if (w) {
+                    // setFocus() only takes effect in the ACTIVE window. A
+                    // floating dock (even a hidden one) can hold activation,
+                    // leaving keys routed there and Delete/Space dead.
+                    if (QApplication::activeWindow() != w->window())
+                        w->window()->activateWindow();
+                    w->setFocus(Qt::MouseFocusReason);
+                }
             }
             mousePressEvent(&mapped);
             break;

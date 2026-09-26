@@ -33,6 +33,11 @@ inline bool widgetConsumesTextKeys(const QWidget* focused)
 inline bool keyboardFocusConsumesTextKeys()
 {
     const QWidget* focused = QApplication::focusWidget();
+    // A field the user cannot see is not being typed into. Qt can leave
+    // focus on a widget inside a HIDDEN floating dock (e.g. a closed Scopes
+    // or History window restored from a saved workspace); treating that
+    // stale focus as text entry silently swallowed Space, Delete, tools...
+    if (focused && !focused->isVisible()) focused = nullptr;
     if (widgetConsumesTextKeys(focused)) return true;
 
     // QCompleter and combo-box popups may move focus to their item view. While

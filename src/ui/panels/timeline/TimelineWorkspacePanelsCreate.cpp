@@ -152,8 +152,9 @@ protected:
         if (QApplication::mouseButtons() != Qt::NoButton) return false;
         if (QApplication::activeModalWidget()) return false;
 
-        // Don't steal focus from a user actively typing/editing.
-        if (auto* fw = QApplication::focusWidget()) {
+        // Don't steal focus from a user actively typing/editing (a hidden
+        // field — e.g. in a closed floating dock — is not being edited).
+        if (auto* fw = QApplication::focusWidget(); fw && fw->isVisible()) {
             if (qobject_cast<QLineEdit*>(fw)        ||
                 qobject_cast<QTextEdit*>(fw)        ||
                 qobject_cast<QPlainTextEdit*>(fw)   ||
