@@ -64,4 +64,30 @@ struct RationalFrameRate
     return frameIndexToTick(frameIndex, fps.numerator, fps.denominator);
 }
 
+/// Exact inverse of frameIndexToTick: the frame ON SCREEN at `tick`, i.e.
+/// the largest frame whose start tick is <= tick. Plain `seconds * fps`
+/// truncation is wrong here — at NTSC rates frame starts are ROUNDED ticks
+/// (29.97: frame 2 = tick 3203 → 1.9999 frames), so truncating an in point
+/// sitting exactly on a frame returned the frame BEFORE it.
+[[nodiscard]] inline int64_t tickToFrameIndex(
+    int64_t tick, uint32_t fpsNumerator, uint32_t fpsDenominator) noexcept
+{
+    if (fpsNumerator == 0 || fpsDenominator == 0) return 0;
+    auto frame = static_cast<int64_t>(std::floor(
+        static_cast<long double>(tick) * static_cast<long double>(fpsNumerator)
+        / (static_cast<long double>(kTicksPerSecond) * static_cast<long double>(fpsDenominator))));
+    // Settle against the canonical (rounded) frame starts.
+    while (frameIndexToTick(frame + 1, fpsNumerator, fpsDenominator) <= tick) ++frame;
+    while (frameIndexToTick(frame, fpsNumerator, fpsDenominator) > tick) --frame;
+    return frame;
+}
+
+/// Exclusive end frame for a range ending at `tick` (exclusive): a frame
+/// boundary ends there; a mid-frame tick includes the partial frame.
+[[nodiscard]] inline int64_t tickToEndFrameIndex(
+    int64_t tick, uint32_t fpsNumerator, uint32_t fpsDenominator) noexcept
+{
+    return tickToFrameIndex(tick - 1, fpsNumerator, fpsDenominator) + 1;
+}
+
 } // namespace rt

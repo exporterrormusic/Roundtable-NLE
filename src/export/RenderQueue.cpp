@@ -62,11 +62,8 @@ void setSnapshotExportRange(ExportRenderSnapshot& snapshot,
         ? static_cast<uint32_t>(config.encoderConfig.fpsDen) : 1u;
     int64_t startFrame = config.startFrame;
     int64_t endFrame = config.endFrame;
-    if (endFrame <= startFrame) {
-        const double duration = ticksToSeconds(timeline.duration());
-        endFrame = static_cast<int64_t>(
-            duration * fpsNum / fpsDen);
-    }
+    if (endFrame <= startFrame)
+        endFrame = tickToEndFrameIndex(timeline.duration(), fpsNum, fpsDen);
     if (endFrame <= startFrame)
         endFrame = startFrame + 1;
     snapshot.rangeStartTick = frameIndexToTick(
@@ -672,8 +669,11 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     int64_t startFrame = job.config.startFrame;
     int64_t endFrame   = job.config.endFrame;
     if (endFrame <= startFrame && renderTimeline) {
-        double duration = ticksToSeconds(renderTimeline->duration());
-        endFrame = static_cast<int64_t>(duration * fpsNum / fpsDen);
+        // Exact inverse of frameIndexToTick (truncating seconds*fps could
+        // drop the last frame at NTSC rates).
+        endFrame = tickToEndFrameIndex(
+            renderTimeline->duration(),
+            static_cast<uint32_t>(fpsNum), static_cast<uint32_t>(fpsDen));
     }
     int64_t totalFrames = endFrame - startFrame;
     if (totalFrames <= 0) {

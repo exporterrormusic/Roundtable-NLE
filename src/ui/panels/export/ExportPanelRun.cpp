@@ -232,19 +232,27 @@ ExportJobConfig ExportPanel::buildJobConfig() const
             cfg.audioConfig.bitrate = m_audioBitrateCombo->currentData().toInt();
     }
 
-    // Range: convert In/Out ticks to frame indices and audio times
+    // Range: convert In/Out ticks to frame indices and audio times.
+    // Must be the exact inverse of the render loop's frameIndexToTick —
+    // `seconds * fps` truncation put the start one frame EARLY whenever the
+    // in point's rounded tick fell a hair short (most frames at 29.97).
     if (m_rangeCombo && m_rangeCombo->currentIndex() == 1 && m_timeline) {
         int64_t inPt  = m_timeline->inPoint();
         int64_t outPt = m_timeline->outPoint();
-        double fps = static_cast<double>(cfg.encoderConfig.fpsNum) /
-                     std::max<uint32_t>(cfg.encoderConfig.fpsDen, 1u);
+        const uint32_t fpsNum = cfg.encoderConfig.fpsNum;
+        const uint32_t fpsDen = std::max<uint32_t>(cfg.encoderConfig.fpsDen, 1u);
         double totalDur = ticksToSeconds(m_timeline->duration());
 
-        // Use in-point if set, otherwise start from beginning
+        // Use in-point if set, otherwise start from beginning.
+        // The in point is a raw playhead tick, not frame-aligned, and cuts
+        // (e.g. AudioSync exports) sit off the export frame grid too. Start
+        // at the first frame whose start is AT OR AFTER the in point: the
+        // frame containing it begins earlier and so shows the previous shot.
+        // Audio starts on that same tick so A/V stay locked.
         if (inPt >= 0) {
-            double inSec = ticksToSeconds(inPt);
-            cfg.startFrame = static_cast<int64_t>(inSec * fps);
-            cfg.audioConfig.startTime = inSec;
+            cfg.startFrame = tickToEndFrameIndex(inPt, fpsNum, fpsDen);
+            cfg.audioConfig.startTime = ticksToSeconds(
+                frameIndexToTick(cfg.startFrame, fpsNum, fpsDen));
         } else {
             cfg.startFrame = 0;
             cfg.audioConfig.startTime = 0.0;
@@ -253,10 +261,10 @@ ExportJobConfig ExportPanel::buildJobConfig() const
         // Use out-point if set and > in-point, otherwise use full duration
         if (outPt > 0 && outPt > inPt) {
             double outSec = ticksToSeconds(outPt);
-            cfg.endFrame = static_cast<int64_t>(outSec * fps);
+            cfg.endFrame = tickToEndFrameIndex(outPt, fpsNum, fpsDen);
             cfg.audioConfig.endTime = outSec;
         } else {
-            cfg.endFrame = static_cast<int64_t>(totalDur * fps);
+            cfg.endFrame = tickToEndFrameIndex(m_timeline->duration(), fpsNum, fpsDen);
             cfg.audioConfig.endTime = totalDur;
         }
     } else {
@@ -726,10 +734,9 @@ void ExportPanel::onPollProgress()
     // an audio-only export has no frames to composite).
     if (!j->config.audioOnly && m_previewCallback && m_timeline && m_previewImageLabel) {
         int64_t frameIdx = curFrame + j->config.startFrame;
-        double frameFps = static_cast<double>(j->config.encoderConfig.fpsNum) /
-                     std::max<uint32_t>(j->config.encoderConfig.fpsDen, 1u);
-        double timeSec = (frameFps > 0) ? frameIdx / frameFps : 0.0;
-        int64_t tick = static_cast<int64_t>(timeSec * 48000.0);
+        const int64_t tick = frameIndexToTick(
+            frameIdx, j->config.encoderConfig.fpsNum,
+            std::max<uint32_t>(j->config.encoderConfig.fpsDen, 1u));
 
         uint32_t prevW = static_cast<uint32_t>(j->config.outputWidth);
         uint32_t prevH = static_cast<uint32_t>(j->config.outputHeight);
