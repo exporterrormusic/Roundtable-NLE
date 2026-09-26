@@ -1844,6 +1844,51 @@ TEST_F(SerializerTest, ColorGradingExtendedStateRoundTrip)
     EXPECT_FLOAT_EQ(restored.curveLUT(ColorGrading::CurveBlue)[102], 0.72f);
 }
 
+// v45 made the vignette Premiere-exact: pre-v45 Amount was inverted (positive
+// darkened) and Roundness was 0..100 around 50. Old projects must keep their
+// look's intent — values and keyframes remapped; v45 files load verbatim.
+TEST_F(SerializerTest, PreV45VignetteAmountAndRoundnessMigrateOnLoad)
+{
+    auto p = Project::createNew("Vignette Migration");
+    auto video = std::make_unique<VideoClip>();
+    video->setTimelineIn(0);
+    video->setDuration(48000);
+    auto grading = std::make_unique<ColorGrading>();
+    grading->param(ColorGrading::VignetteAmount).track.setDefaultValue(2.5f);
+    auto& round = grading->param(ColorGrading::VignetteRoundness).track;
+    round.setDefaultValue(50.0f);
+    round.addKeyframe(0, 50.0f);
+    round.addKeyframe(24000, 100.0f);
+    video->effects().addEffect(std::move(grading));
+    p->timeline()->track(0)->addClip(std::move(video));
+
+    auto bytes = serializer.serialize(*p);
+    ASSERT_GE(bytes.size(), 12u);
+    ASSERT_EQ(bytes[8], ProjectSerializer::FORMAT_VERSION);  // LE u32 after magic
+
+    auto current = serializer.deserialize(bytes);
+    ASSERT_NE(current, nullptr);
+    auto& now = static_cast<ColorGrading&>(
+        current->timeline()->track(0)->clip(0)->effects().effect(0));
+    EXPECT_FLOAT_EQ(now.param(ColorGrading::VignetteAmount).track.defaultValue(), 2.5f);
+    const auto& nowRound = now.param(ColorGrading::VignetteRoundness).track;
+    ASSERT_EQ(nowRound.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(nowRound.keyframe(0).value, 50.0f);
+    EXPECT_FLOAT_EQ(nowRound.keyframe(1).value, 100.0f);
+
+    bytes[8] = 44;  // same layout; v45 added no bytes
+    auto legacy = serializer.deserialize(bytes);
+    ASSERT_NE(legacy, nullptr);
+    auto& old = static_cast<ColorGrading&>(
+        legacy->timeline()->track(0)->clip(0)->effects().effect(0));
+    EXPECT_FLOAT_EQ(old.param(ColorGrading::VignetteAmount).track.defaultValue(), -2.5f);
+    const auto& oldRound = old.param(ColorGrading::VignetteRoundness).track;
+    EXPECT_FLOAT_EQ(oldRound.defaultValue(), 0.0f);
+    ASSERT_EQ(oldRound.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(oldRound.keyframe(0).value, 0.0f);
+    EXPECT_FLOAT_EQ(oldRound.keyframe(1).value, 100.0f);
+}
+
 TEST_F(SerializerTest, LegacyMasksMigrateForClipAndEffectsOnLoad)
 {
     auto project = Project::createNew("Legacy Mask Migration");

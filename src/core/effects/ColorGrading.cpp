@@ -48,7 +48,7 @@ ColorGrading::ColorGrading()
     // ── Vignette ────────────────────────────────────────────────────────
     addParam("Vignette Amount",    0.0f, -5.0f, 5.0f);
     addParam("Vignette Midpoint", 50.0f,  0.0f, 100.0f);
-    addParam("Vignette Roundness",50.0f,  0.0f, 100.0f);
+    addParam("Vignette Roundness", 0.0f, -100.0f, 100.0f);
     addParam("Vignette Feather",  50.0f,  0.0f, 100.0f);
 }
 

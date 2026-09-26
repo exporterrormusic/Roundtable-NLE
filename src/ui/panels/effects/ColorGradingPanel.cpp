@@ -956,9 +956,9 @@ void ColorGradingPanel::setupUI()
  m_vigMidpointSpin = makeSlider(tr("Midpoint"), 0.0, 100.0, 50.0, 1, {}, m_mainLayout);
  m_vigMidpointSpin->setScrubStep(0.5);
  m_vigMidpointSpin->setToolTip(tr("Distance of vignette from center"));
- m_vigRoundnessSpin = makeSlider(tr("Roundness"), 0.0, 100.0, 50.0, 1, {}, m_mainLayout);
+ m_vigRoundnessSpin = makeSlider(tr("Roundness"), -100.0, 100.0, 0.0, 1, {}, m_mainLayout);
  m_vigRoundnessSpin->setScrubStep(0.5);
- m_vigRoundnessSpin->setToolTip(tr("Shape of the vignette (0 = rectangular, 100 = circular)"));
+ m_vigRoundnessSpin->setToolTip(tr("Shape of the vignette (-100 = rectangular, 0 = fits the frame, 100 = circular)"));
  m_vigFeatherSpin = makeSlider(tr("Feather"), 0.0, 100.0, 50.0, 1, {}, m_mainLayout);
  m_vigFeatherSpin->setScrubStep(0.5);
  m_vigFeatherSpin->setToolTip(tr("Softness of the vignette edge"));
@@ -1084,7 +1084,7 @@ void ColorGradingPanel::clearClip()
  if (m_creativeSatSpin) m_creativeSatSpin->setValue(100.0);
  if (m_vigAmountSpin) m_vigAmountSpin->setValue(0.0);
  if (m_vigMidpointSpin) m_vigMidpointSpin->setValue(50.0);
- if (m_vigRoundnessSpin)m_vigRoundnessSpin->setValue(50.0);
+ if (m_vigRoundnessSpin)m_vigRoundnessSpin->setValue(0.0);
  if (m_vigFeatherSpin) m_vigFeatherSpin->setValue(50.0);
  m_updating = false;
 }
@@ -1207,7 +1207,7 @@ void ColorGradingPanel::populateFromEffect()
  if (m_hslLumAdjustSpin) m_hslLumAdjustSpin->setValue(0.0);
  if (m_vigAmountSpin) m_vigAmountSpin->setValue(0.0);
  if (m_vigMidpointSpin) m_vigMidpointSpin->setValue(50.0);
- if (m_vigRoundnessSpin)m_vigRoundnessSpin->setValue(50.0);
+ if (m_vigRoundnessSpin)m_vigRoundnessSpin->setValue(0.0);
  if (m_vigFeatherSpin) m_vigFeatherSpin->setValue(50.0);
  }
 

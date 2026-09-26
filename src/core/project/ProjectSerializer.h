@@ -73,7 +73,8 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 44;  // v44 = clip A/V linkId
+    static constexpr uint32_t FORMAT_VERSION = 45;  // v45 = Premiere vignette (Amount sign, Roundness -100..100)
+                                                    // v44 = clip A/V linkId
                                                     // v43 = open sequence-tab workspace state
                                                     // v42 = caption transcription confidence
                                                     // v40 = complete rich-text appearance, typography, and paragraph runs

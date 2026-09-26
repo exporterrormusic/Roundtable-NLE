@@ -69,9 +69,9 @@
  *   [9]  Faded Film (0-100, /100)
  *   [10] Vibrance (-100..100, /100)
  *   [11] Creative Sat (0-200, /100)
- *   [12] Vignette Amount (-5..5)
+ *   [12] Vignette Amount (-5..5, negative darkens)
  *   [13] Vignette Midpoint (0-100, /100)
- *   [14] Vignette Roundness (0-100, /100)
+ *   [14] Vignette Roundness (-100..100, 0 = frame-fitted ellipse)
  *   [15] Vignette Feather (0-100, /100)
  */
 
@@ -349,38 +349,43 @@ void main()
         c += shadowShift + midtoneShift + highlightShift;
     }
 
-    // ── 9. Vignette ────────────────────────────────────────────────
-    if (abs(vigAmount) > 0.01) {
-        float aspect = float(pc.width) / float(pc.height);
-        vec2 centered = uv - 0.5;
-        centered.x *= aspect;
-
-        float midpoint  = vigMidpoint / 100.0;
-        float roundness = vigRoundness / 100.0;
-        float feather   = max(vigFeather / 100.0, 0.01);
-
-        // Distance from center
-        float dist;
-        if (roundness > 0.99) {
-            dist = length(centered);
-        } else {
-            float rectDist = max(abs(centered.x), abs(centered.y));
-            float circDist = length(centered);
-            dist = mix(rectDist, circDist, roundness);
-        }
-
-        // Vignette falloff
-        float radius = midpoint * 1.4;  // scale midpoint to useful range
-        float vig = smoothstep(radius - feather * 0.5, radius + feather * 0.5, dist);
-        vig *= vigAmount;
-
-        // Darken or lighten
-        c *= 1.0 - vig;
-    }
-
     // ── Output ─────────────────────────────────────────────────────
     // Convert back to sRGB
     c = linearToSrgb(clamp(c, 0.0, 1.0));
+
+    // ── 9. Vignette (Premiere Lumetri semantics) ───────────────────
+    // Applied last, in display space, like Lumetri. Amount sets only the
+    // STRENGTH (-5 = edges fully black, +5 = fully white); Feather alone
+    // sets the edge softness, so the two never compound into a hard edge.
+    if (abs(vigAmount) > 0.001) {
+        float aspect = float(pc.width) / float(max(pc.height, 1));
+
+        // Frame-fit coordinates: frame edges at 1 on both axes, so the
+        // neutral shape (Roundness 0) is an ellipse fitted to the frame.
+        vec2 p = abs(uv - 0.5) * 2.0;
+        float roundness = clamp(vigRoundness / 100.0, -1.0, 1.0);
+        float n = 2.0;
+        if (roundness > 0.0) {
+            // Toward a true circle: stretch the long axis to square pixels.
+            if (aspect >= 1.0) p.x *= mix(1.0, aspect, roundness);
+            else               p.y *= mix(1.0, 1.0 / aspect, roundness);
+        } else {
+            // Toward the frame's rectangle (superellipse).
+            n = mix(2.0, 10.0, -roundness);
+        }
+        float d = pow(pow(p.x, n) + pow(p.y, n), 1.0 / n);
+
+        // Midpoint = where the falloff is half way (0 = center, 100 = past
+        // the corners). Feather = falloff width, from a hard edge to a
+        // gradient spanning the whole frame, linear in the slider.
+        float midpoint = clamp(vigMidpoint / 100.0, 0.0, 1.0) * 1.5;
+        float width    = mix(0.02, 1.6, clamp(vigFeather / 100.0, 0.0, 1.0));
+        float vig = smoothstep(midpoint - width * 0.5, midpoint + width * 0.5, d);
+
+        float strength = clamp(abs(vigAmount) / 5.0, 0.0, 1.0) * vig;
+        if (vigAmount < 0.0) c *= 1.0 - strength;               // darken
+        else                 c = mix(c, vec3(1.0), strength);   // lighten
+    }
 
     imageStore(outputImage, pixel, vec4(c, color.a));
 }

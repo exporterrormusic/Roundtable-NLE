@@ -70,7 +70,7 @@ public:
         // Vignette (section 3)
         VignetteAmount,   // -5 to 5 (negative = darken, positive = lighten)
         VignetteMidpoint, // 0 to 100 (default 50)
-        VignetteRoundness,// 0 to 100 (default 50)
+        VignetteRoundness,// -100 to 100 (default 0 = frame-fitted ellipse; v45+)
         VignetteFeather,  // 0 to 100 (default 50)
 
         ParamCount

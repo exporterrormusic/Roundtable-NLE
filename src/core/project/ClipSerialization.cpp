@@ -1544,6 +1544,26 @@ std::unique_ptr<Clip> readClip(BinaryReader& r, uint32_t version)
                     KeyframeTrack<float> discard(0.0f);
                     readKeyframeTrack(r, discard, version);
                 }
+                // v45 made the vignette Premiere-exact: Amount was inverted
+                // (positive darkened) and Roundness was 0..100 around 50.
+                // Remap so old vignettes keep their darken/lighten intent.
+                if (version < 45 && (fxType == EffectType::ColorGrading
+                                     || fxType == EffectType::LumetriColor)) {
+                    auto remap = [&](size_t idx, auto fn) {
+                        if (idx >= toRead) return;
+                        auto& trk = fx->param(idx).track;
+                        // The default is only stored for static tracks; a
+                        // keyframed track keeps the (already new-scale)
+                        // built-in default.
+                        if (trk.keyframeCount() == 0)
+                            trk.setDefaultValue(fn(trk.defaultValue()));
+                        for (size_t k = 0; k < trk.keyframeCount(); ++k)
+                            trk.keyframe(k).value = fn(trk.keyframe(k).value);
+                    };
+                    remap(ColorGrading::VignetteAmount, [](float v) { return -v; });
+                    remap(ColorGrading::VignetteRoundness,
+                          [](float v) { return (v - 50.0f) * 2.0f; });
+                }
                 if (fxType == EffectType::LUT) {
                     std::string lutPath = r.readString();
                     if (!lutPath.empty())
