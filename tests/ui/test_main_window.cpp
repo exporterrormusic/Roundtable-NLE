@@ -25,11 +25,14 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
+#include "timeline/GraphicClip.h"
+#include "timeline/GraphicLayer.h"
 #include "widgets/TimelineTrackWidget.h"
 
 // Panels (for type checking)
 #include "panels/characters/CharacterBrowser.h"
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/export/ExportPanel.h"
 #include "panels/export/ExportRenderExecutor.h"
 #include "panels/export/ExportRenderSession.h"
@@ -914,6 +917,34 @@ TEST_F(MainWindowTest, BuildPanelsIdempotent)
     int count = mw.dockCount();
     mw.buildPanels(); // Should not create duplicates
     EXPECT_EQ(mw.dockCount(), count);
+}
+
+TEST_F(MainWindowTest, GraphicsLayerSelectionFollowsActiveTimeline)
+{
+    Timeline first;
+    Timeline second;
+    auto* track = second.addVideoTrack("Text");
+    auto owned = std::make_unique<GraphicClip>();
+    owned->setDuration(48000);
+    auto* bottom = owned->addTextLayer("Bottom text");
+    auto* top = owned->addTextLayer("Top text");
+    auto* clip = track->addClip(std::move(owned));
+
+    TimelineWorkspace workspace;
+    workspace.setTimeline(&first);
+    workspace.buildPanels();
+    workspace.setTimeline(&second);
+    auto* graphics = workspace.graphicsEditorPanel();
+    ASSERT_NE(graphics, nullptr);
+    graphics->setClip(clip, track);
+    graphics->selectLayerByStackIndex(0);
+    EXPECT_EQ(graphics->selectedLayer(), bottom);
+    graphics->selectLayerByStackIndex(1);
+    EXPECT_EQ(graphics->selectedLayer(), top);
+
+    // Closing a project must also discard the old clip/layer binding.
+    workspace.setTimeline(nullptr);
+    EXPECT_EQ(graphics->selectedLayer(), nullptr);
 }
 
 TEST_F(MainWindowTest, ClosingSequenceTabImmediatelyUpdatesSavedProjectState)

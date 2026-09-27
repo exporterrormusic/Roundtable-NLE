@@ -14,6 +14,7 @@
 #include "Settings.h"
 
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/EffectsPanel.h"
 #include "panels/captions/CaptionsPanel.h"
 #include "panels/tierlist/TierListPanel.h"
@@ -160,6 +161,12 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     // Forward to EffectControlsPanel
     if (m_effectControlsPanel)
         m_effectControlsPanel->setTimeline(timeline);
+
+    // Layer selection resolves the bound clip against the active timeline.
+    // Keeping the previous sequence here clears the selected text layer on
+    // the next click, preventing multi-layer graphics from entering text edit.
+    if (m_GraphicsEditorPanel)
+        m_GraphicsEditorPanel->setTimeline(timeline);
 
     // Forward to CaptionsPanel so the caption list rebuilds for the new sequence.
     if (m_captionsPanel)
