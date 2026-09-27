@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <optional>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -122,6 +123,7 @@ void FrameProducer::reset() noexcept
     {
         std::lock_guard lock(m_exchangeMtx);
         m_exchange = {};
+        m_aheadQueue.clear();
     }
     m_lastGoodFrame.reset();
     m_dropNextComposite = false;
@@ -452,6 +454,9 @@ void FrameProducer::publishFrame(std::shared_ptr<CachedFrame> frame, int64_t tic
 {
     {
         std::lock_guard lock(m_exchangeMtx);
+        m_aheadQueue.push_back({tick, frame});
+        while (m_aheadQueue.size() > kAheadQueueDepth)
+            m_aheadQueue.pop_front();
         m_exchange.frame  = std::move(frame);
         m_exchange.tick   = tick;
         m_exchange.hasNew = true;
@@ -466,7 +471,54 @@ bool FrameProducer::consumeFrame(std::shared_ptr<CachedFrame>& outFrame, int64_t
     outFrame = m_exchange.frame;
     outTick  = m_exchange.tick;
     m_exchange.hasNew = false;
+    m_aheadQueue.clear();
     return true;
+}
+
+bool FrameProducer::consumeFrameForTick(int64_t displayTick, int64_t ticksPerFrame,
+                                        bool reverse,
+                                        std::shared_ptr<CachedFrame>& outFrame,
+                                        int64_t& outTick)
+{
+    std::lock_guard lock(m_exchangeMtx);
+    const int64_t tpf = std::max<int64_t>(1, ticksPerFrame);
+    // Frame ticks are frame STARTS.  Forward, allow a frame up to a third of
+    // a frame early (audio-clock granularity); in reverse the playhead moves
+    // down through the frame, so its start is up to a whole frame "ahead".
+    const int64_t earlyTolerance = reverse ? tpf : tpf / 3;
+    const int64_t staleLimit = 3 * tpf;      // behind the playhead
+    const int64_t aheadLimit = 8 * tpf;      // pre-seek / pre-wrap leftovers
+
+    // age >= 0: the frame is due (its tick is at/before the playhead in the
+    // playback direction); age < 0: it is still in the future.
+    auto ageOf = [&](int64_t frameTick) {
+        return reverse ? frameTick - displayTick : displayTick - frameTick;
+    };
+    auto isStale = [&](int64_t age) {
+        return age > staleLimit || age < -aheadLimit;
+    };
+
+    std::optional<size_t> best;
+    for (size_t i = 0; i < m_aheadQueue.size(); ++i) {
+        const int64_t age = ageOf(m_aheadQueue[i].tick);
+        if (isStale(age) || age < -earlyTolerance)
+            continue;
+        if (!best || age < ageOf(m_aheadQueue[*best].tick))
+            best = i;  // the most recent frame that is due
+    }
+
+    // Drop stale entries plus the chosen one and anything older than it.
+    const int64_t bestAge = best ? ageOf(m_aheadQueue[*best].tick) : 0;
+    if (best) {
+        outFrame = m_aheadQueue[*best].frame;
+        outTick  = m_aheadQueue[*best].tick;
+    }
+    std::erase_if(m_aheadQueue, [&](const QueuedFrame& q) {
+        const int64_t age = ageOf(q.tick);
+        return isStale(age) || (best && age >= bestAge);
+    });
+    m_exchange.hasNew = !m_aheadQueue.empty();
+    return best.has_value();
 }
 
 bool FrameProducer::waitForFrame(std::chrono::milliseconds timeout)

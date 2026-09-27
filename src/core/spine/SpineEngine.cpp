@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SpineEngine.cpp — Skeleton loading, animation, mesh extraction.
  */
 
@@ -41,8 +41,79 @@ namespace fs = std::filesystem;
 namespace rt {
 
 // ─── Deleters ───────────────────────────────────────────────────────────────
-void SpineEngine::SkelDataDeleter::operator()(spine::SkeletonData* p) const { delete p; }
+void SpineParsedSkeleton::SkelDataDeleter::operator()(spine::SkeletonData* p) const { delete p; }
 void SpineEngine::SkelDeleter::operator()(spine::Skeleton* p) const { delete p; }
+
+// ─── Shared parsed data ─────────────────────────────────────────────────────
+SpineParsedSkeleton::SpineParsedSkeleton() = default;
+SpineParsedSkeleton::~SpineParsedSkeleton() = default;
+
+std::shared_ptr<SpineParsedSkeleton> SpineParsedSkeleton::parseFromBuffers(
+    const std::vector<uint8_t>& skelBytes, const std::string& atlasText,
+    const std::string& atlasDir, const std::string& skelPath,
+    const std::string& atlasPath, float scale)
+{
+    auto parsed = std::make_shared<SpineParsedSkeleton>();
+    if (!parsed->atlas.loadFromMemory(atlasText.data(),
+                                      static_cast<int>(atlasText.size()),
+                                      atlasDir)) {
+        spdlog::error("SpineEngine: atlas load from memory failed");
+        return nullptr;
+    }
+
+    spine::AtlasAttachmentLoader attachmentLoader(parsed->atlas.getSpineAtlas());
+    spine::SkeletonBinary binary(&attachmentLoader);
+    binary.setScale(scale);
+    auto* data = binary.readSkeletonData(
+        reinterpret_cast<const unsigned char*>(skelBytes.data()),
+        static_cast<int>(skelBytes.size()));
+    if (!data) {
+        spdlog::error("SpineEngine: failed to load skeleton from buffer: {}",
+                      binary.getError().buffer());
+        return nullptr;
+    }
+    parsed->skelData.reset(data);
+    parsed->skelPath  = skelPath;
+    parsed->atlasPath = atlasPath;
+
+    spdlog::info("SpineEngine: parsed skeleton from buffers — {} bones, {} slots, {} animations",
+                 data->getBones().size(), data->getSlots().size(),
+                 data->getAnimations().size());
+    return parsed;
+}
+
+std::shared_ptr<SpineParsedSkeleton> SpineParsedSkeleton::parseFromFiles(
+    const std::string& skelPath, const std::string& atlasPath, float scale)
+{
+    auto parsed = std::make_shared<SpineParsedSkeleton>();
+    parsed->version = SpineEngine::detectVersion(skelPath);
+    spdlog::info("SpineEngine: loading skeleton '{}' (version: {})",
+                 pathToUtf8(utf8ToPath(skelPath).filename()),
+                 parsed->version.empty() ? "unknown" : parsed->version);
+
+    if (!parsed->atlas.load(atlasPath)) {
+        spdlog::error("SpineEngine: atlas load failed: {}", atlasPath);
+        return nullptr;
+    }
+
+    spine::AtlasAttachmentLoader attachmentLoader(parsed->atlas.getSpineAtlas());
+    spine::SkeletonBinary binary(&attachmentLoader);
+    binary.setScale(scale);
+    auto* data = binary.readSkeletonDataFile(spine::String(skelPath.c_str()));
+    if (!data) {
+        spdlog::error("SpineEngine: failed to load skeleton: {} — {}",
+                      skelPath, binary.getError().buffer());
+        return nullptr;
+    }
+    parsed->skelData.reset(data);
+    parsed->skelPath  = skelPath;
+    parsed->atlasPath = atlasPath;
+
+    spdlog::info("SpineEngine: loaded skeleton — {} bones, {} slots, {} animations, {} skins",
+                 data->getBones().size(), data->getSlots().size(),
+                 data->getAnimations().size(), data->getSkins().size());
+    return parsed;
+}
 void SpineEngine::ClipperDeleter::operator()(spine::SkeletonClipping* p) const { delete p; }
 
 // ─── Construction ───────────────────────────────────────────────────────────
@@ -147,64 +218,46 @@ bool SpineEngine::loadSkeleton(const std::string& skelPath,
     if (m_skeleton && m_loadedSkelPath == skelPath && m_loadedAtlasPath == atlasPath)
         return true;
 
+    return adoptParsed(SpineParsedSkeleton::parseFromFiles(skelPath, atlasPath, scale));
+}
+
+// ─── Build per-engine state on shared parsed data ───────────────────────────
+bool SpineEngine::adoptParsed(std::shared_ptr<SpineParsedSkeleton> parsed)
+{
     // Reset any existing state — order matters!
     // AnimationState references Skeleton and SkeletonData, so destroy it first.
     m_animation = SpineAnimation{};
     m_skeleton.reset();
-    m_skelData.reset();
     m_clipper.reset();
+    m_parsed.reset();
     m_version.clear();
     m_loadedSkelPath.clear();
     m_loadedAtlasPath.clear();
 
-    // 1. Detect version
-    m_version = detectVersion(skelPath);
-    spdlog::info("SpineEngine: loading skeleton '{}' (version: {})",
-                 pathToUtf8(utf8ToPath(skelPath).filename()),
-                 m_version.empty() ? "unknown" : m_version);
-
-    // 2. Load atlas
-    if (!m_atlas.load(atlasPath)) {
-        spdlog::error("SpineEngine: atlas load failed: {}", atlasPath);
+    if (!parsed || !parsed->skelData)
         return false;
-    }
+    m_parsed = std::move(parsed);
+    auto* data = m_parsed->skelData.get();
 
-    // 3. Create attachment loader and skeleton binary reader
-    spine::AtlasAttachmentLoader attachmentLoader(m_atlas.getSpineAtlas());
-    spine::SkeletonBinary binary(&attachmentLoader);
-    binary.setScale(scale);
-
-    // 4. Read skeleton data from binary file
-    auto* skelData = binary.readSkeletonDataFile(spine::String(skelPath.c_str()));
-    if (!skelData) {
-        spdlog::error("SpineEngine: failed to load skeleton: {} — {}",
-                       skelPath, binary.getError().buffer());
-        return false;
-    }
-    m_skelData.reset(skelData);
-
-    // 5. Create skeleton instance
-    m_skeleton.reset(new spine::Skeleton(skelData));
+    m_skeleton.reset(new spine::Skeleton(data));
     m_skeleton->setToSetupPose();
     m_skeleton->updateWorldTransform();
 
-    // 6. Create skeleton clipper
     m_clipper.reset(new spine::SkeletonClipping());
 
-    // 7. Init animation state
-    m_animation.init(m_skeleton.get(), skelData, 0.2f);
+    m_animation.init(m_skeleton.get(), data, 0.2f);
     computeAlphaAnimatedSlots();
 
-    spdlog::info("SpineEngine: loaded skeleton — {} bones, {} slots, {} animations, {} skins",
-                 skelData->getBones().size(),
-                 skelData->getSlots().size(),
-                 skelData->getAnimations().size(),
-                 skelData->getSkins().size());
-
-    m_loadedSkelPath = skelPath;
-    m_loadedAtlasPath = atlasPath;
-
+    m_version         = m_parsed->version;
+    m_loadedSkelPath  = m_parsed->skelPath;
+    m_loadedAtlasPath = m_parsed->atlasPath;
     return true;
+}
+
+const SpineAtlas& SpineEngine::atlas() const noexcept
+{
+    static const SpineAtlas s_empty;
+    return m_parsed ? m_parsed->atlas : s_empty;
 }
 
 // ─── Load from in-memory buffers ────────────────────────────────────────────
@@ -219,61 +272,8 @@ bool SpineEngine::loadSkeletonFromBuffers(const std::vector<uint8_t>& skelBytes,
     if (m_skeleton && m_loadedSkelPath == skelPath && m_loadedAtlasPath == atlasPath)
         return true;
 
-    // Reset any existing state
-    m_animation = SpineAnimation{};
-    m_skeleton.reset();
-    m_skelData.reset();
-    m_clipper.reset();
-    m_version.clear();
-    m_loadedSkelPath.clear();
-    m_loadedAtlasPath.clear();
-
-    spdlog::info("SpineEngine: loading skeleton from buffers ({} bytes skel, {} bytes atlas)",
-                 skelBytes.size(), atlasText.size());
-
-    // 1. Load atlas from memory (no disk I/O)
-    if (!m_atlas.loadFromMemory(atlasText.data(), static_cast<int>(atlasText.size()), atlasDir)) {
-        spdlog::error("SpineEngine: atlas load from memory failed");
-        return false;
-    }
-
-    // 2. Create attachment loader and skeleton binary reader
-    spine::AtlasAttachmentLoader attachmentLoader(m_atlas.getSpineAtlas());
-    spine::SkeletonBinary binary(&attachmentLoader);
-    binary.setScale(scale);
-
-    // 3. Read skeleton data from in-memory buffer (no disk I/O)
-    auto* skelData = binary.readSkeletonData(
-        reinterpret_cast<const unsigned char*>(skelBytes.data()),
-        static_cast<int>(skelBytes.size()));
-    if (!skelData) {
-        spdlog::error("SpineEngine: failed to load skeleton from buffer: {}",
-                       binary.getError().buffer());
-        return false;
-    }
-    m_skelData.reset(skelData);
-
-    // 4. Create skeleton instance
-    m_skeleton.reset(new spine::Skeleton(skelData));
-    m_skeleton->setToSetupPose();
-    m_skeleton->updateWorldTransform();
-
-    // 5. Create skeleton clipper
-    m_clipper.reset(new spine::SkeletonClipping());
-
-    // 6. Init animation state
-    m_animation.init(m_skeleton.get(), skelData, 0.2f);
-    computeAlphaAnimatedSlots();
-
-    spdlog::info("SpineEngine: loaded skeleton from buffers — {} bones, {} slots, {} animations",
-                 skelData->getBones().size(),
-                 skelData->getSlots().size(),
-                 skelData->getAnimations().size());
-
-    m_loadedSkelPath = skelPath;
-    m_loadedAtlasPath = atlasPath;
-
-    return true;
+    return adoptParsed(SpineParsedSkeleton::parseFromBuffers(
+        skelBytes, atlasText, atlasDir, skelPath, atlasPath, scale));
 }
 
 // ─── Load from clip ─────────────────────────────────────────────────────────
@@ -324,22 +324,44 @@ bool SpineEngine::loadFromClipBuffered(const SpineClip& clip,
     return true;
 }
 
+// ─── Load from clip using shared parsed data ────────────────────────────────
+bool SpineEngine::loadFromClipParsed(const SpineClip& clip,
+                                      std::shared_ptr<SpineParsedSkeleton> parsed)
+{
+    if (!adoptParsed(std::move(parsed)))
+        return false;
+
+    // Apply clip settings (same as loadFromClip)
+    if (!clip.animationName().empty()) {
+        m_animation.setBodyAnimation(clip.animationName(), clip.isLooping());
+    }
+    m_animation.setSpeed(clip.animationSpeed());
+
+    if (clip.isTalking()) {
+        m_animation.startTalking();
+    } else {
+        m_animation.stopTalking();
+    }
+
+    return true;
+}
+
 // ─── Skeleton info ──────────────────────────────────────────────────────────
 float SpineEngine::skeletonWidth() const
 {
-    return m_skelData ? m_skelData->getWidth() : 0.0f;
+    return skelData() ? skelData()->getWidth() : 0.0f;
 }
 
 float SpineEngine::skeletonHeight() const
 {
-    return m_skelData ? m_skelData->getHeight() : 0.0f;
+    return skelData() ? skelData()->getHeight() : 0.0f;
 }
 
 bool SpineEngine::setSkin(const std::string& skinName)
 {
     if (!m_skeleton) return false;
 
-    auto* skin = m_skelData->findSkin(spine::String(skinName.c_str()));
+    auto* skin = skelData()->findSkin(spine::String(skinName.c_str()));
     if (!skin) {
         spdlog::warn("SpineEngine: skin '{}' not found", skinName);
         return false;
@@ -354,9 +376,9 @@ bool SpineEngine::setSkin(const std::string& skinName)
 std::vector<std::string> SpineEngine::listSkins() const
 {
     std::vector<std::string> result;
-    if (!m_skelData) return result;
+    if (!skelData()) return result;
 
-    auto& skins = m_skelData->getSkins();
+    auto& skins = skelData()->getSkins();
     result.reserve(skins.size());
     for (size_t i = 0; i < skins.size(); ++i) {
         result.emplace_back(skins[i]->getName().buffer());
@@ -433,10 +455,10 @@ SpineBlendMode convertBlendMode(spine::BlendMode mode)
 void SpineEngine::computeAlphaAnimatedSlots()
 {
     m_slotAlphaAnimated.clear();
-    if (!m_skelData) return;
-    m_slotAlphaAnimated.assign(m_skelData->getSlots().size(), 0);
+    if (!skelData()) return;
+    m_slotAlphaAnimated.assign(skelData()->getSlots().size(), 0);
 
-    auto& anims = m_skelData->getAnimations();
+    auto& anims = skelData()->getAnimations();
     for (size_t a = 0; a < anims.size(); ++a) {
         auto& tls = anims[a]->getTimelines();
         for (size_t t = 0; t < tls.size(); ++t) {

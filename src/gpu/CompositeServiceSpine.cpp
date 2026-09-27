@@ -182,6 +182,9 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
     // All pages are now PMA; the CPU path will un-premultiply on first use.
     shared->pagePixelsUnpremultiplied = false;
 
+    // Keep the parsed data so per-clip engines don't re-parse it.
+    shared->parsed = tempEngine.parsedData();
+
     // Pre-cache bounds from setup pose
     tempEngine.getBounds(
         shared->stableBoundsX, shared->stableBoundsY,
@@ -274,7 +277,11 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
     // Use in-memory buffers from the shared cache when available to avoid
     // re-reading files from disk (eliminates split/clone freeze).
     bool engineLoaded = false;
-    if (!shared->skelPath.empty()) {
+    if (shared->parsed) {
+        // Fastest path: reuse the character's parsed atlas + SkeletonData;
+        // only this clip's Skeleton + AnimationState are built.
+        engineLoaded = state->engine.loadFromClipParsed(*clip, shared->parsed);
+    } else if (!shared->skelPath.empty()) {
         if (!shared->skelBytes.empty() && !shared->atlasText.empty()) {
             // Fast path: load from cached buffers (no disk I/O)
             engineLoaded = state->engine.loadFromClipBuffered(
@@ -291,6 +298,8 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
                               spineCharKey(*clip);
         return nullptr;
     }
+    if (!shared->parsed)
+        shared->parsed = state->engine.parsedData();
 
     // Grave's default skeleton contains a multi-part blue eye effect that
     // Compose does not present but the live timeline renderer otherwise

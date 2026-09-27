@@ -831,6 +831,9 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
     gWorkerStep("convertDecodedToCacheGpu/submit/signal-semaphore");
     VkSemaphore  prefetchSignalSem   = VK_NULL_HANDLE;
     uint64_t     prefetchSignalValue = 0;
+    // Held from value allocation through queue submit so signal values
+    // reach the compute queue in strictly increasing order.
+    std::unique_lock timelineSubmitLock(prefetchTimelineSubmitMutex());
     {
         const uint64_t semHandle = prefetchTimelineSem();
         if (semHandle != 0) {
@@ -869,6 +872,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCacheGpu(
 
     gWorkerStep("convertDecodedToCacheGpu/submit/queue-submit");
     const VkResult sr = ctx.scheduler().submit(sub);
+    timelineSubmitLock.unlock();
     if (sr != VK_SUCCESS) {
         spdlog::warn("convertDecodedToCacheGpu: submit failed vk={} handle={} frame={}",
                      static_cast<int>(sr), task.handle, frameNumber);

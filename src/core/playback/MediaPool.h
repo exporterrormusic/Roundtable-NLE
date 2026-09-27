@@ -572,7 +572,15 @@ public:
     /// Atomic ++ and return the next value to signal.  Called once per
     /// convert+copy submission; the same value is also stored in the
     /// produced CachedFrame's producerTimelineValue field.
+    /// Caller MUST hold prefetchTimelineSubmitMutex() from this call through
+    /// the queue submit that signals the value: timeline signals must be
+    /// strictly increasing in submission order, and concurrent workers could
+    /// otherwise submit value N after N+1.
     [[nodiscard]] uint64_t nextPrefetchTimelineValue() noexcept;
+    [[nodiscard]] std::mutex& prefetchTimelineSubmitMutex() noexcept
+    {
+        return m_prefetchTimelineSubmitMutex;
+    }
 
 private:
 
@@ -621,6 +629,7 @@ private:
     // CachedFrame stores the value it received.
     uint64_t                                        m_prefetchTimelineSem{0};
     std::atomic<uint64_t>                            m_prefetchTimelineValue{0};
+    std::mutex                                       m_prefetchTimelineSubmitMutex;
 
     // Prefetch thread pool state
     std::vector<std::thread>                         m_prefetchThreads;

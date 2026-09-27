@@ -129,7 +129,42 @@ void FramePresenter::presentLoop()
             }
 
             if (m_producer) {
-                consumedNew = m_producer->consumeFrame(frame, tick);
+                // Show the frame that is due at the audio clock position,
+                // not merely the newest one: FrameClock renders ahead, so
+                // producer timing jitter no longer turns into held/dropped
+                // frames at this deadline.
+                auto* sync = m_controller->syncClock();
+                const double speed = sync ? sync->speed()
+                                          : m_controller->shuttleSpeed();
+                const int64_t ticksPerFrame =
+                    std::max<int64_t>(1, static_cast<int64_t>(48000.0 / fps));
+                const int64_t displayTick = m_controller->currentTick();
+                consumedNew = m_producer->consumeFrameForTick(
+                    displayTick, ticksPerFrame,
+                    /*reverse=*/speed < 0.0, frame, tick);
+
+                // Phase-lock deadlines to MID-frame of the audio clock.  A
+                // free-running deadline that sits near a frame boundary maps
+                // two consecutive deadlines to the same frame under clock
+                // jitter (a repeat) and then skips one.  Nudge the next
+                // deadline toward the frame middle, ≤2 ms per frame, at 1x
+                // only (shuttle speeds cross frames at other rates).
+                if (std::abs(std::abs(speed) - 1.0) < 0.01) {
+                    int64_t phase = displayTick % ticksPerFrame;
+                    if (phase < 0) phase += ticksPerFrame;
+                    // Fraction of the frame already elapsed in the playback
+                    // direction, minus one half: > 0 means we are late.
+                    double lateness = static_cast<double>(phase) /
+                        static_cast<double>(ticksPerFrame) - 0.5;
+                    if (speed < 0.0) lateness = -lateness;
+                    constexpr double kGain = 0.25;
+                    const auto maxStep = std::chrono::duration_cast<Duration>(
+                        std::chrono::milliseconds(2));
+                    auto step = std::chrono::duration_cast<Duration>(
+                        frameDur * (lateness * kGain));
+                    step = std::clamp(step, -maxStep, maxStep);
+                    nextDeadline -= step;  // late → present earlier next time
+                }
             }
 
             nextDeadline += frameDur;

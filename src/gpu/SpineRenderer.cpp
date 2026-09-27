@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SpineRenderer.cpp — Vulkan GPU renderer for Spine character meshes.
  * Step 9: GPU Spine Renderer
  */
@@ -27,6 +27,57 @@
 namespace fs = std::filesystem;
 
 namespace rt {
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Shared pipeline set (per device + colour format)
+// ═════════════════════════════════════════════════════════════════════════════
+
+struct SpinePipelineSet
+{
+    VkDevice              device{VK_NULL_HANDLE};
+    VkFormat              format{VK_FORMAT_UNDEFINED};
+    PipelineManager       mgr;
+    VkDescriptorSetLayout setLayout{VK_NULL_HANDLE};
+    VkPipelineLayout      pipelineLayout{VK_NULL_HANDLE};
+    VkShaderModule        vertShader{VK_NULL_HANDLE};
+    VkShaderModule        fragShader{VK_NULL_HANDLE};
+    VkPipeline            normal{VK_NULL_HANDLE};
+    VkPipeline            additive{VK_NULL_HANDLE};
+    VkPipeline            multiply{VK_NULL_HANDLE};
+    VkPipeline            screen{VK_NULL_HANDLE};
+
+    SpinePipelineSet() = default;
+    SpinePipelineSet(const SpinePipelineSet&) = delete;
+    SpinePipelineSet& operator=(const SpinePipelineSet&) = delete;
+    ~SpinePipelineSet()
+    {
+        mgr.destroy();  // pipelines, pipeline layout, shader modules
+        if (device != VK_NULL_HANDLE && setLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+    }
+
+    /// Alive while any renderer holds it; rebuilt on demand afterwards.
+    static std::shared_ptr<SpinePipelineSet> acquire(Device& dev, VkFormat fmt)
+    {
+        static std::mutex s_mtx;
+        static std::vector<std::weak_ptr<SpinePipelineSet>> s_sets;
+        std::lock_guard lock(s_mtx);
+        for (auto it = s_sets.begin(); it != s_sets.end();) {
+            auto set = it->lock();
+            if (!set) { it = s_sets.erase(it); continue; }
+            if (set->device == dev.handle() && set->format == fmt)
+                return set;
+            ++it;
+        }
+        auto set = std::make_shared<SpinePipelineSet>();
+        if (!set->build(dev, fmt))
+            return nullptr;
+        s_sets.push_back(set);
+        return set;
+    }
+
+    bool build(Device& dev, VkFormat colorFormat);
+};
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Construction / Destruction
@@ -65,9 +116,10 @@ bool SpineRenderer::init(Device& device,
     vkGetPhysicalDeviceProperties(device.physicalDevice(), &props);
     m_timestampPeriod = props.limits.timestampPeriod;
 
-    // ── Pipeline manager ────────────────────────────────────────────────
-    if (!m_pipelineMgr.create(device)) {
-        spdlog::error("SpineRenderer: failed to create pipeline manager");
+    // ── Shared pipelines (per device + colour format) ───────────────────
+    m_shared = SpinePipelineSet::acquire(device, config.colorFormat);
+    if (!m_shared) {
+        spdlog::error("SpineRenderer: failed to create shared pipelines");
         return false;
     }
 
@@ -198,13 +250,8 @@ void SpineRenderer::shutdown(GpuTeardownMode mode)
         m_descriptorPool = VK_NULL_HANDLE;
     }
 
-    // Descriptor set layout
-    if (m_descriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(m_vkDevice, m_descriptorSetLayout, nullptr);
-        m_descriptorSetLayout = VK_NULL_HANDLE;
-    }
-
-    // Pipelines + shaders
+    // Layout, pipelines and shaders are borrowed from the shared set.
+    m_descriptorSetLayout = VK_NULL_HANDLE;
     m_pipelineNormal   = VK_NULL_HANDLE;
     m_pipelineAdditive = VK_NULL_HANDLE;
     m_pipelineMultiply = VK_NULL_HANDLE;
@@ -212,7 +259,7 @@ void SpineRenderer::shutdown(GpuTeardownMode mode)
     m_pipelineLayout   = VK_NULL_HANDLE;
     m_vertShader       = VK_NULL_HANDLE;
     m_fragShader       = VK_NULL_HANDLE;
-    m_pipelineMgr.destroy();
+    m_shared.reset();
 
     m_vkDevice      = VK_NULL_HANDLE;
     m_graphicsQueue = VK_NULL_HANDLE;
@@ -229,22 +276,11 @@ void SpineRenderer::shutdown(GpuTeardownMode mode)
 
 bool SpineRenderer::createDescriptorPool()
 {
-    // ── Descriptor set layout (one combined image sampler at binding 0) ──
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings    = &binding;
-
-    if (vkCreateDescriptorSetLayout(m_vkDevice, &layoutInfo, nullptr,
-                                     &m_descriptorSetLayout) != VK_SUCCESS) {
+    // Descriptor-set layout (one combined image sampler at binding 0) is
+    // owned by the shared pipeline set.
+    m_descriptorSetLayout = m_shared ? m_shared->setLayout : VK_NULL_HANDLE;
+    if (m_descriptorSetLayout == VK_NULL_HANDLE)
         return false;
-    }
 
     // ── Descriptor pool (enough for all atlas pages + some headroom) ────
     VkDescriptorPoolSize poolSize{};
@@ -297,6 +333,42 @@ VkDescriptorSet SpineRenderer::allocateDescriptorSet(const Texture& tex)
 
 bool SpineRenderer::createPipelines()
 {
+    if (!m_shared) return false;
+    m_pipelineLayout   = m_shared->pipelineLayout;
+    m_vertShader       = m_shared->vertShader;
+    m_fragShader       = m_shared->fragShader;
+    m_pipelineNormal   = m_shared->normal;
+    m_pipelineAdditive = m_shared->additive;
+    m_pipelineMultiply = m_shared->multiply;
+    m_pipelineScreen   = m_shared->screen;
+    return true;
+}
+
+bool SpinePipelineSet::build(Device& dev, VkFormat colorFormat)
+{
+    device = dev.handle();
+    format = colorFormat;
+    if (!mgr.create(dev)) {
+        spdlog::error("SpineRenderer: failed to create pipeline manager");
+        return false;
+    }
+
+    // ── Descriptor set layout (one combined image sampler at binding 0) ──
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding         = 0;
+    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings    = &binding;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+                                     &setLayout) != VK_SUCCESS) {
+        return false;
+    }
+
     // ── Find SPIR-V shaders ─────────────────────────────────────────────
     // Look in several candidate locations relative to CWD and build tree.
     // Prioritise directories that contain compiled .spv files.
@@ -324,8 +396,8 @@ bool SpineRenderer::createPipelines()
     pushRange.offset     = 0;
     pushRange.size       = sizeof(SpinePushConstants);
 
-    m_pipelineLayout = m_pipelineMgr.createLayout({pushRange}, {m_descriptorSetLayout});
-    if (m_pipelineLayout == VK_NULL_HANDLE) {
+    pipelineLayout = mgr.createLayout({pushRange}, {setLayout});
+    if (pipelineLayout == VK_NULL_HANDLE) {
         spdlog::error("SpineRenderer: failed to create pipeline layout");
         return false;
     }
@@ -336,13 +408,13 @@ bool SpineRenderer::createPipelines()
         auto fragPath = shaderDir / "spine.frag.spv";
 
         if (fs::exists(vertPath) && fs::exists(fragPath)) {
-            m_vertShader = m_pipelineMgr.loadShader(vertPath);
-            m_fragShader = m_pipelineMgr.loadShader(fragPath);
+            vertShader = mgr.loadShader(vertPath);
+            fragShader = mgr.loadShader(fragPath);
         }
     }
 
     // If shaders loaded, create actual pipelines
-    if (m_vertShader != VK_NULL_HANDLE && m_fragShader != VK_NULL_HANDLE) {
+    if (vertShader != VK_NULL_HANDLE && fragShader != VK_NULL_HANDLE) {
         // ── Vertex input description ────────────────────────────────────
         // Matches SpineVertex: {float x,y; float u,v; float r,g,b,a}
         VkVertexInputBindingDescription vertexBinding{};
@@ -358,12 +430,12 @@ bool SpineRenderer::createPipelines()
 
         // ── Normal blend (PMA) ──────────────────────────────────────────
         GraphicsPipelineConfig cfg;
-        cfg.vertShader       = m_vertShader;
-        cfg.fragShader       = m_fragShader;
+        cfg.vertShader       = vertShader;
+        cfg.fragShader       = fragShader;
         cfg.vertexBindings   = {vertexBinding};
         cfg.vertexAttributes = vertexAttrs;
-        cfg.layout           = m_pipelineLayout;
-        cfg.colorFormat      = m_config.colorFormat;
+        cfg.layout           = pipelineLayout;
+        cfg.colorFormat      = format;
         cfg.blendEnable      = true;
         cfg.srcColorBlend    = VK_BLEND_FACTOR_ONE;                     // PMA
         cfg.dstColorBlend    = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -372,32 +444,32 @@ bool SpineRenderer::createPipelines()
         cfg.cullMode         = VK_CULL_MODE_NONE;
         cfg.depthTestEnable  = false;
 
-        m_pipelineNormal = m_pipelineMgr.createGraphicsPipeline(cfg);
-        if (m_pipelineNormal == VK_NULL_HANDLE) return false;
+        normal = mgr.createGraphicsPipeline(cfg);
+        if (normal == VK_NULL_HANDLE) return false;
 
         // ── Additive blend ──────────────────────────────────────────────
         cfg.srcColorBlend = VK_BLEND_FACTOR_ONE;
         cfg.dstColorBlend = VK_BLEND_FACTOR_ONE;
         cfg.srcAlphaBlend = VK_BLEND_FACTOR_ONE;
         cfg.dstAlphaBlend = VK_BLEND_FACTOR_ONE;
-        m_pipelineAdditive = m_pipelineMgr.createGraphicsPipeline(cfg);
-        if (m_pipelineAdditive == VK_NULL_HANDLE) return false;
+        additive = mgr.createGraphicsPipeline(cfg);
+        if (additive == VK_NULL_HANDLE) return false;
 
         // ── Multiply blend ──────────────────────────────────────────────
         cfg.srcColorBlend = VK_BLEND_FACTOR_DST_COLOR;
         cfg.dstColorBlend = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         cfg.srcAlphaBlend = VK_BLEND_FACTOR_DST_ALPHA;
         cfg.dstAlphaBlend = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        m_pipelineMultiply = m_pipelineMgr.createGraphicsPipeline(cfg);
-        if (m_pipelineMultiply == VK_NULL_HANDLE) return false;
+        multiply = mgr.createGraphicsPipeline(cfg);
+        if (multiply == VK_NULL_HANDLE) return false;
 
         // ── Screen blend ────────────────────────────────────────────────
         cfg.srcColorBlend = VK_BLEND_FACTOR_ONE;
         cfg.dstColorBlend = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         cfg.srcAlphaBlend = VK_BLEND_FACTOR_ONE;
         cfg.dstAlphaBlend = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-        m_pipelineScreen = m_pipelineMgr.createGraphicsPipeline(cfg);
-        if (m_pipelineScreen == VK_NULL_HANDLE) return false;
+        screen = mgr.createGraphicsPipeline(cfg);
+        if (screen == VK_NULL_HANDLE) return false;
 
         spdlog::info("SpineRenderer: created 4 blend-mode pipelines");
     } else {
@@ -507,19 +579,19 @@ bool SpineRenderer::uploadAtlasTexture(int pageIndex,
 
     VkDeviceSize dataSize = static_cast<VkDeviceSize>(width) * height * 4;  // RGBA8
 
-    if (!slot.texture.createFromData(m_vmaAllocator, m_vkDevice, texConfig,
-                                      pixelData, dataSize,
-                                      *m_cmdPool, m_graphicsQueue)) {
+    slot.texture = std::make_shared<Texture>();
+    if (!slot.texture->createFromData(m_vmaAllocator, m_vkDevice, texConfig,
+                                       pixelData, dataSize,
+                                       *m_cmdPool, m_graphicsQueue)) {
         spdlog::error("SpineRenderer: failed to upload atlas texture page {}", pageIndex);
         m_atlasTextures.erase(pageIndex);
         return false;
     }
 
     // Create descriptor set for this texture
-    slot.descriptorSet = allocateDescriptorSet(slot.texture);
+    slot.descriptorSet = allocateDescriptorSet(*slot.texture);
     if (slot.descriptorSet == VK_NULL_HANDLE) {
         spdlog::error("SpineRenderer: failed to create descriptor set for page {}", pageIndex);
-        slot.texture.destroy();
         m_atlasTextures.erase(pageIndex);
         return false;
     }
@@ -527,6 +599,36 @@ bool SpineRenderer::uploadAtlasTexture(int pageIndex,
     spdlog::debug("SpineRenderer: uploaded atlas page {} ({}x{}) from '{}'",
                   pageIndex, width, height, path);
     return true;
+}
+
+bool SpineRenderer::adoptAtlasTexture(int pageIndex,
+                                       std::shared_ptr<Texture> texture,
+                                       const std::string& path)
+{
+    if (!m_initialized || !texture || texture->image() == VK_NULL_HANDLE)
+        return false;
+
+    releaseTexture(pageIndex);
+
+    auto& slot = m_atlasTextures[pageIndex];
+    slot.width   = texture->width();
+    slot.height  = texture->height();
+    slot.path    = path;
+    slot.texture = std::move(texture);
+    slot.descriptorSet = allocateDescriptorSet(*slot.texture);
+    if (slot.descriptorSet == VK_NULL_HANDLE) {
+        spdlog::error("SpineRenderer: failed to create descriptor set for shared page {}",
+                      pageIndex);
+        m_atlasTextures.erase(pageIndex);
+        return false;
+    }
+    return true;
+}
+
+std::shared_ptr<Texture> SpineRenderer::atlasTexture(int pageIndex) const
+{
+    const auto it = m_atlasTextures.find(pageIndex);
+    return it != m_atlasTextures.end() ? it->second.texture : nullptr;
 }
 
 int SpineRenderer::loadAtlasTextures(const SpineAtlas& atlas)
@@ -610,7 +712,7 @@ void SpineRenderer::releaseTexture(int pageIndex)
     if (it->second.descriptorSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(m_vkDevice, m_descriptorPool, 1, &it->second.descriptorSet);
     }
-    it->second.texture.destroy();
+    // Drop this renderer's reference; the page itself may be shared.
     m_atlasTextures.erase(it);
 }
 
@@ -628,9 +730,8 @@ void SpineRenderer::releaseAllTextures()
         if (slot.descriptorSet != VK_NULL_HANDLE) {
             vkFreeDescriptorSets(m_vkDevice, m_descriptorPool, 1, &slot.descriptorSet);
         }
-        slot.texture.destroy();
     }
-    m_atlasTextures.clear();
+    m_atlasTextures.clear();  // drops (possibly shared) page references
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -798,7 +899,8 @@ bool SpineRenderer::renderSkeleton(const SpineRenderData& renderData,
         const auto it = m_atlasTextures.find(batch.texturePageIndex);
         if (it == m_atlasTextures.end() ||
             it->second.descriptorSet == VK_NULL_HANDLE ||
-            it->second.texture.image() == VK_NULL_HANDLE) {
+            !it->second.texture ||
+            it->second.texture->image() == VK_NULL_HANDLE) {
             spdlog::error("[SPINE] missing atlas page {} for render batch",
                           batch.texturePageIndex);
             return false;

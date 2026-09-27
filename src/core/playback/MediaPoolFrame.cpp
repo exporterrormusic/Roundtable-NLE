@@ -180,7 +180,11 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // ── Disk cache check (second-level persistent cache) ─────────────
     // ~2-3 ms on NVMe SSD vs 10-100 ms re-decode.  Skipped for forceExact
     // (export) — same isolation rationale as the RAM cache above.
-    if (!forceExact && m_diskCache) {
+    // Also skipped during playback (!scrubMode): this runs on FrameProducer,
+    // and a full-res BGRA read measured ~52 ms every ~13 frames in
+    // perf_log.txt 2026-09-26 ([RESOLVE-SLOW] handle=20).  Playback takes
+    // the non-blocking nearby/last-good path below while prefetch decodes.
+    if (scrubMode && !forceExact && m_diskCache) {
         cached = m_diskCache->get(handle, frameNumber, tier);
         if (cached) {
             m_cache->put(cached); // Promote back to RAM

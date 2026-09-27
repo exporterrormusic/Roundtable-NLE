@@ -246,6 +246,11 @@ void CompositeService::reset()
     m_stickyLastCharFrame.clear();
 #ifdef ROUNDTABLE_HAS_SPINE
     m_spineSharedCache.clear();
+    {
+        // Renderers holding a page keep it alive past this (fence-guarded).
+        std::lock_guard lg(m_spineGpuPagesMutex);
+        m_spineGpuPages.clear();
+    }
     m_animNameCache.clear();
     m_gpuSpinePreparedRenderers.clear();
     m_spineCache.clear();
@@ -499,6 +504,84 @@ void CompositeService::integrateSpineSharedData(const std::string& key,
                                                  std::shared_ptr<SpineSharedData> shared)
 {
     m_spineSharedCache[key] = std::move(shared);
+}
+
+void CompositeService::preuploadSpineAtlas(const std::string& key,
+                                           const SpineSharedData& shared)
+{
+    if (m_shutdown.load(std::memory_order_acquire) || shared.pagePixels.empty())
+        return;
+    auto& ctx = GpuContext::get();
+    if (!ctx.isInitialized() || !ctx.isOperational())
+        return;
+    {
+        std::lock_guard lg(m_spineGpuPagesMutex);
+        if (m_spineGpuPages.count(key))
+            return;
+    }
+
+    // Private pool: command pools are externally synchronised and this runs
+    // on a background thread.  Same queue family as SpineRenderer's uploads.
+    const auto& families = ctx.device().queueFamilies();
+    CommandPool pool;
+    if (!pool.create(ctx.vkDevice(), families.graphics.value_or(0)))
+        return;
+    pool.setQueueMutex(&ctx.graphicsQueueMutex());
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::shared_ptr<Texture>> pages(shared.pagePixels.size());
+    for (size_t pi = 0; pi < shared.pagePixels.size(); ++pi) {
+        if (m_shutdown.load(std::memory_order_acquire))
+            return;  // shutdown() waits for this thread; device still alive
+        if (pi >= shared.pageWidths.size() || pi >= shared.pageHeights.size() ||
+            shared.pagePixels[pi].empty() ||
+            shared.pageWidths[pi] <= 0 || shared.pageHeights[pi] <= 0)
+            return;  // incomplete set: let the renderer path handle it
+
+        // Must match SpineRenderer::uploadAtlasTexture's configuration.
+        TextureConfig cfg;
+        cfg.width  = static_cast<uint32_t>(shared.pageWidths[pi]);
+        cfg.height = static_cast<uint32_t>(shared.pageHeights[pi]);
+        cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
+        cfg.filter = VK_FILTER_LINEAR;
+        auto tex = std::make_shared<Texture>();
+        if (!tex->createFromData(ctx.allocator().handle(), ctx.vkDevice(), cfg,
+                                 shared.pagePixels[pi].data(),
+                                 static_cast<VkDeviceSize>(shared.pagePixels[pi].size()),
+                                 pool, ctx.graphicsQueue())) {
+            spdlog::warn("[SPINE-GPU] background atlas upload failed for '{}' page {}",
+                         key, pi);
+            return;
+        }
+        pages[pi] = std::move(tex);
+    }
+
+    {
+        std::lock_guard lg(m_spineGpuPagesMutex);
+        if (!m_shutdown.load(std::memory_order_acquire))
+            m_spineGpuPages.emplace(key, std::move(pages));
+    }
+    spdlog::info("[SPINE-GPU] pre-uploaded atlas for '{}' ({} pages, {:.1f} ms, background)",
+                 key, shared.pagePixels.size(),
+                 std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - t0).count());
+}
+
+std::vector<std::shared_ptr<Texture>>
+CompositeService::spineGpuPages(const std::string& key) const
+{
+    std::lock_guard lg(m_spineGpuPagesMutex);
+    const auto it = m_spineGpuPages.find(key);
+    return it != m_spineGpuPages.end() ? it->second
+                                       : std::vector<std::shared_ptr<Texture>>{};
+}
+
+void CompositeService::storeSpineGpuPages(const std::string& key,
+                                          std::vector<std::shared_ptr<Texture>> pages)
+{
+    std::lock_guard lg(m_spineGpuPagesMutex);
+    if (!m_shutdown.load(std::memory_order_acquire))
+        m_spineGpuPages.emplace(key, std::move(pages));  // keeps an existing set
 }
 
 void CompositeService::removeSpinePendingKey(const std::string& key)

@@ -3,8 +3,8 @@
  * Extracted verbatim from buildLayersForFrame() (modularization). The two
  * disabled if(false) blocks (pre-rendered video cache + video fallback) were
  * removed first, leaving only the live GPU-first / CPU-fallback Spine path.
- * Body is byte-identical to the original; outputs are returned via a result
- * struct using reference aliases so no body line changed.
+ * Outputs are returned via a result struct using reference aliases.
+ * [SPINE-SLOW] sub-timings were added 2026-09-26.
  */
 
 #include "CompositeService.h"
@@ -25,6 +25,7 @@
 #endif
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -46,6 +47,21 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     uint32_t& gpuSpineH          = R.gpuSpineH;
     bool&     cpuSpineRendered   = R.cpuSpineRendered;
 
+    // [SPINE-SLOW] sub-timings: separates CPU work (state/atlas/evaluate/
+    // extract/record) from the host fence wait inside beginFrame() and the
+    // submit in endFrame(), which [LAYER-SLOW] lumps into one number.
+    using SpineClock = std::chrono::steady_clock;
+    const auto spineT0 = SpineClock::now();
+    auto spineLap = [](SpineClock::time_point& t) {
+        const auto now = SpineClock::now();
+        const double lapMs =
+            std::chrono::duration<double, std::milli>(now - t).count();
+        t = now;
+        return lapMs;
+    };
+    double rendererMs = 0, stateMs = 0, atlasMs = 0, evalMs = 0, extractMs = 0;
+    double beginMs = 0, recordMs = 0, endMs = 0;
+
     try {
                 // Try GPU Spine rendering first (faster + better quality)
                 bool gpuSpineDone = false;
@@ -59,9 +75,13 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                                 simultaneousAssetInstance);
                     const SpineRendererCacheKey rendererKey{
                         outW, outH, rendererContentKey};
+                    const auto rendererT0 = SpineClock::now();
                     auto sr = renderSpineRenderer(
                         outW, outH, rendererContentKey);
+                    rendererMs = std::chrono::duration<double, std::milli>(
+                        SpineClock::now() - rendererT0).count();
                     if (sr && sr->isInitialized()) {
+                        auto spineLapT = SpineClock::now();
                         // Each active character clip owns a persistent renderer,
                         // FBO, and atlas set. Multiple on-screen characters (or
                         // duplicate instances of one character) can therefore
@@ -81,6 +101,7 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                             && sit->second->shared->boundsCached) {
                             auto& state = *sit->second;
                             auto& shared = *state.shared;
+                            stateMs = spineLap(spineLapT);
 
                             // Upload once per exact renderer generation. reset()
                             // clears the weak preparation map, forcing a refresh
@@ -98,7 +119,23 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     state.engine.atlas().pages().size();
                                 const size_t expectedPages = atlasPageCount > 0
                                     ? atlasPageCount : shared.pagePixels.size();
-                                if (!shared.pagePixels.empty()) {
+                                // Shared GPU pages (pre-uploaded on the spine
+                                // loader thread, or by another renderer size)
+                                // need only a descriptor set here.
+                                const auto gpuPages = spineGpuPages(charKey);
+                                const bool gpuPagesComplete =
+                                    expectedPages > 0 &&
+                                    gpuPages.size() == expectedPages &&
+                                    std::all_of(gpuPages.begin(), gpuPages.end(),
+                                                [](const auto& p) { return p != nullptr; });
+                                if (gpuPagesComplete) {
+                                    for (size_t pi = 0; pi < expectedPages; ++pi) {
+                                        if (sr->adoptAtlasTexture(
+                                                static_cast<int>(pi), gpuPages[pi],
+                                                "shared"))
+                                            ++loaded;
+                                    }
+                                } else if (!shared.pagePixels.empty()) {
                                     for (size_t pi = 0; pi < expectedPages; ++pi) {
                                         if (pi >= shared.pagePixels.size() ||
                                             pi >= shared.pageWidths.size() ||
@@ -123,7 +160,17 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 if (expectedPages > 0 &&
                                     loaded == static_cast<int>(expectedPages)) {
                                     m_gpuSpinePreparedRenderers[rendererKey] = sr;
-                                    spdlog::info("[SPINE-GPU] uploaded complete atlas for '{}': {} pages",
+                                    if (!gpuPagesComplete) {
+                                        // First upload of this character:
+                                        // share it with other renderer sizes.
+                                        std::vector<std::shared_ptr<Texture>> pages;
+                                        pages.reserve(expectedPages);
+                                        for (size_t pi = 0; pi < expectedPages; ++pi)
+                                            pages.push_back(sr->atlasTexture(static_cast<int>(pi)));
+                                        storeSpineGpuPages(charKey, std::move(pages));
+                                    }
+                                    spdlog::info("[SPINE-GPU] {} complete atlas for '{}': {} pages",
+                                                 gpuPagesComplete ? "bound shared" : "uploaded",
                                                  spineClip->characterName(), loaded);
                                 } else {
                                     // Never render a partly uploaded character. A
@@ -136,6 +183,7 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                                  expectedPages);
                                 }
                             }
+                            atlasMs = spineLap(spineLapT);
 
                             if (auto readyIt =
                                     m_gpuSpinePreparedRenderers.find(rendererKey);
@@ -147,8 +195,10 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 const float timeSeconds = static_cast<float>(ticksToSeconds(animTick));
                                 state.engine.evaluateAtTime(
                                     timeSeconds * spineClip->animationSpeed(), timeSeconds);
+                                evalMs = spineLap(spineLapT);
 
                                 SpineRenderData renderData = state.engine.extractMeshes();
+                                extractMs = spineLap(spineLapT);
 
                                 // ── SPINE-BLEND-DIAG (opt-in) ──────────────
                                 // Diagnostic for one-frame Spine flicker: logs a
@@ -286,12 +336,16 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                     glm::mat4 model = SpineRenderer::modelMatrix(0.0f, 0.0f);
                                     glm::mat4 mvp = proj * model;
 
+                                    spineLap(spineLapT);  // exclude bounds/diag
                                     const bool began = sr->beginFrame();
+                                    beginMs = spineLap(spineLapT);
                                     const bool drew = began &&
                                         sr->renderSkeleton(renderData, mvp, 1.0f);
+                                    recordMs = spineLap(spineLapT);
                                     // Finish a begun command buffer even if atlas
                                     // validation rejected its draw commands.
                                     const bool submitted = began && sr->endFrame();
+                                    endMs = spineLap(spineLapT);
                                     // Spine production and compositor sampling
                                     // use the same scheduled graphics queue.
                                     // Submission order is the dependency; a
@@ -360,6 +414,16 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     catch (...) {
         spdlog::error("compositeFrame: SpineClip '{}' unknown exception",
                       spineClip->characterName());
+    }
+    if (const double totalMs = std::chrono::duration<double, std::milli>(
+            SpineClock::now() - spineT0).count();
+        totalMs > 50.0) {
+        spdlog::warn("[SPINE-SLOW] '{}' total={:.1f}ms renderer={:.1f} state={:.1f} "
+                     "atlas={:.1f} eval={:.1f} extract={:.1f} fenceWait={:.1f} "
+                     "record={:.1f} submit={:.1f} gpu={} cpuFallback={}",
+                     spineClip->characterName(), totalMs, rendererMs, stateMs, atlasMs,
+                     evalMs, extractMs, beginMs, recordMs, endMs,
+                     gpuSpineZeroCopy, cpuSpineRendered);
     }
     if (!gpuSpineZeroCopy && !frame) {
         const auto state = spineResourceState(*spineClip);

@@ -93,9 +93,16 @@ struct SpineFrameResources
 
 // ── Atlas texture handle ────────────────────────────────────────────────────
 
+/// Pipelines/layouts shared by every SpineRenderer of one colour format
+/// (defined in SpineRenderer.cpp).
+struct SpinePipelineSet;
+
 struct AtlasTextureSlot
 {
-    Texture         texture;
+    // Shared: one immutable GPU page serves every renderer (size/instance)
+    // of the same character.  A renderer drops its reference only after its
+    // own frame fence, so an in-flight draw always keeps the page alive.
+    std::shared_ptr<Texture> texture;
     VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
     uint32_t        width{0};
     uint32_t        height{0};
@@ -165,6 +172,14 @@ public:
                             const void* pixelData,
                             uint32_t width, uint32_t height,
                             const std::string& path = "");
+
+    /// Bind an already-uploaded (shared) atlas page — only allocates this
+    /// renderer's descriptor set, no pixel upload.
+    bool adoptAtlasTexture(int pageIndex, std::shared_ptr<Texture> texture,
+                           const std::string& path = "");
+
+    /// The GPU page bound at `pageIndex` (nullptr if none), for sharing.
+    [[nodiscard]] std::shared_ptr<Texture> atlasTexture(int pageIndex) const;
 
     /// Load atlas textures from PNG files listed in SpineAtlas pages.
     /// Uses stb_image to load each PNG.
@@ -274,8 +289,11 @@ private:
     CommandPool*  m_cmdPool{nullptr};
     std::mutex*   m_queueMutex{nullptr};  ///< Optional: lock around vkQueueSubmit
 
-    // Pipelines (one per blend mode)
-    PipelineManager     m_pipelineMgr;
+    // Pipelines (one per blend mode).  Borrowed from m_shared, which owns
+    // the descriptor-set layout, pipeline layout, shaders and pipelines for
+    // every renderer of the same colour format (creating them per renderer
+    // cost ~50 ms at each character's first appearance).
+    std::shared_ptr<SpinePipelineSet> m_shared;
     VkPipelineLayout    m_pipelineLayout{VK_NULL_HANDLE};
     VkPipeline          m_pipelineNormal{VK_NULL_HANDLE};
     VkPipeline          m_pipelineAdditive{VK_NULL_HANDLE};

@@ -99,9 +99,29 @@ public:
         bool    hasNew{false};
     };
 
-    /// Lock the exchange and read the latest frame.
-    /// Returns true if a new frame was available.
+    /// Lock the exchange and read the latest frame (paused/scrub path).
+    /// Returns true if a new frame was available.  Also empties the
+    /// render-ahead queue.
     bool consumeFrame(std::shared_ptr<CachedFrame>& outFrame, int64_t& outTick);
+
+    /// Playback path: take the frame that is DUE at `displayTick` (the audio
+    /// clock position) from the render-ahead queue — the newest one at or
+    /// before it (at or after it when `reverse`), within half a frame of
+    /// tolerance.  Frames still in the future stay queued; frames more than
+    /// a few frames stale (seek / loop wrap) are discarded.  Returns false
+    /// when nothing is due yet (caller holds its current frame).
+    ///
+    /// FrameClock requests frames kRenderAheadFrames ahead, so a frame only
+    /// has to finish within that lead instead of before an unrelated
+    /// presenter deadline — the single-slot hand-off dropped/held ~10% of
+    /// frames even with the producer under budget (perf_log 2026-09-26).
+    bool consumeFrameForTick(int64_t displayTick, int64_t ticksPerFrame,
+                             bool reverse,
+                             std::shared_ptr<CachedFrame>& outFrame,
+                             int64_t& outTick);
+
+    /// Max frames buffered ahead of the presenter.
+    static constexpr size_t kAheadQueueDepth = 4;
 
     /// Wait for a new frame (for paused mode or presenter thread).
     /// Returns false if timed out.
@@ -205,6 +225,14 @@ private:
     mutable std::mutex       m_exchangeMtx;
     FrameExchange            m_exchange;
     std::condition_variable  m_exchangeCV;
+
+    // Render-ahead queue, oldest first (guarded by m_exchangeMtx).  Every
+    // published frame is appended; the playback presenter picks by tick.
+    struct QueuedFrame {
+        int64_t tick{0};
+        std::shared_ptr<CachedFrame> frame;
+    };
+    std::deque<QueuedFrame>  m_aheadQueue;
 
     // Last good frame (for re-publish on cache miss)
     std::shared_ptr<CachedFrame> m_lastGoodFrame;

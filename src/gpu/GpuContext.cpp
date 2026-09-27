@@ -22,6 +22,7 @@
 #include <volk.h>
 #include <cstdlib>     // std::getenv (validation opt-in env vars)
 #include <thread>
+#include <chrono>
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -186,9 +187,12 @@ bool GpuContext::init(VkSurfaceKHR surface)
     m_gpuState.store(GpuState::Healthy, std::memory_order_release);
     spdlog::info("GpuContext: Vulkan initialization complete");
 
-    // Initialize shared staging ring (64 MB — absorbs CompositeService's ring)
+    // Initialize shared staging ring (128 MB — absorbs CompositeService's
+    // ring).  64 MB overflowed ("ring full") on the first composite of a
+    // project: several full-res stills + a 1824x3072 puppet in one frame.
+    // Keep in sync with GpuUploadManager::kStagingRingCapacity.
     m_resourceManager = std::make_unique<GpuResourceManager>();
-    m_resourceManager->initStagingRing(m_allocator.handle(), 64u * 1024u * 1024u);
+    m_resourceManager->initStagingRing(m_allocator.handle(), 128u * 1024u * 1024u);
 
     // Eager-init the default transition generation so the first shader
     // compilation happens during startup. Other resolutions get independent
@@ -469,7 +473,21 @@ std::shared_ptr<EffectProcessor> GpuContext::effectProcessor(
     const uint64_t requests = m_effectProcessorRequests;
     const uint64_t hits = m_effectProcessorCacheHits;
     const uint64_t creations = m_effectProcessorCreations;
+    const bool recreated = !m_effectProcessorKeysSeen.insert(key).second;
     lock.unlock();
+    if (recreated) {
+        // A size built before was evicted and is needed again: per-frame
+        // rebuilds cost 10-20 ms of CPU each.  Surface it (warn+ logging).
+        static std::atomic<int64_t> s_lastThrashLogMs{0};
+        const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (nowMs - s_lastThrashLogMs.load(std::memory_order_relaxed) >= 2000) {
+            s_lastThrashLogMs.store(nowMs, std::memory_order_relaxed);
+            spdlog::warn("[GPU-CACHE-THRASH] EffectProcessor {}x{} re-created "
+                         "(resident={}, creations={}, retired now={})",
+                         width, height, resident, creations, retired.size());
+        }
+    }
     spdlog::info("[PERF] GpuContext EffectProcessor cache MISS: {}x{} -> "
                  "created entry {} (requests={}, hits={}, creations={}, retired={})",
                  width, height, resident, requests, hits, creations,

@@ -167,8 +167,9 @@ private:
                                 const void* data, VkDeviceSize dataSize);
 
     static constexpr int kRingSize = 3;
+    // Matches the primary ring in GpuContext (slot 0).
     static constexpr VkDeviceSize kStagingRingCapacity =
-        64u * 1024u * 1024u;
+        128u * 1024u * 1024u;
 
     GpuContext&           m_ctx;
     StagingRing&          m_primaryRing;

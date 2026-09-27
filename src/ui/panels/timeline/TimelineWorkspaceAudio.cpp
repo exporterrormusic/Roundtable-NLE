@@ -379,10 +379,12 @@ void TimelineWorkspace::preOpenVideoMedia()
                             if (info.isCharacter) {
                                 if (info.predecode && mediaInfo->frameCount > 1)
                                     pool->startLoopPreDecode(handle, ResolutionTier::Half);
-                            } else if (mediaInfo->frameCount > 1 &&
-                                       mediaInfo->frameCount <= MediaPool::LOOP_PREDECODE_MAX_FRAMES) {
-                                pool->startLoopPreDecode(handle, ResolutionTier::Full);
                             } else if (mediaInfo->frameCount > 1) {
+                                // Ordinary videos get a head prefetch only.  Full-res
+                                // loop pre-decode of every short clip thrashed the 1 GB
+                                // RAM cache (~125 frames at 1888x1088), forced CPU
+                                // converts over GPU zero-copy, and resumed on every
+                                // pause — jittery playback (perf_log 2026-09-26).
                                 pool->schedulePrefetch(handle, /*afterFrame=*/0,
                                                        /*count=*/60, /*urgent=*/false,
                                                        ResolutionTier::Full);

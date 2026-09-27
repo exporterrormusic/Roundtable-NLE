@@ -38,6 +38,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rt {
@@ -317,7 +318,13 @@ private:
     // shared leases, so an LRU retirement never invalidates recorded Vulkan
     // descriptors or delayed readbacks.
     GpuGenerationCache<Compositor> m_compositors{{3, 192ull * 1024ull * 1024ull}};
-    GpuGenerationCache<EffectProcessor> m_effectProcessors{{4, 192ull * 1024ull * 1024ull}};
+    // Sized so the output-size processor and clip-size processors (effects
+    // run at the clip's native size — a 4K still is ~199 MB by this estimate)
+    // stay resident together.  At 4 / 192 MB a blurred 4K layer evicted the
+    // 1080p processor every frame and both were rebuilt per frame (~14 +
+    // ~18 ms CPU; perf_log 2026-09-26 [SUBMIT-SPLIT]).
+    GpuGenerationCache<EffectProcessor> m_effectProcessors{{8, 1024ull * 1024ull * 1024ull}};
+    std::unordered_set<uint64_t> m_effectProcessorKeysSeen;  ///< thrash detector
     GpuGenerationCache<SpineRenderer, SpineRendererCacheKey,
                        SpineRendererCacheKeyHash>
         m_spineRenderers{{6, 768ull * 1024ull * 1024ull}};

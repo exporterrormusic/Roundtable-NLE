@@ -174,6 +174,10 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
             }
             shared->pagePixelsUnpremultiplied = false;
 
+            // Parsed on this background thread; per-clip engines on the
+            // render thread reuse it instead of re-parsing (~50 ms/clip).
+            shared->parsed = tempEngine.parsedData();
+
             // Pre-cache bounds
             tempEngine.getBounds(
                 shared->stableBoundsX, shared->stableBoundsY,
@@ -184,6 +188,10 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
 
             spdlog::info("scheduleSpineSharedLoad: loaded '{}' ({} atlas pages)",
                          key, pages.size());
+
+            // Upload the atlas pages to the GPU here, off the frame producer,
+            // so the character's first composite only binds them.
+            m_compositeService->preuploadSpineAtlas(key, *shared);
 
             // Merge result into main-thread cache and trigger refresh
             QMetaObject::invokeMethod(this, [this, key, shared]() {

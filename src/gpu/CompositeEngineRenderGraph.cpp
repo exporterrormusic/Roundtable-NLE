@@ -377,6 +377,21 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 {
     using namespace render_graph;
 
+    // [SUBMIT-SPLIT] CPU sub-timings of the COMPOSITE-SLOW "submit=" window
+    // (perfTlayers → perfTgpuUp).  A steady ~33 ms submit with ~1.7 ms of
+    // GPU work was observed (perf_log 2026-09-26) only on frames with an
+    // effect layer; these laps attribute it without guessing.
+    using SplitClock = std::chrono::steady_clock;
+    const auto splitT0 = SplitClock::now();
+    auto splitMs = [](SplitClock::time_point a, SplitClock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    SplitClock::time_point splitBegin = splitT0, splitPrep = splitT0,
+                           splitWalk = splitT0, splitEnd = splitT0,
+                           splitSubmit = splitT0;
+    double passUploadMs = 0, passEffectMs = 0, passCompositeMs = 0,
+           passOtherMs = 0;
+
     auto& ctx = GpuContext::get();
 
     // ── Ensure texture pool is large enough ──────────────────────────
@@ -436,6 +451,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         m_gpuCompositeState = -1;
         return nullptr;
     }
+    splitBegin = SplitClock::now();
     VkCommandBuffer cmd = slot.cmdBuffer();
     slot.retainForCurrentSlot(compositor);
     slot.retainForCurrentSlot(effectProcessor);
@@ -1077,6 +1093,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     //   1: after all uploads, before first effect/transition
     //   2: after all effects+transitions, before composite
     //   3: after composite+readback (written after the loop)
+    splitPrep = SplitClock::now();
     bool uploadTimestampWritten = false;
     bool effectTimestampWritten = false;
     const bool timingActive = m_timingInitialized &&
@@ -1135,6 +1152,17 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         }
 
         // ── Execute the pass ─────────────────────────────────────
+        struct PassLap {
+            double& bucket;
+            SplitClock::time_point t0{SplitClock::now()};
+            ~PassLap() {
+                bucket += std::chrono::duration<double, std::milli>(
+                    SplitClock::now() - t0).count();
+            }
+        } passLap{pass.type == PassType::Upload    ? passUploadMs
+                : pass.type == PassType::Effect    ? passEffectMs
+                : pass.type == PassType::Composite ? passCompositeMs
+                                                   : passOtherMs};
         switch (pass.type) {
         case PassType::Upload: {
             uploadsSeen = true;
@@ -1869,7 +1897,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     // Queue order is sufficient; a one-shot binary semaphore was unsafe for
     // held frames and leaked whenever a produced frame was dropped.
     VkSemaphore frameSem = VK_NULL_HANDLE;
+    splitWalk = SplitClock::now();
     const bool endOk = slot.endRecording();
+    splitEnd = SplitClock::now();
     bool gpuSubmitOk = false;
     if (endOk) {
         // Note: no manual queue-mutex lock here.  GpuWorkSubmission::
@@ -1924,6 +1954,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             gpuSubmitOk = slot.submit(ctx.graphicsQueue(), frameSem, nullptr);
         }
     }
+    splitSubmit = SplitClock::now();
 
     // Advance the composite epoch that drives PrefetchTexturePool's deferred-
     // reuse quarantine.  Bumped per composite submit (whether or not it
@@ -2097,14 +2128,37 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             if (nowNs - lastNs >= 1'000'000'000ll &&
                 s_lastSlowLogNs.compare_exchange_strong(
                     lastNs, nowNs, std::memory_order_relaxed)) {
+                // Which effects are active: "L<index>[adj]:Name+Name".
+                std::string fxList;
+                for (size_t li = 0; li < layers.size(); ++li) {
+                    if (layers[li].effects.empty()) continue;
+                    if (!fxList.empty()) fxList += ' ';
+                    fxList += 'L' + std::to_string(li);
+                    if (layers[li].isAdjustmentLayer) fxList += "adj";
+                    fxList += ':';
+                    for (size_t fi = 0; fi < layers[li].effects.size(); ++fi) {
+                        if (fi) fxList += '+';
+                        fxList += effectTypeName(layers[li].effects[fi].type);
+                    }
+                }
                 spdlog::warn("[COMPOSITE-SLOW] tick={} TOTAL={:.1f}ms "
                              "layers={:.1f}ms submit={:.1f}ms readback={:.1f}ms "
                              "| scrub={} layerCount={} effectLayers={} effectPasses={} "
-                             "transitions={} gpuDisplay={}",
+                             "transitions={} gpuDisplay={} fx=[{}]",
                              tick, totalMs, layersMs, submitMs, readbackMs,
                              scrubMode, layers.size(),
                              effectLayerCount, effectPassCount,
-                             transitionCount, gpuDisplayMode);
+                             transitionCount, gpuDisplayMode, fxList);
+                spdlog::warn("[SUBMIT-SPLIT] tick={} slotWait={:.1f} prep={:.1f} "
+                             "passes[upload={:.1f} effect={:.1f} composite={:.1f} "
+                             "other={:.1f}] endRec={:.1f} queueSubmit={:.1f} "
+                             "post={:.1f} (ms)",
+                             tick, splitMs(splitT0, splitBegin),
+                             splitMs(splitBegin, splitPrep),
+                             passUploadMs, passEffectMs, passCompositeMs,
+                             passOtherMs, splitMs(splitWalk, splitEnd),
+                             splitMs(splitEnd, splitSubmit),
+                             splitMs(splitSubmit, SplitClock::now()));
             }
         } else if (perfLog) {
             spdlog::info("[RENDER_GRAPH] compositeFrame (DAG): layers={} | "

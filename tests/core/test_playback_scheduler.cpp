@@ -4,9 +4,12 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <initializer_list>
 #include <mutex>
+#include <thread>
 
 namespace rt {
 namespace {
@@ -164,6 +167,72 @@ TEST(PlaybackSchedulerTest, ProducerResetDiscardsHeldAndPublishedFrame)
 
     EXPECT_EQ(producer.lastProducedFrame(), nullptr);
     EXPECT_FALSE(producer.consumeFrame(produced, producedTick));
+}
+
+// Publish one frame per tick (in order) through the producer thread.
+void publishTicks(FrameProducer& producer, std::initializer_list<int64_t> ticks)
+{
+    std::atomic<int> produced{0};
+    producer.setCompositeCallback(
+        [&produced](int64_t, uint32_t, uint32_t, bool, bool) {
+            auto f = std::make_shared<CachedFrame>();
+            f->width = 64;
+            f->height = 36;
+            produced.fetch_add(1);
+            return f;
+        });
+    producer.start();
+    int expected = 0;
+    for (int64_t t : ticks) {
+        producer.requestScrubFrame(t, 64, 36, false);
+        ++expected;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (produced.load() < expected && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ASSERT_EQ(produced.load(), expected);
+        // The publish follows the callback; give it a moment.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    producer.stop();
+}
+
+TEST(PlaybackSchedulerTest, RenderAheadQueueShowsTheFrameDueAtTheAudioTick)
+{
+    constexpr int64_t tpf = 1600;  // 30 fps at 48 kHz ticks
+    FrameProducer producer;
+    publishTicks(producer, {0, tpf, 2 * tpf, 3 * tpf});
+
+    std::shared_ptr<CachedFrame> frame;
+    int64_t tick = -1;
+    // Mid-frame 1: frame 1 is due, frame 0 is superseded, 2/3 stay queued.
+    ASSERT_TRUE(producer.consumeFrameForTick(tpf + 100, tpf, false, frame, tick));
+    EXPECT_EQ(tick, tpf);
+    // Still inside frame 1: frame 2 is not due yet → hold.
+    EXPECT_FALSE(producer.consumeFrameForTick(tpf + 200, tpf, false, frame, tick));
+    // A little before frame 2 starts (within 1/3 frame) counts as due.
+    ASSERT_TRUE(producer.consumeFrameForTick(2 * tpf - tpf / 4, tpf, false, frame, tick));
+    EXPECT_EQ(tick, 2 * tpf);
+    // After a large forward seek the remaining frame is stale, not shown.
+    EXPECT_FALSE(producer.consumeFrameForTick(100 * tpf, tpf, false, frame, tick));
+    EXPECT_FALSE(producer.consumeFrameForTick(3 * tpf, tpf, false, frame, tick));
+}
+
+TEST(PlaybackSchedulerTest, RenderAheadQueueHandlesReversePlayback)
+{
+    constexpr int64_t tpf = 1600;
+    FrameProducer producer;
+    publishTicks(producer, {10 * tpf, 9 * tpf, 8 * tpf});
+
+    std::shared_ptr<CachedFrame> frame;
+    int64_t tick = -1;
+    // Playhead moving down inside frame 9: frame 9 is due, 10 superseded.
+    ASSERT_TRUE(producer.consumeFrameForTick(9 * tpf + 800, tpf, true, frame, tick));
+    EXPECT_EQ(tick, 9 * tpf);
+    // Still inside frame 9: frame 8 is not due yet → hold.
+    EXPECT_FALSE(producer.consumeFrameForTick(9 * tpf + 700, tpf, true, frame, tick));
+    // Frame 8 becomes due once the playhead enters its span.
+    ASSERT_TRUE(producer.consumeFrameForTick(8 * tpf + 900, tpf, true, frame, tick));
+    EXPECT_EQ(tick, 8 * tpf);
 }
 
 TEST(PlaybackSchedulerTest, CancelingInFlightScrubLetsPlaybackFrameWin)

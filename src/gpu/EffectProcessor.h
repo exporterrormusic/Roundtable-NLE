@@ -32,9 +32,17 @@
 #include "effects/EffectStack.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace rt {
+
+/// Size-independent Vulkan objects (descriptor-set layouts, pipeline layouts,
+/// ~33 compute pipelines) shared by every EffectProcessor on a device.
+/// Width/height travel in push constants, so one set serves all sizes; a
+/// new-size processor then only allocates images + descriptor sets instead
+/// of recompiling every pipeline (~20-40 ms per creation before).
+struct EffectPipelineSet;
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -206,8 +214,10 @@ private:
     Texture m_storageTextures[2];
     int     m_currentOutput{0}; // which storage texture holds the final result
 
-    // Pipelines (one per effect type)
-    PipelineManager  m_pipelineManager;
+    // Pipelines (one per effect type).  All handles below (pipelines,
+    // pipeline layouts, descriptor-set layouts) are BORROWED from m_shared,
+    // which owns and destroys them once the last processor releases it.
+    std::shared_ptr<EffectPipelineSet> m_shared;
     VkPipeline       m_colorCorrectPipeline{VK_NULL_HANDLE};
     VkPipeline       m_blurPipeline{VK_NULL_HANDLE};
     VkPipeline       m_sharpenPipeline{VK_NULL_HANDLE};

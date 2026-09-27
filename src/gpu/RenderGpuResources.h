@@ -66,7 +66,8 @@ private:
     // Bounded generation caches. Eviction drops only the cache lease; exact
     // command-slot/readback leases defer destruction until use is complete.
     GpuGenerationCache<Compositor> m_compositors{{3, 192ull * 1024ull * 1024ull}};
-    GpuGenerationCache<EffectProcessor> m_effectProcessors{{4, 192ull * 1024ull * 1024ull}};
+    // Matches GpuContext: clip-size + output-size processors must co-reside.
+    GpuGenerationCache<EffectProcessor> m_effectProcessors{{8, 1024ull * 1024ull * 1024ull}};
     GpuGenerationCache<TransitionRenderer> m_transitionRenderers{{3, 128ull * 1024ull * 1024ull}};
     GpuGenerationCache<SpineRenderer, SpineRendererCacheKey,
                        SpineRendererCacheKeyHash>

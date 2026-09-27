@@ -162,13 +162,15 @@ bool DiskFrameCache::contains(uint64_t mediaId, int64_t frameNumber,
 void DiskFrameCache::putAsync(std::shared_ptr<CachedFrame> frame)
 {
     if (!frame) return;
-    // UPGRADE_PLAN Phase 7 K.2: GPU-resident frames arrive with empty
-    // pixels and a lazyReadback closure that materialises on demand.
-    // Skip only when there is truly nothing to write (neither CPU pixels
-    // nor a way to get them).  The writer thread will call ensurePixels()
-    // on lazy frames before writeFrame() so the synchronous GPU readback
-    // happens off the prefetch hot path.
-    if (frame->pixels.empty() && !frame->lazyReadback) return;
+    // Only frames that already have CPU pixels are written.  GPU-resident
+    // frames (empty pixels + lazyReadback) are skipped: materialising them
+    // meant a synchronous 8 MB readback per frame on the shared compute
+    // queue, which delayed prefetch converts → the compositor's timeline
+    // wait → the graphics queue (submit ~33 ms, Spine fence waits, preroll
+    // timeouts; perf_log 2026-09-26).  The readback's layout transitions
+    // also raced the compositor sampling the same texture.  Playback no
+    // longer reads the disk cache, and NVDEC re-decode beats a disk read.
+    if (frame->pixels.empty()) return;
 
     auto hash = getPathHash(frame->mediaId);
     if (hash.empty()) return;

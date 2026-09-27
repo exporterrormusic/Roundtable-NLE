@@ -98,6 +98,7 @@ class RenderGpuResources;
 class SegmentRenderCache;
 class SequenceClip;
 class ShotPresetManager;
+class Texture;
 class Timeline;
 class TitleClip;
 class TransitionRenderer;
@@ -527,6 +528,10 @@ public:
         std::vector<uint8_t> skelBytes;
         std::string atlasText;
         std::string atlasDir;
+        // Parsed atlas + SkeletonData, shared by every clip of this
+        // character.  Set by the loaders (before publish) or by the first
+        // getOrCreateSpineState(); later clips skip the ~50 ms re-parse.
+        std::shared_ptr<SpineParsedSkeleton> parsed;
     };
 
     struct SpineCPUState {
@@ -578,6 +583,21 @@ public:
     void removeSpinePendingKey(const std::string& key);
     bool isSpinePending(const std::string& key) const;
     bool addSpinePendingKey(const std::string& key);
+
+    // ── Shared GPU atlas pages (one upload per character) ──────────────
+    /// Upload `shared.pagePixels` to GPU textures on the CALLING thread
+    /// (the background spine loader) so the first composite of a character
+    /// only binds them instead of a 50-125 ms synchronous upload on the
+    /// frame producer.  No-op once shutdown has begun.  Thread-safe.
+    void preuploadSpineAtlas(const std::string& key,
+                             const SpineSharedData& shared);
+    /// Complete page set for `key` (empty if not uploaded yet).
+    [[nodiscard]] std::vector<std::shared_ptr<Texture>>
+        spineGpuPages(const std::string& key) const;
+    /// Record pages a renderer uploaded itself so other renderer sizes
+    /// (scrub 960x540 vs playback 1920x1080) reuse them.
+    void storeSpineGpuPages(const std::string& key,
+                            std::vector<std::shared_ptr<Texture>> pages);
 
     // ── Spine futures ──────────────────────────────────────────────────
     /// Remove completed futures to avoid unbounded growth, then push a new one.
@@ -1023,6 +1043,14 @@ private:
     mutable std::mutex m_spinePendingMutex;
     std::unordered_set<std::string> m_spinePendingKeys;
     std::vector<std::future<void>> m_spineLoadFutures;
+
+    // Shared GPU atlas pages by spine char key.  Written from the background
+    // loader and the producer thread, cleared by reset()/shutdown() while the
+    // device is alive (never routed through queued UI lambdas, which can
+    // outlive GPU teardown at exit).
+    mutable std::mutex m_spineGpuPagesMutex;
+    std::unordered_map<std::string, std::vector<std::shared_ptr<Texture>>>
+        m_spineGpuPages;
 
     std::unique_ptr<AnimationVideoCache> m_animVideoCache;
 

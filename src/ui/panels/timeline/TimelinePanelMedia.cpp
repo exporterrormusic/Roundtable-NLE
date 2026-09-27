@@ -15,6 +15,8 @@
 #include "timeline/VideoClip.h"
 #include "audio/AudioFile.h"
 #include "decode/VideoDecoder.h"
+#include "decode/ConvertDecodedFrame.h"
+#include "cache/FrameCache.h"
 #include "widgets/TimelineTrackWidget.h"
 
 #include <QImage>
@@ -25,6 +27,12 @@
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+extern "C" {
+#include <libswscale/swscale.h>
+}
+#endif
 
 namespace rt {
 
@@ -428,18 +436,44 @@ void TimelinePanel::queueThumbnailLoad(const std::string& path, bool visible)
             ThumbnailTaskOutput output;
             VideoDecoder decoder;
             DecodedFrame frame;
-            if (decoder.open(resolved) &&
+            // Software decode: a thumbnail doesn't need an NVDEC session
+            // competing with playback prefetch.  decodeAt() returns the
+            // native format (NV12 / yuv420p / ...), so convert through the
+            // shared BGRA core — accepting only BGRA/RGBA used to fail
+            // every H.264/HEVC/ProRes file.
+            if (decoder.open(resolved, /*forceSoftware=*/true) &&
                 !stop.stop_requested() &&
                 decoder.decodeAt(0.0, frame) &&
                 frame.width > 0 && frame.height > 0) {
-                const int bytesPerRow = frame.linesize[0];
-                if (frame.format == PixelFormat::BGRA) {
-                    output.image = QImage(frame.data[0], frame.width, frame.height,
-                                          bytesPerRow,
-                                          QImage::Format_RGBA8888_Premultiplied).copy();
-                } else if (frame.format == PixelFormat::RGBA) {
-                    output.image = QImage(frame.data[0], frame.width, frame.height,
-                                          bytesPerRow, QImage::Format_RGBA8888).copy();
+                if (frame.isHardware) {
+                    DecodedFrame cpuFrame;
+                    if (decoder.transferHardwareFrame(frame, cpuFrame))
+                        frame = std::move(cpuFrame);
+                }
+                if (!frame.isHardware && frame.data[0]) {
+                    void* swsCtx = nullptr;
+                    int swsSrcW = 0, swsSrcH = 0, swsSrcFmt = -1;
+                    int swsDstW = 0, swsDstH = 0;
+                    CachedFrame bgra;
+                    const int w = static_cast<int>(frame.width);
+                    const int h = static_cast<int>(frame.height);
+                    if (convertDecodedToBgra(
+                            frame, resolveDecodedAvFormat(frame), w, h,
+                            decoder.info(), resolved,
+                            SwsCacheRef{swsCtx, swsSrcW, swsSrcH, swsSrcFmt,
+                                        swsDstW, swsDstH},
+                            /*pool=*/nullptr, bgra) &&
+                        !bgra.pixels.empty()) {
+                        // BGRA bytes == QImage ARGB32 on little-endian.
+                        output.image = QImage(bgra.pixels.data(),
+                                              static_cast<int>(bgra.width),
+                                              static_cast<int>(bgra.height),
+                                              static_cast<qsizetype>(bgra.stride),
+                                              QImage::Format_ARGB32).copy();
+                    }
+#ifdef ROUNDTABLE_HAS_FFMPEG
+                    if (swsCtx) sws_freeContext(static_cast<SwsContext*>(swsCtx));
+#endif
                 }
             }
             if (output.image.isNull())

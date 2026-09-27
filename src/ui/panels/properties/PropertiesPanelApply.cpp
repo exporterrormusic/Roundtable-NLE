@@ -521,10 +521,10 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
     if (visualClips.empty()) return;
 
     // Partition the selection into actual shot instances. Audio-Sync's line
-    // backlink is the strongest identity: layers from different script lines
-    // must stay independent even when their ranges overlap. For unsynced
-    // footage, a shared group plus a STRICT time overlap identifies layers of
-    // one instance. Merely adjacent clips are separate shots.
+    // backlink is the strongest identity when BOTH layers have one. Legacy
+    // and copied layers can lack that backlink or have separate group IDs.
+    // Recover those pairs from their group/range or complementary layer IDs;
+    // otherwise each layer would instantiate an entire replacement preset.
     std::sort(visualClips.begin(), visualClips.end(),
               [](const Clip* a, const Clip* b) {
                   if (a->timelineIn() != b->timelineIn())
@@ -544,23 +544,33 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
     for (Clip* clip : visualClips) {
         ShotSection* matching = nullptr;
         for (auto& section : sections) {
-            if (clip->syncLine() >= 0) {
+            if (clip->syncLine() >= 0 && section.syncLine >= 0) {
                 if (section.syncLine == clip->syncLine()) {
                     matching = &section;
                     break;
                 }
                 continue;
             }
-            if (section.syncLine >= 0)
-                continue;
-
             const bool groupsCompatible =
                 clip->groupId() == 0 || section.originalGroupId == 0
                 || clip->groupId() == section.originalGroupId;
             const bool strictlyOverlaps =
                 clip->timelineIn() < section.end
                 && clip->timelineOut() > section.start;
-            if (groupsCompatible && strictlyOverlaps) {
+            // A character and background copied independently may no longer
+            // share a group. Require exact timing, the same named preset and
+            // distinct, nonempty layer identities before recovering that pair.
+            const bool complementaryLayers = !clip->shotName().empty()
+                && !clip->layerId().empty()
+                && std::all_of(section.clips.begin(), section.clips.end(),
+                    [clip](const Clip* member) {
+                        return member->timelineIn() == clip->timelineIn()
+                            && member->timelineOut() == clip->timelineOut()
+                            && member->shotName() == clip->shotName()
+                            && !member->layerId().empty()
+                            && member->layerId() != clip->layerId();
+                    });
+            if ((groupsCompatible && strictlyOverlaps) || complementaryLayers) {
                 matching = &section;
                 break;
             }
@@ -572,6 +582,8 @@ void PropertiesPanel::onShotChanged(const std::string& newShotName)
         } else {
             matching->start = std::min(matching->start, clip->timelineIn());
             matching->end = std::max(matching->end, clip->timelineOut());
+            if (matching->syncLine < 0)
+                matching->syncLine = clip->syncLine();
             matching->clips.push_back(clip);
         }
     }

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * EffectProcessor.cpp — GPU compute-shader effects pipeline.
  *
  * Step 22: Effects System
@@ -30,6 +30,9 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -62,6 +65,164 @@ static fs::path findShader(const char* name)
         if (fs::exists(p)) return p;
     return {};
 }
+
+// =============================================================================
+//  Shared, size-independent pipeline set
+// =============================================================================
+
+namespace {
+constexpr const char* kLutShader     = "lut.comp.spv";
+constexpr const char* kMaskMixShader = "mask_mix.comp.spv";
+// Shaders using the ordinary 2-binding layout.
+constexpr const char* kMainShaders[] = {
+    "color_correct.comp.spv", "blur.comp.spv", "sharpen.comp.spv",
+    "glow.comp.spv", "chroma_key.comp.spv", "ultra_key_matte.comp.spv",
+    "ultra_key_cleanup.comp.spv", "ultra_key_finalize.comp.spv",
+    "ultra_key_combined.comp.spv", "ultra_key_light.comp.spv",
+    "transform2d.comp.spv", "vignette.comp.spv", "letterbox.comp.spv",
+    "lumetri_color.comp.spv", "tint.comp.spv", "ots.comp.spv",
+    "flip.comp.spv", "scanlines.comp.spv", "block_glitch.comp.spv",
+    "chromatic_split.comp.spv", "turbulent_displace.comp.spv",
+    "posterize.comp.spv", "grain.comp.spv", "signal_tear.comp.spv",
+    "beat_zoom.comp.spv", "beat_flash.comp.spv", "beat_shake.comp.spv",
+    "beat_chroma.comp.spv", "beat_drop.comp.spv",
+};
+} // namespace
+
+struct EffectPipelineSet
+{
+    VkDevice              device{VK_NULL_HANDLE};
+    PipelineManager       manager;
+    VkDescriptorSetLayout mainSetLayout{VK_NULL_HANDLE};  ///< bindings 0-1
+    VkDescriptorSetLayout lutSetLayout{VK_NULL_HANDLE};   ///< bindings 0-2
+    VkPipelineLayout      pipelineLayout{VK_NULL_HANDLE};
+    VkPipelineLayout      lutPipelineLayout{VK_NULL_HANDLE};
+    VkPipelineLayout      maskMixPipelineLayout{VK_NULL_HANDLE};
+    std::unordered_map<std::string, VkPipeline> pipelines;  ///< by .spv name
+
+    EffectPipelineSet() = default;
+    EffectPipelineSet(const EffectPipelineSet&) = delete;
+    EffectPipelineSet& operator=(const EffectPipelineSet&) = delete;
+
+    ~EffectPipelineSet()
+    {
+        manager.destroy();  // pipelines + pipeline layouts + shader modules
+        if (device != VK_NULL_HANDLE) {
+            if (lutSetLayout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(device, lutSetLayout, nullptr);
+            if (mainSetLayout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(device, mainSetLayout, nullptr);
+        }
+    }
+
+    [[nodiscard]] VkPipeline get(const char* spvName) const
+    {
+        const auto it = pipelines.find(spvName);
+        return it != pipelines.end() ? it->second : VK_NULL_HANDLE;
+    }
+
+    /// One set per device, alive while any processor holds it.  Built under
+    /// a mutex so concurrent first-time processors (preview + export) don't
+    /// both compile.
+    static std::shared_ptr<EffectPipelineSet> acquire(Device& dev)
+    {
+        static std::mutex s_mtx;
+        static std::weak_ptr<EffectPipelineSet> s_set;
+        std::lock_guard lock(s_mtx);
+        if (auto existing = s_set.lock();
+            existing && existing->device == dev.handle())
+            return existing;
+        auto set = std::make_shared<EffectPipelineSet>();
+        if (!set->build(dev))
+            return nullptr;
+        s_set = set;
+        return set;
+    }
+
+private:
+    bool build(Device& dev)
+    {
+        device = dev.handle();
+
+        auto makeSetLayout = [&](uint32_t bindingCount,
+                                 VkDescriptorSetLayout& out) {
+            // binding 0: storage image (output); 1..N: combined samplers.
+            VkDescriptorSetLayoutBinding b[3]{};
+            for (uint32_t i = 0; i < bindingCount; ++i) {
+                b[i].binding         = i;
+                b[i].descriptorType  = i == 0
+                    ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                    : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                b[i].descriptorCount = 1;
+                b[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+            VkDescriptorSetLayoutCreateInfo ci{};
+            ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            ci.bindingCount = bindingCount;
+            ci.pBindings    = b;
+            return vkCreateDescriptorSetLayout(device, &ci, nullptr, &out)
+                == VK_SUCCESS;
+        };
+        if (!makeSetLayout(2, mainSetLayout)) {
+            spdlog::error("EffectProcessor: Failed to create descriptor set layout");
+            return false;
+        }
+        // LUT layout: binding 2 is the 3D LUT sampler (also used by mask mix).
+        if (!makeSetLayout(3, lutSetLayout)) {
+            spdlog::error("EffectProcessor: Failed to create LUT descriptor set layout");
+            return false;
+        }
+
+        if (!manager.create(dev)) {
+            spdlog::error("EffectProcessor: Failed to create pipeline manager");
+            return false;
+        }
+
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushRange.offset     = 0;
+        pushRange.size       = sizeof(EffectPushConstants);
+
+        pipelineLayout = manager.createLayout({pushRange}, {mainSetLayout});
+        if (pipelineLayout == VK_NULL_HANDLE) {
+            spdlog::error("EffectProcessor: Failed to create pipeline layout");
+            return false;
+        }
+        lutPipelineLayout     = manager.createLayout({pushRange}, {lutSetLayout});
+        maskMixPipelineLayout = manager.createLayout({pushRange}, {lutSetLayout});
+
+        // Non-fatal per shader: a missing one is skipped at dispatch time.
+        auto load = [&](const char* spvName, VkPipelineLayout layout) {
+            if (layout == VK_NULL_HANDLE) return;
+            fs::path path = findShader(spvName);
+            if (path.empty()) {
+                spdlog::warn("EffectProcessor: shader {} not found — skipping", spvName);
+                return;
+            }
+            VkShaderModule mod = manager.loadShader(path);
+            if (mod == VK_NULL_HANDLE) {
+                spdlog::warn("EffectProcessor: failed to load {}", spvName);
+                return;
+            }
+            ComputePipelineConfig pc;
+            pc.compShader = mod;
+            pc.layout     = layout;
+            VkPipeline p = manager.createComputePipeline(pc);
+            if (p == VK_NULL_HANDLE)
+                spdlog::warn("EffectProcessor: failed to create pipeline for {}", spvName);
+            else
+                pipelines.emplace(spvName, p);
+        };
+        for (const char* name : kMainShaders)
+            load(name, pipelineLayout);
+        load(kLutShader, lutPipelineLayout);
+        load(kMaskMixShader, maskMixPipelineLayout);
+
+        spdlog::info("EffectProcessor: shared pipeline set built ({} pipelines)",
+                     pipelines.size());
+        return true;
+    }
+};
 
 // =============================================================================
 //  Lifecycle
@@ -157,17 +318,13 @@ void EffectProcessor::shutdown(GpuTeardownMode mode)
         m_curSourceSet        = VK_NULL_HANDLE;
         m_curLutSet           = VK_NULL_HANDLE;
     }
-    if (m_lutDescriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(dev, m_lutDescriptorSetLayout, nullptr);
-        m_lutDescriptorSetLayout = VK_NULL_HANDLE;
-    }
-    if (m_descriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(dev, m_descriptorSetLayout, nullptr);
-        m_descriptorSetLayout = VK_NULL_HANDLE;
-    }
+    // Layouts + pipelines are borrowed from the shared set (destroyed by
+    // it when the last processor lets go) — only drop our references.
+    m_lutDescriptorSetLayout = VK_NULL_HANDLE;
+    m_descriptorSetLayout    = VK_NULL_HANDLE;
+    m_shared.reset();
 
     // Pipelines
-    m_pipelineManager.destroy();
     m_colorCorrectPipeline = VK_NULL_HANDLE;
     m_blurPipeline         = VK_NULL_HANDLE;
     m_sharpenPipeline      = VK_NULL_HANDLE;
@@ -755,65 +912,15 @@ bool EffectProcessor::createDescriptorResources()
 {
     VkDevice dev = m_device->handle();
 
-    // Main descriptor set layout (bindings 0-1, used by most shaders):
-    //   binding 0: storage image   (writeonly output)
-    //   binding 1: combined sampler (readonly input)
-    VkDescriptorSetLayoutBinding mainBindings[2]{};
-
-    mainBindings[0].binding         = 0;
-    mainBindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    mainBindings[0].descriptorCount = 1;
-    mainBindings[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    mainBindings[1].binding         = 1;
-    mainBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    mainBindings[1].descriptorCount = 1;
-    mainBindings[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutCI{};
-    layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCI.bindingCount = 2;
-    layoutCI.pBindings    = mainBindings;
-
-    if (vkCreateDescriptorSetLayout(dev, &layoutCI, nullptr,
-                                     &m_descriptorSetLayout) != VK_SUCCESS)
-    {
-        spdlog::error("EffectProcessor: Failed to create descriptor set layout");
+    // Descriptor-set layouts (and all pipelines) come from the per-device
+    // shared set; see EffectPipelineSet above.
+    m_shared = EffectPipelineSet::acquire(*m_device);
+    if (!m_shared) {
+        spdlog::error("EffectProcessor: shared pipeline set unavailable");
         return false;
     }
-
-    // LUT-specific descriptor set layout (bindings 0-2):
-    //   binding 0: storage image   (writeonly output)
-    //   binding 1: combined sampler (readonly input)
-    //   binding 2: combined sampler (3D LUT texture)
-    VkDescriptorSetLayoutBinding lutBindings[3]{};
-
-    lutBindings[0].binding         = 0;
-    lutBindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    lutBindings[0].descriptorCount = 1;
-    lutBindings[0].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    lutBindings[1].binding         = 1;
-    lutBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    lutBindings[1].descriptorCount = 1;
-    lutBindings[1].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    lutBindings[2].binding         = 2;
-    lutBindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    lutBindings[2].descriptorCount = 1;
-    lutBindings[2].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo lutLayoutCI{};
-    lutLayoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    lutLayoutCI.bindingCount = 3;
-    lutLayoutCI.pBindings    = lutBindings;
-
-    if (vkCreateDescriptorSetLayout(dev, &lutLayoutCI, nullptr,
-                                     &m_lutDescriptorSetLayout) != VK_SUCCESS)
-    {
-        spdlog::error("EffectProcessor: Failed to create LUT descriptor set layout");
-        return false;
-    }
+    m_descriptorSetLayout    = m_shared->mainSetLayout;
+    m_lutDescriptorSetLayout = m_shared->lutSetLayout;
 
     // Pool sizing:
     //   ping-pong[0], ping-pong[1]                       = 2 main sets
@@ -1034,45 +1141,13 @@ void EffectProcessor::initDescriptorRingBindings()
 
 bool EffectProcessor::createPipelines()
 {
-    if (!m_pipelineManager.create(*m_device)) {
-        spdlog::error("EffectProcessor: Failed to create pipeline manager");
+    if (!m_shared)
         return false;
-    }
-
-    // Pipeline layout shared by all effect shaders
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushRange.offset     = 0;
-    pushRange.size       = sizeof(EffectPushConstants);
-
-    m_pipelineLayout = m_pipelineManager.createLayout(
-        {pushRange}, {m_descriptorSetLayout});
-    if (m_pipelineLayout == VK_NULL_HANDLE) {
-        spdlog::error("EffectProcessor: Failed to create pipeline layout");
-        return false;
-    }
-
-    // Helper lambda — load shader + create pipeline.  Non-fatal if not found
-    // (we just leave that pipeline null and skip it at dispatch time).
-    auto loadPipeline = [&](const char* spvName) -> VkPipeline {
-        fs::path path = findShader(spvName);
-        if (path.empty()) {
-            spdlog::warn("EffectProcessor: shader {} not found — skipping", spvName);
-            return VK_NULL_HANDLE;
-        }
-        VkShaderModule mod = m_pipelineManager.loadShader(path);
-        if (mod == VK_NULL_HANDLE) {
-            spdlog::warn("EffectProcessor: failed to load {}", spvName);
-            return VK_NULL_HANDLE;
-        }
-        ComputePipelineConfig pc;
-        pc.compShader = mod;
-        pc.layout     = m_pipelineLayout;
-        VkPipeline p = m_pipelineManager.createComputePipeline(pc);
-        if (p == VK_NULL_HANDLE)
-            spdlog::warn("EffectProcessor: failed to create pipeline for {}", spvName);
-        return p;
-    };
+    const EffectPipelineSet& s = *m_shared;
+    m_pipelineLayout        = s.pipelineLayout;
+    m_lutPipelineLayout     = s.lutPipelineLayout;
+    m_maskMixPipelineLayout = s.maskMixPipelineLayout;
+    auto loadPipeline = [&](const char* spvName) { return s.get(spvName); };
 
     m_colorCorrectPipeline = loadPipeline("color_correct.comp.spv");
     m_blurPipeline         = loadPipeline("blur.comp.spv");
@@ -1086,22 +1161,8 @@ bool EffectProcessor::createPipelines()
     m_ultraKeyLightPipeline     = loadPipeline("ultra_key_light.comp.spv");
     m_transform2dPipeline  = loadPipeline("transform2d.comp.spv");
     m_vignettePipeline    = loadPipeline("vignette.comp.spv");
-    // LUT uses binding 2 for the 3D texture and therefore cannot use the
-    // two-binding layout shared by ordinary effects.
-    m_lutPipelineLayout = m_pipelineManager.createLayout(
-        {pushRange}, {m_lutDescriptorSetLayout});
-    if (m_lutPipelineLayout != VK_NULL_HANDLE) {
-        fs::path lutPath = findShader("lut.comp.spv");
-        if (!lutPath.empty()) {
-            VkShaderModule mod = m_pipelineManager.loadShader(lutPath);
-            if (mod != VK_NULL_HANDLE) {
-                ComputePipelineConfig lutConfig;
-                lutConfig.compShader = mod;
-                lutConfig.layout = m_lutPipelineLayout;
-                m_lutPipeline = m_pipelineManager.createComputePipeline(lutConfig);
-            }
-        }
-    }
+    // LUT uses binding 2 for the 3D texture (lutPipelineLayout).
+    m_lutPipeline         = loadPipeline(kLutShader);
     m_letterboxPipeline   = loadPipeline("letterbox.comp.spv");
     m_colorGradingPipeline = loadPipeline("lumetri_color.comp.spv");
     m_tintPipeline         = loadPipeline("tint.comp.spv");
@@ -1120,27 +1181,13 @@ bool EffectProcessor::createPipelines()
     m_beatChromaPipeline        = loadPipeline("beat_chroma.comp.spv");
     m_beatDropPipeline          = loadPipeline("beat_drop.comp.spv");
 
-    // Effect-mask mix — uses the 3-binding LUT descriptor layout (storage +
-    // 2 samplers), so it needs its own pipeline layout for valid binding.
-    m_maskMixPipelineLayout = m_pipelineManager.createLayout(
-        {pushRange}, {m_lutDescriptorSetLayout});
-    if (m_maskMixPipelineLayout != VK_NULL_HANDLE) {
-        fs::path mixPath = findShader("mask_mix.comp.spv");
-        if (!mixPath.empty()) {
-            VkShaderModule mod = m_pipelineManager.loadShader(mixPath);
-            if (mod != VK_NULL_HANDLE) {
-                ComputePipelineConfig pcCfg;
-                pcCfg.compShader = mod;
-                pcCfg.layout     = m_maskMixPipelineLayout;
-                m_maskMixPipeline = m_pipelineManager.createComputePipeline(pcCfg);
-            }
-        }
-        if (m_maskMixPipeline == VK_NULL_HANDLE)
-            spdlog::warn("EffectProcessor: mask_mix pipeline unavailable — "
-                         "effect masks will be ignored");
-    }
+    // Effect-mask mix — 3-binding LUT descriptor layout (maskMixPipelineLayout).
+    m_maskMixPipeline = loadPipeline(kMaskMixShader);
+    if (m_maskMixPipeline == VK_NULL_HANDLE)
+        spdlog::warn("EffectProcessor: mask_mix pipeline unavailable — "
+                     "effect masks will be ignored");
 
-    spdlog::info("EffectProcessor: pipelines created (colorCorrect={}, blur={}, lumetri={})",
+    spdlog::debug("EffectProcessor: pipelines created (colorCorrect={}, blur={}, lumetri={})",
                  m_colorCorrectPipeline != VK_NULL_HANDLE,
                  m_blurPipeline != VK_NULL_HANDLE,
                  m_colorGradingPipeline != VK_NULL_HANDLE);

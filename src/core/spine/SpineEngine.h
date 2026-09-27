@@ -76,6 +76,42 @@ struct SpineRenderData
     float boundsX = 0, boundsY = 0, boundsW = 0, boundsH = 0;
 };
 
+/// Parsed, immutable atlas + skeleton data for one character asset.
+/// Parsing is the expensive part of creating a SpineEngine (~50 ms for a
+/// full character); spine-cpp treats SkeletonData/Atlas as read-only at
+/// runtime, so every clip of the same character shares one instance and
+/// only builds its own Skeleton + AnimationState.  Engines hold a
+/// shared_ptr, so the data outlives every Skeleton that references it.
+struct SpineParsedSkeleton
+{
+    SpineParsedSkeleton();
+    ~SpineParsedSkeleton();
+    SpineParsedSkeleton(const SpineParsedSkeleton&) = delete;
+    SpineParsedSkeleton& operator=(const SpineParsedSkeleton&) = delete;
+
+    /// Parse from in-memory .skel bytes + .atlas text.  Thread-safe (no
+    /// shared state); returns nullptr on failure.
+    static std::shared_ptr<SpineParsedSkeleton> parseFromBuffers(
+        const std::vector<uint8_t>& skelBytes, const std::string& atlasText,
+        const std::string& atlasDir, const std::string& skelPath,
+        const std::string& atlasPath, float scale = 1.0f);
+
+    /// Parse from .skel + .atlas files on disk; nullptr on failure.
+    static std::shared_ptr<SpineParsedSkeleton> parseFromFiles(
+        const std::string& skelPath, const std::string& atlasPath,
+        float scale = 1.0f);
+
+    struct SkelDataDeleter { void operator()(spine::SkeletonData* p) const; };
+
+    // Declaration order matters: skelData's attachments reference atlas
+    // regions, so skelData (declared after) is destroyed first.
+    SpineAtlas                                            atlas;
+    std::unique_ptr<spine::SkeletonData, SkelDataDeleter> skelData;
+    std::string                                           skelPath;
+    std::string                                           atlasPath;
+    std::string                                           version;
+};
+
 class SpineEngine
 {
 public:
@@ -128,6 +164,11 @@ public:
                               const std::string& atlasDir,
                               const std::string& skelPath,
                               const std::string& atlasPath);
+
+    /// Fast path: build this engine's Skeleton + AnimationState on already
+    /// parsed shared data (no parsing).  Applies the clip's settings.
+    bool loadFromClipParsed(const SpineClip& clip,
+                            std::shared_ptr<SpineParsedSkeleton> parsed);
 
     /// @return true if skeleton is loaded
     [[nodiscard]] bool isLoaded() const noexcept { return m_skeleton != nullptr; }
@@ -186,7 +227,14 @@ public:
 
     // ── Atlas access ────────────────────────────────────────────────────
 
-    [[nodiscard]] const SpineAtlas& atlas() const noexcept { return m_atlas; }
+    [[nodiscard]] const SpineAtlas& atlas() const noexcept;
+
+    /// The shared parsed data this engine was built on (nullptr if unloaded).
+    /// Hand it to other engines' loadFromClipParsed() to skip re-parsing.
+    [[nodiscard]] std::shared_ptr<SpineParsedSkeleton> parsedData() const noexcept
+    {
+        return m_parsed;
+    }
 
     // ── Static utilities ────────────────────────────────────────────────
 
@@ -208,8 +256,15 @@ public:
                                        CharacterStance stance);
 
 private:
-    struct SkelDataDeleter { void operator()(spine::SkeletonData* p) const; };
     struct SkelDeleter     { void operator()(spine::Skeleton* p) const; };
+
+    /// Replace current state with a Skeleton + AnimationState built on
+    /// `parsed` (shared, never mutated).
+    bool adoptParsed(std::shared_ptr<SpineParsedSkeleton> parsed);
+    [[nodiscard]] spine::SkeletonData* skelData() const noexcept
+    {
+        return m_parsed ? m_parsed->skelData.get() : nullptr;
+    }
     struct ClipperDeleter  { void operator()(spine::SkeletonClipping* p) const; };
 
     /// Build m_slotAlphaAnimated from the loaded skeleton data: marks every slot
@@ -223,8 +278,8 @@ private:
     std::unordered_set<std::string>                       m_hiddenAttachmentNames;
     std::string                                           m_loadedSkelPath;
     std::string                                           m_loadedAtlasPath;
-    SpineAtlas                                            m_atlas;
-    std::unique_ptr<spine::SkeletonData, SkelDataDeleter> m_skelData;
+    // Declared before the skeleton/animation so it is destroyed after them.
+    std::shared_ptr<SpineParsedSkeleton>                  m_parsed;
     std::unique_ptr<spine::Skeleton, SkelDeleter>         m_skeleton;
     std::unique_ptr<spine::SkeletonClipping, ClipperDeleter> m_clipper;
     SpineAnimation                                        m_animation;

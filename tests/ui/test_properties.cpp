@@ -489,6 +489,64 @@ TEST(PropertiesPanel, OverlappingSyncedShotInstancesRemainIndependent)
     EXPECT_EQ(laterFront->groupId(), requestedGroups[1]);
 }
 
+TEST(PropertiesPanel, ShotLayersWithIncompleteIdentityRequestOneSwitch)
+{
+    // Older/manual edits can leave a background without its character's
+    // sync backlink, or give the two layers separate group IDs.
+    for (int scenario = 0; scenario < 6; ++scenario) {
+        for (bool backgroundFirst : {false, true}) {
+            rt::Timeline timeline;
+            auto* backTrack = timeline.addVideoTrack("V1");
+            auto* frontTrack = timeline.addVideoTrack("V2");
+            auto addLayer = [](rt::Track* track, const char* layer,
+                               uint64_t group, int32_t sync) {
+                auto clip = std::make_unique<rt::VideoClip>();
+                clip->setDuration(48000);
+                clip->setShotName("MARIAN (Default)");
+                clip->setLayerId(layer);
+                clip->setGroupId(group);
+                clip->setSyncLine(sync);
+                return track->addClip(std::move(clip));
+            };
+            auto* back = addLayer(backTrack, "background_0", 42,
+                                  scenario == 3 ? 11 : -1);
+            auto* front = addLayer(frontTrack, "char_0",
+                                   scenario == 0 ? 42 : 43,
+                                   scenario == 0 || scenario == 2 || scenario == 3
+                                       ? 10 : -1);
+            if (scenario == 4) front->setLayerId("background_0");
+            if (scenario == 5) front->setShotName("Another Shot");
+            rt::PropertiesPanel panel;
+            panel.setTimeline(&timeline);
+            panel.setMultiSelection(backgroundFirst
+                ? std::vector<rt::Clip*>{back, front}
+                : std::vector<rt::Clip*>{front, back});
+            QComboBox* shotCombo = nullptr;
+            for (auto* combo : panel.findChildren<QComboBox*>())
+                if (combo->toolTip() == QStringLiteral("Select a camera shot preset"))
+                    shotCombo = combo;
+            ASSERT_NE(shotCombo, nullptr);
+            shotCombo->addItem(QStringLiteral("TRONY (Close-Up)"));
+            shotCombo->setCurrentIndex(shotCombo->count() - 1);
+            std::vector<uint64_t> requests;
+            QObject::connect(&panel, &rt::PropertiesPanel::shotSwitchRequested,
+                             [&requests](uint64_t group, const std::string&) {
+                requests.push_back(group);
+            });
+            emit shotCombo->activated(shotCombo->currentIndex());
+            ASSERT_EQ(requests.size(), scenario < 3 ? 1u : 2u)
+                << "scenario=" << scenario
+                << " backgroundFirst=" << backgroundFirst;
+            if (scenario < 3) {
+                EXPECT_EQ(back->groupId(), requests.front());
+                EXPECT_EQ(front->groupId(), requests.front());
+            } else {
+                EXPECT_NE(back->groupId(), front->groupId());
+            }
+        }
+    }
+}
+
 TEST(GraphicsEditorPanel, TextAppearanceAppliesWithoutShadowEnabled)
 {
     rt::Track track(rt::TrackType::Video, "T1");
