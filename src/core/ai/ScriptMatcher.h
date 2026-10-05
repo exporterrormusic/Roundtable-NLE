@@ -28,7 +28,18 @@ struct ScriptLine
     int                    lineNumber{0};
     std::string            segment{"UNTITLED"}; // Segment/section this line belongs to
     std::optional<double>  timecode;             // Optional manual timecode (seconds)
+
+    // ── Shot-table scripts only (SHOT | ACTION | SCRIPT columns) ────────
+    // Empty for character-dialogue scripts, so every existing consumer
+    // behaves exactly as before. In a shot-table script an empty `shot`
+    // means the doc's SHOT cell was blank: the user must pick one.
+    std::string            shot;                 // "WIDE", "CLOSE-UP", or the doc's own label
+    std::string            action;               // ACTION column text (facial-expression source)
 };
+
+/// Character assigned to every line of a shot-table script. These shows have
+/// one on-camera announcer (the green-screen video), not character sprites.
+inline constexpr const char* kShotScriptCharacter = "Announcer";
 
 /// Parsed script containing dialogue lines and metadata.
 struct Script
@@ -36,6 +47,7 @@ struct Script
     std::vector<ScriptLine>  lines;
     std::vector<std::string> characters;  // Sorted unique character names
     std::vector<std::string> segments;    // Ordered segment names
+    bool                     shotTable{false}; // Parsed from a SHOT | ACTION | SCRIPT table
 
     // ── Queries ─────────────────────────────────────────────────────────
 
@@ -52,6 +64,9 @@ struct Script
     /// True if script has no lines.
     [[nodiscard]] bool isEmpty() const noexcept { return lines.empty(); }
 
+    /// True when parsed from a SHOT | ACTION | SCRIPT table.
+    [[nodiscard]] bool isShotScript() const noexcept { return shotTable; }
+
     // ── Parsers ─────────────────────────────────────────────────────────
 
     /// Parse from plain text format.
@@ -60,7 +75,16 @@ struct Script
     static Script fromText(const std::string& text);
 
     /// Parse from HTML (Google Docs export). Bold text = segment markers.
+    /// A table whose header row has SHOT and SCRIPT columns is parsed as a
+    /// shot-table script instead (see fromShotTable).
     static Script fromHtml(const std::string& html);
+
+    /// Parse a SHOT | ACTION | SCRIPT table (Google Docs HTML export).
+    /// Rows like "- | STORY | -" start a segment; lines before the first
+    /// segment row belong to "INTRO"; a blank SHOT cell leaves `shot` empty.
+    /// Text outside the table is ignored. Returns an empty script when no
+    /// such table exists.
+    static Script fromShotTable(const std::string& html);
 
     /// Parse from JSON format.
     static Script fromJson(const std::string& jsonStr);
@@ -68,6 +92,37 @@ struct Script
     /// Auto-detect format and parse.
     static Script load(const std::string& pathOrContent);
 };
+
+// ─── Take finding (shot-table scripts) ──────────────────────────────────────
+
+/// One transcribed word and its time span in the recording.
+struct TimedWord
+{
+    std::string text;
+    double      start{0.0};
+    double      end{0.0};
+};
+
+/// One take of a script line found in a recording.
+struct LineTake
+{
+    int    lineNumber{-1};
+    int    firstWord{0};     ///< Index into the words vector (first matching word)
+    int    lastWord{0};      ///< Index into the words vector (last matching word)
+    int    hits{0};          ///< Words matching the script text
+    float  coverage{0.0f};   ///< hits / script-line word count
+    double start{0.0};       ///< words[firstWord].start
+    double end{0.0};         ///< words[lastWord].end
+};
+
+/// Find EVERY take of every line in one continuous recording (someone reading
+/// a script on camera, repeating lines until happy). Unlike a whole-file
+/// alignment, repeated reads of the same line each come back as their own
+/// take. Takes of different lines never overlap; a flubbed partial read that
+/// overlaps a fuller read of the same line is dropped. Sorted by start time.
+[[nodiscard]] std::vector<LineTake> findLineTakes(const std::vector<TimedWord>& words,
+                                                  const std::vector<ScriptLine>& lines,
+                                                  float minCoverage = 0.6f);
 
 // ─── Match result ───────────────────────────────────────────────────────────
 

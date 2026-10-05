@@ -24,6 +24,7 @@
 #include "panels/characters/CharacterBrowser.h"
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/export/ExportPanel.h"
+#include "panels/comfy/ComfyPanel.h"
 #include "panels/export/ExportRenderSession.h"
 #include "panels/project/ProjectPanel.h"
 #include "panels/characters/ShotComposer.h"
@@ -827,6 +828,71 @@ void MainWindow::buildPanels()
             return m_timelineWorkspace->createExportRenderSession();
         });
     m_pageStack->addWidget(m_exportPanel);
+
+    // ── Page 5: COMFYUI — green-screen takes → SCAIL driving clips ──────
+    m_comfyPanel = new ComfyPanel(m_audioSync, this);
+    m_pageStack->addWidget(m_comfyPanel);
+    connect(m_comfyPanel, &ComfyPanel::assembleRequested, this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (!m_currentProject || !m_comfyPanel) return;
+        struct ModalGuard {
+            ~ModalGuard() { CompositeService::setModalDialogActive(false); }
+        };
+        CompositeService::setModalDialogActive(true);
+        ModalGuard modalGuard;
+
+        // Same sequence picker as the AUDIO page's export.
+        const QString kCreateNew = QStringLiteral("+  Create new sequence...");
+        QStringList items;
+        const int activeIdx = static_cast<int>(m_currentProject->activeSequenceIndex());
+        for (size_t i = 0; i < m_currentProject->sequenceCount(); ++i) {
+            auto* seq = m_currentProject->sequence(i);
+            items << (seq ? QString::fromStdString(seq->name()) : QStringLiteral("Sequence %1").arg(i + 1));
+        }
+        const int createRow = items.size();
+        items << kCreateNew;
+        bool ok = false;
+        const QString chosen = QInputDialog::getItem(
+            this, "Assemble SCAIL shots", "Put the shots at the end of which sequence?",
+            items, activeIdx, /*editable=*/false, &ok);
+        if (!ok) return;
+
+        Timeline* target = nullptr;
+        const int row = items.indexOf(chosen);
+        if (row == createRow) {
+            bool nameOk = false;
+            const QString defaultName = m_audioSync->activeScriptName().isEmpty()
+                ? QString::fromStdString(m_currentProject->nextSequenceName())
+                : m_audioSync->activeScriptName();
+            QString name = QInputDialog::getText(this, "New Sequence", "Sequence name:",
+                                                 QLineEdit::Normal, defaultName, &nameOk);
+            if (!nameOk) return;
+            if (name.trimmed().isEmpty()) name = defaultName;
+            target = m_currentProject->addSequence(name.toStdString());
+            if (!target) return;
+            switchSequence(m_currentProject->sequenceCount() - 1);
+        } else {
+            const size_t idx = static_cast<size_t>(row < 0 ? activeIdx : row);
+            target = m_currentProject->sequence(idx);
+            if (idx != m_currentProject->activeSequenceIndex()) switchSequence(idx);
+        }
+        if (!target) return;
+
+        QString note;
+        const int placed = m_comfyPanel->assembleIntoTimeline(target, m_commandStack, &note);
+        if (placed <= 0) {
+            QMessageBox::warning(this, "Assemble SCAIL shots", note);
+            return;
+        }
+        if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel()) {
+            m_timelineWorkspace->timelinePanel()->rebuildTracks();
+            m_timelineWorkspace->timelinePanel()->notifyZoomChanged();
+        }
+        setCurrentPage(Page::Timeline);
+        if (!note.isEmpty())
+            QMessageBox::information(this, "Assemble SCAIL shots",
+                                     QString("Placed %1 shot(s).\n\n%2").arg(placed).arg(note));
+    });
 
     // Feed long-running work into the application-wide activity center.
     connect(m_exportPanel, &ExportPanel::exportStarted, this,

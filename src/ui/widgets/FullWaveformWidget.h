@@ -44,6 +44,9 @@ public:
     [[nodiscard]] double selectionEnd()   const noexcept { return m_selEnd; }
 
     /// Playhead
+    /// Zoom/pan to show [start, end] seconds (clamped to the file).
+    void setViewRange(double start, double end);
+
     void setPlayhead(double timeSec);
     void setPlayheadVisible(bool v) { m_playheadVisible = v; update(); }
     [[nodiscard]] double playhead() const noexcept { return m_playhead; }

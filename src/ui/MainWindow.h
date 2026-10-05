@@ -67,6 +67,7 @@ class CharacterBrowser;
 class CharacterShotPanel;
 class CommandStack;
 class ExportPanel;
+class ComfyPanel;
 class MediaPool;
 class MediaSourceService;
 class PlaybackController;
@@ -99,8 +100,12 @@ enum class Page : int
     Characters = 1,   ///< Combined CharacterShotPanel (LIBRARY + COMPOSE sub-rail)
     Audio      = 2,
     Timeline   = 3,
-    Export     = 4
+    Export     = 4,
+    ComfyUI    = 5    ///< Green-screen → SCAIL shot pipeline (ComfyPanel)
 };
+
+/// Number of main pages / nav buttons.
+inline constexpr int kPageCount = 6;
 
 class ProjectController;
 
@@ -237,7 +242,7 @@ public:
     [[nodiscard]] int dockCount() const noexcept;
 
     /// Number of top-level pages.
-    [[nodiscard]] int pageCount() const noexcept { return 5; }
+    [[nodiscard]] int pageCount() const noexcept { return kPageCount; }
 
 signals:
     /// Emitted when workspace layout changes.
@@ -354,7 +359,7 @@ private:
     // ── Nav rail + page stack ────────────────────────────────────────────
     QWidget*         m_navRail{nullptr};
     QButtonGroup*    m_navGroup{nullptr};
-    QPushButton*     m_navButtons[5]{};        // one per Page enum value
+    QPushButton*     m_navButtons[kPageCount]{};  // one per Page enum value
     QStackedWidget*  m_pageStack{nullptr};
     QPushButton*     m_navCollapseBtn{nullptr};
     QPushButton*     m_navExpandBtn{nullptr};
@@ -368,6 +373,7 @@ private:
     CharacterShotPanel*  m_characterShotPanel{nullptr};
     TimelineWorkspace*   m_timelineWorkspace{nullptr};
     ExportPanel*         m_exportPanel{nullptr};
+    ComfyPanel*          m_comfyPanel{nullptr};
 
     // ── State ───────────────────────────────────────────────────────────
     bool m_fullScreenPreview{false};

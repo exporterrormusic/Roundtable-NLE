@@ -190,6 +190,8 @@ bool AudioSync::alignClipsToScript()
         spdlog::warn("[ALIGN] no VALID word timestamps → cannot align, falling back");
         return false;
     }
+    if (m_script->isShotScript())
+        return alignShotTakes();
 
     auto norm = [](const std::string& s) { return ScriptMatcher::normalize(s); };
     auto normChar = [](std::string name) -> std::string {
@@ -492,6 +494,116 @@ bool AudioSync::alignClipsToScript()
     for (size_t k = 0; k < m_clips.size(); ++k) m_clips[k].id = static_cast<int>(k);
     spdlog::warn("[ALIGN] USED — word-aligned across {} file(s) → {} clips",
                  alignedFiles.size(), m_clips.size());
+    return true;
+}
+
+bool AudioSync::alignShotTakes()
+{
+    const double frontPaddingSec = std::max(0.0, m_syncFrontPaddingSec);
+    const double endPaddingSec   = std::max(0.0, m_syncEndPaddingSec);
+
+    std::unordered_map<int, const ScriptLine*> lineByNum;
+    for (const auto& line : m_script->lines) lineByNum[line.lineNumber] = &line;
+
+    // Confirmed (picked) takes survive re-sync untouched.
+    std::vector<SyncClip> result;
+    for (const auto& c : m_clips)
+        if (c.matchState == 2) result.push_back(c);
+    const size_t confirmedCount = result.size();
+
+    std::unordered_set<std::string> alignedFiles;
+    for (size_t fi = 0; fi < m_audioPaths.size() && fi < m_allTranscriptionResults.size(); ++fi) {
+        const std::string& file = m_audioPaths[fi];
+        std::vector<TimedWord> words;
+        for (const auto& seg : m_allTranscriptionResults[fi].segments)
+            for (const auto& wd : seg.words)
+                if (!wd.word.empty() && wd.end > wd.start)
+                    words.push_back({ wd.word, wd.start, wd.end });
+        if (words.empty()) continue;
+        alignedFiles.insert(file);
+
+        const auto takes = findLineTakes(words, m_script->lines);
+        const auto as = m_audioSamples.find(file);
+        for (size_t k = 0; k < takes.size(); ++k) {
+            const LineTake& take = takes[k];
+            // Already picked: this read IS the confirmed clip.
+            bool isConfirmed = false;
+            for (size_t c = 0; c < confirmedCount; ++c) {
+                const auto& cc = result[c];
+                if (cc.sourceFile == file && cc.start < take.end && cc.end > take.start) {
+                    isConfirmed = true;
+                    break;
+                }
+            }
+            if (isConfirmed) continue;
+
+            // Same window + neighbour clamp + speech-edge refine as the
+            // dialogue aligner, with the neighbouring TAKES as neighbours.
+            SyncClip clip;
+            clip.start = std::max(0.0, take.start - std::max(0.25, frontPaddingSec));
+            clip.end   = take.end + std::max(0.20, endPaddingSec);
+            const double padLo = k > 0 ? takes[k - 1].end : 0.0;
+            if (k > 0) {
+                double lim = std::min(padLo + 0.02, 0.5 * (padLo + take.start));
+                clip.start = std::max(clip.start, std::min(lim, take.start));
+            }
+            if (k + 1 < takes.size()) {
+                const double nextStart = takes[k + 1].start;
+                clip.end = std::min(clip.end, std::max(nextStart - 0.02, 0.5 * (take.end + nextStart)));
+            }
+            if (clip.end < clip.start + 0.05) clip.end = clip.start + 0.05;
+            const double wSpanS = std::max(take.start, clip.start);
+            const double wSpanE = std::max(wSpanS, std::min(take.end, clip.end));
+            bool refined = false;
+            if (as != m_audioSamples.end())
+                refineSpeechBounds(as->second.samples, static_cast<int>(as->second.sampleRate),
+                                   clip.start, clip.end, wSpanS, wSpanE,
+                                   frontPaddingSec, endPaddingSec, padLo, refined);
+            if (!refined) {
+                clip.start = std::max(std::min(padLo, take.start), take.start - frontPaddingSec);
+                clip.start = std::max(0.0, clip.start);
+                clip.end   = take.end + endPaddingSec;
+                if (k + 1 < takes.size())
+                    clip.end = std::min(clip.end, std::max(takes[k + 1].start - 0.02,
+                                                           0.5 * (take.end + takes[k + 1].start)));
+                if (clip.end < clip.start + 0.05) clip.end = clip.start + 0.05;
+            }
+
+            const ScriptLine* sl = lineByNum.count(take.lineNumber) ? lineByNum[take.lineNumber] : nullptr;
+            clip.sourceFile       = file;
+            clip.character        = kShotScriptCharacter;
+            clip.transcript       = sl ? sl->dialogue : std::string();
+            clip.editedText       = clip.transcript;
+            clip.scriptLineNumber = take.lineNumber;
+            clip.scriptSegment    = sl ? (sl->character + ": " + sl->dialogue) : std::string();
+            clip.matchState       = 1;   // candidate — the user picks the take
+            clip.confidence       = take.coverage;
+            result.push_back(std::move(clip));
+        }
+        spdlog::info("[ALIGN-TAKES] file#{} → {} take(s)", fi, takes.size());
+    }
+
+    if (alignedFiles.empty()) return false;
+
+    // Keep unconfirmed clips of files that had no words (nothing silently vanishes).
+    for (const auto& c : m_clips)
+        if (c.matchState != 2 && !alignedFiles.count(c.sourceFile)) result.push_back(c);
+
+    // Stable order: by file, then time — "Take 1, 2, 3" follow recording order.
+    std::unordered_map<std::string, size_t> fileOrder;
+    for (size_t fi = 0; fi < m_audioPaths.size(); ++fi) fileOrder.emplace(m_audioPaths[fi], fi);
+    std::stable_sort(result.begin(), result.end(), [&fileOrder](const SyncClip& a, const SyncClip& b) {
+        const size_t fa = fileOrder.count(a.sourceFile) ? fileOrder[a.sourceFile] : SIZE_MAX;
+        const size_t fb = fileOrder.count(b.sourceFile) ? fileOrder[b.sourceFile] : SIZE_MAX;
+        if (fa != fb) return fa < fb;
+        return a.start < b.start;
+    });
+
+    m_clips = std::move(result);
+    for (size_t k = 0; k < m_clips.size(); ++k) m_clips[k].id = static_cast<int>(k);
+    m_displayedTakeId.clear();   // ids were reassigned
+    spdlog::info("[ALIGN-TAKES] {} file(s) → {} clips ({} confirmed kept)",
+                 alignedFiles.size(), m_clips.size(), confirmedCount);
     return true;
 }
 

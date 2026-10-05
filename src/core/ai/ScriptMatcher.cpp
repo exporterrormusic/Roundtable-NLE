@@ -238,13 +238,11 @@ Script Script::fromText(const std::string& text)
     return script;
 }
 
-Script Script::fromHtml(const std::string& html)
-{
-    // Simple HTML parser: strip tags, then parse as text.
-    // Google Docs bold detection is complex — for now we strip and use text parser.
-    // A more sophisticated parser could detect <b>/<strong>/CSS font-weight:700.
-    std::string plainText = stripHtmlTags(html);
+namespace {
 
+/// Decode the HTML character references Google Docs exports emit.
+std::string decodeHtmlEntities(std::string plainText)
+{
     // Decode numeric HTML character references: &#NNNN;
     {
         static const std::regex numericRef(R"(&#(\d+);)");
@@ -311,7 +309,197 @@ Script Script::fromHtml(const std::string& html)
       replaceAll(plainText, amp + "amp;",   "&");  // Must be last!
     }
 
-    return fromText(plainText);
+    return plainText;
+}
+
+/// ASCII-only lowercase; UTF-8 bytes are untouched so offsets still line up
+/// with the original string.
+std::string asciiLower(std::string s)
+{
+    for (auto& c : s) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+
+std::string asciiUpper(std::string s)
+{
+    for (auto& c : s) {
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    }
+    return s;
+}
+
+/// Find the next "<name" tag opener in [from, to) of a lowercased document,
+/// requiring a tag boundary so "<th" does not match "<thead".
+size_t findTagOpen(const std::string& lower, const std::string& name, size_t from, size_t to)
+{
+    const std::string needle = "<" + name;
+    for (size_t pos = lower.find(needle, from); pos != std::string::npos && pos < to;
+         pos = lower.find(needle, pos + 1)) {
+        const size_t after = pos + needle.size();
+        if (after >= lower.size()) return std::string::npos;
+        const char c = lower[after];
+        if (c == '>' || c == '/' || std::isspace(static_cast<unsigned char>(c)))
+            return pos;
+    }
+    return std::string::npos;
+}
+
+/// Plain text of one table cell: paragraphs joined by a space, whitespace
+/// runs (including non-breaking spaces) collapsed.
+std::string tableCellText(const std::string& cellHtml)
+{
+    std::string text = decodeHtmlEntities(stripHtmlTags(cellHtml));
+    std::string out;
+    out.reserve(text.size());
+    bool pendingSpace = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        const bool nbsp = (c == 0xC2 && i + 1 < text.size() &&
+                           static_cast<unsigned char>(text[i + 1]) == 0xA0);
+        if (std::isspace(c) || nbsp) {
+            if (nbsp) ++i;
+            pendingSpace = !out.empty();
+            continue;
+        }
+        if (pendingSpace) {
+            out += ' ';
+            pendingSpace = false;
+        }
+        out += static_cast<char>(c);
+    }
+    return out;
+}
+
+/// Cell texts of every row in the table spanning [begin, end) of `html`.
+std::vector<std::vector<std::string>> extractTableRows(const std::string& html,
+                                                       const std::string& lower,
+                                                       size_t begin, size_t end)
+{
+    std::vector<std::vector<std::string>> rows;
+    size_t pos = begin;
+    while (true) {
+        const size_t tr = findTagOpen(lower, "tr", pos, end);
+        if (tr == std::string::npos) break;
+        size_t trEnd = lower.find("</tr", tr);
+        if (trEnd == std::string::npos || trEnd > end) trEnd = end;
+
+        std::vector<std::string> cells;
+        size_t cellPos = tr + 3;
+        while (true) {
+            size_t td = findTagOpen(lower, "td", cellPos, trEnd);
+            const size_t th = findTagOpen(lower, "th", cellPos, trEnd);
+            if (td == std::string::npos || (th != std::string::npos && th < td)) td = th;
+            if (td == std::string::npos) break;
+            const size_t open = lower.find('>', td);
+            if (open == std::string::npos || open >= trEnd) break;
+            size_t close = lower.find(lower[td + 2] == 'd' ? "</td" : "</th", open);
+            if (close == std::string::npos || close > trEnd) close = trEnd;
+            cells.push_back(tableCellText(html.substr(open + 1, close - open - 1)));
+            cellPos = close + 1;
+        }
+        rows.push_back(std::move(cells));
+        pos = trEnd + 1;
+    }
+    return rows;
+}
+
+/// Canonical shot label: WIDE / CLOSE-UP for the usual spellings, otherwise
+/// the doc's own label uppercased.
+std::string normalizeShotType(const std::string& raw)
+{
+    const std::string upper = asciiUpper(trim(raw));
+    std::string key;
+    for (char c : upper) {
+        if (c != ' ' && c != '-' && c != '_' && c != '.') key += c;
+    }
+    if (key == "WIDE" || key == "WS" || key == "WIDESHOT") return "WIDE";
+    if (key == "CLOSEUP" || key == "CU" || key == "CLOSE") return "CLOSE-UP";
+    return upper;
+}
+
+} // namespace
+
+Script Script::fromHtml(const std::string& html)
+{
+    Script shotScript = fromShotTable(html);
+    if (!shotScript.isEmpty())
+        return shotScript;
+
+    // Simple HTML parser: strip tags, then parse as text.
+    // Google Docs bold detection is complex — for now we strip and use text parser.
+    // A more sophisticated parser could detect <b>/<strong>/CSS font-weight:700.
+    return fromText(decodeHtmlEntities(stripHtmlTags(html)));
+}
+
+Script Script::fromShotTable(const std::string& html)
+{
+    Script script;
+    const std::string lower = asciiLower(html);
+
+    for (size_t tablePos = findTagOpen(lower, "table", 0, lower.size());
+         tablePos != std::string::npos && script.lines.empty();
+         tablePos = findTagOpen(lower, "table", tablePos + 1, lower.size())) {
+        size_t tableEnd = lower.find("</table", tablePos);
+        if (tableEnd == std::string::npos) tableEnd = lower.size();
+        const auto rows = extractTableRows(html, lower, tablePos, tableEnd);
+        if (rows.empty()) continue;
+
+        int shotCol = -1, actionCol = -1, scriptCol = -1;
+        for (size_t c = 0; c < rows.front().size(); ++c) {
+            const std::string header = asciiUpper(rows.front()[c]);
+            if (header == "SHOT")                                shotCol   = static_cast<int>(c);
+            else if (header == "ACTION")                         actionCol = static_cast<int>(c);
+            else if (header == "SCRIPT" || header == "DIALOGUE") scriptCol = static_cast<int>(c);
+        }
+        if (shotCol < 0 || scriptCol < 0) continue;
+
+        auto cell = [](const std::vector<std::string>& row, int col) {
+            return (col >= 0 && static_cast<size_t>(col) < row.size())
+                ? row[static_cast<size_t>(col)] : std::string{};
+        };
+
+        std::string currentSegment = "INTRO";
+        std::unordered_set<std::string> seenSegments;
+        for (size_t r = 1; r < rows.size(); ++r) {
+            const std::string shot   = cell(rows[r], shotCol);
+            const std::string action = cell(rows[r], actionCol);
+            const std::string text   = cell(rows[r], scriptCol);
+
+            // "- | STORY | -" starts a new segment, as does an all-caps
+            // ACTION-only row ("  | MINI-GAME |  ").
+            const bool capsActionOnly = shot.empty() && text.empty() && !action.empty() &&
+                std::none_of(action.begin(), action.end(),
+                             [](char c) { return c >= 'a' && c <= 'z'; });
+            if (shot == "-" || text == "-" || capsActionOnly) {
+                if (!action.empty() && action != "-")
+                    currentSegment = action;
+                continue;
+            }
+            if (text.empty()) continue;
+
+            ScriptLine sl;
+            sl.character  = kShotScriptCharacter;
+            sl.dialogue   = text;
+            sl.lineNumber = static_cast<int>(r);
+            sl.segment    = currentSegment;
+            sl.action     = action;
+            if (!shot.empty())
+                sl.shot = normalizeShotType(shot);  // blank stays blank: user must pick
+            if (seenSegments.insert(sl.segment).second)
+                script.segments.push_back(sl.segment);
+            script.lines.push_back(std::move(sl));
+        }
+    }
+
+    if (!script.lines.empty()) {
+        script.shotTable = true;
+        finalizeScript(script);
+        spdlog::debug("ScriptMatcher: Parsed {} shot lines, {} segments from shot table",
+                      script.lines.size(), script.segments.size());
+    }
+    return script;
 }
 
 Script Script::fromJson(const std::string& jsonStr)
@@ -761,6 +949,124 @@ ScriptMatcher::matchAllSegments(const std::vector<SegmentInput>& segments,
 const std::vector<std::string>& ScriptMatcher::characters() const
 {
     return m_script.characters;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Take finding (shot-table scripts)
+// ═══════════════════════════════════════════════════════════════════════════
+
+std::vector<LineTake> findLineTakes(const std::vector<TimedWord>& words,
+                                    const std::vector<ScriptLine>& lines,
+                                    float minCoverage)
+{
+    auto tokenize = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::istringstream ss(ScriptMatcher::normalize(text));
+        std::string token;
+        while (ss >> token) out.push_back(std::move(token));
+        return out;
+    };
+
+    // Recording token stream; each token remembers its source word.
+    std::vector<std::string> W;
+    std::vector<int> wordOf;
+    for (size_t k = 0; k < words.size(); ++k) {
+        for (auto& token : tokenize(words[k].text)) {
+            W.push_back(std::move(token));
+            wordOf.push_back(static_cast<int>(k));
+        }
+    }
+    const int n = static_cast<int>(W.size());
+    if (n == 0) return {};
+
+    // Per line: fitting alignment of the WHOLE line against ANY stretch of the
+    // recording (free start/end in W). Every local maximum of the final
+    // column is one read of the line. Match +2, mismatch -1, gap -1.
+    std::vector<LineTake> candidates;
+    std::vector<int> score;
+    std::vector<uint8_t> dir;   // 0 diag, 1 up (extra recording word), 2 left (missing script word)
+    for (const auto& line : lines) {
+        const auto S = tokenize(line.dialogue);
+        const int m = static_cast<int>(S.size());
+        if (m == 0) continue;
+        const size_t cols = static_cast<size_t>(m) + 1;
+        score.assign(static_cast<size_t>(n + 1) * cols, 0);
+        dir.assign(score.size(), 0);
+        auto at = [cols](int i, int j) { return static_cast<size_t>(i) * cols + static_cast<size_t>(j); };
+        for (int j = 1; j <= m; ++j) { score[at(0, j)] = -j; dir[at(0, j)] = 2; }
+        for (int i = 1; i <= n; ++i) {
+            dir[at(i, 0)] = 1;   // score 0: a take may start anywhere
+            for (int j = 1; j <= m; ++j) {
+                int best = score[at(i - 1, j - 1)] + (W[i - 1] == S[j - 1] ? 2 : -1);
+                uint8_t d = 0;
+                if (score[at(i - 1, j)] - 1 > best) { best = score[at(i - 1, j)] - 1; d = 1; }
+                if (score[at(i, j - 1)] - 1 > best) { best = score[at(i, j - 1)] - 1; d = 2; }
+                score[at(i, j)] = best;
+                dir[at(i, j)] = d;
+            }
+        }
+
+        const int minHits = std::min(m, 2);
+        for (int i = 1; i <= n; ++i) {
+            const int s = score[at(i, m)];
+            if (s <= 0) continue;
+            if (i > 1 && score[at(i - 1, m)] >= s) continue;   // not a local max
+            if (i < n && score[at(i + 1, m)] > s) continue;
+
+            int hits = 0, first = -1, last = -1;
+            for (int ti = i, tj = m; ti > 0 && tj > 0; ) {
+                const uint8_t d = dir[at(ti, tj)];
+                if (d == 0) {
+                    if (W[ti - 1] == S[tj - 1]) {
+                        ++hits;
+                        first = ti - 1;
+                        if (last < 0) last = ti - 1;
+                    }
+                    --ti; --tj;
+                } else if (d == 1) {
+                    --ti;
+                } else {
+                    --tj;
+                }
+            }
+            const float coverage = static_cast<float>(hits) / static_cast<float>(m);
+            if (hits < minHits || coverage < minCoverage || first < 0) continue;
+
+            LineTake take;
+            take.lineNumber = line.lineNumber;
+            take.firstWord  = wordOf[static_cast<size_t>(first)];
+            take.lastWord   = wordOf[static_cast<size_t>(last)];
+            take.hits       = hits;
+            take.coverage   = coverage;
+            take.start      = words[static_cast<size_t>(take.firstWord)].start;
+            take.end        = words[static_cast<size_t>(take.lastWord)].end;
+            candidates.push_back(take);
+        }
+    }
+
+    // Strongest reads win: a fuller read beats a flubbed partial of the same
+    // line, and a long line's read beats a short line that merely occurs
+    // inside it.
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](const LineTake& a, const LineTake& b) {
+                         if (a.hits != b.hits) return a.hits > b.hits;
+                         return a.coverage > b.coverage;
+                     });
+    std::vector<LineTake> accepted;
+    for (const auto& c : candidates) {
+        bool keep = true;
+        for (const auto& a : accepted) {
+            const int overlap = std::min(c.lastWord, a.lastWord)
+                              - std::max(c.firstWord, a.firstWord) + 1;
+            if (overlap <= 0) continue;
+            const int shorter = std::min(c.lastWord - c.firstWord, a.lastWord - a.firstWord) + 1;
+            if (c.lineNumber == a.lineNumber || overlap * 2 > shorter) { keep = false; break; }
+        }
+        if (keep) accepted.push_back(c);
+    }
+    std::sort(accepted.begin(), accepted.end(),
+              [](const LineTake& a, const LineTake& b) { return a.start < b.start; });
+    return accepted;
 }
 
 } // namespace rt

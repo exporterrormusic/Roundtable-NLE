@@ -360,6 +360,7 @@ void MainWindow::buildViewMenu(QMenuBar* menuBar)
     pagesMenu->addAction("Projects",   this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::Projects); });
     pagesMenu->addAction("Characters", this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::Characters); });
     pagesMenu->addAction("Audio",      this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::Audio); });
+    pagesMenu->addAction("ComfyUI",    this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::ComfyUI); });
     pagesMenu->addAction("Timeline",   this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::Timeline); });
     pagesMenu->addAction("Export",     this, [this]() { if (m_destroying.load(std::memory_order_acquire)) return; setCurrentPage(Page::Export); });
 

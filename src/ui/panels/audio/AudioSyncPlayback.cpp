@@ -4,6 +4,7 @@
  */
 
 #include "panels/audio/AudioSync.h"
+#include "panels/audio/VideoFrameGrabber.h"
 
 #include "audio/AudioEngine.h"
 #include "audio/AudioFile.h"
@@ -400,6 +401,7 @@ void AudioSync::playClip(size_t clipIdx)
                 wf->setPlayhead(currentTime);
                 wf->setPlayheadVisible(true);
             }
+            requestTakePreviewFrame(static_cast<size_t>(m_playingClipIdx), currentTime);
 
             // Update transport bar display
             updateTransportBar();
@@ -408,9 +410,160 @@ void AudioSync::playClip(size_t clipIdx)
     m_playheadTimer->start();
 }
 
+bool AudioSync::loadPreviewAudioForTake(int clipId, double rangeStart, double rangeEnd)
+{
+    const SyncClip* clip = nullptr;
+    for (const auto& c : m_clips) if (c.id == clipId) { clip = &c; break; }
+    if (!clip) return false;
+    auto it = m_audioSamples.find(clip->sourceFile);
+    if (it == m_audioSamples.end() || it->second.samples.empty()) return false;
+    char key[64];
+    std::snprintf(key, sizeof(key), "|%.4f|%.4f", rangeStart, rangeEnd);
+    return loadPreviewAudio(clip->sourceFile + key, it->second, rangeStart, rangeEnd);
+}
+
+bool AudioSync::loadPreviewAudioForMedia(const std::string& path)
+{
+    auto it = m_mediaAudioCache.find(path);
+    if (it == m_mediaAudioCache.end()) {
+        if (m_mediaAudioCache.size() >= 6) m_mediaAudioCache.clear();   // renders are short; keep a few
+        AudioFile af;
+        if (!af.open(path)) return false;
+        const auto info = af.info();
+        std::vector<float> all = af.readAll();
+        if (all.empty() || info.channels == 0) return false;
+        AudioSampleData d;
+        d.sampleRate = info.sampleRate;
+        d.samples.resize(all.size() / info.channels);
+        for (size_t i = 0; i < d.samples.size(); ++i) {
+            float sum = 0.0f;
+            for (uint32_t ch = 0; ch < info.channels; ++ch) sum += all[i * info.channels + ch];
+            d.samples[i] = sum / static_cast<float>(info.channels);
+        }
+        it = m_mediaAudioCache.emplace(path, std::move(d)).first;
+    }
+    const auto& data = it->second;
+    return loadPreviewAudio(path + "|media", data, 0.0,
+                            static_cast<double>(data.samples.size()) / std::max(1u, data.sampleRate));
+}
+
+bool AudioSync::loadPreviewAudio(const std::string& key, const AudioSampleData& data,
+                                 double rangeStart, double rangeEnd)
+{
+    if (!m_audioEngine || data.samples.empty() || data.sampleRate == 0) return false;
+    if (m_takeAudioActive && key == m_takeAudioKey && !m_takeAudioBuffer.empty()) return true;   // already loaded
+    stopTakeAudio();
+    stopPlayback();
+    stopFilePlayback();
+
+    const double srcRate = static_cast<double>(data.sampleRate);
+    const double engineRate = static_cast<double>(m_audioEngine->config().sampleRate);
+    const double from = std::max(0.0, rangeStart);
+    const auto s0 = std::min(data.samples.size(), static_cast<size_t>(from * srcRate));
+    const auto s1 = std::min(data.samples.size(), static_cast<size_t>(std::max(from, rangeEnd) * srcRate));
+    if (s1 <= s0 + 1) return false;
+
+    // Resample the range to the engine rate (linear, like playClip).
+    const double ratio = engineRate / srcRate;
+    const size_t n = static_cast<size_t>(static_cast<double>(s1 - s0) * ratio);
+    m_takeAudioBuffer.assign(n, 0.0f);
+    for (size_t j = 0; j < n; ++j) {
+        const double pos = static_cast<double>(j) / ratio;
+        const size_t i = s0 + static_cast<size_t>(pos);
+        const float frac = static_cast<float>(pos - std::floor(pos));
+        const float a = data.samples[std::min(i, s1 - 1)];
+        const float b = data.samples[std::min(i + 1, s1 - 1)];
+        m_takeAudioBuffer[j] = a + (b - a) * frac;
+    }
+    m_takeAudioKey = key;
+    m_takeAudioFrom = static_cast<double>(s0) / srcRate;
+    m_takeAudioEnd = static_cast<double>(s1) / srcRate;
+    m_takeAudioRate = engineRate;
+    // Same isolation as playClip: never move the timeline's clock.
+    if (!m_savedSyncClock) {
+        m_savedSyncClock = m_audioEngine->syncClock();
+        m_audioEngine->setSyncClock(nullptr);
+    }
+    m_takeAudioActive = true;
+    installPreviewAudio();
+    return true;
+}
+
+void AudioSync::installPreviewAudio()
+{
+    if (!m_audioEngine || m_takeAudioBuffer.empty()) return;
+    AudioTrackSource src;
+    src.trackId     = 9999;
+    src.samples     = m_takeAudioBuffer.data();
+    src.totalFrames = static_cast<int64_t>(m_takeAudioBuffer.size());
+    src.startFrame  = 0;
+    src.channels    = 1;
+    src.sampleRate  = static_cast<uint32_t>(m_takeAudioRate);
+    src.volume      = 1.0f;
+    // Re-installed on every use: the engine is shared across pages.
+    m_audioEngine->setTrackSources({src});
+}
+
+bool AudioSync::playPreviewAudio(double fromSec, double speed)
+{
+    if (!m_takeAudioActive || !m_audioEngine || m_takeAudioBuffer.empty() || speed == 0.0) return false;
+    installPreviewAudio();
+    const auto last = static_cast<int64_t>(m_takeAudioBuffer.size()) - 1;
+    const auto frame = std::clamp(static_cast<int64_t>((fromSec - m_takeAudioFrom) * m_takeAudioRate), int64_t(0), last);
+    m_audioEngine->pause();
+    m_audioEngine->setPlaybackSpeed(speed);   // time-stretched; negative = reverse
+    m_audioEngine->seekToFrame(frame);
+    m_audioEngine->play();
+    return true;
+}
+
+void AudioSync::scrubPreviewAudio(double atSec)
+{
+    if (!m_takeAudioActive || !m_audioEngine || m_takeAudioBuffer.empty()) return;
+    if (atSec < m_takeAudioFrom || atSec >= m_takeAudioEnd) return;
+    installPreviewAudio();
+    m_audioEngine->setPlaybackSpeed(1.0);
+    const auto frame = static_cast<int64_t>((atSec - m_takeAudioFrom) * m_takeAudioRate);
+    // ~1 video frame of sound, like Premiere's scrub.
+    m_audioEngine->scrub(frame, static_cast<int64_t>(m_takeAudioRate / 24.0));
+}
+
+void AudioSync::pausePreviewAudio()
+{
+    if (!m_takeAudioActive || !m_audioEngine) return;
+    m_audioEngine->pause();
+    m_audioEngine->setPlaybackSpeed(1.0);
+}
+
+void AudioSync::stopTakeAudio()
+{
+    if (!m_takeAudioActive) return;
+    m_takeAudioActive = false;
+    m_takeAudioKey.clear();
+    if (m_audioEngine) {
+        m_audioEngine->pause();
+        m_audioEngine->setPlaybackSpeed(1.0);
+        m_audioEngine->clearTrackSources();   // before the buffer goes away
+        if (m_savedSyncClock) {
+            m_audioEngine->setSyncClock(m_savedSyncClock);
+            m_savedSyncClock = nullptr;
+        }
+    }
+    m_takeAudioBuffer.clear();
+}
+
+double AudioSync::takeAudioTime() const
+{
+    if (!m_takeAudioActive || !m_audioEngine) return -1.0;
+    if (m_audioEngine->transportState() != TransportState::Playing) return -1.0;
+    return m_takeAudioFrom + static_cast<double>(m_audioEngine->currentFrame()) / m_takeAudioRate;
+}
+
 void AudioSync::stopPlayback()
 {
     spdlog::info("AudioSync::stopPlayback: playingClip={}", m_playingClipIdx);
+    // Any other playback supersedes a take preview (its sources are cleared below).
+    m_takeAudioActive = false;
 
     if (m_audioEngine) {
         m_audioEngine->pause();
@@ -503,6 +656,7 @@ void AudioSync::seekPlayingClip(double timeSec)
         wf->setPlayhead(timeSec);
         wf->setPlayheadVisible(true);
     }
+    requestTakePreviewFrame(static_cast<size_t>(m_playingClipIdx), timeSec);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -513,6 +667,8 @@ void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
 {
     if (!m_audioEngine || clipIdx >= m_clips.size())
         return;
+
+    requestTakePreviewFrame(clipIdx, timeSec);
 
     const auto& clip = m_clips[clipIdx];
     auto it = m_audioSamples.find(clip.sourceFile);

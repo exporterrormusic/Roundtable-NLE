@@ -35,6 +35,15 @@ void FullWaveformWidget::setAudio(const std::vector<float>& samples, uint32_t sa
     update();
 }
 
+void FullWaveformWidget::setViewRange(double start, double end)
+{
+    const double dur = duration();
+    if (dur <= 0.0 || end <= start) return;
+    m_viewStart = std::clamp(start, 0.0, dur);
+    m_viewEnd   = std::clamp(end, m_viewStart + 0.01, dur);
+    update();
+}
+
 void FullWaveformWidget::setConfirmedRegions(const std::vector<std::pair<double,double>>& regions)
 {
     m_confirmedRegions = regions;

@@ -443,6 +443,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
             if (currentPage() == Page::Export) {
                 return QMainWindow::eventFilter(watched, event);
             }
+            // Same for the COMFYUI page: its SHOTS player owns Space/J/K/L
+            // (ComfyPanel's own app filter claims them first).
+            if (currentPage() == Page::ComfyUI) {
+                return QMainWindow::eventFilter(watched, event);
+            }
 
             // J / K / L (and their releases) must reach
             // TimelineWorkspace::key{Press,Release}Event so the Premiere-style

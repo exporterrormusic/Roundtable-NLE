@@ -25,6 +25,8 @@ namespace rt {
 class AudioEngine;
 class AVSyncClock;
 class FullWaveformWidget;
+class VideoFrameGrabber;
+class VideoFrameView;
 
 class ManualMatchDialog : public QDialog
 {
@@ -58,11 +60,25 @@ public:
 
     ~ManualMatchDialog() override;
 
+    /// Current playhead position (seconds).
+    [[nodiscard]] double playhead() const;
+
     /// Get the result after accept.
     [[nodiscard]] Result result() const { return m_result; }
 
     /// Call after setting m_confirmedByFile/m_tentativeByFile to load the first file.
     void loadInitialFile();
+
+    /// Enable the video pane: video files then show their picture above the
+    /// waveform, following the playhead and the in/out point being dragged.
+    /// Call before loadInitialFile().
+    void setVideoFrameGrabber(VideoFrameGrabber* grabber);
+
+    /// Edit an existing take instead of matching a new one: retitles the
+    /// dialog, preselects [start, end] and zooms to it.  Call after
+    /// loadInitialFile().
+    void setEditRange(const QString& title, const QString& confirmText,
+                      double start, double end);
 
 private slots:
     void onAudioFileChanged(int index);
@@ -72,6 +88,8 @@ private slots:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void changeEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
 
 public:
@@ -82,6 +100,8 @@ public:
 private:
     void updateSelectionLabel();
     void loadFileIntoWaveform(const std::string& path);
+    /// Show the current file's video frame at timeSec (video files only).
+    void showVideoAt(double timeSec);
 
     // Input data
     std::string m_character;
@@ -117,7 +137,26 @@ private:
     int m_jShuttleLevel{0};
     int m_lShuttleLevel{0};
 
+    // Premiere K-hold: K+tap J/L steps one frame; K+hold J/L plays slow motion.
+    bool    m_kHeld{false};
+    int     m_slowDir{0};              ///< J/L held with K: -1 / +1, 0 = none
+    QTimer* m_slowHoldTimer{nullptr};  ///< tap vs hold decision
+    bool    m_slowPlaying{false};
+    void stepFrame(int direction);
+    void startSlowPlayback(int direction);
+    void stopSlowMotion();
+    [[nodiscard]] double frameDuration() const;
+
+    // Video pane (video files only)
+    VideoFrameGrabber*  m_frameGrabber{nullptr};
+    VideoFrameView*     m_videoView{nullptr};
+    bool                m_currentIsVideo{false};
+    double              m_lastSelStart{-1.0};
+    double              m_lastSelEnd{-1.0};
+
     // UI
+    QLabel*             m_titleLabel{nullptr};
+    QLabel*             m_fileLabel{nullptr};
     FullWaveformWidget* m_waveform{nullptr};
     QComboBox*          m_fileCombo{nullptr};
     QLabel*             m_scriptLabel{nullptr};

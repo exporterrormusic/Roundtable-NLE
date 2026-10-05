@@ -515,7 +515,7 @@ void AudioSync::restoreAudioPaths(const QString& projectName)
 //  Binary blob serialization (for .rtp project file)
 // ═══════════════════════════════════════════════════════════════════════════
 
-static constexpr uint32_t AUDIO_SYNC_BLOB_VERSION = 6;  // v6: per-file word TEXT + timestamps (v5 saved timestamps only)
+static constexpr uint32_t AUDIO_SYNC_BLOB_VERSION = 8;  // v8: per-session COMFYUI pipeline block; v7: per-session shot picks; v6: per-file word TEXT + timestamps (v5 saved timestamps only)
 
 /// Write a single session's clip/audio data into the writer.
 /// Used by serializeToBlob for each session (active or stored).
@@ -630,6 +630,22 @@ std::vector<uint8_t> AudioSync::serializeToBlob() const
                              session.scriptLoaded, session.audioImported,
                              session.transcriptionDone, session.syncDone,
                              session.lineAudioFile, session.allTranscriptionResults);
+        }
+
+        // v7: shots picked in-app for blank SHOT cells (shot-table scripts)
+        const auto& overrides = (key == m_activeScriptKey) ? m_shotOverrides : session.shotOverrides;
+        w.writeU32(static_cast<uint32_t>(overrides.size()));
+        for (const auto& [lineKey, shot] : overrides) {
+            w.writeString(lineKey);
+            w.writeString(shot);
+        }
+
+        // v8: COMFYUI page state as a length-prefixed, self-versioned block.
+        {
+            BinaryWriter block;
+            ((key == m_activeScriptKey) ? m_pipeline : session.pipeline).write(block);
+            w.writeU32(static_cast<uint32_t>(block.data().size()));
+            w.writeBytes(block.data().data(), block.data().size());
         }
     }
 
@@ -782,6 +798,24 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
                             session.transcriptionDone, session.syncDone,
                             session.lineAudioFile,
                             session.allTranscriptionResults, version);
+
+            if (version >= 7) {
+                const uint32_t overrideCount = r.readU32();
+                for (uint32_t oi = 0; oi < overrideCount; ++oi) {
+                    std::string lineKey = r.readString();
+                    session.shotOverrides[std::move(lineKey)] = r.readString();
+                }
+            }
+            if (version >= 8) {
+                const uint32_t blockSize = r.readU32();
+                BinaryReader block = r.readSubReader(blockSize);
+                try {
+                    session.pipeline.read(block);
+                } catch (const std::exception& e) {
+                    spdlog::warn("  session[{}]: unreadable COMFYUI pipeline block: {}", si, e.what());
+                    session.pipeline = ShowPipelineState{};
+                }
+            }
 
             // Parse the script from raw content so the Script object is available
             if (!rawContent.empty()) {

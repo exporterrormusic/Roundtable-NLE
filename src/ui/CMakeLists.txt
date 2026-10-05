@@ -126,6 +126,14 @@ add_library(roundtable_ui STATIC
     panels/audio/AudioSyncResegmentAndManual.cpp
     panels/audio/AudioSyncUIScriptPage.cpp
     panels/audio/AudioSyncVoice.cpp
+    panels/audio/VideoFrameGrabber.cpp
+    panels/comfy/ComfyPanel.cpp
+    panels/comfy/ComfyPanelRender.cpp
+    panels/comfy/ComfyPanelAssemble.cpp
+    panels/comfy/ComfyWorkflow.cpp
+    panels/comfy/ComfyRunner.cpp
+    panels/comfy/ComfyEventStream.cpp
+    panels/comfy/FramingEditor.cpp
     panels/audio/VoiceGenerationService.cpp
     panels/audio/VoiceGenerationPanel.cpp
     panels/audio/VoiceProviders.cpp
@@ -219,6 +227,7 @@ add_library(roundtable_ui STATIC
     widgets/SpinePreviewOverlay.cpp
     widgets/FullWaveformWidget.cpp
     widgets/ManualMatchDialog.cpp
+    widgets/VideoFrameView.cpp
     widgets/DockTitleBar.cpp
     widgets/MediaDragTreeWidget.cpp
 

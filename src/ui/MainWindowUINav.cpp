@@ -99,8 +99,10 @@ void MainWindow::setupPageTabs()
         {"\U0001F464", "CHARACTERS"},
         {"\U0001F3B5", "AUDIO"},
         {"\U0001F39E", "TIMELINE"},
-        {"\U0001F4E4", "EXPORT"}
+        {"\U0001F4E4", "EXPORT"},
+        {"\U0001F916", "COMFYUI"}
     };
+    static_assert(sizeof(entries) / sizeof(entries[0]) == kPageCount);
 
     m_navGroup = new QButtonGroup(this);
     m_navGroup->setExclusive(true);
@@ -122,7 +124,14 @@ void MainWindow::setupPageTabs()
         return div;
     };
 
-    for (int i = 0; i < 5; ++i) {
+    // Rail order differs from Page ids: COMFYUI sits under AUDIO (it continues
+    // the AUDIO page's work) but keeps id 5 so saved "activePage" values stay valid.
+    static constexpr int kRailOrder[kPageCount] = {
+        static_cast<int>(Page::Projects), static_cast<int>(Page::Characters),
+        static_cast<int>(Page::Audio),    static_cast<int>(Page::ComfyUI),
+        static_cast<int>(Page::Timeline), static_cast<int>(Page::Export)};
+    for (int slot = 0; slot < kPageCount; ++slot) {
+        const int i = kRailOrder[slot];
         auto* btn = new QPushButton(QString::fromUtf8(entries[i].icon));
         btn->setCheckable(true);
         btn->setFixedSize(128, 84);
@@ -143,7 +152,7 @@ void MainWindow::setupPageTabs()
         railLayout->addWidget(lbl, 0, Qt::AlignHCenter);
 
         // Add a divider after each entry except the last
-        if (i < 4) {
+        if (slot < kPageCount - 1) {
             railLayout->addWidget(makeDivider());
         }
     }
@@ -263,7 +272,7 @@ void MainWindow::setupPageTabs()
 void MainWindow::setCurrentPage(Page page)
 {
     int idx = static_cast<int>(page);
-    if (idx >= 0 && idx < 5 && m_navButtons[idx]) {
+    if (idx >= 0 && idx < kPageCount && m_navButtons[idx]) {
         m_navButtons[idx]->setChecked(true);
         onPageTabChanged(idx);   // QButtonGroup::idClicked only fires on user clicks
     }
@@ -288,10 +297,11 @@ void MainWindow::toggleNavRail()
         QColor(180, 100, 255),  // CHARACTERS — purple
         QColor(80, 210, 120),   // AUDIO     — green
         QColor(70, 150, 255),   // TIMELINE  — blue
-        QColor(240, 70, 70)     // EXPORT    — red
+        QColor(240, 70, 70),    // EXPORT    — red
+        QColor(255, 140, 40)    // COMFYUI   — orange
     };
     static const char* kPageLabels[] = {
-        "PROJECTS", "CHARACTERS", "AUDIO", "TIMELINE", "EXPORT"
+        "PROJECTS", "CHARACTERS", "AUDIO", "TIMELINE", "EXPORT", "COMFYUI"
     };
 
     if (m_navCollapsed) {
@@ -325,7 +335,7 @@ void MainWindow::toggleNavRail()
         const int kGap     = 3 * vlay->spacing() + 2 * m.spacingSm; // 3×2 + 2×6 = 18
         const int kCompactH = kTargetH - kGap + 2;  // +2 fine-tune
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < kPageCount; ++i) {
             QColor col = kPageColors[i];
 
             // Render vertical text (rotated 90° CW) into a QPixmap.
@@ -384,7 +394,7 @@ void MainWindow::toggleNavRail()
             auto* w = layout->itemAt(i)->widget();
             if (!w) continue;
             bool isNavBtn = false;
-            for (int j = 0; j < 5; ++j)
+            for (int j = 0; j < kPageCount; ++j)
                 if (w == m_navButtons[j]) { isNavBtn = true; break; }
             if (isNavBtn || w == m_navExpandBtn) continue;
             w->hide();
@@ -447,7 +457,7 @@ void MainWindow::toggleNavRail()
         // Restore original emoji + full-size nav buttons
         static const char* kPageIcons[] = {
             "\U0001F4C1", "\U0001F464", "\U0001F3B5",
-            "\U0001F39E", "\U0001F4E4"
+            "\U0001F39E", "\U0001F4E4", "\U0001F916"
         };
 
         QString navBtnStyle = QStringLiteral(
@@ -465,7 +475,7 @@ void MainWindow::toggleNavRail()
             .arg(Theme::rgb(c.accentDim))
             .arg(Theme::rgb(c.accent));
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < kPageCount; ++i) {
             m_navButtons[i]->setIcon(QIcon());   // clear icon
             m_navButtons[i]->setText(QString::fromUtf8(kPageIcons[i]));
             m_navButtons[i]->setFixedSize(128, 84);
@@ -522,8 +532,8 @@ void MainWindow::onPageTabChanged(int index)
     }
 
     // Log page switch
-    static const char* pageNames[] = {"PROJECTS", "CHARACTERS", "AUDIO", "TIMELINE", "EXPORT"};
-    if (index >= 0 && index < 5)
+    static const char* pageNames[] = {"PROJECTS", "CHARACTERS", "AUDIO", "TIMELINE", "EXPORT", "COMFYUI"};
+    if (index >= 0 && index < kPageCount)
         spdlog::debug("Switched to {} page", pageNames[index]);
 }
 

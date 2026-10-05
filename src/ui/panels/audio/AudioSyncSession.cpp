@@ -30,6 +30,8 @@ void AudioSync::saveCurrentSession()
     session.transcriptionDone = m_transcriptionDone;
     session.syncDone = m_syncDone;
     session.lineAudioFile = std::move(m_lineAudioFile);
+    session.shotOverrides = std::move(m_shotOverrides);
+    session.pipeline = std::move(m_pipeline);
     session.characterColors = std::move(m_characterColors);
     session.allTranscriptionResults = std::move(m_allTranscriptionResults);
     session.currentTranscriptionIndex = m_currentTranscriptionIndex;
@@ -58,6 +60,8 @@ void AudioSync::restoreSession(const std::string& sessionKey)
     m_transcriptionDone = session.transcriptionDone;
     m_syncDone = session.syncDone;
     m_lineAudioFile = std::move(session.lineAudioFile);
+    m_shotOverrides = std::move(session.shotOverrides);
+    m_pipeline = std::move(session.pipeline);
     m_characterColors = std::move(session.characterColors);
     m_allTranscriptionResults = std::move(session.allTranscriptionResults);
     m_currentTranscriptionIndex = session.currentTranscriptionIndex;
@@ -90,6 +94,9 @@ void AudioSync::clearCurrentSession()
     m_transcriptionDone = false;
     m_syncDone = false;
     m_lineAudioFile.clear();
+    m_shotOverrides.clear();
+    m_pipeline = ShowPipelineState{};
+    m_displayedTakeId.clear();
     m_characterColors.clear();
     m_allTranscriptionResults.clear();
     m_currentTranscriptionIndex = 0;
@@ -100,7 +107,7 @@ void AudioSync::clearCurrentSession()
     m_cardWidgets.clear();
     m_cardScriptLineNums.clear();
     m_cardClipIndices.clear();
-    m_highlightedCard = nullptr;
+    setHighlightedCard(nullptr);
     m_selectedLeftCard = nullptr;
     m_playingClipIdx = -1;
     m_selectedClipIdx = -1;

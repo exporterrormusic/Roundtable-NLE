@@ -253,7 +253,7 @@ void AudioSync::setupUi()
 
     // Title row
     auto* importTitleRow = new QHBoxLayout;
-    auto* importTitle = new QLabel("Import Audio");
+    auto* importTitle = new QLabel("Import Media");
     importTitle->setStyleSheet(QStringLiteral(
         "font-size: 20px; font-weight: %1; color: %2;")
         .arg(t.weightBold)
@@ -277,7 +277,7 @@ void AudioSync::setupUi()
     importPageLayout->addLayout(importTitleRow);
 
     // Import button
-    m_importAudioBtn = new QPushButton("\U0001F4C1  Import Audio Files...");
+    m_importAudioBtn = new QPushButton("\U0001F4C1  Import Media Files...");
     m_importAudioBtn->setMinimumHeight(48);
     m_importAudioBtn->setCursor(Qt::PointingHandCursor);
     m_importAudioBtn->setStyleSheet(QStringLiteral(

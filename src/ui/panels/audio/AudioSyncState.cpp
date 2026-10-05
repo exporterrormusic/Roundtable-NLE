@@ -145,6 +145,7 @@ QStringList AudioSync::missingDefaultShots() const
 {
     QStringList missing;
     if (!m_shotPresetManager || !m_script) return missing;
+    if (m_script->isShotScript()) return missing;  // announcer is video, no sprite shot
 
     for (const auto& character : m_script->characters) {
         if (character.empty()) continue;
@@ -627,10 +628,7 @@ void AudioSync::scrollToCard(int scriptLineNumber)
     if (!m_rightScrollArea || m_cardWidgets.empty()) return;
 
     // Remove highlight from previously highlighted card
-    if (m_highlightedCard) {
-        m_highlightedCard->setGraphicsEffect(nullptr);
-        m_highlightedCard = nullptr;
-    }
+    setHighlightedCard(nullptr);
 
     // Find the card for this script line
     auto widgets = m_cardWidgets;  // local copy — protect against vector modification
@@ -641,17 +639,8 @@ void AudioSync::scrollToCard(int scriptLineNumber)
             auto widget = widgets[i];
             QWidget* rawWidget = widget;
             if (rawWidget) {
-                // Apply highlight: accent glow that preserves match-state colors
-                m_highlightedCard = widget;
-
-                auto* frame = qobject_cast<QFrame*>(rawWidget);
-                if (frame) {
-                    auto* glow = new QGraphicsDropShadowEffect(frame);
-                    glow->setBlurRadius(18);
-                    glow->setColor(Theme::colors().accent);
-                    glow->setOffset(0, 0);
-                    frame->setGraphicsEffect(glow);
-                }
+                // Apply highlight: accent outline that preserves match-state colors
+                setHighlightedCard(rawWidget);
 
                 // Defer centering until layout is fully processed
                 QPointer<QWidget> safeWidget(widget);

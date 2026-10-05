@@ -1117,12 +1117,15 @@ TEST_F(MainWindowTest, PageNavigation)
 
     mw.setCurrentPage(Page::Timeline);
     EXPECT_EQ(mw.currentPage(), Page::Timeline);
+
+    mw.setCurrentPage(Page::ComfyUI);
+    EXPECT_EQ(mw.currentPage(), Page::ComfyUI);
 }
 
 TEST_F(MainWindowTest, PageCount)
 {
     MainWindow mw;
-    EXPECT_EQ(mw.pageCount(), 5);
+    EXPECT_EQ(mw.pageCount(), 6);   // … EXPORT, COMFYUI
 }
 
 TEST_F(MainWindowTest, WorkspaceSaveRestore)
@@ -1175,7 +1178,7 @@ TEST_F(MainWindowTest, AppFullIntegration)
     EXPECT_NE(mw->timelinePanel(), nullptr);
     EXPECT_NE(mw->exportPanel(), nullptr);
     EXPECT_NE(mw->projectPanel(), nullptr);
-    EXPECT_EQ(mw->pageCount(), 5);
+    EXPECT_EQ(mw->pageCount(), 6);   // … EXPORT, COMFYUI
 }
 
 // Real app wiring: click the empty space between two V1 clips, press

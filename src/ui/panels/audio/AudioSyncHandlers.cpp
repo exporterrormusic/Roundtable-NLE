@@ -374,8 +374,13 @@ void AudioSync::onImportAudioClicked()
     if (lastDir.isEmpty())
         lastDir = QDir::homePath();
 
-    QStringList paths = QFileDialog::getOpenFileNames(this, "Import Audio Files",
-        lastDir, "Audio Files (*.wav *.mp3 *.flac *.ogg *.m4a);;All Files (*)");
+    // Video files import their audio track (FFmpeg) for transcription; the
+    // Match tab then shows video previews for them.
+    QStringList paths = QFileDialog::getOpenFileNames(this, "Import Audio or Video Files",
+        lastDir,
+        "Audio or Video (*.wav *.mp3 *.flac *.ogg *.m4a *.mp4 *.mov *.mxf *.mkv *.m4v *.avi *.webm);;"
+        "Audio Files (*.wav *.mp3 *.flac *.ogg *.m4a);;"
+        "Video Files (*.mp4 *.mov *.mxf *.mkv *.m4v *.avi *.webm);;All Files (*)");
     if (!paths.isEmpty()) {
         // Save the directory for next time
         QString dir = QFileInfo(paths.first()).absolutePath();

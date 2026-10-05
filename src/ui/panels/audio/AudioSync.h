@@ -47,6 +47,7 @@
 #include <QPointer>
 
 #include "ai/Transcriber.h"    // For TranscriptionResult
+#include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 
 #include <atomic>
 #include <cstdint>
@@ -65,6 +66,8 @@ class MiniWaveformWidget;
 struct Script;
 class ShotPresetManager;
 class Timeline;
+class VideoFrameGrabber;
+class VideoFrameView;
 struct ScriptLine;
 struct MatchResult;
 
@@ -172,6 +175,21 @@ struct ScriptSession
     size_t                                  transcriptionRunTotal{0};
     size_t                                  transcriptionRunCompleted{0};
     std::vector<size_t>                     pendingTranscriptionIndices;
+    std::unordered_map<std::string, std::string> shotOverrides; ///< see AudioSync::m_shotOverrides
+    ShowPipelineState                       pipeline;      ///< see AudioSync::m_pipeline
+};
+
+/// One script line of a shot-table script as the COMFYUI page sees it.
+struct ShowShot
+{
+    int         lineNumber{-1};
+    std::string dialogue;
+    std::string action;
+    std::string segment;
+    std::string shot;        ///< effectiveShot(): doc value, in-app pick, or empty
+    std::string key;         ///< ScriptMatcher::normalize(dialogue) — pipeline key
+    bool        hasTake{false};
+    SyncClip    take;        ///< the CONFIRMED take (valid when hasTake)
 };
 
 // ─── AudioSync panel ────────────────────────────────────────────────────────
@@ -226,6 +244,11 @@ public:
     /// (word timestamps present + at least one file aligned), false to fall
     /// back to the heuristic merge/resegment/match path in runAutoSync().
     bool alignClipsToScript();
+
+    /// Shot-table scripts: one tentative clip per TAKE of each line (a line
+    /// read several times yields several candidate clips for the user to pick
+    /// from). Confirmed clips are kept. Called by alignClipsToScript().
+    bool alignShotTakes();
 
     /// Save/restore state for project persistence.
     void saveProjectState(const QString& projectName);
@@ -310,7 +333,50 @@ public:
     [[nodiscard]] bool auditionVoiceDraft(const QString& path);
     void stopVoiceDraftAudition();
 
+    /// Shot for a line of a shot-table script: the doc's SHOT cell, else the
+    /// shot the user picked in-app for that blank cell, else empty (missing).
+    [[nodiscard]] std::string effectiveShot(const ScriptLine& line) const;
+
+    /// Pick the shot for a line whose SHOT cell is blank in the doc. Undoable.
+    /// Keyed by the line's text so the pick survives doc edits / re-imports;
+    /// a shot later typed into the doc takes precedence.
+    void setShotOverride(const ScriptLine& line, const std::string& shot);
+
+    // ── COMFYUI page (shot-table scripts) ───────────────────────────────
+    [[nodiscard]] bool isShotScript() const;
+    [[nodiscard]] QString activeScriptName() const;
+    /// Every line of the active shot-table script in script order, with its
+    /// picked take (if any).
+    [[nodiscard]] std::vector<ShowShot> showShots() const;
+    /// Play a take (by SyncClip::id) in the take player and adjust its in/out
+    /// points (one undo step).  Returns true if the in/out changed.
+    bool openTakePlayerForClipId(int clipId);
+
+    // ── Preview audio for other pages (COMFYUI SHOTS transport) ────────
+    // Load a source range once, then play it at any speed (reverse and slow
+    // included — the engine time-stretches) or scrub it.
+    /// Load [rangeStart, rangeEnd] of a take's source audio. False if none.
+    bool loadPreviewAudioForTake(int clipId, double rangeStart, double rangeEnd);
+    /// Load a media file's own audio (e.g. a ComfyUI render), decoded once.
+    bool loadPreviewAudioForMedia(const std::string& path);
+    /// Play the loaded range from `fromSec` at `speed` (1 = normal, <0 = reverse).
+    bool playPreviewAudio(double fromSec, double speed);
+    /// A short burst at `atSec` (scrub / frame step).
+    void scrubPreviewAudio(double atSec);
+    /// Pause without unloading (the next play / scrub is instant).
+    void pausePreviewAudio();
+    void stopTakeAudio();
+    /// Source time being heard while playing, or -1 when stopped.
+    [[nodiscard]] double takeAudioTime() const;
+    /// Set a take's in/out (seconds in its source) as one undo step.
+    bool setTakeInOut(int clipId, double start, double end);
+    /// Framing / per-shot settings of the active script session. Saved with
+    /// the project (AudioSync blob v8); edits need no extra notification.
+    [[nodiscard]] ShowPipelineState& pipeline() noexcept { return m_pipeline; }
+    [[nodiscard]] const ShowPipelineState& pipeline() const noexcept { return m_pipeline; }
+
     /// Return the subset of script characters that have no default shot configured.
+    /// Always empty for shot-table scripts (their announcer is video, not a sprite).
     /// Characters are checked via ShotPresetManager::resolveDefaultShot.
     [[nodiscard]] QStringList missingDefaultShots() const;
 
@@ -444,6 +510,26 @@ private:
     void scrubClipAt(size_t clipIdx, double timeSec);
     void autoTrimClip(size_t clipIdx);
     void openManualMatch(int lineNumber);
+
+    // Card building: populateCards() builds every card; rebuildCardsForLines()
+    // rebuilds only the named lines' cards in place (take swap, confirm,
+    // reject, reassign...), which is what keeps those clicks fast.
+    struct CardBuildContext;
+    [[nodiscard]] CardBuildContext makeCardBuildContext() const;
+    void fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
+                  const CardBuildContext& ctx,
+                  MiniWaveformWidget*& waveformOut, int& clipIdxOut);
+    void rebuildCardsForLines(const std::vector<int>& lineNumbers);
+    /// Cheap left-list update after match-state changes only (same rows):
+    /// restyles changed rows; falls back to populateLeftList() otherwise.
+    void refreshLeftListStates();
+    /// Deferred rebuildCardsForLines(): safe from inside a card's own signal.
+    void scheduleCardRebuild(std::vector<int> lineNumbers);
+    /// Accent outline on the selected card.  A lightweight overlay child, NOT
+    /// a QGraphicsDropShadowEffect: an effect forces the whole card (waveform,
+    /// video, buttons) through an offscreen blur on every repaint, which made
+    /// every click and every playback tick slow.
+    void setHighlightedCard(QWidget* card);
     void splitClip(size_t clipIdx);
     void mergeClipWithNext(size_t clipIdx);
     void updateSelectedClipHighlight();
@@ -501,6 +587,17 @@ private:
 
     std::unordered_map<std::string, AudioSampleData> m_audioSamples;
 
+    // Take preview (playTakeAudio): its own buffer, full take audio from `from`.
+    std::vector<float> m_takeAudioBuffer;
+    double  m_takeAudioFrom{0.0};
+    double  m_takeAudioEnd{0.0};
+    double  m_takeAudioRate{48000.0};
+    bool    m_takeAudioActive{false};
+    std::unordered_map<std::string, AudioSampleData> m_mediaAudioCache;   ///< playMediaAudio decodes
+    std::string m_takeAudioKey;          ///< what the loaded preview buffer holds
+    bool loadPreviewAudio(const std::string& key, const AudioSampleData& data, double rangeStart, double rangeEnd);
+    void installPreviewAudio();
+
     // Playback state
     int     m_playingClipIdx{-1};
     int     m_selectedClipIdx{-1};  // Currently highlighted clip row
@@ -548,6 +645,32 @@ private:
     // Set by the user via the audio file combo on unmatched cards.
     // Used as the pre-selected file when MANUAL match is opened.
     std::unordered_map<int, std::string> m_lineAudioFile;
+
+    // Shot picked in-app for shot-table lines whose SHOT cell is blank:
+    // ScriptMatcher::normalize(dialogue) → "WIDE" / "CLOSE-UP".
+    std::unordered_map<std::string, std::string> m_shotOverrides;
+    ShowPipelineState m_pipeline;   ///< active session's COMFYUI page state
+
+    // ── Video takes (video sources only; audio cards are unchanged) ─────
+    std::unique_ptr<VideoFrameGrabber> m_frameGrabber;   ///< lazily created
+    [[nodiscard]] VideoFrameGrabber* frameGrabber();
+    /// lineNumber → SyncClip::id of the take the user clicked to view.
+    /// Transient view state (not saved); ignored if the id left that line.
+    std::unordered_map<int, int> m_displayedTakeId;
+    /// clip index → its card's video preview (rebuilt with the cards).
+    std::unordered_map<size_t, QPointer<VideoFrameView>> m_takePreviewLabels;
+    /// Show the source frame at timeSec in the clip's card preview, if any.
+    void requestTakePreviewFrame(size_t clipIdx, double timeSec);
+    /// Big take player: video + full-file waveform, drag/I/O to adjust the
+    /// take's in/out points (applied with undo on confirm).
+    void openTakePlayer(size_t clipIdx);
+    /// "Take 1 · 0:42" chips for every candidate take of a line.
+    [[nodiscard]] QWidget* createTakeStrip(int lineNumber, const std::vector<size_t>& clipIndices,
+                                           size_t shownClipIdx);
+
+    /// Build the WIDE / CLOSE-UP tag for a shot-table line. Missing shots
+    /// render as a red "SET SHOT" button; picked ones stay clickable.
+    [[nodiscard]] QWidget* createShotTag(const ScriptLine& line, int width);
 
     // Multi-file transcription state
     size_t m_currentTranscriptionIndex{0};
@@ -696,7 +819,8 @@ private:
     std::vector<QPointer<QWidget>>            m_cardWidgets;      // card frames in right pane
     std::vector<int>                 m_cardScriptLineNums; // script line number per card
     std::vector<int>                 m_cardClipIndices;    // clip index per card (-1 if unmatched)
-    QPointer<QWidget>                m_highlightedCard;          // currently highlighted card (glow effect)
+    QPointer<QWidget>                m_highlightedCard;          // currently highlighted card (outline overlay)
+    QPointer<QFrame>                 m_cardHighlight;            // the outline overlay (child of m_highlightedCard)
     QPointer<QFrame>                 m_selectedLeftCard;         // currently selected left card (glow effect)
 
     // Trim drag undo debouncing

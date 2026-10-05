@@ -146,6 +146,7 @@ add_library(roundtable_core STATIC
     # AI
     ai/Transcriber.cpp
     ai/ScriptMatcher.cpp
+    ai/ShotPipeline.cpp
 
     # Subtitle
     SrtIO.cpp

@@ -5,6 +5,8 @@
 #include "widgets/ManualMatchDialog.h"
 #include "widgets/FullWaveformWidget.h"
 #include "widgets/ScriptTextCopy.h"
+#include "widgets/VideoFrameView.h"
+#include "panels/audio/VideoFrameGrabber.h"
 #include "Theme.h"
 
 #include <QVBoxLayout>
@@ -15,6 +17,7 @@
 #include <QScreen>
 #include <QKeyEvent>
 #include <QShowEvent>
+#include <QPointer>
 #include <QTimer>
 
 #include <cmath>
@@ -127,11 +130,12 @@ ManualMatchDialog::ManualMatchDialog(
     titleLayout->setContentsMargins(4, 0, 4, 0);
     titleLayout->setSpacing(8);
 
-    auto* titleLabel = new QLabel("Manual Match");
-    titleLabel->setStyleSheet("color: " + acc + "; font-size: " + fsSmall + "px; font-weight: bold; border: none;");
-    titleLayout->addWidget(titleLabel);
+    m_titleLabel = new QLabel("Manual Match");
+    m_titleLabel->setStyleSheet("color: " + acc + "; font-size: " + fsSmall + "px; font-weight: bold; border: none;");
+    titleLayout->addWidget(m_titleLabel);
 
-    auto* shortcutHint = new QLabel("Space: Play/Pause    I: Set In    O: Set Out    Scroll: Zoom    Right-drag: Pan");
+    auto* shortcutHint = new QLabel("Space: Play/Pause    J/K/L: Shuttle    Hold K + J/L: Step frame (hold = slow)"
+                                    "    I: Set In    O: Set Out    Scroll: Zoom    Right-drag: Pan");
     shortcutHint->setStyleSheet("color: " + td + "; font-size: " + fsXs + "px; border: none;");
     titleLayout->addWidget(shortcutHint, 1);
 
@@ -176,9 +180,9 @@ ManualMatchDialog::ManualMatchDialog(
 
     // ── Audio file selector ──────────────────────────────────────────
     auto* fileRow = new QHBoxLayout;
-    auto* fileLabel = new QLabel("Audio File:");
-    fileLabel->setStyleSheet("QLabel { color: " + t3 + "; font-size: 13px; }");;
-    fileRow->addWidget(fileLabel);
+    m_fileLabel = new QLabel("Audio File:");
+    m_fileLabel->setStyleSheet("QLabel { color: " + t3 + "; font-size: 13px; }");
+    fileRow->addWidget(m_fileLabel);
 
     m_fileCombo = new QComboBox;
     m_fileCombo->setMinimumWidth(300);
@@ -209,6 +213,12 @@ ManualMatchDialog::ManualMatchDialog(
     fileRow->addStretch();
     mainLayout->addLayout(fileRow);
 
+    // ── Video (video files only; hidden until setVideoFrameGrabber) ──
+    m_videoView = new VideoFrameView;
+    m_videoView->setMinimumHeight(180);
+    m_videoView->setVisible(false);
+    mainLayout->addWidget(m_videoView, 3);
+
     // ── Full waveform ────────────────────────────────────────────────
     m_waveform = new FullWaveformWidget;
     m_waveform->setMinimumHeight(200);
@@ -226,6 +236,7 @@ ManualMatchDialog::ManualMatchDialog(
 
         m_waveform->setPlayhead(t);
         m_waveform->setPlayheadVisible(true);
+        showVideoAt(t);
         // Audio scrub — play a short burst at this position
         if (m_audioEngine && !m_isPlaying && !m_fullFileBuffer.empty()) {
             // Another shared-engine client must not be able to leave this
@@ -337,15 +348,31 @@ ManualMatchDialog::ManualMatchDialog(
         auto frame = m_audioEngine->currentFrame();
         // Full file is loaded at m_fullFileRate, so frame/rate = absolute time
         double currentTime = static_cast<double>(frame) / m_fullFileRate;
-        if (currentTime >= m_playbackEndTime ||
+        const bool reverse = m_audioEngine->playbackSpeed() < 0.0;
+        if ((!reverse && currentTime >= m_playbackEndTime) ||
+            (reverse && currentTime <= 0.0) ||
             m_audioEngine->transportState() != TransportState::Playing) {
-            m_waveform->setPlayhead(m_playbackEndTime);
+            // Park where playback actually stopped (reverse or interrupted
+            // playback must not jump to the out point).
+            const double parked = std::clamp(currentTime, 0.0, m_playbackEndTime);
+            m_waveform->setPlayhead(parked);
+            showVideoAt(parked);
             stopPreviewPlayback();
             return;
         }
         m_waveform->setPlayhead(currentTime);
         m_waveform->setPlayheadVisible(true);
+        showVideoAt(currentTime);
     });
+    // K held + J/L: a tap steps one frame; still held after this delay
+    // becomes slow-motion playback (Premiere behaviour).
+    m_slowHoldTimer = new QTimer(this);
+    m_slowHoldTimer->setSingleShot(true);
+    m_slowHoldTimer->setInterval(300);
+    connect(m_slowHoldTimer, &QTimer::timeout, this, [this]() {
+        if (m_kHeld && m_slowDir != 0) startSlowPlayback(m_slowDir);
+    });
+
     // ── Stop any in-progress audio from the main app ─────────────────
     if (m_audioEngine) {
         // Manual Match owns the shared engine for the lifetime of the modal
@@ -409,8 +436,53 @@ void ManualMatchDialog::loadFileIntoWaveform(const std::string& path)
         setupFullFileSource();
     }
     m_waveform->clearSelection();
+    m_lastSelStart = m_lastSelEnd = -1.0;
     m_confirmBtn->setEnabled(false);
     updateSelectionLabel();
+
+    m_currentIsVideo = m_frameGrabber && VideoFrameGrabber::isVideoFile(path);
+    m_videoView->setVisible(m_currentIsVideo);
+    m_videoView->setPoster(QImage());
+    m_videoView->showPoster();
+    if (m_currentIsVideo) {
+        // After the layout gives the view its real size.
+        QTimer::singleShot(0, this, [this]() {
+            showVideoAt(m_waveform->playheadVisible() ? m_waveform->playhead() : 0.0);
+        });
+    }
+}
+
+void ManualMatchDialog::setVideoFrameGrabber(VideoFrameGrabber* grabber)
+{
+    m_frameGrabber = grabber;
+    if (m_frameGrabber && m_fileLabel) m_fileLabel->setText("Media File:");
+}
+
+void ManualMatchDialog::showVideoAt(double timeSec)
+{
+    if (!m_currentIsVideo || !m_frameGrabber || !m_videoView->isVisible()) return;
+    QPointer<VideoFrameView> view(m_videoView);
+    // Capped: decode + scale must keep up with 30 ms playhead ticks.
+    const QSize size = view->requestSize().boundedTo(QSize(1280, 720));
+    m_frameGrabber->requestLive(view, m_currentFile, std::max(0.0, timeSec), size,
+                                [view](const QImage& image) {
+                                    if (view) view->setFrame(image);
+                                }, VideoFrameGrabber::Player);
+}
+
+void ManualMatchDialog::setEditRange(const QString& title, const QString& confirmText,
+                                     double start, double end)
+{
+    if (m_titleLabel) m_titleLabel->setText(title);
+    if (m_confirmBtn) m_confirmBtn->setText(confirmText);
+    if (end <= start) return;
+    const double pad = std::max(1.0, 0.5 * (end - start));
+    m_waveform->setViewRange(start - pad, end + pad);
+    m_waveform->setSelection(start, end);
+    m_waveform->setPlayhead(start);
+    m_waveform->setPlayheadVisible(true);
+    onSelectionChanged(start, end);
+    showVideoAt(start);
 }
 
 void ManualMatchDialog::setupFullFileSource()
@@ -470,6 +542,14 @@ void ManualMatchDialog::installFullFileSource()
 
 void ManualMatchDialog::onSelectionChanged(double start, double end)
 {
+    // Show the frame at whichever edge moved (in point, else out point).
+    if (std::abs(end - m_lastSelEnd) > 1e-6 && std::abs(start - m_lastSelStart) <= 1e-6)
+        showVideoAt(end);
+    else
+        showVideoAt(start);
+    m_lastSelStart = start;
+    m_lastSelEnd   = end;
+
     m_result.audioFile = m_currentFile;
     m_result.start     = start;
     m_result.end       = end;
@@ -588,14 +668,120 @@ void ManualMatchDialog::stopPreviewPlayback()
     if (m_playheadTimer)
         m_playheadTimer->stop();
     m_isPlaying = false;
+    m_slowPlaying = false;
     m_jShuttleLevel = 0;
     m_lShuttleLevel = 0;
     if (m_previewBtn)
         m_previewBtn->setText(QStringLiteral("\u25B6  Play"));
 }
 
+double ManualMatchDialog::playhead() const
+{
+    return m_waveform->playhead();
+}
+
+double ManualMatchDialog::frameDuration() const
+{
+    double fps = 0.0;
+    if (m_currentIsVideo && m_frameGrabber) fps = m_frameGrabber->knownFps(m_currentFile);
+    return 1.0 / (fps > 0.0 ? fps : 30.0);
+}
+
+void ManualMatchDialog::stepFrame(int direction)
+{
+    const double dur = m_waveform->duration();
+    const double from = m_waveform->playheadVisible() ? m_waveform->playhead() : 0.0;
+    const double t = std::clamp(from + direction * frameDuration(), 0.0, dur);
+    m_waveform->setPlayhead(t);
+    m_waveform->setPlayheadVisible(true);
+    showVideoAt(t);
+    if (m_audioEngine && !m_fullFileBuffer.empty()) {
+        installFullFileSource();
+        auto frame = static_cast<int64_t>(t * m_fullFileRate);
+        frame = std::clamp(frame, int64_t(0), static_cast<int64_t>(m_fullFileBuffer.size()) - 1);
+        m_audioEngine->scrub(frame, static_cast<int64_t>(frameDuration() * m_fullFileRate));
+    }
+}
+
+void ManualMatchDialog::startSlowPlayback(int direction)
+{
+    if (!m_audioEngine || m_fullFileBuffer.empty()) return;
+    stopPreviewPlayback();
+    const double from = m_waveform->playheadVisible() ? m_waveform->playhead() : 0.0;
+    m_playbackEndTime = m_waveform->duration();
+    if (direction > 0 && from >= m_playbackEndTime - 0.01) return;
+    if (direction < 0 && from <= 0.01) return;
+
+    auto seekFrame = static_cast<int64_t>(from * m_fullFileRate);
+    seekFrame = std::clamp(seekFrame, int64_t(0),
+                           static_cast<int64_t>(m_fullFileBuffer.size()) - 1);
+    m_audioEngine->stop();
+    installFullFileSource();
+    m_audioEngine->seekToFrame(seekFrame);
+    m_audioEngine->setPlaybackSpeed(direction > 0 ? 0.25 : -0.25);
+    m_audioEngine->play();
+
+    m_isPlaying = true;
+    m_slowPlaying = true;
+    m_previewBtn->setText(QStringLiteral("⏹  Stop"));
+    m_playheadTimer->start();
+}
+
+void ManualMatchDialog::stopSlowMotion()
+{
+    m_slowHoldTimer->stop();
+    m_slowDir = 0;
+    if (m_slowPlaying) stopPreviewPlayback();
+}
+
+void ManualMatchDialog::changeEvent(QEvent* event)
+{
+    // Key releases never arrive while another window is active.
+    if (event->type() == QEvent::ActivationChange && !isActiveWindow()) {
+        m_kHeld = false;
+        stopSlowMotion();
+    }
+    QDialog::changeEvent(event);
+}
+
+void ManualMatchDialog::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->isAutoRepeat()) { event->accept(); return; }
+    const int key = event->key();
+    if (key == Qt::Key_K) {
+        m_kHeld = false;
+        stopSlowMotion();
+        event->accept();
+        return;
+    }
+    if ((key == Qt::Key_J && m_slowDir < 0) || (key == Qt::Key_L && m_slowDir > 0)) {
+        stopSlowMotion();
+        event->accept();
+        return;
+    }
+    QDialog::keyReleaseEvent(event);
+}
+
 void ManualMatchDialog::keyPressEvent(QKeyEvent* event)
 {
+    // Hold K + J/L: frame step on tap, slow motion while held.
+    if (m_kHeld && (event->key() == Qt::Key_J || event->key() == Qt::Key_L)) {
+        if (!event->isAutoRepeat()) {
+            const int dir = (event->key() == Qt::Key_L) ? 1 : -1;
+            m_slowHoldTimer->stop();
+            if (m_isPlaying) stopPreviewPlayback();
+            m_slowDir = dir;
+            stepFrame(dir);
+            m_slowHoldTimer->start();
+        }
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_K && event->isAutoRepeat()) {
+        event->accept();   // holding K must not keep re-stopping slow motion
+        return;
+    }
+
     switch (event->key()) {
     case Qt::Key_Space:
         onPreviewClicked();
@@ -640,7 +826,8 @@ void ManualMatchDialog::keyPressEvent(QKeyEvent* event)
         return;
     }
     case Qt::Key_K:
-        // Shuttle pause
+        // Shuttle pause; also arms K+J/L frame step / slow motion.
+        m_kHeld = true;
         m_jShuttleLevel = 0;
         m_lShuttleLevel = 0;
         stopPreviewPlayback();

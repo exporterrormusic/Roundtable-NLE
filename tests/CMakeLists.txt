@@ -153,6 +153,13 @@ add_roundtable_test(test_main_window     LIBS roundtable_ui roundtable_core USES
 add_roundtable_test(test_render_policy   LIBS roundtable_ui roundtable_gpu roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_history_panel   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+# Pure QtCore JSON logic: headless + deterministic, so it gates CI.
+add_roundtable_test(test_comfy_workflow LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
+# Batch runner against an in-process fake ComfyUI HTTP server (localhost only).
+add_roundtable_test(test_comfy_runner   LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
+add_roundtable_test(test_comfy_panel LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_video_frame_grabber LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_manual_match_dialog LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_voice_generation LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
 # Service lifecycle tests drive a protocol-compatible fake worker.
 target_compile_definitions(test_voice_generation PRIVATE

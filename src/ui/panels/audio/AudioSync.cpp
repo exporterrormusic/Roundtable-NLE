@@ -3,6 +3,8 @@
  */
 
 #include "panels/audio/AudioSync.h"
+#include "panels/audio/VideoFrameGrabber.h"
+#include "widgets/VideoFrameView.h"
 
 #include "ai/Transcriber.h"
 #include "ai/ScriptMatcher.h"
@@ -310,6 +312,12 @@ MiniWaveformWidget* AudioSync::waveformForClip(int clipIdx) const
 
 bool AudioSync::eventFilter(QObject* watched, QEvent* event)
 {
+    // Keep the selected-card outline sized to its card.
+    if (event->type() == QEvent::Resize && watched == m_highlightedCard.data() &&
+        m_cardHighlight && m_cardHighlight->parentWidget() == m_highlightedCard.data()) {
+        m_cardHighlight->setGeometry(m_highlightedCard->rect());
+    }
+
     // While ManualMatchDialog is open, don't intercept any events
     if (m_manualMatchOpen)
         return QWidget::eventFilter(watched, event);
@@ -568,20 +576,8 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                                 m_selectedClipIdx = m_cardClipIndices[i];
                             // Apply card highlight (no scroll — only highlight)
                             if (i < m_cardScriptLineNums.size()) {
-                                // Remove previous highlight
-                                if (m_highlightedCard) {
-                                    m_highlightedCard->setGraphicsEffect(nullptr);
-                                    m_highlightedCard = nullptr;
-                                }
-                                auto* cardFrame = qobject_cast<QFrame*>(card);
-                                if (cardFrame) {
-                                    m_highlightedCard = cardFrame;
-                                    auto* glow = new QGraphicsDropShadowEffect(cardFrame);
-                                    glow->setBlurRadius(18);
-                                    glow->setColor(Theme::colors().accent);
-                                    glow->setOffset(0, 0);
-                                    cardFrame->setGraphicsEffect(glow);
-                                }
+                                if (m_highlightedCard != card)
+                                    setHighlightedCard(card);
                             }
                             // Sync left list selection
                             if (m_leftScriptList && i < m_cardScriptLineNums.size()) {

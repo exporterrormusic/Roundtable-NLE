@@ -180,3 +180,6 @@ assets/presets/shots/thumbnails/
 
 # A/B render-path harness output (#18)
 framehash.csv
+
+# Local dev/test defaults (COMFYUI workflow, refs, launcher) — never commit, never ship
+dev_defaults/

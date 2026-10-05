@@ -876,7 +876,8 @@ void AudioSync::relinkAudioFile(int fileIdx)
         this,
         tr("Re-link: %1").arg(oldName),
         oldDir,
-        tr("Audio Files (*.wav *.mp3 *.flac *.aac *.m4a *.ogg *.aiff *.aif);;All Files (*.*)"));
+        tr("Audio or Video (*.wav *.mp3 *.flac *.aac *.m4a *.ogg *.aiff *.aif "
+           "*.mp4 *.mov *.mxf *.mkv *.m4v *.avi *.webm);;All Files (*.*)"));
     if (newPath.isEmpty()) return;
 
     std::string newPathStr = newPath.toStdString();
@@ -980,7 +981,7 @@ void AudioSync::removeFilesFromSync(std::vector<int> fileIndices)
 
     // Rebuilt cards must not inherit indices or pointers into the old clip set.
     m_selectedClipIdx = -1;
-    m_highlightedCard = nullptr;
+    setHighlightedCard(nullptr);
     m_selectedLeftCard = nullptr;
 
     // Restore the one-path/one-result invariant before erasing paired entries.

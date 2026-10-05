@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "AudioMixdown.h"
+#include "ai/ScriptMatcher.h"
 #include "audio/AudioFile.h"
 #include "command/CommandStack.h"
 #include "panels/audio/AudioSync.h"
@@ -220,6 +221,61 @@ TEST_F(VoiceGenerationTest, ScriptDialogueCanBeSelectedAndCopied)
     copyAction->trigger();
     EXPECT_EQ(QGuiApplication::clipboard()->text(),
               QStringLiteral("Paste this into TTS."));
+}
+
+TEST_F(VoiceGenerationTest, ShotScriptBlankShotIsPickedInAppAndPersists)
+{
+    auto row = [](const char* shot, const char* action, const char* text) {
+        return QStringLiteral("<tr><td><p><span>%1</span></p></td><td><p><span>%2</span></p></td>"
+                              "<td><p><span>%3</span></p></td></tr>")
+            .arg(QString::fromLatin1(shot), QString::fromLatin1(action), QString::fromLatin1(text));
+    };
+    const QString html = QStringLiteral("<html><body><table>")
+        + row("SHOT", "ACTION", "SCRIPT")
+        + row("WIDE", "", "Welcome to the show.")
+        + row("", "", "Nobody filled in this shot.")
+        + QStringLiteral("</table></body></html>");
+
+    rt::CommandStack stack;
+    rt::AudioSync audioSync;
+    audioSync.setCommandStack(&stack);
+    ASSERT_TRUE(audioSync.loadScript(html.toStdString(), "https://docs.google.com/document/d/shot-test/"));
+    EXPECT_TRUE(audioSync.missingDefaultShots().isEmpty());  // announcer is video, no sprite
+
+    auto buttonTexts = [&audioSync]() {
+        QStringList texts;
+        auto* list = audioSync.scriptListWidget();
+        for (int i = 0; i < list->count(); ++i) {
+            for (auto* btn : list->itemWidget(list->item(i))->findChildren<QPushButton*>())
+                texts << btn->text();
+        }
+        return texts;
+    };
+    EXPECT_EQ(buttonTexts(), QStringList{QStringLiteral("SET SHOT")});
+
+    rt::ScriptLine blank;
+    blank.dialogue = "Nobody filled in this shot.";
+    EXPECT_TRUE(audioSync.effectiveShot(blank).empty());
+
+    audioSync.setShotOverride(blank, "CLOSE-UP");
+    EXPECT_EQ(audioSync.effectiveShot(blank), "CLOSE-UP");
+    EXPECT_EQ(buttonTexts(), QStringList{QStringLiteral("CLOSE-UP")});
+
+    ASSERT_TRUE(stack.undo());
+    EXPECT_TRUE(audioSync.effectiveShot(blank).empty());
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(audioSync.effectiveShot(blank), "CLOSE-UP");
+
+    // Saved with the project and restored on open.
+    const auto blob = audioSync.serializeToBlob();
+    rt::AudioSync reopened;
+    reopened.deserializeFromBlob(blob);
+    EXPECT_EQ(reopened.effectiveShot(blank), "CLOSE-UP");
+
+    // A shot typed into the doc wins over the in-app pick.
+    rt::ScriptLine filled = blank;
+    filled.shot = "WIDE";
+    EXPECT_EQ(reopened.effectiveShot(filled), "WIDE");
 }
 
 TEST_F(VoiceGenerationTest, ReusesAutomaticTranscriptForManualReferenceRange)
@@ -851,3 +907,4 @@ TEST_F(VoiceGenerationTest, MatchTabShowsOneCardPerScriptLine)
         EXPECT_EQ(visibleCardNames().size(), static_cast<size_t>(kLines)) << "pass " << pass;
     }
 }
+

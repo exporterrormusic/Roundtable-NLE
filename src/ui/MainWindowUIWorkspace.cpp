@@ -138,7 +138,7 @@ bool MainWindow::restoreWorkspace(const QString& name)
     // Restore the last active page so the user returns to where they left off.
     int savedPage = settings.value("activePage",
                                     static_cast<int>(Page::Projects)).toInt();
-    if (savedPage < 0 || savedPage > static_cast<int>(Page::Export))
+    if (savedPage < 0 || savedPage >= kPageCount)
         savedPage = static_cast<int>(Page::Projects);
     setCurrentPage(static_cast<Page>(savedPage));
 

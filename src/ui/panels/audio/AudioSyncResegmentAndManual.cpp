@@ -492,6 +492,7 @@ void AudioSync::openManualMatch(int lineNumber)
     // Set per-file region maps, then load initial file (must be after regions)
     dlg.m_confirmedByFile = confirmedByFile;
     dlg.m_tentativeByFile = tentativeByFile;
+    dlg.setVideoFrameGrabber(frameGrabber());   // video files show their picture
     dlg.loadInitialFile();
 
     m_manualMatchOpen = true;
@@ -532,11 +533,12 @@ void AudioSync::openManualMatch(int lineNumber)
                     m_clips.push_back(std::move(newClip));
                 }
             },
-            [this]() {
-                QTimer::singleShot(0, this, [this]() {
+            [this, lineNumber]() {
+                // Only this line's card changes (a newly created clip is
+                // appended, so no other card's clip index moves).
+                QTimer::singleShot(0, this, [this, lineNumber]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    populateCards();
-                    updateWorkflowState();
+                    rebuildCardsForLines({lineNumber});
                     emit voiceContextChanged();
                 });
             });
@@ -544,6 +546,132 @@ void AudioSync::openManualMatch(int lineNumber)
         spdlog::info("AudioSync: Manual match for line {} → {}  {:.3f}-{:.3f}",
                       lineNumber, result.audioFile, result.start, result.end);
     }
+}
+
+
+bool AudioSync::setTakeInOut(int clipId, double start, double end)
+{
+    if (end <= start + 0.05) return false;
+    int lineNumber = -1;
+    for (const auto& c : m_clips) if (c.id == clipId) { lineNumber = c.scriptLineNumber; break; }
+    if (lineNumber == -1 && std::none_of(m_clips.begin(), m_clips.end(),
+                                         [clipId](const SyncClip& c) { return c.id == clipId; }))
+        return false;
+    runClipsMutationWithUndo(
+        "Adjust take in/out",
+        [this, clipId, start, end]() {
+            for (auto& c : m_clips) {
+                if (c.id != clipId) continue;
+                c.start = start;
+                c.end = end;
+                c.deletedRegions.erase(
+                    std::remove_if(c.deletedRegions.begin(), c.deletedRegions.end(),
+                                   [&](const auto& r) { return r.second <= c.start || r.first >= c.end; }),
+                    c.deletedRegions.end());
+                break;
+            }
+        },
+        [this, lineNumber]() {
+            QTimer::singleShot(0, this, [this, lineNumber]() {
+                if (!m_destroying.load(std::memory_order_acquire)) rebuildCardsForLines({lineNumber});
+            });
+        });
+    return true;
+}
+
+bool AudioSync::openTakePlayerForClipId(int clipId)
+{
+    for (size_t i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].id != clipId) continue;
+        const double start = m_clips[i].start, end = m_clips[i].end;
+        openTakePlayer(i);
+        for (const auto& c : m_clips)   // index may not survive an undo-stack edit; re-find
+            if (c.id == clipId) return c.start != start || c.end != end;
+        return false;
+    }
+    return false;
+}
+
+void AudioSync::openTakePlayer(size_t clipIdx)
+{
+    if (clipIdx >= m_clips.size()) return;
+    const SyncClip clip = m_clips[clipIdx];
+    auto sampleIt = m_audioSamples.find(clip.sourceFile);
+    if (sampleIt == m_audioSamples.end()) return;
+
+    // Same nested-event-loop rule as openManualMatch().
+    stopPlayback();
+    stopFilePlayback();
+
+    std::string character = clip.character, dialogue;
+    if (m_script) {
+        for (const auto& sl : m_script->lines) {
+            if (sl.lineNumber == clip.scriptLineNumber) {
+                character = sl.character;
+                dialogue  = sl.dialogue;
+                break;
+            }
+        }
+    }
+
+    // Darken the file's other matched regions (not this take itself).
+    std::unordered_map<std::string, std::vector<std::pair<double,double>>> confirmedByFile;
+    std::unordered_map<std::string, std::vector<std::pair<double,double>>> tentativeByFile;
+    for (size_t i = 0; i < m_clips.size(); ++i) {
+        const auto& c = m_clips[i];
+        if (i == clipIdx || c.sourceFile != clip.sourceFile || c.scriptLineNumber < 0) continue;
+        if (c.matchState == 2)      confirmedByFile[c.sourceFile].emplace_back(c.start, c.end);
+        else if (c.matchState == 1) tentativeByFile[c.sourceFile].emplace_back(c.start, c.end);
+    }
+
+    // Only this take's file: copying every imported file's samples into the
+    // dialog would be slow for long recordings.
+    std::unordered_map<std::string, ManualMatchDialog::AudioData> audioDataMap;
+    audioDataMap[clip.sourceFile] = { sampleIt->second.samples, sampleIt->second.sampleRate };
+
+    ManualMatchDialog dlg(character, dialogue, clip.scriptLineNumber,
+                          {clip.sourceFile}, audioDataMap, {}, {},
+                          clip.sourceFile, m_audioEngine, this);
+    dlg.m_confirmedByFile = confirmedByFile;
+    dlg.m_tentativeByFile = tentativeByFile;
+    dlg.setVideoFrameGrabber(frameGrabber());
+    dlg.loadInitialFile();
+    dlg.setEditRange(QStringLiteral("Take Player"),
+                     QStringLiteral("✓  Apply In/Out"), clip.start, clip.end);
+
+    m_manualMatchOpen = true;
+    const int dialogResult = dlg.exec();
+    m_manualMatchOpen = false;
+    if (dialogResult != QDialog::Accepted) return;
+
+    const auto result = dlg.result();
+    if (result.end <= result.start) return;
+    const int clipId = clip.id;
+    const int lineNumber = clip.scriptLineNumber;
+    runClipsMutationWithUndo(
+        "Adjust take in/out",
+        [this, clipId, result]() {
+            for (auto& c : m_clips) {
+                if (c.id != clipId) continue;
+                if (std::abs(c.start - result.start) < 1e-6 && std::abs(c.end - result.end) < 1e-6)
+                    break;
+                c.start = result.start;
+                c.end   = result.end;
+                // Drop cut regions that no longer fall inside the take.
+                c.deletedRegions.erase(
+                    std::remove_if(c.deletedRegions.begin(), c.deletedRegions.end(),
+                                   [&](const auto& r) { return r.second <= c.start || r.first >= c.end; }),
+                    c.deletedRegions.end());
+                break;
+            }
+        },
+        [this, lineNumber]() {
+            QTimer::singleShot(0, this, [this, lineNumber]() {
+                if (m_destroying.load(std::memory_order_acquire)) return;
+                rebuildCardsForLines({lineNumber});
+            });
+        });
+    spdlog::info("AudioSync: take {} in/out → {:.3f}-{:.3f}", clipId, result.start, result.end);
 }
 
 
