@@ -11,6 +11,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
@@ -160,8 +161,19 @@ void ProjectPanel::rebuildRecentPathButtons()
 {
     if (!m_recentPathsWidget) return;
 
-    auto* rpLay = qobject_cast<QHBoxLayout*>(m_recentPathsWidget->layout());
+    // Grid, not a single row: "Projects" + up to 4 recent folder names in one
+    // QHBoxLayout forced the NEW page's minimum width past the fixed-width
+    // side panel, clipping every card on the right.
+    auto* rpLay = qobject_cast<QGridLayout*>(m_recentPathsWidget->layout());
     if (!rpLay) return;
+    constexpr int kRecentCols = 2;
+    int slot = 0;
+    auto addRecentBtn = [&](QPushButton* b) {
+        b->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        b->setMinimumWidth(0);
+        rpLay->addWidget(b, 1 + slot / kRecentCols, slot % kRecentCols);
+        ++slot;
+    };
 
     while (QLayoutItem* item = rpLay->takeAt(0)) {
         if (item->widget())
@@ -176,7 +188,7 @@ void ProjectPanel::rebuildRecentPathButtons()
     recentLbl->setStyleSheet(QStringLiteral(
         "font-size: 9px; font-weight: 600; color: %1; letter-spacing: 0.4px;")
         .arg(Theme::rgb(c.textPrimary)));
-    rpLay->addWidget(recentLbl);
+    rpLay->addWidget(recentLbl, 0, 0, 1, kRecentCols);
 
     auto* projectsBtn = new QPushButton(" Projects");
     projectsBtn->setIcon(createFolderIcon());
@@ -195,7 +207,7 @@ void ProjectPanel::rebuildRecentPathButtons()
         m_locationInput->setText(m_projectsDir);
         addRecentSaveLocation(m_projectsDir);
     });
-    rpLay->addWidget(projectsBtn);
+    addRecentBtn(projectsBtn);
 
     int shown = 0;
     for (const auto& loc : m_recentSaveLocations) {
@@ -226,11 +238,9 @@ void ProjectPanel::rebuildRecentPathButtons()
             m_locationInput->setText(loc);
         });
 
-        rpLay->addWidget(btn);
+        addRecentBtn(btn);
         ++shown;
     }
-
-    rpLay->addStretch();
 }
 
 } // namespace rt

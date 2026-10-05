@@ -251,9 +251,11 @@ void ProjectPanel::buildSidePanel()
         folderRow->addStretch();
         lay->addLayout(folderRow);
 
-        // Recent paths row
+        // Recent paths: "Recent:" label row, then a 2-column button grid
+        // (rebuildRecentPathButtons() repopulates it). A single row overflowed
+        // the fixed-width side panel.
         m_recentPathsWidget = new QWidget;
-        auto* rpLay = new QHBoxLayout(m_recentPathsWidget);
+        auto* rpLay = new QGridLayout(m_recentPathsWidget);
         rpLay->setContentsMargins(0, 0, 0, 0);
         rpLay->setSpacing(4);
         auto* recentLbl = new QLabel("Recent:");
@@ -261,7 +263,7 @@ void ProjectPanel::buildSidePanel()
         recentLbl->setStyleSheet(QStringLiteral(
             "font-size: 9px; font-weight: 600; color: %1; letter-spacing: 0.4px;")
             .arg(Theme::rgb(c.textPrimary)));
-        rpLay->addWidget(recentLbl);
+        rpLay->addWidget(recentLbl, 0, 0, 1, 2);
         // Quick-select button for the default projects folder
         auto* rpSample = new QPushButton(" Projects");
         rpSample->setIcon(createFolderIcon());
@@ -280,8 +282,8 @@ void ProjectPanel::buildSidePanel()
             // Set the path directly from m_projectsDir — never strip display text
             m_locationInput->setText(m_projectsDir);
         });
-        rpLay->addWidget(rpSample);
-        rpLay->addStretch();
+        rpSample->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        rpLay->addWidget(rpSample, 1, 0);
         lay->addWidget(m_recentPathsWidget);
 
         newPageLayout->addWidget(card);
@@ -656,6 +658,8 @@ void ProjectPanel::buildSidePanel()
         // Row 1: Project name (dynamic, updated via textChanged signal)
         m_summaryNameLabel = new QLabel(QStringLiteral("\U0001F4C4  New Project"));
         m_summaryNameLabel->setObjectName("NewSummaryName");
+        // Wrap long project names instead of widening the fixed-width panel.
+        m_summaryNameLabel->setWordWrap(true);
         m_summaryNameLabel->setStyleSheet(QStringLiteral(
             "font-size: %1px; font-weight: 700; color: %2;")
             .arg(t.sizeXs)
