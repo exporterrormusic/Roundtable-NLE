@@ -55,6 +55,11 @@ QString voiceReferenceCacheDirectory()
 
 QString ffmpegExecutable()
 {
+    // Installed builds ship ffmpeg.exe beside the app; the compiled-in path
+    // (build machine's third_party copy) only exists on the dev machine.
+    const QString besideApp =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/ffmpeg.exe");
+    if (QFileInfo::exists(besideApp)) return besideApp;
     return QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH);
 }
 
