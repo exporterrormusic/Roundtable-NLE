@@ -4,7 +4,6 @@
  */
 
 #include "panels/characters/ShotComposer.h"
-#include "AppPaths.h"
 #include "PathUtils.h"
 
 #include "panels/characters/ShotComposerInternal.h"
@@ -138,7 +137,7 @@ static QImage decodeFrameToQImage(DecodedFrame& df, VideoDecoder* decoder)
         float scaleY = static_cast<float>(PREVIEW_MAX_HEIGHT) / static_cast<float>(h);
         float scale  = std::min(scaleX, scaleY);
         dstW = std::max(1, static_cast<int>(w * scale));
-        dstH = std::max(1, static_cast<int>(h * scale));
+        dstH = std::max(2, static_cast<int>(h * scale) & ~1);   // even: packed-alpha halves
     }
 
     // Re-use cached SwsContext when dimensions and format haven't changed
@@ -181,11 +180,6 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
 
     spdlog::info("ShotComposer: extractVideoThumbnail called for '{}'", path);
 
-    const QString ffmpegPath = QString::fromStdWString(rt::AppPaths::ffmpegExecutable().wstring());
-    if (ffmpegPath.isEmpty()) {
-        spdlog::error("ShotComposer: ffmpeg not found in any search path, cannot extract video thumbnail");
-        return {};
-    }
 
     // Resolve video path to absolute (try .webm first, fall back to .mov)
     QString videoPath = QString::fromStdString(path);
@@ -214,49 +208,24 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
     }
     videoPath = resolved;
 
-    // Temp output file
-    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    QString tempPath = tempDir + "/rt_video_thumb_" +
-        QString::number(qHash(videoPath)) + ".png";
-
-    // Run ffmpeg to extract first frame
-    QStringList args = {
-        "-y", "-i", videoPath,
-        "-vframes", "1",
-        "-f", "image2",
-        tempPath
-    };
-    spdlog::info("ShotComposer: running: {} {}",
-        ffmpegPath.toStdString(), args.join(' ').toStdString());
-
-    QProcess proc;
-    proc.setProcessChannelMode(QProcess::SeparateChannels);
-#ifdef _WIN32
-    proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
-        args->flags |= CREATE_NO_WINDOW;
-    });
+    // Decode the first frame in-process (software decoder: one frame does
+    // not pay for a GPU decoder). This used to run ffmpeg.exe on the UI
+    // thread -- a process spawn plus a temp PNG round trip, waiting up to
+    // 5 s to start and 15 s to finish, per thumbnail.
+    QImage frame;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    {
+        VideoDecoder decoder;
+        if (decoder.open(utf8ToPath(videoPath.toStdString()), /*forceSoftware=*/true)) {
+            DecodedFrame df;
+            if (decoder.decodeNext(df))
+                frame = decodeFrameToQImage(df, &decoder);
+        } else {
+            spdlog::warn("ShotComposer: cannot open '{}' for a thumbnail: {}",
+                         videoPath.toStdString(), decoder.lastError());
+        }
+    }
 #endif
-    proc.start(ffmpegPath, args);
-
-    if (!proc.waitForStarted(5000)) {
-        spdlog::error("ShotComposer: ffmpeg failed to start: {}",
-            proc.errorString().toStdString());
-        return {};
-    }
-
-    if (!proc.waitForFinished(15000)) {
-        spdlog::error("ShotComposer: ffmpeg timed out after 15s");
-        proc.kill();
-        return {};
-    }
-
-    if (proc.exitCode() != 0) {
-        spdlog::warn("ShotComposer: ffmpeg exit code {}: {}",
-            proc.exitCode(),
-            proc.readAllStandardError().toStdString());
-    }
-
-    QImage frame(tempPath);
     if (!frame.isNull()) {
         frame = frame.convertToFormat(QImage::Format_ARGB32);
         // Chroma-key generated H264_Green cache entries and legacy
@@ -268,18 +237,9 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
         spdlog::info("ShotComposer: extracted video thumbnail {}x{} from '{}'",
             frame.width(), frame.height(), path);
     } else {
-        if (QFileInfo::exists(tempPath)) {
-            spdlog::warn("ShotComposer: temp file exists at '{}' but failed to load as image",
-                tempPath.toStdString());
-        } else {
-            spdlog::warn("ShotComposer: ffmpeg did not create output file at '{}'",
-                tempPath.toStdString());
-        }
+        spdlog::warn("ShotComposer: no thumbnail frame decoded from '{}'",
+                     videoPath.toStdString());
     }
-
-    // Clean up temp file
-    QFile::remove(tempPath);
-
     return frame;
 }
 
