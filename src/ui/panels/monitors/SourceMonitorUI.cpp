@@ -84,6 +84,7 @@ SourceMonitor::SourceMonitor(QWidget* parent)
     // no-op even though the controller tick had moved.
     m_controller->onPositionChanged = [this](int64_t) {
         if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_scrubPending) return; // the scrub timer coalesces expensive decoding
         if (m_controller && m_controller->isPlaying()) return;  // poll timer covers it
         updateFrameDisplay();
     };
@@ -93,6 +94,11 @@ SourceMonitor::SourceMonitor(QWidget* parent)
     m_controller->onStateChanged = [this](PlayState state) {
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (state == PlayState::Playing || state == PlayState::Shuttling) {
+            // The scrub target is already committed to the controller. Do not
+            // let a queued scrub burst replace the audio we are starting now.
+            m_scrubPending = false;
+            m_scrubQualityActive = false;
+            m_scrubSettleCounter = 0;
             m_pollTimer->start();
             startSourceAudio();
         } else {

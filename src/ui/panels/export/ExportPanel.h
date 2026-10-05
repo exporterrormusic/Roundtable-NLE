@@ -302,6 +302,7 @@ private:
     void onSavePreset();
     void onDeletePreset();
     void loadCustomPresets();
+    void initializeSavedSettings();
     QString customPresetsDir() const;
     void syncMatchSequenceSettings();
 
@@ -311,6 +312,7 @@ private:
     /// onStartExport (after addJob) and onStartQueue.
     void armQueueAndRun();
     [[nodiscard]] bool prepareExportRenderSession();
+    [[nodiscard]] bool confirmExportOverwrite(const ExportJobConfig* additional = nullptr);
     /// Toggle the run row / cancel button / action buttons / render pip
     /// between running and idle.
     void setRunningUiState(bool running);

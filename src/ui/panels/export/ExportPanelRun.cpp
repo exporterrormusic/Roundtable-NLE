@@ -31,6 +31,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QSettings>
+#include <QSet>
 #include <QShowEvent>
 #include <QSplitter>
 
@@ -316,8 +317,46 @@ bool ExportPanel::checkOfflineMedia(const Timeline* timeline)
     return (result == QMessageBox::Yes);
 }
 
+bool ExportPanel::confirmExportOverwrite(const ExportJobConfig* additional)
+{
+    QSet<QString> destinations;
+    QStringList conflicts;
+    auto check = [&](const ExportJobConfig& config) {
+        const QFileInfo file(QString::fromStdString(pathToUtf8(config.outputPath)));
+        const QString path = QDir::cleanPath(file.absoluteFilePath());
+        QString key = path;
+#ifdef Q_OS_WIN
+        key = key.toCaseFolded();
+#endif
+        if (file.exists() || destinations.contains(key))
+            conflicts.append(QDir::toNativeSeparators(path));
+        destinations.insert(key);
+    };
+    for (const auto& job : m_renderQueue->jobs())
+        if (job && job->status.load() == JobStatus::Queued)
+            check(job->config);
+    if (additional) check(*additional);
+    conflicts.removeDuplicates();
+    if (conflicts.isEmpty()) return true;
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Replace existing export?"));
+    box.setIcon(QMessageBox::Warning);
+    box.setTextFormat(Qt::PlainText);
+    box.setText(tr("An export file already exists, or multiple queued exports use the same destination."));
+    box.setInformativeText(tr("Continuing will replace files at these locations:\n\n%1")
+                              .arg(conflicts.join(QLatin1Char('\n'))));
+    auto* replace = box.addButton(tr("Replace"), QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setEscapeButton(QMessageBox::Cancel);
+    box.exec();
+    return box.clickedButton() == replace;
+}
+
 void ExportPanel::onStartExport()
 {
+    if (!m_renderQueue || m_renderQueue->isRunning()) return;
     if (m_outputPath->text().isEmpty()) {
         notifyExportProblem(tr("Select an output file before starting the export."));
         return;
@@ -329,6 +368,7 @@ void ExportPanel::onStartExport()
     }
 
     auto config = buildJobConfig();
+    if (!confirmExportOverwrite(&config)) return;
 
     // Video-export pre-flight (skipped entirely for audio-only exports, which
     // need neither the compositor nor a hardware video encoder).
@@ -408,6 +448,7 @@ void ExportPanel::onStartQueue()
 {
     if (!m_renderQueue || m_renderQueue->isRunning()) return;
     if (m_renderQueue->pendingCount() == 0) return;
+    if (!confirmExportOverwrite()) return;
 
     // Queued jobs own their project/timeline snapshots and remain runnable
     // after the live project is closed or switched. Offline-media warnings

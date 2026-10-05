@@ -133,6 +133,9 @@ void PlaybackController::play()
 
     // Sync the audio engine's position with the captured playhead tick
     if (m_audioEngine) {
+        // Drain any scrub callback before seeking. Otherwise that callback can
+        // publish its old position between seekToFrame() and play().
+        m_audioEngine->pause();
         m_audioEngine->setPlaybackSpeed(1.0);
         uint32_t sr = m_audioEngine->sampleRate();
         int64_t frame = static_cast<int64_t>(
@@ -317,7 +320,7 @@ void PlaybackController::shuttleReverse()
     // callback, so using it as anchor shifts both clock and audio forward
     // by up to one buffer (~10-40ms depending on speed).
     int64_t startTick;
-    if (m_audioEngine && m_audioEngine->sampleRate() > 0) {
+    if (isPlaying() && m_audioEngine && m_audioEngine->sampleRate() > 0) {
         uint32_t sr = m_audioEngine->sampleRate();
         int64_t frame = m_audioEngine->currentFrame();
         startTick = static_cast<int64_t>(
@@ -338,6 +341,11 @@ void PlaybackController::shuttleReverse()
     if (m_audioEngine)
     {
         m_audioEngine->setPlaybackSpeed(speed);
+        if (!isPlaying()) {
+            const auto frame = static_cast<int64_t>(
+                static_cast<double>(startTick) / 48000.0 * m_audioEngine->sampleRate());
+            m_audioEngine->seekToFrame(frame);
+        }
         m_audioEngine->play();
     }
 
@@ -370,7 +378,7 @@ void PlaybackController::setShuttleSpeed(double speed)
     m_shuttleSpeed  = speed;
 
     int64_t startTick;
-    if (m_audioEngine && m_audioEngine->sampleRate() > 0) {
+    if (isPlaying() && m_audioEngine && m_audioEngine->sampleRate() > 0) {
         uint32_t sr = m_audioEngine->sampleRate();
         int64_t frame = m_audioEngine->currentFrame();
         startTick = static_cast<int64_t>(
@@ -386,6 +394,11 @@ void PlaybackController::setShuttleSpeed(double speed)
 
     if (m_audioEngine) {
         m_audioEngine->setPlaybackSpeed(speed);
+        if (!isPlaying()) {
+            const auto frame = static_cast<int64_t>(
+                static_cast<double>(startTick) / 48000.0 * m_audioEngine->sampleRate());
+            m_audioEngine->seekToFrame(frame);
+        }
         m_audioEngine->play();
     }
 
@@ -421,7 +434,7 @@ void PlaybackController::shuttleForward()
     // callback, so using it as anchor shifts both clock and audio forward
     // by up to one buffer (~10-40ms depending on speed).
     int64_t startTick;
-    if (m_audioEngine && m_audioEngine->sampleRate() > 0) {
+    if (isPlaying() && m_audioEngine && m_audioEngine->sampleRate() > 0) {
         uint32_t sr = m_audioEngine->sampleRate();
         int64_t frame = m_audioEngine->currentFrame();
         startTick = static_cast<int64_t>(
@@ -442,6 +455,11 @@ void PlaybackController::shuttleForward()
     if (m_audioEngine)
     {
         m_audioEngine->setPlaybackSpeed(speed);
+        if (!isPlaying()) {
+            const auto frame = static_cast<int64_t>(
+                static_cast<double>(startTick) / 48000.0 * m_audioEngine->sampleRate());
+            m_audioEngine->seekToFrame(frame);
+        }
         m_audioEngine->play();
     }
 
@@ -521,8 +539,9 @@ bool PlaybackController::isPlaying() const noexcept
 
 int64_t PlaybackController::currentTick() const noexcept
 {
-    // If we have a sync clock and it's running, use its position
-    if (m_syncClock && m_syncClock->isRunning())
+    // A shared audio clock may run for another transport while we are paused.
+    // Only follow it while this controller owns active playback.
+    if (isPlaying() && m_syncClock && m_syncClock->isRunning())
         return m_syncClock->currentTick();
 
     // Otherwise use the timeline's stored playhead

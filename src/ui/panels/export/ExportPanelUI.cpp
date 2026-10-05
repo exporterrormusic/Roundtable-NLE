@@ -78,6 +78,7 @@ void ExportPanel::setupUI()
     // m_outputPath holds the authoritative full path (hidden); File Name and
     // Location are editable views onto it.
     m_outputPath = new QLineEdit(settingsWidget);
+    m_outputPath->setObjectName(QStringLiteral("ExportOutputPath"));
     m_outputPath->setVisible(false);
 
     auto* headerForm = new QFormLayout();

@@ -27,6 +27,17 @@
 #include <QThread>
 #include <QTest>
 #include <QTextLayout>
+#include <QSettings>
+#include <QTemporaryDir>
+#include <QSlider>
+#include <QMessageBox>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QTimer>
+#include <QPushButton>
+#include "project/Project.h"
+#include "panels/export/ExportPanel.h"
 
 // MiniTimeline and Viewport are Qt widgets, need headers
 #include "widgets/MiniTimeline.h"
@@ -1757,6 +1768,111 @@ public:
 
 static auto* g_env = ::testing::AddGlobalTestEnvironment(new MonitorTestEnv);
 
+TEST(ExportSettingsTest, QualitySurvivesPanelRecreation)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const auto previousFormat = QSettings::defaultFormat();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+    struct RestoreFormat {
+        QSettings::Format format;
+        ~RestoreFormat() { QSettings::setDefaultFormat(format); }
+    } restore{previousFormat};
+    {
+        ExportPanel panel;
+        auto* quality = panel.findChild<QSlider*>();
+        ASSERT_NE(quality, nullptr);
+        quality->setValue(93);
+        QSettings saved(QSettings::IniFormat, QSettings::UserScope,
+                        QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
+        EXPECT_EQ(saved.value(QStringLiteral("export/lastSettings/quality")).toInt(), 93);
+    }
+    {
+        ExportPanel panel;
+        auto* quality = panel.findChild<QSlider*>();
+        ASSERT_NE(quality, nullptr);
+        EXPECT_EQ(quality->value(), 93);
+        quality->setValue(61);
+    }
+    ExportPanel panel;
+    ASSERT_NE(panel.findChild<QSlider*>(), nullptr);
+    EXPECT_EQ(panel.findChild<QSlider*>()->value(), 61);
+}
+
+TEST(ExportSafetyTest, CancelProtectsDirectAndQueuedDestinations)
+{
+    // Queueing remembers the output folder in the application's native store.
+    // Restore it even if an assertion aborts the test.
+    struct RestoreOutputDirectory {
+        QSettings settings{QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE")};
+        QVariant previous = settings.value(QStringLiteral("export/lastOutputDir"));
+        ~RestoreOutputDirectory() {
+            if (previous.isValid()) settings.setValue(QStringLiteral("export/lastOutputDir"), previous);
+            else settings.remove(QStringLiteral("export/lastOutputDir"));
+        }
+    } restoreDirectory;
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const auto previousFormat = QSettings::defaultFormat();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+    struct RestoreFormat {
+        QSettings::Format format;
+        ~RestoreFormat() { QSettings::setDefaultFormat(format); }
+    } restore{previousFormat};
+
+    for (int mode = 0; mode < 3; ++mode) {
+        auto project = Project::createNew("Overwrite test");
+        ExportPanel panel;
+        panel.setProject(project.get());
+        panel.setTimeline(project->timeline());
+        for (auto* combo : panel.findChildren<QComboBox*>()) {
+            const int wav = combo->findText(QStringLiteral("Waveform / WAV (audio only)"));
+            if (wav >= 0) combo->setCurrentIndex(wav);
+        }
+        auto* output = panel.findChild<QLineEdit*>(QStringLiteral("ExportOutputPath"));
+        ASSERT_NE(output, nullptr);
+        const QString path = directory.filePath(QStringLiteral("export-%1.wav").arg(mode));
+        output->setText(path);
+        if (mode > 0) {
+            ASSERT_TRUE(QMetaObject::invokeMethod(&panel, "onAddToQueue", Qt::DirectConnection));
+            if (mode == 2)
+                ASSERT_TRUE(QMetaObject::invokeMethod(&panel, "onAddToQueue", Qt::DirectConnection));
+        }
+        // Mode 1 creates the file only AFTER enqueueing; mode 2 tests two jobs
+        // sharing a path even when that file does not exist yet.
+        if (mode != 2) {
+            QFile file(path);
+            ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+            file.write("original export");
+        }
+        QSignalSpy started(&panel, &ExportPanel::exportStarted);
+        bool prompted = false;
+        QTimer::singleShot(0, &panel, [&] {
+            auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            EXPECT_NE(box, nullptr);
+            if (!box) return;
+            prompted = box->windowTitle() == QStringLiteral("Replace existing export?");
+            EXPECT_TRUE(box->informativeText().contains(QDir::toNativeSeparators(path)));
+            EXPECT_EQ(box->defaultButton(), box->button(QMessageBox::Cancel));
+            box->reject();
+        });
+        ASSERT_TRUE(QMetaObject::invokeMethod(&panel, mode == 0 ? "onStartExport" : "onStartQueue",
+                                             Qt::DirectConnection));
+        EXPECT_TRUE(prompted);
+        EXPECT_EQ(started.count(), 0);
+        EXPECT_FALSE(panel.isExporting());
+        if (mode != 2) {
+            QFile file(path);
+            ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+            EXPECT_EQ(file.readAll(), QByteArray("original export"));
+        } else {
+            EXPECT_FALSE(QFileInfo::exists(path));
+        }
+    }
+}
+
 TEST(ScopesPanelTest, BackgroundFeedUsesCapturedModeAndRenderSize)
 {
     ScopesPanel panel;
@@ -2347,6 +2463,24 @@ TEST_F(SourceMonitorTest, LoadClipNullPool)
 {
     sm->loadClip(1, nullptr);
     EXPECT_FALSE(sm->hasClip());
+}
+
+TEST_F(SourceMonitorTest, PlayImmediatelyAfterScrubUsesLatestTarget)
+{
+    sm->loadSequence(0, QStringLiteral("Scrub resume"), 480000, 30.0,
+                     1920, 1080,
+                     [](int64_t, uint32_t, uint32_t, bool, ResolutionTier, bool)
+                         -> std::shared_ptr<CachedFrame> { return nullptr; });
+    auto* ruler = sm->findChild<MiniTimeline*>();
+    ASSERT_NE(ruler, nullptr);
+    ruler->scrubbed(240000);
+    // No event-loop/timer delivery between the gesture and Play.
+    EXPECT_EQ(sm->controller()->currentTick(), 240000);
+    sm->controller()->play();
+    ASSERT_TRUE(QMetaObject::invokeMethod(sm.get(), "onPollTimer", Qt::DirectConnection));
+    EXPECT_GE(sm->controller()->currentTick(), 240000);
+    EXPECT_DOUBLE_EQ(sm->controller()->shuttleSpeed(), 1.0);
+    sm->controller()->pause();
 }
 
 TEST_F(SourceMonitorTest, SizeHint)

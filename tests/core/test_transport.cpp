@@ -17,6 +17,7 @@
 
 #include "playback/PlaybackController.h"
 #include "playback/AVSyncClock.h"
+#include "audio/AudioEngine.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
@@ -769,4 +770,42 @@ TEST(Transport, MultipleClipsEditPoints)
 
     ctrl.goToNextEditPoint(); // → 8s
     EXPECT_EQ(ctrl.currentTick(), 8 * TPS);
+}
+
+TEST(Transport, ResumeUsesParkedPlayheadWhenSharedClockIsRunning)
+{
+    TestSetup s;
+    s.controller.seekTo(5 * TPS);
+    // Another transport has started the shared clock at the beginning.
+    s.clock.reset(0);
+    s.clock.setRunning(true);
+    EXPECT_EQ(s.controller.pollPosition(), 5 * TPS);
+    int64_t start = -1;
+    s.controller.onPlayStarting = [&](int64_t tick) { start = tick; };
+    s.controller.play();
+    EXPECT_EQ(start, 5 * TPS);
+    EXPECT_GE(s.controller.currentTick(), 5 * TPS);
+    s.controller.pause();
+    s.controller.seekTo(7 * TPS);
+    s.clock.reset(0);
+    s.clock.setRunning(true);
+    s.controller.play();
+    EXPECT_EQ(start, 7 * TPS);
+}
+
+TEST(Transport, ShuttleFromPauseUsesParkedPositionInsteadOfScrubAudioPosition)
+{
+    for (int mode = 0; mode < 3; ++mode) {
+        TestSetup s;
+        rt::AudioEngine audio;
+        s.controller.setAudioEngine(&audio);
+        s.controller.seekTo(5 * TPS);
+        audio.seekToFrame(0); // shared engine moved independently while paused
+        if (mode == 0) s.controller.shuttleForward();
+        if (mode == 1) s.controller.shuttleReverse();
+        if (mode == 2) s.controller.setShuttleSpeed(0.5);
+        EXPECT_EQ(audio.currentFrame(), 5 * TPS);
+        EXPECT_EQ(s.clock.currentTick(), 5 * TPS);
+        s.controller.setAudioEngine(nullptr);
+    }
 }

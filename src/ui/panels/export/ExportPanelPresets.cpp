@@ -54,6 +54,61 @@
 
 namespace rt {
 
+void ExportPanel::initializeSavedSettings()
+{
+    QSettings settings(QSettings::defaultFormat(), QSettings::UserScope,
+                       QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
+    settings.beginGroup(QStringLiteral("export/lastSettings"));
+
+    // Restore dependencies first: choosing a codec rebuilds profile/container
+    // controls. Use item data so translated labels and reordered lists are safe.
+    const std::pair<const char*, QComboBox*> combos[] = {
+        {"codec", m_codecCombo}, {"profile", m_profileCombo},
+        {"container", m_containerCombo}, {"accel", m_accelCombo},
+        {"fps", m_fpsCombo}, {"audioFormat", m_audioFormatCombo},
+        {"audioBitrate", m_audioBitrateCombo}
+    };
+    for (const auto& [key, combo] : combos) {
+        if (!settings.contains(key)) continue;
+        const int index = combo->findData(settings.value(key));
+        if (index >= 0) combo->setCurrentIndex(index);
+    }
+    m_widthSpin->setValue(settings.value("width", m_widthSpin->value()).toInt());
+    m_heightSpin->setValue(settings.value("height", m_heightSpin->value()).toInt());
+    m_crfSlider->setValue(settings.value("quality", m_crfSlider->value()).toInt());
+    m_matchSequenceCheck->setChecked(settings.value("matchSequence", m_matchSequenceCheck->isChecked()).toBool());
+    m_videoSection->toggle()->setChecked(settings.value("video", videoEnabled()).toBool());
+    m_audioSection->toggle()->setChecked(settings.value("audio", audioEnabled()).toBool());
+    m_alphaCheck->setChecked(settings.value("alpha", m_alphaCheck->isChecked()).toBool());
+    updateAlphaAvailability();
+
+    // Connect only after restoration so initialization cannot overwrite saved
+    // values. Persist edits immediately, including changes made by presets.
+    for (const auto& [key, combo] : combos) {
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, combo, key]() {
+            if (!combo->currentData().isValid()) return;
+            QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
+                        QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
+            s.setValue(QStringLiteral("export/lastSettings/") + QLatin1String(key), combo->currentData());
+            if (combo == m_codecCombo && m_profileCombo->currentData().isValid())
+                s.setValue(QStringLiteral("export/lastSettings/profile"), m_profileCombo->currentData());
+        });
+    }
+    auto save = [](const char* key, const QVariant& value) {
+        QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
+                        QStringLiteral("RoundtableMedia"), QStringLiteral("RoundtableNLE"));
+        s.setValue(QStringLiteral("export/lastSettings/") + QLatin1String(key), value);
+    };
+    connect(m_widthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [save](int v) { save("width", v); });
+    connect(m_heightSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [save](int v) { save("height", v); });
+    connect(m_crfSlider, &QSlider::valueChanged, this, [save](int v) { save("quality", v); });
+    connect(m_matchSequenceCheck, &QCheckBox::toggled, this, [save](bool v) { save("matchSequence", v); });
+    connect(m_videoSection->toggle(), &QAbstractButton::toggled, this, [save](bool v) { save("video", v); });
+    connect(m_audioSection->toggle(), &QAbstractButton::toggled, this, [save](bool v) { save("audio", v); });
+    connect(m_alphaCheck, &QCheckBox::toggled, this, [save](bool v) { save("alpha", v); });
+}
+
 void ExportPanel::populatePresets()
 {
     m_presetCombo->addItem(tr("Custom"), static_cast<int>(ExportPreset::Custom));

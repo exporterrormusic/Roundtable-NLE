@@ -178,8 +178,10 @@ void expectWorkingSetWithinLimits(
     constexpr size_t kMiB = 1024ull * 1024ull;
     EXPECT_LE(stats.compositors.residentEntries, 3u);
     EXPECT_LE(stats.compositors.estimatedBytes, 192u * kMiB);
-    EXPECT_LE(stats.effectProcessors.residentEntries, 4u);
-    EXPECT_LE(stats.effectProcessors.estimatedBytes, 192u * kMiB);
+    // 8 / 1 GiB since v0.34 (GpuContext.h, RenderGpuResources.h): clip-size
+    // and output-size processors must co-reside or they rebuild every frame.
+    EXPECT_LE(stats.effectProcessors.residentEntries, 8u);
+    EXPECT_LE(stats.effectProcessors.estimatedBytes, 1024u * kMiB);
     EXPECT_LE(stats.spineRenderers.residentEntries, 6u);
     EXPECT_LE(stats.spineRenderers.estimatedBytes, 768u * kMiB);
     EXPECT_LE(stats.transitionRenderers.residentEntries, 3u);

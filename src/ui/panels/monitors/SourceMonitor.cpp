@@ -503,14 +503,17 @@ void SourceMonitor::onScrub(int64_t tick)
     if (!m_scrubPending)
         emit scrubbed();
 
-    // Coalesce: just record the latest scrub target.  The poll timer
-    // (16 ms) will pick it up and do a single seek+decode for the most
+    // Coalesce decoding for the latest scrub target. The poll timer
+    // (16 ms) will pick it up and do a single decode for the most
     // recent position, instead of one full-resolution precise-seek per
     // mouse-move event.  On long-GOP H.264 sources each precise seek is
     // 100-300 ms; without coalescing, dragging the playhead generates a
     // huge backlog and feels frozen.
     m_pendingScrubTick = tick;
     m_scrubPending     = true;
+    // Commit transport position immediately so Play before the next timer tick
+    // resumes here. Only decoding/audio scrub work should be deferred.
+    m_controller->seekTo(tick);
     m_scrubQualityActive = true;
 
     // Start settle polling so late prefetch deliveries update the display
@@ -524,13 +527,12 @@ void SourceMonitor::onPollTimer()
 {
     if (!m_hasClip || !m_controller) return;
 
-    // Drain any pending scrub: a single seek+decode for the latest
+    // Drain any pending scrub: a single decode for the latest
     // mouse-move target, regardless of how many scrub events arrived
     // since the last poll.
     const bool hadPendingScrub = m_scrubPending;
     if (m_scrubPending) {
         m_scrubPending = false;
-        m_controller->seekTo(m_pendingScrubTick);
         scrubAudioAt(m_pendingScrubTick);
         emit playheadChanged(m_pendingScrubTick);
     }

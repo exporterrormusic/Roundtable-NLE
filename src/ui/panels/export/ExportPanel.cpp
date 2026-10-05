@@ -59,6 +59,7 @@ ExportPanel::ExportPanel(QWidget* parent)
 {
     m_renderExecutor = new ExportRenderExecutor(this);
     setupUI();
+    initializeSavedSettings();
     setFocusPolicy(Qt::StrongFocus);
 
     m_pollTimer = new QTimer(this);
