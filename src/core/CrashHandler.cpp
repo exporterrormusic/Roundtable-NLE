@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -18,6 +19,7 @@
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -51,6 +53,7 @@ struct CrashHandlerState
 
 #ifdef _WIN32
     LPTOP_LEVEL_EXCEPTION_FILTER        previousFilter{nullptr};
+    wchar_t                             exePathW[MAX_PATH + 1]{};  // stack-safe, for dumps
 #endif
 };
 
@@ -58,6 +61,35 @@ CrashHandlerState& state()
 {
     static CrashHandlerState s;
     return s;
+}
+
+/// Keep the newest `keep` crash_*.dmp files. Nothing ever removed them, and
+/// logs/ had grown to 34 dumps / 3.4 GB. Other files are left alone.
+void pruneOldCrashDumps(const std::filesystem::path& dir, size_t keep)
+{
+    try {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        std::vector<std::pair<fs::file_time_type, fs::path>> dumps;
+        for (const auto& entry : fs::directory_iterator(dir, ec)) {
+            const auto name = entry.path().filename().wstring();
+            if (!entry.is_regular_file(ec) || name.rfind(L"crash_", 0) != 0 ||
+                entry.path().extension() != L".dmp")
+                continue;
+            dumps.emplace_back(entry.last_write_time(ec), entry.path());
+        }
+        if (dumps.size() <= keep) return;
+        std::sort(dumps.begin(), dumps.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        size_t removed = 0;
+        for (size_t i = keep; i < dumps.size(); ++i)
+            if (fs::remove(dumps[i].second, ec)) ++removed;
+        if (removed > 0)
+            spdlog::info("CrashHandler: removed {} old crash dump(s), kept the newest {}",
+                         removed, keep);
+    } catch (const std::exception& e) {
+        spdlog::warn("CrashHandler: could not prune old crash dumps: {}", e.what());
+    }
 }
 
 // Lock-free flag set by App::~App at the start of Phase 1.  The SEH
@@ -241,6 +273,39 @@ std::string exceptionCodeToString(DWORD code)
     }
 }
 
+/// Data segments (globals) only for the app's own executable -- all app
+/// code links into it. The CUDA/cuBLAS, Qt and FFmpeg DLLs' data segments
+/// are what made each dump ~174 MB (41 MB before cuBLAS shipped).
+/// Called inside the crashing process: no allocation.
+BOOL CALLBACK ownDataSegmentsOnly(PVOID /*param*/,
+                                  const PMINIDUMP_CALLBACK_INPUT input,
+                                  PMINIDUMP_CALLBACK_OUTPUT output)
+{
+    if (!input || !output) return FALSE;
+    switch (input->CallbackType) {
+    case ModuleCallback:
+        if ((output->ModuleWriteFlags & ModuleWriteDataSeg) &&
+            (!input->Module.FullPath ||
+             _wcsicmp(input->Module.FullPath, state().exePathW) != 0))
+            output->ModuleWriteFlags &= ~ModuleWriteDataSeg;
+        return TRUE;
+    // Every module and thread, as without a callback.
+    case IncludeModuleCallback:
+    case IncludeThreadCallback:
+    case ThreadCallback:
+        return TRUE;
+    case CancelCallback:   // stop asking
+        output->CheckCancel = FALSE;
+        output->Cancel = FALSE;
+        return TRUE;
+    // Anything else (extra memory, custom I/O, VM queries...) declined:
+    // DbgHelp's defaults. Accepting IoStartCallback made it expect this
+    // callback to write the file, and the dump failed.
+    default:
+        return FALSE;
+    }
+}
+
 bool writeMiniDump(const std::filesystem::path& dumpPath,
                    EXCEPTION_POINTERS*          exInfo)
 {
@@ -261,6 +326,9 @@ bool writeMiniDump(const std::filesystem::path& dumpPath,
     mdei.ExceptionPointers = exInfo;
     mdei.ClientPointers    = FALSE;
 
+    MINIDUMP_CALLBACK_INFORMATION callback{};
+    callback.CallbackRoutine = ownDataSegmentsOnly;
+
     BOOL result = MiniDumpWriteDump(
         GetCurrentProcess(),
         GetCurrentProcessId(),
@@ -268,7 +336,7 @@ bool writeMiniDump(const std::filesystem::path& dumpPath,
         MiniDumpWithDataSegs,
         exInfo ? &mdei : nullptr,
         nullptr,
-        nullptr);
+        &callback);
 
     CloseHandle(hFile);
     return result != FALSE;
@@ -817,6 +885,10 @@ void CrashHandler::install(const std::filesystem::path& crashDir)
         spdlog::error("CrashHandler: failed to create crash dir '{}': {}",
                        pathToUtf8(crashDir), e.what());
     }
+    pruneOldCrashDumps(crashDir, kKeptCrashDumps);
+#ifdef _WIN32
+    GetModuleFileNameW(nullptr, s.exePathW, MAX_PATH);
+#endif
 
     installPlatformHandler();
     s.installed = true;
@@ -995,6 +1067,21 @@ void CrashHandler::notifyShutdownStarted() noexcept
 bool CrashHandler::isShutdownInProgress() noexcept
 {
     return shutdownInProgressFlag().load(std::memory_order_acquire);
+}
+
+bool CrashHandler::writeDump(const std::filesystem::path& path)
+{
+#ifdef _WIN32
+    if (state().exePathW[0] == L'\0')
+        GetModuleFileNameW(nullptr, state().exePathW, MAX_PATH);
+    if (writeMiniDump(path, nullptr)) return true;
+    spdlog::warn("CrashHandler: MiniDumpWriteDump failed (error 0x{:08x})",
+                 static_cast<unsigned>(GetLastError()));
+    return false;
+#else
+    (void)path;
+    return false;
+#endif
 }
 
 std::filesystem::path CrashHandler::nextDumpPath()

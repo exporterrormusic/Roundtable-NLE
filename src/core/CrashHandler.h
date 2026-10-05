@@ -55,6 +55,10 @@ public:
     /// @param crashDir  Directory where crash dumps and logs are written.
     static void install(const std::filesystem::path& crashDir = "crash_logs");
 
+    /// Crash dumps kept in the crash directory; install() deletes older
+    /// crash_*.dmp files (nothing else in the directory is touched).
+    static constexpr size_t kKeptCrashDumps = 5;
+
     /// Uninstall the crash handler (restores default OS behavior).
     static void uninstall();
 
@@ -101,6 +105,9 @@ public:
 
     /// Get the path where the next crash dump would be written.
     [[nodiscard]] static std::filesystem::path nextDumpPath();
+
+    /// Write a minidump of the running process now (diagnostics, tests).
+    static bool writeDump(const std::filesystem::path& path);
 
     /// Get the path to the crash log file.
     [[nodiscard]] static std::filesystem::path crashLogPath();

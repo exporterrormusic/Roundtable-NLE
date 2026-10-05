@@ -681,6 +681,53 @@ protected:
     }
 };
 
+// Dumps used to pile up forever (34 dumps / 3.4 GB in logs/). Installing
+// keeps the newest few crash_*.dmp files and touches nothing else.
+TEST_F(CrashHandlerTest, InstallKeepsOnlyTheNewestCrashDumps)
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = crashDir / "prune";
+    fs::create_directories(dir);
+    const auto now = fs::file_time_type::clock::now();
+    constexpr int kDumps = static_cast<int>(rt::CrashHandler::kKeptCrashDumps) + 3;
+    for (int i = 0; i < kDumps; ++i) {
+        const fs::path dump = dir / ("crash_2026010" + std::to_string(i) + "_000000.dmp");
+        std::ofstream(dump) << "dump";
+        fs::last_write_time(dump, now - std::chrono::hours(kDumps - i));   // i = newer
+    }
+    std::ofstream(dir / "crash_log.txt") << "log";
+    std::ofstream(dir / "notes.dmp") << "not a crash dump";
+
+    rt::CrashHandler::install(dir);
+    rt::CrashHandler::uninstall();
+
+    int dumpsLeft = 0;
+    for (const auto& entry : fs::directory_iterator(dir))
+        if (entry.path().filename().string().rfind("crash_2026", 0) == 0) ++dumpsLeft;
+    EXPECT_EQ(dumpsLeft, static_cast<int>(rt::CrashHandler::kKeptCrashDumps));
+    for (int i = kDumps - static_cast<int>(rt::CrashHandler::kKeptCrashDumps); i < kDumps; ++i)
+        EXPECT_TRUE(fs::exists(dir / ("crash_2026010" + std::to_string(i) + "_000000.dmp")))
+            << "newest dump " << i;
+    EXPECT_TRUE(fs::exists(dir / "crash_log.txt"));
+    EXPECT_TRUE(fs::exists(dir / "notes.dmp"));
+}
+
+// Dumps keep only the executable's own data segments: the CUDA/Qt/FFmpeg
+// DLLs' globals made every crash dump ~174 MB.
+TEST_F(CrashHandlerTest, DumpIsWrittenAndStaysSmall)
+{
+#ifdef _WIN32
+    const fs::path dump = crashDir / "self.dmp";
+    ASSERT_TRUE(rt::CrashHandler::writeDump(dump));
+    ASSERT_TRUE(fs::exists(dump));
+    const auto bytes = fs::file_size(dump);
+    EXPECT_GT(bytes, 16u * 1024u);                  // a real dump, not an empty file
+    EXPECT_LT(bytes, 64ull * 1024ull * 1024ull);    // no third-party data segments
+#else
+    GTEST_SKIP() << "minidumps are Windows-only";
+#endif
+}
+
 TEST_F(CrashHandlerTest, InitiallyNotInstalled)
 {
     EXPECT_FALSE(rt::CrashHandler::isInstalled());
