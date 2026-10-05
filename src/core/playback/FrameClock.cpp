@@ -6,6 +6,7 @@
 #include "playback/FrameClock.h"
 #include "playback/PlaybackController.h"
 #include "playback/AVSyncClock.h"
+#include "FrameTime.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -125,11 +126,13 @@ void FrameClock::clockLoop()
             // Read current audio clock position
             const int64_t tick = m_controller->currentTick();
 
-            // Snap to frame boundary
-            const int64_t ticksPerFrame = (fps > 0.0)
-                ? static_cast<int64_t>(48000.0 / fps) : 1600;
-            const int64_t frameNum = tick / ticksPerFrame;
-            const int64_t snappedTick = frameNum * ticksPerFrame;
+            // Snap to the canonical frame grid (FrameTime.h) — the same ticks
+            // export and "Render In to Out" key on. A truncated 48000/fps
+            // (1601 at 29.97) drifted a frame every ~100 s: a repeated frame
+            // each time, and pre-rendered segments never hit.
+            const RationalFrameRate rate = canonicalFrameRate(fps);
+            const int64_t frameNum = tickToFrameIndex(tick, rate);
+            const int64_t snappedTick = frameIndexToTick(frameNum, rate);
 
             // Fire callback
             if (m_frameCB) {
@@ -200,7 +203,7 @@ void FrameClock::clockLoop()
                 lastRequestedFrame  = requestFrameNum;
                 lastRequestDir      = dir;
                 lastResetGeneration = resetGeneration;
-                m_frameCB(requestFrameNum * ticksPerFrame, requestFrameNum);
+                m_frameCB(frameIndexToTick(requestFrameNum, rate), requestFrameNum);
             }
 
         } else {

@@ -531,23 +531,30 @@ try
     // (Full) and reduced playback (Half/…) keyed apart.
     const ResolutionTier segmentTier = requestTier;
     const auto segmentLookupStart = std::chrono::steady_clock::now();
+    // Segments are stored at canonical frame STARTS (renderRangeToCache).
+    // A preview tick inside a frame shows that frame, so look up its start.
+    // Export ticks are already exact on the EXPORT grid, which can differ
+    // from the sequence rate — use them as-is.
+    const int64_t segmentTick = (policy.forceFullResolution || !renderTimeline)
+        ? tick
+        : frameStartAtOrBefore(tick, renderTimeline->settings().frameGrid());
     if ((m_segmentCacheReadEnabled.load(std::memory_order_relaxed)
              || policy.forceFullResolution)
             && !isNestedRecursion && m_segmentRenderCache
-            && m_segmentRenderCache->hasCandidate(tick, segmentTier)) {
+            && m_segmentRenderCache->hasCandidate(segmentTick, segmentTier)) {
         const ResolutionTier tier = segmentTier;
         const uint32_t renderFlags = policy.preserveAlpha
             ? RenderStatePreserveAlpha : RenderStateNone;
         const uint64_t cfgHash = hashCompositeConfigAt(
-            *renderTimeline, tick, renderProject, renderFlags);
-        auto cached = m_segmentRenderCache->get(tick, tier, cfgHash);
+            *renderTimeline, segmentTick, renderProject, renderFlags);
+        auto cached = m_segmentRenderCache->get(segmentTick, tier, cfgHash);
         if (!cached) {
             // The (tick,tier,hash) key isn't present — the common, expected
             // case for any not-yet-rendered frame.  Debug-only tally.
             const uint64_t n = ++m_segCacheKeyMiss;
             if (n == 1 || (n % 600) == 0)
                 spdlog::debug("[SEGCACHE] miss #{}: tick={} tier={} cfgHash={:#x}",
-                              n, tick, static_cast<int>(tier), cfgHash);
+                              n, segmentTick, static_cast<int>(tier), cfgHash);
         }
         if (cached) {
             if (cached->width == outW && cached->height == outH

@@ -296,7 +296,10 @@ void TimelineRuler::mouseReleaseEvent(QMouseEvent* event)
 void TimelineRuler::scrubToPosition(int x)
 {
     if (!m_engine) return;
-    int64_t tick = m_engine->pixelXToTime(static_cast<double>(x));
+    // Park on the start of the frame under the cursor, like other NLEs:
+    // the picture is the same, and edits at the playhead stay frame-exact.
+    const int64_t tick = m_engine->frameStartAt(
+        m_engine->pixelXToTime(static_cast<double>(x)));
     m_playheadTick = tick;
     update();
     emit playheadScrubbed(tick);

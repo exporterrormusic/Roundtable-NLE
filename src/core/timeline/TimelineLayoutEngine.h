@@ -217,8 +217,11 @@ public:
 
     // ── Snapping ────────────────────────────────────────────────────────
 
-    /// Snap a pixel X to the nearest frame boundary.
+    /// Snap a tick (or a signed offset) to the nearest frame boundary.
     [[nodiscard]] int64_t snapToFrame(int64_t tick) const;
+
+    /// Start of the frame on screen at `tick` (the playhead parks here).
+    [[nodiscard]] int64_t frameStartAt(int64_t tick) const;
 
     /// Snap a pixel X to the nearest ruler mark.
     [[nodiscard]] int64_t snapToGrid(int64_t tick) const;

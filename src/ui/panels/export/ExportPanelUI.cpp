@@ -401,13 +401,21 @@ void ExportPanel::setupUI()
             m_playPauseBtn->setText(QStringLiteral("▶")); // ▶
             if (m_playbackController) {
                 m_playbackController->pause();
-                // Restore the main timeline's saved playhead so scrubbing
-                // in the export preview doesn't move the main timeline.
+                // Restore the shared transport's rate and the main
+                // timeline's saved playhead so scrubbing in the export
+                // preview doesn't change the main timeline.
+                if (m_savedMainFrameRate > 0.0) {
+                    m_playbackController->setFrameRate(m_savedMainFrameRate);
+                    m_savedMainFrameRate = 0.0;
+                }
                 if (m_savedMainPlayhead >= 0) {
                     m_playbackController->seekTo(m_savedMainPlayhead);
                     m_savedMainPlayhead = -1;
                 }
             }
+            // Play suspended the Program Monitor's pipeline; resume it
+            // (the Play/Pause stop path does the same).
+            emit previewPlaybackToggled(false);
         }
 
         // Do NOT seek the shared PlaybackController here — the export

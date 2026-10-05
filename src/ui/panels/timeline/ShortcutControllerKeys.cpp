@@ -29,6 +29,7 @@
 #include "timeline/EditOperations.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
+#include "FrameTime.h"
 
 #include <algorithm>
 #include <limits>
@@ -460,9 +461,8 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         if (m_ws->timeline() && m_ws->commandStack() && m_ws->timelinePanel() && m_ws->project()) {
             const auto& selClips = m_ws->timelinePanel()->selection().clips();
             if (!selClips.empty()) {
-                const int64_t ticksPerFrame = m_ws->project()->settings().ticksPerFrame();
+                const RationalFrameRate grid = m_ws->project()->settings().frameGrid();
                 const int frames = (shiftOnly ? 5 : 1) * (keyLeft ? -1 : 1);
-                int64_t deltaTicks = frames * ticksPerFrame;
 
                 // Group-floor clamp: never let the leftmost selected clip
                 // slide past tick 0 (matches the drag-move group clamp).
@@ -477,6 +477,12 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 if (minIn == std::numeric_limits<int64_t>::max()) {
                     event->accept(); return;
                 }
+                // Land the leftmost clip on the frame `frames` away and move
+                // the selection with it. NTSC frames alternate 1601/1602
+                // ticks, so `frames * ticksPerFrame` drifted off the grid.
+                const int64_t targetFrame = std::max<int64_t>(
+                    0, nearestFrameIndex(minIn, grid) + frames);
+                int64_t deltaTicks = frameIndexToTick(targetFrame, grid) - minIn;
                 if (deltaTicks < -minIn) deltaTicks = -minIn;
 
                 if (deltaTicks != 0) {

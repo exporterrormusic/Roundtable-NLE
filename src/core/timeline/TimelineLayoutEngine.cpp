@@ -3,6 +3,7 @@
  */
 
 #include "timeline/TimelineLayoutEngine.h"
+#include "FrameTime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -454,9 +455,14 @@ void TimelineLayoutEngine::applyScrollbarResize(double newHandleStart, double ne
 
 int64_t TimelineLayoutEngine::snapToFrame(int64_t tick) const
 {
-    double ticksPerFrame = kTicksPerSecond / m_frameRate;
-    int64_t frame = static_cast<int64_t>(std::round(tick / ticksPerFrame));
-    return static_cast<int64_t>(frame * ticksPerFrame);
+    // Canonical frame starts (FrameTime.h): truncating frame * 1601.6 put
+    // NTSC frame starts one tick early, onto the previous frame.
+    return snapTickToNearestFrame(tick, canonicalFrameRate(m_frameRate));
+}
+
+int64_t TimelineLayoutEngine::frameStartAt(int64_t tick) const
+{
+    return frameStartAtOrBefore(tick, canonicalFrameRate(m_frameRate));
 }
 
 int64_t TimelineLayoutEngine::snapToGrid(int64_t tick) const

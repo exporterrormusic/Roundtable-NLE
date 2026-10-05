@@ -9,6 +9,7 @@
 #include "timeline/EditOperations.h"
 #include "playback/AVSyncClock.h"
 #include "audio/AudioEngine.h"
+#include "FrameTime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +17,16 @@
 #include <cstdio>
 
 namespace rt {
+
+namespace {
+
+/// Frame grid for a transport rate; unset rates fall back to 24 fps.
+RationalFrameRate transportFrameGrid(double fps) noexcept
+{
+    return canonicalFrameRate(fps > 0.0 ? fps : 24.0);
+}
+
+} // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Timecode helpers
@@ -34,11 +45,13 @@ Timecode tickToTimecode(int64_t tick, double fps) noexcept
     if (fps <= 0.0) fps = 24.0;
     if (tick < 0) tick = 0;
 
-    const double totalSeconds = static_cast<double>(tick) / 48000.0;
-
     Timecode tc;
-    int64_t totalFrames = static_cast<int64_t>(totalSeconds * fps);
+    // The frame on screen at `tick`. Truncating seconds * fps labelled a
+    // playhead parked exactly on an NTSC frame start (29.97 frame 2 = tick
+    // 3203 = 1.9999 frames) as the frame before it.
+    const int64_t totalFrames = tickToFrameIndex(tick, transportFrameGrid(fps));
 
+    // Non-drop-frame labels: count frames at the nominal rate (30 for 29.97).
     int fpsi = static_cast<int>(std::round(fps));
     if (fpsi <= 0) fpsi = 24;
 
@@ -56,13 +69,14 @@ int64_t timecodeToTick(const Timecode& tc, double fps) noexcept
 {
     if (fps <= 0.0) fps = 24.0;
 
-    double totalSeconds =
-        tc.hours * 3600.0 +
-        tc.minutes * 60.0 +
-        tc.seconds +
-        tc.frames / fps;
-
-    return static_cast<int64_t>(totalSeconds * 48000.0);
+    // Inverse of tickToTimecode: a non-drop label counts frames at the
+    // nominal rate, so 00:00:01:00 at 29.97 is frame 30, not 1.0 s.
+    int fpsi = static_cast<int>(std::round(fps));
+    if (fpsi <= 0) fpsi = 24;
+    const int64_t totalSeconds =
+        (static_cast<int64_t>(tc.hours) * 60 + tc.minutes) * 60 + tc.seconds;
+    const int64_t frame = totalSeconds * fpsi + tc.frames;
+    return frameIndexToTick(std::max<int64_t>(0, frame), transportFrameGrid(fps));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -174,7 +188,10 @@ void PlaybackController::pause()
     // once stopped.  At shuttle speeds >1x the extrapolated position
     // can be several frames ahead of m_tick, so stopping first would
     // cause the playhead to visibly jump backward.
-    const int64_t pauseTick = currentTick();
+    // Park on the start of the frame on screen: the picture is unchanged,
+    // and edits made at the playhead (razor, insert) land on a frame
+    // boundary instead of mid-frame.
+    const int64_t pauseTick = frameStartAtOrBefore(currentTick(), transportFrameGrid(m_fps));
 
     m_shuttleSpeed = 0.0;
     m_jShuttleLevel = 0;
@@ -267,8 +284,9 @@ void PlaybackController::stepForward()
     if (m_state == PlayState::Playing || m_state == PlayState::Shuttling)
         pause();
 
-    int64_t step = ticksPerFrame();
-    int64_t newTick = currentTick() + step;
+    // Next frame START on the canonical grid (NTSC frames alternate
+    // 1601/1602 ticks; adding a fixed step drifts off it).
+    int64_t newTick = stepFrames(currentTick(), 1, transportFrameGrid(m_fps));
 
     // Clamp to timeline duration (only if timeline has content)
     if (m_timeline && m_timeline->duration() > 0)
@@ -285,8 +303,7 @@ void PlaybackController::stepBackward()
     if (m_state == PlayState::Playing || m_state == PlayState::Shuttling)
         pause();
 
-    int64_t step = ticksPerFrame();
-    int64_t newTick = std::max<int64_t>(0, currentTick() - step);
+    const int64_t newTick = stepFrames(currentTick(), -1, transportFrameGrid(m_fps));
 
     seekInternal(newTick);
 
@@ -643,12 +660,6 @@ int64_t PlaybackController::pollPosition()
 }
 
 // ── Private ─────────────────────────────────────────────────────────────────
-
-int64_t PlaybackController::ticksPerFrame() const noexcept
-{
-    if (m_fps <= 0.0) return 2000; // fallback to ~24fps
-    return static_cast<int64_t>(48000.0 / m_fps);
-}
 
 int64_t PlaybackController::applyLoopBounds(int64_t tick) const
 {

@@ -161,6 +161,12 @@ TEST(SettingsTest, TicksPerFrame)
 
     s.setFrameRate(24.0);
     EXPECT_EQ(s.ticksPerFrame(), 2000); // 48000 / 24
+
+    // NTSC: the nominal (rounded) length, not a truncated 1601.
+    s.setFrameRate(29.97);
+    EXPECT_EQ(s.ticksPerFrame(), 1602);
+    EXPECT_EQ(s.frameGrid().numerator, 30000u);
+    EXPECT_EQ(s.frameGrid().denominator, 1001u);
 }
 
 TEST(SettingsTest, Equality)
@@ -789,6 +795,147 @@ TEST_F(SerializerTest, AudioClipDefaultStreamIsAuto)
     }
     ASSERT_NE(ac, nullptr);
     EXPECT_EQ(ac->audioStreamIndex(), -1);
+}
+
+// Pre-v46 files get a ONE-TIME frame alignment onto the canonical grid
+// playback and export sample on (FrameTime.h). Older builds re-snapped every
+// load onto int(48000/29.97) = 1601, moving correctly placed NTSC cuts by up
+// to half a frame. Visual clips snap; audio only follows its linked video;
+// free audio keeps its exact position and length; every sequence uses its
+// own grid; v46+ files load verbatim.
+namespace {
+const Clip* findClipById(const Timeline* tl, uint64_t id)
+{
+    for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
+        const Track* tr = tl->track(ti);
+        const size_t ci = tr->findClipIndexById(id);
+        if (ci < tr->clipCount()) return tr->clip(ci);
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_F(SerializerTest, PreV46FrameAlignSnapsVisualClipsOnceToTheCanonicalGrid)
+{
+    constexpr RationalFrameRate ntsc{30000, 1001};
+    constexpr RationalFrameRate film{24000, 1001};
+    auto p = std::make_unique<Project>();
+    p->settings().setFrameRate(29.97);
+    auto* vt = p->timeline()->addVideoTrack("Video 1");
+    auto* at = p->timeline()->addAudioTrack("Audio 1");
+
+    auto onGrid = std::make_unique<VideoClip>();         // frames 300..600
+    onGrid->setTimelineIn(frameIndexToTick(300, ntsc));
+    onGrid->setDuration(frameIndexToTick(600, ntsc) - frameIndexToTick(300, ntsc));
+    const uint64_t onGridId = onGrid->id();
+    vt->addClip(std::move(onGrid));
+
+    auto oldGrid = std::make_unique<VideoClip>();        // old 1601 grid, 900..930
+    oldGrid->setTimelineIn(900 * 1601);
+    oldGrid->setDuration(30 * 1601);
+    const uint64_t oldGridId = oldGrid->id();
+    oldGrid->setLinkId(oldGridId);
+    vt->addClip(std::move(oldGrid));
+
+    auto sliver = std::make_unique<VideoClip>();         // shorter than a frame
+    sliver->setTimelineIn(frameIndexToTick(1000, ntsc));
+    sliver->setDuration(500);
+    const uint64_t sliverId = sliver->id();
+    vt->addClip(std::move(sliver));
+
+    auto linked = std::make_unique<AudioClip>();         // companion of oldGrid
+    linked->setTimelineIn(900 * 1601);
+    linked->setDuration(30 * 1601 + 7);
+    linked->setLinkId(oldGridId);
+    const uint64_t linkedId = linked->id();
+    at->addClip(std::move(linked));
+
+    auto blip = std::make_unique<AudioClip>();           // free sub-frame audio
+    blip->setTimelineIn(frameIndexToTick(100, ntsc) + 123);
+    blip->setDuration(500);
+    const uint64_t blipId = blip->id();
+    at->addClip(std::move(blip));
+
+    Timeline* seq2 = p->addSequence("Film");
+    seq2->settings().setFrameRate(24000.0 / 1001.0);   // as probed from media
+    auto* vt2 = seq2->addVideoTrack("Video 1");
+    auto filmClip = std::make_unique<VideoClip>();       // old 2001 grid, 700..724
+    filmClip->setTimelineIn(700 * 2001);
+    filmClip->setDuration(24 * 2001);
+    const uint64_t filmId = filmClip->id();
+    vt2->addClip(std::move(filmClip));
+
+    auto bytes = serializer.serialize(*p);
+    ASSERT_GE(bytes.size(), 12u);
+    ASSERT_EQ(bytes[8], ProjectSerializer::FORMAT_VERSION);  // LE u32 after magic
+    bytes[8] = 45;  // same layout; v46 added no bytes
+
+    auto loaded = serializer.deserialize(bytes);
+    ASSERT_NE(loaded, nullptr);
+    const Timeline* tl = loaded->sequence(0);
+    ASSERT_NE(tl, nullptr);
+
+    const Clip* a = findClipById(tl, onGridId);
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->timelineIn(), frameIndexToTick(300, ntsc));   // untouched
+    EXPECT_EQ(a->timelineOut(), frameIndexToTick(600, ntsc));
+
+    const Clip* b = findClipById(tl, oldGridId);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(b->timelineIn(), frameIndexToTick(900, ntsc));   // pulled on-grid
+    EXPECT_EQ(b->timelineOut(), frameIndexToTick(930, ntsc));
+
+    const Clip* s = findClipById(tl, sliverId);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(s->timelineIn(), frameIndexToTick(1000, ntsc));
+    EXPECT_EQ(s->timelineOut(), frameIndexToTick(1001, ntsc)); // one whole frame
+
+    const Clip* l = findClipById(tl, linkedId);
+    ASSERT_NE(l, nullptr);
+    EXPECT_EQ(l->timelineIn(), frameIndexToTick(900, ntsc));   // follows its video
+    EXPECT_EQ(l->duration(), 30 * 1601 + 7);                   // length kept
+
+    const Clip* c = findClipById(tl, blipId);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->timelineIn(), frameIndexToTick(100, ntsc) + 123);  // exact
+    EXPECT_EQ(c->duration(), 500);
+
+    const Timeline* tl2 = loaded->sequence(1);
+    ASSERT_NE(tl2, nullptr);
+    const Clip* f = findClipById(tl2, filmId);
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(f->timelineIn(), frameIndexToTick(700, film));   // its own grid
+    EXPECT_EQ(f->timelineOut(), frameIndexToTick(724, film));
+}
+
+TEST_F(SerializerTest, CurrentFormatLoadKeepsSubFramePositions)
+{
+    auto p = std::make_unique<Project>();
+    p->settings().setFrameRate(29.97);
+    auto* vt = p->timeline()->addVideoTrack("Video 1");
+    auto* at = p->timeline()->addAudioTrack("Audio 1");
+
+    auto video = std::make_unique<VideoClip>();
+    video->setTimelineIn(900 * 1601);
+    video->setDuration(30 * 1601);
+    const uint64_t videoId = video->id();
+    vt->addClip(std::move(video));
+
+    auto audio = std::make_unique<AudioClip>();
+    audio->setTimelineIn(48123);
+    audio->setDuration(500);
+    const uint64_t audioId = audio->id();
+    at->addClip(std::move(audio));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*p));
+    ASSERT_NE(loaded, nullptr);
+    const Clip* v = findClipById(loaded->timeline(), videoId);
+    const Clip* a = findClipById(loaded->timeline(), audioId);
+    ASSERT_TRUE(v && a);
+    EXPECT_EQ(v->timelineIn(), 900 * 1601);
+    EXPECT_EQ(v->duration(), 30 * 1601);
+    EXPECT_EQ(a->timelineIn(), 48123);
+    EXPECT_EQ(a->duration(), 500);
 }
 
 TEST_F(SerializerTest, AdjustmentClipRoundTrip)

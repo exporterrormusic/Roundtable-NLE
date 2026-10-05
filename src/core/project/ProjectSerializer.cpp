@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <algorithm>
+#include <unordered_map>
 #include <spdlog/spdlog.h>
 
 namespace rt {
@@ -140,6 +141,61 @@ int migrateLegacyMasks(Project& project)
         }
     }
     return migrated;
+}
+
+// Pre-v46 files: clips placed before drag/export frame-snapping can sit on
+// fractional-frame ticks, and a visual clip whose end overhangs a frame
+// boundary renders one extra frame (the "ghost" of a character that should
+// have left at a shot cut). Older builds also re-snapped every load onto a
+// whole-tick 48000/fps grid (1601 at 29.97) that drifts off the canonical
+// one by a frame every ~100 s. Snap visual clips once onto each sequence's
+// canonical grid (FrameTime.h). Audio never needed frame alignment, so it
+// only follows its linked video by the same shift to keep A/V sync; free
+// audio keeps its exact position and length.
+int alignLegacyClipsToFrameGrid(Project& project)
+{
+    int adjusted = 0;
+    for (size_t si = 0; si < project.sequenceCount(); ++si) {
+        Timeline* timeline = project.sequence(si);
+        if (!timeline) continue;
+        const RationalFrameRate grid = timeline->settings().frameGrid();
+        std::unordered_map<uint64_t, int64_t> linkShift;
+
+        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+            Track* track = timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                Clip* clip = track->clip(ci);
+                if (!clip || clip->isAudio()) continue;
+                const int64_t inQ = snapTickToNearestFrame(clip->timelineIn(), grid);
+                int64_t outQ = snapTickToNearestFrame(clip->timelineOut(), grid);
+                if (outQ <= inQ)   // keep at least 1 frame
+                    outQ = frameIndexToTick(tickToFrameIndex(inQ, grid) + 1, grid);
+                if (clip->linkId() != 0)
+                    linkShift.try_emplace(clip->linkId(), inQ - clip->timelineIn());
+                if (inQ != clip->timelineIn() || outQ != clip->timelineOut()) {
+                    clip->setTimelineIn(inQ);
+                    clip->setDuration(outQ - inQ);
+                    ++adjusted;
+                }
+            }
+        }
+
+        if (linkShift.empty()) continue;
+        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
+            Track* track = timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+                Clip* clip = track->clip(ci);
+                if (!clip || !clip->isAudio() || clip->linkId() == 0) continue;
+                const auto it = linkShift.find(clip->linkId());
+                if (it == linkShift.end() || it->second == 0) continue;
+                clip->setTimelineIn(std::max<int64_t>(0, clip->timelineIn() + it->second));
+                ++adjusted;
+            }
+        }
+    }
+    return adjusted;
 }
 
 // Remove duplicate transitions left on a track.  Track::addTransition does a
@@ -1060,40 +1116,14 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
             migratedMaskCount);
     }
 
-    // ── Frame-align migration ───────────────────────────────────────────
-    // Clips placed before drag/export frame-snapping can have boundaries on
-    // fractional-frame ticks (timeline ticks run at 48000/sec; a frame is
-    // 48000/fps ticks). Playback samples on exact frame boundaries, so a
-    // clip whose end overhangs a boundary by a sub-frame renders one extra
-    // frame — the 1-frame "ghost" of a character that should have left at a
-    // shot cut. Snap every clip's in/out to the nearest whole frame so the
-    // boundaries the user aligned by eye are exact. Idempotent (re-running
-    // on already-aligned clips is a no-op).
-    if (Timeline* tl = project->timeline()) {
-        const int64_t tpf = project->settings().ticksPerFrame();
-        if (tpf > 0) {
-            auto q = [tpf](int64_t t) { return ((t + tpf / 2) / tpf) * tpf; };
-            int adjusted = 0;
-            for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
-                Track* trk = tl->track(ti);
-                if (!trk) continue;
-                for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
-                    Clip* c = trk->clip(ci);
-                    if (!c) continue;
-                    const int64_t inQ  = q(c->timelineIn());
-                    int64_t       outQ = q(c->timelineOut());
-                    if (outQ <= inQ) outQ = inQ + tpf;   // keep at least 1 frame
-                    if (inQ != c->timelineIn() || outQ != c->timelineOut()) {
-                        c->setTimelineIn(inQ);
-                        c->setDuration(outQ - inQ);
-                        ++adjusted;
-                    }
-                }
-            }
-            if (adjusted > 0)
-                spdlog::info("ProjectSerializer: frame-aligned {} clip boundaries "
-                             "(tpf={})", adjusted, tpf);
-        }
+    // One-time frame-align migration (see alignLegacyClipsToFrameGrid).
+    // v46+ files were edited on the canonical grid; re-snapping them on
+    // every load would keep moving deliberate sub-frame audio placements.
+    if (version < 46) {
+        const int aligned = alignLegacyClipsToFrameGrid(*project);
+        if (aligned > 0)
+            spdlog::info("ProjectSerializer: frame-aligned {} clip(s) from a v{} file",
+                         aligned, version);
     }
 
     project->setModified(false);

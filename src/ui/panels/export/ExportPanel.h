@@ -393,6 +393,7 @@ private:
     // Saved main timeline playhead — restored when export playback stops
     // so the main timeline stays where the user left it.
     int64_t       m_savedMainPlayhead{-1};
+    double        m_savedMainFrameRate{0.0};   ///< transport rate before preview play
 
     // Output
     QLineEdit*    m_outputPath{nullptr};

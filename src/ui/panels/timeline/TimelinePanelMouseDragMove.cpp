@@ -15,6 +15,7 @@
 #include "command/CommandStack.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TransitionCmds.h"
+#include "FrameTime.h"
 
 #include <QApplication>
 #include <QMouseEvent>
@@ -248,14 +249,31 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     // a clip's end overhang the frame boundary the compositor samples on —
     // showing a 1-frame ghost at shot cuts. Snap-to-edge (below) still
     // overrides this when the magnet engages.
+    // NTSC frames alternate 1601/1602 ticks, so a fixed whole-frame step
+    // drifts off the grid playback samples on: land the dragged EDGE on a
+    // canonical frame start instead (FrameTime.h).
     {
         const double fps = m_layoutEngine.frameRate();
         if (fps > 0.0) {
-            const int64_t tpf = static_cast<int64_t>(48000.0 / fps + 0.5);
-            if (tpf > 0) {
-                const int64_t half = (tickDelta >= 0) ? tpf / 2 : -(tpf / 2);
-                tickDelta = ((tickDelta + half) / tpf) * tpf;
+            const RationalFrameRate grid = canonicalFrameRate(fps);
+            int64_t anchor = -1;
+            switch (m_dragMode) {
+            case DragMode::ClipMove:
+            case DragMode::ClipTrimHead:
+                anchor = m_dragOriginalIn;
+                break;
+            case DragMode::ClipTrimTail:
+                anchor = m_dragOriginalIn + m_dragOriginalDuration;
+                break;
+            case DragMode::RollingEdit:
+                anchor = m_rollOriginalEditPoint;
+                break;
+            default:
+                break;
             }
+            tickDelta = (anchor >= 0)
+                ? snapTickToNearestFrame(anchor + tickDelta, grid) - anchor
+                : snapTickToNearestFrame(tickDelta, grid);   // whole frames
         }
     }
 

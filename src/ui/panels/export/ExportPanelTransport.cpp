@@ -42,6 +42,7 @@
 #include "MainWindow.h"
 #include "App.h"
 #include "HardwareDiagnostics.h"
+#include "FrameTime.h"
 
 #include <spdlog/spdlog.h>
 
@@ -50,6 +51,18 @@
 
 
 namespace rt {
+
+namespace {
+
+/// Frame grid of the export preview: the chosen output rate, else 30.
+/// The combo holds the exact rate (29.97); toInt() made it 29.
+RationalFrameRate exportPreviewFrameGrid(const QComboBox* fpsCombo)
+{
+    const double fps = fpsCombo ? fpsCombo->currentData().toDouble() : 0.0;
+    return canonicalFrameRate(fps > 0.0 ? fps : 30.0);
+}
+
+} // namespace
 
 void ExportPanel::onRangeChanged(int /*index*/)
 {
@@ -123,8 +136,12 @@ void ExportPanel::onPlayPause()
         if (m_playbackController) {
             m_playbackController->pause();
 
-            // Restore the main timeline's playhead to where it was before
-            // export preview playback started.
+            // Restore the shared transport's rate and the main timeline's
+            // playhead to what they were before export preview playback.
+            if (m_savedMainFrameRate > 0.0) {
+                m_playbackController->setFrameRate(m_savedMainFrameRate);
+                m_savedMainFrameRate = 0.0;
+            }
             if (m_savedMainPlayhead >= 0) {
                 m_playbackController->seekTo(m_savedMainPlayhead);
                 m_savedMainPlayhead = -1;
@@ -158,8 +175,8 @@ void ExportPanel::onPlayPause()
         // on 60 fps ProRes preview playback.
         emit previewPlaybackToggled(true);
 
-        int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
-        if (fps <= 0) fps = 30;
+        const RationalFrameRate grid = exportPreviewFrameGrid(m_fpsCombo);
+        const double fps = static_cast<double>(grid.numerator) / grid.denominator;
 
         // Render the FIRST frame immediately so the user sees video
         // without waiting for the timer to fire (~33ms delay).
@@ -177,14 +194,18 @@ void ExportPanel::onPlayPause()
 
         // Seek PlaybackController to mini-timeline position and play (audio)
         if (m_playbackController) {
-            m_playbackController->setFrameRate(static_cast<double>(fps));
+            // The controller is shared with the main timeline: remember its
+            // rate so stopping the preview puts it back (it stayed at the
+            // export rate before).
+            m_savedMainFrameRate = m_playbackController->frameRate();
+            m_playbackController->setFrameRate(fps);
             m_playbackController->seekTo(m_miniTimeline->playhead());
             m_playbackController->play();
         }
 
         // Poll timer for visual preview updates (half the framerate to
         // avoid overwhelming the compositor — audio is exact via PortAudio)
-        int intervalMs = std::max(1000 / fps, 16);
+        const int intervalMs = std::max(static_cast<int>(1000.0 / fps), 16);
         m_playbackTimer->start(intervalMs);
     }
 }
@@ -199,10 +220,8 @@ void ExportPanel::onPlaybackTick()
     // Use the mini-timeline's own playhead for independent frame stepping.
     // This keeps the export preview's position separate from the main
     // timeline (which we save/restore in onPlayPause).
-    int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
-    if (fps <= 0) fps = 30;
-    int64_t ticksPerFrame = 48000 / fps;
-    int64_t tick = m_miniTimeline->playhead() + ticksPerFrame;
+    const RationalFrameRate grid = exportPreviewFrameGrid(m_fpsCombo);
+    const int64_t tick = stepFrames(m_miniTimeline->playhead(), 1, grid);
 
     // Determine the end-of-range
     int64_t endTick = m_timeline->duration();
@@ -233,8 +252,8 @@ void ExportPanel::onPlaybackTick()
     // override only fires when forceFullResolution is false).
     static int s_tickCount = 0;
     if (++s_tickCount <= 5 || s_tickCount % 30 == 0) {
-        spdlog::info("[EXPORT-PLAYBACK] tick={} endTick={} fps={}",
-                     tick, endTick, fps);
+        spdlog::info("[EXPORT-PLAYBACK] tick={} endTick={} fps={}/{}",
+                     tick, endTick, grid.numerator, grid.denominator);
     }
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
                        m_widthSpin, m_heightSpin, tick, /*scrub=*/true);
@@ -247,11 +266,8 @@ void ExportPanel::onStepForward()
     // Stop playback if playing
     if (m_playing) onPlayPause();
 
-    int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
-    if (fps <= 0) fps = 30;
-    int64_t ticksPerFrame = 48000 / fps;
-
-    int64_t next = m_miniTimeline->playhead() + ticksPerFrame;
+    int64_t next = stepFrames(m_miniTimeline->playhead(), 1,
+                              exportPreviewFrameGrid(m_fpsCombo));
     int64_t maxTick = m_timeline->duration();
     if (next > maxTick) next = maxTick;
 
@@ -266,12 +282,8 @@ void ExportPanel::onStepBack()
 
     if (m_playing) onPlayPause();
 
-    int fps = m_fpsCombo ? m_fpsCombo->currentData().toInt() : 30;
-    if (fps <= 0) fps = 30;
-    int64_t ticksPerFrame = 48000 / fps;
-
-    int64_t prev = m_miniTimeline->playhead() - ticksPerFrame;
-    if (prev < 0) prev = 0;
+    const int64_t prev = stepFrames(m_miniTimeline->playhead(), -1,
+                                    exportPreviewFrameGrid(m_fpsCombo));
 
     m_miniTimeline->setPlayhead(prev);
     renderPreviewFrame(this, m_previewImageLabel, m_previewCallback,
@@ -365,8 +377,8 @@ void ExportPanel::updateFileEstimate()
 
     int w = m_widthSpin->value();
     int h = m_heightSpin->value();
-    int fps = m_fpsCombo->currentData().toInt();
-    if (fps <= 0) fps = 30;
+    double fps = m_fpsCombo->currentData().toDouble();
+    if (fps <= 0.0) fps = 30.0;
     auto codec = static_cast<EncoderCodec>(m_codecCombo->currentData().toInt());
 
     // Estimate bitrate in kbps based on codec + quality + resolution

@@ -232,9 +232,6 @@ private:
     /// Use-after-free guard
     std::atomic<bool> m_destroying{false};
 
-    /// Ticks per frame at current FPS.
-    [[nodiscard]] int64_t ticksPerFrame() const noexcept;
-
     /// Apply loop boundaries if applicable.
     [[nodiscard]] int64_t applyLoopBounds(int64_t tick) const;
 

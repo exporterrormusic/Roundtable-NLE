@@ -7,6 +7,7 @@
 #include "playback/PlaybackController.h"
 #include "playback/AVSyncClock.h"
 #include "cache/FrameCache.h"
+#include "FrameTime.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -136,11 +137,10 @@ void FramePresenter::presentLoop()
                 auto* sync = m_controller->syncClock();
                 const double speed = sync ? sync->speed()
                                           : m_controller->shuttleSpeed();
-                const int64_t ticksPerFrame =
-                    std::max<int64_t>(1, static_cast<int64_t>(48000.0 / fps));
+                const RationalFrameRate rate = canonicalFrameRate(fps);
                 const int64_t displayTick = m_controller->currentTick();
                 consumedNew = m_producer->consumeFrameForTick(
-                    displayTick, ticksPerFrame,
+                    displayTick, nominalTicksPerFrame(rate),
                     /*reverse=*/speed < 0.0, frame, tick);
 
                 // Phase-lock deadlines to MID-frame of the audio clock.  A
@@ -150,12 +150,17 @@ void FramePresenter::presentLoop()
                 // deadline toward the frame middle, ≤2 ms per frame, at 1x
                 // only (shuttle speeds cross frames at other rates).
                 if (std::abs(std::abs(speed) - 1.0) < 0.01) {
-                    int64_t phase = displayTick % ticksPerFrame;
-                    if (phase < 0) phase += ticksPerFrame;
+                    // Phase within the canonical frame (NTSC frames are
+                    // 1601 or 1602 ticks; a modulo grid drifts off them).
+                    const int64_t frameIdx = tickToFrameIndex(displayTick, rate);
+                    const int64_t frameStart = frameIndexToTick(frameIdx, rate);
+                    const int64_t frameLen = std::max<int64_t>(
+                        1, frameIndexToTick(frameIdx + 1, rate) - frameStart);
+                    const int64_t phase = displayTick - frameStart;
                     // Fraction of the frame already elapsed in the playback
                     // direction, minus one half: > 0 means we are late.
                     double lateness = static_cast<double>(phase) /
-                        static_cast<double>(ticksPerFrame) - 0.5;
+                        static_cast<double>(frameLen) - 0.5;
                     if (speed < 0.0) lateness = -lateness;
                     constexpr double kGain = 0.25;
                     const auto maxStep = std::chrono::duration_cast<Duration>(

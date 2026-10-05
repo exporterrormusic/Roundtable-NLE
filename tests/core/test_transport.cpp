@@ -17,14 +17,20 @@
 
 #include "playback/PlaybackController.h"
 #include "playback/AVSyncClock.h"
+#include "playback/FrameClock.h"
 #include "audio/AudioEngine.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
+#include "FrameTime.h"
 
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Helpers
@@ -807,5 +813,108 @@ TEST(Transport, ShuttleFromPauseUsesParkedPositionInsteadOfScrubAudioPosition)
         EXPECT_EQ(audio.currentFrame(), 5 * TPS);
         EXPECT_EQ(s.clock.currentTick(), 5 * TPS);
         s.controller.setAudioEngine(nullptr);
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  NTSC frame grid — every transport position is a canonical frame start
+//  (FrameTime.h), the grid export and "Render In to Out" key on.
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+constexpr rt::RationalFrameRate kNtsc{30000, 1001};
+
+bool isFrameStart(int64_t tick, rt::RationalFrameRate rate)
+{
+    return rt::frameIndexToTick(rt::tickToFrameIndex(tick, rate), rate) == tick;
+}
+
+} // namespace
+
+TEST(Transport, StepForwardAtNtscStaysOnTheFrameGrid)
+{
+    TestSetup ts(0.0, 200.0);
+    ts.controller.setFrameRate(29.97);
+    ts.controller.seekTo(0);
+    // A fixed 1601-tick step drifted a whole frame every ~89 s (2,669
+    // frames); step well past that and require exact frame starts.
+    for (int64_t frame = 1; frame <= 3000; ++frame) {
+        ts.controller.stepForward();
+        ASSERT_EQ(ts.controller.currentTick(), rt::frameIndexToTick(frame, kNtsc))
+            << "frame " << frame;
+    }
+}
+
+TEST(Transport, StepBackwardFromMidFrameShowsThePreviousFrame)
+{
+    TestSetup ts;
+    ts.controller.setFrameRate(29.97);
+    ts.controller.seekTo(2400);              // inside frame 1 (1602..3202)
+    ts.controller.stepBackward();
+    EXPECT_EQ(ts.controller.currentTick(), 0);
+    ts.controller.seekTo(2400);
+    ts.controller.stepForward();
+    EXPECT_EQ(ts.controller.currentTick(), 3203);
+}
+
+TEST(Transport, PauseParksOnTheStartOfTheFrameOnScreen)
+{
+    TestSetup ts(0.0, 60.0);
+    ts.controller.setFrameRate(29.97);
+    const int64_t seek = 10 * TPS + 100;     // mid-frame at 29.97
+    ts.controller.seekTo(seek);
+    ts.controller.play();
+    ts.controller.pause();
+    const int64_t parked = ts.controller.currentTick();
+    EXPECT_TRUE(isFrameStart(parked, kNtsc)) << parked;
+    EXPECT_LE(parked, seek + TPS / 2);       // the frame on screen, not later
+    EXPECT_GT(parked, seek - 2 * rt::nominalTicksPerFrame(kNtsc));
+}
+
+TEST(Transport, NtscTimecodeLabelsCanonicalFrameStarts)
+{
+    // 29.97 frame 2 starts at tick 3203 (1.9999 "seconds * fps").
+    EXPECT_EQ(rt::tickToTimecode(3203, 29.97).frames, 2);
+    EXPECT_EQ(rt::tickToTimecode(3202, 29.97).frames, 1);
+    // Non-drop labels count 30 frames per "second" at 29.97.
+    EXPECT_EQ(rt::timecodeToTick(rt::Timecode{0, 0, 1, 0}, 29.97),
+              rt::frameIndexToTick(30, kNtsc));
+    for (int64_t frame = 0; frame < 4000; ++frame) {
+        const int64_t tick = rt::frameIndexToTick(frame, kNtsc);
+        const rt::Timecode tc = rt::tickToTimecode(tick, 29.97);
+        ASSERT_EQ(tc.frames, static_cast<int>(frame % 30)) << frame;
+        ASSERT_EQ(rt::timecodeToTick(tc, 29.97), tick) << frame;
+    }
+}
+
+TEST(Transport, FrameClockRequestsCanonicalFramesAtNtsc)
+{
+    // At 10 s the truncated grid (frame * 1601) is ~180 ticks before the
+    // canonical frame start, so the old clock could never satisfy this.
+    TestSetup ts(0.0, 60.0);
+    ts.controller.setFrameRate(29.97);
+    ts.controller.seekTo(10 * TPS);
+
+    std::mutex mutex;
+    std::vector<std::pair<int64_t, int64_t>> requests;
+    rt::FrameClock frameClock;
+    frameClock.setController(&ts.controller);
+    frameClock.setFrameCallback([&](int64_t tick, int64_t frame) {
+        std::lock_guard lock(mutex);
+        requests.emplace_back(tick, frame);
+    });
+
+    ts.controller.play();
+    frameClock.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    frameClock.stop();
+    ts.controller.pause();
+
+    std::lock_guard lock(mutex);
+    ASSERT_FALSE(requests.empty());
+    for (const auto& [tick, frame] : requests) {
+        EXPECT_EQ(tick, rt::frameIndexToTick(frame, kNtsc)) << "frame " << frame;
+        EXPECT_GE(frame, 299);               // 10 s at 29.97 = frame 299
     }
 }

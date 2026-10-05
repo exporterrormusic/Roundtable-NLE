@@ -6,6 +6,7 @@
 #include "Encoder.h"
 
 #include "Constants.h"
+#include "FrameTime.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
@@ -110,7 +111,12 @@ SmartRenderPlan analyzeSmartRender(
     SmartRenderPlan plan;
     plan.totalFrames = endFrame - startFrame;
 
-    const double exportFps = static_cast<double>(encoderConfig.fpsNum) / encoderConfig.fpsDen;
+    // Same rational rate RenderQueue renders with, so frame f is analysed at
+    // exactly the tick it is rendered at.
+    const uint32_t fpsNum = encoderConfig.fpsNum > 0
+        ? static_cast<uint32_t>(encoderConfig.fpsNum) : 1u;
+    const uint32_t fpsDen = encoderConfig.fpsDen > 0
+        ? static_cast<uint32_t>(encoderConfig.fpsDen) : 1u;
 
     // Image sequences can't do passthrough
     if (encoderConfig.codec == EncoderCodec::ImageSequence) {
@@ -131,9 +137,9 @@ SmartRenderPlan analyzeSmartRender(
     }
 
     for (int64_t f = startFrame; f < endFrame; ++f) {
-        // Convert frame number to timeline tick
-        int64_t tick = static_cast<int64_t>(
-            static_cast<double>(f) * kTicksPerSecond / exportFps);
+        // Frame start tick, rounded like RenderQueue (truncating put 40% of
+        // NTSC frames one tick early — before a cut that starts on them).
+        const int64_t tick = frameIndexToTick(f, fpsNum, fpsDen);
 
         // Collect all active video clips at this tick across all video tracks
         std::vector<std::pair<Clip*, const VideoClip*>> activeClips;

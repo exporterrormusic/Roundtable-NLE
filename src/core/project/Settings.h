@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "FrameTime.h"
+
 #include <cstdint>
 #include <string>
 
@@ -67,10 +69,18 @@ public:
     [[nodiscard]] double frameRate() const noexcept { return m_frameRate; }
     void setFrameRate(double fps) noexcept { m_frameRate = fps; }
 
-    /// Ticks per frame at current frame rate (48000 / fps)
+    /// Frame length rounded to whole ticks (1600 at 30, 1602 at 29.97).
+    /// For tolerances only: NTSC frames alternate 1601/1602 ticks, so frame
+    /// POSITIONS must come from FrameTime.h (frameIndexToTick et al.).
     [[nodiscard]] int64_t ticksPerFrame() const noexcept
     {
-        return static_cast<int64_t>(48000.0 / m_frameRate);
+        return nominalTicksPerFrame(canonicalFrameRate(m_frameRate));
+    }
+
+    /// The sequence's frame grid (see FrameTime.h).
+    [[nodiscard]] RationalFrameRate frameGrid() const noexcept
+    {
+        return canonicalFrameRate(m_frameRate);
     }
 
     // ── Color space ─────────────────────────────────────────────────────

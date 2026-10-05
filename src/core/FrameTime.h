@@ -90,4 +90,67 @@ struct RationalFrameRate
     return tickToFrameIndex(tick - 1, fpsNumerator, fpsDenominator) + 1;
 }
 
+[[nodiscard]] inline int64_t tickToFrameIndex(
+    int64_t tick, RationalFrameRate fps) noexcept
+{
+    return tickToFrameIndex(tick, fps.numerator, fps.denominator);
+}
+
+// ── Frame-grid helpers ──────────────────────────────────────────────────────
+// Use these instead of `48000 / fps`: at NTSC rates a frame is 1601.6 ticks,
+// so frame starts alternate 1601/1602 apart. Truncating to 1601 (or rounding
+// to 1602) builds a second grid that drifts off this one by a whole frame
+// every ~90 s at 29.97 — repeated frames, missed pre-render cache keys, and
+// cuts that land on the wrong frame.
+
+/// Exact (fractional) frame length. For tolerances and pixel math only —
+/// positions must come from frameIndexToTick().
+[[nodiscard]] inline double exactTicksPerFrame(RationalFrameRate fps) noexcept
+{
+    if (fps.numerator == 0 || fps.denominator == 0) return 0.0;
+    return static_cast<double>(kTicksPerSecond) * fps.denominator / fps.numerator;
+}
+
+/// Frame length rounded to whole ticks (1602 at 29.97), for tolerance windows.
+[[nodiscard]] inline int64_t nominalTicksPerFrame(RationalFrameRate fps) noexcept
+{
+    const int64_t ticks = std::llround(exactTicksPerFrame(fps));
+    return ticks > 0 ? ticks : 1;
+}
+
+/// Start of the frame on screen at `tick` (floor onto the frame grid).
+[[nodiscard]] inline int64_t frameStartAtOrBefore(
+    int64_t tick, RationalFrameRate fps) noexcept
+{
+    return frameIndexToTick(tickToFrameIndex(tick, fps), fps);
+}
+
+/// Frame whose start is nearest `tick`; a tie goes to the later frame.
+[[nodiscard]] inline int64_t nearestFrameIndex(
+    int64_t tick, RationalFrameRate fps) noexcept
+{
+    const int64_t frame = tickToFrameIndex(tick, fps);
+    const int64_t start = frameIndexToTick(frame, fps);
+    const int64_t next  = frameIndexToTick(frame + 1, fps);
+    return (tick - start < next - tick) ? frame : frame + 1;
+}
+
+/// Nearest frame start to `tick`. Also snaps a signed offset to a whole
+/// number of frames (n frames = frameIndexToTick(n)).
+[[nodiscard]] inline int64_t snapTickToNearestFrame(
+    int64_t tick, RationalFrameRate fps) noexcept
+{
+    return frameIndexToTick(nearestFrameIndex(tick, fps), fps);
+}
+
+/// Start of the frame `frames` away from the one on screen at `tick`,
+/// never before frame 0. Stepping back from mid-frame lands on the previous
+/// frame, so every step shows a different picture.
+[[nodiscard]] inline int64_t stepFrames(
+    int64_t tick, int64_t frames, RationalFrameRate fps) noexcept
+{
+    const int64_t frame = tickToFrameIndex(tick, fps) + frames;
+    return frameIndexToTick(frame > 0 ? frame : 0, fps);
+}
+
 } // namespace rt
