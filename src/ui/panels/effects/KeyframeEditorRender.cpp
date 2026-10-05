@@ -85,7 +85,7 @@ void KeyframeEditor::paintEvent(QPaintEvent* event)
 
     // Empty state: no clip selected
     if (!m_clip || m_curves.empty()) {
-        p.setPen(tc.textDisabled);
+        p.setPen(tc.textTertiary);
         QFont f = p.font();
         f.setPixelSize(12);
         p.setFont(f);

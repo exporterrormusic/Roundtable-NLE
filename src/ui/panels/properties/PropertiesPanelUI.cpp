@@ -271,7 +271,7 @@ void PropertiesPanel::setupUI()
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setStyleSheet(
         QString("QLabel { color: %1; font-size: 13px; background: %2; border: none; }")
-            .arg(Theme::hex(tc.textDisabled), Theme::hex(tc.surface0)));
+            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.surface0)));
     mainLayout->addWidget(m_emptyLabel, 1);
 
     // ── Status bar (22px) ───────────────────────────────────────────────

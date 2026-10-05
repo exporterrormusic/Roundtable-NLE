@@ -336,7 +336,7 @@ void SpinePreviewWidget::renderSingleEngine(QPainter& painter)
     auto meshData = m_engine->extractMeshes();
     if (meshData.batches.empty()) {
         painter.fillRect(rect(), m_bgColor);
-        painter.setPen(Theme::colors().textDisabled);
+        painter.setPen(Theme::colors().textTertiary);
         painter.drawText(rect(), Qt::AlignCenter, "No mesh data");
         return;
     }

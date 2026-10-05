@@ -313,7 +313,7 @@ void ScopesPanel::paintEvent(QPaintEvent* event)
     if (m_renderedScope.isNull()) {
         const int topMargin = 30;
         QRect area(4, topMargin, width() - 8, height() - topMargin - 26);
-        p.setPen(tc.textDisabled);
+        p.setPen(tc.textTertiary);
         p.drawText(area, Qt::AlignCenter, tr("No frame data"));
         --s_paintDepth;
         return;

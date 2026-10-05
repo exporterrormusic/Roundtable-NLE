@@ -751,7 +751,7 @@ void ProjectBin::setupUI()
     m_emptyLabel->setObjectName("EmptyStateLabel");
     m_emptyLabel->setStyleSheet(QStringLiteral(
         "color: %1; font-size: %2px; background: transparent;")
-        .arg(Theme::hex(Theme::colors().textDisabled))
+        .arg(Theme::hex(Theme::colors().textTertiary))
         .arg(Theme::typography().sizeXs));
     m_emptyLabel->setVisible(false);
     mainLayout->addWidget(m_emptyLabel, 1);

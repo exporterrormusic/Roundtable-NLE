@@ -160,7 +160,7 @@ void AudioSync::populateCards()
             auto* placeholder = new QLabel("Load a script and import audio to begin.");
             placeholder->setAlignment(Qt::AlignCenter);
             placeholder->setStyleSheet(
-                QString("QLabel { color: %1; font-size: 13px; padding: 40px; border: none; }").arg(Theme::hex(Theme::colors().textDisabled)));
+                QString("QLabel { color: %1; font-size: 13px; padding: 40px; border: none; }").arg(Theme::hex(Theme::colors().textTertiary)));
             m_rightLayout->addWidget(placeholder);
             m_rightLayout->addStretch();
         }
@@ -1272,7 +1272,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         noAudioLabel->setAlignment(Qt::AlignCenter);
         noAudioLabel->setStyleSheet(
             QString("QLabel { color: %1; font-size: 13px; font-style: italic; border: none; "
-            "padding: 20px; }").arg(Theme::hex(_tc.textDisabled)));
+            "padding: 20px; }").arg(Theme::hex(_tc.textTertiary)));
         leftLayout->addWidget(noAudioLabel, 1);
 
         int lineNum = line.lineNumber;

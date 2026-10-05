@@ -323,7 +323,7 @@ void GraphicsEditorPanel::setupUI()
  m_emptyLabel->setAlignment(Qt::AlignCenter);
  m_emptyLabel->setStyleSheet(QStringLiteral(
  "color: %1; font-size: 12px; background: transparent;")
- .arg(Theme::hex(tc.textDisabled)));
+ .arg(Theme::hex(tc.textTertiary)));
  rootLayout->addWidget(m_emptyLabel, 1);
 
  // ── Scrollable edit area ────────────────────────────────────────────

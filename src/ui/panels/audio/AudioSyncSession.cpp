@@ -193,7 +193,7 @@ void AudioSync::resetForNewProject()
         placeholder->setAlignment(Qt::AlignCenter);
         placeholder->setStyleSheet(
             QString("QLabel { color: %1; font-size: 13px; padding: 40px; border: none; }")
-                .arg(Theme::hex(Theme::colors().textDisabled)));
+                .arg(Theme::hex(Theme::colors().textTertiary)));
         m_rightLayout->addWidget(placeholder);
         m_rightLayout->addStretch();
     }

@@ -100,7 +100,7 @@ void FramingEditor::paintEvent(QPaintEvent*)
     const QRectF img = imageRect();
     if (m_frame.isNull()) {
         p.fillRect(img, QColor(20, 20, 20));
-        p.setPen(tc.textDisabled);
+        p.setPen(tc.textTertiary);
         p.drawText(img, Qt::AlignCenter, QStringLiteral("Select a shot with a picked take"));
     } else {
         p.drawImage(img, m_frame);

@@ -303,7 +303,7 @@ void SpinePreviewWidget::paintEvent(QPaintEvent* event)
             int dy = (height() - scaled.height()) / 2;
             painter.drawImage(dx, dy, scaled);
         } else {
-            painter.setPen(Theme::colors().textDisabled);
+            painter.setPen(Theme::colors().textTertiary);
             painter.drawText(rect(), Qt::AlignCenter, "No character loaded");
         }
     }

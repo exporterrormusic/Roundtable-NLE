@@ -168,7 +168,7 @@ void CharactersPanel::buildUI()
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setStyleSheet(
         QString("QLabel { color: %1; font-size: 13px; background: %2; border: none; }")
-            .arg(Theme::hex(tc.textDisabled), Theme::hex(tc.surface0)));
+            .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.surface0)));
     m_emptyLabel->hide();
     lay->addWidget(m_emptyLabel, 1);
 
@@ -309,7 +309,7 @@ void CharactersPanel::refresh()
                 // so the expansion arrow appears.
                 auto* placeholder = new QTreeWidgetItem(stanceItem);
                 placeholder->setText(0, QStringLiteral("(loading\u2026)"));
-                placeholder->setForeground(0, tc.textDisabled);
+                placeholder->setForeground(0, tc.textTertiary);
                 placeholder->setFlags(placeholder->flags() & ~Qt::ItemIsDragEnabled);
 
                 // Store stance metadata for lazy loading callback
@@ -489,7 +489,7 @@ void CharactersPanel::populateStanceAnims(QTreeWidgetItem* stanceItem,
                      charName, outfit, stanceInt);
         auto* errItem = new QTreeWidgetItem(stanceItem);
         errItem->setText(0, QStringLiteral("(skeleton not found)"));
-        errItem->setForeground(0, tc.textDisabled);
+        errItem->setForeground(0, tc.textTertiary);
         errItem->setFlags(errItem->flags() & ~Qt::ItemIsDragEnabled);
         return;
     }
@@ -501,7 +501,7 @@ void CharactersPanel::populateStanceAnims(QTreeWidgetItem* stanceItem,
                      charName, outfit, stanceInt);
         auto* errItem = new QTreeWidgetItem(stanceItem);
         errItem->setText(0, QStringLiteral("(failed to load)"));
-        errItem->setForeground(0, tc.textDisabled);
+        errItem->setForeground(0, tc.textTertiary);
         errItem->setFlags(errItem->flags() & ~Qt::ItemIsDragEnabled);
         return;
     }
@@ -540,7 +540,7 @@ void CharactersPanel::populateStanceAnims(QTreeWidgetItem* stanceItem,
         // No valid animations found
         auto* emptyItem = new QTreeWidgetItem(stanceItem);
         emptyItem->setText(0, QStringLiteral("(no animations)"));
-        emptyItem->setForeground(0, tc.textDisabled);
+        emptyItem->setForeground(0, tc.textTertiary);
         emptyItem->setFlags(emptyItem->flags() & ~Qt::ItemIsDragEnabled);
     }
 #else

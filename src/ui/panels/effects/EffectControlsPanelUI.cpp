@@ -226,7 +226,7 @@ void EffectControlsPanel::setupUI()
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setStyleSheet(QStringLiteral(
         "QLabel { color: %1; font-size: 13px; background: %2; border: none; }")
-        .arg(Theme::hex(tc.textDisabled), Theme::hex(tc.surface1)));
+        .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.surface1)));
 
     // Stack splitter + empty label — show one at a time
     m_splitterContainer = new QWidget(this);

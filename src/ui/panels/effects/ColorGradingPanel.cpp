@@ -974,7 +974,7 @@ void ColorGradingPanel::setupUI()
  m_emptyLabel->setAlignment(Qt::AlignCenter);
  m_emptyLabel->setStyleSheet(QStringLiteral(
  "color: %1; font-size: %2px; background: transparent;")
- .arg(Theme::hex(tc.textDisabled))
+ .arg(Theme::hex(tc.textTertiary))
  .arg(Theme::typography().sizeXs));
  m_emptyLabel->setVisible(true);
  outerLayout->addWidget(m_emptyLabel, 1);
