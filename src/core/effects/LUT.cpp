@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string_view>
@@ -27,8 +29,7 @@ std::unique_ptr<Effect> LUT::clone() const
 {
     auto copy = std::make_unique<LUT>();
     copy->m_enabled  = m_enabled;
-    copy->m_lutData  = m_lutData;
-    copy->m_lutSize  = m_lutSize;
+    copy->m_cube.store(cube(), std::memory_order_release);   // immutable: share it
     copy->m_lutPath  = m_lutPath;
     for (size_t i = 0; i < m_params.size(); ++i)
         copy->m_params[i].track = m_params[i].track;
@@ -65,10 +66,10 @@ bool LUT::loadCubeFile(const std::string& path)
             continue;
 
         if (line.rfind("LUT_3D_SIZE", 0) == 0) {
-            auto pos = line.find_first_of("0123456789");
-            if (pos != std::string::npos) {
-                size = std::stoi(line.substr(pos));
-            }
+            // The size follows the keyword. Searching the whole line for its
+            // first digit found the "3" of "3D", so every real cube (33, 65)
+            // was read as size 3 and rejected.
+            size = std::atoi(line.c_str() + std::strlen("LUT_3D_SIZE"));
             continue;
         }
 
@@ -99,8 +100,12 @@ bool LUT::loadCubeFile(const std::string& path)
         return false;
     }
 
-    m_lutSize = size;
-    m_lutData = std::move(data);
+    static std::atomic<uint64_t> s_nextCubeId{1};
+    auto cube = std::make_shared<LutCube>();
+    cube->size = size;
+    cube->data = std::move(data);
+    cube->id   = s_nextCubeId.fetch_add(1, std::memory_order_relaxed);
+    m_cube.store(std::move(cube), std::memory_order_release);
     m_lutPath = path;
 
     spdlog::info("LUT: loaded {}x{}x{} 3D LUT from {}", size, size, size, path);

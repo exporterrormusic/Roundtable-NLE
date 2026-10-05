@@ -17,10 +17,13 @@
 #include "effects/Transform2D.h"
 #include "effects/Tint.h"
 #include "effects/ColorGrading.h"
+#include "effects/LUT.h"
 #include "command/CommandStack.h"
 #include "command/commands/EffectCommands.h"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 
 using namespace rt;
@@ -726,4 +729,67 @@ TEST(EffectParamsTest, ColorCorrectGammaDefault)
     EXPECT_FLOAT_EQ(fx.evalParam(ColorCorrect::Gamma, 0), 1.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ColorCorrect::Gain, 0), 1.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ColorCorrect::Lift, 0), 0.0f);
+}
+
+// ── LUT cubes are immutable shared snapshots ───────────────────────────────
+// The render thread used to read the live LUT effect (and re-upload its data
+// every frame). Snapshots now carry the loaded cube; a reload publishes a new
+// cube with a new id (the GPU texture cache key), clones share theirs.
+namespace {
+std::string writeCubeFile(const char* name, float scale)
+{
+    const auto path = std::filesystem::temp_directory_path() / name;
+    std::ofstream out(path);
+    out << "TITLE \"test\"\nLUT_3D_SIZE 2\n";
+    for (int b = 0; b < 2; ++b)
+        for (int g = 0; g < 2; ++g)
+            for (int r = 0; r < 2; ++r)
+                out << r * scale << ' ' << g * scale << ' ' << b * scale << '\n';
+    return path.string();
+}
+} // namespace
+
+TEST(LUTTest, SnapshotCarriesTheLoadedCubeAndReloadsGetNewIds)
+{
+    const std::string identity = writeCubeFile("rt_test_identity.cube", 1.0f);
+    const std::string half = writeCubeFile("rt_test_half.cube", 0.5f);
+
+    EffectStack stack;
+    auto lut = std::make_unique<LUT>();
+    LUT* live = lut.get();
+    EXPECT_FALSE(live->hasLUT());
+    stack.addEffect(std::move(lut));
+
+    // Nothing loaded: the snapshot says so instead of the GPU reusing a stale cube.
+    auto snaps = stack.evaluate(0);
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_EQ(snaps[0].lut, nullptr);
+
+    ASSERT_TRUE(live->loadCubeFile(identity));
+    const auto first = live->cube();
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->size, 2);
+    EXPECT_EQ(first->data.size(), 2u * 2u * 2u * 3u);
+    snaps = stack.evaluate(0);
+    EXPECT_EQ(snaps[0].lut, first);
+
+    // A clone shares the immutable cube (same GPU texture).
+    auto copy = live->clone();
+    EXPECT_EQ(static_cast<LUT&>(*copy).cube(), first);
+
+    // A reload publishes a new cube; holders of the old one keep it.
+    ASSERT_TRUE(live->loadCubeFile(half));
+    const auto second = live->cube();
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second->id, first->id);
+    EXPECT_FLOAT_EQ(second->data[3], 0.5f);   // voxel (1,0,0) red
+    EXPECT_FLOAT_EQ(first->data[3], 1.0f);    // the old snapshot is untouched
+    EXPECT_EQ(stack.evaluate(0)[0].lut, second);
+
+    // A bad file leaves the loaded cube in place.
+    EXPECT_FALSE(live->loadCubeFile("does-not-exist.cube"));
+    EXPECT_EQ(live->cube(), second);
+
+    std::filesystem::remove(identity);
+    std::filesystem::remove(half);
 }

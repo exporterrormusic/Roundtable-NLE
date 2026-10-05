@@ -1406,30 +1406,18 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     break;
                 slot.retainForCurrentSlot(activeEffectLease);
 
-                for (const auto& snap : layer.effects) {
-                    if (snap.type == EffectType::LUT && layer.clipPtr) {
-                        for (size_t cfi = 0; cfi < layer.clipPtr->effects().effectCount(); ++cfi) {
-                            auto& clipFx = layer.clipPtr->effects().effect(cfi);
-                            if (clipFx.effectType() == EffectType::LUT && clipFx.isEnabled()) {
-                                auto* lutFx = static_cast<LUT*>(&clipFx);
-                                if (lutFx->hasLUT()) {
-                                    activeEffectProcessor->uploadLUT3D(
-                                        lutFx->lutData(), lutFx->lutSize());
-                                }
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                }
-
                 VkDescriptorImageInfo srcInfo = gpuLayers[li].textureInfo;
                 const std::vector<VkDescriptorImageInfo>* fxMasks =
                     (li < layerEffectMaskInfos.size() &&
                      !layerEffectMaskInfos[li].empty())
                         ? &layerEffectMaskInfos[li] : nullptr;
-                if (activeEffectProcessor->process(cmd, srcInfo, layer.effects,
-                                                   fxMasks)) {
+                const bool effectsOk = activeEffectProcessor->process(
+                    cmd, srcInfo, layer.effects, fxMasks);
+                // The cached LUT texture this dispatch samples must outlive
+                // the frame even if the cache drops it meanwhile.
+                if (const auto& lut = activeEffectProcessor->activeLUT3D())
+                    slot.retainForCurrentSlot(lut);
+                if (effectsOk) {
                     gpuLayers[li].textureInfo = activeEffectProcessor->outputDescriptorInfo();
                     gpuLayers[li].needsSwapRB = false;
                     gpuLayers[li].isPacked = false;
@@ -1752,36 +1740,17 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                     adjustmentSource = compositor->outputDescriptorInfo();
                 }
 
-                // LUT data is stored on the live effect object, just as it is
-                // for ordinary clip effects; snapshots carry only parameters.
-                for (const auto& effect : layer.effects) {
-                    if (effect.type == EffectType::LUT && layer.clipPtr) {
-                        for (size_t fxIndex = 0;
-                             fxIndex < layer.clipPtr->effects().effectCount();
-                             ++fxIndex) {
-                            auto& clipEffect =
-                                layer.clipPtr->effects().effect(fxIndex);
-                            if (clipEffect.effectType() == EffectType::LUT &&
-                                clipEffect.isEnabled()) {
-                                auto* lut = static_cast<LUT*>(&clipEffect);
-                                if (lut->hasLUT())
-                                    m_adjustmentEffectProcessor->uploadLUT3D(
-                                        lut->lutData(), lut->lutSize());
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                }
-
                 ++effectLayerCount;
                 effectPassCount += static_cast<int>(layer.effects.size());
                 const std::vector<VkDescriptorImageInfo>* effectMasks =
                     (li < layerEffectMaskInfos.size() &&
                      !layerEffectMaskInfos[li].empty())
                         ? &layerEffectMaskInfos[li] : nullptr;
-                if (!m_adjustmentEffectProcessor->process(
-                        cmd, adjustmentSource, layer.effects, effectMasks)) {
+                const bool adjustmentOk = m_adjustmentEffectProcessor->process(
+                    cmd, adjustmentSource, layer.effects, effectMasks);
+                if (const auto& lut = m_adjustmentEffectProcessor->activeLUT3D())
+                    slot.retainForCurrentSlot(lut);
+                if (!adjustmentOk) {
                     spdlog::warn("Adjustment-layer effect stack failed for clip {}",
                                  layer.clipId);
                     continue;

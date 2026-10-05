@@ -15,6 +15,8 @@
 
 namespace rt {
 
+struct LutCube;
+
 class EffectStack
 {
 public:
@@ -64,6 +66,9 @@ public:
         std::vector<float> params;
         uint64_t           effectId{0};
         std::vector<MaskRenderState> masks;
+        /// EffectType::LUT: the loaded cube (null = none), so the render
+        /// thread never reads the live LUT effect.
+        std::shared_ptr<const LutCube> lut;
     };
     [[nodiscard]] std::vector<EffectSnapshot> evaluate(int64_t time) const;
 

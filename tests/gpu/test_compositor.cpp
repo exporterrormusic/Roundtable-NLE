@@ -16,6 +16,7 @@
 #include "CompositeEngine.h"
 #include "CompositeServiceLayerBuild.h"
 #include "EffectProcessor.h"
+#include "effects/LUT.h"
 #include "GpuContext.h"
 #include "GpuGenerationCache.h"
 #include "SpineRendererCacheKey.h"
@@ -944,6 +945,92 @@ TEST_F(CompositorTest, GPU_EffectProcessor_ResizeThenTwoEffects)
     std::vector<uint8_t> outputPixels;
     ASSERT_TRUE(processor.readbackOutput(outputPixels));
     EXPECT_EQ(outputPixels, sourcePixels);
+
+    source.destroy();
+    processor.shutdown();
+}
+
+// The 3D LUT used to be destroyed, converted and re-uploaded (blocking) on
+// every frame for every LUT layer, from the live effect on the render thread.
+// Now each cube is uploaded once and reused; a different cube gets its own.
+TEST_F(CompositorTest, GPU_EffectProcessor_LutTextureIsCachedPerCube)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+
+    constexpr uint32_t kWidth = 8;
+    constexpr uint32_t kHeight = 4;
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = kWidth;
+    cfg.height = kHeight;
+    ASSERT_TRUE(processor.init(
+        g_vk->device, g_vk->allocator, g_vk->cmdPool,
+        g_vk->device.graphicsQueue(), cfg));
+
+    auto makeCube = [](uint64_t id, bool invert) {
+        auto cube = std::make_shared<rt::LutCube>();
+        cube->size = 2;
+        cube->id = id;
+        for (int b = 0; b < 2; ++b)
+            for (int g = 0; g < 2; ++g)
+                for (int r = 0; r < 2; ++r)
+                    for (int v : {r, g, b})
+                        cube->data.push_back(invert ? 1.0f - v : static_cast<float>(v));
+        return std::shared_ptr<const rt::LutCube>(cube);
+    };
+    const auto invert = makeCube(0xC0BE0001, true);
+    const auto identity = makeCube(0xC0BE0002, false);
+
+    std::vector<uint8_t> sourcePixels(kWidth * kHeight * 4);
+    for (size_t i = 0; i < kWidth * kHeight; ++i) {
+        sourcePixels[i * 4 + 0] = static_cast<uint8_t>(i * 8);
+        sourcePixels[i * 4 + 1] = static_cast<uint8_t>(255 - i * 8);
+        sourcePixels[i * 4 + 2] = static_cast<uint8_t>(i * 4 + 64);
+        sourcePixels[i * 4 + 3] = 255;
+    }
+    auto source = createRgbaTexture(kWidth, kHeight, sourcePixels);
+
+    auto run = [&](const std::shared_ptr<const rt::LutCube>& cube,
+                   std::vector<uint8_t>& out) {
+        std::vector<rt::EffectStack::EffectSnapshot> effects(1);
+        effects[0].type = rt::EffectType::LUT;
+        effects[0].params = {1.0f};   // full intensity
+        effects[0].lut = cube;
+        VkCommandBuffer cmd = g_vk->cmdPool.beginSingleTime();
+        ASSERT_NE(cmd, VK_NULL_HANDLE);
+        ASSERT_TRUE(processor.process(cmd, source.descriptorInfo(), effects));
+        g_vk->cmdPool.endSingleTime(cmd, g_vk->device.graphicsQueue());
+        ASSERT_TRUE(processor.readbackOutput(out));
+    };
+
+    std::vector<uint8_t> out;
+    run(invert, out);
+    const auto invertTexture = processor.activeLUT3D();
+    ASSERT_NE(invertTexture, nullptr);
+    ASSERT_EQ(out.size(), sourcePixels.size());
+    for (size_t i = 0; i < sourcePixels.size(); i += 4)
+        for (size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(out[i + c], 255 - sourcePixels[i + c], 3) << "byte " << i + c;
+
+    // Same cube again: the cached texture, not a new upload.
+    run(invert, out);
+    EXPECT_EQ(processor.activeLUT3D(), invertTexture);
+
+    // Another cube: its own texture, and it is the one applied.
+    run(identity, out);
+    ASSERT_NE(processor.activeLUT3D(), nullptr);
+    EXPECT_NE(processor.activeLUT3D(), invertTexture);
+    for (size_t i = 0; i < sourcePixels.size(); i += 4)
+        for (size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(out[i + c], sourcePixels[i + c], 3) << "byte " << i + c;
+
+    // No cube loaded: the image passes through (identity), not the last cube.
+    run(nullptr, out);
+    ASSERT_NE(processor.activeLUT3D(), nullptr);
+    EXPECT_NE(processor.activeLUT3D(), invertTexture);
+    for (size_t i = 0; i < sourcePixels.size(); i += 4)
+        for (size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(out[i + c], sourcePixels[i + c], 3) << "byte " << i + c;
 
     source.destroy();
     processor.shutdown();

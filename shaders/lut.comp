@@ -28,8 +28,13 @@ void main()
     float intensity = pc.params[0];
 
     // Sample 3D LUT using the pixel's RGB as coordinates
-    // LUT stored as size^3 texture, trilinear filtering handles interpolation
-    vec3 graded = texture(lutTexture, color.rgb).rgb;
+    // LUT stored as size^3 texture, trilinear filtering handles interpolation.
+    // Inputs 0..1 span the first..last texel CENTRES (as in Resolve/Adobe),
+    // not the texture edges: sampling at the raw colour stretched contrast
+    // around mid-grey (slightly at 33^3, grossly for small cubes).
+    float lutSize = float(textureSize(lutTexture, 0).x);
+    vec3 coord = clamp(color.rgb, 0.0, 1.0) * ((lutSize - 1.0) / lutSize) + 0.5 / lutSize;
+    vec3 graded = texture(lutTexture, coord).rgb;
 
     // Blend between original and graded based on intensity
     color.rgb = mix(color.rgb, graded, intensity);

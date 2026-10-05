@@ -16,6 +16,7 @@
 
 #include <volk.h>
 #include "EffectProcessor.h"
+#include "effects/LUT.h"
 #include "GpuContext.h"
 #include "GpuScheduler.h"
 
@@ -37,6 +38,27 @@
 namespace fs = std::filesystem;
 
 namespace rt {
+
+namespace {
+
+/// 2x2x2 identity: with trilinear filtering it maps every colour to itself.
+const std::shared_ptr<const LutCube>& identityLutCube()
+{
+    static const std::shared_ptr<const LutCube> cube = [] {
+        auto identity = std::make_shared<LutCube>();
+        identity->size = 2;
+        identity->id = UINT64_MAX;   // loaded cubes count up from 1
+        for (int b = 0; b < 2; ++b)
+            for (int g = 0; g < 2; ++g)
+                for (int r = 0; r < 2; ++r)
+                    identity->data.insert(identity->data.end(),
+                                          {float(r), float(g), float(b)});
+        return identity;
+    }();
+    return cube;
+}
+
+} // namespace
 
 // =============================================================================
 //  Construction / Destruction
@@ -301,8 +323,9 @@ void EffectProcessor::shutdown(GpuTeardownMode mode)
         m_syncFence = VK_NULL_HANDLE;
     }
 
-    // LUT 3D texture
-    m_lutTexture3D.destroy();
+    // LUT 3D textures (frames still in flight hold their own references)
+    m_activeLut.reset();
+    m_lutCache.clear();
 
     // Descriptor resources
     if (m_descriptorPool != VK_NULL_HANDLE) {
@@ -396,6 +419,19 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
     m_stats.effectsApplied = static_cast<int>(effects.size());
     m_currentOutput = 0;
 
+    // One LUT descriptor set per call, so one cube per call: the first LUT
+    // effect's, as before. Its texture comes from the cache, not a per-frame
+    // destroy + convert + blocking upload, and nothing reads the live effect.
+    // A LUT effect with no cube loaded passes the image through (identity
+    // cube) instead of sampling the 2D placeholder through a 3D sampler.
+    m_activeLut.reset();
+    for (const auto& snap : effects) {
+        if (snap.type == EffectType::LUT) {
+            m_activeLut = lutTextureFor(snap.lut ? snap.lut : identityLutCube());
+            break;
+        }
+    }
+
     // Claim this call's ring slot for the source + LUT descriptor sets.  A
     // single shared set cannot be reused across the multiple process() calls
     // the render graph records into one command buffer (one per effected
@@ -415,6 +451,7 @@ bool EffectProcessor::process(VkCommandBuffer cmd,
         // Ensure layout is set for shader read
         if (srcInfo.imageLayout == VK_IMAGE_LAYOUT_UNDEFINED)
             srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        m_curSourceInfo = srcInfo;
 
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -721,19 +758,25 @@ bool EffectProcessor::resize(uint32_t width, uint32_t height)
 //  LUT 3D texture management
 // =============================================================================
 
-bool EffectProcessor::uploadLUT3D(const std::vector<float>& lutData, int lutSize)
+std::shared_ptr<Texture> EffectProcessor::lutTextureFor(
+    const std::shared_ptr<const LutCube>& cube)
 {
-    if (!m_initialized || !m_device) return false;
-    if (lutData.empty() || lutSize < 2) return false;
+    if (!m_initialized || !m_device || !cube || cube->size < 2) return nullptr;
+    const size_t numVoxels =
+        static_cast<size_t>(cube->size) * cube->size * cube->size;
+    if (cube->data.size() != numVoxels * 3) return nullptr;
 
-    // Destroy previous LUT texture if any
-    m_lutTexture3D.destroy();
+    for (auto& entry : m_lutCache) {
+        if (entry.cubeId == cube->id) {
+            entry.lastUse = ++m_lutUseClock;
+            return entry.texture;
+        }
+    }
 
     // LUT data is size^3 × 3 floats (RGB). We need to convert to RGBA8.
-    const size_t numVoxels = static_cast<size_t>(lutSize) * lutSize * lutSize;
-    const size_t dataSize  = numVoxels * 4; // RGBA8 = 4 bytes per voxel
+    const size_t dataSize = numVoxels * 4; // RGBA8 = 4 bytes per voxel
     std::vector<uint8_t> rgbaData(dataSize);
-
+    const auto& lutData = cube->data;
     for (size_t i = 0; i < numVoxels; ++i) {
         rgbaData[i * 4 + 0] = static_cast<uint8_t>(
             std::clamp(lutData[i * 3 + 0] * 255.0f, 0.0f, 255.0f));
@@ -745,36 +788,36 @@ bool EffectProcessor::uploadLUT3D(const std::vector<float>& lutData, int lutSize
     }
 
     TextureConfig cfg;
-    cfg.width       = static_cast<uint32_t>(lutSize);
-    cfg.height      = static_cast<uint32_t>(lutSize);
-    cfg.depth       = static_cast<uint32_t>(lutSize);
+    cfg.width       = static_cast<uint32_t>(cube->size);
+    cfg.height      = static_cast<uint32_t>(cube->size);
+    cfg.depth       = static_cast<uint32_t>(cube->size);
     cfg.format      = VK_FORMAT_R8G8B8A8_UNORM;
     cfg.usage       = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     cfg.filter      = VK_FILTER_LINEAR;
     cfg.addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
-    if (!m_lutTexture3D.createFromData(
+    auto texture = std::make_shared<Texture>();
+    if (!texture->createFromData(
             m_allocator->handle(), m_device->handle(), cfg,
             rgbaData.data(), static_cast<VkDeviceSize>(dataSize),
             *m_cmdPool, m_queue))
     {
         spdlog::error("EffectProcessor: Failed to create LUT 3D texture ({}x{}x{})",
-                      lutSize, lutSize, lutSize);
-        return false;
+                      cube->size, cube->size, cube->size);
+        return nullptr;
     }
 
-    // No descriptor write here: dispatchEffect() binds binding 2 (the 3D LUT
-    // sampler) on the selected ring slot for every LUT dispatch, reading the
-    // current m_lutTexture3D.  A single-set update would not reach the ring.
-    spdlog::info("EffectProcessor: uploaded {}x{}x{} LUT 3D texture", lutSize, lutSize, lutSize);
-    return true;
-}
-
-void EffectProcessor::clearLUT3D()
-{
-    // dispatchEffect() falls back to the placeholder for binding 2 whenever
-    // m_lutTexture3D is null, so just dropping the texture is sufficient.
-    m_lutTexture3D.destroy();
+    // Least recently used goes. Dropping it here is safe: every frame that
+    // sampled it retained its own reference (activeLUT3D()) until its fence.
+    if (m_lutCache.size() >= kLutCacheSize) {
+        auto oldest = std::min_element(m_lutCache.begin(), m_lutCache.end(),
+            [](const LutCacheEntry& a, const LutCacheEntry& b) { return a.lastUse < b.lastUse; });
+        m_lutCache.erase(oldest);
+    }
+    m_lutCache.push_back({cube->id, texture, ++m_lutUseClock});
+    spdlog::info("EffectProcessor: uploaded {}x{}x{} LUT 3D texture",
+                 cube->size, cube->size, cube->size);
+    return texture;
 }
 
 // =============================================================================
@@ -1223,20 +1266,18 @@ bool EffectProcessor::dispatchEffect(VkCommandBuffer cmd,
 
         VkDescriptorImageInfo inInfo{};
         if (sourceIdx == -1) {
-            // First effect: input from external source (already set in m_curLutSet binding 1)
-            // For LUT, we need to reference the first storage texture as output and
-            // the source image needs to be handled. Since we can't share the external
-            // image between descriptor sets, we use a workaround: set source to storage[1]
-            // which will be overwritten. Better: update LUT set binding 1 to source.
-            inInfo = m_placeholderTexture.descriptorInfo(); // fallback
+            // First effect: the caller's source, as process() bound it for
+            // the other effects (this used to bind the placeholder, so a
+            // LUT as the first effect graded a blank image).
+            inInfo = m_curSourceInfo;
         } else {
             inInfo.sampler     = m_storageTextures[1 - targetIdx].sampler();
             inInfo.imageView   = m_storageTextures[1 - targetIdx].imageView();
             inInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         }
 
-        VkDescriptorImageInfo lutInfo = m_lutTexture3D.image() != VK_NULL_HANDLE
-            ? m_lutTexture3D.descriptorInfo()
+        VkDescriptorImageInfo lutInfo = m_activeLut
+            ? m_activeLut->descriptorInfo()
             : m_placeholderTexture.descriptorInfo();
 
         VkWriteDescriptorSet writes[3]{};

@@ -142,9 +142,13 @@ public:
 
     [[nodiscard]] const EffectProcessorStats& stats() const noexcept { return m_stats; }
 
-public:
-    bool uploadLUT3D(const std::vector<float>& lutData, int lutSize);
-    void clearLUT3D();
+    /// The 3D LUT texture the last process() call bound (null if none).
+    /// Callers recording into a frame slot retain it for that frame: the
+    /// cache below may drop it while the GPU still samples it.
+    [[nodiscard]] const std::shared_ptr<Texture>& activeLUT3D() const noexcept
+    {
+        return m_activeLut;
+    }
 
 private:
     bool createStorageTextures();
@@ -296,9 +300,22 @@ private:
     std::vector<VkDescriptorSet> m_maskMixDescriptorSets;
     uint32_t        m_maskMixRingCursor{0};
 
-    // Placeholder texture + LUT 3D texture
+    /// Cached GPU texture for `cube` (converted + uploaded on first use
+    /// only -- this used to happen, blocking, on every frame).
+    std::shared_ptr<Texture> lutTextureFor(const std::shared_ptr<const LutCube>& cube);
+
+    // Placeholder texture + LUT 3D textures
     Texture m_placeholderTexture;
-    Texture m_lutTexture3D;           ///< 3D texture holding the LUT cube data
+    struct LutCacheEntry {
+        uint64_t cubeId{0};
+        std::shared_ptr<Texture> texture;
+        uint64_t lastUse{0};
+    };
+    static constexpr size_t kLutCacheSize = 8;
+    std::vector<LutCacheEntry> m_lutCache;
+    uint64_t m_lutUseClock{0};
+    std::shared_ptr<Texture> m_activeLut;   ///< bound for this call's LUT dispatches
+    VkDescriptorImageInfo m_curSourceInfo{}; ///< this call's external source (binding 1)
 
     // Reusable fence for processSync (avoids create/destroy per call)
     VkFence m_syncFence{VK_NULL_HANDLE};

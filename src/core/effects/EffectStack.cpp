@@ -258,6 +258,8 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
         result.back().effectId = e->id();
         if (e->maskCount() > 0)
             result.back().masks = evaluateMaskStates(e->masks(), time);
+        if (e->effectType() == EffectType::LUT)
+            result.back().lut = static_cast<const LUT*>(e.get())->cube();
     }
     return result;
 }

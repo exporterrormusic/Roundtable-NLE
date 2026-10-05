@@ -10,10 +10,22 @@
 #include "effects/Effect.h"
 
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace rt {
+
+/// One loaded .cube, immutable once published. Render snapshots and GPU
+/// texture caches share it; reloading the effect publishes a new cube.
+struct LutCube
+{
+    int size{0};               ///< dimension (e.g. 33 for 33x33x33)
+    std::vector<float> data;   ///< size^3 x 3 floats (RGB), R varies fastest
+    uint64_t id{0};            ///< unique per load: the GPU texture cache key
+};
 
 class LUT : public Effect
 {
@@ -33,17 +45,19 @@ public:
     /// Load a .cube LUT file from disk.
     bool loadCubeFile(const std::string& path);
 
-    /// Get the 3D LUT data (size^3 × 3 floats, row-major, R varies fastest).
-    [[nodiscard]] const std::vector<float>& lutData() const noexcept { return m_lutData; }
-    [[nodiscard]] int lutSize() const noexcept { return m_lutSize; }
+    /// The loaded cube, or null. Safe from any thread: a reload publishes
+    /// a new cube and whoever holds the old one keeps it alive.
+    [[nodiscard]] std::shared_ptr<const LutCube> cube() const noexcept
+    {
+        return m_cube.load(std::memory_order_acquire);
+    }
     [[nodiscard]] const std::string& lutPath() const noexcept { return m_lutPath; }
 
-    [[nodiscard]] bool hasLUT() const noexcept { return m_lutSize > 0 && !m_lutData.empty(); }
+    [[nodiscard]] bool hasLUT() const noexcept { return cube() != nullptr; }
 
 private:
-    std::vector<float> m_lutData;    // size^3 × 3 floats (RGB)
-    int                m_lutSize{0}; // dimension (e.g. 33 for 33x33x33)
-    std::string        m_lutPath;
+    std::atomic<std::shared_ptr<const LutCube>> m_cube;
+    std::string m_lutPath;
 };
 
 } // namespace rt
