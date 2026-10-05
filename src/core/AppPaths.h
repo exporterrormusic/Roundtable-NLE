@@ -17,6 +17,11 @@ namespace rt::AppPaths {
 /// root() / "assets"
 [[nodiscard]] std::filesystem::path assets();
 
+/// The bundled ffmpeg executable: beside the app (installed, and copied
+/// there by the build), else the dev tree's third_party / tools copy.
+/// Empty when neither exists (callers may then try PATH).
+[[nodiscard]] std::filesystem::path ffmpegExecutable();
+
 /// Make root() the process working directory.  Projects and presets store
 /// asset paths relative to the root ("assets/backgrounds/x.png"), so they
 /// must resolve identically however the app was started: launcher script,

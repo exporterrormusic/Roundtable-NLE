@@ -4,6 +4,7 @@
  */
 
 #include "panels/characters/ShotComposer.h"
+#include "AppPaths.h"
 #include "PathUtils.h"
 
 #include "panels/characters/ShotComposerInternal.h"
@@ -180,22 +181,7 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
 
     spdlog::info("ShotComposer: extractVideoThumbnail called for '{}'", path);
 
-    // Find ffmpeg executable — check multiple locations
-    QString ffmpegPath;
-    QStringList searchPaths = {
-        QStringLiteral("third_party/ffmpeg/bin/ffmpeg.exe"),
-        QApplication::applicationDirPath() + "/../../../third_party/ffmpeg/bin/ffmpeg.exe",
-        QApplication::applicationDirPath() + "/ffmpeg.exe",
-        QStringLiteral("tools/ffmpeg/ffmpeg.exe"),
-    };
-    for (const auto& p : searchPaths) {
-        spdlog::debug("ShotComposer: checking ffmpeg at '{}'", p.toStdString());
-        if (QFileInfo::exists(p)) {
-            ffmpegPath = QFileInfo(p).absoluteFilePath();
-            spdlog::info("ShotComposer: found ffmpeg at '{}'", ffmpegPath.toStdString());
-            break;
-        }
-    }
+    const QString ffmpegPath = QString::fromStdWString(rt::AppPaths::ffmpegExecutable().wstring());
     if (ffmpegPath.isEmpty()) {
         spdlog::error("ShotComposer: ffmpeg not found in any search path, cannot extract video thumbnail");
         return {};

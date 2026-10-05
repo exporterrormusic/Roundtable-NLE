@@ -1,4 +1,5 @@
 #include "panels/audio/VoiceGenerationService.h"
+#include "AppPaths.h"
 
 #include "panels/audio/VoiceProviders.h"
 
@@ -55,11 +56,10 @@ QString voiceReferenceCacheDirectory()
 
 QString ffmpegExecutable()
 {
-    // Installed builds ship ffmpeg.exe beside the app; the compiled-in path
-    // (build machine's third_party copy) only exists on the dev machine.
-    const QString besideApp =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/ffmpeg.exe");
-    if (QFileInfo::exists(besideApp)) return besideApp;
+    // The bundled copy (beside the app when installed); the compiled-in
+    // build-machine path only as a last resort on the dev machine.
+    const QString bundled = QString::fromStdWString(rt::AppPaths::ffmpegExecutable().wstring());
+    if (!bundled.isEmpty()) return bundled;
     return QString::fromUtf8(ROUNDTABLE_FFMPEG_EXE_PATH);
 }
 

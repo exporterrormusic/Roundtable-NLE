@@ -36,6 +36,7 @@
 #include "project/ProjectSerializer.h"
 #include "CrashHandler.h"
 #include "AtomicFile.h"
+#include "AppPaths.h"
 
 #include <chrono>
 #include <filesystem>
@@ -981,4 +982,15 @@ TEST(AtomicFileTest, WritesReplacesAndNeverLeavesPartialFiles)
     EXPECT_EQ(read(file), R"({"a":2,"b":[1,2,3]})");
 
     fs::remove_all(dir, ec);
+}
+
+// Four features each searched for ffmpeg differently (one only at a path
+// compiled in on the build machine). They now share this lookup; the build
+// copies ffmpeg beside the executable, as the installer does.
+TEST(AppPathsTest, FindsTheBundledFfmpeg)
+{
+    const fs::path ffmpeg = rt::AppPaths::ffmpegExecutable();
+    ASSERT_FALSE(ffmpeg.empty());
+    EXPECT_TRUE(fs::is_regular_file(ffmpeg));
+    EXPECT_EQ(ffmpeg.stem(), fs::path("ffmpeg"));
 }

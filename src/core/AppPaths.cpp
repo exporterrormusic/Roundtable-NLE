@@ -100,6 +100,23 @@ fs::path assets()
     return root() / "assets";
 }
 
+fs::path ffmpegExecutable()
+{
+#ifdef _WIN32
+    constexpr const wchar_t* kName = L"ffmpeg.exe";
+#else
+    constexpr const char* kName = "ffmpeg";
+#endif
+    const fs::path candidates[] = {
+        executableDirectory() / kName,
+        root() / "third_party" / "ffmpeg" / "bin" / kName,
+        root() / "tools" / "ffmpeg" / kName,
+    };
+    for (const auto& candidate : candidates)
+        if (!candidate.empty() && isFile(candidate)) return candidate.lexically_normal();
+    return {};
+}
+
 bool makeRootCurrentDirectory()
 {
     std::error_code error;

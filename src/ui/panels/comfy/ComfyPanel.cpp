@@ -2,6 +2,7 @@
  * ComfyPanel.cpp — see header.
  */
 #include "panels/comfy/ComfyPanel.h"
+#include "AppPaths.h"
 
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VideoFrameGrabber.h"
@@ -1545,11 +1546,8 @@ QString ComfyPanel::defaultOutputDir() const
 
 QString ComfyPanel::findFfmpeg()
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    for (const QString& candidate : {appDir + QStringLiteral("/ffmpeg.exe"),
-                                     appDir + QStringLiteral("/../../../third_party/ffmpeg/bin/ffmpeg.exe")}) {
-        if (QFileInfo::exists(candidate)) return QDir::cleanPath(candidate);
-    }
+    const QString bundled = QString::fromStdWString(rt::AppPaths::ffmpegExecutable().wstring());
+    if (!bundled.isEmpty()) return bundled;
     return QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
 }
 

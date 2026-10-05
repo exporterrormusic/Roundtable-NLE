@@ -7,6 +7,7 @@
  */
 
 #include "QtHelpers.h"
+#include "AppPaths.h"
 #include "PathUtils.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/project/ProjectBinInternal.h"
@@ -515,21 +516,7 @@ void ProjectBin::createBarsAndTone()
     QString name = nameEdit->text().trimmed();
     if (name.isEmpty()) return;
 
-    QString ffmpegPath;
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        appDir + QStringLiteral("/ffmpeg.exe"),
-        appDir + QStringLiteral("/../../../third_party/ffmpeg/bin/ffmpeg.exe"),
-        QStringLiteral("third_party/ffmpeg/bin/ffmpeg.exe"),
-        QStringLiteral("tools/ffmpeg/ffmpeg.exe")
-    };
-    for (const QString& candidate : candidates) {
-        QFileInfo info(candidate);
-        if (info.exists() && info.isFile()) {
-            ffmpegPath = info.absoluteFilePath();
-            break;
-        }
-    }
+    const QString ffmpegPath = QString::fromStdWString(rt::AppPaths::ffmpegExecutable().wstring());
     if (ffmpegPath.isEmpty()) {
         QMessageBox::warning(this, tr("Bars and Tone"),
             tr("FFmpeg could not be found, so Bars and Tone could not be generated."));
