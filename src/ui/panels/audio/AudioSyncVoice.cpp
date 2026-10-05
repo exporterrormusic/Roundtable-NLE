@@ -8,6 +8,7 @@
 #include "AudioMixdown.h"
 
 #include <QAction>
+#include <QSaveFile>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -249,9 +250,11 @@ bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& cli
         {QStringLiteral("approvedClips"), used},
         {QStringLiteral("created"), QDateTime::currentDateTime().toString(Qt::ISODate)}
     };
-    QFile metadataFile(QDir(library).filePath(base + QStringLiteral(".json")));
-    if (metadataFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    QSaveFile metadataFile(QDir(library).filePath(base + QStringLiteral(".json")));
+    if (metadataFile.open(QIODevice::WriteOnly)) {
         metadataFile.write(QJsonDocument(metadata).toJson(QJsonDocument::Indented));
+        metadataFile.commit();
+    }
     VoiceReferenceLibrary::invalidate();
 
     if (savedPath) *savedPath = audioPath;

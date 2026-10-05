@@ -14,6 +14,7 @@
 #include "decode/VideoDecoder.h"
 
 #include <QApplication>
+#include <QSaveFile>
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDesktopServices>
@@ -165,9 +166,11 @@ void writeExportManifestEntry(const std::string& outputFile, const std::string& 
     const QString dir = out.absolutePath();
     QJsonObject manifest = readExportManifest(dir);
     manifest.insert(out.fileName(), QString::fromStdString(signature));
-    QFile f(dir + QLatin1Char('/') + QLatin1String(kExportManifest));
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    QSaveFile f(dir + QLatin1Char('/') + QLatin1String(kExportManifest));
+    if (f.open(QIODevice::WriteOnly)) {
         f.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+        f.commit();
+    }
 }
 
 std::string exportSignatureOf(const ShotExportJob& job)

@@ -21,6 +21,7 @@
 #include "QtHelpers.h"
 
 #include <QFormLayout>
+#include <QSaveFile>
 #include <QGroupBox>
 #include <QCheckBox>
 #include <QComboBox>
@@ -545,10 +546,10 @@ void PropertiesPanel::saveTextPresetsToDisk() const
         arr.append(o);
     }
     const QString path = rt::userDataDir() + QStringLiteral("/text_presets.json");
-    QFile f(path);
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
         f.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
-        f.close();
+        f.commit();
     }
 }
 

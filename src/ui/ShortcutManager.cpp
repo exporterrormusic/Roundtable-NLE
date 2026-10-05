@@ -6,6 +6,7 @@
 #include "ShortcutManager.h"
 
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -284,11 +285,11 @@ bool ShortcutManager::exportToFile(const QString& filePath) const
     for (auto& [id, act] : m_actions)
         root.insert(id, act.currentKey.toString());
 
-    QFile file(filePath);
+    QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly))
         return false;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    return true;
+    return file.commit();
 }
 
 bool ShortcutManager::importFromFile(const QString& filePath)

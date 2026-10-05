@@ -16,6 +16,7 @@ add_library(roundtable_core STATIC
 
     # Crash handler
     CrashHandler.cpp
+    AtomicFile.cpp
     HangWatchdog.cpp
     WorkerBreadcrumb.cpp
 

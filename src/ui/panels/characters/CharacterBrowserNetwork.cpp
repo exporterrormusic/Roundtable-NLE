@@ -278,10 +278,10 @@ void CharacterBrowser::fetchRemoteL2dNames()
 
         if (added > 0) {
             root["characters"] = chars;
-            QFile outFile("assets/character_metadata.json");
-            if (outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QSaveFile outFile("assets/character_metadata.json");
+            if (outFile.open(QIODevice::WriteOnly)) {
                 outFile.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-                outFile.close();
+                outFile.commit();
                 spdlog::info("CharacterBrowser: Added {} new characters ({} named, {} unnamed)",
                              added, added - placeholders, placeholders);
             }

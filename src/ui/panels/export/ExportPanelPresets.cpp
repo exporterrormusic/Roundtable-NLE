@@ -17,6 +17,7 @@
 #include "widgets/ToggleSwitch.h"
 
 #include <QDir>
+#include <QSaveFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -164,10 +165,10 @@ void ExportPanel::onSavePreset()
         obj[QStringLiteral("profile")] = m_profileCombo->currentData().toInt();
 
     QString path = dir.filePath(name + QStringLiteral(".json"));
-    QFile f(path);
+    QSaveFile f(path);
     if (f.open(QIODevice::WriteOnly)) {
         f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
-        f.close();
+        f.commit();
     }
 
     // Refresh combo: check if already there

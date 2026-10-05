@@ -4,6 +4,7 @@
  */
 
 #include "panels/characters/ShotComposer.h"
+#include "AtomicFile.h"
 
 #include "panels/characters/ShotComposerInternal.h"
 #include "Theme.h"
@@ -79,11 +80,9 @@ void ShotComposer::saveDefaults() const
     for (const auto& [charName, shotName] : m_characterDefaults)
         obj[QString::fromStdString(charName)] = QString::fromStdString(shotName);
     QJsonDocument doc(obj);
-    std::ofstream f(path, std::ios::trunc);
-    if (f.is_open()) {
-        auto bytes = doc.toJson(QJsonDocument::Compact);
-        f.write(bytes.constData(), bytes.size());
-    }
+    const QByteArray bytes = doc.toJson(QJsonDocument::Compact);
+    rt::writeFileAtomically(path, std::string_view(bytes.constData(),
+                                                   static_cast<size_t>(bytes.size())));
 }
 
 void ShotComposer::loadDefaults()

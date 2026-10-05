@@ -4,6 +4,7 @@
  */
 
 #include "panels/effects/EffectsPanel.h"
+#include "AtomicFile.h"
 #include "PathUtils.h"
 
 #include "Theme.h"
@@ -886,12 +887,8 @@ void EffectsPanel::saveEffectPreset(const Effect& fx)
     }
     auto path = m_presetsDir / (filename + ".json");
 
-    std::ofstream ofs(path);
-    if (ofs.is_open()) {
-        ofs << o.str();
-        ofs.close();
+    if (rt::writeFileAtomically(path, o.str()))
         loadPresetsFromDisk();
-    }
 }
 
 std::unique_ptr<Effect> EffectsPanel::loadEffectPreset(const std::filesystem::path& path)

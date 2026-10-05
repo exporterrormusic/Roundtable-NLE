@@ -3,6 +3,7 @@
  */
 
 #include "spine/ShotPreset.h"
+#include "AtomicFile.h"
 
 #include "PathUtils.h"
 #include <spdlog/spdlog.h>
@@ -1254,11 +1255,7 @@ void ShotPresetManager::saveAliases() const
     }
     os << '}';
 
-    std::ofstream f(path, std::ios::trunc);
-    if (f.is_open()) {
-        auto s = os.str();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
+    writeFileAtomically(path, os.str());
 }
 
 void ShotPresetManager::setCharacterGroup(const std::string& realName,
@@ -1321,11 +1318,7 @@ void ShotPresetManager::saveCharacterGroups() const
     }
     os << '}';
 
-    std::ofstream f(m_directory / "_character_groups.json", std::ios::trunc);
-    if (f.is_open()) {
-        const auto s = os.str();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
+    writeFileAtomically(m_directory / "_character_groups.json", os.str());
 }
 
 // ── Show registry ────────────────────────────────────────────────────────
@@ -1457,11 +1450,7 @@ void ShotPresetManager::saveShowThumbnails() const
     }
     os << '}';
 
-    std::ofstream f(path, std::ios::trunc);
-    if (f.is_open()) {
-        auto s = os.str();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
+    writeFileAtomically(path, os.str());
 }
 
 void ShotPresetManager::loadShows()
@@ -1502,11 +1491,7 @@ void ShotPresetManager::saveShows() const
     }
     os << ']';
 
-    std::ofstream f(path, std::ios::trunc);
-    if (f.is_open()) {
-        auto s = os.str();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
+    writeFileAtomically(path, os.str());
 }
 
 // ── Per-show default shots ────────────────────────────────────────────────
@@ -1594,11 +1579,7 @@ void ShotPresetManager::saveShowDefaults() const
     }
     os << '}';
 
-    std::ofstream f(path, std::ios::trunc);
-    if (f.is_open()) {
-        auto s = os.str();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
+    writeFileAtomically(path, os.str());
 }
 
 std::filesystem::path ShotPresetManager::pathForPreset(const std::string& show,

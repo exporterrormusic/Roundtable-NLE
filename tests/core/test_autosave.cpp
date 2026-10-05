@@ -35,6 +35,7 @@
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
 #include "CrashHandler.h"
+#include "AtomicFile.h"
 
 #include <chrono>
 #include <filesystem>
@@ -950,4 +951,34 @@ TEST(AutoSaveStatsTest, DefaultConstruction)
     EXPECT_EQ(stats.saveCount, 0u);
     EXPECT_EQ(stats.failCount, 0u);
     EXPECT_EQ(stats.status, rt::AutoSaveStatus::Idle);
+}
+
+// Settings/preset files used to be rewritten in place: a crash or full disk
+// mid-write left them empty. writeFileAtomically swaps in a complete file.
+TEST(AtomicFileTest, WritesReplacesAndNeverLeavesPartialFiles)
+{
+    const fs::path dir = fs::temp_directory_path() / "rt_test_atomic_file";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+    const fs::path file = dir / "settings.json";
+    auto read = [](const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+
+    ASSERT_TRUE(rt::writeFileAtomically(file, R"({"a":1})"));
+    EXPECT_EQ(read(file), R"({"a":1})");
+
+    ASSERT_TRUE(rt::writeFileAtomically(file, R"({"a":2,"b":[1,2,3]})"));
+    EXPECT_EQ(read(file), R"({"a":2,"b":[1,2,3]})");
+    EXPECT_FALSE(fs::exists(dir / "settings.json.tmp"));
+
+    // Unwritable target (its directory is missing): fails, nothing left behind.
+    const fs::path missing = dir / "no-such-dir" / "x.json";
+    EXPECT_FALSE(rt::writeFileAtomically(missing, "data"));
+    EXPECT_FALSE(fs::exists(missing));
+    EXPECT_EQ(read(file), R"({"a":2,"b":[1,2,3]})");
+
+    fs::remove_all(dir, ec);
 }

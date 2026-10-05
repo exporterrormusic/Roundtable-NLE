@@ -14,6 +14,7 @@
 #include <spdlog/spdlog.h>
 
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QFile>
 #include <QFileDialog>
 #include <QFrame>
@@ -209,12 +210,13 @@ void AudioSync::addToScriptHistory(const QString& url)
         entries.pop_back();
 
     // Write back
-    QFile writeFile(historyPath);
+    QSaveFile writeFile(historyPath);
     if (writeFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&writeFile);
         for (const auto& e : entries)
             out << e.displayName << "|" << e.url << "\n";
-        writeFile.close();
+        out.flush();
+        writeFile.commit();
     }
 
     spdlog::info("AudioSync: Added script to history (total: {})", entries.size());
@@ -247,12 +249,13 @@ void AudioSync::deleteScriptHistoryEntry(int index)
     entries.erase(entries.begin() + index);
 
     // Write back
-    QFile writeFile(historyPath);
+    QSaveFile writeFile(historyPath);
     if (writeFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&writeFile);
         for (const auto& e : entries)
             out << e.displayName << "|" << e.url << "\n";
-        writeFile.close();
+        out.flush();
+        writeFile.commit();
     }
 
     spdlog::info("AudioSync: Deleted script history entry at index {}", index);
@@ -303,12 +306,13 @@ void AudioSync::renameScriptHistoryEntry(int index)
     }
 
     // Write back
-    QFile writeFile(historyPath);
+    QSaveFile writeFile(historyPath);
     if (writeFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&writeFile);
         for (const auto& e : entries)
             out << e.displayName << "|" << e.url << "\n";
-        writeFile.close();
+        out.flush();
+        writeFile.commit();
     }
 
     // Also update the in-memory session display name if this session is loaded

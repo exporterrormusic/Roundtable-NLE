@@ -5,6 +5,7 @@
 #include "panels/characters/PuppetLibrary.h"
 
 #include <QDir>
+#include <QSaveFile>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -133,14 +134,18 @@ bool save(const PuppetManifest& m)
     }
     root.insert(QStringLiteral("variants"), variants);
 
-    QFile f(manifestPath(m.folderName));
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile f(manifestPath(m.folderName));
+    if (!f.open(QIODevice::WriteOnly)) {
         spdlog::warn("PuppetLibrary: cannot write manifest for '{}'",
                      m.folderName.toStdString());
         return false;
     }
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    f.close();
+    if (!f.commit()) {
+        spdlog::warn("PuppetLibrary: cannot write manifest for '{}'",
+                     m.folderName.toStdString());
+        return false;
+    }
     return true;
 }
 

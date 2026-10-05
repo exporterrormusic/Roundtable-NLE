@@ -17,6 +17,7 @@
 #include "Settings.h"
 
 #include <QDataStream>
+#include <QSaveFile>
 #include <QFile>
 #include <QLabel>
 #include <QProgressBar>
@@ -162,7 +163,7 @@ bool MainWindow::restoreWorkspace(const QString& name)
 
 void MainWindow::saveWorkspaceToFile(const QString& filePath)
 {
-    QFile file(filePath);
+    QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
         spdlog::warn("saveWorkspaceToFile: cannot write {}", filePath.toStdString());
         return;
@@ -194,7 +195,10 @@ void MainWindow::saveWorkspaceToFile(const QString& filePath)
         }
     }
 
-    file.close();
+    if (!file.commit()) {
+        spdlog::warn("saveWorkspaceToFile: cannot write {}", filePath.toStdString());
+        return;
+    }
     spdlog::info("Workspace layout saved to {}", filePath.toStdString());
 }
 
