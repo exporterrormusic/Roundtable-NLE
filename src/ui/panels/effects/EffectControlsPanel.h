@@ -695,6 +695,7 @@ protected:
 
     // ── UI ──────────────────────────────────────────────────────────────
     QLabel*         m_footerTimecodeLabel{nullptr};
+    QPushButton*    m_removeAllKfBtn{nullptr};   ///< only while a clip is shown
     QLabel*         m_emptyLabel{nullptr};
     QLineEdit*      m_searchField{nullptr};
     QWidget*        m_splitterContainer{nullptr};  // wraps splitter + empty label

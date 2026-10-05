@@ -2509,6 +2509,30 @@ TEST(EffectControlsPanel, FirstAudioLaneDiamondWinsOverClipBar)
     EXPECT_TRUE(timeline.hasSelectedKeyframes());
 }
 
+// The footer's "Remove All Keyframes" showed with no clip selected, where it
+// has nothing to act on. It now appears only alongside a clip.
+TEST(EffectControlsPanel, RemoveAllKeyframesShowsOnlyWithAClip)
+{
+    rt::EffectControlsPanel panel;
+    panel.resize(400, 300);
+    panel.show();
+    QApplication::processEvents();
+
+    QPushButton* removeAll = nullptr;
+    for (auto* button : panel.findChildren<QPushButton*>())
+        if (button->text() == QStringLiteral("Remove All Keyframes")) removeAll = button;
+    ASSERT_NE(removeAll, nullptr);
+    EXPECT_FALSE(removeAll->isVisible());
+
+    rt::VideoClip clip;
+    clip.setDuration(48000);
+    panel.setClip(&clip);
+    EXPECT_TRUE(removeAll->isVisible());
+
+    panel.clearClip();
+    EXPECT_FALSE(removeAll->isVisible());
+}
+
 TEST(EffectControlsPanel, RemoveAllKeyframesIncludesMaskPathAndScalars)
 {
     rt::VideoClip clip;

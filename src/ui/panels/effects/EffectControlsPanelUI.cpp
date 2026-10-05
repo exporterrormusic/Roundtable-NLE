@@ -260,6 +260,8 @@ void EffectControlsPanel::setupUI()
     // "Remove All Keyframes" clears clip, effect, mask, and graphic-layer
     // animation in one undoable step.
     auto* removeAllKfBtn = new QPushButton(tr("Remove All Keyframes"), footer);
+    m_removeAllKfBtn = removeAllKfBtn;
+    removeAllKfBtn->hide();   // nothing to clear until a clip is shown
     removeAllKfBtn->setCursor(Qt::PointingHandCursor);
     removeAllKfBtn->setToolTip(
         tr("Clear every clip, effect, mask, and layer keyframe"));

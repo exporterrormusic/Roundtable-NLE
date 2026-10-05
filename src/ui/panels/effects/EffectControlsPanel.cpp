@@ -266,6 +266,7 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
         // Show property tree, hide empty state
         m_splitter->show();
         m_emptyLabel->hide();
+        if (m_removeAllKfBtn) m_removeAllKfBtn->show();
     } else {
         m_clipNameLabel->setText("No clip selected");
         m_clipTypeLabel->clear();
@@ -277,6 +278,7 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
         // Hide property tree, show empty state
         m_splitter->hide();
         m_emptyLabel->show();
+        if (m_removeAllKfBtn) m_removeAllKfBtn->hide();
     }
 
     m_updating = false;
