@@ -15,6 +15,7 @@
 #include "panels/characters/ShotComposer.h"
 
 #include <QApplication>
+#include <QTemporaryDir>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLineEdit>
@@ -831,10 +832,17 @@ class ShotComposerUITest : public ::testing::Test {
 protected:
     void SetUp() override {
         m_panel = std::make_unique<ShotComposer>();
+        // Each test saves into its own folder. The shared default made
+        // parallel test processes (ctest -j) clobber each other's temporary
+        // preset file -- a validation error that hung until the timeout --
+        // and left "Test Shot.json" in whatever the working directory was.
+        ASSERT_TRUE(m_presetsDir.isValid());
+        m_panel->setPresetsDirectory(std::filesystem::path(m_presetsDir.path().toStdWString()));
         m_panel->show();
         QApplication::processEvents();
     }
 
+    QTemporaryDir m_presetsDir;
     std::unique_ptr<ShotComposer> m_panel;
 };
 
