@@ -9,6 +9,7 @@
 
 #include "Theme.h"
 #include "QtHelpers.h"
+#include "NotificationCenter.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "spine/ModelManager.h"
@@ -38,6 +39,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QPointer>
 #include <QProcess>
 #include <QProgressBar>
 #include <QRegularExpression>
@@ -797,11 +799,7 @@ void CharacterBrowser::onDownloadClicked()
     loadMetadata();
     const QJsonObject& metaChars = m_cachedCharacters;
 
-    m_downloadBtn->setEnabled(false);
-    m_downloadProgress->setVisible(true);
-    m_downloadProgress->setValue(0);
-
-    int queued = 0;
+    std::vector<CharacterDownloadRequest> requests;
     for (auto* item : items) {
         QString name = item->data(Qt::UserRole).toString();       // folder name (may include charId suffix)
         QString displayName = item->text();                        // display name (with colons)
@@ -839,84 +837,169 @@ void CharacterBrowser::onDownloadClicked()
             }
         }
 
-        // Collect all outfits from metadata for this character
-        QJsonObject charObj = metaChars.value(charId).toObject();
-        QJsonObject outfitsObj = charObj.value("outfits").toObject();
-
-        struct OutfitDownload { QString repoPath; QString outfitKey; };
-        std::vector<OutfitDownload> outfitsToDownload;
-
-        if (!outfitsObj.isEmpty()) {
-            for (auto oit = outfitsObj.begin(); oit != outfitsObj.end(); ++oit) {
-                QString outfitKey = oit.key();
-                QString repoPath = charId;
-                if (outfitKey != "default" && outfitKey.startsWith("outfit_")) {
-                    QString suffix = outfitKey.mid(6);  // "_01" from "outfit_01"
-                    repoPath = charId + suffix;
-                }
-                outfitsToDownload.push_back({repoPath, outfitKey});
-            }
-        } else {
-            outfitsToDownload.push_back({charId, "default"});
-        }
-
-        // Track overall completion across all outfit downloads
-        auto totalOutfits = std::make_shared<int>(static_cast<int>(outfitsToDownload.size()));
-        auto completedOutfits = std::make_shared<int>(0);
-        auto anyOutfitFailed = std::make_shared<bool>(false);
-
-        for (const auto& od : outfitsToDownload) {
-            spdlog::info("CharacterBrowser: Download {} [{}] outfit={} repoPath={}",
-                         name.toStdString(), charId.toStdString(),
-                         od.outfitKey.toStdString(), od.repoPath.toStdString());
-
-            m_statusLabel->setText(QString("Downloading %1 (%2)...")
-                .arg(displayName).arg(od.outfitKey));
-
-            downloadCharacterModel(od.repoPath, name, od.outfitKey,
-                [this, displayName, totalOutfits, completedOutfits, anyOutfitFailed](bool success) {
-                    (*completedOutfits)++;
-                    if (!success) *anyOutfitFailed = true;
-
-                    if (*completedOutfits >= *totalOutfits) {
-                        // All outfits for this character are done — show one message
-                        m_downloadBtn->setEnabled(true);
-                        m_downloadProgress->setVisible(false);
-                        if (*anyOutfitFailed) {
-                            m_statusLabel->setText(QString("Downloaded %1 (some failed)").arg(displayName));
-                            spdlog::warn("CharacterBrowser: Some outfits failed for {}",
-                                         displayName.toStdString());
-                            QMessageBox::warning(this, "Download",
-                                QString("Downloaded %1 but some outfits had errors.").arg(displayName));
-                        } else {
-                            m_statusLabel->setText("Downloaded " + displayName);
-                            spdlog::info("CharacterBrowser: Successfully downloaded all outfits for {}",
-                                         displayName.toStdString());
-                            QMessageBox::information(this, "Download Complete",
-                                QString("Successfully downloaded %1.").arg(displayName));
-                        }
-
-                        // Rescan and refresh
-#ifdef ROUNDTABLE_HAS_SPINE
-                        rt::rescanCharacterModels(m_modelManager);
-#endif
-                        populateCharacterList();
-                        populateControls();
-                        emit downloadRequested(displayName);
-                    }
-                });
-        }
-
-        emit downloadRequested(name);
-        ++queued;
+        requests.push_back({name, displayName, charId});
     }
 
-    if (queued == 0) {
-        m_downloadBtn->setEnabled(true);
-        m_downloadProgress->setVisible(false);
+    if (requests.empty()) {
         QMessageBox::warning(this, "Download Failed",
             "Could not find character IDs for any selected characters.");
+        return;
     }
+    startCharacterDownloads(std::move(requests));
+}
+
+void CharacterBrowser::startCharacterDownloads(std::vector<CharacterDownloadRequest> requests)
+{
+    loadMetadata();
+    const QJsonObject& metaChars = m_cachedCharacters;
+
+    // Every outfit of every requested character is one job.
+    struct Job { size_t request; QString repoPath; QString outfitKey; };
+    std::vector<Job> jobs;
+    for (size_t r = 0; r < requests.size(); ++r) {
+        const QString& charId = requests[r].charId;
+        const QJsonObject outfitsObj =
+            metaChars.value(charId).toObject().value("outfits").toObject();
+        if (outfitsObj.isEmpty()) {
+            jobs.push_back({r, charId, QStringLiteral("default")});
+            continue;
+        }
+        for (auto oit = outfitsObj.begin(); oit != outfitsObj.end(); ++oit) {
+            QString outfitKey = oit.key();
+            QString repoPath = charId;
+            if (outfitKey != "default" && outfitKey.startsWith("outfit_"))
+                repoPath = charId + outfitKey.mid(6);   // "_01" from "outfit_01"
+            jobs.push_back({r, repoPath, outfitKey});
+        }
+    }
+
+    // Batch state shared by every job's callbacks.
+    struct Batch {
+        std::vector<CharacterDownloadRequest> requests;
+        std::vector<int> outfitsLeft;        // per request
+        std::vector<bool> requestFailed;     // per request
+        std::vector<std::pair<int, int>> files;   // per job: done / total
+        int jobsLeft = 0;
+        int shownPercent = 0;
+        QStringList errors;
+        rt::NotificationCenter::Id task = 0;
+    };
+    auto batch = std::make_shared<Batch>();
+    batch->requests = std::move(requests);
+    batch->outfitsLeft.assign(batch->requests.size(), 0);
+    batch->requestFailed.assign(batch->requests.size(), false);
+    batch->files.assign(jobs.size(), {0, 0});
+    batch->jobsLeft = static_cast<int>(jobs.size());
+    for (const auto& job : jobs) ++batch->outfitsLeft[job.request];
+
+    m_downloadBtn->setEnabled(false);
+    m_downloadProgress->setVisible(true);
+    m_downloadProgress->setValue(0);
+
+    // Retry downloads the characters that failed; filled in at the end.
+    auto retryList = std::make_shared<std::vector<CharacterDownloadRequest>>();
+    QPointer<CharacterBrowser> self(this);
+    if (auto* notices = rt::NotificationCenter::current()) {
+        QStringList names;
+        for (const auto& req : batch->requests) names << req.displayName;
+        batch->task = notices->beginTask(
+            batch->requests.size() == 1 ? tr("Downloading %1").arg(names.front())
+                                        : tr("Downloading %1 characters").arg(names.size()),
+            names.join(QStringLiteral(", ")), 0, {},
+            [self, retryList]() {
+                if (self && !retryList->empty()) self->startCharacterDownloads(*retryList);
+            });
+    }
+
+    auto reportProgress = [this, batch]() {
+        // Each outfit weighs the same; files within it as they finish.
+        double sum = 0.0;
+        for (const auto& [done, total] : batch->files)
+            if (total > 0) sum += static_cast<double>(done) / total;
+        const int percent = static_cast<int>(100.0 * sum / std::max<size_t>(1, batch->files.size()));
+        if (percent <= batch->shownPercent) return;   // never runs backwards
+        batch->shownPercent = percent;
+        m_downloadProgress->setValue(percent);
+        if (auto* notices = rt::NotificationCenter::current(); notices && batch->task)
+            notices->updateTask(batch->task, percent);
+    };
+
+    for (size_t j = 0; j < jobs.size(); ++j) {
+        const Job job = jobs[j];
+        const CharacterDownloadRequest& req = batch->requests[job.request];
+        spdlog::info("CharacterBrowser: Download {} [{}] outfit={} repoPath={}",
+                     req.name.toStdString(), req.charId.toStdString(),
+                     job.outfitKey.toStdString(), job.repoPath.toStdString());
+        m_statusLabel->setText(QString("Downloading %1 (%2)...")
+            .arg(req.displayName).arg(job.outfitKey));
+
+        downloadCharacterModel(job.repoPath, req.name, job.outfitKey,
+            [this, batch, job, retryList](bool success, const QString& error) {
+                const CharacterDownloadRequest& req = batch->requests[job.request];
+                if (!success) {
+                    batch->requestFailed[job.request] = true;
+                    if (!error.isEmpty()) batch->errors << error;
+                }
+
+                if (--batch->outfitsLeft[job.request] == 0) {
+                    // This character is done: refresh lists as before.
+                    if (batch->requestFailed[job.request])
+                        spdlog::warn("CharacterBrowser: Some outfits failed for {}",
+                                     req.displayName.toStdString());
+                    else
+                        spdlog::info("CharacterBrowser: Successfully downloaded all outfits for {}",
+                                     req.displayName.toStdString());
+#ifdef ROUNDTABLE_HAS_SPINE
+                    rt::rescanCharacterModels(m_modelManager);
+#endif
+                    populateCharacterList();
+                    populateControls();
+                    emit downloadRequested(req.displayName);
+                }
+
+                if (--batch->jobsLeft > 0) return;
+
+                // Whole batch done: one message, non-modal when possible.
+                m_downloadBtn->setEnabled(true);
+                m_downloadProgress->setVisible(false);
+                QStringList done, failed;
+                for (size_t r = 0; r < batch->requests.size(); ++r) {
+                    if (batch->requestFailed[r]) {
+                        failed << batch->requests[r].displayName;
+                        retryList->push_back(batch->requests[r]);
+                    } else {
+                        done << batch->requests[r].displayName;
+                    }
+                }
+                const QString doneText = done.join(QStringLiteral(", "));
+                if (failed.isEmpty()) {
+                    m_statusLabel->setText("Downloaded " + doneText);
+                } else {
+                    m_statusLabel->setText(QString("Downloaded %1 (some failed)")
+                        .arg(QStringList(done + failed).join(QStringLiteral(", "))));
+                }
+                const QString failText = tr("Could not download: %1").arg(failed.join(QStringLiteral(", ")))
+                    + (batch->errors.isEmpty() ? QString()
+                       : QStringLiteral("\n") + batch->errors.mid(0, 6).join(QStringLiteral("\n")));
+                if (auto* notices = rt::NotificationCenter::current(); notices && batch->task) {
+                    notices->finishTask(batch->task, failed.isEmpty(),
+                                        failed.isEmpty() ? tr("Downloaded %1").arg(doneText)
+                                                         : failText,
+                                        /*addNotification=*/true);
+                } else if (failed.isEmpty()) {
+                    QMessageBox::information(this, "Download Complete",
+                        QString("Successfully downloaded %1.").arg(doneText));
+                } else {
+                    QMessageBox::warning(this, "Download", failText);
+                }
+            },
+            [batch, j, reportProgress](int filesDone, int filesTotal) {
+                batch->files[j] = {filesDone, filesTotal};
+                reportProgress();
+            });
+    }
+    for (const auto& req : batch->requests)
+        emit downloadRequested(req.name);
 }
 void CharacterBrowser::onDeleteClicked()
 {

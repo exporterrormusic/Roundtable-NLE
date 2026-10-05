@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <QSaveFile>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -299,7 +300,8 @@ void CharacterBrowser::fetchRemoteL2dNames()
 void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
                                                const QString& charName,
                                                const QString& outfitName,
-                                               std::function<void(bool)> onOutfitComplete)
+                                               std::function<void(bool, const QString&)> onOutfitComplete,
+                                               std::function<void(int, int)> onFileProgress)
 {
     // Resolve display name if not provided
     QString displayName = charName;
@@ -338,7 +340,9 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
 
     auto* reply = m_networkManager->get(request);
     connect(reply, &QNetworkReply::finished, this,
-        [this, reply, repoPath, displayName, targetDir, onOutfitComplete = std::move(onOutfitComplete)]() {
+        [this, reply, repoPath, displayName, outfitName, targetDir,
+         onOutfitComplete = std::move(onOutfitComplete),
+         onFileProgress = std::move(onFileProgress)]() {
         reply->deleteLater();
 
         if (reply->error() != QNetworkReply::NoError) {
@@ -346,11 +350,8 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
             spdlog::error("CharacterBrowser: Failed to list files for {}: {}",
                           repoPath.toStdString(), errStr.toStdString());
             m_statusLabel->setText("Download failed: " + errStr);
-            QMessageBox::warning(this, "Download Failed",
-                QString("Failed to download %1:\n%2").arg(displayName, errStr));
-            m_downloadBtn->setEnabled(true);
-            m_downloadProgress->setVisible(false);
-            if (onOutfitComplete) onOutfitComplete(false);
+            if (onOutfitComplete)
+                onOutfitComplete(false, QString("%1 (%2): %3").arg(displayName, outfitName, errStr));
             return;
         }
 
@@ -358,11 +359,10 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
         if (!doc.isArray()) {
             spdlog::error("CharacterBrowser: Unexpected response for {}", repoPath.toStdString());
             m_statusLabel->setText("Download failed: bad response");
-            QMessageBox::warning(this, "Download Failed",
-                QString("Unexpected API response for %1.\nThe remote repository may have changed.").arg(displayName));
-            m_downloadBtn->setEnabled(true);
-            m_downloadProgress->setVisible(false);
-            if (onOutfitComplete) onOutfitComplete(false);
+            if (onOutfitComplete)
+                onOutfitComplete(false, QString("%1 (%2): unexpected response; the remote "
+                                                 "repository may have changed")
+                                            .arg(displayName, outfitName));
             return;
         }
 
@@ -400,12 +400,9 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
         if (files.empty() && subDirs.isEmpty()) {
             spdlog::warn("CharacterBrowser: No downloadable files for {}", repoPath.toStdString());
             m_statusLabel->setText("No files found for " + displayName);
-            QMessageBox::warning(this, "Download",
-                QString("No downloadable files found for %1 at path '%2'.")
-                    .arg(displayName, repoPath));
-            m_downloadBtn->setEnabled(true);
-            m_downloadProgress->setVisible(false);
-            if (onOutfitComplete) onOutfitComplete(false);
+            if (onOutfitComplete)
+                onOutfitComplete(false, QString("%1 (%2): no downloadable files at '%3'")
+                                            .arg(displayName, outfitName, repoPath));
             return;
         }
 
@@ -425,13 +422,12 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
         state->subdirListingsPending = static_cast<int>(subDirs.size());
 
         // Helper lambda to check if everything is done
-        auto checkComplete = [this, displayName, targetDir, state, onOutfitComplete]() {
+        auto checkComplete = [this, displayName, outfitName, targetDir, state, onOutfitComplete]() {
             if (state->completionFired) return;
             if (state->downloaded < state->totalFiles) return;
             if (state->subdirListingsPending > 0) return; // still waiting for subdir listings
 
             state->completionFired = true;
-            m_downloadProgress->setVisible(false);
 
             if (state->failCount > 0) {
                 m_statusLabel->setText(QString("Downloaded %1 (%2 failed)")
@@ -449,7 +445,10 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
             renderAndCacheCharacterThumbnail(displayName.toStdString());
 
             if (onOutfitComplete)
-                onOutfitComplete(state->failCount == 0);
+                onOutfitComplete(state->failCount == 0,
+                                 state->failCount == 0 ? QString()
+                                     : QString("%1 (%2): %3 file(s) failed")
+                                           .arg(displayName, outfitName).arg(state->failCount));
         };
 
         // Download each main file
@@ -457,11 +456,10 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
             QString localPath = targetDir + "/" + f.name;
             spdlog::info("CharacterBrowser: Downloading {} → {}", f.downloadUrl.toStdString(), localPath.toStdString());
             downloadFile(f.downloadUrl, localPath,
-                [this, state, displayName, checkComplete](bool ok) {
+                [state, checkComplete, onFileProgress](bool ok) {
                     state->downloaded++;
                     if (!ok) state->failCount++;
-                    int pct = (state->totalFiles > 0) ? (state->downloaded * 100 / state->totalFiles) : 100;
-                    m_downloadProgress->setValue(pct);
+                    if (onFileProgress) onFileProgress(state->downloaded, state->totalFiles);
                     checkComplete();
                 });
         }
@@ -477,7 +475,8 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
 
             auto* subReply = m_networkManager->get(subReq);
             connect(subReply, &QNetworkReply::finished, this,
-                [this, subReply, repoPath, subDir, subTargetDir, state, checkComplete]() {
+                [this, subReply, repoPath, subDir, subTargetDir, state, checkComplete,
+                 onFileProgress]() {
                     subReply->deleteLater();
                     // Decrement pending subdir listings
                     state->subdirListingsPending--;
@@ -511,12 +510,11 @@ void CharacterBrowser::downloadCharacterModel(const QString& repoPath,
                                 // Add to total BEFORE starting download
                                 state->totalFiles++;
                                 downloadFile(url, subTargetDir + "/" + name,
-                                    [this, state, checkComplete](bool ok) {
+                                    [state, checkComplete, onFileProgress](bool ok) {
                                         state->downloaded++;
                                         if (!ok) state->failCount++;
-                                        int pct = (state->totalFiles > 0)
-                                            ? (state->downloaded * 100 / state->totalFiles) : 100;
-                                        m_downloadProgress->setValue(pct);
+                                        if (onFileProgress)
+                                            onFileProgress(state->downloaded, state->totalFiles);
                                         checkComplete();
                                     });
                                 break;
@@ -548,13 +546,16 @@ void CharacterBrowser::downloadFile(const QString& remotePath, const QString& lo
                 return;
             }
 
-            QFile file(localPath);
-            if (file.open(QIODevice::WriteOnly)) {
-                file.write(reply->readAll());
-                file.close();
+            // QSaveFile + checked write: a failed or partial write never
+            // leaves a truncated .skel/.atlas/.png that later fails to load.
+            const QByteArray data = reply->readAll();
+            QSaveFile file(localPath);
+            if (file.open(QIODevice::WriteOnly) && file.write(data) == data.size() &&
+                file.commit()) {
                 cb(true);
             } else {
-                spdlog::warn("Failed to write: {}", localPath.toStdString());
+                spdlog::warn("Failed to write: {} ({})", localPath.toStdString(),
+                             file.errorString().toStdString());
                 cb(false);
             }
         });

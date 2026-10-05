@@ -141,10 +141,23 @@ private:
     void loadPreviewModel();
     void fetchRemoteCharacterList();
     void fetchRemoteL2dNames();
+    /// One selected character of a download batch.
+    struct CharacterDownloadRequest {
+        QString name;          ///< folder name
+        QString displayName;   ///< list text
+        QString charId;        ///< metadata id (e.g. c010)
+    };
+    /// Download every outfit of `requests` as one batch: one notification
+    /// task with progress, one completion notice or one failure notice
+    /// (Retry re-downloads the failed characters); the Download button
+    /// comes back when the whole batch is done.
+    void startCharacterDownloads(std::vector<CharacterDownloadRequest> requests);
+    /// `onOutfitComplete(ok, error)`; `onFileProgress(done, total)` per file.
     void downloadCharacterModel(const QString& repoPath,
                                 const QString& charName = {},
                                 const QString& outfitName = "default",
-                                std::function<void(bool)> onOutfitComplete = nullptr);
+                                std::function<void(bool, const QString&)> onOutfitComplete = nullptr,
+                                std::function<void(int, int)> onFileProgress = nullptr);
     void downloadFile(const QString& remotePath, const QString& localPath,
                       std::function<void(bool)> callback);
     void resolveCharacterName(const QString& charId) const;
