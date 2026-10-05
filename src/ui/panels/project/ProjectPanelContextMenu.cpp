@@ -14,6 +14,8 @@
 #include <QMessageBox>
 #include <QTableWidget>
 
+#include <spdlog/spdlog.h>
+
 namespace rt {
 
 void ProjectPanel::setKnownShows(const QStringList& shows)
@@ -129,12 +131,17 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
             QMessageBox::warning(this, "Rename", "A file with that name already exists.");
             return;
         }
-        QFile::rename(path, newPath);
+        if (!QFile::rename(path, newPath)) {
+            QMessageBox::warning(this, "Rename",
+                QString("Couldn't rename \"%1\".\n\nMake sure it isn't open in another "
+                        "program and the drive is writable.").arg(fi.fileName()));
+            return;
+        }
         QString thumbDir = fi.absolutePath() + "/thumbs/";
         for (const auto& ext : {".png", ".jpg"}) {
             QString oldThumb = thumbDir + fi.completeBaseName() + ext;
-            if (QFile::exists(oldThumb))
-                QFile::rename(oldThumb, thumbDir + newName + ext);
+            if (QFile::exists(oldThumb) && !QFile::rename(oldThumb, thumbDir + newName + ext))
+                spdlog::warn("Projects: couldn't rename thumbnail {}", oldThumb.toStdString());
         }
         populateOpenList();
     });
@@ -146,7 +153,12 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
             newPath = fi.absolutePath() + "/" + baseName + " " +
                       QString::number(counter++) + "." + fi.suffix();
         }
-        QFile::copy(path, newPath);
+        if (!QFile::copy(path, newPath)) {
+            QMessageBox::warning(this, "Duplicate",
+                QString("Couldn't duplicate \"%1\".\n\nMake sure the drive is writable "
+                        "and has free space.").arg(fi.fileName()));
+            return;
+        }
         populateOpenList();
     });
     menu.addSeparator();
@@ -155,7 +167,11 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
             QString("Delete \"%1\"?\n\nThis cannot be undone.").arg(fi.fileName()),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (reply == QMessageBox::Yes) {
-            QFile::remove(path);
+            if (!QFile::remove(path)) {
+                QMessageBox::warning(this, "Delete Project",
+                    QString("Couldn't delete \"%1\".\n\nMake sure it isn't open in "
+                            "another program.").arg(fi.fileName()));
+            }
             populateOpenList();
         }
     });
