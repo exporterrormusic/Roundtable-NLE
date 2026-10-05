@@ -1,4 +1,5 @@
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
+#include "MediaTaskQueue.h"
 
 #include "cache/FrameCache.h"
 #include "cache/FrameContentBounds.h"
@@ -2520,8 +2521,11 @@ std::shared_ptr<CachedFrame> loadPuppetFrame(const std::string& path)
     return frame;
 }
 
-// Decode every face of `clip` not yet cached or being decoded, each on its own
-// detached thread.  Cheap after warm-up: four map lookups under the lock.
+// Decode every face of `clip` not yet cached or being decoded on the shared
+// MediaTaskQueue workers. It used one detached OS thread per face: unbounded
+// with many puppets, and still running past shutdown into the static cache's
+// destruction. The queue is bounded, de-duplicates by path and is joined at
+// exit. Cheap after warm-up: four map lookups under the lock.
 void prewarmPuppetFaces(const PngPuppetClip& clip)
 {
     auto& fc = puppetFaceCache();
@@ -2535,8 +2539,19 @@ void prewarmPuppetFaces(const PngPuppetClip& clip)
                 missing.push_back(path);
         }
     }
-    for (auto& path : missing)
-        std::thread([path = std::move(path)] { loadPuppetFrame(path); }).detach();
+    if (missing.empty()) return;
+    auto& tasks = MediaTaskQueue::instance();
+    static const MediaTaskQueue::OwnerId owner = tasks.createOwner();
+    for (auto& path : missing) {
+        // A face not prewarmed (queue shut down) still loads on first draw.
+        std::string key = "puppet-face:" + path;
+        tasks.submit<bool>(owner, std::move(key), MediaTaskQueue::Priority::Visible,
+            [path = std::move(path)](std::stop_token stop) {
+                if (!stop.stop_requested()) loadPuppetFrame(path);
+                return MediaTaskQueue::Result<bool>::success(true);
+            },
+            [](MediaTaskQueue::Result<bool>) {});
+    }
 }
 
 } // namespace
