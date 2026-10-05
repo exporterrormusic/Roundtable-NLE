@@ -45,16 +45,20 @@
 #include <QSettings>
 #include <QVBoxLayout>
 #include <QPointer>
+#include <QElapsedTimer>
 
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace rt {
@@ -273,6 +277,27 @@ public:
     [[nodiscard]] bool isAudioImported() const noexcept { return m_audioImported; }
     [[nodiscard]] bool isTranscriptionComplete() const noexcept { return m_transcriptionDone; }
     [[nodiscard]] bool isSyncComplete() const noexcept { return m_syncDone; }
+
+    /// Waveform samples decode in the background (MediaTaskQueue). True while
+    /// any imported file is still queued or decoding.
+    [[nodiscard]] bool audioSamplesPending() const noexcept;
+    [[nodiscard]] bool hasAudioSamples(const std::string& path) const
+    {
+        return m_audioSamples.count(path) != 0;
+    }
+
+    /// MATCH cards build a viewport's worth at once, then the rest in short
+    /// slices. Rows = cards in the current view; built = cards created so far.
+    [[nodiscard]] int cardRowCount() const noexcept { return static_cast<int>(m_cardWidgets.size()); }
+    [[nodiscard]] int builtCardCount() const noexcept;
+    [[nodiscard]] bool cardBuildPending() const noexcept
+    {
+        return m_cardBuild.active || m_leftBuild.active;
+    }
+    /// Build every remaining card now.
+    void finishCardBuild();
+    /// Test seam: replace the active session's clips and rebuild the cards.
+    void setClipsForTesting(std::vector<SyncClip> clips);
 
     /// Get character names from the loaded script.
     [[nodiscard]] QStringList scriptCharacters() const;
@@ -501,7 +526,24 @@ private:
                                   std::function<void()> rebuild = nullptr);
 
     // Audio playback / waveform helpers
+    /// Queue a background decode for every imported file not loaded yet.
     void loadAudioSamples();
+    /// Decode any still-missing samples on this thread (programmatic callers
+    /// that need complete audio right now; the UI waits instead).
+    void loadAudioSamplesNow();
+    /// Run `fn` now when every imported file's samples are loaded, else once
+    /// the background decodes finish (a repeat of the same waiting action is
+    /// dropped). For session-wide actions that analyse the audio.
+    void whenAudioSamplesReady(const QString& action, std::function<void()> fn);
+    /// False, with a notice, while `path`'s samples (empty path: any file's)
+    /// are still decoding. Per-card actions use this instead of waiting.
+    bool audioReadyOrNotify(const std::string& path, const QString& action);
+    void pumpAudioSampleDecode();
+    void installAudioSamples(const std::string& path, AudioSampleData decoded);
+    void finishAudioSampleDecodes();
+    /// Stop queued/running decodes and drop actions waiting on them.
+    void cancelAudioSampleDecodes();
+    void refreshAudioFileListItem(const std::string& path);
     void playClip(size_t clipIdx);
     void togglePlayClip(size_t clipIdx);
     void pausePlayback();
@@ -520,6 +562,19 @@ private:
                   const CardBuildContext& ctx,
                   MiniWaveformWidget*& waveformOut, int& clipIdxOut);
     void rebuildCardsForLines(const std::vector<int>& lineNumbers);
+    /// Create row `row` of the current card build at its layout position.
+    void buildCardRow(size_t row, const CardBuildContext& ctx);
+    /// Build the next pending rows: for about `budgetMs` (at least one row),
+    /// or all of them when `budgetMs` < 0.
+    void buildPendingCardRows(int budgetMs);
+    /// One time-boxed slice of the background card build (timer).
+    void continueCardBuild();
+    /// Keep the page at least as tall as the projected finished build.
+    void reserveCardPageHeight();
+    void buildLeftRow(size_t row, const std::unordered_map<int, int>& lineMatchState);
+    void buildPendingLeftRows(int budgetMs);
+    void setTrailingCardStretch(int stretch);
+    void cancelCardBuild();
     /// Cheap left-list update after match-state changes only (same rows):
     /// restyles changed rows; falls back to populateLeftList() otherwise.
     void refreshLeftListStates();
@@ -541,7 +596,7 @@ private:
     [[nodiscard]] int clipRowForWidget(QWidget* widget) const;
 
     /// Add a rich item to the audio file list (filename + details).
-    void addAudioFileListItem(const QString& fullPath);
+    void addAudioFileListItem(const QString& fullPath, int row = -1);
 
     /// Re-link an audio file to a new path, preserving all sync data.
     void relinkAudioFile(int fileIdx);
@@ -586,6 +641,19 @@ private:
     std::vector<std::string> m_audioPaths;   // All imported audio paths
 
     std::unordered_map<std::string, AudioSampleData> m_audioSamples;
+
+    // Background waveform decode: one file at a time (the old synchronous
+    // loop's peak memory), results installed on the UI thread.
+    uint64_t                m_audioTaskOwner{0};
+    std::deque<std::string> m_audioDecodeQueue;
+    std::string             m_audioDecodeInFlight;
+    std::vector<std::pair<QString, std::function<void()>>> m_afterAudioSamplesReady;
+    std::unordered_set<std::string> m_audioDecodeFailedPaths;  ///< not retried until re-imported
+    uint64_t                m_audioDecodeNotice{0};   ///< NotificationCenter task
+    int                     m_audioDecodeTotal{0};
+    int                     m_audioDecodeDone{0};
+    int                     m_audioDecodeFailed{0};
+    uint64_t                m_audioDecodeGeneration{0};  ///< bumped by cancel
 
     // Take preview (playTakeAudio): its own buffer, full take audio from `from`.
     std::vector<float> m_takeAudioBuffer;
@@ -819,6 +887,29 @@ private:
     std::vector<QPointer<QWidget>>            m_cardWidgets;      // card frames in right pane
     std::vector<int>                 m_cardScriptLineNums; // script line number per card
     std::vector<int>                 m_cardClipIndices;    // clip index per card (-1 if unmatched)
+    // Rows above are sized to the whole view up front (index-aligned with
+    // the left list); a row's widget/waveform stays null until it is built.
+    struct PendingCardBuild {
+        bool active{false};
+        std::vector<size_t> lineIndices;  ///< m_script->lines index per row
+        size_t next{0};                   ///< next row to build
+        const Script* script{nullptr};    ///< script the indices refer to
+        int pendingScrollLine{-1};        ///< scrollToCard() target not built yet
+        int width{0};                     ///< card width the heights below assume
+        int builtHeight{0};               ///< built cards' heights + spacing
+        int reservedHeight{0};            ///< page minimum height while building
+        QElapsedTimer sinceSlice;         ///< end of the last slice (Qt's pass since)
+    };
+    PendingCardBuild m_cardBuild;
+    /// Left script list: every row's item exists; widgets stream in.
+    struct PendingLeftBuild {
+        bool active{false};
+        std::vector<size_t> lineIndices;  ///< m_script->lines index per row
+        size_t next{0};                   ///< next row whose widget to build
+        const Script* script{nullptr};
+    };
+    PendingLeftBuild m_leftBuild;
+    QTimer*          m_cardBuildTimer{nullptr};
     QPointer<QWidget>                m_highlightedCard;          // currently highlighted card (outline overlay)
     QPointer<QFrame>                 m_cardHighlight;            // the outline overlay (child of m_highlightedCard)
     QPointer<QFrame>                 m_selectedLeftCard;         // currently selected left card (glow effect)

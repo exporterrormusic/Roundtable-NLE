@@ -490,6 +490,13 @@ void AudioSync::onCancelTranscriptionClicked()
 
 void AudioSync::onAutoSyncClicked()
 {
+    // Auto-Sync snaps boundaries to the speech in the samples: wait for the
+    // background decodes rather than run on partial audio.
+    loadAudioSamples();   // re-queue anything missing, e.g. a cancelled load
+    if (audioSamplesPending()) {
+        whenAudioSamplesReady(QStringLiteral("Auto-Sync"), [this]() { onAutoSyncClicked(); });
+        return;
+    }
     // Snapshot the editable values for this run. Both sync implementations
     // preserve confirmed clips, including their existing boundaries.
     if (m_syncFrontPaddingSpin)

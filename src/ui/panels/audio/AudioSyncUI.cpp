@@ -1036,9 +1036,12 @@ void AudioSync::setupUi()
     auto* closeGapsBtn = makeActionBtn(
         "\u2194  Close Gaps", c.surface3, c.surface2, c.textPrimary);
     connect(closeGapsBtn, &QPushButton::clicked, this, [this, bulkRebuild]() {
-        runClipsMutationWithUndo("Close inter-clip gaps",
-            [this]() { closeInterClipGaps(); },
-            bulkRebuild);
+        // Trims to the speech in the samples: wait for background decodes.
+        whenAudioSamplesReady(QStringLiteral("Close Gaps"), [this, bulkRebuild]() {
+            runClipsMutationWithUndo("Close inter-clip gaps",
+                [this]() { closeInterClipGaps(); },
+                bulkRebuild);
+        });
     });
     actionBarLayout->addWidget(closeGapsBtn);
 

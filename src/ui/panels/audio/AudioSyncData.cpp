@@ -44,6 +44,9 @@ namespace rt {
 
 void AudioSync::runAutoSync()
 {
+    // Programmatic callers get complete audio now. The button waits for the
+    // background decode first (onAutoSyncClicked), so this is a no-op there.
+    loadAudioSamplesNow();
     runClipsMutationWithUndo(
         "Auto-sync audio matches",
         [this]() { runAutoSyncImpl(); },

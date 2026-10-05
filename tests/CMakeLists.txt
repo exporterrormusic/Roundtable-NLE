@@ -161,6 +161,7 @@ add_roundtable_test(test_comfy_panel LIBS roundtable_ui roundtable_export roundt
 add_roundtable_test(test_video_frame_grabber LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_manual_match_dialog LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_voice_generation LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_audio_sync_match LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
 # Service lifecycle tests drive a protocol-compatible fake worker.
 target_compile_definitions(test_voice_generation PRIVATE
     ROUNDTABLE_FAKE_VOICE_WORKER="${CMAKE_CURRENT_SOURCE_DIR}/ui/fake_voice_worker.py")

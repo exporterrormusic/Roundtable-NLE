@@ -18,6 +18,10 @@ namespace rt {
 void AudioSync::saveCurrentSession()
 {
     if (m_activeScriptKey.empty() || !m_script) return;
+    // Waiting actions and the card build belong to the outgoing session.
+    // Its queued decodes are skipped once its paths leave m_audioPaths.
+    m_afterAudioSamplesReady.clear();
+    cancelCardBuild();
 
     auto& session = m_scriptSessions[m_activeScriptKey];
     session.script = std::move(m_script);
@@ -76,6 +80,8 @@ void AudioSync::restoreSession(const std::string& sessionKey)
 
 void AudioSync::clearCurrentSession()
 {
+    m_afterAudioSamplesReady.clear();
+    cancelCardBuild();
     m_script.reset();
     m_clips.clear();
     m_audioPath.clear();

@@ -16,6 +16,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QElapsedTimer>
 #include <QComboBox>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
@@ -121,6 +122,9 @@ void AudioSync::populateCards()
     QScrollBar* rightSB = m_rightScrollArea ? m_rightScrollArea->verticalScrollBar() : nullptr;
     if (rightSB) rightSB->blockSignals(true);
 
+    // A full rebuild replaces any build still streaming in.
+    cancelCardBuild();
+
     // ── Card widget pool (Phase 5.A) ──────────────────────────────────
     // Hide existing cards for reuse instead of destroy+recreate.
     m_cardPool.releaseAll();
@@ -131,12 +135,17 @@ void AudioSync::populateCards()
     setHighlightedCard(nullptr);
     m_selectedLeftCard = nullptr;
 
-    // Remove all widget items from layout (without deleting widgets)
+    // Empty the layout. Pooled cards stay parented (hidden): detaching and
+    // re-attaching them re-ran the whole style-sheet cascade on every card
+    // twice per rebuild. Anything else (the empty-state label) is deleted.
     if (m_rightLayout) {
         while (m_rightLayout->count() > 0) {
             auto* item = m_rightLayout->takeAt(0);
-            if (auto* w = item->widget())
-                w->setParent(nullptr);  // detach but don't delete
+            if (auto* w = item->widget()) {
+                if (std::find(m_cardPool.pool.begin(), m_cardPool.pool.end(), w)
+                        == m_cardPool.pool.end())
+                    w->deleteLater();
+            }
             delete item;
         }
     }
@@ -177,55 +186,65 @@ void AudioSync::populateCards()
     const CardBuildContext ctx = makeCardBuildContext();
     const auto& lineToClips = ctx.lineToClips;
 
-    int cardIdx = 0;
-
-    for (const auto& line : m_script->lines) {
+    // Rows: the same filtered lines, in the same order, as the left list
+    // (populateLeftList), so row i is left-list row i.
+    m_cardBuild.script = m_script.get();
+    for (size_t li = 0; li < m_script->lines.size(); ++li) {
+        const auto& line = m_script->lines[li];
         // Apply character filter
-        if (!filterChar.isEmpty()) {
-            if (QString::fromStdString(line.character) != filterChar)
-                continue;
-        }
-
+        if (!filterChar.isEmpty() &&
+            QString::fromStdString(line.character) != filterChar)
+            continue;
         // Apply unmatched filter — show only lines without a matched clip
-        if (filterUnmatched) {
-            bool hasMatch = lineToClips.count(line.lineNumber) > 0;
-            if (hasMatch) continue;
-        }
-
-        ++cardIdx;
-
-        auto* card = m_cardPool.acquire();
-        if (!card) {
-            card = new QFrame;
-            m_cardPool.adopt(card);
-        }
-        MiniWaveformWidget* waveform = nullptr;
-        int cardClipIdx = -1;
-        fillCard(card, line, cardIdx, ctx, waveform, cardClipIdx);
-
-        // Store mapping
-        m_cardWidgets.push_back(card);
-        m_cardWaveforms.push_back(waveform);
-        m_cardClipIndices.push_back(cardClipIdx);
-
-        m_rightLayout->addWidget(card);
-
-        // Install event filter on card and focusable children for keyboard routing + click
-        card->installEventFilter(this);
-        for (auto* child : card->findChildren<QWidget*>()) {
-            if (qobject_cast<QLineEdit*>(child) || qobject_cast<QComboBox*>(child))
-                continue;
-            child->installEventFilter(this);
-        }
-
-        // Show the card (pooled cards are hidden after releaseAll)
-        card->setVisible(true);
+        if (filterUnmatched && lineToClips.count(line.lineNumber) > 0)
+            continue;
+        m_cardBuild.lineIndices.push_back(li);
     }
-
+    const size_t rows = m_cardBuild.lineIndices.size();
+    m_cardWidgets.assign(rows, nullptr);
+    m_cardWaveforms.assign(rows, nullptr);
+    m_cardClipIndices.assign(rows, -1);
     m_rightLayout->addStretch();
 
-    // Shrink pool to active count + headroom (Phase 5.A)
-    m_cardPool.shrink(m_cardPool.activeCount + 16);
+    // Build what the restored scroll position shows, plus a screen of
+    // margin, right now; the rest streams in short slices so a long script
+    // doesn't freeze the UI (5-7 s after Auto-Sync). Rows build top-down,
+    // so later ones only extend the page below what is on screen.
+    const QWidget* viewport = m_rightScrollArea ? m_rightScrollArea->viewport() : nullptr;
+    const int viewportW = viewport ? viewport->width() : 0;
+    const int viewportH = viewport ? viewport->height() : 0;
+    const QMargins pageMargins = m_rightLayout->contentsMargins();
+    const int cardW = std::max(0, viewportW - pageMargins.left() - pageMargins.right());
+    const int wanted = savedScrollPos + 2 * std::max(viewportH, 600);
+    const int spacing = std::max(0, m_rightLayout->spacing());
+    int builtHeight = 0;
+    while (m_cardBuild.next < rows && builtHeight < wanted) {
+        const size_t row = m_cardBuild.next++;
+        buildCardRow(row, ctx);
+        if (const QWidget* card = m_cardWidgets[row]) {
+            builtHeight += spacing + ((cardW > 0 && card->hasHeightForWidth())
+                ? card->heightForWidth(cardW) : card->sizeHint().height());
+        }
+    }
+    m_cardBuild.active = m_cardBuild.next < rows;
+    m_cardBuild.width = cardW;   // the width the layout lays cards out at
+    m_cardBuild.builtHeight = builtHeight;
+    if (m_cardBuild.active) {
+        reserveCardPageHeight();
+        m_cardBuildTimer->start();
+    } else {
+        m_cardPool.shrink(m_cardPool.activeCount + 16);   // Phase 5.A headroom
+    }
+
+    // A resizable QScrollArea with height-for-width content and an
+    // as-needed bar re-measures the whole page at up to 16 one-pixel-
+    // narrower widths on every layout pass (its scrollbar anti-flicker
+    // search), so every card's word-wrapped text was re-laid out ~16 times
+    // per streamed slice and per card refresh. A page that did not fit two
+    // screens shows the bar anyway: pin it on (same look), skipping that.
+    if (m_rightScrollArea)
+        m_rightScrollArea->setVerticalScrollBarPolicy(
+            m_cardBuild.active ? Qt::ScrollBarAlwaysOn : Qt::ScrollBarAsNeeded);
 
     // Re-enable repaints after bulk creation
     if (m_rightScrollContent)
@@ -253,6 +272,177 @@ void AudioSync::populateCards()
         QTimer::singleShot(0,  this, restoreScroll);
         QTimer::singleShot(30, this, restoreScroll);
     }
+}
+
+void AudioSync::buildCardRow(size_t row, const CardBuildContext& ctx)
+{
+    const ScriptLine& line = m_script->lines[m_cardBuild.lineIndices[row]];
+    auto* card = m_cardPool.acquire();
+    if (!card) {
+        // Parented (hidden) up front, so its content is built and polished
+        // once under its final ancestors instead of again on insertion.
+        card = new QFrame(m_rightScrollContent);
+        card->hide();
+        m_cardPool.adopt(card);
+    }
+    MiniWaveformWidget* waveform = nullptr;
+    int cardClipIdx = -1;
+    fillCard(card, line, static_cast<int>(row) + 1, ctx, waveform, cardClipIdx);
+
+    // Store mapping
+    m_cardWidgets[row]     = card;
+    m_cardWaveforms[row]   = waveform;
+    m_cardClipIndices[row] = cardClipIdx;
+
+    // Rows build top-down, so `row` cards precede this one in the layout
+    // (the trailing stretch stays last).
+    m_rightLayout->insertWidget(static_cast<int>(row), card);
+
+    // Install event filter on card and focusable children for keyboard routing + click
+    card->installEventFilter(this);
+    for (auto* child : card->findChildren<QWidget*>()) {
+        if (qobject_cast<QLineEdit*>(child) || qobject_cast<QComboBox*>(child))
+            continue;
+        child->installEventFilter(this);
+    }
+
+    // Show the card (pooled cards are hidden after releaseAll)
+    card->setVisible(true);
+}
+
+void AudioSync::buildPendingCardRows(int budgetMs)
+{
+    if (!m_cardBuild.active || m_destroying.load(std::memory_order_acquire)) return;
+    // The script the rows index into was replaced or stashed (session
+    // switch): this build is stale.
+    if (!m_script || m_script.get() != m_cardBuild.script || !m_rightLayout) {
+        cancelCardBuild();
+        return;
+    }
+
+    // Fresh per slice: clips may have been matched/reassigned since the last.
+    const CardBuildContext ctx = makeCardBuildContext();
+    const size_t rows = m_cardBuild.lineIndices.size();
+    // No setUpdatesEnabled() toggling here: re-enabling walks and repaints
+    // every existing card, which made the streamed build quadratic. New
+    // rows land below what is on screen.
+    QElapsedTimer slice;
+    slice.start();
+    const int spacing = std::max(0, m_rightLayout->spacing());
+    do {
+        const size_t row = m_cardBuild.next++;
+        if (m_cardBuild.lineIndices[row] >= m_script->lines.size()) continue;
+        buildCardRow(row, ctx);
+        if (const QWidget* card = m_cardWidgets[row]) {
+            m_cardBuild.builtHeight += spacing +
+                ((m_cardBuild.width > 0 && card->hasHeightForWidth())
+                    ? card->heightForWidth(m_cardBuild.width) : card->sizeHint().height());
+        }
+    } while (m_cardBuild.next < rows && (budgetMs < 0 || slice.elapsed() < budgetMs));
+
+    if (m_cardBuild.next < rows) reserveCardPageHeight();
+    if (m_cardBuild.next >= rows) {
+        m_cardBuild.active = false;
+        m_cardPool.shrink(m_cardPool.activeCount + 16);   // Phase 5.A headroom
+        // Built: the page takes its real height (one final layout pass).
+        if (m_cardBuild.reservedHeight > 0) {
+            setTrailingCardStretch(0);
+            if (m_rightScrollContent) m_rightScrollContent->setMinimumHeight(0);
+            m_cardBuild.reservedHeight = 0;
+        }
+    }
+
+    // A left-list click on a card that wasn't built yet scrolls there now.
+    if (const int line = m_cardBuild.pendingScrollLine; line >= 0) {
+        for (size_t i = 0; i < m_cardScriptLineNums.size() && i < m_cardWidgets.size(); ++i) {
+            if (m_cardScriptLineNums[i] == line && m_cardWidgets[i]) {
+                scrollToCard(line);
+                break;
+            }
+        }
+    }
+}
+
+void AudioSync::continueCardBuild()
+{
+    // Each slice is followed by Qt's own pass over the page (layout, paint),
+    // which grows with the card count. Building for about as long as that
+    // pass took keeps building >= half the time, and the UI never stalls
+    // for more than ~2 x 40 ms.
+    const qint64 sinceLast = m_cardBuild.sinceSlice.isValid()
+        ? m_cardBuild.sinceSlice.elapsed() : 0;
+    const int budgetMs = static_cast<int>(std::clamp<qint64>(sinceLast, 12, 40));
+    // Left rows are cheap; they share the slice with the cards.
+    QElapsedTimer slice;
+    slice.start();
+    if (m_leftBuild.active)
+        buildPendingLeftRows(m_cardBuild.active ? budgetMs / 3 : budgetMs);
+    if (m_cardBuild.active)
+        buildPendingCardRows(std::max(1, budgetMs - static_cast<int>(slice.elapsed())));
+    if (m_cardBuild.active || m_leftBuild.active) {
+        m_cardBuild.sinceSlice.start();
+        m_cardBuildTimer->start();
+    }
+}
+
+void AudioSync::finishCardBuild()
+{
+    if (m_cardBuildTimer) m_cardBuildTimer->stop();
+    buildPendingLeftRows(-1);
+    buildPendingCardRows(-1);
+}
+
+void AudioSync::reserveCardPageHeight()
+{
+    // While cards stream in, a page shorter than its cards makes every
+    // layout pass squeeze all of them and the scroll area then stretch them
+    // back: each card (and its word-wrapped text) re-laid out twice per
+    // slice, quadratic over the build. Reserve the projected final height
+    // instead; the trailing stretch takes the slack until the last slice.
+    if (!m_rightScrollContent || !m_rightLayout || m_cardBuild.next == 0) return;
+    const size_t rows = m_cardBuild.lineIndices.size();
+    const int perCard = m_cardBuild.builtHeight / static_cast<int>(m_cardBuild.next);
+    const QMargins margins = m_rightLayout->contentsMargins();
+    const int projected = margins.top() + margins.bottom() + m_cardBuild.builtHeight +
+        perCard * static_cast<int>(rows - m_cardBuild.next);
+    if (projected <= m_cardBuild.reservedHeight) return;
+    m_cardBuild.reservedHeight = projected + projected / 8;   // headroom: few re-reserves
+    // Cards expand vertically (their control column ends in a stretch), so
+    // they would share the slack and all resize as it shrinks. Give it all
+    // to the trailing stretch while building.
+    setTrailingCardStretch(1);
+    m_rightScrollContent->setMinimumHeight(m_cardBuild.reservedHeight);
+}
+
+void AudioSync::setTrailingCardStretch(int stretch)
+{
+    if (!m_rightLayout || m_rightLayout->count() == 0) return;
+    const int last = m_rightLayout->count() - 1;
+    if (m_rightLayout->itemAt(last)->spacerItem() && m_rightLayout->stretch(last) != stretch)
+        m_rightLayout->setStretch(last, stretch);
+}
+
+void AudioSync::cancelCardBuild()
+{
+    if (m_cardBuildTimer) m_cardBuildTimer->stop();
+    if (m_cardBuild.reservedHeight > 0) {
+        setTrailingCardStretch(0);
+        if (m_rightScrollContent) m_rightScrollContent->setMinimumHeight(0);
+    }
+    m_cardBuild = PendingCardBuild{};
+    m_leftBuild = PendingLeftBuild{};
+}
+
+int AudioSync::builtCardCount() const noexcept
+{
+    return static_cast<int>(std::count_if(m_cardWidgets.begin(), m_cardWidgets.end(),
+                                          [](const QPointer<QWidget>& w) { return !w.isNull(); }));
+}
+
+void AudioSync::setClipsForTesting(std::vector<SyncClip> clips)
+{
+    m_clips = std::move(clips);
+    populateCards();
 }
 
 // Builds (or rebuilds in place) one script-line card.  Shared by

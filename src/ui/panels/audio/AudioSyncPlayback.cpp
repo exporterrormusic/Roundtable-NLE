@@ -9,18 +9,24 @@
 #include "audio/AudioEngine.h"
 #include "audio/AudioFile.h"
 #include "widgets/MiniWaveformWidget.h"
+#include "MediaTaskQueue.h"
+#include "NotificationCenter.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
+#include <QSaveFile>
 #include <QTimer>
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <vector>
 #include <cmath>
+#include <optional>
+#include <stop_token>
+#include <vector>
 
 namespace rt {
 
@@ -99,9 +105,10 @@ static void writeAudioCache(const std::string& sourcePath,
     QFileInfo srcInfo(QString::fromStdString(sourcePath));
     if (!srcInfo.exists() || samples.empty()) return;
 
+    // QSaveFile: a reader (or a crash) never sees a half-written cache.
     QString cachePath = audioCacheDir() + "/" + audioCacheKey(sourcePath) + ".pcm";
-    QFile cacheFile(cachePath);
-    if (!cacheFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    QSaveFile cacheFile(cachePath);
+    if (!cacheFile.open(QIODevice::WriteOnly))
         return;
 
     AudioCacheHeader hdr{};
@@ -113,70 +120,285 @@ static void writeAudioCache(const std::string& sourcePath,
     cacheFile.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
     cacheFile.write(reinterpret_cast<const char*>(samples.data()),
                     static_cast<qint64>(samples.size() * sizeof(float)));
+    if (!cacheFile.commit())
+        spdlog::warn("AudioSync: could not write waveform cache {}", cachePath.toStdString());
 }
+
+namespace {
+
+/// Whole-file mono samples for waveforms/analysis. Thread-safe (no AudioSync
+/// state): runs on a MediaTaskQueue worker.
+std::optional<AudioSampleData> decodeMonoSamples(const std::string& path,
+                                                 const std::stop_token& stop)
+{
+    // Cached mono samples skip the expensive decode.
+    {
+        std::vector<float> cached;
+        uint32_t cachedRate = 0;
+        if (readAudioCache(path, cached, cachedRate)) {
+            spdlog::info("AudioSync: Loaded {} samples ({}Hz) from cache for {}",
+                         cached.size(), static_cast<int>(cachedRate), path);
+            AudioSampleData asd;
+            asd.sampleRate = cachedRate;
+            asd.samples    = std::move(cached);
+            return asd;
+        }
+    }
+    if (stop.stop_requested()) return std::nullopt;
+
+    AudioFile af;
+    if (!af.open(path)) {
+        spdlog::warn("AudioSync: Failed to open audio file for waveform: {}", path);
+        return std::nullopt;
+    }
+
+    auto info = af.info();
+    auto allSamples = af.readAll();
+    if (allSamples.empty() || info.channels == 0) {
+        spdlog::warn("AudioSync: Empty audio data from: {}", path);
+        return std::nullopt;
+    }
+    if (stop.stop_requested()) return std::nullopt;
+
+    // Mix to mono for waveform display
+    std::vector<float> mono;
+    if (info.channels == 1) {
+        mono = std::move(allSamples);
+    } else {
+        mono.resize(allSamples.size() / info.channels);
+        for (size_t i = 0; i < mono.size(); ++i) {
+            float sum = 0.0f;
+            for (uint32_t ch = 0; ch < info.channels; ++ch)
+                sum += allSamples[i * info.channels + ch];
+            mono[i] = sum / static_cast<float>(info.channels);
+        }
+        std::vector<float>().swap(allSamples);
+    }
+
+    // Cache the decoded mono samples for fast reload
+    writeAudioCache(path, mono, info.sampleRate);
+
+    spdlog::info("AudioSync: Loaded {} samples ({}Hz) from {}",
+                 mono.size(), static_cast<int>(info.sampleRate), path);
+    AudioSampleData asd;
+    asd.samples    = std::move(mono);
+    asd.sampleRate = info.sampleRate;
+    return asd;
+}
+
+/// Task result. `mutable` so the one subscriber can move the samples out
+/// of the queue's shared const result instead of copying ~700 MB per hour.
+struct DecodedAudioSamples {
+    mutable AudioSampleData data;
+};
+
+} // namespace
 
 void AudioSync::loadAudioSamples()
 {
     for (const auto& path : m_audioPaths) {
-        if (m_audioSamples.count(path))
-            continue; // already loaded
-
-        // Try cached mono samples first (skips expensive audio decoding)
-        {
-            std::vector<float> cached;
-            uint32_t cachedRate = 0;
-            if (readAudioCache(path, cached, cachedRate)) {
-                AudioSampleData asd;
-                auto sampleCount = cached.size();
-                asd.sampleRate = cachedRate;
-                asd.samples    = std::move(cached);
-                m_audioSamples[path] = std::move(asd);
-                spdlog::info("AudioSync: Loaded {} samples ({}Hz) from cache for {}",
-                             sampleCount, static_cast<int>(cachedRate), path);
-                continue;
-            }
-        }
-
-        AudioFile af;
-        if (!af.open(path)) {
-            spdlog::warn("AudioSync: Failed to open audio file for waveform: {}", path);
+        if (m_audioSamples.count(path) || m_audioDecodeFailedPaths.count(path) ||
+            path == m_audioDecodeInFlight ||
+            std::find(m_audioDecodeQueue.begin(), m_audioDecodeQueue.end(), path)
+                != m_audioDecodeQueue.end())
             continue;
-        }
-
-        auto info = af.info();
-        auto allSamples = af.readAll();
-        if (allSamples.empty()) {
-            spdlog::warn("AudioSync: Empty audio data from: {}", path);
-            continue;
-        }
-
-        // Mix to mono for waveform display
-        std::vector<float> mono;
-        if (info.channels == 1) {
-            mono = std::move(allSamples);
-        } else {
-            mono.resize(allSamples.size() / info.channels);
-            for (size_t i = 0; i < mono.size(); ++i) {
-                float sum = 0.0f;
-                for (uint32_t ch = 0; ch < info.channels; ++ch)
-                    sum += allSamples[i * info.channels + ch];
-                mono[i] = sum / static_cast<float>(info.channels);
-            }
-        }
-
-        // Cache the decoded mono samples for fast reload
-        writeAudioCache(path, mono, info.sampleRate);
-
-        AudioSampleData asd;
-        auto sampleCount = mono.size();
-        auto sr = info.sampleRate;
-        asd.samples    = std::move(mono);
-        asd.sampleRate = sr;
-        m_audioSamples[path] = std::move(asd);
-
-        spdlog::info("AudioSync: Loaded {} samples ({}Hz) from {}",
-                     sampleCount, static_cast<int>(sr), path);
+        m_audioDecodeQueue.push_back(path);
+        ++m_audioDecodeTotal;
     }
+    pumpAudioSampleDecode();
+}
+
+bool AudioSync::audioSamplesPending() const noexcept
+{
+    return !m_audioDecodeInFlight.empty() || !m_audioDecodeQueue.empty();
+}
+
+void AudioSync::pumpAudioSampleDecode()
+{
+    if (m_destroying.load(std::memory_order_acquire) || !m_audioDecodeInFlight.empty())
+        return;
+
+    while (!m_audioDecodeQueue.empty()) {
+        std::string path = std::move(m_audioDecodeQueue.front());
+        m_audioDecodeQueue.pop_front();
+        // Loaded meanwhile (loadAudioSamplesNow), or no longer imported
+        // (removed, or another script session is active now).
+        if (m_audioSamples.count(path) ||
+            std::find(m_audioPaths.begin(), m_audioPaths.end(), path) == m_audioPaths.end()) {
+            ++m_audioDecodeDone;
+            continue;
+        }
+
+        if (auto* notices = NotificationCenter::current()) {
+            const QString fileName = QFileInfo(QString::fromStdString(path)).fileName();
+            const int progress = m_audioDecodeTotal > 0
+                ? m_audioDecodeDone * 100 / m_audioDecodeTotal : -1;
+            if (m_audioDecodeNotice == 0) {
+                QPointer<AudioSync> guard(this);
+                m_audioDecodeNotice = notices->beginTask(
+                    QStringLiteral("Loading audio waveforms"), fileName, progress,
+                    [guard]() { if (guard) guard->cancelAudioSampleDecodes(); });
+            }
+            else
+                notices->updateTask(m_audioDecodeNotice, progress, fileName);
+        }
+
+        // Keyed per owner: the one subscriber moves the samples out, so no
+        // other panel may share the task.
+        m_audioDecodeInFlight = path;
+        QPointer<AudioSync> self(this);
+        const uint64_t generation = m_audioDecodeGeneration;
+        const bool accepted = MediaTaskQueue::instance().submit<DecodedAudioSamples>(
+            m_audioTaskOwner,
+            "audiosync-mono:" + std::to_string(m_audioTaskOwner) + ":" + path,
+            MediaTaskQueue::Priority::Visible,
+            [path](std::stop_token stop) {
+                auto decoded = decodeMonoSamples(path, stop);
+                if (!decoded)
+                    return MediaTaskQueue::Result<DecodedAudioSamples>::failure(
+                        "could not decode audio");
+                return MediaTaskQueue::Result<DecodedAudioSamples>::success(
+                    DecodedAudioSamples{std::move(*decoded)});
+            },
+            [self, path, generation](MediaTaskQueue::Result<DecodedAudioSamples> result) {
+                auto* app = QCoreApplication::instance();
+                if (!app) return;
+                QMetaObject::invokeMethod(app, [self, path, generation,
+                                                result = std::move(result)]() {
+                    if (!self || self->m_destroying.load(std::memory_order_acquire)) return;
+                    // Landed after a cancel: the samples are still good, but
+                    // the queue state now belongs to newer requests.
+                    const bool current = self->m_audioDecodeGeneration == generation;
+                    if (current) {
+                        if (self->m_audioDecodeInFlight == path)
+                            self->m_audioDecodeInFlight.clear();
+                        ++self->m_audioDecodeDone;
+                        if (!result.succeeded()) {
+                            ++self->m_audioDecodeFailed;
+                            self->m_audioDecodeFailedPaths.insert(path);
+                        }
+                    }
+                    if (result.succeeded() &&
+                        std::find(self->m_audioPaths.begin(), self->m_audioPaths.end(), path)
+                            != self->m_audioPaths.end())
+                        self->installAudioSamples(path, std::move(result.value->data));
+                    if (current) self->pumpAudioSampleDecode();
+                }, Qt::QueuedConnection);
+            });
+        if (accepted) return;
+        m_audioDecodeInFlight.clear();
+        ++m_audioDecodeDone;
+        ++m_audioDecodeFailed;
+    }
+    finishAudioSampleDecodes();
+}
+
+void AudioSync::finishAudioSampleDecodes()
+{
+    if (audioSamplesPending()) return;
+    if (m_audioDecodeNotice != 0) {
+        if (auto* notices = NotificationCenter::current()) {
+            // Only a failure is worth a notification; success just clears.
+            const int failed = m_audioDecodeFailed;
+            notices->finishTask(m_audioDecodeNotice, failed == 0,
+                                failed == 0 ? QString()
+                                    : QStringLiteral("%1 audio file(s) could not be read "
+                                                     "(see the log).").arg(failed),
+                                /*addNotification=*/failed > 0);
+        }
+        m_audioDecodeNotice = 0;
+    }
+    m_audioDecodeTotal = 0;
+    m_audioDecodeDone = 0;
+    m_audioDecodeFailed = 0;
+
+    // Actions that waited for complete audio (Auto-Sync, auto-trim...).
+    auto ready = std::move(m_afterAudioSamplesReady);
+    m_afterAudioSamplesReady.clear();
+    for (auto& [action, fn] : ready)
+        if (fn && !m_destroying.load(std::memory_order_acquire)) fn();
+}
+
+void AudioSync::cancelAudioSampleDecodes()
+{
+    ++m_audioDecodeGeneration;
+    MediaTaskQueue::instance().cancelOwner(m_audioTaskOwner);
+    m_audioDecodeQueue.clear();
+    m_audioDecodeInFlight.clear();
+    m_afterAudioSamplesReady.clear();
+    if (m_audioDecodeNotice != 0) {
+        if (auto* notices = NotificationCenter::current())
+            notices->finishTask(m_audioDecodeNotice, false,
+                                QStringLiteral("Cancelled"), /*addNotification=*/false);
+        m_audioDecodeNotice = 0;
+    }
+    m_audioDecodeTotal = 0;
+    m_audioDecodeDone = 0;
+    m_audioDecodeFailed = 0;
+}
+
+void AudioSync::installAudioSamples(const std::string& path, AudioSampleData decoded)
+{
+    if (decoded.samples.empty() || m_audioSamples.count(path)) return;
+    // unordered_map nodes never move: waveforms keep pointing at this entry.
+    const AudioSampleData& stored = m_audioSamples[path] = std::move(decoded);
+
+    // Cards built before the samples arrived show an empty waveform.
+    for (size_t i = 0; i < m_cardWaveforms.size() && i < m_cardClipIndices.size(); ++i) {
+        const int ci = m_cardClipIndices[i];
+        MiniWaveformWidget* wf = m_cardWaveforms[i];
+        if (!wf || ci < 0 || static_cast<size_t>(ci) >= m_clips.size()) continue;
+        const SyncClip& clip = m_clips[static_cast<size_t>(ci)];
+        if (clip.sourceFile != path) continue;
+        wf->setAudioShared(&stored.samples, stored.sampleRate, clip.start, clip.end);
+        if (!clip.deletedRegions.empty())
+            wf->setDeletedRegions(clip.deletedRegions);
+    }
+    // File lists show duration + a waveform only once samples exist.
+    refreshAudioFileListItem(path);
+    refreshTranscribeFileList();
+}
+
+void AudioSync::loadAudioSamplesNow()
+{
+    for (const auto& path : m_audioPaths) {
+        if (m_audioSamples.count(path) || m_audioDecodeFailedPaths.count(path)) continue;
+        // A background decode of the same file may still finish; its result
+        // is dropped because the entry exists by then.
+        if (auto decoded = decodeMonoSamples(path, std::stop_token{}))
+            installAudioSamples(path, std::move(*decoded));
+        else
+            m_audioDecodeFailedPaths.insert(path);
+    }
+}
+
+void AudioSync::whenAudioSamplesReady(const QString& action, std::function<void()> fn)
+{
+    if (!fn) return;
+    loadAudioSamples();   // re-queue anything missing, e.g. a cancelled load
+    if (!audioSamplesPending()) {
+        fn();
+        return;
+    }
+    for (const auto& waiting : m_afterAudioSamplesReady)
+        if (waiting.first == action) return;   // already waiting (double click)
+    m_afterAudioSamplesReady.emplace_back(action, std::move(fn));
+    if (auto* notices = NotificationCenter::current())
+        notices->postInfo(action, QStringLiteral("Starts when the audio finishes loading."));
+}
+
+bool AudioSync::audioReadyOrNotify(const std::string& path, const QString& action)
+{
+    const bool pending = path.empty()
+        ? audioSamplesPending()
+        : (path == m_audioDecodeInFlight ||
+           std::find(m_audioDecodeQueue.begin(), m_audioDecodeQueue.end(), path)
+               != m_audioDecodeQueue.end());
+    if (!pending) return true;
+    if (auto* notices = NotificationCenter::current())
+        notices->postInfo(action,
+                          QStringLiteral("The audio is still loading. Try again in a moment."));
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -712,6 +934,7 @@ void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
 void AudioSync::autoTrimClip(size_t clipIdx)
 {
     if (clipIdx >= m_clips.size()) return;
+    if (!audioReadyOrNotify(m_clips[clipIdx].sourceFile, QStringLiteral("Auto-trim"))) return;
 
     auto& clip = m_clips[clipIdx];
     auto it = m_audioSamples.find(clip.sourceFile);

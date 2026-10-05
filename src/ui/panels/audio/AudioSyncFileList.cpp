@@ -428,7 +428,30 @@ QColor AudioSync::characterColor(const std::string& character) const
 //  Audio file list helpers — rich items with file details
 // ═══════════════════════════════════════════════════════════════════════════
 
-void AudioSync::addAudioFileListItem(const QString& fullPath)
+void AudioSync::refreshAudioFileListItem(const std::string& path)
+{
+    if (!m_audioFileList) return;
+    const QString fullPath = QString::fromStdString(path);
+    for (int row = 0; row < m_audioFileList->count(); ++row) {
+        QListWidgetItem* item = m_audioFileList->item(row);
+        if (!item || item->data(Qt::UserRole).toString() != fullPath) continue;
+        // Rebuilt in place (same row, same selection) now that its samples
+        // can show a duration and waveform.
+        const bool wasCurrent = m_audioFileList->currentRow() == row;
+        const bool wasSelected = item->isSelected();
+        m_audioFileList->blockSignals(true);
+        delete m_audioFileList->takeItem(row);
+        addAudioFileListItem(fullPath, row);
+        if (QListWidgetItem* rebuilt = m_audioFileList->item(row)) {
+            if (wasCurrent) m_audioFileList->setCurrentItem(rebuilt);
+            rebuilt->setSelected(wasSelected);
+        }
+        m_audioFileList->blockSignals(false);
+        return;
+    }
+}
+
+void AudioSync::addAudioFileListItem(const QString& fullPath, int row)
 {
     if (!m_audioFileList) return;
 
@@ -601,7 +624,10 @@ void AudioSync::addAudioFileListItem(const QString& fullPath)
         ? fi.birthTime() : fi.lastModified());   // for sorting by date
     item->setData(Qt::UserRole + 2, bytes);      // for sorting by size
     item->setSizeHint(QSize(0, std::max(widget->sizeHint().height(), 160) + 8));
-    m_audioFileList->addItem(item);
+    if (row >= 0 && row <= m_audioFileList->count())
+        m_audioFileList->insertItem(row, item);
+    else
+        m_audioFileList->addItem(item);
     m_audioFileList->setItemWidget(item, widget);
 }
 

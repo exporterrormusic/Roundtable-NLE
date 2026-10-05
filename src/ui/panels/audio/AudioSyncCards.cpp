@@ -16,6 +16,7 @@
 #include "Theme.h"
 
 #include <QComboBox>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -79,6 +80,7 @@ void styleLeftCard(QFrame* cardWidget, QLabel* numLabel, int lineNumber, int mat
 void AudioSync::populateLeftList()
 {
     if (!m_leftScriptList) return;
+    m_leftBuild = PendingLeftBuild{};   // a rebuild replaces one still streaming
     if (!m_script) {
         m_leftScriptList->blockSignals(true);
         m_leftScriptList->clear();
@@ -114,8 +116,8 @@ void AudioSync::populateLeftList()
     m_leftScriptList->clear();
     m_cardScriptLineNums.clear();
 
-    int displayIdx = 0;
-    for (const auto& line : m_script->lines) {
+    for (size_t lineIndex = 0; lineIndex < m_script->lines.size(); ++lineIndex) {
+        const auto& line = m_script->lines[lineIndex];
         // Apply character filter
         if (!filterChar.isEmpty()) {
             if (QString::fromStdString(line.character) != filterChar)
@@ -127,115 +129,29 @@ void AudioSync::populateLeftList()
             if (lineMatchState.count(line.lineNumber) > 0)
                 continue;
         }
-        ++displayIdx;
-
-        int matchState = 0;
-        auto it = lineMatchState.find(line.lineNumber);
-        if (it != lineMatchState.end())
-            matchState = it->second;
-
-        // Status icon
-        QString icon;
-        QString iconColor;
-        const auto& _tc = Theme::colors();
-        switch (matchState) {
-        case 2:  icon = QStringLiteral("\u2713"); iconColor = Theme::hex(_tc.success); break;
-        case 1:  icon = "?"; iconColor = Theme::hex(_tc.warning); break;
-        default: icon = QStringLiteral("\u25CB"); iconColor = Theme::hex(_tc.textDisabled); break;
-        }
-
-        QColor cc = characterColor(line.character);
-        QString charName = QString::fromStdString(line.character);
-        QString dialogueText = QString::fromStdString(line.dialogue);
-
-        // ── Build custom card widget: [ #N | CHAR | dialogue text ] ───
-        // Number box colored by match state
-        QString numBg;
-        switch (matchState) {
-        case 2:  numBg = Theme::hex(_tc.successBtnBg); break;
-        case 1:  numBg = Theme::hex(_tc.warning); break;
-        default: numBg = Theme::hex(_tc.error); break;
-        }
-
-        // Card background with subtle match tint
-        QString cardBg, cardBorder;
-        switch (matchState) {
-        case 2:  cardBg = Theme::hex(_tc.successBg); cardBorder = Theme::hex(_tc.success); break;
-        case 1:  cardBg = Theme::hex(_tc.warningBg); cardBorder = Theme::hex(_tc.warning); break;
-        default: cardBg = Theme::hex(_tc.errorBg); cardBorder = Theme::hex(_tc.error); break;
-        }
-
-        // Hover variant: slightly brighter background + border
-        QString hoverBg, hoverBorder;
-        switch (matchState) {
-        case 2:  hoverBg = Theme::hex(_tc.successBg.lighter(120)); hoverBorder = Theme::hex(_tc.success.lighter(120)); break;
-        case 1:  hoverBg = Theme::hex(_tc.warningBg.lighter(120)); hoverBorder = Theme::hex(_tc.warning.lighter(120)); break;
-        default: hoverBg = Theme::hex(_tc.surface3); hoverBorder = Theme::hex(_tc.border); break;
-        }
-
-        auto* cardWidget = new QFrame;
-        cardWidget->setProperty("matchState", matchState);  // refreshLeftListStates()
-        cardWidget->setObjectName(QString("leftCard_%1").arg(line.lineNumber));
-        cardWidget->setCursor(Qt::PointingHandCursor);
-        cardWidget->setStyleSheet(
-            QString("QFrame#leftCard_%1 { background: %2; border: 1px solid %3; border-radius: %6px; }"
-                    "QFrame#leftCard_%1:hover { background: %4; border: 1px solid %5; }")
-                .arg(line.lineNumber).arg(cardBg, cardBorder, hoverBg, hoverBorder).arg(Theme::metrics().radiusMd));
-
-        auto* rowLayout = new QHBoxLayout(cardWidget);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(0);
-
-        // Number badge — colored by match state
-        auto* numLabel = new QLabel(QString::number(displayIdx));
-        numLabel->setFixedWidth(36);
-        numLabel->setAlignment(Qt::AlignCenter);
-        numLabel->setStyleSheet(
-            QString("QLabel { color: %2; font-size: %4px; font-weight: bold; "
-                    "background: %1; border: none; "
-                    "border-top-left-radius: %3px; border-bottom-left-radius: %3px; "
-                    "padding: 4px 0px; }")
-                .arg(numBg, Theme::hex(_tc.textBright)).arg(Theme::metrics().radiusMd)
-                .arg(Theme::typography().sizeSmall));
-        rowLayout->addWidget(numLabel);
-
-        // Character name tag — neutral bg, colored text
-        if (m_script->isShotScript()) {
-            // One announcer, so the tag shows the shot instead.
-            rowLayout->addWidget(createShotTag(line, 80));
-        } else {
-            auto* charLabel = new QLabel(charName);
-            charLabel->setFixedWidth(80);
-            charLabel->setAlignment(Qt::AlignCenter);
-            charLabel->setStyleSheet(
-                QString("QLabel { color: %1; font-size: 13px; font-weight: bold; "
-                        "background: %2; border: none; padding: 4px 4px; }")
-                    .arg(cc.lighter(130).name(), Theme::hex(_tc.surface2)));
-            rowLayout->addWidget(charLabel);
-        }
-
-        // Script dialogue text
-        auto* textLabel = new QLabel(dialogueText);
-        textLabel->setWordWrap(true);
-        enableScriptTextCopy(textLabel, dialogueText);
-        addGenerateVoiceAction(textLabel, line.lineNumber, charName, dialogueText,
-                               QString::fromStdString(line.segment));
-        textLabel->setStyleSheet(
-            QString("QLabel { color: %1; font-size: %2px; "
-                    "background: transparent; border: none; "
-                    "padding: 6px 10px; }").arg(Theme::hex(_tc.textPrimary))
-                .arg(Theme::typography().sizeSmall));
-        textLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        rowLayout->addWidget(textLabel, 1);
-
-        // ── Insert into list ────────────────────────────────────────
+        // Items (row index, line number) exist for every row up front, so
+        // left row i stays right-pane card i; the row widgets -- a few
+        // style sheets each, ~3-4 ms a row -- stream in like the cards.
         auto* item = new QListWidgetItem(m_leftScriptList);
         item->setData(Qt::UserRole, line.lineNumber);
-        item->setSizeHint(QSize(0, std::max(cardWidget->sizeHint().height(), 42) + 6));
-        m_leftScriptList->setItemWidget(item, cardWidget);
-
+        item->setSizeHint(QSize(0, 42 + 6));   // until its widget is built
         m_cardScriptLineNums.push_back(line.lineNumber);
+        m_leftBuild.lineIndices.push_back(lineIndex);
     }
+
+    m_leftBuild.script = m_script.get();
+    m_leftBuild.active = !m_leftBuild.lineIndices.empty();
+    // The first screen of rows now (it is what shows), the rest in slices.
+    const int wanted = 2 * std::max(m_leftScriptList->viewport()->height(), 600);
+    int builtHeight = 0;
+    while (m_leftBuild.active && builtHeight < wanted) {
+        buildLeftRow(m_leftBuild.next, lineMatchState);
+        if (auto* item = m_leftScriptList->item(static_cast<int>(m_leftBuild.next)))
+            builtHeight += item->sizeHint().height();
+        m_leftBuild.active = ++m_leftBuild.next < m_leftBuild.lineIndices.size();
+    }
+    if (m_leftBuild.active && m_cardBuildTimer && !m_cardBuildTimer->isActive())
+        m_cardBuildTimer->start();
 
     // Orphan clips hidden — manual matching is the preferred workflow.
     if (m_leftOrphanLabel) m_leftOrphanLabel->setVisible(false);
@@ -246,6 +162,140 @@ void AudioSync::populateLeftList()
 
     m_leftScriptList->blockSignals(false);
     updateSmartBar();
+}
+
+void AudioSync::buildLeftRow(size_t row, const std::unordered_map<int, int>& lineMatchState)
+{
+    QListWidgetItem* item = m_leftScriptList->item(static_cast<int>(row));
+    if (!item || row >= m_leftBuild.lineIndices.size()) return;
+    const auto& line = m_script->lines[m_leftBuild.lineIndices[row]];
+    const int displayIdx = static_cast<int>(row) + 1;
+
+    int matchState = 0;
+    auto it = lineMatchState.find(line.lineNumber);
+    if (it != lineMatchState.end())
+        matchState = it->second;
+
+    // Status icon
+    QString icon;
+    QString iconColor;
+    const auto& _tc = Theme::colors();
+    switch (matchState) {
+    case 2:  icon = QStringLiteral("\u2713"); iconColor = Theme::hex(_tc.success); break;
+    case 1:  icon = "?"; iconColor = Theme::hex(_tc.warning); break;
+    default: icon = QStringLiteral("\u25CB"); iconColor = Theme::hex(_tc.textDisabled); break;
+    }
+
+    QColor cc = characterColor(line.character);
+    QString charName = QString::fromStdString(line.character);
+    QString dialogueText = QString::fromStdString(line.dialogue);
+
+    // ── Build custom card widget: [ #N | CHAR | dialogue text ] ───
+    // Number box colored by match state
+    QString numBg;
+    switch (matchState) {
+    case 2:  numBg = Theme::hex(_tc.successBtnBg); break;
+    case 1:  numBg = Theme::hex(_tc.warning); break;
+    default: numBg = Theme::hex(_tc.error); break;
+    }
+
+    // Card background with subtle match tint
+    QString cardBg, cardBorder;
+    switch (matchState) {
+    case 2:  cardBg = Theme::hex(_tc.successBg); cardBorder = Theme::hex(_tc.success); break;
+    case 1:  cardBg = Theme::hex(_tc.warningBg); cardBorder = Theme::hex(_tc.warning); break;
+    default: cardBg = Theme::hex(_tc.errorBg); cardBorder = Theme::hex(_tc.error); break;
+    }
+
+    // Hover variant: slightly brighter background + border
+    QString hoverBg, hoverBorder;
+    switch (matchState) {
+    case 2:  hoverBg = Theme::hex(_tc.successBg.lighter(120)); hoverBorder = Theme::hex(_tc.success.lighter(120)); break;
+    case 1:  hoverBg = Theme::hex(_tc.warningBg.lighter(120)); hoverBorder = Theme::hex(_tc.warning.lighter(120)); break;
+    default: hoverBg = Theme::hex(_tc.surface3); hoverBorder = Theme::hex(_tc.border); break;
+    }
+
+    auto* cardWidget = new QFrame;
+    cardWidget->setProperty("matchState", matchState);  // refreshLeftListStates()
+    cardWidget->setObjectName(QString("leftCard_%1").arg(line.lineNumber));
+    cardWidget->setCursor(Qt::PointingHandCursor);
+    cardWidget->setStyleSheet(
+        QString("QFrame#leftCard_%1 { background: %2; border: 1px solid %3; border-radius: %6px; }"
+                "QFrame#leftCard_%1:hover { background: %4; border: 1px solid %5; }")
+            .arg(line.lineNumber).arg(cardBg, cardBorder, hoverBg, hoverBorder).arg(Theme::metrics().radiusMd));
+
+    auto* rowLayout = new QHBoxLayout(cardWidget);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(0);
+
+    // Number badge — colored by match state
+    auto* numLabel = new QLabel(QString::number(displayIdx));
+    numLabel->setFixedWidth(36);
+    numLabel->setAlignment(Qt::AlignCenter);
+    numLabel->setStyleSheet(
+        QString("QLabel { color: %2; font-size: %4px; font-weight: bold; "
+                "background: %1; border: none; "
+                "border-top-left-radius: %3px; border-bottom-left-radius: %3px; "
+                "padding: 4px 0px; }")
+            .arg(numBg, Theme::hex(_tc.textBright)).arg(Theme::metrics().radiusMd)
+            .arg(Theme::typography().sizeSmall));
+    rowLayout->addWidget(numLabel);
+
+    // Character name tag — neutral bg, colored text
+    if (m_script->isShotScript()) {
+        // One announcer, so the tag shows the shot instead.
+        rowLayout->addWidget(createShotTag(line, 80));
+    } else {
+        auto* charLabel = new QLabel(charName);
+        charLabel->setFixedWidth(80);
+        charLabel->setAlignment(Qt::AlignCenter);
+        charLabel->setStyleSheet(
+            QString("QLabel { color: %1; font-size: 13px; font-weight: bold; "
+                    "background: %2; border: none; padding: 4px 4px; }")
+                .arg(cc.lighter(130).name(), Theme::hex(_tc.surface2)));
+        rowLayout->addWidget(charLabel);
+    }
+
+    // Script dialogue text
+    auto* textLabel = new QLabel(dialogueText);
+    textLabel->setWordWrap(true);
+    enableScriptTextCopy(textLabel, dialogueText);
+    addGenerateVoiceAction(textLabel, line.lineNumber, charName, dialogueText,
+                           QString::fromStdString(line.segment));
+    textLabel->setStyleSheet(
+        QString("QLabel { color: %1; font-size: %2px; "
+                "background: transparent; border: none; "
+                "padding: 6px 10px; }").arg(Theme::hex(_tc.textPrimary))
+            .arg(Theme::typography().sizeSmall));
+    textLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    rowLayout->addWidget(textLabel, 1);
+
+    // ── Insert into list ────────────────────────────────────────
+    item->setSizeHint(QSize(0, std::max(cardWidget->sizeHint().height(), 42) + 6));
+    m_leftScriptList->setItemWidget(item, cardWidget);
+}
+
+void AudioSync::buildPendingLeftRows(int budgetMs)
+{
+    if (!m_leftBuild.active || m_destroying.load(std::memory_order_acquire)) return;
+    if (!m_leftScriptList || !m_script || m_script.get() != m_leftBuild.script ||
+        m_leftScriptList->count() != static_cast<int>(m_leftBuild.lineIndices.size())) {
+        m_leftBuild = PendingLeftBuild{};   // stale: the list was rebuilt or cleared
+        return;
+    }
+    std::unordered_map<int, int> lineMatchState;   // fresh: states change between slices
+    for (const auto& clip : m_clips) {
+        if (clip.scriptLineNumber > 0) {
+            int& st = lineMatchState[clip.scriptLineNumber];
+            st = std::max(st, clip.matchState);
+        }
+    }
+    QElapsedTimer slice;
+    slice.start();
+    do {
+        buildLeftRow(m_leftBuild.next, lineMatchState);
+        m_leftBuild.active = ++m_leftBuild.next < m_leftBuild.lineIndices.size();
+    } while (m_leftBuild.active && (budgetMs < 0 || slice.elapsed() < budgetMs));
 }
 
 void AudioSync::refreshLeftListStates()
@@ -277,7 +327,13 @@ void AudioSync::refreshLeftListStates()
         auto* item = m_leftScriptList->item(r);
         auto* frame = qobject_cast<QFrame*>(m_leftScriptList->itemWidget(item));
         const int lineNumber = item ? item->data(Qt::UserRole).toInt() : -1;
-        if (!frame || lineNumber != m_script->lines[static_cast<size_t>(r)].lineNumber) {
+        if (lineNumber != m_script->lines[static_cast<size_t>(r)].lineNumber) {
+            populateLeftList();
+            return;
+        }
+        if (!frame) {
+            // Not built yet: it takes the current state when it is.
+            if (m_leftBuild.active && static_cast<size_t>(r) >= m_leftBuild.next) continue;
             populateLeftList();
             return;
         }

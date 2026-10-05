@@ -22,6 +22,7 @@
 #include "widgets/ManualMatchDialog.h"
 #include "Theme.h"
 #include "QtHelpers.h"
+#include "MediaTaskQueue.h"
 
 #include <spdlog/spdlog.h>
 
@@ -156,6 +157,14 @@ AudioSync::AudioSync(QWidget* parent)
     m_transcriber->setModelsDirectory(
         (rt::userDataDir() + "/models").toStdString());
 
+    m_audioTaskOwner = MediaTaskQueue::instance().createOwner();
+
+    // MATCH cards past the first screenful build in short slices.
+    m_cardBuildTimer = new QTimer(this);
+    m_cardBuildTimer->setSingleShot(true);
+    m_cardBuildTimer->setInterval(0);
+    connect(m_cardBuildTimer, &QTimer::timeout, this, &AudioSync::continueCardBuild);
+
     // Trim-drag undo debounce timer
     m_trimDebounceTimer = new QTimer(this);
     m_trimDebounceTimer->setSingleShot(true);
@@ -212,6 +221,10 @@ AudioSync::~AudioSync()
 {
     m_destroying.store(true);
     ++m_transcriptionRunId; // Invalidate queued callbacks from the active run.
+    // Drop queued waveform decodes; a running one is cancelled and its
+    // completion never reaches this panel.
+    cancelAudioSampleDecodes();
+    if (m_cardBuildTimer) m_cardBuildTimer->stop();
     m_transcriptionState = TranscriptionState::Cancelling;
 
     QPointer<QThread> thread = m_workerThread;
@@ -717,10 +730,8 @@ void AudioSync::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
     if (m_cardsDirty) {
-        // populateScriptList() already rebuilds both the left list and the
-        // cards; calling populateClipList() afterwards rebuilt every card a
-        // second time. Build once.
-        populateLeftList();
+        // populateCards() rebuilds both the left list and the cards; calling
+        // populateLeftList()/populateClipList() as well built them twice.
         populateCards();
         m_cardsDirty = false;
     }
@@ -891,6 +902,7 @@ bool AudioSync::importAudio(const std::string& audioPath)
         spdlog::info("AudioSync: Audio already imported: {}", audioPath);
         return true;
     }
+    m_audioDecodeFailedPaths.erase(audioPath);   // re-imported: try decoding again
 
     // Repair any legacy size mismatch before appending the new parallel slot.
     m_allTranscriptionResults.resize(m_audioPaths.size());

@@ -158,8 +158,7 @@ QStringList AudioSync::missingDefaultShots() const
 
 void AudioSync::populateScriptList()
 {
-    populateLeftList();
-    populateCards();
+    populateCards();   // rebuilds the left list too
 }
 
 void AudioSync::populateClipList()
@@ -625,6 +624,7 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
 
 void AudioSync::scrollToCard(int scriptLineNumber)
 {
+    m_cardBuild.pendingScrollLine = -1;
     if (!m_rightScrollArea || m_cardWidgets.empty()) return;
 
     // Remove highlight from previously highlighted card
@@ -638,6 +638,12 @@ void AudioSync::scrollToCard(int scriptLineNumber)
         {
             auto widget = widgets[i];
             QWidget* rawWidget = widget;
+            if (!rawWidget && m_cardBuild.active) {
+                // Not built yet (the rest of the cards are streaming in):
+                // scroll there as soon as its slice lands.
+                m_cardBuild.pendingScrollLine = scriptLineNumber;
+                break;
+            }
             if (rawWidget) {
                 // Apply highlight: accent outline that preserves match-state colors
                 setHighlightedCard(rawWidget);

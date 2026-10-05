@@ -426,6 +426,7 @@ void AudioSync::resegmentByScript()
 void AudioSync::openManualMatch(int lineNumber)
 {
     if (!m_script || m_audioPaths.empty()) return;
+    if (!audioReadyOrNotify({}, QStringLiteral("Manual match"))) return;
 
     // QDialog::exec() runs a nested event loop.  Stop both AudioSync preview
     // modes before entering it so their timers cannot observe the dialog's
@@ -595,6 +596,7 @@ bool AudioSync::openTakePlayerForClipId(int clipId)
 void AudioSync::openTakePlayer(size_t clipIdx)
 {
     if (clipIdx >= m_clips.size()) return;
+    if (!audioReadyOrNotify(m_clips[clipIdx].sourceFile, QStringLiteral("Take player"))) return;
     const SyncClip clip = m_clips[clipIdx];
     auto sampleIt = m_audioSamples.find(clip.sourceFile);
     if (sampleIt == m_audioSamples.end()) return;
