@@ -198,6 +198,9 @@ option(ROUNDTABLE_ENABLE_BREEZE
 # ─── Global definitions ─────────────────────────────────────────────────────
 add_compile_definitions(
     ROUNDTABLE_VERSION="${PROJECT_VERSION}"
+    # Tool paths below are compiled in under this source dir; at run time
+    # rt::AppPaths::relocatedToolPath() maps them onto the app root.
+    ROUNDTABLE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     VK_NO_PROTOTYPES          # Required: volk provides Vulkan function pointers at runtime.
                               # Without this, vulkan.h declares direct prototypes that link
                               # to volk's pointer variables instead of calling through them.

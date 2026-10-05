@@ -1,4 +1,5 @@
 #include "AppPaths.h"
+#include "PathUtils.h"
 
 #include <cstdlib>
 #include <system_error>
@@ -98,6 +99,22 @@ const fs::path& root()
 fs::path assets()
 {
     return root() / "assets";
+}
+
+std::string relocatedToolPath(std::string_view compiledPath)
+{
+#ifdef ROUNDTABLE_SOURCE_DIR
+    constexpr std::string_view sourceDir = ROUNDTABLE_SOURCE_DIR;
+    if (compiledPath.size() > sourceDir.size() + 1 &&
+        compiledPath.substr(0, sourceDir.size()) == sourceDir &&
+        (compiledPath[sourceDir.size()] == '/' || compiledPath[sourceDir.size()] == '\\')) {
+        const std::string relative(compiledPath.substr(sourceDir.size() + 1));
+        const fs::path candidate = root() / utf8ToPath(relative);
+        std::error_code error;
+        if (fs::exists(candidate, error)) return pathToUtf8(candidate.lexically_normal());
+    }
+#endif
+    return std::string(compiledPath);
 }
 
 fs::path ffmpegExecutable()

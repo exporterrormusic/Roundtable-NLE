@@ -37,6 +37,7 @@
 #include "CrashHandler.h"
 #include "AtomicFile.h"
 #include "AppPaths.h"
+#include "PathUtils.h"
 
 #include <chrono>
 #include <filesystem>
@@ -993,4 +994,24 @@ TEST(AppPathsTest, FindsTheBundledFfmpeg)
     ASSERT_FALSE(ffmpeg.empty());
     EXPECT_TRUE(fs::is_regular_file(ffmpeg));
     EXPECT_EQ(ffmpeg.stem(), fs::path("ffmpeg"));
+}
+
+// Voice / transcription tool paths are compiled in as absolute source-tree
+// paths; at run time they resolve against the app root so they survive the
+// repo moving (or a runtime placed beside an installed app).
+TEST(AppPathsTest, RelocatedToolPathResolvesAgainstTheAppRoot)
+{
+    const std::string inTree = std::string(ROUNDTABLE_SOURCE_DIR) + "/CMakeLists.txt";
+    const fs::path resolved = rt::utf8ToPath(rt::AppPaths::relocatedToolPath(inTree));
+    EXPECT_TRUE(fs::is_regular_file(resolved));
+    EXPECT_EQ(resolved.filename(), fs::path("CMakeLists.txt"));
+    EXPECT_EQ(resolved.parent_path().lexically_normal(),
+              rt::AppPaths::root().lexically_normal());
+
+    // Nothing there under the root: the compiled path is kept as is.
+    const std::string missing = std::string(ROUNDTABLE_SOURCE_DIR) + "/no/such/tool.exe";
+    EXPECT_EQ(rt::AppPaths::relocatedToolPath(missing), missing);
+    // Outside the source tree: untouched.
+    EXPECT_EQ(rt::AppPaths::relocatedToolPath("C:/elsewhere/python.exe"),
+              "C:/elsewhere/python.exe");
 }

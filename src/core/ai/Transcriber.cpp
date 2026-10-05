@@ -6,6 +6,8 @@
  */
 
 #include "ai/Transcriber.h"
+#include "PathUtils.h"
+#include "AppPaths.h"
 
 #include <spdlog/spdlog.h>
 
@@ -300,9 +302,12 @@ struct Transcriber::Impl
     {
         stopCrisper();
 
-        if (!std::filesystem::exists(ROUNDTABLE_CRISPERWHISPER_WORKER_PATH)) {
-            lastError = std::string("CrisperWhisper worker script not found: ")
-                + ROUNDTABLE_CRISPERWHISPER_WORKER_PATH;
+        const std::string workerPath =
+            AppPaths::relocatedToolPath(ROUNDTABLE_CRISPERWHISPER_WORKER_PATH);
+        const std::string pythonPath =
+            AppPaths::relocatedToolPath(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH);
+        if (!std::filesystem::exists(utf8ToPath(workerPath))) {
+            lastError = "CrisperWhisper worker script not found: " + workerPath;
             return false;
         }
 
@@ -328,12 +333,12 @@ struct Transcriber::Impl
         std::wstring python;
         if (pythonLength > 0 && pythonLength < std::size(pythonBuffer)) {
             python.assign(pythonBuffer, pythonLength);
-        } else if (std::filesystem::exists(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH)) {
-            python = utf8ToWide(ROUNDTABLE_CRISPERWHISPER_PYTHON_PATH);
+        } else if (std::filesystem::exists(utf8ToPath(pythonPath))) {
+            python = utf8ToWide(pythonPath);
         } else {
             python = L"python";
         }
-        const std::wstring worker = utf8ToWide(ROUNDTABLE_CRISPERWHISPER_WORKER_PATH);
+        const std::wstring worker = utf8ToWide(workerPath);
         std::wstring command = quoteWindowsArg(python) + L" -u " + quoteWindowsArg(worker);
 
         childStderr = CreateFileW(L"NUL", GENERIC_WRITE,

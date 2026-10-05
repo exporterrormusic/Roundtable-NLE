@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
+#include <string_view>
 
 namespace rt::AppPaths {
 
@@ -21,6 +23,12 @@ namespace rt::AppPaths {
 /// there by the build), else the dev tree's third_party / tools copy.
 /// Empty when neither exists (callers may then try PATH).
 [[nodiscard]] std::filesystem::path ffmpegExecutable();
+
+/// A tool path compiled in as <source dir>/<rel> (voice / transcription
+/// runtimes, worker scripts): root()/<rel> when that exists -- the same file
+/// in a dev run, and found again after the repo moves or beside an installed
+/// app -- else the compiled path unchanged. UTF-8 in and out.
+[[nodiscard]] std::string relocatedToolPath(std::string_view compiledPath);
 
 /// Make root() the process working directory.  Projects and presets store
 /// asset paths relative to the root ("assets/backgrounds/x.png"), so they

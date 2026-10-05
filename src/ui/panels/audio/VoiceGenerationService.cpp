@@ -123,10 +123,10 @@ BreezeInstallation breezeInstallationAt(const QString& selectedRoot)
 BreezeInstallation scanForBreezeInstallation()
 {
     const BreezeInstallation packaged{
-        QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT),
-        QString::fromUtf8(ROUNDTABLE_BREEZE_PYTHON_PATH),
-        QString::fromUtf8(ROUNDTABLE_BREEZE_MODEL_PATH),
-        QString::fromUtf8(ROUNDTABLE_BREEZE_SERVER_PATH)
+        QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_BREEZE_ROOT)),
+        QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_BREEZE_PYTHON_PATH)),
+        QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_BREEZE_MODEL_PATH)),
+        QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_BREEZE_SERVER_PATH))
     };
     if (packaged.complete()) return packaged;
 
@@ -183,17 +183,17 @@ ProviderRuntime providerRuntime(const QString& provider)
 {
     if (provider == QStringLiteral("breeze")) {
         const auto& breeze = breezeInstallation();
-        return {breeze.python, QString::fromUtf8(ROUNDTABLE_BREEZE_ROOT),
+        return {breeze.python, QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_BREEZE_ROOT)),
                 breeze.model, breeze.server};
     }
     if (provider == QStringLiteral("fish-s2")) {
-        return {QString::fromUtf8(ROUNDTABLE_FISH_S2_PYTHON_PATH),
-                QString::fromUtf8(ROUNDTABLE_FISH_S2_ROOT),
-                QString::fromUtf8(ROUNDTABLE_FISH_S2_MODEL_PATH), {}};
+        return {QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_FISH_S2_PYTHON_PATH)),
+                QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_FISH_S2_ROOT)),
+                QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_FISH_S2_MODEL_PATH)), {}};
     }
-    return {QString::fromUtf8(ROUNDTABLE_OMNIVOICE_PYTHON_PATH),
-            QString::fromUtf8(ROUNDTABLE_OMNIVOICE_ROOT),
-            QString::fromUtf8(ROUNDTABLE_OMNIVOICE_MODEL_PATH), {}};
+    return {QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_OMNIVOICE_PYTHON_PATH)),
+            QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_OMNIVOICE_ROOT)),
+            QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_OMNIVOICE_MODEL_PATH)), {}};
 }
 
 void removeStaleDrafts()
@@ -454,7 +454,7 @@ VoiceGenerationService::WorkerLaunch VoiceGenerationService::launchFor(
 
     const auto runtime = providerRuntime(provider);
     QStringList arguments{
-        QString::fromUtf8(ROUNDTABLE_VOICE_WORKER_PATH),
+        QString::fromStdString(rt::AppPaths::relocatedToolPath(ROUNDTABLE_VOICE_WORKER_PATH)),
         QStringLiteral("--provider"), provider,
         QStringLiteral("--runtime-root"), runtime.root,
         QStringLiteral("--model"), runtime.model,
