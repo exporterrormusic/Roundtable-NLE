@@ -1091,7 +1091,7 @@ double ComfyPanel::frameStep()
         else if (const RenderVersion* r = shownRender()) { path = r->file; fallback = r->fps > 0 ? r->fps : 16.0; }
     }
     if (!path.empty()) {
-        mediaDuration(path);   // probes fps once
+        (void)mediaDuration(path);   // called only to probe and cache the fps
         auto it = m_mediaFps.find(path);
         if (it != m_mediaFps.end() && it->second > 0.0) return 1.0 / it->second;
     }
