@@ -237,6 +237,10 @@ std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
 /// swresample's FIR spans a few dozen taps; 256 frames is comfortably past it.
 constexpr int64_t kResampleMarginFrames = 256;
 
+/// Frames decoded (and dropped) before a seek target so lossy decoders
+/// settle: several AAC (1024) / MP3 (1152) / Opus frames.
+constexpr int64_t kSeekPrerollFrames = 8192;
+
 /// Rate-convert an interleaved float buffer.  swresample when available
 /// (windowed-sinc — no HF roll-off/aliasing), linear interpolation otherwise.
 std::vector<float> resampleInterleaved(const std::vector<float>& samples,
@@ -1198,7 +1202,13 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
         fallbackFramePos = impl.contFallbackPos;
         haveDecodedPosition = true;
     } else {
-        const int64_t seekTarget = av_rescale_q(startFrame, sampleTimeBase, stream->time_base);
+        // Pre-roll: lossy codecs (AAC, MP3, Opus...) need the frames before
+        // a position to decode it correctly (overlapping transforms, the MP3
+        // bit reservoir). Decoding from exactly the target got the first
+        // samples wrong by up to 80% of the signal -- a click at the start of
+        // every playback page. The extra frames are decoded and then dropped.
+        const int64_t prerollStart = std::max<int64_t>(0, startFrame - kSeekPrerollFrames);
+        const int64_t seekTarget = av_rescale_q(prerollStart, sampleTimeBase, stream->time_base);
         av_seek_frame(impl.fmtCtx, impl.audioStreamIdx, seekTarget, AVSEEK_FLAG_BACKWARD);
         avcodec_flush_buffers(impl.codecCtx);
         swr_close(impl.swrCtx);

@@ -291,17 +291,62 @@ TEST(AudioRegionReader, SequentialCompressedReadsDecodeContinuously)
     }
     EXPECT_EQ(got, expected);
 
-    // A non-sequential read afterwards seeks instead of continuing. An AAC
-    // seek has no decoder pre-roll, so only compare once a few frames have
-    // settled the overlap: a stale continuation would be off by ~40000 frames.
+    // A non-sequential read afterwards seeks instead of continuing: it
+    // matches a fresh file's read (a stale continuation would be off by
+    // ~40000 frames).
     AudioFile fresh;
     ASSERT_TRUE(fresh.open(m4a));
     std::vector<float> again, freshRead;
     ASSERT_EQ(sequential.readRegion(40000, 8192, again), 8192);
     ASSERT_EQ(fresh.readRegion(40000, 8192, freshRead), 8192);
-    const std::vector<float> settledAgain(again.begin() + 4096 * 2, again.end());
-    const std::vector<float> settledFresh(freshRead.begin() + 4096 * 2, freshRead.end());
-    EXPECT_LE(maxAbsDiff(settledAgain, settledFresh), 1e-3f);
+    EXPECT_LE(maxAbsDiff(again, freshRead), 1e-5f);
+}
+
+TEST(AudioRegionReader, CompressedSeekReadsMatchAContinuousDecode)
+{
+    // Decoding AAC from exactly a seek point (no pre-roll) got the first
+    // samples wrong by up to 80% of the signal: a click at the start of every
+    // playback page. Region reads must match one continuous decode.
+    TempDir dir;
+    MixdownResult tone;
+    tone.sampleRate = 48000;
+    tone.channels = 2;
+    tone.totalFrames = 48000 * 4;
+    tone.duration = 4.0;
+    tone.samples.resize(static_cast<size_t>(tone.totalFrames) * 2);
+    for (int64_t i = 0; i < tone.totalFrames; ++i) {
+        const float v = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 440.0 * i / 48000.0));
+        tone.samples[static_cast<size_t>(i) * 2] = v;
+        tone.samples[static_cast<size_t>(i) * 2 + 1] = -v;
+    }
+    const auto m4a = dir.path() / "tone.m4a";
+    if (!AudioMixdown::writeAudioFile(tone, m4a, AudioCodec::AAC, 192000))
+        GTEST_SKIP() << "AAC encoder unavailable in this FFmpeg build";
+
+    AudioFile whole;
+    ASSERT_TRUE(whole.open(m4a));
+    std::vector<float> continuous;
+    ASSERT_EQ(whole.readRegion(0, tone.totalFrames, continuous), tone.totalFrames);
+    auto slice = [&](int64_t start, int64_t frames) {
+        return std::vector<float>(continuous.begin() + start * 2,
+                                  continuous.begin() + (start + frames) * 2);
+    };
+
+    for (int64_t start : {5000, 30000, 96000, 150001}) {
+        AudioFile file;
+        ASSERT_TRUE(file.open(m4a));
+        std::vector<float> region;
+        ASSERT_EQ(file.readRegion(start, 8192, region), 8192);
+        EXPECT_LE(maxAbsDiff(region, slice(start, 8192)), 1e-5f) << "start " << start;
+    }
+
+    // Also after the file has decoded somewhere else (the playback case).
+    AudioFile reused;
+    ASSERT_TRUE(reused.open(m4a));
+    std::vector<float> scratch, region;
+    ASSERT_GT(reused.readRegion(120000, 4000, scratch), 0);
+    ASSERT_EQ(reused.readRegion(30000, 8192, region), 8192);
+    EXPECT_LE(maxAbsDiff(region, slice(30000, 8192)), 1e-5f);
 }
 
 TEST(AudioFileStreaming, CompressedReadAllStreamingMatchesReadAll)
@@ -319,8 +364,8 @@ TEST(AudioFileStreaming, CompressedReadAllStreamingMatchesReadAll)
     if (!AudioMixdown::writeAudioFile(tone, m4a, AudioCodec::AAC, 128000))
         GTEST_SKIP() << "AAC encoder unavailable in this FFmpeg build";
 
-    // Fresh files for both: an AAC seek back to the start does not decode
-    // exactly like a fresh open (no decoder pre-roll).
+    // Fresh files for both: an AAC seek back to the very start does not
+    // decode exactly like a fresh open.
     AudioFile whole, streaming;
     ASSERT_TRUE(whole.open(m4a));
     ASSERT_TRUE(streaming.open(m4a));
