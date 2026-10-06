@@ -18,14 +18,6 @@ namespace rt {
 
 class Device;
 
-/// Shader module RAII wrapper.
-struct ShaderModule
-{
-    VkShaderModule handle{VK_NULL_HANDLE};
-    VkShaderStageFlagBits stage{VK_SHADER_STAGE_VERTEX_BIT};
-    std::string entryPoint{"main"};
-};
-
 /// Configuration for creating a graphics pipeline.
 struct GraphicsPipelineConfig
 {

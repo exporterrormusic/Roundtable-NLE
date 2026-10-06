@@ -40,21 +40,6 @@ enum class RenderExactness : uint8_t
     ExactRequired
 };
 
-enum class RenderNodeKind : uint8_t
-{
-    Media,
-    Audio,
-    Character,
-    Graphic,
-    Title,
-    Caption,
-    Adjustment,
-    NestedSequence,
-    Transition,
-    Mask,
-    Generated
-};
-
 enum class RenderResultStatus : uint8_t
 {
     Ready,
@@ -77,29 +62,6 @@ enum class ResourceLoadState : uint8_t
     Ready,
     Missing,
     Failed
-};
-
-enum class RenderResourceKind : uint8_t
-{
-    MediaFrame,
-    AudioSamples,
-    CharacterPose,
-    GraphicRaster,
-    TitleRaster,
-    NestedSequence,
-    Transition,
-    Mask,
-    Effect
-};
-
-struct MediaSourceHandle
-{
-    uint64_t id{0};
-};
-
-struct CharacterSourceHandle
-{
-    uint64_t id{0};
 };
 
 /// Immutable model graph selected for a render request.
@@ -162,110 +124,6 @@ struct RenderRequest
         return type == RenderRequestType::Playback &&
                !scrubMode && !stillFrame && !forceFullResolution;
     }
-};
-
-struct RenderNode
-{
-    uint64_t stableId{0};
-    uint64_t sourceId{0};
-    uint64_t peerSourceId{0};
-    uint64_t groupId{0};
-    RenderNodeKind kind{RenderNodeKind::Media};
-    int64_t timelineIn{0};
-    int64_t duration{0};
-    int64_t localTick{0};
-    int64_t sourceIn{0};
-    int64_t sourceOut{0};
-    int64_t sourceTick{0};
-    int trackIndex{0};
-    int stackOrder{0};
-    int32_t blendMode{0};
-    int32_t transitionType{-1};
-    float transitionProgress{-1.0f};
-    float opacity{1.0f};
-    float positionX{0.0f};
-    float positionY{0.0f};
-    float scaleX{1.0f};
-    float scaleY{1.0f};
-    float rotation{0.0f};
-    float cropLeft{0.0f};
-    float cropRight{0.0f};
-    float cropTop{0.0f};
-    float cropBottom{0.0f};
-    float clipVolume{1.0f};
-    float clipPan{0.0f};
-    float trackVolume{1.0f};
-    float trackPan{0.0f};
-    double playbackSpeed{1.0};
-    double effectiveSpeed{1.0};
-    uint32_t sourceWidth{0};
-    uint32_t sourceHeight{0};
-    size_t effectCount{0};
-    size_t maskCount{0};
-    size_t graphicLayerCount{0};
-    bool enabled{true};
-    bool trackMuted{false};
-    bool maintainPitch{true};
-    bool hasActiveEffects{false};
-    bool hasMasks{false};
-    bool audioNeeded{false};
-    bool looping{false};
-    bool stillSource{false};
-    bool characterSource{false};
-    std::string label;
-    std::string shotName;
-    std::string layerId;
-    std::string sourcePath;
-};
-
-struct TimelineSnapshot
-{
-    uint64_t editVersion{0};
-    int64_t evaluationTick{0};
-    int64_t sequenceDuration{0};
-    double frameRate{0.0};
-    std::vector<RenderNode> nodes;
-};
-
-struct RenderGraphNode
-{
-    uint64_t nodeId{0};
-    RenderNodeKind kind{RenderNodeKind::Media};
-    int trackIndex{0};
-    int stackOrder{0};
-    size_t firstResource{0};
-    size_t resourceCount{0};
-};
-
-struct RenderResourceRequest
-{
-    RenderResourceKind kind{RenderResourceKind::MediaFrame};
-    uint64_t nodeId{0};
-    uint64_t sourceId{0};
-    uint64_t peerSourceId{0};
-    int64_t sourceTick{0};
-    int64_t duration{0};
-    RenderRequestType requestType{RenderRequestType::Playback};
-    RenderQuality quality{RenderQuality::Auto};
-    RenderExactness exactness{RenderExactness::BestEffortAllowed};
-    uint32_t sourceWidth{0};
-    uint32_t sourceHeight{0};
-    size_t effectCount{0};
-    size_t maskCount{0};
-    size_t graphicLayerCount{0};
-    bool audioNeeded{false};
-    bool stillSource{false};
-    bool characterSource{false};
-    std::string sourcePath;
-};
-
-struct RenderGraph
-{
-    uint64_t editVersion{0};
-    int64_t evaluationTick{0};
-    double frameRate{0.0};
-    std::vector<RenderGraphNode> nodes;
-    std::vector<RenderResourceRequest> resources;
 };
 
 struct FrameDiagnostics
@@ -393,22 +251,6 @@ struct RenderPreflightResult
     case RenderResultStatus::Failed:       return "Failed";
     case RenderResultStatus::MissingMedia: return "MissingMedia";
     case RenderResultStatus::Canceled:     return "Canceled";
-    }
-    return "Unknown";
-}
-
-[[nodiscard]] inline const char* toString(RenderResourceKind kind) noexcept
-{
-    switch (kind) {
-    case RenderResourceKind::MediaFrame:     return "MediaFrame";
-    case RenderResourceKind::AudioSamples:   return "AudioSamples";
-    case RenderResourceKind::CharacterPose:  return "CharacterPose";
-    case RenderResourceKind::GraphicRaster:  return "GraphicRaster";
-    case RenderResourceKind::TitleRaster:    return "TitleRaster";
-    case RenderResourceKind::NestedSequence: return "NestedSequence";
-    case RenderResourceKind::Transition:     return "Transition";
-    case RenderResourceKind::Mask:           return "Mask";
-    case RenderResourceKind::Effect:         return "Effect";
     }
     return "Unknown";
 }

@@ -6,10 +6,8 @@
  * The graph dispatcher walks the DAG in topological order, inserting
  * automatic pipeline barriers between passes and executing each one.
  *
- * This is the GPU-level graph — distinct from the scene-level rt::RenderGraph
- * defined in EngineContracts.h (which represents the timeline's logical
- * structure of nodes and resources).  The scene graph is the *input* that
- * drives construction of this GPU graph.
+ * This is the GPU-level graph. Its input is the compositor's per-frame layer
+ * list (the timeline's evaluated layers), as planned below.
  *
  * Typical roundtrip:
  *   1. CompositeGraphExecutor::plan() produces CompositeExecutionPlan

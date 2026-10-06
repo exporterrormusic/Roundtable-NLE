@@ -72,15 +72,6 @@ struct AnimCacheEntry
     std::filesystem::file_time_type skelModTime{};
 };
 
-/// Status of a pre-render job
-enum class PrerenderStatus : uint8_t
-{
-    Queued,
-    InProgress,
-    Completed,
-    Failed
-};
-
 /// Callback when a pre-render job completes
 /// (characterName, outfit, animationName, success)
 using AnimCacheCompleteFn = std::function<void(const std::string&,

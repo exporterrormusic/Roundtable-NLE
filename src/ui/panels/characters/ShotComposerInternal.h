@@ -135,26 +135,4 @@ QPixmap makeAllFilterIcon(int sz);
 QPixmap makeUnassignedFilterIcon(int sz);
 QPixmap makeFilterDividerIcon(int width);
 
-// ── Custom delegate that clips item painting to rounded rect ─────────────
-// Without this, QListWidget in IconMode draws the icon on top of the item
-// background without clipping to border-radius, causing images to visually
-// spill outside the rounded button area.
-class RoundedClipDelegate : public QStyledItemDelegate
-{
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override
-    {
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
-        QPainterPath path;
-        path.addRoundedRect(QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
-        painter->setClipPath(path);
-        QStyledItemDelegate::paint(painter, option, index);
-        painter->restore();
-    }
-};
-
 } // namespace rt
