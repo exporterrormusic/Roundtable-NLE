@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -21,7 +22,6 @@ namespace rt {
 // Forward declarations
 struct EncodedPacket;
 struct EncoderConfig;
-struct MixdownResult;
 
 // ── Container format ────────────────────────────────────────────────────────
 
@@ -65,6 +65,17 @@ struct MuxerConfig
     bool     hasAudio{true};
 };
 
+/// Audio that muxFile() pulls a block at a time while it writes the video,
+/// so the whole mix never has to sit in memory.
+struct MuxAudioSource
+{
+    uint32_t sampleRate{0};
+    uint16_t channels{0};
+    /// Fill `out` with up to `maxFrames` interleaved float frames; return
+    /// the frame count, 0 once the audio is finished.
+    std::function<int64_t(float* out, int64_t maxFrames)> pull;
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 class Muxer
@@ -88,8 +99,9 @@ public:
     /// Write a video packet.
     bool writeVideoPacket(const EncodedPacket& packet);
 
-    /// Write raw audio data (interleaved float).
-    /// For containers that need encoded audio, this encodes internally.
+    /// Write raw audio data (interleaved float), encoded to AAC internally.
+    /// Calls may split the audio anywhere: samples are held until a whole
+    /// encoder frame is there, and close() encodes the short remainder.
     bool writeAudioData(const float* samples, int64_t frameCount,
                         uint32_t sampleRate, uint16_t channels);
 
@@ -101,11 +113,12 @@ public:
 
     // ── Convenience ─────────────────────────────────────────────────────
 
-    /// Mux video packets + audio mix result into a container.
-    /// This is the simple all-in-one mux path.
+    /// Mux video packets + audio into a container: the all-in-one path.
+    /// Audio is pulled from `audio` (null = video only) as the video is
+    /// written, so the two streams interleave in the file.
     static bool muxFile(const std::filesystem::path& outputPath,
                         const std::vector<EncodedPacket>& videoPackets,
-                        const MixdownResult* audioResult,
+                        const MuxAudioSource* audio,
                         const MuxerConfig& config);
 
     // ── Queries ─────────────────────────────────────────────────────────

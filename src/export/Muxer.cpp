@@ -4,10 +4,12 @@
 
 #include "Muxer.h"
 #include "Encoder.h"
-#include "AudioMixdown.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <limits>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -15,6 +17,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/mathematics.h>
 #include <libswresample/swresample.h>
 }
 #endif
@@ -219,7 +222,41 @@ struct Muxer::AudioEncoder {
     AVFrame*        frame{nullptr};
     AVPacket*       pkt{nullptr};
     int64_t         pts{0};
+    uint16_t        channels{0};
+    // Interleaved input waiting for a whole encoder frame. AAC accepts a
+    // short frame only as the last one, so a short frame mid-stream (from a
+    // caller's arbitrary block size) would end the stream.
+    std::vector<float> fifo;
 };
+
+namespace {
+#ifdef ROUNDTABLE_HAS_FFMPEG
+/// Convert one frame's worth of interleaved float, encode it, and write
+/// the packets it produces. False when the encoder rejects the frame.
+bool encodeAudioFrame(AVFormatContext* fmtCtx, AVStream* stream, AVCodecContext* ctx,
+                      SwrContext* swr, AVFrame* frame, AVPacket* pkt, int64_t& pts,
+                      const float* samples, int frames)
+{
+    const uint8_t* srcData[] = { reinterpret_cast<const uint8_t*>(samples) };
+    av_frame_make_writable(frame);
+    frame->nb_samples = frames;
+    swr_convert(swr, frame->data, frames, srcData, frames);
+
+    frame->pts = pts;
+    pts += frames;
+
+    if (avcodec_send_frame(ctx, frame) < 0) return false;
+
+    while (avcodec_receive_packet(ctx, pkt) == 0) {
+        pkt->stream_index = stream->index;
+        av_packet_rescale_ts(pkt, ctx->time_base, stream->time_base);
+        av_interleaved_write_frame(fmtCtx, pkt);
+        av_packet_unref(pkt);
+    }
+    return true;
+}
+#endif
+} // namespace
 
 void Muxer::initAudioEncoder(uint32_t sampleRate, uint16_t channels)
 {
@@ -276,6 +313,7 @@ void Muxer::initAudioEncoder(uint32_t sampleRate, uint16_t channels)
 
     enc->pkt = av_packet_alloc();
     enc->pts = 0;
+    enc->channels = channels;
 
     m_audioEnc = enc;
     spdlog::info("Muxer: AAC encoder initialized ({}Hz, {}ch)", sampleRate, channels);
@@ -286,6 +324,16 @@ void Muxer::flushAudioEncoder()
 {
 #ifdef ROUNDTABLE_HAS_FFMPEG
     if (!m_audioEnc || !m_audioEnc->ctx) return;
+
+    // The short last frame, then drain the encoder.
+    const int tail = static_cast<int>(m_audioEnc->fifo.size() / m_audioEnc->channels);
+    if (tail > 0) {
+        encodeAudioFrame(m_fmtCtx, m_audioStream, m_audioEnc->ctx, m_audioEnc->swr,
+                         m_audioEnc->frame, m_audioEnc->pkt, m_audioEnc->pts,
+                         m_audioEnc->fifo.data(), tail);
+        m_audioEnc->fifo.clear();
+        m_audioPtsWritten = m_audioEnc->pts;
+    }
 
     avcodec_send_frame(m_audioEnc->ctx, nullptr);
     while (avcodec_receive_packet(m_audioEnc->ctx, m_audioEnc->pkt) == 0) {
@@ -318,40 +366,25 @@ bool Muxer::writeAudioData(const float* samples, int64_t frameCount,
     if (!m_audioEnc)
         return false;
 
-    const int frameSize = m_audioEnc->ctx->frame_size;
-    int64_t   samplesRead = 0;
+    AudioEncoder& enc = *m_audioEnc;
+    if (channels != enc.channels) {
+        m_lastError = "Muxer: audio channel count changed mid-stream";
+        return false;
+    }
+    const size_t frameSamples = static_cast<size_t>(enc.ctx->frame_size) * channels;
+    enc.fifo.insert(enc.fifo.end(), samples, samples + static_cast<size_t>(frameCount) * channels);
 
-    while (samplesRead < frameCount) {
-        int64_t remaining = frameCount - samplesRead;
-        int     chunk     = static_cast<int>(std::min<int64_t>(remaining, frameSize));
-
-        const uint8_t* srcData[] = {
-            reinterpret_cast<const uint8_t*>(samples + samplesRead * channels)
-        };
-        av_frame_make_writable(m_audioEnc->frame);
-        m_audioEnc->frame->nb_samples = chunk;
-        swr_convert(m_audioEnc->swr, m_audioEnc->frame->data, chunk,
-                    srcData, chunk);
-
-        m_audioEnc->frame->pts = m_audioEnc->pts;
-        m_audioEnc->pts += chunk;
-
-        int ret = avcodec_send_frame(m_audioEnc->ctx, m_audioEnc->frame);
-        if (ret < 0) {
+    size_t consumed = 0;
+    while (enc.fifo.size() - consumed >= frameSamples) {
+        if (!encodeAudioFrame(m_fmtCtx, m_audioStream, enc.ctx, enc.swr, enc.frame,
+                              enc.pkt, enc.pts, enc.fifo.data() + consumed,
+                              enc.ctx->frame_size)) {
             m_lastError = "Muxer: AAC encode error";
             return false;
         }
-
-        while (avcodec_receive_packet(m_audioEnc->ctx, m_audioEnc->pkt) == 0) {
-            m_audioEnc->pkt->stream_index = m_audioStream->index;
-            av_packet_rescale_ts(m_audioEnc->pkt, m_audioEnc->ctx->time_base,
-                                  m_audioStream->time_base);
-            av_interleaved_write_frame(m_fmtCtx, m_audioEnc->pkt);
-            av_packet_unref(m_audioEnc->pkt);
-        }
-
-        samplesRead += chunk;
+        consumed += frameSamples;
     }
+    enc.fifo.erase(enc.fifo.begin(), enc.fifo.begin() + static_cast<std::ptrdiff_t>(consumed));
 
     m_audioPtsWritten = m_audioEnc->pts;
     return true;
@@ -415,13 +448,13 @@ bool Muxer::close()
 // static
 bool Muxer::muxFile(const std::filesystem::path& outputPath,
                      const std::vector<EncodedPacket>& videoPackets,
-                     const MixdownResult* audioResult,
+                     const MuxAudioSource* audio,
                      const MuxerConfig& config)
 {
     Muxer mux;
     MuxerConfig cfg = config;
     cfg.outputPath = outputPath;
-    cfg.hasAudio = audioResult != nullptr && audioResult->isValid();
+    cfg.hasAudio = audio && audio->pull && audio->sampleRate > 0 && audio->channels > 0;
 
     // Open with deferred header so we can set up audio codec params first
     if (!mux.open(cfg, /*deferHeader=*/cfg.hasAudio)) return false;
@@ -431,8 +464,8 @@ bool Muxer::muxFile(const std::filesystem::path& outputPath,
     // audio stream, so the deferred header is written with correct params.
     // This is the same encoder that does the actual audio encoding below —
     // no throwaway context.
-    if (cfg.hasAudio && mux.m_audioStream && audioResult) {
-        mux.initAudioEncoder(audioResult->sampleRate, audioResult->channels);
+    if (cfg.hasAudio && mux.m_audioStream) {
+        mux.initAudioEncoder(audio->sampleRate, audio->channels);
         if (!mux.m_audioEnc) {
             spdlog::warn("Muxer: Could not init AAC encoder, writing video-only");
             cfg.hasAudio = false;
@@ -444,8 +477,40 @@ bool Muxer::muxFile(const std::filesystem::path& outputPath,
         if (!mux.writeHeader()) return false;
     }
 
-    // ── Write video packets ──────────────────────────────────────────────
+    // ── Audio, pulled as the video advances ──────────────────────────────
+    bool audioDone = !(cfg.hasAudio && mux.m_audioEnc);
+    int64_t audioFrames = 0;
+    std::vector<float> block;
+    auto writeAudioUntil = [&](int64_t targetFrames) {
+        constexpr int64_t kMaxBlockFrames = 1 << 16;
+        while (!audioDone && audioFrames < targetFrames) {
+            const int64_t wanted = std::min(kMaxBlockFrames, targetFrames - audioFrames);
+            block.resize(static_cast<size_t>(wanted) * audio->channels);
+            const int64_t got = audio->pull(block.data(), wanted);
+            if (got <= 0) {
+                audioDone = true;
+                break;
+            }
+            if (!mux.writeAudioData(block.data(), got, audio->sampleRate, audio->channels)) {
+                spdlog::warn("Muxer: Audio encoding had errors but video is intact");
+                audioDone = true;
+                break;
+            }
+            audioFrames += got;
+        }
+    };
+
+    // ── Write video packets, keeping the audio level with them ───────────
     for (const auto& pkt : videoPackets) {
+        if (!audioDone) {
+            // Audio up to this packet's decode time (video time base is
+            // fpsDen/fpsNum seconds per tick), so the streams interleave.
+            const int64_t ts = pkt.dts != AV_NOPTS_VALUE ? pkt.dts : pkt.pts;
+            if (ts != AV_NOPTS_VALUE && ts > 0 && cfg.videoFpsNum > 0) {
+                writeAudioUntil(av_rescale(ts, static_cast<int64_t>(cfg.videoFpsDen) * audio->sampleRate,
+                                           cfg.videoFpsNum));
+            }
+        }
         if (!mux.writeVideoPacket(pkt)) {
             spdlog::error("Muxer: Failed at video pts {}", pkt.pts);
             mux.close();
@@ -453,15 +518,8 @@ bool Muxer::muxFile(const std::filesystem::path& outputPath,
         }
     }
 
-    // ── Encode + write audio (encoder already initialized above) ─────────
-    if (cfg.hasAudio && mux.m_audioEnc && audioResult) {
-        if (!mux.writeAudioData(audioResult->samples.data(),
-                                 audioResult->totalFrames,
-                                 audioResult->sampleRate,
-                                 audioResult->channels)) {
-            spdlog::warn("Muxer: Audio encoding had errors but video is intact");
-        }
-    }
+    // ── The rest of the audio ────────────────────────────────────────────
+    writeAudioUntil(std::numeric_limits<int64_t>::max());
 
     return mux.close();
 }
@@ -475,7 +533,7 @@ bool Muxer::writeAudioData(const float*, int64_t, uint32_t, uint16_t) { return f
 bool Muxer::writeAudioPacket(const EncodedPacket&) { return false; }
 bool Muxer::close() { m_isOpen = false; return true; }
 bool Muxer::muxFile(const std::filesystem::path&, const std::vector<EncodedPacket>&,
-                     const MixdownResult*, const MuxerConfig&) { return false; }
+                     const MuxAudioSource*, const MuxerConfig&) { return false; }
 
 #endif // ROUNDTABLE_HAS_FFMPEG
 

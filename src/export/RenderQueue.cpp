@@ -1151,13 +1151,11 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
 
     // Audio consumes the SAME renderTimeline used for duration/video dispatch,
     // so edits cannot produce queue-time audio under live/current video (or the
-    // reverse).
-    MixdownResult audioResult;
-    {
-        if (job.config.includeAudio && renderTimeline) {
-            AudioMixdown mixdown;
-            audioResult = mixdown.mix(*renderTimeline, job.config.audioConfig);
-        }
+    // reverse). It is mixed block by block while the muxer writes the video.
+    std::unique_ptr<AudioMixStream> audioStream;
+    if (job.config.includeAudio && renderTimeline) {
+        audioStream = std::make_unique<AudioMixStream>(*renderTimeline, job.config.audioConfig);
+        if (!audioStream->isValid()) audioStream.reset();
     }
 
     // Mux video+audio into container file.
@@ -1179,7 +1177,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     mCfg.videoHeight    = job.config.outputHeight;
     mCfg.videoFpsNum    = job.config.encoderConfig.fpsNum;
     mCfg.videoFpsDen    = job.config.encoderConfig.fpsDen;
-    mCfg.hasAudio       = audioResult.isValid();
+    mCfg.hasAudio       = audioStream != nullptr;
     mCfg.audioSampleRate = job.config.audioConfig.sampleRate;
     mCfg.audioChannels   = static_cast<uint16_t>(job.config.audioConfig.channels);
     // Map encoder codec to AVCodecID for the container header.
@@ -1199,7 +1197,15 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     }
     if (m_progressCb) m_progressCb(job.id, job.progress);
 
-    const MixdownResult* audioPtr = audioResult.isValid() ? &audioResult : nullptr;
+    MuxAudioSource audioSource;
+    if (audioStream) {
+        audioSource.sampleRate = audioStream->sampleRate();
+        audioSource.channels   = audioStream->channels();
+        audioSource.pull = [&audioStream](float* out, int64_t maxFrames) {
+            return audioStream->read(out, maxFrames);
+        };
+    }
+    const MuxAudioSource* audioPtr = audioStream ? &audioSource : nullptr;
     // Log packet diagnostics
     if (!allPackets.empty()) {
         spdlog::info("RndQ[{}]: total packets={} first_pts={} last_pts={} fps={}/{}",

@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 
 #include "AudioMixdown.h"
+#include "Encoder.h"
+#include "Muxer.h"
 
 #include "audio/AudioFile.h"
 #include "audio/AudioRegionReader.h"
@@ -36,6 +38,14 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/frame.h>
+}
+#endif
 
 using namespace rt;
 
@@ -468,3 +478,169 @@ TEST(AudioFileWriter, UnfinishedWriterCanBeDiscarded)
     std::error_code ec;
     EXPECT_TRUE(fs::remove(path, ec)) << ec.message();
 }
+
+// ── Muxer: audio pulled while the video is written ──────────────────────────
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+namespace {
+
+/// A few tiny MPEG-4 Part 2 frames, so the muxer has real video to write.
+struct TinyVideo
+{
+    AVCodecContext* ctx{nullptr};
+    std::vector<std::vector<uint8_t>> payloads;
+    std::vector<EncodedPacket> packets;
+
+    explicit TinyVideo(int frames)
+    {
+        const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        if (!codec) return;
+        ctx = avcodec_alloc_context3(codec);
+        ctx->width = 64;
+        ctx->height = 64;
+        ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        ctx->time_base = {1, 30};
+        ctx->framerate = {30, 1};
+        ctx->gop_size = 10;
+        ctx->max_b_frames = 0;
+        ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (avcodec_open2(ctx, codec, nullptr) < 0) {
+            avcodec_free_context(&ctx);
+            return;
+        }
+        AVFrame* frame = av_frame_alloc();
+        frame->format = ctx->pix_fmt;
+        frame->width = 64;
+        frame->height = 64;
+        av_frame_get_buffer(frame, 0);
+        AVPacket* pkt = av_packet_alloc();
+        auto collect = [&]() {
+            while (avcodec_receive_packet(ctx, pkt) == 0) {
+                payloads.emplace_back(pkt->data, pkt->data + pkt->size);
+                EncodedPacket ep;
+                ep.size = pkt->size;
+                ep.pts = pkt->pts;
+                ep.dts = pkt->dts;
+                ep.duration = 1;
+                ep.isKeyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+                packets.push_back(ep);
+                av_packet_unref(pkt);
+            }
+        };
+        for (int i = 0; i < frames; ++i) {
+            av_frame_make_writable(frame);
+            for (int p = 0; p < 3; ++p) {
+                const int h = p == 0 ? 64 : 32;
+                for (int y = 0; y < h; ++y)
+                    std::memset(frame->data[p] + y * frame->linesize[p], (i * 7 + p * 40) & 0xFF,
+                                static_cast<size_t>(p == 0 ? 64 : 32));
+            }
+            frame->pts = i;
+            avcodec_send_frame(ctx, frame);
+            collect();
+        }
+        avcodec_send_frame(ctx, nullptr);
+        collect();
+        for (size_t i = 0; i < packets.size(); ++i) packets[i].data = payloads[i].data();
+        av_packet_free(&pkt);
+        av_frame_free(&frame);
+    }
+    ~TinyVideo() { if (ctx) avcodec_free_context(&ctx); }
+};
+
+} // namespace
+
+TEST(MuxerAudioPull, PulledAudioMatchesDirectEncodeAndInterleaves)
+{
+    TempDir dir;
+    // Longer than FFmpeg's 10 s interleave window, so writing all the video
+    // before the audio would show up in the file layout.
+    TinyVideo video(450);   // 15 s at 30 fps
+    if (!video.ctx || video.packets.empty()) GTEST_SKIP() << "MPEG-4 encoder unavailable";
+
+    const MixdownResult mix = testSignal(15.0, 48000, 2);
+
+    // Reference: the same samples through the standalone AAC writer.
+    const auto reference = dir.path() / "reference.m4a";
+    ASSERT_TRUE(AudioMixdown::writeAudioFile(mix, reference, AudioCodec::AAC, 160000));
+
+    MuxerConfig cfg;
+    cfg.format = ContainerFormat::MP4;
+    cfg.videoWidth = 64;
+    cfg.videoHeight = 64;
+    cfg.videoFpsNum = 30;
+    cfg.videoFpsDen = 1;
+    cfg.videoCodecId = AV_CODEC_ID_MPEG4;
+    cfg.videoCodecContext = video.ctx;
+    cfg.audioSampleRate = 48000;
+    cfg.audioChannels = 2;
+    cfg.audioBitrate = 160000;
+
+    // Pull in small, odd blocks: none lines up with an AAC frame.
+    int64_t pos = 0;
+    MuxAudioSource source;
+    source.sampleRate = 48000;
+    source.channels = 2;
+    source.pull = [&](float* out, int64_t maxFrames) {
+        const int64_t n = std::min({maxFrames, int64_t(777), mix.totalFrames - pos});
+        std::copy_n(mix.samples.data() + static_cast<size_t>(pos) * 2, n * 2, out);
+        pos += n;
+        return n;
+    };
+    const auto muxed = dir.path() / "muxed.mp4";
+    ASSERT_TRUE(Muxer::muxFile(muxed, video.packets, &source, cfg));
+    EXPECT_EQ(pos, mix.totalFrames);
+
+    // Same AAC frames → the same decoded audio.
+    AudioFile fromMux, fromWriter;
+    ASSERT_TRUE(fromMux.open(muxed));
+    ASSERT_TRUE(fromWriter.open(reference));
+    const auto muxAudio = fromMux.readAll();
+    const auto refAudio = fromWriter.readAll();
+    ASSERT_FALSE(refAudio.empty());
+    EXPECT_EQ(muxAudio, refAudio);
+
+    // Interleaved: in file order, well under a second of video comes
+    // before the first audio packet.
+    AVFormatContext* fmt = nullptr;
+    ASSERT_EQ(avformat_open_input(&fmt, muxed.string().c_str(), nullptr, nullptr), 0);
+    ASSERT_GE(avformat_find_stream_info(fmt, nullptr), 0);
+    struct Placed { int64_t pos; bool audio; };
+    std::vector<Placed> order;
+    AVPacket* pkt = av_packet_alloc();
+    while (av_read_frame(fmt, pkt) >= 0) {
+        const auto type = fmt->streams[pkt->stream_index]->codecpar->codec_type;
+        order.push_back({pkt->pos, type == AVMEDIA_TYPE_AUDIO});
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&fmt);
+    std::sort(order.begin(), order.end(),
+              [](const Placed& a, const Placed& b) { return a.pos < b.pos; });
+    const auto firstAudio = std::find_if(order.begin(), order.end(),
+                                         [](const Placed& p) { return p.audio; });
+    ASSERT_NE(firstAudio, order.end());
+    EXPECT_LT(std::distance(order.begin(), firstAudio), 30);
+}
+
+TEST(MuxerAudioPull, NoAudioSourceWritesVideoOnly)
+{
+    TempDir dir;
+    TinyVideo video(10);
+    if (!video.ctx || video.packets.empty()) GTEST_SKIP() << "MPEG-4 encoder unavailable";
+
+    MuxerConfig cfg;
+    cfg.format = ContainerFormat::MP4;
+    cfg.videoWidth = 64;
+    cfg.videoHeight = 64;
+    cfg.videoCodecId = AV_CODEC_ID_MPEG4;
+    cfg.videoCodecContext = video.ctx;
+    const auto muxed = dir.path() / "video_only.mp4";
+    ASSERT_TRUE(Muxer::muxFile(muxed, video.packets, nullptr, cfg));
+
+    AVFormatContext* fmt = nullptr;
+    ASSERT_EQ(avformat_open_input(&fmt, muxed.string().c_str(), nullptr, nullptr), 0);
+    EXPECT_EQ(fmt->nb_streams, 1u);
+    avformat_close_input(&fmt);
+}
+#endif // ROUNDTABLE_HAS_FFMPEG
