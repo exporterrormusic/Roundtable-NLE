@@ -195,11 +195,11 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 
     for (const auto& item : items)
     {
-        // Skip folder items â they are synthetic icon-view items, not real media
+        // Skip folder items — they are synthetic icon-view items, not real media
         if (item.isFolder)
             continue;
 
-        // Apply search filter (don't use item.visible â icon-view navigation
+        // Apply search filter (don't use item.visible — icon-view navigation
         // may have set it to false for items not at the current level).
         const QString searchText = m_searchField->text().trimmed();
         if (!searchText.isEmpty()) {
@@ -259,7 +259,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
         }
         treeItem->setIcon(0, makePremiereBinIcon(itemLabelColor, shape));
 
-        // Media Offline indicator â only flag if both: no valid media handle
+        // Media Offline indicator — only flag if both: no valid media handle
         // AND file not found on disk (a valid handle means MediaPool opened it)
         // Adjustment layers are synthetic — never offline.
         bool isOffline = !isAdjustment &&
@@ -272,7 +272,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
             QFont offlineFont = treeItem->font(0);
             offlineFont.setItalic(true);
             treeItem->setFont(0, offlineFont);
-            treeItem->setToolTip(0, QStringLiteral("Media Offline â ") +
+            treeItem->setToolTip(0, QStringLiteral("Media Offline — ") +
                 QString::fromStdString(pathToUtf8(item.filePath)));
         }
 
@@ -364,7 +364,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
 }
 
 // -----------------------------------------------------------------------------
-//  Icon view â Explorer-style bin navigation
+//  Icon view — Explorer-style bin navigation
 // -----------------------------------------------------------------------------
 
 void ProjectBin::syncIconView()
@@ -372,7 +372,7 @@ void ProjectBin::syncIconView()
     // Update breadcrumb label
     QString crumb = "Project";
     for (const auto& seg : m_iconBinPath)
-        crumb += QStringLiteral("  \u203A  ") + seg;  // âº
+        crumb += QStringLiteral("  \u203A  ") + seg;  // ›
     m_breadcrumbLabel->setText(crumb);
 
     // -- Find the target container in the QTreeWidget --------------------
@@ -392,7 +392,7 @@ void ProjectBin::syncIconView()
             }
         }
         if (!found) {
-            // Bin path segment not found â reset to root
+            // Bin path segment not found — reset to root
             m_iconBinPath.clear();
             m_breadcrumbLabel->setText("Project");
             container = nullptr;
@@ -454,7 +454,7 @@ void ProjectBin::syncIconView()
         auto* child = container ? container->child(i)
                                 : m_listWidget->topLevelItem(i);
         if (child->data(0, Qt::UserRole + 3).toBool()) {
-            // Sequence â add as a synthetic grid item so it's visible
+            // Sequence — add as a synthetic grid item so it's visible
             seqNames.push_back(child->text(0));
         }
     }
