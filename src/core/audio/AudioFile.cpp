@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <numeric>
 
 // ── libsndfile ──────────────────────────────────────────────────────────────
 #ifdef ROUNDTABLE_HAS_SNDFILE
@@ -236,6 +237,9 @@ std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
 /// swr filter warm-up/tail transients fall outside the extracted region.
 /// swresample's FIR spans a few dozen taps; 256 frames is comfortably past it.
 constexpr int64_t kResampleMarginFrames = 256;
+
+/// Largest rate-grid period resampleSourceSpan() aligns to (frames).
+constexpr int64_t kMaxResampleGridFrames = 4096;
 
 /// Frames decoded (and dropped) before a seek target so lossy decoders
 /// settle: several AAC (1024) / MP3 (1152) / Opus frames.
@@ -586,6 +590,18 @@ AudioFile::SourceSpan AudioFile::resampleSourceSpan(int64_t startFrame, int64_t 
                      + 1 + kResampleMarginFrames;
     srcStart = std::max<int64_t>(0, srcStart);
     srcEnd = std::min<int64_t>(sourceFrames, srcEnd);
+
+    // Start on the two rates' common grid: source frame s lands exactly on
+    // a target frame only when s is a multiple of R / gcd(R, T) (147 for
+    // 44.1 -> 48 kHz). Every span then shares one output grid, so regions
+    // resampled separately (playback pages) line up sample-exactly instead
+    // of each carrying its own sub-sample offset. Odd rate pairs with a huge
+    // period skip this rather than decode up to a second more per read.
+    if (sourceRate > 0 && targetRate > 0) {
+        const int64_t period = sourceRate / std::gcd(sourceRate, targetRate);
+        if (period > 1 && period <= kMaxResampleGridFrames)
+            srcStart -= srcStart % period;
+    }
     return {srcStart, srcEnd};
 }
 

@@ -253,6 +253,25 @@ TEST(AudioRegionReader, ResampledMatchesOneShotRead)
     }
 }
 
+TEST(AudioRegionReader, SeparatelyResampledPagesJoinSeamlessly)
+{
+    // Playback reads 44.1 kHz audio as independently resampled 48 kHz pages.
+    // Each page used to carry its own sub-sample offset (its output grid was
+    // anchored at a rounded position), so pages stepped at every join.
+    TempDir dir;
+    const auto wav = writeTestWav(dir.path() / "pages.wav", 44100, 2, 6.0, 9);
+    AudioFile file;
+    ASSERT_TRUE(file.open(wav));
+
+    const int64_t page = 48000;
+    std::vector<float> joined, chunk;
+    for (int64_t start = 0; start < 5 * page; start += page) {
+        ASSERT_EQ(file.readRegionResampled(start, page, 48000, chunk), page);
+        joined.insert(joined.end(), chunk.begin(), chunk.end());
+    }
+    EXPECT_EQ(joined, readerAll(file, 0, 5 * page, 48000, 4096));
+}
+
 TEST(AudioRegionReader, SequentialCompressedReadsDecodeContinuously)
 {
     // AAC decodes with an inter-frame overlap: a seek per read would put a
