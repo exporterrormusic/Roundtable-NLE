@@ -331,6 +331,16 @@ struct AudioFile::Impl
     // raw HANDLE on Windows / FILE* on POSIX.
     AVIOContext*      avioCtx{nullptr};
     void*             avioFile{nullptr};
+
+    // Sequential reads (readRegionFFmpeg): a request that starts exactly
+    // where the previous one ended carries on decoding instead of seeking.
+    // A seek restarts the decoder, which for AAC/MP3 puts a priming
+    // transient at every request boundary of a block-wise reader.
+    bool               contValid{false};
+    int64_t            contNextFrame{0};    ///< start frame that continues
+    int64_t            contFallbackPos{0};  ///< expected start of the next decoded frame
+    std::vector<float> contStash;           ///< decoded past the last request's end
+    int64_t            contStashStart{0};   ///< frame position of contStash[0]
 #endif
 };
 
@@ -441,6 +451,8 @@ void AudioFile::close()
         m_impl->avioFile = nullptr;
     }
     m_impl->audioStreamIdx = -1;
+    m_impl->contValid = false;
+    m_impl->contStash.clear();
 #endif
 
     m_info    = {};
@@ -528,6 +540,21 @@ int64_t AudioFile::readRegion(int64_t startFrame, int64_t numFrames,
     return 0;
 }
 
+AudioFile::SourceSpan AudioFile::resampleSourceSpan(int64_t startFrame, int64_t numFrames,
+                                                   uint32_t sourceRate, uint32_t targetRate,
+                                                   int64_t sourceFrames) noexcept
+{
+    const double invRatio = static_cast<double>(sourceRate) / targetRate;
+    // Margin keeps the swr filter warm-up/tail outside the window.
+    int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio))
+                       - kResampleMarginFrames;
+    int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio))
+                     + 1 + kResampleMarginFrames;
+    srcStart = std::max<int64_t>(0, srcStart);
+    srcEnd = std::min<int64_t>(sourceFrames, srcEnd);
+    return {srcStart, srcEnd};
+}
+
 int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
                                        uint32_t targetSampleRate,
                                        std::vector<float>& outSamples)
@@ -547,14 +574,8 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
 
 #ifdef ROUNDTABLE_HAS_SNDFILE
         if (m_backend == AudioBackend::Sndfile && m_impl->sndFile) {
-            const double invRatio = static_cast<double>(m_info.sampleRate) / targetSampleRate;
-            // Margin keeps the swr filter warm-up/tail outside the window.
-            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio))
-                               - kResampleMarginFrames;
-            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio))
-                             + 1 + kResampleMarginFrames;
-            srcStart = std::max<int64_t>(0, srcStart);
-            srcEnd = std::min<int64_t>(m_info.frames, srcEnd);
+            const auto [srcStart, srcEnd] = resampleSourceSpan(
+                startFrame, numFrames, m_info.sampleRate, targetSampleRate, m_info.frames);
             if (srcEnd <= srcStart) {
                 outSamples.clear();
                 return 0;
@@ -579,14 +600,8 @@ int64_t AudioFile::readRegionResampled(int64_t startFrame, int64_t numFrames,
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
         if (m_backend == AudioBackend::FFmpeg) {
-            const double invRatio = static_cast<double>(m_info.sampleRate) / targetSampleRate;
-            // Margin keeps the swr filter warm-up/tail outside the window.
-            int64_t srcStart = static_cast<int64_t>(std::floor(startFrame * invRatio))
-                               - kResampleMarginFrames;
-            int64_t srcEnd = static_cast<int64_t>(std::ceil((startFrame + numFrames) * invRatio))
-                             + 1 + kResampleMarginFrames;
-            srcStart = std::max<int64_t>(0, srcStart);
-            srcEnd = std::min<int64_t>(m_info.frames, srcEnd);
+            const auto [srcStart, srcEnd] = resampleSourceSpan(
+                startFrame, numFrames, m_info.sampleRate, targetSampleRate, m_info.frames);
             if (srcEnd <= srcStart) {
                 outSamples.clear();
                 return 0;
@@ -1041,6 +1056,7 @@ AudioFile::enumerateAudioStreams([[maybe_unused]] const std::filesystem::path& p
 std::vector<float> AudioFile::readAllFFmpeg()
 {
     if (!m_impl->fmtCtx || !m_impl->codecCtx) return {};
+    m_impl->contValid = false;
 
     // Seek to beginning
     av_seek_frame(m_impl->fmtCtx, m_impl->audioStreamIdx, 0, AVSEEK_FLAG_BACKWARD);
@@ -1111,21 +1127,62 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
     const int64_t timestampQuantumFrames = std::max<int64_t>(
         1, std::abs(av_rescale_q(1, stream->time_base, sampleTimeBase)));
     const int64_t endFrame = startFrame + numFrames;
-    const int64_t seekTarget = av_rescale_q(startFrame, sampleTimeBase, stream->time_base);
+    const size_t channels = m_info.channels;
+    Impl& impl = *m_impl;
 
-    av_seek_frame(m_impl->fmtCtx, m_impl->audioStreamIdx, seekTarget, AVSEEK_FLAG_BACKWARD);
-    avcodec_flush_buffers(m_impl->codecCtx);
-    swr_close(m_impl->swrCtx);
-    swr_init(m_impl->swrCtx);
+    // A request that starts where the previous one ended continues the
+    // decode in place (see Impl::contValid); anything else seeks.
+    const bool continuing = impl.contValid && startFrame == impl.contNextFrame;
+    std::vector<float> stash;
+    const int64_t stashStart = impl.contStashStart;
+    if (continuing) stash.swap(impl.contStash);
+    impl.contStash.clear();
+    impl.contValid = false;
 
-    outSamples.assign(static_cast<size_t>(numFrames * m_info.channels), 0.0f);
-
-    AVPacket* packet = av_packet_alloc();
-    AVFrame* frame = av_frame_alloc();
-    int64_t framesWritten = 0;
     int64_t fallbackFramePos = startFrame;
     bool haveDecodedPosition = false;
+    if (continuing) {
+        fallbackFramePos = impl.contFallbackPos;
+        haveDecodedPosition = true;
+    } else {
+        const int64_t seekTarget = av_rescale_q(startFrame, sampleTimeBase, stream->time_base);
+        av_seek_frame(impl.fmtCtx, impl.audioStreamIdx, seekTarget, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(impl.codecCtx);
+        swr_close(impl.swrCtx);
+        swr_init(impl.swrCtx);
+    }
 
+    outSamples.assign(static_cast<size_t>(numFrames) * channels, 0.0f);
+
+    int64_t framesWritten = 0;
+    bool covered = false;   // decoded up to (or past) the end of the request
+
+    // Copy the part of a decoded span that falls inside the request; keep
+    // what lies past its end for a follow-on sequential request.
+    auto place = [&](const float* data, int64_t frameStart, int64_t frames) {
+        const int64_t frameEnd = frameStart + frames;
+        const int64_t copyStart = std::max<int64_t>(startFrame, frameStart);
+        const int64_t copyEnd = std::min<int64_t>(endFrame, frameEnd);
+        if (copyEnd > copyStart) {
+            const int64_t dstStart = copyStart - startFrame;
+            std::memcpy(outSamples.data() + static_cast<size_t>(dstStart) * channels,
+                        data + static_cast<size_t>(copyStart - frameStart) * channels,
+                        static_cast<size_t>(copyEnd - copyStart) * channels * sizeof(float));
+            framesWritten = std::max<int64_t>(framesWritten, dstStart + (copyEnd - copyStart));
+        }
+        if (frameEnd >= endFrame) {
+            covered = true;
+            const int64_t keepStart = std::max<int64_t>(endFrame, frameStart);
+            if (frameEnd > keepStart) {
+                if (impl.contStash.empty()) impl.contStashStart = keepStart;
+                impl.contStash.insert(impl.contStash.end(),
+                    data + static_cast<size_t>(keepStart - frameStart) * channels,
+                    data + static_cast<size_t>(frames) * channels);
+            }
+        }
+    };
+
+    std::vector<float> tmp;
     auto consumeFrame = [&](AVFrame* decodedFrame) {
         int64_t frameStart = fallbackFramePos;
         if (decodedFrame->best_effort_timestamp != AV_NOPTS_VALUE) {
@@ -1139,71 +1196,81 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
             }
         }
 
-        const int outFrameCapacity = swr_get_out_samples(m_impl->swrCtx, decodedFrame->nb_samples);
-        std::vector<float> tmp(static_cast<size_t>(outFrameCapacity * m_info.channels));
+        const int outFrameCapacity = swr_get_out_samples(impl.swrCtx, decodedFrame->nb_samples);
+        tmp.resize(static_cast<size_t>(std::max(0, outFrameCapacity)) * channels);
         uint8_t* outBuf = reinterpret_cast<uint8_t*>(tmp.data());
 
-        const int converted = swr_convert(m_impl->swrCtx,
+        const int converted = swr_convert(impl.swrCtx,
                                           &outBuf, outFrameCapacity,
                                           const_cast<const uint8_t**>(decodedFrame->extended_data),
                                           decodedFrame->nb_samples);
+        av_frame_unref(decodedFrame);
         if (converted <= 0) {
-            av_frame_unref(decodedFrame);
             return;
         }
 
-        tmp.resize(static_cast<size_t>(converted * m_info.channels));
-        const int64_t frameEnd = frameStart + converted;
-        fallbackFramePos = frameEnd;
+        fallbackFramePos = frameStart + converted;
         haveDecodedPosition = true;
-
-        const int64_t copyStart = std::max<int64_t>(startFrame, frameStart);
-        const int64_t copyEnd = std::min<int64_t>(endFrame, frameEnd);
-        if (copyEnd > copyStart) {
-            const int64_t localStart = copyStart - frameStart;
-            const int64_t dstStart = copyStart - startFrame;
-            const int64_t framesToCopy = copyEnd - copyStart;
-            const size_t srcSampleOffset = static_cast<size_t>(localStart * m_info.channels);
-            const size_t dstSampleOffset = static_cast<size_t>(dstStart * m_info.channels);
-            const size_t sampleCount = static_cast<size_t>(framesToCopy * m_info.channels);
-            std::memcpy(outSamples.data() + dstSampleOffset,
-                        tmp.data() + srcSampleOffset,
-                        sampleCount * sizeof(float));
-            framesWritten = std::max<int64_t>(framesWritten, dstStart + framesToCopy);
-        }
-
-        av_frame_unref(decodedFrame);
+        place(tmp.data(), frameStart, converted);
     };
 
-    while (framesWritten < numFrames && av_read_frame(m_impl->fmtCtx, packet) >= 0) {
-        if (packet->stream_index != m_impl->audioStreamIdx) {
+    if (!stash.empty()) {
+        place(stash.data(), stashStart, static_cast<int64_t>(stash.size() / channels));
+    }
+
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+
+    // Frames the decoder produced after the previous request was satisfied
+    // come first; sending a packet before receiving them would fail.
+    while (continuing && !covered &&
+           avcodec_receive_frame(impl.codecCtx, frame) == 0) {
+        consumeFrame(frame);
+    }
+
+    bool endOfFile = false;
+    while (!covered) {
+        if (av_read_frame(impl.fmtCtx, packet) < 0) {
+            endOfFile = true;
+            break;
+        }
+        if (packet->stream_index != impl.audioStreamIdx) {
             av_packet_unref(packet);
             continue;
         }
 
-        const int ret = avcodec_send_packet(m_impl->codecCtx, packet);
+        const int ret = avcodec_send_packet(impl.codecCtx, packet);
         av_packet_unref(packet);
         if (ret < 0) {
             continue;
         }
 
-        while (avcodec_receive_frame(m_impl->codecCtx, frame) == 0) {
+        while (!covered && avcodec_receive_frame(impl.codecCtx, frame) == 0) {
             consumeFrame(frame);
-            if (framesWritten >= numFrames) {
-                break;
-            }
         }
     }
 
-    avcodec_send_packet(m_impl->codecCtx, nullptr);
-    while (framesWritten < numFrames && avcodec_receive_frame(m_impl->codecCtx, frame) == 0) {
-        consumeFrame(frame);
+    if (endOfFile) {
+        avcodec_send_packet(impl.codecCtx, nullptr);
+        while (!covered && avcodec_receive_frame(impl.codecCtx, frame) == 0) {
+            consumeFrame(frame);
+        }
     }
 
     av_frame_free(&frame);
     av_packet_free(&packet);
 
-    outSamples.resize(static_cast<size_t>(framesWritten * m_info.channels));
+    if (covered) {
+        // Any gap before the decoded span that covered the end is silence.
+        framesWritten = numFrames;
+        impl.contValid = true;
+        impl.contNextFrame = endFrame;
+        impl.contFallbackPos = fallbackFramePos;
+    } else {
+        impl.contStash.clear();
+    }
+
+    outSamples.resize(static_cast<size_t>(framesWritten) * channels);
     return framesWritten;
 }
 #endif

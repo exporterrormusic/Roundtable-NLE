@@ -10,6 +10,8 @@
 #include "timeline/AudioClip.h"
 #include "timeline/Transition.h"
 #include "audio/AudioFile.h"
+#include "audio/AudioRegionReader.h"
+#include "audiofx/FxChain.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "PathUtils.h"
@@ -47,51 +49,86 @@ const char* audioCodecExtension(AudioCodec codec) noexcept
 AudioMixdown::AudioMixdown() = default;
 AudioMixdown::~AudioMixdown() = default;
 
-MixdownResult AudioMixdown::mix(const Timeline& timeline,
-                                 const AudioMixdownConfig& config,
-                                 const MixdownProgressFn& progress)
+// ── AudioMixStream ──────────────────────────────────────────────────────────
+
+/// One clip's contribution: timing and gain staging copied from the
+/// timeline, plus the source reader and effect state carried between blocks.
+struct AudioMixStream::ClipSource
 {
-    MixdownResult result;
+    /// A cross-dissolve touching this clip: a fade-out when the clip is its
+    /// left side, a fade-in when it is the right side.
+    struct TransitionFade {
+        double tStartSec;
+        double tEndSec;
+        bool   isLeft;  // true = fade-out, false = fade-in
+    };
+
+    std::string mediaPath;
+    int         audioStreamIndex{-1};
+
+    int64_t mixStart{0};       ///< first output frame, from the range start
+    int64_t mixFrames{0};      ///< frames requested from the source region
+    int64_t sourceStart{0};    ///< region start, output-rate domain
+    double  readStartSec{0.0};
+    double  clipStartSec{0.0};
+    double  clipEndSec{0.0};
+    double  fadeInSec{0.0};
+    double  fadeOutSec{0.0};
+    std::vector<TransitionFade> transFades;
+    std::vector<EffectType>     channelFills;   ///< enabled fill effects, stack order
+    audiofx::FxChain fx;
+    bool    hasFx{false};
+    float   volume{1.0f};      ///< clip volume x master volume
+    float   pan{0.0f};
+
+    // Opened when the clip's first block comes up; released once it is done
+    // so a long timeline never holds every source open at once.
+    bool     started{false};
+    bool     done{false};
+    uint16_t sourceChannels{0};
+    std::unique_ptr<AudioFile>         file;
+    std::unique_ptr<AudioRegionReader> reader;
+
+    void release()
+    {
+        done = true;
+        reader.reset();   // reads from `file`: goes first
+        file.reset();
+        fx = {};
+    }
+};
+
+AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfig& config)
+    : m_sampleRate(config.sampleRate)
+    , m_channels(config.channels)
+{
+    if (config.sampleRate == 0 || config.channels == 0) {
+        m_lastError = "AudioMixdown: Invalid output format";
+        return;
+    }
 
     // Determine render range
-    double startSec = config.startTime;
-    double endSec   = config.endTime;
+    const double startSec = config.startTime;
+    double endSec = config.endTime;
     if (endSec <= startSec) {
         endSec = ticksToSeconds(timeline.duration());
     }
     if (endSec <= startSec) {
         m_lastError = "AudioMixdown: Empty timeline";
-        return result;
+        return;
     }
 
-    double duration = endSec - startSec;
-    int64_t totalFrames = static_cast<int64_t>(duration * config.sampleRate);
-
-    result.sampleRate  = config.sampleRate;
-    result.channels    = config.channels;
-    result.totalFrames = totalFrames;
-    result.duration    = duration;
-    result.samples.resize(static_cast<size_t>(totalFrames) * config.channels, 0.0f);
-
-    if (progress) progress(0.0f, "Mixing audio...");
+    m_duration    = endSec - startSec;
+    m_totalFrames = static_cast<int64_t>(m_duration * config.sampleRate);
 
     // Check for solo tracks
     bool hasSolo = false;
     for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
         const Track* track = timeline.track(ti);
-        if (track && track->type() == TrackType::Audio && track->isSoloed()) {
-            hasSolo = true;
-            break;
+        if (track && track->type() == TrackType::Audio) {
+            ++m_audioTracks;
+            if (track->isSoloed()) hasSolo = true;
         }
-    }
-
-    // Process each audio track
-    int tracksProcessed = 0;
-    int totalAudioTracks = 0;
-    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
-        const Track* track = timeline.track(ti);
-        if (!track || track->type() != TrackType::Audio) continue;
-        ++totalAudioTracks;
     }
 
     for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
@@ -100,8 +137,8 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
 
         bool muted = track->isMuted();
         if (hasSolo && !track->isSoloed()) muted = true;
+        if (muted) continue;
 
-        // Process each audio clip in this track
         for (size_t ci = 0; ci < track->clipCount(); ++ci) {
             const Clip* clip = track->clip(ci);
             if (!clip || !clip->isAudio()) continue;
@@ -112,11 +149,12 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
 
             // Skip clips outside render range (with extension margins — see below)
             if (clipEndSec <= startSec || clipStartSec >= endSec) continue;
-            if (muted) continue;
 
             // Cast to AudioClip to get media path and properties
             const auto* aclip = dynamic_cast<const AudioClip*>(clip);
             if (!aclip || aclip->mediaPath().empty()) continue;
+
+            auto source = std::make_unique<ClipSource>();
 
             // ── Compute transition extensions for crossfades ────────────
             // Cross-dissolve transitions straddle the edit point: the left
@@ -127,16 +165,6 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             const uint64_t clipId = clip->id();
             double extBeforeSec = 0.0;
             double extAfterSec  = 0.0;
-
-            // Build transition fade list: for each transition referencing
-            // this clip, record the timeline range and whether we're the
-            // left (fade-out) or right (fade-in) side.
-            struct TransitionFade {
-                double tStartSec;
-                double tEndSec;
-                bool   isLeft;  // true = fade-out, false = fade-in
-            };
-            std::vector<TransitionFade> transFades;
 
             for (size_t tri = 0; tri < track->transitionCount(); ++tri) {
                 const Transition* trans = track->transition(tri);
@@ -150,13 +178,13 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                     // Fade-out: clip extends past its natural end
                     const double after = ticksToSeconds(tEnd - clip->timelineOut());
                     if (after > extAfterSec) extAfterSec = after;
-                    transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), true});
+                    source->transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), true});
                 }
                 if (trans->rightClipId == clipId) {
                     // Fade-in: clip extends before its natural start
                     const double before = ticksToSeconds(clip->timelineIn() - tStart);
                     if (before > extBeforeSec) extBeforeSec = before;
-                    transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), false});
+                    source->transFades.push_back({ticksToSeconds(tStart), ticksToSeconds(tEnd), false});
                 }
             }
 
@@ -167,9 +195,9 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
             const double readEndSec   = std::min(clipEndSec   + extAfterSec,  endSec);
             if (readEndSec <= readStartSec) continue;
 
-            const int64_t mixStartFrame = static_cast<int64_t>((readStartSec - startSec) * config.sampleRate);
-            const int64_t mixFrameCount = static_cast<int64_t>((readEndSec - readStartSec) * config.sampleRate);
-            if (mixFrameCount <= 0) continue;
+            source->mixStart  = static_cast<int64_t>((readStartSec - startSec) * config.sampleRate);
+            source->mixFrames = static_cast<int64_t>((readEndSec - readStartSec) * config.sampleRate);
+            if (source->mixFrames <= 0) continue;
 
             // Compute source read offset, backing up by the extension
             double sourceStartSec = ticksToSeconds(clip->sourceIn());
@@ -183,181 +211,252 @@ MixdownResult AudioMixdown::mix(const Timeline& timeline,
                 sourceStartSec = 0.0;
             }
 
-            // Open the audio file on the clip's chosen audio stream (-1 =
-            // auto/best) so a 10-min export uses the SAME stream the user
-            // picked for preview.
-            AudioFile audioFile;
-            if (!audioFile.open(aclip->mediaPath(), aclip->audioStreamIndex())) {
-                spdlog::warn("AudioMixdown: Cannot open '{}' (audio stream {})",
-                             aclip->mediaPath(), aclip->audioStreamIndex());
-                continue;
+            // The region is read in the OUTPUT sample-rate domain (windowed-
+            // sinc conversion when the source rate differs; nearest-neighbor
+            // mapping aliased every 44.1 kHz source in a 48 kHz export —
+            // cleanup audit §5.5).
+            source->sourceStart = std::max<int64_t>(0, static_cast<int64_t>(
+                sourceStartSec * config.sampleRate));
+
+            // Open on the clip's chosen audio stream (-1 = auto/best) so the
+            // export uses the SAME stream the user picked for preview.
+            source->mediaPath        = aclip->mediaPath();
+            source->audioStreamIndex = aclip->audioStreamIndex();
+
+            // Channel fill effects (applied to stereo sources only).
+            const auto& fxStack = clip->effects();
+            for (size_t ei = 0; ei < fxStack.effectCount(); ++ei) {
+                const auto& fx = fxStack.effect(ei);
+                if (!fx.isEnabled()) continue;
+                if (fx.effectType() == EffectType::FillLeftWithRight ||
+                    fx.effectType() == EffectType::FillRightWithLeft)
+                    source->channelFills.push_back(fx.effectType());
             }
 
-            uint16_t srcCh = audioFile.info().channels;
-
-            // Read the region in the OUTPUT sample-rate domain.
-            // readRegionResampled converts through swresample (windowed
-            // sinc) when the source rate differs — the old path read raw
-            // source-rate samples and nearest-neighbor-mapped them during
-            // mixing, which aliased every 44.1 kHz source in a 48 kHz
-            // export (cleanup audit §5.5).
-            int64_t mixDomainStart = static_cast<int64_t>(
-                sourceStartSec * config.sampleRate);
-            if (mixDomainStart < 0) mixDomainStart = 0;
-
-            std::vector<float> srcSamples;
-            int64_t framesRead = audioFile.readRegionResampled(
-                mixDomainStart, mixFrameCount, config.sampleRate, srcSamples);
-            if (framesRead <= 0) continue;
-
-            // ── Apply audio effects (channel fill) on stereo ────────────
-            if (srcCh == 2) {
-                const auto& fxStack = clip->effects();
-                for (size_t ei = 0; ei < fxStack.effectCount(); ++ei) {
-                    const auto& fx = fxStack.effect(ei);
-                    if (!fx.isEnabled()) continue;
-                    if (fx.effectType() == EffectType::FillLeftWithRight) {
-                        for (int64_t s = 0; s < static_cast<int64_t>(srcSamples.size()); s += 2)
-                            srcSamples[static_cast<size_t>(s)] = srcSamples[static_cast<size_t>(s + 1)];
-                    } else if (fx.effectType() == EffectType::FillRightWithLeft) {
-                        for (int64_t s = 0; s < static_cast<int64_t>(srcSamples.size()); s += 2)
-                            srcSamples[static_cast<size_t>(s + 1)] = srcSamples[static_cast<size_t>(s)];
-                    }
-                }
-            }
-
-            // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────
-            // Samples are already in the output sample-rate domain.
+            // Per-clip audio FX chain (EQ / dynamics), state kept across blocks.
             if (aclip->audioFx().isActive()) {
-                auto chain = aclip->audioFx().clone();
-                chain.prepare(config.sampleRate, srcCh);
-                chain.process(srcSamples.data(), static_cast<int>(framesRead));
+                source->fx    = aclip->audioFx().clone();
+                source->hasFx = true;
             }
 
-            // ── Build per-sample fade envelope ──────────────────────────
-            // Combines: per-clip fade in/out + transition crossfades.
-            // Applied multiplicatively to each source sample before mixing.
-            const double fadeInSec  = ticksToSeconds(aclip->fadeInDuration());
-            const double fadeOutSec = ticksToSeconds(aclip->fadeOutDuration());
-
-            // Pre-compute fade gains for each frame (output-rate domain)
-            const int64_t framesToMix = std::min(mixFrameCount, framesRead);
-            std::vector<float> fadeGains(static_cast<size_t>(framesToMix), 1.0f);
-
-            for (int64_t f = 0; f < framesToMix; ++f) {
-                // Timeline position of this output sample
-                const double tSec = readStartSec +
-                    static_cast<double>(f) / static_cast<double>(config.sampleRate);
-                float gain = 1.0f;
-
-                // ── Per-clip fade in ────────────────────────────────────
-                if (fadeInSec > 0.0) {
-                    const double fadePos = tSec - clipStartSec;
-                    if (fadePos < 0.0) {
-                        gain = 0.0f;  // pre-roll before clip (right-side transition)
-                    } else if (fadePos < fadeInSec) {
-                        gain *= static_cast<float>(fadePos / fadeInSec);
-                    }
-                }
-
-                // ── Per-clip fade out ───────────────────────────────────
-                if (fadeOutSec > 0.0) {
-                    const double fadePos = clipEndSec - tSec;
-                    if (fadePos < 0.0) {
-                        gain = 0.0f;  // post-roll after clip (left-side transition)
-                    } else if (fadePos < fadeOutSec) {
-                        gain *= static_cast<float>(fadePos / fadeOutSec);
-                    }
-                }
-
-                // ── Transition crossfades ───────────────────────────────
-                for (const auto& tf : transFades) {
-                    if (tSec >= tf.tStartSec && tSec < tf.tEndSec) {
-                        const double dur = tf.tEndSec - tf.tStartSec;
-                        const double t = (tSec - tf.tStartSec) / dur;
-                        if (tf.isLeft) {
-                            // Fade-out: 1.0 → 0.0
-                            gain *= static_cast<float>(1.0 - std::clamp(t, 0.0, 1.0));
-                        } else {
-                            // Fade-in: 0.0 → 1.0
-                            gain *= static_cast<float>(std::clamp(t, 0.0, 1.0));
-                        }
-                    }
-                }
-
-                fadeGains[static_cast<size_t>(f)] = gain;
-            }
+            source->readStartSec = readStartSec;
+            source->clipStartSec = clipStartSec;
+            source->clipEndSec   = clipEndSec;
+            source->fadeInSec    = ticksToSeconds(aclip->fadeInDuration());
+            source->fadeOutSec   = ticksToSeconds(aclip->fadeOutDuration());
 
             // ── Volume and pan ──────────────────────────────────────────
-            float volume = aclip->volume().evaluate(clip->timelineIn()) * config.masterVolume;
-            float clipPan = aclip->pan().evaluate(clip->timelineIn());
+            source->volume = aclip->volume().evaluate(clip->timelineIn()) * config.masterVolume;
+            source->pan    = aclip->pan().evaluate(clip->timelineIn());
 
-            // Mix into output buffer
-            float* dst = result.samples.data() + mixStartFrame * config.channels;
-            const float* src = srcSamples.data();
+            m_clips.push_back(std::move(source));
+        }
+    }
+}
 
-            int64_t actualMix = std::min(framesToMix, totalFrames - mixStartFrame);
+AudioMixStream::~AudioMixStream() = default;
 
-            // Compute stereo pan gains
-            const float panL = std::min(1.0f, 1.0f - clipPan);
-            const float panR = std::min(1.0f, 1.0f + clipPan);
+int64_t AudioMixStream::read(float* out, int64_t frames)
+{
+    const int64_t blockFrames = std::min(frames, m_totalFrames - m_position);
+    if (!out || blockFrames <= 0) return 0;
 
-            if (srcCh == config.channels) {
-                // Fast path: same channel count (rate already matches —
-                // readRegionResampled delivered output-rate samples)
-                if (config.channels == 2) {
-                    for (int64_t f = 0; f < actualMix; ++f) {
-                        int64_t si = f * 2;
-                        int64_t di = f * 2;
-                        if (si + 1 < static_cast<int64_t>(srcSamples.size())) {
-                            const float g = fadeGains[static_cast<size_t>(f)] * volume;
-                            dst[di]     += src[si]     * g * panL;
-                            dst[di + 1] += src[si + 1] * g * panR;
-                        }
-                    }
+    std::fill(out, out + static_cast<size_t>(blockFrames) * m_channels, 0.0f);
+    // Clips sum in track order, then clip order, every block: each output
+    // sample accumulates in the same order whatever the block size.
+    for (auto& clip : m_clips) {
+        if (clip->done || clip->mixStart >= m_position + blockFrames) continue;
+        mixClip(*clip, out, blockFrames);
+    }
+    m_position += blockFrames;
+    return blockFrames;
+}
+
+void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
+{
+    if (!clip.started) {
+        clip.started = true;
+        auto file = std::make_unique<AudioFile>();
+        if (!file->open(clip.mediaPath, clip.audioStreamIndex)) {
+            spdlog::warn("AudioMixdown: Cannot open '{}' (audio stream {})",
+                         clip.mediaPath, clip.audioStreamIndex);
+            clip.release();
+            return;
+        }
+        auto reader = std::make_unique<AudioRegionReader>();
+        if (!reader->begin(*file, clip.sourceStart, clip.mixFrames, m_sampleRate)) {
+            clip.release();
+            return;
+        }
+        clip.sourceChannels = reader->channels();
+        if (clip.hasFx) clip.fx.prepare(m_sampleRate, clip.sourceChannels);
+        clip.file   = std::move(file);
+        clip.reader = std::move(reader);
+    }
+
+    // The part of the clip's region that falls in this block. Blocks come in
+    // order, so `first` is exactly where the previous block stopped reading.
+    const int64_t limit = std::min(clip.mixFrames, m_totalFrames - clip.mixStart);
+    const int64_t first = std::max<int64_t>(0, m_position - clip.mixStart);
+    const int64_t last  = std::min(limit, m_position + blockFrames - clip.mixStart);
+    if (last <= first) {
+        if (first >= limit) clip.release();
+        return;
+    }
+
+    const int64_t wanted = last - first;
+    const int64_t framesRead = clip.reader->read(wanted, m_source);
+    if (framesRead <= 0) {
+        clip.release();
+        return;
+    }
+
+    const uint16_t srcCh = clip.sourceChannels;
+    float* src = m_source.data();
+
+    // ── Apply audio effects (channel fill) on stereo ────────────────────
+    if (srcCh == 2) {
+        for (const EffectType fill : clip.channelFills) {
+            for (int64_t f = 0; f < framesRead; ++f) {
+                float* frame = src + f * 2;
+                if (fill == EffectType::FillLeftWithRight) frame[0] = frame[1];
+                else                                       frame[1] = frame[0];
+            }
+        }
+    }
+
+    // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────────────
+    // Samples are already in the output sample-rate domain.
+    if (clip.hasFx) clip.fx.process(src, static_cast<int>(framesRead));
+
+    // ── Per-sample fade envelope ────────────────────────────────────────
+    // Combines: per-clip fade in/out + transition crossfades.
+    // Applied multiplicatively to each source sample before mixing.
+    m_gains.resize(static_cast<size_t>(framesRead));
+    for (int64_t i = 0; i < framesRead; ++i) {
+        // Timeline position of this output sample
+        const int64_t f = first + i;
+        const double tSec = clip.readStartSec +
+            static_cast<double>(f) / static_cast<double>(m_sampleRate);
+        float gain = 1.0f;
+
+        // ── Per-clip fade in ────────────────────────────────────────────
+        if (clip.fadeInSec > 0.0) {
+            const double fadePos = tSec - clip.clipStartSec;
+            if (fadePos < 0.0) {
+                gain = 0.0f;  // pre-roll before clip (right-side transition)
+            } else if (fadePos < clip.fadeInSec) {
+                gain *= static_cast<float>(fadePos / clip.fadeInSec);
+            }
+        }
+
+        // ── Per-clip fade out ───────────────────────────────────────────
+        if (clip.fadeOutSec > 0.0) {
+            const double fadePos = clip.clipEndSec - tSec;
+            if (fadePos < 0.0) {
+                gain = 0.0f;  // post-roll after clip (left-side transition)
+            } else if (fadePos < clip.fadeOutSec) {
+                gain *= static_cast<float>(fadePos / clip.fadeOutSec);
+            }
+        }
+
+        // ── Transition crossfades ───────────────────────────────────────
+        for (const auto& tf : clip.transFades) {
+            if (tSec >= tf.tStartSec && tSec < tf.tEndSec) {
+                const double dur = tf.tEndSec - tf.tStartSec;
+                const double t = (tSec - tf.tStartSec) / dur;
+                if (tf.isLeft) {
+                    // Fade-out: 1.0 → 0.0
+                    gain *= static_cast<float>(1.0 - std::clamp(t, 0.0, 1.0));
                 } else {
-                    for (int64_t f = 0; f < actualMix; ++f) {
-                        int64_t s = f * static_cast<int64_t>(config.channels);
-                        if (s < static_cast<int64_t>(srcSamples.size())) {
-                            const float g = fadeGains[static_cast<size_t>(f)] * volume;
-                            for (uint16_t ch = 0; ch < config.channels; ++ch) {
-                                if (s + ch < static_cast<int64_t>(srcSamples.size()))
-                                    dst[s + ch] += src[s + ch] * g;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // General path: channel mapping (rate already matches)
-                for (int64_t f = 0; f < actualMix; ++f) {
-                    if (f >= framesRead) break;
-
-                    const float g = fadeGains[static_cast<size_t>(f)] * volume;
-                    for (uint16_t ch = 0; ch < config.channels; ++ch) {
-                        uint16_t srcChan = (ch < srcCh) ? ch : 0;
-                        int64_t si = f * srcCh + srcChan;
-                        int64_t di = f * config.channels + ch;
-                        if (si < static_cast<int64_t>(srcSamples.size()) &&
-                            (mixStartFrame * config.channels + di) <
-                                static_cast<int64_t>(result.samples.size())) {
-                            dst[di] += src[si] * g;
-                        }
-                    }
+                    // Fade-in: 0.0 → 1.0
+                    gain *= static_cast<float>(std::clamp(t, 0.0, 1.0));
                 }
             }
         }
 
-        ++tracksProcessed;
-        if (progress && totalAudioTracks > 0) {
-            progress(static_cast<float>(tracksProcessed) / totalAudioTracks,
-                     "Mixing track " + std::to_string(tracksProcessed) + "/" +
-                     std::to_string(totalAudioTracks));
+        m_gains[static_cast<size_t>(i)] = gain;
+    }
+
+    // ── Mix into the block ──────────────────────────────────────────────
+    const uint16_t channels = m_channels;
+    float* dst = out + static_cast<size_t>(clip.mixStart + first - m_position) * channels;
+    const float volume = clip.volume;
+
+    // Compute stereo pan gains
+    const float panL = std::min(1.0f, 1.0f - clip.pan);
+    const float panR = std::min(1.0f, 1.0f + clip.pan);
+
+    if (srcCh == channels) {
+        // Fast path: same channel count (rate already matches — the reader
+        // delivers output-rate samples)
+        if (channels == 2) {
+            for (int64_t f = 0; f < framesRead; ++f) {
+                const int64_t i = f * 2;
+                const float g = m_gains[static_cast<size_t>(f)] * volume;
+                dst[i]     += src[i]     * g * panL;
+                dst[i + 1] += src[i + 1] * g * panR;
+            }
+        } else {
+            for (int64_t f = 0; f < framesRead; ++f) {
+                const int64_t s = f * static_cast<int64_t>(channels);
+                const float g = m_gains[static_cast<size_t>(f)] * volume;
+                for (uint16_t ch = 0; ch < channels; ++ch)
+                    dst[s + ch] += src[s + ch] * g;
+            }
         }
+    } else {
+        // General path: channel mapping (rate already matches)
+        for (int64_t f = 0; f < framesRead; ++f) {
+            const float g = m_gains[static_cast<size_t>(f)] * volume;
+            for (uint16_t ch = 0; ch < channels; ++ch) {
+                const uint16_t srcChan = (ch < srcCh) ? ch : 0;
+                dst[f * channels + ch] += src[f * srcCh + srcChan] * g;
+            }
+        }
+    }
+
+    // A short read means the source ran out: the clip is done.
+    if (framesRead < wanted || first + framesRead >= limit) clip.release();
+}
+
+// ── AudioMixdown ────────────────────────────────────────────────────────────
+
+MixdownResult AudioMixdown::mix(const Timeline& timeline,
+                                 const AudioMixdownConfig& config,
+                                 const MixdownProgressFn& progress)
+{
+    MixdownResult result;
+
+    AudioMixStream stream(timeline, config);
+    if (!stream.isValid()) {
+        if (!stream.lastError().empty()) m_lastError = stream.lastError();
+        return result;
+    }
+
+    const int64_t totalFrames = stream.totalFrames();
+    result.sampleRate  = stream.sampleRate();
+    result.channels    = stream.channels();
+    result.totalFrames = totalFrames;
+    result.duration    = stream.duration();
+    result.samples.resize(static_cast<size_t>(totalFrames) * result.channels, 0.0f);
+
+    if (progress) progress(0.0f, "Mixing audio...");
+
+    constexpr int64_t kBlockFrames = 1 << 16;   // ~1.4 s at 48 kHz
+    for (int64_t pos = 0; pos < totalFrames;) {
+        const int64_t framesMixed = stream.read(
+            result.samples.data() + static_cast<size_t>(pos) * result.channels,
+            std::min(kBlockFrames, totalFrames - pos));
+        if (framesMixed <= 0) break;
+        pos += framesMixed;
+        if (progress)
+            progress(static_cast<float>(pos) / static_cast<float>(totalFrames), "Mixing audio...");
     }
 
     if (progress) progress(1.0f, "Mix complete");
     spdlog::info("AudioMixdown: Mixed {} tracks, {} frames, {:.1f}s",
-                 totalAudioTracks, totalFrames, duration);
+                 stream.audioTrackCount(), totalFrames, result.duration);
     return result;
 }
 
@@ -723,39 +822,6 @@ size_t AudioMixdown::estimateFileSize(const AudioMixdownConfig& config, double d
             return static_cast<size_t>(durationSec * config.sampleRate * config.channels * 2 * 0.6);
         default:
             return 0;
-    }
-}
-
-// static
-void AudioMixdown::mixTrackInto(float* mixBuffer, int64_t mixFrames,
-                                 const float* sourceData, int64_t sourceFrames,
-                                 int64_t sourceOffset,
-                                 uint16_t sourceChannels, uint16_t mixChannels,
-                                 float volume, float pan, bool muted)
-{
-    if (muted || !sourceData || !mixBuffer) return;
-
-    // Calculate stereo pan coefficients (constant-power pan law)
-    float panAngle = (pan + 1.0f) * 0.25f * 3.14159265f; // 0 to pi/2
-    float gainL = volume * std::cos(panAngle);
-    float gainR = volume * std::sin(panAngle);
-
-    int64_t framesToMix = std::min(mixFrames, sourceFrames - sourceOffset);
-    if (framesToMix <= 0) return;
-
-    for (int64_t f = 0; f < framesToMix; ++f) {
-        int64_t srcIdx = (sourceOffset + f) * sourceChannels;
-        int64_t mixIdx = f * mixChannels;
-
-        float srcL = sourceData[srcIdx];
-        float srcR = sourceChannels > 1 ? sourceData[srcIdx + 1] : srcL;
-
-        if (mixChannels >= 2) {
-            mixBuffer[mixIdx]     += srcL * gainL;
-            mixBuffer[mixIdx + 1] += srcR * gainR;
-        } else {
-            mixBuffer[mixIdx] += (srcL + srcR) * 0.5f * volume;
-        }
     }
 }
 

@@ -138,6 +138,7 @@ add_roundtable_test(test_render_soak   LIBS roundtable_gpu roundtable_core GROUP
 
 # Export tests
 add_roundtable_test(test_export        LIBS roundtable_export roundtable_core GROUP export)
+add_roundtable_test(test_audio_mix_stream LIBS roundtable_export roundtable_core GROUP export)
 add_roundtable_test(test_rgba16f_pack  LIBS roundtable_export roundtable_core GROUP export)
 
 # UI tests (Qt required)

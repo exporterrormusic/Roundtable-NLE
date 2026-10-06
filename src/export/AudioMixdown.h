@@ -2,7 +2,8 @@
  * AudioMixdown — Multi-track audio mixing to stereo WAV for export.
  *
  * Reads all audio clips from the timeline, applies per-track volume/pan/mute,
- * mixes to stereo interleaved float, and writes to WAV.
+ * mixes to stereo interleaved float, and writes to WAV. AudioMixStream does
+ * the mixing block by block; AudioMixdown::mix() collects a whole range.
  * Can also encode to AAC via FFmpeg for final muxing.
  */
 
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -68,6 +70,57 @@ struct MixdownResult
 /// Progress callback: (progress 0-1, status text)
 using MixdownProgressFn = std::function<void(float, const std::string&)>;
 
+// ── Streaming mix ───────────────────────────────────────────────────────────
+
+/// Mixes the timeline's audio a block at a time. Each clip keeps its own
+/// source reader and effect-chain state across blocks, so memory grows with
+/// the block size, not with the export length, and the output is the same
+/// whatever block sizes are used.
+///
+/// Everything needed from the timeline is copied at construction; the
+/// timeline may change or go away afterwards.
+class AudioMixStream
+{
+public:
+    AudioMixStream(const Timeline& timeline, const AudioMixdownConfig& config);
+    ~AudioMixStream();
+
+    AudioMixStream(const AudioMixStream&) = delete;
+    AudioMixStream& operator=(const AudioMixStream&) = delete;
+
+    /// False when the render range is empty (see lastError()).
+    [[nodiscard]] bool isValid() const noexcept { return m_totalFrames > 0; }
+
+    [[nodiscard]] uint32_t sampleRate() const noexcept { return m_sampleRate; }
+    [[nodiscard]] uint16_t channels() const noexcept { return m_channels; }
+    [[nodiscard]] int64_t  totalFrames() const noexcept { return m_totalFrames; }
+    [[nodiscard]] double   duration() const noexcept { return m_duration; }
+    [[nodiscard]] int64_t  position() const noexcept { return m_position; }
+    [[nodiscard]] size_t   audioTrackCount() const noexcept { return m_audioTracks; }
+    [[nodiscard]] const std::string& lastError() const noexcept { return m_lastError; }
+
+    /// Mix the next `frames` frames into `out` (frames * channels() floats,
+    /// overwritten). Returns the frames written: fewer than asked only at
+    /// the end of the range, 0 once it is done.
+    int64_t read(float* out, int64_t frames);
+
+private:
+    struct ClipSource;
+
+    void mixClip(ClipSource& clip, float* out, int64_t blockFrames);
+
+    std::vector<std::unique_ptr<ClipSource>> m_clips;   ///< track order, then clip order
+    uint32_t    m_sampleRate{0};
+    uint16_t    m_channels{0};
+    int64_t     m_totalFrames{0};
+    double      m_duration{0.0};
+    int64_t     m_position{0};
+    size_t      m_audioTracks{0};
+    std::string m_lastError;
+    std::vector<float> m_source;   ///< scratch: one clip's block of source frames
+    std::vector<float> m_gains;    ///< scratch: one clip's block of fade gains
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 class AudioMixdown
@@ -124,13 +177,6 @@ public:
     static size_t estimateFileSize(const AudioMixdownConfig& config, double durationSec);
 
 private:
-    /// Apply volume and pan to a mono/stereo source into the mix buffer.
-    static void mixTrackInto(float* mixBuffer, int64_t mixFrames,
-                              const float* sourceData, int64_t sourceFrames,
-                              int64_t sourceOffset,
-                              uint16_t sourceChannels, uint16_t mixChannels,
-                              float volume, float pan, bool muted);
-
     std::string m_lastError;
 };
 

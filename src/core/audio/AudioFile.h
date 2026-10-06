@@ -136,6 +136,15 @@ public:
                                 uint32_t targetSampleRate,
                                 std::vector<float>& outSamples);
 
+    /// The source frames readRegionResampled() decodes for a target-rate
+    /// region: the region mapped to the source rate plus a resampler margin
+    /// on each side, clamped to [0, sourceFrames). AudioRegionReader decodes
+    /// the same span, so a block-wise read matches a one-shot read.
+    struct SourceSpan { int64_t start{0}; int64_t end{0}; };
+    [[nodiscard]] static SourceSpan resampleSourceSpan(int64_t startFrame, int64_t numFrames,
+                                                       uint32_t sourceRate, uint32_t targetRate,
+                                                       int64_t sourceFrames) noexcept;
+
     /// Build a max-peak envelope for the full file in the target sample-rate
     /// domain without materializing the entire decoded file in memory.
     size_t buildPeakEnvelopeResampled(uint32_t targetSampleRate,
