@@ -815,29 +815,37 @@ TranscriptionResult Transcriber::transcribe(
         if (progress)
             progress(5.0f, "Loading and resampling audio...");
 
-        // Read all samples resampled to 16kHz
-        auto resampled = audioFile.readAllResampled(16000);
-        if (resampled.empty()) {
+        // Resample to 16 kHz and mix down to mono as the file decodes, so only
+        // the mono result is held (not the decoded file or a resampled
+        // multi-channel copy). Cancel is honoured while loading.
+        const auto& info = audioFile.info();
+        const uint16_t channels = std::max<uint16_t>(1, info.channels);
+        if (info.sampleRate > 0)
+            samples.reserve(static_cast<size_t>(std::ceil(
+                info.frames * 16000.0 / info.sampleRate)));
+        const int64_t frames = audioFile.readAllResampledStreaming(
+            16000, [&](const float* data, int64_t count) {
+                if (m_impl->cancelRequested.load(std::memory_order_acquire))
+                    return false;
+                if (channels == 1) {
+                    samples.insert(samples.end(), data, data + count);
+                    return true;
+                }
+                for (int64_t i = 0; i < count; ++i) {
+                    float sum = 0.0f;
+                    for (uint16_t ch = 0; ch < channels; ++ch)
+                        sum += data[i * channels + ch];
+                    samples.push_back(sum / static_cast<float>(channels));
+                }
+                return true;
+            });
+        if ((frames <= 0 || samples.empty()) &&
+            !m_impl->cancelRequested.load(std::memory_order_acquire)) {
             m_impl->lastError = "Failed to read audio samples from: " + audioPath;
             spdlog::error("Transcriber: {}", m_impl->lastError);
             m_impl->transcribing.store(false);
             return failure(TranscriptionStatus::Failed,
                            TranscriptionErrorCode::AudioDecodeFailed);
-        }
-
-        // Mix down to mono if multi-channel
-        auto channels = audioFile.info().channels;
-        if (channels > 1) {
-            size_t monoFrames = resampled.size() / channels;
-            samples.resize(monoFrames);
-            for (size_t i = 0; i < monoFrames; ++i) {
-                float sum = 0.0f;
-                for (uint16_t ch = 0; ch < channels; ++ch)
-                    sum += resampled[i * channels + ch];
-                samples[i] = sum / static_cast<float>(channels);
-            }
-        } else {
-            samples = std::move(resampled);
         }
 
         result.duration = audioFile.info().duration;
