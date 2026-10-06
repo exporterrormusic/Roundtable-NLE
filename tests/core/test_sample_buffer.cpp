@@ -202,3 +202,56 @@ TEST(AudioFileStreaming, ReadAllStreamingMatchesReadAll)
     EXPECT_GT(seen, 0);
     EXPECT_LT(seen, static_cast<int64_t>(frames));
 }
+
+TEST(AudioFileStreaming, ReadAllResampledMatchesAOneShotResample)
+{
+    // readAllResampled() now converts while it decodes instead of holding
+    // the decoded file and a resampled copy. It must give exactly what the
+    // one-shot path gives: readRegionResampled() over the whole file
+    // resamples [0, end) in one go.
+    TempDir dir;
+    const uint32_t rate = 44100;
+    const uint32_t frames = rate * 3 + 101;
+    const auto path = dir.path() / "tone44.wav";
+    {
+        std::ofstream f(path, std::ios::binary);
+        auto w32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+        auto w16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+        f.write("RIFF", 4); w32(36 + frames * 4); f.write("WAVE", 4);
+        f.write("fmt ", 4); w32(16); w16(1); w16(2); w32(rate); w32(rate * 4); w16(4); w16(16);
+        f.write("data", 4); w32(frames * 4);
+        std::mt19937 rng(11);
+        std::uniform_int_distribution<int> noise(-800, 800);
+        for (uint32_t i = 0; i < frames; ++i) {
+            const auto v = static_cast<int16_t>(
+                9000 * std::sin(2.0 * 3.14159265358979 * 523.0 * i / rate) + noise(rng));
+            w16(static_cast<uint16_t>(v));
+            w16(static_cast<uint16_t>(-v));
+        }
+    }
+
+    for (const uint32_t target : {48000u, 16000u}) {
+        AudioFile file;
+        ASSERT_TRUE(file.open(path));
+        const auto streamed = file.readAllResampled(target);
+        ASSERT_FALSE(streamed.empty());
+
+        std::vector<float> oneShot;
+        const int64_t wanted = static_cast<int64_t>(
+            std::ceil(static_cast<double>(frames) * target / rate)) + 16;
+        file.readRegionResampled(0, wanted, target, oneShot);
+        EXPECT_EQ(streamed, oneShot) << "target " << target;
+
+        std::vector<float> chunks;
+        int calls = 0;
+        const int64_t delivered = file.readAllResampledStreaming(
+            target, [&](const float* samples, int64_t n) {
+                ++calls;
+                chunks.insert(chunks.end(), samples, samples + n * 2);
+                return true;
+            });
+        EXPECT_EQ(delivered, static_cast<int64_t>(streamed.size() / 2));
+        EXPECT_GT(calls, 1);
+        EXPECT_EQ(chunks, streamed);
+    }
+}

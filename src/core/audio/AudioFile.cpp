@@ -162,6 +162,24 @@ std::vector<float> resampleInterleavedLinear(const std::vector<float>& samples,
 }
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
+/// An interleaved-float rate converter (same layout both sides), or null.
+SwrContext* makeFloatResampler(uint16_t channels, uint32_t srcSampleRate,
+                               uint32_t dstSampleRate)
+{
+    AVChannelLayout layout;
+    av_channel_layout_default(&layout, channels);
+    SwrContext* ctx = nullptr;
+    if (swr_alloc_set_opts2(&ctx,
+                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(dstSampleRate),
+                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(srcSampleRate),
+                            0, nullptr) < 0 || !ctx || swr_init(ctx) < 0) {
+        if (ctx) swr_free(&ctx);
+        ctx = nullptr;
+    }
+    av_channel_layout_uninit(&layout);
+    return ctx;
+}
+
 /// Resample an interleaved float buffer via swresample (windowed-sinc).
 /// Same contract as resampleInterleavedLinear: output frame d corresponds to
 /// source position d * srcRate / dstRate, length ≈ ceil(srcFrames * ratio).
@@ -184,16 +202,8 @@ std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
         return {};
     }
 
-    AVChannelLayout layout;
-    av_channel_layout_default(&layout, channels);
-
-    SwrContext* ctx = nullptr;
-    if (swr_alloc_set_opts2(&ctx,
-                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(dstSampleRate),
-                            &layout, AV_SAMPLE_FMT_FLT, static_cast<int>(srcSampleRate),
-                            0, nullptr) < 0 || !ctx || swr_init(ctx) < 0) {
-        if (ctx) swr_free(&ctx);
-        av_channel_layout_uninit(&layout);
+    SwrContext* ctx = makeFloatResampler(channels, srcSampleRate, dstSampleRate);
+    if (!ctx) {
         return resampleInterleavedLinear(samples, channels, srcSampleRate, dstSampleRate);
     }
 
@@ -207,7 +217,6 @@ std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
                             &inPlanes, static_cast<int>(srcFrames));
     if (total < 0) {
         swr_free(&ctx);
-        av_channel_layout_uninit(&layout);
         return resampleInterleavedLinear(samples, channels, srcSampleRate, dstSampleRate);
     }
 
@@ -222,7 +231,6 @@ std::vector<float> resampleInterleavedSwr(const std::vector<float>& samples,
     }
 
     swr_free(&ctx);
-    av_channel_layout_uninit(&layout);
 
     // Preserve the linear resampler's length contract so the position math
     // in extractResampledRegion keeps lining up across chunk boundaries.
@@ -767,13 +775,90 @@ size_t AudioFile::buildPeakEnvelopeResampled(uint32_t targetSampleRate,
 
 std::vector<float> AudioFile::readAllResampled(uint32_t targetSampleRate)
 {
-    auto samples = readAll();
-    if (samples.empty() || m_info.sampleRate == targetSampleRate) {
-        return samples;
+    uint16_t channels = 0;
+    size_t estimate = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_isOpen || m_info.sampleRate == 0) return {};
+        channels = m_info.channels;
+        estimate = static_cast<size_t>(std::ceil(
+            m_info.frames * static_cast<double>(targetSampleRate) / m_info.sampleRate)) * channels;
     }
+    std::vector<float> samples;
+    samples.reserve(estimate);
+    const int64_t frames = readAllResampledStreaming(
+        targetSampleRate, [&](const float* data, int64_t count) {
+            samples.insert(samples.end(), data, data + static_cast<size_t>(count) * channels);
+            return true;
+        });
+    if (frames < 0) return {};
+    return samples;
+}
 
-    return resampleInterleaved(samples, m_info.channels,
-                                     m_info.sampleRate, targetSampleRate);
+int64_t AudioFile::readAllResampledStreaming(uint32_t targetSampleRate, const SampleSink& sink)
+{
+    uint32_t sourceRate = 0;
+    uint16_t channels = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_isOpen || !sink || targetSampleRate == 0 || m_info.sampleRate == 0)
+            return -1;
+        sourceRate = m_info.sampleRate;
+        channels = m_info.channels;
+    }
+    if (sourceRate == targetSampleRate || channels == 0)
+        return readAllStreaming(sink);
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    if (SwrContext* swr = makeFloatResampler(channels, sourceRate, targetSampleRate)) {
+        // One converter across the whole file: the same samples as resampling
+        // the fully decoded file in one go (resampleInterleavedSwr), including
+        // its length contract, without holding either buffer.
+        std::vector<float> converted;
+        int64_t sourceFrames = 0;
+        int64_t produced = 0;
+        bool stopped = false;
+        auto emit = [&](int64_t frames) {
+            produced += frames;
+            if (!sink(converted.data(), frames)) stopped = true;
+        };
+
+        const int64_t decoded = readAllStreaming([&](const float* samples, int64_t frames) {
+            sourceFrames += frames;
+            const int capacity = swr_get_out_samples(swr, static_cast<int>(frames));
+            if (capacity <= 0) return true;
+            converted.resize(static_cast<size_t>(capacity) * channels);
+            const uint8_t* in = reinterpret_cast<const uint8_t*>(samples);
+            uint8_t* out = reinterpret_cast<uint8_t*>(converted.data());
+            const int got = swr_convert(swr, &out, capacity, &in, static_cast<int>(frames));
+            if (got > 0) emit(got);
+            return !stopped;
+        });
+
+        // Drain the filter tail, up to ceil(sourceFrames * ratio) in all.
+        const int64_t expected = static_cast<int64_t>(std::ceil(
+            sourceFrames * static_cast<double>(targetSampleRate) / sourceRate));
+        while (decoded >= 0 && !stopped && produced < expected) {
+            const int capacity = std::max(256, swr_get_out_samples(swr, 0));
+            converted.resize(static_cast<size_t>(capacity) * channels);
+            uint8_t* out = reinterpret_cast<uint8_t*>(converted.data());
+            const int got = swr_convert(swr, &out, capacity, nullptr, 0);
+            if (got <= 0) break;
+            emit(std::min<int64_t>(got, expected - produced));
+        }
+        swr_free(&swr);
+        return (decoded < 0 || stopped) ? -1 : produced;
+    }
+#endif
+
+    // No streaming converter: resample the whole file in one go.
+    auto samples = readAll();
+    if (samples.empty()) return -1;
+    auto resampled = resampleInterleaved(samples, channels, sourceRate, targetSampleRate);
+    std::vector<float>().swap(samples);
+    const int64_t frames = static_cast<int64_t>(resampled.size() / channels);
+    if (frames > 0 && !sink(resampled.data(), frames)) return -1;
+    return frames;
 }
 
 // ─── libsndfile backend ─────────────────────────────────────────────────────

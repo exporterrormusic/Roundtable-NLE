@@ -64,7 +64,9 @@ struct SourceWaveformResult {
 };
 
 struct SourceAudioResult {
-    std::vector<float> samples;
+    /// `mutable` so the one subscriber can move the samples out of the
+    /// queue's shared const result instead of copying the whole file.
+    mutable std::vector<float> samples;
     uint16_t channels{1};
 };
 
@@ -217,7 +219,7 @@ void SourceMonitor::requestSourceAudioLoadAsync()
                 }
 
                 self->m_audioSamples = std::make_shared<std::vector<float>>(
-                    result.value->samples);
+                    std::move(result.value->samples));
                 self->m_audioChannels = result.value->channels;
                 self->m_audioLoadFailed = false;
 

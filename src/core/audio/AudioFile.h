@@ -137,8 +137,13 @@ public:
                        std::vector<float>& outSamples);
 
     /// Read all samples and resample to targetSampleRate if different.
-    /// Simple linear interpolation resampler for preview quality.
+    /// Decodes and resamples block by block into the one result buffer.
     [[nodiscard]] std::vector<float> readAllResampled(uint32_t targetSampleRate);
+
+    /// readAllResampled() delivered to `sink` in chunks instead of one
+    /// buffer: memory stays at a chunk whatever the file length. Returns the
+    /// frames delivered, or -1 on failure or when stopped.
+    int64_t readAllResampledStreaming(uint32_t targetSampleRate, const SampleSink& sink);
 
     /// Read a region expressed in the target sample-rate domain and resample
     /// if needed. Output is interleaved float samples.
