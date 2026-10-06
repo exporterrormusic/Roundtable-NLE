@@ -981,12 +981,12 @@ TranscriptionResult Transcriber::transcribe(
         if (progress)
             progress(10.0f, "Detecting speech regions...");
 
+        // CPU only: whisper.cpp always runs VAD compute on the CPU ("GPU VAD
+        // is forced disabled" in whisper_vad_init_context), so with
+        // use_gpu=true the weights landed in a CUDA buffer no compute backend
+        // could read and ggml aborted the process. The model is under 1 MB.
         whisper_vad_context_params vadContextParams = whisper_vad_default_context_params();
-#ifdef ROUNDTABLE_HAS_WHISPER_CUDA
-        vadContextParams.use_gpu = true;
-#else
         vadContextParams.use_gpu = false;
-#endif
         whisper_vad_context* vadContext =
             whisper_vad_init_from_file_with_params(vadModelFile.c_str(), vadContextParams);
         if (vadContext) {

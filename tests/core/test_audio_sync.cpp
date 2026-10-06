@@ -7,6 +7,13 @@
 
 #include <gtest/gtest.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include "ai/Transcriber.h"
 #include "ai/ScriptMatcher.h"
 #include "ai/ShotPipeline.h"
@@ -15,6 +22,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1123,4 +1133,67 @@ TEST(ShotPipelineTest, RenderTrimSurvivesSaveAndLoad)
     EXPECT_DOUBLE_EQ(loaded.shots["line"].renders[0].trimIn, 0.125);
     EXPECT_DOUBLE_EQ(loaded.shots["line"].renders[0].trimOut, 3.375);
     EXPECT_EQ(loaded, state);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Transcriber end to end (needs local models; skipped without them)
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// The models folder the build copies next to the binaries, if it holds
+/// what `files` names. Tests never download models.
+std::filesystem::path localModelsDir(std::initializer_list<const char*> files)
+{
+    std::vector<std::filesystem::path> candidates;
+#ifdef _WIN32
+    wchar_t exe[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH) > 0)
+        candidates.push_back(std::filesystem::path(exe).parent_path() / "models");
+#endif
+    candidates.push_back(std::filesystem::current_path() / "models");
+    for (const auto& dir : candidates) {
+        bool all = true;
+        for (const char* file : files)
+            all = all && std::filesystem::exists(dir / file);
+        if (all) return dir;
+    }
+    return {};
+}
+
+} // namespace
+
+TEST(TranscriberEndToEnd, VoiceActivityDetectionRunsWithoutAborting)
+{
+    // VAD weights used to be loaded on the GPU in CUDA builds while
+    // whisper.cpp always computes VAD on the CPU: ggml aborted the whole
+    // process on the first transcription with the VAD model present.
+    const auto models = localModelsDir({"ggml-tiny.bin", "ggml-silero-v6.2.0.bin"});
+    if (models.empty()) GTEST_SKIP() << "whisper tiny + silero VAD models not found locally";
+
+    // 3 s of 44.1 kHz stereo tone: also exercises the 16 kHz mono load.
+    const auto path = std::filesystem::temp_directory_path() / "rt_transcriber_vad_test.wav";
+    {
+        const uint32_t rate = 44100, frames = rate * 3;
+        std::ofstream f(path, std::ios::binary);
+        auto w32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+        auto w16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+        f.write("RIFF", 4); w32(36 + frames * 4); f.write("WAVE", 4);
+        f.write("fmt ", 4); w32(16); w16(1); w16(2); w32(rate); w32(rate * 4); w16(4); w16(16);
+        f.write("data", 4); w32(frames * 4);
+        for (uint32_t i = 0; i < frames; ++i) {
+            const auto v = static_cast<int16_t>(6000 * std::sin(2.0 * 3.14159265358979 * 220.0 * i / rate));
+            w16(static_cast<uint16_t>(v));
+            w16(static_cast<uint16_t>(v));
+        }
+    }
+
+    Transcriber transcriber;
+    transcriber.setModelsDirectory(models.string());
+    ASSERT_TRUE(transcriber.loadModel(WhisperModelSize::Tiny));
+    ASSERT_TRUE(transcriber.isVadEnabled());
+    const TranscriptionResult result = transcriber.transcribe(path.string(), "en");
+    EXPECT_TRUE(result.succeeded()) << static_cast<int>(result.status);
+    EXPECT_NEAR(result.duration, 3.0, 0.01);
+    std::filesystem::remove(path);
 }
