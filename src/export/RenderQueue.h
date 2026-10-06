@@ -337,7 +337,7 @@ private:
     /// Audio-only job: mix the timeline's audio and write a standalone audio
     /// file (no video encode/composite).  Called from processJob when
     /// job.config.audioOnly is set.
-    void processAudioOnlyJob(ExportJob& job, const Timeline* timeline);
+    void processAudioOnlyJob(ExportJob& job, JobRunContext& ctx, const Timeline* timeline);
 
     // Jobs are held by shared_ptr: the worker keeps its own reference to the
     // job it is processing, so removeJob erasing a vector element can never

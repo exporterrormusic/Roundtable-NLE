@@ -1,11 +1,12 @@
 /*
  * test_audio_mix_stream.cpp — block-wise audio export mixing.
  *
- * AudioMixStream mixes a block at a time and AudioRegionReader reads a
- * source region a block at a time. Both must give exactly the same samples
- * as the one-shot paths whatever the block size: these tests mix and read with
- * several block sizes, including ones that cut through fades, transitions
- * and resampler/decoder frame boundaries.
+ * AudioMixStream mixes a block at a time, AudioRegionReader reads a source
+ * region a block at a time and AudioFileWriter writes a file a block at a
+ * time. Each must give exactly the same output as the one-shot path
+ * whatever the block size: these tests use several block sizes, including
+ * ones that cut through fades, transitions and resampler, decoder and
+ * encoder frame boundaries.
  */
 
 #include <gtest/gtest.h>
@@ -28,6 +29,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -369,4 +372,99 @@ TEST(AudioMixStream, EmptyTimelineIsInvalid)
     EXPECT_FALSE(stream.lastError().empty());
     std::vector<float> out(64);
     EXPECT_EQ(stream.read(out.data(), 32), 0);
+}
+
+// ── AudioFileWriter ─────────────────────────────────────────────────────────
+
+namespace {
+
+MixdownResult testSignal(double seconds, uint32_t rate, uint16_t channels)
+{
+    MixdownResult mix;
+    mix.sampleRate = rate;
+    mix.channels = channels;
+    mix.totalFrames = static_cast<int64_t>(seconds * rate);
+    mix.duration = seconds;
+    mix.samples.resize(static_cast<size_t>(mix.totalFrames) * channels);
+    uint32_t lcg = 99;
+    for (size_t i = 0; i < mix.samples.size(); ++i) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const double t = static_cast<double>(i / channels) / rate;
+        // Peaks past +-1 exercise the PCM-16 clamp.
+        mix.samples[i] = 1.2f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 330.0 * t)) +
+                         (static_cast<float>(lcg >> 8) / 16777216.0f - 0.5f) * 0.1f;
+    }
+    return mix;
+}
+
+std::vector<char> fileBytes(const fs::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+} // namespace
+
+TEST(AudioFileWriter, BlockSizesWriteIdenticalFiles)
+{
+    TempDir dir;
+    const MixdownResult mix = testSignal(1.3, 48000, 2);
+    for (const AudioCodec codec : {AudioCodec::PCM_S16LE, AudioCodec::PCM_F32LE,
+                                   AudioCodec::FLAC, AudioCodec::MP3, AudioCodec::AAC}) {
+        const std::string ext = audioCodecExtension(codec);
+        const auto whole = dir.path() / ("whole" + ext);
+        if (!AudioMixdown::writeAudioFile(mix, whole, codec, 160000)) {
+            ADD_FAILURE() << "codec " << static_cast<int>(codec) << " unavailable";
+            continue;
+        }
+        for (int64_t block : {1, 997, 4096}) {
+            const auto streamed = dir.path() / ("streamed" + std::to_string(block) + ext);
+            AudioFileWriter writer;
+            ASSERT_TRUE(writer.open(streamed, codec, 48000, 2, 160000));
+            for (int64_t pos = 0; pos < mix.totalFrames; pos += block) {
+                const int64_t n = std::min(block, mix.totalFrames - pos);
+                ASSERT_TRUE(writer.write(mix.samples.data() + static_cast<size_t>(pos) * 2, n));
+            }
+            EXPECT_EQ(writer.framesWritten(), mix.totalFrames);
+            ASSERT_TRUE(writer.finish());
+            EXPECT_EQ(fileBytes(streamed), fileBytes(whole))
+                << "codec " << static_cast<int>(codec) << " block " << block;
+        }
+    }
+}
+
+TEST(AudioFileWriter, WavHeaderSizesAreFilledIn)
+{
+    TempDir dir;
+    const MixdownResult mix = testSignal(0.5, 44100, 1);
+    const auto path = dir.path() / "mono.wav";
+    ASSERT_TRUE(AudioMixdown::writeWav(mix, path));
+
+    const auto bytes = fileBytes(path);
+    ASSERT_EQ(bytes.size(), 44u + static_cast<size_t>(mix.totalFrames) * 2);
+    uint32_t riffSize = 0, dataSize = 0;
+    std::memcpy(&riffSize, bytes.data() + 4, 4);
+    std::memcpy(&dataSize, bytes.data() + 40, 4);
+    EXPECT_EQ(dataSize, static_cast<uint32_t>(mix.totalFrames * 2));
+    EXPECT_EQ(riffSize, 36u + dataSize);
+
+    AudioFile file;
+    ASSERT_TRUE(file.open(path));
+    EXPECT_EQ(file.info().frames, mix.totalFrames);
+    EXPECT_EQ(file.info().sampleRate, 44100u);
+}
+
+TEST(AudioFileWriter, UnfinishedWriterCanBeDiscarded)
+{
+    TempDir dir;
+    const auto path = dir.path() / "partial.flac";
+    {
+        AudioFileWriter writer;
+        if (!writer.open(path, AudioCodec::FLAC, 48000, 2))
+            GTEST_SKIP() << "FLAC encoder unavailable";
+        const MixdownResult mix = testSignal(0.2, 48000, 2);
+        ASSERT_TRUE(writer.write(mix.samples.data(), mix.totalFrames));
+    }   // destroyed without finish(): the file must be closed, so removable
+    std::error_code ec;
+    EXPECT_TRUE(fs::remove(path, ec)) << ec.message();
 }

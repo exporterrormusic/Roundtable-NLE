@@ -470,65 +470,148 @@ bool AudioMixdown::mixToFile(const Timeline& timeline,
     return writeWav(result, outputPath);
 }
 
-// static
-bool AudioMixdown::writeWav(const MixdownResult& result,
-                             const std::filesystem::path& outputPath)
-{
-    if (!result.isValid()) return false;
+// ── AudioFileWriter ─────────────────────────────────────────────────────────
 
-    std::ofstream out(outputPath, std::ios::binary);
-    if (!out.is_open()) {
-        spdlog::error("AudioMixdown: Cannot open {} for writing", pathToUtf8(outputPath));
+/// PCM 16-bit WAV, sizes patched into the header by finish().
+struct AudioFileWriter::WavOut
+{
+    std::ofstream         out;
+    std::filesystem::path path;
+    uint32_t              sampleRate{0};
+    uint16_t              channels{0};
+    int64_t               frames{0};
+    std::vector<int16_t>  converted;
+};
+
+/// FFmpeg encoder + muxer. Input collects in `fifo` until a whole encoder
+/// frame is there, so the frames the encoder sees never depend on how the
+/// caller splits its writes; only the last one may be short.
+struct AudioFileWriter::EncodedOut
+{
+    AVFormatContext* fmt{nullptr};
+    AVStream*        stream{nullptr};
+    AVCodecContext*  ctx{nullptr};
+    SwrContext*      swr{nullptr};
+    AVFrame*         frame{nullptr};
+    AVPacket*        pkt{nullptr};
+    std::string      pathUtf8;
+    uint16_t         channels{0};
+    int              frameSize{0};
+    int64_t          pts{0};
+    int64_t          frames{0};
+    bool             writeError{false};
+    std::vector<float> fifo;
+    size_t             fifoHead{0};
+
+    ~EncodedOut()
+    {
+        if (pkt)   av_packet_free(&pkt);
+        if (frame) av_frame_free(&frame);
+        if (swr)   swr_free(&swr);
+        if (ctx)   avcodec_free_context(&ctx);
+        if (fmt) {
+            if (fmt->pb && !(fmt->oformat->flags & AVFMT_NOFILE))
+                avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+        }
+    }
+
+    void drain()
+    {
+        while (avcodec_receive_packet(ctx, pkt) == 0) {
+            pkt->stream_index = stream->index;
+            av_packet_rescale_ts(pkt, ctx->time_base, stream->time_base);
+            if (av_interleaved_write_frame(fmt, pkt) < 0) writeError = true;
+            av_packet_unref(pkt);
+        }
+    }
+
+    void encode(const float* samples, int chunk)
+    {
+        const uint8_t* srcData[] = { reinterpret_cast<const uint8_t*>(samples) };
+        av_frame_make_writable(frame);
+        frame->nb_samples = chunk;
+        swr_convert(swr, frame->data, chunk, srcData, chunk);
+
+        frame->pts = pts;
+        pts += chunk;
+
+        if (avcodec_send_frame(ctx, frame) < 0) {
+            writeError = true;
+            return;
+        }
+        drain();
+    }
+};
+
+AudioFileWriter::AudioFileWriter() = default;
+AudioFileWriter::~AudioFileWriter() = default;
+
+bool AudioFileWriter::isOpen() const noexcept
+{
+    return m_wav || m_encoded;
+}
+
+int64_t AudioFileWriter::framesWritten() const noexcept
+{
+    if (m_wav) return m_wav->frames;
+    if (m_encoded) return m_encoded->frames;
+    return 0;
+}
+
+bool AudioFileWriter::open(const std::filesystem::path& outputPath, AudioCodec codec,
+                           uint32_t sampleRate, uint16_t channels, int bitrate)
+{
+    m_wav.reset();
+    m_encoded.reset();
+    m_lastError.clear();
+    if (sampleRate == 0 || channels == 0) {
+        m_lastError = "AudioMixdown: invalid audio format";
         return false;
     }
 
-    // Write WAV header (PCM 16-bit)
-    uint16_t channels    = result.channels;
-    uint32_t sampleRate  = result.sampleRate;
-    uint16_t bitsPerSamp = 16;
-    uint32_t byteRate    = sampleRate * channels * (bitsPerSamp / 8);
-    uint16_t blockAlign  = channels * (bitsPerSamp / 8);
-    uint32_t dataSize    = static_cast<uint32_t>(result.totalFrames * channels * (bitsPerSamp / 8));
-    uint32_t fileSize    = 36 + dataSize;
+    // WAV → a plain PCM-16 writer (no encoder/muxer needed).
+    if (codec == AudioCodec::PCM_S16LE) {
+        auto wav = std::make_unique<WavOut>();
+        wav->out.open(outputPath, std::ios::binary);
+        if (!wav->out.is_open()) {
+            m_lastError = "AudioMixdown: Cannot open " + pathToUtf8(outputPath) + " for writing";
+            spdlog::error("{}", m_lastError);
+            return false;
+        }
+        wav->path       = outputPath;
+        wav->sampleRate = sampleRate;
+        wav->channels   = channels;
 
-    out.write("RIFF", 4);
-    out.write(reinterpret_cast<const char*>(&fileSize), 4);
-    out.write("WAVE", 4);
-    out.write("fmt ", 4);
-    uint32_t fmtSize = 16;
-    out.write(reinterpret_cast<const char*>(&fmtSize), 4);
-    uint16_t audioFmt = 1; // PCM
-    out.write(reinterpret_cast<const char*>(&audioFmt), 2);
-    out.write(reinterpret_cast<const char*>(&channels), 2);
-    out.write(reinterpret_cast<const char*>(&sampleRate), 4);
-    out.write(reinterpret_cast<const char*>(&byteRate), 4);
-    out.write(reinterpret_cast<const char*>(&blockAlign), 2);
-    out.write(reinterpret_cast<const char*>(&bitsPerSamp), 2);
-    out.write("data", 4);
-    out.write(reinterpret_cast<const char*>(&dataSize), 4);
-
-    // Convert float samples to 16-bit and write
-    for (int64_t i = 0; i < result.totalFrames * channels; ++i) {
-        float sample = std::clamp(result.samples[static_cast<size_t>(i)], -1.0f, 1.0f);
-        int16_t s16 = static_cast<int16_t>(sample * 32767.0f);
-        out.write(reinterpret_cast<const char*>(&s16), 2);
+        // WAV header (PCM 16-bit); the two sizes are patched by finish().
+        const uint16_t bitsPerSamp = 16;
+        const uint32_t byteRate    = sampleRate * channels * (bitsPerSamp / 8);
+        const uint16_t blockAlign  = static_cast<uint16_t>(channels * (bitsPerSamp / 8));
+        const uint32_t sizePlaceholder = 0;
+        const uint32_t fmtSize = 16;
+        const uint16_t audioFmt = 1; // PCM
+        auto& out = wav->out;
+        out.write("RIFF", 4);
+        out.write(reinterpret_cast<const char*>(&sizePlaceholder), 4);
+        out.write("WAVE", 4);
+        out.write("fmt ", 4);
+        out.write(reinterpret_cast<const char*>(&fmtSize), 4);
+        out.write(reinterpret_cast<const char*>(&audioFmt), 2);
+        out.write(reinterpret_cast<const char*>(&channels), 2);
+        out.write(reinterpret_cast<const char*>(&sampleRate), 4);
+        out.write(reinterpret_cast<const char*>(&byteRate), 4);
+        out.write(reinterpret_cast<const char*>(&blockAlign), 2);
+        out.write(reinterpret_cast<const char*>(&bitsPerSamp), 2);
+        out.write("data", 4);
+        out.write(reinterpret_cast<const char*>(&sizePlaceholder), 4);
+        if (!out) {
+            m_lastError = "AudioMixdown: Cannot write " + pathToUtf8(outputPath);
+            spdlog::error("{}", m_lastError);
+            return false;
+        }
+        m_wav = std::move(wav);
+        return true;
     }
-
-    spdlog::info("AudioMixdown: Wrote {} ({:.1f}s, {} Hz, {} ch)",
-                 pathToUtf8(outputPath), result.duration, sampleRate, channels);
-    return true;
-}
-
-// static
-bool AudioMixdown::writeAudioFile(const MixdownResult& result,
-                                  const std::filesystem::path& outputPath,
-                                  AudioCodec codec, int bitrate)
-{
-    if (!result.isValid()) return false;
-
-    // WAV → the existing PCM-16 writer (no encoder/muxer needed).
-    if (codec == AudioCodec::PCM_S16LE)
-        return writeWav(result, outputPath);
 
     // Map our format → FFmpeg encoder id, container short-name, and the
     // sample format the encoder expects.  Hard-coding the sample format avoids
@@ -545,265 +628,200 @@ bool AudioMixdown::writeAudioFile(const MixdownResult& result,
         default: break;
     }
 
-    const std::string outUtf8 = pathToUtf8(outputPath);
-
-    const AVCodec* enc = avcodec_find_encoder(codecId);
-    if (!enc) {
-        spdlog::error("AudioMixdown: audio encoder not available in this build "
-                      "(codec id {})", static_cast<int>(codecId));
+    auto enc = std::make_unique<EncodedOut>();
+    enc->pathUtf8 = pathToUtf8(outputPath);
+    enc->channels = channels;
+    const std::string& outUtf8 = enc->pathUtf8;
+    auto fail = [&](std::string message) {
+        m_lastError = "AudioMixdown: " + std::move(message);
+        spdlog::error("{}", m_lastError);
         return false;
-    }
+    };
 
-    AVFormatContext* fmt = nullptr;
-    avformat_alloc_output_context2(&fmt, nullptr, fmtName, outUtf8.c_str());
-    if (!fmt) {
-        spdlog::error("AudioMixdown: failed to allocate output context for {}", outUtf8);
-        return false;
-    }
+    const AVCodec* encoder = avcodec_find_encoder(codecId);
+    if (!encoder)
+        return fail("audio encoder not available in this build (codec id " +
+                    std::to_string(static_cast<int>(codecId)) + ")");
 
-    AVStream* st = avformat_new_stream(fmt, nullptr);
-    AVCodecContext* ctx = st ? avcodec_alloc_context3(enc) : nullptr;
-    if (!st || !ctx) {
-        spdlog::error("AudioMixdown: failed to create audio stream/encoder context");
-        if (ctx) avcodec_free_context(&ctx);
-        avformat_free_context(fmt);
-        return false;
-    }
+    avformat_alloc_output_context2(&enc->fmt, nullptr, fmtName, outUtf8.c_str());
+    if (!enc->fmt)
+        return fail("failed to allocate output context for " + outUtf8);
 
+    enc->stream = avformat_new_stream(enc->fmt, nullptr);
+    enc->ctx = enc->stream ? avcodec_alloc_context3(encoder) : nullptr;
+    if (!enc->stream || !enc->ctx)
+        return fail("failed to create audio stream/encoder context");
+
+    AVCodecContext* ctx = enc->ctx;
     ctx->sample_fmt  = sampleFmt;
-    ctx->sample_rate = static_cast<int>(result.sampleRate);
-    av_channel_layout_default(&ctx->ch_layout, result.channels);
+    ctx->sample_rate = static_cast<int>(sampleRate);
+    av_channel_layout_default(&ctx->ch_layout, channels);
     ctx->time_base   = {1, ctx->sample_rate};
     if (usesBitrate)
         ctx->bit_rate = bitrate > 0 ? bitrate : 192000;
-    if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+    if (enc->fmt->oformat->flags & AVFMT_GLOBALHEADER)
         ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    // Local cleanup helper for the failure paths below.
-    auto teardown = [&](SwrContext** swr, AVFrame** frame, AVPacket** pkt) {
-        if (pkt && *pkt)     av_packet_free(pkt);
-        if (frame && *frame) av_frame_free(frame);
-        if (swr && *swr)     swr_free(swr);
-        avcodec_free_context(&ctx);
-        if (fmt) {
-            if (fmt->pb && !(fmt->oformat->flags & AVFMT_NOFILE))
-                avio_closep(&fmt->pb);
-            avformat_free_context(fmt);
-        }
-    };
+    if (avcodec_open2(ctx, encoder, nullptr) < 0)
+        return fail("failed to open audio encoder");
+    avcodec_parameters_from_context(enc->stream->codecpar, ctx);
+    enc->stream->time_base = ctx->time_base;
 
-    if (avcodec_open2(ctx, enc, nullptr) < 0) {
-        spdlog::error("AudioMixdown: failed to open audio encoder");
-        teardown(nullptr, nullptr, nullptr);
-        return false;
+    if (!(enc->fmt->oformat->flags & AVFMT_NOFILE)) {
+        if (avio_open(&enc->fmt->pb, outUtf8.c_str(), AVIO_FLAG_WRITE) < 0)
+            return fail("failed to open output file: " + outUtf8);
     }
-    avcodec_parameters_from_context(st->codecpar, ctx);
-    st->time_base = ctx->time_base;
-
-    if (!(fmt->oformat->flags & AVFMT_NOFILE)) {
-        if (avio_open(&fmt->pb, outUtf8.c_str(), AVIO_FLAG_WRITE) < 0) {
-            spdlog::error("AudioMixdown: failed to open output file: {}", outUtf8);
-            teardown(nullptr, nullptr, nullptr);
-            return false;
-        }
-    }
-    if (avformat_write_header(fmt, nullptr) < 0) {
-        spdlog::error("AudioMixdown: failed to write container header for {}", outUtf8);
-        teardown(nullptr, nullptr, nullptr);
-        return false;
-    }
+    if (avformat_write_header(enc->fmt, nullptr) < 0)
+        return fail("failed to write container header for " + outUtf8);
 
     // Resample interleaved float (mix buffer) → the encoder's sample format.
-    SwrContext* swr = nullptr;
     AVChannelLayout srcLayout{};
-    av_channel_layout_default(&srcLayout, result.channels);
-    swr_alloc_set_opts2(&swr,
+    av_channel_layout_default(&srcLayout, channels);
+    swr_alloc_set_opts2(&enc->swr,
                         &ctx->ch_layout, sampleFmt,        ctx->sample_rate,
-                        &srcLayout,      AV_SAMPLE_FMT_FLT, static_cast<int>(result.sampleRate),
+                        &srcLayout,      AV_SAMPLE_FMT_FLT, static_cast<int>(sampleRate),
                         0, nullptr);
-    if (!swr || swr_init(swr) < 0) {
-        spdlog::error("AudioMixdown: failed to init resampler");
-        teardown(&swr, nullptr, nullptr);
-        return false;
-    }
+    if (!enc->swr || swr_init(enc->swr) < 0)
+        return fail("failed to init resampler");
 
-    const int frameSize = ctx->frame_size > 0 ? ctx->frame_size : 4096;
+    enc->frameSize = ctx->frame_size > 0 ? ctx->frame_size : 4096;
 
-    AVFrame* frame = av_frame_alloc();
-    if (!frame) {
-        spdlog::error("AudioMixdown: failed to allocate audio frame");
-        teardown(&swr, &frame, nullptr);
-        return false;
-    }
-    frame->format      = sampleFmt;
-    frame->sample_rate = ctx->sample_rate;
-    av_channel_layout_copy(&frame->ch_layout, &ctx->ch_layout);
-    frame->nb_samples  = frameSize;
-    if (av_frame_get_buffer(frame, 0) < 0) {
-        spdlog::error("AudioMixdown: failed to allocate audio frame buffer");
-        teardown(&swr, &frame, nullptr);
-        return false;
-    }
+    enc->frame = av_frame_alloc();
+    if (!enc->frame)
+        return fail("failed to allocate audio frame");
+    enc->frame->format      = sampleFmt;
+    enc->frame->sample_rate = ctx->sample_rate;
+    av_channel_layout_copy(&enc->frame->ch_layout, &ctx->ch_layout);
+    enc->frame->nb_samples  = enc->frameSize;
+    if (av_frame_get_buffer(enc->frame, 0) < 0)
+        return fail("failed to allocate audio frame buffer");
 
-    AVPacket* pkt = av_packet_alloc();
-    const float* pcm = result.samples.data();
-    const int64_t totalFrames = result.totalFrames;
-    int64_t samplesRead = 0;
-    int64_t pts = 0;
-    bool writeError = false;
+    enc->pkt = av_packet_alloc();
+    if (!enc->pkt)
+        return fail("failed to allocate audio packet");
 
-    auto drain = [&]() {
-        while (avcodec_receive_packet(ctx, pkt) == 0) {
-            pkt->stream_index = st->index;
-            av_packet_rescale_ts(pkt, ctx->time_base, st->time_base);
-            if (av_interleaved_write_frame(fmt, pkt) < 0) writeError = true;
-            av_packet_unref(pkt);
-        }
-    };
-
-    while (samplesRead < totalFrames && !writeError) {
-        const int64_t remaining = totalFrames - samplesRead;
-        const int     chunk     = static_cast<int>(std::min<int64_t>(remaining, frameSize));
-
-        const uint8_t* srcData[] = {
-            reinterpret_cast<const uint8_t*>(pcm + samplesRead * result.channels)
-        };
-        av_frame_make_writable(frame);
-        frame->nb_samples = chunk;
-        swr_convert(swr, frame->data, chunk, srcData, chunk);
-
-        frame->pts = pts;
-        pts += chunk;
-
-        if (avcodec_send_frame(ctx, frame) < 0) { writeError = true; break; }
-        drain();
-        samplesRead += chunk;
-    }
-
-    // Flush the encoder.
-    avcodec_send_frame(ctx, nullptr);
-    drain();
-
-    if (!writeError)
-        av_write_trailer(fmt);
-
-    teardown(&swr, &frame, &pkt);
-
-    if (writeError) {
-        spdlog::error("AudioMixdown: error writing encoded audio to {}", outUtf8);
-        return false;
-    }
-
-    spdlog::info("AudioMixdown: wrote {} ({:.1f}s, codec {})",
-                 outUtf8, result.duration, static_cast<int>(codec));
+    m_encoded = std::move(enc);
     return true;
 }
 
-// static
-std::vector<uint8_t> AudioMixdown::encodeAAC(const MixdownResult& result, int bitrate)
+bool AudioFileWriter::write(const float* samples, int64_t frames)
 {
-    std::vector<uint8_t> output;
+    if (frames <= 0) return true;
+    if (!samples || !isOpen()) return false;
 
-    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!codec) {
-        spdlog::error("AudioMixdown: AAC encoder not found");
-        return output;
-    }
-
-    AVCodecContext* ctx = avcodec_alloc_context3(codec);
-    if (!ctx) {
-        spdlog::error("AudioMixdown: Failed to alloc AAC context");
-        return output;
-    }
-
-    ctx->sample_fmt  = AV_SAMPLE_FMT_FLTP;
-    ctx->sample_rate = static_cast<int>(result.sampleRate);
-    ctx->bit_rate    = bitrate > 0 ? bitrate : 192000;
-    av_channel_layout_default(&ctx->ch_layout, result.channels);
-    ctx->time_base   = {1, ctx->sample_rate};
-
-    if (avcodec_open2(ctx, codec, nullptr) < 0) {
-        spdlog::error("AudioMixdown: Failed to open AAC encoder");
-        avcodec_free_context(&ctx);
-        return output;
-    }
-
-    const int frameSize = ctx->frame_size;
-
-    // SwrContext: interleaved float (FLT) → planar float (FLTP)
-    SwrContext* swr = nullptr;
-    AVChannelLayout srcLayout{}, dstLayout{};
-    av_channel_layout_default(&srcLayout, result.channels);
-    av_channel_layout_default(&dstLayout, result.channels);
-    swr_alloc_set_opts2(&swr,
-                        &dstLayout, AV_SAMPLE_FMT_FLTP, ctx->sample_rate,
-                        &srcLayout, AV_SAMPLE_FMT_FLT,  static_cast<int>(result.sampleRate),
-                        0, nullptr);
-    if (!swr || swr_init(swr) < 0) {
-        spdlog::error("AudioMixdown: Failed to init SwrContext");
-        avcodec_free_context(&ctx);
-        if (swr) swr_free(&swr);
-        return output;
-    }
-
-    AVFrame* frame = av_frame_alloc();
-    frame->format      = AV_SAMPLE_FMT_FLTP;
-    frame->sample_rate = ctx->sample_rate;
-    av_channel_layout_copy(&frame->ch_layout, &ctx->ch_layout);
-    frame->nb_samples  = frameSize;
-    av_frame_get_buffer(frame, 0);
-
-    AVPacket* pkt = av_packet_alloc();
-
-    const float* pcm         = result.samples.data();
-    const int64_t totalFrames = static_cast<int64_t>(result.totalFrames);
-    int64_t samplesRead = 0;
-    int64_t pts = 0;
-
-    // Reserve rough estimate
-    output.reserve(static_cast<size_t>(result.duration * (bitrate > 0 ? bitrate : 192000) / 8));
-
-    auto collectPackets = [&]() {
-        while (avcodec_receive_packet(ctx, pkt) == 0) {
-            output.insert(output.end(), pkt->data, pkt->data + pkt->size);
-            av_packet_unref(pkt);
+    if (m_wav) {
+        WavOut& wav = *m_wav;
+        const size_t count = static_cast<size_t>(frames) * wav.channels;
+        wav.converted.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+            const float sample = std::clamp(samples[i], -1.0f, 1.0f);
+            wav.converted[i] = static_cast<int16_t>(sample * 32767.0f);
         }
-    };
-
-    while (samplesRead < totalFrames) {
-        int64_t remaining = totalFrames - samplesRead;
-        int chunk = static_cast<int>(std::min<int64_t>(remaining, frameSize));
-
-        const uint8_t* srcData[] = {
-            reinterpret_cast<const uint8_t*>(pcm + samplesRead * result.channels)
-        };
-        av_frame_make_writable(frame);
-        frame->nb_samples = chunk;
-        swr_convert(swr, frame->data, chunk, srcData, chunk);
-
-        frame->pts = pts;
-        pts += chunk;
-
-        if (avcodec_send_frame(ctx, frame) < 0) {
-            spdlog::error("AudioMixdown: Error sending frame to AAC encoder");
-            break;
+        wav.out.write(reinterpret_cast<const char*>(wav.converted.data()),
+                      static_cast<std::streamsize>(count * sizeof(int16_t)));
+        wav.frames += frames;
+        if (!wav.out) {
+            m_lastError = "AudioMixdown: error writing " + pathToUtf8(wav.path);
+            return false;
         }
-        collectPackets();
-        samplesRead += chunk;
+        return true;
     }
 
-    // Flush encoder
-    avcodec_send_frame(ctx, nullptr);
-    collectPackets();
+    EncodedOut& enc = *m_encoded;
+    if (enc.writeError) return false;
+    const size_t channels = enc.channels;
+    enc.fifo.insert(enc.fifo.end(), samples, samples + static_cast<size_t>(frames) * channels);
+    enc.frames += frames;
 
-    av_packet_free(&pkt);
-    av_frame_free(&frame);
-    swr_free(&swr);
-    avcodec_free_context(&ctx);
+    const size_t frameSamples = static_cast<size_t>(enc.frameSize) * channels;
+    while (!enc.writeError && enc.fifo.size() - enc.fifoHead >= frameSamples) {
+        enc.encode(enc.fifo.data() + enc.fifoHead, enc.frameSize);
+        enc.fifoHead += frameSamples;
+    }
+    enc.fifo.erase(enc.fifo.begin(), enc.fifo.begin() + static_cast<std::ptrdiff_t>(enc.fifoHead));
+    enc.fifoHead = 0;
 
-    spdlog::info("AudioMixdown: Encoded {} AAC bytes from {:.1f}s audio",
-                 output.size(), result.duration);
-    return output;
+    if (enc.writeError) {
+        m_lastError = "AudioMixdown: error writing encoded audio to " + enc.pathUtf8;
+        return false;
+    }
+    return true;
+}
+
+bool AudioFileWriter::finish()
+{
+    if (m_wav) {
+        std::unique_ptr<WavOut> wav = std::move(m_wav);
+        const uint64_t bytes = static_cast<uint64_t>(wav->frames) * wav->channels * 2;
+        // A RIFF size field is 32-bit; past 4 GB readers go by the file length.
+        const uint32_t dataSize = static_cast<uint32_t>(std::min<uint64_t>(bytes, 0xFFFFFFFFull - 36));
+        const uint32_t fileSize = 36 + dataSize;
+        wav->out.seekp(4);
+        wav->out.write(reinterpret_cast<const char*>(&fileSize), 4);
+        wav->out.seekp(40);
+        wav->out.write(reinterpret_cast<const char*>(&dataSize), 4);
+        wav->out.close();
+        if (wav->out.fail()) {
+            m_lastError = "AudioMixdown: error finishing " + pathToUtf8(wav->path);
+            spdlog::error("{}", m_lastError);
+            return false;
+        }
+        spdlog::info("AudioMixdown: Wrote {} ({:.1f}s, {} Hz, {} ch)", pathToUtf8(wav->path),
+                     static_cast<double>(wav->frames) / wav->sampleRate,
+                     wav->sampleRate, wav->channels);
+        return true;
+    }
+
+    if (!m_encoded) return false;
+    std::unique_ptr<EncodedOut> enc = std::move(m_encoded);
+
+    // The short last frame, then flush the encoder.
+    const int64_t tail = static_cast<int64_t>(enc->fifo.size() / enc->channels);
+    if (tail > 0 && !enc->writeError)
+        enc->encode(enc->fifo.data(), static_cast<int>(tail));
+    avcodec_send_frame(enc->ctx, nullptr);
+    enc->drain();
+
+    if (!enc->writeError)
+        av_write_trailer(enc->fmt);
+
+    if (enc->writeError) {
+        m_lastError = "AudioMixdown: error writing encoded audio to " + enc->pathUtf8;
+        spdlog::error("{}", m_lastError);
+        return false;
+    }
+    spdlog::info("AudioMixdown: wrote {} ({:.1f}s)", enc->pathUtf8,
+                 static_cast<double>(enc->frames) / enc->ctx->sample_rate);
+    return true;
+}
+
+// ── AudioMixdown file output ────────────────────────────────────────────────
+
+namespace {
+bool writeResult(const MixdownResult& result, const std::filesystem::path& outputPath,
+                 AudioCodec codec, int bitrate)
+{
+    if (!result.isValid()) return false;
+    AudioFileWriter writer;
+    return writer.open(outputPath, codec, result.sampleRate, result.channels, bitrate) &&
+           writer.write(result.samples.data(), result.totalFrames) &&
+           writer.finish();
+}
+} // namespace
+
+// static
+bool AudioMixdown::writeWav(const MixdownResult& result,
+                             const std::filesystem::path& outputPath)
+{
+    return writeResult(result, outputPath, AudioCodec::PCM_S16LE, 0);
+}
+
+// static
+bool AudioMixdown::writeAudioFile(const MixdownResult& result,
+                                  const std::filesystem::path& outputPath,
+                                  AudioCodec codec, int bitrate)
+{
+    return writeResult(result, outputPath, codec, bitrate);
 }
 
 // static

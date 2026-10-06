@@ -121,6 +121,48 @@ private:
     std::vector<float> m_gains;    ///< scratch: one clip's block of fade gains
 };
 
+// ── Streaming file output ───────────────────────────────────────────────────
+
+/// Writes interleaved float audio to a standalone file a block at a time:
+/// the streaming form of AudioMixdown::writeAudioFile(), with the same
+/// output for the same samples whatever the block sizes. PCM_S16LE writes a
+/// WAV whose sizes finish() fills in; the other codecs encode and mux
+/// through FFmpeg.
+///
+/// A writer destroyed before finish() closes the file as it stands; the
+/// caller removes it.
+class AudioFileWriter
+{
+public:
+    AudioFileWriter();
+    ~AudioFileWriter();
+
+    AudioFileWriter(const AudioFileWriter&) = delete;
+    AudioFileWriter& operator=(const AudioFileWriter&) = delete;
+
+    /// `bitrate` (bits/sec) applies to the lossy codecs (MP3/AAC) only.
+    bool open(const std::filesystem::path& outputPath, AudioCodec codec,
+              uint32_t sampleRate, uint16_t channels, int bitrate = 192000);
+
+    /// Append `frames` interleaved frames (frames * channels floats).
+    bool write(const float* samples, int64_t frames);
+
+    /// Flush, finalize the container and close. Returns false on any error.
+    bool finish();
+
+    [[nodiscard]] bool isOpen() const noexcept;
+    [[nodiscard]] int64_t framesWritten() const noexcept;
+    [[nodiscard]] const std::string& lastError() const noexcept { return m_lastError; }
+
+private:
+    struct WavOut;
+    struct EncodedOut;
+
+    std::unique_ptr<WavOut>     m_wav;
+    std::unique_ptr<EncodedOut> m_encoded;
+    std::string                 m_lastError;
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 class AudioMixdown
@@ -164,10 +206,6 @@ public:
                                const std::filesystem::path& outputPath,
                                AudioCodec codec,
                                int bitrate = 192000);
-
-    /// Encode mix result to AAC (via FFmpeg). Returns encoded bytes.
-    static std::vector<uint8_t> encodeAAC(const MixdownResult& result,
-                                           int bitrate = 192000);
 
     // ── Queries ─────────────────────────────────────────────────────────
 

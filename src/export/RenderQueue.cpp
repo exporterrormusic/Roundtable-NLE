@@ -535,7 +535,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // Audio-only export: no compositor / encoder / frame loop — just mix the
     // timeline audio and write a standalone WAV/MP3/AAC/FLAC file.
     if (job.config.audioOnly) {
-        processAudioOnlyJob(job, renderTimeline);
+        processAudioOnlyJob(job, ctx, renderTimeline);
         return;
     }
 
@@ -1291,7 +1291,8 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // Completion callback fires ONCE, in workerThread, after this returns.
 }
 
-void RenderQueue::processAudioOnlyJob(ExportJob& job, const Timeline* timeline)
+void RenderQueue::processAudioOnlyJob(ExportJob& job, JobRunContext& ctx,
+                                      const Timeline* timeline)
 {
     spdlog::info("RndQ[{}]: audio-only export → {}", job.id, pathToUtf8(job.config.outputPath));
 
@@ -1321,44 +1322,76 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, const Timeline* timeline)
         return;
     }
 
-    // Mix every audio track over the configured range.  Mixdown progress maps
-    // to 0–90%; the file write takes the last slice.
-    AudioMixdown mixdown;
-    MixdownResult result = mixdown.mix(
-        *timeline, job.config.audioConfig,
-        [&](float p, const std::string& s) {
-            job.progress.percent = p * 90.0f;
-            setStatusText(s);
-            if (m_progressCb) m_progressCb(job.id, job.progress);
-        });
-
-    if (isCancelled()) {
-        job.status = JobStatus::Cancelled;
-        return;
-    }
-
-    if (!result.isValid()) {
+    // Mix every audio track over the configured range and write it as it is
+    // mixed, a block at a time, so memory does not grow with the duration.
+    AudioMixStream stream(*timeline, job.config.audioConfig);
+    if (!stream.isValid()) {
         job.status = JobStatus::Failed;
-        job.error  = mixdown.lastError().empty()
+        job.error  = stream.lastError().empty()
             ? "No audio to export (the timeline has no audio in this range)"
-            : mixdown.lastError();
+            : stream.lastError();
         return;
     }
 
-    job.progress.percent = 92.0f;
-    setStatusText("Writing audio file...");
-    if (m_progressCb) m_progressCb(job.id, job.progress);
+    // Written beside the destination and published only once complete, so a
+    // cancel or failure never leaves a truncated file at the output path
+    // (JobRunContext removes the staged file).
+    ctx.stagedOutputPath = makeStagedExportPath(job.config.outputPath, job.id);
+    if (ctx.stagedOutputPath.empty()) {
+        job.status = JobStatus::Failed;
+        job.error  = "Could not create a staged export path";
+        return;
+    }
 
-    const bool ok = AudioMixdown::writeAudioFile(
-        result, job.config.outputPath,
-        job.config.audioConfig.codec, job.config.audioConfig.bitrate);
-
-    if (!ok) {
+    const auto writeFailed = [&](const std::string& detail) {
+        spdlog::error("RndQ[{}]: audio-only export failed: {}", job.id, detail);
         job.status = JobStatus::Failed;
         job.error  = "Failed to write the audio file (the encoder or output path "
                      "may be unavailable — see the log for details)";
+    };
+
+    AudioFileWriter writer;
+    if (!writer.open(ctx.stagedOutputPath, job.config.audioConfig.codec,
+                     stream.sampleRate(), stream.channels(),
+                     job.config.audioConfig.bitrate)) {
+        writeFailed(writer.lastError());
         return;
     }
+
+    constexpr int64_t kBlockFrames = 1 << 16;   // ~1.4 s at 48 kHz
+    std::vector<float> block(static_cast<size_t>(kBlockFrames) * stream.channels());
+    const int64_t totalFrames = stream.totalFrames();
+    while (stream.position() < totalFrames) {
+        if (isCancelled()) {
+            job.status = JobStatus::Cancelled;
+            return;
+        }
+        const int64_t framesMixed = stream.read(block.data(), kBlockFrames);
+        if (framesMixed <= 0) break;
+        if (!writer.write(block.data(), framesMixed)) {
+            writeFailed(writer.lastError());
+            return;
+        }
+        job.progress.percent = 99.0f * static_cast<float>(stream.position()) /
+                               static_cast<float>(totalFrames);
+        if (m_progressCb) m_progressCb(job.id, job.progress);
+    }
+
+    setStatusText("Writing audio file...");
+    if (m_progressCb) m_progressCb(job.id, job.progress);
+    if (!writer.finish()) {
+        writeFailed(writer.lastError());
+        return;
+    }
+
+    std::string publishError;
+    if (!publishStagedExport(ctx.stagedOutputPath, job.config.outputPath, publishError)) {
+        spdlog::error("RenderQueue: publication failed for job {}: {}", job.id, publishError);
+        job.status = JobStatus::Failed;
+        job.error  = publishError;
+        return;
+    }
+    ctx.stagedOutputPath.clear();
 
     job.progress.currentFrame = 1;
     job.progress.percent    = 100.0f;
@@ -1368,7 +1401,7 @@ void RenderQueue::processAudioOnlyJob(ExportJob& job, const Timeline* timeline)
     double elapsed = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - startTime).count();
     spdlog::info("RndQ[{}]: audio-only export complete ({:.1f}s, {:.1f}s of audio)",
-                 job.id, elapsed, result.duration);
+                 job.id, elapsed, stream.duration());
     // Completion callback fires ONCE, in workerThread, after this returns.
 }
 
