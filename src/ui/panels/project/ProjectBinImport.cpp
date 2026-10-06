@@ -16,10 +16,14 @@
 #include "project/Project.h"
 #include "playback/MediaPool.h"
 #include "playback/MediaSourceService.h"
+#include "MediaTaskQueue.h"
 
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
+#include <QCoreApplication>
+#include <QPointer>
 #include <QInputDialog>
 #include <QLineEdit>
 
@@ -157,7 +161,16 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
             continue;
         }
         uint64_t handle = 0;
-        if (m_mediaSources) {
+        if (m_pool) {
+            // Already probed (e.g. just dropped on the timeline): instant.
+            // Otherwise the probe runs in the background and the row's
+            // duration/size fill in when it lands; the file opened on demand
+            // (drop, Source Monitor) meanwhile, as for restored bins.
+            if (m_pool->isPathOpen(f))
+                handle = m_pool->open(f);
+            else
+                probeInBackground(f);
+        } else if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});
             handle = result.handle;
         }
@@ -170,6 +183,59 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
         focusListViewOnBin();
     if (!m_listView)
         syncIconView();
+}
+
+void ProjectBin::probeInBackground(const std::filesystem::path& path)
+{
+    if (!m_pool) return;
+    auto& tasks = MediaTaskQueue::instance();
+    if (m_probeOwner == 0) m_probeOwner = tasks.createOwner();
+    // MediaPool::open is thread-safe and de-duplicates by path; the pool
+    // outlives the queue (App joins the queue before destroying it).
+    MediaPool* pool = m_pool;
+    QPointer<ProjectBin> self(this);
+    tasks.submit<uint64_t>(m_probeOwner, "bin-probe:" + pathToUtf8(path),
+        MediaTaskQueue::Priority::Visible,
+        [pool, path](std::stop_token stop) {
+            if (stop.stop_requested())
+                return MediaTaskQueue::Result<uint64_t>::failure("canceled");
+            const uint64_t handle = pool->open(path);
+            return handle != 0 ? MediaTaskQueue::Result<uint64_t>::success(handle)
+                               : MediaTaskQueue::Result<uint64_t>::failure("could not open");
+        },
+        [self, path](MediaTaskQueue::Result<uint64_t> result) {
+            auto* app = QCoreApplication::instance();
+            if (!app) return;
+            const uint64_t handle = result.succeeded() ? *result.value : 0;
+            QMetaObject::invokeMethod(app, [self, path, handle]() {
+                if (self) self->onBackgroundProbeDone(path, handle);
+            }, Qt::QueuedConnection);
+        });
+}
+
+void ProjectBin::onBackgroundProbeDone(const std::filesystem::path& path, uint64_t handle)
+{
+    if (handle == 0 || !m_grid) return;   // unreadable: stays as imported
+    const ThumbnailItem* probed = nullptr;
+    for (auto& item : m_grid->mutableItems()) {
+        if (item.isFolder || item.mediaHandle != 0 || item.filePath != path) continue;
+        item.mediaHandle = handle;
+        probed = &item;
+    }
+    if (!probed || !m_listWidget) return;
+
+    // Update just those rows: a full syncListView() would rebuild the tree
+    // (and drop the selection) for every file that finishes probing.
+    const VideoStreamInfo* info = m_pool ? m_pool->getInfo(handle) : nullptr;
+    const QString key = QString::fromStdString(pathToUtf8(path));
+    for (QTreeWidgetItemIterator it(m_listWidget); *it; ++it) {
+        QTreeWidgetItem* row = *it;
+        if (row->data(0, Qt::UserRole).toString() != key ||
+            row->data(0, Qt::UserRole + 1).toULongLong() != 0)
+            continue;
+        row->setData(0, Qt::UserRole + 1, QVariant::fromValue(handle));
+        fillMetadataColumns(row, *probed, info);
+    }
 }
 
 void ProjectBin::addFilesToBin(const std::vector<std::filesystem::path>& files,
@@ -213,7 +279,16 @@ void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& fil
             continue;
         }
         uint64_t handle = 0;
-        if (m_mediaSources) {
+        if (m_pool) {
+            // Already probed (e.g. just dropped on the timeline): instant.
+            // Otherwise the probe runs in the background and the row's
+            // duration/size fill in when it lands; the file opened on demand
+            // (drop, Source Monitor) meanwhile, as for restored bins.
+            if (m_pool->isPathOpen(f))
+                handle = m_pool->open(f);
+            else
+                probeInBackground(f);
+        } else if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});
             handle = result.handle;
         }
@@ -289,7 +364,16 @@ void ProjectBin::addFilesToNamedBin(const std::vector<std::filesystem::path>& fi
     for (const auto& f : files) {
         if (f.empty()) continue;
         uint64_t handle = 0;
-        if (m_mediaSources) {
+        if (m_pool) {
+            // Already probed (e.g. just dropped on the timeline): instant.
+            // Otherwise the probe runs in the background and the row's
+            // duration/size fill in when it lands; the file opened on demand
+            // (drop, Source Monitor) meanwhile, as for restored bins.
+            if (m_pool->isPathOpen(f))
+                handle = m_pool->open(f);
+            else
+                probeInBackground(f);
+        } else if (m_mediaSources) {
             auto result = m_mediaSources->openSource({f, RenderRequestType::Still, false});
             handle = result.handle;
         }

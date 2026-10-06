@@ -34,6 +34,75 @@
 
 namespace rt {
 
+void ProjectBin::fillMetadataColumns(QTreeWidgetItem* row, const ThumbnailItem& item,
+                                     const VideoStreamInfo* info)
+{
+    if (info) {
+        // Duration
+        if (info->duration > 0.0) {
+            double fps = (info->fps > 0.0) ? info->fps : 24.0;
+            int totalFrames = static_cast<int>(info->duration * fps);
+            int hh = totalFrames / (3600 * static_cast<int>(fps));
+            int mm = (totalFrames / (60 * static_cast<int>(fps))) % 60;
+            int ss = (totalFrames / static_cast<int>(fps)) % 60;
+            int ff = totalFrames % static_cast<int>(fps);
+            row->setText(2, QString("%1:%2:%3:%4")
+                .arg(hh, 2, 10, QChar('0'))
+                .arg(mm, 2, 10, QChar('0'))
+                .arg(ss, 2, 10, QChar('0'))
+                .arg(ff, 2, 10, QChar('0')));
+        } else {
+            row->setText(2, "--:--:--:--");
+        }
+
+        // Frame rate.  VFR sources get a "VFR" badge + explanatory
+        // tooltip (Phase 4.3a): the reported rate is the AVERAGE and
+        // frame timing is uneven.  Playback/export are time-anchored
+        // (seek-by-PTS), so this does NOT desync audio, but frame
+        // stepping can look slightly irregular; Interpret Footage lets
+        // the user assume a constant rate.
+        if (info->fps > 0.0) {
+            QString fpsText = QString::number(info->fps, 'f',
+                (info->fps == std::floor(info->fps)) ? 0 : 2);
+            if (info->isVFR) {
+                fpsText += QStringLiteral(" VFR");
+                row->setToolTip(3, tr(
+                    "Variable frame rate detected — %1 fps is the average. "
+                    "Frame timing is uneven, so stepping may look slightly "
+                    "irregular (audio stays in sync). Use Interpret Footage "
+                    "to assume a constant rate.")
+                    .arg(QString::number(info->fps, 'f', 2)));
+            }
+            row->setText(3, fpsText);
+        } else {
+            row->setText(3, "--");
+        }
+
+        // Resolution
+        if (info->width > 0 && info->height > 0)
+            row->setText(4, QStringLiteral("%1x%2").arg(info->width).arg(info->height));
+        else
+            row->setText(4, "");
+
+        // Sample rate (audio files — use project audio sample rate)
+        if (item.type == MediaType::Audio && info->hasAudio && m_project)
+            row->setText(5, QString("%1 Hz")
+                .arg(m_project->settings().audioFormat().sampleRate));
+        else
+            row->setText(5, "");
+    } else {
+        row->setText(2, "--:--:--:--");
+        row->setText(3, "--");
+        row->setText(4, (item.type == MediaType::Video || item.type == MediaType::Image) ? "--" : "");
+        row->setText(5, (item.type == MediaType::Audio) ? "--" : "");
+    }
+
+    // Store media type and frame count for hover-scrub
+    row->setData(0, kMediaTypeRole, static_cast<int>(item.type));
+    if (info && info->frameCount > 0)
+        row->setData(0, kFrameCountRole, QVariant::fromValue(info->frameCount));
+}
+
 void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOverride)
 {
     // Abort any in-progress inline rename before we delete every item out
@@ -247,70 +316,7 @@ void ProjectBin::syncListView(const std::vector<BinFolderState>* savedFoldersOve
         }
 
 
-        if (info) {
-            // Duration
-            if (info->duration > 0.0) {
-                double fps = (info->fps > 0.0) ? info->fps : 24.0;
-                int totalFrames = static_cast<int>(info->duration * fps);
-                int hh = totalFrames / (3600 * static_cast<int>(fps));
-                int mm = (totalFrames / (60 * static_cast<int>(fps))) % 60;
-                int ss = (totalFrames / static_cast<int>(fps)) % 60;
-                int ff = totalFrames % static_cast<int>(fps);
-                treeItem->setText(2, QString("%1:%2:%3:%4")
-                    .arg(hh, 2, 10, QChar('0'))
-                    .arg(mm, 2, 10, QChar('0'))
-                    .arg(ss, 2, 10, QChar('0'))
-                    .arg(ff, 2, 10, QChar('0')));
-            } else {
-                treeItem->setText(2, "--:--:--:--");
-            }
-
-            // Frame rate.  VFR sources get a "VFR" badge + explanatory
-            // tooltip (Phase 4.3a): the reported rate is the AVERAGE and
-            // frame timing is uneven.  Playback/export are time-anchored
-            // (seek-by-PTS), so this does NOT desync audio, but frame
-            // stepping can look slightly irregular; Interpret Footage lets
-            // the user assume a constant rate.
-            if (info->fps > 0.0) {
-                QString fpsText = QString::number(info->fps, 'f',
-                    (info->fps == std::floor(info->fps)) ? 0 : 2);
-                if (info->isVFR) {
-                    fpsText += QStringLiteral(" VFR");
-                    treeItem->setToolTip(3, tr(
-                        "Variable frame rate detected — %1 fps is the average. "
-                        "Frame timing is uneven, so stepping may look slightly "
-                        "irregular (audio stays in sync). Use Interpret Footage "
-                        "to assume a constant rate.")
-                        .arg(QString::number(info->fps, 'f', 2)));
-                }
-                treeItem->setText(3, fpsText);
-            } else {
-                treeItem->setText(3, "--");
-            }
-
-            // Resolution
-            if (info->width > 0 && info->height > 0)
-                treeItem->setText(4, QStringLiteral("%1x%2").arg(info->width).arg(info->height));
-            else
-                treeItem->setText(4, "");
-
-            // Sample rate (audio files — use project audio sample rate)
-            if (item.type == MediaType::Audio && info->hasAudio && m_project)
-                treeItem->setText(5, QString("%1 Hz")
-                    .arg(m_project->settings().audioFormat().sampleRate));
-            else
-                treeItem->setText(5, "");
-        } else {
-            treeItem->setText(2, "--:--:--:--");
-            treeItem->setText(3, "--");
-            treeItem->setText(4, (item.type == MediaType::Video || item.type == MediaType::Image) ? "--" : "");
-            treeItem->setText(5, (item.type == MediaType::Audio) ? "--" : "");
-        }
-
-        // Store media type and frame count for hover-scrub
-        treeItem->setData(0, kMediaTypeRole, static_cast<int>(item.type));
-        if (info && info->frameCount > 0)
-            treeItem->setData(0, kFrameCountRole, QVariant::fromValue(info->frameCount));
+        fillMetadataColumns(treeItem, item, info);
 
         m_listWidget->addTopLevelItem(treeItem);
         ++count;

@@ -59,6 +59,8 @@ class ThumbnailGrid;
 class ThumbnailGenerator;
 class MediaDragTreeWidget;
 class MediaPool;
+struct ThumbnailItem;
+struct VideoStreamInfo;
 class MediaSourceService;
 class Project;
 class CommandStack;
@@ -398,6 +400,13 @@ private:
     void setupUI();
     void syncListView(const std::vector<BinFolderState>* savedFoldersOverride = nullptr);
     void syncIconView();
+    /// Duration / rate / size / sample-rate columns of one list row.
+    void fillMetadataColumns(QTreeWidgetItem* row, const ThumbnailItem& item,
+                             const VideoStreamInfo* info);
+    /// Imports probe media off the UI thread (an FFmpeg probe is 25-300 ms
+    /// a file, 11 s for one broadcast .mxf); rows fill in when it lands.
+    void probeInBackground(const std::filesystem::path& path);
+    void onBackgroundProbeDone(const std::filesystem::path& path, uint64_t handle);
 
     /// Rebuild a full (unflattened) tree before per-view scoping: from live
     /// data when the tree is already full, or from m_rootFolderState to
@@ -435,6 +444,7 @@ private:
     MediaType   m_activeType{MediaType::Unknown}; // Unknown = All
     QStringList m_iconBinPath;     // Current folder path in icon view
     MediaPool*  m_pool{nullptr};
+    uint64_t    m_probeOwner{0};   ///< MediaTaskQueue owner for import probes
     MediaSourceService* m_mediaSources{nullptr};
     ThumbnailGenerator* m_generator{nullptr};
     std::unique_ptr<ThumbnailGenerator> m_ownedGenerator;  // owned if created internally

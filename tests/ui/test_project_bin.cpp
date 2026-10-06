@@ -12,6 +12,7 @@
 #include "widgets/MediaDragTreeWidget.h"
 #include "command/CommandStack.h"
 #include "project/Project.h"
+#include "playback/MediaPool.h"
 
 #include <QApplication>
 #include <QColor>
@@ -21,6 +22,9 @@
 #include <QLineEdit>
 #include <QSlider>
 #include <QTest>
+#include <QTemporaryDir>
+#include <QElapsedTimer>
+#include <fstream>
 
 #include <filesystem>
 #include <thread>
@@ -677,6 +681,51 @@ TEST(ProjectBin, AddAndQueryFiles)
 
     EXPECT_EQ(bin.itemCount(), 4);
     EXPECT_EQ(bin.allFiles().size(), 4u);
+}
+
+// Importing probed each file with FFmpeg on the UI thread (25-300 ms a
+// file, 11 s for one .mxf). The probe now runs in the background and the
+// item gets its handle (and the row its duration) when it lands.
+TEST(ProjectBin, ImportProbesMediaInTheBackground)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const fs::path wav = fs::path(dir.path().toStdWString()) / "tone.wav";
+    {
+        // 0.5 s of 16-bit mono silence at 48 kHz.
+        const uint32_t rate = 48000, frames = rate / 2, dataBytes = frames * 2;
+        std::ofstream out(wav, std::ios::binary);
+        auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+        auto u16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+        out.write("RIFF", 4); u32(36 + dataBytes); out.write("WAVE", 4);
+        out.write("fmt ", 4); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+        out.write("data", 4); u32(dataBytes);
+        const std::vector<char> silence(dataBytes, 0);
+        out.write(silence.data(), static_cast<std::streamsize>(silence.size()));
+    }
+
+    rt::MediaPool pool;
+    rt::ProjectBin bin;
+    bin.setMediaPool(&pool);
+    bin.addFiles({wav});
+    ASSERT_EQ(bin.itemCount(), 1);
+    auto handle = [&]() -> uint64_t {
+        for (const auto& item : bin.grid()->items())
+            if (!item.isFolder && item.filePath == wav) return item.mediaHandle;
+        return 0;
+    };
+    EXPECT_EQ(handle(), 0u);   // returned before the probe
+
+    QElapsedTimer timer;
+    timer.start();
+    while (handle() == 0 && timer.elapsed() < 10000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    EXPECT_NE(handle(), 0u);
+    EXPECT_TRUE(pool.isPathOpen(wav));
+
+    // Importing it again is instant: already probed.
+    bin.addFiles({wav});
+    EXPECT_NE(bin.grid()->items().back().mediaHandle, 0u);
 }
 
 TEST(ProjectBin, ExplicitReimportCreatesIndependentBinItems)
