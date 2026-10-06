@@ -246,11 +246,7 @@ std::optional<AudioSampleData> decodeMonoSamples(const std::string& path,
             spdlog::warn("AudioSync: Empty audio data from: {}", path);
             return std::nullopt;
         }
-        // The cache could not be written or read back: decode again into
-        // memory, from a fresh open (a seek back to the start does not decode
-        // compressed audio exactly like the first pass).
-        af.close();
-        if (!af.open(path)) return std::nullopt;
+        // The cache could not be written or read back: decode again into memory.
     }
 
     std::vector<float> all;

@@ -359,13 +359,17 @@ TEST(AudioRegionReader, CompressedSeekReadsMatchAContinuousDecode)
         EXPECT_LE(maxAbsDiff(region, slice(start, 8192)), 1e-5f) << "start " << start;
     }
 
-    // Also after the file has decoded somewhere else (the playback case).
-    AudioFile reused;
-    ASSERT_TRUE(reused.open(m4a));
-    std::vector<float> scratch, region;
-    ASSERT_GT(reused.readRegion(120000, 4000, scratch), 0);
-    ASSERT_EQ(reused.readRegion(30000, 8192, region), 8192);
-    EXPECT_LE(maxAbsDiff(region, slice(30000, 8192)), 1e-5f);
+    // Also after the file has decoded somewhere else (the playback case),
+    // including a seek back to the very start (replaying a clip from its
+    // first frame), which has nothing earlier to pre-roll through.
+    for (int64_t start : {int64_t(30000), int64_t(0), int64_t(500)}) {
+        AudioFile reused;
+        ASSERT_TRUE(reused.open(m4a));
+        std::vector<float> scratch, region;
+        ASSERT_GT(reused.readRegion(120000, 4000, scratch), 0);
+        ASSERT_EQ(reused.readRegion(start, 8192, region), 8192);
+        EXPECT_LE(maxAbsDiff(region, slice(start, 8192)), 1e-5f) << "after decode, start " << start;
+    }
 }
 
 TEST(AudioFileStreaming, CompressedReadAllStreamingMatchesReadAll)
@@ -383,17 +387,16 @@ TEST(AudioFileStreaming, CompressedReadAllStreamingMatchesReadAll)
     if (!AudioMixdown::writeAudioFile(tone, m4a, AudioCodec::AAC, 128000))
         GTEST_SKIP() << "AAC encoder unavailable in this FFmpeg build";
 
-    // Fresh files for both: an AAC seek back to the very start does not
-    // decode exactly like a fresh open.
-    AudioFile whole, streaming;
-    ASSERT_TRUE(whole.open(m4a));
-    ASSERT_TRUE(streaming.open(m4a));
-    ASSERT_EQ(streaming.backend(), AudioBackend::FFmpeg);
-    const auto all = whole.readAll();
+    // One file for both: the streaming read rewinds to the start after
+    // readAll() and must decode exactly like the first pass.
+    AudioFile file;
+    ASSERT_TRUE(file.open(m4a));
+    ASSERT_EQ(file.backend(), AudioBackend::FFmpeg);
+    const auto all = file.readAll();
     ASSERT_FALSE(all.empty());
 
     std::vector<float> streamed;
-    const int64_t frames = streaming.readAllStreaming([&](const float* samples, int64_t n) {
+    const int64_t frames = file.readAllStreaming([&](const float* samples, int64_t n) {
         streamed.insert(streamed.end(), samples, samples + n * 2);
         return true;
     });

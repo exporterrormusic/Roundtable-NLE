@@ -290,6 +290,27 @@ int64_t extractResampledRegion(std::vector<float>& resampled,
 }
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
+/// Replace `ctx` with a freshly opened decoder for `stream` (kept when that
+/// fails). A flushed decoder is not quite a fresh one: AAC keeps state such
+/// as the previous window shape, which changed the first frame after a seek
+/// back to the start of the file. Away from the start the seek pre-roll
+/// washes that state out; at the start there is nothing to pre-roll through.
+bool reopenDecoder(AVCodecContext*& ctx, const AVStream* stream)
+{
+    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (!codec) return false;
+    AVCodecContext* fresh = avcodec_alloc_context3(codec);
+    if (!fresh) return false;
+    if (avcodec_parameters_to_context(fresh, stream->codecpar) < 0 ||
+        avcodec_open2(fresh, codec, nullptr) < 0) {
+        avcodec_free_context(&fresh);
+        return false;
+    }
+    avcodec_free_context(&ctx);
+    ctx = fresh;
+    return true;
+}
+
 /// Convert a decoded AVFrame to interleaved float samples via swr_convert,
 /// appending the result to `outBuffer`. Returns number of frames converted.
 int convertAndAppendFrame(SwrContext* swrCtx, AVFrame* decodedFrame,
@@ -1121,9 +1142,10 @@ int64_t AudioFile::readAllFFmpegStreaming(const SampleSink& sink)
     if (!m_impl->fmtCtx || !m_impl->codecCtx) return -1;
     m_impl->contValid = false;
 
-    // Seek to beginning
+    // Seek to beginning, with a fresh decoder (see reopenDecoder)
     av_seek_frame(m_impl->fmtCtx, m_impl->audioStreamIdx, 0, AVSEEK_FLAG_BACKWARD);
-    avcodec_flush_buffers(m_impl->codecCtx);
+    if (!reopenDecoder(m_impl->codecCtx, m_impl->fmtCtx->streams[m_impl->audioStreamIdx]))
+        avcodec_flush_buffers(m_impl->codecCtx);
 
     AVPacket* packet = av_packet_alloc();
     AVFrame*  frame  = av_frame_alloc();
@@ -1226,7 +1248,8 @@ int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
         const int64_t prerollStart = std::max<int64_t>(0, startFrame - kSeekPrerollFrames);
         const int64_t seekTarget = av_rescale_q(prerollStart, sampleTimeBase, stream->time_base);
         av_seek_frame(impl.fmtCtx, impl.audioStreamIdx, seekTarget, AVSEEK_FLAG_BACKWARD);
-        avcodec_flush_buffers(impl.codecCtx);
+        if (prerollStart > 0 || !reopenDecoder(impl.codecCtx, stream))
+            avcodec_flush_buffers(impl.codecCtx);
         swr_close(impl.swrCtx);
         swr_init(impl.swrCtx);
     }
