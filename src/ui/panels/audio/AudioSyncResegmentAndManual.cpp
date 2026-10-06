@@ -458,7 +458,10 @@ void AudioSync::openManualMatch(int lineNumber)
     // Build audio data map using same type as ManualMatchDialog expects
     std::unordered_map<std::string, ManualMatchDialog::AudioData> audioDataMap;
     for (const auto& [path, sampleData] : m_audioSamples) {
-        audioDataMap[path] = { sampleData.samples, sampleData.sampleRate };
+        ManualMatchDialog::AudioData data;
+        data.sampleRate = sampleData.sampleRate;
+        data.shared = &sampleData.samples;   // the dialog is modal: no copy
+        audioDataMap[path] = data;
     }
 
     // Pre-select audio file: user-assigned file takes priority,
@@ -629,7 +632,10 @@ void AudioSync::openTakePlayer(size_t clipIdx)
     // Only this take's file: copying every imported file's samples into the
     // dialog would be slow for long recordings.
     std::unordered_map<std::string, ManualMatchDialog::AudioData> audioDataMap;
-    audioDataMap[clip.sourceFile] = { sampleIt->second.samples, sampleIt->second.sampleRate };
+    ManualMatchDialog::AudioData takeData;
+    takeData.sampleRate = sampleIt->second.sampleRate;
+    takeData.shared = &sampleIt->second.samples;   // modal dialog: no copy
+    audioDataMap[clip.sourceFile] = takeData;
 
     ManualMatchDialog dlg(character, dialogue, clip.scriptLineNumber,
                           {clip.sourceFile}, audioDataMap, {}, {},

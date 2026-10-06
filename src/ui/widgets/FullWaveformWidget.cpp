@@ -27,7 +27,20 @@ FullWaveformWidget::FullWaveformWidget(QWidget* parent)
 
 void FullWaveformWidget::setAudio(const std::vector<float>& samples, uint32_t sampleRate)
 {
+    m_extSamples = nullptr;
     m_samples    = samples;
+    m_sampleRate = sampleRate;
+    m_viewStart  = 0.0;
+    m_viewEnd    = duration();
+    m_hasSelection = false;
+    update();
+}
+
+void FullWaveformWidget::setAudioShared(const std::vector<float>* samples, uint32_t sampleRate)
+{
+    m_samples.clear();
+    m_samples.shrink_to_fit();
+    m_extSamples = samples;
     m_sampleRate = sampleRate;
     m_viewStart  = 0.0;
     m_viewEnd    = duration();
@@ -79,7 +92,7 @@ void FullWaveformWidget::setPlayhead(double timeSec)
 
 double FullWaveformWidget::duration() const noexcept
 {
-    return (m_sampleRate > 0) ? static_cast<double>(m_samples.size()) / m_sampleRate : 0.0;
+    return (m_sampleRate > 0) ? static_cast<double>(pcm().size()) / m_sampleRate : 0.0;
 }
 
 // ── Coordinate conversion ────────────────────────────────────────────────
@@ -119,15 +132,15 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
     // Background
     p.fillRect(rect(), tc.waveformBg);
 
-    if (m_samples.empty() || m_sampleRate == 0 || w <= 0) return;
+    if (pcm().empty() || m_sampleRate == 0 || w <= 0) return;
 
     double viewDur = m_viewEnd - m_viewStart;
     if (viewDur <= 0.0) return;
 
     int viewStartSample = static_cast<int>(m_viewStart * m_sampleRate);
     int viewEndSample   = static_cast<int>(m_viewEnd   * m_sampleRate);
-    viewStartSample = std::clamp(viewStartSample, 0, static_cast<int>(m_samples.size()));
-    viewEndSample   = std::clamp(viewEndSample,   0, static_cast<int>(m_samples.size()));
+    viewStartSample = std::clamp(viewStartSample, 0, static_cast<int>(pcm().size()));
+    viewEndSample   = std::clamp(viewEndSample,   0, static_cast<int>(pcm().size()));
     int totalViewSamples = viewEndSample - viewStartSample;
     if (totalViewSamples <= 0) return;
 
@@ -136,7 +149,7 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
     // Find peak for normalization
     float maxAmp = 0.001f;
     for (int i = viewStartSample; i < viewEndSample; ++i)
-        maxAmp = std::max(maxAmp, std::abs(m_samples[static_cast<size_t>(i)]));
+        maxAmp = std::max(maxAmp, std::abs(pcm()[static_cast<size_t>(i)]));
 
     int centerY = h / 2;
 
@@ -144,13 +157,13 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
     for (int px = 0; px < w; ++px) {
         int blockStart = viewStartSample + static_cast<int>(px * samplesPerPixel);
         int blockEnd   = viewStartSample + static_cast<int>((px + 1) * samplesPerPixel);
-        blockStart = std::clamp(blockStart, 0, static_cast<int>(m_samples.size()));
-        blockEnd   = std::clamp(blockEnd,   blockStart, static_cast<int>(m_samples.size()));
+        blockStart = std::clamp(blockStart, 0, static_cast<int>(pcm().size()));
+        blockEnd   = std::clamp(blockEnd,   blockStart, static_cast<int>(pcm().size()));
         if (blockStart >= blockEnd) continue;
 
         float minVal = 0.0f, maxVal = 0.0f;
         for (int j = blockStart; j < blockEnd; ++j) {
-            float s = m_samples[static_cast<size_t>(j)];
+            float s = pcm()[static_cast<size_t>(j)];
             minVal = std::min(minVal, s);
             maxVal = std::max(maxVal, s);
         }

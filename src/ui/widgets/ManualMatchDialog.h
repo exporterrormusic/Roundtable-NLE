@@ -42,8 +42,16 @@ public:
 
     /// Audio sample data passed in.
     struct AudioData {
-        std::vector<float> samples;
+        std::vector<float> samples;   ///< owned copy (tests), unused when `shared` is set
         uint32_t sampleRate{44100};
+        /// The caller's samples, not copied (AudioSync passes its loaded
+        /// files: copying every one cost ~700 MB per hour of audio per open).
+        /// Must outlive the dialog.
+        const std::vector<float>* shared{nullptr};
+        [[nodiscard]] const std::vector<float>& pcm() const noexcept
+        {
+            return shared ? *shared : samples;
+        }
     };
 
     explicit ManualMatchDialog(
@@ -128,6 +136,8 @@ private:
     void installFullFileSource();
     QTimer* m_playheadTimer{nullptr};
     std::vector<float> m_fullFileBuffer;  ///< Full file resampled to engine rate
+    const std::vector<float>* m_fullFile{nullptr};   ///< m_fullFileBuffer, or the samples when no resample
+    [[nodiscard]] bool hasFullFile() const noexcept { return m_fullFile && !m_fullFile->empty(); }
     double m_fullFileRate{48000.0};       ///< Engine sample rate
     double m_playbackEndTime{0.0};
     bool m_isPlaying{false};
