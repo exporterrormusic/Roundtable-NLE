@@ -27,8 +27,8 @@ namespace {
 // scrub/prefetch decoder that just produced it is never needed again.
 // Fully release it (reset(), not just close()) so the underlying OS file
 // HANDLE is dropped and the image can be overwritten/deleted live in
-// Explorer.  getScrubDecoder() recreates a fresh decoder on demand if the
-// pinned frame is ever evicted and the still must be re-decoded.
+// Explorer.  The next scrub/exact request reopens a fresh decoder (under
+// the slot lock, in getFrame) if the still must be decoded again.
 void releaseStillDecoder(PrefetchDecoderState& state, const PrefetchTask& task)
 {
     if (task.info.frameCount > 1 && task.info.duration > 0.0)

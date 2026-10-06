@@ -726,9 +726,9 @@ private:
     mutable std::mutex m_scrubDecodersMutex;
     std::unordered_map<MediaHandle, std::shared_ptr<ScrubDecoderSlot>>
         m_scrubDecoders;
-    std::shared_ptr<ScrubDecoderSlot> getScrubDecoder(
-        MediaHandle handle, const std::filesystem::path& path,
-        const VideoStreamInfo& info);
+    /// The handle's slot (created on first use). The decoder itself is
+    /// opened by the caller under slot->mutex.
+    std::shared_ptr<ScrubDecoderSlot> getScrubDecoder(MediaHandle handle);
     void retireScrubDecoder(MediaHandle handle);
     void retireAllScrubDecoders();
 

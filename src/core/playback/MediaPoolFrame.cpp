@@ -51,40 +51,39 @@ namespace rt {
 
 // ─── Scrub decoder management ───────────────────────────────────────────────
 
-std::shared_ptr<ScrubDecoderSlot> MediaPool::getScrubDecoder(
-    MediaHandle handle, const std::filesystem::path& path, const VideoStreamInfo& /*info*/)
+namespace {
+
+/// Open the scrub decoder; call with the slot's mutex held.
+void openScrubDecoder(PrefetchDecoderState& state, MediaHandle handle,
+                      const std::filesystem::path& path)
 {
-    std::shared_ptr<ScrubDecoderSlot> slot;
-    {
-        std::lock_guard mapLock(m_scrubDecodersMutex);
-        auto& stored = m_scrubDecoders[handle];
-        if (!stored)
-            stored = std::make_shared<ScrubDecoderSlot>();
-        slot = stored;
+    state.decoder = std::make_unique<VideoDecoder>();
+    // forceSoftware=false (use NVDEC if available): on H.264 NVDEC decodes
+    // ~5–10× faster per frame than 2-thread software, which is what cold
+    // scrubbing actually pays per position (keyframe seek + GOP forward).
+    // The trade is one 500–650 ms NVDEC init the first time this clip is
+    // scrubbed; every scrub after that is dramatically faster, instead of
+    // every scrub paying SW GOP cost forever. VideoDecoder::open falls
+    // back to software automatically if NVDEC/D3D11VA/QSV are all unavailable.
+    // sliceOnlyThreading=true is retained for the SW fallback path —
+    // FF_THREAD_FRAME causes H.264 reference frame corruption after
+    // avcodec_flush_buffers, producing distorted multi-copy artifacts.
+    if (!state.decoder->open(path, /*forceSoftware=*/false, /*maxThreads=*/2, /*sliceOnlyThreading=*/true)) {
+        spdlog::warn("MediaPool: scrub decoder open failed for handle={}", handle);
+        state.decoder.reset();
     }
-    std::unique_lock stateLock(slot->mutex);
-    if (slot->retired)
-        return nullptr;
-    auto& state = slot->state;
-    if (!state.decoder) {
-        state.decoder = std::make_unique<VideoDecoder>();
-        // forceSoftware=false (use NVDEC if available): on H.264 NVDEC decodes
-        // ~5–10× faster per frame than 2-thread software, which is what cold
-        // scrubbing actually pays per position (keyframe seek + GOP forward).
-        // The trade is one 500–650 ms NVDEC init the first time this clip is
-        // scrubbed; every scrub after that is dramatically faster, instead of
-        // every scrub paying SW GOP cost forever. VideoDecoder::open falls
-        // back to software automatically if NVDEC/D3D11VA/QSV are all unavailable.
-        // sliceOnlyThreading=true is retained for the SW fallback path —
-        // FF_THREAD_FRAME causes H.264 reference frame corruption after
-        // avcodec_flush_buffers, producing distorted multi-copy artifacts.
-        if (!state.decoder->open(path, /*forceSoftware=*/false, /*maxThreads=*/2, /*sliceOnlyThreading=*/true)) {
-            spdlog::warn("MediaPool: scrub decoder open failed for handle={}", handle);
-            state.decoder.reset();
-        }
-        state.lastDecodedFrame = -1;
-    }
-    return slot;
+    state.lastDecodedFrame = -1;
+}
+
+} // namespace
+
+std::shared_ptr<ScrubDecoderSlot> MediaPool::getScrubDecoder(MediaHandle handle)
+{
+    std::lock_guard mapLock(m_scrubDecodersMutex);
+    auto& stored = m_scrubDecoders[handle];
+    if (!stored)
+        stored = std::make_shared<ScrubDecoderSlot>();
+    return stored;
 }
 
 // ─── getFrame (blocking + scrub path) ───────────────────────────────────────
@@ -364,16 +363,21 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
     // m_mutex released — decode is now lock-free.
 
-    auto scrubSlot = getScrubDecoder(handle, filePath, info);
-    if (!scrubSlot)
-        return nullptr;
+    auto scrubSlot = getScrubDecoder(handle);
 
     // DecodedFrame plane pointers remain owned by VideoDecoder until its next
     // decode/seek. Keep this lock across decoding, hardware transfer, and
     // sws_scale so another render consumer cannot invalidate those planes or
     // concurrently enter the same cached SwsContext.
     std::unique_lock scrubLock(scrubSlot->mutex);
-    if (scrubSlot->retired || !scrubSlot->state.decoder)
+    if (scrubSlot->retired)
+        return nullptr;
+    // Opened here, under the lock the decode holds: a still image's decoder
+    // is released right after its decode (live file replace), so a request
+    // that queued behind that decode must reopen it, not fail.
+    if (!scrubSlot->state.decoder)
+        openScrubDecoder(scrubSlot->state, handle, filePath);
+    if (!scrubSlot->state.decoder)
         return nullptr;
     auto& scrubState = scrubSlot->state;
 
