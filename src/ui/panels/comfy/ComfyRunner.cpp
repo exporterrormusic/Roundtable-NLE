@@ -393,29 +393,43 @@ void ComfyRunner::waitForServer(bool wantAlive, int timeoutSec, Done then)
 void ComfyRunner::killServer(Done then)
 {
     // Every process listening on the port, plus the tree we launched.
-    QSet<QString> pids;
+    // Asynchronous: PowerShell takes seconds to start, and this used to wait
+    // for it (up to 20 s) and then for each taskkill on the UI thread.
     const int port = QUrl(m_config.url).port(8188);
-    QProcess ps;
-    ps.start(QStringLiteral("powershell"),
-             {QStringLiteral("-NoProfile"), QStringLiteral("-Command"),
-              QStringLiteral("(Get-NetTCPConnection -LocalPort %1 -State Listen -ErrorAction SilentlyContinue).OwningProcess")
-                  .arg(port)});
-    if (ps.waitForFinished(20000)) {
-        for (const QString& tok : QString::fromLocal8Bit(ps.readAllStandardOutput()).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts))
+    auto* ps = new QProcess(this);
+    auto finished = std::make_shared<bool>(false);
+    auto proceed = [this, ps, then, finished]() {
+        if (*finished) return;
+        *finished = true;
+        QSet<QString> pids;
+        for (const QString& tok : QString::fromLocal8Bit(ps->readAllStandardOutput())
+                                      .split(QRegularExpression(QStringLiteral("\\s+")),
+                                             Qt::SkipEmptyParts))
             if (tok.toLongLong() > 0) pids.insert(tok);
-    }
-    if (m_server && m_server->state() != QProcess::NotRunning)
-        pids.insert(QString::number(m_server->processId()));
-    for (const QString& pid : pids) {
-        emit log(QStringLiteral("Stopping ComfyUI (PID %1)").arg(pid));
-        QProcess::execute(QStringLiteral("taskkill"),
-                          {QStringLiteral("/PID"), pid, QStringLiteral("/T"), QStringLiteral("/F")});
-    }
-    if (pids.isEmpty()) {
-        then(true, {});
-        return;
-    }
-    waitForServer(false, 60, then);
+        ps->deleteLater();
+        if (m_server && m_server->state() != QProcess::NotRunning)
+            pids.insert(QString::number(m_server->processId()));
+        for (const QString& pid : pids) {
+            emit log(QStringLiteral("Stopping ComfyUI (PID %1)").arg(pid));
+            QProcess::startDetached(QStringLiteral("taskkill"),
+                                    {QStringLiteral("/PID"), pid, QStringLiteral("/T"),
+                                     QStringLiteral("/F")});
+        }
+        if (pids.isEmpty()) {
+            then(true, {});
+            return;
+        }
+        waitForServer(false, 60, then);   // polls until the port is free
+    };
+    connect(ps, &QProcess::finished, this, [proceed](int, QProcess::ExitStatus) { proceed(); });
+    connect(ps, &QProcess::errorOccurred, this, [proceed](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) proceed();   // still end our own tree
+    });
+    QTimer::singleShot(20000, ps, [ps]() { ps->kill(); });   // -> finished -> proceed
+    ps->start(QStringLiteral("powershell"),
+              {QStringLiteral("-NoProfile"), QStringLiteral("-Command"),
+               QStringLiteral("(Get-NetTCPConnection -LocalPort %1 -State Listen -ErrorAction SilentlyContinue).OwningProcess")
+                   .arg(port)});
 }
 
 void ComfyRunner::restartServer(Done then)
