@@ -406,9 +406,17 @@ struct JobRunContext
     std::unique_ptr<Encoder> encoder;
     std::unordered_map<std::string, std::unique_ptr<PacketDemuxer>> demuxers;
     std::filesystem::path stagedOutputPath;
+    // The audio the muxer pulls while it writes the video (declared before
+    // the muxer so it outlives it).
+    std::unique_ptr<AudioMixStream> audioStream;
+    MuxAudioSource audioSource;
+    std::unique_ptr<Muxer> muxer;   ///< writes stagedOutputPath as packets arrive
 
     ~JobRunContext()
     {
+        // Close the container first: an open file cannot be removed.
+        muxer.reset();
+
         // A staged container is cleared only after atomic publication.  Any
         // ordinary failure, cancellation, C++ exception, or caught SEH leaves
         // it here for guaranteed cleanup while preserving the prior target.
@@ -762,29 +770,84 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         }
     }
 
-    // Render frame by frame
-    // OwnedPacket stores a deep copy of encoded data so packet pointers
-    // remain valid until muxing completes (encoder reuses its internal
-    // AVPacket buffer on each encode call).
-    struct OwnedPacket {
-        std::vector<uint8_t> storage;
-        EncodedPacket        pkt;
-    };
-    std::vector<OwnedPacket> allPackets;
+    // ── Output container, written as the packets are produced ───────
+    // Packets used to be deep-copied and held until the last frame (~4.5 GB
+    // per hour at 10 Mbps). The muxer now writes each one as the encoder
+    // emits it, pulling the audio mix up to that point, into a staged file
+    // that is published only after validation.
+    ctx.stagedOutputPath = makeStagedExportPath(job.config.outputPath, job.id);
+    if (ctx.stagedOutputPath.empty()) {
+        job.status = JobStatus::Failed;
+        job.error = "Could not create a staged export path";
+        encoder->shutdown();
+        return;
+    }
 
-    // Deep-copy packets while rejecting malformed output.  An encoder packet
-    // with no payload cannot contribute a decodable frame and must never make
-    // it as far as the muxer.
-    auto appendOwnedPacket = [&](const EncodedPacket& pkt) -> bool {
+    // Audio consumes the SAME renderTimeline used for duration/video dispatch,
+    // so edits cannot produce queue-time audio under live/current video (or the
+    // reverse). It is mixed block by block while the muxer writes the video.
+    if (job.config.includeAudio && renderTimeline) {
+        ctx.audioStream = std::make_unique<AudioMixStream>(*renderTimeline, job.config.audioConfig);
+        if (!ctx.audioStream->isValid()) ctx.audioStream.reset();
+    }
+    if (ctx.audioStream) {
+        AudioMixStream* stream = ctx.audioStream.get();
+        ctx.audioSource.sampleRate = stream->sampleRate();
+        ctx.audioSource.channels   = stream->channels();
+        ctx.audioSource.pull = [stream](float* out, int64_t maxFrames) {
+            return stream->read(out, maxFrames);
+        };
+    }
+
+    MuxerConfig mCfg;
+    mCfg.outputPath     = ctx.stagedOutputPath;
+    mCfg.format         = static_cast<ContainerFormat>(job.config.containerFormat);
+    mCfg.videoWidth     = job.config.outputWidth;
+    mCfg.videoHeight    = job.config.outputHeight;
+    mCfg.videoFpsNum    = job.config.encoderConfig.fpsNum;
+    mCfg.videoFpsDen    = job.config.encoderConfig.fpsDen;
+    mCfg.hasAudio       = ctx.audioStream != nullptr;
+    mCfg.audioSampleRate = job.config.audioConfig.sampleRate;
+    mCfg.audioChannels   = static_cast<uint16_t>(job.config.audioConfig.channels);
+    // Map encoder codec to AVCodecID for the container header.
+    // Without this the muxer falls back to H264, which is wrong for H265/AV1.
+    mCfg.videoCodecId = encoder ? encoder->avCodecId() : 0;
+    // The opened codec context, so the muxer copies extradata (SPS/PPS, hvcC,
+    // AV1 seq header) + full codec params into the container's stream. Every
+    // encoder opens with AV_CODEC_FLAG_GLOBAL_HEADER, so the extradata exists
+    // before the first frame; the encoder stays alive until the file is closed.
+    mCfg.videoCodecContext = smartPlan.passthroughCount == totalFrames && demuxers.size() == 1
+        ? demuxers.begin()->second->codecContext()
+        : (encoder ? encoder->avCodecContext() : nullptr);
+    spdlog::info("RndQ[{}]: mux config fps={}/{} codecId={}", job.id,
+                 mCfg.videoFpsNum, mCfg.videoFpsDen, mCfg.videoCodecId);
+
+    ctx.muxer = std::make_unique<Muxer>();
+    if (!ctx.muxer->beginStream(mCfg, ctx.audioStream ? &ctx.audioSource : nullptr)) {
+        spdlog::error("RenderQueue: could not open the output for job {}", job.id);
+        job.status = JobStatus::Failed;
+        job.error = "Muxing failed — output file not written";
+        encoder->shutdown();
+        return;
+    }
+
+    // Render frame by frame. Packets go to the muxer in the order the encoder
+    // emits them (decode order). An encoder packet with no payload cannot
+    // contribute a decodable frame and must never reach the muxer.
+    // Returns "" when written, else the job error.
+    int64_t packetsWritten = 0;
+    int64_t firstPacketPts = 0;
+    int64_t lastPacketPts  = 0;
+    auto writePacket = [&](const EncodedPacket& pkt,
+                           const char* emptyPacketError) -> std::string {
         if (!pkt.data || pkt.size <= 0)
-            return false;
-        OwnedPacket op;
-        op.storage.assign(pkt.data, pkt.data + pkt.size);
-        op.pkt = pkt;
-        op.pkt.data = op.storage.data();
-        op.pkt.ownsData = false;
-        allPackets.push_back(std::move(op));
-        return true;
+            return emptyPacketError;
+        if (!ctx.muxer->writeStreamVideo(pkt))
+            return "Muxing failed at video packet " + std::to_string(pkt.pts) +
+                   (ctx.muxer->lastError().empty() ? "" : ": " + ctx.muxer->lastError());
+        if (packetsWritten++ == 0) firstPacketPts = pkt.pts;
+        lastPacketPts = pkt.pts;
+        return {};
     };
 
     // Helper: update render progress.  Numeric fields are atomics (polled by
@@ -870,10 +933,16 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                         rawPkt.dts = frameIdx;
                         rawPkt.duration = 1;
 
-                        if (!appendOwnedPacket(rawPkt)) {
+                        if (!rawPkt.data || rawPkt.size <= 0) {
                             spdlog::warn("RndQ[{}]: passthrough source returned an "
                                          "empty packet for frame {}; re-encoding",
                                          job.id, f);
+                        } else if (const std::string err = writePacket(rawPkt, "");
+                                   !err.empty()) {
+                            job.status = JobStatus::Failed;
+                            job.error = err;
+                            encoder->shutdown();
+                            return;
                         } else {
                             ++acceptedVideoFrames;
                             ptRunMedia    = pf.mediaPath;
@@ -1013,9 +1082,10 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
             ++encodedVideoFrames;
             if (got)
             {
-                if (!appendOwnedPacket(encoder->lastPacket())) {
+                if (const std::string err = writePacket(encoder->lastPacket(), "Encoder emitted an empty packet");
+                    !err.empty()) {
                     job.status = JobStatus::Failed;
-                    job.error = "Encoder emitted an empty packet";
+                    job.error = err;
                     encoder->shutdown();
                     return;
                 }
@@ -1024,9 +1094,10 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                 spdlog::debug("RndQ[{}]: encoder buffering at f={} (16F, no packet yet)",
                               job.id, f);
             for (const auto& ep : encoder->pendingPackets()) {
-                if (!appendOwnedPacket(ep)) {
+                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
+                    !err.empty()) {
                     job.status = JobStatus::Failed;
-                    job.error = "Encoder emitted an empty pending packet";
+                    job.error = err;
                     encoder->shutdown();
                     return;
                 }
@@ -1075,17 +1146,19 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         ++encodedVideoFrames;
         if (gotPacket) {
             const auto& lp = encoder->lastPacket();
-            if (!appendOwnedPacket(lp)) {
+            if (const std::string err = writePacket(lp, "Encoder emitted an empty packet");
+                !err.empty()) {
                 job.status = JobStatus::Failed;
-                job.error = "Encoder emitted an empty packet";
+                job.error = err;
                 encoder->shutdown();
                 return;
             }
             // Collect any extra packets the encoder produced (B-frame drain)
             for (const auto& ep : encoder->pendingPackets()) {
-                if (!appendOwnedPacket(ep)) {
+                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
+                    !err.empty()) {
                     job.status = JobStatus::Failed;
-                    job.error = "Encoder emitted an empty pending packet";
+                    job.error = err;
                     encoder->shutdown();
                     return;
                 }
@@ -1099,9 +1172,10 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
             spdlog::debug("RndQ[{}]: encoder buffering at f={} (no packet yet)",
                           job.id, f);
             for (const auto& ep : encoder->pendingPackets()) {
-                if (!appendOwnedPacket(ep)) {
+                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
+                    !err.empty()) {
                     job.status = JobStatus::Failed;
-                    job.error = "Encoder emitted an empty pending packet";
+                    job.error = err;
                     encoder->shutdown();
                     return;
                 }
@@ -1135,61 +1209,20 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         return;
     }
     for (const auto& ep : encoder->flushedPackets()) {
-        if (!appendOwnedPacket(ep)) {
+        if (const std::string err = writePacket(ep, "Encoder emitted an empty flushed packet");
+            !err.empty()) {
             job.status = JobStatus::Failed;
-            job.error = "Encoder emitted an empty flushed packet";
+            job.error = err;
             encoder->shutdown();
             return;
         }
     }
-    if (allPackets.empty()) {
+    if (packetsWritten == 0) {
         job.status = JobStatus::Failed;
         job.error = "Encoder produced no video packets";
         encoder->shutdown();
         return;
     }
-
-    // Audio consumes the SAME renderTimeline used for duration/video dispatch,
-    // so edits cannot produce queue-time audio under live/current video (or the
-    // reverse). It is mixed block by block while the muxer writes the video.
-    std::unique_ptr<AudioMixStream> audioStream;
-    if (job.config.includeAudio && renderTimeline) {
-        audioStream = std::make_unique<AudioMixStream>(*renderTimeline, job.config.audioConfig);
-        if (!audioStream->isValid()) audioStream.reset();
-    }
-
-    // Mux video+audio into container file.
-    // NOTE: the encoder is intentionally kept alive (NOT shut down) until
-    // after muxing so the muxer can copy its extradata (SPS/PPS, hvcC,
-    // AV1 seq header) into the container. Shutting it down here would free
-    // the AVCodecContext and produce a file that only plays in VLC.
-    MuxerConfig mCfg;
-    ctx.stagedOutputPath = makeStagedExportPath(job.config.outputPath, job.id);
-    if (ctx.stagedOutputPath.empty()) {
-        job.status = JobStatus::Failed;
-        job.error = "Could not create a staged export path";
-        encoder->shutdown();
-        return;
-    }
-    mCfg.outputPath     = ctx.stagedOutputPath;
-    mCfg.format         = static_cast<ContainerFormat>(job.config.containerFormat);
-    mCfg.videoWidth     = job.config.outputWidth;
-    mCfg.videoHeight    = job.config.outputHeight;
-    mCfg.videoFpsNum    = job.config.encoderConfig.fpsNum;
-    mCfg.videoFpsDen    = job.config.encoderConfig.fpsDen;
-    mCfg.hasAudio       = audioStream != nullptr;
-    mCfg.audioSampleRate = job.config.audioConfig.sampleRate;
-    mCfg.audioChannels   = static_cast<uint16_t>(job.config.audioConfig.channels);
-    // Map encoder codec to AVCodecID for the container header.
-    // Without this the muxer falls back to H264, which is wrong for H265/AV1.
-    mCfg.videoCodecId = encoder ? encoder->avCodecId() : 0;
-    // Hand the opened codec context to the muxer so it can copy
-    // extradata + full codec params into the container's stream.
-    mCfg.videoCodecContext = smartPlan.passthroughCount == totalFrames && demuxers.size() == 1
-        ? demuxers.begin()->second->codecContext()
-        : (encoder ? encoder->avCodecContext() : nullptr);
-    spdlog::info("RndQ[{}]: mux config fps={}/{} codecId={}", job.id,
-                 mCfg.videoFpsNum, mCfg.videoFpsDen, mCfg.videoCodecId);
 
     {
         std::lock_guard<std::mutex> lk(m_mutex);
@@ -1197,33 +1230,15 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     }
     if (m_progressCb) m_progressCb(job.id, job.progress);
 
-    MuxAudioSource audioSource;
-    if (audioStream) {
-        audioSource.sampleRate = audioStream->sampleRate();
-        audioSource.channels   = audioStream->channels();
-        audioSource.pull = [&audioStream](float* out, int64_t maxFrames) {
-            return audioStream->read(out, maxFrames);
-        };
-    }
-    const MuxAudioSource* audioPtr = audioStream ? &audioSource : nullptr;
-    // Log packet diagnostics
-    if (!allPackets.empty()) {
-        spdlog::info("RndQ[{}]: total packets={} first_pts={} last_pts={} fps={}/{}",
-                     job.id, allPackets.size(),
-                     allPackets.front().pkt.pts, allPackets.back().pkt.pts,
-                     mCfg.videoFpsNum, mCfg.videoFpsDen);
-    }
+    spdlog::info("RndQ[{}]: total packets={} first_pts={} last_pts={} fps={}/{}",
+                 job.id, packetsWritten, firstPacketPts, lastPacketPts,
+                 mCfg.videoFpsNum, mCfg.videoFpsDen);
 
-    // Build a plain EncodedPacket vector for the muxer (data pointers are
-    // valid because OwnedPacket storage stays alive until end of scope).
-    // Packets are in encoder DTS order thanks to the drain loop in sendFrame.
-    std::vector<EncodedPacket> muxPackets;
-    muxPackets.reserve(allPackets.size());
-    for (const auto& op : allPackets)
-        muxPackets.push_back(op.pkt);
-    bool muxOk = Muxer::muxFile(ctx.stagedOutputPath, muxPackets, audioPtr, mCfg);
+    // The rest of the audio, then the trailer.
+    const bool muxOk = ctx.muxer->finishStream();
+    ctx.muxer.reset();
 
-    // Safe to release the encoder now that the muxer has read its params.
+    // Safe to release the encoder now that the file is closed.
     encoder->shutdown();
 
     if (!muxOk) {

@@ -121,6 +121,22 @@ public:
                         const MuxAudioSource* audio,
                         const MuxerConfig& config);
 
+    // ── Streaming mux ───────────────────────────────────────────────────
+
+    /// The streaming form of muxFile(): open config.outputPath, then hand
+    /// over video packets in decode order as the encoder emits them, then
+    /// finishStream(). Audio is pulled from `audio` (null = video only) up to
+    /// each video packet's time, so neither stream is held in memory.
+    /// `audio` must stay valid until finishStream() or close().
+    bool beginStream(const MuxerConfig& config, const MuxAudioSource* audio);
+
+    /// Write one video packet (in the encoder time base, 1/fps), preceded by
+    /// the audio up to its decode time.
+    bool writeStreamVideo(const EncodedPacket& packet);
+
+    /// Write the remaining audio and the trailer, and close the file.
+    bool finishStream();
+
     // ── Queries ─────────────────────────────────────────────────────────
 
     [[nodiscard]] bool isOpen() const noexcept { return m_isOpen; }
@@ -138,6 +154,12 @@ private:
     AudioEncoder* m_audioEnc{nullptr};
     void initAudioEncoder(uint32_t sampleRate, uint16_t channels);
     void flushAudioEncoder();
+
+    // Streaming mux state (beginStream)
+    const MuxAudioSource* m_streamAudio{nullptr};
+    int64_t               m_streamAudioFrames{0};
+    std::vector<float>    m_streamAudioBlock;
+    void writeStreamAudioUntil(int64_t targetFrames);
 
     MuxerConfig m_config;
     int64_t     m_videoPtsWritten{0};

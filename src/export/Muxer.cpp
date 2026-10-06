@@ -419,6 +419,7 @@ bool Muxer::writeAudioPacket(const EncodedPacket& packet)
 
 bool Muxer::close()
 {
+    m_streamAudio = nullptr;
     if (!m_isOpen) return true;
 
     // Flush any pending audio frames from the persistent encoder
@@ -454,74 +455,90 @@ bool Muxer::muxFile(const std::filesystem::path& outputPath,
     Muxer mux;
     MuxerConfig cfg = config;
     cfg.outputPath = outputPath;
+    if (!mux.beginStream(cfg, audio)) return false;
+
+    for (const auto& pkt : videoPackets) {
+        if (!mux.writeStreamVideo(pkt)) {
+            spdlog::error("Muxer: Failed at video pts {}", pkt.pts);
+            mux.close();
+            return false;
+        }
+    }
+    return mux.finishStream();
+}
+
+bool Muxer::beginStream(const MuxerConfig& config, const MuxAudioSource* audio)
+{
+    MuxerConfig cfg = config;
     cfg.hasAudio = audio && audio->pull && audio->sampleRate > 0 && audio->channels > 0;
+    m_streamAudio = nullptr;
+    m_streamAudioFrames = 0;
 
     // Open with deferred header so we can set up audio codec params first
-    if (!mux.open(cfg, /*deferHeader=*/cfg.hasAudio)) return false;
+    if (!open(cfg, /*deferHeader=*/cfg.hasAudio)) return false;
 
     // ── Set up the persistent AAC encoder BEFORE writing the header ──────
     // initAudioEncoder() copies codec params (incl. extradata) onto the
     // audio stream, so the deferred header is written with correct params.
-    // This is the same encoder that does the actual audio encoding below —
-    // no throwaway context.
-    if (cfg.hasAudio && mux.m_audioStream) {
-        mux.initAudioEncoder(audio->sampleRate, audio->channels);
-        if (!mux.m_audioEnc) {
+    // This is the same encoder that does the actual audio encoding — no
+    // throwaway context.
+    if (cfg.hasAudio && m_audioStream) {
+        initAudioEncoder(audio->sampleRate, audio->channels);
+        if (!m_audioEnc) {
             spdlog::warn("Muxer: Could not init AAC encoder, writing video-only");
             cfg.hasAudio = false;
         }
     }
 
     // Now write the header with proper codec params
-    if (!mux.m_headerWritten) {
-        if (!mux.writeHeader()) return false;
+    if (!m_headerWritten && !writeHeader()) return false;
+
+    if (cfg.hasAudio && m_audioEnc) m_streamAudio = audio;
+    return true;
+}
+
+void Muxer::writeStreamAudioUntil(int64_t targetFrames)
+{
+    constexpr int64_t kMaxBlockFrames = 1 << 16;
+    while (m_streamAudio && m_streamAudioFrames < targetFrames) {
+        const int64_t wanted = std::min(kMaxBlockFrames, targetFrames - m_streamAudioFrames);
+        m_streamAudioBlock.resize(static_cast<size_t>(wanted) * m_streamAudio->channels);
+        const int64_t got = m_streamAudio->pull(m_streamAudioBlock.data(), wanted);
+        if (got <= 0) {
+            m_streamAudio = nullptr;   // the audio is finished
+            break;
+        }
+        if (!writeAudioData(m_streamAudioBlock.data(), got,
+                            m_streamAudio->sampleRate, m_streamAudio->channels)) {
+            spdlog::warn("Muxer: Audio encoding had errors but video is intact");
+            m_streamAudio = nullptr;
+            break;
+        }
+        m_streamAudioFrames += got;
     }
+}
 
-    // ── Audio, pulled as the video advances ──────────────────────────────
-    bool audioDone = !(cfg.hasAudio && mux.m_audioEnc);
-    int64_t audioFrames = 0;
-    std::vector<float> block;
-    auto writeAudioUntil = [&](int64_t targetFrames) {
-        constexpr int64_t kMaxBlockFrames = 1 << 16;
-        while (!audioDone && audioFrames < targetFrames) {
-            const int64_t wanted = std::min(kMaxBlockFrames, targetFrames - audioFrames);
-            block.resize(static_cast<size_t>(wanted) * audio->channels);
-            const int64_t got = audio->pull(block.data(), wanted);
-            if (got <= 0) {
-                audioDone = true;
-                break;
-            }
-            if (!mux.writeAudioData(block.data(), got, audio->sampleRate, audio->channels)) {
-                spdlog::warn("Muxer: Audio encoding had errors but video is intact");
-                audioDone = true;
-                break;
-            }
-            audioFrames += got;
-        }
-    };
-
-    // ── Write video packets, keeping the audio level with them ───────────
-    for (const auto& pkt : videoPackets) {
-        if (!audioDone) {
-            // Audio up to this packet's decode time (video time base is
-            // fpsDen/fpsNum seconds per tick), so the streams interleave.
-            const int64_t ts = pkt.dts != AV_NOPTS_VALUE ? pkt.dts : pkt.pts;
-            if (ts != AV_NOPTS_VALUE && ts > 0 && cfg.videoFpsNum > 0) {
-                writeAudioUntil(av_rescale(ts, static_cast<int64_t>(cfg.videoFpsDen) * audio->sampleRate,
-                                           cfg.videoFpsNum));
-            }
-        }
-        if (!mux.writeVideoPacket(pkt)) {
-            spdlog::error("Muxer: Failed at video pts {}", pkt.pts);
-            mux.close();
-            return false;
+bool Muxer::writeStreamVideo(const EncodedPacket& packet)
+{
+    if (m_streamAudio) {
+        // Audio up to this packet's decode time (video time base is
+        // fpsDen/fpsNum seconds per tick), so the streams interleave.
+        const int64_t ts = packet.dts != AV_NOPTS_VALUE ? packet.dts : packet.pts;
+        if (ts != AV_NOPTS_VALUE && ts > 0 && m_config.videoFpsNum > 0) {
+            writeStreamAudioUntil(av_rescale(
+                ts, static_cast<int64_t>(m_config.videoFpsDen) * m_streamAudio->sampleRate,
+                m_config.videoFpsNum));
         }
     }
+    return writeVideoPacket(packet);
+}
 
+bool Muxer::finishStream()
+{
     // ── The rest of the audio ────────────────────────────────────────────
-    writeAudioUntil(std::numeric_limits<int64_t>::max());
-
-    return mux.close();
+    writeStreamAudioUntil(std::numeric_limits<int64_t>::max());
+    m_streamAudio = nullptr;
+    return close();
 }
 
 #else // !ROUNDTABLE_HAS_FFMPEG
@@ -534,6 +551,9 @@ bool Muxer::writeAudioPacket(const EncodedPacket&) { return false; }
 bool Muxer::close() { m_isOpen = false; return true; }
 bool Muxer::muxFile(const std::filesystem::path&, const std::vector<EncodedPacket>&,
                      const MuxAudioSource*, const MuxerConfig&) { return false; }
+bool Muxer::beginStream(const MuxerConfig&, const MuxAudioSource*) { m_lastError = "FFmpeg not available"; return false; }
+bool Muxer::writeStreamVideo(const EncodedPacket&) { return false; }
+bool Muxer::finishStream() { return close(); }
 
 #endif // ROUNDTABLE_HAS_FFMPEG
 

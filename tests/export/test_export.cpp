@@ -22,6 +22,7 @@
 #include "Constants.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/FxChain.h"
+#include "audio/AudioFile.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1112,6 +1113,93 @@ TEST(ExportPreflight, PendingDependencyBecomesReadyBeforeSuccessfulRender)
     EXPECT_EQ(frameCalls.load(), 1);
     EXPECT_TRUE(std::filesystem::exists(output));
     std::filesystem::remove(output);
+}
+
+// A full export with audio: video packets and the audio mix are muxed as
+// they are produced. The file must hold every frame and exactly the same
+// audio as the mix written on its own.
+TEST(ExportIntegrity, ExportWithAudioMuxesTheMixAlongsideTheVideo)
+{
+    if (!hasProResEncoderForIntegrityTest())
+        GTEST_SKIP() << "ProRes encoder unavailable in this FFmpeg build";
+
+    const auto wav = uniqueExportTestPath("_tone.wav");
+    {
+        MixdownResult tone;
+        tone.sampleRate = 48000;
+        tone.channels = 2;
+        tone.totalFrames = 48000 * 3;
+        tone.duration = 3.0;
+        tone.samples.resize(static_cast<size_t>(tone.totalFrames) * 2);
+        for (int64_t i = 0; i < tone.totalFrames; ++i) {
+            const float v = 0.4f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 330.0 * i / 48000.0));
+            tone.samples[static_cast<size_t>(i) * 2] = v;
+            tone.samples[static_cast<size_t>(i) * 2 + 1] = -v;
+        }
+        ASSERT_TRUE(AudioMixdown::writeWav(tone, wav));
+    }
+
+    auto project = Project::createNew("Export With Audio");
+    ASSERT_NE(project, nullptr);
+    Timeline* timeline = project->timeline();
+    ASSERT_NE(timeline, nullptr);
+    Track* audioTrack = timeline->addAudioTrack("A1");
+    ASSERT_NE(audioTrack, nullptr);
+    auto clip = std::make_unique<AudioClip>();
+    clip->setMediaPath(wav.string());
+    clip->setSampleRate(48000);
+    clip->setChannels(2);
+    clip->setTimelineIn(0);
+    clip->setDuration(secondsToTicks(2.0));
+    clip->setSourceDuration(secondsToTicks(3.0));
+    audioTrack->addClip(std::move(clip));
+
+    const auto destination = uniqueExportTestPath("_with_audio.mov");
+    ExportJobConfig config = proResIntegrityJob(destination);
+    config.includeAudio = true;
+    config.endFrame = 60;   // 2 s at 30 fps
+    config.audioConfig.sampleRate = 48000;
+    config.audioConfig.channels = 2;
+    config.audioConfig.startTime = 0.0;
+    config.audioConfig.endTime = 2.0;
+
+    RenderQueue queue;
+    queue.setSnapshotResourcePreflightCallback(
+        [](const std::shared_ptr<const ExportRenderSnapshot>&) {
+            RenderPreflightResult result;
+            result.status = RenderResultStatus::Ready;
+            return result;
+        });
+    queue.setFrameRenderCallback(
+        [](int64_t, int64_t, uint32_t, uint32_t, bool) { return makeIntegrityFrame(128, 128); });
+    const uint32_t id = queue.addJob(config, project.get(), timeline);
+    queue.start(nullptr);
+    ASSERT_TRUE(waitForRenderQueue(queue));
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    ASSERT_EQ(job->status.load(), JobStatus::Completed) << job->error;
+
+    const auto valid = validateExportFile(destination, 60, 128, 128, 30, 1);
+    EXPECT_TRUE(valid.ok) << valid.error;
+
+    // The same mix written straight to AAC (the muxer's encoder settings).
+    AudioMixdown mixdown;
+    const MixdownResult mix = mixdown.mix(*timeline, config.audioConfig);
+    ASSERT_TRUE(mix.isValid());
+    const auto reference = uniqueExportTestPath("_reference.m4a");
+    ASSERT_TRUE(AudioMixdown::writeAudioFile(mix, reference, AudioCodec::AAC, 192000));
+
+    AudioFile exported, direct;
+    ASSERT_TRUE(exported.open(destination));
+    ASSERT_TRUE(direct.open(reference));
+    const auto exportedAudio = exported.readAll();
+    const auto directAudio = direct.readAll();
+    ASSERT_FALSE(directAudio.empty());
+    EXPECT_EQ(exportedAudio, directAudio);
+
+    std::filesystem::remove(destination);
+    std::filesystem::remove(reference);
+    std::filesystem::remove(wav);
 }
 
 } // namespace
