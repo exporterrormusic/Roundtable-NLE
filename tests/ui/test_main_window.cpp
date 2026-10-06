@@ -64,6 +64,7 @@
 #include <QTest>
 #include <QThread>
 #include <QTimer>
+#include <QElapsedTimer>
 
 #include <atomic>
 #include <chrono>
@@ -271,15 +272,30 @@ TEST_F(MainWindowTest, ProductionTimelineUsesOneActiveDockTabGroup)
 
     workspace.resize(1600, 900);
     workspace.show();
+    // The active group follows keyboard focus, which only arrives once this
+    // window is active -- with parallel test processes (ctest -j) another
+    // window can hold activation for a while, so wait for it instead of a
+    // fixed 20 ms.
+    workspace.activateWindow();
+    (void)QTest::qWaitForWindowActive(&workspace, 3000);
 
     sourceDock->raise();
     sourceDock->setFocusPolicy(Qt::StrongFocus);
     sourceDock->setFocus(Qt::OtherFocusReason);
-    {
-        QEventLoop loop;
-        QTimer::singleShot(20, &loop, &QEventLoop::quit);
-        loop.exec();
-    }
+    auto sourceGroupActive = [&]() {
+        for (auto* tabs : workspace.findChildren<QTabBar*>()) {
+            if (!tabs->property("roundtableDockTabBar").toBool()) continue;
+            for (int index = 0; index < tabs->count(); ++index)
+                if (tabs->tabText(index) == QStringLiteral("Source Monitor"))
+                    return tabs->property("panelBarActive").toBool();
+        }
+        return false;
+    };
+    QElapsedTimer waited;
+    waited.start();
+    do {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    } while (!sourceGroupActive() && waited.elapsed() < 2000);
 
     QTabBar* sourceTabs = nullptr;
     int activeGroups = 0;
