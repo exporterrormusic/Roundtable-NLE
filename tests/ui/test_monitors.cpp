@@ -2532,6 +2532,19 @@ protected:
         pm = std::make_unique<ProgramMonitor>();
     }
 
+    /// Runs `fn` when the scope exits, early ASSERT returns included.
+    struct ScopeExit
+    {
+        std::function<void()> fn;
+        ~ScopeExit() { if (fn) fn(); }
+    };
+
+    /// The monitor outlives the test body, but its producer thread calls
+    /// callbacks that capture the body's locals, and it keeps pointers to
+    /// the body's controller/timeline. Declare this after those locals so
+    /// the monitor is destroyed while they still exist.
+    ScopeExit destroyMonitorOnExit() { return {[this] { pm.reset(); }}; }
+
     std::unique_ptr<ProgramMonitor> pm;
 };
 
@@ -2553,6 +2566,7 @@ TEST_F(ProgramMonitorTest, SetOutputResolution)
 TEST_F(ProgramMonitorTest, SetController)
 {
     PlaybackController ctrl;
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setController(&ctrl);
     EXPECT_EQ(pm->controller(), &ctrl);
 }
@@ -2560,6 +2574,7 @@ TEST_F(ProgramMonitorTest, SetController)
 TEST_F(ProgramMonitorTest, SetTimeline)
 {
     Timeline tl;
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setTimeline(&tl);
     EXPECT_EQ(pm->timeline(), &tl);
 }
@@ -2577,6 +2592,7 @@ TEST_F(ProgramMonitorTest, MiniTimelineAccess)
 TEST_F(ProgramMonitorTest, SetCompositeCallback)
 {
     bool called = false;
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setCompositeCallback([&](int64_t /*tick*/, uint32_t /*w*/, uint32_t /*h*/,
                                  bool /*scrub*/, bool /*still*/) -> std::shared_ptr<CachedFrame> {
         called = true;
@@ -2612,6 +2628,7 @@ TEST_F(ProgramMonitorTest, RefreshInvokesCallbackAsync)
     pm->setController(&ctrl);
 
     std::atomic<int64_t> capturedTick{-100};
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setCompositeCallback([&](int64_t tick, uint32_t /*w*/, uint32_t /*h*/,
                                  bool /*scrub*/, bool /*still*/) -> std::shared_ptr<CachedFrame> {
         capturedTick.store(tick);
@@ -2635,6 +2652,7 @@ TEST_F(ProgramMonitorTest, PausedFullRequests1080pStillQuality)
     std::atomic<uint32_t> capturedH{0};
     std::atomic<bool> capturedScrub{true};
     std::atomic<bool> capturedStill{false};
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setCompositeCallback(
         [&](int64_t, uint32_t w, uint32_t h, bool scrub,
             bool still) -> std::shared_ptr<CachedFrame> {
@@ -2664,6 +2682,7 @@ TEST_F(ProgramMonitorTest, RefreshWithFrameData)
     testFrame->height = 240;
     testFrame->stride = 320 * 4;
     testFrame->pixels.resize(320 * 240 * 4, 128);
+    const auto monitorGuard = destroyMonitorOnExit();
 
     pm->setCompositeCallback([&](int64_t /*tick*/, uint32_t /*w*/, uint32_t /*h*/,
                                  bool /*scrub*/, bool /*still*/) -> std::shared_ptr<CachedFrame> {
@@ -2694,6 +2713,10 @@ TEST_F(ProgramMonitorTest, PausedFrameWaitsForModalDialogToClose)
 
     std::atomic<bool> compositeReady{false};
     std::atomic<bool> releaseComposite{false};
+    const auto monitorGuard = destroyMonitorOnExit();
+    // Runs first: a callback still blocked in the producer would otherwise
+    // keep the monitor's destructor waiting forever.
+    const ScopeExit releaseOnExit{[&] { releaseComposite.store(true); }};
     pm->setCompositeCallback(
         [&](int64_t, uint32_t, uint32_t, bool, bool)
             -> std::shared_ptr<CachedFrame> {
@@ -2735,6 +2758,7 @@ TEST_F(ProgramMonitorTest, RefreshForcesRerenderAtSameTick)
     pm->setController(&ctrl);
 
     std::atomic<int> callCount{0};
+    const auto monitorGuard = destroyMonitorOnExit();
     pm->setCompositeCallback([&](int64_t /*tick*/, uint32_t /*w*/, uint32_t /*h*/,
                                  bool /*scrub*/, bool /*still*/) -> std::shared_ptr<CachedFrame> {
         callCount.fetch_add(1);
@@ -2763,6 +2787,7 @@ TEST_F(ProgramMonitorTest, TimelineUpdatesMinitimeline)
 {
     Timeline tl;
     (void)tl.addVideoTrack("V1");
+    const auto monitorGuard = destroyMonitorOnExit();
     // (Can't add clips easily without full Clip creation, but duration should be 0 initially)
     pm->setTimeline(&tl);
 
