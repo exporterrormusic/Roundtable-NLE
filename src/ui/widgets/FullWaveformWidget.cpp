@@ -27,8 +27,7 @@ FullWaveformWidget::FullWaveformWidget(QWidget* parent)
 
 void FullWaveformWidget::setAudio(const std::vector<float>& samples, uint32_t sampleRate)
 {
-    m_extSamples = nullptr;
-    m_samples    = samples;
+    m_samples    = SampleBuffer(samples);
     m_sampleRate = sampleRate;
     m_viewStart  = 0.0;
     m_viewEnd    = duration();
@@ -36,11 +35,9 @@ void FullWaveformWidget::setAudio(const std::vector<float>& samples, uint32_t sa
     update();
 }
 
-void FullWaveformWidget::setAudioShared(const std::vector<float>* samples, uint32_t sampleRate)
+void FullWaveformWidget::setAudioShared(const SampleBuffer& samples, uint32_t sampleRate)
 {
-    m_samples.clear();
-    m_samples.shrink_to_fit();
-    m_extSamples = samples;
+    m_samples    = samples;
     m_sampleRate = sampleRate;
     m_viewStart  = 0.0;
     m_viewEnd    = duration();
@@ -148,8 +145,11 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
 
     // Find peak for normalization
     float maxAmp = 0.001f;
-    for (int i = viewStartSample; i < viewEndSample; ++i)
-        maxAmp = std::max(maxAmp, std::abs(pcm()[static_cast<size_t>(i)]));
+    {
+        const auto [lo, hi] = pcm().minMax(static_cast<size_t>(viewStartSample),
+                                           static_cast<size_t>(viewEndSample));
+        maxAmp = std::max({maxAmp, std::abs(lo), std::abs(hi)});
+    }
 
     int centerY = h / 2;
 
@@ -161,12 +161,10 @@ void FullWaveformWidget::paintEvent(QPaintEvent* event)
         blockEnd   = std::clamp(blockEnd,   blockStart, static_cast<int>(pcm().size()));
         if (blockStart >= blockEnd) continue;
 
-        float minVal = 0.0f, maxVal = 0.0f;
-        for (int j = blockStart; j < blockEnd; ++j) {
-            float s = pcm()[static_cast<size_t>(j)];
-            minVal = std::min(minVal, s);
-            maxVal = std::max(maxVal, s);
-        }
+        const auto [lo, hi] = pcm().minMax(static_cast<size_t>(blockStart),
+                                           static_cast<size_t>(blockEnd));
+        const float minVal = std::min(0.0f, lo);
+        const float maxVal = std::max(0.0f, hi);
 
         float normMin = minVal / maxAmp;
         float normMax = maxVal / maxAmp;

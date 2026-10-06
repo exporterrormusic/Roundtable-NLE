@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "audio/SampleBuffer.h"
+
 #include <QWidget>
 #include <QColor>
 #include <vector>
@@ -29,9 +31,9 @@ public:
 
     /// Set the full audio file samples.
     void setAudio(const std::vector<float>& samples, uint32_t sampleRate);
-    /// Like setAudio() without copying: `samples` must outlive the widget
-    /// (or the next setAudio*) -- a whole file is ~700 MB per hour.
-    void setAudioShared(const std::vector<float>* samples, uint32_t sampleRate);
+    /// Like setAudio() without copying: the widget shares `samples`
+    /// (a whole file is ~700 MB per hour).
+    void setAudioShared(const SampleBuffer& samples, uint32_t sampleRate);
 
     /// Set regions that are already confirmed (drawn as dark grey overlay).
     void setConfirmedRegions(const std::vector<std::pair<double,double>>& regions);
@@ -77,13 +79,9 @@ private:
     double pixelToTime(int x) const;
     int    timeToPixel(double t) const;
 
-    // Audio data
-    std::vector<float> m_samples;
-    const std::vector<float>* m_extSamples{nullptr};   ///< setAudioShared (non-owning)
-    [[nodiscard]] const std::vector<float>& pcm() const noexcept
-    {
-        return m_extSamples ? *m_extSamples : m_samples;
-    }
+    // Audio data (a copy from setAudio, or shared via setAudioShared)
+    SampleBuffer m_samples;
+    [[nodiscard]] const SampleBuffer& pcm() const noexcept { return m_samples; }
     uint32_t           m_sampleRate{44100};
 
     // View window (zoom/pan)

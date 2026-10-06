@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "audio/SampleBuffer.h"
+
 #include <QWidget>
 #include <QColor>
 #include <QKeyEvent>
@@ -37,8 +39,8 @@ public:
     void setAudio(const std::vector<float>& allSamples, uint32_t sampleRate,
                   double clipStart, double clipEnd);
 
-    /// Set audio via external pointer (no copy — caller must keep data alive).
-    void setAudioShared(const std::vector<float>* samples, uint32_t sampleRate,
+    /// Like setAudio() without copying: the widget shares `samples`.
+    void setAudioShared(const SampleBuffer& samples, uint32_t sampleRate,
                         double clipStart, double clipEnd);
 
     /// Set trim in/out points (in seconds, absolute time).
@@ -102,10 +104,9 @@ private:
     void   expandViewIfNeeded(double timeSec);
     double fileDuration() const;
 
-    // Audio data
-    std::vector<float> m_samples;              // owned copy (used by setAudio)
-    const std::vector<float>* m_extSamples{nullptr}; // non-owning ref (setAudioShared)
-    const std::vector<float>& sam() const { return m_extSamples ? *m_extSamples : m_samples; }
+    // Audio data (a copy from setAudio, or shared via setAudioShared)
+    SampleBuffer m_samples;
+    const SampleBuffer& sam() const { return m_samples; }
     uint32_t           m_sampleRate{44100};
     double             m_clipStart{0.0};
     double             m_clipEnd{1.0};

@@ -746,7 +746,7 @@ void VoiceGenerationPanel::refreshManualTrack()
         const double fullDuration = static_cast<double>(samples->samples.size())
                                   / samples->sampleRate;
         m_referenceWaveform->setAudioShared(
-            &samples->samples, samples->sampleRate, 0.0, fullDuration);
+            samples->samples, samples->sampleRate, 0.0, fullDuration);
         m_referenceWaveform->setTrimHandlesVisible(true);
         m_referenceWaveform->setTrimRange(
             m_referenceStart->value(), m_referenceEnd->value());

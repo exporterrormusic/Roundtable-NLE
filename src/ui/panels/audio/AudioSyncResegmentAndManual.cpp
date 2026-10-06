@@ -460,7 +460,7 @@ void AudioSync::openManualMatch(int lineNumber)
     for (const auto& [path, sampleData] : m_audioSamples) {
         ManualMatchDialog::AudioData data;
         data.sampleRate = sampleData.sampleRate;
-        data.shared = &sampleData.samples;   // the dialog is modal: no copy
+        data.pcm = sampleData.samples;   // shared, not copied
         audioDataMap[path] = data;
     }
 
@@ -634,7 +634,7 @@ void AudioSync::openTakePlayer(size_t clipIdx)
     std::unordered_map<std::string, ManualMatchDialog::AudioData> audioDataMap;
     ManualMatchDialog::AudioData takeData;
     takeData.sampleRate = sampleIt->second.sampleRate;
-    takeData.shared = &sampleIt->second.samples;   // modal dialog: no copy
+    takeData.pcm = sampleIt->second.samples;   // shared, not copied
     audioDataMap[clip.sourceFile] = takeData;
 
     ManualMatchDialog dlg(character, dialogue, clip.scriptLineNumber,

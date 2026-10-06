@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -120,6 +121,15 @@ public:
     /// Returns empty vector on failure. For large files, prefer readRegion().
     [[nodiscard]] std::vector<float> readAll();
 
+    /// Chunk sink for readAllStreaming(): interleaved float frames; return
+    /// false to stop.
+    using SampleSink = std::function<bool(const float* samples, int64_t frames)>;
+
+    /// Decode the whole file front to back, handing interleaved float chunks
+    /// to `sink` as they are decoded, so memory does not grow with the file.
+    /// Returns the frames delivered, or -1 on failure or when stopped.
+    int64_t readAllStreaming(const SampleSink& sink);
+
     /// Read a region of sample frames [startFrame, startFrame + numFrames).
     /// Output: interleaved float samples (numFrames * channels).
     /// Returns number of frames actually read.
@@ -164,6 +174,7 @@ private:
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
     std::vector<float> readAllFFmpeg();
+    int64_t readAllFFmpegStreaming(const SampleSink& sink);
     int64_t readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
                              std::vector<float>& outSamples);
 #endif

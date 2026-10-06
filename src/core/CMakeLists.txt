@@ -86,6 +86,7 @@ add_library(roundtable_core STATIC
     audio/TimeStretch.cpp
     audio/AudioFile.cpp
     audio/AudioRegionReader.cpp
+    audio/SampleBuffer.cpp
     decode/SharedFileIO.cpp
     cache/FrameCache.cpp
     cache/CachePolicy.cpp

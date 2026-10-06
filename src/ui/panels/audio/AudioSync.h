@@ -47,6 +47,7 @@
 #include <QPointer>
 #include <QElapsedTimer>
 
+#include "audio/SampleBuffer.h"
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 
@@ -128,9 +129,11 @@ struct SyncClip
     bool operator==(const SyncClip&) const = default;
 };
 
-/// Loaded audio sample data (mono float, keyed by file path)
+/// Loaded audio sample data (mono float, keyed by file path). The samples
+/// are normally a memory mapping of the decoded-audio cache file; copies
+/// (waveforms, dialogs) share them.
 struct AudioSampleData {
-    std::vector<float> samples;  // mono float -1..1
+    SampleBuffer samples;  // mono float -1..1
     uint32_t sampleRate{44100};
 };
 

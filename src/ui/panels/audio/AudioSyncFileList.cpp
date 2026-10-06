@@ -535,7 +535,7 @@ void AudioSync::addAudioFileListItem(const QString& fullPath, int row)
             auto* waveform = new MiniWaveformWidget;
             waveform->setContextMenuPolicy(Qt::PreventContextMenu);
             waveform->setFixedHeight(40);
-            waveform->setAudioShared(&sampIt2->second.samples,
+            waveform->setAudioShared(sampIt2->second.samples,
                                      sampIt2->second.sampleRate, 0.0, dur);
             waveform->setTrimHandlesVisible(false);
 
@@ -791,7 +791,7 @@ void AudioSync::refreshTranscribeFileList()
             auto* waveform = new MiniWaveformWidget;
             waveform->setContextMenuPolicy(Qt::PreventContextMenu);
             waveform->setFixedHeight(40);
-            waveform->setAudioShared(&sampIt->second.samples,
+            waveform->setAudioShared(sampIt->second.samples,
                                      sampIt->second.sampleRate, 0.0, dur);
             waveform->setTrimHandlesVisible(false);
 

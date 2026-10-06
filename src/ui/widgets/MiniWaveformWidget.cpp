@@ -30,8 +30,7 @@ void MiniWaveformWidget::setAudio(const std::vector<float>& allSamples,
                                    uint32_t sampleRate,
                                    double clipStart, double clipEnd)
 {
-    m_extSamples = nullptr;   // using owned copy
-    m_samples    = allSamples;
+    m_samples    = SampleBuffer(allSamples);
     m_sampleRate = sampleRate;
     m_clipStart  = clipStart;
     m_clipEnd    = clipEnd;
@@ -53,13 +52,11 @@ void MiniWaveformWidget::setAudio(const std::vector<float>& allSamples,
     update();
 }
 
-void MiniWaveformWidget::setAudioShared(const std::vector<float>* samples,
+void MiniWaveformWidget::setAudioShared(const SampleBuffer& samples,
                                          uint32_t sampleRate,
                                          double clipStart, double clipEnd)
 {
-    m_extSamples = samples;   // non-owning pointer — caller keeps data alive
-    m_samples.clear();        // release any previous owned copy
-    m_samples.shrink_to_fit();
+    m_samples    = samples;   // shares the caller's samples
     m_sampleRate = sampleRate;
     m_clipStart  = clipStart;
     m_clipEnd    = clipEnd;
@@ -266,8 +263,11 @@ void MiniWaveformWidget::paintEvent(QPaintEvent* event)
     int trimOutPx = timeToPixel(m_trimOut);
 
     float maxAmp = 0.001f;
-    for (int i = viewStartSample; i < viewEndSample; ++i)
-        maxAmp = std::max(maxAmp, std::abs(samples[static_cast<size_t>(i)]));
+    {
+        const auto [lo, hi] = samples.minMax(static_cast<size_t>(viewStartSample),
+                                             static_cast<size_t>(viewEndSample));
+        maxAmp = std::max({maxAmp, std::abs(lo), std::abs(hi)});
+    }
 
     int centerY = h / 2;
 
@@ -279,12 +279,10 @@ void MiniWaveformWidget::paintEvent(QPaintEvent* event)
         blockEnd   = std::clamp(blockEnd,   blockStart, static_cast<int>(samples.size()));
         if (blockStart >= blockEnd) continue;
 
-        float minVal = 0.0f, maxVal = 0.0f;
-        for (int j = blockStart; j < blockEnd; ++j) {
-            float sv = samples[static_cast<size_t>(j)];
-            minVal = std::min(minVal, sv);
-            maxVal = std::max(maxVal, sv);
-        }
+        const auto [lo, hi] = samples.minMax(static_cast<size_t>(blockStart),
+                                             static_cast<size_t>(blockEnd));
+        const float minVal = std::min(0.0f, lo);
+        const float maxVal = std::max(0.0f, hi);
 
         float normMin = minVal / maxAmp;
         float normMax = maxVal / maxAmp;

@@ -658,7 +658,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         waveform = new MiniWaveformWidget;
         auto sampleIt = m_audioSamples.find(clip.sourceFile);
         if (sampleIt != m_audioSamples.end()) {
-            waveform->setAudioShared(&sampleIt->second.samples, sampleIt->second.sampleRate,
+            waveform->setAudioShared(sampleIt->second.samples, sampleIt->second.sampleRate,
                                clip.start, clip.end);
         }
 

@@ -38,7 +38,7 @@ namespace rt {
 // run loose), so here we just trim the loose silence: we do NOT anchor to a loud
 // "speech core" (that collapsed long, dynamic lines down to their loudest middle
 // chunk and cut the softer real speech on both sides).
-static void refineSpeechBounds(const std::vector<float>& samples, int sr,
+static void refineSpeechBounds(const SampleBuffer& samples, int sr,
                                double& clipStart, double& clipEnd,
                                double wordStart, double wordEnd,
                                double frontPaddingSec, double endPaddingSec,

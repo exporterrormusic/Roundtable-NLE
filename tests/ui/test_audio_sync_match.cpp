@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "audio/AudioFile.h"
 #include "AudioMixdown.h"
 #include "panels/audio/AudioSync.h"
 
@@ -10,6 +11,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -132,7 +134,9 @@ TEST_F(AudioSyncMatchTest, CardsStreamInIndexAlignedWithTheLeftList)
     EXPECT_NE(left->itemWidget(left->item(0)), nullptr);            // first screen
     EXPECT_EQ(left->itemWidget(left->item(kLines - 1)), nullptr);   // still to come
 
-    ASSERT_TRUE(waitFor([&] { return !audioSync.cardBuildPending(); }));
+    // Streaming 300 cards takes ~11 s on an idle machine and well past the
+    // default 20 s under a parallel ctest run; this checks order, not speed.
+    ASSERT_TRUE(waitFor([&] { return !audioSync.cardBuildPending(); }, 90000));
     const qint64 allMs = timer.elapsed();
     EXPECT_EQ(audioSync.builtCardCount(), kLines);
     for (int row = 0; row < kLines; ++row)
@@ -194,6 +198,29 @@ TEST_F(AudioSyncMatchTest, ImportDecodesSamplesInTheBackground)
 
     ASSERT_TRUE(waitFor([&] { return !audioSync.audioSamplesPending(); }));
     EXPECT_TRUE(audioSync.hasAudioSamples(tone.toStdString()));
+
+    // The samples are the file's, served from a memory-mapped cache with
+    // their waveform peaks already built (off the UI thread).
+    rt::AudioFile direct;
+    ASSERT_TRUE(direct.open(tone.toStdString()));
+    const std::vector<float> expected = direct.readAll();
+    const rt::AudioSampleData* loaded = audioSync.voiceAudioSamples(tone);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->sampleRate, 44100u);
+    EXPECT_TRUE(loaded->samples.isMapped());
+    EXPECT_TRUE(loaded->samples.hasBlockPeaks());
+    ASSERT_EQ(loaded->samples.size(), expected.size());
+    EXPECT_TRUE(std::equal(loaded->samples.begin(), loaded->samples.end(), expected.begin()));
+
+    // A second panel loads the same file from the cache, mapped as well.
+    rt::AudioSync again;
+    ASSERT_TRUE(again.importAudio(tone.toStdString()));
+    ASSERT_TRUE(waitFor([&] { return !again.audioSamplesPending(); }));
+    const rt::AudioSampleData* cached = again.voiceAudioSamples(tone);
+    ASSERT_NE(cached, nullptr);
+    EXPECT_TRUE(cached->samples.isMapped());
+    ASSERT_EQ(cached->samples.size(), expected.size());
+    EXPECT_TRUE(std::equal(cached->samples.begin(), cached->samples.end(), expected.begin()));
 }
 
 TEST_F(AudioSyncMatchTest, PanelClosedMidDecodeIsSafe)

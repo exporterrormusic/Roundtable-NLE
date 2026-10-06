@@ -33,7 +33,7 @@ protected:
     {
         ManualMatchDialog::AudioData data;
         data.sampleRate = 48000;
-        data.samples.assign(48000 * 10, 0.0f);   // 10 s of silence
+        data.pcm = SampleBuffer(std::vector<float>(48000 * 10, 0.0f));   // 10 s of silence
         m_dlg = std::make_unique<ManualMatchDialog>(
             "Announcer", "Line", 1, std::vector<std::string>{"take.wav"},
             std::unordered_map<std::string, ManualMatchDialog::AudioData>{{"take.wav", data}},

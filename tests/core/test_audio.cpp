@@ -7,6 +7,13 @@
  */
 
 #include <gtest/gtest.h>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <atomic>
 #include <cmath>
 #include <vector>
@@ -196,10 +203,17 @@ cleanup:
 }
 #endif
 
-// Temp directory for test files
+// Temp directory for test files. One per process: ctest runs the cases as
+// parallel processes, and each process's cleanup removes its directory.
 std::filesystem::path testTempDir()
 {
-    auto dir = std::filesystem::temp_directory_path() / "roundtable_test_audio";
+#ifdef _WIN32
+    const auto pid = static_cast<long long>(_getpid());
+#else
+    const auto pid = static_cast<long long>(getpid());
+#endif
+    auto dir = std::filesystem::temp_directory_path() /
+               ("roundtable_test_audio_" + std::to_string(pid));
     std::filesystem::create_directories(dir);
     return dir;
 }

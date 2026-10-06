@@ -244,7 +244,7 @@ ManualMatchDialog::ManualMatchDialog(
             installFullFileSource();
             auto frame = static_cast<int64_t>(t * m_fullFileRate);
             frame = std::clamp(frame, int64_t(0),
-                               static_cast<int64_t>(m_fullFile->size()) - 1);
+                               static_cast<int64_t>(m_fullFile.size()) - 1);
             m_audioEngine->scrub(frame, 4096);
         }
     });
@@ -417,7 +417,7 @@ void ManualMatchDialog::loadFileIntoWaveform(const std::string& path)
     m_currentFile = path;
     auto it = m_audioSamples.find(path);
     if (it != m_audioSamples.end()) {
-        m_waveform->setAudioShared(&it->second.pcm(), it->second.sampleRate);
+        m_waveform->setAudioShared(it->second.pcm, it->second.sampleRate);
 
         // Set confirmed/tentative regions for this file
         auto cIt = m_confirmedByFile.find(path);
@@ -487,12 +487,13 @@ void ManualMatchDialog::setEditRange(const QString& title, const QString& confir
 
 void ManualMatchDialog::setupFullFileSource()
 {
-    m_fullFile = nullptr;   // never left pointing at the previous file
+    if (m_audioEngine) m_audioEngine->clearTrackSources();   // reads m_fullFile
+    m_fullFile.reset();
     if (!m_audioEngine) return;
     auto it = m_audioSamples.find(m_currentFile);
     if (it == m_audioSamples.end()) return;
     const auto& audioData = it->second;
-    const std::vector<float>& pcm = audioData.pcm();
+    const SampleBuffer& pcm = audioData.pcm;
 
     double srcRate = static_cast<double>(audioData.sampleRate);
     m_fullFileRate = static_cast<double>(m_audioEngine->config().sampleRate);
@@ -502,25 +503,23 @@ void ManualMatchDialog::setupFullFileSource()
         double ratio = m_fullFileRate / srcRate;
         auto newSize = static_cast<size_t>(
             static_cast<double>(pcm.size()) * ratio) + 1;
-        m_fullFileBuffer.resize(newSize);
-        m_fullFile = &m_fullFileBuffer;
+        std::vector<float> resampled(newSize);
         for (size_t j = 0; j < newSize; ++j) {
             double srcPos = static_cast<double>(j) / ratio;
             auto idx = static_cast<size_t>(srcPos);
             float frac = static_cast<float>(srcPos - static_cast<double>(idx));
             if (idx + 1 < pcm.size())
-                m_fullFileBuffer[j] = pcm[idx] * (1.0f - frac)
-                                    + pcm[idx + 1] * frac;
+                resampled[j] = pcm[idx] * (1.0f - frac)
+                             + pcm[idx + 1] * frac;
             else if (idx < pcm.size())
-                m_fullFileBuffer[j] = pcm[idx];
+                resampled[j] = pcm[idx];
             else
-                m_fullFileBuffer[j] = 0.0f;
+                resampled[j] = 0.0f;
         }
+        m_fullFile = SampleBuffer(std::move(resampled));
     } else {
         // Same rate: play the samples directly instead of copying them.
-        m_fullFileBuffer.clear();
-        m_fullFileBuffer.shrink_to_fit();
-        m_fullFile = &pcm;
+        m_fullFile = pcm;
         m_fullFileRate = srcRate;
     }
 
@@ -533,8 +532,8 @@ void ManualMatchDialog::installFullFileSource()
 
     AudioTrackSource src;
     src.trackId     = 9999;
-    src.samples     = m_fullFile->data();
-    src.totalFrames = static_cast<int64_t>(m_fullFile->size());
+    src.samples     = m_fullFile.data();
+    src.totalFrames = static_cast<int64_t>(m_fullFile.size());
     src.startFrame  = 0;
     src.channels    = 1;
     src.sampleRate  = static_cast<uint32_t>(m_fullFileRate);
@@ -611,8 +610,8 @@ ManualMatchDialog::~ManualMatchDialog()
 {
     stopPreviewPlayback();
     if (m_audioEngine) {
-        // The installed source contains a raw pointer into
-        // m_fullFileBuffer, so remove it before that buffer is destroyed.
+        // The installed source contains a raw pointer into m_fullFile,
+        // so remove it before those samples are released.
         m_audioEngine->clearTrackSources();
         m_audioEngine->setSyncClock(m_savedSyncClock);
     }
@@ -649,7 +648,7 @@ void ManualMatchDialog::startPreviewPlayback()
     // Just seek to the right frame and play.
     auto seekFrame = static_cast<int64_t>(playFrom * m_fullFileRate);
     seekFrame = std::clamp(seekFrame, int64_t(0),
-                           static_cast<int64_t>(m_fullFile->size()) - 1);
+                           static_cast<int64_t>(m_fullFile.size()) - 1);
 
     m_audioEngine->stop();
     // Reinstall our source on every start.  AudioEngine is shared across
@@ -704,7 +703,7 @@ void ManualMatchDialog::stepFrame(int direction)
     if (m_audioEngine && hasFullFile()) {
         installFullFileSource();
         auto frame = static_cast<int64_t>(t * m_fullFileRate);
-        frame = std::clamp(frame, int64_t(0), static_cast<int64_t>(m_fullFile->size()) - 1);
+        frame = std::clamp(frame, int64_t(0), static_cast<int64_t>(m_fullFile.size()) - 1);
         m_audioEngine->scrub(frame, static_cast<int64_t>(frameDuration() * m_fullFileRate));
     }
 }
@@ -720,7 +719,7 @@ void ManualMatchDialog::startSlowPlayback(int direction)
 
     auto seekFrame = static_cast<int64_t>(from * m_fullFileRate);
     seekFrame = std::clamp(seekFrame, int64_t(0),
-                           static_cast<int64_t>(m_fullFile->size()) - 1);
+                           static_cast<int64_t>(m_fullFile.size()) - 1);
     m_audioEngine->stop();
     installFullFileSource();
     m_audioEngine->seekToFrame(seekFrame);

@@ -8,6 +8,7 @@
 
 #include "audio/AudioEngine.h"
 #include "audio/AudioFile.h"
+#include "PathUtils.h"
 #include "widgets/MiniWaveformWidget.h"
 #include "MediaTaskQueue.h"
 #include "NotificationCenter.h"
@@ -24,6 +25,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <vector>
@@ -63,86 +66,133 @@ struct AudioCacheHeader {
     int64_t  sourceModTime = 0;  // msecs since epoch
 };
 
-static bool readAudioCache(const std::string& sourcePath,
-                           std::vector<float>& outSamples,
-                           uint32_t& outSampleRate)
+static QString audioCachePath(const std::string& sourcePath)
 {
-    QFileInfo srcInfo(QString::fromStdString(sourcePath));
-    if (!srcInfo.exists()) return false;
-
-    QString cachePath = audioCacheDir() + "/" + audioCacheKey(sourcePath) + ".pcm";
-    QFile cacheFile(cachePath);
-    if (!cacheFile.open(QIODevice::ReadOnly))
-        return false;
-
-    AudioCacheHeader hdr{};
-    if (cacheFile.read(reinterpret_cast<char*>(&hdr), sizeof(hdr)) != sizeof(hdr))
-        return false;
-    if (hdr.magic != 0x52544157 || hdr.version != 1)
-        return false;
-
-    // Validate source hasn't changed
-    if (hdr.sourceSize != srcInfo.size())
-        return false;
-    if (hdr.sourceModTime != srcInfo.lastModified().toMSecsSinceEpoch())
-        return false;
-
-    if (hdr.numSamples == 0) return false;
-
-    outSamples.resize(static_cast<size_t>(hdr.numSamples));
-    qint64 dataBytes = static_cast<qint64>(hdr.numSamples * sizeof(float));
-    if (cacheFile.read(reinterpret_cast<char*>(outSamples.data()), dataBytes) != dataBytes)
-        return false;
-
-    outSampleRate = hdr.sampleRate;
-    return true;
+    return audioCacheDir() + "/" + audioCacheKey(sourcePath) + ".pcm";
 }
 
-static void writeAudioCache(const std::string& sourcePath,
-                             const std::vector<float>& samples,
-                             uint32_t sampleRate)
+/// The cached mono samples for `sourcePath`, memory-mapped, if the cache is
+/// there and still matches the source file's size and modification time.
+static std::optional<AudioSampleData> readAudioCache(const std::string& sourcePath)
 {
     QFileInfo srcInfo(QString::fromStdString(sourcePath));
-    if (!srcInfo.exists() || samples.empty()) return;
+    if (!srcInfo.exists()) return std::nullopt;
 
-    // QSaveFile: a reader (or a crash) never sees a half-written cache.
-    QString cachePath = audioCacheDir() + "/" + audioCacheKey(sourcePath) + ".pcm";
-    QSaveFile cacheFile(cachePath);
-    if (!cacheFile.open(QIODevice::WriteOnly))
-        return;
-
+    const QString cachePath = audioCachePath(sourcePath);
     AudioCacheHeader hdr{};
-    hdr.sampleRate    = sampleRate;
-    hdr.numSamples    = samples.size();
-    hdr.sourceSize    = srcInfo.size();
-    hdr.sourceModTime = srcInfo.lastModified().toMSecsSinceEpoch();
+    {
+        QFile cacheFile(cachePath);
+        if (!cacheFile.open(QIODevice::ReadOnly))
+            return std::nullopt;
+        if (cacheFile.read(reinterpret_cast<char*>(&hdr), sizeof(hdr)) != sizeof(hdr))
+            return std::nullopt;
+        if (hdr.magic != 0x52544157 || hdr.version != 1)
+            return std::nullopt;
 
-    cacheFile.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
-    cacheFile.write(reinterpret_cast<const char*>(samples.data()),
-                    static_cast<qint64>(samples.size() * sizeof(float)));
-    if (!cacheFile.commit())
-        spdlog::warn("AudioSync: could not write waveform cache {}", cachePath.toStdString());
+        // Validate source hasn't changed
+        if (hdr.sourceSize != srcInfo.size())
+            return std::nullopt;
+        if (hdr.sourceModTime != srcInfo.lastModified().toMSecsSinceEpoch())
+            return std::nullopt;
+
+        if (hdr.numSamples == 0) return std::nullopt;
+        if (cacheFile.size() < static_cast<qint64>(sizeof(hdr) + hdr.numSamples * sizeof(float)))
+            return std::nullopt;
+    }
+
+    AudioSampleData asd;
+    asd.sampleRate = hdr.sampleRate;
+    asd.samples = SampleBuffer::mapFile(utf8ToPath(cachePath.toStdString()),
+                                        sizeof(hdr), hdr.numSamples);
+    if (asd.samples.empty()) {
+        // Could not map (address space or handle limits): read it instead.
+        QFile cacheFile(cachePath);
+        if (!cacheFile.open(QIODevice::ReadOnly) || !cacheFile.seek(sizeof(hdr)))
+            return std::nullopt;
+        std::vector<float> samples(static_cast<size_t>(hdr.numSamples));
+        const qint64 dataBytes = static_cast<qint64>(hdr.numSamples * sizeof(float));
+        if (cacheFile.read(reinterpret_cast<char*>(samples.data()), dataBytes) != dataBytes)
+            return std::nullopt;
+        asd.samples = SampleBuffer(std::move(samples));
+    }
+    return asd;
 }
+
+/// Writes the cache while the file decodes, so the samples never have to be
+/// in memory all at once. QSaveFile: a reader (or a crash) never sees a
+/// half-written cache.
+class AudioCacheWriter
+{
+public:
+    bool begin(const std::string& sourcePath, uint32_t sampleRate)
+    {
+        QFileInfo srcInfo(QString::fromStdString(sourcePath));
+        if (!srcInfo.exists()) return false;
+        m_path = audioCachePath(sourcePath);
+        m_file = std::make_unique<QSaveFile>(m_path);
+        if (!m_file->open(QIODevice::WriteOnly)) {
+            m_file.reset();
+            return false;
+        }
+        m_header.sampleRate    = sampleRate;
+        m_header.sourceSize    = srcInfo.size();
+        m_header.sourceModTime = srcInfo.lastModified().toMSecsSinceEpoch();
+        return write(&m_header, sizeof(m_header));   // numSamples patched by finish()
+    }
+
+    bool append(const float* samples, size_t count)
+    {
+        m_header.numSamples += count;
+        return write(samples, count * sizeof(float));
+    }
+
+    bool finish()
+    {
+        if (!m_file || m_failed || m_header.numSamples == 0) return false;
+        if (!m_file->seek(0) || !write(&m_header, sizeof(m_header)) || !m_file->commit()) {
+            spdlog::warn("AudioSync: could not write waveform cache {}", m_path.toStdString());
+            return false;
+        }
+        return true;
+    }
+
+private:
+    bool write(const void* data, size_t bytes)
+    {
+        if (!m_file || m_failed) return false;
+        if (m_file->write(static_cast<const char*>(data), static_cast<qint64>(bytes)) !=
+            static_cast<qint64>(bytes))
+            m_failed = true;
+        return !m_failed;
+    }
+
+    QString                    m_path;
+    std::unique_ptr<QSaveFile> m_file;
+    AudioCacheHeader           m_header{};
+    bool                       m_failed{false};
+};
 
 namespace {
 
 /// Whole-file mono samples for waveforms/analysis. Thread-safe (no AudioSync
-/// state): runs on a MediaTaskQueue worker.
+/// state): runs on a MediaTaskQueue worker. The file decodes straight into
+/// the sample cache, which is then memory-mapped; only when the cache cannot
+/// be written are the samples kept in memory.
 std::optional<AudioSampleData> decodeMonoSamples(const std::string& path,
                                                  const std::stop_token& stop)
 {
+    // Block peaks let full-file waveforms draw without reading every sample;
+    // build them here, off the UI thread.
+    auto withPeaks = [](AudioSampleData asd) {
+        (void)asd.samples.blockPeaks();
+        return asd;
+    };
+
     // Cached mono samples skip the expensive decode.
-    {
-        std::vector<float> cached;
-        uint32_t cachedRate = 0;
-        if (readAudioCache(path, cached, cachedRate)) {
-            spdlog::info("AudioSync: Loaded {} samples ({}Hz) from cache for {}",
-                         cached.size(), static_cast<int>(cachedRate), path);
-            AudioSampleData asd;
-            asd.sampleRate = cachedRate;
-            asd.samples    = std::move(cached);
-            return asd;
-        }
+    if (auto cached = readAudioCache(path)) {
+        spdlog::info("AudioSync: Loaded {} samples ({}Hz) from cache for {}",
+                     cached->samples.size(), static_cast<int>(cached->sampleRate), path);
+        return withPeaks(std::move(*cached));
     }
     if (stop.stop_requested()) return std::nullopt;
 
@@ -152,38 +202,74 @@ std::optional<AudioSampleData> decodeMonoSamples(const std::string& path,
         return std::nullopt;
     }
 
-    auto info = af.info();
-    auto allSamples = af.readAll();
-    if (allSamples.empty() || info.channels == 0) {
+    const auto info = af.info();
+    if (info.channels == 0) {
         spdlog::warn("AudioSync: Empty audio data from: {}", path);
         return std::nullopt;
     }
-    if (stop.stop_requested()) return std::nullopt;
 
-    // Mix to mono for waveform display
+    // Decode, mixing to mono for waveform display, into `sink`.
     std::vector<float> mono;
-    if (info.channels == 1) {
-        mono = std::move(allSamples);
-    } else {
-        mono.resize(allSamples.size() / info.channels);
-        for (size_t i = 0; i < mono.size(); ++i) {
-            float sum = 0.0f;
-            for (uint32_t ch = 0; ch < info.channels; ++ch)
-                sum += allSamples[i * info.channels + ch];
-            mono[i] = sum / static_cast<float>(info.channels);
+    auto decodeMono = [&](const std::function<bool(const float*, size_t)>& sink) {
+        return af.readAllStreaming([&](const float* samples, int64_t frames) {
+            if (stop.stop_requested()) return false;
+            const float* out = samples;
+            if (info.channels != 1) {
+                mono.resize(static_cast<size_t>(frames));
+                for (size_t i = 0; i < mono.size(); ++i) {
+                    float sum = 0.0f;
+                    for (uint32_t ch = 0; ch < info.channels; ++ch)
+                        sum += samples[i * info.channels + ch];
+                    mono[i] = sum / static_cast<float>(info.channels);
+                }
+                out = mono.data();
+            }
+            return sink(out, static_cast<size_t>(frames));
+        });
+    };
+
+    AudioCacheWriter cache;
+    if (cache.begin(path, info.sampleRate)) {
+        const int64_t frames = decodeMono([&](const float* samples, size_t count) {
+            cache.append(samples, count);   // a failure shows in finish()
+            return true;
+        });
+        if (stop.stop_requested()) return std::nullopt;
+        if (frames > 0 && cache.finish()) {
+            if (auto mapped = readAudioCache(path)) {
+                spdlog::info("AudioSync: Loaded {} samples ({}Hz) from {}",
+                             mapped->samples.size(), static_cast<int>(info.sampleRate), path);
+                return withPeaks(std::move(*mapped));
+            }
         }
-        std::vector<float>().swap(allSamples);
+        if (frames <= 0) {
+            spdlog::warn("AudioSync: Empty audio data from: {}", path);
+            return std::nullopt;
+        }
+        // The cache could not be written or read back: decode again into
+        // memory, from a fresh open (a seek back to the start does not decode
+        // compressed audio exactly like the first pass).
+        af.close();
+        if (!af.open(path)) return std::nullopt;
     }
 
-    // Cache the decoded mono samples for fast reload
-    writeAudioCache(path, mono, info.sampleRate);
+    std::vector<float> all;
+    const int64_t frames = decodeMono([&](const float* samples, size_t count) {
+        all.insert(all.end(), samples, samples + count);
+        return true;
+    });
+    if (stop.stop_requested()) return std::nullopt;
+    if (frames <= 0 || all.empty()) {
+        spdlog::warn("AudioSync: Empty audio data from: {}", path);
+        return std::nullopt;
+    }
 
-    spdlog::info("AudioSync: Loaded {} samples ({}Hz) from {}",
-                 mono.size(), static_cast<int>(info.sampleRate), path);
+    spdlog::info("AudioSync: Loaded {} samples ({}Hz) from {} (not cached)",
+                 all.size(), static_cast<int>(info.sampleRate), path);
     AudioSampleData asd;
-    asd.samples    = std::move(mono);
+    asd.samples    = SampleBuffer(std::move(all));
     asd.sampleRate = info.sampleRate;
-    return asd;
+    return withPeaks(std::move(asd));
 }
 
 /// Task result. `mutable` so the one subscriber can move the samples out
@@ -340,7 +426,6 @@ void AudioSync::cancelAudioSampleDecodes()
 void AudioSync::installAudioSamples(const std::string& path, AudioSampleData decoded)
 {
     if (decoded.samples.empty() || m_audioSamples.count(path)) return;
-    // unordered_map nodes never move: waveforms keep pointing at this entry.
     const AudioSampleData& stored = m_audioSamples[path] = std::move(decoded);
 
     // Cards built before the samples arrived show an empty waveform.
@@ -350,7 +435,7 @@ void AudioSync::installAudioSamples(const std::string& path, AudioSampleData dec
         if (!wf || ci < 0 || static_cast<size_t>(ci) >= m_clips.size()) continue;
         const SyncClip& clip = m_clips[static_cast<size_t>(ci)];
         if (clip.sourceFile != path) continue;
-        wf->setAudioShared(&stored.samples, stored.sampleRate, clip.start, clip.end);
+        wf->setAudioShared(stored.samples, stored.sampleRate, clip.start, clip.end);
         if (!clip.deletedRegions.empty())
             wf->setDeletedRegions(clip.deletedRegions);
     }
@@ -654,14 +739,15 @@ bool AudioSync::loadPreviewAudioForMedia(const std::string& path)
         const auto info = af.info();
         std::vector<float> all = af.readAll();
         if (all.empty() || info.channels == 0) return false;
-        AudioSampleData d;
-        d.sampleRate = info.sampleRate;
-        d.samples.resize(all.size() / info.channels);
-        for (size_t i = 0; i < d.samples.size(); ++i) {
+        std::vector<float> mono(all.size() / info.channels);
+        for (size_t i = 0; i < mono.size(); ++i) {
             float sum = 0.0f;
             for (uint32_t ch = 0; ch < info.channels; ++ch) sum += all[i * info.channels + ch];
-            d.samples[i] = sum / static_cast<float>(info.channels);
+            mono[i] = sum / static_cast<float>(info.channels);
         }
+        AudioSampleData d;
+        d.sampleRate = info.sampleRate;
+        d.samples = SampleBuffer(std::move(mono));
         it = m_mediaAudioCache.emplace(path, std::move(d)).first;
     }
     const auto& data = it->second;

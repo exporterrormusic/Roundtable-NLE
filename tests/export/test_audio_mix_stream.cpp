@@ -304,6 +304,39 @@ TEST(AudioRegionReader, SequentialCompressedReadsDecodeContinuously)
     EXPECT_LE(maxAbsDiff(settledAgain, settledFresh), 1e-3f);
 }
 
+TEST(AudioFileStreaming, CompressedReadAllStreamingMatchesReadAll)
+{
+    TempDir dir;
+    MixdownResult tone;
+    tone.sampleRate = 48000;
+    tone.channels = 2;
+    tone.totalFrames = 48000 * 2 + 333;
+    tone.duration = static_cast<double>(tone.totalFrames) / 48000.0;
+    tone.samples.resize(static_cast<size_t>(tone.totalFrames) * 2);
+    for (size_t i = 0; i < tone.samples.size(); ++i)
+        tone.samples[i] = 0.3f * static_cast<float>(std::sin(0.01 * static_cast<double>(i)));
+    const auto m4a = dir.path() / "tone.m4a";
+    if (!AudioMixdown::writeAudioFile(tone, m4a, AudioCodec::AAC, 128000))
+        GTEST_SKIP() << "AAC encoder unavailable in this FFmpeg build";
+
+    // Fresh files for both: an AAC seek back to the start does not decode
+    // exactly like a fresh open (no decoder pre-roll).
+    AudioFile whole, streaming;
+    ASSERT_TRUE(whole.open(m4a));
+    ASSERT_TRUE(streaming.open(m4a));
+    ASSERT_EQ(streaming.backend(), AudioBackend::FFmpeg);
+    const auto all = whole.readAll();
+    ASSERT_FALSE(all.empty());
+
+    std::vector<float> streamed;
+    const int64_t frames = streaming.readAllStreaming([&](const float* samples, int64_t n) {
+        streamed.insert(streamed.end(), samples, samples + n * 2);
+        return true;
+    });
+    EXPECT_EQ(frames, static_cast<int64_t>(all.size() / 2));
+    EXPECT_EQ(streamed, all);
+}
+
 // ── AudioMixStream ──────────────────────────────────────────────────────────
 
 TEST(AudioMixStream, BlockSizeDoesNotChangeTheMix)

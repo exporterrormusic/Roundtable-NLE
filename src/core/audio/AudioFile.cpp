@@ -505,6 +505,36 @@ std::vector<float> AudioFile::readAll()
     return samples;
 }
 
+int64_t AudioFile::readAllStreaming(const SampleSink& sink)
+{
+    std::lock_guard lock(m_mutex);
+    if (!m_isOpen || !sink) return -1;
+
+#ifdef ROUNDTABLE_HAS_SNDFILE
+    if (m_backend == AudioBackend::Sndfile && m_impl->sndFile) {
+        constexpr sf_count_t kChunkFrames = 65536;
+        std::vector<float> chunk(static_cast<size_t>(kChunkFrames) * m_info.channels);
+        sf_seek(m_impl->sndFile, 0, SEEK_SET);
+        int64_t total = 0;
+        for (;;) {
+            const sf_count_t read = sf_readf_float(m_impl->sndFile, chunk.data(), kChunkFrames);
+            if (read <= 0) break;
+            total += read;
+            if (!sink(chunk.data(), read)) return -1;
+        }
+        return total;
+    }
+#endif
+
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    if (m_backend == AudioBackend::FFmpeg) {
+        return readAllFFmpegStreaming(sink);
+    }
+#endif
+
+    return -1;
+}
+
 // ─── Read region ────────────────────────────────────────────────────────────
 
 int64_t AudioFile::readRegion(int64_t startFrame, int64_t numFrames,
@@ -1055,20 +1085,45 @@ AudioFile::enumerateAudioStreams([[maybe_unused]] const std::filesystem::path& p
 #ifdef ROUNDTABLE_HAS_FFMPEG
 std::vector<float> AudioFile::readAllFFmpeg()
 {
-    if (!m_impl->fmtCtx || !m_impl->codecCtx) return {};
+    std::vector<float> allSamples;
+    allSamples.reserve(static_cast<size_t>(m_info.frames * m_info.channels));
+    const int64_t frames = readAllFFmpegStreaming([&](const float* samples, int64_t count) {
+        allSamples.insert(allSamples.end(), samples,
+                          samples + static_cast<size_t>(count) * m_info.channels);
+        return true;
+    });
+    if (frames < 0) return {};
+    return allSamples;
+}
+
+int64_t AudioFile::readAllFFmpegStreaming(const SampleSink& sink)
+{
+    if (!m_impl->fmtCtx || !m_impl->codecCtx) return -1;
     m_impl->contValid = false;
 
     // Seek to beginning
     av_seek_frame(m_impl->fmtCtx, m_impl->audioStreamIdx, 0, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(m_impl->codecCtx);
 
-    std::vector<float> allSamples;
-    allSamples.reserve(static_cast<size_t>(m_info.frames * m_info.channels));
-
     AVPacket* packet = av_packet_alloc();
     AVFrame*  frame  = av_frame_alloc();
+    std::vector<float> converted;
+    int64_t total = 0;
+    bool stopped = false;
 
-    while (av_read_frame(m_impl->fmtCtx, packet) >= 0) {
+    auto deliver = [&]() {
+        while (!stopped && avcodec_receive_frame(m_impl->codecCtx, frame) == 0) {
+            converted.clear();
+            convertAndAppendFrame(m_impl->swrCtx, frame, m_info.channels, converted);
+            const int64_t frames = static_cast<int64_t>(converted.size() / m_info.channels);
+            if (frames > 0) {
+                total += frames;
+                if (!sink(converted.data(), frames)) stopped = true;
+            }
+        }
+    };
+
+    while (!stopped && av_read_frame(m_impl->fmtCtx, packet) >= 0) {
         if (packet->stream_index != m_impl->audioStreamIdx) {
             av_packet_unref(packet);
             continue;
@@ -1078,27 +1133,25 @@ std::vector<float> AudioFile::readAllFFmpeg()
         av_packet_unref(packet);
         if (ret < 0) continue;
 
-        while (avcodec_receive_frame(m_impl->codecCtx, frame) == 0) {
-            convertAndAppendFrame(m_impl->swrCtx, frame, m_info.channels, allSamples);
-        }
+        deliver();
     }
 
     // Flush decoder
-    avcodec_send_packet(m_impl->codecCtx, nullptr);
-    while (avcodec_receive_frame(m_impl->codecCtx, frame) == 0) {
-        convertAndAppendFrame(m_impl->swrCtx, frame, m_info.channels, allSamples);
+    if (!stopped) {
+        avcodec_send_packet(m_impl->codecCtx, nullptr);
+        deliver();
     }
 
     av_frame_free(&frame);
     av_packet_free(&packet);
+    if (stopped) return -1;
 
     // Update actual frame count
-    m_info.frames = static_cast<int64_t>(allSamples.size()) / m_info.channels;
+    m_info.frames = total;
     m_info.duration = (m_info.sampleRate > 0)
                         ? static_cast<double>(m_info.frames) / m_info.sampleRate
                         : 0.0;
-
-    return allSamples;
+    return total;
 }
 
 int64_t AudioFile::readRegionFFmpeg(int64_t startFrame, int64_t numFrames,
