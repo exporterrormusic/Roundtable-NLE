@@ -67,6 +67,10 @@ struct SwsCacheRef {
 /// `pool` non-null → pixel buffer comes from the recycling pool; null →
 /// plain vector resize.  Returns false when no conversion was possible
 /// (sws_getContext failed); `cached` is left with empty pixels in that case.
+/// `swsThreads` is the conversion's thread count (ThreadedSws.h): 1 for the
+/// prefetch workers, which already run side by side; 0 (one per core) for a
+/// lone stream such as the export / scrub decoder. Keep it constant per
+/// cached context — it is not part of the cache key.
 bool convertDecodedToBgra(const DecodedFrame& decoded,
                           int srcFmt,
                           int dstW, int dstH,
@@ -74,6 +78,7 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
                           const std::filesystem::path& sourceFile,
                           SwsCacheRef sws,
                           PixelBufferPool* pool,
-                          CachedFrame& cached);
+                          CachedFrame& cached,
+                          int swsThreads = 1);
 
 } // namespace rt

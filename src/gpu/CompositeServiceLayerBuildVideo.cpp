@@ -78,9 +78,8 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         return nullptr;
     }
 
-    // During export (forceFullRes), first try the cache via tryGetFrame
-    // — this sets the playhead + extends the interactive playback window
-    // (unlike getFrame with scrubMode=true which skips both).  If the
+    // During export (forceFullRes), first try the cache — this sets the
+    // playhead (unlike getFrame with scrubMode=true).  If the
     // exact frame IS cached, return it instantly.  Otherwise fall through
     // to blocking getFrame with forceExact=true: it skips the ±N nearby-
     // frame fallback (which would otherwise hand back the PREVIOUS frame
@@ -90,7 +89,10 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
     // won't thrash-evict.  Also reject alternate-tier fallback frames
     // (e.g. Half when Full was requested) — export always wants full quality.
     if (forceFullResolution) {
-        auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
+        // peekExactFrame, not tryGetExactFrame: a miss there queued a
+        // background decode of this same frame, which then ran alongside
+        // the blocking decode below — every export frame decoded twice.
+        auto frame = m_mediaPool->peekExactFrame(handle, frameNumber, tier);
         // Reject loop-pre-decoded cache entries during export.  The loop
         // pre-decoder (MediaPoolPrefetchLoop) seeks with SeekMode::Precise
         // and labels frames sequentially.  Precise seek used to FLUSH the

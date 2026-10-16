@@ -52,6 +52,11 @@ public:
         const std::shared_ptr<const RenderSnapshot>& snapshot,
         int64_t tick, const std::shared_ptr<CachedFrame>& frame);
 
+    /// Release the media pool's export decoders once a queue run is over.
+    /// Call from the UI thread while the pool is alive — never from the
+    /// destructor, which can run after App has destroyed the pool.
+    void releaseMediaDecoders();
+
 private:
     void ensureInitialized();
     void bindSnapshot(const std::shared_ptr<const RenderSnapshot>& snapshot);

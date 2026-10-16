@@ -684,6 +684,10 @@ void ExportPanel::setRunningUiState(bool running)
         m_renderQueue->setSnapshotResourcePreflightCallback({});
         m_renderQueue->setSnapshotFrameRenderResultCallback({});
         m_renderQueue->setSnapshotFrameStoreCallback({});
+        // The run is over, so its decoders can go; the pool is alive here
+        // (unlike in the session's destructor during app shutdown).
+        if (m_exportRenderSession && !m_destroying.load(std::memory_order_acquire))
+            m_exportRenderSession->releaseMediaDecoders();
         // Drop the UI's session reference first; executor cleanup then destroys
         // the final owner on the render thread before joining it.
         m_exportRenderSession.reset();
@@ -771,18 +775,20 @@ void ExportPanel::onPollProgress()
         }
     }
 
-    // Update preview with the current frame being rendered (video only —
-    // an audio-only export has no frames to composite).
-    if (!j->config.audioOnly && m_previewCallback && m_timeline && m_previewImageLabel) {
+    // Update preview with the frame the export just rendered (video only —
+    // an audio-only export has no frames). It used to composite the tick
+    // again here at full resolution: a second render running beside the
+    // export, seeking the export's decoders back ten times a second.
+    if (!j->config.audioOnly && m_previewImageLabel) {
         int64_t frameIdx = curFrame + j->config.startFrame;
         const int64_t tick = frameIndexToTick(
             frameIdx, j->config.encoderConfig.fpsNum,
             std::max<uint32_t>(j->config.encoderConfig.fpsDen, 1u));
 
-        uint32_t prevW = static_cast<uint32_t>(j->config.outputWidth);
-        uint32_t prevH = static_cast<uint32_t>(j->config.outputHeight);
-        auto frame = m_previewCallback(tick, prevW, prevH, true);
-        if (frame && frame->ensurePixels() && frame->width > 0 && frame->height > 0) {
+        // Pixels are already on the CPU (the worker encoded them), so no
+        // ensurePixels() — its lazy readback is not safe off the render thread.
+        auto frame = m_renderQueue->latestFrame();
+        if (frame && !frame->pixels.empty() && frame->width > 0 && frame->height > 0) {
             uint32_t stride = frame->stride > 0 ? frame->stride : frame->width * 4;
             QImage img(frame->pixels.data(), static_cast<int>(frame->width),
                        static_cast<int>(frame->height), static_cast<int>(stride),

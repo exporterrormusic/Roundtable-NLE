@@ -96,7 +96,7 @@ std::shared_ptr<CachedFrame> MediaPool::convertDecodedToCache(
                 task.info, task.filePath,
                 SwsCacheRef{state.swsCtx, state.swsSrcW, state.swsSrcH,
                             state.swsSrcFmt, state.swsDstW, state.swsDstH},
-                pool.get(), *cached))
+                pool.get(), *cached, state.swsThreads))
         {
             return nullptr;   // sws_getContext failed
         }

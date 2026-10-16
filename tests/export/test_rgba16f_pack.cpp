@@ -18,6 +18,7 @@
 
 #include "Rgba16fPack.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -239,6 +240,67 @@ TEST(PackChroma, Yuv422HalfWidthBoxAverage)
     EXPECT_EQ(vv[0], quantizeC10((r - Y) / 1.5748f));
     // Luma stays full-resolution (two distinct samples).
     EXPECT_NE(y[0], y[1]);
+}
+
+
+TEST(PackThreads, LargeFrameMatchesStripByStripPacking)
+{
+    // A 4K-class frame is packed on several threads in row bands. Packing
+    // the same image as 32-row strips (each too small to split) must give
+    // identical planes for every target, including the odd last row.
+    constexpr int W = 1920, H = 1081, kStrip = 32;
+    std::vector<uint16_t> src(static_cast<size_t>(W) * H * 4);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            uint16_t* p = &src[(static_cast<size_t>(y) * W + x) * 4];
+            p[0] = f2h(((x * 7 + y * 3) % 256) / 255.0f);
+            p[1] = f2h(((x + y * 11) % 256) / 255.0f);
+            p[2] = f2h((((x / 5) ^ (y / 3)) % 256) / 255.0f);
+            p[3] = f2h(((x * y) % 256) / 255.0f);
+        }
+    const int strideBytes = W * 4 * 2;
+
+    for (PackTarget target : {PackTarget::P010LE, PackTarget::YUV422P10LE,
+                              PackTarget::YUV444P10LE, PackTarget::YUVA444P10LE}) {
+        const bool p010 = target == PackTarget::P010LE;
+        const int subX = (target == PackTarget::YUV422P10LE || p010) ? 2 : 1;
+        const int subY = p010 ? 2 : 1;
+        const int chromaW = (W + subX - 1) / subX, chromaH = (H + subY - 1) / subY;
+        const int uWords = p010 ? chromaW * 2 : chromaW;
+
+        struct Planes { std::vector<uint16_t> y, u, v, a; };
+        auto alloc = [&] {
+            Planes p;
+            p.y.assign(static_cast<size_t>(W) * H, 0);
+            p.u.assign(static_cast<size_t>(uWords) * chromaH, 0);
+            p.v.assign(static_cast<size_t>(chromaW) * chromaH, 0);
+            p.a.assign(static_cast<size_t>(W) * H, 0);
+            return p;
+        };
+        auto planesAt = [&](Planes& p, int row) {
+            PackPlanes d;
+            d.y = p.y.data() + static_cast<size_t>(row) * W;              d.yStride = W * 2;
+            d.u = p.u.data() + static_cast<size_t>(row / subY) * uWords;  d.uStride = uWords * 2;
+            d.v = p010 ? nullptr : p.v.data() + static_cast<size_t>(row / subY) * chromaW;
+            d.vStride = chromaW * 2;
+            if (target == PackTarget::YUVA444P10LE) {
+                d.a = p.a.data() + static_cast<size_t>(row) * W;          d.aStride = W * 2;
+            }
+            return d;
+        };
+
+        Planes whole = alloc(), strips = alloc();
+        packRgba16fToYuv(src.data(), strideBytes, W, H, target, planesAt(whole, 0));
+        for (int row = 0; row < H; row += kStrip) {
+            const int rows = std::min(kStrip, H - row);
+            packRgba16fToYuv(src.data() + static_cast<size_t>(row) * W * 4, strideBytes,
+                             W, rows, target, planesAt(strips, row));
+        }
+        EXPECT_EQ(whole.y, strips.y) << static_cast<int>(target);
+        EXPECT_EQ(whole.u, strips.u) << static_cast<int>(target);
+        EXPECT_EQ(whole.v, strips.v) << static_cast<int>(target);
+        EXPECT_EQ(whole.a, strips.a) << static_cast<int>(target);
+    }
 }
 
 } // namespace

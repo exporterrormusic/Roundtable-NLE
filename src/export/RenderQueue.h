@@ -259,6 +259,13 @@ public:
     /// same mutex).  Returns "" if the job doesn't exist.
     [[nodiscard]] std::string jobStatusText(uint32_t jobId) const;
 
+    /// The frame the running export composited most recently (CPU BGRA
+    /// pixels present), for the Export panel's progress preview. Showing it
+    /// replaces a second full-resolution render of the same tick, which ran
+    /// beside the export and pulled its decoders off their sequential
+    /// position ten times a second. Null before the first frame.
+    [[nodiscard]] std::shared_ptr<const CachedFrame> latestFrame() const;
+
     /// Number of queued/running jobs.
     [[nodiscard]] size_t pendingCount() const;
 
@@ -345,6 +352,7 @@ private:
     // shifted elements on erase while the worker held a raw pointer).
     mutable std::mutex          m_mutex;
     std::vector<std::shared_ptr<ExportJob>> m_jobs;
+    std::shared_ptr<const CachedFrame> m_latestFrame;   ///< guarded by m_mutex
     uint32_t                    m_nextJobId{1};
     std::atomic<bool>           m_running{false};
     std::atomic<bool>           m_cancelAll{false};

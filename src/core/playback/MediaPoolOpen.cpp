@@ -4,6 +4,7 @@
  */
 
 #include "MediaPool.h"
+#include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
 
 #include <cstring>
@@ -348,6 +349,8 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
 
 void MediaPool::retireScrubDecoder(MediaHandle handle)
 {
+    retireExportDecoder(handle);
+
     std::shared_ptr<ScrubDecoderSlot> slot;
     {
         std::lock_guard mapLock(m_scrubDecodersMutex);
@@ -361,19 +364,13 @@ void MediaPool::retireScrubDecoder(MediaHandle handle)
     // A concurrent caller may already hold this slot. Wait for its complete
     // decode/convert operation before releasing the decoder or SwsContext.
     std::lock_guard stateLock(slot->mutex);
-    slot->retired = true;
-#ifdef ROUNDTABLE_HAS_FFMPEG
-    if (slot->state.swsCtx) {
-        sws_freeContext(static_cast<SwsContext*>(slot->state.swsCtx));
-        slot->state.swsCtx = nullptr;
-    }
-#endif
-    slot->state.decoder.reset();
-    slot->state.lastDecodedFrame = -1;
+    retireSlotLocked(*slot);
 }
 
 void MediaPool::retireAllScrubDecoders()
 {
+    releaseExportDecoders();
+
     std::vector<std::shared_ptr<ScrubDecoderSlot>> slots;
     {
         std::lock_guard mapLock(m_scrubDecodersMutex);
@@ -388,15 +385,45 @@ void MediaPool::retireAllScrubDecoders()
     for (auto& slot : slots) {
         if (!slot) continue;
         std::lock_guard stateLock(slot->mutex);
-        slot->retired = true;
-#ifdef ROUNDTABLE_HAS_FFMPEG
-        if (slot->state.swsCtx) {
-            sws_freeContext(static_cast<SwsContext*>(slot->state.swsCtx));
-            slot->state.swsCtx = nullptr;
+        retireSlotLocked(*slot);
+    }
+}
+
+void MediaPool::retireExportDecoder(MediaHandle handle)
+{
+    std::shared_ptr<ScrubDecoderSlot> slot;
+    {
+        std::lock_guard mapLock(m_exportDecodersMutex);
+        auto it = m_exportDecoders.find(handle);
+        if (it == m_exportDecoders.end())
+            return;
+        slot = std::move(it->second);
+        m_exportDecoders.erase(it);
+        auto& recency = m_exportDecoderRecency;
+        recency.erase(std::remove(recency.begin(), recency.end(), handle),
+                      recency.end());
+    }
+    std::lock_guard stateLock(slot->mutex);
+    retireSlotLocked(*slot);
+}
+
+void MediaPool::releaseExportDecoders()
+{
+    std::vector<std::shared_ptr<ScrubDecoderSlot>> slots;
+    {
+        std::lock_guard mapLock(m_exportDecodersMutex);
+        slots.reserve(m_exportDecoders.size());
+        for (auto& [handle, slot] : m_exportDecoders) {
+            (void)handle;
+            slots.push_back(std::move(slot));
         }
-#endif
-        slot->state.decoder.reset();
-        slot->state.lastDecodedFrame = -1;
+        m_exportDecoders.clear();
+        m_exportDecoderRecency.clear();
+    }
+    for (auto& slot : slots) {
+        if (!slot) continue;
+        std::lock_guard stateLock(slot->mutex);
+        retireSlotLocked(*slot);
     }
 }
 

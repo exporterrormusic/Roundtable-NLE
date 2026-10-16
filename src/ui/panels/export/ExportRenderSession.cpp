@@ -374,4 +374,10 @@ bool ExportRenderSession::storeFrame(
     return true;
 }
 
+void ExportRenderSession::releaseMediaDecoders()
+{
+    if (m_dependencies.mediaPool)
+        m_dependencies.mediaPool->releaseExportDecoders();
+}
+
 } // namespace rt

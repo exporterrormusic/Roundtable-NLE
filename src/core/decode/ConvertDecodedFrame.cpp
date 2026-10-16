@@ -8,6 +8,7 @@
 
 #include "cache/FrameCache.h"     // CachedFrame
 #include "decode/PixelOps.h"      // clearTransparentPixelRGB + chromaKeyInPlace
+#include "decode/ThreadedSws.h"
 #include "playback/MediaPool.h"      // PixelBufferPool
 #include "decode/VideoDecoder.h"   // DecodedFrame, VideoStreamInfo
 
@@ -80,7 +81,8 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
                           const std::filesystem::path& sourceFile,
                           SwsCacheRef sws,
                           PixelBufferPool* pool,
-                          CachedFrame& cached)
+                          CachedFrame& cached,
+                          int swsThreads)
 {
     const int w = static_cast<int>(decoded.width);
     const int h = static_cast<int>(decoded.height);
@@ -109,10 +111,8 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
                 sws_freeContext(static_cast<SwsContext*>(sws.ctx));
                 sws.ctx = nullptr;
             }
-            ctx = sws_getContext(
-                w, h, static_cast<AVPixelFormat>(srcFmt),
-                dstW, dstH, AV_PIX_FMT_BGRA,
-                SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+            ctx = createSwsContext(w, h, srcFmt, dstW, dstH, AV_PIX_FMT_BGRA,
+                                   SWS_FAST_BILINEAR, swsThreads);
             if (ctx) {
                 // Per-source colourspace (Phase 4.1).  swscale defaults to
                 // BT.601 for everything; instead we derive the matrix + range
@@ -162,8 +162,8 @@ bool convertDecodedToBgra(const DecodedFrame& decoded,
 
         uint8_t* dstData[1] = { cached.pixels.data() };
         int dstLinesize[1]  = { static_cast<int>(cached.stride) };
-        sws_scale(ctx, decoded.data, decoded.linesize, 0, h,
-                  dstData, dstLinesize);
+        swsScaleWhole(ctx, decoded.data, decoded.linesize, w, h, srcFmt,
+                      dstData, dstLinesize, dstW, dstH, AV_PIX_FMT_BGRA);
     }
 
     // ── Clear transparent-pixel RGB for native-alpha video ──────────────

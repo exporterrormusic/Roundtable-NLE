@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <deque>
 #include <iterator>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -221,6 +222,31 @@ inline void resetPrefetchConversionState(PrefetchDecoderState& state)
 bool reopenPrefetchDecoder(PrefetchDecoderState& state,
                             const PrefetchTask& task,
                             bool forceSoftware);
+
+/// Frame threads for an export decoder's software decode: the logical core
+/// count, capped at 8 — each frame thread holds a decoded frame, and a
+/// frame rarely has more than a few video layers decoding at once.
+inline int exportDecodeThreads() noexcept
+{
+    const unsigned cores = std::thread::hardware_concurrency();
+    return static_cast<int>(std::clamp(cores, 2u, 8u));
+}
+
+/// Free a scrub/export slot's decoder state; call with slot.mutex held.
+/// `retired` stops a caller that still holds the slot from reopening it.
+inline void retireSlotLocked(ScrubDecoderSlot& slot)
+{
+    slot.retired = true;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    if (slot.state.swsCtx) {
+        sws_freeContext(static_cast<SwsContext*>(slot.state.swsCtx));
+        slot.state.swsCtx = nullptr;
+    }
+#endif
+    slot.state.decoder.reset();
+    slot.state.lastDecodedFrame = -1;
+    slot.lastExactFrame.reset();
+}
 
 inline bool reopenPrefetchDecoderAsSoftware(PrefetchDecoderState& state,
                                      const PrefetchTask& task)

@@ -195,6 +195,20 @@ struct PrefetchDecoderState
     /// causes catastrophic SW decode of large packed-alpha frames.  We
     /// only fall back after multiple consecutive slow frames.
     int                            consecutiveSlowHwFrames{0};
+    /// swscale thread count for this decoder's CPU convert (ThreadedSws.h):
+    /// 1 for prefetch workers, 0 (one per core) for the lone scrub/export
+    /// decoders.
+    int                            swsThreads{1};
+    /// Export decoder: a full-quality sequential stream. It never falls back
+    /// to the slow-hardware software path, and a software decode runs on
+    /// frame threads.
+    bool                           exportDecoder{false};
+    /// Software decode is frame-threaded. Such a decoder is reopened instead
+    /// of flushed when it has to seek (see decodePrefetchFrame).
+    bool                           frameThreaded{false};
+    /// Seeks this frame-threaded decoder has made; past a few (a reversed
+    /// clip seeks every frame) it reopens slice-threaded for good.
+    int                            frameThreadedSeeks{0};
 };
 
 /// One serialized on-demand decoder for a media handle. Exact export and
@@ -207,6 +221,10 @@ struct ScrubDecoderSlot
     std::mutex           mutex;
     PrefetchDecoderState state;
     bool                 retired{false};
+    /// Export slots only: the frame the last exact request returned. A
+    /// source frame repeats when a 24p clip sits in a 30p sequence or a clip
+    /// is slowed down; answering the repeat from here saves a keyframe seek.
+    std::shared_ptr<CachedFrame> lastExactFrame;
 };
 
 class MediaPool
@@ -335,6 +353,18 @@ public:
     [[nodiscard]] std::shared_ptr<CachedFrame> tryGetExactFrame(
         MediaHandle handle, int64_t frameNumber,
         ResolutionTier tier = ResolutionTier::Full);
+
+    /// Exact cache lookup with no side effects beyond marking the playhead:
+    /// a miss schedules nothing. Export uses it before its own blocking
+    /// decode — tryGetExactFrame's miss queued a background decode of the
+    /// same frame, so every export frame was decoded twice.
+    [[nodiscard]] std::shared_ptr<CachedFrame> peekExactFrame(
+        MediaHandle handle, int64_t frameNumber,
+        ResolutionTier tier = ResolutionTier::Full);
+
+    /// Release the export decoders (forceExact getFrame). Call when an
+    /// export run ends; they also give way to each other on an LRU cap.
+    void releaseExportDecoders();
 
     /// Schedule background decode-ahead for sequential playback.
     /// Called automatically by getFrame on sequential access.
@@ -736,6 +766,20 @@ private:
     std::shared_ptr<ScrubDecoderSlot> getScrubDecoder(MediaHandle handle);
     void retireScrubDecoder(MediaHandle handle);
     void retireAllScrubDecoders();
+
+    // ── Export decoders ─────────────────────────────────────────────────
+    // forceExact (export) requests decode on their own slots, so export and
+    // interactive scrub never seek one shared decoder back and forth, and a
+    // software export decode can use frame threads. Capped by LRU: a frame
+    // rarely has more than a few video layers, and each frame-threaded
+    // decoder holds several frames.
+    static constexpr size_t kMaxExportDecoders = 6;
+    mutable std::mutex m_exportDecodersMutex;
+    std::unordered_map<MediaHandle, std::shared_ptr<ScrubDecoderSlot>>
+        m_exportDecoders;
+    std::vector<MediaHandle> m_exportDecoderRecency;   ///< oldest first
+    std::shared_ptr<ScrubDecoderSlot> getExportDecoder(MediaHandle handle);
+    void retireExportDecoder(MediaHandle handle);
 
     // Real-time preview requests extend this deadline so opportunistic
     // background work can back off during cold playback startup.

@@ -382,6 +382,12 @@ std::string RenderQueue::jobStatusText(uint32_t jobId) const
     return {};
 }
 
+std::shared_ptr<const CachedFrame> RenderQueue::latestFrame() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_latestFrame;
+}
+
 size_t RenderQueue::pendingCount() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -494,6 +500,10 @@ void RenderQueue::workerThread()
         }
 
         if (!nextJob) break; // No more queued jobs
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_latestFrame.reset();
+        }
 
         // ctx owns the encoder + demuxers OUTSIDE the __try frame so an SEH
         // unwind (which skips processJob's local destructors) still releases
@@ -517,6 +527,10 @@ void RenderQueue::workerThread()
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_latestFrame.reset();
+    }
     m_running.store(false);
     spdlog::info("RenderQueue: Worker finished");
 }
@@ -1057,6 +1071,11 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
             ++segmentCacheHits;
         else
             ++segmentCacheMisses;
+
+        if (cframe && !cframe->pixels.empty()) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            m_latestFrame = cframe;
+        }
 
         // §4.2 export 16F passthrough: a single full-frame opaque >8-bit clip
         // arrives as a dual-payload frame (RGBA16F + an 8-bit BGRA copy).  For

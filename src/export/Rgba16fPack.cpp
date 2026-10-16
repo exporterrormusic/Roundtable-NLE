@@ -4,14 +4,18 @@
 
 #include "Rgba16fPack.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <thread>
+#include <vector>
 
 namespace rt {
 
 namespace {
 
-// Clamp helper (no <algorithm> dependency churn; keeps this TU tiny).
+// Clamp helpers.
 inline float clampf(float v, float lo, float hi) noexcept
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -108,12 +112,15 @@ uint16_t quantizeA10(float alpha) noexcept
     return static_cast<uint16_t>(clampi(q, 0, 1023));
 }
 
-void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
-                      int width, int height,
-                      PackTarget target, const PackPlanes& dst) noexcept
-{
-    if (!srcRgba16f || width <= 0 || height <= 0) return;
+namespace {
 
+/// Pack chroma rows [cy0, cy1) and the luma/alpha rows they cover. Each
+/// output sample depends only on its own source pixels, so bands are
+/// independent and the result does not depend on how rows are split.
+void packBand(const uint16_t* srcRgba16f, int srcStrideBytes,
+              int width, int height, PackTarget target, const PackPlanes& dst,
+              int subX, int subY, int cy0, int cy1) noexcept
+{
     // P010 stores the 10-bit value in the HIGH 10 bits (value << 6); every
     // planar *P10LE format stores it in the LOW 10 bits (value & 0x3FF).
     const bool highBits = (target == PackTarget::P010LE);
@@ -122,9 +129,12 @@ void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
                         : static_cast<uint16_t>(q10 & 0x3FFu);
     };
 
+    const int y0 = cy0 * subY;
+    const int y1 = std::min(cy1 * subY, height);
+
     // ── Luma plane (full resolution for every target) ───────────────────────
     if (dst.y) {
-        for (int y = 0; y < height; ++y) {
+        for (int y = y0; y < y1; ++y) {
             uint16_t* yrow = rowPtr(dst.y, dst.yStride, y);
             for (int x = 0; x < width; ++x) {
                 const Rgba p = rgbaAt(srcRgba16f, srcStrideBytes, x, y);
@@ -135,7 +145,7 @@ void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
 
     // ── Alpha plane (YUVA444P10LE only — full resolution, full range) ────────
     if (target == PackTarget::YUVA444P10LE && dst.a) {
-        for (int y = 0; y < height; ++y) {
+        for (int y = y0; y < y1; ++y) {
             uint16_t* arow = rowPtr(dst.a, dst.aStride, y);
             for (int x = 0; x < width; ++x) {
                 const Rgba p = rgbaAt(srcRgba16f, srcStrideBytes, x, y);
@@ -145,28 +155,17 @@ void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
     }
 
     // ── Chroma planes ───────────────────────────────────────────────────────
-    // Subsample factors per target: 4:2:0 (P010) = 2×2, 4:2:2 = 2×1, 4:4:4 = 1×1.
-    int subX = 1, subY = 1;
-    switch (target) {
-        case PackTarget::P010LE:       subX = 2; subY = 2; break;
-        case PackTarget::YUV422P10LE:  subX = 2; subY = 1; break;
-        case PackTarget::YUV444P10LE:
-        case PackTarget::YUVA444P10LE: subX = 1; subY = 1; break;
-    }
-
-    const int chromaW = (width  + subX - 1) / subX;
-    const int chromaH = (height + subY - 1) / subY;
-
-    for (int cy = 0; cy < chromaH; ++cy) {
+    const int chromaW = (width + subX - 1) / subX;
+    for (int cy = cy0; cy < cy1; ++cy) {
         for (int cx = 0; cx < chromaW; ++cx) {
             // Box-average the source block (edge-clamped) co-sited top-left.
-            const int x0 = cx * subX;
-            const int y0 = cy * subY;
-            const int x1 = (x0 + subX < width)  ? x0 + subX : width;
-            const int y1 = (y0 + subY < height) ? y0 + subY : height;
+            const int bx0 = cx * subX;
+            const int by0 = cy * subY;
+            const int bx1 = (bx0 + subX < width)  ? bx0 + subX : width;
+            const int by1 = (by0 + subY < height) ? by0 + subY : height;
             const Rgba p = (subX == 1 && subY == 1)
-                ? rgbaAt(srcRgba16f, srcStrideBytes, x0, y0)
-                : avgBlock(srcRgba16f, srcStrideBytes, x0, y0, x1, y1);
+                ? rgbaAt(srcRgba16f, srcStrideBytes, bx0, by0)
+                : avgBlock(srcRgba16f, srcStrideBytes, bx0, by0, bx1, by1);
             const float y = luma709(p);
             const uint16_t cbWord = storeWord(quantizeC10(cb709(p, y)));
             const uint16_t crWord = storeWord(quantizeC10(cr709(p, y)));
@@ -184,6 +183,55 @@ void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
             }
         }
     }
+}
+
+} // namespace
+
+void packRgba16fToYuv(const uint16_t* srcRgba16f, int srcStrideBytes,
+                      int width, int height,
+                      PackTarget target, const PackPlanes& dst) noexcept
+{
+    if (!srcRgba16f || width <= 0 || height <= 0) return;
+
+    // Subsample factors per target: 4:2:0 (P010) = 2×2, 4:2:2 = 2×1, 4:4:4 = 1×1.
+    int subX = 1, subY = 1;
+    switch (target) {
+        case PackTarget::P010LE:       subX = 2; subY = 2; break;
+        case PackTarget::YUV422P10LE:  subX = 2; subY = 1; break;
+        case PackTarget::YUV444P10LE:
+        case PackTarget::YUVA444P10LE: subX = 1; subY = 1; break;
+    }
+    const int chromaH = (height + subY - 1) / subY;
+
+    // Split into row bands across cores: on one core a 4K frame took tens
+    // of ms per exported frame. Small frames stay on the calling thread.
+    constexpr int kMinRowsPerBand = 64;
+    const int cores = static_cast<int>(std::thread::hardware_concurrency());
+    const int bands = std::clamp(std::min(cores, chromaH * subY / kMinRowsPerBand), 1, 8);
+    if (bands == 1) {
+        packBand(srcRgba16f, srcStrideBytes, width, height, target, dst,
+                 subX, subY, 0, chromaH);
+        return;
+    }
+
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(bands - 1));
+    try {
+        for (int band = 1; band < bands; ++band) {
+            const int cy0 = chromaH * band / bands;
+            const int cy1 = chromaH * (band + 1) / bands;
+            workers.emplace_back(packBand, srcRgba16f, srcStrideBytes, width, height,
+                                 target, std::cref(dst), subX, subY, cy0, cy1);
+        }
+    } catch (...) {
+        // Could not start a thread: pack the bands that have no worker here.
+        for (int band = static_cast<int>(workers.size()) + 1; band < bands; ++band)
+            packBand(srcRgba16f, srcStrideBytes, width, height, target, dst, subX, subY,
+                     chromaH * band / bands, chromaH * (band + 1) / bands);
+    }
+    packBand(srcRgba16f, srcStrideBytes, width, height, target, dst,
+             subX, subY, 0, chromaH / bands);
+    for (auto& worker : workers) worker.join();
 }
 
 } // namespace rt

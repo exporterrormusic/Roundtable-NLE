@@ -49,7 +49,6 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     WorkerGpuState* wgs)
 {
     auto perfDecodeT0 = std::chrono::high_resolution_clock::now();
-    auto& decoder = *state.decoder;
     double targetTime = task.frameNumber / task.fps;
 
     // GREEN-suffixed chroma-key files MUST go through the CPU path
@@ -75,9 +74,35 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
             // Short forward jump (scrub step, prefetch catching up): decode
             // on from here, skipping pictures nothing references, instead of
             // fully decoding every frame in between.
-            needSeek = !decoder.advanceTo(targetTime);
+            needSeek = !state.decoder->advanceTo(targetTime);
         }
     }
+
+    // A frame-threaded software decoder is reopened rather than flushed:
+    // frame threads and avcodec_flush_buffers corrupted H.264 references in
+    // the past (see openScrubDecoder). Opening a software decoder costs a
+    // few ms and an export seeks about once per clip. A decoder that keeps
+    // seeking (a reversed clip seeks every frame) goes slice-threaded for
+    // good instead of reopening every frame.
+    if (needSeek && state.frameThreaded && state.lastDecodedFrame >= 0 &&
+        !state.decoder->isHardwareAccelerated()) {
+        constexpr int kFrameThreadedSeekLimit = 8;
+        const bool keepFrameThreads =
+            ++state.frameThreadedSeeks < kFrameThreadedSeekLimit;
+        auto fresh = std::make_unique<VideoDecoder>();
+        if (!fresh->open(task.filePath, /*forceSoftware=*/false,
+                         keepFrameThreads ? exportDecodeThreads() : 2,
+                         /*sliceOnlyThreading=*/!keepFrameThreads)) {
+            spdlog::warn("MediaPool: reopening export decoder failed for handle={}",
+                         task.handle);
+            state.decoder.reset();
+            state.lastDecodedFrame = -1;
+            return nullptr;
+        }
+        state.decoder = std::move(fresh);
+        state.frameThreaded = keepFrameThreads;
+    }
+    auto& decoder = *state.decoder;
 
     if (needSeek) {
         // Precise seek: back to the keyframe, then forward to the exact
@@ -150,7 +175,10 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
 
     // NVDEC→SW fallback only on single next-frame decodes: seeks and
     // forward jumps decode many pictures in one call.
-    if (shouldFallbackToSoftwarePreview(*state.decoder,
+    // Not for export: its CPU transfer + convert makes every hardware frame
+    // look "slow", and the software fallback is far slower still.
+    if (!state.exportDecoder &&
+        shouldFallbackToSoftwarePreview(*state.decoder,
                                         singleFrameStep,
                                         task.tier,
                                         decoded.width,

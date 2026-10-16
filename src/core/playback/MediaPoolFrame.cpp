@@ -4,6 +4,7 @@
  */
 
 #include "MediaPool.h"
+#include "MediaPoolPrefetchInternal.h"
 #include "playback/FrameFallbackPolicy.h"
 
 #include <cstring>
@@ -73,6 +74,33 @@ void openScrubDecoder(PrefetchDecoderState& state, MediaHandle handle,
         state.decoder.reset();
     }
     state.lastDecodedFrame = -1;
+    // One request at a time: the YUV→BGRA convert may use every core.
+    state.swsThreads = 0;
+}
+
+/// Open an export decoder; call with the slot's mutex held. Export decodes
+/// one sequential full-quality stream per source, so a software decode
+/// (ProRes, DNxHR, 10-bit or 4:2:2 H.264, alpha formats) runs on frame
+/// threads instead of the scrub decoder's two slice threads, which on a
+/// single-slice H.264 stream amount to one core. Frame threads and
+/// avcodec_flush_buffers corrupted H.264 references in the past (see
+/// openScrubDecoder), so decodePrefetchFrame reopens this decoder rather
+/// than flushing it whenever it must seek. Hardware decoders ignore the
+/// thread settings.
+void openExportDecoder(PrefetchDecoderState& state, MediaHandle handle,
+                       const std::filesystem::path& path)
+{
+    state.decoder = std::make_unique<VideoDecoder>();
+    if (!state.decoder->open(path, /*forceSoftware=*/false,
+                             exportDecodeThreads(), /*sliceOnlyThreading=*/false)) {
+        spdlog::warn("MediaPool: export decoder open failed for handle={}", handle);
+        state.decoder.reset();
+    }
+    state.lastDecodedFrame = -1;
+    state.swsThreads = 0;
+    state.exportDecoder = true;
+    state.frameThreaded = true;
+    state.frameThreadedSeeks = 0;
 }
 
 } // namespace
@@ -84,6 +112,38 @@ std::shared_ptr<ScrubDecoderSlot> MediaPool::getScrubDecoder(MediaHandle handle)
     if (!stored)
         stored = std::make_shared<ScrubDecoderSlot>();
     return stored;
+}
+
+std::shared_ptr<ScrubDecoderSlot> MediaPool::getExportDecoder(MediaHandle handle)
+{
+    std::shared_ptr<ScrubDecoderSlot> evicted;
+    std::shared_ptr<ScrubDecoderSlot> slot;
+    {
+        std::lock_guard mapLock(m_exportDecodersMutex);
+        auto& stored = m_exportDecoders[handle];
+        if (!stored)
+            stored = std::make_shared<ScrubDecoderSlot>();
+        slot = stored;
+
+        auto& recency = m_exportDecoderRecency;
+        recency.erase(std::remove(recency.begin(), recency.end(), handle),
+                      recency.end());
+        recency.push_back(handle);
+        if (recency.size() > kMaxExportDecoders) {
+            const MediaHandle oldest = recency.front();
+            recency.erase(recency.begin());
+            auto victim = m_exportDecoders.find(oldest);
+            if (victim != m_exportDecoders.end()) {
+                evicted = std::move(victim->second);
+                m_exportDecoders.erase(victim);
+            }
+        }
+    }
+    if (evicted) {
+        std::lock_guard stateLock(evicted->mutex);
+        retireSlotLocked(*evicted);
+    }
+    return slot;
 }
 
 // ─── getFrame (blocking + scrub path) ───────────────────────────────────────
@@ -363,7 +423,9 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
     // m_mutex released — decode is now lock-free.
 
-    auto scrubSlot = getScrubDecoder(handle);
+    // Export decodes on its own slot (see m_exportDecoders).
+    auto scrubSlot = forceExact ? getExportDecoder(handle)
+                                : getScrubDecoder(handle);
 
     // DecodedFrame plane pointers remain owned by VideoDecoder until its next
     // decode/seek. Keep this lock across decoding, hardware transfer, and
@@ -372,11 +434,23 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     std::unique_lock scrubLock(scrubSlot->mutex);
     if (scrubSlot->retired)
         return nullptr;
+    // A repeated source frame (24p in a 30p sequence, slow motion): the
+    // decoder already sits past it, so decoding it again means a keyframe
+    // seek and a decode forward. Export decodes never reach the shared
+    // cache, so the slot keeps the last one.
+    if (forceExact && scrubSlot->lastExactFrame &&
+        scrubSlot->lastExactFrame->frameNumber == frameNumber &&
+        scrubSlot->lastExactFrame->tier == tier)
+        return scrubSlot->lastExactFrame;
     // Opened here, under the lock the decode holds: a still image's decoder
     // is released right after its decode (live file replace), so a request
     // that queued behind that decode must reopen it, not fail.
-    if (!scrubSlot->state.decoder)
-        openScrubDecoder(scrubSlot->state, handle, filePath);
+    if (!scrubSlot->state.decoder) {
+        if (forceExact)
+            openExportDecoder(scrubSlot->state, handle, filePath);
+        else
+            openScrubDecoder(scrubSlot->state, handle, filePath);
+    }
     if (!scrubSlot->state.decoder)
         return nullptr;
     auto& scrubState = scrubSlot->state;
@@ -403,6 +477,8 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // GPU texture (readback raced the convert).  Steady playback still gets
     // GPU-resident frames via the prefetch workers' per-worker path.
     auto result = decodePrefetchFrame(scrubState, scrubTask);
+    if (forceExact)
+        scrubSlot->lastExactFrame = result;
     // Don't publish export decodes into the shared caches — keep export
     // side-effect-free so it can't evict playback frames or feed the
     // DiskFrameCache writer queue (which would pin VRAM via lazyReadback).
@@ -431,6 +507,27 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     }
 
     return result;
+}
+
+std::shared_ptr<CachedFrame> MediaPool::peekExactFrame(
+    MediaHandle handle, int64_t frameNumber, ResolutionTier tier)
+{
+    m_perf.totalRequests.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lock(m_mutex);
+        auto* entry = findEntry(handle);
+        if (entry && entry->info.frameCount > 1 &&
+            frameNumber >= entry->info.frameCount) {
+            frameNumber = entry->info.frameCount - 1;
+        }
+    }
+    if (frameNumber < 0) frameNumber = 0;
+
+    m_cache->setPlayhead(handle, frameNumber);
+    auto cached = m_cache->get(handle, frameNumber, tier);
+    if (cached)
+        m_perf.cacheHits.fetch_add(1, std::memory_order_relaxed);
+    return cached;
 }
 
 // ─── tryGetFrame (non-blocking playback path) ───────────────────────────────

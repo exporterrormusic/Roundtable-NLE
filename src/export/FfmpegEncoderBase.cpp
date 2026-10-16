@@ -5,6 +5,7 @@
 
 #include "FfmpegEncoderBase.h"
 #include "Rgba16fPack.h"
+#include "decode/ThreadedSws.h"
 
 #include <spdlog/spdlog.h>
 
@@ -265,11 +266,12 @@ bool FfmpegEncoderBase::finishInit(int swFrameFormat)
     if (!m_packet)
         return failInit(std::string(logName()) + ": failed to allocate packet");
 
-    m_swsCtx = sws_getContext(
+    // Threaded: one export stream converts every frame, and on one core the
+    // BGRA → YUV step alone held 4K exports to a few dozen fps.
+    m_swsCtx = createSwsContext(
         m_codecCtx->width, m_codecCtx->height, AV_PIX_FMT_BGRA,
-        m_codecCtx->width, m_codecCtx->height,
-        static_cast<AVPixelFormat>(swFrameFormat),
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+        m_codecCtx->width, m_codecCtx->height, swFrameFormat,
+        SWS_BILINEAR, /*threads=*/0);
     if (!m_swsCtx) {
         return failInit(std::string(logName()) +
                         ": failed to create pixel conversion context");
@@ -305,9 +307,13 @@ bool FfmpegEncoderBase::encodeFrame(const uint8_t* bgraPixels, int64_t frameInde
     // caller's BGRA buffer (config-sized).  m_frame may be taller if NVENC
     // aligned the dimensions — extra lines stay zero (black).
     int srcLines = std::min(static_cast<int>(m_config.height), m_frame->height);
-    const int convertedRows = sws_scale(
-        m_swsCtx, srcSlice, srcStride, 0, srcLines,
-        m_frame->data, m_frame->linesize);
+    const int convertedRows = srcLines == m_codecCtx->height
+        ? swsScaleWhole(m_swsCtx, srcSlice, srcStride,
+                        m_codecCtx->width, srcLines, AV_PIX_FMT_BGRA,
+                        m_frame->data, m_frame->linesize,
+                        m_frame->width, m_frame->height, m_frame->format)
+        : sws_scale(m_swsCtx, srcSlice, srcStride, 0, srcLines,
+                    m_frame->data, m_frame->linesize);
     if (convertedRows != m_frame->height) {
         m_lastError = std::string(logName()) +
                       ": BGRA conversion returned an incomplete frame";
