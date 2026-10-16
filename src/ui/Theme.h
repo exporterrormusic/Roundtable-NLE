@@ -114,6 +114,7 @@ struct ThemeColors
     QColor clipSpine{200, 140, 50};    ///< Spine clip color (live eval)
     QColor clipSpineCached{80, 170, 105}; ///< Spine clip pre-rendered
     QColor clipGraphic{68, 187, 255};    ///< Graphic (text/shape) clip color
+    QColor clipAdjustment{227, 133, 227}; ///< Adjustment layer: Premiere's "Lavender" label
     QColor clipSelected{90, 165, 240}; ///< Selected clip outline
     QColor clipHover{70, 70, 80};      ///< Clip hover overlay
     QColor transition{100, 80, 160};   ///< Transition overlay

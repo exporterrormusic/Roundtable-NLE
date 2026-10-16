@@ -16,6 +16,8 @@
 #include <QTabBar>
 #include <QToolButton>
 
+#include "widgets/ToolGroupButton.h"
+
 namespace rt {
 
 void TimelineWorkspace::arrangeDockLayout()
@@ -140,8 +142,12 @@ void TimelineWorkspace::arrangeDockLayout()
         connectTool(m_toolButtons[6], EditTool::Text);
     if (m_toolButtons[7])
         connectTool(m_toolButtons[7], EditTool::Zoom);
-    if (m_toolButtons[8])
-        connectTool(m_toolButtons[8], EditTool::PenMask);
+    if (auto* maskTools = dynamic_cast<ToolGroupButton*>(m_toolButtons[8])) {
+        maskTools->setActivateHandler([this](int toolId) {
+            if (m_timelinePanel)
+                m_timelinePanel->setActiveTool(static_cast<EditTool>(toolId));
+        });
+    }
 
     // Snap button retained in createPanelWidgets to be passed here
     // Find the snap button via toolbar children
@@ -168,7 +174,7 @@ void TimelineWorkspace::arrangeDockLayout()
             auto* btnSli2 = m_toolButtons[5];
             auto* btnTxt  = m_toolButtons[6];
             auto* btnZm   = m_toolButtons[7];
-            auto* btnPen  = m_toolButtons[8];
+            auto* btnMask = dynamic_cast<ToolGroupButton*>(m_toolButtons[8]);
             if (btnSel)  btnSel->setChecked(tool == EditTool::Selection);
             if (btnRip)  btnRip->setChecked(tool == EditTool::Ripple);
             if (btnRoll) btnRoll->setChecked(tool == EditTool::Rolling);
@@ -177,7 +183,7 @@ void TimelineWorkspace::arrangeDockLayout()
             if (btnSli2) btnSli2->setChecked(tool == EditTool::Slide);
             if (btnTxt)  btnTxt->setChecked(tool == EditTool::Text);
             if (btnZm)   btnZm->setChecked(tool == EditTool::Zoom);
-            if (btnPen)  btnPen->setChecked(tool == EditTool::PenMask);
+            if (btnMask) btnMask->syncToId(static_cast<int>(tool));
         });
     }
 }

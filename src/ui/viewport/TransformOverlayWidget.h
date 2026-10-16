@@ -172,6 +172,17 @@ public:
     /// Apply character formatting to the active monitor selection. With only
     /// a caret, these set the typing format for subsequently inserted text.
     bool applyInlineTextFontFamily(const QString& family);
+    /// Font-menu hover preview (Premiere's "interactive" change): show
+    /// `family` on the selection without leaving an undo step behind and
+    /// without taking focus from the open menu. endInlineTextFontPreview()
+    /// reverts it; applyInlineTextFontFamily() replaces it with the real,
+    /// single edit.
+    bool previewInlineTextFontFamily(const QString& family);
+    void endInlineTextFontPreview();
+    /// Premiere titler shortcut the monitor text editor claims while active
+    /// (Ctrl+Alt+Left/Right size, Alt+Up/Down leading, Alt+Left/Right
+    /// kerning, Ctrl+Shift+L/C/R alignment).
+    [[nodiscard]] static bool isInlineTitlerShortcut(const QKeyEvent* ke);
     bool applyInlineTextFontSize(float pointSizeRef);
     bool applyInlineTextFontWeight(int weight);
     bool applyInlineTextItalic(bool italic);
@@ -521,6 +532,19 @@ private:
     bool editExistingMaskWithPen(const QPointF& widgetPos,
                                  Qt::KeyboardModifiers modifiers);
 
+    /// Ellipse/Rectangle Mask tool drafts: press starts a corner, the drag
+    /// sizes the shape (Shift = circle/square, Alt = from center), release
+    /// commits it through maskCreated as one undo step.
+    [[nodiscard]] bool isShapeMaskTool() const noexcept
+    {
+        return m_editTool == 10 || m_editTool == 11;
+    }
+    void beginShapeMask(const QPointF& widgetPos);
+    void updateShapeMask(const QPointF& widgetPos,
+                         Qt::KeyboardModifiers modifiers);
+    bool commitShapeMask();
+    void cancelShapeMask() noexcept;
+
     /// Hit-test whether widgetPos is near a mask edge (for pen cursor hint).
     bool hitTestMaskEdge(const QPointF& widgetPos) const;
 
@@ -562,6 +586,7 @@ private:
         MoveAnchor,         ///< anchor point (rotation/scale pivot) handle
         CropEdge,           ///< crop edge handle (Left/Right/Top/Bottom)
         DrawMaskPoint,      ///< click/drag a new Pen Mask vertex + tangents
+        DrawMaskShape,      ///< drag out a new Ellipse/Rectangle mask
     };
     DragMode m_dragMode{DragMode::None};
     int      m_dragHandle{-1};
@@ -589,7 +614,7 @@ private:
     bool     m_showGrid{false};
 
     // Active editing tool (uses uint8_t to avoid EditTool dependency)
-    uint8_t  m_editTool{0};  // 0=Selection, 6=Text, 8=Eyedropper, 9=Pen Mask
+    uint8_t  m_editTool{0};  // 0=Selection, 6=Text, 8=Eyedropper, 9=Pen Mask, 10=Ellipse Mask, 11=Rectangle Mask
 
     // In-place text editor (lazily created child widget shown over the
     // selected text layer's bounding box). Owned via Qt parent.
@@ -679,6 +704,31 @@ private:
     /// still belongs to this highlighted character range.
     int              m_inlineRetainedSelectionStart{0};
     int              m_inlineRetainedSelectionEnd{0};
+    /// Live font-menu preview state (previewInlineTextFontFamily). The
+    /// preview's own document undo steps are counted so exactly those are
+    /// rolled back; with only a caret there are none and the typing format
+    /// is restored instead.
+    struct InlineFontPreview {
+        bool            active{false};
+        int             undoSteps{0};
+        QTextCursor     selection;
+        QTextCharFormat caretFormat;
+    } m_inlineFontPreview;
+    void revertInlineFontPreviewEdits();
+    /// Insert typed text so each word is ONE undo step: a word's first
+    /// character opens an edit block, the rest join it. QTextDocument would
+    /// otherwise fold a whole typing run into a single step (one Ctrl+Z
+    /// erased everything typed). Join only while the previous step is our
+    /// own contiguous typing.
+    void insertInlineTypedText(const QString& text);
+    int              m_inlineTypingJoinPos{-1};
+    int              m_inlineTypingUndoSteps{-1};
+    /// Premiere titler nudges on the selection (keyboard shortcuts).
+    bool nudgeInlineTextFontSize(float delta);
+    bool nudgeInlineTextLeading(float delta);
+    bool nudgeInlineTextKerning(float delta);
+    [[nodiscard]] QTextCharFormat inlineSelectionLeadFormat() const;
+    bool handleInlineTitlerShortcut(const QKeyEvent* ke);
     Qt::Alignment    m_inlineEditAlignH{Qt::AlignHCenter};
     /// Saved overlay info so we can restore the transform box after
     /// inline text editing ends (it is hidden during editing to prevent
@@ -718,6 +768,11 @@ private:
     OpacityMask m_penDraft{};
     QPointF     m_penPressLocal{};
     QPointF     m_penHoverWidget{};
+
+    // Interactive Ellipse/Rectangle Mask draft (preview-only until release).
+    bool        m_shapeDrawing{false};
+    OpacityMask m_shapeDraft{};
+    QPointF     m_shapePressWidget{};
 
     // Offset from overlay origin to viewport origin (overlay is clipped to panel)
     QPoint m_vpOffset{0, 0};

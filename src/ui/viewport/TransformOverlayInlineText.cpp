@@ -34,6 +34,7 @@
 #include <QTextFragment>
 #include <QTextOption>
 #include <QTextBlockFormat>
+#include <QTextDocument>
 #include <QSignalBlocker>
 #include <QPointer>
 #include <QTimer>
@@ -274,6 +275,9 @@ void TransformOverlayWidget::beginInlineTextEdit(const QString& initial,
     m_inlineEditorHasFocused = false;
     m_inlineEditorFocusSettling = true;
     m_inlinePointerRerouted = false;
+    m_inlineTypingJoinPos = -1;
+    m_inlineTypingUndoSteps = -1;
+    m_inlineFontPreview = {};
     spdlog::debug("[INLINE-TEXT] begin session={} textLength={} font='{}'",
                  editSession, initial.size(), fontFamily.toStdString());
 
@@ -1590,6 +1594,8 @@ void TransformOverlayWidget::finishInlineTextEdit(bool cancel)
     if (!m_inlineTextEdit || !m_inlineTextEdit->isVisible()
         || m_committingInlineText) return;
 
+    // A font still being previewed from an open menu is not part of the edit.
+    if (m_inlineFontPreview.active) endInlineTextFontPreview();
     m_committingInlineText = true;
     m_inlineEditorFocusSettling = false;
     m_inlinePointerRerouted = false;
@@ -1933,6 +1939,9 @@ void refocusInlineEditor(QPlainTextEdit* edit)
 bool TransformOverlayWidget::applyInlineTextFontFamily(const QString& family)
 {
     if (!isInlineTextEditing() || family.isEmpty()) return false;
+    // Replace a hover preview with the real edit: roll the preview back so
+    // the document records exactly one font change.
+    if (m_inlineFontPreview.active) endInlineTextFontPreview();
     const QTextCursor selection = inlineTextFormattingCursor();
     QTextCharFormat format;
     format.setFontFamilies(QStringList{family});
@@ -1942,6 +1951,131 @@ bool TransformOverlayWidget::applyInlineTextFontFamily(const QString& family)
     notifyInlineTextSelectionFormat();
     refocusInlineEditor(m_inlineTextEdit);
     return true;
+}
+
+bool TransformOverlayWidget::previewInlineTextFontFamily(const QString& family)
+{
+    if (!isInlineTextEditing() || family.isEmpty()) return false;
+    if (!m_inlineFontPreview.active) {
+        m_inlineFontPreview.active = true;
+        m_inlineFontPreview.selection = inlineTextFormattingCursor();
+        m_inlineFontPreview.caretFormat = m_inlineTextEdit->currentCharFormat();
+    } else {
+        revertInlineFontPreviewEdits();
+    }
+    QTextDocument* document = m_inlineTextEdit->document();
+    const int stepsBefore = document->availableUndoSteps();
+    QTextCharFormat format;
+    format.setFontFamilies(QStringList{family});
+    m_inlineTextEdit->setTextCursor(m_inlineFontPreview.selection);
+    m_inlineTextEdit->mergeCurrentCharFormat(format);
+    m_inlineFontPreview.undoSteps =
+        std::max(0, document->availableUndoSteps() - stepsBefore);
+    // No refocus and no selection-format broadcast: the font menu is open
+    // and must keep focus and its own highlighted row.
+    resizeInlineTextEditorToDocument();
+    update();
+    return true;
+}
+
+void TransformOverlayWidget::revertInlineFontPreviewEdits()
+{
+    if (!m_inlineTextEdit) return;
+    QTextDocument* document = m_inlineTextEdit->document();
+    for (int i = 0; i < m_inlineFontPreview.undoSteps
+                    && document->isUndoAvailable(); ++i)
+        document->undo();
+    if (m_inlineFontPreview.undoSteps > 0)
+        document->clearUndoRedoStacks(QTextDocument::RedoStack);
+    m_inlineFontPreview.undoSteps = 0;
+    m_inlineTextEdit->setTextCursor(m_inlineFontPreview.selection);
+    // A caret-only preview changed the typing format, not the document.
+    // (With a selection, setCurrentCharFormat would REformat the text.)
+    if (!m_inlineFontPreview.selection.hasSelection())
+        m_inlineTextEdit->setCurrentCharFormat(m_inlineFontPreview.caretFormat);
+}
+
+void TransformOverlayWidget::endInlineTextFontPreview()
+{
+    if (!m_inlineFontPreview.active) return;
+    if (m_inlineTextEdit) {
+        revertInlineFontPreviewEdits();
+        resizeInlineTextEditorToDocument();
+        notifyInlineTextSelectionFormat();
+        update();
+    }
+    m_inlineFontPreview = {};
+}
+
+void TransformOverlayWidget::insertInlineTypedText(const QString& text)
+{
+    if (!m_inlineTextEdit || text.isEmpty()) return;
+    QTextDocument* document = m_inlineTextEdit->document();
+    QTextCursor cursor = m_inlineTextEdit->textCursor();
+    const int position = cursor.selectionStart();
+    const QChar previous = position > 0 ? document->characterAt(position - 1)
+                                        : QChar();
+    // A word's first character starts a new step; the space after a word
+    // stays with that word (Ctrl+Z removes "world", then "Hello ").
+    const bool startsWord = !text.front().isSpace()
+        && (position == 0 || previous.isSpace());
+    const bool continuesTyping = !cursor.hasSelection()
+        && cursor.position() == m_inlineTypingJoinPos
+        && document->availableUndoSteps() == m_inlineTypingUndoSteps;
+    if (continuesTyping && !startsWord)
+        cursor.joinPreviousEditBlock();
+    else
+        cursor.beginEditBlock();
+    cursor.insertText(text);
+    cursor.endEditBlock();
+    m_inlineTextEdit->setTextCursor(cursor);
+    m_inlineTextEdit->ensureCursorVisible();
+    m_inlineTypingJoinPos = cursor.position();
+    m_inlineTypingUndoSteps = document->availableUndoSteps();
+}
+
+QTextCharFormat TransformOverlayWidget::inlineSelectionLeadFormat() const
+{
+    if (!m_inlineTextEdit) return {};
+    const QTextCursor selection = inlineTextFormattingCursor();
+    if (!selection.hasSelection()) return m_inlineTextEdit->currentCharFormat();
+    // charFormat() of a selection reports the character BEFORE the cursor
+    // position; probe the first selected character instead.
+    QTextCursor probe(m_inlineTextEdit->document());
+    probe.setPosition(selection.selectionStart() + 1);
+    return probe.charFormat();
+}
+
+bool TransformOverlayWidget::nudgeInlineTextFontSize(float delta)
+{
+    if (!isInlineTextEditing()) return false;
+    const double scale = m_inlineFontPointScale > 1.0e-6
+        ? m_inlineFontPointScale : 1.0;
+    double screenSize = inlineSelectionLeadFormat().fontPointSize();
+    if (screenSize <= 0.0) screenSize = m_inlineTextEdit->font().pointSizeF();
+    const double current = std::round(screenSize / scale * 10.0) / 10.0;
+    return applyInlineTextFontSize(
+        static_cast<float>(std::max(1.0, current + delta)));
+}
+
+bool TransformOverlayWidget::nudgeInlineTextLeading(float delta)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCharFormat format = inlineSelectionLeadFormat();
+    const float current = format.hasProperty(kInlineLeadingProperty)
+        ? format.property(kInlineLeadingProperty).toFloat()
+        : m_inlineBaseLeading;
+    return applyInlineTextLeading(std::max(0.0f, current + delta));
+}
+
+bool TransformOverlayWidget::nudgeInlineTextKerning(float delta)
+{
+    if (!isInlineTextEditing()) return false;
+    const QTextCharFormat format = inlineSelectionLeadFormat();
+    const float current = format.hasProperty(kInlineKerningProperty)
+        ? format.property(kInlineKerningProperty).toFloat()
+        : m_inlineBaseKerning;
+    return applyInlineTextKerning(current + delta);
 }
 
 bool TransformOverlayWidget::applyInlineTextFontSize(float pointSizeRef)

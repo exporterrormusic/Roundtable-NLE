@@ -1,7 +1,7 @@
 /*
  * test_comfy_runner.cpp — ComfyRunner against an in-process fake ComfyUI
  * HTTP server: upload → /prompt → /history poll → /view download, the
- * restart/12 fps/skip failure ladder, and batch-stopping validation errors.
+ * quality-preserving retries, staged batches, and validation errors.
  */
 #include <gtest/gtest.h>
 
@@ -35,11 +35,16 @@ class FakeComfy : public QObject
 public:
     bool        alive{true};
     bool        rejectPrompts{false};
+    bool        failCacheDownloads{false};
     int         failFirstN{0};            ///< the first N queued prompts end in execution_error
     QStringList uploads;                  ///< uploaded file names, in order
+    QHash<QString, QImage> uploadedImages;
     QList<QJsonObject> prompts;           ///< API prompts received
+    QList<QJsonObject> metadata;
     int         interrupts{0};
     int         frees{0};
+    QJsonObject freeRequest;
+    QStringList released;
 
     FakeComfy()
     {
@@ -86,6 +91,9 @@ private:
             static const QRegularExpression nameRe(QStringLiteral("filename=\"([^\"]+)\""));
             const QString name = nameRe.match(QString::fromUtf8(body)).captured(1);
             uploads << name;
+            const int dataStart = body.indexOf("\r\n\r\n") + 4;
+            const int dataEnd = body.indexOf("\r\n--", dataStart);
+            uploadedImages.insert(name, QImage::fromData(body.mid(dataStart, dataEnd - dataStart)));
             reply(s, 200, QJsonDocument(QJsonObject{{"name", name}, {"subfolder", ""}, {"type", "input"}}).toJson());
             return;
         }
@@ -96,6 +104,7 @@ private:
                 return;
             }
             prompts << QJsonDocument::fromJson(body).object().value("prompt").toObject();
+            metadata << QJsonDocument::fromJson(body).object().value("extra_data").toObject().value("extra_pnginfo").toObject();
             reply(s, 200, QJsonDocument(QJsonObject{{"prompt_id", QString("p%1").arg(prompts.size())}}).toJson());
             return;
         }
@@ -115,17 +124,37 @@ private:
                                                            {"messages", messages}}},
                                     {"outputs", QJsonObject{}}};
             } else {
+                for (const auto& node : prompts[n - 1]) {
+                    const auto type = node.toObject().value("class_type").toString();
+                    if (type == "RoundtablePrepare" || type == "RoundtableGenerate") {
+                        const auto in = node.toObject().value("inputs").toObject();
+                        entry = QJsonObject{{"status", QJsonObject{{"status_str", "success"}, {"completed", true}}},
+                            {"outputs", QJsonObject{{"23", QJsonObject{
+                                {"roundtable_stage", QJsonArray{type == "RoundtablePrepare" ? "prepared" : "generated"}},
+                                {"artifact_key", QJsonArray{in.value("artifact_key")}}}}}}};
+                        reply(s, 200, QJsonDocument(QJsonObject{{id, entry}}).toJson());
+                        return;
+                    }
+                }
+                const bool alpha = prompts[n - 1].value("25").toObject().value("class_type") == "VHS_VideoCombine";
                 entry = QJsonObject{{"status", QJsonObject{{"status_str", "success"}, {"completed", true}}},
                     {"outputs", QJsonObject{{"25", QJsonObject{{"images", QJsonArray{
-                        QJsonObject{{"filename", QString("out_%1.mp4").arg(n)}, {"subfolder", "roundtable"},
+                        QJsonObject{{"filename", QString("out_%1").arg(n) + (alpha ? ".mov" : ".mp4")}, {"subfolder", "roundtable"},
                                     {"type", "output"}}}}}}}}};
             }
             reply(s, 200, QJsonDocument(QJsonObject{{id, entry}}).toJson());
             return;
         }
-        if (path.startsWith(QLatin1String("/view"))) { reply(s, 200, "FAKE-MP4-BYTES", "video/mp4"); return; }
+        if (path.startsWith(QLatin1String("/view"))) {
+            if (failCacheDownloads && path.contains("frames.pt")) { reply(s, 500, "cache unavailable"); return; }
+            reply(s, 200, "FAKE-MP4-BYTES", "video/mp4"); return;
+        }
         if (path == QLatin1String("/interrupt")) { ++interrupts; reply(s, 200, "{}"); return; }
-        if (path == QLatin1String("/free")) { ++frees; reply(s, 200, "{}"); return; }
+        if (path == QLatin1String("/free")) { ++frees; freeRequest = QJsonDocument::fromJson(body).object(); reply(s, 200, "{}"); return; }
+        if (path == QLatin1String("/roundtable_batch/release")) {
+            released << QJsonDocument::fromJson(body).object().value("artifact_key").toString();
+            reply(s, 200, "{}"); return;
+        }
         reply(s, 404, "{}");
     }
 
@@ -144,11 +173,15 @@ protected:
     void SetUp() override
     {
         ASSERT_TRUE(dir.isValid());
-        for (const char* name : {"001_INTRO_WIDE_L1.mp4", "002_INTRO_CU_L2.mp4", "wide.png", "cu.png"}) {
+        for (const char* name : {"001_INTRO_WIDE_L1.mp4", "002_INTRO_CU_L2.mp4"}) {
             QFile f(dir.filePath(name));
             ASSERT_TRUE(f.open(QIODevice::WriteOnly));
             f.write("x");
         }
+        QImage reference(64, 36, QImage::Format_ARGB32);
+        reference.fill(QColor(40, 80, 120, 128));
+        ASSERT_TRUE(reference.save(dir.filePath("wide.png")));
+        ASSERT_TRUE(reference.save(dir.filePath("cu.png")));
     }
 
     ComfyRunner::Config config(const FakeComfy& fake) const
@@ -260,10 +293,203 @@ TEST_F(ComfyRunnerTest, RendersEveryShotAndFillsTheWorkflow)
     EXPECT_TRUE(QTest::qWaitFor([&]() { return fake.frees == 1; }, 3000));   // VRAM back to editing
 }
 
-TEST_F(ComfyRunnerTest, RetriesThenFallsBackTo12Fps)
+TEST_F(ComfyRunnerTest, ReferencesAreCappedAt1080pBeforeUploadWithoutChangingOriginals)
+{
+    QImage large(3840, 2160, QImage::Format_ARGB32);
+    large.fill(QColor(40, 80, 120, 128));
+    ASSERT_TRUE(large.save(dir.filePath("wide.png")));
+    FakeComfy fake;
+    ComfyRunner runner;
+    runner.start(config(fake), twoJobs());
+    ASSERT_TRUE(waitFinished(runner));
+    const QImage wide = fake.uploadedImages.value("rt_ref_wide_wide.png");
+    ASSERT_FALSE(wide.isNull());
+    EXPECT_EQ(wide.size(), QSize(1920, 1080));
+    EXPECT_EQ(wide.pixelColor(960, 540).alpha(), 128);
+    EXPECT_EQ(fake.uploadedImages.value("rt_ref_closeup_cu.png").size(), QSize(64, 36));
+    EXPECT_EQ(QImage(dir.filePath("wide.png")), large);
+}
+
+TEST_F(ComfyRunnerTest, StagedBatchGroupsReferencesWithoutChangingShotIdentity)
 {
     FakeComfy fake;
-    fake.failFirstN = 2;   // as-is fails, retry fails, 12 fps succeeds
+    auto c = config(fake);
+    c.uiWorkflow = QJsonObject{{"nodes", QJsonArray{}}};
+    auto node = [](const char* type, QJsonObject in) { return QJsonObject{{"class_type", type}, {"inputs", in}}; };
+    c.prompt.insert("16", node("UNETLoader", {{"unet_name", "wan.safetensors"}}));
+    c.prompt.insert("19", node("CLIPLoader", {{"clip_name", "text.safetensors"}}));
+    c.prompt.insert("20", node("VAELoader", {{"vae_name", "vae.safetensors"}}));
+    c.prompt.insert("15", node("GAPMultiCharacterReference", {{"image_1", QJsonArray{"10", 0}}}));
+    c.prompt.insert("22", node("CLIPVisionEncode", {{"image", QJsonArray{"15", 2}}}));
+    c.prompt.insert("23", node("GAPSCAIL2LongVideo", {
+        {"model", QJsonArray{"16", 0}}, {"clip", QJsonArray{"19", 0}}, {"vae", QJsonArray{"20", 0}},
+        {"reference_image", QJsonArray{"15", 0}}, {"reference_image_mask", QJsonArray{"15", 1}},
+        {"character_count", QJsonArray{"15", 3}}, {"clip_vision_output", QJsonArray{"22", 0}},
+        {"width", 1280}, {"height", 704}, {"replacement_mode", false},
+        {"seed", QJsonArray{"84", 2}}, {"base_prompt", QJsonArray{"87", 0}},
+        {"pose_video", QJsonArray{"60", 0}}, {"steps", 8}}));
+    c.prompt.insert("91", node("ToonOut Selected BG JNK", {{"image", QJsonArray{"23", 0}}, {"model_name", "toon.pth"}}));
+    c.prompt.insert("24", node("CreateVideo", {{"images", QJsonArray{"91", 0}}, {"audio", QJsonArray{"60", 2}}, {"fps", 16.0}}));
+    c.prompt.insert("25", node("SaveVideo", {{"video", QJsonArray{"24", 0}}, {"filename_prefix", "video/x"}}));
+    auto jobs = twoJobs();
+    std::swap(jobs[0], jobs[1]); // script starts close-up, rendering starts wide
+    jobs.push_back(jobs[1]);
+    jobs[2].key = "second-wide";
+    jobs[2].seed = 77;
+    jobs[2].expression = "serious";
+    ComfyRunner runner;
+    QList<int> delivered;
+    const auto deliveryConnection = QObject::connect(&runner, &ComfyRunner::jobRendered, [&](int index, const QString&) {
+        delivered << index;
+        EXPECT_EQ(fake.prompts.size() - delivered.size(), 6); // no delivery before both earlier passes
+    });
+    runner.start(c, jobs);
+    ASSERT_TRUE(waitFinished(runner));
+    ASSERT_EQ(fake.prompts.size(), 9);
+    EXPECT_EQ(delivered, (QList<int>{1, 2, 0}));
+    const int order[] = {1, 2, 0};
+    for (int i = 0; i < 3; ++i) {
+        const auto& job = runner.jobs()[order[i]];
+        EXPECT_EQ(job.key, jobs[order[i]].key);
+        EXPECT_TRUE(job.prepared);
+        EXPECT_TRUE(job.generated);
+        EXPECT_EQ(job.state, RenderJob::State::Done);
+        EXPECT_EQ(job.fpsUsed, 16);
+        const auto prep = inputs(fake.prompts[i], "23");
+        EXPECT_EQ(prep.value("artifact_key").toString(), job.artifactKey);
+        EXPECT_EQ(inputs(fake.prompts[i + 3], "23").value("artifact_key").toString(), job.artifactKey);
+        EXPECT_EQ(inputs(fake.prompts[i + 6], "rt_batch_media").value("artifact_key").toString(), job.artifactKey);
+        EXPECT_EQ(prep.value("audio"), QJsonValue(QJsonArray{"60", 2}));
+        EXPECT_EQ(prep.value("steps").toInt(), 8);
+        EXPECT_FALSE(fake.prompts[i].contains("16"));
+        EXPECT_FALSE(fake.prompts[i + 3].contains("19"));
+        EXPECT_FALSE(fake.prompts[i + 3].contains("60"));
+        EXPECT_FALSE(fake.prompts[i + 6].contains("16"));
+        EXPECT_EQ(inputs(fake.prompts[i + 6], "25").value("audio"), QJsonValue(QJsonArray{"rt_batch_media", 1}));
+        EXPECT_EQ(inputs(fake.prompts[i + 6], "25").value("profile"), "4444");
+        EXPECT_EQ(inputs(fake.prompts[i + 6], "91").value("background_type"), "transparent");
+        EXPECT_EQ(inputs(fake.prompts[i + 6], "rt_alpha_repair").value("image"), QJsonValue(QJsonArray{"91", 0}));
+        EXPECT_TRUE(job.outputFile.endsWith(".mov"));
+        const QString cache = QDir(c.rendersDir).absoluteFilePath("../ComfyUI Cache/" + QFileInfo(job.outputFile).completeBaseName());
+        EXPECT_TRUE(QFileInfo::exists(cache + "/frames.pt"));
+        EXPECT_TRUE(QFileInfo::exists(cache + "/media.pt"));
+        EXPECT_TRUE(QFileInfo::exists(cache + "/recipe.json"));
+        const auto original = fake.metadata[i + 6].value("roundtable_source_prompt").toObject();
+        EXPECT_EQ(inputs(original, "23").value("steps").toInt(), 8);
+        EXPECT_EQ(inputs(original, "60").value("video").toString(), QFileInfo(job.drivingVideo).fileName());
+    }
+    EXPECT_EQ(inputs(fake.prompts[0], "10").value("image").toString(), "rt_ref_wide_wide.png");
+    EXPECT_EQ(inputs(fake.prompts[2], "10").value("image").toString(), "rt_ref_closeup_cu.png");
+    ASSERT_TRUE(QTest::qWaitFor([&]() { return fake.frees == 1 && fake.released.size() == 3; }, 3000));
+    EXPECT_FALSE(fake.freeRequest.value("free_memory").toBool());
+    EXPECT_TRUE(fake.freeRequest.value("unload_models").toBool());
+    EXPECT_EQ(fake.uploads.size(), 5); // two references and three driving clips, uploaded once
+    // Even one shot uses the staged path so its raw frames can be retained.
+    QObject::disconnect(deliveryConnection);
+    FakeComfy single;
+    c.url = single.url();
+    runner.start(c, {jobs.front()});
+    ASSERT_TRUE(waitFinished(runner));
+    ASSERT_EQ(single.prompts.size(), 3);
+    EXPECT_TRUE(runner.jobs().front().staged);
+    FakeComfy cacheFailure;
+    cacheFailure.failCacheDownloads = true;
+    c.url = cacheFailure.url();
+    runner.start(c, {jobs.front()});
+    ASSERT_TRUE(waitFinished(runner));
+    EXPECT_TRUE(QFileInfo::exists(runner.jobs().front().outputFile));
+    EXPECT_TRUE(cacheFailure.released.empty()); // never delete the sole raw copy after an archive error
+}
+
+TEST_F(ComfyRunnerTest, LiveStagedBatch)
+{
+    const QString folder = qEnvironmentVariable("RT_COMFY_BATCH_PROBE");
+    if (folder.isEmpty()) GTEST_SKIP() << "Set RT_COMFY_BATCH_PROBE to an isolated test folder.";
+    QFile specification(folder + "/jobs.json");
+    ASSERT_TRUE(specification.open(QIODevice::ReadOnly));
+    const auto spec = QJsonDocument::fromJson(specification.readAll()).object();
+    QFile workflow(spec.value("workflow").toString());
+    ASSERT_TRUE(workflow.open(QIODevice::ReadOnly));
+    const auto ui = QJsonDocument::fromJson(workflow.readAll()).object();
+    const auto converted = comfy::convertUiWorkflow(ui);
+    ASSERT_TRUE(converted.ok());
+    ASSERT_FALSE(comfy::batchStagePrompt(converted.prompt, converted.targets, comfy::BatchStage::Prepare,
+                                        "00000000000000000000000000000000_0").isEmpty());
+    ComfyRunner::Config c;
+    c.prompt = converted.prompt;
+    c.uiWorkflow = ui;
+    c.targets = converted.targets;
+    c.wideReference = spec.value("wide").toString();
+    c.closeUpReference = spec.value("close").toString();
+    c.rendersDir = folder + "/renders";
+    c.filenamePrefix = "diagnostics/roundtable_batch";
+    c.pollIntervalMs = 500;
+    std::vector<RenderJob> jobs;
+    for (const auto& value : spec.value("jobs").toArray()) {
+        const auto item = value.toObject();
+        RenderJob j;
+        j.key = item.value("key").toString().toStdString();
+        j.label = QString::fromStdString(j.key);
+        j.drivingVideo = item.value("video").toString();
+        j.closeUp = item.value("close").toBool();
+        j.expression = item.value("expression").toString();
+        j.seed = item.value("seed").toInteger();
+        j.fps = 16;
+        jobs.push_back(j);
+    }
+    ComfyRunner runner;
+    bool done = false;
+    QObject::connect(&runner, &ComfyRunner::log, [&](const QString& message) {
+        std::cout << message.toStdString() << std::endl;
+    });
+    QObject::connect(&runner, &ComfyRunner::finished, [&](int rendered, int failed, bool stopped) {
+        EXPECT_FALSE(stopped);
+        EXPECT_EQ(failed, 0);
+        EXPECT_EQ(rendered, jobs.size());
+        done = true;
+    });
+    runner.start(c, jobs);
+    ASSERT_TRUE(QTest::qWaitFor([&]() { return done; }, 45 * 60 * 1000));
+    for (const auto& job : runner.jobs()) {
+        EXPECT_TRUE(job.prepared);
+        EXPECT_TRUE(job.generated);
+        EXPECT_EQ(job.state, RenderJob::State::Done);
+        std::cout << "OUTPUT " << job.key << " " << job.outputFile.toStdString() << std::endl;
+    }
+}
+
+TEST_F(ComfyRunnerTest, PortraitReferenceKeepsAspectRatioInside1080pBounds)
+{
+    QImage portrait(1800, 2400, QImage::Format_RGB32);
+    portrait.fill(Qt::red);
+    ASSERT_TRUE(portrait.save(dir.filePath("wide.png")));
+    FakeComfy fake;
+    ComfyRunner runner;
+    auto jobs = twoJobs();
+    jobs.resize(1);
+    runner.start(config(fake), jobs);
+    ASSERT_TRUE(waitFinished(runner));
+    EXPECT_EQ(fake.uploadedImages.value("rt_ref_wide_wide.png").size(), QSize(810, 1080));
+}
+
+TEST_F(ComfyRunnerTest, UnreadableReferenceStopsBeforeSubmittingRender)
+{
+    QFile invalid(dir.filePath("wide.png"));
+    ASSERT_TRUE(invalid.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    invalid.write("not an image");
+    invalid.close();
+    FakeComfy fake;
+    ComfyRunner runner;
+    runner.start(config(fake), twoJobs());
+    ASSERT_TRUE(waitFinished(runner));
+    EXPECT_TRUE(fake.uploads.isEmpty());
+    EXPECT_TRUE(fake.prompts.isEmpty());
+}
+
+TEST_F(ComfyRunnerTest, RetriesPreserveRequestedQuality)
+{
+    FakeComfy fake;
+    fake.failFirstN = 2;
     ComfyRunner runner;
     QStringList log;
     QObject::connect(&runner, &ComfyRunner::log, [&](const QString& l) { log << l; });
@@ -275,11 +501,11 @@ TEST_F(ComfyRunnerTest, RetriesThenFallsBackTo12Fps)
     const RenderJob& job = runner.jobs()[0];
     EXPECT_EQ(job.state, RenderJob::State::Done);
     EXPECT_EQ(job.attempt, 2);
-    EXPECT_EQ(job.fpsUsed, 12);
+    EXPECT_EQ(job.fpsUsed, 16);
     ASSERT_EQ(fake.prompts.size(), 3);
     EXPECT_EQ(inputs(fake.prompts[0], "60").value("force_rate").toInt(), 16);
     EXPECT_EQ(inputs(fake.prompts[1], "60").value("force_rate").toInt(), 16);
-    EXPECT_EQ(inputs(fake.prompts[2], "60").value("force_rate").toInt(), 12);
+    EXPECT_EQ(inputs(fake.prompts[2], "60").value("force_rate").toInt(), 16);
     EXPECT_TRUE(log.join('\n').contains("Allocation on device"));
 }
 

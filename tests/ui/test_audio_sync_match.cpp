@@ -1,12 +1,16 @@
 #include <gtest/gtest.h>
 #include "audio/AudioFile.h"
 #include "AudioMixdown.h"
+#include "command/CommandStack.h"
 #include "panels/audio/AudioSync.h"
+#include "widgets/VideoFrameView.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QListWidget>
+#include <QPushButton>
+#include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -240,6 +244,131 @@ TEST_F(AudioSyncMatchTest, PanelClosedMidDecodeIsSafe)
     while (timer.elapsed() < 500)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     SUCCEED();
+}
+
+TEST_F(AudioSyncMatchTest, ConfirmKeepsTheVideoPreviewAndControls)
+{
+    for (bool shotScript : {false, true}) {
+        SCOPED_TRACE(shotScript ? "shot script" : "dialogue script");
+        rt::AudioSync audioSync;
+        audioSync.resize(1400, 900);
+        audioSync.show();
+        const std::string script = shotScript
+            ? "<html><body><table><tr><td>SHOT</td><td>ACTION</td><td>SCRIPT</td></tr>"
+              "<tr><td>WIDE</td><td></td><td>A test video line.</td></tr></table></body></html>"
+            : "ALICE: A test video line.\n";
+        ASSERT_TRUE(audioSync.loadScript(script, "memory://preview-test"));
+        auto clips = clipsFor(1, "C:/missing/preview.mp4");
+        clips.front().matchState = 1;
+        audioSync.setClipsForTesting(std::move(clips));
+        audioSync.finishCardBuild();
+        QPointer<rt::VideoFrameView> preview = audioSync.findChild<rt::VideoFrameView*>();
+        ASSERT_TRUE(preview);
+        QImage poster(192, 108, QImage::Format_RGB32);
+        poster.fill(Qt::green);
+        preview->setPoster(poster);
+        QImage live(192, 108, QImage::Format_RGB32);
+        live.fill(Qt::red);
+        preview->setFrame(live);
+        QPointer<QPushButton> confirm;
+        for (auto* button : audioSync.findChildren<QPushButton*>())
+            if (button->toolTip() == "Confirm match") confirm = button;
+        ASSERT_TRUE(confirm);
+        const auto buttonsBefore = audioSync.findChildren<QPushButton*>().size();
+        confirm->click();
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        ASSERT_TRUE(preview) << "Confirm must not discard the displayed video frame";
+        EXPECT_EQ(preview->grab().toImage().pixelColor(96, 54), QColor(Qt::red));
+        EXPECT_EQ(audioSync.findChildren<QPushButton*>().size(), buttonsBefore);
+        ASSERT_TRUE(confirm);
+        EXPECT_EQ(confirm->toolTip(), "Click to unconfirm match");
+        confirm->click();
+        QCoreApplication::processEvents();
+        ASSERT_TRUE(preview);
+        EXPECT_EQ(preview->grab().toImage().pixelColor(96, 54), QColor(Qt::red));
+        EXPECT_EQ(confirm->toolTip(), "Confirm match");
+    }
+}
+
+TEST_F(AudioSyncMatchTest, LeavingPreviewWhilePosterIsPendingKeepsLastFrame)
+{
+    rt::VideoFrameView preview;
+    preview.resize(192, 108);
+    QImage live(192, 108, QImage::Format_RGB32);
+    live.fill(Qt::red);
+    preview.setFrame(live);
+    preview.showPoster();
+    EXPECT_EQ(preview.grab().toImage().pixelColor(96, 54), QColor(Qt::red));
+
+    QImage poster(192, 108, QImage::Format_RGB32);
+    poster.fill(Qt::green);
+    preview.setPoster(poster);
+    EXPECT_EQ(preview.grab().toImage().pixelColor(96, 54), QColor(Qt::green));
+
+    // A late poster must not interrupt playback, and a failed decode must
+    // not erase the last good frame. Switching sources clears explicitly.
+    preview.setFrame(live);
+    preview.setPoster(poster);
+    preview.setFrame(QImage());
+    EXPECT_EQ(preview.grab().toImage().pixelColor(96, 54), QColor(Qt::red));
+    preview.clear();
+    EXPECT_EQ(preview.grab().toImage().pixelColor(96, 54), QColor(Qt::black));
+}
+
+TEST_F(AudioSyncMatchTest, PickingAnotherTakeAndUndoKeepPreviewAndUpdateChips)
+{
+    rt::CommandStack commands;
+    rt::AudioSync audioSync;
+    audioSync.setCommandStack(&commands);
+    ASSERT_TRUE(audioSync.loadScript(
+        "<html><body><table><tr><td>SHOT</td><td>ACTION</td><td>SCRIPT</td></tr>"
+        "<tr><td>WIDE</td><td></td><td>A test video line.</td></tr></table></body></html>",
+        "memory://take-confirm-test"));
+    auto clips = clipsFor(1, "C:/missing/takes.mp4");
+    auto second = clips.front();
+    second.id = 1;
+    second.start += 3.0;
+    second.end += 3.0;
+    second.matchState = 1;
+    clips.push_back(second);
+    audioSync.setClipsForTesting(std::move(clips));
+    audioSync.finishCardBuild();
+    auto chips = audioSync.findChildren<QPushButton*>("takeChip");
+    ASSERT_EQ(chips.size(), 2);
+    chips[1]->click();
+    QCoreApplication::processEvents();
+    chips = audioSync.findChildren<QPushButton*>("takeChip");
+    ASSERT_EQ(chips.size(), 2);
+    QPointer<rt::VideoFrameView> preview = audioSync.findChild<rt::VideoFrameView*>();
+    ASSERT_TRUE(preview);
+    QImage image(192, 108, QImage::Format_RGB32);
+    image.fill(Qt::red);
+    preview->setFrame(image);
+    auto* confirm = audioSync.findChild<QPushButton*>("confirmMatchButton");
+    ASSERT_NE(confirm, nullptr);
+    confirm->click();
+    QCoreApplication::processEvents();
+    ASSERT_TRUE(preview);
+    EXPECT_EQ(audioSync.clip(0).matchState, 1);
+    EXPECT_EQ(audioSync.clip(1).matchState, 2);
+    EXPECT_FALSE(chips[0]->text().startsWith(QChar(0x2713)));
+    EXPECT_TRUE(chips[1]->text().startsWith(QChar(0x2713)));
+    commands.undo();
+    QCoreApplication::processEvents();
+    ASSERT_TRUE(preview);
+    EXPECT_EQ(audioSync.clip(0).matchState, 2);
+    EXPECT_EQ(audioSync.clip(1).matchState, 1);
+    EXPECT_TRUE(chips[0]->text().startsWith(QChar(0x2713)));
+    EXPECT_FALSE(chips[1]->text().startsWith(QChar(0x2713)));
+    commands.redo();
+    QCoreApplication::processEvents();
+    ASSERT_TRUE(preview);
+    EXPECT_EQ(audioSync.clip(0).matchState, 1);
+    EXPECT_EQ(audioSync.clip(1).matchState, 2);
+    EXPECT_FALSE(chips[0]->text().startsWith(QChar(0x2713)));
+    EXPECT_TRUE(chips[1]->text().startsWith(QChar(0x2713)));
+    EXPECT_EQ(preview->grab().toImage().pixelColor(96, 54), QColor(Qt::red));
 }
 
 } // namespace

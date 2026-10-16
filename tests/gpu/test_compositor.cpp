@@ -30,6 +30,8 @@
 #include "timeline/AdjustmentClip.h"
 #include "effects/Blur.h"
 #include "effects/ColorCorrect.h"
+#include "effects/ChromaKey.h"
+#include "effects/ColorGrading.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -41,6 +43,9 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <fstream>
+#include <filesystem>
+#include <cstdlib>
 
 // ─── Vulkan context for GPU tests ───────────────────────────────────────────
 
@@ -896,6 +901,148 @@ TEST_F(CompositorTest, GPU_Compositor_TransformMotionBlurCreatesTemporalTrail)
 
     stripe.destroy();
     compositor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_UltraKeyFlatGreenKeepsSubjectOpaqueAndSuppressesEdgeSpill)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    constexpr uint32_t width = 128, height = 32;
+    std::vector<uint8_t> pixels(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const float green = x < 48 ? 1.0f : x >= 80 ? 0.0f : (80.0f - x) / 32.0f;
+            const size_t i = (y * width + x) * 4;
+            pixels[i] = static_cast<uint8_t>(40 * (1 - green));
+            pixels[i + 1] = static_cast<uint8_t>(32 * (1 - green) + 255 * green);
+            pixels[i + 2] = static_cast<uint8_t>(58 * (1 - green));
+            pixels[i + 3] = 255;
+        }
+    }
+    auto source = createRgbaTexture(width, height, pixels);
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    ASSERT_TRUE(processor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                               g_vk->device.graphicsQueue(), cfg));
+    auto render = [&](bool improved, std::vector<uint8_t>& output) {
+        rt::EffectStack stack;
+        auto key = std::make_unique<rt::ChromaKey>();
+        if (improved) key->applyFlatGreenPreset();
+        else key->param(rt::ChromaKey::Transparency).track.setDefaultValue(45.0f);
+        stack.addEffect(std::move(key));
+        return processor.processSync(source.descriptorInfo(), stack.evaluate(0)) && processor.readbackOutput(output);
+    };
+    std::vector<uint8_t> old, improved;
+    ASSERT_TRUE(render(false, old));
+    ASSERT_TRUE(render(true, improved));
+    ASSERT_EQ(improved.size(), pixels.size());
+    const size_t opaque = (16 * width + 110) * 4;
+    EXPECT_NEAR(old[opaque + 3], 140, 1); // reproduces the old 55% foreground opacity
+    EXPECT_EQ(improved[opaque + 3], 255);
+    for (int c = 0; c < 3; ++c) EXPECT_NEAR(improved[opaque + c], pixels[opaque + c], 1);
+    EXPECT_EQ(improved[(16 * width + 10) * 4 + 3], 0);
+    auto visibleGreen = [&](const std::vector<uint8_t>& frame) {
+        double total = 0;
+        for (uint32_t x = 48; x < 80; ++x) {
+            const size_t i = (16 * width + x) * 4;
+            total += std::max(0, int(frame[i + 1]) - std::max(int(frame[i]), int(frame[i + 2]))) * frame[i + 3] / 255.0;
+        }
+        return total;
+    };
+    EXPECT_GT(visibleGreen(old), 5.0);
+    EXPECT_LT(visibleGreen(improved), visibleGreen(old) * 0.15);
+    source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_ColorGradingKeepsNeutralGradientsAndTinyChromaNoiseNeutral)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    constexpr uint32_t width = 256, height = 4;
+    std::vector<uint8_t> pixels(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t i = (y * width + x) * 4;
+            for (uint32_t c = 0; c < 3; ++c)
+                pixels[i+c] = y == 0 ? uint8_t(x) : uint8_t(128 + (c == y-1 ? 1 : 0));
+            pixels[i+3] = 255;
+        }
+    }
+    auto source = createRgbaTexture(width, height, pixels);
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    ASSERT_TRUE(processor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                               g_vk->device.graphicsQueue(), cfg));
+    for (float exposure : {-2.0f, 0.0f, 2.0f}) {
+        for (float highlights : {-100.0f, -50.0f, 0.0f}) {
+            SCOPED_TRACE("exposure=" + std::to_string(exposure) + " highlights=" + std::to_string(highlights));
+            rt::EffectStack stack;
+            auto grade = std::make_unique<rt::ColorGrading>();
+            grade->param(rt::ColorGrading::Exposure).track.setDefaultValue(exposure);
+            grade->param(rt::ColorGrading::Highlights).track.setDefaultValue(highlights);
+            grade->param(rt::ColorGrading::Vibrance).track.setDefaultValue(40);
+            grade->param(rt::ColorGrading::CreativeSat).track.setDefaultValue(115);
+            stack.addEffect(std::move(grade));
+            ASSERT_TRUE(processor.processSync(source.descriptorInfo(), stack.evaluate(0)));
+            std::vector<uint8_t> output;
+            ASSERT_TRUE(processor.readbackOutput(output));
+            ASSERT_EQ(output.size(), pixels.size());
+            int maxNeutralChroma = 0, maxNoiseChroma = 0;
+            for (uint32_t y = 0; y < height; ++y) {
+                for (uint32_t x = 0; x < width; ++x) {
+                    const size_t i = (y * width + x) * 4;
+                    const int chroma = std::max({output[i], output[i+1], output[i+2]})
+                                     - std::min({output[i], output[i+1], output[i+2]});
+                    if (y == 0) maxNeutralChroma = std::max(maxNeutralChroma, chroma);
+                    else maxNoiseChroma = std::max(maxNoiseChroma, chroma);
+                    EXPECT_EQ(output[i+3], 255);
+                }
+            }
+            EXPECT_LE(maxNeutralChroma, 1);
+            EXPECT_LE(maxNoiseChroma, 8);
+        }
+    }
+    source.destroy();
+    processor.shutdown();
+}
+
+TEST_F(CompositorTest, GPU_OptionalAlphaComparisonKeyControl)
+{
+    const char* directory = std::getenv("ROUNDTABLE_ALPHA_COMPARISON_DIR");
+    if (!directory) GTEST_SKIP() << "Set ROUNDTABLE_ALPHA_COMPARISON_DIR for the real-clip comparison";
+    ASSERT_TRUE(hasGPU());
+    const auto root = std::filesystem::path(directory);
+    std::ifstream input(root / "green-control.rgba", std::ios::binary);
+    ASSERT_TRUE(input.is_open());
+    std::ofstream output(root / "keyed-control.rgba", std::ios::binary);
+    ASSERT_TRUE(output.is_open());
+    constexpr uint32_t width = 1280, height = 704;
+    std::vector<uint8_t> pixels(width * height * 4), keyed;
+    rt::EffectProcessor processor;
+    rt::EffectProcessorConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    ASSERT_TRUE(processor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                               g_vk->device.graphicsQueue(), cfg));
+    rt::EffectStack stack;
+    auto key = std::make_unique<rt::ChromaKey>();
+    key->applyFlatGreenPreset();
+    stack.addEffect(std::move(key));
+    size_t frames = 0;
+    while (input.read(reinterpret_cast<char*>(pixels.data()), pixels.size())) {
+        auto source = createRgbaTexture(width, height, pixels);
+        ASSERT_TRUE(processor.processSync(source.descriptorInfo(), stack.evaluate(0)));
+        ASSERT_TRUE(processor.readbackOutput(keyed));
+        ASSERT_EQ(keyed.size(), pixels.size());
+        output.write(reinterpret_cast<const char*>(keyed.data()), keyed.size());
+        source.destroy();
+        ++frames;
+    }
+    EXPECT_EQ(frames, 73u);
+    processor.shutdown();
 }
 
 TEST_F(CompositorTest, GPU_EffectProcessor_ResizeThenTwoEffects)

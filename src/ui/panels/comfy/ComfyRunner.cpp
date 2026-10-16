@@ -6,11 +6,13 @@
 
 #include "ai/ShotPipeline.h"
 
+#include <QBuffer>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -18,6 +20,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSaveFile>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -32,7 +35,7 @@ namespace rt {
 namespace {
 
 constexpr int kMaxPollFailures = 6;          // ~12 s of no answer → server is gone
-constexpr int kMaxAttempts = 3;              // as-is, restart, restart @12 fps
+constexpr int kMaxAttempts = 3;              // retries always preserve quality
 
 QString fmtDuration(qint64 ms)
 {
@@ -142,7 +145,7 @@ ComfyRunner::ComfyRunner(QObject* parent)
 
 QString ComfyRunner::renderingStatus(const RenderJob& job) const
 {
-    QString status = QStringLiteral("Rendering");
+    QString status = m_stage == 1 ? QStringLiteral("Preparing") : m_stage == 3 ? QStringLiteral("Cleaning background") : QStringLiteral("Rendering");
     if (job.steps > 0)
         status += QStringLiteral(" · %1%2/%3")
                       .arg(job.stepNode.isEmpty() ? QString() : job.stepNode + QLatin1Char(' '))
@@ -197,21 +200,53 @@ void ComfyRunner::fireAndForget(const QString& path, const QJsonObject& body)
     connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
 }
 
-void ComfyRunner::upload(const QString& localPath, const QString& remoteName, Done then)
+void ComfyRunner::upload(const QString& localPath, const QString& remoteName, Done then,
+                         bool referenceImage)
 {
-    auto* file = new QFile(localPath);
-    if (!file->open(QIODevice::ReadOnly)) {
-        delete file;
-        then(false, QStringLiteral("cannot read %1").arg(localPath));
-        return;
+    QIODevice* data = nullptr;
+    if (referenceImage) {
+        // Bound reference segmentation as well as encoding: the workflow may
+        // not resize until after SAM. Keep framing/alpha; never upscale.
+        QImageReader reader(localPath);
+        reader.setAutoTransform(true);
+        QImage image = reader.read();
+        if (image.isNull()) {
+            then(false, QStringLiteral("cannot read reference %1: %2")
+                            .arg(localPath, reader.errorString()));
+            return;
+        }
+        const QSize original = image.size();
+        if (image.width() > 1920 || image.height() > 1080)
+            image = image.scaled(1920, 1080, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        auto* buffer = new QBuffer;
+        buffer->open(QIODevice::ReadWrite);
+        if (!image.save(buffer, "PNG")) {
+            delete buffer;
+            then(false, QStringLiteral("cannot encode reference %1").arg(localPath));
+            return;
+        }
+        buffer->seek(0);
+        data = buffer;
+        emit log(QStringLiteral("Reference %1: %2×%3 → %4×%5")
+                     .arg(QFileInfo(localPath).fileName())
+                     .arg(original.width()).arg(original.height())
+                     .arg(image.width()).arg(image.height()));
+    } else {
+        auto* file = new QFile(localPath);
+        if (!file->open(QIODevice::ReadOnly)) {
+            delete file;
+            then(false, QStringLiteral("cannot read %1").arg(localPath));
+            return;
+        }
+        data = file;
     }
     auto* multi = new QHttpMultiPart(QHttpMultiPart::FormDataType);
     QHttpPart filePart;
     filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
                        QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(remoteName));
     filePart.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
-    filePart.setBodyDevice(file);
-    file->setParent(multi);
+    filePart.setBodyDevice(data);
+    data->setParent(multi);
     multi->append(filePart);
     for (const auto& [name, value] : {std::pair{"type", "input"}, std::pair{"overwrite", "true"}}) {
         QHttpPart part;
@@ -460,6 +495,22 @@ void ComfyRunner::start(const Config& config, std::vector<RenderJob> jobs)
     m_config = config;
     m_jobs = std::move(jobs);
     m_index = -1;
+    m_orderPosition = -1;
+    m_executionOrder.clear();
+    const QString batchId = QUuid::createUuid().toString(QUuid::Id128);
+    for (int i = 0; i < static_cast<int>(m_jobs.size()); ++i) {
+        m_executionOrder.push_back(i);
+        m_jobs[i].artifactKey = batchId + QStringLiteral("_%1").arg(i);
+    }
+    m_stage = config.stagedBatch && !m_jobs.empty() &&
+        !comfy::batchStagePrompt(config.prompt, config.targets, comfy::BatchStage::Prepare,
+                                batchId + QStringLiteral("_0")).isEmpty() ? 1 : 0;
+    if (m_stage) {
+        for (auto& job : m_jobs) job.staged = true;
+        std::stable_sort(m_executionOrder.begin(), m_executionOrder.end(), [this](int a, int b) {
+            return m_jobs[a].closeUp < m_jobs[b].closeUp;
+        });
+    }
     m_running = true;
     m_stopRequested = false;
     m_done = m_failed = 0;
@@ -469,6 +520,7 @@ void ComfyRunner::start(const Config& config, std::vector<RenderJob> jobs)
     m_pollTimer->setInterval(std::max(20, m_config.pollIntervalMs));
     QDir().mkpath(m_config.rendersDir);
     emit log(QStringLiteral("Batch started: %1 shot(s)").arg(m_jobs.size()));
+    if (m_stage) emit log(QStringLiteral("Three passes: prepare references/audio, generate shots, then clean backgrounds. Wide shots first; timeline order is preserved."));
     m_events->open(QUrl(m_config.url), m_clientId);   // step progress + live preview
     nextJob();
 }
@@ -495,11 +547,26 @@ void ComfyRunner::stop()
 void ComfyRunner::nextJob()
 {
     m_pollTimer->stop();
-    while (++m_index < static_cast<int>(m_jobs.size())) {
+    m_promptId.clear();
+    while (++m_orderPosition < static_cast<int>(m_executionOrder.size())) {
+        m_index = m_executionOrder[m_orderPosition];
         if (current().state == RenderJob::State::Pending) {
             runCurrentJob();
             return;
         }
+    }
+    if (m_stage == 1 || m_stage == 2) {
+        ++m_stage;
+        m_orderPosition = -1;
+        for (auto& job : m_jobs) {
+            if (job.state == RenderJob::State::Failed) continue;
+            job.state = RenderJob::State::Pending;
+            job.attempt = 0;
+        }
+        emit log(m_stage == 2 ? QStringLiteral("Preparation complete. Generating all shots.")
+                              : QStringLiteral("Generation complete. Cleaning backgrounds and saving each shot with its audio."));
+        nextJob();
+        return;
     }
     finishBatch();
 }
@@ -514,7 +581,7 @@ void ComfyRunner::runCurrentJob()
 {
     RenderJob& job = current();
     job.state = RenderJob::State::Running;
-    job.fpsUsed = job.attempt >= 2 ? kScailReducedFps : job.fps;
+    job.fpsUsed = job.fps;
     setStatus(QStringLiteral("Connecting to ComfyUI…"));
     const qint64 gen = m_generation;
 
@@ -524,6 +591,11 @@ void ComfyRunner::runCurrentJob()
             // Nothing to restart with → every shot would fail the same way.
             if (m_config.launcher.isEmpty()) stopBatch(err);
             else failCurrent(err);
+            return;
+        }
+
+        if (m_stage >= 2) {
+            submitCurrent();
             return;
         }
 
@@ -548,13 +620,13 @@ void ComfyRunner::runCurrentJob()
             }
             setStatus(QStringLiteral("Uploading reference image…"));
             const QString remote = (closeUp ? QStringLiteral("rt_ref_closeup_") : QStringLiteral("rt_ref_wide_"))
-                                 + QFileInfo(local).fileName();
+                                 + QFileInfo(local).completeBaseName() + QStringLiteral(".png");
             upload(local, remote, [this, gen, uploadRefs, closeUp](bool ok, const QString& nameOrErr) {
                 if (gen != m_generation) return;
                 if (!ok) { stopBatch(QStringLiteral("Reference image upload failed: ") + nameOrErr); return; }
                 (closeUp ? m_uploadedCloseUp : m_uploadedWide) = nameOrErr;
                 (*uploadRefs)();
-            });
+            }, true);
         };
         (*uploadRefs)();
     });
@@ -571,10 +643,21 @@ void ComfyRunner::submitCurrent()
     params.seed = job.seed;
     params.filenamePrefix = m_config.filenamePrefix + QLatin1Char('/') + QFileInfo(job.drivingVideo).completeBaseName();
     QStringList missing;
-    const QJsonObject prompt = comfy::applyShotParams(m_config.prompt, m_config.targets, params, &missing);
+    QJsonObject prompt = comfy::applyShotParams(m_config.prompt, m_config.targets, params, &missing);
+    const QJsonObject sourcePrompt = prompt;
+    m_sourcePrompt = sourcePrompt;
     if (!missing.isEmpty()) {
         stopBatch(QStringLiteral("The workflow has no node for: %1").arg(missing.join(QStringLiteral(", "))));
         return;
+    }
+
+    if (m_stage) {
+        prompt = comfy::batchStagePrompt(prompt, m_config.targets,
+            m_stage == 1 ? comfy::BatchStage::Prepare : m_stage == 2 ? comfy::BatchStage::Generate : comfy::BatchStage::Finish,
+            job.artifactKey);
+        if (prompt.isEmpty()) { stopBatch(QStringLiteral("The workflow no longer supports staged rendering.")); return; }
+    } else {
+        prompt = comfy::alphaOutputPrompt(prompt, m_config.targets);
     }
 
     setStatus(QStringLiteral("Queueing…"));
@@ -582,10 +665,13 @@ void ComfyRunner::submitCurrent()
     job.stepNode.clear();
     m_consoleDrivesStep = false;
     QJsonObject body{{QStringLiteral("prompt"), prompt}, {QStringLiteral("client_id"), m_clientId}};
-    if (!m_config.uiWorkflow.isEmpty())
+    if (!m_config.uiWorkflow.isEmpty()) {
+        QJsonObject metadata{{QStringLiteral("workflow"), m_config.uiWorkflow}};
+        if (m_stage) metadata.insert(QStringLiteral("roundtable_source_prompt"), sourcePrompt);
         body.insert(QStringLiteral("extra_data"),
                     QJsonObject{{QStringLiteral("extra_pnginfo"),
-                                 QJsonObject{{QStringLiteral("workflow"), m_config.uiWorkflow}}}});
+                                 metadata}});
+    }
     QNetworkReply* reply = postJson(QStringLiteral("/prompt"), body);
     const qint64 gen = m_generation;
     connect(reply, &QNetworkReply::finished, this, [this, reply, gen]() {
@@ -610,7 +696,7 @@ void ComfyRunner::submitCurrent()
                      .arg(j.label).arg(j.fpsUsed)
                      .arg(j.seed >= 0 ? QString::number(j.seed) : QStringLiteral("workflow"))
                      .arg(j.attempt ? QStringLiteral(", attempt %1").arg(j.attempt + 1) : QString()));
-        setStatus(QStringLiteral("Rendering…"));
+        setStatus(m_stage == 1 ? QStringLiteral("Preparing…") : m_stage == 3 ? QStringLiteral("Cleaning background…") : QStringLiteral("Rendering…"));
         m_pollTimer->start();
     });
 }
@@ -662,6 +748,28 @@ void ComfyRunner::pollCurrent()
         }
         if (status.value(QLatin1String("completed")).toBool() || state == QLatin1String("success")) {
             m_pollTimer->stop();
+            if (m_stage == 1 || m_stage == 2) {
+                const QJsonObject outputs = entry.value(QLatin1String("outputs")).toObject();
+                bool verified = false;
+                for (const auto& value : outputs) {
+                    const auto out = value.toObject();
+                    const QJsonArray keys = out.value("artifact_key").toArray();
+                    const QJsonArray stages = out.value("roundtable_stage").toArray();
+                    if (keys.contains(current().artifactKey) && stages.contains(m_stage == 1 ? "prepared" : "generated")) verified = true;
+                }
+                if (!verified) { failCurrent(QStringLiteral("Batch phase completed without its shot artifact.")); return; }
+                RenderJob& j = current();
+                j.completedPhaseMs += m_jobClock.elapsed();
+                emit log(QStringLiteral("%1: %2 in %3").arg(j.label,
+                    m_stage == 1 ? QStringLiteral("prepared") : QStringLiteral("generated"),
+                    fmtDuration(m_jobClock.elapsed())));
+                if (m_stage == 1) j.prepared = true; else j.generated = true;
+                j.status = m_stage == 1 ? QStringLiteral("Prepared; waiting to generate") : QStringLiteral("Generated; waiting for cleanup");
+                j.state = RenderJob::State::WaitingForNextPass;
+                emit jobChanged(m_index);
+                nextJob();
+                return;
+            }
             downloadOutput(entry.value(QLatin1String("outputs")).toObject());
         }
     });
@@ -699,8 +807,9 @@ void ComfyRunner::downloadOutput(const QJsonObject& outputs)
         .arg(m_config.rendersDir, QFileInfo(job.drivingVideo).completeBaseName(),
              job.seed >= 0 ? QString::number(job.seed) : QStringLiteral("wf"))
         .arg(job.fpsUsed);
-    QString dest = base + QStringLiteral(".mp4");
-    for (int n = 2; QFileInfo::exists(dest); ++n) dest = base + QStringLiteral("_%1.mp4").arg(n);
+    const QString extension = QLatin1Char('.') + QFileInfo(found.value("filename").toString()).suffix().toLower();
+    QString dest = base + extension;
+    for (int n = 2; QFileInfo::exists(dest); ++n) dest = base + QStringLiteral("_%1").arg(n) + extension;
 
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("filename"), found.value(QLatin1String("filename")).toString());
@@ -725,7 +834,7 @@ void ComfyRunner::downloadOutput(const QJsonObject& outputs)
         RenderJob& job = current();
         job.state = RenderJob::State::Done;
         job.outputFile = dest;
-        job.elapsedMs = m_jobClock.elapsed();
+        job.elapsedMs = job.completedPhaseMs + m_jobClock.elapsed();
         job.status = QStringLiteral("Done in %1").arg(fmtDuration(job.elapsedMs));
         if (job.frames > 0) {
             m_renderSeconds += job.elapsedMs / 1000.0;
@@ -735,8 +844,77 @@ void ComfyRunner::downloadOutput(const QJsonObject& outputs)
         emit log(QStringLiteral("%1: done → %2").arg(job.label, QFileInfo(dest).fileName()));
         emit jobChanged(m_index);
         emit jobRendered(m_index, dest);
+        if (m_stage) {
+            archiveCurrent(dest, 0, [this, gen](bool ok, const QString& error) {
+            if (gen != m_generation) return;
+            if (!ok) {
+                stopBatch(QStringLiteral("Video saved, but raw cache could not be archived: %1. Server originals retained.").arg(error));
+                return;
+            }
+            auto& job = current();
+            auto* cleanup = postJson(QStringLiteral("/roundtable_batch/release"), QJsonObject{{"artifact_key", job.artifactKey}});
+            connect(cleanup, &QNetworkReply::finished, this, [this, cleanup, gen]() {
+                cleanup->deleteLater();
+                if (gen != m_generation) return;
+                if (cleanup->error() != QNetworkReply::NoError)
+                    emit log(QStringLiteral("Video saved; temporary batch files could not be released: ") + cleanup->errorString());
+                nextJob();
+            });
+            });
+            return;
+        }
         nextJob();
     });
+}
+
+void ComfyRunner::archiveCurrent(const QString& videoFile, int fileIndex, Done then)
+{
+    // Stream full tensors to the show's media folder: never buffer a gigabyte-sized reply in RAM.
+    const QString directory = QDir(m_config.rendersDir).absoluteFilePath(
+        QStringLiteral("../ComfyUI Cache/") + QFileInfo(videoFile).completeBaseName());
+    if (!QDir().mkpath(directory)) { then(false, directory); return; }
+    const QStringList files{QStringLiteral("frames.pt"), QStringLiteral("media.pt")};
+    if (fileIndex == files.size()) {
+        QSaveFile recipe(directory + QStringLiteral("/recipe.json"));
+        const QByteArray bytes = QJsonDocument(QJsonObject{{"source_prompt", m_sourcePrompt},
+            {"render", videoFile}, {"artifact_key", current().artifactKey}, {"alpha_revision", 3}}).toJson();
+        if (!recipe.open(QIODevice::WriteOnly) || recipe.write(bytes) != bytes.size() || !recipe.commit()) {
+            then(false, QStringLiteral("Cannot save cache recipe")); return;
+        }
+        emit log(QStringLiteral("Raw frames retained in %1").arg(QDir::cleanPath(directory)));
+        then(true, {});
+        return;
+    }
+    const QString name = files[fileIndex];
+    auto file = std::make_shared<QSaveFile>(directory + QLatin1Char('/') + name);
+    if (!file->open(QIODevice::WriteOnly)) { then(false, file->errorString()); return; }
+    QUrlQuery query;
+    query.addQueryItem("filename", name);
+    query.addQueryItem("subfolder", QStringLiteral("roundtable_batch/") + current().artifactKey);
+    query.addQueryItem("type", "output");
+    auto* reply = get(QStringLiteral("/view?") + query.toString(QUrl::FullyEncoded));
+    const auto gen = m_generation;
+    auto failed = std::make_shared<bool>(false);
+    auto received = std::make_shared<qint64>(0);
+    auto drain = [reply, file, failed, received]() {
+        const auto bytes = reply->readAll();
+        *received += bytes.size();
+        if (file->write(bytes) != bytes.size()) *failed = true;
+    };
+    setStatus(QStringLiteral("Saving raw cache: %1").arg(name));
+    connect(reply, &QNetworkReply::readyRead, this, drain);
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, file, failed, received, drain, gen, videoFile, fileIndex, then]() {
+            reply->deleteLater();
+            if (gen != m_generation) return;
+            drain();
+            const auto length = reply->header(QNetworkRequest::ContentLengthHeader);
+            if (*failed || *received <= 0 || (length.isValid() && length.toLongLong() != *received) ||
+                reply->error() != QNetworkReply::NoError || !file->commit()) {
+                then(false, reply->errorString() + QStringLiteral(" / ") + file->errorString()); return;
+            }
+            archiveCurrent(videoFile, fileIndex + 1, then);
+        });
 }
 
 void ComfyRunner::failCurrent(const QString& why)
@@ -749,8 +927,7 @@ void ComfyRunner::failCurrent(const QString& why)
     const qint64 gen = m_generation;
     if (job.attempt + 1 < kMaxAttempts) {
         ++job.attempt;
-        setStatus(job.attempt >= 2 ? QStringLiteral("Restarting ComfyUI, then retrying at 12 fps…")
-                                   : QStringLiteral("Restarting ComfyUI, then retrying…"));
+        setStatus(QStringLiteral("Restarting ComfyUI, then retrying with unchanged settings…"));
         restartServer([this, gen](bool ok, const QString& err) {
             if (gen != m_generation) return;
             if (!ok) emit log(QStringLiteral("Restart failed: ") + err);
@@ -793,7 +970,7 @@ void ComfyRunner::finishBatch()
     emit log(QStringLiteral("Batch finished: %1 rendered, %2 failed").arg(m_done).arg(m_failed));
     // Give the VRAM back to editing while nothing renders.
     fireAndForget(QStringLiteral("/free"), QJsonObject{{QStringLiteral("unload_models"), true},
-                                                       {QStringLiteral("free_memory"), true}});
+                                                       {QStringLiteral("free_memory"), false}});
     emit finished(m_done, m_failed, false);
 }
 

@@ -18,6 +18,8 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 
+#include <QApplication>
+#include <QKeyEvent>
 #include <QSplitter>
 #include <QScrollBar>
 #include <QTimer>
@@ -32,6 +34,37 @@ namespace rt {
 //  Constructor / Destructor
 // ═════════════════════════════════════════════════════════════════════════════
 
+namespace {
+/// Esc cancels an in-progress timeline drag (Premiere). App-level because
+/// during a drag keyboard focus usually sits on the workspace, not here.
+/// Inert unless a drag is active, so it never steals Esc otherwise.
+class TimelineDragEscapeFilter final : public QObject
+{
+public:
+    explicit TimelineDragEscapeFilter(TimelinePanel* panel) : m_panel(panel) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        const auto type = event->type();
+        if ((type == QEvent::KeyPress || type == QEvent::ShortcutOverride)
+            && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape
+            && m_panel->isDragInProgress()) {
+            if (type == QEvent::ShortcutOverride) {
+                event->accept();       // deliver it as a KeyPress instead
+                return true;
+            }
+            m_panel->cancelActiveDrag();
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    TimelinePanel* m_panel;
+};
+} // namespace
+
 TimelinePanel::TimelinePanel(QWidget* parent)
     : QWidget(parent)
 {
@@ -40,11 +73,14 @@ TimelinePanel::TimelinePanel(QWidget* parent)
     setAcceptDrops(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setupLayout();
+    m_dragEscapeFilter = std::make_unique<TimelineDragEscapeFilter>(this);
+    if (qApp) qApp->installEventFilter(m_dragEscapeFilter.get());
 }
 
 TimelinePanel::~TimelinePanel()
 {
     m_destroying.store(true);
+    m_dragEscapeFilter.reset();   // it calls back into this panel
     auto& tasks = MediaTaskQueue::instance();
     tasks.cancelOwner(m_waveformTaskOwner);
     tasks.cancelOwner(m_thumbnailTaskOwner);

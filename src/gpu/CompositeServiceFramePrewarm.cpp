@@ -539,49 +539,14 @@ void CompositeService::prewarmUpcomingShots(
             }
 
             if (!m_mediaPool->isPathOpen(mp)) {
-                // Imminent-shot escape hatch: if the clip starts within
-                // kImminentTicks the next scan (~100 ms later) will fire
-                // AFTER the playhead crosses the cut, which is exactly
-                // when we end up returning the empty-sentinel.  Force a
-                // synchronous open instead — it can block this thread for
-                // 30-100 ms, but that delay is on the prewarm thread, not
-                // the FrameProducer, and the alternative is a visible
-                // black frame at the cut.
-                constexpr int64_t kImminentTicks =
-                    static_cast<int64_t>(0.5 * kTicksPerSecond);
-                const int64_t leadTicks = clipIn - tick;
-                if (leadTicks <= kImminentTicks) {
-                    uint64_t syncHandle = 0;
-                    {
-                        std::lock_guard hl(m_openMediaHandlesMutex);
-                        syncHandle = m_mediaPool->open(mp);
-                        if (syncHandle != 0)
-                            m_openMediaHandles[mp] = syncHandle;
-                    }
-                    ++openedThisScan;
-                    spdlog::info("[LOOKAHEAD] imminent shot ({:.0f} ms ahead) "
-                                 "forced sync-open: '{}' handle={}",
-                                 static_cast<double>(leadTicks)
-                                     / static_cast<double>(kTicksPerSecond)
-                                     * 1000.0,
-                                 pathToUtf8(utf8ToPath(mp).filename()),
-                                 syncHandle);
-                    if (syncHandle == 0) {
-                        // Open failed; let the next scan re-try.
-                        m_prewarmedClipIds.erase(clip->id());
-                        m_headWarmedClipIds.erase(clip->id());
-                        continue;
-                    }
-                    // Fall through to the prefetch scheduling below.
-                } else {
-                    m_mediaPool->openAsync(mp);
-                    ++openedThisScan;
-                    // Re-queue: next scan (~100ms later) will schedule prefetch
-                    // once the async open completes.
-                    m_prewarmedClipIds.erase(clip->id());
-                    m_headWarmedClipIds.erase(clip->id());
-                    continue;
-                }
+                // This scan also runs on FrameProducer. Never synchronously
+                // open here: a cold decoder can consume several display frames.
+                // Retry the prefetch pass after the background open completes.
+                m_mediaPool->openAsync(mp);
+                ++openedThisScan;
+                m_prewarmedClipIds.erase(clip->id());
+                m_headWarmedClipIds.erase(clip->id());
+                continue;
             }
 
             uint64_t handle = 0;

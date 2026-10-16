@@ -223,4 +223,110 @@ QString workflowExpression(const QJsonObject& prompt, const WorkflowSlots& targe
         .value(QLatin1String("inputs")).toObject().value(QLatin1String("value")).toString();
 }
 
+QJsonObject alphaOutputPrompt(QJsonObject graph, const WorkflowSlots& targets)
+{
+    const auto save = graph.value(targets.save).toObject();
+    if (save.value("class_type") != "SaveVideo") return graph;
+    const auto saved = save.value("inputs").toObject();
+    const auto source = [](const QJsonValue& value) {
+        const auto link = value.toArray();
+        return link.isEmpty() ? QString() : link[0].toString();
+    };
+    const QString create = source(saved.value("video"));
+    if (graph.value(create).toObject().value("class_type") != "CreateVideo") return graph;
+    const auto video = graph.value(create).toObject().value("inputs").toObject();
+    const QString cleanup = source(video.value("images"));
+    auto toon = graph.value(cleanup).toObject();
+    if (toon.value("class_type") != "ToonOut Selected BG JNK") return graph;
+    auto clean = toon.value("inputs").toObject();
+    clean.insert("background_type", "transparent");
+    toon.insert("inputs", clean);
+    graph.insert(cleanup, toon);
+    graph.insert("rt_alpha_repair", QJsonObject{{"class_type", "RoundtableAlphaRepair"},
+        {"inputs", QJsonObject{{"image", QJsonArray{cleanup, 0}}}}});
+    graph.insert(targets.save, QJsonObject{{"class_type", "VHS_VideoCombine"},
+        {"inputs", QJsonObject{{"images", QJsonArray{"rt_alpha_repair", 0}},
+            {"audio", video.value("audio")}, {"frame_rate", video.value("fps")},
+            {"filename_prefix", saved.value("filename_prefix")}, {"format", "video/ProRes"},
+            {"profile", "4444"}, {"loop_count", 0}, {"pingpong", false},
+            {"save_output", true}, {"save_metadata", true}, {"trim_to_audio", false}}}});
+    graph.remove(create);
+    return graph;
+}
+
+QJsonObject batchStagePrompt(const QJsonObject& original, const WorkflowSlots& targets,
+                            BatchStage stage, const QString& artifactKey)
+{
+    auto inputs = [&](const QString& id) { return original.value(id).toObject().value("inputs").toObject(); };
+    auto type = [&](const QString& id) { return original.value(id).toObject().value("class_type").toString(); };
+    auto source = [](const QJsonValue& value) {
+        const auto link = value.toArray();
+        return link.isEmpty() ? QString() : link[0].toString();
+    };
+    const QString create = source(inputs(targets.save).value("video"));
+    const QString cleanup = source(inputs(create).value("images"));
+    const QString generator = source(inputs(cleanup).value("image"));
+    if (type(targets.save) != "SaveVideo" || type(create) != "CreateVideo" ||
+        type(cleanup) != "ToonOut Selected BG JNK" || type(generator) != "GAPSCAIL2LongVideo") return {};
+    const QJsonObject generation = inputs(generator);
+    for (const char* name : {"reference_image", "reference_image_mask", "clip_vision_output", "character_count"})
+        if (!generation.contains(QLatin1String(name))) return {};
+
+    QJsonObject graph = original;
+    auto put = [&](const QString& id, const QString& nodeType, const QJsonObject& in) {
+        graph.insert(id, QJsonObject{{"class_type", nodeType}, {"inputs", in}});
+    };
+    const QString reference = "rt_batch_reference", media = "rt_batch_media";
+    QString output;
+    if (stage == BatchStage::Prepare) {
+        QJsonObject ref;
+        for (const char* name : {"reference_image", "reference_image_mask", "clip_vision_output", "character_count",
+                                 "vae", "width", "height", "replacement_mode"})
+            ref.insert(QLatin1String(name), generation.value(QLatin1String(name)));
+        put(reference, "RoundtableReference", ref);
+        QJsonObject prep = generation;
+        for (const char* name : {"model", "vae", "reference_image", "reference_image_mask", "clip_vision_output", "character_count"})
+            prep.remove(QLatin1String(name));
+        prep.insert("reference", QJsonArray{reference, 0});
+        prep.insert("artifact_key", artifactKey);
+        prep.insert("audio", inputs(create).value("audio"));
+        prep.insert("fps", inputs(create).value("fps"));
+        put(generator, "RoundtablePrepare", prep);
+        output = generator;
+    } else if (stage == BatchStage::Generate) {
+        put(generator, "RoundtableGenerate", QJsonObject{{"artifact_key", artifactKey},
+            {"model", generation.value("model")}, {"vae", generation.value("vae")}});
+        output = generator;
+    } else {
+        put(media, "RoundtableLoadFrames", QJsonObject{{"artifact_key", artifactKey}});
+        QJsonObject clean = inputs(cleanup);
+        clean.insert("image", QJsonArray{media, 0});
+        clean.remove("scail_model");
+        put("rt_batch_toon", "RoundtableToonModel", QJsonObject{{"model_name", clean.value("model_name")}});
+        clean.insert("prepared_model", QJsonArray{"rt_batch_toon", 0});
+        put(cleanup, type(cleanup), clean);
+        QJsonObject video = inputs(create);
+        video.insert("audio", QJsonArray{media, 1});
+        video.insert("fps", QJsonArray{media, 2});
+        put(create, type(create), video);
+        output = targets.save;
+        graph = alphaOutputPrompt(graph, targets);
+    }
+    // Keep only this phase's ancestors; otherwise ComfyUI also executes the
+    // original output nodes and silently runs the entire workflow again.
+    QJsonObject result;
+    std::function<void(const QString&)> visit = [&](const QString& id) {
+        if (result.contains(id) || !graph.contains(id)) return;
+        const QJsonObject node = graph.value(id).toObject();
+        result.insert(id, node);
+        const QJsonObject in = node.value("inputs").toObject();
+        for (auto it = in.begin(); it != in.end(); ++it) {
+            const QJsonArray link = it.value().toArray();
+            if (link.size() == 2 && link[0].isString()) visit(link[0].toString());
+        }
+    };
+    visit(output);
+    return result;
+}
+
 } // namespace rt::comfy

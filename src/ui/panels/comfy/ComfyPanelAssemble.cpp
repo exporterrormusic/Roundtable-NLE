@@ -8,6 +8,7 @@
  * AudioSync::exportToTimeline).
  */
 #include "panels/comfy/ComfyPanel.h"
+#include "panels/comfy/ComfyTimelineTemplate.h"
 
 #include "Constants.h"
 #include "PathUtils.h"
@@ -41,6 +42,7 @@ struct AssemblyProbe
     int    width{0};
     int    height{0};
     bool   hasAudio{false};
+    bool   hasAlpha{false};
 };
 
 AssemblyProbe probeAssemblyMedia(const std::string& path)
@@ -58,6 +60,7 @@ AssemblyProbe probeAssemblyMedia(const std::string& path)
     p.width = static_cast<int>(info.width);
     p.height = static_cast<int>(info.height);
     p.hasAudio = info.hasAudio;
+    p.hasAlpha = info.hasAlpha || info.packedAlpha;
     return p;
 }
 
@@ -95,7 +98,16 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
     struct Item { const ShowShot* shot; const RenderVersion* render; AssemblyProbe probe; };
     std::vector<Item> items;
     QStringList missing;
+    const ShowShot* firstWide = nullptr;
+    const ShowShot* lastIntroWide = nullptr;
+    const ShowShot* lastShot = nullptr;
     for (const auto& shot : m_shots) {
+        if (!shot.shot.empty()) lastShot = &shot;
+        if (shot.shot == "WIDE") {
+            if (!firstWide) firstWide = &shot;
+            if (QString::fromStdString(shot.segment).compare("INTRO", Qt::CaseInsensitive) == 0)
+                lastIntroWide = &shot;
+        }
         if (shot.shot.empty() || !shot.hasTake) continue;
         auto it = state.shots.find(shot.key);
         const RenderVersion* rv = it != state.shots.end() ? ComfyPanel::usableRender(it->second) : nullptr;
@@ -116,6 +128,11 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
     }
 
     const AssemblyProbe bgProbe = state.background.empty() ? AssemblyProbe{} : probeAssemblyMedia(state.background);
+    if (!state.background.empty() && !bgProbe.ok) {
+        if (error) *error = QStringLiteral("Cannot read the assembly background: %1")
+                               .arg(QString::fromStdString(state.background));
+        return 0;
+    }
 
     // ── Staged build (nothing visible changes until it all succeeded) ────
     auto before = timeline->clone();
@@ -138,8 +155,15 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
         layout.push_back({item.shot->segment, item.shot->shot == "CLOSE-UP",
                           item.probe.durationSec, item.render->tailPadSec,
                           item.render->trimIn, item.render->effectiveOut(item.probe.durationSec)});
-    const AssemblyPlan plan = planAssembly(layout, start, state.segmentGapSec,
-                                           bgProbe.still ? 0.0 : bgProbe.durationSec);
+    AssemblyPlan plan;
+    std::unique_ptr<ComfyTimelineTemplate> production;
+    if (!state.timelineTemplate.empty()) {
+        production = std::make_unique<ComfyTimelineTemplate>();
+        if (!production->load(QString::fromStdString(state.timelineTemplate), error) ||
+            !production->build(layout, start, bgProbe.still ? 0.0 : bgProbe.durationSec, tl, plan, error)) return 0;
+    } else {
+        plan = planAssembly(layout, start, state.segmentGapSec, bgProbe.still ? 0.0 : bgProbe.durationSec);
+    }
 
     // Tracks: backgrounds on V1 (bottom), renders on the layer above.
     auto videoTracks = assemblyVideoTracks(tl);
@@ -159,8 +183,7 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
         const std::string& path = state.background;
         const AssemblyProbe& probe = bgProbe;
         if (path.empty() || !probe.ok) continue;
-        // Full size under WIDE shots; zoomed under CLOSE-UPs so it looks as
-        // close as the talent does (auto = that recording's CU / WIDE framing).
+        // Every WIDE uses the default centred background at 100%.
         double zoom = 1.0;
         if (bg.closeUp) {
             zoom = state.closeUpBackgroundZoom;
@@ -174,6 +197,10 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
         auto clip = std::make_unique<VideoClip>(path);
         clip->scaleX().setDefaultValue(static_cast<float>(zoom));
         clip->scaleY().setDefaultValue(static_cast<float>(zoom));
+        if (bg.closeUp) {
+            clip->positionX().setDefaultValue(static_cast<float>(state.closeUpBackgroundOffsetX));
+            clip->positionY().setDefaultValue(static_cast<float>(state.closeUpBackgroundOffsetY));
+        }
         clip->setTimelineIn(bg.timelineIn);
         clip->setDuration(bg.duration);
         clip->setSourceIn(bg.sourceIn);
@@ -209,7 +236,18 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
         vc->scaleX().setDefaultValue(fit.scale);
         vc->scaleY().setDefaultValue(fit.scale);
         vc->positionY().setDefaultValue(fit.posYPx);
-        vc->effects().addEffect(std::make_unique<ChromaKey>());   // SCAIL/ToonOut background is pure green
+        if (!item.probe.hasAlpha) {
+            auto key = std::make_unique<ChromaKey>();
+            key->applyFlatGreenPreset();
+            vc->effects().addEffect(std::move(key));
+        }
+        if (production) production->applyCharacterStyle(*vc, shot.shot == "CLOSE-UP",
+            &shot == firstWide || &shot == lastIntroWide || &shot == lastShot);
+        // The saved style can contain one or more old Ultra Key instances.
+        if (item.probe.hasAlpha)
+            for (size_t e = vc->effects().effectCount(); e-- > 0;)
+                if (vc->effects().effect(e).effectType() == EffectType::ChromaKey)
+                    (void)vc->effects().removeEffect(e);
         const uint64_t linkId = vc->id();
         if (item.probe.hasAudio) vc->setLinkId(linkId);
         shotTrack->addClip(std::move(vc));

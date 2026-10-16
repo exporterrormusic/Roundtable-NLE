@@ -130,6 +130,7 @@ add_library(roundtable_ui STATIC
     panels/comfy/ComfyPanel.cpp
     panels/comfy/ComfyPanelRender.cpp
     panels/comfy/ComfyPanelAssemble.cpp
+    panels/comfy/ComfyTimelineTemplate.cpp
     panels/comfy/ComfyWorkflow.cpp
     panels/comfy/ComfyRunner.cpp
     panels/comfy/ComfyEventStream.cpp
@@ -216,6 +217,7 @@ add_library(roundtable_ui STATIC
     widgets/ColorWheelWidget.cpp
     widgets/CurveEditor.cpp
     widgets/ScrubbySpinBox.cpp
+    widgets/FontFamilyCombo.cpp
     widgets/ScrubGesture.cpp
     widgets/SpinBoxScrubber.cpp
     widgets/PressFeedback.cpp

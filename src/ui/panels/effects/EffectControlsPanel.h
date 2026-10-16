@@ -56,6 +56,7 @@
 #include <QKeyEvent>
 #include <QTimer>
 #include <QDialog>
+#include <QPointer>
 
 #include <atomic>
 #include <cstdint>
@@ -257,6 +258,10 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    /// Premiere-style keyframe-area zoom: Alt/Ctrl+wheel zooms about the
+    /// pointer, Shift+wheel (or a horizontal wheel) pans; plain wheel still
+    /// scrolls the property rows.
+    void wheelEvent(QWheelEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;  // clears selection
                                                       // when focus leaves to
                                                       // a non-popup widget
@@ -305,6 +310,10 @@ private:
     int64_t                    m_playheadTick{0};
     int64_t                    m_viewStart{0};
     int64_t                    m_viewEnd{48000 * 10};  // 10 seconds default
+    /// True while the view shows the whole clip; a user zoom clears it so
+    /// panel refreshes (which re-call setClip) keep the zoom.
+    bool                       m_viewFit{true};
+    void fitViewToClip();
     bool                       m_scrubbing{false};
 
     // Multi-selection (track + time pairs)
@@ -482,6 +491,22 @@ public:
     /// well as by row clicks. Returns false if the mask no longer exists.
     bool selectMaskById(quint64 effectId, uint64_t maskId);
 
+    /// Where a mask drawn in the Program Monitor right now belongs
+    /// (Premiere 26): the selected effect, or Opacity when Opacity is
+    /// selected, or the owner of the selected mask — otherwise the clip's
+    /// Unassigned Masks.
+    struct NewMaskTarget {
+        quint64 effectId{0};     ///< 0 = the clip's own mask list
+        bool    unassigned{true};
+    };
+    [[nodiscard]] NewMaskTarget newMaskTarget() const;
+
+    /// Move a mask to Opacity (toEffectId 0, toUnassigned false), to an
+    /// effect, or back to Unassigned Masks, as one undo step. Returns false
+    /// when nothing changed.
+    bool assignMask(quint64 fromEffectId, uint64_t maskId,
+                    quint64 toEffectId, bool toUnassigned);
+
     /// Copy the currently selected effect to internal clipboard.
     void copySelectedEffect();
 
@@ -506,6 +531,7 @@ public:
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
     void dropEvent(QDropEvent* event) override;
 
 signals:
@@ -553,8 +579,22 @@ private:
     void wireEffectParam(ScrubbySpinBox* spin, size_t effectIdx, size_t paramIdx);
     /// Build mask parameter sub-sections for one mask list (the clip's
     /// opacity masks when effectId==0, or an effect's masks).
+    enum class MaskListFilter : uint8_t { All, Assigned, Unassigned };
     void buildMaskUI(std::vector<OpacityMask>& maskList, quint64 effectId,
-                     int& rowIdx);
+                     int& rowIdx, MaskListFilter filter = MaskListFilter::All);
+    /// Make Opacity (0) or an effect the selected mask owner and repaint
+    /// the owner header highlights to match.
+    void selectMaskOwner(quint64 effectId);
+    void refreshMaskOwnerHighlight();
+    /// Right-click menu on a mask header: assign to Opacity / an effect /
+    /// back to Unassigned Masks.
+    void showMaskAssignMenu(QWidget* anchor, const QPoint& globalPos,
+                            quint64 effectId, uint64_t maskId);
+    /// Mask drop target under a panel position: the widget to highlight,
+    /// plus the owner it stands for. nullptr when the spot is not a target.
+    QWidget* maskDropTargetAt(const QPoint& panelPos, quint64& effectId,
+                              bool& unassigned) const;
+    void setMaskDropHighlight(QWidget* target);
     /// Add a new mask to the clip (effectId==0) or to an effect's mask list.
     void addMask(uint8_t shapeType, quint64 effectId = 0);
     /// Delete one mask through the undo stack, resolving it by stable id.
@@ -676,6 +716,13 @@ protected:
     int64_t        m_playheadTick{0};
     int            m_selectedEffectIndex{-1};  // -1 = none selected
     bool           m_hasSelectedMask{false};
+    /// Opacity header selected (new masks are assigned to Opacity).
+    bool           m_opacitySelected{false};
+    /// Mask header pressed and possibly about to be dragged to a new owner.
+    QPointer<QWidget> m_maskDragSource;
+    QPoint         m_maskDragPressPos;
+    QPointer<QWidget> m_maskDropHighlight;
+    QString        m_maskDropHighlightStyle;
     quint64        m_selectedMaskEffectId{0};
     uint64_t       m_selectedMaskId{0};
     /// Clipboard for copy/paste of a single effect with its settings.

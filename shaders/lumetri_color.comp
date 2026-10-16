@@ -277,7 +277,7 @@ void main()
     }
     if (abs(blacks) > 0.1) {
         float bShift = blacks / 100.0 * 0.3;
-        c = mix(c, c + bShift, smoothstep(0.4, 0.0, c));
+        c = mix(c, c + bShift, 1.0 - smoothstep(0.0, 0.4, c));
     }
 
     // ── 6. Saturation (basic) ──────────────────────────────────────
@@ -308,8 +308,14 @@ void main()
         // Protect skin tones (hue ~30° = 30/360 ≈ 0.083)
         float skinProximity = 1.0 - smoothstep(0.0, 0.12, abs(hsl.x - 0.083));
         float protection = mix(1.0, 0.5, skinProximity);
-        float adjustment = vibNorm * boostFactor * protection;
-        hsl.y = clamp(hsl.y + adjustment * 0.5, 0.0, 1.0);
+        // Scale existing chroma rather than adding saturation. Hue is
+        // undefined at gray and unstable near it: an additive boost painted
+        // grays red and amplified one-code-value codec noise into colored
+        // islands when exposure/highlights moved pixels through this range.
+        // This still boosts muted colors more than saturated colors, while
+        // preserving neutral tones and approaching them continuously.
+        float chromaGain = 1.0 + vibNorm * boostFactor * protection;
+        hsl.y = clamp(hsl.y * chromaGain, 0.0, 1.0);
         c = hslToRgb(hsl);
     }
 

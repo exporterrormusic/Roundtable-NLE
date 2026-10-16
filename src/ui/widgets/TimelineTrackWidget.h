@@ -64,6 +64,26 @@ public:
     /// Set hover edge highlight. edgeTick = the tick position of the hovered edge, -1 to clear.
     void setHoverEdgeTick(int64_t tick);
 
+    /// Transition handles (Premiere's video transition handles): the hovered
+    /// clip shows a small square in each top inner corner whose edge has no
+    /// transition yet; dragging one inward adds the default transition.
+    /// clipId 0 hides them. hotEdge: 0 = head, 1 = tail, -1 = neither under
+    /// the cursor.
+    void setTransitionHandleHover(uint64_t clipId, int hotEdge);
+
+    static constexpr double kTransitionHandleSize = 8.0;       ///< drawn square
+    static constexpr double kTransitionHandleZone = 14.0;      ///< grab width
+    static constexpr double kTransitionHandleMinClipPx = 40.0; ///< narrower clips get none
+
+    /// Height of the band below the clip top where a handle grabs; the rest
+    /// of the edge keeps trimming. 0 = clip too short to show handles.
+    [[nodiscard]] static double transitionHandleBand(double clipHeight) noexcept
+    {
+        if (clipHeight < 18.0) return 0.0;
+        const double band = clipHeight * 0.4;
+        return band < kTransitionHandleZone ? band : kTransitionHandleZone;
+    }
+
     /// Set / clear the Premiere-style edit-point selection.
     /// Pass -1 to clear. With side=Both the widget draws facing brackets
     /// at the connected cut. With HeadOnly/TailOnly only the inward-facing
@@ -147,6 +167,8 @@ private:
     double                      m_lastPaintedPlayheadPx{-1000};
     int64_t                     m_snapIndicatorTick{-1};
     int64_t                     m_hoverEdgeTick{-1};
+    uint64_t                    m_handleHoverClipId{0};
+    int                         m_handleHotEdge{-1};
     int64_t                     m_razorTick{-1};
     int64_t                     m_editPointTick{-1};  ///< "between clips" selection (-1 = none)
     EditPointSide               m_editPointSide{EditPointSide::Both}; ///< which bracket(s) to draw

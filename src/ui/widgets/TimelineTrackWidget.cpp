@@ -13,6 +13,7 @@
 #include "timeline/AudioClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/Transition.h"
+#include "timeline/EditOperations.h"
 
 #ifdef ROUNDTABLE_HAS_SPINE
 #include "timeline/SpineClip.h"
@@ -153,6 +154,15 @@ void TimelineTrackWidget::setSnapIndicatorTick(int64_t tick)
 void TimelineTrackWidget::setHoverEdgeTick(int64_t tick)
 {
     m_hoverEdgeTick = tick;
+    update();
+}
+
+void TimelineTrackWidget::setTransitionHandleHover(uint64_t clipId, int hotEdge)
+{
+    if (clipId == 0) hotEdge = -1;
+    if (m_handleHoverClipId == clipId && m_handleHotEdge == hotEdge) return;
+    m_handleHoverClipId = clipId;
+    m_handleHotEdge = hotEdge;
     update();
 }
 
@@ -1146,6 +1156,33 @@ void TimelineTrackWidget::paintClip(QPainter& painter, size_t clipIndex)
             }
 
             painter.restore();
+        }
+    }
+
+    // ── Transition handles on the hovered clip ──────────────────────────
+    // Unclamped layoutRect edges: an edge outside the widget is skipped, so
+    // the clamp above never moves a handle onto the visible part of a clip.
+    if (clip->id() == m_handleHoverClipId && !dragging
+        && layoutRect.width >= kTransitionHandleMinClipPx) {
+        const double band = transitionHandleBand(layoutRect.height);
+        if (band > 0.0) {
+            const double size = std::min(kTransitionHandleSize, band - 2.0);
+            const double top = layoutRect.y + 1.0;
+            for (int e = 0; e < 2; ++e) {
+                const ClipEdge edge = e == 0 ? ClipEdge::Head : ClipEdge::Tail;
+                if (EditOperations::clipEdgeHasTransition(*m_track, clip->id(), edge))
+                    continue;
+                const double x = e == 0
+                    ? layoutRect.x + 1.0
+                    : layoutRect.x + layoutRect.width - 1.0 - size;
+                if (x + size < 0.0 || x > width()) continue;
+                const bool hot = e == m_handleHotEdge;
+                QColor fill = tc.textBright;
+                fill.setAlpha(hot ? 255 : 170);
+                painter.setPen(QPen(QColor(0, 0, 0, hot ? 220 : 150), 1.0));
+                painter.setBrush(fill);
+                painter.drawRect(QRectF(x, top, size, size));
+            }
         }
     }
 

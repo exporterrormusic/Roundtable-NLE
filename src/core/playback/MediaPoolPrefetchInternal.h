@@ -12,9 +12,11 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <iterator>
 #include <utility>
+#include <vector>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 extern "C" {
@@ -82,12 +84,53 @@ inline bool mergeExactTask(std::deque<PrefetchTask>& queue,
     return true;
 }
 
+/// A prefetch worker releases a decoder idle this long (filmcraft MEM2: an
+/// NVDEC decoder that has decoded holds its surface pool, tens to hundreds
+/// of MB of VRAM, for as long as it lives)...
+inline constexpr auto kIdleDecoderRelease = std::chrono::seconds(5);
+/// ...but keeps this many warm, so the files it just served (a cut back to
+/// the previous shot) don't pay a fresh open + seek.
+inline constexpr size_t kWarmDecodersKept = 2;
+
+/// Handles whose decoders to release, oldest first: those idle at least
+/// `idleAfter`, while more than `keepWarm` decoders would remain.
+inline std::vector<MediaHandle> idleDecodersToRelease(
+    std::vector<std::pair<MediaHandle, std::chrono::steady_clock::time_point>> lastUsed,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::duration idleAfter,
+    size_t keepWarm)
+{
+    std::sort(lastUsed.begin(), lastUsed.end(),
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+    std::vector<MediaHandle> release;
+    size_t remaining = lastUsed.size();
+    for (const auto& [handle, used] : lastUsed) {
+        if (remaining <= keepWarm || now - used < idleAfter) break;
+        release.push_back(handle);
+        --remaining;
+    }
+    return release;
+}
+
+/// Queue-ordering distance of a frame from its file's playhead. A file with
+/// no recorded playhead sorts last instead of overflowing.
+inline int64_t frameDistanceFromPlayhead(int64_t frameNumber,
+                                         int64_t filePlayhead) noexcept
+{
+    if (filePlayhead <= INT64_MIN + 4) return INT64_MAX;
+    const int64_t d = frameNumber - filePlayhead;
+    return d < 0 ? -d : d;
+}
+
+/// `taskFilePlayhead` is the last frame requested from the TASK's own file.
+/// Frame numbers of different files are unrelated, so another file's tasks
+/// are stale only once that file's own playhead has moved past them.
 inline bool replaceableByDecodeAheadRebuild(const PrefetchTask& task,
                                              MediaHandle handle,
-                                             int64_t playhead) noexcept
+                                             int64_t taskFilePlayhead) noexcept
 {
     if (task.exactRequest) return false;
-    return task.handle == handle || task.frameNumber < playhead - 4;
+    return task.handle == handle || task.frameNumber < taskFilePlayhead - 4;
 }
 
 inline bool containsTaskKey(const std::deque<PrefetchTask>& queue,
@@ -117,25 +160,46 @@ inline bool isInteractivePlaybackActive(const std::atomic<int64_t>& untilMs)
     return untilMs.load(std::memory_order_acquire) > steadyClockMillis();
 }
 
+/// Consecutive slow single-frame hardware decodes before a reduced-tier
+/// preview decoder is reopened in software.
+constexpr int kSlowHardwareFramesBeforeFallback = 3;
+
+namespace prefetch_detail {
+
+/// Whether one decode call counts as a slow hardware frame. Only a
+/// single next-frame decode measures the decoder: a seek or a forward jump
+/// decodes many pictures in one call, so a 2.4 s catch-up across 150 frames
+/// used to count as one "slow frame" and pushed ordinary MP4s onto the
+/// (slower, CPU-converted) software decoder for the rest of the session.
+inline bool isSlowHardwareStep(bool hardware, bool singleFrameStep,
+                               ResolutionTier tier, uint32_t sourceWidth,
+                               uint32_t sourceHeight, double totalMs,
+                               bool packedAlpha) noexcept
+{
+    if (!hardware || !singleFrameStep || tier == ResolutionTier::Full)
+        return false;
+    // Packed-alpha cache files are large and SW decode is ~200ms/frame --
+    // strictly worse than the occasional NVDEC hiccup.
+    if (packedAlpha) return false;
+    if (totalMs < kSlowHardwarePreviewFallbackMs) return false;
+    const uint64_t sourcePixels = static_cast<uint64_t>(sourceWidth) *
+                                  static_cast<uint64_t>(sourceHeight);
+    return sourcePixels >= kSlowHardwarePreviewMinPixels;
+}
+
+} // namespace prefetch_detail
+
 inline bool shouldFallbackToSoftwarePreview(const VideoDecoder& decoder,
+                                     bool singleFrameStep,
                                      ResolutionTier tier,
                                      uint32_t sourceWidth,
                                      uint32_t sourceHeight,
                                      double totalMs,
                                      bool packedAlpha)
 {
-    if (!decoder.isHardwareAccelerated() || tier == ResolutionTier::Full) {
-        return false;
-    }
-    if (packedAlpha) {
-        return false;
-    }
-    if (totalMs < kSlowHardwarePreviewFallbackMs) {
-        return false;
-    }
-    const uint64_t sourcePixels = static_cast<uint64_t>(sourceWidth) *
-                                  static_cast<uint64_t>(sourceHeight);
-    return sourcePixels >= kSlowHardwarePreviewMinPixels;
+    return prefetch_detail::isSlowHardwareStep(
+        decoder.isHardwareAccelerated(), singleFrameStep, tier,
+        sourceWidth, sourceHeight, totalMs, packedAlpha);
 }
 
 #ifdef ROUNDTABLE_HAS_FFMPEG

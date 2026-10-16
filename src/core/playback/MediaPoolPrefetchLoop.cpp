@@ -30,7 +30,8 @@ extern "C" {
 
 namespace rt {
 
-void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier, int64_t priority)
+void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier,
+                                   int64_t priority, int64_t startFrameHint)
 {
     std::filesystem::path path;
     VideoStreamInfo info;
@@ -78,6 +79,7 @@ void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier, int6
         task.info        = info;
         task.packedAlpha = packed;
         task.tier        = tier;
+        task.startFrameHint = startFrameHint;
         m_loopPreDecodeQueue.push(std::move(task));
     }
     m_loopPreDecodeCv.notify_one();
@@ -108,13 +110,14 @@ void MediaPool::loopPreDecodeDispatcher()
         spdlog::info("[PERF] Loop pre-decode: handle={} '{}' starting decode (priority={})",
                      task.handle, pathToUtf8(task.path.filename()), task.priority);
         loopPreDecodeWorker(task.handle, std::move(task.path), task.info,
-                            task.packedAlpha, task.tier);
+                            task.packedAlpha, task.tier, task.startFrameHint);
     }
 }
 
 void MediaPool::loopPreDecodeWorker(
     MediaHandle handle, std::filesystem::path path,
-    VideoStreamInfo info, bool packedAlpha, ResolutionTier tier)
+    VideoStreamInfo info, bool packedAlpha, ResolutionTier tier,
+    int64_t startFrameHint)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -139,11 +142,19 @@ void MediaPool::loopPreDecodeWorker(
     int consecutive_failures = 0;
     const int MAX_CONSECUTIVE_FAILURES = 3;
 
-    // Start at playhead % frameCount so playback doesn't wait for frame 0.
+    // Start at this file's playhead (wrapped to the loop) so playback doesn't
+    // wait for frame 0. It was read from the pool-wide playhead, i.e. from
+    // whichever file was requested last. Before any request for this file,
+    // the caller's hint (the frame its nearest use shows) stands in.
     int64_t startFrame = 0;
     {
-        const int64_t ph = m_playheadFrame.load(std::memory_order_relaxed);
-        if (ph > 0 && frameCount > 1) {
+        int64_t ph = startFrameHint;
+        {
+            std::lock_guard lock(m_prefetchMutex);
+            const auto it = m_handlePlayheadFrame.find(handle);
+            if (it != m_handlePlayheadFrame.end()) ph = it->second;
+        }
+        if (frameCount > 1) {
             startFrame = ((ph % frameCount) + frameCount) % frameCount;
         }
     }

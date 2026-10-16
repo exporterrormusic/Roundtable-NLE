@@ -1081,6 +1081,11 @@ void OverlayController::wireOverlayToolSignals()
                 graphics->textFormattingWidget());
             connect(graphics, &GraphicsEditorPanel::inlineFontFamilyRequested,
                     ov2, &TransformOverlayWidget::applyInlineTextFontFamily);
+            connect(graphics,
+                    &GraphicsEditorPanel::inlineFontFamilyPreviewRequested,
+                    ov2, &TransformOverlayWidget::previewInlineTextFontFamily);
+            connect(graphics, &GraphicsEditorPanel::inlineFontPreviewEnded,
+                    ov2, &TransformOverlayWidget::endInlineTextFontPreview);
             connect(graphics, &GraphicsEditorPanel::inlineFontSizeRequested,
                     ov2, &TransformOverlayWidget::applyInlineTextFontSize);
             connect(graphics, &GraphicsEditorPanel::inlineFontWeightRequested,
@@ -1143,6 +1148,13 @@ void OverlayController::wireOverlayToolSignals()
             auto* properties = m_ws->propertiesPanel();
             connect(properties, &PropertiesPanel::inlineFontFamilyRequested,
                     ov2, &TransformOverlayWidget::applyInlineTextFontFamily);
+            connect(properties,
+                    &PropertiesPanel::inlineFontFamilyPreviewRequested,
+                    ov2, &TransformOverlayWidget::previewInlineTextFontFamily);
+            connect(properties, &PropertiesPanel::inlineFontPreviewEnded,
+                    ov2, &TransformOverlayWidget::endInlineTextFontPreview);
+            connect(properties, &PropertiesPanel::inlineFontStyleRequested,
+                    ov2, &TransformOverlayWidget::applyInlineTextFontStyle);
             connect(properties, &PropertiesPanel::inlineFontSizeRequested,
                     ov2, &TransformOverlayWidget::applyInlineTextFontSize);
             connect(properties, &PropertiesPanel::inlineFontWeightRequested,

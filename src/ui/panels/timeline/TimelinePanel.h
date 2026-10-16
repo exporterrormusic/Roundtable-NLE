@@ -157,6 +157,13 @@ public:
     /// Refresh all track widgets from the data model.
     void rebuildTracks();
 
+    /// Premiere's Esc during a timeline drag: put the dragged clips / edit
+    /// back as they were and record nothing. Returns false when no drag
+    /// is in progress.
+    bool cancelActiveDrag();
+    [[nodiscard]] bool isDragInProgress() const noexcept
+    { return m_dragMode != DragMode::None; }
+
     /// Number of track widgets currently laid out (used to detect when the
     /// timeline's track count changed and a full rebuild is required).
     [[nodiscard]] size_t laidOutTrackCount() const { return m_trackWidgets.size(); }
@@ -311,6 +318,8 @@ public:
     /// Open the Paste Attributes dialog for the current selection.
     /// Remembers which checkboxes were checked last time (Premiere-style).
     void showPasteAttributesDialog();
+    /// Remove chosen effect types from selected clips as one undoable edit.
+    void showRemoveAttributesDialog();
 
     /// Copy attributes from the first selected clip into the attributes clipboard.
     /// Called automatically by Ctrl+C so Paste Attributes is always ready.
@@ -346,6 +355,15 @@ public:
         bool     valid{false};
     };
     [[nodiscard]] ClickedEdge lastClickedEdge() const { return m_lastClickedEdge; }
+
+    /// A transition handle: the top inner corner of a clip edge that has no
+    /// transition yet (Selection tool, unlocked non-caption track). Dragging
+    /// it inward adds the default transition and sizes it live.
+    struct TransitionHandleHit {
+        size_t   trackIndex{SIZE_MAX};
+        uint64_t clipId{0};
+        ClipEdge edge{ClipEdge::Head};
+    };
 
 signals:
     /// Emitted when user scrubs the playhead.
@@ -441,6 +459,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -475,6 +494,9 @@ private:
     void continueRollingEditDrag(int64_t tickDelta);
     void continuePendingClipClick(QPointF pos);
     void continueTransitionTrimDrag(QPointF pos);
+    void continueTransitionHandleDrag(QPointF pos);
+    /// Live duration readout next to the cursor during a transition drag.
+    void showTransitionDurationTip(QPointF pos, int64_t duration);
 
     // dragMoveEvent, one handler per dragged payload type
     // (TimelinePanelDragDrop.cpp).
@@ -503,6 +525,27 @@ private:
     void mediaDrop(QDropEvent* event, const GhostDropState& ghost);
     void externalFileDrop(QDropEvent* event, const GhostDropState& ghost);
     void treeWidgetDrop(QDropEvent* event, const GhostDropState& ghost);
+
+    /// Put live-dragged clips / rolled seams back at their drag-start state
+    /// (shared by release, Esc-cancel and interrupted-drag cleanup).
+    void restoreClipMoveToOrigin();
+    void restoreRollingEditToOrigin();
+    std::unique_ptr<QObject> m_dragEscapeFilter;   // app filter: Esc cancels a drag
+
+    // Drop placement shared by the media ghost and every media drop path,
+    // so a release lands exactly where the ghost was drawn.
+    /// Timeline length a dropped file gets (stills: the default length, not
+    /// FFmpeg's one-frame image duration).
+    [[nodiscard]] int64_t mediaDropDuration(uint64_t handle, const QString& path);
+    /// Default still / unknown-media length, in whole frames.
+    [[nodiscard]] int64_t stillDropDuration() const;
+    /// Head tick for a group `groupDur` long dropped at `pos`: the mouse
+    /// tick on the frame grid, then magnet-snapped by head or tail.
+    int64_t computeMediaDropTick(const QPointF& pos, int64_t groupDur,
+                                 bool* didSnap = nullptr);
+    /// The tick the ghost showed for `pos` (the drop arrives at the last
+    /// dragMove position), else computeMediaDropTick().
+    int64_t resolveMediaDropTick(const QPointF& pos, int64_t groupDur);
 
     Timeline*             m_timeline{nullptr};
     TimelineLayoutEngine  m_layoutEngine;
@@ -617,7 +660,8 @@ private:
     enum class DragMode { None, ClipMove, ClipTrimHead, ClipTrimTail,
                           PendingMarquee, MarqueeSelect, RollingEdit,
                           SlipTool, SlideTool, TransitionTrim,
-                          PendingClipClick };
+                          PendingClipClick,
+                          TransitionHandle };  // pressed a handle, not dragged yet
     DragMode  m_dragMode{DragMode::None};
     QPointF   m_dragStart;
     QPointF   m_marqueeEnd;   // Current endpoint during marquee drag
@@ -671,6 +715,10 @@ private:
     int64_t m_transTrimOrigDuration{0};
     int64_t m_transTrimOrigEditPoint{0};
 
+    // Transition handle pressed (DragMode::TransitionHandle); becomes a
+    // TransitionTrim of the new transition once the drag passes a deadzone.
+    TransitionHandleHit m_handleDrag;
+
     // Last clicked edge (for Ctrl+T transitions) — uses public ClickedEdge struct
     ClickedEdge m_lastClickedEdge;
 
@@ -707,6 +755,12 @@ private:
     // into new-track space (so every stream is brand-new).  SIZE_MAX = no audio.
     size_t m_ghostDropAudioAnchor{SIZE_MAX};
     int    m_ghostDropAudioStreams{1}; // discrete audio streams in the dragged source
+    // Head tick the media ghost was drawn at, and the cursor position it was
+    // computed for (-1 = no ghost this drag). The drop reuses it: re-deriving
+    // the tick on release (different duration, head-only snap) moved clips a
+    // frame or two off the cut the ghost showed them on.
+    int64_t m_ghostDropTick{-1};
+    QPointF m_ghostDropPos;
     GhostTrackOverlay* m_ghostOverlay{nullptr};
     // Second overlay for the companion side of a video+audio drag — so
     // both the video destination AND the audio destination can show
@@ -796,6 +850,12 @@ private:
     /// cursor) and press so the cursor never promises a trim the click
     /// then turns into a gap selection.
     [[nodiscard]] std::optional<ClipRef> hitTestEdgeHalo(size_t ti, double px) const;
+
+    /// Transition handle under `pos`, if any (see TransitionHandleHit).
+    [[nodiscard]] std::optional<TransitionHandleHit>
+        hitTestTransitionHandle(const QPointF& pos) const;
+    /// Show the hovered clip's transition handles (or hide them all).
+    void updateTransitionHandleHover(const QPointF& pos);
 
     /// Premiere-style adaptive trim-handle grab width, in pixels.
     /// Bigger than the old fixed 6px so edges are easy to grab, but

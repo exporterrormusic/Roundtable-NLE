@@ -70,6 +70,8 @@ class TitleClip;
 class CaptionClip;
 class GraphicClip;
 class TextLayer;
+class GraphicLayer;
+class FontFamilyCombo;
 class ScrubbySpinBox;
 class AudioFxSection;
 class CommandStack;
@@ -265,6 +267,12 @@ signals:
     void graphicLayerStackChanged(quint64 selectedLayerId);
 
     void inlineFontFamilyRequested(const QString& family);
+    /// Font-menu hover preview while editing text in the monitor: show
+    /// `family` on the selection without committing (no history step).
+    void inlineFontFamilyPreviewRequested(const QString& family);
+    /// The font menu closed without a choice: drop the preview.
+    void inlineFontPreviewEnded();
+    void inlineFontStyleRequested(const QString& styleName);
     void inlineFontSizeRequested(float pointSize);
     void inlineFontWeightRequested(int weight);
     void inlineItalicRequested(bool italic);
@@ -411,6 +419,18 @@ private:
     void applyGfxStrokeWidth();
     void applyGfxStrokeColor();
     void applyGfxShadowEnabled();
+    void applyGfxFontStyle();
+    void rebuildGfxFontStyleCombo(const QString& family);
+    void previewGfxFontFamily(const QString& family);
+    void endGfxFontPreview();
+    // Undo for the Graphic section: snapshot the text layer when an edit
+    // starts (first live change), push ONE restore command when the control
+    // commits — one history step per finished gesture.
+    void beginGfxLayerEdit();
+    void commitGfxLayerEdit(const char* description);
+    /// Undo record for a layer just added at `index` (keeps its id on redo).
+    void pushGfxLayerAddedCommand(const char* description, GraphicClip* gc,
+                                  size_t index, uint64_t layerId);
     void addGfxTextObject();
     void duplicateGfxTextObject();
     void rebuildGfxTextObjectCombo();
@@ -563,7 +583,12 @@ private:
     QPushButton*    m_gfxDuplicateTextObjectBtn{nullptr};
     uint64_t        m_gfxSelectedTextLayerId{0};
     QLineEdit*      m_gfxTextEdit{nullptr};
-    QComboBox*      m_gfxFontFamilyCombo{nullptr};
+    FontFamilyCombo* m_gfxFontFamilyCombo{nullptr};
+    QComboBox*      m_gfxFontStyleCombo{nullptr};
+    std::shared_ptr<GraphicLayer> m_gfxEditBaseline;   // state before the open edit
+    uint64_t        m_gfxEditBaselineClipId{0};
+    uint64_t        m_gfxEditBaselineLayerId{0};
+    bool            m_gfxFontPreviewActive{false};
     ScrubbySpinBox* m_gfxFontSizeSpin{nullptr};
     ScrubbySpinBox* m_gfxFontWeightSpin{nullptr};
     ScrubbySpinBox* m_gfxLeadingSpin{nullptr};

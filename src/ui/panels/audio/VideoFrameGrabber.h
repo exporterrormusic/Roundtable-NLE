@@ -80,6 +80,7 @@ private:
         QSize             size;
         Callback          callback;
         std::string       cacheKey;   // empty for live requests
+        std::string       sourceKey;  // path + file revision, never reuse a replaced file
     };
     struct DecoderSlot;
 

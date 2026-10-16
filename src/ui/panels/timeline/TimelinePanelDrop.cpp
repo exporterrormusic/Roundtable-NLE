@@ -30,6 +30,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <vector>
+
 namespace rt {
 namespace {
 constexpr size_t kGhostDropTrackVideoAbove = SIZE_MAX - 1;
@@ -558,12 +560,11 @@ void TimelinePanel::mediaDrop(QDropEvent* event, const GhostDropState& ghost)
         else if (m == "audio") mediaDragMode = TimelinePanel::DragAudioOnly;
     }
 
-    // Emit mediaDropped for each handle, placing clips sequentially.
-    // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
-    if (m_commandStack && handleTokens.size() > 1)
-        m_commandStack->beginMacro("Import Files");
-
-    int64_t currentTick = tick;
+    // Each item's timeline length — the same values the ghost drew with
+    // (stills get the default length, not FFmpeg's one-frame duration).
+    struct DropItem { uint64_t handle; QString path; int64_t duration; };
+    std::vector<DropItem> items;
+    int64_t groupDur = 0;
     for (int i = 0; i < handleTokens.size(); ++i) {
         bool ok = false;
         uint64_t handle = handleTokens[i].toULongLong(&ok);
@@ -581,37 +582,30 @@ void TimelinePanel::mediaDrop(QDropEvent* event, const GhostDropState& ghost)
         // so they resolve via the file-path fallback below.
         if (handle == 0 && filePath.isEmpty()) continue;
 
-        // Compute duration for this clip
-        int64_t clipDur = 0;
-        if (sourceIn >= 0 && sourceOut > sourceIn) {
-            clipDur = sourceOut - sourceIn;
-        } else if (m_mediaPool && handle != 0) {
-            const auto* info = m_mediaPool->getInfo(handle);
-            if (info && info->duration > 0.0)
-                clipDur = static_cast<int64_t>(info->duration * 48000.0);
-        }
-        // Resolve via file path if handle had no info (covers handle==0)
-        if (clipDur <= 0 && m_mediaPool && !filePath.isEmpty()) {
-            auto h = m_mediaPool->open(filePath.toStdString());
-            if (h != 0) {
-                const auto* info = m_mediaPool->getInfo(h);
-                if (info && info->duration > 0.0)
-                    clipDur = static_cast<int64_t>(info->duration * 48000.0);
-                // Promote handle from 0 to the newly opened handle so the
-                // downstream handler can use it for metadata lookup.
-                if (handle == 0) handle = h;
-            }
-        }
+        const int64_t clipDur = (sourceIn >= 0 && sourceOut > sourceIn)
+            ? sourceOut - sourceIn : mediaDropDuration(handle, filePath);
+        // Promote handle from 0 to an opened handle so the downstream
+        // handler can use it for metadata lookup.
+        if (handle == 0 && m_mediaPool && !filePath.isEmpty())
+            handle = m_mediaPool->open(filePath.toStdString());
+        items.push_back({handle, filePath, clipDur});
+        groupDur += clipDur;
+    }
 
-        // Snap this clip's position
-        int64_t snapTick = currentTick;
-        if (clipDur > 0) {
-            auto snapRes = m_snapEngine.snapPair(snapTick, snapTick + clipDur);
-            if (snapRes.didSnap) snapTick = snapRes.snappedTick;
-        } else {
-            auto snapRes = m_snapEngine.snap(snapTick);
-            if (snapRes.didSnap) snapTick = snapRes.snappedTick;
-        }
+    // The whole group lands where the ghost showed it (one head/tail snap
+    // for the group, like the ghost) — never re-snapped clip by clip.
+    tick = resolveMediaDropTick(pos, groupDur);
+
+    // Emit mediaDropped for each handle, placing clips sequentially.
+    // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
+    if (m_commandStack && items.size() > 1)
+        m_commandStack->beginMacro("Import Files");
+
+    int64_t currentTick = tick;
+    for (const DropItem& item : items) {
+        const uint64_t handle = item.handle;
+        const QString& filePath = item.path;
+        const int64_t snapTick = currentTick;
 
         if (!filePath.isEmpty()) {
             if (sourceIn >= 0 && sourceOut > sourceIn)
@@ -647,14 +641,10 @@ void TimelinePanel::mediaDrop(QDropEvent* event, const GhostDropState& ghost)
         }
 
         // Advance tick for next clip (sequential placement like Premiere).
-        // Use 5-second default for stills/images/unknown media with 0 duration.
-        if (clipDur > 0)
-            currentTick = snapTick + clipDur;
-        else
-            currentTick = snapTick + static_cast<int64_t>(5.0 * 48000.0);
+        currentTick = snapTick + item.duration;
     }
 
-    if (m_commandStack && handleTokens.size() > 1)
+    if (m_commandStack && items.size() > 1)
         m_commandStack->endMacro();
 
     event->acceptProposedAction();
@@ -703,31 +693,31 @@ void TimelinePanel::externalFileDrop(QDropEvent* event, const GhostDropState& gh
     else if (isAudioDrop && !ghost.wasOnExisting && ((ghost.wasVisible && !ghost.wasAbove) || belowBottomAudio))
         trackIdx = kGhostDropTrackAudioBelow;
 
-    auto snapRes = m_snapEngine.snap(tick);
-    if (snapRes.didSnap) tick = snapRes.snappedTick;
-
     // Place files sequentially (Premiere Pro-style), advancing tick
     // by each file's duration so they don't stack on top of each other.
     // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
     const auto& dropUrls = event->mimeData()->urls();
+    std::vector<int64_t> advances;
+    int64_t groupDur = 0;
+    for (const QUrl& url : dropUrls) {
+        const QString localPath = url.toLocalFile();
+        const int64_t advance = localPath.isEmpty()
+            ? 0 : mediaDropDuration(0, localPath);
+        advances.push_back(advance);
+        groupDur += advance;
+    }
+    // Head/tail snap exactly as the ghost showed it (this used to snap the
+    // head only, so a ghost whose TAIL locked onto a cut landed elsewhere).
+    tick = resolveMediaDropTick(pos, groupDur);
+
     if (m_commandStack && dropUrls.size() > 1)
         m_commandStack->beginMacro("Import Files");
 
     int64_t currentTick = tick;
-    for (const QUrl& url : dropUrls) {
-        QString localPath = url.toLocalFile();
+    for (int urlIndex = 0; urlIndex < dropUrls.size(); ++urlIndex) {
+        QString localPath = dropUrls[urlIndex].toLocalFile();
         if (localPath.isEmpty()) continue;
-
-        // Compute duration for sequential advance
-        int64_t advance = static_cast<int64_t>(5.0 * 48000.0); // 5-second default
-        if (m_mediaPool) {
-            auto h = m_mediaPool->open(localPath.toStdString());
-            if (h != 0) {
-                const auto* info = m_mediaPool->getInfo(h);
-                if (info && info->duration > 0.0)
-                    advance = static_cast<int64_t>(info->duration * 48000.0);
-            }
-        }
+        const int64_t advance = advances[static_cast<size_t>(urlIndex)];
 
         emit externalFileDropped(localPath, currentTick, trackIdx);
         // Rewrite the sentinel to the just-created track's real index
@@ -768,10 +758,20 @@ void TimelinePanel::treeWidgetDrop(QDropEvent* event, const GhostDropState& ghos
     bool belowBottomAudio = false;
     computeGhostDropZones(pos, aboveTopVideo, belowBottomAudio);
 
-    // Snap the drop tick to clip edges
+    // Land where the ghost showed it (head/tail snap of the whole group).
     {
-        auto snapRes = m_snapEngine.snap(tick);
-        if (snapRes.didSnap) tick = snapRes.snappedTick;
+        int64_t groupDur = 0;
+        for (auto* item : selected) {
+            if (item->data(0, Qt::UserRole + 2).toBool()) continue;   // bin
+            if (item->data(0, Qt::UserRole + 3).toBool()) {           // sequence
+                groupDur += stillDropDuration();
+                continue;
+            }
+            groupDur += mediaDropDuration(
+                item->data(0, Qt::UserRole + 1).toULongLong(),
+                item->data(0, Qt::UserRole).toString());
+        }
+        tick = resolveMediaDropTick(pos, groupDur);
     }
 
     // Wrap in a macro so Ctrl+Z undoes the whole multi-drop as one action.
@@ -790,8 +790,8 @@ void TimelinePanel::treeWidgetDrop(QDropEvent* event, const GhostDropState& ghos
             if (!ghost.wasOnExisting && ((ghost.wasVisible && ghost.wasAbove) || aboveTopVideo))
                 seqTrack = kGhostDropTrackVideoAbove;
             emit sequenceDropped(seqIndex, currentTick, seqTrack);
-            // Advance by 5-second default for sequences (duration unknown here)
-            currentTick += static_cast<int64_t>(5.0 * 48000.0);
+            // Advance by the default length (sequence duration unknown here)
+            currentTick += stillDropDuration();
             continue;
         }
 
@@ -807,21 +807,8 @@ void TimelinePanel::treeWidgetDrop(QDropEvent* event, const GhostDropState& ghos
         if (!filePath.isEmpty()) {
             emit mediaDropped(filePath, handle, currentTick, trackIdx);
 
-            // Advance tick for sequential placement
-            int64_t advance = static_cast<int64_t>(5.0 * 48000.0);
-            if (handle != 0 && m_mediaPool) {
-                const auto* info = m_mediaPool->getInfo(handle);
-                if (info && info->duration > 0.0)
-                    advance = static_cast<int64_t>(info->duration * 48000.0);
-            } else if (m_mediaPool) {
-                auto h = m_mediaPool->open(filePath.toStdString());
-                if (h != 0) {
-                    const auto* info = m_mediaPool->getInfo(h);
-                    if (info && info->duration > 0.0)
-                        advance = static_cast<int64_t>(info->duration * 48000.0);
-                }
-            }
-            currentTick += advance;
+            // Advance tick for sequential placement (stills: default length)
+            currentTick += mediaDropDuration(handle, filePath);
         }
     }
 

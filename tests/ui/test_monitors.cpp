@@ -404,6 +404,166 @@ TEST(TransformOverlayInput, MultilineCaretSurfaceAnchorsToRenderedTextTop)
     QApplication::processEvents();
 }
 
+namespace {
+// A started monitor text editor (top-level QPlainTextEdit "inlineTextEdit").
+QPlainTextEdit* startInlineEditor(TransformOverlayWidget& overlay,
+                                  QWidget& formattingPanel,
+                                  const QString& text)
+{
+    overlay.resize(640, 360);
+    overlay.setSequenceResolution(1920, 1080);
+    TransformOverlayInfo info;
+    info.visible = true;
+    info.srcW = 1920;
+    info.srcH = 1080;
+    info.useContentRect = true;
+    info.contentL = 700.0f;
+    info.contentT = 480.0f;
+    info.contentR = 1220.0f;
+    info.contentB = 600.0f;
+    info.contentCanvasW = 1920.0f;
+    info.contentCanvasH = 1080.0f;
+    overlay.setTransformOverlay(info);
+    overlay.show();
+    formattingPanel.setFocusPolicy(Qt::StrongFocus);
+    formattingPanel.show();
+    overlay.setInlineTextFormattingWidget(&formattingPanel);
+    overlay.beginInlineTextEdit(text, QStringLiteral("Arial"), 72.0f, 400,
+                                false, Qt::white);
+    QApplication::processEvents();
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+        if (widget->objectName() == QStringLiteral("inlineTextEdit")
+            && widget->isVisible())
+            return qobject_cast<QPlainTextEdit*>(widget);
+    }
+    return nullptr;
+}
+
+void cancelInlineEditor(QPlainTextEdit* editor)
+{
+    if (!editor || !editor->isVisible()) return;
+    QKeyEvent cancelPress(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(editor, &cancelPress);
+    QApplication::processEvents();
+}
+} // namespace
+
+TEST(TransformOverlayInput, InlineTypingUndoesOneWordAtATime)
+{
+    TransformOverlayWidget overlay(nullptr);
+    QWidget formattingPanel;
+    QPlainTextEdit* editor = startInlineEditor(overlay, formattingPanel, QString());
+    ASSERT_NE(editor, nullptr);
+    QTextCursor end = editor->textCursor();
+    end.movePosition(QTextCursor::End);
+    editor->setTextCursor(end);
+
+    // Before: QTextDocument folded the whole run into one step, so a single
+    // Ctrl+Z erased everything typed in the session.
+    QTest::keyClicks(editor, QStringLiteral("Hello big world"));
+    ASSERT_EQ(editor->toPlainText(), QStringLiteral("Hello big world"));
+
+    editor->undo();
+    EXPECT_EQ(editor->toPlainText(), QStringLiteral("Hello big "));
+    editor->undo();
+    EXPECT_EQ(editor->toPlainText(), QStringLiteral("Hello "));
+    editor->undo();
+    EXPECT_EQ(editor->toPlainText(), QString());
+    editor->redo();
+    EXPECT_EQ(editor->toPlainText(), QStringLiteral("Hello "));
+
+    // Typing after an undo starts fresh steps; it never joins the step the
+    // undo left on top.
+    QTextCursor caret = editor->textCursor();
+    caret.movePosition(QTextCursor::End);
+    editor->setTextCursor(caret);
+    QTest::keyClicks(editor, QStringLiteral("you"));
+    EXPECT_EQ(editor->toPlainText(), QStringLiteral("Hello you"));
+    editor->undo();
+    EXPECT_EQ(editor->toPlainText(), QStringLiteral("Hello "));
+
+    cancelInlineEditor(editor);
+}
+
+TEST(TransformOverlayInput, InlineFontPreviewRevertsWithoutAnUndoStep)
+{
+    TransformOverlayWidget overlay(nullptr);
+    QWidget formattingPanel;
+    QPlainTextEdit* editor = startInlineEditor(
+        overlay, formattingPanel, QStringLiteral("alpha beta"));
+    ASSERT_NE(editor, nullptr);
+    overlay.setInlineTextSelection(6, 4);
+    QTextDocument* document = editor->document();
+    const int stepsBefore = document->availableUndoSteps();
+
+    const auto familyAt = [&](int position) {
+        QTextCursor probe(document);
+        probe.setPosition(position);
+        const QStringList families = probe.charFormat().fontFamilies().toStringList();
+        return families.isEmpty() ? QString() : families.front();
+    };
+    const QString original = familyAt(8);
+
+    // Hovering two fonts in the menu: each previews live...
+    ASSERT_TRUE(overlay.previewInlineTextFontFamily(QStringLiteral("Courier New")));
+    EXPECT_EQ(familyAt(8), QStringLiteral("Courier New"));
+    ASSERT_TRUE(overlay.previewInlineTextFontFamily(QStringLiteral("Times New Roman")));
+    EXPECT_EQ(familyAt(8), QStringLiteral("Times New Roman"));
+    EXPECT_EQ(familyAt(3), original);   // outside the selection untouched
+
+    // ...closing the menu restores the text and leaves no history behind.
+    overlay.endInlineTextFontPreview();
+    EXPECT_EQ(familyAt(8), original);
+    EXPECT_EQ(document->availableUndoSteps(), stepsBefore);
+    EXPECT_FALSE(document->isRedoAvailable());
+    EXPECT_EQ(overlay.inlineTextSelection(), std::make_pair(6, 4));
+
+    // Preview then choose: exactly ONE undo step for the font change.
+    ASSERT_TRUE(overlay.previewInlineTextFontFamily(QStringLiteral("Courier New")));
+    ASSERT_TRUE(overlay.applyInlineTextFontFamily(QStringLiteral("Courier New")));
+    EXPECT_EQ(familyAt(8), QStringLiteral("Courier New"));
+    EXPECT_EQ(document->availableUndoSteps(), stepsBefore + 1);
+    document->undo();
+    EXPECT_EQ(familyAt(8), original);
+
+    cancelInlineEditor(editor);
+}
+
+TEST(TransformOverlayInput, InlineTitlerShortcutsMatchPremiere)
+{
+    // Ctrl+Alt+Left/Right size, Alt+Up/Down leading, Ctrl+Shift+L/C/R align.
+    const Qt::KeyboardModifiers ctrlAlt = Qt::ControlModifier | Qt::AltModifier;
+    QKeyEvent sizeUp(QEvent::KeyPress, Qt::Key_Right, ctrlAlt);
+    QKeyEvent leadDown(QEvent::KeyPress, Qt::Key_Down, Qt::AltModifier);
+    QKeyEvent alignCenter(QEvent::KeyPress, Qt::Key_C,
+                          Qt::ControlModifier | Qt::ShiftModifier);
+    QKeyEvent plainLeft(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+    QKeyEvent ctrlC(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
+    EXPECT_TRUE(TransformOverlayWidget::isInlineTitlerShortcut(&sizeUp));
+    EXPECT_TRUE(TransformOverlayWidget::isInlineTitlerShortcut(&leadDown));
+    EXPECT_TRUE(TransformOverlayWidget::isInlineTitlerShortcut(&alignCenter));
+    EXPECT_FALSE(TransformOverlayWidget::isInlineTitlerShortcut(&plainLeft));
+    EXPECT_FALSE(TransformOverlayWidget::isInlineTitlerShortcut(&ctrlC));
+
+    TransformOverlayWidget overlay(nullptr);
+    QWidget formattingPanel;
+    QPlainTextEdit* editor = startInlineEditor(
+        overlay, formattingPanel, QStringLiteral("alpha beta"));
+    ASSERT_NE(editor, nullptr);
+    overlay.setInlineTextSelection(0, 5);
+    QApplication::sendEvent(editor, &sizeUp);
+    QKeyEvent sizeUp5(QEvent::KeyPress, Qt::Key_Right,
+                      ctrlAlt | Qt::ShiftModifier);
+    QApplication::sendEvent(editor, &sizeUp5);
+    const auto runs = overlay.currentInlineTextStyles();
+    const auto grown = std::find_if(runs.begin(), runs.end(),
+        [](const TextStyleRun& run) {
+            return run.start == 0 && std::abs(run.fontSize - 78.0f) < 0.05f;
+        });
+    EXPECT_NE(grown, runs.end());   // 72 + 1 + 5
+    cancelInlineEditor(editor);
+}
+
 TEST(TransformOverlayInput, InlineEditorUsesLogicalTextRectNotPaddedHandleRect)
 {
     VulkanViewport viewport;

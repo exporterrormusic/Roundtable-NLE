@@ -249,6 +249,7 @@ static void writeMask(BinaryWriter& w, const OpacityMask& m)
     writeKeyframeTrack(w, m.expansion);
     w.writeU8(static_cast<uint8_t>(m.coordinateSpace));
     w.writeU64(m.maskId);
+    w.writeU8(m.unassigned ? 1 : 0);  // v47
 }
 
 static OpacityMask readMask(BinaryReader& r, uint32_t version)
@@ -283,6 +284,8 @@ static OpacityMask readMask(BinaryReader& r, uint32_t version)
             if (m.maskId == 0) m.maskId = allocateOpacityMaskId();
             reserveOpacityMaskId(m.maskId);
         }
+        if (version >= 47)
+            m.unassigned = r.readU8() != 0;
         return m;
     }
 

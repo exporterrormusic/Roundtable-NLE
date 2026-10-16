@@ -1518,7 +1518,7 @@ static uint64_t hashGraphicClipRenderState(GraphicClip* clip, int64_t localTick,
 
 bool graphicClipBakesOuterTransform(GraphicClip* clip, int64_t localTick)
 {
-    if (!clip || clip->maskCount() != 0 || clip->effects().hasActiveEffects())
+    if (!clip || clip->hasAssignedMasks() || clip->effects().hasActiveEffects())
         return false;
 
     // A multi-sample GPU transform is still required for motion blur.  Static

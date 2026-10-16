@@ -31,9 +31,11 @@ VideoDecoder::VideoDecoder()
 {
     m_frame   = av_frame_alloc();
     m_hwFrame = av_frame_alloc();
+    m_pendingFrame = av_frame_alloc();
     m_packet  = av_packet_alloc();
+    m_heldPacket = av_packet_alloc();
 
-    if (!m_frame || !m_hwFrame || !m_packet) {
+    if (!m_frame || !m_hwFrame || !m_pendingFrame || !m_packet || !m_heldPacket) {
         spdlog::error("VideoDecoder: Failed to allocate AVFrame/AVPacket");
     }
 }
@@ -43,7 +45,9 @@ VideoDecoder::~VideoDecoder()
     close();
     av_frame_free(&m_frame);
     av_frame_free(&m_hwFrame);
+    av_frame_free(&m_pendingFrame);
     av_packet_free(&m_packet);
+    av_packet_free(&m_heldPacket);
 }
 
 // ---- Queries -----------------------------------------------------------------
@@ -112,6 +116,7 @@ bool VideoDecoder::isOpen() const noexcept { return false; }
 const VideoStreamInfo& VideoDecoder::info() const noexcept { return m_info; }
 bool VideoDecoder::seek(double, SeekMode) { return false; }
 bool VideoDecoder::seekToFrame(int64_t, SeekMode) { return false; }
+bool VideoDecoder::advanceTo(double) { return false; }
 bool VideoDecoder::decodeNext(DecodedFrame&) { return false; }
 bool VideoDecoder::decodeAt(double, DecodedFrame&) { return false; }
 bool VideoDecoder::isHardwareAccelerated() const noexcept { return false; }

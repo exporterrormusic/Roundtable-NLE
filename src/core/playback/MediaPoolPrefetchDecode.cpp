@@ -65,42 +65,37 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         state.lastDecodedFrame < 0 && task.frameNumber == 0 &&
         (task.info.duration <= 0.0 || task.info.frameCount <= 1);
     bool needSeek = !freshSingleFrame;
+    bool singleFrameStep = false;  // only these measure the hw decoder
     if (state.lastDecodedFrame >= 0) {
         int64_t delta = task.frameNumber - state.lastDecodedFrame;
         if (delta == 1) {
             needSeek = false;
+            singleFrameStep = true;
         } else if (delta > 1 && delta <= 150) {
-            needSeek = false;
-            DecodedFrame skip;
-            for (int64_t i = 0; i < delta - 1; ++i) {
-                if (!decoder.decodeNext(skip)) {
-                    needSeek = true;
-                    break;
-                }
-            }
+            // Short forward jump (scrub step, prefetch catching up): decode
+            // on from here, skipping pictures nothing references, instead of
+            // fully decoding every frame in between.
+            needSeek = !decoder.advanceTo(targetTime);
         }
     }
 
     if (needSeek) {
-        // Keyframe seek + forward decode (avoids Precise seek B-frame bug).
-        if (!decoder.seek(targetTime, SeekMode::Keyframe)) {
+        // Precise seek: back to the keyframe, then forward to the exact
+        // frame, skipping unreferenced pictures and backing off further when
+        // an open-GOP keyframe lands AFTER the target. (This used to seek to
+        // the keyframe and decode forward here by hand, which on open-GOP
+        // footage stopped at the keyframe and cached it as the target.)
+        if (!decoder.seek(targetTime, SeekMode::Precise)) {
             spdlog::debug("MediaPool prefetch: seek failed handle={} frame={}",
                           task.handle, task.frameNumber);
             state.lastDecodedFrame = -1;
             return nullptr;
         }
-        const double halfFrame = 0.5 / task.fps;
         DecodedFrame fwd;
-        int fwdCount = 0;
-        constexpr int kMaxForwardDecode = 600;
-        while (fwdCount < kMaxForwardDecode) {
-            if (!decoder.decodeNext(fwd)) {
-                state.lastDecodedFrame = -1;
-                return nullptr;
-            }
-            ++fwdCount;
-            if (fwd.timestamp >= targetTime - halfFrame)
-                break;
+        const int fwdCount = 1;
+        if (!decoder.decodeNext(fwd)) {
+            state.lastDecodedFrame = -1;
+            return nullptr;
         }
         state.lastDecodedFrame = task.frameNumber;
 
@@ -153,17 +148,17 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     logDecodePerf(task, false, 0, decodeOnlyMs, convertMs, totalMs,
                   decoded.width, decoded.height);
 
-    // NVDEC→SW fallback only on sequential decodes (seek frames are inherently slow).
-    if (!needSeek &&
-        shouldFallbackToSoftwarePreview(*state.decoder,
+    // NVDEC→SW fallback only on single next-frame decodes: seeks and
+    // forward jumps decode many pictures in one call.
+    if (shouldFallbackToSoftwarePreview(*state.decoder,
+                                        singleFrameStep,
                                         task.tier,
                                         decoded.width,
                                         decoded.height,
                                         totalMs,
                                         task.packedAlpha)) {
         ++state.consecutiveSlowHwFrames;
-        constexpr int kFallbackSlowFrameThreshold = 3;
-        if (state.consecutiveSlowHwFrames >= kFallbackSlowFrameThreshold) {
+        if (state.consecutiveSlowHwFrames >= kSlowHardwareFramesBeforeFallback) {
             spdlog::warn("[PERF] MediaPool prefetch: handle={} '{}' switching to software after {} consecutive slow hw frames (last={:.1f}ms total, src={}x{}, dst={}x{}, tier={})",
                          task.handle,
                          pathToUtf8(task.filePath.filename()),
@@ -177,7 +172,7 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
             reopenPrefetchDecoderAsSoftware(state, task);
             state.consecutiveSlowHwFrames = 0;
         }
-    } else {
+    } else if (singleFrameStep) {
         state.consecutiveSlowHwFrames = 0;
     }
 

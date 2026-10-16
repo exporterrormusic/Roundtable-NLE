@@ -226,6 +226,28 @@ void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
         return;
     }
 
+    // ── Ellipse / Rectangle Mask tools ──
+    // Press-drag sweeps out a new shape. Handles of an existing mask stay
+    // grabbable so a freshly drawn shape can be resized without switching
+    // back to the Selection tool.
+    if (event->button() == Qt::LeftButton && isShapeMaskTool() && m_masks) {
+        const QPointF wPos = event->position();
+        int maskIdx = -1;
+        const int handleIdx = hitTestMaskHandle(wPos, maskIdx);
+        if (handleIdx >= 0 && maskIdx >= 0) {
+            m_dragMode = DragMode::DragMaskPoint;
+            m_dragMaskIndex = maskIdx;
+            m_dragMaskHandle = handleIdx;
+            m_dragStartMask = (*m_masks)[static_cast<size_t>(maskIdx)];
+            m_dragStartWidget = wPos;
+            event->accept();
+            return;
+        }
+        beginShapeMask(wPos);
+        event->accept();
+        return;
+    }
+
     // ── Ctrl+Click: add point on mask border ──────────────────────────
     if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)
         && m_masks && !m_masks->empty()) {
@@ -640,6 +662,13 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         }
         update();
         emit motionPathLiveUpdate();
+        event->accept();
+        return;
+    }
+
+    if (m_dragMode == DragMode::DrawMaskShape && m_shapeDrawing
+        && (event->buttons() & Qt::LeftButton)) {
+        updateShapeMask(wPos, event->modifiers());
         event->accept();
         return;
     }
@@ -1133,6 +1162,20 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
+    if (isShapeMaskTool() && m_dragMode == DragMode::None) {
+        int maskIndex = -1;
+        const int handle = hitTestMaskHandle(wPos, maskIndex);
+        const int hoverIndex = handle >= 0 ? maskIndex : -1;
+        if (hoverIndex != m_hoverMaskIndex || handle != m_hoverMaskHandle) {
+            m_hoverMaskIndex = hoverIndex;
+            m_hoverMaskHandle = handle;
+            update();
+        }
+        applyCursor(handle >= 0 ? Qt::SizeAllCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+
     // Text/Type tool: always show the I-beam over the monitor (Premiere
     // Pro behavior) — even when a clip is selected and its transform
     // handles are visible.
@@ -1243,6 +1286,15 @@ void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
     if (m_dragMode == DragMode::Pan) {
         m_dragMode = DragMode::None;
         applyCursor(Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+
+    if (m_dragMode == DragMode::DrawMaskShape) {
+        updateShapeMask(event->position(), event->modifiers());
+        commitShapeMask();
+        m_dragMode = DragMode::None;
+        applyCursor(Qt::CrossCursor);
         event->accept();
         return;
     }
@@ -1383,6 +1435,64 @@ void TransformOverlayWidget::wheelEvent(QWheelEvent* event)
     }
 }
 
+// Premiere's titler shortcuts while editing monitor text, from Premiere's
+// "Adobe Premiere Pro Defaults V6.kys" (cmd.titler.misc.size/lead,
+// cmd.graphicsinspector.align*):
+//   Ctrl+Alt+Right / Left   font size +1 / -1   (Shift: 5)
+//   Alt+Up / Down           leading   +1 / -1   (Shift: 5)
+//   Ctrl+Shift+L / C / R    align left / center / right
+// plus Alt+Right / Left for kerning +5 / -5 (the Adobe text-tool habit;
+// Premiere ships its kerning commands unbound).
+bool TransformOverlayWidget::isInlineTitlerShortcut(const QKeyEvent* ke)
+{
+    const auto modifiers = ke->modifiers();
+    const bool ctrl = modifiers & (Qt::ControlModifier | Qt::MetaModifier);
+    const bool alt = modifiers & Qt::AltModifier;
+    const bool shift = modifiers & Qt::ShiftModifier;
+    const int key = ke->key();
+    const bool horizontal = key == Qt::Key_Left || key == Qt::Key_Right;
+    const bool vertical = key == Qt::Key_Up || key == Qt::Key_Down;
+    if (alt && horizontal) return true;
+    if (alt && !ctrl && vertical) return true;
+    return ctrl && shift && !alt
+        && (key == Qt::Key_L || key == Qt::Key_C || key == Qt::Key_R);
+}
+
+bool TransformOverlayWidget::handleInlineTitlerShortcut(const QKeyEvent* ke)
+{
+    if (!isInlineTitlerShortcut(ke)) return false;
+    const auto modifiers = ke->modifiers();
+    const bool ctrl = modifiers & (Qt::ControlModifier | Qt::MetaModifier);
+    const bool shift = modifiers & Qt::ShiftModifier;
+    const int key = ke->key();
+    const float step = shift ? 5.0f : 1.0f;
+    switch (key) {
+    case Qt::Key_Left:
+    case Qt::Key_Right: {
+        const float sign = key == Qt::Key_Right ? 1.0f : -1.0f;
+        if (ctrl) nudgeInlineTextFontSize(sign * step);
+        else      nudgeInlineTextKerning(sign * 5.0f);
+        break;
+    }
+    case Qt::Key_Up:
+    case Qt::Key_Down:
+        nudgeInlineTextLeading((key == Qt::Key_Up ? 1.0f : -1.0f) * step);
+        break;
+    case Qt::Key_L:
+        applyInlineParagraphAlignment(static_cast<int>(GTextAlign::Left));
+        break;
+    case Qt::Key_C:
+        applyInlineParagraphAlignment(static_cast<int>(GTextAlign::Center));
+        break;
+    case Qt::Key_R:
+        applyInlineParagraphAlignment(static_cast<int>(GTextAlign::Right));
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
     // A release can be lost when Windows deactivates or tears down the native
@@ -1502,8 +1612,10 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
                 || ke->matches(QKeySequence::SelectAll)
                 || ((modifiers & (Qt::ControlModifier | Qt::MetaModifier))
                     && (ke->key() == Qt::Key_B || ke->key() == Qt::Key_I
+                        || ke->key() == Qt::Key_U
                         || ke->key() == Qt::Key_Return
-                        || ke->key() == Qt::Key_Enter));
+                        || ke->key() == Qt::Key_Enter))
+                || isInlineTitlerShortcut(ke);
             if (plainTyping || textEditingShortcut) {
                 // Shortcut dispatch happens before KeyPress. Claim ordinary
                 // typing here so application tool bindings (T, A, B, R, ...)
@@ -1526,6 +1638,23 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
                 const bool current =
                     m_inlineTextEdit->currentCharFormat().fontItalic();
                 applyInlineTextItalic(!current);
+                return true;
+            }
+            if ((ke->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))
+                && !(ke->modifiers() & Qt::AltModifier)
+                && ke->key() == Qt::Key_U) {
+                applyInlineTextUnderline(
+                    !m_inlineTextEdit->currentCharFormat().fontUnderline());
+                return true;
+            }
+            if (handleInlineTitlerShortcut(ke)) return true;
+            // Plain printable typing: insert it ourselves so each word is
+            // its own undo step (insertInlineTypedText).
+            if (!(ke->modifiers() & (Qt::ControlModifier | Qt::MetaModifier
+                                     | Qt::AltModifier))
+                && !ke->text().isEmpty() && ke->text().front().isPrint()
+                && !m_inlineTextEdit->isReadOnly()) {
+                insertInlineTypedText(ke->text());
                 return true;
             }
             if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
@@ -1599,6 +1728,10 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
     case QEvent::KeyPress:
     {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (m_shapeDrawing && keyEvent->key() == Qt::Key_Escape) {
+            cancelShapeMask();
+            return true;
+        }
         if (m_editTool == 9 && m_penDrawing) {
             if (keyEvent->key() == Qt::Key_Escape) {
                 cancelPenMask();

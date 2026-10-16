@@ -526,6 +526,18 @@ void PlaybackController::goToPrevEditPoint()
     seekTo(prev);
 }
 
+void PlaybackController::goToNextGap()
+{
+    if (!m_timeline) return;
+    seekTo(EditOperations::nextSequenceGap(*m_timeline, currentTick()));
+}
+
+void PlaybackController::goToPrevGap()
+{
+    if (!m_timeline) return;
+    seekTo(EditOperations::prevSequenceGap(*m_timeline, currentTick()));
+}
+
 void PlaybackController::goToInPoint()
 {
     if (!m_timeline) return;

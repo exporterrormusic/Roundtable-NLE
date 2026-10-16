@@ -336,6 +336,38 @@ QWidget* ComfyPanel::setupSettingsPage()
     grid->addWidget(m_gapSpin, row, 4);
     ++row;
 
+    label(QStringLiteral("CLOSE-UP position X"), row, 0);
+    label(QStringLiteral("Position Y"), row, 3);
+    m_cuBackgroundXSpin = new QDoubleSpinBox;
+    m_cuBackgroundYSpin = new QDoubleSpinBox;
+    m_cuBackgroundXSpin->setObjectName(QStringLiteral("comfyBackgroundPositionX"));
+    m_cuBackgroundYSpin->setObjectName(QStringLiteral("comfyBackgroundPositionY"));
+    for (auto* spin : {m_cuBackgroundXSpin, m_cuBackgroundYSpin}) {
+        spin->setRange(-10000.0, 10000.0);
+        spin->setDecimals(1);
+        spin->setSingleStep(0.1);
+        spin->setSuffix(QStringLiteral(" px"));
+        spin->setToolTip(QStringLiteral("Background centre in a 1920 x 1080 frame, measured from the top left. "
+                                       "960, 540 is centred. WIDE shots always stay centred at 100%."));
+    }
+    connect(m_cuBackgroundXSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (!m_updatingControls) m_audioSync->pipeline().closeUpBackgroundOffsetX = v - 960.0;
+    });
+    connect(m_cuBackgroundYSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        if (!m_updatingControls) m_audioSync->pipeline().closeUpBackgroundOffsetY = v - 540.0;
+    });
+    grid->addWidget(m_cuBackgroundXSpin, row, 1);
+    grid->addWidget(m_cuBackgroundYSpin, row, 4);
+    ++row;
+
+    pathRow(QStringLiteral("Timeline template"), m_timelineTemplateEdit, row, 0,
+            QStringLiteral("Timeline assembly template (*.json)"),
+            [this](const QString& p) { m_audioSync->pipeline().timelineTemplate = p.toStdString(); });
+    m_timelineTemplateEdit->setObjectName(QStringLiteral("comfyTimelineTemplate"));
+    m_timelineTemplateEdit->setPlaceholderText(QStringLiteral("Optional: character framing, stingers, music and overlays"));
+    m_gapSpin->setToolTip(QStringLiteral("Gap between segments when no timeline template is selected. "
+                                         "A template uses its own stinger durations."));
+    ++row;
     grid->setColumnStretch(1, 1);
     grid->setColumnStretch(4, 1);
     v->addLayout(grid);
@@ -411,7 +443,6 @@ QWidget* ComfyPanel::setupQueuePage()
 // The one action row, below every page.
 QWidget* ComfyPanel::setupActionBar()
 {
-    const auto& tc = Theme::colors();
     auto* bar = new QWidget;
     auto* h = new QHBoxLayout(bar);
     h->setContentsMargins(0, 4, 0, 0);
@@ -420,17 +451,18 @@ QWidget* ComfyPanel::setupActionBar()
     m_renderAllBtn = new QPushButton(QStringLiteral("RENDER ALL"));
     m_renderAllBtn->setStyleSheet(renderButtonStyle(true));
     m_renderAllBtn->setToolTip(QStringLiteral(
-        "Export every shot with a picked take and render it in ComfyUI, overnight-safe. "
+        "Render shots with no video on disk and shots marked Retake, using fresh seeds. "
+        "Approved renders and renders awaiting review are kept. "
         "To render only some shots, select them on SHOTS and right-click."));
     connect(m_renderAllBtn, &QPushButton::clicked, this, [this]() {
         std::vector<int> all(m_shots.size());
         for (size_t i = 0; i < all.size(); ++i) all[i] = static_cast<int>(i);
-        startRender(all, m_rerenderCheck->isChecked());
+        startRender(all, /*includeRendered=*/false, /*freshSeeds=*/true);
     });
     h->addWidget(m_renderAllBtn);
-    m_rerenderCheck = new QCheckBox(QStringLiteral("Also re-render shots that already have a render"));
-    m_rerenderCheck->setStyleSheet(QString("QCheckBox { color: %1; }").arg(Theme::hex(tc.textPrimary)));
-    h->addWidget(m_rerenderCheck);
+    auto* renderScope = new QLabel(QStringLiteral("Unrendered + retakes · new seeds"));
+    renderScope->setStyleSheet(renderLabelStyle());
+    h->addWidget(renderScope);
     m_stopRenderBtn = new QPushButton(QStringLiteral("Stop"));
     m_stopRenderBtn->setStyleSheet(renderButtonStyle(false));
     connect(m_stopRenderBtn, &QPushButton::clicked, this, [this]() {
@@ -456,8 +488,8 @@ QWidget* ComfyPanel::setupActionBar()
     m_assembleBtn->setStyleSheet(renderButtonStyle(true));
     m_assembleBtn->setToolTip(QStringLiteral(
         "Put the chosen render of every shot on a sequence in script order: tail pad trimmed, "
-        "keyed, full width on the bottom edge, background underneath, a gap + marker per segment. "
-        "One undo step. Background / zoom / gap are on SETTINGS."));
+        "keyed with a fresh background for each shot. A timeline template also adds character framing, "
+        "stingers, music, transitions and overlays. One undo step. Configure on SETTINGS."));
     connect(m_assembleBtn, &QPushButton::clicked, this, [this]() { emit assembleRequested(); });
     h->addWidget(m_assembleBtn);
     return bar;
@@ -496,11 +528,14 @@ void ComfyPanel::setupRunner()
                                settings.renders.end());
         settings.renders.push_back(std::move(rv));
         settings.chosenRender = -1;   // newest
+        settings.review = ShotReview::Unreviewed;
+        settings.reviewedRender.clear();
         for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) {
             if (m_shots[static_cast<size_t>(i)].key != m_jobShotKeys[static_cast<size_t>(index)]) continue;
             updateShotRow(i);
             if (i == m_selected) loadFramingForSelection();   // new render in the USE RENDER list
         }
+        updateExportSummary();
     });
     connect(m_runner, &ComfyRunner::finished, this, [this](int done, int failed, bool stopped) {
         m_renderStatus->setText(QString("%1 · %2 rendered · %3 failed")
@@ -640,7 +675,6 @@ bool ComfyPanel::loadWorkflow(QString* error)
         if (error) *error = QStringLiteral("Choose the ComfyUI workflow (.json) on the SETTINGS page first.");
         return false;
     }
-    if (path == m_workflowLoadedFrom && !m_workflowPrompt.isEmpty()) return true;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         if (error) *error = QStringLiteral("Cannot read %1").arg(path);
@@ -680,7 +714,21 @@ void ComfyPanel::applyDevDefaults()
     fill(state.workflowFile, pathOf("workflow"));
     fill(state.wideReferenceImage, pathOf("wideReference"));
     fill(state.closeUpReferenceImage, pathOf("closeUpReference"));
+    fill(state.timelineTemplate, pathOf("timelineTemplate"));
     fill(state.defaultExpression, json.value(QLatin1String("defaultExpression")).toString().trimmed().toStdString());
+    // A revised local preset updates this background once per show. Persist
+    // its revision so subsequent manual adjustments survive refresh/reload.
+    const std::string background = pathOf("background");
+    const int revision = std::max(0, json.value(QLatin1String("backgroundFramingRevision")).toInt(0));
+    const bool newerFraming = static_cast<uint32_t>(revision) > state.backgroundFramingRevision
+        && QFileInfo(QString::fromStdString(state.background)) == QFileInfo(QString::fromStdString(background));
+    if (!background.empty() && (state.background.empty() || newerFraming)) {
+        state.background = background;
+        state.closeUpBackgroundZoom = json.value(QLatin1String("closeUpBackgroundZoom")).toDouble(0.0);
+        state.closeUpBackgroundOffsetX = json.value(QLatin1String("closeUpBackgroundPositionX")).toDouble(960.0) - 960.0;
+        state.closeUpBackgroundOffsetY = json.value(QLatin1String("closeUpBackgroundPositionY")).toDouble(540.0) - 540.0;
+        state.backgroundFramingRevision = static_cast<uint32_t>(revision);
+    }
     auto settings = appSettings();
     if (settings.value(kLauncherKey).toString().isEmpty()) {
         const std::string launcher = pathOf("launcher");
@@ -704,7 +752,10 @@ void ComfyPanel::refreshRenderPage()
     m_defaultExprEdit->setText(QString::fromStdString(state.defaultExpression));
     m_frameLimitSpin->setValue(state.frameCapThreshold);
     m_backgroundEdit->setText(QString::fromStdString(state.background));
+    m_timelineTemplateEdit->setText(QString::fromStdString(state.timelineTemplate));
     m_cuZoomSpin->setValue(state.closeUpBackgroundZoom);
+    m_cuBackgroundXSpin->setValue(960.0 + state.closeUpBackgroundOffsetX);
+    m_cuBackgroundYSpin->setValue(540.0 + state.closeUpBackgroundOffsetY);
     m_gapSpin->setValue(state.segmentGapSec);
     m_updatingControls = false;
 
@@ -764,7 +815,7 @@ QString ComfyPanel::rendersDir() const
     return dir.absoluteFilePath(QStringLiteral("renders"));
 }
 
-void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRendered)
+void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRendered, bool freshSeeds)
 {
     if (!m_audioSync || !m_runner || m_runner->isRunning()) return;
     applyDevDefaults();
@@ -783,14 +834,14 @@ void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRe
         const ShowShot& shot = m_shots[static_cast<size_t>(i)];
         if (!isExportable(shot)) continue;
         auto it = state.shots.find(shot.key);
-        if (!includeRendered && it != state.shots.end() && !it->second.renders.empty()) continue;
+        if (!includeRendered && it != state.shots.end() && !needsRender(it->second)) continue;
         picked.push_back(i);
         (shot.shot == "CLOSE-UP" ? needCloseUp : needWide) = true;
     }
     if (picked.empty()) {
         QMessageBox::information(this, QStringLiteral("Render"),
-            QStringLiteral("Nothing to render — every shot already has a render (or has no picked take). "
-                           "Tick \"Also re-render\" to render them again."));
+            QStringLiteral("Nothing to render — no unfinished shots or retakes have a picked video take. "
+                           "Mark a shot Retake on SHOTS to generate a new version."));
         return;
     }
     const auto refOk = [](const std::string& p) { return !p.empty() && QFileInfo::exists(QString::fromStdString(p)); };
@@ -855,10 +906,10 @@ void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRe
     // ── Export the shots (always fresh), then hand them to ComfyUI ───────
     if (picked.size() > 1) showPage(kPageQueue);
     appendLog(QStringLiteral("Preparing %1 shot(s) for ComfyUI…").arg(picked.size()));
-    prepareShots(picked, [this, picked]() { launchRender(picked); });
+    prepareShots(picked, [this, picked, freshSeeds]() { launchRender(picked, freshSeeds); });
 }
 
-void ComfyPanel::launchRender(const std::vector<int>& shotIndices)
+void ComfyPanel::launchRender(const std::vector<int>& shotIndices, bool freshSeeds)
 {
     if (!m_audioSync || !m_runner || m_runner->isRunning()) return;
     auto& state = m_audioSync->pipeline();
@@ -875,7 +926,13 @@ void ComfyPanel::launchRender(const std::vector<int>& shotIndices)
     m_jobShotKeys.clear();
     for (int i : picked) {
         const ShowShot& shot = m_shots[static_cast<size_t>(i)];
-        const auto& settings = state.shots[shot.key];
+        auto& settings = state.shots[shot.key];
+        if (freshSeeds) {
+            do {
+                settings.setFreshSeed(QRandomGenerator::global()->generate(),
+                                     comfy::workflowSeed(m_workflowPrompt, m_workflowTargets));
+            } while (settings.seed == state.seed);
+        }
         RenderJob job;
         job.key = shot.key;
         job.order = i + 1;
@@ -891,6 +948,7 @@ void ComfyPanel::launchRender(const std::vector<int>& shotIndices)
         jobs.push_back(std::move(job));
         m_jobShotKeys.push_back(shot.key);
     }
+    if (freshSeeds) loadFramingForSelection();
 
     ComfyRunner::Config config;
     const QString url = m_urlEdit->text().trimmed();
@@ -948,7 +1006,6 @@ void ComfyPanel::updateQueueRow(int jobIndex)
     set(QStatus, job.state == RenderJob::State::Pending && job.status.isEmpty() ? QStringLiteral("Waiting") : job.status,
         color);
     set(QOutput, QFileInfo(job.outputFile).fileName());
-    if (job.state == RenderJob::State::Running) m_queueTable->scrollToItem(m_queueTable->item(jobIndex, QOrder));
 }
 
 } // namespace rt

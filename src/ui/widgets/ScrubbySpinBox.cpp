@@ -332,6 +332,12 @@ void ScrubbySpinBox::onEditingFinished()
         blockSignals(true);
         if (auto* p = parentWidget())
             p->setFocus(Qt::OtherFocusReason);
+        // A NoFocus parent leaves this box focused, and while focused the
+        // valueChanged sync skips m_startValue — so an undo that rewrites
+        // the value left a stale "before", and the NEXT commit's undo also
+        // reverted the earlier edit. Never stay focused after a commit.
+        if (hasFocus() || (lineEdit() && lineEdit()->hasFocus()))
+            clearFocus();
         blockSignals(false);
 
         setCursor(Qt::SizeHorCursor);

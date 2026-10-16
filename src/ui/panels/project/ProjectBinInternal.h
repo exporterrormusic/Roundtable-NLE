@@ -41,7 +41,12 @@ inline const QColor kLabelVideo     ( 64, 130, 210);
 inline const QColor kLabelAudio     ( 74, 180, 110);
 inline const QColor kLabelImage     (160,  90, 210);
 inline const QColor kLabelSpine     (200, 140,  50);
-inline const QColor kLabelAdjustment(255, 170,  68);  // 0xFFFFAA44 — matches ClipSerialization
+// Adjustment layers use Premiere's "Lavender" label (same as the timeline
+// tint, Theme clipAdjustment). Bins saved before 2026-10-12 stored the old
+// orange; it is read as "default" and shown as Lavender.
+inline constexpr uint32_t kAdjustmentLabelArgb       = 0xFFE385E3;
+inline constexpr uint32_t kLegacyAdjustmentLabelArgb = 0xFFFFAA44;
+inline const QColor kLabelAdjustment(227, 133, 227);
 inline const QColor kLabelUnknown   (136, 136, 136);
 
 // Sentinel path components for synthetic bin items. The angle brackets make

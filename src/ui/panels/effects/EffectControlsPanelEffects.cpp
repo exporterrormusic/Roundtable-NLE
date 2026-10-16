@@ -410,7 +410,7 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
         sl->addWidget(lbl);
 
         auto* combo = new QComboBox(settingWidget);
-        combo->addItems({"Default", "Relaxed", "Aggressive", "Custom"});
+        combo->addItems({"Default", "Relaxed", "Aggressive", "Custom", "ComfyUI Green"});
         combo->setCurrentIndex(static_cast<int>(fx.param(ChromaKey::Setting).track.evaluate(0)));
         combo->setFixedHeight(22);
         sl->addWidget(combo, 1);
@@ -476,6 +476,227 @@ std::vector<OpacityMask>* EffectControlsPanel::maskListFor(quint64 effectId) con
     if (Effect* fx = m_clip->effects().effectById(effectId))
         return &fx->masks();
     return nullptr;
+}
+
+EffectControlsPanel::NewMaskTarget EffectControlsPanel::newMaskTarget() const
+{
+    if (!m_clip) return {};
+    if (m_hasSelectedMask) {
+        if (m_selectedMaskEffectId != 0) {
+            if (maskListFor(m_selectedMaskEffectId))
+                return {m_selectedMaskEffectId, false};
+        } else {
+            for (const auto& mask : m_clip->masks())
+                if (mask.maskId == m_selectedMaskId)
+                    return {0, mask.unassigned};
+        }
+    }
+    if (m_selectedEffectIndex >= 0
+        && static_cast<size_t>(m_selectedEffectIndex)
+               < m_clip->effects().effectCount()) {
+        const Effect& fx = m_clip->effects().effect(
+            static_cast<size_t>(m_selectedEffectIndex));
+        if (!isAudioEffect(fx.effectType()))
+            return {fx.id(), false};
+    }
+    if (m_opacitySelected) return {0, false};
+    return {0, true};
+}
+
+bool EffectControlsPanel::assignMask(quint64 fromEffectId, uint64_t maskId,
+                                     quint64 toEffectId, bool toUnassigned)
+{
+    if (!m_clip || (m_track && m_track->isLocked())) return false;
+    if (toEffectId != 0) toUnassigned = false;  // effect masks always apply
+    auto* from = maskListFor(fromEffectId);
+    if (!from || !maskListFor(toEffectId)) return false;
+    const auto it = std::find_if(from->begin(), from->end(),
+        [maskId](const OpacityMask& mask) { return mask.maskId == maskId; });
+    if (it == from->end()) return false;
+    const bool wasUnassigned = it->unassigned;
+    if (fromEffectId == toEffectId && wasUnassigned == toUnassigned)
+        return false;
+    const size_t fromIndex = static_cast<size_t>(it - from->begin());
+
+    Clip* clip = m_clip;
+    auto listOf = [clip](quint64 effectId) -> std::vector<OpacityMask>* {
+        if (effectId == 0) return &clip->masks();
+        if (Effect* fx = clip->effects().effectById(effectId))
+            return &fx->masks();
+        return nullptr;
+    };
+    // Move the mask between owner lists (or just flip the flag in place
+    // when it stays in the clip list), keeping its id, geometry and keys.
+    auto place = [listOf, maskId](quint64 src, quint64 dst, bool unassigned,
+                                  size_t dstIndex) {
+        auto* s = listOf(src);
+        auto* d = listOf(dst);
+        if (!s || !d) return;
+        const auto at = std::find_if(s->begin(), s->end(),
+            [maskId](const OpacityMask& mask) { return mask.maskId == maskId; });
+        if (at == s->end()) return;
+        if (s == d) {
+            at->unassigned = unassigned;
+            return;
+        }
+        OpacityMask moved = *at;
+        s->erase(at);
+        moved.unassigned = dst == 0 && unassigned;
+        d->insert(d->begin() + static_cast<ptrdiff_t>(
+                      std::min(dstIndex, d->size())),
+                  std::move(moved));
+    };
+
+    const char* name = toEffectId == 0
+        ? (toUnassigned ? "Unassign Mask" : "Assign Mask to Opacity")
+        : "Assign Mask to Effect";
+    auto command = std::make_unique<LambdaCommand>(
+        name,
+        [place, fromEffectId, toEffectId, toUnassigned]() {
+            place(fromEffectId, toEffectId, toUnassigned, SIZE_MAX);
+        },
+        [place, fromEffectId, toEffectId, wasUnassigned, fromIndex]() {
+            place(toEffectId, fromEffectId, wasUnassigned, fromIndex);
+        });
+    if (m_commandStack)
+        m_commandStack->execute(std::move(command));
+    else
+        command->execute();
+
+    refresh();
+    selectMaskById(toEffectId, maskId);
+    emit maskChanged();
+    emit propertyChanged();
+    return true;
+}
+
+void EffectControlsPanel::selectMaskOwner(quint64 effectId)
+{
+    m_hasSelectedMask = false;
+    m_selectedMaskEffectId = 0;
+    m_selectedMaskId = 0;
+    m_opacitySelected = effectId == 0;
+    m_selectedEffectIndex = -1;
+    if (m_clip && effectId != 0) {
+        for (size_t i = 0; i < m_clip->effects().effectCount(); ++i) {
+            if (m_clip->effects().effect(i).id() == effectId) {
+                m_selectedEffectIndex = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    refreshMaskOwnerHighlight();
+}
+
+void EffectControlsPanel::refreshMaskOwnerHighlight()
+{
+    const auto& tc = Theme::colors();
+    auto headerStyle = [&tc](bool selected) {
+        return QStringLiteral("background: %1; border-bottom: 1px solid %2;")
+            .arg(Theme::hex(selected ? tc.accentDim : tc.surface2),
+                 Theme::hex(tc.border));
+    };
+    if (m_opacitySection)
+        m_opacitySection->setStyleSheet(headerStyle(m_opacitySelected));
+    for (size_t i = 0; i < m_effectHeaders.size(); ++i)
+        m_effectHeaders[i]->setStyleSheet(headerStyle(
+            static_cast<int>(i) == m_selectedEffectIndex));
+    if (!m_hasSelectedMask) {
+        for (auto& section : m_sectionArrows) {
+            if (!section.header->property("maskId").isValid()) continue;
+            section.header->setStyleSheet(QStringLiteral(
+                "background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2;")
+                .arg(Theme::hex(tc.surface2), Theme::hex(tc.border)));
+        }
+    }
+}
+
+void EffectControlsPanel::showMaskAssignMenu(QWidget* anchor,
+                                             const QPoint& globalPos,
+                                             quint64 effectId, uint64_t maskId)
+{
+    if (!m_clip) return;
+    bool unassigned = false;
+    if (effectId == 0) {
+        for (const auto& mask : m_clip->masks())
+            if (mask.maskId == maskId) unassigned = mask.unassigned;
+    }
+    QMenu menu(anchor);
+    QAction* toOpacity = menu.addAction(tr("Assign to Opacity"));
+    toOpacity->setEnabled(effectId != 0 || unassigned);
+    connect(toOpacity, &QAction::triggered, this, [this, effectId, maskId]() {
+        assignMask(effectId, maskId, 0, false);
+    });
+    QMenu* toEffect = menu.addMenu(tr("Assign to Effect"));
+    for (size_t i = 0; i < m_clip->effects().effectCount(); ++i) {
+        const Effect& fx = m_clip->effects().effect(i);
+        if (isAudioEffect(fx.effectType())) continue;
+        const quint64 fxId = fx.id();
+        QAction* action = toEffect->addAction(QString::fromUtf8(fx.name()));
+        action->setEnabled(fxId != effectId);
+        connect(action, &QAction::triggered, this, [this, effectId, maskId, fxId]() {
+            assignMask(effectId, maskId, fxId, false);
+        });
+    }
+    toEffect->setEnabled(!toEffect->actions().isEmpty());
+    QAction* toUnassigned = menu.addAction(tr("Move to Unassigned Masks"));
+    toUnassigned->setEnabled(!(effectId == 0 && unassigned));
+    connect(toUnassigned, &QAction::triggered, this, [this, effectId, maskId]() {
+        assignMask(effectId, maskId, 0, true);
+    });
+    menu.addSeparator();
+    menu.addAction(tr("Delete Mask"), this, [this, effectId, maskId]() {
+        deleteMask(effectId, maskId);
+    });
+    menu.exec(globalPos);
+}
+
+QWidget* EffectControlsPanel::maskDropTargetAt(const QPoint& panelPos,
+                                               quint64& effectId,
+                                               bool& unassigned) const
+{
+    for (QWidget* w = childAt(panelPos); w && w != this; w = w->parentWidget()) {
+        const QVariant target = w->property("maskDropTarget");
+        if (target.isValid()) {
+            effectId = 0;
+            unassigned = target.toString() == QStringLiteral("unassigned");
+            return w;
+        }
+        const QVariant fxTarget = w->property("maskDropEffectId");
+        if (fxTarget.isValid()) {
+            effectId = fxTarget.toULongLong();
+            unassigned = false;
+            return w;
+        }
+        // Dropping onto another mask joins that mask's owner.
+        if (w->property("maskId").isValid()
+            && w->property("maskEffectId").isValid()) {
+            effectId = w->property("maskEffectId").toULongLong();
+            unassigned = false;
+            if (effectId == 0 && m_clip) {
+                const uint64_t id = w->property("maskId").toULongLong();
+                for (const auto& mask : m_clip->masks())
+                    if (mask.maskId == id) unassigned = mask.unassigned;
+            }
+            return w;
+        }
+    }
+    return nullptr;
+}
+
+void EffectControlsPanel::setMaskDropHighlight(QWidget* target)
+{
+    if (m_maskDropHighlight == target) return;
+    if (m_maskDropHighlight)
+        m_maskDropHighlight->setStyleSheet(m_maskDropHighlightStyle);
+    m_maskDropHighlight = target;
+    if (target) {
+        m_maskDropHighlightStyle = target->styleSheet();
+        const auto& tc = Theme::colors();
+        target->setStyleSheet(m_maskDropHighlightStyle + QStringLiteral(
+            " background: %1; border: 1px solid %2;")
+            .arg(Theme::hex(tc.accentDim), Theme::hex(tc.accent)));
+    }
 }
 
 bool EffectControlsPanel::deleteMask(quint64 effectId, uint64_t maskId)
@@ -814,7 +1035,8 @@ void EffectControlsPanel::trackMask(quint64 effectId, size_t maskIdx,
 // ═════════════════════════════════════════════════════════════════════════════
 
 void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
-                                      quint64 effectId, int& rowIdx)
+                                      quint64 effectId, int& rowIdx,
+                                      MaskListFilter filter)
 {
     if (!m_clip || maskList.empty()) return;
 
@@ -1006,6 +1228,9 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
     for (size_t mi = 0; mi < maskList.size(); ++mi) {
         auto& mask = maskList[mi];
         const uint64_t stableMaskId = mask.maskId;
+        if ((filter == MaskListFilter::Assigned && mask.unassigned)
+            || (filter == MaskListFilter::Unassigned && !mask.unassigned))
+            continue;
 
         // ── Mask sub-section header ─────────────────────────────────────
         auto* header = new QWidget(m_propContainer);
@@ -1039,6 +1264,8 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
             .arg(Theme::typography().sizeXs));
         hl->addWidget(titleLabel);
         hl->addStretch();
+        header->setToolTip(tr("Drag onto Opacity or an effect to assign this "
+                              "mask, or right-click for options"));
 
         // Delete mask button
         auto* deleteBtn = new QToolButton(header);

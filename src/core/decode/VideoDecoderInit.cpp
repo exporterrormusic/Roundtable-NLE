@@ -702,6 +702,11 @@ void VideoDecoder::close()
     m_hwAccel = false;
     m_currentFrame = 0;
     m_hwPixFmt = -1;
+    // Before the codec goes: a parked hardware picture references its pool.
+    if (m_pendingFrame) av_frame_unref(m_pendingFrame);
+    m_hasPendingFrame = false;
+    if (m_heldPacket) av_packet_unref(m_heldPacket);
+    m_hasHeldPacket = false;
 
     if (m_codecCtx)
     {

@@ -18,6 +18,7 @@
 #include "FrameTime.h"
 
 #include <QApplication>
+#include <QToolTip>
 #include <QMouseEvent>
 #include <QTimer>
 #include <QRubberBand>
@@ -110,6 +111,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     // ── Hover cursor feedback when not dragging ─────────────────────────
     if (m_dragMode == DragMode::None)
     {
+        updateTransitionHandleHover(event->position());
         if (m_activeTool == EditTool::Razor)
         {
             // Track razor position for the red line indicator
@@ -169,6 +171,15 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
                         }
                     }
                 }
+            }
+            // Transition handle: the top inner corner of an edge with no
+            // transition. A distinct cursor from the trim cursor so the two
+            // gestures are never confused.
+            if (!hoveringTransEdge && hitTestTransitionHandle(event->position())) {
+                setCursor(Qt::PointingHandCursor);
+                for (auto tw : m_trackWidgets)
+                    tw->setHoverEdgeTick(-1);
+                hoveringTransEdge = true;
             }
             if (!hoveringTransEdge) {
             auto hitRef = hitTestClip(event->position());
@@ -437,6 +448,9 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     }
     case DragMode::TransitionTrim:
         continueTransitionTrimDrag(pos);
+        break;
+    case DragMode::TransitionHandle:
+        continueTransitionHandleDrag(pos);
         break;
     default:
         break;
@@ -1176,8 +1190,91 @@ void TimelinePanel::continueTransitionTrimDrag(QPointF pos)
         auto cmd = std::make_unique<SetTransitionPropertyCommand>(
             track, m_transTrimIndex, t);
         executeCommand(std::move(cmd));
+        showTransitionDurationTip(pos, newDur);
     }
     onScrollChanged();
+}
+
+void TimelinePanel::continueTransitionHandleDrag(QPointF pos)
+{
+    // Deadzone: a plain click on a handle only selects the edge.
+    if (std::abs(pos.x() - m_dragStart.x()) < 4.0) return;
+
+    Track* track = m_timeline->track(m_handleDrag.trackIndex);
+    const size_t idx = track ? track->findClipIndexById(m_handleDrag.clipId)
+                             : SIZE_MAX;
+    if (!track || track->isLocked() || idx >= track->clipCount()) return;
+    if (EditOperations::clipEdgeHasTransition(
+            *track, m_handleDrag.clipId, m_handleDrag.edge))
+        return;
+    const Clip* clip = track->clip(idx);
+
+    // Only an inward drag makes a transition.
+    const bool head = m_handleDrag.edge == ClipEdge::Head;
+    const int64_t dragTick =
+        m_layoutEngine.pixelXToTime(pos.x() - headerWidth());
+    const int64_t inward = head ? dragTick - clip->timelineIn()
+                                : clip->timelineOut() - dragTick;
+    if (inward <= 0) return;
+
+    // The transition's inner edge follows the cursor: a one-sided fade spans
+    // the whole drag, a dissolve centered on a cut spans it on both sides.
+    Transition trans = EditOperations::defaultTransitionAtEdge(
+        *track, *clip, m_handleDrag.edge, inward);
+    if (trans.leftClipId != 0 && trans.rightClipId != 0)
+        trans.duration = inward * 2;
+    if (!EditOperations::fitTransitionToAvailableDuration(*track, trans))
+        return;
+
+    // One undo step for the whole gesture: the add plus every live resize
+    // (continueTransitionTrimDrag reuses this macro; release closes it).
+    if (m_commandStack && !m_commandStack->isMacroActive())
+        m_commandStack->beginMacro("Add Transition");
+    executeCommand(std::make_unique<AddTransitionCommand>(
+        track, idx, idx, trans));
+
+    size_t transIdx = SIZE_MAX;
+    for (size_t i = 0; i < track->transitionCount(); ++i) {
+        const Transition* t = track->transition(i);
+        if (t && t->leftClipId == trans.leftClipId
+            && t->rightClipId == trans.rightClipId) {
+            transIdx = i;
+            break;
+        }
+    }
+    if (transIdx == SIZE_MAX) return;
+
+    // From here on it is an ordinary drag of the new transition's inner edge.
+    clearEditPointSelection();
+    m_transTrimTrackIndex    = m_handleDrag.trackIndex;
+    m_transTrimIndex         = transIdx;
+    m_transTrimIsStart       = !head;
+    m_transTrimOrigDuration  = 0;
+    m_transTrimOrigEditPoint = trans.editPointTick;
+    m_selectedTransitionTrack = m_handleDrag.trackIndex;
+    m_selectedTransitionIndex = transIdx;
+    for (auto tw : m_trackWidgets) {
+        tw->setTransitionHandleHover(0, -1);
+        tw->setSelectedTransition(
+            tw->trackIndex() == m_selectedTransitionTrack ? transIdx : SIZE_MAX);
+    }
+    m_dragMode = DragMode::TransitionTrim;
+    setCursor(Qt::SizeHorCursor);
+    emit selectionChanged();
+    continueTransitionTrimDrag(pos);
+}
+
+void TimelinePanel::showTransitionDurationTip(QPointF pos, int64_t duration)
+{
+    // Premiere shows the change and the total length while a transition
+    // edge is dragged.
+    const int64_t delta = duration - m_transTrimOrigDuration;
+    const QString text = QStringLiteral("%1%2   Duration %3")
+        .arg(delta < 0 ? QStringLiteral("-") : QStringLiteral("+"),
+             QString::fromStdString(m_layoutEngine.formatTimecode(
+                 delta < 0 ? -delta : delta)),
+             QString::fromStdString(m_layoutEngine.formatTimecode(duration)));
+    QToolTip::showText(mapToGlobal(pos.toPoint()) + QPoint(14, -36), text, this);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

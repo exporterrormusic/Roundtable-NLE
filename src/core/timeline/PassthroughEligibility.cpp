@@ -51,7 +51,7 @@ bool isIdentityVideoClip(VideoClip& vc, int64_t localTick) noexcept
         vc.cropTop()   > kCropEps || vc.cropBottom() > kCropEps) return false;
     if (vc.effects().hasActiveEffects()) return false;
     if (vc.blendMode() != 0) return false;              // 0 = Normal
-    if (vc.maskCount() > 0) return false;
+    if (vc.hasAssignedMasks()) return false;
     // Retime: only an un-r*ramped*, 1.0× clip is a 1:1 passthrough of
     // contiguous source frames.
     if (vc.timeInterpolation() != TimeInterpolation::FrameSampling) return false;

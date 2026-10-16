@@ -8,6 +8,7 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/FontFamilyCombo.h"
 #include "widgets/AudioFxSection.h"
 #include "Theme.h"
 
@@ -967,6 +968,7 @@ void PropertiesPanel::populateFromGraphic()
     const bool hasText = tl != nullptr;
     m_gfxTextEdit->setEnabled(hasText && !m_monitorTextEditing);
     m_gfxFontFamilyCombo->setEnabled(hasText);
+    if (m_gfxFontStyleCombo) m_gfxFontStyleCombo->setEnabled(hasText);
     m_gfxFontSizeSpin->setEnabled(hasText);
     m_gfxFontWeightSpin->setEnabled(hasText);
     m_gfxLeadingSpin->setEnabled(hasText);
@@ -982,8 +984,17 @@ void PropertiesPanel::populateFromGraphic()
     m_gfxShadowCheck->setEnabled(hasText);
     if (tl) {
         m_gfxTextEdit->setText(QString::fromStdString(tl->text()));
-        m_gfxFontFamilyCombo->setCurrentText(
-            QString::fromStdString(tl->fontFamily()));
+        const QString family = QString::fromStdString(tl->fontFamily());
+        m_gfxFontFamilyCombo->setCurrentFamily(family);
+        rebuildGfxFontStyleCombo(family);
+        if (m_gfxFontStyleCombo && !tl->fontStyle().empty()) {
+            const int styleIndex = m_gfxFontStyleCombo->findText(
+                QString::fromStdString(tl->fontStyle()), Qt::MatchFixedString);
+            if (styleIndex >= 0) {
+                QSignalBlocker blocker(m_gfxFontStyleCombo);
+                m_gfxFontStyleCombo->setCurrentIndex(styleIndex);
+            }
+        }
         m_gfxFontSizeSpin->setValue(static_cast<double>(tl->fontSize()));
         m_gfxFontWeightSpin->setValue(tl->fontWeight());
         m_gfxLeadingSpin->setValue(

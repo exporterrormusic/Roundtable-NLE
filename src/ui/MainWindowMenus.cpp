@@ -482,14 +482,42 @@ void MainWindow::buildTimelineMenu(QMenuBar* menuBar)
         if (m_shortcutManager)
             m_shortcutManager->triggerAction(ShortcutManager::kRippleDel);
     });
+    menu->addSeparator();
+    QMenu* gapMenu = menu->addMenu("Go to Gap");
+    auto* nextGapAct = gapMenu->addAction("Next in Sequence");
+    auto* prevGapAct = gapMenu->addAction("Previous in Sequence");
+    connect(nextGapAct, &QAction::triggered, this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_shortcutManager)
+            m_shortcutManager->triggerAction(ShortcutManager::kNextGap);
+    });
+    connect(prevGapAct, &QAction::triggered, this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_shortcutManager)
+            m_shortcutManager->triggerAction(ShortcutManager::kPrevGap);
+    });
     connect(menu, &QMenu::aboutToShow, this,
-            [this, addVideoTrackAct, addAudioTrackAct, splitAct, rippleDeleteAct]() {
+            [this, addVideoTrackAct, addAudioTrackAct, splitAct, rippleDeleteAct,
+             gapMenu, nextGapAct, prevGapAct]() {
         const bool enabled = !m_destroying.load(std::memory_order_acquire)
             && m_timelineWorkspace && m_timelineWorkspace->timeline();
         addVideoTrackAct->setEnabled(enabled);
         addAudioTrackAct->setEnabled(enabled);
         splitAct->setEnabled(enabled);
         rippleDeleteAct->setEnabled(enabled);
+        gapMenu->setEnabled(enabled);
+        // Show a key the user bound in Keyboard Shortcuts, like Edit does.
+        const auto withKey = [this](QAction* act, const QString& label,
+                                    const char* actionId) {
+            const auto* action = m_shortcutManager
+                ? m_shortcutManager->action(QString::fromLatin1(actionId))
+                : nullptr;
+            const QString key = action ? action->currentKey.toString(
+                QKeySequence::NativeText) : QString();
+            act->setText(key.isEmpty() ? label : label + QLatin1Char('\t') + key);
+        };
+        withKey(nextGapAct, tr("Next in Sequence"), ShortcutManager::kNextGap);
+        withKey(prevGapAct, tr("Previous in Sequence"), ShortcutManager::kPrevGap);
     });
     menu->addSeparator();
     // In/Out — QAction text includes shortcut hint for display.

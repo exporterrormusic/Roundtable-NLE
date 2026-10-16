@@ -1,10 +1,10 @@
 /*
  * ConvertDecodedFrame — the ONE CPU decoded-frame → BGRA conversion core.
  *
- * Shared by the three decode paths that previously each carried their own
- * copy of this logic (and diverged — see the packedTiles/contentHeight bug):
- *   - MediaPool::decodeFrame            (urgent/scrub decode, MediaPoolDecode.cpp)
- *   - MediaPool::convertDecodedToCache  (prefetch workers, MediaPoolPrefetchConvert.cpp)
+ * Shared by the decode paths that previously each carried their own copy of
+ * this logic (and diverged — see the packedTiles/contentHeight bug):
+ *   - MediaPool::convertDecodedToCache  (prefetch workers and scrub/export
+ *                                        decodes, MediaPoolPrefetchConvert.cpp)
  *   - MediaPool::loopPreDecodeWorker    (loop pre-decode, MediaPoolPrefetchLoop.cpp)
  *
  * What it does, identically for all callers:

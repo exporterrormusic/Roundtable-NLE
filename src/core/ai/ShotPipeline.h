@@ -72,6 +72,8 @@ struct RenderVersion
     bool operator==(const RenderVersion&) const = default;
 };
 
+enum class ShotReview : uint8_t { Unreviewed, Approved, Retake };
+
 /// Per-shot (per script line) settings. Unset values fall back to the
 /// recording / pipeline defaults.
 struct ShotSettings
@@ -89,6 +91,12 @@ struct ShotSettings
     int64_t                    seed{-1};        ///< -1 → ShowPipelineState::seed
     std::vector<RenderVersion> renders;
     int                        chosenRender{-1}; ///< index into renders; -1 → newest
+    ShotReview                 review{ShotReview::Unreviewed};
+    std::string                reviewedRender; ///< approval belongs to this file only
+
+    [[nodiscard]] ShotReview reviewFor(const RenderVersion* render) const;
+    /// Pick a seed different from the configured seed and every previous render.
+    void setFreshSeed(uint32_t candidate, int64_t fallbackSeed);
 
     /// The render the timeline should use (chosen, else newest), or nullptr.
     [[nodiscard]] const RenderVersion* activeRender() const;
@@ -116,6 +124,10 @@ struct ShowPipelineState
     double      closeUpBackgroundZoom{0.0}; ///< background zoom under CLOSE-UPs; 0 = auto
                                             ///< (the recording's CLOSE-UP / WIDE framing scale)
     double      segmentGapSec{3.0};     ///< room left for the stinger between segments
+    double      closeUpBackgroundOffsetX{0.0}; ///< pixels from centre in a 1920x1080 frame
+    double      closeUpBackgroundOffsetY{0.0}; ///< positive = down
+    uint32_t    backgroundFramingRevision{0}; ///< last local preset applied; later manual edits survive refresh
+    std::string timelineTemplate;       ///< optional saved assembly recipe (.json)
 
     bool operator==(const ShowPipelineState&) const = default;
 
@@ -214,10 +226,9 @@ struct AssemblyPlan
 
 /// Lay the shots end to end from `startTick` (ticks = kTicksPerSecond):
 /// a `segmentGapSec` gap (for the stinger) before every segment after the
-/// first, a marker at each segment start, and one background clip per run of
-/// same-type shots (split where the loop wraps). The background plays as ONE
-/// continuous loop from `startTick`, so cutting WIDE/CLOSE-UP never jumps it
-/// in time. `backgroundSec` <= 0 means a still image.
+/// first, a marker at each segment start, and a fresh background starting at
+/// source time zero for every shot. Shots longer than `backgroundSec` repeat
+/// the background within that shot. `backgroundSec` <= 0 means a still image.
 [[nodiscard]] AssemblyPlan planAssembly(const std::vector<AssemblyShot>& shots, int64_t startTick,
                                         double segmentGapSec, double backgroundSec);
 

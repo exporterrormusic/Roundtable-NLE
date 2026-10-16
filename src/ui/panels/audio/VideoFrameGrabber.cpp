@@ -36,6 +36,19 @@ constexpr size_t kFrameCacheBytes = 48u * 1024u * 1024u;   ///< per open decoder
 /// While walking forward from a keyframe, frames this close before the
 /// target are converted + cached too (a backward scrub lands on them).
 constexpr double kCacheLeadSec = 0.5;
+
+// A deleted render can be recreated under the same name while an open decoder
+// still reads the old file. Both decoded frames and posters need its revision.
+std::string mediaSourceKey(const std::string& path)
+{
+    const auto file = utf8ToPath(path);
+    std::error_code ec;
+    const auto modified = std::filesystem::last_write_time(file, ec);
+    if (ec) return {};
+    const auto bytes = std::filesystem::file_size(file, ec);
+    if (ec) return {};
+    return path + "|" + std::to_string(modified.time_since_epoch().count()) + "|" + std::to_string(bytes);
+}
 } // namespace
 
 struct VideoFrameGrabber::DecoderSlot
@@ -43,6 +56,7 @@ struct VideoFrameGrabber::DecoderSlot
     VideoDecoder decoder;
     double       lastTime{-1.0};   ///< Timestamp of the last decoded frame (decoder cursor)
     uint64_t     lastUse{0};
+    std::string  sourceKey;
 
     struct CachedImage
     {
@@ -148,8 +162,9 @@ bool VideoFrameGrabber::isVideoFile(const std::string& path)
 
 double VideoFrameGrabber::knownFps(const std::string& path) const
 {
+    const auto sourceKey = mediaSourceKey(path);
     std::lock_guard lock(m_mutex);
-    auto it = m_fps.find(path);
+    auto it = m_fps.find(sourceKey);
     return it != m_fps.end() ? it->second : 0.0;
 }
 
@@ -166,7 +181,9 @@ void VideoFrameGrabber::requestStill(QObject* receiver, const std::string& path,
                                      QSize size, Callback callback)
 {
     if (!receiver || !callback || path.empty() || size.isEmpty()) return;
-    Request request{receiver, path, timeSec, size, std::move(callback), stillKey(path, timeSec, size)};
+    const auto sourceKey = mediaSourceKey(path);
+    if (sourceKey.empty()) return;
+    Request request{receiver, path, timeSec, size, std::move(callback), stillKey(sourceKey, timeSec, size), sourceKey};
     QImage cached;
     {
         std::lock_guard lock(m_mutex);
@@ -188,9 +205,11 @@ void VideoFrameGrabber::requestLive(QObject* receiver, const std::string& path, 
                                     QSize size, Callback callback, int channel)
 {
     if (!receiver || !callback || path.empty() || size.isEmpty()) return;
+    const auto sourceKey = mediaSourceKey(path);
+    if (sourceKey.empty()) return;
     {
         std::lock_guard lock(m_mutex);
-        m_live[channel] = Request{receiver, path, timeSec, size, std::move(callback), {}};
+        m_live[channel] = Request{receiver, path, timeSec, size, std::move(callback), {}, sourceKey};
     }
     m_cv.notify_one();
 }
@@ -199,8 +218,9 @@ void VideoFrameGrabber::deliver(const Request& request, const QImage& image)
 {
     if (image.isNull() || !QCoreApplication::instance()) return;
     QMetaObject::invokeMethod(QCoreApplication::instance(),
-        [receiver = request.receiver, callback = request.callback, image]() {
-            if (receiver) callback(image);
+        [receiver = request.receiver, callback = request.callback, image,
+         path = request.path, sourceKey = request.sourceKey]() {
+            if (receiver && mediaSourceKey(path) == sourceKey) callback(image);
         }, Qt::QueuedConnection);
 }
 
@@ -228,6 +248,7 @@ void VideoFrameGrabber::workerLoop()
                 if (it != m_stillCache.end()) cachedHit = it->second;
             }
         }
+        if (!request.receiver || mediaSourceKey(request.path) != request.sourceKey) continue;
         if (!cachedHit.isNull()) {
             deliver(request, cachedHit);
             continue;
@@ -258,6 +279,7 @@ void VideoFrameGrabber::workerLoop()
 QImage VideoFrameGrabber::decode(const Request& request)
 {
     auto& slot = m_decoders[request.path];
+    if (slot && slot->sourceKey != request.sourceKey) slot.reset();
     if (!slot) {
         while (m_decoders.size() > kMaxOpenDecoders) {
             auto lru = m_decoders.end();
@@ -269,6 +291,7 @@ QImage VideoFrameGrabber::decode(const Request& request)
             m_decoders.erase(lru);
         }
         auto fresh = std::make_unique<DecoderSlot>();
+        fresh->sourceKey = request.sourceKey;
         // Slice-only threading: this decoder seeks constantly (poster frames
         // for many takes), which frame threading corrupts on H.264.
         if (!fresh->decoder.open(utf8ToPath(request.path), /*forceSoftware=*/false,
@@ -279,7 +302,7 @@ QImage VideoFrameGrabber::decode(const Request& request)
         }
         if (const double fps = fresh->decoder.info().fps; fps > 0.0) {
             std::lock_guard lock(m_mutex);
-            m_fps[request.path] = fps;
+            m_fps[request.sourceKey] = fps;
         }
         m_decoders[request.path] = std::move(fresh);
     }
@@ -333,7 +356,10 @@ QImage VideoFrameGrabber::decode(const Request& request)
     // decodeAt(): its precise seek flushes the codec after reaching the
     // target, so on long-GOP H.264 the following decode skips ahead to the
     // next keyframe (or EOF) -- that made posters black and playback ~1 fps.
-    const bool forward = s.lastTime >= 0.0 && t > s.lastTime - halfFrame && t - s.lastTime < 2.0;
+    // A size change drops the converted cache, not the decoder cursor.
+    // If the current decoded frame covers t, seek back to recover it at
+    // the new size. Advancing would skip that frame (or return no image at EOF).
+    const bool forward = s.lastTime >= 0.0 && t > s.lastTime + halfFrame && t - s.lastTime < 2.0;
     if (!forward) {
         s.pendingNext.reset();
         if (!s.decoder.seek(t, SeekMode::Keyframe)) {

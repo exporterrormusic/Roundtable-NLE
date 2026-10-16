@@ -7,9 +7,12 @@
 #include <gtest/gtest.h>
 
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/FontFamilyCombo.h"
 #include "widgets/KeyboardFocusUtils.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/ColorGradingPanel.h"
+#include "effects/LUT.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/KeyframeEditor.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -34,12 +37,16 @@
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialog>
+#include <QFile>
+#include <QFileDialog>
+#include <QTemporaryDir>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QToolButton>
+#include <QWheelEvent>
 #include <QTest>
 #include <QTimer>
 
@@ -55,6 +62,99 @@ static ClipT& addToTrack(rt::Track& track)
     ClipT& ref = *owned;
     track.addClip(std::move(owned));
     return ref;
+}
+
+TEST(ColorGradingPanel, BrowseImportsReplacesAndRemovesLutWithUndo)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString first = dir.filePath(QString::fromUtf8("first-\xc3\xa9.cube"));
+    const QString second = dir.filePath("second.cube");
+    for (const auto& path : {first, second}) {
+        QFile f(path);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write("LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n");
+    }
+    rt::Track track(rt::TrackType::Video, "V1");
+    auto& clip = addToTrack<rt::VideoClip>(track);
+    clip.effects().addEffect(std::make_unique<rt::Tint>());
+    clip.effects().addEffect(std::make_unique<rt::ColorGrading>());
+    rt::CommandStack stack;
+    rt::ColorGradingPanel panel;
+    panel.setCommandStack(&stack);
+    panel.setClip(&clip, &track);
+    auto* combo = panel.findChild<QComboBox*>("colorInputLutCombo");
+    auto* browse = panel.findChild<QToolButton*>("colorInputLutBrowse");
+    ASSERT_NE(combo, nullptr);
+    ASSERT_NE(browse, nullptr);
+    EXPECT_EQ(combo->currentText(), "None");
+    EXPECT_GE(combo->findText("Browse..."), 0);
+    // Exercise the actual Browse button and file picker.
+    const bool nativeDisabled = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    QTimer::singleShot(0, [&]() {
+        auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        ASSERT_NE(dialog, nullptr);
+        dialog->selectFile(first);
+        QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
+    });
+    browse->click();
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeDisabled);
+    ASSERT_EQ(clip.effects().effectCount(), 3u);
+    EXPECT_EQ(clip.effects().effect(0).effectType(), rt::EffectType::Tint);
+    EXPECT_EQ(clip.effects().effect(2).effectType(), rt::EffectType::ColorGrading);
+    auto* lut = dynamic_cast<rt::LUT*>(&clip.effects().effect(1));
+    ASSERT_NE(lut, nullptr);
+    ASSERT_TRUE(lut->hasLUT());
+    const auto originalCube = lut->cube();
+    const auto id = lut->id();
+    lut->param(rt::LUT::Intensity).track.addKeyframe(100, 0.4f);
+    EXPECT_EQ(combo->currentData().toString(), first);
+    EXPECT_EQ(clip.effects().evaluate(0)[1].lut, originalCube);
+    QString error;
+    ASSERT_TRUE(panel.loadInputLut(second, &error)) << error.toStdString();
+    EXPECT_EQ(lut->id(), id);
+    EXPECT_FLOAT_EQ(lut->evalParam(rt::LUT::Intensity, 100), 0.4f);
+    EXPECT_NE(lut->cube(), originalCube);
+    EXPECT_EQ(combo->currentData().toString(), second);
+    EXPECT_FALSE(panel.loadInputLut(dir.filePath("missing.cube"), &error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_EQ(stack.undoCount(), 2u);
+    EXPECT_EQ(combo->currentData().toString(), second);
+    ASSERT_TRUE(QFile::remove(first));
+    ASSERT_TRUE(QFile::remove(second));
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(lut->cube(), originalCube);
+    EXPECT_EQ(combo->currentData().toString(), first);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(clip.effects().effectCount(), 2u);
+    EXPECT_EQ(combo->currentText(), "None");
+    ASSERT_TRUE(stack.redo());
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(combo->currentData().toString(), second);
+    combo->setCurrentIndex(0);
+    emit combo->activated(0);
+    EXPECT_EQ(clip.effects().effectCount(), 2u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(clip.effects().effectCount(), 3u);
+    EXPECT_EQ(combo->currentData().toString(), second);
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    QTimer::singleShot(0, [&]() {
+        auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        ASSERT_NE(dialog, nullptr);
+        dialog->reject();
+    });
+    combo->setCurrentIndex(combo->count() - 1);
+    emit combo->activated(combo->currentIndex());
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nativeDisabled);
+    EXPECT_EQ(combo->currentData().toString(), second);
+    EXPECT_EQ(clip.effects().effectCount(), 3u);
+    track.setLocked(true);
+    panel.setClip(&clip, &track);
+    EXPECT_FALSE(browse->isEnabled());
+    EXPECT_FALSE(panel.loadInputLut(first, &error));
+    panel.clearClip();
+    EXPECT_EQ(combo->currentText(), "None");
 }
 
 TEST(GraphicsEditorPanel, TextRowsAreMultilineAndFontFamilyIsSearchable)
@@ -163,6 +263,72 @@ TEST(PropertiesPanel, GraphicFontFamilyIsSearchableDropdown)
     EXPECT_EQ(layer->fontFamily(), family.toStdString());
 }
 
+TEST(PropertiesPanel, GraphicTextEditsUndoOneAtATimeAndFontPreviewReverts)
+{
+    rt::Track track(rt::TrackType::Video, "V1");
+    auto ownedClip = std::make_unique<rt::GraphicClip>();
+    ownedClip->setDuration(48000);
+    auto* layer = ownedClip->addTextLayer("undo me");
+    ASSERT_NE(layer, nullptr);
+    layer->setFontSize(40.0f);
+    layer->setFontFamily("Arial");
+    auto* clip = static_cast<rt::GraphicClip*>(
+        track.addClip(std::move(ownedClip)));
+    ASSERT_NE(clip, nullptr);
+
+    rt::CommandStack stack;
+    rt::PropertiesPanel panel;
+    panel.setCommandStack(&stack);
+    panel.setClip(clip, &track);
+
+    // Two separate edits are two history steps. They used to record none,
+    // so Ctrl+Z reverted whatever had been recorded before them instead.
+    auto* size = panel.findChild<rt::ScrubbySpinBox*>(
+        QStringLiteral("propertiesGraphicFontSizeSpin"));
+    ASSERT_NE(size, nullptr);
+    size->setValue(50.0);
+    emit size->editingFinished();
+    size->setValue(60.0);
+    emit size->editingFinished();
+    EXPECT_FLOAT_EQ(layer->fontSize(), 60.0f);
+    ASSERT_EQ(stack.undoCount(), 2u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_FLOAT_EQ(layer->fontSize(), 50.0f);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_FLOAT_EQ(layer->fontSize(), 40.0f);
+    stack.clear();
+
+    auto* fonts = panel.findChild<rt::FontFamilyCombo*>(
+        QStringLiteral("propertiesGraphicFontFamilyCombo"));
+    ASSERT_NE(fonts, nullptr);
+    QString other;
+    for (int row = 0; row < fonts->count() && other.isEmpty(); ++row)
+        if (fonts->itemText(row) != QStringLiteral("Arial"))
+            other = fonts->itemText(row);
+    ASSERT_FALSE(other.isEmpty());
+
+    // Hovering a font previews it on the text; closing the menu reverts it
+    // and nothing reaches the history (Premiere's "interactive" change).
+    emit fonts->familyPreviewRequested(other);
+    EXPECT_EQ(layer->fontFamily(), other.toStdString());
+    EXPECT_EQ(stack.undoCount(), 0u);
+    emit fonts->familyPreviewEnded();
+    EXPECT_EQ(layer->fontFamily(), "Arial");
+    EXPECT_EQ(stack.undoCount(), 0u);
+
+    // Preview, then choose it: exactly one step, which undoes to the
+    // original font (not to the previewed one).
+    emit fonts->familyPreviewRequested(other);
+    fonts->setCurrentFamily(other);
+    emit fonts->textActivated(other);
+    EXPECT_EQ(layer->fontFamily(), other.toStdString());
+    ASSERT_EQ(stack.undoCount(), 1u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(layer->fontFamily(), "Arial");
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(layer->fontFamily(), other.toStdString());
+}
+
 TEST(PropertiesPanel, GraphicClipCanAddAndDuplicateIndependentTextObjects)
 {
     rt::Track track(rt::TrackType::Video, "V1");
@@ -215,14 +381,21 @@ TEST(PropertiesPanel, GraphicClipCanAddAndDuplicateIndependentTextObjects)
     add->click();
     ASSERT_EQ(clip->layerCount(), 3u);
     EXPECT_EQ(static_cast<rt::TextLayer*>(clip->layer(2))->text(), "Title");
-    ASSERT_EQ(stack.undoCount(), 2u);
+    // Duplicate, the text edit and Add Text are three separate steps (the
+    // text edit used to record nothing, so Ctrl+Z skipped past it).
+    ASSERT_EQ(stack.undoCount(), 3u);
 
     ASSERT_TRUE(stack.undo()); // Add Text
     EXPECT_EQ(clip->layerCount(), 2u);
+    ASSERT_TRUE(stack.undo()); // Edit Text
+    EXPECT_EQ(static_cast<rt::TextLayer*>(clip->layer(1))->text(), "Original");
     ASSERT_TRUE(stack.undo()); // Duplicate
     EXPECT_EQ(clip->layerCount(), 1u);
     ASSERT_TRUE(stack.redo());
     EXPECT_EQ(clip->layerCount(), 2u);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(static_cast<rt::TextLayer*>(clip->layer(1))->text(),
+              "Independent copy");
     ASSERT_TRUE(stack.redo());
     EXPECT_EQ(clip->layerCount(), 3u);
 }
@@ -1159,6 +1332,80 @@ TEST(TimelinePanel, PasteAttributesPastesCheckedEffects)
     EXPECT_EQ(target()->effects().effect(1).effectType(), rt::EffectType::Blur);
 }
 
+TEST(TimelinePanel, RemoveAttributesRemovesChosenTypesAcrossSelectionAndUndoesExactly)
+{
+    rt::Timeline timeline;
+    auto* track = timeline.addVideoTrack("V1");
+    auto& first = addToTrack<rt::VideoClip>(*track);
+    first.setDuration(48000);
+    first.positionX().setDefaultValue(123.0f);
+    first.effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    first.effects().addEffect(rt::createEffect(rt::EffectType::Tint));
+    first.effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    first.effects().effect(0).param(0).track.addKeyframe(12000, 7.0f);
+    rt::OpacityMask mask;
+    const uint64_t maskId = mask.maskId;
+    first.effects().effect(0).addMask(mask);
+    auto& second = addToTrack<rt::VideoClip>(*track);
+    second.setTimelineIn(48000);
+    second.setDuration(48000);
+    second.effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    auto& unselected = addToTrack<rt::VideoClip>(*track);
+    unselected.setTimelineIn(96000);
+    unselected.setDuration(48000);
+    unselected.effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    const uint64_t ids[] = {first.effects().effect(0).id(), first.effects().effect(1).id(),
+                            first.effects().effect(2).id(), second.effects().effect(0).id()};
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    panel.selection().selectClip({0, first.id()});
+    panel.selection().selectClip({0, second.id()}, true);
+    int types = 0;
+    QTimer::singleShot(0, [&]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        for (auto* box : dialog->findChildren<QCheckBox*>()) {
+            if (!box->objectName().startsWith("removeAttrEffect_")) continue;
+            ++types;
+            box->setChecked(box->objectName() == QStringLiteral("removeAttrEffect_%1")
+                .arg(static_cast<int>(rt::EffectType::Blur)));
+        }
+        dialog->accept();
+    });
+    panel.showRemoveAttributesDialog();
+    EXPECT_EQ(types, 2);
+    ASSERT_EQ(first.effects().effectCount(), 1u);
+    EXPECT_EQ(first.effects().effect(0).id(), ids[1]);
+    EXPECT_TRUE(second.effects().isEmpty());
+    EXPECT_EQ(unselected.effects().effectCount(), 1u);
+    EXPECT_FLOAT_EQ(first.positionX().defaultValue(), 123.0f);
+    EXPECT_EQ(first.duration(), 48000);
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(first.effects().effectCount(), 3u);
+    for (size_t i = 0; i < 3; ++i) EXPECT_EQ(first.effects().effect(i).id(), ids[i]);
+    EXPECT_EQ(second.effects().effect(0).id(), ids[3]);
+    EXPECT_EQ(first.effects().effect(0).param(0).track.keyframeCount(), 1u);
+    EXPECT_FLOAT_EQ(first.effects().effect(0).param(0).track.keyframe(0).value, 7.0f);
+    ASSERT_EQ(first.effects().effect(0).masks().size(), 1u);
+    EXPECT_EQ(first.effects().effect(0).masks()[0].maskId, maskId);
+    EXPECT_FALSE(stack.canUndo()); // one history entry for the whole selection
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(first.effects().effectCount(), 1u);
+    EXPECT_TRUE(second.effects().isEmpty());
+
+    QTimer::singleShot(0, []() {
+        if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) dialog->reject();
+    });
+    panel.showRemoveAttributesDialog();
+    EXPECT_EQ(first.effects().effectCount(), 1u); // Cancel preserves remaining Tint
+
+    track->setLocked(true);
+    panel.showRemoveAttributesDialog(); // no dialog, no mutation on locked tracks
+    EXPECT_EQ(first.effects().effectCount(), 1u);
+}
+
 TEST(TimelinePanel, NarrowGapWinsOverAdjacentClipEdgeHalos)
 {
     constexpr int64_t kTicksPerSecond = 48000;
@@ -1340,6 +1587,94 @@ TEST(TimelinePanel, RollingToolRollsSelectedCutsOnAllTracks)
     ASSERT_TRUE(stack.undo());   // both tracks in ONE step
     EXPECT_EQ(clipOf(v1, a1Id)->timelineOut(), kSec);
     EXPECT_EQ(clipOf(v2, a2Id)->timelineOut(), kSec);
+}
+
+namespace {
+// Press and move with the button held, but DON'T release.
+void pressAndDrag(QWidget* widget, QPoint from, QPoint to)
+{
+    QTest::mousePress(widget, Qt::LeftButton, Qt::NoModifier, from);
+    for (int step = 1; step <= 4; ++step) {
+        const QPoint p = from + (to - from) * step / 4;
+        QMouseEvent move(QEvent::MouseMove, QPointF(p), QPointF(widget->mapToGlobal(p)),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(widget, &move);
+    }
+}
+
+void pressEscapeAndRelease(QWidget* widget, QPoint at)
+{
+    // Wherever focus is: the app-level filter owns Esc during a drag.
+    QWidget* target = QApplication::focusWidget() ? QApplication::focusWidget() : widget;
+    QTest::keyClick(target, Qt::Key_Escape);
+    QTest::mouseRelease(widget, Qt::LeftButton, Qt::NoModifier, at);
+}
+} // namespace
+
+// Premiere: Esc during a drag puts everything back and records nothing.
+TEST(TimelinePanel, EscapeCancelsClipMoveTrimAndRollDrags)
+{
+    constexpr int64_t kSec = 48000;
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    auto addClip = [&](int64_t in) {
+        auto c = std::make_unique<rt::VideoClip>();
+        c->setTimelineIn(in);
+        c->setDuration(kSec);
+        return v1->addClip(std::move(c));
+    };
+    rt::Clip* a = addClip(0);
+    rt::Clip* b = addClip(kSec);
+    rt::Clip* c = addClip(4 * kSec);
+    ASSERT_TRUE(a && b && c);
+    const uint64_t aId = a->id(), bId = b->id(), cId = c->id();
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    showAtHundredPixelsPerSecond(panel, timeline);
+    auto* widget = trackWidgetFor(panel, 0);
+    ASSERT_NE(widget, nullptr);
+    const int y = widget->height() / 2;
+    auto clipOf = [&](uint64_t id) -> const rt::Clip* {
+        const size_t i = v1->findClipIndexById(id);
+        return i < v1->clipCount() ? v1->clip(i) : nullptr;
+    };
+    const auto px = [&](int64_t tick) {
+        return qRound(panel.layoutEngine().timeToPixelX(tick));
+    };
+
+    // Move clip C by its body.
+    const QPoint cBody(px(4 * kSec + kSec / 2), y);
+    pressAndDrag(widget, cBody, cBody + QPoint(80, 0));
+    ASSERT_TRUE(panel.isDragInProgress());
+    ASSERT_NE(clipOf(cId)->timelineIn(), 4 * kSec);   // live preview moved it
+    pressEscapeAndRelease(widget, cBody + QPoint(80, 0));
+    EXPECT_FALSE(panel.isDragInProgress());
+    EXPECT_EQ(clipOf(cId)->timelineIn(), 4 * kSec);
+    EXPECT_EQ(stack.undoCount(), 0u);
+
+    // Trim C's tail (trims execute real commands mid-drag).
+    const QPoint cTail(px(5 * kSec) - 2, y);
+    pressAndDrag(widget, cTail, cTail - QPoint(40, 0));
+    ASSERT_TRUE(panel.isDragInProgress());
+    pressEscapeAndRelease(widget, cTail - QPoint(40, 0));
+    EXPECT_EQ(clipOf(cId)->duration(), kSec);
+    EXPECT_EQ(stack.undoCount(), 0u);
+    EXPECT_FALSE(stack.isMacroActive());
+
+    // Roll the A|B cut.
+    panel.setActiveTool(rt::EditTool::Rolling);
+    const QPoint cut(px(kSec), y);
+    pressAndDrag(widget, cut, cut + QPoint(30, 0));
+    ASSERT_TRUE(panel.isDragInProgress());
+    pressEscapeAndRelease(widget, cut + QPoint(30, 0));
+    EXPECT_EQ(clipOf(aId)->timelineOut(), kSec);
+    EXPECT_EQ(clipOf(bId)->timelineIn(), kSec);
+    EXPECT_EQ(stack.undoCount(), 0u);
+
+    // Esc with no drag in progress is not swallowed by the timeline.
+    EXPECT_FALSE(panel.cancelActiveDrag());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1606,6 +1941,76 @@ TEST(EffectControlsPanel, ShutterAngleIsKeyframeableAndUndoable)
     EXPECT_FLOAT_EQ(clip.shutterAngle().evaluate(0), 0.0f);
     ASSERT_TRUE(stack.redo());
     EXPECT_FLOAT_EQ(clip.shutterAngle().evaluate(0), 180.0f);
+}
+
+TEST(EffectControlsPanel, MotionPositionUsesAbsoluteSequenceCoordinates)
+{
+    for (int factor : {1, 2}) {
+        rt::VideoClip clip;
+        clip.setDuration(48000);
+        // The background already assembled by ComfyUI.
+        clip.positionX().setDefaultValue(-3.6f);
+        clip.positionY().setDefaultValue(-1.7f);
+        rt::CommandStack stack;
+        rt::EffectControlsPanel panel;
+        panel.setCommandStack(&stack);
+        panel.setSequenceResolution(1920 * factor, 1080 * factor);
+        panel.setClip(&clip);
+        auto* row = findEffectPropertyRow(panel, QStringLiteral("Position"));
+        ASSERT_NE(row, nullptr);
+        const auto spins = row->findChildren<rt::ScrubbySpinBox*>();
+        ASSERT_EQ(spins.size(), 2);
+        EXPECT_NEAR(spins[0]->value(), 956.4 * factor, 0.001);
+        EXPECT_NEAR(spins[1]->value(), 538.3 * factor, 0.001);
+
+        const double oldX = spins[0]->value();
+        spins[0]->setValue(950.0 * factor);
+        emit spins[0]->valueScrubbed(spins[0]->value());
+        emit spins[0]->valueCommitted(oldX, spins[0]->value());
+        EXPECT_FLOAT_EQ(clip.positionX().defaultValue(), -10.0f);
+        EXPECT_FLOAT_EQ(clip.positionY().defaultValue(), -1.7f);
+        ASSERT_TRUE(stack.undo());
+        EXPECT_FLOAT_EQ(clip.positionX().defaultValue(), -3.6f);
+        EXPECT_NEAR(spins[0]->value(), 956.4 * factor, 0.001);
+        ASSERT_TRUE(stack.redo());
+        EXPECT_NEAR(spins[0]->value(), 950.0 * factor, 0.001);
+
+        const double oldY = spins[1]->value();
+        spins[1]->setValue(530.0 * factor);
+        emit spins[1]->valueScrubbed(spins[1]->value());
+        emit spins[1]->valueCommitted(oldY, spins[1]->value());
+        EXPECT_FLOAT_EQ(clip.positionY().defaultValue(), -10.0f);
+        emit row->resetRequested();
+        EXPECT_FLOAT_EQ(clip.positionX().defaultValue(), 0.0f);
+        EXPECT_FLOAT_EQ(clip.positionY().defaultValue(), 0.0f);
+        EXPECT_DOUBLE_EQ(spins[0]->value(), 960.0 * factor);
+        EXPECT_DOUBLE_EQ(spins[1]->value(), 540.0 * factor);
+        ASSERT_TRUE(stack.undo());
+        EXPECT_DOUBLE_EQ(spins[0]->value(), 950.0 * factor);
+        EXPECT_DOUBLE_EQ(spins[1]->value(), 530.0 * factor);
+    }
+}
+
+TEST(EffectControlsPanel, MotionGraphicLayerPositionStaysInProjectPixels)
+{
+    rt::GraphicClip clip;
+    auto* layer = clip.addTextLayer("Layer");
+    layer->transform().posX.setDefaultValue(320.0f);
+    layer->transform().posY.setDefaultValue(240.0f);
+    rt::EffectControlsPanel panel;
+    panel.setSequenceResolution(3840, 2160);
+    panel.setClip(&clip);
+    panel.setSelectedGraphicLayer(layer);
+    auto* row = findEffectPropertyRow(panel, QStringLiteral("Position"));
+    ASSERT_NE(row, nullptr);
+    const auto spins = row->findChildren<rt::ScrubbySpinBox*>();
+    ASSERT_EQ(spins.size(), 2);
+    EXPECT_DOUBLE_EQ(spins[0]->value(), 320.0);
+    EXPECT_DOUBLE_EQ(spins[1]->value(), 240.0);
+    spins[0]->setValue(400.0);
+    emit spins[0]->valueScrubbed(400.0);
+    emit spins[0]->valueCommitted(320.0, 400.0);
+    EXPECT_FLOAT_EQ(layer->transform().posX.defaultValue(), 400.0f);
 }
 
 TEST(EffectControlsPanel, PositionDiamondUsesLivePlayheadInsteadOfPaintedTime)
@@ -1998,6 +2403,58 @@ TEST(EffectControlsPanel, PenMaskButtonArmsToolWithoutCreatingPlaceholder)
     ASSERT_EQ(spy.count(), 1);
     EXPECT_EQ(spy.at(0).at(0).toULongLong(), 0u);
     EXPECT_TRUE(clip.masks().empty());
+}
+
+TEST(EffectControlsPanel, UnassignedMaskAssignsToOpacityAndEffectsWithUndo)
+{
+    rt::VideoClip clip;
+    clip.effects().addEffect(rt::createEffect(rt::EffectType::Blur));
+    const uint64_t blurId = clip.effects().effect(0).id();
+    rt::OpacityMask mask;
+    mask.name = "Mask 1";
+    mask.unassigned = true;
+    clip.addMask(mask);
+    const uint64_t maskId = clip.masks()[0].maskId;
+
+    rt::CommandStack stack;
+    rt::EffectControlsPanel panel;
+    panel.setCommandStack(&stack);
+    panel.resize(900, 600);
+    panel.setClip(&clip);
+
+    // Listed under Unassigned Masks, rendering nothing.
+    EXPECT_NE(panel.findChild<QWidget*>(QStringLiteral("unassignedMasksHeader")),
+              nullptr);
+    EXPECT_FALSE(clip.hasAssignedMasks());
+
+    // Nothing selected: a newly drawn mask is unassigned.
+    auto target = panel.newMaskTarget();
+    EXPECT_EQ(target.effectId, 0u);
+    EXPECT_TRUE(target.unassigned);
+
+    ASSERT_TRUE(panel.assignMask(0, maskId, 0, false));   // → Opacity
+    ASSERT_EQ(clip.masks().size(), 1u);
+    EXPECT_FALSE(clip.masks()[0].unassigned);
+    EXPECT_TRUE(clip.hasAssignedMasks());
+    // The moved mask is selected, so the next mask joins its owner.
+    target = panel.newMaskTarget();
+    EXPECT_EQ(target.effectId, 0u);
+    EXPECT_FALSE(target.unassigned);
+
+    ASSERT_TRUE(panel.assignMask(0, maskId, blurId, false)); // → Blur
+    EXPECT_TRUE(clip.masks().empty());
+    ASSERT_EQ(clip.effects().effect(0).maskCount(), 1u);
+    EXPECT_EQ(clip.effects().effect(0).masks()[0].maskId, maskId);
+    EXPECT_FALSE(panel.assignMask(blurId, maskId, blurId, false)); // no-op
+
+    ASSERT_TRUE(stack.undo());   // back to Opacity
+    ASSERT_EQ(clip.masks().size(), 1u);
+    EXPECT_FALSE(clip.masks()[0].unassigned);
+    EXPECT_EQ(clip.effects().effect(0).maskCount(), 0u);
+    ASSERT_TRUE(stack.undo());   // back to Unassigned
+    ASSERT_EQ(clip.masks().size(), 1u);
+    EXPECT_TRUE(clip.masks()[0].unassigned);
+    EXPECT_EQ(clip.masks()[0].maskId, maskId);
 }
 
 TEST(EffectControlsPanel, InPlaceCreatedPenMaskAppearsAndCanBeSelected)
@@ -2482,6 +2939,47 @@ TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadFollowsExactTick)
     EXPECT_EQ(clip.positionX().keyframe(1).time, 20000);
     ASSERT_TRUE(stack.redo());
     EXPECT_EQ(clip.positionX().keyframeCount(), 1u);
+}
+
+// Premiere: the Effect Controls keyframe area zooms independently of the
+// timeline. Alt/Ctrl+wheel zooms about the pointer, panel refreshes keep the
+// zoom, and "\" fits the whole clip again.
+TEST(EffectControlsPanel, KeyframeAreaZoomsAboutPointerAndKeepsZoom)
+{
+    rt::VideoClip clip;
+    clip.setTimelineIn(0);
+    clip.setDuration(480000);   // 10 s
+
+    rt::KeyframeTimeline timeline;
+    timeline.resize(1001, 240);   // 480 ticks per pixel when fitted
+    timeline.setClip(&clip);
+    timeline.show();
+    QApplication::processEvents();
+
+    QSignalSpy seekSpy(&timeline, &rt::KeyframeTimeline::playheadScrubbed);
+    const auto tickAt = [&](int x) {
+        QTest::mousePress(&timeline, Qt::LeftButton, Qt::NoModifier, QPoint(x, 4));
+        QTest::mouseRelease(&timeline, Qt::LeftButton, Qt::NoModifier, QPoint(x, 4));
+        return seekSpy.isEmpty() ? int64_t(-1) : seekSpy.last().at(0).toLongLong();
+    };
+    const int64_t fittedAt600 = tickAt(600);
+    ASSERT_NEAR(static_cast<double>(fittedAt600), 288000.0, 600.0);
+
+    QWheelEvent zoomIn(QPointF(500, 100), timeline.mapToGlobal(QPointF(500, 100)),
+                       QPoint(), QPoint(0, 120), Qt::NoButton,
+                       Qt::ControlModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&timeline, &zoomIn);
+    EXPECT_TRUE(zoomIn.isAccepted());
+    EXPECT_NEAR(static_cast<double>(tickAt(500)), 240000.0, 600.0);   // anchor stays
+    const int64_t zoomedAt600 = tickAt(600);
+    EXPECT_LT(zoomedAt600, fittedAt600 - 5000);                     // finer scale
+    EXPECT_GT(zoomedAt600, 240000);
+
+    timeline.setClip(&clip);   // a panel refresh keeps the zoom
+    EXPECT_EQ(tickAt(600), zoomedAt600);
+
+    QTest::keyClick(&timeline, Qt::Key_Backslash);
+    EXPECT_NEAR(static_cast<double>(tickAt(600)), 288000.0, 600.0);
 }
 
 TEST(EffectControlsPanel, FirstAudioLaneDiamondWinsOverClipBar)

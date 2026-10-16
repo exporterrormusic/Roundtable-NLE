@@ -42,8 +42,8 @@ ClipVisualStyle TimelineClipWidget::defaultStyle(ClipType type)
             style.borderColor = tc.clipTitle.lighter(130);
             break;
         case ClipType::Adjustment:
-            style.fillColor   = tc.surface3;
-            style.borderColor = tc.surface4;
+            style.fillColor   = tc.clipAdjustment;
+            style.borderColor = tc.clipAdjustment.lighter(130);
             break;
         case ClipType::Image:
             style.fillColor   = tc.warning;

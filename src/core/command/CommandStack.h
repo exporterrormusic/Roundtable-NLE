@@ -131,6 +131,15 @@ public:
     /// Returns true if a macro is currently being recorded.
     [[nodiscard]] bool isMacroActive() const noexcept { return m_macroDepth > 0; }
 
+    /// End the current merge window: the next execute() starts a new undo
+    /// step even when it could mergeWith() the previous command. The UI
+    /// calls this at the start of every user gesture (mouse/key press), so
+    /// one gesture (a whole drag) still merges into one step but two
+    /// separate edits of the same property never fuse. This is Premiere's
+    /// model: its undo stack has no merging at all, and one history step is
+    /// posted per finished gesture. undo()/redo()/clear() also seal.
+    void sealMerge() noexcept { m_mergeSealed = true; }
+
 private:
     std::deque<std::unique_ptr<Command>> m_undoStack;
     std::deque<std::unique_ptr<Command>> m_redoStack;
@@ -140,6 +149,9 @@ private:
     // Macro recording state
     int                                   m_macroDepth{0};
     std::unique_ptr<class MacroCommand>   m_activeMacro;
+
+    // True when the top of the undo stack must not absorb the next command.
+    bool                                  m_mergeSealed{false};
 
     void trimToMaxDepth();
     void notifyChange();

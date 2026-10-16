@@ -34,8 +34,11 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
     // recent undo command. Clear it before mergeWith() can return early.
     m_redoStack.clear();
 
-    // Try to merge with the most recent command (absorb into existing)
-    if (!m_undoStack.empty() && m_undoStack.back()->typeId() >= 0
+    // Try to merge with the most recent command (absorb into existing),
+    // but only inside the current gesture — see sealMerge().
+    const bool canMerge = !m_mergeSealed;
+    m_mergeSealed = false;
+    if (canMerge && !m_undoStack.empty() && m_undoStack.back()->typeId() >= 0
         && m_undoStack.back()->typeId() == cmd->typeId()
         && m_undoStack.back()->mergeWith(*cmd))
     {
@@ -65,6 +68,7 @@ void CommandStack::pushWithoutExecute(std::unique_ptr<Command> cmd)
 
     // Push onto undo stack without calling cmd->execute().
     // The caller is responsible for having already applied the change.
+    m_mergeSealed = true;
     m_undoStack.push_back(std::move(cmd));
     m_redoStack.clear();
     trimToMaxDepth();
@@ -80,6 +84,8 @@ bool CommandStack::undo()
 
     auto cmd = std::move(m_undoStack.back());
     m_undoStack.pop_back();
+    // The new top is an OLDER command; a fresh edit must not merge into it.
+    m_mergeSealed = true;
 
     cmd->undo();
     spdlog::trace("Undid command: {}", cmd->description());
@@ -95,6 +101,7 @@ bool CommandStack::redo()
 
     auto cmd = std::move(m_redoStack.back());
     m_redoStack.pop_back();
+    m_mergeSealed = true;
 
     cmd->execute();
     spdlog::trace("Redid command: {}", cmd->description());
@@ -138,6 +145,7 @@ void CommandStack::clear()
 {
     m_undoStack.clear();
     m_redoStack.clear();
+    m_mergeSealed = true;
     notifyChange();
 }
 
@@ -220,6 +228,7 @@ void CommandStack::endMacro()
 
         m_undoStack.push_back(std::move(m_activeMacro));
         m_redoStack.clear();
+        m_mergeSealed = true;
         trimToMaxDepth();
         notifyChange();
 

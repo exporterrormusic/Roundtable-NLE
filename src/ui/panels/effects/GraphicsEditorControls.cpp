@@ -2,6 +2,7 @@
 
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/FontFamilyCombo.h"
 #include "Theme.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
@@ -146,19 +147,12 @@ void GraphicsEditorPanel::buildEditControls()
  // -- Font family (full width) --
  {
  auto* rl = makeRow(10);
- m_fontCombo = new QComboBox(m_editContainer);
+ // Premiere-style font menu (sample rows, favorites, recent, hover preview).
+ m_fontCombo = new FontFamilyCombo(m_editContainer);
  m_fontCombo->setObjectName(QStringLiteral("graphicsFontFamilyCombo"));
  m_fontCombo->setFixedHeight(22);
- m_fontCombo->addItems(QFontDatabase::families());
- m_fontCombo->setEditable(true);
- m_fontCombo->setInsertPolicy(QComboBox::NoInsert);
- auto* fontCompleter = new QCompleter(m_fontCombo->model(), m_fontCombo);
- fontCompleter->setCaseSensitivity(Qt::CaseInsensitive);
- fontCompleter->setFilterMode(Qt::MatchContains);
- fontCompleter->setCompletionMode(QCompleter::PopupCompletion);
- m_fontCombo->setCompleter(fontCompleter);
- m_fontCombo->lineEdit()->setClearButtonEnabled(true);
- m_fontCombo->lineEdit()->setPlaceholderText(tr("Type to find a font"));
+ m_fontCombo->setToolTip(tr("Choose a font: hover to preview it, click the "
+                            "star to favorite, or type to search"));
  m_fontCombo->setStyleSheet(QStringLiteral(
  "QComboBox { background: %1; color: %2; border: 1px solid %3; "
  "font-size: 12px; padding: 2px 4px; }"
@@ -169,14 +163,14 @@ void GraphicsEditorPanel::buildEditControls()
  Theme::hex(tc.border), Theme::hex(tc.textSecondary)));
  auto applyFontFamily = [this](const QString& requested) {
  if (m_updating || !m_fontCombo) return;
- const QString candidate = requested.trimmed();
- const int index = m_fontCombo->findText(candidate, Qt::MatchFixedString);
- if (index < 0) return; // only commit an installed, complete family name
- const QString family = m_fontCombo->itemText(index);
- {
-     QSignalBlocker blocker(m_fontCombo);
-     m_fontCombo->setCurrentIndex(index);
- }
+ // Only an installed, complete family name commits (never a menu
+ // section header or a half-typed filter).
+ const QString family = m_fontCombo->installedFamily(requested);
+ if (family.isEmpty()) return;
+ m_fontCombo->setCurrentFamily(family);
+ // A hover preview may already show this font; the commit below makes
+ // it the single history step (the baseline predates the preview).
+ m_fontPreviewActive = false;
  if (m_fontStyleCombo) {
      QSignalBlocker blocker(m_fontStyleCombo);
      const QString oldStyle = m_fontStyleCombo->currentText();
@@ -198,6 +192,10 @@ void GraphicsEditorPanel::buildEditControls()
  };
  connect(m_fontCombo, &QComboBox::textActivated,
          this, applyFontFamily);
+ connect(m_fontCombo, &FontFamilyCombo::familyPreviewRequested,
+         this, &GraphicsEditorPanel::previewFontFamily);
+ connect(m_fontCombo, &FontFamilyCombo::familyPreviewEnded,
+         this, &GraphicsEditorPanel::endFontPreview);
  connect(m_fontCombo->lineEdit(), &QLineEdit::editingFinished,
          this, [this, applyFontFamily]() {
              if (m_fontCombo) applyFontFamily(m_fontCombo->currentText());

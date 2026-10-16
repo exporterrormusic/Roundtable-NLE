@@ -129,6 +129,12 @@ struct OpacityMask
     /// When true, the mask is inverted (transparent inside, opaque outside).
     bool inverted{false};
 
+    /// Premiere 26 "Unassigned Masks": a clip-list mask drawn while neither
+    /// Opacity nor an effect was the target. It is listed and editable but
+    /// affects nothing until assigned (dragged onto Opacity or an effect).
+    /// Only meaningful in Clip::masks(); effect masks are always assigned.
+    bool unassigned{false};
+
     /// Display name for the UI (e.g. "Mask 1", "Mask 2").
     std::string name;
 
@@ -561,7 +567,8 @@ evaluateMaskStates(const std::vector<OpacityMask>& masks, int64_t time)
     std::vector<MaskRenderState> out;
     out.reserve(masks.size());
     for (const auto& m : masks)
-        out.push_back(m.evalRenderState(time));
+        if (!m.unassigned)
+            out.push_back(m.evalRenderState(time));
     return out;
 }
 

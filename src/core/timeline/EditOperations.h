@@ -280,7 +280,9 @@ enum class EditTool : uint8_t
     Text,       // T — create / edit graphic text
     Zoom,       // Z — click to zoom in, Alt+click to zoom out
     Eyedropper, // (internal) — pick color from program monitor
-    PenMask     // P — draw/edit closed Bezier masks in the Program Monitor
+    PenMask,    // P — draw/edit closed Bezier masks in the Program Monitor
+    EllipseMask,   // drag out an ellipse mask in the Program Monitor
+    RectangleMask  // drag out a rectangle mask in the Program Monitor
 };
 
 /// Edge of a clip (for trim operations).
@@ -404,6 +406,17 @@ public:
     static bool fitTransitionToAvailableDuration(
         const Track& track, Transition& transition);
 
+    /// The default transition (Cross Dissolve) at one edge of `clip`: centered
+    /// on the cut when a neighbour touches that edge (within 1/30 s), otherwise
+    /// a single-sided fade of the clip itself. `duration` is not fitted; run
+    /// fitTransitionToAvailableDuration before adding it.
+    [[nodiscard]] static Transition defaultTransitionAtEdge(
+        const Track& track, const Clip& clip, ClipEdge edge, int64_t duration);
+
+    /// True when a transition is already attached to `edge` of the clip.
+    [[nodiscard]] static bool clipEdgeHasTransition(
+        const Track& track, uint64_t clipId, ClipEdge edge);
+
     // ── Clipboard ───────────────────────────────────────────────────────
 
     /// Copy selected clips to clipboard.
@@ -483,6 +496,14 @@ public:
 
     /// Find the previous edit point (clip edge) from the current time.
     [[nodiscard]] static int64_t prevEditPoint(const Timeline& timeline, int64_t fromTime);
+
+    /// Start of the next gap in the sequence (Premiere: Go to Gap > Next in
+    /// Sequence): a span no video or audio clip covers, before the sequence
+    /// end. Caption clips don't fill a gap. Returns fromTime when none.
+    [[nodiscard]] static int64_t nextSequenceGap(const Timeline& timeline, int64_t fromTime);
+
+    /// Start of the previous gap in the sequence. Returns fromTime when none.
+    [[nodiscard]] static int64_t prevSequenceGap(const Timeline& timeline, int64_t fromTime);
 
     // ── Match Frame ───────────────────────────────────────────────────
 

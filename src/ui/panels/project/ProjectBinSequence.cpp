@@ -692,7 +692,7 @@ void ProjectBin::createAdjustmentLayer()
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (m_grid->hasItem(sentinel)) return;
         m_grid->addRestoredItem(sentinel, MediaType::Unknown, /*handle*/ 0,
-                                /*itemId*/ 0, name, /*labelColor*/ 0xFFFFAA44);
+                                /*itemId*/ 0, name, /*labelColor*/ kAdjustmentLabelArgb);
         syncListView();
         if (!m_listView) syncIconView();
     };

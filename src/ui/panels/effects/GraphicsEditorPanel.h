@@ -38,6 +38,7 @@ class Clip;
 class Track;
 class GraphicClip;
 class TextLayer;
+class FontFamilyCombo;
 class CommandStack;
 class Timeline;
 class ScrubbySpinBox;
@@ -122,6 +123,9 @@ public:
 signals:
  void propertyChanged();
  void inlineFontFamilyRequested(const QString& family);
+ /// Font-menu hover preview while editing monitor text (no history).
+ void inlineFontFamilyPreviewRequested(const QString& family);
+ void inlineFontPreviewEnded();
  void inlineFontSizeRequested(float pointSize);
  void inlineFontWeightRequested(int weight);
  void inlineItalicRequested(bool italic);
@@ -176,6 +180,10 @@ private:
  // is called on selection; commitLayerEdit() from each control's commit signal.
  void captureEditBaseline();
  void commitLayerEdit();
+ // Font-menu hover preview: show a family live; the edit baseline is the
+ // revert point, so a choice still commits as ONE undo step.
+ void previewFontFamily(const QString& family);
+ void endFontPreview();
 
  // Helpers
  ScrubbySpinBox* makeScrubby(double min, double max, double step,
@@ -198,6 +206,7 @@ private:
  std::unique_ptr<GraphicLayer> m_editBaseline;   ///< Layer snapshot at gesture start
  uint64_t m_editBaselineId{0};                   ///< Stable id of the snapshotted layer
  bool     m_layerEditDirty{false};               ///< A property changed since the snapshot
+ bool     m_fontPreviewActive{false};              ///< A font-menu hover preview is showing
  bool     m_monitorTextEditing{false};            ///< Route character controls to monitor selection
 
  // ── Top-level layout ────────────────────────────────────────────────
@@ -214,7 +223,7 @@ private:
  // ── Text section ────────────────────────────────────────────────────
  QWidget* m_textSection{nullptr};
  QPlainTextEdit* m_textContentEdit{nullptr};  // editable text-string box
- QComboBox* m_fontCombo{nullptr};
+ FontFamilyCombo* m_fontCombo{nullptr};
  QComboBox* m_fontStyleCombo{nullptr};
  QToolButton* m_boldBtn{nullptr};
  QToolButton* m_italicBtn{nullptr};

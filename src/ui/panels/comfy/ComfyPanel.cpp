@@ -18,6 +18,7 @@
 #include <QSaveFile>
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QCollator>
 #include <QDesktopServices>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -147,9 +148,52 @@ private:
 
 namespace {
 
-enum Column { ColOrder, ColShot, ColLine, ColTake, ColLength, ColPad, ColStatus, ColCount };
+enum Column { ColOrder, ColShot, ColLine, ColTake, ColLength, ColPad, ColStatus, ColApprove, ColRetake, ColCount };
 constexpr int kShotIndexRole = Qt::UserRole + 1;
+constexpr int kSortValueRole = Qt::UserRole + 2;
 const QSize kPreviewFrameSize(960, 540);
+
+class ShotTreeItem : public QTreeWidgetItem
+{
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    bool operator<(const QTreeWidgetItem& other) const override
+    {
+        // Segment headings stay in script order in either sort direction.
+        if (!parent()) {
+            const int a = data(0, kSortValueRole).toInt();
+            const int b = other.data(0, kSortValueRole).toInt();
+            return treeWidget()->header()->sortIndicatorOrder() == Qt::DescendingOrder ? a > b : a < b;
+        }
+        const int column = treeWidget()->sortColumn();
+        static const QCollator collator = [] {
+            QCollator c;
+            c.setNumericMode(true);
+            c.setCaseSensitivity(Qt::CaseInsensitive);
+            return c;
+        }();
+        if (column == ColOrder || column == ColLength || column == ColPad) {
+            const double a = data(column, kSortValueRole).toDouble();
+            const double b = other.data(column, kSortValueRole).toDouble();
+            if (a != b) return a < b;
+        } else if (column == ColApprove || column == ColRetake) {
+            if (checkState(column) != other.checkState(column))
+                return checkState(column) < other.checkState(column);
+        } else if (column == ColTake) {
+            const int name = collator.compare(data(column, kSortValueRole).toString(),
+                                              other.data(column, kSortValueRole).toString());
+            if (name != 0) return name < 0;
+            const double a = data(column, kSortValueRole + 1).toDouble();
+            const double b = other.data(column, kSortValueRole + 1).toDouble();
+            if (a != b) return a < b;
+        } else {
+            const int result = collator.compare(text(column), other.text(column));
+            if (result != 0) return result < 0;
+        }
+        return data(0, kShotIndexRole).toInt() < other.data(0, kShotIndexRole).toInt();
+    }
+};
 
 /// "<shot file name>": shotExportSignature() of the export that made it.
 constexpr const char* kExportManifest = ".roundtable_shots.json";
@@ -338,7 +382,7 @@ void ComfyPanel::setupUi()
     // ── Shot list ──────────────────────────────────────────────────────
     m_shotTree = new QTreeWidget;
     m_shotTree->setColumnCount(ColCount);
-    m_shotTree->setHeaderLabels({"#", "SHOT", "LINE", "TAKE", "LENGTH", "PAD", "STATUS"});
+    m_shotTree->setHeaderLabels({"#", "SHOT", "LINE", "TAKE", "LENGTH", "PAD", "STATUS", "APPROVE", "RETAKE"});
     m_shotTree->setRootIsDecorated(false);
     m_shotTree->setUniformRowHeights(true);
     m_shotTree->setAlternatingRowColors(true);
@@ -349,10 +393,32 @@ void ComfyPanel::setupUi()
     // Every column can be dragged wider/narrower or hidden; remembered.
     auto* shotHeader = m_shotTree->header();
     for (auto [col, width] : {std::pair{ColOrder, 44}, {ColShot, 86}, {ColLine, 360}, {ColTake, 150},
-                              {ColLength, 110}, {ColPad, 44}})
+                              {ColLength, 110}, {ColPad, 44}, {ColApprove, 76}, {ColRetake, 76}})
         shotHeader->resizeSection(col, width);
     makeColumnsAdjustable(shotHeader, QStringLiteral("ComfyUI/shotColumns"));
-    connect(m_shotTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+    shotHeader->setSortIndicator(ColOrder, Qt::AscendingOrder);
+    m_shotTree->setSortingEnabled(true);
+    connect(m_shotTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int col) {
+        if (col != ColApprove && col != ColRetake) return;
+        const QVariant v = item->data(0, kShotIndexRole);
+        if (!v.isValid() || !m_audioSync) return;
+        const int index = v.toInt();
+        if (index < 0 || index >= static_cast<int>(m_shots.size())) return;
+        auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(index)].key];
+        const RenderVersion* render = usableRender(settings);
+        const bool checked = item->checkState(col) == Qt::Checked;
+        if (col == ColApprove && checked && !render) {
+            updateShotRow(index);
+            return;
+        }
+        settings.review = checked ? (col == ColApprove ? ShotReview::Approved : ShotReview::Retake)
+                                  : ShotReview::Unreviewed;
+        settings.reviewedRender = checked && render ? render->file : std::string{};
+        updateShotRow(index);
+        updateExportSummary();
+    });
+    connect(m_shotTree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int col) {
+        if (col == ColApprove || col == ColRetake) return;
         const QVariant v = item ? item->data(0, kShotIndexRole) : QVariant();
         if (v.isValid()) playAndTrimTake(v.toInt());
     });
@@ -691,8 +757,8 @@ void ComfyPanel::showShotContextMenu(const QPoint& pos)
     } else if (chosen == render || chosen == reroll) {
         if (chosen == reroll) {
             for (int i : picked)
-                state.shots[m_shots[static_cast<size_t>(i)].key].seed =
-                    static_cast<int64_t>(QRandomGenerator::global()->bounded(1, 2147483647));
+                state.shots[m_shots[static_cast<size_t>(i)].key].setFreshSeed(
+                    QRandomGenerator::global()->generate(), state.seed);
             loadFramingForSelection();   // seed label
         }
         startRender(picked, /*includeRendered=*/true);
@@ -749,9 +815,14 @@ QString ComfyPanel::batchStatusFor(const std::string& key) const
         for (const RenderJob& job : m_runner->jobs()) {
             if (job.key != key) continue;
             if (job.state == RenderJob::State::Pending) return QStringLiteral("QUEUED");
-            if (job.state == RenderJob::State::Running)
+            if (job.state == RenderJob::State::WaitingForNextPass)
+                return job.generated ? QStringLiteral("AWAITING CLEANUP") : QStringLiteral("PREPARED");
+            if (job.state == RenderJob::State::Running) {
+                if (job.staged && !job.prepared) return QStringLiteral("PREPARING");
+                if (job.generated) return QStringLiteral("CLEANING BACKGROUND");
                 return job.steps > 0 ? QStringLiteral("RENDERING %1/%2").arg(job.step).arg(job.steps)
                                      : QStringLiteral("RENDERING");
+            }
         }
     }
     return {};
@@ -772,8 +843,11 @@ const RenderVersion* ComfyPanel::shownRender() const
 
 double ComfyPanel::mediaDuration(const std::string& path)
 {
+    const QFileInfo file(QString::fromStdString(path));
+    const auto revision = std::pair{file.size(), file.lastModified().toMSecsSinceEpoch()};
     auto it = m_durations.find(path);
-    if (it != m_durations.end()) return it->second;
+    if (it != m_durations.end() && m_mediaRevisions[path] == revision) return it->second;
+    m_mediaFps.erase(path);
     double dur = 0.0;
     VideoDecoder probe;
     if (probe.open(utf8ToPath(path), /*forceSoftware=*/true)) {
@@ -781,6 +855,7 @@ double ComfyPanel::mediaDuration(const std::string& path)
         m_mediaFps[path] = probe.info().fps;
     }
     m_durations[path] = dur;
+    m_mediaRevisions[path] = revision;
     return dur;
 }
 
@@ -873,16 +948,27 @@ void ComfyPanel::updateRenderStripMarks()
     }
 }
 
+bool ComfyPanel::needsRender(const ShotSettings& settings)
+{
+    return settings.review == ShotReview::Retake || !usableRender(settings);
+}
+
 void ComfyPanel::useRender(int renderIndex, bool showBig)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
     auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
     if (renderIndex < 0 || renderIndex >= static_cast<int>(settings.renders.size())) return;
+    const RenderVersion* previous = usableRender(settings);
+    if (!previous || previous->file != settings.renders[static_cast<size_t>(renderIndex)].file) {
+        settings.review = ShotReview::Unreviewed;
+        settings.reviewedRender.clear();
+    }
     settings.chosenRender = renderIndex;   // what ASSEMBLE puts on the timeline
     m_bigRenderIndex = renderIndex;
     if (showBig) setBigView(1);
     showRenderPreview();
     updateShotRow(m_selected);
+    updateExportSummary();
 }
 
 void ComfyPanel::showRenderMenu(int renderIndex, const QPoint& globalPos)
@@ -932,6 +1018,10 @@ void ComfyPanel::deleteRender(int renderIndex)
                              QStringLiteral("Could not delete %1 (is it open in another program?)").arg(name));
         return;
     }
+    if (settings.reviewedRender == file) {
+        settings.review = ShotReview::Unreviewed;
+        settings.reviewedRender.clear();
+    }
     // Drop every record of that file; keep the chosen one pointing at the same file.
     const std::string chosenFile = settings.chosenRender >= 0 &&
                                    settings.chosenRender < static_cast<int>(settings.renders.size())
@@ -946,12 +1036,13 @@ void ComfyPanel::deleteRender(int renderIndex)
     appendLog(QStringLiteral("Deleted render %1 (Recycle Bin)").arg(name));
     loadFramingForSelection();   // strip, seed line, big view
     updateShotRow(m_selected);
+    updateExportSummary();
 }
 
 void ComfyPanel::showRenderPreview()
 {
-    m_bigRender->setPoster(QImage());
-    m_bigRender->showPoster();
+    const auto generation = ++m_renderPreviewGeneration;
+    m_bigRender->clear();
     const RenderVersion* r = shownRender();
     if (!r) {
         if (!framingMode()) setBigView(0);   // nothing to show big
@@ -960,8 +1051,11 @@ void ComfyPanel::showRenderPreview()
     }
     const std::string file = r->file;
     QPointer<VideoFrameView> view(m_bigRender);
+    QPointer<ComfyPanel> self(this);
     m_grabber->requestStill(view, file, 0.35 * mediaDuration(file), view->requestSize(),
-                            [view](const QImage& img) { if (view) view->setPoster(img); });
+                            [self, view, generation](const QImage& img) {
+        if (self && view && self->m_renderPreviewGeneration == generation) view->setPoster(img);
+    });
     updateRenderStripMarks();
     updateTransport();
 }
@@ -1043,8 +1137,12 @@ void ComfyPanel::showFrameAt(double t)
         }, VideoFrameGrabber::Player);
     } else if (const RenderVersion* r = shownRender()) {
         QPointer<VideoFrameView> view(m_bigRender);
+        const auto generation = m_renderPreviewGeneration;
         m_grabber->requestLive(view, r->file, t, view->requestSize(),
-                               [view](const QImage& img) { if (view) view->setFrame(img); },
+                               [self, view, generation](const QImage& img) {
+            if (self && view && !self->framingMode() && self->m_renderPreviewGeneration == generation)
+                view->setFrame(img);
+        },
                                VideoFrameGrabber::Player);
     }
 }
@@ -1254,12 +1352,14 @@ void ComfyPanel::refresh()
                                                : QStringLiteral("COMFYUI — %1").arg(scriptName));
 
     QSignalBlocker blocker(m_shotTree);
+    m_shotTree->setSortingEnabled(false);
     m_shotTree->clear();
     if (!m_audioSync->isShotScript()) {
         m_hintLabel->setText(QStringLiteral(
             "Load a SHOT | ACTION | SCRIPT script on the AUDIO page, import your green-screen video and pick takes."));
         m_framingEditor->setSource(QImage(), 0, 0);
         m_framingTitle->clear();
+        m_shotTree->setSortingEnabled(true);
         updateExportSummary();
         return;
     }
@@ -1271,7 +1371,8 @@ void ComfyPanel::refresh()
         const ShowShot& shot = m_shots[static_cast<size_t>(i)];
         if (!segmentItem || shot.segment != currentSegment) {
             currentSegment = shot.segment;
-            segmentItem = new QTreeWidgetItem(m_shotTree);
+            segmentItem = new ShotTreeItem(m_shotTree);
+            segmentItem->setData(0, kSortValueRole, i);
             segmentItem->setText(ColLine, QString::fromStdString(currentSegment));
             QFont f = segmentItem->font(ColLine);
             f.setBold(true);
@@ -1281,12 +1382,13 @@ void ComfyPanel::refresh()
             segmentItem->setText(0, QString::fromStdString(currentSegment));
             segmentItem->setFont(0, f);
         }
-        auto* item = new QTreeWidgetItem(segmentItem);
+        auto* item = new ShotTreeItem(segmentItem);
         item->setData(0, kShotIndexRole, i);
         if (shot.key == selectedKey) reselect = item;
     }
     m_shotTree->expandAll();
     for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);
+    m_shotTree->setSortingEnabled(true);
     updateExportSummary();
 
     if (!reselect && m_shotTree->topLevelItemCount() > 0 && m_shotTree->topLevelItem(0)->childCount() > 0)
@@ -1309,11 +1411,13 @@ void ComfyPanel::updateShotRow(int index)
         }
     }
     if (!item) return;
+    const QSignalBlocker blocker(m_shotTree);
 
     const auto& tc = Theme::colors();
     const ShowShot& shot = m_shots[static_cast<size_t>(index)];
     const auto& state = m_audioSync->pipeline();
     item->setText(ColOrder, QString::number(index + 1));
+    item->setData(ColOrder, kSortValueRole, index + 1);
     item->setText(ColShot, shot.shot.empty() ? QStringLiteral("SET SHOT") : QString::fromStdString(shot.shot));
     item->setForeground(ColShot, shot.shot.empty() ? QBrush(tc.error) : QBrush(tc.textPrimary));
     item->setText(ColLine, QString::fromStdString(shot.dialogue));
@@ -1322,6 +1426,11 @@ void ComfyPanel::updateShotRow(int index)
 
     const int fps = state.fpsFor(shot.key);
     const int pad = state.padFramesFor(shot.key);
+    item->setData(ColPad, kSortValueRole, pad);
+    item->setData(ColLength, kSortValueRole, shot.hasTake ? std::max(0.0, shot.take.end - shot.take.start) : -1.0);
+    item->setData(ColTake, kSortValueRole, shot.hasTake
+        ? QFileInfo(QString::fromStdString(shot.take.sourceFile)).fileName() : QString());
+    item->setData(ColTake, kSortValueRole + 1, shot.hasTake ? shot.take.start : -1.0);
     if (shot.hasTake) {
         const int secs = static_cast<int>(shot.take.start);
         item->setText(ColTake, QString("%1  %2:%3")
@@ -1339,6 +1448,14 @@ void ComfyPanel::updateShotRow(int index)
     QString status;
     QColor color = tc.textSecondary;
     auto it = state.shots.find(shot.key);
+    const RenderVersion* render = it != state.shots.end() ? usableRender(it->second) : nullptr;
+    const ShotReview review = it != state.shots.end() ? it->second.reviewFor(render) : ShotReview::Unreviewed;
+    item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    item->setCheckState(ColApprove, review == ShotReview::Approved ? Qt::Checked : Qt::Unchecked);
+    item->setCheckState(ColRetake, review == ShotReview::Retake ? Qt::Checked : Qt::Unchecked);
+    item->setToolTip(ColApprove, render ? QStringLiteral("Approve the selected render. Clears Retake.")
+                                      : QStringLiteral("Render this shot before approving it."));
+    item->setToolTip(ColRetake, QStringLiteral("Generate a new version with a fresh seed on the next Render All."));
     if (shot.shot.empty())                                     { status = "SET SHOT (AUDIO page)"; color = tc.error; }
     else if (!shot.hasTake)                                    { status = "NO TAKE PICKED";        color = tc.warning; }
     else if (!VideoFrameGrabber::isVideoFile(shot.take.sourceFile)) { status = "AUDIO ONLY";       color = tc.warning; }
@@ -1346,6 +1463,8 @@ void ComfyPanel::updateShotRow(int index)
         // Only renders still on disk (deleted files don't count).
         status = onDisk > 1 ? QString("RENDERED (%1)").arg(onDisk) : QStringLiteral("RENDERED");
         color = tc.success;
+        if (review == ShotReview::Approved) status = QStringLiteral("APPROVED");
+        else if (review == ShotReview::Retake) { status = QStringLiteral("RETAKE"); color = tc.warning; }
     }
     else                                                       { status = "READY"; }
     if (const QString batch = batchStatusFor(shot.key); !batch.isEmpty()) {
@@ -1358,13 +1477,18 @@ void ComfyPanel::updateShotRow(int index)
 
 void ComfyPanel::updateExportSummary()
 {
-    int ready = 0, missingShot = 0, missingTake = 0;
+    int ready = 0, toRender = 0, missingShot = 0, missingTake = 0;
     for (const auto& s : m_shots) {
-        if (isExportable(s)) ++ready;
+        if (isExportable(s)) {
+            ++ready;
+            const auto& settings = m_audioSync->pipeline().shots;
+            const auto it = settings.find(s.key);
+            if (it == settings.end() || needsRender(it->second)) ++toRender;
+        }
         else if (s.shot.empty()) ++missingShot;
         else if (!s.hasTake) ++missingTake;
     }
-    if (m_renderAllBtn) m_renderAllBtn->setText(QStringLiteral("RENDER ALL (%1)").arg(ready));
+    if (m_renderAllBtn) m_renderAllBtn->setText(QStringLiteral("RENDER ALL (%1)").arg(toRender));
     updateRenderButtons();
     if (m_audioSync && m_audioSync->isShotScript()) {
         QStringList parts;
@@ -1415,8 +1539,8 @@ void ComfyPanel::loadFramingForSelection()
         stopShotPlayback();
         m_bigRenderIndex = -1;
         rebuildRenderStrip();
-        m_bigRender->setPoster(QImage());
-        m_bigRender->showPoster();
+        ++m_renderPreviewGeneration;
+        m_bigRender->clear();
         m_framingTitle->setText(m_selected >= 0 ? QStringLiteral("This line needs a SHOT and a picked video take.")
                                                 : QString());
         return;

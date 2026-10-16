@@ -258,6 +258,14 @@ public:
     [[nodiscard]] const std::vector<OpacityMask>& masks() const noexcept { return m_masks; }
     std::vector<OpacityMask>& masks() noexcept { return m_masks; }
     size_t maskCount() const noexcept { return m_masks.size(); }
+    /// True when at least one clip mask gates opacity (unassigned masks
+    /// are listed on the clip but render nothing).
+    [[nodiscard]] bool hasAssignedMasks() const noexcept
+    {
+        for (const auto& m : m_masks)
+            if (!m.unassigned) return true;
+        return false;
+    }
     void addMask(OpacityMask mask) { m_masks.push_back(std::move(mask)); }
     void removeMask(size_t index) {
         if (index < m_masks.size()) m_masks.erase(m_masks.begin() + static_cast<ptrdiff_t>(index));

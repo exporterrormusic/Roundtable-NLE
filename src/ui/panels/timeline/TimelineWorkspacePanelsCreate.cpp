@@ -44,6 +44,7 @@
 // Widgets
 #include "widgets/DockTitleBar.h"
 #include "widgets/ToolButton.h"
+#include "widgets/ToolGroupButton.h"
 #include "widgets/VUMeter.h"
 #include "viewport/Viewport.h"
 #include "viewport/TransformOverlayWidget.h"
@@ -770,10 +771,20 @@ void TimelineWorkspace::createPanelWidgets()
     btnZoom->setFixedSize(40, 34);
     btnZoom->setToolTip(QStringLiteral("Zoom Tool (Z) — Click: Zoom In, Alt+Click: Zoom Out"));
 
-    auto* btnPenMask = new ToolButton(ToolButton::PenMask);
-    btnPenMask->setObjectName(QStringLiteral("penMaskToolButton"));
-    btnPenMask->setFixedSize(40, 34);
-    btnPenMask->setToolTip(QStringLiteral("Pen Mask Tool (P)"));
+    // Pen / Ellipse / Rectangle Mask share one slot, as in Premiere: click
+    // uses the last-picked tool, press-and-hold or right-click picks another.
+    auto* btnMaskTools = new ToolGroupButton({
+        {ToolButton::PenMask, QStringLiteral("Pen Mask Tool (P)"),
+         static_cast<int>(EditTool::PenMask)},
+        {ToolButton::EllipseMask,
+         QStringLiteral("Ellipse Mask Tool (Shift: circle, Alt: from center)"),
+         static_cast<int>(EditTool::EllipseMask)},
+        {ToolButton::RectangleMask,
+         QStringLiteral("Rectangle Mask Tool (Shift: square, Alt: from center)"),
+         static_cast<int>(EditTool::RectangleMask)},
+    });
+    btnMaskTools->setObjectName(QStringLiteral("penMaskToolButton"));
+    btnMaskTools->setFixedSize(40, 34);
 
     auto addToolSep = [&]() {
         auto* sep = new QFrame;
@@ -804,7 +815,7 @@ void TimelineWorkspace::createPanelWidgets()
     addToolSep();
     toolColumnLayout->addWidget(btnZoom);
     addToolSep();
-    toolColumnLayout->addWidget(btnPenMask);
+    toolColumnLayout->addWidget(btnMaskTools);
     toolColumnLayout->addStretch();
 
     // Store tool buttons for sync with shortcuts
@@ -816,7 +827,7 @@ void TimelineWorkspace::createPanelWidgets()
     m_toolButtons[5] = btnSlide;
     m_toolButtons[6] = btnText;
     m_toolButtons[7] = btnZoom;
-    m_toolButtons[8] = btnPenMask;
+    m_toolButtons[8] = btnMaskTools;
 
     // -- Center: Toolbar + Timeline Panel ---------------------------------
     auto* centerContainer = new QWidget;

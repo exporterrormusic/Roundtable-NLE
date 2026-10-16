@@ -61,21 +61,7 @@ void FrameClock::clockLoop()
     using clock = std::chrono::steady_clock;
     auto nextDeadline = clock::now();
     bool wasPlaying = false;
-    // Render-ahead: request frames kRenderAheadFrames ahead of the audio
-    // position so FramePresenter (which picks the frame DUE at the audio
-    // position) always has one ready.  Ramped from 0 at play start so the
-    // first ticks still render the current frame immediately.
-    constexpr int64_t kRenderAheadFrames = 2;
-    int64_t ticksSincePlay = 0;
-    // Sequential requests: at 1x the clock asks for lastRequested+1 rather
-    // than re-deriving the frame from the audio position every tick.  A
-    // tick landing near a frame boundary plus audio-clock jitter otherwise
-    // rounds to N, N+2 — frame N+1 is never rendered and the presenter
-    // repeats a frame (~15-20% held frames in perf_log 2026-09-26).
-    bool    haveLastRequest = false;
-    int64_t lastRequestedFrame = 0;
-    int64_t lastRequestDir = 1;
-    uint64_t lastResetGeneration = 0;
+    frame_clock_detail::FrameRequestPacer requestPacer;
 
     while (m_running.load(std::memory_order_relaxed)) {
 
@@ -88,8 +74,7 @@ void FrameClock::clockLoop()
                 // Reset deadline on play start — first frame fires immediately
                 nextDeadline = clock::now();
                 m_diagJumpDetector.reset();
-                ticksSincePlay = 0;
-                haveLastRequest = false;
+                requestPacer.reset();
             }
             if (m_stateCB) m_stateCB(playing);
         }
@@ -173,37 +158,10 @@ void FrameClock::clockLoop()
                         }
                     }
                 }
-                // Lead in the playback direction (reverse shuttle renders
-                // behind).  |speed| > 1 shuttles skip frames anyway; keep
-                // the lead in frames of timeline time.
-                const int64_t dir = speedNow < 0.0 ? -1 : 1;
-                const int64_t lead = std::min(ticksSincePlay, kRenderAheadFrames);
-                const int64_t target = std::max<int64_t>(0, frameNum + dir * lead);
-                ++ticksSincePlay;
-
-                const bool normalSpeed = std::abs(std::abs(speedNow) - 1.0) < 0.01;
-                const bool resync = !haveLastRequest || !normalSpeed ||
-                    dir != lastRequestDir ||
-                    resetGeneration != lastResetGeneration;
-                int64_t requestFrameNum = target;
-                if (!resync) {
-                    const int64_t next = lastRequestedFrame + dir;
-                    // > 0: `next` is further along than the lead target.
-                    const int64_t aheadOfTarget = (next - target) * dir;
-                    if (aheadOfTarget > 1 && aheadOfTarget <= 3) {
-                        // Clock slightly outran audio: skip this tick, the
-                        // queue already holds the upcoming frames.
-                        continue;
-                    }
-                    if (aheadOfTarget >= -2 && aheadOfTarget <= 1)
-                        requestFrameNum = std::max<int64_t>(0, next);
-                    // else: seek / loop wrap / fell behind → resync to target
+                if (const auto requested = requestPacer.next(
+                        frameNum, speedNow, resetGeneration)) {
+                    m_frameCB(frameIndexToTick(*requested, rate), *requested);
                 }
-                haveLastRequest     = true;
-                lastRequestedFrame  = requestFrameNum;
-                lastRequestDir      = dir;
-                lastResetGeneration = resetGeneration;
-                m_frameCB(frameIndexToTick(requestFrameNum, rate), requestFrameNum);
             }
 
         } else {

@@ -104,6 +104,8 @@ void TransformOverlayWidget::setEditTool(uint8_t tool) noexcept
 {
     if (m_editTool == 9 && tool != 9)
         cancelPenMask();
+    if (m_editTool != tool)
+        cancelShapeMask();
     // Selection is also Premiere's mask-manipulation tool. Do not clear the
     // selected mask here: Effect Controls selects the path, then activates
     // Selection so its vertices/body move without moving the owning clip.
@@ -113,6 +115,8 @@ void TransformOverlayWidget::setEditTool(uint8_t tool) noexcept
         applyCursor(zoomCursor());
     else if (tool == 9)  // Pen Mask tool
         applyCursor(penCursor());
+    else if (tool == 10 || tool == 11)  // Ellipse / Rectangle Mask tools
+        applyCursor(Qt::CrossCursor);
     else if (tool == 6)  // text/type tool — I-beam like Premiere Pro
         applyCursor(Qt::IBeamCursor);
     else if (tool == 8)  // eyedropper
@@ -125,6 +129,7 @@ void TransformOverlayWidget::setMasks(std::vector<OpacityMask>* masks) noexcept
 {
     if (m_masks != masks) {
         cancelPenMask();
+        cancelShapeMask();
         m_activeMaskIndex = -1;
     }
     m_masks = masks;
@@ -143,7 +148,7 @@ void TransformOverlayWidget::enterEvent(QEnterEvent* /*event*/)
         applyCursor(penCursor());
     else if (m_editTool == 6)
         applyCursor(Qt::IBeamCursor);
-    else if (m_editTool == 8)
+    else if (m_editTool == 8 || isShapeMaskTool())
         applyCursor(Qt::CrossCursor);
 }
 
@@ -181,6 +186,7 @@ void TransformOverlayWidget::setSecondaryOverlays(
 void TransformOverlayWidget::clearTransformOverlay()
 {
     cancelPenMask();
+    cancelShapeMask();
     m_overlay.visible = false;
     m_masks = nullptr;
     m_activeMaskIndex = -1;

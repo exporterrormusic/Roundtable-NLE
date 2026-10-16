@@ -64,7 +64,6 @@ void MediaPool::scheduleExactPrefetch(MediaHandle handle,
     }
     if (m_cache->contains(handle, frameNumber, tier)) return;
 
-    m_playheadFrame.store(frameNumber, std::memory_order_relaxed);
     m_scheduler.setPlayhead(frameNumber);
 
     PrefetchTask task;
@@ -82,6 +81,7 @@ void MediaPool::scheduleExactPrefetch(MediaHandle handle,
     bool inserted = false;
     {
         std::lock_guard lock(m_prefetchMutex);
+        m_handlePlayheadFrame[handle] = task.frameNumber;
         inserted = prefetch_detail::mergeExactTask(m_prefetchQueue,
                                                     std::move(task));
     }
@@ -93,13 +93,13 @@ void MediaPool::scheduleExactPrefetch(MediaHandle handle,
 
 void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int count, bool urgent, ResolutionTier tier)
 {
-    m_playheadFrame.store(afterFrame, std::memory_order_relaxed);
     const bool interactivePlayback = urgent && isInteractivePlaybackActive(m_interactivePlaybackUntilMs);
 
     // Cooldown: skip queue rebuild if we recently scheduled for this handle.
     {
         auto now = std::chrono::steady_clock::now();
         std::lock_guard lock(m_prefetchMutex);
+        m_handlePlayheadFrame[handle] = afterFrame;
         auto it = m_lastScheduleTime.find(handle);
         if (it != m_lastScheduleTime.end()) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second);
@@ -154,17 +154,23 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
     {
         std::lock_guard lock(m_prefetchMutex);
 
-        // Remove tasks for this handle + prune stale frames behind playhead.
-        {
-            const int64_t playhead = m_playheadFrame.load(std::memory_order_relaxed);
-            m_prefetchQueue.erase(
-                std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
-                    [handle, playhead](const PrefetchTask& t) {
-                        return prefetch_detail::replaceableByDecodeAheadRebuild(
-                            t, handle, playhead);
-                    }),
-                m_prefetchQueue.end());
-        }
+        // Frame numbers only compare within one file, so every queued task
+        // is measured against its OWN file's last requested frame.
+        const auto filePlayhead = [this](MediaHandle h) {
+            const auto it = m_handlePlayheadFrame.find(h);
+            return it != m_handlePlayheadFrame.end() ? it->second
+                                                     : INT64_MIN + 4;
+        };
+
+        // Remove tasks for this handle + prune each file's stale frames
+        // behind that file's own playhead.
+        m_prefetchQueue.erase(
+            std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
+                [&](const PrefetchTask& t) {
+                    return prefetch_detail::replaceableByDecodeAheadRebuild(
+                        t, handle, filePlayhead(t.handle));
+                }),
+            m_prefetchQueue.end());
 
         const size_t kMaxQueueSize = interactivePlayback ? 32u : 64u;
         while (m_prefetchQueue.size() > kMaxQueueSize) {
@@ -240,12 +246,17 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             if (task.urgent) {
                 m_prefetchQueue.push_front(task);
             } else {
-                const int64_t playhead = m_playheadFrame.load(std::memory_order_relaxed);
-                const int64_t dist = std::abs(fn - playhead);
+                // Interleave files by how far each frame is from its own
+                // file's playhead, so every visible clip's next frame is
+                // decoded before any clip's far lookahead.
+                const int64_t dist = prefetch_detail::frameDistanceFromPlayhead(
+                    fn, afterFrame);
                 auto it = m_prefetchQueue.begin();
                 while (it != m_prefetchQueue.end() && it->urgent) ++it;
                 while (it != m_prefetchQueue.end()) {
-                    const int64_t existDist = std::abs(it->frameNumber - playhead);
+                    const int64_t existDist =
+                        prefetch_detail::frameDistanceFromPlayhead(
+                            it->frameNumber, filePlayhead(it->handle));
                     if (existDist > dist) break;
                     ++it;
                 }
@@ -328,15 +339,50 @@ void MediaPool::prefetchWorker(int workerId)
     int skippedCached = 0;
     int decodedCount = 0;
 
+    // Drops this worker's decoder for `handle` (its NVDEC surfaces / frame
+    // threads and swscale state) and gives up ownership of the handle.
+    const auto releaseDecoder = [&](MediaHandle handle) {
+        auto it = decoders.find(handle);
+        if (it == decoders.end()) return;
+#ifdef ROUNDTABLE_HAS_FFMPEG
+        if (it->second.swsCtx)
+            sws_freeContext(static_cast<SwsContext*>(it->second.swsCtx));
+#endif
+        decoders.erase(it);
+        std::lock_guard lk(m_prefetchMutex);
+        auto oit = m_prefetchPackedOwner.find(handle);
+        if (oit != m_prefetchPackedOwner.end() && oit->second == workerId)
+            m_prefetchPackedOwner.erase(oit);
+    };
+
     while (m_prefetchRunning) {
         // Lazy retry: if GpuContext became initialised since worker start,
         // arm WorkerGpuState now.  No-op when already ready.
         if (!wgs.ready()) tryInitWgs();
 
+        // Release decoders this worker hasn't used for a while (beyond the
+        // few kept warm). They used to live until 8 other files pushed them
+        // out, holding VRAM for clips long gone from the timeline window.
+        if (decoders.size() > prefetch_detail::kWarmDecodersKept) {
+            std::vector<std::pair<MediaHandle,
+                                  std::chrono::steady_clock::time_point>> lastUsed;
+            lastUsed.reserve(decoders.size());
+            for (const auto& [h, s] : decoders) lastUsed.emplace_back(h, s.lastUsed);
+            for (const MediaHandle h : prefetch_detail::idleDecodersToRelease(
+                     std::move(lastUsed), std::chrono::steady_clock::now(),
+                     prefetch_detail::kIdleDecoderRelease,
+                     prefetch_detail::kWarmDecodersKept)) {
+                releaseDecoder(h);
+                spdlog::debug("MediaPool prefetch[{}]: released idle decoder "
+                              "for handle {}", workerId, h);
+            }
+        }
+
         PrefetchTask task;
         {
             std::unique_lock lock(m_prefetchMutex);
-            m_prefetchCv.wait(lock, [this] {
+            // Timed so an idle worker still gets back to the release above.
+            m_prefetchCv.wait_for(lock, std::chrono::seconds(2), [this] {
                 return !m_prefetchQueue.empty() || !m_prefetchRunning;
             });
             if (!m_prefetchRunning) break;
@@ -523,22 +569,9 @@ void MediaPool::prefetchWorker(int workerId)
                 }
             }
             if (evictHandle != 0) {
-                auto eit = decoders.find(evictHandle);
-                if (eit != decoders.end()) {
-#ifdef ROUNDTABLE_HAS_FFMPEG
-                    if (eit->second.swsCtx)
-                        sws_freeContext(static_cast<SwsContext*>(eit->second.swsCtx));
-#endif
-                    decoders.erase(eit);
-                    {
-                        std::lock_guard lk(m_prefetchMutex);
-                        auto oit = m_prefetchPackedOwner.find(evictHandle);
-                        if (oit != m_prefetchPackedOwner.end() && oit->second == workerId)
-                            m_prefetchPackedOwner.erase(oit);
-                    }
-                    spdlog::debug("MediaPool prefetch[{}]: evicted decoder for handle {} (limit={})",
-                                  workerId, evictHandle, maxDecoders);
-                }
+                releaseDecoder(evictHandle);
+                spdlog::debug("MediaPool prefetch[{}]: evicted decoder for handle {} (limit={})",
+                              workerId, evictHandle, maxDecoders);
             }
         }
 

@@ -1080,6 +1080,20 @@ try
         return nullptr;
     }
 
+    // A decoder miss is pending work, not an empty timeline. In particular,
+    // BAR overlays and adjustment boundaries can make layers.size() look
+    // complete while a new shot or its background is still decoding. Never
+    // publish/cache that partial composite as a ready playback frame. The
+    // producer holds its last complete picture until the new sources arrive.
+    // Confirmed resource failures retain the partial-result policy below.
+    const bool resourceFailure = context.outcome &&
+        (context.outcome->status == RenderResultStatus::MissingMedia ||
+         context.outcome->status == RenderResultStatus::Failed);
+    if (!scrubMode && !stillMode && !resourceFailure &&
+        resolvedClipsAtTick < clipsAtTick) {
+        return nullptr;
+    }
+
     // ── A1: Settle-window fallback (Premiere-style hold) ─────────────────
     // If we resolved FEWER layers than the active clip count, the composite
     // would render with missing layers — the visible "layers build up over
@@ -1099,7 +1113,7 @@ try
     // blocks until full, but Export Preview runs on a QTimer and can't.
     // Export still bypasses this via scrub=true (set by RenderQueue).
     if (!scrubMode &&
-        clipsAtTick > 0 && static_cast<int>(layers.size()) < clipsAtTick)
+        clipsAtTick > 0 && resolvedClipsAtTick < clipsAtTick)
     {
         using namespace std::chrono;
         const auto now = steady_clock::now();
@@ -1383,8 +1397,7 @@ try
                                   gpuResult ? gpuResult->width : 0,
                                   gpuResult ? gpuResult->height : 0, wasStale);
                 }
-                if (clipsAtTick == 0 ||
-                    static_cast<int>(layers.size()) >= clipsAtTick)
+                if (clipsAtTick == 0 || resolvedClipsAtTick >= clipsAtTick)
                 {
                     m_lastFullCompositeAt = std::chrono::steady_clock::now();
                     m_lastFullLayerCount  = static_cast<int>(layers.size());

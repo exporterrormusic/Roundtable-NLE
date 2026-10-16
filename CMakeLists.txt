@@ -270,6 +270,10 @@ endif()
 # ─── Subdirectories ─────────────────────────────────────────────────────────
 add_subdirectory(src)
 
+# Opt-in maintenance utility; not built or shipped with the application.
+add_executable(roundtable_project_tool EXCLUDE_FROM_ALL tools/project_tool.cpp)
+target_link_libraries(roundtable_project_tool PRIVATE roundtable_core)
+
 enable_testing()
 option(ROUNDTABLE_BUILD_TESTS "Build Roundtable unit/integration tests" OFF)
 if(ROUNDTABLE_BUILD_TESTS)

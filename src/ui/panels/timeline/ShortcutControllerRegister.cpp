@@ -145,6 +145,21 @@ void ShortcutController::registerKeyboardShortcuts()
         stopPlaybackIfRunning();
         if (auto* ctl = activeArrowController()) ctl->goToNextEditPoint();
     });
+    // Go to Gap is a sequence command, so it always drives the timeline.
+    addGlobalShortcut(ShortcutManager::kPrevGap, QKeySequence(), [this]() {
+        if (keyboardFocusConsumesTextKeys()) return;
+        auto* ctl = m_ws->playbackController();
+        if (!ctl) return;
+        if (ctl->isPlaying()) ctl->pause();
+        ctl->goToPrevGap();
+    });
+    addGlobalShortcut(ShortcutManager::kNextGap, QKeySequence(), [this]() {
+        if (keyboardFocusConsumesTextKeys()) return;
+        auto* ctl = m_ws->playbackController();
+        if (!ctl) return;
+        if (ctl->isPlaying()) ctl->pause();
+        ctl->goToNextGap();
+    });
 
     // Shift+I / Shift+O: go to in/out point
     addActionShortcut(ShortcutManager::kGoIn, Qt::SHIFT | Qt::Key_I, [this]() {
@@ -393,54 +408,8 @@ void ShortcutController::registerKeyboardShortcuts()
         if (clipIdx >= track->clipCount()) return;
 
         const Clip* clip = track->clip(clipIdx);
-        Transition trans;
-        trans.duration = kDefaultTransitionDuration;
-
-        if (edge.edge == ClipEdge::Head) {
-            const Clip* leftClip = nullptr;
-            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                if (ci == clipIdx) continue;
-                const Clip* c = track->clip(ci);
-                int64_t gap = std::abs(c->timelineOut() - clip->timelineIn());
-                if (gap <= 1600) {
-                    leftClip = c;
-                    break;
-                }
-            }
-            if (leftClip) {
-                trans.type = TransitionType::CrossDissolve;
-                trans.leftClipId = leftClip->id();
-                trans.rightClipId = clip->id();
-                trans.editPointTick = clip->timelineIn();
-            } else {
-                trans.type = TransitionType::CrossDissolve;
-                trans.leftClipId = 0;
-                trans.rightClipId = clip->id();
-                trans.editPointTick = clip->timelineIn();
-            }
-        } else {
-            const Clip* rightClip = nullptr;
-            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                if (ci == clipIdx) continue;
-                const Clip* c = track->clip(ci);
-                int64_t gap = std::abs(c->timelineIn() - clip->timelineOut());
-                if (gap <= 1600) {
-                    rightClip = c;
-                    break;
-                }
-            }
-            if (rightClip) {
-                trans.type = TransitionType::CrossDissolve;
-                trans.leftClipId = clip->id();
-                trans.rightClipId = rightClip->id();
-                trans.editPointTick = clip->timelineOut();
-            } else {
-                trans.type = TransitionType::CrossDissolve;
-                trans.leftClipId = clip->id();
-                trans.rightClipId = 0;
-                trans.editPointTick = clip->timelineOut();
-            }
-        }
+        Transition trans = EditOperations::defaultTransitionAtEdge(
+            *track, *clip, edge.edge, kDefaultTransitionDuration);
 
         // Preserve the requested edge and transition type, but shorten the
         // default duration when the opposite edge already uses some of this

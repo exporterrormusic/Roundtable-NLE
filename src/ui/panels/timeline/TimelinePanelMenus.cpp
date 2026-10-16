@@ -17,6 +17,7 @@
 #include "command/LambdaCommand.h"
 #include "command/CompoundCommand.h"
 #include "command/CommandStack.h"
+#include "command/commands/EffectCommands.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "audio/AudioFile.h"
@@ -48,10 +49,14 @@
 #include <QProgressDialog>
 #include <QMessageBox>
 #include <QTimer>
+#include <QScrollArea>
+#include <QPushButton>
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 
 namespace rt {
 // ═════════════════════════════════════════════════════════════════════════════
@@ -194,6 +199,16 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     QAction* copyAttrsAction = menu.addAction("Copy Attributes");
     QAction* pasteAttrsAction = menu.addAction("Paste Attributes     Ctrl+Shift+V");
     pasteAttrsAction->setEnabled(m_attrClipboard.has_value());
+    QAction* removeAttrsAction = menu.addAction("Remove Attributes...");
+    bool hasSelectedEffects = false;
+    for (const auto& sel : m_selection.clips()) {
+        const Track* selectedTrack = m_timeline->track(sel.trackIndex);
+        if (!selectedTrack) continue;
+        const size_t selectedIndex = selectedTrack->findClipIndexById(sel.clipId);
+        if (selectedIndex < selectedTrack->clipCount() && !selectedTrack->clip(selectedIndex)->effects().isEmpty())
+            hasSelectedEffects = true;
+    }
+    removeAttrsAction->setEnabled(hasSelectedEffects);
 
     menu.addSeparator();
 
@@ -239,6 +254,7 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
         colorMenu->setEnabled(false);
         pasteEffectsAction->setEnabled(false);
         pasteAttrsAction->setEnabled(false);
+        removeAttrsAction->setEnabled(false);
     }
     if (track->isLocked()) {
         splitAction->setEnabled(false);
@@ -874,6 +890,9 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
     else if (chosen == pasteAttrsAction) {
         showPasteAttributesDialog();
     }
+    else if (chosen == removeAttrsAction) {
+        showRemoveAttributesDialog();
+    }
     else {
         // Check label colors
         for (size_t ci = 0; ci < colorActions.size(); ++ci) {
@@ -968,6 +987,80 @@ void TimelinePanel::showEmptyAreaContextMenu(const QPointF& globalPos, size_t tr
 // ═════════════════════════════════════════════════════════════════════════════
 //  Paste Attributes dialog (Premiere Pro-style with persistent checkbox state)
 // ═════════════════════════════════════════════════════════════════════════════
+
+void TimelinePanel::showRemoveAttributesDialog()
+{
+    if (!m_timeline || m_selection.clips().empty()) return;
+    const auto selected = m_selection.clips();
+    std::map<EffectType, size_t> counts;
+    for (const auto& ref : selected) {
+        const Track* track = m_timeline->track(ref.trackIndex);
+        if (!track) continue;
+        if (track->isLocked()) return;
+        const size_t index = track->findClipIndexById(ref.clipId);
+        if (index >= track->clipCount()) continue;
+        const auto& effects = track->clip(index)->effects();
+        for (size_t i = 0; i < effects.effectCount(); ++i) ++counts[effects.effect(i).effectType()];
+    }
+    if (counts.empty()) return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Remove Attributes");
+    dialog.setMinimumWidth(340);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* label = new QLabel("Choose effects to remove from the selected clips.\n"
+                            "All instances of each checked effect will be removed.", &dialog);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto* scroll = new QScrollArea(&dialog);
+    scroll->setWidgetResizable(true);
+    auto* contents = new QWidget(scroll);
+    auto* effectsLayout = new QVBoxLayout(contents);
+    std::map<EffectType, QCheckBox*> checks;
+    for (const auto& [type, count] : counts) {
+        auto* check = new QCheckBox(QStringLiteral("%1 (%2)")
+            .arg(QString::fromUtf8(effectTypeName(type))).arg(count), contents);
+        check->setObjectName(QStringLiteral("removeAttrEffect_%1").arg(static_cast<int>(type)));
+        check->setChecked(true);
+        effectsLayout->addWidget(check);
+        checks[type] = check;
+    }
+    effectsLayout->addStretch();
+    scroll->setWidget(contents);
+    layout->addWidget(scroll);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText("Remove");
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.resize(380, std::min(450, 150 + static_cast<int>(counts.size()) * 30));
+    if (dialog.exec() != QDialog::Accepted || !m_timeline) return;
+
+    std::set<EffectType> removeTypes;
+    for (const auto& [type, check] : checks) if (check->isChecked()) removeTypes.insert(type);
+    auto command = std::make_unique<CompoundCommand>("Remove Attributes");
+    for (const auto& ref : selected) {
+        Track* track = m_timeline->track(ref.trackIndex);
+        if (!track) continue;
+        if (track->isLocked()) return;
+        const size_t index = track->findClipIndexById(ref.clipId);
+        if (index >= track->clipCount()) continue;
+        auto& effects = track->clip(index)->effects();
+        // Remove backwards so earlier indices remain valid; undo restores
+        // the original objects, including masks, keyframes and effect IDs.
+        for (size_t i = effects.effectCount(); i-- > 0;)
+            if (removeTypes.contains(effects.effect(i).effectType()))
+                command->addCommand(std::make_unique<RemoveEffectCommand>(&effects, i));
+    }
+    if (command->size() == 0) return;
+    if (m_commandStack) executeCommand(std::move(command));
+    else {
+        command->execute();
+        onScrollChanged();
+        emit contentChanged();
+    }
+    emit selectionChanged();
+}
 
 void TimelinePanel::showPasteAttributesDialog()
 {

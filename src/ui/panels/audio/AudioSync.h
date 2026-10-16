@@ -516,6 +516,7 @@ private:
     void toggleAudioSidePanel(int mode);
     void scrollToCard(int scriptLineNumber);  // sync left→right
     void updateCardMatchStyle(size_t clipIdx); // lightweight restyle after matchState change
+    static void styleConfirmButton(QPushButton* button, int matchState);
     void syncLeftListFromScroll();     // sync right→left
 
     /// Snapshot-then-mutate helper for bulk operations.  Captures m_clips
@@ -738,6 +739,7 @@ private:
     /// "Take 1 · 0:42" chips for every candidate take of a line.
     [[nodiscard]] QWidget* createTakeStrip(int lineNumber, const std::vector<size_t>& clipIndices,
                                            size_t shownClipIdx);
+    static void styleTakeChip(QPushButton* chip, bool chosen, bool shown);
 
     /// Build the WIDE / CLOSE-UP tag for a shot-table line. Missing shots
     /// render as a red "SET SHOT" button; picked ones stay clickable.

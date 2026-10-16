@@ -157,7 +157,7 @@ void ProjectBin::addFiles(const std::vector<std::filesystem::path>& files)
             QString name = QString::fromStdString(pathToUtf8(f.stem()));
             m_grid->addRestoredItem(f, MediaType::Unknown, /*handle*/ 0,
                                     /*itemId*/ 0, name,
-                                    /*labelColor*/ 0xFFFFAA44);
+                                    /*labelColor*/ kAdjustmentLabelArgb);
             continue;
         }
         uint64_t handle = 0;
@@ -272,7 +272,7 @@ void ProjectBin::addFilesToBinPath(const std::vector<std::filesystem::path>& fil
             QString name = QString::fromStdString(pathToUtf8(f.stem()));
             const int index = m_grid->addRestoredItem(
                 f, MediaType::Unknown, /*handle*/ 0, /*itemId*/ 0, name,
-                /*labelColor*/ 0xFFFFAA44);
+                /*labelColor*/ kAdjustmentLabelArgb);
             if (index >= 0)
                 addedIds.push_back(
                     m_grid->items()[static_cast<size_t>(index)].itemId);

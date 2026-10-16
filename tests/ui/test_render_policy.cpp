@@ -3,19 +3,29 @@
 #include "cache/FrameCache.h"
 #include "playback/EngineContracts.h"
 #include "playback/MediaPool.h"
+#include "playback/PlaybackScheduler.h"
+#include "playback/PlaybackController.h"
+#include "playback/AVSyncClock.h"
 #include "panels/export/ExportRenderSession.h"
 #include "project/Project.h"
+#include "project/ProjectSerializer.h"
+#include "GpuContext.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/ImageClip.h"
 #include "timeline/PngPuppetClip.h"
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
+#include "timeline/AdjustmentClip.h"
+#include "effects/ColorGrading.h"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <fstream>
+#include <thread>
+#include <cstdlib>
+#include <iostream>
 
 namespace rt {
 namespace {
@@ -330,6 +340,147 @@ TEST(RenderPolicyTest, ExistingButUndecodableSourceRemainsRetryable)
     std::error_code removeError;
     std::filesystem::remove(path, removeError);
     EXPECT_FALSE(removeError);
+}
+
+TEST(RenderPolicyTest, PlaybackDecodeMissNeverBecomesBlankOrPartialAdjustmentFrame)
+{
+    // An existing file whose decoder has not produced a frame must remain
+    // retryable, including after the old 250ms settle window expires.
+    const auto path = std::filesystem::temp_directory_path() /
+        "roundtable_pending_playback_source.bin";
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output << "decoder has no frame yet";
+    }
+    for (bool withAdjustment : {false, true}) {
+        MediaPool mediaPool;
+        Timeline timeline;
+        if (withAdjustment) {
+            auto* track = timeline.addVideoTrack("Grade");
+            auto adjustment = std::make_unique<AdjustmentClip>();
+            adjustment->setDuration(48000);
+            adjustment->effects().addEffect(std::make_unique<ColorGrading>());
+            track->addClip(std::move(adjustment));
+        }
+        auto* track = timeline.addVideoTrack("New shot");
+        auto video = std::make_unique<VideoClip>(path.string());
+        video->setDuration(48000);
+        track->addClip(std::move(video));
+        CompositeService compositor;
+        compositor.setTimeline(&timeline);
+        compositor.setMediaPool(&mediaPool);
+        RenderRequest request;
+        request.type = RenderRequestType::Playback;
+        request.exactness = RenderExactness::BestEffortAllowed;
+        request.outputWidth = 64;
+        request.outputHeight = 36;
+        for (int sample = 0; sample < 2; ++sample) {
+            const auto result = compositor.renderFrame(request);
+            EXPECT_EQ(result.status, RenderResultStatus::Pending)
+                << "adjustment=" << withAdjustment << " sample=" << sample;
+            EXPECT_EQ(result.frame, nullptr);
+            if (sample == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(270));
+            request.timelineTick += 800;
+        }
+        // A real gap still clears the viewport.
+        request.timelineTick = 96000;
+        EXPECT_EQ(compositor.renderFrame(request).status, RenderResultStatus::Blank);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
+{
+    const char* path = std::getenv("ROUNDTABLE_PLAYBACK_PROFILE_PROJECT");
+    if (!path) GTEST_SKIP() << "Set ROUNDTABLE_PLAYBACK_PROFILE_PROJECT for real-media profiling";
+    ProjectSerializer serializer;
+    auto project = serializer.load(path);
+    ASSERT_NE(project, nullptr);
+    ASSERT_GT(project->sequenceCount(), 1u);
+    auto* timeline = project->sequence(1);
+    auto& gpu = GpuContext::get();
+    ASSERT_TRUE(gpu.init());
+    {
+        auto cache = std::make_shared<FrameCache>(1024ull * 1024 * 1024);
+        MediaPool pool(cache);
+        pool.onGpuContextReady();
+        CompositeService compositor;
+        compositor.setProject(project.get());
+        compositor.setTimeline(timeline);
+        compositor.setMediaPool(&pool);
+        RenderRequest request;
+        request.outputWidth = 1920;
+        request.outputHeight = 1080;
+        request.quality = RenderQuality::Half;
+        request.preferGpuOutput = true;
+        // Exercise the opening, alternating shots, restarted background and
+        // first section transition at actual 60fps request cadence.
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        std::vector<double> costs;
+        size_t ready = 0, pending = 0, blank = 0, failed = 0, held = 0;
+        for (int frame = 0; frame < 1500; ++frame) {
+            std::this_thread::sleep_until(start + std::chrono::microseconds(frame * 1000000ll / 60));
+            request.timelineTick = frame * 800ll;
+            const auto before = Clock::now();
+            const auto result = compositor.renderFrame(request);
+            costs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - before).count());
+            switch (result.status) {
+            case RenderResultStatus::Ready: ++ready; break;
+            case RenderResultStatus::Pending: ++pending; break;
+            case RenderResultStatus::Blank: ++blank; break;
+            case RenderResultStatus::HeldPrevious: ++held; break;
+            default: ++failed; break;
+            }
+        }
+        std::sort(costs.begin(), costs.end());
+        std::cout << "PLAYBACK_PROFILE ready=" << ready << " pending=" << pending
+                  << " blank=" << blank << " held=" << held << " failed=" << failed
+                  << " medianMs=" << costs[costs.size()/2]
+                  << " p95Ms=" << costs[costs.size()*95/100]
+                  << " maxMs=" << costs.back() << std::endl;
+        EXPECT_EQ(blank, 0u);
+        EXPECT_EQ(failed, 0u);
+
+        // Also exercise the real clock/producer/presenter threads. The sink
+        // replaces only the window swapchain, so this measures scheduling,
+        // not desktop presentation or the audio-device callback.
+        AVSyncClock sync;
+        PlaybackController controller;
+        controller.setSyncClock(&sync);
+        controller.setFrameRate(60.0);
+        PlaybackScheduler scheduler;
+        scheduler.setController(&controller);
+        scheduler.setOutputResolution(1920, 1080);
+        scheduler.setAdaptiveEnabled(false);
+        size_t presentations = 0, repeats = 0, empty = 0;
+        int64_t previousTick = -1;
+        scheduler.setCompositeResultCallback(
+            [&](int64_t tick, uint32_t, uint32_t, bool, bool) {
+                request.timelineTick = tick;
+                return compositor.renderFrame(request);
+            });
+        scheduler.setPresentCallback([&](const auto& frame) {
+            if (!frame || frame->width == 0) ++empty;
+            return true;
+        });
+        scheduler.setPresentNotify([&](int64_t tick) {
+            ++presentations;
+            if (tick == previousTick) ++repeats;
+            previousTick = tick;
+        });
+        sync.reset(0);
+        controller.play();
+        scheduler.start();
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        scheduler.stop();
+        controller.pause();
+        std::cout << "PIPELINE_PROFILE presentations=" << presentations
+                  << " repeats=" << repeats << " empty=" << empty << std::endl;
+        EXPECT_EQ(empty, 0u);
+    }
+    gpu.shutdown();
 }
 
 TEST(RenderPolicyTest, ConfirmedOfflineStillImagePropagatesAsMissingMedia)

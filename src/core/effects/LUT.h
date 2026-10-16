@@ -55,6 +55,17 @@ public:
 
     [[nodiscard]] bool hasLUT() const noexcept { return cube() != nullptr; }
 
+    // Retain loaded data in undo history, independent of the source file.
+    struct Source {
+        std::string path;
+        std::shared_ptr<const LutCube> cube;
+    };
+    [[nodiscard]] Source source() const { return {m_lutPath, cube()}; }
+    void setSource(const Source& source) {
+        m_lutPath = source.path;
+        m_cube.store(source.cube, std::memory_order_release);
+    }
+
 private:
     std::atomic<std::shared_ptr<const LutCube>> m_cube;
     std::string m_lutPath;

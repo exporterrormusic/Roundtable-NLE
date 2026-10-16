@@ -306,20 +306,17 @@ MediaHandle MediaPool::open(const std::filesystem::path& filePath)
         m_pathToHandle[origKey] = handle;
     }
 
-    // ── Premiere-style live replacement: don't hold a handle on stills ──
-    // A still image is decoded exactly once and pinned in the cache, so the
-    // probe decoder opened above is never consulted again.  Releasing its
-    // OS file HANDLE here means a still added to the project (bin/timeline)
-    // never locks the file in Explorer.  If the pinned cache entry is ever
-    // evicted, decodeFrame()'s isStillImage branch transparently reopens
-    // via close()+open(), decodes, then releases the handle again.
-    const bool entryIsStill =
-        (entry.info.duration <= 0.0 || entry.info.frameCount <= 1);
-    if (entryIsStill && entry.decoder) {
+    // ── The entry decoder only probes: close it now ─────────────────────
+    // Every decode runs on a prefetch worker's, the scrub slot's or the loop
+    // pre-decoder's own decoder; nothing decodes through this one. Holding
+    // it open kept an FFmpeg/NVDEC context and the OS file HANDLE for every
+    // open file for the whole session (42 in perf_log 2026-10-12).  Closing
+    // it also lets videos, not just stills, be replaced live in Explorer.
+    // entry.info keeps the probed stream info.
+    if (entry.decoder) {
         entry.decoder->close();
-        spdlog::debug("MediaPool: released probe handle for still image '{}' "
-                     "(handle={}) — live replace enabled",
-                     pathToUtf8(entry.path.filename()), handle);
+        spdlog::debug("MediaPool: closed probe decoder for '{}' (handle={})",
+                      pathToUtf8(entry.path.filename()), handle);
     }
 
     m_entries.emplace(handle, std::move(entry));
@@ -439,6 +436,8 @@ void MediaPool::release(MediaHandle handle)
                 std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
                     [handle](const PrefetchTask& t) { return t.handle == handle; }),
                 m_prefetchQueue.end());
+            m_handlePlayheadFrame.erase(handle);
+            m_lastScheduleTime.erase(handle);
         }
         // Cancel any pending scheduler work for this handle.
         m_scheduler.cancel(handle);
@@ -502,6 +501,8 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
             std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
                 [handle](const PrefetchTask& t) { return t.handle == handle; }),
             m_prefetchQueue.end());
+        m_handlePlayheadFrame.erase(handle);
+        m_lastScheduleTime.erase(handle);
     }
     m_scheduler.cancel(handle);
 
@@ -559,18 +560,17 @@ MediaHandle MediaPool::invalidatePath(const std::filesystem::path& filePath,
     entry.decodePathLogged   = 0;
     entry.loopPreDecodeStarted = false;
 
-    // Reopen the decoder on the new file so video seeks work immediately
-    // and entry.info reflects any new dimensions.  (Stills additionally
-    // close()+open() inside decodeFrame()'s isStillImage branch, which is
-    // harmless on an already-open decoder.)  If the file is momentarily
-    // unreadable mid-write, getFrame() fails gracefully and a later
-    // composite retries.
+    // Re-probe the new file so entry.info reflects any new dimensions,
+    // then close again: the entry decoder only probes (see open()).  If the
+    // file is momentarily unreadable mid-write, getFrame() fails gracefully
+    // and a later composite retries.
     if (entry.decoder) {
         entry.decoder->close();
         if (reopenDecoder) {
             if (entry.decoder->open(entry.path)) {
                 entry.info        = entry.decoder->info();
                 entry.packedAlpha = entry.info.packedAlpha;
+                entry.decoder->close();
                 // Track the refreshed file's mtime so open() doesn't re-probe
                 // the same change again on its next call.
                 std::error_code wec;
@@ -637,6 +637,8 @@ void MediaPool::closePath(const std::filesystem::path& filePath)
             std::remove_if(m_prefetchQueue.begin(), m_prefetchQueue.end(),
                 [handle](const PrefetchTask& t) { return t.handle == handle; }),
             m_prefetchQueue.end());
+        m_handlePlayheadFrame.erase(handle);
+        m_lastScheduleTime.erase(handle);
     }
     m_scheduler.cancel(handle);
 

@@ -1870,6 +1870,7 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     MaskGeometry shifted = bezier.base;
     for (auto& v : shifted.vertices) v.x += 0.1f;
     bezier.addPathKey(48000, shifted);
+    bezier.unassigned = true;  // v47: drawn with no Opacity/effect target
     const uint64_t bezierId = bezier.maskId;
     video->addMask(std::move(bezier));
 
@@ -1915,6 +1916,7 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     EXPECT_EQ(masks[0].name, "Vignette");
     EXPECT_EQ(masks[0].coordinateSpace, MaskCoordinateSpace::SourceLocal);
     EXPECT_EQ(masks[0].maskId, ellipseId);
+    EXPECT_FALSE(masks[0].unassigned);
 
     EXPECT_EQ(masks[1].shape, MaskShape::FreeDrawBezier);
     ASSERT_EQ(masks[1].base.vertices.size(), 3u);
@@ -1925,6 +1927,10 @@ TEST_F(SerializerTest, OpacityMaskRoundTrip)
     EXPECT_FLOAT_EQ(masks[1].base.vertices[2].outTanY, 0.03f);
     EXPECT_EQ(masks[1].coordinateSpace, MaskCoordinateSpace::SourceLocal);
     EXPECT_EQ(masks[1].maskId, bezierId);
+    EXPECT_TRUE(masks[1].unassigned);
+    // An unassigned mask is kept but renders nothing.
+    EXPECT_EQ(evaluateMaskStates(masks, 0).size(), 1u);
+    EXPECT_TRUE(clip->hasAssignedMasks());
 
     // Mask Path keyframes round-trip + interpolation halfway
     EXPECT_TRUE(masks[1].pathAnimated);

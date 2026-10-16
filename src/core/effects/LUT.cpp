@@ -6,6 +6,7 @@
  */
 
 #include "effects/LUT.h"
+#include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 
@@ -38,7 +39,7 @@ std::unique_ptr<Effect> LUT::clone() const
 
 bool LUT::loadCubeFile(const std::string& path)
 {
-    std::ifstream file(path);
+    std::ifstream file(utf8ToPath(path));
     if (!file.is_open()) {
         spdlog::error("LUT: cannot open .cube file: {}", path);
         return false;

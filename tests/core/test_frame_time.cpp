@@ -118,6 +118,26 @@ TEST(FrameTime, NearestFrameSnapsBothWaysAndTiesGoLater)
         ASSERT_EQ(snapTickToNearestFrame(t, {30, 1}), ((t + 800) / 1600) * 1600) << t;
 }
 
+TEST(FrameTime, DefaultDurationsAreWholeFrames)
+{
+    // A dropped still's 5 s must end ON a frame, or snapping its tail to a
+    // cut leaves the head mid-frame (the "off by a frame" drop bug).
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, kNtsc30), 240240);        // 150 frames
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, {24000, 1001}), 240240);  // 120 frames
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, {60000, 1001}), 240240);  // 300 frames
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, {30, 1}), 240000);
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, {25, 1}), 240000);
+    EXPECT_EQ(wholeFrameDurationTicks(5.0, {24, 1}), 240000);
+    // A head on the grid plus the duration lands on the grid.
+    for (int64_t frame : {0, 1, 7, 449, 1000}) {
+        const int64_t head = frameIndexToTick(frame, kNtsc30);
+        const int64_t tail = head + wholeFrameDurationTicks(5.0, kNtsc30);
+        EXPECT_EQ(frameStartAtOrBefore(tail, kNtsc30), tail) << frame;
+    }
+    // Never zero-length.
+    EXPECT_EQ(wholeFrameDurationTicks(0.001, {30, 1}), 1600);
+}
+
 TEST(FrameTime, NearestFrameSnapsSignedOffsetsToWholeFrames)
 {
     EXPECT_EQ(snapTickToNearestFrame(-1601, kNtsc30), -1602);

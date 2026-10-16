@@ -2,6 +2,7 @@
 
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/FontFamilyCombo.h"
 #include "Theme.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
@@ -9,6 +10,7 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "viewport/TransformOverlayWidget.h"
+#include <QAbstractItemView>
 #include <QColorDialog>
 #include <QLineEdit>
 #include <QFontDatabase>
@@ -42,13 +44,13 @@ void GraphicsEditorPanel::setInlineTextSelectionFormat(
                 spin->value(), 'f', spin->decimals()) + spin->suffix());
         }
     };
-    if (m_fontCombo) {
+    // Leave the picker alone while its menu is open (the user is browsing).
+    if (m_fontCombo && !m_fontCombo->view()->isVisible()) {
         m_fontCombo->blockSignals(true);
         if (mixed(InlineMixedFamily)) {
             m_fontCombo->setCurrentIndex(-1);
         } else {
-            const int index = m_fontCombo->findText(family);
-            if (index >= 0) m_fontCombo->setCurrentIndex(index);
+            m_fontCombo->setCurrentFamily(family);
         }
         m_fontCombo->setToolTip(mixed(InlineMixedFamily)
             ? tr("Mixed font families in selection") : QString());
@@ -285,12 +287,8 @@ void GraphicsEditorPanel::populateFromLayer()
  // Text content is edited inline via QLineEdit in the layer list.
  // The list item widgets handle their own population during rebuildLayerList().
 
- if (m_fontCombo) {
- m_fontCombo->blockSignals(true);
- int idx = m_fontCombo->findText(QString::fromStdString(tl->fontFamily()));
- if (idx >= 0) m_fontCombo->setCurrentIndex(idx);
- m_fontCombo->blockSignals(false);
- }
+ if (m_fontCombo)
+ m_fontCombo->setCurrentFamily(QString::fromStdString(tl->fontFamily()));
  if (m_fontStyleCombo) {
  m_fontStyleCombo->blockSignals(true);
  m_fontStyleCombo->clear();
@@ -779,6 +777,39 @@ void GraphicsEditorPanel::captureEditBaseline()
         m_editBaselineId = 0;
     }
     m_layerEditDirty = false;
+}
+
+void GraphicsEditorPanel::previewFontFamily(const QString& family)
+{
+    if (m_updating || !canMutateBoundClip() || family.isEmpty()) return;
+    if (!m_selectedLayer || m_selectedLayer->layerType() != GraphicLayerType::Text)
+        return;
+    m_fontPreviewActive = true;
+    if (m_monitorTextEditing) {
+        emit inlineFontFamilyPreviewRequested(family);
+        return;
+    }
+    // Live only: m_editBaseline (taken at the last commit / selection) is
+    // the revert point, and nothing is recorded until a font is chosen.
+    static_cast<TextLayer*>(m_selectedLayer)->setFontFamily(family.toStdString());
+    emit propertyChanged();
+}
+
+void GraphicsEditorPanel::endFontPreview()
+{
+    if (!m_fontPreviewActive) return;
+    m_fontPreviewActive = false;
+    if (m_monitorTextEditing) {
+        emit inlineFontPreviewEnded();
+        return;
+    }
+    if (!m_editBaseline || !m_selectedLayer
+        || m_selectedLayer->layerId() != m_editBaselineId) return;
+    m_selectedLayer->assignStateFrom(*m_editBaseline);
+    m_updating = true;
+    populateFromLayer();
+    m_updating = false;
+    emit propertyChanged();
 }
 
 void GraphicsEditorPanel::commitLayerEdit()

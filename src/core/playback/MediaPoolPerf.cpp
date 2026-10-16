@@ -244,7 +244,11 @@ void MediaPool::logPerfReport()
         adaptiveMark = prod->isAdaptiveEnabled() ? '*' : ' ';
     }
 
-    spdlog::warn("[CACHE-DUMP] frameMB={:.0f}/{:.0f} frameN={}/{} gpuOwn={} "
+    // gpuOwn/cap is the invariant the entry cap enforces (it counts only
+    // texture-pinning entries). evict/unused are cumulative: a fast-rising
+    // "unused" during playback = prefetched frames dropped before shown.
+    spdlog::warn("[CACHE-DUMP] frameMB={:.0f}/{:.0f} frameN={} gpuOwn={}/{} "
+                 "evict={} unused={} "
                  "gpuTexMB={:.0f}/{:.0f} gpuTexN={} "
                  "vmaMB={:.0f}/{:.0f} vmaAllocs={} vmaBlocksMB={:.0f} "
                  "prefetchQ={} ownedH={} scrubDec={} diskQ={} "
@@ -253,7 +257,8 @@ void MediaPool::logPerfReport()
                  "tier=1/{}{}",
                  cacheStats.memoryUsed / 1048576.0,
                  cacheStats.memoryCapacity / 1048576.0,
-                 cacheStats.frameCount, frameNCap, gpuOwn,
+                 cacheStats.frameCount, gpuOwn, frameNCap,
+                 cacheStats.evictionCount, cacheStats.evictedUnusedCount,
                  gpuTexBytes / 1048576.0, gpuTexBudget / 1048576.0,
                  gpuTexEntries,
                  vmaUsed / 1048576.0, vmaBudget / 1048576.0,

@@ -18,15 +18,22 @@
 
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "command/commands/EffectCommands.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "effects/ColorGrading.h"
+#include "effects/LUT.h"
 #include "timeline/Clip.h"
 #include "timeline/Track.h"
 #include "timeline/ClipMutation.h"
 
 #include <QGridLayout>
 #include <QLinearGradient>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QPointer>
+#include <QSignalBlocker>
 
 #include <algorithm>
 #include <cmath>
@@ -589,8 +596,10 @@ void ColorGradingPanel::setupUI()
  lutLbl->setStyleSheet(labelSS(tc));
  lutLbl->setFixedWidth(66);
  hl->addWidget(lutLbl);
- auto* lutCombo = new QComboBox(lutRow);
- lutCombo->addItem(tr("None"));
+ auto* lutCombo = m_inputLutCombo = new QComboBox(lutRow);
+ lutCombo->setObjectName(QStringLiteral("colorInputLutCombo"));
+ lutCombo->setMinimumWidth(0);
+ lutCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
  lutCombo->setFixedHeight(20);
  lutCombo->setStyleSheet(QStringLiteral(
  "QComboBox { background: %1; color: %2; border: 1px solid %3; "
@@ -600,6 +609,18 @@ void ColorGradingPanel::setupUI()
  Theme::hex(tc.controlBorder))
  .arg(Theme::typography().sizeXs));
  hl->addWidget(lutCombo, 1);
+ auto* browse = new QToolButton(lutRow);
+ browse->setObjectName(QStringLiteral("colorInputLutBrowse"));
+ browse->setText(tr("Browse..."));
+ browse->setToolTip(tr("Import a 3D .cube LUT"));
+ connect(browse, &QToolButton::clicked, this, &ColorGradingPanel::browseInputLut);
+ hl->addWidget(browse);
+ connect(lutCombo, &QComboBox::activated, this, [this](int index) {
+     if (m_updating) return;
+     if (index == m_inputLutCombo->count() - 1) browseInputLut();
+     else if (index == 0) clearInputLut();
+ });
+ refreshInputLut();
  m_mainLayout->addWidget(lutRow);
  }
 
@@ -1001,14 +1022,119 @@ void ColorGradingPanel::setupUI()
 // Clip binding
 // ═══════════════════════════════════════════════════════════════════════════
 
+namespace {
+size_t inputLutIndex(const Clip* clip)
+{
+    if (!clip) return 0;
+    const auto& effects = clip->effects();
+    for (size_t i = 0; i < effects.effectCount(); ++i)
+        if (effects.effect(i).effectType() == EffectType::LUT) return i;
+    return effects.effectCount();
+}
+}
+
+void ColorGradingPanel::refreshInputLut()
+{
+    if (!m_inputLutCombo) return;
+    const QSignalBlocker blocker(m_inputLutCombo);
+    m_inputLutCombo->clear();
+    m_inputLutCombo->addItem(tr("None"));
+    m_inputLutCombo->setToolTip(QString());
+    const size_t index = inputLutIndex(m_clip);
+    if (m_clip && index < m_clip->effects().effectCount()) {
+        const auto& lut = static_cast<const LUT&>(m_clip->effects().effect(index));
+        if (lut.hasLUT()) {
+            const QString path = QString::fromStdString(lut.lutPath());
+            m_inputLutCombo->addItem(QFileInfo(path).fileName(), path);
+            m_inputLutCombo->setCurrentIndex(1);
+            m_inputLutCombo->setToolTip(path);
+        }
+    }
+    m_inputLutCombo->addItem(tr("Browse..."));
+}
+
+void ColorGradingPanel::runLutCommand(std::unique_ptr<Command> command)
+{
+    auto action = std::shared_ptr<Command>(std::move(command));
+    QPointer<ColorGradingPanel> panel(this);
+    auto notify = [panel]() {
+        if (!panel) return;
+        panel->refreshInputLut();
+        emit panel->propertyChanged();
+    };
+    auto wrapped = std::make_unique<LambdaCommand>(action->description(),
+        [action, notify]() { action->execute(); notify(); },
+        [action, notify]() { action->undo(); notify(); });
+    if (m_commandStack) m_commandStack->execute(std::move(wrapped));
+    else wrapped->execute();
+}
+
+bool ColorGradingPanel::loadInputLut(const QString& path, QString* error)
+{
+    if (!canMutateBoundClip()) {
+        if (error) *error = tr("Select a clip on an unlocked track first.");
+        return false;
+    }
+    auto loaded = std::make_unique<LUT>();
+    if (!loaded->loadCubeFile(path.toStdString())) {
+        if (error) *error = tr("Could not load this LUT. Choose a valid 3D .cube file.");
+        return false;
+    }
+    auto& effects = m_clip->effects();
+    const size_t index = inputLutIndex(m_clip);
+    if (index < effects.effectCount()) {
+        auto* lut = static_cast<LUT*>(&effects.effect(index));
+        const auto before = lut->source();
+        const auto after = loaded->source();
+        auto* target = &effects;
+        const uint64_t id = lut->id();
+        auto apply = [target, id](const LUT::Source& source) {
+            if (auto* live = dynamic_cast<LUT*>(target->effectById(id))) live->setSource(source);
+        };
+        runLutCommand(std::make_unique<LambdaCommand>("Change Input LUT",
+            [apply, after]() { apply(after); },
+            [apply, before]() { apply(before); }));
+    } else {
+        // Input conversion runs before grading, while earlier effects such
+        // as the green-screen key keep their established position.
+        size_t insertion = effects.effectCount();
+        for (size_t i = 0; i < effects.effectCount(); ++i) {
+            if (effects.effect(i).effectType() == EffectType::ColorGrading) {
+                insertion = i;
+                break;
+            }
+        }
+        runLutCommand(std::make_unique<AddEffectCommand>(&effects, std::move(loaded), insertion));
+    }
+    return true;
+}
+
+void ColorGradingPanel::clearInputLut()
+{
+    if (!canMutateBoundClip()) { refreshInputLut(); return; }
+    const size_t index = inputLutIndex(m_clip);
+    if (index < m_clip->effects().effectCount())
+        runLutCommand(std::make_unique<RemoveEffectCommand>(&m_clip->effects(), index));
+}
+
+void ColorGradingPanel::browseInputLut()
+{
+    if (!canMutateBoundClip()) { refreshInputLut(); return; }
+    Clip* selected = m_clip;
+    const QString previous = m_inputLutCombo->toolTip();
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import Input LUT"), previous,
+                                                     tr("3D Cube LUT files (*.cube)"));
+    if (!path.isEmpty() && m_clip == selected && canMutateBoundClip()) {
+        QString error;
+        if (!loadInputLut(path, &error)) QMessageBox::warning(this, tr("Import Input LUT"), error);
+    }
+    refreshInputLut();
+}
+
 void ColorGradingPanel::setClip(Clip* clip, Track* track)
 {
  const bool editable = rt::canMutateClip(clip, track);
  if (m_scrollArea) m_scrollArea->setEnabled(editable);
- if (m_clip == clip) {
- m_track = track;
- return;
- }
  m_clip = clip;
  m_track = track;
  m_effect = nullptr;
@@ -1060,6 +1186,7 @@ void ColorGradingPanel::clearClip()
  m_clip = nullptr;
  m_track = nullptr;
  m_effect = nullptr;
+ refreshInputLut();
  m_curveUndoBefore.reset();
  m_clipLabel->setText(tr("Color Panel"));
  m_typeBadge->setVisible(false);
@@ -1101,6 +1228,7 @@ bool ColorGradingPanel::canMutateBoundClip() const noexcept
 void ColorGradingPanel::populateFromEffect()
 {
  m_updating = true;
+ refreshInputLut();
 
  if (m_effect) {
  auto val = [this](size_t i) {

@@ -31,10 +31,10 @@ public:
         // Output / preset
         OutputMode,       // 0=Composite, 1=Alpha Matte, 2=Color Channel,
                           // 3=Original, 4=Removed Color, 5=Spill Map
-        Setting,          // 0=Default, 1=Relaxed, 2=Aggressive, 3=Custom
+        Setting,          // 0=Default, 1=Relaxed, 2=Aggressive, 3=Custom, 4=ComfyUI Green
 
         // Matte Generation
-        Transparency,     // 0–100  (default 45)
+        Transparency,     // 0–100  (default 0; foreground stays opaque)
         Highlight,        // 0–100  (default 10) — restores bright areas
         Shadow,           // 0–100  (default 50) — restores dark areas
         Tolerance,        // 0–100  (default 50) — chroma radius
@@ -62,6 +62,8 @@ public:
 
     /// Apply a preset (Default / Relaxed / Aggressive) by batch-setting params.
     void applyPreset(int preset);
+    /// Clean, flat green outputs such as ComfyUI/ToonOut renders.
+    void applyFlatGreenPreset();
 };
 
 } // namespace rt

@@ -147,6 +147,10 @@ public:
     /// Go to the previous edit point (clip boundary).
     void goToPrevEditPoint();
 
+    /// Go to the start of the next / previous gap in the sequence.
+    void goToNextGap();
+    void goToPrevGap();
+
     /// Go to the in-point (if set).
     void goToInPoint();
 

@@ -1072,6 +1072,67 @@ TEST(EditOperations, FitTransitionRejectsOnlyWhenNoDurationRemains)
         *track, requested));
 }
 
+TEST(EditOperations, DefaultTransitionAtEdgeCentersOnTouchingCut)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    const uint64_t a = addClip(track, 0.0, 1.0);
+    const uint64_t b = addClip(track, 1.0, 1.0);
+    const rt::Clip& clipA = *track->clip(track->findClipIndexById(a));
+    const rt::Clip& clipB = *track->clip(track->findClipIndexById(b));
+
+    // A's tail and B's head name the same cut, so both handles build the
+    // same two-sided dissolve.
+    for (const auto& [clip, edge] :
+         {std::pair{&clipA, rt::ClipEdge::Tail}, std::pair{&clipB, rt::ClipEdge::Head}}) {
+        const rt::Transition t = rt::EditOperations::defaultTransitionAtEdge(
+            *track, *clip, edge, 12000);
+        EXPECT_EQ(t.type, rt::TransitionType::CrossDissolve);
+        EXPECT_EQ(t.leftClipId, a);
+        EXPECT_EQ(t.rightClipId, b);
+        EXPECT_EQ(t.editPointTick, TPS);
+        EXPECT_EQ(t.duration, 12000);
+    }
+}
+
+TEST(EditOperations, DefaultTransitionAtFreeEdgeIsSingleSidedFade)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    const uint64_t a = addClip(track, 1.0, 2.0);
+    const rt::Clip& clip = *track->clip(track->findClipIndexById(a));
+
+    const rt::Transition in = rt::EditOperations::defaultTransitionAtEdge(
+        *track, clip, rt::ClipEdge::Head, 6000);
+    EXPECT_EQ(in.leftClipId, 0u);
+    EXPECT_EQ(in.rightClipId, a);
+    EXPECT_EQ(in.editPointTick, TPS);
+
+    const rt::Transition out = rt::EditOperations::defaultTransitionAtEdge(
+        *track, clip, rt::ClipEdge::Tail, 6000);
+    EXPECT_EQ(out.leftClipId, a);
+    EXPECT_EQ(out.rightClipId, 0u);
+    EXPECT_EQ(out.editPointTick, 3 * TPS);
+}
+
+TEST(EditOperations, ClipEdgeHasTransitionChecksTheRightSide)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    const uint64_t a = addClip(track, 0.0, 1.0);
+    const uint64_t b = addClip(track, 1.0, 1.0);
+
+    rt::Transition fadeOut;
+    fadeOut.duration = 6000;
+    fadeOut.leftClipId = b;
+    fadeOut.editPointTick = 2 * TPS;
+    track->addTransition(fadeOut);
+
+    EXPECT_TRUE(rt::EditOperations::clipEdgeHasTransition(*track, b, rt::ClipEdge::Tail));
+    EXPECT_FALSE(rt::EditOperations::clipEdgeHasTransition(*track, b, rt::ClipEdge::Head));
+    EXPECT_FALSE(rt::EditOperations::clipEdgeHasTransition(*track, a, rt::ClipEdge::Tail));
+}
+
 TEST(EditOperations, CopyAndPasteStandaloneTransitionAtAnotherCut)
 {
     TestTimeline tt;
@@ -1493,6 +1554,44 @@ TEST(EditOperations, NextEditPointEmptyTimeline)
     timeline.addVideoTrack("V1"); // No clips
 
     EXPECT_EQ(rt::EditOperations::nextEditPoint(timeline, 0), 0);
+}
+
+TEST(EditOperations, SequenceGapNavigation)
+{
+    rt::Timeline timeline;
+    auto* v1 = timeline.addVideoTrack("V1");
+    auto* v2 = timeline.addVideoTrack("V2");
+    auto* a1 = timeline.addAudioTrack("A1");
+    auto* captions = timeline.addCaptionTrack();
+    ASSERT_NE(captions, nullptr);
+    // V1 [1–3] [6–8], V2 [2–4] overlaps V1, A1 [10–12]; a caption over
+    // [4–6] does not fill the picture gap there.
+    addClip(v1, 1.0, 2.0);
+    addClip(v1, 6.0, 2.0);
+    addClip(v2, 2.0, 2.0);
+    addClip(a1, 10.0, 2.0);
+    addClip(captions, 4.0, 2.0);
+    // Gaps start at 0, 4s and 8s. The end of the sequence is not a gap.
+    using rt::EditOperations;
+    EXPECT_EQ(EditOperations::nextSequenceGap(timeline, 0), 4 * TPS);
+    EXPECT_EQ(EditOperations::nextSequenceGap(timeline, 5 * TPS), 8 * TPS);
+    EXPECT_EQ(EditOperations::nextSequenceGap(timeline, 8 * TPS), 8 * TPS);
+    EXPECT_EQ(EditOperations::nextSequenceGap(timeline, 11 * TPS), 11 * TPS);
+    EXPECT_EQ(EditOperations::prevSequenceGap(timeline, 11 * TPS), 8 * TPS);
+    EXPECT_EQ(EditOperations::prevSequenceGap(timeline, 8 * TPS), 4 * TPS);
+    EXPECT_EQ(EditOperations::prevSequenceGap(timeline, 4 * TPS), 0);
+    EXPECT_EQ(EditOperations::prevSequenceGap(timeline, 0), 0);
+}
+
+TEST(EditOperations, SequenceGapNavigationWithoutGaps)
+{
+    TestTimeline tt;  // [0–2s] [2–5s] [5–8s], back to back
+    EXPECT_EQ(rt::EditOperations::nextSequenceGap(tt.timeline, TPS), TPS);
+    EXPECT_EQ(rt::EditOperations::prevSequenceGap(tt.timeline, 7 * TPS), 7 * TPS);
+
+    rt::Timeline empty;
+    empty.addVideoTrack("V1");
+    EXPECT_EQ(rt::EditOperations::nextSequenceGap(empty, 0), 0);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -159,6 +159,8 @@ void TimelinePanel::updateCursorForTool()
         setCursor(Qt::IBeamCursor);
         break;
     case EditTool::PenMask:
+    case EditTool::EllipseMask:
+    case EditTool::RectangleMask:
         setCursor(Qt::CrossCursor);
         break;
     case EditTool::Eyedropper:

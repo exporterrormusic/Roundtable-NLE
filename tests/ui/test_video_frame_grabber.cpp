@@ -18,10 +18,12 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QImage>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QTimer>
 
 #include <algorithm>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -45,7 +47,7 @@ char* g_argv[] = {g_arg0, nullptr};
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
 /// Writes a 64x64 MPEG-4 mp4: GOP 45 with B-frames; frame i shows i in binary.
-bool writeIndexedVideo(const std::string& path)
+bool writeIndexedVideo(const std::string& path, int indexOffset = 0)
 {
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
     if (!codec) return false;
@@ -89,7 +91,7 @@ bool writeIndexedVideo(const std::string& path)
         for (int y = 0; y < kH; ++y)
             for (int x = 0; x < kW; ++x) {
                 const int bit = std::min(x / (kW / kBits), kBits - 1);
-                frame->data[0][y * frame->linesize[0] + x] = ((i >> bit) & 1) ? 235 : 16;
+                frame->data[0][y * frame->linesize[0] + x] = (((i + indexOffset) >> bit) & 1) ? 235 : 16;
             }
         for (int y = 0; y < kH / 2; ++y)
             for (int x = 0; x < kW / 2; ++x) {
@@ -144,16 +146,16 @@ protected:
     }
 
     /// Frame index the grabber delivers for `timeSec`.
-    int grab(double timeSec, bool live)
+    int grab(double timeSec, bool live, QSize size = QSize(kW, kH))
     {
         std::optional<QImage> got;
         QEventLoop loop;
         auto cb = [&](const QImage& image) { got = image; loop.quit(); };
         if (live)
-            m_grabber.requestLive(&m_receiver, m_path, timeSec, QSize(kW, kH), cb,
+            m_grabber.requestLive(&m_receiver, m_path, timeSec, size, cb,
                                   VideoFrameGrabber::Playback);
         else
-            m_grabber.requestStill(&m_receiver, m_path, timeSec, QSize(kW, kH), cb);
+            m_grabber.requestStill(&m_receiver, m_path, timeSec, size, cb);
         if (!got) {
             QTimer::singleShot(10000, &loop, &QEventLoop::quit);
             loop.exec();
@@ -197,4 +199,32 @@ TEST_F(VideoFrameGrabberTest, BackwardSeekAndScrubReturnTheRightFrame)
 TEST_F(VideoFrameGrabberTest, PastTheEndShowsTheLastFrame)
 {
     EXPECT_EQ(grab(at(kFrames + 20), true), kFrames - 1);
+}
+
+TEST_F(VideoFrameGrabberTest, SwitchingPreviewSizeKeepsTheRequestedFrame)
+{
+    // Take chips, card previews and the take player share one decoder but
+    // request different sizes, sometimes at exactly the same timestamp.
+    for (int frame : {40, kFrames - 1}) {
+        EXPECT_EQ(grab(at(frame), true, QSize(kW, kH)), frame);
+        EXPECT_EQ(grab(at(frame), false, QSize(kW * 2, kH * 2)), frame);
+        EXPECT_EQ(grab(at(frame), true, QSize(kW, kH)), frame);
+    }
+}
+
+TEST_F(VideoFrameGrabberTest, ReplacingAFileRefreshesPosterAndPlayback)
+{
+#ifdef ROUNDTABLE_HAS_FFMPEG
+    EXPECT_EQ(grab(at(40), false), 40);
+    EXPECT_EQ(grab(at(40), true), 40);
+    const auto before = std::filesystem::last_write_time(m_path);
+    const std::string replacement = m_path + ".replacement.mp4";
+    ASSERT_TRUE(writeIndexedVideo(replacement, 37));
+    ASSERT_TRUE(QFile::remove(QString::fromStdString(m_path)));
+    ASSERT_TRUE(QFile::rename(QString::fromStdString(replacement), QString::fromStdString(m_path)));
+    std::filesystem::last_write_time(m_path, before + std::chrono::seconds(2));
+    EXPECT_EQ(grab(at(40), false), 77);  // old poster's exact cache key
+    EXPECT_EQ(grab(at(40), true), 77);   // old decoded frame's timestamp
+    EXPECT_EQ(grab(at(65), true), 102);  // also reopen the old file handle
+#endif
 }

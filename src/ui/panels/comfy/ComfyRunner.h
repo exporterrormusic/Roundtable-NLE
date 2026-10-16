@@ -8,7 +8,7 @@
  *
  * Failure ladder (owner's rule — failures are nearly always ComfyUI itself):
  *   1st failure → restart ComfyUI, retry as-is
- *   2nd failure → restart ComfyUI, retry at 12 fps
+ *   2nd failure → restart ComfyUI, retry with unchanged quality settings
  *   3rd failure → restart ComfyUI (fresh for the next shot), skip this shot
  * A workflow VALIDATION error (HTTP 400) would fail every shot the same way,
  * so it stops the batch instead.
@@ -44,7 +44,7 @@ class ComfyEventStream;
 
 struct RenderJob
 {
-    enum class State { Pending, Running, Done, Failed, Skipped };
+    enum class State { Pending, Running, Done, Failed, Skipped, WaitingForNextPass };
 
     std::string key;            ///< pipeline shot key
     int         order{0};       ///< 1-based position in the script
@@ -58,12 +58,17 @@ struct RenderJob
     int         frames{0};      ///< SCAIL frames at `fps` (for ETA)
 
     State       state{State::Pending};
-    int         attempt{0};     ///< 0, 1 (restarted), 2 (restarted @12fps)
+    int         attempt{0};     ///< attempt within the current phase
     int         fpsUsed{0};
     QString     status;
     QString     outputFile;
     QString     remoteVideo;    ///< name of the uploaded clip in ComfyUI's input folder
     qint64      elapsedMs{0};
+    qint64      completedPhaseMs{0};
+    bool        prepared{false};
+    bool        generated{false};
+    bool        staged{false};
+    QString     artifactKey;
     // Live progress from ComfyUI's event feed (0 = none yet).
     int         step{0};
     int         steps{0};
@@ -91,6 +96,7 @@ public:
         int                       jobTimeoutSec{2 * 60 * 60};
         int                       serverStartTimeoutSec{5 * 60};
         int                       pollIntervalMs{2000};
+        bool                      stagedBatch{true};
     };
 
     explicit ComfyRunner(QObject* parent = nullptr);
@@ -155,7 +161,8 @@ private:
     QNetworkReply* get(const QString& path);
     QNetworkReply* postJson(const QString& path, const QJsonObject& body);
     void fireAndForget(const QString& path, const QJsonObject& body);
-    void upload(const QString& localPath, const QString& remoteName, Done then);
+    void upload(const QString& localPath, const QString& remoteName, Done then,
+                bool referenceImage = false);
 
     // Batch
     void nextJob();
@@ -163,6 +170,7 @@ private:
     void submitCurrent();
     void pollCurrent();
     void downloadOutput(const QJsonObject& outputs);
+    void archiveCurrent(const QString& videoFile, int fileIndex, Done then);
     void failCurrent(const QString& why);
     void stopBatch(const QString& why);
     void finishBatch();
@@ -175,8 +183,12 @@ private:
     QElapsedTimer          m_jobClock;
 
     Config                 m_config;
+    QJsonObject            m_sourcePrompt;
     std::vector<RenderJob> m_jobs;
     int                    m_index{-1};
+    std::vector<int>        m_executionOrder;
+    int                    m_orderPosition{-1};
+    int                    m_stage{0}; // 0 = whole shot, 1 = prepare, 2 = generate, 3 = finish
     bool                   m_running{false};
     bool                   m_stopRequested{false};
     QString                m_promptId;

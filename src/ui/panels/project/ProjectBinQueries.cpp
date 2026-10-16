@@ -52,8 +52,10 @@ void ProjectBin::restoreBinModel(const std::vector<Project::BinItem>& items,
         // Synthetic adjustment-layer items: no source to open, force orange
         // label even if the saved color drifted.
         if (projectBinIsAdjustmentPath(bi.path)) {
-            uint32_t color = (bi.labelColor != 0xFF888888)
-                ? bi.labelColor : 0xFFFFAA44;
+            // The old default orange counts as "not customised".
+            uint32_t color = (bi.labelColor != 0xFF888888
+                              && bi.labelColor != kLegacyAdjustmentLabelArgb)
+                ? bi.labelColor : kAdjustmentLabelArgb;
             m_grid->addRestoredItem(
                 bi.path, MediaType::Unknown, /*handle*/ 0, bi.id,
                 QString::fromStdString(bi.displayName), color);

@@ -14,6 +14,34 @@
 namespace rt {
 namespace {
 
+TEST(PlaybackSchedulerTest, ClockBuildsAndMaintainsTwoFrameRenderLead)
+{
+    for (int64_t direction : {int64_t(1), int64_t(-1)}) {
+        frame_clock_detail::FrameRequestPacer pacer;
+        for (int64_t n = 0; n < 60; ++n) {
+            const int64_t playhead = 100 + direction * n;
+            const auto requested = pacer.next(playhead, double(direction), 0);
+            ASSERT_TRUE(requested.has_value());
+            EXPECT_EQ(*requested, playhead + direction * std::min(n, int64_t(2)));
+        }
+        // A seek starts preparing frames at the new position immediately.
+        EXPECT_EQ(pacer.next(1000, double(direction), 1), 1000 + direction * 2);
+        pacer.reset();
+        EXPECT_EQ(pacer.next(500, double(direction), 1), 500);
+    }
+}
+
+TEST(PlaybackSchedulerTest, ClockKeepsCadenceAcrossAudioBoundaryJitter)
+{
+    frame_clock_detail::FrameRequestPacer pacer;
+    EXPECT_EQ(pacer.next(0, 1.0, 0), 0);
+    EXPECT_EQ(pacer.next(1, 1.0, 0), 2);
+    EXPECT_EQ(pacer.next(2, 1.0, 0), 4);
+    EXPECT_EQ(pacer.next(2, 1.0, 0), 5);  // duplicate audio frame observation
+    EXPECT_EQ(pacer.next(4, 1.0, 0), 6);  // audio catches up; no skipped request
+    EXPECT_EQ(pacer.next(5, 1.0, 0), 7);
+}
+
 TEST(PlaybackSchedulerTest, PlaybackFramesUseBestEffortDeadlinePolicy)
 {
     PlaybackScheduler scheduler;
@@ -283,6 +311,65 @@ TEST(PlaybackSchedulerTest, CancelingInFlightScrubLetsPlaybackFrameWin)
     EXPECT_NE(produced, nullptr);
     EXPECT_EQ(producedTick, 2000);
 
+    producer.stop();
+}
+
+// A mask/transform drag re-requests the same paused frame on every mouse
+// move. When a render is slower than those requests arrive, the in-flight
+// one must still be shown — discarding it starved the monitor until the
+// drag stopped.
+TEST(PlaybackSchedulerTest, SameFrameRefreshDoesNotStarveInFlightStillRender)
+{
+    FrameProducer producer;
+    std::mutex mutex;
+    std::condition_variable cv;
+    int calls = 0;
+    bool releaseFirst = false;
+    bool releaseSecond = false;
+    auto first = std::make_shared<CachedFrame>();
+    first->width = 320;
+    first->height = 180;
+    auto second = std::make_shared<CachedFrame>();
+    second->width = 320;
+    second->height = 180;
+
+    producer.setCompositeCallback(
+        [&](int64_t, uint32_t, uint32_t, bool, bool) {
+            std::unique_lock lock(mutex);
+            const int call = ++calls;
+            cv.notify_all();
+            bool& release = call == 1 ? releaseFirst : releaseSecond;
+            cv.wait_for(lock, std::chrono::seconds(2), [&] { return release; });
+            return call == 1 ? first : second;
+        });
+    producer.start();
+    producer.requestScrubFrame(1000, 320, 180, false);
+    {
+        std::unique_lock lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(2),
+                                [&] { return calls >= 1; }));
+    }
+
+    // An edit refresh of the same paused frame arrives mid-render.
+    producer.requestScrubFrame(1000, 320, 180, false);
+    {
+        std::lock_guard lock(mutex);
+        releaseFirst = true;
+    }
+    cv.notify_all();
+
+    ASSERT_TRUE(producer.waitForFrame(std::chrono::seconds(2)));
+    std::shared_ptr<CachedFrame> produced;
+    int64_t producedTick = 0;
+    ASSERT_TRUE(producer.consumeFrame(produced, producedTick));
+    EXPECT_EQ(produced, first);
+    EXPECT_EQ(producedTick, 1000);
+
+    {
+        std::lock_guard lock(mutex);
+        releaseSecond = true;
+    }
+    cv.notify_all();
     producer.stop();
 }
 

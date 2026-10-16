@@ -225,8 +225,8 @@ public:
     [[nodiscard]] TierListPanel*       tierListPanel()       const noexcept { return m_tierListPanel; }
     [[nodiscard]] SelectionState&       selection()       noexcept { return m_selection; }
     [[nodiscard]] const SelectionState& selection() const noexcept { return m_selection; }
-    /// The 9 edit-tool buttons (Selection..Pen Mask), for keyboard-shortcut
-    /// focus-policy / active-tool sync.  Returns a reference to the array.
+    /// The 9 edit-tool buttons (Selection..mask tool group), for keyboard-
+    /// shortcut focus-policy / active-tool sync.  Returns a reference to the array.
     [[nodiscard]] QToolButton* (&toolButtons() noexcept)[9] { return m_toolButtons; }
     /// True once destruction has begun (lambdas/callbacks must bail).
     [[nodiscard]] bool isDestroying() const noexcept { return m_destroying.load(std::memory_order_acquire); }
@@ -457,7 +457,7 @@ private:
     std::vector<size_t> m_tabToSeq;
 
     // Tool buttons (for sync with keyboard shortcuts)
-    QToolButton*      m_toolButtons[9]{};  // Selection, Ripple, Rolling, Razor, Slip, Slide, Text, Zoom, Pen Mask
+    QToolButton*      m_toolButtons[9]{};  // Selection, Ripple, Rolling, Razor, Slip, Slide, Text, Zoom, Mask tool group
 
     // Nested QMainWindow for dock widget support
     QMainWindow*      m_innerMainWindow{nullptr};

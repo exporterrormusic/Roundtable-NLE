@@ -198,6 +198,8 @@ void ShortcutManager::registerNLEDefaults()
     registerAction(kToolSlide, "Slide Tool", QKeySequence(Qt::Key_U), empty, "Tools");
     registerAction(kToolText, "Text Tool", QKeySequence(Qt::Key_T), empty, "Tools");
     registerAction(kToolPen, "Pen Mask Tool", QKeySequence(Qt::Key_P), empty, "Tools");
+    registerAction(kToolEllipseMask, "Ellipse Mask Tool", QKeySequence(), empty, "Tools");
+    registerAction(kToolRectangleMask, "Rectangle Mask Tool", QKeySequence(), empty, "Tools");
     registerAction(kToolZoom, "Zoom Tool", QKeySequence(Qt::Key_Z), empty, "Tools");
 
     // Additional editing (FCP7)
@@ -211,6 +213,9 @@ void ShortcutManager::registerNLEDefaults()
     registerAction(kFrameBack, "Step Backward", QKeySequence(Qt::Key_Left), empty, "Transport");
     registerAction(kNextEdit, "Next Edit Point", QKeySequence(Qt::Key_Down), empty, "Transport");
     registerAction(kPrevEdit, "Previous Edit Point", QKeySequence(Qt::Key_Up), empty, "Transport");
+    // Premiere's Go to Gap ships unbound too.
+    registerAction(kNextGap, "Go to Next Gap", QKeySequence(), empty, "Transport");
+    registerAction(kPrevGap, "Go to Previous Gap", QKeySequence(), empty, "Transport");
     registerAction(kGoStart, "Go to Start", QKeySequence(Qt::Key_Home), empty, "Transport");
     registerAction(kGoEnd, "Go to End", QKeySequence(Qt::Key_End), empty, "Transport");
 

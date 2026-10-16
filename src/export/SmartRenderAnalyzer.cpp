@@ -71,7 +71,7 @@ static bool isIdentityClip(Clip& clip, const VideoClip& vc,
         return false;
 
     // No masks
-    if (!clip.masks().empty())
+    if (clip.hasAssignedMasks())
         return false;
 
     // Blend mode must be Normal (0)

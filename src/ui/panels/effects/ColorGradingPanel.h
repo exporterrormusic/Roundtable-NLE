@@ -38,6 +38,7 @@
 #include "effects/ColorGrading.h"
 
 #include <optional>
+#include <memory>
 #include <vector>
 
 namespace rt {
@@ -45,6 +46,7 @@ namespace rt {
 class Clip;
 class Track;
 class CommandStack;
+class Command;
 class Timeline;
 class ScrubbySpinBox;
 class ColorWheelWidget;
@@ -65,6 +67,8 @@ public:
  // ── Clip binding ────────────────────────────────────────────────────
  void setClip(Clip* clip, Track* track = nullptr);
  void clearClip();
+ /// Import a 3D .cube LUT into the bound clip; failures leave it unchanged.
+ bool loadInputLut(const QString& path, QString* error = nullptr);
 
  [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
 
@@ -78,6 +82,10 @@ private:
  void applyToEffect();
  void applyCurvesToEffect();
  void ensureColorGradingEffect();
+ void refreshInputLut();
+ void browseInputLut();
+ void clearInputLut();
+ void runLutCommand(std::unique_ptr<Command> command);
 
  ScrubbySpinBox* makeSlider(const QString& label, double min, double max,
  double defaultVal, int decimals,
@@ -115,6 +123,7 @@ private:
 
  // ── Basic Correction ────────────────────────────────────────────────
  ScrubbySpinBox* m_temperatureSpin{nullptr};
+ QComboBox* m_inputLutCombo{nullptr};
  ScrubbySpinBox* m_tintSpin{nullptr};
  ScrubbySpinBox* m_exposureSpin{nullptr};
  ScrubbySpinBox* m_contrastSpin{nullptr};

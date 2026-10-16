@@ -10,6 +10,7 @@
 
 #include "Constants.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -141,6 +142,20 @@ struct RationalFrameRate
     int64_t tick, RationalFrameRate fps) noexcept
 {
     return frameIndexToTick(nearestFrameIndex(tick, fps), fps);
+}
+
+/// `seconds` rounded to a whole number of frames, in ticks. Default clip
+/// lengths (a still's 5 s) must end ON a frame: 5 s at 29.97 is 150 frames
+/// = 240240 ticks, while 240000 ends mid-frame, so a drop that snapped the
+/// clip's tail to a cut put its head off the frame grid.
+[[nodiscard]] inline int64_t wholeFrameDurationTicks(
+    double seconds, RationalFrameRate fps) noexcept
+{
+    if (fps.numerator == 0 || fps.denominator == 0)
+        return std::llround(seconds * static_cast<double>(kTicksPerSecond));
+    const int64_t frames = std::max<int64_t>(1, std::llround(
+        seconds * fps.numerator / static_cast<double>(fps.denominator)));
+    return frameIndexToTick(frames, fps);
 }
 
 /// Start of the frame `frames` away from the one on screen at `tick`,

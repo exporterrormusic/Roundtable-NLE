@@ -93,10 +93,11 @@ std::shared_ptr<CachedFrame> CompositeService::resolveMediaFrame(
         auto frame = m_mediaPool->tryGetExactFrame(handle, frameNumber, tier);
         // Reject loop-pre-decoded cache entries during export.  The loop
         // pre-decoder (MediaPoolPrefetchLoop) seeks with SeekMode::Precise
-        // and labels frames sequentially, which the rest of the engine
-        // deliberately avoids (scrub/prefetch use Keyframe seek + forward
-        // decode) because Precise seek mislabels the frames right after each
-        // seek/wrap — i.e. source frame 0, the START of every clip.  Trusting
+        // and labels frames sequentially.  Precise seek used to FLUSH the
+        // codec after reaching the target, mislabeling the frames right after
+        // each seek/wrap — i.e. source frame 0, the START of every clip (root
+        // cause fixed 2026-10-12, test_video_decoder_seek; this guard stays
+        // as defense in depth for export).  Trusting
         // those entries here baked a 1-frame jump/jitter into the very start
         // of every video-character (Wells) clip in exports, even though
         // playback (which sees them only transiently) looked fine.  Force the

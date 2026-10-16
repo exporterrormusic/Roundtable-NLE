@@ -29,6 +29,7 @@
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace rt {
 
@@ -930,6 +931,54 @@ std::unique_ptr<Command> EditOperations::paste(
     return compound->size() > 0 ? std::move(compound) : nullptr;
 }
 
+Transition EditOperations::defaultTransitionAtEdge(
+    const Track& track, const Clip& clip, ClipEdge edge, int64_t duration)
+{
+    // A neighbour within this distance of the edge counts as touching.
+    constexpr int64_t kTouchTolerance = 1600;
+
+    Transition trans;
+    trans.type = TransitionType::CrossDissolve;
+    trans.duration = duration;
+    if (edge == ClipEdge::Head) {
+        trans.rightClipId = clip.id();
+        trans.editPointTick = clip.timelineIn();
+        for (size_t ci = 0; ci < track.clipCount(); ++ci) {
+            const Clip* c = track.clip(ci);
+            if (!c || c->id() == clip.id()) continue;
+            if (std::abs(c->timelineOut() - clip.timelineIn()) <= kTouchTolerance) {
+                trans.leftClipId = c->id();
+                break;
+            }
+        }
+    } else {
+        trans.leftClipId = clip.id();
+        trans.editPointTick = clip.timelineOut();
+        for (size_t ci = 0; ci < track.clipCount(); ++ci) {
+            const Clip* c = track.clip(ci);
+            if (!c || c->id() == clip.id()) continue;
+            if (std::abs(c->timelineIn() - clip.timelineOut()) <= kTouchTolerance) {
+                trans.rightClipId = c->id();
+                break;
+            }
+        }
+    }
+    return trans;
+}
+
+bool EditOperations::clipEdgeHasTransition(
+    const Track& track, uint64_t clipId, ClipEdge edge)
+{
+    for (size_t i = 0; i < track.transitionCount(); ++i) {
+        const Transition* t = track.transition(i);
+        if (!t) continue;
+        if (edge == ClipEdge::Head ? t->rightClipId == clipId
+                                   : t->leftClipId == clipId)
+            return true;
+    }
+    return false;
+}
+
 bool EditOperations::fitTransitionToAvailableDuration(
     const Track& track, Transition& transition)
 {
@@ -1433,6 +1482,56 @@ int64_t EditOperations::prevEditPoint(const Timeline& timeline, int64_t fromTime
     }
 
     return nearest >= 0 ? nearest : fromTime;
+}
+
+namespace {
+
+/// Start ticks of every gap in the sequence, ascending: tick 0 when nothing
+/// starts there, then the end of each covered run that something follows.
+std::vector<int64_t> sequenceGapStarts(const Timeline& timeline)
+{
+    std::vector<std::pair<int64_t, int64_t>> spans;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti)
+    {
+        const Track* track = timeline.track(ti);
+        if (!track || track->isCaptionTrack()) continue;
+        for (size_t ci = 0; ci < track->clipCount(); ++ci)
+        {
+            const Clip* clip = track->clip(ci);
+            if (clip && clip->timelineOut() > clip->timelineIn())
+                spans.emplace_back(clip->timelineIn(), clip->timelineOut());
+        }
+    }
+    std::sort(spans.begin(), spans.end());
+
+    std::vector<int64_t> starts;
+    if (spans.empty()) return starts;
+    if (spans.front().first > 0) starts.push_back(0);
+    int64_t coveredEnd = spans.front().second;
+    for (size_t i = 1; i < spans.size(); ++i)
+    {
+        if (spans[i].first > coveredEnd)
+            starts.push_back(coveredEnd);
+        coveredEnd = std::max(coveredEnd, spans[i].second);
+    }
+    return starts;
+}
+
+} // namespace
+
+int64_t EditOperations::nextSequenceGap(const Timeline& timeline, int64_t fromTime)
+{
+    for (const int64_t start : sequenceGapStarts(timeline))
+        if (start > fromTime) return start;
+    return fromTime;
+}
+
+int64_t EditOperations::prevSequenceGap(const Timeline& timeline, int64_t fromTime)
+{
+    const auto starts = sequenceGapStarts(timeline);
+    for (auto it = starts.rbegin(); it != starts.rend(); ++it)
+        if (*it < fromTime) return *it;
+    return fromTime;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

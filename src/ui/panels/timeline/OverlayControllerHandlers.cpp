@@ -752,9 +752,9 @@ void OverlayController::onOverlayMaskCreated(int maskIndex,
     if (!selectedTrackIsEditable()) return;
 
     Clip* clip = m_ws->selection().clip;
-    const int index = maskIndex;
+    int index = maskIndex;
     const uint64_t stableMaskId = mask.maskId;
-    const uint64_t fxId = m_activeMaskEffectId;
+    uint64_t fxId = m_activeMaskEffectId;
     auto listOf = [](Clip* c, uint64_t effectId) -> std::vector<OpacityMask>* {
         if (!c) return nullptr;
         if (effectId == 0) return &c->masks();
@@ -762,9 +762,39 @@ void OverlayController::onOverlayMaskCreated(int maskIndex,
         return nullptr;
     };
 
+    // Premiere 26: a new mask belongs to whatever Effect Controls has
+    // selected (an effect, Opacity, or a mask's owner); with nothing
+    // selected it goes to Unassigned Masks and changes nothing until it is
+    // assigned. The overlay drew it into the list it was showing, so move
+    // it to that target before recording the creation.
+    OpacityMask placed = mask;
+    if (auto* ec = m_ws->effectControlsPanel()) {
+        const auto target = ec->newMaskTarget();
+        auto* drawnInto = listOf(clip, fxId);
+        auto* targetList = listOf(clip, target.effectId);
+        if (drawnInto && targetList) {
+            const auto it = std::find_if(drawnInto->begin(), drawnInto->end(),
+                [stableMaskId](const OpacityMask& value) {
+                    return value.maskId == stableMaskId;
+                });
+            if (it != drawnInto->end()) {
+                placed.unassigned = target.effectId == 0 && target.unassigned;
+                drawnInto->erase(it);
+                targetList->push_back(placed);
+                index = static_cast<int>(targetList->size()) - 1;
+                fxId = target.effectId;
+                m_activeMaskEffectId = fxId;
+            }
+        }
+    }
+
+    const char* commandName =
+        mask.shape == MaskShape::Ellipse     ? "Create Ellipse Mask"
+        : mask.shape == MaskShape::Rectangle ? "Create Rectangle Mask"
+                                             : "Create Pen Mask";
     auto command = std::make_unique<LambdaCommand>(
-        "Create Pen Mask",
-        [clip, index, fxId, stableMaskId, mask, listOf]() {
+        commandName,
+        [clip, index, fxId, stableMaskId, mask = placed, listOf]() {
             if (auto* masks = listOf(clip, fxId)) {
                 const auto existing = std::find_if(
                     masks->begin(), masks->end(),

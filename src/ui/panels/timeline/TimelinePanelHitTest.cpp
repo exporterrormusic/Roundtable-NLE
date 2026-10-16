@@ -13,6 +13,7 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "timeline/EditOperations.h"
 
 #include <QPoint>
 
@@ -106,6 +107,83 @@ std::optional<ClipRef> TimelinePanel::hitTestEdgeHalo(size_t ti, double px) cons
         }
     }
     return best;
+}
+
+std::optional<TimelinePanel::TransitionHandleHit>
+TimelinePanel::hitTestTransitionHandle(const QPointF& pos) const
+{
+    if (!m_timeline || m_activeTool != EditTool::Selection) return std::nullopt;
+    const size_t ti = hitTestTrack(pos.y());
+    if (ti >= m_timeline->trackCount() || ti >= m_trackWidgets.size()
+        || !m_trackWidgets[ti])
+        return std::nullopt;
+    const Track* track = m_timeline->track(ti);
+    if (!track || track->isLocked() || track->isDivider()
+        || track->isCaptionTrack())
+        return std::nullopt;
+
+    // Only the band along the clip's top grabs a handle; the rest of the
+    // edge height still trims (Premiere's handles famously steal trims).
+    const auto tw = m_trackWidgets[ti];
+    const double pad = ClipLayoutRect::kTrackPadding;
+    const double clipTop = tw->mapTo(this, QPoint(0, 0)).y() + pad;
+    const double band =
+        TimelineTrackWidget::transitionHandleBand(tw->height() - 2.0 * pad);
+    if (band <= 0.0 || pos.y() < clipTop || pos.y() >= clipTop + band)
+        return std::nullopt;
+
+    const double px = pos.x() - headerWidth();
+    for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+        const Clip* clip = track->clip(ci);
+        if (!clip) continue;
+        const double left = m_layoutEngine.timeToPixelX(clip->timelineIn());
+        const double right = m_layoutEngine.timeToPixelX(clip->timelineOut());
+        if (px < left || px >= right) continue;
+        if (right - left < TimelineTrackWidget::kTransitionHandleMinClipPx)
+            return std::nullopt;
+        constexpr double zone = TimelineTrackWidget::kTransitionHandleZone;
+        if (px - left < zone && !EditOperations::clipEdgeHasTransition(
+                                    *track, clip->id(), ClipEdge::Head))
+            return TransitionHandleHit{ti, clip->id(), ClipEdge::Head};
+        if (right - px < zone && !EditOperations::clipEdgeHasTransition(
+                                     *track, clip->id(), ClipEdge::Tail))
+            return TransitionHandleHit{ti, clip->id(), ClipEdge::Tail};
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+void TimelinePanel::updateTransitionHandleHover(const QPointF& pos)
+{
+    size_t trackIndex = SIZE_MAX;
+    uint64_t clipId = 0;
+    int hotEdge = -1;
+    if (m_timeline && m_activeTool == EditTool::Selection
+        && m_dragMode == DragMode::None) {
+        if (const auto handle = hitTestTransitionHandle(pos)) {
+            trackIndex = handle->trackIndex;
+            clipId = handle->clipId;
+            hotEdge = handle->edge == ClipEdge::Head ? 0 : 1;
+        } else if (const auto ref = hitTestClip(pos)) {
+            const Track* track = m_timeline->track(ref->trackIndex);
+            if (track && !track->isLocked() && !track->isCaptionTrack()) {
+                trackIndex = ref->trackIndex;
+                clipId = ref->clipId;
+            }
+        }
+    }
+    for (auto tw : m_trackWidgets) {
+        if (!tw) continue;
+        const bool here = tw->trackIndex() == trackIndex;
+        tw->setTransitionHandleHover(here ? clipId : 0, here ? hotEdge : -1);
+    }
+}
+
+void TimelinePanel::leaveEvent(QEvent* event)
+{
+    for (auto tw : m_trackWidgets)
+        if (tw) tw->setTransitionHandleHover(0, -1);
+    QWidget::leaveEvent(event);
 }
 
 ClipEdge TimelinePanel::hitTestClipEdge(const QPointF& pos, const ClipRef& ref) const

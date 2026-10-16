@@ -442,8 +442,7 @@ void ManualMatchDialog::loadFileIntoWaveform(const std::string& path)
 
     m_currentIsVideo = m_frameGrabber && VideoFrameGrabber::isVideoFile(path);
     m_videoView->setVisible(m_currentIsVideo);
-    m_videoView->setPoster(QImage());
-    m_videoView->showPoster();
+    m_videoView->clear();
     if (m_currentIsVideo) {
         // After the layout gives the view its real size.
         QTimer::singleShot(0, this, [this]() {

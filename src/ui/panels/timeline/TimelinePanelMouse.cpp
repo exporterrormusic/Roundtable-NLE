@@ -130,6 +130,14 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     // stuck in a mode that ignores subsequent input.  Also clean up any
     // visible artifacts left behind by an interrupted drag.
     if (m_dragMode != DragMode::None) {
+        // Moves and rolls are applied live and only RECORDED on release:
+        // an interrupted one would leave clips moved with no undo step, so
+        // put them back (as Esc does).
+        if (m_dragMode == DragMode::ClipMove) restoreClipMoveToOrigin();
+        else if (m_dragMode == DragMode::RollingEdit) {
+            restoreRollingEditToOrigin();
+            m_rollExtraSeams.clear();
+        }
         // Close any dangling undo macro from the interrupted drag so
         // future commands don't accumulate into a stale macro.
         if (m_commandStack && m_commandStack->isMacroActive()) {
@@ -160,6 +168,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     // here" indicator even though the edit point is still selected.
     const bool viewOnlyPress = (m_activeTool == EditTool::Zoom
                                 || m_activeTool == EditTool::PenMask
+                                || m_activeTool == EditTool::EllipseMask
+                                || m_activeTool == EditTool::RectangleMask
                                 || m_activeTool == EditTool::Eyedropper);
 
     if (!viewOnlyPress) {
@@ -198,6 +208,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     switch (m_activeTool)
     {
     case EditTool::PenMask:
+    case EditTool::EllipseMask:
+    case EditTool::RectangleMask:
     case EditTool::Eyedropper:
         // These tools act in the Program Monitor, never on timeline clips.
         event->ignore();
@@ -338,6 +350,43 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                     event->accept();
                     return;
                 }
+            }
+        }
+    }
+
+    // ── Transition handle (top inner corner, edge without a transition) ──
+    // The press selects that edge exactly like an edge click, so a plain
+    // click still primes Ctrl+T. Dragging inward past a small deadzone adds
+    // the default transition and sizes it live (continueTransitionHandleDrag).
+    if (!(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier
+                                | Qt::AltModifier))) {
+        if (const auto handle = hitTestTransitionHandle(pos)) {
+            Track* track = m_timeline->track(handle->trackIndex);
+            const size_t idx = track->findClipIndexById(handle->clipId);
+            if (idx < track->clipCount()) {
+                const Clip* clip = track->clip(idx);
+                m_selection.clear();
+                if (m_gapSelection.active) {
+                    m_gapSelection.active = false;
+                    for (size_t w = 0; w < m_trackWidgets.size(); ++w)
+                        m_trackWidgets[w]->setGapHighlight(-1, -1);
+                }
+                emit selectionChanged();
+
+                const Transition atEdge = EditOperations::defaultTransitionAtEdge(
+                    *track, *clip, handle->edge, 0);
+                const bool head = handle->edge == ClipEdge::Head;
+                const EditPointSide side =
+                    (atEdge.leftClipId != 0 && atEdge.rightClipId != 0)
+                        ? EditPointSide::Both
+                        : head ? EditPointSide::HeadOnly : EditPointSide::TailOnly;
+                setEditPointSelection(handle->trackIndex, atEdge.editPointTick, side);
+                m_lastClickedEdge = { ClipRef{handle->trackIndex, handle->clipId},
+                                      handle->edge, true };
+                m_handleDrag = *handle;
+                m_dragMode = DragMode::TransitionHandle;
+                event->accept();
+                return;
             }
         }
     }

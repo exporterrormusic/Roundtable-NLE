@@ -15,7 +15,7 @@ namespace rt {
 
 namespace {
 
-constexpr uint32_t kPipelineBlockVersion = 4;   // v4: render trim in/out; v3: assembly settings; v2: seeds, render versions, render settings
+constexpr uint32_t kPipelineBlockVersion = 8;   // v8: timeline assembly template
 
 void writeFraming(BinaryWriter& w, const ShotFraming& f)
 {
@@ -56,6 +56,21 @@ const RenderVersion* ShotSettings::activeRender() const
     if (chosenRender >= 0 && chosenRender < static_cast<int>(renders.size()))
         return &renders[static_cast<size_t>(chosenRender)];
     return &renders.back();
+}
+
+ShotReview ShotSettings::reviewFor(const RenderVersion* render) const
+{
+    if (review == ShotReview::Retake) return review;
+    return render && render->file == reviewedRender ? review : ShotReview::Unreviewed;
+}
+
+void ShotSettings::setFreshSeed(uint32_t candidate, int64_t fallbackSeed)
+{
+    int64_t next = candidate & 0x7fffffffU;
+    while (next == seed || next == fallbackSeed ||
+           std::any_of(renders.begin(), renders.end(), [next](const RenderVersion& r) { return r.seed == next; }))
+        next = (next + 1) & 0x7fffffffLL;
+    seed = next;
 }
 
 ShotFraming ShowPipelineState::framingFor(const std::string& shotKey,
@@ -147,6 +162,17 @@ void ShowPipelineState::write(BinaryWriter& w) const
     w.writeString(background);
     w.writeF64(closeUpBackgroundZoom);
     w.writeF64(segmentGapSec);
+    // Append to preserve the layout of older pipeline blocks.
+    w.writeU32(static_cast<uint32_t>(shots.size()));
+    for (const auto& [key, s] : shots) {
+        w.writeString(key);
+        w.writeU8(static_cast<uint8_t>(s.review));
+        w.writeString(s.reviewedRender);
+    }
+    w.writeF64(closeUpBackgroundOffsetX);
+    w.writeF64(closeUpBackgroundOffsetY);
+    w.writeU32(backgroundFramingRevision);
+    w.writeString(timelineTemplate);
 }
 
 void ShowPipelineState::read(BinaryReader& r)
@@ -212,6 +238,25 @@ void ShowPipelineState::read(BinaryReader& r)
         closeUpBackgroundZoom = r.readF64();
         segmentGapSec         = r.readF64();
     }
+    if (version >= 5) {
+        const uint32_t count = r.readCount();
+        for (uint32_t i = 0; i < count; ++i) {
+            const std::string key = r.readString();
+            const uint8_t review = r.readU8();
+            const std::string file = r.readString();
+            if (auto it = shots.find(key); it != shots.end()) {
+                it->second.review = review <= static_cast<uint8_t>(ShotReview::Retake)
+                    ? static_cast<ShotReview>(review) : ShotReview::Unreviewed;
+                it->second.reviewedRender = file;
+            }
+        }
+    }
+    if (version >= 6) {
+        closeUpBackgroundOffsetX = r.readF64();
+        closeUpBackgroundOffsetY = r.readF64();
+    }
+    if (version >= 7) backgroundFramingRevision = r.readU32();
+    if (version >= 8) timelineTemplate = r.readString();
 }
 
 // ─── Framing math + export command ──────────────────────────────────────────
@@ -296,48 +341,36 @@ AssemblyPlan planAssembly(const std::vector<AssemblyShot>& shots, int64_t startT
     AssemblyPlan plan;
     int64_t t = startTick;
     std::string segment;
-    const int64_t bgLen = backgroundSec > 0 ? ticks(backgroundSec) : 0;
+    const int64_t bgLen = backgroundSec > 0 ? std::max<int64_t>(1, ticks(backgroundSec)) : 0;
 
-    // One continuous loop: the source position is simply the time since the
-    // assembly started, wrapped.
+    // Every shot restarts the background. Only a shot longer than the source
+    // needs additional loop pieces; adjacent shots never share a clip.
     auto addBackground = [&](size_t firstShot, int64_t from, int64_t to) {
         const bool closeUp = shots[firstShot].closeUp;
         while (from < to) {
             int64_t len = to - from;
             int64_t sourceIn = 0;
             if (bgLen > 0) {
-                sourceIn = (from - startTick) % bgLen;
-                len = std::min(len, bgLen - sourceIn);
+                len = std::min(len, bgLen);
             }
             plan.backgrounds.push_back({closeUp, firstShot, from, len, sourceIn});
             from += len;
         }
     };
 
-    size_t runStart = 0;
-    int64_t runIn = t;
     for (size_t i = 0; i < shots.size(); ++i) {
         const AssemblyShot& s = shots[i];
         if (i == 0 || s.segment != segment) {
-            if (i > 0) {
-                addBackground(runStart, runIn, t);
-                t += ticks(std::max(0.0, segmentGapSec));
-            }
+            if (i > 0) t += ticks(std::max(0.0, segmentGapSec));
             segment = s.segment;
             plan.markers.push_back({t, segment});
-            runStart = i;
-            runIn = t;
-        } else if (s.closeUp != shots[runStart].closeUp) {
-            addBackground(runStart, runIn, t);
-            runStart = i;
-            runIn = t;
         }
         const double out = s.renderOutSec >= 0.0 ? s.renderOutSec : s.renderDurationSec - s.tailPadSec;
         const int64_t dur = std::max<int64_t>(1, ticks(out - std::max(0.0, s.renderInSec)));
         plan.shots.push_back({i, t, dur});
+        addBackground(i, t, t + dur);
         t += dur;
     }
-    if (!shots.empty()) addBackground(runStart, runIn, t);
     plan.end = t;
     return plan;
 }

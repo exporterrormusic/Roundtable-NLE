@@ -954,17 +954,48 @@ TEST(ShotPipelineTest, StateRoundTrips)
     state.seed = 153;
     state.background = "C:/bg/bkg loop.mp4";
     state.closeUpBackgroundZoom = 1.65;
+    state.closeUpBackgroundOffsetX = -3.6;
+    state.closeUpBackgroundOffsetY = -1.7;
+    state.backgroundFramingRevision = 1;
+    state.timelineTemplate = "C:/templates/show.json";
     state.segmentGapSec = 4.5;
     shot.seed = 987654321012LL;
     shot.renders.push_back({"C:/renders/001_v1.mp4", 153, "a smug grin", 16, 0.25, 1790000000});
     shot.renders.push_back({"C:/renders/001_v2.mp4", 777, "a big grin", 12, 0.33, 1790000100});
     shot.chosenRender = 0;
+    shot.review = ShotReview::Approved;
+    shot.reviewedRender = shot.renders[0].file;
+    state.shots["needs retake"].review = ShotReview::Retake;
 
     BinaryWriter w;
     state.write(w);
     BinaryReader r(w.data().data(), w.data().size());
     ShowPipelineState back;
     back.read(r);
+    EXPECT_EQ(back, state);
+}
+
+TEST(ShotPipelineTest, VersionSixBackgroundCanReceiveRevisedDefaults)
+{
+    ShowPipelineState state;
+    state.background = "background.mp4";
+    state.closeUpBackgroundZoom = 2.0;
+    state.closeUpBackgroundOffsetX = -3.6;
+    state.closeUpBackgroundOffsetY = -1.7;
+    state.backgroundFramingRevision = 1;
+    BinaryWriter w;
+    state.write(w);
+    // v6 predates the preset revision and the empty v8 template string.
+    auto legacy = w.data();
+    legacy[0] = 6;
+    legacy.resize(legacy.size() - 2 * sizeof(uint32_t));
+    BinaryReader r(legacy.data(), legacy.size());
+    ShowPipelineState back;
+    back.read(r);
+    ASSERT_TRUE(r.ok());
+    EXPECT_EQ(r.remaining(), 0u);
+    EXPECT_EQ(back.backgroundFramingRevision, 0u);
+    state.backgroundFramingRevision = 0;
     EXPECT_EQ(back, state);
 }
 
@@ -989,6 +1020,64 @@ TEST(ShotPipelineTest, SeedsFramesAndActiveRender)
     EXPECT_EQ(s.activeRender()->file, "v2.mp4");  // newest by default
     s.chosenRender = 0;
     EXPECT_EQ(s.activeRender()->file, "v1.mp4");
+}
+
+TEST(ShotPipelineTest, FreshSeedsAvoidConfiguredAndPreviouslyRenderedSeeds)
+{
+    ShotSettings s;
+    s.seed = 42;
+    s.renders = {{"v1.mp4", 43}, {"v2.mp4", 44}};
+    s.setFreshSeed(42, 45);
+    EXPECT_EQ(s.seed, 46);
+    s.setFreshSeed(46, 45);
+    EXPECT_EQ(s.seed, 47);
+    s.seed = 2147483647;
+    s.setFreshSeed(0xffffffffU, 0);
+    EXPECT_EQ(s.seed, 1);
+}
+
+TEST(ShotPipelineTest, ApprovalBelongsToReviewedFile)
+{
+    ShotSettings s;
+    RenderVersion reviewed{"approved.mp4"}, other{"other.mp4"};
+    s.review = ShotReview::Approved;
+    s.reviewedRender = reviewed.file;
+    EXPECT_EQ(s.reviewFor(&reviewed), ShotReview::Approved);
+    EXPECT_EQ(s.reviewFor(&other), ShotReview::Unreviewed);
+    EXPECT_EQ(s.reviewFor(nullptr), ShotReview::Unreviewed);
+    s.review = ShotReview::Retake;
+    EXPECT_EQ(s.reviewFor(nullptr), ShotReview::Retake);
+}
+
+TEST(ShotPipelineTest, VersionFourProjectsLoadWithoutReviewFlags)
+{
+    // A v4 block with one shot, no recordings, and one rendered version.
+    BinaryWriter w;
+    w.writeU32(4); w.writeU32(0); w.writeU32(1);
+    w.writeString("line"); w.writeU8(0);
+    w.writeF64(0.5); w.writeF64(0.5); w.writeF64(0.5);
+    w.writeI64(-1); w.writeString(""); w.writeI64(0);
+    w.writeString("source.mp4"); w.writeF64(0.25); w.writeI64(153);
+    w.writeU32(1); w.writeString("render.mp4"); w.writeI64(153);
+    w.writeString("happy"); w.writeI64(16); w.writeF64(0.25); w.writeI64(1790000000);
+    w.writeF64(0); w.writeF64(-1); w.writeI64(-1);
+    w.writeI64(0); w.writeString("happy"); w.writeI64(120); w.writeString("out");
+    w.writeString("workflow.json"); w.writeString("wide.png"); w.writeString("close.png"); w.writeI64(-1);
+    w.writeString("bg.mp4"); w.writeF64(0); w.writeF64(3);
+    BinaryReader r(w.data().data(), w.size());
+    ShowPipelineState state;
+    state.read(r);
+    ASSERT_TRUE(r.ok());
+    EXPECT_EQ(r.remaining(), 0u);
+    ASSERT_EQ(state.shots.size(), 1u);
+    const auto& shot = state.shots.at("line");
+    EXPECT_EQ(shot.review, ShotReview::Unreviewed);
+    EXPECT_TRUE(shot.reviewedRender.empty());
+    ASSERT_NE(shot.activeRender(), nullptr);
+    EXPECT_EQ(shot.activeRender()->file, "render.mp4");
+    EXPECT_EQ(state.background, "bg.mp4");
+    EXPECT_DOUBLE_EQ(state.closeUpBackgroundOffsetX, 0.0);
+    EXPECT_DOUBLE_EQ(state.closeUpBackgroundOffsetY, 0.0);
 }
 
 TEST(ShotPipelineTest, RenderFillsWidthOnTheBottomEdge)
@@ -1027,10 +1116,8 @@ TEST(ShotPipelineTest, AssemblyLaysOutShotsGapsMarkersAndBackgrounds)
     EXPECT_EQ(plan.markers[1].time, 18 * T);
     EXPECT_EQ(plan.markers[1].label, "STORY");
 
-    // One 3.5 s loop running continuously from 10 s, split per shot-type run
-    // and at every wrap:
-    //   WIDE 10-12 (src 0-2) | CU 12-13.5 (src 2-3.5) | CU 13.5-16 (src 0-2.5)
-    //   | stinger gap | WIDE 18-20.5 (src 1-3.5) | WIDE 20.5-22 (src 0-1.5)
+    // Each shot starts at source zero, including consecutive close-ups.
+    // Only the final 4-second shot exceeds the 3.5-second background.
     const int64_t H = T / 2;
     ASSERT_EQ(plan.backgrounds.size(), 5u);
     EXPECT_FALSE(plan.backgrounds[0].closeUp);
@@ -1040,21 +1127,56 @@ TEST(ShotPipelineTest, AssemblyLaysOutShotsGapsMarkersAndBackgrounds)
     EXPECT_TRUE(plan.backgrounds[1].closeUp);
     EXPECT_EQ(plan.backgrounds[1].firstShot, 1u);
     EXPECT_EQ(plan.backgrounds[1].timelineIn, 12 * T);
-    EXPECT_EQ(plan.backgrounds[1].sourceIn, 2 * T);    // no jump at the cut
-    EXPECT_EQ(plan.backgrounds[1].duration, 3 * H);
-    EXPECT_EQ(plan.backgrounds[2].timelineIn, 12 * T + 3 * H);
-    EXPECT_EQ(plan.backgrounds[2].sourceIn, 0);        // wrapped
-    EXPECT_EQ(plan.backgrounds[2].duration, 5 * H);
+    EXPECT_EQ(plan.backgrounds[1].sourceIn, 0);
+    EXPECT_EQ(plan.backgrounds[1].duration, 3 * T);
+    EXPECT_EQ(plan.backgrounds[2].firstShot, 2u);
+    EXPECT_EQ(plan.backgrounds[2].timelineIn, 15 * T);
+    EXPECT_EQ(plan.backgrounds[2].sourceIn, 0);
+    EXPECT_EQ(plan.backgrounds[2].duration, T);
     EXPECT_FALSE(plan.backgrounds[3].closeUp);
     EXPECT_EQ(plan.backgrounds[3].timelineIn, 18 * T);
-    EXPECT_EQ(plan.backgrounds[3].sourceIn, 1 * T);    // (18 - 10) mod 3.5
-    EXPECT_EQ(plan.backgrounds[3].duration, 5 * H);
+    EXPECT_EQ(plan.backgrounds[3].sourceIn, 0);
+    EXPECT_EQ(plan.backgrounds[3].duration, 7 * H);
+    EXPECT_EQ(plan.backgrounds[4].firstShot, 3u);
+    EXPECT_EQ(plan.backgrounds[4].timelineIn, 18 * T + 7 * H);
     EXPECT_EQ(plan.backgrounds[4].sourceIn, 0);
-    EXPECT_EQ(plan.backgrounds[4].duration, 3 * H);
+    EXPECT_EQ(plan.backgrounds[4].duration, H);
 
-    // A still image never wraps: one clip per run.
+    // A still image never wraps: one clip per shot.
     const auto still = planAssembly(shots, 0, 2.0, 0.0);
-    EXPECT_EQ(still.backgrounds.size(), 3u);
+    ASSERT_EQ(still.backgrounds.size(), shots.size());
+    for (size_t i = 0; i < shots.size(); ++i) {
+        EXPECT_EQ(still.backgrounds[i].firstShot, i);
+        EXPECT_EQ(still.backgrounds[i].timelineIn, still.shots[i].timelineIn);
+        EXPECT_EQ(still.backgrounds[i].duration, still.shots[i].duration);
+        EXPECT_EQ(still.backgrounds[i].sourceIn, 0);
+    }
+}
+
+TEST(ShotPipelineTest, ConsecutiveWidesRestartBackgroundIncludingLoopWraps)
+{
+    const int64_t T = kTicksPerSecond;
+    std::vector<AssemblyShot> shots{
+        {"INTRO", false, 3.0, 0.0},
+        {"INTRO", false, 1.0, 0.0},
+        {"INTRO", false, 1.0, 0.0},
+        {"STORY", false, 1.0, 0.0},
+    };
+    const auto plan = planAssembly(shots, 10 * T, 2.0, 2.0);
+    ASSERT_EQ(plan.backgrounds.size(), 5u);
+    // The long opening shot loops. Consecutive later wides each get their
+    // own background starting at zero.
+    EXPECT_EQ(plan.backgrounds[0].firstShot, 0u);
+    EXPECT_EQ(plan.backgrounds[1].firstShot, 0u);
+    EXPECT_EQ(plan.backgrounds[1].duration, T);
+    EXPECT_EQ(plan.backgrounds[2].firstShot, 1u);
+    EXPECT_EQ(plan.backgrounds[2].timelineIn, 13 * T);
+    EXPECT_EQ(plan.backgrounds[2].sourceIn, 0);
+    EXPECT_EQ(plan.backgrounds[3].firstShot, 2u);
+    EXPECT_EQ(plan.backgrounds[3].timelineIn, 14 * T);
+    EXPECT_EQ(plan.backgrounds[3].sourceIn, 0);
+    EXPECT_EQ(plan.backgrounds[4].firstShot, 3u);
+    EXPECT_EQ(plan.backgrounds[4].sourceIn, 0);
 }
 
 TEST(ShotPipelineTest, FileNamesSortAndAreSafe)

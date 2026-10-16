@@ -223,6 +223,15 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::PenMask);
         event->accept(); return;
     }
+    // Unbound by default; assignable in the keyboard shortcut editor.
+    if (matchesAction(ShortcutManager::kToolEllipseMask, 0, Qt::NoModifier)) {
+        if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::EllipseMask);
+        event->accept(); return;
+    }
+    if (matchesAction(ShortcutManager::kToolRectangleMask, 0, Qt::NoModifier)) {
+        if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::RectangleMask);
+        event->accept(); return;
+    }
     if (matchesAction(ShortcutManager::kToolZoom, Qt::Key_Z, Qt::NoModifier)) {
         if (m_ws->timelinePanel()) m_ws->timelinePanel()->setActiveTool(EditTool::Zoom);
         event->accept(); return;

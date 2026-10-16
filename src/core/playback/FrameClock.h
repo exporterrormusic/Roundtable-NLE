@@ -33,11 +33,52 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace rt {
 
 namespace frame_clock_detail {
+
+// Select sequential requests without canceling the initial render-ahead
+// ramp. Keeping this independent of wall time lets cadence be tested at
+// exact frame boundaries, including reverse and seek resets.
+class FrameRequestPacer
+{
+public:
+    std::optional<int64_t> next(int64_t frame, double speed,
+                                uint64_t resetGeneration) noexcept
+    {
+        constexpr int64_t leadFrames = 2;
+        const int64_t dir = speed < 0.0 ? -1 : 1;
+        const bool buildingLead = m_ticks <= leadFrames;
+        const int64_t lead = std::min(m_ticks++, leadFrames);
+        const int64_t target = std::max<int64_t>(0, frame + dir * lead);
+        const bool resync = !m_previous || buildingLead ||
+            std::abs(std::abs(speed) - 1.0) >= 0.01 ||
+            dir != m_direction || resetGeneration != m_resetGeneration;
+        int64_t requested = target;
+        if (!resync) {
+            const int64_t next = *m_previous + dir;
+            const int64_t ahead = (next - target) * dir;
+            if (ahead > 1 && ahead <= 3) return std::nullopt;
+            if (ahead >= -2 && ahead <= 1)
+                requested = std::max<int64_t>(0, next);
+        }
+        m_previous = requested;
+        m_direction = dir;
+        m_resetGeneration = resetGeneration;
+        return requested;
+    }
+
+    void reset() noexcept { *this = FrameRequestPacer{}; }
+
+private:
+    int64_t m_ticks{0};
+    std::optional<int64_t> m_previous;
+    int64_t m_direction{1};
+    uint64_t m_resetGeneration{0};
+};
 
 struct JumpObservation
 {

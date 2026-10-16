@@ -705,13 +705,23 @@ TEST(EffectParamsTest, ChromaKeyDefaults)
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::KeyColorR, 0), 0.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::KeyColorG, 0), 1.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::KeyColorB, 0), 0.0f);
-    EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Transparency, 0), 45.0f);
+    EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Transparency, 0), 0.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Tolerance, 0), 50.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Pedestal, 0), 10.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Desaturate, 0), 25.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Saturation, 0), 100.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Hue, 0), 0.0f);
     EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Luminance, 0), 100.0f);
+}
+
+TEST(EffectParamsTest, ChromaKeyPresetsKeepForegroundOpaque)
+{
+    ChromaKey fx;
+    for (int preset = 0; preset < 3; ++preset) {
+        fx.param(ChromaKey::Transparency).track.setDefaultValue(45.0f);
+        fx.applyPreset(preset);
+        EXPECT_FLOAT_EQ(fx.evalParam(ChromaKey::Transparency, 0), 0.0f);
+    }
 }
 
 TEST(EffectParamsTest, Transform2DDefaults)

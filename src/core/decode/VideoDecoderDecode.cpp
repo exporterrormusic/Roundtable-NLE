@@ -63,45 +63,130 @@ bool VideoDecoder::seek(double timeSeconds, SeekMode mode)
 
     AVStream* vs = m_fmtCtx->streams[m_info.videoStreamIndex];
 
-    int64_t targetTs = static_cast<int64_t>(timeSeconds / av_q2d(vs->time_base));
-
-    int flags = AVSEEK_FLAG_BACKWARD;
-    int ret = av_seek_frame(m_fmtCtx, m_info.videoStreamIndex, targetTs, flags);
-    if (ret < 0)
-    {
-        int64_t tsAv = static_cast<int64_t>(timeSeconds * AV_TIME_BASE);
-        ret = av_seek_frame(m_fmtCtx, -1, tsAv, flags);
-        if (ret < 0)
-        {
-            m_lastError = "Seek failed";
-            return false;
-        }
-    }
-
-    avcodec_flush_buffers(m_codecCtx);
-    m_draining = false;
-
-    if (mode == SeekMode::Precise)
-    {
-        DecodedFrame dummy;
-        while (true)
-        {
-            int rdret = av_read_frame(m_fmtCtx, m_packet);
-            if (rdret < 0) break;
-            if (m_packet->stream_index != m_info.videoStreamIndex) {
-                av_packet_unref(m_packet);
-                continue;
+    const auto seekDemuxer = [&](double seconds) {
+        const int64_t targetTs = static_cast<int64_t>(seconds / av_q2d(vs->time_base));
+        const int flags = AVSEEK_FLAG_BACKWARD;
+        int ret = av_seek_frame(m_fmtCtx, m_info.videoStreamIndex, targetTs, flags);
+        if (ret < 0) {
+            const int64_t tsAv = static_cast<int64_t>(seconds * AV_TIME_BASE);
+            ret = av_seek_frame(m_fmtCtx, -1, tsAv, flags);
+            if (ret < 0) {
+                m_lastError = "Seek failed";
+                return false;
             }
-            bool ok = decodePacket(m_packet, dummy);
-            av_packet_unref(m_packet);
-            if (ok && dummy.timestamp >= timeSeconds - (0.5 / m_info.fps))
-                break;
         }
         avcodec_flush_buffers(m_codecCtx);
+        m_draining = false;
+        av_frame_unref(m_pendingFrame);
+        m_hasPendingFrame = false;
+        av_packet_unref(m_heldPacket);
+        m_hasHeldPacket = false;
+        return true;
+    };
+
+    if (!seekDemuxer(timeSeconds)) return false;
+    if (mode == SeekMode::Precise) {
+        // Open GOP: B-frames shown just before a keyframe are coded after
+        // it, so the keyframe's DECODE time precedes them and a backward
+        // seek can pick a keyframe that is SHOWN after the target (target
+        // 44, keyframe 45). If decoding starts past the target, seek
+        // further back and decode forward again.
+        for (double backoff = 1.0;
+             decodeForwardTo(timeSeconds) && backoff <= 16.0; backoff *= 2.0) {
+            const double from = std::max(0.0, timeSeconds - backoff);
+            if (!seekDemuxer(from)) return false;
+            if (from <= 0.0) {
+                decodeForwardTo(timeSeconds);
+                break;
+            }
+        }
     }
 
     m_currentFrame = secondsToFrame(timeSeconds);
     return true;
+}
+
+bool VideoDecoder::decodeForwardTo(double timeSeconds)
+{
+    // A frame "covers" the target from half a frame before it (the rule the
+    // callers have always used).
+    const double fps = m_info.fps > 0.0 ? m_info.fps : 30.0;
+    const double reachedAt = timeSeconds - 0.5 / fps;
+    const double pastTarget = timeSeconds + 0.5 / fps;
+    bool firstPicture = true;
+    bool overshot = false;
+    const AVRational timeBase = m_fmtCtx->streams[m_info.videoStreamIndex]->time_base;
+
+    // Catch-up decode (FilmCraft's GOP cache does the same): a picture no
+    // other picture references, and which is shown before the target, can
+    // be skipped outright — the target decodes bit-identically, and on
+    // long-GOP B-frame footage about half the pictures are skippable.
+    const AVDiscard defaultSkip = m_codecCtx->skip_frame;
+
+    // Returns true once the target is parked in m_pendingFrame.
+    const auto takeFrames = [&]() {
+        while (avcodec_receive_frame(m_codecCtx, m_frame) == 0) {
+            const double shownAt = ptsToSeconds(m_frame->best_effort_timestamp
+                                                != AV_NOPTS_VALUE
+                                                    ? m_frame->best_effort_timestamp
+                                                    : m_frame->pts);
+            if (firstPicture) {
+                firstPicture = false;
+                overshot = shownAt >= pastTarget;
+            }
+            // Keep the latest picture either way: past the end of the
+            // stream the last frame is the closest we have.
+            av_frame_unref(m_pendingFrame);
+            av_frame_move_ref(m_pendingFrame, m_frame);
+            m_hasPendingFrame = true;
+            if (shownAt >= reachedAt) return true;
+        }
+        return false;
+    };
+
+    bool found = false;
+    while (!found) {
+        int readResult = 0;
+        if (m_hasHeldPacket) {
+            // A packet an earlier precise seek could not send goes first.
+            av_packet_move_ref(m_packet, m_heldPacket);
+            m_hasHeldPacket = false;
+        } else {
+            readResult = av_read_frame(m_fmtCtx, m_packet);
+        }
+        if (readResult < 0) {
+            // End of stream: drain what the decoder still holds.
+            m_codecCtx->skip_frame = defaultSkip;
+            avcodec_send_packet(m_codecCtx, nullptr);
+            found = takeFrames();
+            m_draining = true;
+            break;
+        }
+        if (m_packet->stream_index != m_info.videoStreamIndex) {
+            av_packet_unref(m_packet);
+            continue;
+        }
+        const bool beforeTarget = m_packet->pts != AV_NOPTS_VALUE
+            && m_packet->pts * av_q2d(timeBase) < reachedAt;
+        m_codecCtx->skip_frame = beforeTarget ? AVDISCARD_NONREF : defaultSkip;
+        if (avcodec_send_packet(m_codecCtx, m_packet) == AVERROR(EAGAIN)) {
+            // Output queue full (frame threads): collect, then resend.
+            found = takeFrames();
+            if (found) {
+                // Not sent yet — decodeNext() sends it first, or that
+                // picture would silently go missing after the target.
+                av_packet_unref(m_heldPacket);
+                av_packet_move_ref(m_heldPacket, m_packet);
+                m_hasHeldPacket = true;
+                break;
+            }
+            avcodec_send_packet(m_codecCtx, m_packet);
+        }
+        av_packet_unref(m_packet);
+        found = takeFrames();
+    }
+    m_codecCtx->skip_frame = defaultSkip;
+    return overshot;
 }
 
 bool VideoDecoder::seekToFrame(int64_t frameNumber, SeekMode mode)
@@ -110,12 +195,40 @@ bool VideoDecoder::seekToFrame(int64_t frameNumber, SeekMode mode)
     return seek(time, mode);
 }
 
+bool VideoDecoder::advanceTo(double timeSeconds)
+{
+    std::lock_guard lock(m_mutex);
+    if (!m_isOpen) return false;
+    if (m_hasPendingFrame) {
+        // A parked picture that already covers the target is the answer.
+        const double fps = m_info.fps > 0.0 ? m_info.fps : 30.0;
+        const double shownAt = ptsToSeconds(
+            m_pendingFrame->best_effort_timestamp != AV_NOPTS_VALUE
+                ? m_pendingFrame->best_effort_timestamp : m_pendingFrame->pts);
+        if (shownAt >= timeSeconds - 0.5 / fps) return true;
+        av_frame_unref(m_pendingFrame);
+        m_hasPendingFrame = false;
+    }
+    decodeForwardTo(timeSeconds);   // consumes a held packet first
+    m_currentFrame = secondsToFrame(timeSeconds);
+    return m_hasPendingFrame;
+}
+
 // ── Decode ──────────────────────────────────────────────────────────────────
 
 bool VideoDecoder::decodeNext(DecodedFrame& outFrame)
 {
     std::lock_guard lock(m_mutex);
     if (!m_isOpen) return false;
+
+    // The target of the last precise seek.
+    if (m_hasPendingFrame) {
+        av_frame_unref(m_frame);
+        av_frame_move_ref(m_frame, m_pendingFrame);
+        m_hasPendingFrame = false;
+        fillFrameInfo(outFrame, m_frame);
+        return true;
+    }
 
     while (true)
     {
@@ -134,7 +247,13 @@ bool VideoDecoder::decodeNext(DecodedFrame& outFrame)
             return false;
         }
 
-        ret = av_read_frame(m_fmtCtx, m_packet);
+        if (m_hasHeldPacket) {
+            av_packet_move_ref(m_packet, m_heldPacket);
+            m_hasHeldPacket = false;
+            ret = 0;
+        } else {
+            ret = av_read_frame(m_fmtCtx, m_packet);
+        }
         if (ret < 0)
         {
             if (ret == AVERROR_EOF) {
@@ -168,20 +287,6 @@ bool VideoDecoder::decodeAt(double timeSeconds, DecodedFrame& outFrame)
     if (!seek(timeSeconds, SeekMode::Precise))
         return false;
     return decodeNext(outFrame);
-}
-
-bool VideoDecoder::decodePacket(AVPacket* packet, DecodedFrame& outFrame)
-{
-    int ret = avcodec_send_packet(m_codecCtx, packet);
-    if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
-        return false;
-
-    ret = avcodec_receive_frame(m_codecCtx, m_frame);
-    if (ret < 0)
-        return false;
-
-    fillFrameInfo(outFrame, m_frame);
-    return true;
 }
 
 void VideoDecoder::fillFrameInfo(DecodedFrame& outFrame, AVFrame* frame)

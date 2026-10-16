@@ -522,7 +522,12 @@ void DropController::wireMediaDropSignals()
             if (!isCharacterClip) {
                 label = QFileInfo(QString::fromStdString(path)).baseName().toStdString();
             }
-            int64_t dur = secondsToTicks(5.0);
+            // Default length (stills, characters) in WHOLE frames so the
+            // clip ends on the frame grid at NTSC rates; the drag ghost
+            // uses the same value (TimelinePanel::mediaDropDuration).
+            int64_t dur = m_ws->project()
+                ? wholeFrameDurationTicks(5.0, m_ws->project()->settings().frameGrid())
+                : secondsToTicks(5.0);
             double sourceFps = 0.0;
             bool mediaHasAudio = false;
             uint32_t srcW = 0, srcH = 0;

@@ -406,6 +406,39 @@ void EffectControlsPanel::buildPropertyTree()
             .arg(Theme::typography().sizeXxs));
         m_propLayout->addWidget(videoLabel);
 
+        // ── Unassigned Masks (Premiere 26) ──────────────────────────────
+        // Masks drawn with no Opacity/effect target land here and affect
+        // nothing until dragged onto Opacity or an effect (or assigned from
+        // their right-click menu). Shown whenever the clip has any mask so
+        // there is always somewhere to drag a mask back to.
+        bool clipHasAnyMask = m_clip->maskCount() > 0;
+        for (size_t fi = 0; !clipHasAnyMask
+             && fi < m_clip->effects().effectCount(); ++fi)
+            clipHasAnyMask = m_clip->effects().effect(fi).maskCount() > 0;
+        if (clipHasAnyMask) {
+            size_t unassignedCount = 0;
+            for (const auto& mask : m_clip->masks())
+                if (mask.unassigned) ++unassignedCount;
+            auto* unassignedHeader = new QLabel(
+                tr("Unassigned Masks (%1)").arg(unassignedCount),
+                m_propContainer);
+            unassignedHeader->setObjectName(QStringLiteral("unassignedMasksHeader"));
+            unassignedHeader->setFixedHeight(26);
+            unassignedHeader->setToolTip(tr(
+                "Masks here affect nothing. Drag one onto Opacity or an "
+                "effect (or right-click it) to apply it."));
+            unassignedHeader->setProperty("maskDropTarget",
+                                          QStringLiteral("unassigned"));
+            unassignedHeader->setStyleSheet(QStringLiteral(
+                "background: %1; color: %2; font-size: %4px; font-weight: bold; "
+                "padding-left: 8px; border-bottom: 1px solid %3;")
+                .arg(Theme::hex(tc.surface2), Theme::hex(tc.textSecondary),
+                     Theme::hex(tc.border))
+                .arg(Theme::typography().sizeXs));
+            m_propLayout->addWidget(unassignedHeader);
+            buildMaskUI(m_clip->masks(), 0, rowIdx, MaskListFilter::Unassigned);
+        }
+
         // ── Motion section ──────────────────────────────────────────────
         m_motionSection = makeSectionHeader("Motion");
         m_propLayout->addWidget(m_motionSection);
@@ -546,6 +579,9 @@ void EffectControlsPanel::buildPropertyTree()
                              Theme::hex(tc.surface3), Theme::hex(tc.accent))
                         .arg(Theme::typography().sizeXs));
                     connect(btn, &QToolButton::clicked, this, [this, shapeType]() {
+                        // These buttons live on the Opacity header, so the
+                        // new mask is an Opacity mask.
+                        selectMaskOwner(0);
                         if (shapeType == 2)
                             emit penMaskToolRequested(0);
                         else
@@ -565,6 +601,8 @@ void EffectControlsPanel::buildPropertyTree()
                 headerLayout->insertItem(headerLayout->count() - 1, stretchItem);
             }
         }
+        m_opacitySection->setProperty("maskDropTarget", QStringLiteral("opacity"));
+        m_opacitySection->installEventFilter(this);
         m_propLayout->addWidget(m_opacitySection);
 
         m_opacityRow = makeRow("Opacity", effOpacity());
@@ -622,7 +660,7 @@ void EffectControlsPanel::buildPropertyTree()
         });
 
         // ── Mask sub-sections (below blend mode, still in Opacity section) ──
-        buildMaskUI(m_clip->masks(), 0, rowIdx);
+        buildMaskUI(m_clip->masks(), 0, rowIdx, MaskListFilter::Assigned);
     }
 
     // ╔════════════════════════════════════════════════════════════════════
@@ -750,6 +788,7 @@ void EffectControlsPanel::buildPropertyTree()
                         .arg(Theme::typography().sizeXs));
                     connect(btn, &QToolButton::clicked, this,
                             [this, shapeType, fxId]() {
+                        selectMaskOwner(fxId);
                         if (shapeType == 2)
                             emit penMaskToolRequested(fxId);
                         else
@@ -828,6 +867,9 @@ void EffectControlsPanel::buildPropertyTree()
 
             // Left-click on header selects the effect
             fxHeader->installEventFilter(this);
+            if (!isAudioEffect(fx.effectType()))
+                fxHeader->setProperty("maskDropEffectId",
+                                      QVariant::fromValue<qulonglong>(fx.id()));
 
             // ── Ultra Key gets grouped sub-sections ─────────────────────
             if (fx.effectType() == EffectType::ChromaKey) {
@@ -861,6 +903,7 @@ void EffectControlsPanel::buildPropertyTree()
 
     // Stretch at bottom
     m_propLayout->addStretch();
+    refreshMaskOwnerHighlight();
 
     // Default collapsed sections: only Motion and Opacity start expanded
     if (m_sectionCollapsed.find(QStringLiteral("Crop")) == m_sectionCollapsed.end())
@@ -1018,13 +1061,15 @@ void EffectControlsPanel::populateFromClip()
 
     int64_t t = clipRelativeTick();
 
-    // Position — clip-level is stored REF-1920 and shown ×seqW/1920;
-    // graphic-layer is stored project-px (already seq-px) and shown as-is.
-    // posDisplayFactor{X,Y}() returns the right multiplier for each source.
+    // Clip positions are stored as centre-relative REF-1920 offsets, but
+    // Motion shows sequence coordinates from the top left (Premiere-style).
+    // Graphic layers already store their absolute position in project pixels.
     const double posFx = posDisplayFactorX();
     const double posFy = posDisplayFactorY();
-    if (auto* trk = effPosX();    m_posXSpin && trk) m_posXSpin->setValue(trk->evaluate(t) * posFx);
-    if (auto* trk = effPosY();    m_posYSpin && trk) m_posYSpin->setValue(trk->evaluate(t) * posFy);
+    const double originX = m_graphicLayer ? 0.0 : 960.0;
+    const double originY = m_graphicLayer ? 0.0 : 540.0;
+    if (auto* trk = effPosX();    m_posXSpin && trk) m_posXSpin->setValue((trk->evaluate(t) + originX) * posFx);
+    if (auto* trk = effPosY();    m_posYSpin && trk) m_posYSpin->setValue((trk->evaluate(t) + originY) * posFy);
 
     // Scale — Premiere-style native-pixel percentage.  Stored values are
     // cover-fit multipliers (1.0 = fill frame), but we want the displayed

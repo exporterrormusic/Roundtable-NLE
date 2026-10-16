@@ -94,7 +94,7 @@ struct MediaEntry
     int                            swsDstH{0};
 
     /// When true, the decoded video has packed-alpha layout (top half = RGB,
-    /// bottom half = alpha as greyscale).  decodeFrame / decodePrefetchFrame
+    /// bottom half = alpha as greyscale).  decodePrefetchFrame
     /// will unpack inline so cached frames are ready-to-use BGRA at half height.
     bool                           packedAlpha{false};
 
@@ -267,10 +267,11 @@ public:
     /// Force a single media file to be re-read from disk after its
     /// contents changed (live file replacement / edited Color Matte).
     /// Evicts the CPU + disk frame cache for the file, cancels pending
-    /// prefetch.  When reopenDecoder is true (default), reopens the
-    /// decoder IN PLACE.  When false, the decoder is closed and left
-    /// closed — the HANDLE is fully released so Explorer can recreate
-    /// the file.  The next getFrame() transparently reopens on demand.
+    /// prefetch.  When reopenDecoder is true (default), re-probes the new
+    /// file's stream info IN PLACE (the entry decoder only probes and is
+    /// closed again).  When false, the stream info is left as it was.
+    /// Either way no HANDLE stays open, so Explorer can recreate the file;
+    /// the decoders that decode reopen on the next getFrame().
     /// The handle and the path→handle mapping are intentionally preserved:
     /// every consumer that cached the handle (compositor, Source Monitor,
     /// clips) keeps it and transparently receives freshly decoded pixels
@@ -433,8 +434,10 @@ public:
     /// scheduled first).  When the worker pool is at capacity, lower-priority
     /// tasks queue while higher-priority ones run, so clips needed sooner
     /// finish their pre-decode first.
+    /// Decoding starts at this file's last requested frame; `startFrameHint`
+    /// (wrapped to the loop) is used when nothing has been requested yet.
     void startLoopPreDecode(MediaHandle handle, ResolutionTier tier = ResolutionTier::Full,
-                            int64_t priority = 0);
+                            int64_t priority = 0, int64_t startFrameHint = 0);
 
     // ── Disk cache ──────────────────────────────────────────────────────
     /// Attach a persistent disk-backed second-level cache.
@@ -462,9 +465,6 @@ public:
 private:
     MediaEntry* findEntry(MediaHandle handle);
     const MediaEntry* findEntry(MediaHandle handle) const;
-
-    std::shared_ptr<CachedFrame> decodeFrame(MediaEntry& entry, int64_t frameNumber,
-                                              ResolutionTier tier, bool scrubMode = false);
 
     // ── Prefetch background worker ──────────────────────────────────────
     // PREFETCH_THREAD_COUNT total workers; workers [0 .. PREFETCH_NVDEC_
@@ -591,7 +591,7 @@ private:
     // (Public startLoopPreDecode declared above.)
     void loopPreDecodeWorker(MediaHandle handle, std::filesystem::path path,
                              VideoStreamInfo info, bool packedAlpha,
-                             ResolutionTier tier);
+                             ResolutionTier tier, int64_t startFrameHint);
 
     mutable std::mutex                             m_mutex;
     std::unordered_map<MediaHandle, MediaEntry>     m_entries;
@@ -637,13 +637,17 @@ private:
     std::condition_variable                           m_prefetchCv;
     std::atomic<bool>                                m_prefetchRunning{false};
     std::deque<PrefetchTask>                         m_prefetchQueue;
-    std::atomic<int64_t>                              m_playheadFrame{0}; // for priority scheduling
     std::atomic<double>                                m_projectFps{30.0}; // for frame-stride optimization
     std::atomic<double>                                m_playbackSpeed{1.0}; // for high-speed decode striding
 
     // Per-handle cooldown to avoid rebuilding the queue every frame tick.
     // Protected by m_prefetchMutex.
     std::unordered_map<MediaHandle, std::chrono::steady_clock::time_point> m_lastScheduleTime;
+    // Last frame requested per handle: the reference for pruning, ordering
+    // and loop start. Frame numbers of different files are unrelated, so a
+    // pool-wide playhead dropped and misordered other files' decode-ahead.
+    // Protected by m_prefetchMutex.
+    std::unordered_map<MediaHandle, int64_t> m_handlePlayheadFrame;
     // Per-handle prefetch ownership (handle -> worker id).
     // Ensures only ONE worker services a given handle at a time, which forces
     // sequential frame decoding on the fast path (~10ms/frame) and avoids
@@ -692,6 +696,7 @@ private:
         VideoStreamInfo         info;
         bool                    packedAlpha;
         ResolutionTier          tier;
+        int64_t                 startFrameHint{0};
         // Greater = lower scheduling priority.  std::priority_queue is a
         // max-heap, so we invert: smaller priority value pops first.
         bool operator<(const LoopPreDecodeTask& o) const {

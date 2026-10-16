@@ -296,6 +296,10 @@ struct CacheStats
     size_t   hitCount{0};
     size_t   missCount{0};
     size_t   evictionCount{0};
+    /// Evicted before anything read them: decode/prefetch work thrown away.
+    /// A high rate during playback means the cache can't hold the prefetch
+    /// window (frames are decoded, dropped, then missed and held).
+    size_t   evictedUnusedCount{0};
     size_t   frameCount{0};
     size_t   memoryUsed{0};     // Bytes
     size_t   memoryCapacity{0}; // Bytes
@@ -416,16 +420,19 @@ public:
     /// producing the "playback slows to a crawl" symptom documented
     /// in logs around the 13:40-13:41 perf window.
     ///
-    /// When the live entry count exceeds this cap, evictUntilFits runs
-    /// pass 1 (behind-playhead) and falls through to pass 2 (pure LRU)
-    /// just as it does for byte-pressure.  May trigger evictions when
+    /// The cap counts ONLY entries that keep GPU memory alive: a
+    /// gpuTextureOwner, or a GPU-resident frame whose owner was handed to
+    /// GpuTextureCache but whose lazyReadback still holds the texture.
+    /// Pinned stills and CPU-pixel entries (bounded by bytes) don't count.  When those exceed it, evictUntilFits
+    /// runs pass 1 (behind-playhead) and pass 2 (pure LRU) over them, as it
+    /// does over every entry for byte-pressure.  May trigger evictions when
     /// called.  Pass 0 leaves the count uncapped (legacy behaviour).
     void setMaxEntries(size_t maxEntries);
 
     /// Current max-entries cap.  0 = uncapped.
     [[nodiscard]] size_t maxEntries() const noexcept;
 
-    /// Number of entries whose CachedFrame still holds gpuTextureOwner —
+    /// Number of entries that keep GPU memory alive (see setMaxEntries) —
     /// each pins an 8 MB VkImage (1080p BGRA) in VRAM.  Reported in the
     /// CACHE-DUMP perf line so an operator can spot orphan-texture
     /// accumulation directly.
@@ -482,19 +489,25 @@ private:
         // the size once locks the accounting symmetric regardless of
         // later pixel materialisation.
         size_t                       sizeBytes{0};
+        // Read by get() since put — eviction of an unread entry means
+        // decode/prefetch work was thrown away (m_evictedUnused).
+        bool                         used{false};
     };
 
-    void evictUntilFits(size_t neededBytes);
+    /// `incomingGpuOwned`: the frame about to be inserted pins a texture.
+    void evictUntilFits(size_t neededBytes, bool incomingGpuOwned = false);
 
     mutable std::mutex                                         m_mutex;
     std::unordered_map<CacheKey, CacheEntry, CacheKeyHash>     m_map;
     LruList                                                    m_lru;
     size_t                                                     m_capacity;
     size_t                                                     m_used{0};
-    // Hard ceiling on entry count.  See setMaxEntries() for rationale.
-    // Default 2000 — at 30 fps single-track this covers ~67 s of
-    // prefetch/follow-up state; multi-track projects share the same
-    // budget.  CachePolicy tunes this per GPU VRAM.  0 = uncapped.
+    // Hard ceiling on GPU-texture-owning entries (gpuTextureOwner).  See
+    // setMaxEntries() for rationale.  CPU-pixel entries are bounded by
+    // bytes (m_capacity) instead: counting them too let pinned stills and
+    // protected loop frames fill the cap, which then evicted the freshly
+    // prefetched video frames playback needed next (held frames).
+    // Default 2000; CachePolicy tunes this per GPU VRAM.  0 = uncapped.
     size_t                                                     m_maxEntries{2000};
 
     // Playhead positions per media handle (for smart eviction)
@@ -510,6 +523,7 @@ private:
     mutable size_t m_hits{0};
     mutable size_t m_misses{0};
     size_t         m_evictions{0};
+    size_t         m_evictedUnused{0};
 };
 
 } // namespace rt

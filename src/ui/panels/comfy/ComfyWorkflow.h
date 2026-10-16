@@ -69,4 +69,12 @@ struct ShotParams
 /// The expression text stored in the workflow (empty if none).
 [[nodiscard]] QString workflowExpression(const QJsonObject& prompt, const WorkflowSlots& targets);
 
+enum class BatchStage { Prepare, Generate, Finish };
+/// Preserve ToonOut RGBA and apply the approved interior repair before ProRes 4444 output.
+/// Unrelated custom workflows are returned unchanged.
+[[nodiscard]] QJsonObject alphaOutputPrompt(QJsonObject prompt, const WorkflowSlots& targets);
+/// Empty for workflows that do not have the supported SCAIL -> ToonOut -> SaveVideo path.
+[[nodiscard]] QJsonObject batchStagePrompt(const QJsonObject& prompt, const WorkflowSlots& targets,
+                                          BatchStage stage, const QString& artifactKey);
+
 } // namespace rt::comfy

@@ -668,6 +668,104 @@ void TransformOverlayWidget::cancelPenMask() noexcept
     update();
 }
 
+void TransformOverlayWidget::beginShapeMask(const QPointF& widgetPos)
+{
+    if (!m_masks) return;
+    QPointF local;
+    if (!widgetToMaskLocal(widgetPos, local)) return;
+
+    m_shapeDraft = OpacityMask{};
+    m_shapeDraft.shape = m_editTool == 10 ? MaskShape::Ellipse
+                                          : MaskShape::Rectangle;
+    m_shapeDraft.base.centerX = static_cast<float>(local.x());
+    m_shapeDraft.base.centerY = static_cast<float>(local.y());
+    m_shapeDraft.base.width = 0.0f;
+    m_shapeDraft.base.height = 0.0f;
+    m_shapePressWidget = widgetPos;
+    m_shapeDrawing = true;
+    m_dragMode = DragMode::DrawMaskShape;
+    update();
+}
+
+void TransformOverlayWidget::updateShapeMask(const QPointF& widgetPos,
+                                             Qt::KeyboardModifiers modifiers)
+{
+    if (!m_shapeDrawing) return;
+    QPointF start, current;
+    if (!widgetToMaskLocal(m_shapePressWidget, start)
+        || !widgetToMaskLocal(widgetPos, current))
+        return;
+
+    // Constrain in source pixels so Shift gives a true circle/square in the
+    // clip's own pixels, not a square in normalized (aspect-stretched) units.
+    const QSizeF sourceSize = maskSourceSize();
+    double dx = (current.x() - start.x()) * sourceSize.width();
+    double dy = (current.y() - start.y()) * sourceSize.height();
+    if (modifiers.testFlag(Qt::ShiftModifier)) {
+        const double side = std::max(std::abs(dx), std::abs(dy));
+        dx = std::copysign(side, dx);
+        dy = std::copysign(side, dy);
+    }
+
+    // Alt draws outward from the press point (Adobe convention); otherwise
+    // the press point is one corner of the bounding box.
+    const bool fromCenter = modifiers.testFlag(Qt::AltModifier);
+    const double widthPx = std::abs(dx) * (fromCenter ? 2.0 : 1.0);
+    const double heightPx = std::abs(dy) * (fromCenter ? 2.0 : 1.0);
+    const double centerX = fromCenter
+        ? start.x() : start.x() + 0.5 * dx / sourceSize.width();
+    const double centerY = fromCenter
+        ? start.y() : start.y() + 0.5 * dy / sourceSize.height();
+
+    auto& geo = m_shapeDraft.base;
+    geo.centerX = static_cast<float>(centerX);
+    geo.centerY = static_cast<float>(centerY);
+    geo.width = static_cast<float>(widthPx / sourceSize.width());
+    geo.height = static_cast<float>(heightPx / sourceSize.height());
+    update();
+}
+
+bool TransformOverlayWidget::commitShapeMask()
+{
+    if (!m_shapeDrawing || !m_masks) {
+        cancelShapeMask();
+        return false;
+    }
+    // A plain click (or a sliver) is not a mask: nothing is created unless
+    // the pointer actually sweeps out an area.
+    const QSizeF sourceSize = maskSourceSize();
+    const double widthPx = m_shapeDraft.base.width * sourceSize.width();
+    const double heightPx = m_shapeDraft.base.height * sourceSize.height();
+    if (widthPx < 2.0 || heightPx < 2.0) {
+        cancelShapeMask();
+        return false;
+    }
+
+    m_shapeDraft.name = "Mask " + std::to_string(m_masks->size() + 1);
+    const int index = static_cast<int>(m_masks->size());
+    const OpacityMask committed = m_shapeDraft;
+    m_masks->push_back(committed);
+    m_activeMaskIndex = index;
+    m_shapeDrawing = false;
+    m_shapeDraft = OpacityMask{};
+    if (m_dragMode == DragMode::DrawMaskShape)
+        m_dragMode = DragMode::None;
+    emit maskCreated(index, committed);
+    emit maskLiveUpdate();
+    update();
+    return true;
+}
+
+void TransformOverlayWidget::cancelShapeMask() noexcept
+{
+    if (!m_shapeDrawing) return;
+    m_shapeDrawing = false;
+    m_shapeDraft = OpacityMask{};
+    if (m_dragMode == DragMode::DrawMaskShape)
+        m_dragMode = DragMode::None;
+    update();
+}
+
 bool TransformOverlayWidget::editExistingMaskWithPen(
     const QPointF& widgetPos, Qt::KeyboardModifiers modifiers)
 {

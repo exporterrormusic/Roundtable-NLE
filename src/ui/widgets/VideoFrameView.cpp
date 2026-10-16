@@ -23,18 +23,29 @@ VideoFrameView::VideoFrameView(QWidget* parent)
 void VideoFrameView::setPoster(const QImage& image)
 {
     m_poster = image;
-    if (m_frame.isNull()) update();
+    if (m_showPoster && !m_poster.isNull()) m_frame = QImage();
+    update();
 }
 
 void VideoFrameView::setFrame(const QImage& image)
 {
+    if (image.isNull()) return;
+    m_showPoster = false;
     m_frame = image;
     update();
 }
 
 void VideoFrameView::showPoster()
 {
-    if (m_frame.isNull()) return;
+    m_showPoster = true;
+    if (!m_poster.isNull()) m_frame = QImage();
+    update();
+}
+
+void VideoFrameView::clear()
+{
+    m_showPoster = true;
+    m_poster = QImage();
     m_frame = QImage();
     update();
 }

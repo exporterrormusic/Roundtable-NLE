@@ -28,6 +28,10 @@
 #include "effects/Effect.h"
 
 #include <QApplication>
+#include <QContextMenuEvent>
+#include <QDrag>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -714,15 +718,14 @@ void EffectControlsPanel::applyTransformLive()
     };
 
     if (spin == m_posXSpin) {
-        // Spin shows display-space pixels; divide by display-factor on write.
-        // (clip-level: stored REF-1920, factor = seqW/1920. layer-level:
-        // stored project-px, factor = 1.0.)
+        // Convert absolute sequence coordinates back to centre-relative
+        // REF-1920 offsets. Graphic layers already use absolute project pixels.
         writeCompound(effPosX(),
-                      static_cast<float>(spin->value() / posDisplayFactorX()),
+                      static_cast<float>(spin->value() / posDisplayFactorX() - (m_graphicLayer ? 0.0 : 960.0)),
                       effPosY());
     } else if (spin == m_posYSpin) {
         writeCompound(effPosY(),
-                      static_cast<float>(spin->value() / posDisplayFactorY()),
+                      static_cast<float>(spin->value() / posDisplayFactorY() - (m_graphicLayer ? 0.0 : 540.0)),
                       effPosX());
     } else if (spin == m_scaleSpin || spin == m_scaleWSpin) {
         // Spin shows Premiere-style native percentage MAGNITUDE; convert back
@@ -897,13 +900,16 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
 
     // Identify which track this spin operates on
     KeyframeTrack<float>* track = nullptr;
-    double factor = 1.0;  // spin-display-value = track-value * factor
+    double factor = 1.0;  // spin-display-value = (track-value + origin) * factor
+    double origin = 0.0;
     bool uniformScale = false;
 
     if      (spin == m_posXSpin)     { track = effPosX();
-                                       factor = posDisplayFactorX(); }
+                                       factor = posDisplayFactorX();
+                                       origin = m_graphicLayer ? 0.0 : 960.0; }
     else if (spin == m_posYSpin)     { track = effPosY();
-                                       factor = posDisplayFactorY(); }
+                                       factor = posDisplayFactorY();
+                                       origin = m_graphicLayer ? 0.0 : 540.0; }
     else if (spin == m_scaleSpin)    { track = effScaleX();
                                        // displayed = stored × coverFit × 100,
                                        // so factor (= displayed / stored) is
@@ -1022,8 +1028,8 @@ void EffectControlsPanel::commitTransform(double /*oldVal*/, double /*newVal*/)
         oldF = dbToGain(static_cast<float>(spin->scrubStartValue()));
         newF = dbToGain(static_cast<float>(spin->value()));
     } else {
-        oldF = static_cast<float>(spin->scrubStartValue() / factor);
-        newF = static_cast<float>(spin->value() / factor);
+        oldF = static_cast<float>(spin->scrubStartValue() / factor - origin);
+        newF = static_cast<float>(spin->value() / factor - origin);
     }
     int64_t t = (track->keyframeCount() > 0) ? clipRelativeTick() : 0;
 
@@ -1479,6 +1485,8 @@ bool EffectControlsPanel::selectMaskById(quint64 effectId, uint64_t maskId)
     m_selectedMaskEffectId = effectId;
     m_selectedMaskId = maskId;
     m_selectedEffectIndex = -1;
+    m_opacitySelected = false;
+    refreshMaskOwnerHighlight();
 
     const auto& tc = Theme::colors();
     for (auto* effectHeader : m_effectHeaders) {
@@ -1675,8 +1683,63 @@ bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
         }
     }
 
+    // ── Mask header: drag to assign, right-click menu ────────────────────
+    const bool onMaskHeader = maskRoot
+        && maskRoot->objectName() == QLatin1String("maskHeader")
+        && !qobject_cast<QToolButton*>(w);
+    if (event->type() == QEvent::ContextMenu && onMaskHeader) {
+        showMaskAssignMenu(maskRoot,
+                           static_cast<QContextMenuEvent*>(event)->globalPos(),
+                           maskRoot->property("maskEffectId").toULongLong(),
+                           maskRoot->property("maskId").toULongLong());
+        return true;
+    }
+    if (event->type() == QEvent::MouseMove && m_maskDragSource) {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (!(me->buttons() & Qt::LeftButton)) {
+            m_maskDragSource = nullptr;
+        } else if ((me->globalPosition().toPoint() - m_maskDragPressPos)
+                       .manhattanLength() >= QApplication::startDragDistance()) {
+            // Manual press/move -> QDrag (Qt's automatic drag start never
+            // fires reliably in this app).
+            QWidget* source = m_maskDragSource;
+            m_maskDragSource = nullptr;
+            auto* mime = new QMimeData;
+            mime->setData(QStringLiteral("application/x-roundtable-mask"),
+                          QByteArray::number(source->property("maskEffectId")
+                                                 .toULongLong())
+                              + ':'
+                              + QByteArray::number(source->property("maskId")
+                                                       .toULongLong()));
+            auto* drag = new QDrag(this);
+            drag->setMimeData(mime);
+            drag->setPixmap(source->grab());
+            drag->setHotSpot(QPoint(16, source->height() / 2));
+            drag->exec(Qt::MoveAction);
+            setMaskDropHighlight(nullptr);
+            return true;
+        }
+    }
+    if (event->type() == QEvent::MouseButtonRelease)
+        m_maskDragSource = nullptr;
+
     if (event->type() == QEvent::MouseButtonPress && w) {
         const auto& tc = Theme::colors();
+
+        if (onMaskHeader
+            && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            m_maskDragSource = maskRoot;
+            m_maskDragPressPos =
+                static_cast<QMouseEvent*>(event)->globalPosition().toPoint();
+        }
+
+        // Opacity header: new masks drawn in the Program Monitor are
+        // assigned to Opacity while it is selected (Premiere 26).
+        if (w == m_opacitySection) {
+            selectMaskOwner(0);
+            setFocus();
+            return false;
+        }
 
         // A filtered child resolves selection through its nearest tagged
         // mask row/header, then continues into its own normal click.
@@ -1710,10 +1773,8 @@ bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
                                  Theme::hex(tc.border)));
                     }
                 }
-                // Highlight selected header
-                w->setStyleSheet(QStringLiteral(
-                    "background: %1; border-bottom: 1px solid %2;")
-                    .arg(Theme::hex(tc.accentDim), Theme::hex(tc.border)));
+                m_opacitySelected = false;
+                refreshMaskOwnerHighlight();  // highlights this header
                 setFocus(); // Ensure we get key events
                 break;
             }

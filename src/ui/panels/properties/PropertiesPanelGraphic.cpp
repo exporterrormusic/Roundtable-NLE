@@ -12,13 +12,16 @@
 
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/FontFamilyCombo.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
 #include "timeline/GraphicClip.h"
+#include "timeline/ClipMutation.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 
+#include <QAbstractItemView>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -33,6 +36,7 @@
 #include <QSignalBlocker>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -129,8 +133,12 @@ void PropertiesPanel::setInlineTextSelectionFormat(
     if (!m_monitorTextEditing) return;
     const bool oldUpdating = m_updating;
     m_updating = true;
-    if (!(mixedFlags & (1u << 0)) && m_gfxFontFamilyCombo)
-        m_gfxFontFamilyCombo->setCurrentText(family);
+    // Leave the picker alone while its menu is open (the user is browsing).
+    if (!(mixedFlags & (1u << 0)) && m_gfxFontFamilyCombo
+        && !m_gfxFontFamilyCombo->view()->isVisible()) {
+        m_gfxFontFamilyCombo->setCurrentFamily(family);
+        rebuildGfxFontStyleCombo(family);
+    }
     if (!(mixedFlags & (1u << 1)) && m_gfxFontSizeSpin)
         m_gfxFontSizeSpin->setValue(pointSize);
     if (!(mixedFlags & (1u << 2)) && m_gfxFontWeightSpin)
@@ -192,6 +200,37 @@ void PropertiesPanel::setInlineParagraphFormat(int alignment, bool,
     m_gfxAlignCombo->setCurrentIndex(alignment);
 }
 
+void PropertiesPanel::pushGfxLayerAddedCommand(const char* description,
+                                               GraphicClip* gc, size_t index,
+                                               uint64_t layerId)
+{
+    if (!m_commandStack) return;
+    // Undo parks the layer OBJECT and redo re-inserts that same object, so
+    // its id survives. Re-inserting a clone gave the layer a new id, and
+    // every later command on it (Edit Text, a font change, ...) could no
+    // longer find it to redo.
+    auto parked = std::make_shared<std::unique_ptr<GraphicLayer>>();
+    m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+        description,
+        [this, gc, index, parked]() {
+            if (!*parked) return;
+            auto* restored = gc->insertLayer(std::min(index, gc->layerCount()),
+                                             std::move(*parked));
+            m_gfxSelectedTextLayerId = restored ? restored->layerId() : 0;
+            populateFromClip();
+            emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
+            emit propertyChanged();
+        },
+        [this, gc, layerId, parked]() {
+            const size_t at = gc->findLayerIndex(layerId);
+            if (at != SIZE_MAX) *parked = gc->removeLayer(at);
+            m_gfxSelectedTextLayerId = 0;
+            populateFromClip();
+            emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
+            emit propertyChanged();
+        }));
+}
+
 void PropertiesPanel::addGfxTextObject()
 {
     if (m_updating || !canMutateBoundClip()
@@ -200,30 +239,12 @@ void PropertiesPanel::addGfxTextObject()
     auto layer = std::make_unique<TextLayer>();
     layer->setText("Title");
     layer->setName("Text");
-    auto templateLayer = std::shared_ptr<GraphicLayer>(layer->clone().release());
     const size_t index = gc->layerCount();
     auto* added = gc->addLayer(std::move(layer));
     if (!added) return;
     m_gfxSelectedTextLayerId = added->layerId();
-
-    if (m_commandStack) {
-        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-            "Add Graphic Text Object",
-            [this, gc, index, templateLayer]() {
-                auto* restored = gc->insertLayer(index, templateLayer->clone());
-                m_gfxSelectedTextLayerId = restored ? restored->layerId() : 0;
-                populateFromClip();
-                emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
-                emit propertyChanged();
-            },
-            [this, gc, index]() {
-                gc->removeLayer(index);
-                m_gfxSelectedTextLayerId = 0;
-                populateFromClip();
-                emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
-                emit propertyChanged();
-            }));
-    }
+    pushGfxLayerAddedCommand("Add Graphic Text Object", gc, index,
+                             m_gfxSelectedTextLayerId);
     populateFromClip();
     emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
     emit propertyChanged();
@@ -242,30 +263,12 @@ void PropertiesPanel::duplicateGfxTextObject()
     xf.posX.writeValue(tick, xf.posX.evaluate(tick) + 20.0f);
     xf.posY.writeValue(tick, xf.posY.evaluate(tick) + 20.0f);
     duplicate->setName(source->name() + " Copy");
-    auto templateLayer = std::shared_ptr<GraphicLayer>(duplicate->clone().release());
     const size_t index = gc->layerCount();
     auto* added = gc->addLayer(std::move(duplicate));
     if (!added) return;
     m_gfxSelectedTextLayerId = added->layerId();
-
-    if (m_commandStack) {
-        m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-            "Duplicate Graphic Text Object",
-            [this, gc, index, templateLayer]() {
-                auto* restored = gc->insertLayer(index, templateLayer->clone());
-                m_gfxSelectedTextLayerId = restored ? restored->layerId() : 0;
-                populateFromClip();
-                emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
-                emit propertyChanged();
-            },
-            [this, gc, index]() {
-                gc->removeLayer(index);
-                m_gfxSelectedTextLayerId = 0;
-                populateFromClip();
-                emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
-                emit propertyChanged();
-            }));
-    }
+    pushGfxLayerAddedCommand("Duplicate Graphic Text Object", gc, index,
+                             m_gfxSelectedTextLayerId);
     populateFromClip();
     emit graphicLayerStackChanged(m_gfxSelectedTextLayerId);
     emit propertyChanged();
@@ -294,7 +297,9 @@ void PropertiesPanel::applyGfxText()
     if (!tl) return;
     std::string val = m_gfxTextEdit->text().toStdString();
     if (val == tl->text()) return;
+    beginGfxLayerEdit();
     tl->replaceTextPreservingStyles(val);
+    commitGfxLayerEdit("Edit Text");
     rebuildGfxTextObjectCombo();
     emit propertyChanged();
 }
@@ -304,20 +309,141 @@ void PropertiesPanel::applyGfxFontFamily()
     if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
     auto* tl = selectedGraphicTextLayer();
     if (!tl) return;
-    const QString requested = m_gfxFontFamilyCombo->currentText().trimmed();
-    const int index = m_gfxFontFamilyCombo->findText(
-        requested, Qt::MatchFixedString);
-    if (index < 0) return;
-    const QString family = m_gfxFontFamilyCombo->itemText(index);
-    std::string val = family.toStdString();
-    m_gfxFontFamilyCombo->setCurrentIndex(index);
+    // Only an installed, complete family name commits (never a menu
+    // section header or a half-typed filter).
+    const QString family = m_gfxFontFamilyCombo->installedFamily(
+        m_gfxFontFamilyCombo->currentText());
+    if (family.isEmpty()) return;
+    m_gfxFontFamilyCombo->setCurrentFamily(family);
+    rebuildGfxFontStyleCombo(family);
+    // A hover preview may already show this font; the commit below turns
+    // that preview into the single history step.
+    m_gfxFontPreviewActive = false;
     if (m_monitorTextEditing) {
         emit inlineFontFamilyRequested(family);
         return;
     }
-    if (val == tl->fontFamily()) return;
-    tl->setFontFamily(val);
+    const std::string val = family.toStdString();
+    if (val != tl->fontFamily()) {
+        beginGfxLayerEdit();
+        tl->setFontFamily(val);
+    }
+    if (!m_gfxEditBaseline) return;   // unchanged and nothing previewed
+    commitGfxLayerEdit("Change Font");
     emit propertyChanged();
+}
+
+void PropertiesPanel::previewGfxFontFamily(const QString& family)
+{
+    if (m_updating || !canMutateBoundClip()
+        || m_clip->clipType() != ClipType::Graphic) return;
+    auto* tl = selectedGraphicTextLayer();
+    if (!tl || family.isEmpty()) return;
+    m_gfxFontPreviewActive = true;
+    if (m_monitorTextEditing) {
+        emit inlineFontFamilyPreviewRequested(family);
+        return;
+    }
+    // Live only: the snapshot is the revert point; nothing is recorded
+    // until a font is actually chosen.
+    beginGfxLayerEdit();
+    tl->setFontFamily(family.toStdString());
+    emit propertyChanged();
+}
+
+void PropertiesPanel::endGfxFontPreview()
+{
+    if (!m_gfxFontPreviewActive) return;
+    m_gfxFontPreviewActive = false;
+    if (m_monitorTextEditing) {
+        emit inlineFontPreviewEnded();
+        return;
+    }
+    auto baseline = std::move(m_gfxEditBaseline);
+    m_gfxEditBaseline.reset();
+    auto* tl = selectedGraphicTextLayer();
+    if (!baseline || !tl || !m_clip || m_clip->id() != m_gfxEditBaselineClipId
+        || tl->layerId() != m_gfxEditBaselineLayerId) return;
+    tl->assignStateFrom(*baseline);
+    emit propertyChanged();
+}
+
+void PropertiesPanel::rebuildGfxFontStyleCombo(const QString& family)
+{
+    if (!m_gfxFontStyleCombo) return;
+    QSignalBlocker blocker(m_gfxFontStyleCombo);
+    const QString previous = m_gfxFontStyleCombo->currentText();
+    m_gfxFontStyleCombo->clear();
+    m_gfxFontStyleCombo->addItems(QFontDatabase::styles(family));
+    int index = m_gfxFontStyleCombo->findText(previous, Qt::MatchFixedString);
+    if (index < 0)
+        index = m_gfxFontStyleCombo->findText(QStringLiteral("Regular"),
+                                              Qt::MatchFixedString);
+    if (index < 0 && m_gfxFontStyleCombo->count() > 0) index = 0;
+    m_gfxFontStyleCombo->setCurrentIndex(index);
+}
+
+void PropertiesPanel::applyGfxFontStyle()
+{
+    if (m_updating || !canMutateBoundClip() || m_clip->clipType() != ClipType::Graphic) return;
+    auto* tl = selectedGraphicTextLayer();
+    if (!tl || !m_gfxFontStyleCombo) return;
+    const QString style = m_gfxFontStyleCombo->currentText();
+    if (style.isEmpty()) return;
+    if (m_monitorTextEditing) {
+        emit inlineFontStyleRequested(style);
+        return;
+    }
+    const std::string val = style.toStdString();
+    if (val == tl->fontStyle()) return;
+    beginGfxLayerEdit();
+    tl->setFontStyleForAll(val);
+    commitGfxLayerEdit("Change Font Style");
+    emit propertyChanged();
+}
+
+// -- Undo: snapshot at the start of an edit, one restore command at commit --
+
+void PropertiesPanel::beginGfxLayerEdit()
+{
+    auto* tl = selectedGraphicTextLayer();
+    if (!tl || !m_clip) return;
+    if (m_gfxEditBaseline && m_gfxEditBaselineClipId == m_clip->id()
+        && m_gfxEditBaselineLayerId == tl->layerId())
+        return;   // this gesture already has its "before"
+    m_gfxEditBaseline = std::shared_ptr<GraphicLayer>(tl->clone().release());
+    m_gfxEditBaselineClipId = m_clip->id();
+    m_gfxEditBaselineLayerId = tl->layerId();
+}
+
+void PropertiesPanel::commitGfxLayerEdit(const char* description)
+{
+    auto oldState = std::move(m_gfxEditBaseline);
+    m_gfxEditBaseline.reset();
+    if (!oldState || !m_commandStack) return;
+    auto* tl = selectedGraphicTextLayer();
+    if (!tl || !m_clip || m_clip->id() != m_gfxEditBaselineClipId
+        || tl->layerId() != m_gfxEditBaselineLayerId) return;
+    auto newState = std::shared_ptr<GraphicLayer>(tl->clone().release());
+
+    // Resolve by IDs when the command runs; never capture Clip*/layer
+    // pointers (the clip can be deleted and restored by other commands).
+    const uint64_t clipId = m_gfxEditBaselineClipId;
+    const uint64_t layerId = m_gfxEditBaselineLayerId;
+    auto restore = [this, clipId, layerId](const std::shared_ptr<GraphicLayer>& state) {
+        Clip* clip = rt::resolveClipById(m_timeline, clipId);
+        if (!clip && m_clip && m_clip->id() == clipId) clip = m_clip;
+        if (!clip || clip->clipType() != ClipType::Graphic) return;
+        GraphicLayer* layer = static_cast<GraphicClip*>(clip)->findLayerById(layerId);
+        if (!layer) return;
+        layer->assignStateFrom(*state);
+        if (m_clip && m_clip->id() == clipId) populateFromClip();
+        emit propertyChanged();
+    };
+    m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+        description,
+        [restore, newState]() { restore(newState); },
+        [restore, oldState]() { restore(oldState); }));
 }
 
 void PropertiesPanel::applyGfxFontSize()
@@ -331,6 +457,7 @@ void PropertiesPanel::applyGfxFontSize()
         return;
     }
     if (std::abs(val - tl->fontSize()) < 0.01f) return;
+    beginGfxLayerEdit();
     tl->setFontSize(val);
     emit propertyChanged();
 }
@@ -346,6 +473,7 @@ void PropertiesPanel::applyGfxFontWeight()
         return;
     }
     if (val == tl->fontWeight()) return;
+    beginGfxLayerEdit();
     tl->setFontWeight(val);
     emit propertyChanged();
 }
@@ -362,6 +490,7 @@ void PropertiesPanel::applyGfxLeading()
         return;
     }
     if (std::abs(value - tl->leading().evaluate(0)) < 0.01f) return;
+    beginGfxLayerEdit();
     tl->setLeadingForAll(value);
     emit propertyChanged();
 }
@@ -378,6 +507,7 @@ void PropertiesPanel::applyGfxKerning()
         return;
     }
     if (std::abs(value - tl->kerning()) < 0.01f) return;
+    beginGfxLayerEdit();
     tl->setKerningForAll(value);
     emit propertyChanged();
 }
@@ -391,7 +521,9 @@ void PropertiesPanel::applyGfxItalic()
         emit inlineItalicRequested(m_gfxItalicCheck->isChecked());
         return;
     }
+    beginGfxLayerEdit();
     tl->setItalic(m_gfxItalicCheck->isChecked());
+    commitGfxLayerEdit("Italic");
     emit propertyChanged();
 }
 
@@ -405,7 +537,9 @@ void PropertiesPanel::applyGfxAllCaps()
                                            m_gfxSmallCapsCheck->isChecked());
         return;
     }
+    beginGfxLayerEdit();
     tl->setAllCaps(m_gfxAllCapsCheck->isChecked());
+    commitGfxLayerEdit("All Caps");
     emit propertyChanged();
 }
 
@@ -419,7 +553,9 @@ void PropertiesPanel::applyGfxSmallCaps()
                                            m_gfxSmallCapsCheck->isChecked());
         return;
     }
+    beginGfxLayerEdit();
     tl->setSmallCaps(m_gfxSmallCapsCheck->isChecked());
+    commitGfxLayerEdit("Small Caps");
     emit propertyChanged();
 }
 
@@ -434,7 +570,9 @@ void PropertiesPanel::applyGfxAlign()
         return;
     }
     if (val == tl->alignment()) return;
+    beginGfxLayerEdit();
     tl->setAlignment(val);
+    commitGfxLayerEdit("Align Text");
     emit propertyChanged();
 }
 
@@ -459,11 +597,15 @@ void PropertiesPanel::applyGfxFillColor()
                     |  static_cast<uint32_t>(chosen.blue());
     if (m_monitorTextEditing) {
         emit inlineFillRequested(true, packed);
-    } else if (tl->appearance().fills.empty())
-        tl->appearance().fills.push_back({packed, true});
-    else {
-        tl->appearance().fills[0].color = packed;
-        tl->appearance().fills[0].enabled = true;
+    } else {
+        beginGfxLayerEdit();
+        if (tl->appearance().fills.empty())
+            tl->appearance().fills.push_back({packed, true});
+        else {
+            tl->appearance().fills[0].color = packed;
+            tl->appearance().fills[0].enabled = true;
+        }
+        commitGfxLayerEdit("Fill Color");
     }
     m_gfxFillColorBtn->setStyleSheet(
         QStringLiteral("QPushButton { background: %1; border: 1px solid #555; min-width: 40px; min-height: 18px; }")
@@ -485,6 +627,7 @@ void PropertiesPanel::applyGfxStrokeEnabled()
                                    static_cast<int>(stroke.position));
         return;
     }
+    beginGfxLayerEdit();
     if (tl->appearance().strokes.empty()) {
         if (enabled)
             tl->appearance().strokes.push_back(
@@ -492,6 +635,7 @@ void PropertiesPanel::applyGfxStrokeEnabled()
     } else {
         tl->appearance().strokes[0].enabled = enabled;
     }
+    commitGfxLayerEdit("Stroke");
     emit propertyChanged();
 }
 
@@ -510,6 +654,7 @@ void PropertiesPanel::applyGfxStrokeWidth()
         return;
     }
     if (tl->appearance().strokes.empty()) return;
+    beginGfxLayerEdit();
     tl->appearance().strokes[0].width = width;
     emit propertyChanged();
 }
@@ -537,11 +682,15 @@ void PropertiesPanel::applyGfxStrokeColor()
             : tl->appearance().strokes[0];
         emit inlineStrokeRequested(stroke.enabled, packed, stroke.width,
                                    static_cast<int>(stroke.position));
-    } else if (tl->appearance().strokes.empty())
-        tl->appearance().strokes.push_back(
-            {packed, 2.0f, StrokePosition::Outer, 1.0f, true});
-    else
-        tl->appearance().strokes[0].color = packed;
+    } else {
+        beginGfxLayerEdit();
+        if (tl->appearance().strokes.empty())
+            tl->appearance().strokes.push_back(
+                {packed, 2.0f, StrokePosition::Outer, 1.0f, true});
+        else
+            tl->appearance().strokes[0].color = packed;
+        commitGfxLayerEdit("Stroke Color");
+    }
     m_gfxStrokeColorBtn->setStyleSheet(
         QStringLiteral("QPushButton { background: %1; border: 1px solid #555; }")
         .arg(chosen.name()));
@@ -563,12 +712,14 @@ void PropertiesPanel::applyGfxShadowEnabled()
                                    shadow.opacity);
         return;
     }
+    beginGfxLayerEdit();
     if (tl->appearance().shadows.empty()) {
         if (enabled)
             tl->appearance().shadows.push_back({0x80000000, 4.0f, 135.0f, 4.0f, 0.6f, true});
     } else {
         tl->appearance().shadows[0].enabled = enabled;
     }
+    commitGfxLayerEdit("Drop Shadow");
     emit propertyChanged();
 }
 
@@ -629,47 +780,49 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     connect(m_gfxTextEdit, &QLineEdit::editingFinished, this, &PropertiesPanel::applyGfxText);
     form->addRow("Text:", m_gfxTextEdit);
 
-    m_gfxFontFamilyCombo = new QComboBox(m_graphicSection);
+    // Premiere-style font menu: hover a font to preview it on the text,
+    // click to apply (one undo step), Esc / click away to revert.
+    m_gfxFontFamilyCombo = new FontFamilyCombo(m_graphicSection);
     m_gfxFontFamilyCombo->setObjectName(
         QStringLiteral("propertiesGraphicFontFamilyCombo"));
     m_gfxFontFamilyCombo->setToolTip(tr(
-        "Choose an installed font family, or type to search"));
-    m_gfxFontFamilyCombo->addItems(QFontDatabase::families());
-    m_gfxFontFamilyCombo->setEditable(true);
-    m_gfxFontFamilyCombo->setInsertPolicy(QComboBox::NoInsert);
-    m_gfxFontFamilyCombo->setMaxVisibleItems(20);
-    auto* fontCompleter = new QCompleter(
-        m_gfxFontFamilyCombo->model(), m_gfxFontFamilyCombo);
-    fontCompleter->setCaseSensitivity(Qt::CaseInsensitive);
-    fontCompleter->setFilterMode(Qt::MatchContains);
-    fontCompleter->setCompletionMode(QCompleter::PopupCompletion);
-    m_gfxFontFamilyCombo->setCompleter(fontCompleter);
-    m_gfxFontFamilyCombo->lineEdit()->setClearButtonEnabled(true);
-    m_gfxFontFamilyCombo->lineEdit()->setPlaceholderText(
-        tr("Type to find a font"));
+        "Choose a font: hover to preview it, click the star to favorite, "
+        "or type to search"));
     connect(m_gfxFontFamilyCombo, &QComboBox::textActivated,
             this, [this](const QString&) { applyGfxFontFamily(); });
     connect(m_gfxFontFamilyCombo->lineEdit(), &QLineEdit::editingFinished,
             this, &PropertiesPanel::applyGfxFontFamily);
+    connect(m_gfxFontFamilyCombo, &FontFamilyCombo::familyPreviewRequested,
+            this, &PropertiesPanel::previewGfxFontFamily);
+    connect(m_gfxFontFamilyCombo, &FontFamilyCombo::familyPreviewEnded,
+            this, &PropertiesPanel::endGfxFontPreview);
     form->addRow("Font:", m_gfxFontFamilyCombo);
+
+    m_gfxFontStyleCombo = new QComboBox(m_graphicSection);
+    m_gfxFontStyleCombo->setObjectName(
+        QStringLiteral("propertiesGraphicFontStyleCombo"));
+    m_gfxFontStyleCombo->setToolTip(tr("Font style (the family's real faces)"));
+    connect(m_gfxFontStyleCombo, &QComboBox::activated,
+            this, [this](int) { applyGfxFontStyle(); });
+    form->addRow(tr("Style:"), m_gfxFontStyleCombo);
 
     m_gfxFontSizeSpin = createScrubby(1.0, 1000.0, 1.0, 1, " pt");
     m_gfxFontSizeSpin->setObjectName(
         QStringLiteral("propertiesGraphicFontSizeSpin"));
     m_gfxFontSizeSpin->setToolTip(tr("Font size for graphic text"));
-    connect(m_gfxFontSizeSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontSize(); });
+    connect(m_gfxFontSizeSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontSize(); commitGfxLayerEdit("Font Size"); });
     // Live preview during the drag, mirroring transform/effect spinboxes.
     connect(m_gfxFontSizeSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxFontSize(); });
-    connect(m_gfxFontSizeSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxFontSize);
+    connect(m_gfxFontSizeSpin, &QDoubleSpinBox::editingFinished, this, [this]() { applyGfxFontSize(); commitGfxLayerEdit("Font Size"); });
     form->addRow("Size:", m_gfxFontSizeSpin);
 
     m_gfxFontWeightSpin = createScrubby(100.0, 900.0, 100.0, 0, "");
     m_gfxFontWeightSpin->setObjectName(
         QStringLiteral("propertiesGraphicFontWeightSpin"));
     m_gfxFontWeightSpin->setToolTip(tr("Font weight (100 = thin, 400 = normal, 700 = bold, 900 = heavy)"));
-    connect(m_gfxFontWeightSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontWeight(); });
+    connect(m_gfxFontWeightSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxFontWeight(); commitGfxLayerEdit("Font Weight"); });
     connect(m_gfxFontWeightSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxFontWeight(); });
-    connect(m_gfxFontWeightSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxFontWeight);
+    connect(m_gfxFontWeightSpin, &QDoubleSpinBox::editingFinished, this, [this]() { applyGfxFontWeight(); commitGfxLayerEdit("Font Weight"); });
     form->addRow("Weight:", m_gfxFontWeightSpin);
 
     m_gfxLeadingSpin = createScrubby(0.0, 500.0, 0.5, 1, " px");
@@ -678,11 +831,11 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxLeadingSpin->setToolTip(tr(
         "Leading: extra vertical space between lines of text"));
     connect(m_gfxLeadingSpin, &ScrubbySpinBox::valueCommitted,
-            this, [this](double, double) { applyGfxLeading(); });
+            this, [this](double, double) { applyGfxLeading(); commitGfxLayerEdit("Line Spacing"); });
     connect(m_gfxLeadingSpin, &ScrubbySpinBox::valueScrubbed,
             this, [this](double) { applyGfxLeading(); });
     connect(m_gfxLeadingSpin, &QDoubleSpinBox::editingFinished,
-            this, &PropertiesPanel::applyGfxLeading);
+            this, [this]() { applyGfxLeading(); commitGfxLayerEdit("Line Spacing"); });
     form->addRow(tr("Line spacing:"), m_gfxLeadingSpin);
 
     m_gfxKerningSpin = createScrubby(-500.0, 500.0, 1.0, 0, "");
@@ -691,11 +844,11 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxKerningSpin->setToolTip(tr(
         "Kerning: spacing adjustment between the selected characters"));
     connect(m_gfxKerningSpin, &ScrubbySpinBox::valueCommitted,
-            this, [this](double, double) { applyGfxKerning(); });
+            this, [this](double, double) { applyGfxKerning(); commitGfxLayerEdit("Kerning"); });
     connect(m_gfxKerningSpin, &ScrubbySpinBox::valueScrubbed,
             this, [this](double) { applyGfxKerning(); });
     connect(m_gfxKerningSpin, &QDoubleSpinBox::editingFinished,
-            this, &PropertiesPanel::applyGfxKerning);
+            this, [this]() { applyGfxKerning(); commitGfxLayerEdit("Kerning"); });
     form->addRow(tr("Kerning:"), m_gfxKerningSpin);
 
     auto* styleRow = new QHBoxLayout;
@@ -735,9 +888,9 @@ void PropertiesPanel::setupGraphicSection(QWidget* container)
     m_gfxStrokeWidthSpin = createScrubby(0.0, 50.0, 0.5, 1, " px");
     m_gfxStrokeWidthSpin->setToolTip(tr("Stroke outline width in pixels"));
     m_gfxStrokeWidthSpin->setFixedWidth(70);
-    connect(m_gfxStrokeWidthSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxStrokeWidth(); });
+    connect(m_gfxStrokeWidthSpin, &ScrubbySpinBox::valueCommitted, this, [this](double, double) { applyGfxStrokeWidth(); commitGfxLayerEdit("Stroke Width"); });
     connect(m_gfxStrokeWidthSpin, &ScrubbySpinBox::valueScrubbed, this, [this](double) { applyGfxStrokeWidth(); });
-    connect(m_gfxStrokeWidthSpin, &QDoubleSpinBox::editingFinished, this, &PropertiesPanel::applyGfxStrokeWidth);
+    connect(m_gfxStrokeWidthSpin, &QDoubleSpinBox::editingFinished, this, [this]() { applyGfxStrokeWidth(); commitGfxLayerEdit("Stroke Width"); });
     strokeRow->addWidget(m_gfxStrokeWidthSpin);
     m_gfxStrokeColorBtn = new QPushButton(m_graphicSection);
     m_gfxStrokeColorBtn->setToolTip(tr("Pick the stroke outline color"));

@@ -999,24 +999,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             confirmBtn->setFixedHeight(36);
             confirmBtn->setCursor(Qt::PointingHandCursor);
 
-            auto applyButtonStyle = [confirmBtn, _tc, _radM](int ms) {
-                const bool isConfirmed = (ms == 2);
-                confirmBtn->setText(isConfirmed
-                    ? QStringLiteral("\u2713  CONFIRMED")
-                    : QStringLiteral("\u2713  CONFIRM"));
-                confirmBtn->setToolTip(isConfirmed
-                    ? "Click to unconfirm match"
-                    : "Confirm match");
-                confirmBtn->setStyleSheet(
-                    QString("QPushButton { background: %1; color: %2; font-weight: bold; "
-                    "font-size: 13px; border: 2px solid %3; border-radius: %4px; }"
-                    "QPushButton:hover { background: %5; }").arg(
-                        isConfirmed ? Theme::hex(_tc.success)
-                                    : Theme::hex(_tc.successBtnBg),
-                        Theme::hex(_tc.textBright),
-                        Theme::hex(_tc.success), _radM,
-                        Theme::hex(_tc.successBtnHover)));
-            };
+            confirmBtn->setObjectName("confirmMatchButton");
             // Size the button using the LONGER "CONFIRMED" label first
             // and lock that as the minimum width.  Otherwise the button
             // sized for "CONFIRM" (shorter) is too narrow to fit
@@ -1025,21 +1008,17 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             // confirm again).  Computing this from sizeHint after the
             // stylesheet is applied lets the actual font / padding /
             // border be measured rather than estimated.
-            applyButtonStyle(2);
+            styleConfirmButton(confirmBtn, 2);
             confirmBtn->ensurePolished();
             confirmBtn->setMinimumWidth(confirmBtn->sizeHint().width());
             // The SHOWN clip's own state (for dialogue scripts that is the
             // highest-state clip, i.e. the line's aggregate as before).
-            applyButtonStyle(m_clips[primaryClipIdx].matchState);
+            styleConfirmButton(confirmBtn, m_clips[primaryClipIdx].matchState);
 
-            // Captured by QPointer so undo lambdas can safely no-op the
-            // visual update if the card has since been torn down by
-            // another populateCards() pass \u2014 the underlying m_clips
-            // state still gets reverted; only the in-place visual
-            // refresh is skipped.
-            QPointer<QPushButton> btnGuard(confirmBtn);
+            // Restyle the current card on undo/redo, even if it was rebuilt
+            // since this command was created.
             connect(confirmBtn, &QPushButton::clicked, this,
-                    [this, clipIdx, btnGuard, applyButtonStyle]() {
+                    [this, clipIdx]() {
                 if (clipIdx >= m_clips.size()) return;
                 const int oldMS = m_clips[clipIdx].matchState;
                 const int newMS = (oldMS == 2) ? 1 : 2;
@@ -1055,20 +1034,12 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                             demoted.push_back(i);
                     }
                 }
-                const int confirmLine = m_clips[clipIdx].scriptLineNumber;
-                auto apply = [this, clipIdx, btnGuard, applyButtonStyle, demoted, shotScript,
-                              confirmLine](int ms) {
+                auto apply = [this, clipIdx, demoted](int ms) {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     if (clipIdx >= m_clips.size()) return;
                     m_clips[clipIdx].matchState = ms;
                     for (size_t d : demoted)
                         if (d < m_clips.size()) m_clips[d].matchState = (ms == 2) ? 1 : 2;
-                    if (shotScript) {
-                        // Take chips show which take is picked: rebuild this
-                        // line's card (deferred — this button is inside it).
-                        scheduleCardRebuild({confirmLine});
-                    }
-                    if (btnGuard) applyButtonStyle(ms);
                     updateCardMatchStyle(clipIdx);
                     refreshLeftListStates();
                     updateWorkflowState();

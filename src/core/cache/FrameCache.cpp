@@ -9,6 +9,30 @@
 
 namespace rt {
 
+namespace {
+
+/// Whether a cache entry keeps GPU memory alive (and can give it back).
+/// gpuTextureOwner alone is not enough: the compositor moves it to
+/// GpuTextureCache and resets it, but a GPU-decoded frame's lazyReadback
+/// captures the texture too, so the entry still holds the VRAM. Counting
+/// only gpuTextureOwner let those entries pile up unbounded (perf_log
+/// 2026-10-12: 5,338 entries, 23.6 GB of VRAM on a 21.5 GB budget, then
+/// 100-300 ms GPU stalls). Pinned stills are left out: never evicted.
+bool holdsGpuMemory(const CachedFrame* frame) noexcept
+{
+    return frame && !frame->pinned
+        && (frame->gpuTextureOwner != nullptr || frame->gpuReady);
+}
+
+/// VRAM a GPU-holding frame keeps alive (its texture), for pressure relief.
+size_t gpuBytesOf(const CachedFrame& frame) noexcept
+{
+    const size_t bytesPerPixel = frame.depth == 16 ? 8 : 4;
+    return static_cast<size_t>(frame.width) * frame.height * bytesPerPixel;
+}
+
+} // namespace
+
 // ─── Construction ───────────────────────────────────────────────────────────
 
 FrameCache::FrameCache(size_t capacityBytes)
@@ -56,7 +80,7 @@ void FrameCache::put(std::shared_ptr<CachedFrame> frame)
     }
 
     // Evict until we have space
-    evictUntilFits(frameBytes);
+    evictUntilFits(frameBytes, holdsGpuMemory(frame.get()));
 
     // Insert at front of LRU
     m_lru.push_front(key);
@@ -80,6 +104,7 @@ std::shared_ptr<CachedFrame> FrameCache::get(
     }
 
     ++m_hits;
+    it->second.used = true;
 
     // Promote to front of LRU
     m_lru.erase(it->second.lruIt);
@@ -201,9 +226,11 @@ size_t FrameCache::evictGpuCoOwned(size_t minBytes)
     size_t freed = 0;
 
     // Walk from LRU back (least recently used) toward front.
-    // Evict frames that have a non-null gpuTextureOwner (co-own GPU
-    // memory with GpuTextureCache via putShared).
-    // Never evict pinned frames (static images).
+    // Evict frames that keep GPU memory alive (holdsGpuMemory: an owner,
+    // or a texture captured by lazyReadback after the compositor handed
+    // the owner to GpuTextureCache). Never evict pinned frames.
+    // `freed` counts the texture VRAM released: the caller asks for VRAM
+    // bytes, and counting each entry's ~200 CPU bytes evicted everything.
     auto it = m_lru.end();
     while (freed < minBytes && it != m_lru.begin()) {
         --it;
@@ -214,19 +241,16 @@ size_t FrameCache::evictGpuCoOwned(size_t minBytes)
         }
 
         auto& frame = mapIt->second.frame;
-        if (!frame || frame->pinned) {
-            continue;  // never evict pinned
-        }
-        if (!frame->gpuTextureOwner) {
-            continue;  // no GPU co-ownership — skip
+        if (!holdsGpuMemory(frame.get())) {
+            continue;  // pinned, or holds no GPU memory — skip
         }
 
         // This frame co-owns GPU memory.  Evicting it releases the
         // shared_ptr, which may trigger GPU texture destruction in
         // the shared_ptrs aliased by GpuTextureCache::putShared().
-        size_t frameBytes = mapIt->second.sizeBytes;
-        m_used -= frameBytes;
-        freed += frameBytes;
+        if (!mapIt->second.used) ++m_evictedUnused;
+        m_used -= mapIt->second.sizeBytes;
+        freed += gpuBytesOf(*frame);
         m_map.erase(mapIt);
         it = m_lru.erase(it);
         ++m_evictions;
@@ -284,31 +308,43 @@ void FrameCache::setMaxEntries(size_t maxEntries)
     // pinned.  This is a one-shot adjustment; the in-line check inside
     // evictUntilFits drives steady-state behaviour.
     if (m_maxEntries == 0) return;
-    if (m_map.size() <= m_maxEntries) {
+    // The cap bounds texture-pinning entries only (see m_maxEntries).
+    const auto gpuOwned = [](const CacheEntry& e) {
+        return holdsGpuMemory(e.frame.get());
+    };
+    size_t owned = 0;
+    for (const auto& [key, entry] : m_map) {
+        (void)key;
+        if (gpuOwned(entry)) ++owned;
+    }
+    if (owned <= m_maxEntries) {
         spdlog::info("FrameCache max entries set to {}, currently {} entries",
                      m_maxEntries, m_map.size());
         return;
     }
 
     auto it = m_lru.end();
-    while (m_map.size() > m_maxEntries && it != m_lru.begin()) {
+    while (owned > m_maxEntries && it != m_lru.begin()) {
         --it;
         auto mapIt = m_map.find(*it);
         if (mapIt == m_map.end()) {
             it = m_lru.erase(it);
             continue;
         }
-        if (mapIt->second.frame && mapIt->second.frame->pinned) {
+        if ((mapIt->second.frame && mapIt->second.frame->pinned)
+            || !gpuOwned(mapIt->second)) {
             // skip — keep iterating toward the front
             continue;
         }
+        if (!mapIt->second.used) ++m_evictedUnused;
         m_used -= mapIt->second.sizeBytes;
         m_map.erase(mapIt);
         it = m_lru.erase(it);
         ++m_evictions;
+        --owned;
     }
 
-    if (m_map.size() > m_maxEntries) {
+    if (owned > m_maxEntries) {
         static int s_warned = 0;
         if (++s_warned <= 3) {
             spdlog::warn("FrameCache::setMaxEntries: cap={} but {} "
@@ -332,7 +368,7 @@ size_t FrameCache::gpuCoOwnedCount() const
     size_t n = 0;
     for (const auto& [key, entry] : m_map) {
         (void)key;
-        if (entry.frame && entry.frame->gpuTextureOwner) ++n;
+        if (holdsGpuMemory(entry.frame.get())) ++n;
     }
     return n;
 }
@@ -347,6 +383,7 @@ CacheStats FrameCache::stats() const
         .hitCount       = m_hits,
         .missCount      = m_misses,
         .evictionCount  = m_evictions,
+        .evictedUnusedCount = m_evictedUnused,
         .frameCount     = m_map.size(),
         .memoryUsed     = m_used,
         .memoryCapacity = m_capacity,
@@ -367,7 +404,7 @@ size_t FrameCache::memoryUsed() const
 
 // ─── Eviction ───────────────────────────────────────────────────────────────
 
-void FrameCache::evictUntilFits(size_t neededBytes)
+void FrameCache::evictUntilFits(size_t neededBytes, bool incomingGpuOwned)
 {
     // Caller holds m_mutex.
     //
@@ -381,19 +418,36 @@ void FrameCache::evictUntilFits(size_t neededBytes)
     // in the LRU and push prefetch to the back of the queue.
     //
     // Eviction trigger combines two signals:
-    //   - byte pressure:  m_used + neededBytes > m_capacity
-    //   - entry pressure: m_map.size() > m_maxEntries (when m_maxEntries != 0)
+    //   - byte pressure: m_used + neededBytes > m_capacity
+    //   - GPU pressure:  texture-pinning entries > m_maxEntries
     //
-    // The entry-pressure signal is what catches the GPU-resident leak:
-    // a frame with gpuReady=true and pixels.empty() has memoryUsage() ≈
-    // 200 bytes but pins an 8 MB VkImage via gpuTextureOwner.  Without
-    // an entry cap, FrameCache fills with orphan-textured CachedFrames
-    // for ~45 s before VRAM exhausts and ZC collapses to 0.
+    // The GPU signal catches the orphan-texture leak: a frame with
+    // gpuReady=true and pixels.empty() has memoryUsage() ≈ 200 bytes but
+    // keeps an 8 MB VkImage alive (holdsGpuMemory).  It used to count EVERY
+    // entry instead; pinned stills and CPU frames then filled the cap and
+    // every new insert evicted a freshly prefetched video frame — the
+    // frames playback needed next (perf_log 2026-10-12: frameN=169/168 at
+    // 110 MB of 1023 MB, 6-10% of frames held).  Evicting a CPU-only entry
+    // under GPU-only pressure frees no VRAM, so such entries are skipped then.
 
-    auto overCapacity = [&]() {
-        if (m_used + neededBytes > m_capacity) return true;
-        if (m_maxEntries != 0 && m_map.size() > m_maxEntries) return true;
-        return false;
+    const auto isGpuOwned = [](const CacheEntry& e) {
+        return holdsGpuMemory(e.frame.get());
+    };
+    size_t gpuOwned = incomingGpuOwned ? 1 : 0;
+    if (m_maxEntries != 0) {
+        for (const auto& [key, entry] : m_map) {
+            (void)key;
+            if (isGpuOwned(entry)) ++gpuOwned;
+        }
+    }
+    const auto bytesOver = [&]() { return m_used + neededBytes > m_capacity; };
+    const auto gpuOver = [&]() {
+        return m_maxEntries != 0 && gpuOwned > m_maxEntries;
+    };
+    const auto overCapacity = [&]() { return bytesOver() || gpuOver(); };
+    // Would evicting this entry relieve the pressure we are under?
+    const auto relieves = [&](const CacheEntry& e) {
+        return bytesOver() || isGpuOwned(e);
     };
 
     if (!overCapacity())
@@ -402,22 +456,32 @@ void FrameCache::evictUntilFits(size_t neededBytes)
     size_t pass1Evicted = 0, pass2Evicted = 0;
     size_t pass1Bytes = 0, pass2Bytes = 0;
 
+    // Erases one map entry and its LRU node; returns the next LRU iterator.
+    const auto evict = [&](decltype(m_map)::iterator mapIt, LruIterator lruIt,
+                           size_t& passCount, size_t& passBytes) {
+        const size_t freed = mapIt->second.sizeBytes;
+        if (!mapIt->second.used) ++m_evictedUnused;
+        if (isGpuOwned(mapIt->second) && gpuOwned > 0) --gpuOwned;
+        m_used -= freed;
+        passBytes += freed;
+        m_map.erase(mapIt);
+        ++m_evictions;
+        ++passCount;
+        return m_lru.erase(lruIt);
+    };
+
     // Pass 1: Scan from LRU back and evict frames behind playheads.
     // Only do this when we have playhead info.
     if (!m_playheads.empty()) {
         auto it = m_lru.end();
         while (it != m_lru.begin() && overCapacity()) {
             --it;
-            auto& key = *it;
+            const auto mapIt = m_map.find(*it);
+            if (mapIt == m_map.end()) continue;
+            const CacheEntry& entry = mapIt->second;
 
             // Never evict pinned frames (e.g. static images).
-            {
-                auto pinIt = m_map.find(key);
-                if (pinIt != m_map.end() && pinIt->second.frame &&
-                    pinIt->second.frame->pinned) {
-                    continue;
-                }
-            }
+            if (entry.frame && entry.frame->pinned) continue;
 
             // Never pass-1 evict looping-clip frames.  The media playhead
             // marches forward linearly through loop iterations, so in
@@ -425,18 +489,15 @@ void FrameCache::evictUntilFits(size_t neededBytes)
             // moment we pass the end of the first iteration — but the
             // clip will wrap and need every frame again.  Let pass-2
             // pure-LRU evict them only under genuine memory pressure.
-            {
-                auto loopIt = m_map.find(key);
-                if (loopIt != m_map.end() && loopIt->second.frame &&
-                    loopIt->second.frame->isLoopFrame) {
-                    continue;
-                }
-            }
+            if (entry.frame && entry.frame->isLoopFrame) continue;
+
+            if (!relieves(entry)) continue;
 
             // Check if this frame is OUTSIDE the protected playback window
             // for its media.  Default extent is 5 behind / 0 ahead (matches
             // pre-Phase-B behavior).  CachePolicy::setPlayheadWindow can
             // widen the window per media via FrameCache::setPlayheadWindow.
+            const CacheKey& key = *it;
             auto phIt = m_playheads.find(key.mediaId);
             if (phIt != m_playheads.end()) {
                 int64_t playhead = phIt->second;
@@ -452,16 +513,7 @@ void FrameCache::evictUntilFits(size_t neededBytes)
                 const bool outsideWindow = (key.frameNumber < lo) ||
                                            (aheadExt > 0 && key.frameNumber > hi);
                 if (outsideWindow) {
-                    auto mapIt = m_map.find(key);
-                    if (mapIt != m_map.end()) {
-                        size_t freed = mapIt->second.sizeBytes;
-                        m_used -= freed;
-                        pass1Bytes += freed;
-                        m_map.erase(mapIt);
-                        ++m_evictions;
-                        ++pass1Evicted;
-                    }
-                    it = m_lru.erase(it);
+                    it = evict(mapIt, it, pass1Evicted, pass1Bytes);
                     continue;
                 }
             }
@@ -488,8 +540,7 @@ void FrameCache::evictUntilFits(size_t neededBytes)
             auto mapIt = m_map.find(*it);
             // Stale list entry with no map entry — drop the list node.
             if (mapIt == m_map.end()) {
-                auto next = m_lru.erase(it);
-                it = next;
+                it = m_lru.erase(it);
                 continue;
             }
             if (mapIt->second.frame && mapIt->second.frame->pinned) {
@@ -499,14 +550,8 @@ void FrameCache::evictUntilFits(size_t neededBytes)
                 mapIt->second.frame->isLoopFrame) {
                 continue;  // protect loop frames in 2a
             }
-            size_t freed = mapIt->second.sizeBytes;
-            m_map.erase(mapIt);
-            m_used -= freed;
-            pass2Bytes += freed;
-            ++m_evictions;
-            ++pass2Evicted;
-            auto next = m_lru.erase(it);
-            it = next;
+            if (!relieves(mapIt->second)) continue;
+            it = evict(mapIt, it, pass2Evicted, pass2Bytes);
         }
     };
     evictPass(/*includeLoopFrames=*/false);
@@ -517,10 +562,11 @@ void FrameCache::evictUntilFits(size_t neededBytes)
         static int s_evictLog = 0;
         if (++s_evictLog % 50 == 0) {
             spdlog::info("[PERF] FrameCache evict: pass1={} ({:.1f}MB) pass2={} ({:.1f}MB) "
-                         "playheads={} remaining={} used={:.1f}MB",
+                         "playheads={} remaining={} used={:.1f}MB gpuOwned={} unusedEvicted={}",
                          pass1Evicted, pass1Bytes / 1048576.0,
                          pass2Evicted, pass2Bytes / 1048576.0,
-                         m_playheads.size(), m_map.size(), m_used / 1048576.0);
+                         m_playheads.size(), m_map.size(), m_used / 1048576.0,
+                         gpuOwned, m_evictedUnused);
         }
     }
 }

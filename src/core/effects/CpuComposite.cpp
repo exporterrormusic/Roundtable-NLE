@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace rt {
@@ -314,33 +315,66 @@ bool buildMaskPolygon(const MaskRenderState& mask, uint32_t w, uint32_t h,
     return poly.size() >= 6;
 }
 
-/// Even-odd scanline fill of a closed polygon (xy pairs, target px).
-void fillPolygon(const std::vector<float>& poly, uint32_t w, uint32_t h,
-                 std::vector<uint8_t>& inside)
+/// Run fn(begin, end) over [0, count) split across hardware threads. Rows
+/// and columns of every raster pass are independent, so a full-frame mask
+/// (two distance transforms over the whole source) finishes in a fraction of
+/// the single-threaded time — this runs on every edit of a dragged mask.
+template <typename Fn>
+void parallelSpans(uint32_t count, uint64_t workPerItem, Fn&& fn)
+{
+    // Below ~256k units of work the thread start-up costs more than it saves.
+    const uint64_t totalWork = static_cast<uint64_t>(count) * workPerItem;
+    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    const uint32_t threads = totalWork < (1u << 18)
+        ? 1u
+        : std::min<uint32_t>({hw, 16u, count});
+    if (threads <= 1) {
+        fn(0u, count);
+        return;
+    }
+    std::vector<std::thread> pool;
+    pool.reserve(threads - 1);
+    const uint32_t step = (count + threads - 1) / threads;
+    for (uint32_t t = 1; t < threads; ++t) {
+        const uint32_t begin = t * step;
+        const uint32_t end = std::min(count, begin + step);
+        if (begin >= end) break;
+        pool.emplace_back([&fn, begin, end]() { fn(begin, end); });
+    }
+    fn(0u, std::min(count, step));
+    for (auto& th : pool) th.join();
+}
+
+/// Even-odd scanline fill of a closed polygon (xy pairs, target px) into a
+/// bw×bh window whose top-left pixel is (x0, y0) in target pixels.
+void fillPolygon(const std::vector<float>& poly, int x0, int y0,
+                 uint32_t bw, uint32_t bh, std::vector<uint8_t>& inside)
 {
     const size_t n = poly.size() / 2;
-    std::vector<float> xs;
-    xs.reserve(16);
-    for (uint32_t y = 0; y < h; ++y) {
-        const float sy = static_cast<float>(y) + 0.5f;
-        xs.clear();
-        for (size_t i = 0; i < n; ++i) {
-            size_t j = (i + 1) % n;
-            float y0 = poly[i * 2 + 1], y1 = poly[j * 2 + 1];
-            if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
-                float t = (sy - y0) / (y1 - y0);
-                xs.push_back(poly[i * 2] + t * (poly[j * 2] - poly[i * 2]));
+    parallelSpans(bh, n + bw / 8, [&](uint32_t rowBegin, uint32_t rowEnd) {
+        std::vector<float> xs;
+        xs.reserve(16);
+        for (uint32_t y = rowBegin; y < rowEnd; ++y) {
+            const float sy = static_cast<float>(y0 + static_cast<int>(y)) + 0.5f;
+            xs.clear();
+            for (size_t i = 0; i < n; ++i) {
+                size_t j = (i + 1) % n;
+                float ya = poly[i * 2 + 1], yb = poly[j * 2 + 1];
+                if ((ya <= sy && yb > sy) || (yb <= sy && ya > sy)) {
+                    float t = (sy - ya) / (yb - ya);
+                    xs.push_back(poly[i * 2] + t * (poly[j * 2] - poly[i * 2]));
+                }
+            }
+            std::sort(xs.begin(), xs.end());
+            for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+                int xa = std::max(0, static_cast<int>(std::ceil(xs[k] - 0.5f)) - x0);
+                int xb = std::min(static_cast<int>(bw) - 1,
+                                  static_cast<int>(std::floor(xs[k + 1] - 0.5f)) - x0);
+                for (int x = xa; x <= xb; ++x)
+                    inside[static_cast<size_t>(y) * bw + x] = 1;
             }
         }
-        std::sort(xs.begin(), xs.end());
-        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
-            int x0 = std::max(0, static_cast<int>(std::ceil(xs[k] - 0.5f)));
-            int x1 = std::min(static_cast<int>(w) - 1,
-                              static_cast<int>(std::floor(xs[k + 1] - 0.5f)));
-            for (int x = x0; x <= x1; ++x)
-                inside[static_cast<size_t>(y) * w + x] = 1;
-        }
-    }
+    });
 }
 
 /// 1D squared Euclidean distance transform (Felzenszwalb & Huttenlocher).
@@ -372,33 +406,63 @@ void edt1d(const float* f, float* d, int n, int* v, float* z)
     }
 }
 
-/// 2D squared EDT: dist² to the nearest seed (seed = pixels where
-/// seedMask[i] != seedValue... seeds are pixels with mask[i]==seed).
+/// 2D squared EDT over a w×h grid: dist² to the nearest pixel whose
+/// grid value equals `seed`.
 void edt2d(const std::vector<uint8_t>& grid, uint8_t seed,
            uint32_t w, uint32_t h, std::vector<float>& out)
 {
     constexpr float INF = 1e18f;
-    out.assign(static_cast<size_t>(w) * h, 0.0f);
+    out.resize(static_cast<size_t>(w) * h);
     for (size_t i = 0; i < out.size(); ++i)
         out[i] = (grid[i] == seed) ? 0.0f : INF;
 
-    const int maxDim = static_cast<int>(std::max(w, h));
-    std::vector<float> f(maxDim), d(maxDim), z(maxDim + 1);
-    std::vector<int>   v(maxDim);
+    struct Scratch {
+        std::vector<float> f, d, z;
+        std::vector<int> v;
+        explicit Scratch(int n) : f(n), d(n), z(n + 1), v(n) {}
+    };
 
-    // Columns
-    for (uint32_t x = 0; x < w; ++x) {
-        for (uint32_t y = 0; y < h; ++y) f[y] = out[static_cast<size_t>(y) * w + x];
-        edt1d(f.data(), d.data(), static_cast<int>(h), v.data(), z.data());
-        for (uint32_t y = 0; y < h; ++y) out[static_cast<size_t>(y) * w + x] = d[y];
-    }
+    // Columns, a block of adjacent columns at a time: gathering one column
+    // alone strides a whole row per element, so each block is copied out
+    // row by row (contiguous reads), transformed, and written back.
+    constexpr uint32_t kBlock = 16;
+    const uint32_t blocks = (w + kBlock - 1) / kBlock;
+    parallelSpans(blocks, static_cast<uint64_t>(h) * kBlock,
+                  [&](uint32_t begin, uint32_t end) {
+        Scratch s(static_cast<int>(h));
+        std::vector<float> tile(static_cast<size_t>(kBlock) * h);
+        for (uint32_t blk = begin; blk < end; ++blk) {
+            const uint32_t x0 = blk * kBlock;
+            const uint32_t n = std::min(kBlock, w - x0);
+            for (uint32_t y = 0; y < h; ++y) {
+                const float* src = out.data() + static_cast<size_t>(y) * w + x0;
+                for (uint32_t c = 0; c < n; ++c)
+                    tile[static_cast<size_t>(c) * h + y] = src[c];
+            }
+            for (uint32_t c = 0; c < n; ++c) {
+                float* col = tile.data() + static_cast<size_t>(c) * h;
+                edt1d(col, s.d.data(), static_cast<int>(h),
+                      s.v.data(), s.z.data());
+                std::copy(s.d.data(), s.d.data() + h, col);
+            }
+            for (uint32_t y = 0; y < h; ++y) {
+                float* dst = out.data() + static_cast<size_t>(y) * w + x0;
+                for (uint32_t c = 0; c < n; ++c)
+                    dst[c] = tile[static_cast<size_t>(c) * h + y];
+            }
+        }
+    });
     // Rows
-    for (uint32_t y = 0; y < h; ++y) {
-        float* row = out.data() + static_cast<size_t>(y) * w;
-        std::copy(row, row + w, f.data());
-        edt1d(f.data(), d.data(), static_cast<int>(w), v.data(), z.data());
-        std::copy(d.data(), d.data() + w, row);
-    }
+    parallelSpans(h, w, [&](uint32_t begin, uint32_t end) {
+        Scratch s(static_cast<int>(w));
+        for (uint32_t y = begin; y < end; ++y) {
+            float* row = out.data() + static_cast<size_t>(y) * w;
+            std::copy(row, row + w, s.f.data());
+            edt1d(s.f.data(), s.d.data(), static_cast<int>(w),
+                  s.v.data(), s.z.data());
+            std::copy(s.d.data(), s.d.data() + w, row);
+        }
+    });
 }
 
 } // namespace
@@ -423,67 +487,143 @@ std::vector<uint8_t> rasterizeMasks(const std::vector<MaskRenderState>& masks,
         if (!(distScale > 0.0f) || !std::isfinite(distScale)) distScale = 1.0f;
     }
 
-    std::vector<float> accum(npx, 0.0f);
-    std::vector<float> poly;
+    // Only a shape's bounding box, grown by the reach of feather and
+    // expansion (+2 px for the anti-aliased edge), can differ from "fully
+    // outside". Distances inside that window are exact: every pixel beyond
+    // it is outside the shape, and a ring of outside pixels separates it
+    // from the shape wherever the window is not clipped by the frame edge.
+    // A small mask on a 4K clip no longer pays for two full-frame distance
+    // transforms on every drag step.
+    struct Prepared {
+        std::vector<float> poly;   // empty = degenerate shape
+        int x0{0}, y0{0}, x1{0}, y1{0};
+        float feather{0.0f}, expansion{0.0f}, opacity{0.0f};
+        bool inverted{false};
+    };
+    auto clampCoord = [](float v, uint32_t limit) {
+        if (!(v > 0.0f)) return 0;  // also catches NaN
+        if (v >= static_cast<float>(limit)) return static_cast<int>(limit);
+        return static_cast<int>(v);
+    };
+    std::vector<Prepared> prepared;
+    prepared.reserve(masks.size());
+    // Union of everything any mask can change; the full frame as soon as
+    // one mask is inverted (it lifts every pixel outside its shape).
+    int ux0 = static_cast<int>(w), uy0 = static_cast<int>(h), ux1 = 0, uy1 = 0;
+    for (const auto& mask : masks) {
+        Prepared pm;
+        pm.feather   = std::max(0.0f, mask.feather) * distScale;
+        pm.expansion = mask.expansion * distScale;
+        pm.opacity   = std::clamp(mask.maskOpacity, 0.0f, 1.0f);
+        pm.inverted  = mask.inverted;
+        if (buildMaskPolygon(mask, w, h, frameToTarget, pm.poly)) {
+            float minX = pm.poly[0], maxX = pm.poly[0];
+            float minY = pm.poly[1], maxY = pm.poly[1];
+            for (size_t i = 2; i + 1 < pm.poly.size(); i += 2) {
+                minX = std::min(minX, pm.poly[i]);
+                maxX = std::max(maxX, pm.poly[i]);
+                minY = std::min(minY, pm.poly[i + 1]);
+                maxY = std::max(maxY, pm.poly[i + 1]);
+            }
+            const float margin =
+                0.5f * pm.feather + std::max(0.0f, pm.expansion) + 2.0f;
+            pm.x0 = clampCoord(std::floor(minX - margin), w);
+            pm.y0 = clampCoord(std::floor(minY - margin), h);
+            pm.x1 = clampCoord(std::ceil(maxX + margin) + 1.0f, w);
+            pm.y1 = clampCoord(std::ceil(maxY + margin) + 1.0f, h);
+        } else {
+            pm.poly.clear();
+        }
+        if (pm.inverted && pm.opacity > 0.0f) {
+            ux0 = 0; uy0 = 0;
+            ux1 = static_cast<int>(w); uy1 = static_cast<int>(h);
+        } else if (!pm.poly.empty() && pm.x1 > pm.x0 && pm.y1 > pm.y0) {
+            ux0 = std::min(ux0, pm.x0); uy0 = std::min(uy0, pm.y0);
+            ux1 = std::max(ux1, pm.x1); uy1 = std::max(uy1, pm.y1);
+        }
+        prepared.push_back(std::move(pm));
+    }
+    if (ux1 <= ux0 || uy1 <= uy0) return pixels;  // nothing visible
+
+    const uint32_t uw = static_cast<uint32_t>(ux1 - ux0);
+    const uint32_t uh = static_cast<uint32_t>(uy1 - uy0);
+    std::vector<float> accum(static_cast<size_t>(uw) * uh, 0.0f);
     std::vector<uint8_t> inside;
     std::vector<float> distIn, distOut;
 
-    for (const auto& mask : masks) {
-        float alphaConst = -1.0f; // >= 0 → uniform alpha, skip fill
+    for (const Prepared& pm : prepared) {
+        const bool hasWindow =
+            !pm.poly.empty() && pm.x1 > pm.x0 && pm.y1 > pm.y0;
 
-        if (!buildMaskPolygon(mask, w, h, frameToTarget, poly)) {
-            // Degenerate shape contributes nothing (or everything when
-            // inverted).
-            alphaConst = mask.inverted ? mask.maskOpacity : 0.0f;
+        // Pixels outside the window are "far outside": alpha 0, or the full
+        // mask opacity when inverted (everything, for a degenerate shape).
+        if (pm.inverted && pm.opacity > 0.0f) {
+            parallelSpans(uh, uw, [&](uint32_t begin, uint32_t end) {
+                for (uint32_t y = begin; y < end; ++y) {
+                    const int gy = uy0 + static_cast<int>(y);
+                    const bool rowInWindow =
+                        hasWindow && gy >= pm.y0 && gy < pm.y1;
+                    float* row = accum.data() + static_cast<size_t>(y) * uw;
+                    for (uint32_t x = 0; x < uw; ++x) {
+                        const int gx = ux0 + static_cast<int>(x);
+                        if (rowInWindow && gx >= pm.x0 && gx < pm.x1) continue;
+                        row[x] = std::min(1.0f, row[x] + pm.opacity);
+                    }
+                }
+            });
         }
+        if (!hasWindow) continue;
 
-        if (alphaConst >= 0.0f) {
-            if (alphaConst > 0.0f)
-                for (size_t i = 0; i < npx; ++i)
-                    accum[i] = std::min(1.0f, accum[i] + alphaConst);
-            continue;
-        }
+        const uint32_t bw = static_cast<uint32_t>(pm.x1 - pm.x0);
+        const uint32_t bh = static_cast<uint32_t>(pm.y1 - pm.y0);
+        inside.assign(static_cast<size_t>(bw) * bh, 0);
+        fillPolygon(pm.poly, pm.x0, pm.y0, bw, bh, inside);
 
-        inside.assign(npx, 0);
-        fillPolygon(poly, w, h, inside);
+        edt2d(inside, 0, bw, bh, distIn);   // dist² to nearest OUTSIDE pixel
+        edt2d(inside, 1, bw, bh, distOut);  // dist² to nearest INSIDE pixel
 
-        edt2d(inside, 0, w, h, distIn);   // dist² to nearest OUTSIDE pixel... see below
-        edt2d(inside, 1, w, h, distOut);  // dist² to nearest INSIDE pixel
+        const float feather = pm.feather;
+        parallelSpans(bh, bw, [&](uint32_t begin, uint32_t end) {
+            for (uint32_t y = begin; y < end; ++y) {
+                float* row = accum.data()
+                    + static_cast<size_t>(pm.y0 - uy0 + static_cast<int>(y)) * uw
+                    + (pm.x0 - ux0);
+                const size_t base = static_cast<size_t>(y) * bw;
+                for (uint32_t x = 0; x < bw; ++x) {
+                    const size_t i = base + x;
+                    // Signed distance: negative inside, positive outside.
+                    float d = inside[i]
+                        ? -(std::sqrt(distIn[i]) - 0.5f)
+                        :  (std::sqrt(distOut[i]) - 0.5f);
+                    d -= pm.expansion;
 
-        const float feather   = std::max(0.0f, mask.feather) * distScale;
-        const float expansion = mask.expansion * distScale;
-        const float opac      = std::clamp(mask.maskOpacity, 0.0f, 1.0f);
+                    float a;
+                    if (feather > 0.5f) {
+                        float t = std::clamp(0.5f - d / feather, 0.0f, 1.0f);
+                        a = t * t * (3.0f - 2.0f * t);   // smoothstep — Premiere-soft
+                    } else {
+                        a = std::clamp(0.5f - d, 0.0f, 1.0f);  // ~1px anti-aliased edge
+                    }
 
-        for (size_t i = 0; i < npx; ++i) {
-            // Signed distance: negative inside, positive outside. distIn
-            // holds dist²-to-outside (0 at outside pixels), distOut holds
-            // dist²-to-inside (0 at inside pixels).
-            float d = inside[i]
-                ? -(std::sqrt(distIn[i]) - 0.5f)
-                :  (std::sqrt(distOut[i]) - 0.5f);
-            d -= expansion;
-
-            float a;
-            if (feather > 0.5f) {
-                float t = std::clamp(0.5f - d / feather, 0.0f, 1.0f);
-                a = t * t * (3.0f - 2.0f * t);   // smoothstep — Premiere-soft
-            } else {
-                a = std::clamp(0.5f - d, 0.0f, 1.0f);  // ~1px anti-aliased edge
+                    if (pm.inverted) a = 1.0f - a;
+                    a *= pm.opacity;
+                    row[x] = std::min(1.0f, row[x] + a);  // additive combine (union)
+                }
             }
+        });
+    }
 
-            if (mask.inverted) a = 1.0f - a;
-            a *= opac;
-            accum[i] = std::min(1.0f, accum[i] + a);  // additive combine (union)
+    parallelSpans(uh, uw, [&](uint32_t begin, uint32_t end) {
+        for (uint32_t y = begin; y < end; ++y) {
+            const float* src = accum.data() + static_cast<size_t>(y) * uw;
+            uint8_t* dst = pixels.data()
+                + (static_cast<size_t>(uy0 + static_cast<int>(y)) * w + ux0) * 4;
+            for (uint32_t x = 0; x < uw; ++x) {
+                const uint8_t v8 = static_cast<uint8_t>(src[x] * 255.0f + 0.5f);
+                std::memset(dst + static_cast<size_t>(x) * 4, v8, 4);
+            }
         }
-    }
-
-    for (size_t i = 0; i < npx; ++i) {
-        uint8_t v8 = static_cast<uint8_t>(accum[i] * 255.0f + 0.5f);
-        pixels[i * 4 + 0] = v8;
-        pixels[i * 4 + 1] = v8;
-        pixels[i * 4 + 2] = v8;
-        pixels[i * 4 + 3] = v8;
-    }
+    });
     return pixels;
 }
 

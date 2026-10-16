@@ -145,6 +145,7 @@ public:
     /// The render the timeline should use: the chosen one if its file still
     /// exists, else the newest one still on disk, else nullptr.
     [[nodiscard]] static const RenderVersion* usableRender(const ShotSettings& settings);
+    [[nodiscard]] static bool needsRender(const ShotSettings& settings);
 private:
 
     // RENDERS strip (SHOTS pane): every render on disk; click = use + view
@@ -199,9 +200,9 @@ private:
     bool loadWorkflow(QString* error);
     /// Render the given shots (indices into m_shots). `includeRendered`
     /// re-renders shots that already have a render.
-    void startRender(const std::vector<int>& shotIndices, bool includeRendered);
+    void startRender(const std::vector<int>& shotIndices, bool includeRendered, bool freshSeeds = false);
     /// After prepareShots(): queue the shots that exported OK in ComfyUI.
-    void launchRender(const std::vector<int>& shotIndices);
+    void launchRender(const std::vector<int>& shotIndices, bool freshSeeds);
     [[nodiscard]] QString expressionFor(const ShowShot& shot) const;
     [[nodiscard]] QString rendersDir() const;
     void appendLog(const QString& line);
@@ -233,6 +234,7 @@ private:
     struct RenderThumb { QPointer<VideoFrameView> view; QPointer<QLabel> caption; int index{-1}; };
     std::vector<RenderThumb> m_renderThumbs;
     int            m_bigRenderIndex{-1};          ///< render shown big (index into ShotSettings::renders)
+    uint64_t       m_renderPreviewGeneration{0};  ///< reject frames from a previously selected render
     QStackedWidget* m_bigView{nullptr};          ///< FramingEditor | big render view
     VideoFrameView* m_bigRender{nullptr};
     QPushButton*   m_playBtn{nullptr};
@@ -252,6 +254,7 @@ private:
     double         m_playStartHead{0.0};
     qint64         m_playStartMs{0};
     std::unordered_map<std::string, double> m_durations;   ///< media path → seconds
+    std::unordered_map<std::string, std::pair<qint64, qint64>> m_mediaRevisions; ///< size + modification time
     QLabel*        m_framingTitle{nullptr};
     QRadioButton*  m_recordingModeBtn{nullptr};
     QRadioButton*  m_shotModeBtn{nullptr};
@@ -287,7 +290,10 @@ private:
 
     // Assembly (SETTINGS page + action bar)
     QLineEdit*       m_backgroundEdit{nullptr};
+    QLineEdit*       m_timelineTemplateEdit{nullptr};
     QDoubleSpinBox*  m_cuZoomSpin{nullptr};
+    QDoubleSpinBox*  m_cuBackgroundXSpin{nullptr};
+    QDoubleSpinBox*  m_cuBackgroundYSpin{nullptr};
     QDoubleSpinBox*  m_gapSpin{nullptr};
     QPushButton*     m_assembleBtn{nullptr};
 
@@ -302,7 +308,6 @@ private:
     QLineEdit*       m_defaultExprEdit{nullptr};
     QSpinBox*        m_frameLimitSpin{nullptr};
     QPushButton*     m_renderAllBtn{nullptr};
-    QCheckBox*       m_rerenderCheck{nullptr};
     QPushButton*     m_stopRenderBtn{nullptr};
     QLabel*          m_renderStatus{nullptr};
     QTableWidget*    m_queueTable{nullptr};

@@ -287,22 +287,59 @@ static bool isEffectDrop(const QMimeData* m)
         || m->hasFormat(QStringLiteral("application/x-roundtable-glitch-preset"));
 }
 
+/// A mask header dragged within Effect Controls (reassign its owner).
+static bool isMaskAssignDrop(const QMimeData* m)
+{
+    return m->hasFormat(QStringLiteral("application/x-roundtable-mask"));
+}
+
 void EffectControlsPanel::dragEnterEvent(QDragEnterEvent* event)
 {
-    if (isEffectDrop(event->mimeData()) && m_clip) {
+    if ((isEffectDrop(event->mimeData()) || isMaskAssignDrop(event->mimeData()))
+        && m_clip) {
         event->acceptProposedAction();
     }
 }
 
 void EffectControlsPanel::dragMoveEvent(QDragMoveEvent* event)
 {
+    if (isMaskAssignDrop(event->mimeData()) && m_clip) {
+        quint64 effectId = 0;
+        bool unassigned = false;
+        QWidget* target = maskDropTargetAt(event->position().toPoint(),
+                                           effectId, unassigned);
+        setMaskDropHighlight(target);
+        if (target) event->acceptProposedAction();
+        else event->ignore();
+        return;
+    }
     if (isEffectDrop(event->mimeData()) && m_clip) {
         event->acceptProposedAction();
     }
 }
 
+void EffectControlsPanel::dragLeaveEvent(QDragLeaveEvent* event)
+{
+    setMaskDropHighlight(nullptr);
+    QWidget::dragLeaveEvent(event);
+}
+
 void EffectControlsPanel::dropEvent(QDropEvent* event)
 {
+    if (isMaskAssignDrop(event->mimeData())) {
+        setMaskDropHighlight(nullptr);
+        const QList<QByteArray> parts = event->mimeData()
+            ->data(QStringLiteral("application/x-roundtable-mask")).split(':');
+        quint64 effectId = 0;
+        bool unassigned = false;
+        if (m_clip && parts.size() == 2
+            && maskDropTargetAt(event->position().toPoint(), effectId, unassigned)) {
+            assignMask(parts[0].toULongLong(), parts[1].toULongLong(),
+                       effectId, unassigned);
+            event->acceptProposedAction();
+        }
+        return;
+    }
     if (!m_clip || !m_commandStack || !m_timeline) return;
     auto& stack = m_clip->effects();
 

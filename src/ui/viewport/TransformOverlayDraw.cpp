@@ -28,7 +28,8 @@ void TransformOverlayWidget::paintEvent(QPaintEvent* /*event*/)
     // Skip painting entirely when there's nothing to draw.
     // On a WA_TranslucentBackground window, even a no-op QPainter triggers
     // DWM per-pixel alpha composition, so avoid it when possible.
-    bool hasMasks = (m_masks && !m_masks->empty()) || m_penDrawing;
+    bool hasMasks = (m_masks && !m_masks->empty()) || m_penDrawing
+                    || m_shapeDrawing;
     const bool inlineEditing = m_inlineTextEdit && m_inlineTextEdit->isVisible();
     if (!m_overlay.visible && !m_showSafeAreas && !m_showGrid && !hasMasks
         && !inlineEditing)
@@ -472,7 +473,8 @@ void TransformOverlayWidget::drawGrid(QPainter& painter)
 
 void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
 {
-    if ((!m_masks || m_masks->empty()) && !m_penDrawing) return;
+    if ((!m_masks || m_masks->empty()) && !m_penDrawing && !m_shapeDrawing)
+        return;
 
     const QSizeF sourceSize = maskSourceSize();
 
@@ -567,18 +569,26 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
             painter.setBrush(Qt::NoBrush);
             painter.drawPath(path);
 
+            // Feather bounds: the raster ramps alpha across
+            // [edge - feather/2, edge + feather/2], so draw a dashed line at
+            // both ends of the ramp, inside and outside the edge.
             if (feather > 0.01f) {
                 painter.setPen(cosmeticPen(active ? featherColor
                                                   : QColor(0, 120, 255, 50),
                                              1.0, Qt::DashLine));
                 if (mask.shape == MaskShape::FreeDrawBezier) {
+                    // The stroke outline of the edge is exactly the two
+                    // offset curves, one per side.
                     QPainterPathStroker stroker;
                     stroker.setWidth(std::max(
-                        1.0, static_cast<double>(feather) * pixelScale * 2.0));
+                        1.0, static_cast<double>(feather) * pixelScale));
+                    stroker.setJoinStyle(Qt::RoundJoin);
                     painter.drawPath(stroker.createStroke(path));
                 } else {
                     painter.drawPath(buildMaskWidgetPath(
-                        mask, geo, expansion + feather, true));
+                        mask, geo, expansion + 0.5f * feather, true));
+                    painter.drawPath(buildMaskWidgetPath(
+                        mask, geo, expansion - 0.5f * feather, true));
                 }
             }
 
@@ -651,6 +661,15 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
                 }
             }
         }
+    }
+
+    // Ellipse/Rectangle drafts are outline-only previews until release.
+    if (m_shapeDrawing && m_shapeDraft.base.width > 0.0f
+        && m_shapeDraft.base.height > 0.0f) {
+        painter.setPen(cosmeticPen(activeMaskColor, 1.5));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(buildMaskWidgetPath(
+            m_shapeDraft, m_shapeDraft.base, 0.0f, false));
     }
 
     // A Pen Mask is preview-only until closed. Incomplete paths therefore

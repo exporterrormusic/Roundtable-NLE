@@ -13,6 +13,7 @@
 
 #include "CompositeService.h"
 #include "audio/AudioPlaybackService.h"
+#include "decode/VideoFrameMapping.h"
 #include "playback/MediaPool.h"
 #include "playback/PlaybackController.h"
 #include "panels/monitors/ProgramMonitor.h"  // for requestRefresh() after warmup
@@ -33,6 +34,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <set>
@@ -259,7 +262,21 @@ void TimelineWorkspace::preOpenVideoMedia()
         bool isCharacter{false};
         bool predecode{true};
         bool isVideoFile{false};   // video tracks: pre-decode-eligible
+        // Timeline distance from the playhead to this file's nearest use
+        // (0 = under the playhead). Files are warmed nearest-first.
+        int64_t distance{INT64_MAX};
+        // Source frame shown at that nearest use. Mapped here without stream
+        // info, so a clip with no stored fps used the 24 fps fallback and the
+        // worker rescales it to the file's real fps once open.
+        int64_t firstFrame{0};
+        bool mappedAt24Fallback{false};
+        // Loop pre-decode priority on the compositor prewarm's scale (the
+        // tick playback reaches the clip; lower runs sooner).
+        int64_t loopPriority{0};
     };
+    // The model playhead is the restored project position at open; the
+    // playback controller has not been seeked to it yet.
+    const int64_t playhead = m_timeline->playheadPosition();
     std::map<std::string, Entry> paths;
     for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
         auto* track = m_timeline->track(ti);
@@ -270,6 +287,17 @@ void TimelineWorkspace::preOpenVideoMedia()
         for (size_t ci = 0; ci < track->clipCount(); ++ci) {
             auto* clip = track->clip(ci);
             if (!clip) continue;
+            // Playback runs forward, so a clip behind the playhead counts
+            // double the distance of one the same span ahead.
+            int64_t useTick = playhead;
+            int64_t distance = 0;
+            if (playhead < clip->timelineIn()) {
+                useTick = clip->timelineIn();
+                distance = useTick - playhead;
+            } else if (playhead >= clip->timelineOut()) {
+                useTick = clip->timelineIn();
+                distance = 2 * (playhead - clip->timelineOut() + 1);
+            }
             if (auto* videoClip = dynamic_cast<VideoClip*>(clip)) {
                 const auto& path = videoClip->mediaPath();
                 if (path.empty()) continue;
@@ -277,6 +305,14 @@ void TimelineWorkspace::preOpenVideoMedia()
                 if (videoClip->isVideoCharacter())
                     e.isCharacter = true;
                 e.isVideoFile = true;
+                if (distance < e.distance) {
+                    const auto mapped =
+                        mapTickToSourceFrame(*videoClip, useTick, nullptr);
+                    e.distance = distance;
+                    e.loopPriority = playhead + distance;
+                    e.firstFrame = mapped.frame;
+                    e.mappedAt24Fallback = videoClip->sourceFps() <= 0.0;
+                }
                 continue;
             }
             if (auto* imageClip = dynamic_cast<ImageClip*>(clip)) {
@@ -284,7 +320,8 @@ void TimelineWorkspace::preOpenVideoMedia()
                 if (path.empty()) continue;
                 // Stills don't need loop-pre-decode or NVDEC, just an
                 // open() to warm the MediaPool entry.
-                paths[path];   // insert with default Entry (isVideoFile=false)
+                auto& e = paths[path];   // default Entry (isVideoFile=false)
+                e.distance = std::min(e.distance, distance);
                 continue;
             }
             // Audio owns a playhead-window warmup path (warmAudioCacheAsync).
@@ -339,6 +376,29 @@ void TimelineWorkspace::preOpenVideoMedia()
     auto work = std::make_shared<std::vector<std::pair<std::string, Entry>>>();
     work->reserve(paths.size());
     for (auto& kv : paths) work->emplace_back(kv.first, kv.second);
+    // Workers pull in index order, so the clips under the playhead open (and
+    // queue their prefetch) first instead of whichever path sorts first.
+    // stable_sort keeps path order between equally distant files.
+    std::stable_sort(work->begin(), work->end(),
+                     [](const auto& a, const auto& b) {
+                         return a.second.distance < b.second.distance;
+                     });
+
+    // The frame the nearest use shows, in the opened file's frame numbers
+    // (unclamped: loop pre-decode wraps it, prefetch clamps it).
+    const auto startFrameFor = [](const Entry& e, const VideoStreamInfo& media) {
+        if (!e.mappedAt24Fallback || media.fps <= 0.0) return e.firstFrame;
+        return static_cast<int64_t>(std::llround(
+            static_cast<double>(e.firstFrame) * media.fps / 24.0));
+    };
+
+    // Stills near the playhead are decoded too: an undecoded still costs
+    // 60-150 ms (PNG/4K) the first time a composite shows it (perf_log
+    // 2026-10-12: 'INTRO 2' at tick 0, 62 ms). Bounded, since a decoded 4K
+    // still holds ~33 MB.
+    constexpr int kMaxWarmStills = 8;
+    const int64_t stillWindow = secondsToTicks(10.0);
+    auto stillsWarmed = std::make_shared<std::atomic<int>>(0);
 
     const int total           = static_cast<int>(work->size());
     auto workIndex            = std::make_shared<std::atomic<int>>(0);
@@ -360,7 +420,8 @@ void TimelineWorkspace::preOpenVideoMedia()
     for (int ti = 0; ti < nThreads; ++ti) {
         batch->workers.emplace_back(
             [this, pool, work, workIndex, processed, batchPtr, generation,
-             startTime, total, nThreads](std::stop_token stop) {
+             startTime, total, nThreads, startFrameFor, stillWindow,
+             stillsWarmed](std::stop_token stop) {
             for (;;) {
                 if (stop.stop_requested()) break;
                 int idx = workIndex->fetch_add(1, std::memory_order_relaxed);
@@ -370,22 +431,42 @@ void TimelineWorkspace::preOpenVideoMedia()
 
                 if (pool) {
                     uint64_t handle = pool->open(path);
+                    const auto* mediaInfo =
+                        handle != 0 ? pool->getInfo(handle) : nullptr;
                     if (handle == 0) {
                         spdlog::warn("preOpenVideoMedia(bg): failed to open '{}'", path);
+                    } else if (mediaInfo && mediaInfo->frameCount <= 1) {
+                        // A still (ImageClip, or a single-frame file on a
+                        // video track) only needs open() unless it is near
+                        // the playhead. The compositor reads stills at frame 0.
+                        if (info.distance <= stillWindow
+                            && stillsWarmed->fetch_add(1, std::memory_order_relaxed)
+                                   < kMaxWarmStills) {
+                            pool->schedulePrefetch(handle, /*afterFrame=*/0,
+                                                   /*count=*/1, /*urgent=*/false,
+                                                   ResolutionTier::Full);
+                        }
                     } else if (info.isVideoFile) {
-                        // Non-video files (stills / audio) only need open().
-                        const auto* mediaInfo = pool->getInfo(handle);
                         if (mediaInfo) {
                             if (info.isCharacter) {
                                 if (info.predecode && mediaInfo->frameCount > 1)
-                                    pool->startLoopPreDecode(handle, ResolutionTier::Half);
+                                    pool->startLoopPreDecode(
+                                        handle, ResolutionTier::Half,
+                                        info.loopPriority,
+                                        startFrameFor(info, *mediaInfo));
                             } else if (mediaInfo->frameCount > 1) {
-                                // Ordinary videos get a head prefetch only.  Full-res
+                                // Ordinary videos get a short prefetch only.  Full-res
                                 // loop pre-decode of every short clip thrashed the 1 GB
                                 // RAM cache (~125 frames at 1888x1088), forced CPU
                                 // converts over GPU zero-copy, and resumed on every
                                 // pause — jittery playback (perf_log 2026-09-26).
-                                pool->schedulePrefetch(handle, /*afterFrame=*/0,
+                                // It starts at the frame the nearest use shows (the
+                                // playhead frame, or a trimmed clip's in point), not
+                                // the file's frame 0.
+                                const int64_t startFrame = std::clamp(
+                                    startFrameFor(info, *mediaInfo),
+                                    int64_t{0}, mediaInfo->frameCount - 1);
+                                pool->schedulePrefetch(handle, startFrame,
                                                        /*count=*/60, /*urgent=*/false,
                                                        ResolutionTier::Full);
                             }

@@ -236,6 +236,14 @@ public:
     /// Seek to a specific frame number.
     bool seekToFrame(int64_t frameNumber, SeekMode mode = SeekMode::Precise);
 
+    /// Decode FORWARD from the current position to the frame covering
+    /// `timeSeconds`, without seeking: pictures nothing references are
+    /// skipped on the way, and the next decodeNext() returns the target.
+    /// For short forward jumps (scrub steps, a prefetch catching up) where a
+    /// seek would rewind to the keyframe. A target already passed yields the
+    /// next picture. Returns false at end of stream with nothing to return.
+    bool advanceTo(double timeSeconds);
+
     /// Decode the next frame. Returns true if a frame was decoded.
     /// The DecodedFrame is valid until the next call to decodeNext() or seek().
     bool decodeNext(DecodedFrame& outFrame);
@@ -267,7 +275,12 @@ private:
     bool initSoftwareDecoder(const char* preferredDecoderName = nullptr);
     int m_maxThreads{0};  // 0 = auto
     bool m_sliceOnlyThreading{false};
-    bool decodePacket(AVPacket* packet, DecodedFrame& outFrame);
+    /// Precise-seek body: decode forward from the keyframe to the frame
+    /// covering `timeSeconds` and park it in m_pendingFrame for the next
+    /// decodeNext(). Returns true when the first picture decoded was already
+    /// PAST the target (open-GOP keyframe): the caller seeks further back.
+    /// Caller holds m_mutex.
+    bool decodeForwardTo(double timeSeconds);
     void fillFrameInfo(DecodedFrame& outFrame, AVFrame* frame);
 
     AVFormatContext*     m_fmtCtx{nullptr};
@@ -284,6 +297,15 @@ private:
     void*                m_avioMemory{nullptr}; // MemoryAvioSource for stills; no live file handle
     AVFrame*             m_frame{nullptr};
     AVFrame*             m_hwFrame{nullptr};     // For hw→sw transfer
+    // Target picture found by a precise seek, returned by the next
+    // decodeNext(). The old code FLUSHED the codec here instead, so the
+    // target was discarded and the next decode had no reference frames.
+    AVFrame*             m_pendingFrame{nullptr};
+    bool                 m_hasPendingFrame{false};
+    // A packet the precise seek read but could not send (decoder output
+    // full when the target turned up); decodeNext() sends it first.
+    AVPacket*            m_heldPacket{nullptr};
+    bool                 m_hasHeldPacket{false};
     AVPacket*            m_packet{nullptr};
     AVBufferRef*         m_hwDeviceCtx{nullptr};
     int                  m_hwPixFmt{-1};         // AV_PIX_FMT_CUDA or AV_PIX_FMT_D3D11

@@ -25,6 +25,7 @@
 #include <vector>
 
 class QApplication;
+class QObject;
 
 namespace rt {
 
@@ -108,6 +109,7 @@ private:
     // ── Core subsystems (owned) ─────────────────────────────────────────
     std::unique_ptr<Timeline>        m_timeline;
     std::unique_ptr<CommandStack>    m_commandStack;
+    std::unique_ptr<QObject>         m_undoGestureSealer; // app event filter → m_commandStack
     std::unique_ptr<ShortcutManager> m_shortcutManager;
     std::unique_ptr<AudioEngine>          m_audioEngine;
     std::unique_ptr<PlaybackController>   m_playbackController;

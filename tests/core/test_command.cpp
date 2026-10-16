@@ -120,17 +120,66 @@ TEST(CommandStack, NewMergeableCommandClearsRedo)
     ASSERT_TRUE(stack.canRedo());
     EXPECT_EQ(value, 0);
 
-    // This merges with the earlier move command. It must still abandon the
-    // redo branch containing SetValueCommand.
+    // Same type as the (older) move now on top. It must abandon the redo
+    // branch containing SetValueCommand, and — because undo() sealed the
+    // merge window — become its own step instead of folding into the older
+    // move (one Ctrl+Z must never revert two separate edits).
     stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 2000));
 
     EXPECT_EQ(track.clip(0)->timelineIn(), 2000);
     EXPECT_FALSE(stack.canRedo());
     EXPECT_FALSE(stack.redo());
     EXPECT_EQ(value, 0);
+    EXPECT_EQ(stack.undoCount(), 2u);
 
     ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 1000);
+    ASSERT_TRUE(stack.undo());
     EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+}
+
+TEST(CommandStack, SealMergeSplitsSeparateGestures)
+{
+    Track track(TrackType::Video, "V1");
+    auto clip = std::make_unique<SpineClip>("Hero", "default");
+    clip->setTimelineIn(0);
+    clip->setDuration(48000);
+    const uint64_t clipId = clip->id();
+    ASSERT_NE(track.addClip(std::move(clip)), nullptr);
+
+    CommandStack stack;
+    // Gesture 1: a drag of two moves merges into one step.
+    stack.sealMerge();
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 1000));
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 2000));
+    // Gesture 2: a later edit of the same clip is its own step.
+    stack.sealMerge();
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 5000));
+
+    EXPECT_EQ(stack.undoCount(), 2u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 2000);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+}
+
+TEST(CommandStack, PushWithoutExecuteSealsMerge)
+{
+    Track track(TrackType::Video, "V1");
+    auto clip = std::make_unique<SpineClip>("Hero", "default");
+    clip->setTimelineIn(0);
+    clip->setDuration(48000);
+    const uint64_t clipId = clip->id();
+    ASSERT_NE(track.addClip(std::move(clip)), nullptr);
+
+    int value = 0;
+    CommandStack stack;
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 1000));
+    value = 7;
+    stack.pushWithoutExecute(std::make_unique<SetValueCommand>(value, 7));
+    stack.execute(std::make_unique<MoveClipCommand>(&track, clipId, 2000));
+
+    EXPECT_EQ(stack.undoCount(), 3u);
 }
 
 TEST(CommandStack, Descriptions)

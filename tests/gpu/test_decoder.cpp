@@ -189,6 +189,88 @@ TEST(FrameCache, LRU_Eviction)
     EXPECT_NE(cache.get(1, 3), nullptr);
 }
 
+// A GPU-resident frame: no CPU pixels, pins a texture via gpuTextureOwner.
+static std::shared_ptr<CachedFrame> makeGpuFrame(uint64_t mediaId, int64_t frameNum)
+{
+    auto f = std::make_shared<CachedFrame>();
+    f->mediaId     = mediaId;
+    f->frameNumber = frameNum;
+    f->width       = 64;
+    f->height      = 64;
+    f->tier        = ResolutionTier::Full;
+    f->gpuReady    = true;
+    f->gpuTextureOwner = std::make_shared<int>(0);
+    return f;
+}
+
+// The entry cap bounds texture-pinning entries only. It used to count every
+// entry, so pinned stills + CPU frames filled it and every new insert evicted
+// a freshly prefetched frame (perf_log: frameN=169/168 at 110 MB of 1 GB,
+// 6-10% of playback frames held).
+TEST(FrameCache, EntryCapCountsOnlyGpuOwnedFrames)
+{
+    FrameCache cache(64 * 1024 * 1024);
+    cache.setMaxEntries(2);
+
+    for (int64_t i = 0; i < 5; ++i) cache.put(makeFrame(1, i));   // CPU
+    EXPECT_EQ(cache.frameCount(), 5u);          // bytes fit: none evicted
+
+    for (int64_t i = 0; i < 4; ++i) cache.put(makeGpuFrame(2, i));
+    EXPECT_EQ(cache.gpuCoOwnedCount(), 2u);     // GPU cap enforced
+    for (int64_t i = 0; i < 5; ++i)             // GPU pressure spares CPU frames
+        EXPECT_NE(cache.get(1, i), nullptr) << i;
+    EXPECT_NE(cache.get(2, 3), nullptr);        // newest GPU frames kept
+    EXPECT_NE(cache.get(2, 2), nullptr);
+}
+
+// A GPU-decoded frame keeps its texture through lazyReadback after the
+// compositor hands gpuTextureOwner to GpuTextureCache and resets it. Those
+// entries escaped the cap and VRAM grew to 23.6 GB (perf_log 2026-10-12).
+TEST(FrameCache, EntryCapCountsHandedOverGpuFrames)
+{
+    FrameCache cache(64 * 1024 * 1024);
+    cache.setMaxEntries(2);
+    for (int64_t i = 0; i < 6; ++i) {
+        auto f = makeGpuFrame(3, i);
+        f->gpuTextureOwner.reset();   // handed over; still gpuReady
+        cache.put(f);
+    }
+    EXPECT_EQ(cache.frameCount(), 2u);
+    EXPECT_EQ(cache.gpuCoOwnedCount(), 2u);
+
+    // A pinned GPU still never counts and is never evicted.
+    auto still = makeGpuFrame(4, 0);
+    still->pinned = true;
+    cache.put(still);
+    cache.put(makeGpuFrame(3, 6));
+    EXPECT_NE(cache.get(4, 0), nullptr);
+    EXPECT_EQ(cache.gpuCoOwnedCount(), 2u);
+}
+
+TEST(FrameCache, VramPressureEvictionCountsTextureBytes)
+{
+    FrameCache cache(64 * 1024 * 1024);
+    for (int64_t i = 0; i < 4; ++i) cache.put(makeGpuFrame(5, i));  // 64x64
+    // One 64x64 BGRA texture is 16 KB: asking for 16 KB frees one frame,
+    // not every GPU frame (CPU bytes per entry are only a few hundred).
+    EXPECT_EQ(cache.evictGpuCoOwned(64 * 64 * 4), 64u * 64u * 4u);
+    EXPECT_EQ(cache.frameCount(), 3u);
+}
+
+TEST(FrameCache, CountsFramesEvictedBeforeUse)
+{
+    const size_t frameSize = 64 * 64 * 4 + sizeof(CachedFrame) + 64;
+    FrameCache cache(frameSize * 2);
+    cache.put(makeFrame(1, 0));
+    cache.put(makeFrame(1, 1));
+    ASSERT_NE(cache.get(1, 1), nullptr);   // 1 is read, 0 never is
+    cache.put(makeFrame(1, 2));            // evicts 0 (LRU, unread)
+    cache.put(makeFrame(1, 3));            // evicts 1 (read)
+    const auto stats = cache.stats();
+    EXPECT_EQ(stats.evictionCount, 2u);
+    EXPECT_EQ(stats.evictedUnusedCount, 1u);
+}
+
 TEST(FrameCache, EvictMedia)
 {
     FrameCache cache(1024 * 1024);
@@ -514,6 +596,83 @@ TEST(MediaPoolPrefetch, StrideTwoBothMissingQueuesAdjacentExactPair)
     EXPECT_TRUE(exactQueued(kLower));
     EXPECT_TRUE(exactQueued(kUpper));
     EXPECT_EQ(queue.size(), 2u);
+}
+
+TEST(MediaPoolPrefetch, RebuildPrunesOtherFilesOnlyBehindTheirOwnPlayhead)
+{
+    // A rebuild for a clip trimmed deep into its source (frame 5000) used to
+    // compare another file's queued frames to 5000 and drop them all.
+    constexpr MediaHandle kRebuilding = 1;
+    constexpr MediaHandle kOther = 2;
+    PrefetchTask other;
+    other.handle = kOther;
+    other.frameNumber = 100;
+
+    // The other file's own playhead is at 100: its frame is still ahead.
+    EXPECT_FALSE(prefetch_detail::replaceableByDecodeAheadRebuild(
+        other, kRebuilding, /*taskFilePlayhead=*/100));
+    // Once that file's playhead has moved well past, the frame is stale.
+    EXPECT_TRUE(prefetch_detail::replaceableByDecodeAheadRebuild(
+        other, kRebuilding, /*taskFilePlayhead=*/200));
+    // The rebuilding file's own decode-ahead is always replaced.
+    other.handle = kRebuilding;
+    EXPECT_TRUE(prefetch_detail::replaceableByDecodeAheadRebuild(
+        other, kRebuilding, /*taskFilePlayhead=*/0));
+}
+
+TEST(MediaPoolPrefetch, OnlySingleFrameStepsCountAsSlowHardwareFrames)
+{
+    using prefetch_detail::isSlowHardwareStep;
+    constexpr auto kHalf = ResolutionTier::Half;
+    // A 2.4 s forward jump on 1080p NVDEC (perf_log 2026-10-12, 'bkg
+    // loop.mp4') is many pictures, not one slow frame.
+    EXPECT_FALSE(isSlowHardwareStep(true, /*singleFrameStep=*/false, kHalf,
+                                    1920, 1080, 2359.0, false));
+    EXPECT_TRUE(isSlowHardwareStep(true, true, kHalf, 1920, 1080, 250.0, false));
+    // Unchanged rules: fast frames, software, Full tier, packed alpha and
+    // sub-1080p sources never count.
+    EXPECT_FALSE(isSlowHardwareStep(true, true, kHalf, 1920, 1080, 20.0, false));
+    EXPECT_FALSE(isSlowHardwareStep(false, true, kHalf, 1920, 1080, 250.0, false));
+    EXPECT_FALSE(isSlowHardwareStep(true, true, ResolutionTier::Full,
+                                    1920, 1080, 250.0, false));
+    EXPECT_FALSE(isSlowHardwareStep(true, true, kHalf, 1920, 1080, 250.0, true));
+    EXPECT_FALSE(isSlowHardwareStep(true, true, kHalf, 1280, 720, 250.0, false));
+}
+
+TEST(MediaPoolPrefetch, ReleasesIdleDecodersOldestFirstKeepingWarmOnes)
+{
+    using namespace std::chrono_literals;
+    using prefetch_detail::idleDecodersToRelease;
+    const auto now = std::chrono::steady_clock::now();
+    // Handles 1-3 idle 20/10/6 s, 4 used just now.
+    const std::vector<std::pair<MediaHandle, std::chrono::steady_clock::time_point>>
+        lastUsed{{3, now - 6s}, {1, now - 20s}, {4, now}, {2, now - 10s}};
+
+    // Keep 2 warm: the two oldest idle ones go, oldest first.
+    EXPECT_EQ(idleDecodersToRelease(lastUsed, now, 5s, 2),
+              (std::vector<MediaHandle>{1, 2}));
+    // Keep 1: every decoder idle past the limit goes; the busy one stays.
+    EXPECT_EQ(idleDecodersToRelease(lastUsed, now, 5s, 1),
+              (std::vector<MediaHandle>{1, 2, 3}));
+    // Nothing idle long enough.
+    EXPECT_TRUE(idleDecodersToRelease(lastUsed, now, 30s, 0).empty());
+    // Already at the warm count.
+    EXPECT_TRUE(idleDecodersToRelease(lastUsed, now, 5s, 4).empty());
+}
+
+TEST(MediaPoolPrefetch, QueueOrderMeasuresEachFileFromItsOwnPlayhead)
+{
+    // File A plays at frame 100, file B (trimmed) at frame 5000. Each one's
+    // next frame is 1 away from its own playhead, so they interleave instead
+    // of A's whole lookahead outranking B's next frame (pool-wide distance
+    // from 5000 put every A frame ~4900 away).
+    EXPECT_EQ(prefetch_detail::frameDistanceFromPlayhead(101, 100), 1);
+    EXPECT_EQ(prefetch_detail::frameDistanceFromPlayhead(5001, 5000), 1);
+    EXPECT_LT(prefetch_detail::frameDistanceFromPlayhead(5001, 5000),
+              prefetch_detail::frameDistanceFromPlayhead(130, 100));
+    // A file never requested sorts after everything, without overflow.
+    EXPECT_EQ(prefetch_detail::frameDistanceFromPlayhead(0, INT64_MIN + 4),
+              INT64_MAX);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

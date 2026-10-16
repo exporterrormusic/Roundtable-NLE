@@ -19,6 +19,7 @@
 #include "effects/Effect.h"
 #include "playback/MediaPool.h"
 #include "PathUtils.h"
+#include "FrameTime.h"
 #include "audio/AudioFile.h"
 
 #include <QDir>
@@ -48,6 +49,70 @@ bool isStillImagePathDrag(const QString& path)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Media drop placement — shared by the ghost and every media drop path
+// ═════════════════════════════════════════════════════════════════════════════
+
+int64_t TimelinePanel::stillDropDuration() const
+{
+    // Matches the length DropControllerMediaDrop gives a dropped still.
+    return wholeFrameDurationTicks(
+        5.0, canonicalFrameRate(m_layoutEngine.frameRate()));
+}
+
+int64_t TimelinePanel::mediaDropDuration(uint64_t handle, const QString& path)
+{
+    QString resolvedPath = path;
+    if (resolvedPath.isEmpty() && handle != 0 && m_mediaPool)
+        resolvedPath = QString::fromStdString(
+            pathToUtf8(m_mediaPool->getPath(handle)));
+    // FFmpeg's image2 demuxer reports a still as one tiny frame (0.04 s).
+    if (!resolvedPath.isEmpty() && isStillImagePathDrag(resolvedPath))
+        return stillDropDuration();
+    if (m_mediaPool) {
+        const auto* info = handle != 0 ? m_mediaPool->getInfo(handle) : nullptr;
+        if ((!info || info->duration <= 0.0) && !path.isEmpty()) {
+            const auto opened = m_mediaPool->open(path.toStdString());
+            if (opened != 0) info = m_mediaPool->getInfo(opened);
+        }
+        if (info && info->duration > 0.0)
+            return static_cast<int64_t>(info->duration * 48000.0);
+    }
+    return stillDropDuration();
+}
+
+int64_t TimelinePanel::computeMediaDropTick(const QPointF& pos, int64_t groupDur,
+                                            bool* didSnap)
+{
+    int64_t tick = m_layoutEngine.pixelXToTime(pos.x() - headerWidth());
+    if (tick < 0) tick = 0;
+    // Same frame-grid rule as a clip move (TimelinePanelMouseDragMove.cpp):
+    // an off-grid head renders from the NEXT frame, so an unsnapped drop
+    // looked a frame late.
+    tick = m_layoutEngine.snapToFrame(tick);
+    bool snapped = false;
+    if (groupDur > 0) {
+        // Premiere-style: the head OR the tail may lock onto an edge.
+        const auto snapRes = m_snapEngine.snapPair(tick, tick + groupDur);
+        if (snapRes.didSnap) { tick = snapRes.snappedTick; snapped = true; }
+    } else {
+        const auto snapRes = m_snapEngine.snap(tick);
+        if (snapRes.didSnap) { tick = snapRes.snappedTick; snapped = true; }
+    }
+    if (tick < 0) tick = 0;
+    if (didSnap) *didSnap = snapped;
+    return tick;
+}
+
+int64_t TimelinePanel::resolveMediaDropTick(const QPointF& pos, int64_t groupDur)
+{
+    // Qt delivers the drop at the last dragMove position, so this is the
+    // exact tick the ghost was drawn at — use it rather than re-deriving.
+    if (m_ghostDropTick >= 0 && (pos - m_ghostDropPos).manhattanLength() < 0.5)
+        return m_ghostDropTick;
+    return computeMediaDropTick(pos, groupDur);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  Drag-and-drop from Project Bin → Timeline
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -65,6 +130,7 @@ void TimelinePanel::dragEnterEvent(QDragEnterEvent* event)
         event->mimeData()->hasUrls())
     {
         event->acceptProposedAction();
+        m_ghostDropTick = -1;
 
         // Build snap targets for the incoming drag operation
         if (m_timeline) {
@@ -493,10 +559,10 @@ void TimelinePanel::mediaDragMove(QDragMoveEvent* event)
                     }
                 }
             }
-            // Fallback per clip (also covers stills — 5s default matches
-            // what TimelineWorkspaceWiringMediaDrop.cpp creates).
+            // Fallback per clip (also covers stills — the default length
+            // DropControllerMediaDrop creates, in whole frames).
             if (clipDur <= 0)
-                clipDur = static_cast<int64_t>(5.0 * 48000.0);
+                clipDur = stillDropDuration();
             clipDurations.push_back(clipDur);
             previewDur += clipDur;
         }
@@ -522,15 +588,15 @@ void TimelinePanel::mediaDragMove(QDragMoveEvent* event)
                 }
             }
             if (clipDur <= 0)
-                clipDur = static_cast<int64_t>(5.0 * 48000.0);
+                clipDur = stillDropDuration();
             clipDurations.push_back(clipDur);
             previewDur += clipDur;
         }
     }
 
-    // Fallback: 5-second default if all else fails
+    // Fallback: default still length if all else fails
     if (previewDur <= 0) {
-        previewDur = static_cast<int64_t>(5.0 * 48000.0);
+        previewDur = stillDropDuration();
     }
     // Ensure clipDurations has at least one entry for ghost overlay
     if (clipDurations.empty())
@@ -554,15 +620,12 @@ void TimelinePanel::mediaDragMove(QDragMoveEvent* event)
         else if (m == "video") mediaForceVideoOnly = true;
     }
 
-    // Snap both head and tail (Premiere Pro-style edge snapping)
+    // Frame-grid + head/tail edge snap. Remember the result: the drop
+    // reuses this exact tick so the clip lands where the ghost is drawn.
     bool didSnap = false;
-    if (previewDur > 0) {
-        auto snapRes = m_snapEngine.snapPair(tick, tick + previewDur);
-        if (snapRes.didSnap) { tick = snapRes.snappedTick; didSnap = true; }
-    } else {
-        auto snapRes = m_snapEngine.snap(tick);
-        if (snapRes.didSnap) { tick = snapRes.snappedTick; didSnap = true; }
-    }
+    tick = computeMediaDropTick(pos, previewDur, &didSnap);
+    m_ghostDropTick = tick;
+    m_ghostDropPos = pos;
 
     // Show snap indicator if snapping occurred; clear it otherwise.
     for (auto tw : m_trackWidgets) tw->setSnapIndicatorTick(didSnap ? tick : -1);
@@ -1060,6 +1123,7 @@ void TimelinePanel::dragLeaveEvent(QDragLeaveEvent* event)
     m_ghostTrackOnExisting = false;
     m_ghostDropAudioAnchor = SIZE_MAX;
     m_ghostDropAudioStreams = 1;
+    m_ghostDropTick = -1;
     if (m_ghostOverlayAudio) {
         m_ghostOverlayAudio->setClipPreviews({});
         m_ghostOverlayAudio->hide();

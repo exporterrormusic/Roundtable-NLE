@@ -26,8 +26,10 @@ public:
     void setPoster(const QImage& image);
     /// Show a live frame (playback / scrub).
     void setFrame(const QImage& image);
-    /// Drop the live frame and show the poster again.
+    /// Show the poster again, retaining the live frame until a poster arrives.
     void showPoster();
+    /// Clear both images when switching to a different source.
+    void clear();
 
     void setHoverScrubEnabled(bool enabled);
     /// Draw a 2 px outline (e.g. "selected"); invalid colour = none.
@@ -52,6 +54,7 @@ protected:
 private:
     QImage m_poster;
     QImage m_frame;
+    bool   m_showPoster{true};
     bool   m_hoverScrub{false};
     QColor m_outline;
     bool   m_pressed{false};

@@ -145,6 +145,8 @@ public:
     static constexpr const char* kToolSlide     = "tool.slide";
     static constexpr const char* kToolText      = "tool.text";
     static constexpr const char* kToolPen       = "tool.pen_mask";
+    static constexpr const char* kToolEllipseMask   = "tool.ellipse_mask";
+    static constexpr const char* kToolRectangleMask = "tool.rectangle_mask";
     static constexpr const char* kToolZoom      = "tool.zoom";
 
     // Additional editing
@@ -159,6 +161,8 @@ public:
     static constexpr const char* kFrameBack    = "transport.frame_back";
     static constexpr const char* kNextEdit     = "transport.next_edit";
     static constexpr const char* kPrevEdit     = "transport.prev_edit";
+    static constexpr const char* kNextGap      = "transport.next_gap";
+    static constexpr const char* kPrevGap      = "transport.prev_gap";
     static constexpr const char* kGoStart      = "transport.go_start";
     static constexpr const char* kGoEnd        = "transport.go_end";
 

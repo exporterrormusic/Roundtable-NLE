@@ -23,6 +23,7 @@
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QWheelEvent>
 #include <QMimeData>
 #include <QScrollBar>
 #include <QSplitter>
@@ -137,13 +138,66 @@ void KeyframeTimeline::setClip(Clip* clip)
         m_dragTrackSnap.clear();
         m_dragMaskSnap.clear();
     }
+    const bool clipChanged = (m_clip != clip);
     m_clip = clip;
     if (clip) {
-        m_viewStart = 0;
-        m_viewEnd = clip->duration();
-        if (m_viewEnd <= 0) m_viewEnd = 48000 * 10;
+        // Refreshes re-call setClip for the same clip: keep a user zoom,
+        // only clamped to the clip (it may have been trimmed).
+        if (clipChanged || m_viewFit) {
+            fitViewToClip();
+        } else {
+            const int64_t clipEnd = std::max<int64_t>(1, clip->duration());
+            const int64_t range = std::min(m_viewEnd - m_viewStart, clipEnd);
+            m_viewStart = std::clamp<int64_t>(m_viewStart, 0, clipEnd - range);
+            m_viewEnd = m_viewStart + range;
+        }
     }
     update();
+}
+
+void KeyframeTimeline::fitViewToClip()
+{
+    m_viewStart = 0;
+    m_viewEnd = m_clip ? m_clip->duration() : 0;
+    if (m_viewEnd <= 0) m_viewEnd = 48000 * 10;
+    m_viewFit = true;
+}
+
+void KeyframeTimeline::wheelEvent(QWheelEvent* event)
+{
+    // Qt reports an Alt+wheel as a HORIZONTAL wheel on Windows.
+    const QPoint angle = event->angleDelta();
+    const int delta = angle.y() != 0 ? angle.y() : angle.x();
+    const auto modifiers = event->modifiers();
+    const bool zoom = modifiers & (Qt::AltModifier | Qt::ControlModifier);
+    const bool pan = !zoom && ((modifiers & Qt::ShiftModifier) || angle.x() != 0);
+    if (!m_clip || delta == 0 || (!zoom && !pan)) {
+        QWidget::wheelEvent(event);   // plain wheel: scroll the rows
+        return;
+    }
+
+    const int64_t clipEnd = std::max<int64_t>(1, m_clip->duration());
+    const int64_t range = std::max<int64_t>(1, m_viewEnd - m_viewStart);
+    constexpr int64_t kMinRange = 48000 / 10;   // ~3 frames at 30 fps
+    int64_t newRange = range;
+    int64_t newStart = m_viewStart;
+    if (zoom) {
+        // Wheel up zooms in, about the tick under the pointer.
+        const double factor = std::pow(0.8, delta / 120.0);
+        newRange = std::clamp<int64_t>(std::llround(range * factor),
+                                       std::min(kMinRange, clipEnd), clipEnd);
+        const int64_t anchor = xToTick(qRound(event->position().x()));
+        const double frac = static_cast<double>(anchor - m_viewStart) / range;
+        newStart = anchor - std::llround(frac * newRange);
+    } else {
+        newStart = m_viewStart - std::llround(range * 0.1 * (delta / 120.0));
+    }
+    newStart = std::clamp<int64_t>(newStart, 0, clipEnd - newRange);
+    m_viewStart = newStart;
+    m_viewEnd = newStart + newRange;
+    m_viewFit = (newRange >= clipEnd);
+    update();
+    event->accept();
 }
 
 void KeyframeTimeline::setPropertyRows(const std::vector<PropertyRow*>& rows)
@@ -193,6 +247,7 @@ void KeyframeTimeline::setViewRange(int64_t startTick, int64_t endTick)
 {
     m_viewStart = startTick;
     m_viewEnd = endTick;
+    m_viewFit = startTick <= 0 && (!m_clip || endTick >= m_clip->duration());
     update();
 }
 
@@ -1539,6 +1594,15 @@ void KeyframeTimeline::pasteKeyframes()
 
 void KeyframeTimeline::keyPressEvent(QKeyEvent* event)
 {
+    // Backslash: zoom the keyframe area to the whole clip (Premiere's "\"
+    // zoom-to-fit).
+    if (event->key() == Qt::Key_Backslash && !(event->modifiers()
+            & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier))) {
+        fitViewToClip();
+        update();
+        event->accept();
+        return;
+    }
     // ── Ctrl+C / Ctrl+X / Ctrl+V: keyframe clipboard ──────────────────
     if (event->modifiers() & Qt::ControlModifier) {
         if (event->key() == Qt::Key_C && hasSelectedKeyframes()) {

@@ -42,12 +42,15 @@
 #include "MediaTaskQueue.h"
 
 #include "Settings.h"
+#include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDesktopServices>
 #include <QDir>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
@@ -67,6 +70,57 @@
 namespace rt {
 
 namespace {
+
+/// Starts a new undo merge window at the beginning of every user gesture
+/// (CommandStack::sealMerge). A drag still merges into one step because its
+/// moves arrive between one press and the next; two separate edits of the
+/// same property no longer fuse into one Ctrl+Z.
+class UndoGestureSealer final : public QObject
+{
+public:
+    explicit UndoGestureSealer(CommandStack* stack) : m_stack(stack) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            // Trim/slip/slide drags group their commands in a macro that
+            // closes on mouse RELEASE. If that release never arrived (focus
+            // stolen, grab lost mid-drag) the macro stayed open and every
+            // later edit, in any panel, was folded into it — one Ctrl+Z then
+            // reverted all of them. A fresh single-button press with no
+            // dialog/popup up means that gesture is over: close it.
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (m_stack->isMacroActive() && mouse->buttons() == mouse->button()
+                && !QApplication::activeModalWidget()
+                && !QApplication::activePopupWidget()) {
+                spdlog::warn("Undo: closing an undo group left open by an "
+                             "interrupted drag");
+                while (m_stack->isMacroActive()) m_stack->endMacro();
+            }
+            m_stack->sealMerge();
+            break;
+        }
+        case QEvent::MouseButtonDblClick:
+        case QEvent::TabletPress:
+        case QEvent::TouchBegin:
+            m_stack->sealMerge();
+            break;
+        case QEvent::KeyPress:
+            // Holding a key (auto-repeat nudge) stays one gesture.
+            if (!static_cast<QKeyEvent*>(event)->isAutoRepeat())
+                m_stack->sealMerge();
+            break;
+        default:
+            break;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    CommandStack* m_stack;
+};
 
 /// Query installed physical RAM (bytes).  Returns 0 on failure.
 size_t queryTotalPhysicalRam()
@@ -231,6 +285,10 @@ App::~App()
     // Final cleanup
     m_modelManager.reset();
     m_shortcutManager.reset();
+    // The filter points at the stack: remove it first.
+    if (m_undoGestureSealer && qApp)
+        qApp->removeEventFilter(m_undoGestureSealer.get());
+    m_undoGestureSealer.reset();
     m_commandStack.reset();
     m_timeline.reset();
 
@@ -263,6 +321,10 @@ bool App::init()
     // ── Core subsystems ─────────────────────────────────────────────────
     m_timeline = std::make_unique<Timeline>();
     m_commandStack = std::make_unique<CommandStack>();
+    if (qApp) {
+        m_undoGestureSealer = std::make_unique<UndoGestureSealer>(m_commandStack.get());
+        qApp->installEventFilter(m_undoGestureSealer.get());
+    }
     m_shortcutManager = std::make_unique<ShortcutManager>();
     m_audioEngine = std::make_unique<AudioEngine>();
     if (!m_audioEngine->initialize()) {

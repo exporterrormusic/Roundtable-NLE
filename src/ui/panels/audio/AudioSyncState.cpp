@@ -452,6 +452,28 @@ void AudioSync::populateCharacterTabs()
 }
 
 // ── Lightweight card restyle after matchState change (no full rebuild) ───
+void AudioSync::styleConfirmButton(QPushButton* button, int ms)
+{
+    const auto& _tc = Theme::colors();
+    const auto _radM = QString::number(Theme::metrics().radiusMd);
+    const bool isConfirmed = (ms == 2);
+    button->setText(isConfirmed
+        ? QStringLiteral("\u2713  CONFIRMED")
+        : QStringLiteral("\u2713  CONFIRM"));
+    button->setToolTip(isConfirmed
+        ? "Click to unconfirm match"
+        : "Confirm match");
+    button->setStyleSheet(
+        QString("QPushButton { background: %1; color: %2; font-weight: bold; "
+        "font-size: 13px; border: 2px solid %3; border-radius: %4px; }"
+        "QPushButton:hover { background: %5; }").arg(
+            isConfirmed ? Theme::hex(_tc.success)
+                        : Theme::hex(_tc.successBtnBg),
+            Theme::hex(_tc.textBright),
+            Theme::hex(_tc.success), _radM,
+            Theme::hex(_tc.successBtnHover)));
+}
+
 void AudioSync::updateCardMatchStyle(size_t clipIdx)
 {
     if (clipIdx >= m_clips.size()) return;
@@ -539,82 +561,14 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                 }
             }
 
-            // In-place swap of CONFIRM button ↔ CONFIRMED label.
-            // Find the right-panel widget (fixedWidth=130, third child of card outer layout).
-            QVBoxLayout* rLay = nullptr;
-            if (auto* outerLay = m_cardWidgets[i]->layout()) {
-                for (int c = outerLay->count() - 1; c >= 0; --c) {
-                    if (auto* w = outerLay->itemAt(c)->widget()) {
-                        if (w->maximumWidth() == 130) {
-                            rLay = qobject_cast<QVBoxLayout*>(w->layout());
-                            break;
-                        }
-                    }
-                }
-            }
-            if (rLay) {
-                // Find the old confirm/confirmed widget at layout index 1
-                QWidget* oldWidget = nullptr;
-                bool isCurrentlyConfirmed = false;
-                if (auto* item = rLay->itemAt(1)) {
-                    oldWidget = item->widget();
-                    if (auto* lbl = qobject_cast<QLabel*>(oldWidget)) {
-                        if (lbl->text().contains("CONFIRMED")) isCurrentlyConfirmed = true;
-                    }
-                }
-                bool needsSwap = (matchState == 2 && !isCurrentlyConfirmed) ||
-                                 (matchState != 2 && isCurrentlyConfirmed);
-                if (needsSwap && oldWidget) {
-                    rLay->removeWidget(oldWidget);
-                    oldWidget->deleteLater();
-                    const auto _rad = QString::number(Theme::metrics().radiusSm);
-                    if (matchState == 2) {
-                        auto* confirmedLabel = new QLabel(QStringLiteral("\u2713  CONFIRMED"));
-                        confirmedLabel->setFixedHeight(36);
-                        confirmedLabel->setAlignment(Qt::AlignCenter);
-                        confirmedLabel->setStyleSheet(
-                            QString("QLabel { background: %1; color: %2; font-weight: bold; "
-                            "font-size: 13px; border: 2px solid %3; border-radius: %4px; }")
-                                .arg(Theme::hex(_tc.success), Theme::hex(_tc.textBright),
-                                     Theme::hex(_tc.success), _radM));
-                        rLay->insertWidget(1, confirmedLabel);
-                    } else {
-                        size_t ci = clipIdx;
-                        auto* confirmBtn = new QPushButton(QStringLiteral("\u2713  CONFIRM"));
-                        confirmBtn->setFixedHeight(36);
-                        confirmBtn->setToolTip("Confirm match");
-                        confirmBtn->setCursor(Qt::PointingHandCursor);
-                        confirmBtn->setStyleSheet(
-                            QString("QPushButton { background: %1; color: %2; font-weight: bold; "
-                            "font-size: 13px; border: 2px solid %3; border-radius: %4px; }"
-                            "QPushButton:hover { background: %5; }").arg(
-                                Theme::hex(_tc.successBtnBg), Theme::hex(_tc.textBright),
-                                Theme::hex(_tc.success), _radM, Theme::hex(_tc.successBtnHover)));
-                        connect(confirmBtn, &QPushButton::clicked, this, [this, ci]() {
-                            if (ci >= m_clips.size()) return;
-                            const int oldMatchState = m_clips[ci].matchState;
-                            auto apply = [this, ci](int matchState) {
-                                if (m_destroying.load(std::memory_order_acquire)) return;
-                                if (ci >= m_clips.size()) return;
-                                m_clips[ci].matchState = matchState;
-                                populateLeftList();
-                                updateCardMatchStyle(ci);
-                                updateSmartBar();
-                                updateWorkflowState();
-                                emit voiceContextChanged();
-                            };
-                            if (m_commandStack) {
-                                m_commandStack->execute(std::make_unique<LambdaCommand>(
-                                    "Confirm audio match",
-                                    [apply]() { apply(2); },
-                                    [apply, oldMatchState]() { apply(oldMatchState); }));
-                            } else {
-                                apply(2);
-                            }
-                        });
-                        rLay->insertWidget(1, confirmBtn);
-                    }
-                }
+            // Keep the toggle, waveform and video alive while changing state.
+            if (auto* button = m_cardWidgets[i]->findChild<QPushButton*>("confirmMatchButton"))
+                styleConfirmButton(button, matchState);
+            for (auto* chip : m_cardWidgets[i]->findChildren<QPushButton*>("takeChip")) {
+                const int ci = chip->property("takeClipIndex").toInt();
+                if (ci >= 0 && static_cast<size_t>(ci) < m_clips.size())
+                    styleTakeChip(chip, m_clips[ci].matchState == 2,
+                                  chip->property("shownTake").toBool());
             }
 
             break;

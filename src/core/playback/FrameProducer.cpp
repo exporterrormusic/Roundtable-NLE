@@ -409,8 +409,20 @@ void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
     // A newer seek or a Paused->Playing transition invalidated this exact
     // request while it was rendering. Never publish its stale result over the
     // playback frame that follows it.
-    if (req.generation != m_scrubGeneration.load(std::memory_order_acquire))
-        return;
+    //
+    // A newer request for the SAME still frame is different: it is an edit
+    // refresh (a mask or transform drag re-requests the paused frame on every
+    // mouse move and every settle poll). Discarding those starved the display
+    // whenever a render took longer than the 16 ms poll — nothing showed until
+    // the drag stopped. Publish this render; the queued one follows it.
+    if (req.generation != m_scrubGeneration.load(std::memory_order_acquire)) {
+        std::lock_guard lock(m_reqMtx);
+        const bool sameStillFrame = m_pendingScrub
+            && m_pendingScrub->tick == req.tick
+            && m_pendingScrub->w == req.w && m_pendingScrub->h == req.h;
+        if (!sameStillFrame)
+            return;
+    }
 
     auto frame = renderResult.frame;
     if (renderResult.status == RenderResultStatus::Ready &&

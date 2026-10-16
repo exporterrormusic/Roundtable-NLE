@@ -17,6 +17,8 @@
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TransitionCmds.h"
 
+#include <QToolTip>
+
 #include <spdlog/spdlog.h>
 
 #include <unordered_map>
@@ -136,62 +138,9 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
         spdlog::info("[OVERLAP-DIAG] mouseRelease: {} finals from {} dragSelectedClips, trackDelta={}",
                      finals.size(), m_dragSelectedClips.size(), trackDelta);
 
-        // Restore clips to their original tracks and positions.  The
-        // live-drag preview may have moved each clip between tracks via
-        // Track::removeClip()+addClip(), which silently drops every
-        // transition referencing that clip on its source track.  Once
-        // each clip is back on its original track, re-add the
-        // transitions captured at drag-start so the about-to-run
-        // moveClipToTrack command sees them and can carry them over.
-        for (const auto& fp : finals) {
-            Track* curTr = nullptr;
-            size_t curIdx = SIZE_MAX;
-
-            for (size_t st = 0; st < m_timeline->trackCount(); ++st) {
-                Track* t = m_timeline->track(st);
-                size_t idx = t->findClipIndexById(fp.clipId);
-                if (idx < t->clipCount()) {
-                    curTr = t;
-                    curIdx = idx;
-                    break;
-                }
-            }
-            if (!curTr || curIdx >= curTr->clipCount()) continue;
-
-            Track* srcTr = m_timeline->track(fp.srcTrack);
-            if (!srcTr) continue;
-
-            if (curTr != srcTr) {
-                auto clipPtr = curTr->removeClip(curIdx);
-                clipPtr->setTimelineIn(fp.originalIn);
-                srcTr->addClip(std::move(clipPtr));
-            } else {
-                curTr->moveClip(curIdx, fp.originalIn);
-            }
-        }
-        // Replay transitions onto the source track for each dragged clip
-        // so the upcoming move command can capture them (the live drag
-        // preview removed them when it moved the clip between tracks).
-        for (const auto& dcs : m_dragSelectedClips) {
-            if (dcs.originalTransitions.empty()) continue;
-            Track* origTr = m_timeline->track(dcs.originalTrack);
-            if (!origTr) continue;
-            for (const auto& orig : dcs.originalTransitions) {
-                // Skip if a transition with the same edit point + clip
-                // ids is already present (same-track moves leave them).
-                bool dup = false;
-                for (size_t i = 0; i < origTr->transitionCount(); ++i) {
-                    const Transition* ex = origTr->transition(i);
-                    if (ex && ex->editPointTick == orig.editPointTick
-                           && ex->leftClipId   == orig.leftClipId
-                           && ex->rightClipId  == orig.rightClipId) {
-                        dup = true;
-                        break;
-                    }
-                }
-                if (!dup) origTr->addTransition(orig);
-            }
-        }
+        // Back to the drag-start state; the commands below re-apply the
+        // move as one undoable step.
+        restoreClipMoveToOrigin();
 
         bool hasGhostTrack = (newTrackIndex != SIZE_MAX);
         bool didMove = false;
@@ -464,32 +413,9 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             if (li < rollTrack->clipCount() && ri < rollTrack->clipCount()) {
                 int64_t finalEditPoint = rollTrack->clip(li)->timelineOut();
 
-                Clip* lc = rollTrack->clip(li);
-                Clip* rc = rollTrack->clip(ri);
-                lc->setTimelineIn(m_rollLeftOrigIn);
-                lc->setDuration(m_rollLeftOrigDur);
-                lc->setSourceIn(m_rollLeftOrigSrcIn);
-                rc->setTimelineIn(m_rollRightOrigIn);
-                rc->setDuration(m_rollRightOrigDur);
-                rc->setSourceIn(m_rollRightOrigSrcIn);
-
-                // Restore the other tracks' live-rolled seams too, so each
-                // rollingEdit below starts from the original model.
-                for (const auto& seam : m_rollExtraSeams) {
-                    Track* t = m_timeline->track(seam.trackIndex);
-                    if (!t) continue;
-                    const size_t sl = t->findClipIndexById(seam.leftClipId);
-                    const size_t sr = t->findClipIndexById(seam.rightClipId);
-                    if (sl >= t->clipCount() || sr >= t->clipCount()) continue;
-                    Clip* slc = t->clip(sl);
-                    Clip* src = t->clip(sr);
-                    slc->setTimelineIn(seam.leftOrigIn);
-                    slc->setDuration(seam.leftOrigDur);
-                    slc->setSourceIn(seam.leftOrigSrcIn);
-                    src->setTimelineIn(seam.rightOrigIn);
-                    src->setDuration(seam.rightOrigDur);
-                    src->setSourceIn(seam.rightOrigSrcIn);
-                }
+                // Every rolled seam back to the original model, so each
+                // rollingEdit below starts from it.
+                restoreRollingEditToOrigin();
 
                 const int64_t delta = finalEditPoint - m_rollOriginalEditPoint;
                 if (delta != 0) {
@@ -551,6 +477,8 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
 
     // ── Reset all drag-related state ─────────────────────────────────────
     if (m_dragMode != DragMode::None) {
+        if (m_dragMode == DragMode::TransitionTrim)
+            QToolTip::hideText();
         // Close any open undo macro for trim/slip/slide drags so the
         // buffered mouse-move commands collapse into a single undo entry.
         if (m_commandStack && m_commandStack->isMacroActive()) {
@@ -560,6 +488,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             case DragMode::SlipTool:
             case DragMode::SlideTool:
             case DragMode::TransitionTrim:
+            case DragMode::TransitionHandle:
                 m_commandStack->endMacro();
                 break;
             default:
@@ -609,5 +538,144 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Drag restore / cancel
+// ═════════════════════════════════════════════════════════════════════════════
+
+void TimelinePanel::restoreClipMoveToOrigin()
+{
+    if (!m_timeline) return;
+    // The live-drag preview may have moved each clip between tracks via
+    // Track::removeClip()+addClip(), which silently drops every transition
+    // referencing that clip on its source track.  Once each clip is back on
+    // its original track, re-add the transitions captured at drag-start
+    // (a following moveClipToTrack command then carries them over).
+    for (const auto& dcs : m_dragSelectedClips) {
+        Track* curTr = nullptr;
+        size_t curIdx = SIZE_MAX;
+        for (size_t st = 0; st < m_timeline->trackCount(); ++st) {
+            Track* t = m_timeline->track(st);
+            const size_t idx = t->findClipIndexById(dcs.ref.clipId);
+            if (idx < t->clipCount()) {
+                curTr = t;
+                curIdx = idx;
+                break;
+            }
+        }
+        if (!curTr) continue;
+        Track* srcTr = m_timeline->track(dcs.originalTrack);
+        if (!srcTr) continue;
+        if (curTr != srcTr) {
+            auto clipPtr = curTr->removeClip(curIdx);
+            clipPtr->setTimelineIn(dcs.originalIn);
+            srcTr->addClip(std::move(clipPtr));
+        } else if (curTr->clip(curIdx)->timelineIn() != dcs.originalIn) {
+            curTr->moveClip(curIdx, dcs.originalIn);
+        }
+    }
+    for (const auto& dcs : m_dragSelectedClips) {
+        if (dcs.originalTransitions.empty()) continue;
+        Track* origTr = m_timeline->track(dcs.originalTrack);
+        if (!origTr) continue;
+        for (const auto& orig : dcs.originalTransitions) {
+            // Skip if a transition with the same edit point + clip ids is
+            // already present (same-track moves leave them).
+            bool dup = false;
+            for (size_t i = 0; i < origTr->transitionCount(); ++i) {
+                const Transition* ex = origTr->transition(i);
+                if (ex && ex->editPointTick == orig.editPointTick
+                       && ex->leftClipId   == orig.leftClipId
+                       && ex->rightClipId  == orig.rightClipId) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) origTr->addTransition(orig);
+        }
+    }
+}
+
+void TimelinePanel::restoreRollingEditToOrigin()
+{
+    if (!m_timeline) return;
+    const auto restoreSeam = [this](size_t trackIndex, uint64_t leftId, uint64_t rightId,
+                                    int64_t leftIn, int64_t leftDur, int64_t leftSrcIn,
+                                    int64_t rightIn, int64_t rightDur, int64_t rightSrcIn) {
+        Track* t = m_timeline->track(trackIndex);
+        if (!t) return;
+        const size_t li = t->findClipIndexById(leftId);
+        const size_t ri = t->findClipIndexById(rightId);
+        if (li >= t->clipCount() || ri >= t->clipCount()) return;
+        Clip* lc = t->clip(li);
+        Clip* rc = t->clip(ri);
+        lc->setTimelineIn(leftIn);
+        lc->setDuration(leftDur);
+        lc->setSourceIn(leftSrcIn);
+        rc->setTimelineIn(rightIn);
+        rc->setDuration(rightDur);
+        rc->setSourceIn(rightSrcIn);
+    };
+    restoreSeam(m_rollTrackIndex, m_rollLeftClipId, m_rollRightClipId,
+                m_rollLeftOrigIn, m_rollLeftOrigDur, m_rollLeftOrigSrcIn,
+                m_rollRightOrigIn, m_rollRightOrigDur, m_rollRightOrigSrcIn);
+    // The other tracks' live-rolled seams too.
+    for (const auto& seam : m_rollExtraSeams)
+        restoreSeam(seam.trackIndex, seam.leftClipId, seam.rightClipId,
+                    seam.leftOrigIn, seam.leftOrigDur, seam.leftOrigSrcIn,
+                    seam.rightOrigIn, seam.rightOrigDur, seam.rightOrigSrcIn);
+}
+
+bool TimelinePanel::cancelActiveDrag()
+{
+    if (!m_timeline || m_dragMode == DragMode::None) return false;
+
+    // Premiere: Esc during a drag puts everything back as it was and
+    // records nothing.
+    switch (m_dragMode) {
+    case DragMode::ClipMove:
+        restoreClipMoveToOrigin();   // live preview, never recorded
+        break;
+    case DragMode::RollingEdit:
+        restoreRollingEditToOrigin();
+        m_rollExtraSeams.clear();
+        break;
+    case DragMode::ClipTrimHead:
+    case DragMode::ClipTrimTail:
+    case DragMode::SlipTool:
+    case DragMode::SlideTool:
+    case DragMode::TransitionTrim:
+    case DragMode::TransitionHandle:
+        QToolTip::hideText();
+        // These execute real commands into an open macro: close it and
+        // undo it — but only if the drag actually recorded something.
+        if (m_commandStack && m_commandStack->isMacroActive()) {
+            const size_t before = m_commandStack->undoCount();
+            m_commandStack->endMacro();
+            if (m_commandStack->undoCount() > before) m_commandStack->undo();
+        }
+        break;
+    default:
+        break;   // marquee / pending click: nothing applied yet
+    }
+
+    m_dragMode = DragMode::None;
+    m_dragClipRef = {};
+    m_dragSelectedClips.clear();
+    m_dragTargetTrack = SIZE_MAX;
+    m_ghostTrackVisible = false;
+    if (m_ghostOverlay) m_ghostOverlay->hide();
+    if (m_marqueeScrollTimer) m_marqueeScrollTimer->stop();
+    m_marqueeLastMovePos = QPointF();
+    if (m_clipDragScrollTimer) m_clipDragScrollTimer->stop();
+    m_clipDragLastMovePos = QPointF();
+    if (m_rubberBand) m_rubberBand->hide();
+    m_snapEngine.resetHysteresis();
+    setSnapIndicator(-1);
+    setCursor(Qt::ArrowCursor);
+    for (auto tw : m_trackWidgets) tw->setHoverEdgeTick(-1);
+
+    rebuildTracks();
+    emit contentChanged();
+    return true;
+}
 
 } // namespace rt

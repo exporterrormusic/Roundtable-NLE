@@ -75,6 +75,9 @@ void Theme::applyDarkPreset()
     c.clipSpine   = QColor(192, 136, 48);
     c.clipSpineCached = QColor(72, 165, 98);
     c.clipGraphic = QColor(64, 182, 250);
+    // Premiere labels adjustment layers "Lavender" (BE.Prefs.LabelColors.3,
+    // 0xE385E3 BGR). Was the panel surface colour: nearly invisible.
+    c.clipAdjustment = QColor(227, 133, 227);
     c.clipSelected= QColor(82, 162, 240);
     c.clipHover   = QColor(62, 62, 68);
     c.transition  = QColor(96, 78, 155);

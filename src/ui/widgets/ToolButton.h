@@ -22,7 +22,8 @@ namespace rt {
 class ToolButton : public QToolButton
 {
 public:
-    enum Tool { Selection, Razor, Ripple, Rolling, Slip, Slide, Text, Zoom, PenMask };
+    enum Tool { Selection, Razor, Ripple, Rolling, Slip, Slide, Text, Zoom, PenMask,
+                EllipseMask, RectangleMask };
 
     explicit ToolButton(Tool tool, QWidget* parent = nullptr)
         : QToolButton(parent), m_tool(tool)
@@ -80,6 +81,8 @@ protected:
         case Text:      drawText(p, cx, cy, s, color);      break;
         case Zoom:      drawZoom(p, cx, cy, s, color);      break;
         case PenMask:   drawPenMask(p, cx, cy, s, color);   break;
+        case EllipseMask:   drawEllipseMask(p, cx, cy, s, color);   break;
+        case RectangleMask: drawRectangleMask(p, cx, cy, s, color); break;
         }
     }
 
@@ -319,6 +322,41 @@ private:
 
         p.setBrush(color);
         p.drawEllipse(QPointF(cx - s * 0.85, cy + s * 0.85), s * 0.13, s * 0.13);
+    }
+
+    // Small filled anchor squares shared by the shape-mask icons.
+    static void drawMaskAnchor(QPainter& p, QPointF c, qreal s, const QColor& color)
+    {
+        const qreal h = s * 0.16;
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRect(QRectF(c.x() - h, c.y() - h, h * 2, h * 2));
+    }
+
+    // Ellipse Mask tool: ellipse outline with anchors at its four extremes.
+    void drawEllipseMask(QPainter& p, qreal cx, qreal cy, qreal s, const QColor& color)
+    {
+        const qreal rx = s * 1.05, ry = s * 0.8;
+        p.setPen(QPen(color, 1.6));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(cx, cy), rx, ry);
+        drawMaskAnchor(p, QPointF(cx - rx, cy), s, color);
+        drawMaskAnchor(p, QPointF(cx + rx, cy), s, color);
+        drawMaskAnchor(p, QPointF(cx, cy - ry), s, color);
+        drawMaskAnchor(p, QPointF(cx, cy + ry), s, color);
+    }
+
+    // Rectangle Mask tool: rectangle outline with corner anchors.
+    void drawRectangleMask(QPainter& p, qreal cx, qreal cy, qreal s, const QColor& color)
+    {
+        const QRectF r(cx - s * 1.0, cy - s * 0.78, s * 2.0, s * 1.56);
+        p.setPen(QPen(color, 1.6));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r);
+        drawMaskAnchor(p, r.topLeft(), s, color);
+        drawMaskAnchor(p, r.topRight(), s, color);
+        drawMaskAnchor(p, r.bottomLeft(), s, color);
+        drawMaskAnchor(p, r.bottomRight(), s, color);
     }
 
     Tool m_tool;

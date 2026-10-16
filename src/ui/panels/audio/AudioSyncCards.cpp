@@ -409,6 +409,26 @@ void AudioSync::setHighlightedCard(QWidget* card)
     m_cardHighlight->show();
 }
 
+void AudioSync::styleTakeChip(QPushButton* chip, bool chosen, bool shown)
+{
+    const auto& tc = Theme::colors();
+    chip->setText((chosen ? QStringLiteral("\u2713 ") : QString()) +
+                  chip->property("takeLabel").toString());
+    const QString border = chosen ? Theme::hex(tc.success)
+                         : shown  ? Theme::hex(tc.accent)
+                                  : Theme::hex(tc.controlBorder);
+    chip->setStyleSheet(
+        QString("QPushButton { background: %1; color: %2; border: 2px solid %3; "
+                "border-radius: %4px; font-size: %5px; font-weight: %6; padding: 2px 6px; }"
+                "QPushButton:hover { border-color: %7; }")
+            .arg(Theme::hex(shown ? tc.surface3 : tc.surface2),
+                 Theme::hex(tc.textPrimary), border)
+            .arg(Theme::metrics().radiusSm)
+            .arg(Theme::typography().sizeXs)
+            .arg(shown ? 700 : 400)
+            .arg(Theme::hex(tc.accent)));
+}
+
 QWidget* AudioSync::createTakeStrip(int lineNumber, const std::vector<size_t>& clipIndices,
                                     size_t shownClipIdx)
 {
@@ -435,11 +455,7 @@ QWidget* AudioSync::createTakeStrip(int lineNumber, const std::vector<size_t>& c
         const bool shown  = (ci == shownClipIdx);
         const int  secs   = static_cast<int>(clip.start);
 
-        auto* chip = new QPushButton(QString("%1%2  %3:%4")
-            .arg(chosen ? QStringLiteral("✓ ") : QString())
-            .arg(takeNumber)
-            .arg(secs / 60)
-            .arg(secs % 60, 2, 10, QLatin1Char('0')));
+        auto* chip = new QPushButton;
         chip->setCursor(Qt::PointingHandCursor);
         chip->setIconSize(thumbSize);
         chip->setToolTip(QString("Take %1 of %2\n%3\n%4s – %5s · %6% of the line\n"
@@ -448,19 +464,12 @@ QWidget* AudioSync::createTakeStrip(int lineNumber, const std::vector<size_t>& c
             .arg(QFileInfo(QString::fromStdString(clip.sourceFile)).fileName())
             .arg(clip.start, 0, 'f', 1).arg(clip.end, 0, 'f', 1)
             .arg(static_cast<int>(clip.confidence * 100.0f)));
-        const QString border = chosen ? Theme::hex(tc.success)
-                             : shown  ? Theme::hex(tc.accent)
-                                      : Theme::hex(tc.controlBorder);
-        chip->setStyleSheet(
-            QString("QPushButton { background: %1; color: %2; border: 2px solid %3; "
-                    "border-radius: %4px; font-size: %5px; font-weight: %6; padding: 2px 6px; }"
-                    "QPushButton:hover { border-color: %7; }")
-                .arg(Theme::hex(shown ? tc.surface3 : tc.surface2),
-                     Theme::hex(tc.textPrimary), border)
-                .arg(Theme::metrics().radiusSm)
-                .arg(Theme::typography().sizeXs)
-                .arg(shown ? 700 : 400)
-                .arg(Theme::hex(tc.accent)));
+        chip->setObjectName("takeChip");
+        chip->setProperty("takeClipIndex", static_cast<int>(ci));
+        chip->setProperty("shownTake", shown);
+        chip->setProperty("takeLabel", QString("%1  %2:%3").arg(takeNumber)
+            .arg(secs / 60).arg(secs % 60, 2, 10, QLatin1Char('0')));
+        styleTakeChip(chip, chosen, shown);
 
         QPointer<QPushButton> chipGuard(chip);
         const double posterT = clip.start + 0.35 * std::max(0.0, clip.end - clip.start);
