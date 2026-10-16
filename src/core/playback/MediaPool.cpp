@@ -96,6 +96,11 @@ MediaPool::MediaPool(std::shared_ptr<FrameCache> cache)
 void MediaPool::onGpuContextReady()
 {
     if (!GpuContext::get().isInitialized()) return;
+    // App installs the machine profile just before this call, after the
+    // prefetch workers already started, so the workers read this flag per
+    // task rather than a profile snapshot taken at thread start.
+    m_anyWorkerMayUseNvdec.store(!perfProfile().nvdecSessionCapped,
+                                 std::memory_order_release);
     if (m_prefetchTexPool && m_prefetchTimelineSem != 0) return;
     if (!m_prefetchTexPool)
         m_prefetchTexPool = std::make_unique<PrefetchTexturePool>();

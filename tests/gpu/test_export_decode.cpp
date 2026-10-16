@@ -18,6 +18,8 @@
 #include <playback/MediaPool.h>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -125,7 +127,8 @@ protected:
             (std::string("rt_export_decode_") + info->name() + ".mp4");
         if (!writeIndexedVideo(m_path.string()))
             GTEST_SKIP() << "no MPEG-4 encoder in this FFmpeg";
-        m_pool = std::make_unique<MediaPool>();
+        m_cache = std::make_shared<FrameCache>(256ull * 1024 * 1024);
+        m_pool = std::make_unique<MediaPool>(m_cache);
         m_handle = m_pool->open(m_path);
         ASSERT_NE(m_handle, InvalidMedia);
     }
@@ -143,8 +146,9 @@ protected:
                                 /*scrubMode=*/true, /*forceExact=*/true);
     }
 
-    std::filesystem::path      m_path;
-    std::unique_ptr<MediaPool> m_pool;
+    std::filesystem::path       m_path;
+    std::shared_ptr<FrameCache> m_cache;
+    std::unique_ptr<MediaPool>  m_pool;
     MediaHandle                m_handle{InvalidMedia};
 };
 
@@ -190,6 +194,34 @@ TEST_F(ExportDecodeTest, ReleasedDecodersReopen)
     m_pool->releaseExportDecoders();
     EXPECT_EQ(frameIndexOf(exact(31).get()), 31);
     EXPECT_EQ(frameIndexOf(exact(32).get()), 32);
+}
+
+
+TEST_F(ExportDecodeTest, ExactPlaybackHitTopsUpDecodeAhead)
+{
+    // Steady playback reads exact cache hits. Those used to schedule
+    // nothing, so the decode-ahead window drained and was refilled only
+    // after a frame had already missed. A hit with a gap ahead must queue
+    // decode-ahead on its own.
+    m_pool->setProjectFps(kFps);
+    auto seeded = std::make_shared<CachedFrame>();
+    seeded->mediaId     = m_handle;
+    seeded->frameNumber = 100;
+    seeded->tier        = ResolutionTier::Full;
+    seeded->width       = kW;
+    seeded->height      = kH;
+    seeded->stride      = kW * 4;
+    seeded->pixels.assign(static_cast<size_t>(kW) * kH * 4, 0);
+    m_cache->put(seeded);
+    ASSERT_FALSE(m_pool->isFrameCached(m_handle, 106, ResolutionTier::Full));
+
+    ASSERT_EQ(m_pool->tryGetFrame(m_handle, 100, ResolutionTier::Full), seeded);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!m_pool->isFrameCached(m_handle, 106, ResolutionTier::Full) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_TRUE(m_pool->isFrameCached(m_handle, 106, ResolutionTier::Full));
 }
 
 #endif

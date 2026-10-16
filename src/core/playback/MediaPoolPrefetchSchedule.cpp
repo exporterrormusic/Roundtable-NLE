@@ -91,6 +91,43 @@ void MediaPool::scheduleExactPrefetch(MediaHandle handle,
     m_prefetchCv.notify_all();
 }
 
+int MediaPool::decodeAheadStride(double sourceFps) const
+{
+    const double projFps = m_projectFps.load(std::memory_order_relaxed);
+    // Source-fps stride: a 60 fps clip in a 30 fps project only needs every
+    // 2nd source frame.
+    const int srcStride = (sourceFps > projFps * 1.4)
+        ? std::max(1, static_cast<int>(std::round(sourceFps / projFps)))
+        : 1;
+    // Playback-speed stride: at N× the playhead advances ~N source frames
+    // per displayed frame, so decode ONLY those — never the intermediate
+    // frames the player skips over.  This is what lets heavy videos keep
+    // up at 4× (decode load stays ~1× instead of 4×).  No effect at 1×.
+    const double absSpeed = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
+    const int speedStride = (absSpeed > 1.4)
+        ? std::max(1, static_cast<int>(std::lround(absSpeed)))
+        : 1;
+    return std::max(1, srcStride * speedStride);
+}
+
+void MediaPool::topUpDecodeAhead(MediaHandle handle, int64_t frameNumber,
+                                 ResolutionTier tier, double sourceFps,
+                                 int64_t frameCount)
+{
+    // Exact hits used to schedule nothing, so steady playback drained the
+    // decode-ahead window and only refilled it after a frame had already
+    // missed: bursts of decoding, an idle worker, then a stutter. Keep the
+    // window at least half full instead.
+    const int stride = decodeAheadStride(sourceFps);
+    const int window = m_scheduler.maxLookahead();
+    const int64_t probe = frameNumber + static_cast<int64_t>(std::max(2, window / 2)) * stride;
+    if (frameCount > 1 && probe >= frameCount)
+        return;   // the file ends inside the window; nothing left to fetch
+    if (m_cache->contains(handle, probe, tier))
+        return;
+    schedulePrefetch(handle, frameNumber + stride, window, /*urgent=*/false, tier);
+}
+
 void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int count, bool urgent, ResolutionTier tier)
 {
     const bool interactivePlayback = urgent && isInteractivePlaybackActive(m_interactivePlaybackUntilMs);
@@ -181,21 +218,7 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             m_prefetchQueue.erase(std::next(replaceable).base());
         }
 
-        const double projFps = m_projectFps.load(std::memory_order_relaxed);
-        // Source-fps stride: a 60 fps clip in a 30 fps project only needs every
-        // 2nd source frame.
-        const int srcStride = (info.fps > projFps * 1.4)
-            ? std::max(1, static_cast<int>(std::round(info.fps / projFps)))
-            : 1;
-        // Playback-speed stride: at N× the playhead advances ~N source frames
-        // per displayed frame, so decode ONLY those — never the intermediate
-        // frames the player skips over.  This is what lets heavy videos keep
-        // up at 4× (decode load stays ~1× instead of 4×).  No effect at 1×.
-        const double absSpeed = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
-        const int speedStride = (absSpeed > 1.4)
-            ? std::max(1, static_cast<int>(std::lround(absSpeed)))
-            : 1;
-        const int stride = std::max(1, srcStride * speedStride);
+        const int stride = decodeAheadStride(info.fps);
         // Bound the lookahead window in DISPLAYED frames, not source frames, so
         // a strided prefetch still buffers ~maxLookahead frames ahead (without
         // this, stride N would shrink the buffer to maxLookahead/N → stutter).
@@ -458,6 +481,13 @@ void MediaPool::prefetchWorker(int workerId)
             auto isNonPackedVideo = [](const PrefetchTask& t) {
                 return t.info.frameCount > 1 && !t.packedAlpha;
             };
+            // On an uncapped GPU every worker decodes plain video on NVDEC
+            // (useHwDecode below), so none needs to defer to workers
+            // [0, nvdecWorkers). Deferring let a "SW" worker win the race
+            // anyway and decode a 4K H.264 file on two CPU threads at ~5 fps
+            // while NVDEC sat idle.
+            const bool anyWorkerNvdec =
+                m_anyWorkerMayUseNvdec.load(std::memory_order_acquire);
             auto preferredAcceptable = [&](const PrefetchTask& t) -> bool {
                 if (workerId < nvdecWorkers && t.packedAlpha)
                     return false;
@@ -465,7 +495,7 @@ void MediaPool::prefetchWorker(int workerId)
                 if (ownerIt != m_prefetchPackedOwner.end())
                     return ownerIt->second == workerId;
                 // No owner yet.  SW workers skip plain video on this pass.
-                if (workerId >= nvdecWorkers && isNonPackedVideo(t))
+                if (workerId >= nvdecWorkers && isNonPackedVideo(t) && !anyWorkerNvdec)
                     return false;
                 return true;
             };
@@ -577,12 +607,23 @@ void MediaPool::prefetchWorker(int workerId)
 
         auto& state = decoders[task.handle];
         state.lastUsed = std::chrono::steady_clock::now();
+        // Formats the GPU converters don't take (4:2:2, 10-bit planar,
+        // non-709) convert on the CPU here; one thread cost ~30-50 ms per 4K
+        // frame. Same budget as the software decode.
+        state.swsThreads = prefetchSoftwareDecodeThreads();
         if (!state.decoder) {
             auto openT0 = std::chrono::steady_clock::now();
             state.decoder = std::make_unique<VideoDecoder>();
-            const bool useHwDecode = (workerId < nvdecWorkers)
-                                   && !task.info.hasAlpha;
-            const int swThreads = useHwDecode ? 0 : 2;
+            const bool useHwDecode =
+                (workerId < nvdecWorkers ||
+                 (m_anyWorkerMayUseNvdec.load(std::memory_order_acquire) &&
+                  !task.packedAlpha))
+                && !task.info.hasAlpha;
+            // Passed on the hardware path too: a codec NVDEC cannot take
+            // (ProRes, DNxHR, CineForm) falls back to software inside open(),
+            // and with 0 it got slice threads only — one core for CineForm,
+            // which threads by frame.
+            const int swThreads = prefetchSoftwareDecodeThreads();
             if (!state.decoder->open(task.filePath, /*forceSoftware=*/!useHwDecode, /*maxThreads=*/swThreads)) {
                 spdlog::warn("MediaPool prefetch[{}]: failed to open decoder for handle {} '{}'",
                              workerId, task.handle, pathToUtf8(task.filePath.filename()));

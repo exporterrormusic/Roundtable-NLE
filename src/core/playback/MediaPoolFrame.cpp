@@ -583,6 +583,8 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     extendInteractivePlaybackWindow(m_interactivePlaybackUntilMs);
 
     bool isPackedAlpha = false;
+    double sourceFps = 0.0;
+    int64_t frameCount = 0;
 
     // Clamp frame number
     {
@@ -590,6 +592,8 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
         auto* entry = findEntry(handle);
         if (entry) {
             isPackedAlpha = entry->packedAlpha;
+            sourceFps = entry->info.fps;
+            frameCount = entry->info.frameCount;
             if (entry->info.frameCount > 1 && frameNumber >= entry->info.frameCount)
                 frameNumber = entry->info.frameCount - 1;
         }
@@ -636,6 +640,8 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     auto cached = m_cache->get(handle, frameNumber, tier);
     if (cached) {
         m_perf.cacheHits.fetch_add(1, std::memory_order_relaxed);
+        if (frameCount > 1)
+            topUpDecodeAhead(handle, frameNumber, tier, sourceFps, frameCount);
         return returnFrame(std::move(cached));
     }
 

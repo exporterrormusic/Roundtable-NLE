@@ -223,6 +223,17 @@ bool reopenPrefetchDecoder(PrefetchDecoderState& state,
                             const PrefetchTask& task,
                             bool forceSoftware);
 
+/// Threads for a prefetch worker's software decoder (ProRes, DNxHR,
+/// CineForm, alpha formats). One worker owns each file, so this is the whole
+/// CPU budget a software-decoded clip gets during playback; two threads held
+/// 4K ProRes 4444 to roughly 15 fps. Several such files can decode at once,
+/// hence a quarter of the logical cores rather than all of them.
+inline int prefetchSoftwareDecodeThreads() noexcept
+{
+    const unsigned cores = std::thread::hardware_concurrency();
+    return static_cast<int>(std::clamp(cores / 4, 2u, 8u));
+}
+
 /// Frame threads for an export decoder's software decode: the logical core
 /// count, capped at 8 — each frame thread holds a decoded frame, and a
 /// frame rarely has more than a few video layers decoding at once.

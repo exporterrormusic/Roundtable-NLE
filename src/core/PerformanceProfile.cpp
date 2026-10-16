@@ -43,6 +43,7 @@ PerformanceProfile PerformanceProfile::forMachine(size_t deviceVramBytes,
     // than 2 NVDEC workers.
     if (hasStrictNvencCap)
         p.nvdecWorkers = 2;
+    p.nvdecSessionCapped = hasStrictNvencCap;
 
     // Machine tier still controls bounded background work and the first-run
     // preview-resolution default. Decoded-frame retention deliberately does

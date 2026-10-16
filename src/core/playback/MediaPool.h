@@ -668,6 +668,10 @@ private:
     std::atomic<bool>                                m_prefetchRunning{false};
     std::deque<PrefetchTask>                         m_prefetchQueue;
     std::atomic<double>                                m_projectFps{30.0}; // for frame-stride optimization
+    /// Any prefetch worker may decode plain (non-packed) video on NVDEC.
+    /// False until onGpuContextReady, and on session-capped GPUs, where only
+    /// workers [0, nvdecWorkers) may — the rest decode in software.
+    std::atomic<bool>                                  m_anyWorkerMayUseNvdec{false};
     std::atomic<double>                                m_playbackSpeed{1.0}; // for high-speed decode striding
 
     // Per-handle cooldown to avoid rebuilding the queue every frame tick.
@@ -779,6 +783,15 @@ private:
         m_exportDecoders;
     std::vector<MediaHandle> m_exportDecoderRecency;   ///< oldest first
     std::shared_ptr<ScrubDecoderSlot> getExportDecoder(MediaHandle handle);
+
+    /// Source frames advanced per displayed frame: >1 when the source runs
+    /// faster than the sequence or playback is shuttled.
+    [[nodiscard]] int decodeAheadStride(double sourceFps) const;
+    /// On an exact playback hit, queue decode-ahead once the window ahead of
+    /// `frameNumber` is less than half full (see tryGetFrame).
+    void topUpDecodeAhead(MediaHandle handle, int64_t frameNumber,
+                          ResolutionTier tier, double sourceFps,
+                          int64_t frameCount);
     void retireExportDecoder(MediaHandle handle);
 
     // Real-time preview requests extend this deadline so opportunistic

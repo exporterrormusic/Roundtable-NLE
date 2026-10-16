@@ -111,6 +111,14 @@ public:
     bool updateDataRing(const void* pixelData, VkDeviceSize dataSize,
                         VkCommandBuffer cmd, class StagingRing& ring);
 
+    /// Record an upload from caller-owned staging memory whose rows are
+    /// `rowLengthTexels` texels apart (0 = tightly packed) — e.g. a decoder's
+    /// padded planes copied verbatim, with no repack. Same transitions as
+    /// updateDataBatched; the caller keeps the buffer alive until the GPU is
+    /// done with it.
+    void recordUploadFromBuffer(VkCommandBuffer cmd, VkBuffer buffer,
+                                VkDeviceSize offset, uint32_t rowLengthTexels);
+
     /// Destroy all resources.
     void destroy();
 
@@ -138,7 +146,8 @@ private:
     /// Record the buffer-to-image copy + layout transitions into a command buffer.
     /// Transitions: prevLayout → TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL.
     void recordUpload(VkCommandBuffer cmd, VkBuffer stagingBuffer,
-                      VkDeviceSize stagingOffset, VkImageLayout prevLayout);
+                      VkDeviceSize stagingOffset, VkImageLayout prevLayout,
+                      uint32_t rowLengthTexels = 0);
 
     VkImage       m_image{VK_NULL_HANDLE};
     VkImageView   m_imageView{VK_NULL_HANDLE};

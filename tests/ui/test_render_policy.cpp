@@ -21,6 +21,10 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -394,11 +398,25 @@ TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
 {
     const char* path = std::getenv("ROUNDTABLE_PLAYBACK_PROFILE_PROJECT");
     if (!path) GTEST_SKIP() << "Set ROUNDTABLE_PLAYBACK_PROFILE_PROJECT for real-media profiling";
+    // Optional knobs: ROUNDTABLE_PLAYBACK_PROFILE_SEQUENCE (index; default
+    // the project's active sequence), ..._QUALITY ("full" or "half", default
+    // half) and ..._START_SECONDS (default 0).
+    const auto envOr = [](const char* name, const char* fallback) {
+        const char* value = std::getenv(name);
+        return std::string(value ? value : fallback);
+    };
     ProjectSerializer serializer;
     auto project = serializer.load(path);
     ASSERT_NE(project, nullptr);
-    ASSERT_GT(project->sequenceCount(), 1u);
-    auto* timeline = project->sequence(1);
+    const std::string sequenceArg = envOr("ROUNDTABLE_PLAYBACK_PROFILE_SEQUENCE", "");
+    const size_t sequenceIndex = sequenceArg.empty()
+        ? project->activeSequenceIndex()
+        : static_cast<size_t>(std::stoul(sequenceArg));
+    ASSERT_LT(sequenceIndex, project->sequenceCount());
+    auto* timeline = project->sequence(sequenceIndex);
+    const bool fullQuality = envOr("ROUNDTABLE_PLAYBACK_PROFILE_QUALITY", "half") == "full";
+    const int64_t startTick = static_cast<int64_t>(
+        std::stod(envOr("ROUNDTABLE_PLAYBACK_PROFILE_START_SECONDS", "0")) * 48000.0);
     auto& gpu = GpuContext::get();
     ASSERT_TRUE(gpu.init());
     {
@@ -409,10 +427,17 @@ TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
         compositor.setProject(project.get());
         compositor.setTimeline(timeline);
         compositor.setMediaPool(&pool);
+        // The Program Monitor's resolution menu sets both the compositor's
+        // playback tier (which lookahead prewarm decodes at) and the
+        // request quality; keep them in step like the app does.
+        compositor.setPlaybackTier(fullQuality ? ResolutionTier::Full : ResolutionTier::Half);
+        // The Program Monitor tells the pool the sequence rate during
+        // playback; prefetch strides by it.
+        pool.setProjectFps(timeline->settings().frameRate());
         RenderRequest request;
         request.outputWidth = 1920;
         request.outputHeight = 1080;
-        request.quality = RenderQuality::Half;
+        request.quality = fullQuality ? RenderQuality::Full : RenderQuality::Half;
         request.preferGpuOutput = true;
         // Exercise the opening, alternating shots, restarted background and
         // first section transition at actual 60fps request cadence.
@@ -422,7 +447,7 @@ TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
         size_t ready = 0, pending = 0, blank = 0, failed = 0, held = 0;
         for (int frame = 0; frame < 1500; ++frame) {
             std::this_thread::sleep_until(start + std::chrono::microseconds(frame * 1000000ll / 60));
-            request.timelineTick = frame * 800ll;
+            request.timelineTick = startTick + frame * 800ll;
             const auto before = Clock::now();
             const auto result = compositor.renderFrame(request);
             costs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - before).count());
@@ -454,7 +479,7 @@ TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
         scheduler.setController(&controller);
         scheduler.setOutputResolution(1920, 1080);
         scheduler.setAdaptiveEnabled(false);
-        size_t presentations = 0, repeats = 0, empty = 0;
+        size_t presentations = 0, repeats = 0, skips = 0, empty = 0;
         int64_t previousTick = -1;
         scheduler.setCompositeResultCallback(
             [&](int64_t tick, uint32_t, uint32_t, bool, bool) {
@@ -468,17 +493,98 @@ TEST(RenderPolicyTest, OptionalRealProjectPlaybackProfile)
         scheduler.setPresentNotify([&](int64_t tick) {
             ++presentations;
             if (tick == previousTick) ++repeats;
+            else if (previousTick >= 0 && tick - previousTick > 800) ++skips;
             previousTick = tick;
         });
-        sync.reset(0);
+        sync.reset(startTick);
         controller.play();
         scheduler.start();
         std::this_thread::sleep_for(std::chrono::seconds(10));
         scheduler.stop();
         controller.pause();
         std::cout << "PIPELINE_PROFILE presentations=" << presentations
-                  << " repeats=" << repeats << " empty=" << empty << std::endl;
+                  << " repeats=" << repeats << " skips=" << skips
+                  << " empty=" << empty << std::endl;
         EXPECT_EQ(empty, 0u);
+    }
+    gpu.shutdown();
+}
+
+TEST(RenderPolicyTest, OptionalFormatPlaybackProfile)
+{
+    // One clip, played alone at its own frame rate through the real
+    // compositor and prefetch workers — how well a single source format
+    // keeps up. Set ROUNDTABLE_FORMAT_PROFILE_FILE to a video file;
+    // ROUNDTABLE_PLAYBACK_PROFILE_QUALITY=full|half as above. The MediaPool
+    // delivery reports in the log give exact/nearby/miss counts.
+    const char* path = std::getenv("ROUNDTABLE_FORMAT_PROFILE_FILE");
+    if (!path) GTEST_SKIP() << "Set ROUNDTABLE_FORMAT_PROFILE_FILE for per-format profiling";
+    const char* quality = std::getenv("ROUNDTABLE_PLAYBACK_PROFILE_QUALITY");
+    const bool fullQuality = quality && std::string(quality) == "full";
+    const ResolutionTier tier = fullQuality ? ResolutionTier::Full : ResolutionTier::Half;
+
+    auto& gpu = GpuContext::get();
+    ASSERT_TRUE(gpu.init());
+    {
+        auto cache = std::make_shared<FrameCache>(1024ull * 1024 * 1024);
+        MediaPool pool(cache);
+        pool.onGpuContextReady();
+        const MediaHandle probe = pool.open(std::string(path));
+        ASSERT_NE(probe, InvalidMedia);
+        const VideoStreamInfo info = *pool.getInfo(probe);
+        std::cout << "FORMAT_SOURCE codec=" << info.codecName << ' ' << info.width << 'x'
+                  << info.height << " fps=" << info.fps << std::endl;
+        const double fps = info.fps > 0.0 ? info.fps : 30.0;
+        const int64_t durationTicks = static_cast<int64_t>(info.duration * 48000.0);
+
+        Timeline timeline;
+        auto* track = timeline.addVideoTrack("V1");
+        ASSERT_NE(track, nullptr);
+        auto clip = std::make_unique<VideoClip>(std::string(path));
+        clip->setTimelineIn(0);
+        clip->setDuration(durationTicks);
+        clip->setSourceFps(fps);
+        clip->setSourceDuration(durationTicks);
+        ASSERT_NE(track->addClip(std::move(clip)), nullptr);
+
+        CompositeService compositor;
+        compositor.setTimeline(&timeline);
+        compositor.setMediaPool(&pool);
+        compositor.setPlaybackTier(tier);
+        pool.setProjectFps(fps);   // the sequence runs at the clip's rate
+        RenderRequest request;
+        request.outputWidth = 1920;
+        request.outputHeight = 1080;
+        request.quality = fullQuality ? RenderQuality::Full : RenderQuality::Half;
+        request.preferGpuOutput = true;
+
+        // Paused on the first frame, then Play: the frame clock advances in
+        // real time at the clip's rate.
+        using Clock = std::chrono::steady_clock;
+        for (int i = 0; i < 50; ++i) {
+            request.timelineTick = 0;
+            if (compositor.renderFrame(request).status == RenderResultStatus::Ready) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        const int64_t frames = static_cast<int64_t>(info.duration * fps) - 1;
+        const auto start = Clock::now();
+        size_t ready = 0, notReady = 0;
+        std::vector<double> costs;
+        for (int64_t frame = 0; frame < frames; ++frame) {
+            std::this_thread::sleep_until(start + std::chrono::microseconds(
+                static_cast<int64_t>(frame * 1000000.0 / fps)));
+            request.timelineTick = static_cast<int64_t>(frame * 48000.0 / fps);
+            const auto before = Clock::now();
+            const auto result = compositor.renderFrame(request);
+            costs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - before).count());
+            if (result.status == RenderResultStatus::Ready) ++ready; else ++notReady;
+        }
+        std::sort(costs.begin(), costs.end());
+        std::cout << "FORMAT_PROFILE file=" << std::filesystem::path(path).filename().string()
+                  << " ready=" << ready << " notReady=" << notReady
+                  << " medianMs=" << costs[costs.size() / 2]
+                  << " p95Ms=" << costs[costs.size() * 95 / 100]
+                  << " maxMs=" << costs.back() << std::endl;
     }
     gpu.shutdown();
 }

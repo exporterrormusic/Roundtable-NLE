@@ -120,15 +120,57 @@ bool Nv12Converter::recordConvertYuva444p12ScaledImpl(
     const VkPipeline  outputPipe =
         out16f ? m_yuva444Pipeline16F : m_yuva444Pipeline;
 
-    // All four planes are full-resolution (4:4:4 + alpha).
-    if (!uploadR16Plane(m_yuvaYTexture, m_allocator, m_device, yData, yLinesize,
-                        srcW, srcH, cmd, stagingOut)) return false;
-    if (!uploadR16Plane(m_yuvaUTexture, m_allocator, m_device, uData, uLinesize,
-                        srcW, srcH, cmd, stagingOut)) return false;
-    if (!uploadR16Plane(m_yuvaVTexture, m_allocator, m_device, vData, vLinesize,
-                        srcW, srcH, cmd, stagingOut)) return false;
-    if (!uploadR16Plane(m_yuvaATexture, m_allocator, m_device, aData, aLinesize,
-                        srcW, srcH, cmd, stagingOut)) return false;
+    // All four planes are full-resolution (4:4:4 + alpha). Each is copied
+    // once, padding and all, into the converter's persistent staging buffer;
+    // the GPU copy skips the padding via bufferRowLength.
+    Texture* const textures[4] = {
+        &m_yuvaYTexture, &m_yuvaUTexture, &m_yuvaVTexture, &m_yuvaATexture };
+    const uint8_t* const planes[4] = { yData, uData, vData, aData };
+    const int linesizes[4] = { yLinesize, uLinesize, vLinesize, aLinesize };
+    bool stridedOk = true;
+    VkDeviceSize offsets[4]{};
+    VkDeviceSize total = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!planes[i] || linesizes[i] < static_cast<int>(srcW) * 2 || (linesizes[i] & 1))
+            stridedOk = false;
+        offsets[i] = total;
+        total += (static_cast<VkDeviceSize>(linesizes[i]) * srcH + 255) & ~VkDeviceSize(255);
+    }
+    if (stridedOk && m_yuvaStaging.size() < total) {
+        m_yuvaStaging.destroy();
+        stridedOk = m_yuvaStaging.create(m_allocator->handle(), total, BufferUsage::Staging);
+    }
+    auto* staging = stridedOk ? static_cast<uint8_t*>(m_yuvaStaging.map()) : nullptr;
+    if (staging) {
+        for (int i = 0; i < 4; ++i) {
+            Texture& tex = *textures[i];
+            if (tex.image() == VK_NULL_HANDLE || tex.width() != srcW || tex.height() != srcH) {
+                tex.destroy();
+                TextureConfig cfg;
+                cfg.width  = srcW;
+                cfg.height = srcH;
+                cfg.format = VK_FORMAT_R16_UNORM;
+                cfg.usage  = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                if (!tex.create(m_allocator->handle(), m_device->handle(), cfg))
+                    return false;
+            }
+            std::memcpy(staging + offsets[i], planes[i],
+                        static_cast<size_t>(linesizes[i]) * srcH);
+        }
+        m_yuvaStaging.flush(total, 0);
+        for (int i = 0; i < 4; ++i)
+            textures[i]->recordUploadFromBuffer(cmd, m_yuvaStaging.handle(), offsets[i],
+                                                static_cast<uint32_t>(linesizes[i] / 2));
+    } else {
+        if (!uploadR16Plane(m_yuvaYTexture, m_allocator, m_device, yData, yLinesize,
+                            srcW, srcH, cmd, stagingOut)) return false;
+        if (!uploadR16Plane(m_yuvaUTexture, m_allocator, m_device, uData, uLinesize,
+                            srcW, srcH, cmd, stagingOut)) return false;
+        if (!uploadR16Plane(m_yuvaVTexture, m_allocator, m_device, vData, vLinesize,
+                            srcW, srcH, cmd, stagingOut)) return false;
+        if (!uploadR16Plane(m_yuvaATexture, m_allocator, m_device, aData, aLinesize,
+                            srcW, srcH, cmd, stagingOut)) return false;
+    }
 
     // Barrier: transfer writes → compute reads.
     {

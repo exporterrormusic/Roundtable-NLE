@@ -147,6 +147,7 @@ void Nv12Converter::shutdown(GpuTeardownMode mode)
     m_yuvaUTexture.destroy();
     m_yuvaVTexture.destroy();
     m_yuvaATexture.destroy();
+    m_yuvaStaging.destroy();
     if (m_yuva444Pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(dev, m_yuva444Pipeline, nullptr);
         m_yuva444Pipeline = VK_NULL_HANDLE;

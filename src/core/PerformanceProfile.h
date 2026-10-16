@@ -37,6 +37,11 @@ struct PerformanceProfile
     int prefetchAheadFrames  = 12;   ///< lookahead window (was PREFETCH_AHEAD_COUNT)
     int prefetchThreadCount  = 10;   ///< total prefetch workers (was PREFETCH_THREAD_COUNT)
     int nvdecWorkers         = 2;    ///< workers [0..n) eligible for NVDEC (was PREFETCH_NVDEC_WORKERS)
+    /// The GPU caps concurrent NVDEC/NVENC sessions (Pascal consumer SKUs,
+    /// pre-driver-550). Only then is hardware decode confined to the first
+    /// nvdecWorkers workers; otherwise any worker may decode plain video on
+    /// NVDEC (see MediaPool::onGpuContextReady).
+    bool nvdecSessionCapped  = false;
 
     // ── Cache working sets ────────────────────────────────────────────────
     // 0 == "let CachePolicy compute the adaptive default" (its existing

@@ -273,6 +273,9 @@ public:
 private:
     bool initHardwareDecoder(int deviceType);  // AVHWDeviceType
     bool initSoftwareDecoder(const char* preferredDecoderName = nullptr);
+    /// Decode the first picture on the freshly opened hardware decoder, then
+    /// rewind. False if the hardware rejects the stream.
+    bool hardwareDecodesFirstPicture();
     int m_maxThreads{0};  // 0 = auto
     bool m_sliceOnlyThreading{false};
     /// Precise-seek body: decode forward from the keyframe to the frame

@@ -227,6 +227,15 @@ static AVPixelFormat getHwFormat(AVCodecContext* /*ctx*/,
         if (*p == AV_PIX_FMT_CUDA || *p == AV_PIX_FMT_D3D11 || *p == AV_PIX_FMT_QSV)
             return *p;
     }
+    // No hardware format offered (or the GPU rejected it and FFmpeg asks
+    // again without it): decode in software rather than fail. Frames are
+    // classified per frame (fillFrameInfo), so the CPU path takes them.
+    for (const AVPixelFormat* p = pixFmts; *p != AV_PIX_FMT_NONE; ++p)
+    {
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(*p);
+        if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL))
+            return *p;
+    }
     return AV_PIX_FMT_NONE;
 }
 
@@ -634,7 +643,28 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
             goto done_open;
         }
 
-        if (!initHardwareDecoder(AV_HWDEVICE_TYPE_CUDA))
+        bool hardwareReady = initHardwareDecoder(AV_HWDEVICE_TYPE_CUDA);
+        // The native AV1 decoder (the one with hardware support) cannot
+        // decode in software at all, so a GPU without AV1, or a stream below
+        // its minimum size, would fail on every picture. Check one picture
+        // now and use libdav1d instead when the hardware refuses.
+        if (hardwareReady && codecpar->codec_id == AV_CODEC_ID_AV1 &&
+            !hardwareDecodesFirstPicture()) {
+            spdlog::info("VideoDecoder: '{}' — GPU cannot decode this AV1 stream, "
+                         "using software decode", pathToUtf8(path.filename()));
+            avcodec_free_context(&m_codecCtx);
+            m_codecCtx = nullptr;
+            av_buffer_unref(&m_hwDeviceCtx);
+            m_hwDeviceCtx = nullptr;
+            m_hwAccel = false;
+            m_hwPixFmt = -1;
+            if (!initSoftwareDecoder()) {
+                close();
+                return false;
+            }
+            goto done_open;
+        }
+        if (!hardwareReady)
         {
             spdlog::info("VideoDecoder: NVDEC/CUDA not available for codec '{}', trying D3D11VA",
                          m_info.codecName);
@@ -768,16 +798,19 @@ bool VideoDecoder::initHardwareDecoder(int deviceTypeInt)
     auto deviceType = static_cast<AVHWDeviceType>(deviceTypeInt);
     AVStream* vs = m_fmtCtx->streams[m_info.videoStreamIndex];
     const AVCodec* codec = avcodec_find_decoder(vs->codecpar->codec_id);
+    // FFmpeg prefers libdav1d for AV1, which has no hardware support at all;
+    // the native "av1" decoder hands AV1 to NVDEC / D3D11VA / QSV.
+    if (vs->codecpar->codec_id == AV_CODEC_ID_AV1) {
+        if (const AVCodec* native = avcodec_find_decoder_by_name("av1"))
+            codec = native;
+    }
     if (!codec) return false;
 
+    // Hardware only when the decoder has a config for this device type.
+    // (This used to start from the device's pixel format, so a decoder with
+    // no hardware configs — libdav1d — "initialized" as hardware and then
+    // decoded in software behind a hardware flag.)
     AVPixelFormat hwPixFmt = AV_PIX_FMT_NONE;
-    if (deviceType == AV_HWDEVICE_TYPE_CUDA)
-        hwPixFmt = AV_PIX_FMT_CUDA;
-    else if (deviceType == AV_HWDEVICE_TYPE_D3D11VA)
-        hwPixFmt = AV_PIX_FMT_D3D11;
-    else if (deviceType == AV_HWDEVICE_TYPE_QSV)
-        hwPixFmt = AV_PIX_FMT_QSV;
-
     for (int i = 0;; i++)
     {
         const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
@@ -838,6 +871,32 @@ bool VideoDecoder::initHardwareDecoder(int deviceTypeInt)
     spdlog::info("VideoDecoder: hardware decoder initialized ({})",
                  av_hwdevice_get_type_name(deviceType));
     return true;
+}
+
+bool VideoDecoder::hardwareDecodesFirstPicture()
+{
+    bool decoded = false;
+    for (int packets = 0; packets < 64 && !decoded; ++packets) {
+        if (av_read_frame(m_fmtCtx, m_packet) < 0) break;
+        if (m_packet->stream_index != m_info.videoStreamIndex) {
+            av_packet_unref(m_packet);
+            continue;
+        }
+        const int sent = avcodec_send_packet(m_codecCtx, m_packet);
+        av_packet_unref(m_packet);
+        if (sent < 0 && sent != AVERROR(EAGAIN)) break;
+        const int got = avcodec_receive_frame(m_codecCtx, m_frame);
+        if (got == 0) {
+            decoded = true;
+            av_frame_unref(m_frame);
+        } else if (got != AVERROR(EAGAIN)) {
+            break;
+        }
+    }
+    // Back to the start for the first real decode.
+    av_seek_frame(m_fmtCtx, m_info.videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    if (decoded) avcodec_flush_buffers(m_codecCtx);
+    return decoded;
 }
 
 // ── Software decoder init ───────────────────────────────────────────────────

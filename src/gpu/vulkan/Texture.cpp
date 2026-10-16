@@ -101,7 +101,8 @@ static bool createStagingBuffer(VmaAllocator allocator, const void* pixelData,
 /// Record the buffer-to-image copy + layout transitions into a command buffer.
 /// Transitions: prevLayout → TRANSFER_DST → SHADER_READ_ONLY.
 void Texture::recordUpload(VkCommandBuffer cmd, VkBuffer stagingBuffer,
-                            VkDeviceSize stagingOffset, VkImageLayout prevLayout)
+                            VkDeviceSize stagingOffset, VkImageLayout prevLayout,
+                            uint32_t rowLengthTexels)
 {
     // Transition prevLayout → TRANSFER_DST_OPTIMAL
     transitionLayout(cmd, prevLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -110,7 +111,7 @@ void Texture::recordUpload(VkCommandBuffer cmd, VkBuffer stagingBuffer,
 
     VkBufferImageCopy region{};
     region.bufferOffset      = stagingOffset;
-    region.bufferRowLength   = 0;
+    region.bufferRowLength   = rowLengthTexels;
     region.bufferImageHeight = 0;
     region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.mipLevel       = 0;
@@ -125,6 +126,12 @@ void Texture::recordUpload(VkCommandBuffer cmd, VkBuffer stagingBuffer,
     // Transition TRANSFER_DST → SHADER_READ_ONLY
     transitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void Texture::recordUploadFromBuffer(VkCommandBuffer cmd, VkBuffer buffer,
+                                     VkDeviceSize offset, uint32_t rowLengthTexels)
+{
+    recordUpload(cmd, buffer, offset, m_currentLayout, rowLengthTexels);
 }
 
 // ── Destructor ──────────────────────────────────────────────────────────────

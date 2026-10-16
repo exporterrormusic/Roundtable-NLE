@@ -29,7 +29,7 @@ bool reopenPrefetchDecoder(PrefetchDecoderState& state,
                             bool forceSoftware)
 {
     auto newDecoder = std::make_unique<VideoDecoder>();
-    const int maxThreads = forceSoftware ? 2 : 0;
+    const int maxThreads = prefetchSoftwareDecodeThreads();   // see prefetchWorker
     if (!newDecoder->open(task.filePath, /*forceSoftware=*/forceSoftware, /*maxThreads=*/maxThreads)) {
         const char* mode = forceSoftware ? "software" : "hardware";
         spdlog::warn("MediaPool prefetch: failed to reopen '{}' in {} mode after slow path",

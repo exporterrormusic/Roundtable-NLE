@@ -426,6 +426,12 @@ private:
     Texture               m_yuvaUTexture;   // R16_UNORM, W × H
     Texture               m_yuvaVTexture;   // R16_UNORM, W × H
     Texture               m_yuvaATexture;   // R16_UNORM, W × H (alpha)
+    // Persistently mapped staging for those four planes, reused every frame.
+    // A fresh VMA buffer per plane plus a repack copy cost ~30 ms per 4K
+    // frame. Reuse is safe because every caller waits for the previous
+    // submission before recording the next: the prefetch worker's
+    // backpressure (one submission in flight) and the synchronous wrappers.
+    Buffer                m_yuvaStaging;
     VkDescriptorSetLayout m_yuva444DescSetLayout{VK_NULL_HANDLE};
     VkDescriptorPool      m_yuva444DescPool{VK_NULL_HANDLE};
     VkDescriptorSet       m_yuva444DescSet{VK_NULL_HANDLE};
