@@ -43,7 +43,11 @@ TEST(HangWatchdog, LogsStalledThreadStackAndRecovery)
     EXPECT_NE(log.find("UI HANG: main thread recovered after"), std::string::npos) << log;
     // The sampled stack must show the thread parked in the sleep syscall —
     // proves the unwind walked the watched thread, not the watchdog's own.
-    EXPECT_NE(log.find("NtDelayExecution"), std::string::npos) << log;
+    // Nt* and Zw* are two exported names for the same ntdll stub; which one
+    // the symbol engine reports depends on the Windows build.
+    const bool sleepFrame = log.find("NtDelayExecution") != std::string::npos
+                         || log.find("ZwDelayExecution") != std::string::npos;
+    EXPECT_TRUE(sleepFrame) << log;
 }
 
 #endif
