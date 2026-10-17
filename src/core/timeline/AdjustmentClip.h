@@ -19,12 +19,9 @@ public:
     AdjustmentClip();
     ~AdjustmentClip() override = default;
 
-    // ── Blend mode ──────────────────────────────────────────────────────
-    // The blend mode determines how this adjustment layer's output
-    // composites with the layers below it.
-    // (Actual BlendMode enum is used by the compositor — here we store as int)
-    [[nodiscard]] uint8_t blendMode() const noexcept { return m_blendMode; }
-    void setBlendMode(uint8_t mode) noexcept { m_blendMode = mode; }
+    // Blend mode is the shared Clip::blendMode() — this class used to keep a
+    // second copy that nothing rendered and that hid the shared one when the
+    // clip was reached as an AdjustmentClip.
 
     // ── Scope ───────────────────────────────────────────────────────────
     /// If true, only affects the track directly below, not all tracks below.
@@ -38,7 +35,6 @@ protected:
 public:
 
 private:
-    uint8_t m_blendMode{0};     // 0 = Normal
     bool    m_singleTrack{false};
 };
 

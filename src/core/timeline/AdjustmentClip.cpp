@@ -22,9 +22,7 @@ std::unique_ptr<Clip> AdjustmentClip::createEmpty() const
 void AdjustmentClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
 {
     const auto& o = static_cast<const AdjustmentClip&>(src);
-    // AdjustmentClip-specific. m_blendMode here is AdjustmentClip's own
-    // field (it shadows Clip::m_blendMode), so copyBaseStateFrom can't reach it.
-    m_blendMode   = o.m_blendMode;
+    // AdjustmentClip-specific
     m_singleTrack = o.m_singleTrack;
 }
 

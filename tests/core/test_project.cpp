@@ -952,7 +952,7 @@ TEST_F(SerializerTest, AdjustmentClipRoundTrip)
     ASSERT_EQ(clip->clipType(), ClipType::Adjustment);
 
     auto* ac = static_cast<AdjustmentClip*>(clip);
-    EXPECT_EQ(ac->blendMode(), 3u);
+    EXPECT_EQ(ac->blendMode(), 3);
     EXPECT_TRUE(ac->affectsSingleTrack());
     EXPECT_EQ(ac->timelineIn(), 24000);
     EXPECT_EQ(ac->duration(), 48000);

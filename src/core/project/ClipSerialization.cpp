@@ -663,14 +663,18 @@ void readTitleFields(BinaryReader& r, Clip& clip, uint32_t version)
 void writeAdjustmentFields(BinaryWriter& w, const Clip& clip)
 {
     auto& ac = static_cast<const AdjustmentClip&>(clip);
-    w.writeU8(ac.blendMode());
+    // Former adjustment-only blend byte. The real blend mode is the shared
+    // field saved with every clip; this slot stays for file compatibility
+    // and carries the same value (clamped) for older builds.
+    const int32_t blend = clip.blendMode();
+    w.writeU8(static_cast<uint8_t>(blend < 0 ? 0 : (blend > 255 ? 255 : blend)));
     w.writeU8(ac.affectsSingleTrack() ? 1 : 0);
 }
 
 void readAdjustmentFields(BinaryReader& r, Clip& clip, uint32_t)
 {
     auto* ac = static_cast<AdjustmentClip*>(&clip);
-    ac->setBlendMode(r.readU8());
+    (void)r.readU8();   // former adjustment-only blend byte: unused
     ac->setAffectsSingleTrack(r.readU8() != 0);
 }
 
